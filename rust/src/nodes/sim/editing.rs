@@ -2563,8 +2563,6 @@ mod tests {
     use godot::prelude::{Vector2, Vector3};
     use std::collections::HashSet;
 
-    use std::sync::Arc;
-
     fn test_core() -> SimCore {
         use crate::nodes::sim::core::CityTreasury;
         let config = WorldConfig::default();

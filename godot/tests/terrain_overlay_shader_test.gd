@@ -47,7 +47,6 @@ func _run() -> void:
 	camera.current = true
 	var material := ShaderMaterial.new()
 	material.shader = load("res://assets/materials/terrain.gdshader")
-	material.set_shader_parameter("height_is_baked", true)
 	material.set_shader_parameter("heightmap", _texture(Color.BLACK))
 	material.set_shader_parameter("watermap", _texture(Color.BLACK))
 	material.set_shader_parameter("terrain_grass_albedo", _texture(Color(0.25, 0.45, 0.15)))

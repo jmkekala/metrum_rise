@@ -67,7 +67,6 @@ func _commit(points: PackedVector3Array, forward: int = 1, backward: int = 1) ->
 	return false
 
 func _run() -> void:
-	await _test_graded_paving_payload()
 	simulation = SimulationNode.new()
 	root.add_child(simulation)
 	await _test_zoning_buildability_feedback()
@@ -128,62 +127,6 @@ func _test_zoning_buildability_feedback() -> void:
 	_expect(simulation.get_zoning_parcel_preview(0.0, 16.0, 0, 2, 2).get("valid", false), "free parcels do not require a building asset")
 	_expect(simulation.apply_zoning_parcel_at(0.0, 16.0, 0, 2, 2), "free parcel placement must remain possible")
 	_expect(simulation.get_zoning_site_dependencies() != before, "zoning edits invalidate retained cursor previews")
-
-func _test_graded_paving_payload() -> void:
-	var terrain := TerrainScript.new()
-	var data := {
-		"terrain_mesh_vertices": PackedVector3Array([Vector3.ZERO, Vector3(4, 1, 0), Vector3(0, 0, 4)]),
-		"terrain_mesh_normals": PackedVector3Array([Vector3.UP, Vector3.UP, Vector3.UP]),
-		"terrain_mesh_uvs": PackedVector2Array([Vector2.ZERO, Vector2.RIGHT, Vector2.UP]),
-		"terrain_mesh_indices": PackedInt32Array([0, 1, 2]),
-		"terrain_mesh_colors": PackedColorArray([Color.RED, Color.RED, Color.RED]),
-	}
-	_expect(terrain._triangle_mesh_payload_is_valid(data, "terrain_mesh", true), "graded paving payload must validate")
-	var mesh: ArrayMesh = terrain._baked_terrain_patch_mesh(data)
-	var arrays := mesh.surface_get_arrays(0)
-	_expect(arrays[Mesh.ARRAY_VERTEX] == data.terrain_mesh_vertices, "paving upload preserves graded vertices")
-	_expect(arrays[Mesh.ARRAY_COLOR] == data.terrain_mesh_colors, "paving upload preserves material tags")
-	data.terrain_mesh_colors = PackedColorArray([Color.RED])
-	_expect(not terrain._triangle_mesh_payload_is_valid(data, "terrain_mesh", true), "incomplete paving tags must fail closed")
-	terrain.free()
-	if DisplayServer.get_name() == "headless":
-		return
-	# Exercise the actual terrain shader, not the unshaded coverage-test material below.
-	var viewport := SubViewport.new()
-	viewport.size = Vector2i(128, 128)
-	viewport.own_world_3d = true
-	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	root.add_child(viewport)
-	var material := ShaderMaterial.new()
-	material.shader = TerrainScript.TERRAIN_SHADER
-	material.set_shader_parameter("height_is_baked", true)
-	var texture_image := Image.create(2, 2, false, Image.FORMAT_RGBA8)
-	texture_image.fill(Color(1.0, 0.0, 0.0))
-	material.set_shader_parameter("site_asphalt_albedo_tex", ImageTexture.create_from_image(texture_image))
-	var instance := MeshInstance3D.new()
-	instance.mesh = mesh
-	instance.material_override = material
-	viewport.add_child(instance)
-	var camera := Camera3D.new()
-	viewport.add_child(camera)
-	camera.position = Vector3(2.0, 8.0, 6.0)
-	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	camera.size = 6.0
-	camera.look_at(Vector3(2.0, 0.5, 2.0))
-	camera.current = true
-	for frame in range(4):
-		await process_frame
-	await RenderingServer.frame_post_draw
-	var rendered := viewport.get_texture().get_image()
-	var paved_pixels := 0
-	for y in range(rendered.get_height()):
-		for x in range(rendered.get_width()):
-			var color := rendered.get_pixel(x, y)
-			if color.r > 0.2 and color.g < 0.05 and color.b < 0.05:
-				paved_pixels += 1
-	_expect(paved_pixels > 100, "terrain shader must render tagged graded paving with its site material")
-	viewport.queue_free()
-	await process_frame
 
 func _fixture(fixture: Dictionary) -> void:
 	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "junction fixture world must load")
@@ -481,14 +424,14 @@ func _retry_terrain_payloads(ready: Dictionary, pending: Dictionary) -> void:
 		simulation.request_terrain_patch_payloads(requests)
 
 func _capture_terrain() -> Node3D:
-	# Use the production clipped/stitched payload, not a solid plane under road cutouts.
+	# Use the production plain terrain payload beneath the graded preview tiles.
 	var result := Node3D.new()
 	var renderer := TerrainScript.new()
 	var requests := PackedInt32Array()
 	var pending := {}
 	for z in [1, 2]:
 		for x in [1, 2]:
-			requests.append_array(PackedInt32Array([x, z, 2000]))
+			requests.append_array(PackedInt32Array([x, z, 0]))
 			pending[Vector2i(x, z)] = true
 	simulation.request_terrain_patch_payloads(requests)
 	var deadline := Time.get_ticks_msec() + 20000
@@ -500,8 +443,6 @@ func _capture_terrain() -> Node3D:
 			if not pending.has(key):
 				continue
 			pending.erase(key)
-			if data.get("terrain_requires_road_clipping", false):
-				_expect(renderer._patch_uses_cdt_terrain_mesh(data), "road fixture terrain must use real clipped CDT geometry")
 			var instance := MeshInstance3D.new()
 			instance.mesh = renderer._terrain_patch_mesh_from_data(data, 1, 1)
 			instance.position = Vector3(data["world_origin_x"] + data["world_size_x"] * 0.5, 0.0, data["world_origin_z"] + data["world_size_z"] * 0.5)

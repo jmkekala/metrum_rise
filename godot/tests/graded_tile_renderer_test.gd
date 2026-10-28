@@ -478,8 +478,8 @@ func _check_road_preview(graded: GradedTiles, simulation: SimulationNode, camera
 	# frames nor its commit's builds one.
 	var builds_before := int(graded.counters["cell_builds"])
 	var adopted_before := int(graded.counters["edit_adopted"])
-	# A T off the trunk. (A crossing here, (60, -50) to (60, 70), panics in the exact cut's
-	# legacy road loops while the commit grades its margins: road_clip.rs, TERRAIN-07-G's.)
+	# A T off the trunk. Keep it clear of the crossing fixture so the commit grades only its own
+	# local margins.
 	var points := PackedVector3Array([Vector3(60.0, 0.0, 10.0), Vector3(60.0, 0.0, 80.0)])
 	var frame: Dictionary = simulation.preview_road(points, 1, 1, true)
 	_expect(frame.get("is_valid", false), "the preview stroke must validate: %s" % frame.get("invalid_reason", ""))

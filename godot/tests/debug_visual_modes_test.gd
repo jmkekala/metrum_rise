@@ -242,7 +242,7 @@ func _lods(renderer: Node) -> Dictionary:
 	var lods := {}
 	for key in renderer.resident_patch_lookup:
 		var patch: Dictionary = renderer.patches.get(key, {})
-		if not patch.is_empty() and not bool(patch.get("height_is_baked", false)):
+		if not patch.is_empty():
 			lods[key] = int(patch.get("lod_step", 1))
 	return lods
 

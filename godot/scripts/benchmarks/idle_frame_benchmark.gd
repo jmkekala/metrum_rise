@@ -11,8 +11,8 @@
 ## frame pacing can be compared against the display refresh rather than measured as throughput.
 ## METRUM_IDLE_BENCH_CANOPY_DENSITY starts a new game on the pinned world at that many canopy stems
 ## per hectare instead of loading it with the default forest.
-## METRUM_IDLE_BENCH_TERRAIN=exact renders the exact cut (refined patches) instead of the graded
-## tiles (TERRAIN-07-D's same-session comparison, until TERRAIN-07-G retires the exact cut).
+## METRUM_IDLE_BENCH_TERRAIN is retained as an ignored matrix label for old launch scripts; every
+## pose now uses the production graded terrain.
 extends RefCounted
 
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
@@ -96,10 +96,7 @@ func run(bench: Node) -> void:
 	}
 	bench._metrics = _report
 
-	# Read when the world loads (terrain.gd rebuild_from_simulation_state).
-	var graded := OS.get_environment("METRUM_IDLE_BENCH_TERRAIN") != "exact"
-	_terrain.set("graded_tiles_enabled", graded)
-	_report["terrain"] = "graded" if graded else "exact"
+	_report["terrain"] = "graded"
 	var load_start_us := Time.get_ticks_usec()
 	print("[IDLE_BENCH] LOAD_BEGIN t_us=%d" % load_start_us)
 	var save_path := OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH")
@@ -340,8 +337,8 @@ func _selected_poses(text: String) -> Array:
 # the frame paths (a world's sets after its load, hidden sets whose patch took a new step after a
 # camera move), within the streaming budget's spare time, for seconds after a load (Kuopio's
 # 1,296 sets: about 4,900 frames), and a frame inside that window is not idle (`TERRAIN-07-E`
-# round 7: sampled there, Kuopio's close and overview read 0.6-0.8 ms more GPU time than the
-# exact cut). Waits until none is left; the exact cut has none. Returns {ok, ms, frames, builds}.
+# round 7: sampled there, Kuopio's close and overview read 0.6-0.8 ms more GPU time). Waits until
+# none is left. Returns {ok, ms, frames, builds}.
 func _wait_for_cell_builds(bench: Node) -> Dictionary:
 	var graded: Variant = _terrain.get("graded_tiles")
 	var start_us := Time.get_ticks_usec()

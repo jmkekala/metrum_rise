@@ -96,7 +96,6 @@ func run() -> void:
 	for path in GROUND_SHADERS:
 		var material := ShaderMaterial.new()
 		material.shader = load(path)
-		material.set_shader_parameter("height_is_baked", true)
 		material.set_shader_parameter("terrain_grass_albedo", texture)
 		receivers.append(material)
 	for receiver in receivers:

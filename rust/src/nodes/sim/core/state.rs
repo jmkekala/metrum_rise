@@ -2,7 +2,7 @@
 
 //! Authoritative simulation state and deterministic cadence transitions.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 

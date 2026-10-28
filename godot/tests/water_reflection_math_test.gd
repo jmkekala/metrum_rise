@@ -53,7 +53,6 @@ func _run() -> void:
 	source.mesh = PlaneMesh.new()
 	var material := ShaderMaterial.new()
 	material.shader = load("res://assets/materials/terrain.gdshader")
-	material.set_shader_parameter("height_is_baked", true)
 	material.set_shader_parameter("height_scale", 20.0)
 	source.material_override = material
 	terrain.add_child(source)
@@ -65,7 +64,6 @@ func _run() -> void:
 	var id := source.get_instance_id()
 	_expect(renderer._proxies[id][1] == source.mesh.get_rid(), "mirror must share the displayed terrain geometry")
 	var copy: ShaderMaterial = renderer._grid_materials[material]
-	_expect(copy.get_shader_parameter("height_is_baked") == true, "baked heights must stay baked in the mirror")
 	# A texture/material upload must bypass the round robin and invalidate the old copy.
 	renderer._proxy_frame = 2
 	source.mesh = PlaneMesh.new()

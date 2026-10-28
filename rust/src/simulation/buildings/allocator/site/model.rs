@@ -17,16 +17,6 @@ pub(crate) struct BuildingSiteSurfaceClient {
     pub(crate) vertices_world: Vec<Vector2>,
 }
 
-/// A site's flat support pad. It renders as part of the terrain patches over it, in their frame
-/// (`ROAD-68-D`, open question 23).
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct BuildingSiteFoundation {
-    /// World-space flat support footprint corners.
-    pub(crate) footprint_world: Vec<Vector2>,
-    /// Flat support height.
-    pub(crate) support_height_m: f32,
-}
-
 /// Runtime client that owns the required flat building-site support surface.
 #[derive(Clone, Debug)]
 pub(crate) struct BuildingSiteClient {

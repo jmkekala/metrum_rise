@@ -39,7 +39,6 @@ uniform vec3 site_concrete_albedo_floor = vec3(0.0);
 uniform float site_concrete_floor_influence = 0.0;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
-uniform bool height_is_baked = false;
 uniform vec2 world_size = vec2(256.0, 256.0);
 uniform vec4 coal_pit_overlay_world_bounds = vec4(0.0, 0.0, 0.0, 0.0);
 uniform vec4 field_overlay_world_bounds = vec4(0.0, 0.0, 0.0, 0.0);
@@ -568,8 +567,6 @@ void vertex() {
 		// base + delta in f32, the same expression on both sides of a shared vertex.
 		VERTEX.y = base_m + var_cell_delta;
 		h = VERTEX.y / max(height_scale, 0.001);
-	} else if (height_is_baked) {
-		h = VERTEX.y / max(height_scale, 0.001);
 	} else {
 		VERTEX.y += h * height_scale;
 	}
@@ -604,7 +601,9 @@ void fragment() {
 	float cell_pixel_m = max(fwidth(var_cell_local_m.x), fwidth(var_cell_local_m.y));
 	CellMask cell_mask_here = cell_mask(
 		cell_frame_from(var_cell, int(round(terrain_cell_m * 2.0))), var_cell_local_m);
-	if (cell_mask_here.sdf < 0.0) {
+	if (cell_mask_here.sdf < 0.0 && cell_mask_here.sampled_sdf < 0.0) {
+		// A row's half-plane is not a closed-footprint side at a polyline vertex. Deep
+		// discard therefore also requires the baked top-triangle coverage field to be inside.
 		if (cell_mask_here.sdf <= -cell_pixel_m || var_world_pos.y > cell_mask_here.road_top) {
 			discard;
 		}
@@ -644,7 +643,7 @@ void fragment() {
 		SPECULAR = 0.0;
 	} else {
 	var_cloud_sun = weather_cloud_sun(var_world_pos);
-	bool paved_cdt = height_is_baked && COLOR.b < 0.5;
+	bool paved_cdt = false;
 	bool asphalt = COLOR.r > 0.5;
 #ifdef TERRAIN_GRADED
 	// The material class paints the site paving, with the yards' texture and lighting.

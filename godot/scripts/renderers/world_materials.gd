@@ -170,7 +170,6 @@ static func flat_terrain_material() -> ShaderMaterial:
 		var flat_texture := ImageTexture.create_from_image(flat_image)
 		_flat_terrain_material.set_shader_parameter("heightmap", flat_texture)
 		_flat_terrain_material.set_shader_parameter("watermap", flat_texture)
-		_flat_terrain_material.set_shader_parameter("height_is_baked", true)
 		_flat_terrain_material.set_shader_parameter("heightmap_texture_size", Vector2(2.0, 2.0))
 		_flat_terrain_material.set_shader_parameter("inner_sample_offset_texels", Vector2.ZERO)
 		_flat_terrain_material.set_shader_parameter("terrain_grass_albedo", load_texture(GRASS_ALBEDO))

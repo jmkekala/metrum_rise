@@ -23,7 +23,6 @@ signal patches_will_reset
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
-const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const TerrainWorldNoise := preload("res://scripts/renderers/terrain_world_noise.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
@@ -79,8 +78,6 @@ const TERRAIN_BORDER_CONTOUR_MINOR_COLOR := Color(0.13, 0.19, 0.16)
 const TERRAIN_BORDER_CONTOUR_MAJOR_COLOR := Color(0.10, 0.16, 0.14)
 const TERRAIN_BORDER_CONTOUR_MINOR_STRENGTH := 0.14
 const TERRAIN_BORDER_CONTOUR_MAJOR_STRENGTH := 0.28
-const RETAINING_WALL_COLOR := Color(0.54, 0.54, 0.50)
-const RETAINING_WALL_ROUGHNESS := 0.88
 const PATCH_RESIDENCY_CULL_FAR_M := 8000.0
 const PATCH_EXTRA_CULL_MARGIN_M := 4096.0
 const PATCH_CULL_PAD_M := 64.0
@@ -93,7 +90,6 @@ const PATCH_RESIDENCY_MUTATION_BUDGET_MS := 4.0
 const PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
 const PATCH_RESOURCE_POOL_MAX := 96
 const PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 32
-const REFINED_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 2
 const PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
 const PATCH_PREWARM_MAX_PER_FRAME := 4
 const PATCH_PREWARM_BUDGET_MS := 0.75
@@ -110,11 +106,6 @@ const PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME := 8
 const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
-const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
-const TERRAIN_CDT_CONTRACT_REVISION := 15
-const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
-const ROAD_CLIP_LOOP_ROLE_OUTER := 0
-const ROAD_CLIP_LOOP_ROLE_HOLE := 1
 const FIELD_OVERLAY_TEXTURE_TILE_M := 12.0
 const FIELD_OVERLAY_STRENGTH := 0.84
 const FIELD_OVERLAY_GRAIN_TINT := Color(0.98, 1.02, 0.90, 1.0)
@@ -127,10 +118,7 @@ const FIELD_OVERLAY_FALLBACK_COLOR := Color(0.86, 0.70, 0.34, 1.0)
 @onready var water_node = $"../Water"
 
 var overlay_mode: int = 0
-## Graded terrain tiles (TERRAIN-07-D) drawn as cells over the patches that hold them; every
-## patch then requests its plain payload, never a refined CDT cut. Only the reference test turns
-## this off, to render the exact cut beside the graded surface until TERRAIN-07-G (T10).
-var graded_tiles_enabled := true
+## Graded terrain tiles drawn as cells over the plain base-terrain patches.
 var graded_tiles: TerrainGradedTiles = null
 # The resident patches the graded tiles read (key -> {node, material, rect, step, generation,
 # aabb}), kept as patches change rather than rebuilt per frame, with the keys changed since the
@@ -176,9 +164,6 @@ var patch_payload_ready: Dictionary = {}
 var patch_payload_road_generation: int = -1
 var pending_terrain_ack_states: PackedInt64Array = PackedInt64Array()
 var dirty_patch_payload_generations: Dictionary = {}
-var handled_bad_cdt_patch_generations: Dictionary = {}
-var handled_bad_cdt_patch_render_steps: Dictionary = {}
-var handled_bad_cdt_patch_failures: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
 var patch_resource_pool: Array[Dictionary] = []
 var patch_prewarm_queue: Array[Vector2i] = []
@@ -190,7 +175,6 @@ var patch_lod_refresh_queue: Array[Vector2i] = []
 var patch_lod_refresh_lookup: Dictionary = {}
 var water_texture_sync_queue: Array[Vector2i] = []
 var water_texture_sync_lookup: Dictionary = {}
-var engineered_patch_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
 var cached_overlay_day: int = -1
 var cached_coal_pit_overlay_revision: int = -1
@@ -203,7 +187,6 @@ var border_skirt_instance: MeshInstance3D
 var border_bottom_cap_instance: MeshInstance3D
 var border_skirt_material: ShaderMaterial
 var border_bottom_cap_material: StandardMaterial3D
-var retaining_wall_material: ShaderMaterial
 var _resident_patch_bounds_valid: bool = false
 var _resident_min_patch_x: int = 0
 var _resident_max_patch_x: int = -1
@@ -307,11 +290,8 @@ func rebuild_from_simulation_state() -> void:
 	_ensure_grass_textures()
 	_ensure_border_visuals()
 	_prewarm_terrain_patch_resource_pool()
-	# _clear_patches released the previous world's tiles; with the switch off none draw.
-	if graded_tiles_enabled:
-		graded_tiles = TerrainGradedTiles.new()
-		graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size, patch_span_m)
-	_refresh_engineered_patch_lookup()
+	graded_tiles = TerrainGradedTiles.new()
+	graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size, patch_span_m)
 	_sync_patch_residency(true)
 	mark_overlay_dirty()
 	_refresh_overlay_texture(int(simulation_node.get_current_day()))
@@ -582,28 +562,13 @@ func get_pending_render_work_counts() -> Dictionary:
 		"lod_refresh": patch_lod_refresh_queue.size(),
 		"water_texture_sync": water_texture_sync_queue.size(),
 		"residency_mutation": 1 if _terrain_residency_pending_mutations else 0,
-		"blocked_bad_cdt": handled_bad_cdt_patch_failures.size(),
 		"refused": patch_payload_refused.size(),
 	}
 
 func get_blocked_dirty_patch_failures() -> Array[Dictionary]:
-	var failures: Array[Dictionary] = []
-	for key_variant in handled_bad_cdt_patch_failures.keys():
-		var key: Vector2i = key_variant
-		if not _dirty_engineered_patch_has_handled_bad_cdt(key):
-			continue
-		var failure: Dictionary = (
-			handled_bad_cdt_patch_failures[key] as Dictionary
-		).duplicate(true)
-		failure["patch_x"] = key.x
-		failure["patch_z"] = key.y
-		failures.append(failure)
-	return failures
+	return []
 
 func has_blocked_dirty_patch_failure() -> bool:
-	for key_variant in handled_bad_cdt_patch_failures:
-		if _dirty_engineered_patch_has_handled_bad_cdt(key_variant as Vector2i):
-			return true
 	return false
 
 func has_pending_render_work(include_background_cache: bool = true) -> bool:
@@ -613,7 +578,6 @@ func has_pending_render_work(include_background_cache: bool = true) -> bool:
 		or not patch_lod_refresh_queue.is_empty()
 		or not water_texture_sync_queue.is_empty()
 		or _terrain_residency_pending_mutations
-		or has_blocked_dirty_patch_failure()
 		or (
 			include_background_cache
 			and (
@@ -695,7 +659,6 @@ func _terrain_network_render_generation() -> int:
 func prepare_terrain_visual_update(poll_ready: bool = true) -> Dictionary:
 	if not _retry_pending_terrain_ack():
 		return {}
-	_refresh_engineered_patch_lookup()
 	var dirty_states: PackedInt64Array = simulation_node.get_dirty_terrain_patch_payload_states()
 	var dirty_keys := _dirty_patch_payload_keys_from_states(dirty_states)
 	if dirty_keys.is_empty():
@@ -1005,21 +968,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	var patch_data: Dictionary = _terrain_patch_data_for_key(key, false, allow_async)
 	if patch_data.is_empty():
 		return
-	if _patch_requires_engineered_refinement(key, patch_data) and not _engineered_patch_data_is_renderable(patch_data):
-		_mark_bad_cdt_generation_handled(key, patch_data)
-		if _terrain_debug_enabled or _road_debug_enabled:
-			MetrumDebug.log(
-				"terrain",
-				"terrain_create key=(%d,%d) deferred_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s"
-				% [
-					key.x,
-					key.y,
-					str(patch_data.get("terrain_cdt_status", "none")),
-					str(patch_data.get("terrain_cdt_error", "none")),
-			]
-		)
-		return
-
 	var sample_width := int(patch_data["sample_width"])
 	var sample_height := int(patch_data["sample_height"])
 	var texture_width := int(patch_data["texture_width"])
@@ -1044,7 +992,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	var initial_lod_step := _mesh_lod_step_for_patch(key, patch_center_x, patch_center_z)
 	var sample_step_m := world_size_x / float(max(1, sample_width - 1))
 	var initial_subdivision_factor := _mesh_subdivision_factor_for_patch(key, sample_step_m)
-	var height_is_baked: bool = _terrain_patch_mesh_is_baked(patch_data)
 	patch_mesh = _terrain_patch_mesh_from_data(patch_data, initial_lod_step, initial_subdivision_factor)
 
 	var patch_node: MeshInstance3D = patch_resources["node"] as MeshInstance3D
@@ -1060,16 +1007,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		0.0,
 		world_origin_z + world_size_z * 0.5
 	)
-	var retaining_wall_node: MeshInstance3D = patch_resources["retaining_wall_node"] as MeshInstance3D
-	retaining_wall_node.name = "RetainingWalls"
-	retaining_wall_node.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
-	retaining_wall_node.mesh = _retaining_wall_patch_mesh(patch_data)
-	retaining_wall_node.visible = (
-		not _patch_has_unusable_refined_cdt(patch_data)
-		and _patch_has_retaining_wall_mesh(patch_data)
-	)
-	retaining_wall_node.material_override = _retaining_wall_material()
-
 	var material: ShaderMaterial = patch_resources["material"] as ShaderMaterial
 	material.shader = TERRAIN_SHADER
 	material.set_shader_parameter("heightmap", height_texture)
@@ -1087,7 +1024,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	WorldMaterials.apply_terrain_paving_parameters(material)
 	material.set_shader_parameter("overlay_mode", overlay_mode)
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
-	material.set_shader_parameter("height_is_baked", height_is_baked)
 	material.set_shader_parameter("world_size", terrain_world_size)
 	material.set_shader_parameter("terrain_debug_patch_key", Vector2(key.x, key.y))
 	material.set_shader_parameter("terrain_debug_lod_step", float(initial_lod_step))
@@ -1153,7 +1089,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	patches[key] = {
 		"key": key,
 		"node": patch_node,
-		"retaining_wall_node": retaining_wall_node,
 		"material": material,
 		"height_image": height_image,
 		"height_texture": height_texture,
@@ -1186,8 +1121,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"sample_step_m": sample_step_m,
 		"lod_step": initial_lod_step,
 		"subdivision_factor": initial_subdivision_factor,
-		"height_is_baked": height_is_baked,
-		"engineered_bad_cdt_blocked": false,
 		"last_patch_data": patch_data,
 	}
 	_surface_commit_revision += 1
@@ -1214,45 +1147,6 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 				% [
 					key.x,
 					key.y,
-					fetch_ms,
-					float(Time.get_ticks_usec() - total_start_us) / 1000.0,
-				]
-			)
-		return false
-	var patch: Dictionary = patches[key]
-	var engineered_patch := _patch_requires_engineered_refinement(key, patch_data)
-	if engineered_patch and not _engineered_patch_data_is_renderable(patch_data):
-		var previous_patch_data := _last_renderable_engineered_patch_data(patch)
-		_mark_bad_cdt_generation_handled(key, patch_data)
-		if not previous_patch_data.is_empty():
-			patch["engineered_bad_cdt_blocked"] = false
-			_apply_patch_visibility_for_residency(key, patch, previous_patch_data)
-			if _terrain_debug_enabled or _road_debug_enabled:
-				MetrumDebug.log(
-					"terrain",
-					"terrain_upload key=(%d,%d) preserved_last_good_cdt=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
-					% [
-						key.x,
-						key.y,
-						str(patch_data.get("terrain_cdt_status", "none")),
-						str(patch_data.get("terrain_cdt_error", "none")),
-						fetch_ms,
-						float(Time.get_ticks_usec() - total_start_us) / 1000.0,
-					]
-				)
-			return false
-		patch_render_will_change.emit(key)
-		_block_engineered_patch_until_valid_cdt(patch)
-		_graded_patch_changed(key)
-		if _terrain_debug_enabled or _road_debug_enabled:
-			MetrumDebug.log(
-				"terrain",
-				"terrain_upload key=(%d,%d) hidden_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
-				% [
-					key.x,
-					key.y,
-					str(patch_data.get("terrain_cdt_status", "none")),
-					str(patch_data.get("terrain_cdt_error", "none")),
 					fetch_ms,
 					float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 				]
@@ -1322,7 +1216,6 @@ func _stage_terrain_patch_update(
 	var world_size_x := float(patch_data["world_size_x"])
 	var world_size_z := float(patch_data["world_size_z"])
 	var sample_step_m := world_size_x / float(sample_width - 1)
-	var height_is_baked: bool = _terrain_patch_mesh_is_baked(patch_data)
 	var center_x := float(patch_data["world_origin_x"]) + world_size_x * 0.5
 	var center_z := float(patch_data["world_origin_z"]) + world_size_z * 0.5
 	var lod_step := _mesh_lod_step_for_patch(key, center_x, center_z)
@@ -1335,16 +1228,7 @@ func _stage_terrain_patch_update(
 	)
 	if terrain_mesh == null:
 		return {}
-	if height_is_baked and (terrain_mesh as ArrayMesh).get_surface_count() != 1:
-		return {}
 	var mesh_ms := float(Time.get_ticks_usec() - mesh_start_us) / 1000.0
-
-	var retaining_start_us := Time.get_ticks_usec()
-	var retaining_mesh := _retaining_wall_patch_mesh(patch_data)
-	var retaining_visible := _patch_has_retaining_wall_mesh(patch_data)
-	if retaining_visible and retaining_mesh.get_surface_count() != 1:
-		return {}
-	var retaining_ms := float(Time.get_ticks_usec() - retaining_start_us) / 1000.0
 	return {
 		"valid": true,
 		"patch_node_id": (patch["node"] as MeshInstance3D).get_instance_id(),
@@ -1354,8 +1238,6 @@ func _stage_terrain_patch_update(
 		"height_texture": height_texture,
 		"mask_image": mask_image,
 		"terrain_mesh": terrain_mesh,
-		"retaining_mesh": retaining_mesh,
-		"retaining_visible": retaining_visible,
 		"position": Vector3(center_x, 0.0, center_z),
 		"sample_width": sample_width,
 		"sample_height": int(patch_data["sample_height"]),
@@ -1366,10 +1248,8 @@ func _stage_terrain_patch_update(
 		"sample_step_m": sample_step_m,
 		"lod_step": lod_step,
 		"subdivision_factor": subdivision_factor,
-		"height_is_baked": height_is_baked,
 		"texture_ms": texture_ms,
 		"mesh_ms": mesh_ms,
-		"retaining_ms": retaining_ms,
 	}
 
 func _commit_staged_patch_data(
@@ -1397,8 +1277,6 @@ func _commit_staged_patch_data(
 	patch["last_patch_data"] = patch_data
 	_surface_commit_revision += 1
 	_commit_patch_land_cover(patch, stage["land_cover"])
-	patch["engineered_bad_cdt_blocked"] = false
-	_clear_bad_cdt_generation_handled(key)
 
 	var material: ShaderMaterial = patch["material"] as ShaderMaterial
 	material.set_shader_parameter("heightmap", stage["height_texture"])
@@ -1421,7 +1299,6 @@ func _commit_staged_patch_data(
 		"patch_world_size_m",
 		Vector2(float(stage["world_size_x"]), float(stage["world_size_z"]))
 	)
-	material.set_shader_parameter("height_is_baked", bool(stage["height_is_baked"]))
 	material.set_shader_parameter("terrain_debug_lod_step", float(stage["lod_step"]))
 
 	patch["sample_width"] = int(stage["sample_width"])
@@ -1434,73 +1311,26 @@ func _commit_staged_patch_data(
 	patch["lod_step"] = int(stage["lod_step"])
 	_graded_patch_changed(key)
 	patch["subdivision_factor"] = int(stage["subdivision_factor"])
-	patch["height_is_baked"] = bool(stage["height_is_baked"])
 
 	var patch_node: MeshInstance3D = patch["node"] as MeshInstance3D
 	patch_node.mesh = stage["terrain_mesh"] as Mesh
 	patch_node.position = stage["position"] as Vector3
-	var retaining_wall_node: MeshInstance3D = patch["retaining_wall_node"] as MeshInstance3D
-	retaining_wall_node.mesh = stage["retaining_mesh"] as Mesh
-	retaining_wall_node.visible = bool(stage["retaining_visible"])
 	_apply_patch_visibility_for_residency(key, patch, patch_data)
 	_terrain_debug_patch_uploads += 1
 
 	if _road_debug_enabled:
-		var terrain_vertices := 0
-		var terrain_indices := 0
-		var retaining_vertices := 0
-		var retaining_indices := 0
-		if patch_data.has("terrain_mesh_vertices"):
-			terrain_vertices = (patch_data["terrain_mesh_vertices"] as PackedVector3Array).size()
-		if patch_data.has("terrain_mesh_indices"):
-			terrain_indices = (patch_data["terrain_mesh_indices"] as PackedInt32Array).size()
-		if patch_data.has("terrain_retaining_wall_mesh_vertices"):
-			retaining_vertices = (
-				patch_data["terrain_retaining_wall_mesh_vertices"] as PackedVector3Array
-			).size()
-		if patch_data.has("terrain_retaining_wall_mesh_indices"):
-			retaining_indices = (
-				patch_data["terrain_retaining_wall_mesh_indices"] as PackedInt32Array
-			).size()
 		MetrumDebug.log(
 			"road",
-			"terrain_upload key=(%d,%d) engineered_owned=%s include_debug=%s fetch_ms=%.3f metadata_ms=%.3f texture_ms=%.3f patch_update_ms=%.3f mesh_ms=%.3f retaining_ms=%.3f position_ms=%.3f total_ms=%.3f terrain_vertices=%d terrain_indices=%d retaining_vertices=%d retaining_indices=%d"
+			"terrain_upload key=(%d,%d) fetch_ms=%.3f texture_ms=%.3f mesh_ms=%.3f total_ms=%.3f"
 			% [
 				key.x,
 				key.y,
-				str(engineered_patch_lookup.has(key)),
-				"false",
 				fetch_ms,
-				0.0,
 				float(stage["texture_ms"]),
-				0.0,
 				float(stage["mesh_ms"]),
-				float(stage["retaining_ms"]),
-				0.0,
 				float(Time.get_ticks_usec() - total_start_us) / 1000.0,
-				terrain_vertices,
-				terrain_indices,
-				retaining_vertices,
-				retaining_indices,
 			]
 		)
-
-func _block_engineered_patch_until_valid_cdt(patch: Dictionary) -> void:
-	patch["engineered_bad_cdt_blocked"] = true
-	patch["last_patch_data"] = {}
-	_surface_commit_revision += 1
-	patch["height_is_baked"] = true
-	var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
-	if patch_node != null:
-		patch_node.visible = false
-		patch_node.mesh = null
-	var retaining_wall_node: MeshInstance3D = patch.get("retaining_wall_node", null) as MeshInstance3D
-	if retaining_wall_node != null:
-		retaining_wall_node.visible = false
-		retaining_wall_node.mesh = null
-
-func _patch_is_blocked_by_bad_cdt(patch: Dictionary) -> bool:
-	return bool(patch.get("engineered_bad_cdt_blocked", false))
 
 func _apply_patch_visibility_for_residency(
 	key: Vector2i,
@@ -1511,12 +1341,6 @@ func _apply_patch_visibility_for_residency(
 	var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
 	if patch_node != null:
 		patch_node.visible = visible_for_residency
-	var retaining_wall_node: MeshInstance3D = patch.get("retaining_wall_node", null) as MeshInstance3D
-	if retaining_wall_node != null:
-		retaining_wall_node.visible = (
-			visible_for_residency
-			and _patch_has_retaining_wall_mesh(patch_data)
-		)
 
 func _activate_patch(key: Vector2i) -> bool:
 	if resident_patch_lookup.has(key):
@@ -1528,19 +1352,6 @@ func _activate_patch(key: Vector2i) -> bool:
 	if patch.is_empty():
 		return false
 	var last_patch_data: Dictionary = patch.get("last_patch_data", {}) as Dictionary
-	if (
-		_patch_is_blocked_by_bad_cdt(patch)
-		or (
-			engineered_patch_lookup.has(key)
-			and not _engineered_patch_data_is_renderable(last_patch_data)
-		)
-	):
-		if not _upload_patch(key, true):
-			return false
-		patch = patches.get(key, {})
-		last_patch_data = patch.get("last_patch_data", {}) as Dictionary
-	if patch.is_empty() or _patch_is_blocked_by_bad_cdt(patch):
-		return false
 	_refresh_one_patch_mesh_lod(key)
 	# Creation and refresh can build hidden resources, but a concurrent network generation owns
 	# their first visible publication together with its road chunks.
@@ -1645,9 +1456,6 @@ func _clear_patches() -> void:
 	patch_payload_requested_generation.clear()
 	patch_payload_ready.clear()
 	dirty_patch_payload_generations.clear()
-	handled_bad_cdt_patch_generations.clear()
-	handled_bad_cdt_patch_render_steps.clear()
-	handled_bad_cdt_patch_failures.clear()
 	patch_payload_refused.clear()
 	patch_payload_road_generation = -1
 	pending_terrain_ack_states = PackedInt64Array()
@@ -1685,9 +1493,6 @@ func _acquire_terrain_patch_resources() -> Dictionary:
 	patch_node.visible = false
 	patch_node.mesh = null
 	patch_node.position = Vector3.ZERO
-	var retaining_wall_node: MeshInstance3D = resources["retaining_wall_node"] as MeshInstance3D
-	retaining_wall_node.visible = false
-	retaining_wall_node.mesh = null
 	_ensure_patch_node_parent(patch_node)
 	return resources
 
@@ -1695,9 +1500,6 @@ func _release_terrain_patch_resources(patch: Dictionary) -> void:
 	var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
 	if patch_node == null:
 		return
-	var retaining_wall_node: MeshInstance3D = (
-		patch.get("retaining_wall_node", null) as MeshInstance3D
-	)
 	var material: ShaderMaterial = patch.get("material", null) as ShaderMaterial
 	var height_image: Image = patch.get("height_image", null) as Image
 	var height_texture: ImageTexture = patch.get("height_texture", null) as ImageTexture
@@ -1710,15 +1512,11 @@ func _release_terrain_patch_resources(patch: Dictionary) -> void:
 	if material != null:
 		material.shader = TERRAIN_SHADER
 		patch_node.material_override = material
-	if retaining_wall_node != null:
-		retaining_wall_node.visible = false
-		retaining_wall_node.mesh = null
 	if patch_resource_pool.size() >= PATCH_RESOURCE_POOL_MAX:
 		patch_node.queue_free()
 		return
 	patch_resource_pool.append({
 		"node": patch_node,
-		"retaining_wall_node": retaining_wall_node,
 		"material": material,
 		"height_image": height_image,
 		"height_texture": height_texture,
@@ -1753,17 +1551,6 @@ func _new_terrain_patch_resources() -> Dictionary:
 	patch_node.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
 	patch_node.visible = false
 
-	var retaining_wall_node := MeshInstance3D.new()
-	retaining_wall_node.name = "RetainingWalls"
-	SceneLightingConfig.apply_shadow_policy(
-		retaining_wall_node,
-		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
-		"terrain"
-	)
-	retaining_wall_node.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
-	retaining_wall_node.visible = false
-	patch_node.add_child(retaining_wall_node)
-
 	var material := ShaderMaterial.new()
 	material.shader = TERRAIN_SHADER
 	patch_node.material_override = material
@@ -1776,7 +1563,6 @@ func _new_terrain_patch_resources() -> Dictionary:
 	add_child(patch_node)
 	return {
 		"node": patch_node,
-		"retaining_wall_node": retaining_wall_node,
 		"material": material,
 		"height_image": height_image,
 		"height_texture": height_texture,
@@ -2021,51 +1807,7 @@ func _dirty_patch_payload_keys_from_states(
 				or int(ready_patch_data.get("surface_generation", -1)) != generation
 			):
 				patch_payload_ready.erase(key)
-		if int(handled_bad_cdt_patch_generations.get(key, -1)) != generation:
-			handled_bad_cdt_patch_generations.erase(key)
-			handled_bad_cdt_patch_render_steps.erase(key)
-			handled_bad_cdt_patch_failures.erase(key)
 	return keys
-
-func _dirty_engineered_patch_has_handled_bad_cdt(key: Vector2i) -> bool:
-	var generation := int(dirty_patch_payload_generations.get(key, -1))
-	return generation >= 0 and int(handled_bad_cdt_patch_generations.get(key, -1)) == generation
-
-func _patch_payload_has_handled_bad_cdt(key: Vector2i, render_step_mm: int) -> bool:
-	return (
-		int(handled_bad_cdt_patch_generations.get(key, -1)) >= 0
-		and int(handled_bad_cdt_patch_render_steps.get(key, -1)) == render_step_mm
-	)
-
-func _mark_bad_cdt_generation_handled(key: Vector2i, patch_data: Dictionary) -> void:
-	var generation := int(patch_data.get("surface_generation", -1))
-	if generation >= 0:
-		handled_bad_cdt_patch_generations[key] = generation
-		handled_bad_cdt_patch_render_steps[key] = int(
-			patch_data.get("render_step_mm", _terrain_patch_payload_render_step_mm(key))
-		)
-		handled_bad_cdt_patch_failures[key] = {
-			"surface_generation": generation,
-			"render_step_mm": int(
-				patch_data.get("render_step_mm", _terrain_patch_payload_render_step_mm(key))
-			),
-			"cdt_status": str(patch_data.get("terrain_cdt_status", "unknown")),
-			"cdt_error": str(patch_data.get("terrain_cdt_error", "unknown")),
-			"cdt_invalid_constraints": int(
-				patch_data.get("terrain_cdt_invalid_constraints", 0)
-			),
-			"cdt_missing_road_constraints": int(
-				patch_data.get("terrain_cdt_spade_missing_road_constraint_edges", 0)
-			),
-		}
-	patch_payload_ready.erase(key)
-	patch_payload_requested.erase(key)
-	patch_payload_requested_generation.erase(key)
-
-func _clear_bad_cdt_generation_handled(key: Vector2i) -> void:
-	handled_bad_cdt_patch_generations.erase(key)
-	handled_bad_cdt_patch_render_steps.erase(key)
-	handled_bad_cdt_patch_failures.erase(key)
 
 func _acknowledge_terrain_batch(flat_states: PackedInt64Array) -> bool:
 	if flat_states.is_empty():
@@ -2094,162 +1836,28 @@ func _dirty_patch_keys_touch_border(keys: Array[Vector2i]) -> bool:
 
 func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[String]:
 	var lines: Array[String] = []
-	var keys: Array[Vector2i] = _dirty_patch_keys(flat_pairs)
-	if keys.is_empty():
-		lines.append("terrain_patch none")
-		return lines
-	for key in keys:
-		var patch: Dictionary = patches.get(key, {})
-		var patch_data: Dictionary = patch.get("last_patch_data", {})
+	for index in range(flat_pairs.size() / 2):
+		var key := Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1])
+		var patch_data: Dictionary = _terrain_patch_data_for_key(key, true)
 		if patch_data.is_empty():
-			lines.append("terrain_patch key=(%d,%d) missing_cached_patch_data=true" % [key.x, key.y])
+			lines.append("terrain_patch key=(%d,%d) missing=true" % [key.x, key.y])
 			continue
-		var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
-		var mesh: Mesh = null
-		if patch_node != null:
-			mesh = patch_node.mesh
-		var height_stats: Dictionary = _terrain_patch_height_stats(patch_data)
-		var water_texture_width := int(patch.get("water_texture_width", 0))
-		var water_texture_height := int(patch.get("water_texture_height", 0))
-		var water_depth_nonzero_count := int(patch.get("water_depth_nonzero_count", 0))
-		var water_world_origin_x := float(patch.get("water_world_origin_x", 0.0))
-		var water_world_origin_z := float(patch.get("water_world_origin_z", 0.0))
-		var water_world_size_x := float(patch.get("water_world_size_x", 0.0))
-		var water_world_size_z := float(patch.get("water_world_size_z", 0.0))
-		var clip_stats: Dictionary = RenderDebug.clip_stats(_road_clip_loop_groups_from_patch_data(patch_data))
-		var baked_vertex_count: int = _road_geometry_baked_vertex_count(patch_data)
-		var retaining_wall_baked_vertex_count: int = _road_geometry_retaining_wall_baked_vertex_count(patch_data)
-		var baked_mesh_stats: String = _road_geometry_baked_mesh_stats_label(patch_data)
-		var cdt_status: String = str(patch_data.get("terrain_cdt_status", "none"))
-		var cdt_error: String = str(patch_data.get("terrain_cdt_error", "none"))
-		var cdt_stage: String = str(patch_data.get("terrain_cdt_diagnostic_stage", "none"))
-		var cdt_backend: String = str(patch_data.get("terrain_cdt_diagnostic_backend", "none"))
-		var cdt_input_vertices: int = int(patch_data.get("terrain_cdt_input_vertices", 0))
-		var cdt_constraint_edges: int = int(patch_data.get("terrain_cdt_constraint_edges", 0))
-		var cdt_road_constraint_edges: int = int(patch_data.get("terrain_cdt_road_constraint_edges", 0))
-		var cdt_preserved_road_constraint_edges: int = int(patch_data.get("terrain_cdt_preserved_road_constraint_edges", 0))
-		var cdt_spade_missing_road_constraint_edges: int = int(patch_data.get("terrain_cdt_spade_missing_road_constraint_edges", 0))
-		var cdt_rejected_road_constraint_edges: int = int(patch_data.get("terrain_cdt_rejected_road_constraint_edges", 0))
-		var cdt_internal_road_constraint_edges: int = int(patch_data.get("terrain_cdt_internal_road_constraint_edges", 0))
-		var cdt_invalid_constraints: int = int(patch_data.get("terrain_cdt_invalid_constraints", 0))
-		var cdt_accepted_faces: int = int(patch_data.get("terrain_cdt_accepted_faces", 0))
-		var cdt_rejected_road_faces: int = int(patch_data.get("terrain_cdt_rejected_road_faces", 0))
-		var cdt_emitted_faces: int = int(patch_data.get("terrain_cdt_emitted_faces", 0))
-		var cdt_terrain_face_sources: String = _road_geometry_cdt_face_sources_summary_label(
-			patch_data,
-			"terrain_mesh"
-		)
-		var cdt_max_face_y_delta_m: float = float(patch_data.get("terrain_cdt_max_face_y_delta_m", 0.0))
-		var cdt_max_face_slope_ratio: float = float(patch_data.get("terrain_cdt_max_face_slope_ratio", 0.0))
-		var cdt_longest_triangle_edge_m: float = float(patch_data.get("terrain_cdt_longest_triangle_edge_m", 0.0))
-		var cdt_road_seam_faces: int = int(patch_data.get("terrain_cdt_road_seam_faces", 0))
-		var cdt_road_seam_max_y_delta_m: float = float(patch_data.get("terrain_cdt_road_seam_max_y_delta_m", 0.0))
-		var cdt_road_seam_max_slope_ratio: float = float(patch_data.get("terrain_cdt_road_seam_max_slope_ratio", 0.0))
-		var cdt_retaining_wall_faces: int = int(patch_data.get("terrain_cdt_retaining_wall_faces", 0))
-		var cdt_retaining_wall_emitted_faces: int = int(patch_data.get("terrain_cdt_retaining_wall_emitted_faces", 0))
-		var cdt_retaining_wall_face_sources: String = _road_geometry_cdt_face_sources_summary_label(
-			patch_data,
-			"terrain_retaining_wall_mesh"
-		)
-		var cdt_retaining_wall_max_y_delta_m: float = float(patch_data.get("terrain_cdt_retaining_wall_max_y_delta_m", 0.0))
-		var cdt_retaining_wall_max_slope_ratio: float = float(patch_data.get("terrain_cdt_retaining_wall_max_slope_ratio", 0.0))
-		var cdt_accepted_seam_edges: int = int(patch_data.get("terrain_cdt_accepted_seam_edges", 0))
-		var cdt_merged_subbudget_seam_edges: int = int(patch_data.get("terrain_cdt_merged_subbudget_seam_edges", 0))
-		var cdt_omitted_near_seam_source_samples: int = int(patch_data.get("terrain_cdt_omitted_near_seam_source_samples", 0))
-		var cdt_retaining_wall_required_seam_edges: int = int(patch_data.get("terrain_cdt_retaining_wall_required_seam_edges", 0))
-		var cdt_retaining_wall_required_seam_faces: int = int(patch_data.get("terrain_cdt_retaining_wall_required_seam_faces", 0))
-		var cdt_blocking_degenerate_seam_edges: int = int(patch_data.get("terrain_cdt_blocking_degenerate_seam_edges", 0))
-		var cdt_tie_in_widened_source_samples: int = int(patch_data.get("terrain_cdt_tie_in_widened_source_samples", 0))
-		var cdt_tie_in_widened_max_y_delta_m: float = float(patch_data.get("terrain_cdt_tie_in_widened_max_y_delta_m", 0.0))
-		var cdt_tie_in_widened_max_slope_ratio: float = float(patch_data.get("terrain_cdt_tie_in_widened_max_slope_ratio", 0.0))
-		var cdt_invalid_constraint_samples: String = _road_geometry_terrain_invalid_constraint_samples_label(patch_data)
-		var cdt_road_seam_samples: String = _road_geometry_terrain_seam_samples_label(patch_data)
-		var cdt_retaining_wall_samples: String = _road_geometry_terrain_retaining_wall_samples_label(patch_data)
-		var cdt_seam_quality_samples: String = _road_geometry_terrain_seam_quality_samples_label(patch_data)
-		var cdt_tie_in_widened_samples: String = _road_geometry_terrain_tie_in_widened_samples_label(patch_data)
+		var patch: Dictionary = patches.get(key, {})
+		var node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
+		var mesh: Mesh = node.mesh if node != null else null
+		var height_stats := _terrain_patch_height_stats(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s engineered_owned=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) watermap=terrain_aligned:%dx%d water_nonzero=%d water_world_origin=(%.3f,%.3f) water_world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d baked_mesh=%s cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_spade_missing_road_constraints=%d cdt_rejected_road_constraints=%d cdt_internal_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_longest_triangle_edge=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
+			"terrain_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d height_min=%.3f height_max=%.3f"
 			% [
-				key.x,
-				key.y,
-				str(resident_patch_lookup.has(key)),
-				str(engineered_patch_lookup.has(key)),
-				RenderDebug.mesh_label(mesh),
-				int(patch_data["sample_width"]),
-				int(patch_data["sample_height"]),
-				int(patch_data["texture_width"]),
-				int(patch_data["texture_height"]),
-				float(patch_data["world_origin_x"]),
-				float(patch_data["world_origin_z"]),
-				float(patch_data["world_size_x"]),
-				float(patch_data["world_size_z"]),
-				water_texture_width,
-				water_texture_height,
-				water_depth_nonzero_count,
-				water_world_origin_x,
-				water_world_origin_z,
-				water_world_size_x,
-				water_world_size_z,
-				float(height_stats.get("min", 0.0)),
-				float(height_stats.get("max", 0.0)),
-				int(clip_stats.get("group_count", 0)),
-				int(clip_stats.get("loop_count", 0)),
-				int(clip_stats.get("point_count", 0)),
-				float(clip_stats.get("area", 0.0)),
-				RenderDebug.bounds_label(clip_stats),
-				float(clip_stats.get("max_bbox_x", 0.0)),
-				float(clip_stats.get("max_bbox_z", 0.0)),
-				baked_vertex_count,
-				retaining_wall_baked_vertex_count,
-				baked_mesh_stats,
-				cdt_status,
-				cdt_error,
-				cdt_stage,
-				cdt_backend,
-				cdt_input_vertices,
-				cdt_constraint_edges,
-				cdt_road_constraint_edges,
-				cdt_preserved_road_constraint_edges,
-				cdt_spade_missing_road_constraint_edges,
-				cdt_rejected_road_constraint_edges,
-				cdt_internal_road_constraint_edges,
-				cdt_invalid_constraints,
-				cdt_accepted_faces,
-				cdt_rejected_road_faces,
-				cdt_emitted_faces,
-				cdt_retaining_wall_emitted_faces,
-				cdt_terrain_face_sources,
-				cdt_retaining_wall_face_sources,
-				cdt_max_face_y_delta_m,
-				cdt_max_face_slope_ratio,
-				cdt_longest_triangle_edge_m,
-				cdt_road_seam_faces,
-				cdt_road_seam_max_y_delta_m,
-				cdt_road_seam_max_slope_ratio,
-				cdt_retaining_wall_faces,
-				cdt_retaining_wall_max_y_delta_m,
-				cdt_retaining_wall_max_slope_ratio,
-				cdt_accepted_seam_edges,
-				cdt_merged_subbudget_seam_edges,
-				cdt_omitted_near_seam_source_samples,
-				cdt_retaining_wall_required_seam_edges,
-				cdt_retaining_wall_required_seam_faces,
-				cdt_blocking_degenerate_seam_edges,
-				cdt_seam_quality_samples,
-				cdt_tie_in_widened_source_samples,
-				cdt_tie_in_widened_max_y_delta_m,
-				cdt_tie_in_widened_max_slope_ratio,
-				cdt_invalid_constraint_samples,
-				cdt_road_seam_samples,
-				cdt_retaining_wall_samples,
-				cdt_tie_in_widened_samples,
+				key.x, key.y, str(resident_patch_lookup.has(key)), RenderDebug.mesh_label(mesh),
+				int(patch_data["sample_width"]), int(patch_data["sample_height"]),
+				int(patch_data["texture_width"]), int(patch_data["texture_height"]),
+				float(height_stats.get("min", 0.0)), float(height_stats.get("max", 0.0)),
 			]
 		)
 	return lines
 
-func _terrain_patch_payload_render_step_mm(key: Vector2i) -> int:
-	if engineered_patch_lookup.has(key) and not graded_tiles_enabled:
-		return int(round(ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M * 1000.0))
+func _terrain_patch_payload_render_step_mm(_key: Vector2i) -> int:
 	return 0
 
 func _road_surface_payload_generation() -> int:
@@ -2258,7 +1866,7 @@ func _road_surface_payload_generation() -> int:
 	return 0
 
 func _sync_patch_payload_road_generation() -> void:
-	# Terrain payload validity is patch-local. Exact dirty-state generations below
+	# Terrain payload validity is patch-local. Dirty-state generations below
 	# retire only affected requests; the road-tool revision is diagnostic here.
 	patch_payload_road_generation = _road_surface_payload_generation()
 
@@ -2276,7 +1884,6 @@ func _request_terrain_patch_payloads(
 		return 0
 	var flat_requests := PackedInt32Array()
 	var requested_count := 0
-	var refined_requested_count := 0
 	_sync_patch_payload_road_generation()
 	for key in keys:
 		if requested_count >= budget:
@@ -2284,15 +1891,11 @@ func _request_terrain_patch_payloads(
 		if not include_existing and patches.has(key):
 			continue
 		var render_step_mm := _terrain_patch_payload_render_step_mm(key)
-		if _patch_payload_has_handled_bad_cdt(key, render_step_mm):
-			continue
 		if patch_payload_ready.has(key):
 			var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
 			if int(ready_patch_data.get("render_step_mm", -1)) == render_step_mm:
 				continue
 			patch_payload_ready.erase(key)
-		if render_step_mm > 0 and refined_requested_count >= REFINED_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME:
-			continue
 		if int(patch_payload_requested.get(key, -1)) == render_step_mm:
 			continue
 		if patch_payload_refused.has(key) and int(patch_payload_refused[key][0]) == render_step_mm:
@@ -2301,8 +1904,6 @@ func _request_terrain_patch_payloads(
 		flat_requests.push_back(key.y)
 		flat_requests.push_back(render_step_mm)
 		requested_count += 1
-		if render_step_mm > 0:
-			refined_requested_count += 1
 	if not flat_requests.is_empty():
 		var result: Dictionary = simulation_node.request_terrain_patch_payloads(flat_requests)
 		var tracked_requests: PackedInt64Array = result.get(
@@ -2427,27 +2028,8 @@ func _dirty_patch_payloads_renderable_for_atomic_upload(keys: Array[Vector2i]) -
 	for key in keys:
 		if not patches.has(key):
 			continue
-		if _dirty_engineered_patch_has_handled_bad_cdt(key):
-			return false
 		var patch_data: Dictionary = patch_payload_ready.get(key, {}) as Dictionary
 		if patch_data.is_empty():
-			return false
-		if (
-			_patch_requires_engineered_refinement(key, patch_data)
-			and not _engineered_patch_cdt_status_is_renderable(patch_data)
-		):
-			_mark_bad_cdt_generation_handled(key, patch_data)
-			if _road_debug_enabled:
-				MetrumDebug.log(
-					"road",
-					"terrain_atomic_upload_blocked key=(%d,%d) preserved_last_good_batch=true cdt_status=%s cdt_error=%s"
-					% [
-						key.x,
-						key.y,
-						str(patch_data.get("terrain_cdt_status", "none")),
-						str(patch_data.get("terrain_cdt_error", "none")),
-					]
-				)
 			return false
 	return true
 
@@ -2485,22 +2067,19 @@ func _terrain_patch_stage_matches_target(key: Vector2i, stage: Dictionary) -> bo
 		and typeof(stage.get("land_cover", null)) == TYPE_DICTIONARY
 		and simulation_node.is_vegetation_land_cover_current(key, stage["land_cover"]["generations"])
 		and stage.get("terrain_mesh", null) is Mesh
-		and stage.get("retaining_mesh", null) is Mesh
 	)
 
 func _terrain_patch_payload_is_stageable(
 	key: Vector2i,
 	patch_data: Dictionary,
 	expected_generation: int,
-	expected_render_step_mm: int,
-	planned_ownership: bool = false
+	expected_render_step_mm: int
 ) -> bool:
 	if not patches.has(key):
 		return false
 	var patch: Dictionary = patches[key]
 	if (
 		not (patch.get("node", null) is MeshInstance3D)
-		or not (patch.get("retaining_wall_node", null) is MeshInstance3D)
 		or not (patch.get("material", null) is ShaderMaterial)
 		or not (patch.get("height_image", null) is Image)
 		or not (patch.get("height_texture", null) is ImageTexture)
@@ -2557,139 +2136,15 @@ func _terrain_patch_payload_is_stageable(
 		or (patch_data["height_bytes"] as PackedByteArray).size() != expected_height_bytes
 	):
 		return false
-
-	for field in [
-		"terrain_requires_engineered_refinement",
-		"terrain_requires_road_clipping",
-	]:
-		if patch_data.has(field) and typeof(patch_data[field]) != TYPE_BOOL:
-			return false
-	# A planned patch may remove the last live contributor. Only preview callers use its
-	# explicit Rust-exported ownership; authoritative uploads retain the live ownership gate.
-	var engineered_patch := bool(patch_data.get("terrain_requires_engineered_refinement", false)) if planned_ownership else _patch_requires_engineered_refinement(key, patch_data)
-	if engineered_patch:
-		if (
-			typeof(patch_data.get("terrain_cdt_status", null)) != TYPE_STRING
-			or typeof(patch_data.get("terrain_cdt_contract_revision", null)) != TYPE_INT
-			or typeof(patch_data.get("terrain_cdt_mesh_suppressed", null)) != TYPE_BOOL
-		):
-			return false
-		if (
-			patch_data.has("terrain_cdt_empty_refined")
-			and typeof(patch_data["terrain_cdt_empty_refined"]) != TYPE_BOOL
-		):
-			return false
-		if (
-			patch_data.has("terrain_cdt_pathological_faces_omitted")
-			and (
-				typeof(patch_data["terrain_cdt_pathological_faces_omitted"]) != TYPE_INT
-				or int(patch_data["terrain_cdt_pathological_faces_omitted"]) != 0
-			)
-		):
-			return false
-		if not _engineered_patch_data_is_renderable(patch_data):
-			return false
-	elif patch_data.has("terrain_cdt_status"):
-		return false
-	if (
-		not engineered_patch
-		and not _triangle_mesh_payload_is_valid(
-			patch_data,
-			"terrain_retaining_wall_mesh",
-			false
-		)
-	):
-		return false
 	return true
 
 func _terrain_numeric_field_is_finite(patch_data: Dictionary, field: String) -> bool:
 	var value = patch_data.get(field, null)
 	return (typeof(value) == TYPE_FLOAT or typeof(value) == TYPE_INT) and is_finite(float(value))
 
-func _triangle_mesh_payload_is_valid(
-	patch_data: Dictionary,
-	prefix: String,
-	required: bool
-) -> bool:
-	var vertices_key := prefix + "_vertices"
-	var normals_key := prefix + "_normals"
-	var uvs_key := prefix + "_uvs"
-	var indices_key := prefix + "_indices"
-	if not patch_data.has(vertices_key):
-		return (
-			not required
-			and not patch_data.has(normals_key)
-			and not patch_data.has(uvs_key)
-			and not patch_data.has(indices_key)
-		)
-	if typeof(patch_data[vertices_key]) != TYPE_PACKED_VECTOR3_ARRAY:
-		return false
-	var vertices: PackedVector3Array = patch_data[vertices_key]
-	if (
-		not patch_data.has(normals_key)
-		or typeof(patch_data[normals_key]) != TYPE_PACKED_VECTOR3_ARRAY
-		or not patch_data.has(uvs_key)
-		or typeof(patch_data[uvs_key]) != TYPE_PACKED_VECTOR2_ARRAY
-		or not patch_data.has(indices_key)
-		or typeof(patch_data[indices_key]) != TYPE_PACKED_INT32_ARRAY
-	):
-		return false
-	var normals: PackedVector3Array = patch_data[normals_key]
-	var uvs: PackedVector2Array = patch_data[uvs_key]
-	var indices: PackedInt32Array = patch_data[indices_key]
-	var colors: PackedColorArray = PackedColorArray()
-	if patch_data.has(prefix + "_colors"):
-		if typeof(patch_data[prefix + "_colors"]) != TYPE_PACKED_COLOR_ARRAY:
-			return false
-		colors = patch_data[prefix + "_colors"]
-		if not colors.is_empty() and colors.size() != vertices.size():
-			return false
-	if vertices.is_empty():
-		return not required and normals.is_empty() and uvs.is_empty() and indices.is_empty()
-	if vertices.size() < 3:
-		return false
-	if normals.size() != vertices.size() or uvs.size() != vertices.size():
-		return false
-	if indices.is_empty():
-		if vertices.size() % 3 != 0:
-			return false
-	elif indices.size() % 3 != 0:
-		return false
-	# Refined buffers are built and fully validated off-thread in Rust. Keep the cheap Variant
-	# shape checks above at this boundary, but do not repeat O(vertices + indices) validation in
-	# interpreted GDScript on every upload.
-	var rust_validated = patch_data.get("terrain_mesh_payload_validated", false)
-	if typeof(rust_validated) != TYPE_BOOL:
-		return false
-	if rust_validated:
-		return true
-	for vertex in vertices:
-		if not is_finite(vertex.x) or not is_finite(vertex.y) or not is_finite(vertex.z):
-			return false
-	for normal in normals:
-		if not is_finite(normal.x) or not is_finite(normal.y) or not is_finite(normal.z):
-			return false
-	for uv in uvs:
-		if not is_finite(uv.x) or not is_finite(uv.y):
-			return false
-	for color in colors:
-		if not is_finite(color.r) or not is_finite(color.g) or not is_finite(color.b) or not is_finite(color.a):
-			return false
-	if indices.is_empty():
-		return true
-	for index in indices:
-		if index < 0 or index >= vertices.size():
-			return false
-	return true
-
 func _patch_payload_ready_for_key(key: Vector2i) -> bool:
 	var expected_render_step_mm := _terrain_patch_payload_render_step_mm(key)
 	_sync_patch_payload_road_generation()
-	if (
-		_dirty_engineered_patch_has_handled_bad_cdt(key)
-		and _patch_payload_has_handled_bad_cdt(key, expected_render_step_mm)
-	):
-		return true
 	if patch_payload_ready.has(key):
 		var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
 		if int(ready_patch_data.get("render_step_mm", expected_render_step_mm)) == expected_render_step_mm:
@@ -2715,16 +2170,6 @@ func _terrain_patch_data_for_key(
 		patch_payload_ready.erase(key)
 	_request_terrain_patch_payload(key, patches.has(key))
 	return {}
-
-func _patch_requires_engineered_refinement(key: Vector2i, patch_data: Dictionary) -> bool:
-	# Graded tiles draw the roads' terrain over plain patches: no patch needs the exact cut.
-	if graded_tiles_enabled:
-		return false
-	return (
-		engineered_patch_lookup.has(key)
-		or bool(patch_data.get("terrain_requires_engineered_refinement", false))
-		or bool(patch_data.get("terrain_requires_road_clipping", false))
-	)
 
 func _terrain_patch_height_bytes(patch_data: Dictionary) -> PackedByteArray:
 	return patch_data["height_bytes"] as PackedByteArray
@@ -2779,45 +2224,14 @@ func _apply_patch_masks(
 		"terrain_mask_uv_scale", Vector2(texture_width, texture_height) / Vector2(_mask_layer_size))
 
 func _terrain_patch_height_stats(patch_data: Dictionary) -> Dictionary:
-	# Failed refinement payloads intentionally omit a drawable height buffer.
 	var bytes: PackedByteArray = patch_data.get("height_bytes", PackedByteArray())
 	return RenderDebug.float_stats(bytes.to_float32_array())
-
-func _patch_has_road_clip_loops(patch_data: Dictionary) -> bool:
-	if (
-		not patch_data.has("road_clip_loop_counts")
-		or not patch_data.has("road_clip_loop_groups")
-		or not patch_data.has("road_clip_loop_roles")
-		or not patch_data.has("road_clip_loop_points")
-	):
-		return false
-	var counts := patch_data["road_clip_loop_counts"] as PackedInt32Array
-	var groups := patch_data["road_clip_loop_groups"] as PackedInt32Array
-	var roles := patch_data["road_clip_loop_roles"] as PackedInt32Array
-	var points := patch_data["road_clip_loop_points"] as PackedVector3Array
-	if counts.size() == 0:
-		return false
-	if groups.size() != counts.size() or roles.size() != counts.size():
-		return false
-	var expected_points := 0
-	for index in range(counts.size()):
-		var count: int = counts[index]
-		if count < 3:
-			return false
-		if groups[index] < 0:
-			return false
-		if roles[index] != ROAD_CLIP_LOOP_ROLE_OUTER and roles[index] != ROAD_CLIP_LOOP_ROLE_HOLE:
-			return false
-		expected_points += count
-	return expected_points == points.size()
 
 func _terrain_patch_mesh_from_data(
 	patch_data: Dictionary,
 	lod_step: int,
 	subdivision_factor: int
 ) -> Mesh:
-	if _patch_uses_cdt_terrain_mesh(patch_data):
-		return _baked_terrain_patch_mesh(patch_data)
 	return _patch_mesh(
 		int(patch_data["sample_width"]),
 		int(patch_data["sample_height"]),
@@ -2827,252 +2241,13 @@ func _terrain_patch_mesh_from_data(
 		subdivision_factor
 	)
 
-func _patch_uses_cdt_terrain_mesh(patch_data: Dictionary) -> bool:
-	# Failed CDT keeps diagnostic fields but must not replace the heightmap mesh with an empty bake.
-	var omitted = patch_data.get("terrain_cdt_pathological_faces_omitted", 0)
-	# Removing a bad face leaves a hole; an otherwise valid buffer is not a complete terrain product.
-	if typeof(omitted) != TYPE_INT or int(omitted) != 0:
-		return false
-	if (
-		typeof(patch_data.get("terrain_cdt_status", null)) != TYPE_STRING
-		or typeof(patch_data.get("terrain_cdt_contract_revision", null)) != TYPE_INT
-		or typeof(patch_data.get("terrain_cdt_mesh_suppressed", null)) != TYPE_BOOL
-		or bool(patch_data["terrain_cdt_mesh_suppressed"])
-	):
-		return false
-	return (
-		patch_data["terrain_cdt_status"] == "ok"
-		and _patch_has_current_cdt_contract(patch_data)
-		and _patch_has_baked_terrain_mesh(patch_data)
-	)
-
-func _patch_has_current_cdt_contract(patch_data: Dictionary) -> bool:
-	return (
-		typeof(patch_data.get("terrain_cdt_contract_revision", null)) == TYPE_INT
-		and int(patch_data["terrain_cdt_contract_revision"]) == TERRAIN_CDT_CONTRACT_REVISION
-	)
-
-func _patch_has_bad_refined_cdt_status(patch_data: Dictionary) -> bool:
-	var cdt_status := str(patch_data.get("terrain_cdt_status", ""))
-	return cdt_status == "failed" or cdt_status == "conflicted" or cdt_status == "pathological"
-
-func _patch_has_empty_refined_cdt(patch_data: Dictionary) -> bool:
-	return (
-		bool(patch_data.get("terrain_cdt_empty_refined", false))
-		or str(patch_data.get("terrain_cdt_status", "")) == "empty"
-	)
-
-func _patch_has_unusable_refined_cdt(patch_data: Dictionary) -> bool:
-	if patch_data.has("terrain_cdt_status") and not _patch_has_current_cdt_contract(patch_data):
-		return true
-	return _patch_has_empty_refined_cdt(patch_data) or _patch_has_bad_refined_cdt_status(patch_data)
-
-func _last_renderable_engineered_patch_data(patch: Dictionary) -> Dictionary:
-	var previous_patch_data: Dictionary = patch.get("last_patch_data", {}) as Dictionary
-	if _engineered_patch_data_is_renderable(previous_patch_data):
-		return previous_patch_data
-	return {}
-
-func _engineered_patch_data_is_renderable(patch_data: Dictionary) -> bool:
-	if patch_data.is_empty():
-		return false
-	return (
-		_engineered_patch_cdt_status_is_renderable(patch_data)
-		and _triangle_mesh_payload_is_valid(patch_data, "terrain_mesh", true)
-		and _triangle_mesh_payload_is_valid(
-			patch_data,
-			"terrain_retaining_wall_mesh",
-			false
-		)
-	)
-
-func _engineered_patch_cdt_status_is_renderable(patch_data: Dictionary) -> bool:
-	return _patch_uses_cdt_terrain_mesh(patch_data)
-
-func _terrain_patch_mesh_is_baked(patch_data: Dictionary) -> bool:
-	return _patch_uses_cdt_terrain_mesh(patch_data)
-
-func _patch_has_baked_terrain_mesh(patch_data: Dictionary) -> bool:
-	if typeof(patch_data.get("terrain_mesh_vertices", null)) != TYPE_PACKED_VECTOR3_ARRAY:
-		return false
-	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
-	return vertices.size() >= 3
-
-func _patch_has_retaining_wall_mesh(patch_data: Dictionary) -> bool:
-	if bool(patch_data.get("terrain_cdt_mesh_suppressed", false)):
-		return false
-	if not patch_data.has("terrain_retaining_wall_mesh_vertices"):
-		return false
-	var vertices: PackedVector3Array = patch_data["terrain_retaining_wall_mesh_vertices"] as PackedVector3Array
-	return vertices.size() >= 3
-
-func _baked_terrain_patch_mesh(patch_data: Dictionary) -> ArrayMesh:
-	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
-	var normals: PackedVector3Array = patch_data["terrain_mesh_normals"] as PackedVector3Array
-	var uvs: PackedVector2Array = patch_data["terrain_mesh_uvs"] as PackedVector2Array
-	var indices: PackedInt32Array = patch_data.get("terrain_mesh_indices", PackedInt32Array()) as PackedInt32Array
-	var colors: PackedColorArray = patch_data.get("terrain_mesh_colors", PackedColorArray()) as PackedColorArray
-	var mesh: ArrayMesh = ArrayMesh.new()
-	if vertices.size() < 3:
-		return mesh
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = vertices
-	if colors.size() == vertices.size():
-		arrays[Mesh.ARRAY_COLOR] = colors
-	if normals.size() == vertices.size():
-		arrays[Mesh.ARRAY_NORMAL] = normals
-	if uvs.size() == vertices.size():
-		arrays[Mesh.ARRAY_TEX_UV] = uvs
-	if indices.size() >= 3:
-		arrays[Mesh.ARRAY_INDEX] = indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	return mesh
-
-func _retaining_wall_patch_mesh(patch_data: Dictionary) -> ArrayMesh:
-	var mesh: ArrayMesh = ArrayMesh.new()
-	if not _patch_has_retaining_wall_mesh(patch_data):
-		return mesh
-	var vertices: PackedVector3Array = patch_data["terrain_retaining_wall_mesh_vertices"] as PackedVector3Array
-	var normals: PackedVector3Array = (
-		patch_data.get("terrain_retaining_wall_mesh_normals", PackedVector3Array())
-		as PackedVector3Array
-	)
-	var uvs: PackedVector2Array = (
-		patch_data.get("terrain_retaining_wall_mesh_uvs", PackedVector2Array())
-		as PackedVector2Array
-	)
-	var indices: PackedInt32Array = (
-		patch_data.get("terrain_retaining_wall_mesh_indices", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = vertices
-	if normals.size() == vertices.size():
-		arrays[Mesh.ARRAY_NORMAL] = normals
-	if uvs.size() == vertices.size():
-		arrays[Mesh.ARRAY_TEX_UV] = uvs
-	if indices.size() >= 3:
-		arrays[Mesh.ARRAY_INDEX] = indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	return mesh
-
-func _retaining_wall_material() -> ShaderMaterial:
-	if retaining_wall_material == null:
-		var source := StandardMaterial3D.new()
-		source.albedo_color = RETAINING_WALL_COLOR
-		source.roughness = RETAINING_WALL_ROUGHNESS
-		source.metallic = 0.0
-		source.cull_mode = BaseMaterial3D.CULL_DISABLED
-		# Through the shared factory, so the clouds dim the sun on walls as on the ground.
-		retaining_wall_material = WindowMaterials.create(source)
-	return retaining_wall_material
-
-func _road_clip_loop_groups_from_patch_data(patch_data: Dictionary) -> Array:
-	if not _patch_has_road_clip_loops(patch_data):
-		return []
-	var counts := patch_data["road_clip_loop_counts"] as PackedInt32Array
-	var group_indices := patch_data["road_clip_loop_groups"] as PackedInt32Array
-	var roles := patch_data["road_clip_loop_roles"] as PackedInt32Array
-	var points := patch_data["road_clip_loop_points"] as PackedVector3Array
-	var groups_by_id: Dictionary = {}
-	var group_ids: Array = []
-	var cursor := 0
-	for loop_index in range(counts.size()):
-		var count: int = counts[loop_index]
-		var group_id: int = group_indices[loop_index]
-		var loop_points := PackedVector2Array()
-		for offset in range(count):
-			var point := points[cursor + offset]
-			loop_points.append(Vector2(point.x, point.z))
-		var loop_bounds := _polygon_bounds(loop_points)
-		var loop_entry := {
-			"points": loop_points,
-			"bounds": loop_bounds,
-			"role": roles[loop_index],
-		}
-		if not groups_by_id.has(group_id):
-			groups_by_id[group_id] = {
-				"group_id": group_id,
-				"outer_loops": [],
-				"hole_loops": [],
-				"bounds": loop_bounds,
-				"has_bounds": false,
-			}
-			group_ids.append(group_id)
-		var group_entry: Dictionary = groups_by_id[group_id]
-		if bool(group_entry["has_bounds"]):
-			group_entry["bounds"] = _merge_bounds(group_entry["bounds"], loop_bounds)
-		else:
-			group_entry["bounds"] = loop_bounds
-			group_entry["has_bounds"] = true
-		if roles[loop_index] == ROAD_CLIP_LOOP_ROLE_HOLE:
-			var hole_loops: Array = group_entry["hole_loops"]
-			hole_loops.append(loop_entry)
-		else:
-			var outer_loops: Array = group_entry["outer_loops"]
-			outer_loops.append(loop_entry)
-		cursor += count
-	group_ids.sort()
-	var loop_groups: Array = []
-	for group_id_variant in group_ids:
-		var group_id: int = int(group_id_variant)
-		var group_entry: Dictionary = groups_by_id[group_id]
-		var outer_loops: Array = group_entry["outer_loops"]
-		if outer_loops.is_empty():
-			continue
-		loop_groups.append({
-			"group_id": group_id,
-			"outer_loops": outer_loops,
-			"hole_loops": group_entry["hole_loops"],
-			"bounds": group_entry["bounds"],
-		})
-	return loop_groups
-
-func _polygon_bounds(polygon: PackedVector2Array) -> Rect2:
-	if polygon.size() == 0:
-		return Rect2()
-	var min_x := polygon[0].x
-	var max_x := polygon[0].x
-	var min_y := polygon[0].y
-	var max_y := polygon[0].y
-	for point in polygon:
-		min_x = minf(min_x, point.x)
-		max_x = maxf(max_x, point.x)
-		min_y = minf(min_y, point.y)
-		max_y = maxf(max_y, point.y)
-	return Rect2(Vector2(min_x, min_y), Vector2(max_x - min_x, max_y - min_y))
-
-func _merge_bounds(a: Rect2, b: Rect2) -> Rect2:
-	var min_x := minf(a.position.x, b.position.x)
-	var min_y := minf(a.position.y, b.position.y)
-	var max_x := maxf(a.position.x + a.size.x, b.position.x + b.size.x)
-	var max_y := maxf(a.position.y + a.size.y, b.position.y + b.size.y)
-	return Rect2(Vector2(min_x, min_y), Vector2(max_x - min_x, max_y - min_y))
-
 func _prewarm_regular_terrain_mesh_variants() -> void:
 	if patch_interval_cells <= 0 or patch_span_m <= 0.0:
 		return
 	var sample_count: int = patch_interval_cells + 1
 	var lod_steps: Array[int] = [1, 2, 4, 8]
-	var subdivision_factors: Array[int] = [1]
-	var road_subdivision_factor: int = max(
-		1,
-		int(ceili(terrain_cell_m / ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M))
-	)
-	if road_subdivision_factor != 1:
-		subdivision_factors.append(road_subdivision_factor)
 	for lod_step: int in lod_steps:
-		for subdivision_factor: int in subdivision_factors:
-			_patch_mesh(
-				sample_count,
-				sample_count,
-				patch_span_m,
-				patch_span_m,
-				lod_step,
-				subdivision_factor
-			)
+		_patch_mesh(sample_count, sample_count, patch_span_m, patch_span_m, lod_step, 1)
 
 func _patch_mesh(
 	sample_width: int,
@@ -3139,13 +2314,11 @@ func _mesh_subdivisions_for_sample_count(
 	)
 	return max(0, lod_vertex_count - 2)
 
-func _mesh_subdivision_factor_for_patch(key: Vector2i, sample_step_m: float) -> int:
+func _mesh_subdivision_factor_for_patch(_key: Vector2i, _sample_step_m: float) -> int:
 	# Graded terrain draws a road's patch with its cells, and its PlaneMesh samples the plain base:
 	# a finer grid adds only vertices (the water reflection mirrored them, 5.8 M extra primitives on
 	# the saved Kuopio paths, TERRAIN-07-D round 8).
-	if not engineered_patch_lookup.has(key) or graded_tiles_enabled:
-		return 1
-	return max(1, int(ceili(sample_step_m / ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M)))
+	return 1
 
 func _mesh_lod_step_for_patch(key: Vector2i, center_x: float, center_z: float) -> int:
 	var camera: Camera3D = get_viewport().get_camera_3d()
@@ -3161,8 +2334,6 @@ func _mesh_lod_step_for_patch_with_camera(
 	camera_valid: bool
 ) -> int:
 	if _terrain_force_lod1:
-		return 1
-	if engineered_patch_lookup.has(key):
 		return 1
 	if not camera_valid:
 		return 1
@@ -3260,8 +2431,6 @@ func _terrain_patch_lod_refresh_needed(
 	var patch: Dictionary = patches.get(key, {})
 	if patch.is_empty():
 		return false
-	if bool(patch.get("height_is_baked", false)):
-		return false
 	var patch_node: MeshInstance3D = patch["node"]
 	var target_lod_step: int = _mesh_lod_step_for_patch_with_camera(
 		key,
@@ -3309,10 +2478,6 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> bool:
 	var patch: Dictionary = patches.get(key, {})
 	if patch.is_empty():
 		return false
-	if _patch_is_blocked_by_bad_cdt(patch):
-		return false
-	if bool(patch.get("height_is_baked", false)):
-		return false
 	var patch_node: MeshInstance3D = patch["node"]
 	var target_lod_step := _mesh_lod_step_for_patch(key, patch_node.position.x, patch_node.position.z)
 	var target_subdivision_factor := _mesh_subdivision_factor_for_patch(
@@ -3327,8 +2492,6 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> bool:
 	if patch_data.is_empty():
 		patch_data = _terrain_patch_data_for_key(key, false)
 	if patch_data.is_empty():
-		return false
-	if engineered_patch_lookup.has(key) and not _engineered_patch_data_is_renderable(patch_data):
 		return false
 	patch_render_will_change.emit(key)
 	patch["lod_step"] = target_lod_step
@@ -3357,13 +2520,6 @@ func _record_lod_perf_counters(
 	_terrain_lod_last_queue_count = queue_count
 	_terrain_lod_last_replaced_count = replaced_count
 	_terrain_lod_last_skipped_count = skipped_count
-
-func _refresh_engineered_patch_lookup() -> void:
-	engineered_patch_lookup.clear()
-	var flat_pairs: PackedInt32Array = simulation_node.get_engineered_terrain_patches()
-	var pair_count: int = flat_pairs.size() / 2
-	for index in range(pair_count):
-		engineered_patch_lookup[Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1])] = true
 
 func _ensure_overlay_texture() -> bool:
 	var dims: Vector2 = simulation_node.get_heightmap_size()
@@ -3991,490 +3147,6 @@ func _add_skirt_vertex(surface_tool: SurfaceTool, position: Vector3, normal: Vec
 	surface_tool.set_normal(normal)
 	surface_tool.set_uv(uv)
 	surface_tool.add_vertex(position)
-
-func _road_geometry_terrain_seam_samples_label(patch_data: Dictionary) -> String:
-	if not patch_data.has("terrain_cdt_road_seam_sample_centroids"):
-		return "[]"
-	var centroids: PackedVector3Array = (
-		patch_data["terrain_cdt_road_seam_sample_centroids"] as PackedVector3Array
-	)
-	var bounds: PackedVector3Array = (
-		patch_data.get("terrain_cdt_road_seam_sample_bounds", PackedVector3Array())
-		as PackedVector3Array
-	)
-	var metrics: PackedFloat32Array = (
-		patch_data.get("terrain_cdt_road_seam_sample_metrics", PackedFloat32Array())
-		as PackedFloat32Array
-	)
-	var vertices: PackedVector3Array = (
-		patch_data.get("terrain_cdt_road_seam_sample_vertices", PackedVector3Array())
-		as PackedVector3Array
-	)
-	var kinds: PackedInt32Array = (
-		patch_data.get("terrain_cdt_road_seam_sample_kinds", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var sample_count: int = mini(
-		centroids.size(),
-		mini(int(bounds.size() / 2), int(metrics.size() / 2))
-	)
-	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
-	if sample_count <= 0:
-		return "[]"
-	var parts: Array[String] = []
-	for index in range(sample_count):
-		var centroid: Vector3 = centroids[index]
-		var bounds_min: Vector3 = bounds[index * 2]
-		var bounds_max: Vector3 = bounds[index * 2 + 1]
-		var y_delta_m: float = metrics[index * 2]
-		var slope_ratio: float = metrics[index * 2 + 1]
-		var kind_label := "terrain"
-		if kinds.size() > index:
-			kind_label = _road_geometry_terrain_tie_in_kind_label(kinds[index])
-		var vertices_label := ""
-		if vertices.size() >= (index + 1) * 3:
-			var v0: Vector3 = vertices[index * 3]
-			var v1: Vector3 = vertices[index * 3 + 1]
-			var v2: Vector3 = vertices[index * 3 + 2]
-			vertices_label = ",verts=[(%.3f,%.3f,%.3f),(%.3f,%.3f,%.3f),(%.3f,%.3f,%.3f)]" % [
-				v0.x,
-				v0.y,
-				v0.z,
-				v1.x,
-				v1.y,
-				v1.z,
-				v2.x,
-				v2.y,
-				v2.z,
-			]
-		parts.append(
-			"{kind=%s,centroid=(%.3f,%.3f,%.3f),bounds=[(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)],y_delta=%.3f,slope=%.3f%s,sources=%s}"
-			% [
-				kind_label,
-				centroid.x,
-				centroid.y,
-				centroid.z,
-				bounds_min.x,
-				bounds_min.y,
-				bounds_min.z,
-				bounds_max.x,
-				bounds_max.y,
-				bounds_max.z,
-				y_delta_m,
-				slope_ratio,
-				vertices_label,
-				_road_geometry_cdt_sample_sources_label(patch_data, "terrain_cdt_road_seam", index),
-			]
-		)
-	return "[" + ", ".join(parts) + "]"
-
-func _road_geometry_terrain_retaining_wall_samples_label(patch_data: Dictionary) -> String:
-	if not patch_data.has("terrain_cdt_retaining_wall_sample_centroids"):
-		return "[]"
-	var centroids: PackedVector3Array = (
-		patch_data["terrain_cdt_retaining_wall_sample_centroids"] as PackedVector3Array
-	)
-	var bounds: PackedVector3Array = (
-		patch_data.get("terrain_cdt_retaining_wall_sample_bounds", PackedVector3Array())
-		as PackedVector3Array
-	)
-	var metrics: PackedFloat32Array = (
-		patch_data.get("terrain_cdt_retaining_wall_sample_metrics", PackedFloat32Array())
-		as PackedFloat32Array
-	)
-	var vertices: PackedVector3Array = (
-		patch_data.get("terrain_cdt_retaining_wall_sample_vertices", PackedVector3Array())
-		as PackedVector3Array
-	)
-	var sample_count: int = mini(
-		centroids.size(),
-		mini(int(bounds.size() / 2), int(metrics.size() / 2))
-	)
-	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
-	if sample_count <= 0:
-		return "[]"
-	var parts: Array[String] = []
-	for index in range(sample_count):
-		var centroid: Vector3 = centroids[index]
-		var bounds_min: Vector3 = bounds[index * 2]
-		var bounds_max: Vector3 = bounds[index * 2 + 1]
-		var y_delta_m: float = metrics[index * 2]
-		var slope_ratio: float = metrics[index * 2 + 1]
-		var vertices_label := ""
-		if vertices.size() >= (index + 1) * 3:
-			var v0: Vector3 = vertices[index * 3]
-			var v1: Vector3 = vertices[index * 3 + 1]
-			var v2: Vector3 = vertices[index * 3 + 2]
-			vertices_label = ",verts=[(%.3f,%.3f,%.3f),(%.3f,%.3f,%.3f),(%.3f,%.3f,%.3f)]" % [
-				v0.x,
-				v0.y,
-				v0.z,
-				v1.x,
-				v1.y,
-				v1.z,
-				v2.x,
-				v2.y,
-				v2.z,
-			]
-		parts.append(
-			"{centroid=(%.3f,%.3f,%.3f),bounds=[(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)],y_delta=%.3f,slope=%.3f%s,sources=%s}"
-			% [
-				centroid.x,
-				centroid.y,
-				centroid.z,
-				bounds_min.x,
-				bounds_min.y,
-				bounds_min.z,
-				bounds_max.x,
-				bounds_max.y,
-				bounds_max.z,
-				y_delta_m,
-				slope_ratio,
-				vertices_label,
-				_road_geometry_cdt_sample_sources_label(
-					patch_data,
-					"terrain_cdt_retaining_wall",
-					index
-				),
-			]
-		)
-	return "[" + ", ".join(parts) + "]"
-
-func _road_geometry_terrain_tie_in_kind_label(kind: int) -> String:
-	if kind == 1:
-		return "retaining_wall"
-	return "terrain"
-
-# Source rows carry the Rust debug label of each CDT source (ROAD-68-D); kind code 0 is a
-# roadbed chain segment, 1 a building-site loop edge.
-func _road_geometry_cdt_sample_sources_label(
-	patch_data: Dictionary,
-	prefix: String,
-	sample_index: int
-) -> String:
-	var counts: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_counts", PackedInt32Array())
-		as PackedInt32Array
-	)
-	if sample_index < 0 or sample_index >= counts.size():
-		return "[]"
-	var source_count: int = maxi(0, counts[sample_index])
-	if source_count <= 0:
-		return "[]"
-	var row_start := 0
-	for index in range(sample_index):
-		row_start += maxi(0, counts[index])
-	var labels: PackedStringArray = (
-		patch_data.get(prefix + "_sample_sources", PackedStringArray()) as PackedStringArray
-	)
-	var parts: Array[String] = []
-	for local_index in range(source_count):
-		parts.append(_road_geometry_string_at(labels, row_start + local_index))
-	return "[" + ", ".join(parts) + "]"
-
-func _road_geometry_cdt_face_sources_summary_label(patch_data: Dictionary, prefix: String) -> String:
-	var counts: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_counts", PackedInt32Array())
-		as PackedInt32Array
-	)
-	if counts.is_empty():
-		return "{faces=0,unsourced=0,source_rows=0,road=0,site=0,samples=[]}"
-	var kind_codes: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_kind_codes", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var labels: PackedStringArray = (
-		patch_data.get(prefix + "_face_sources", PackedStringArray()) as PackedStringArray
-	)
-	var unsourced_count := 0
-	var source_rows := 0
-	var road_source_rows := 0
-	var site_source_rows := 0
-	var row_cursor := 0
-	var first_unsourced_face := -1
-	var samples: Array[String] = []
-	for face_index in range(counts.size()):
-		var source_count: int = maxi(0, counts[face_index])
-		if source_count <= 0:
-			unsourced_count += 1
-			if first_unsourced_face < 0:
-				first_unsourced_face = face_index
-			continue
-		source_rows += source_count
-		var source_parts: Array[String] = []
-		for local_index in range(source_count):
-			var row: int = row_cursor + local_index
-			var source_kind_code: int = _road_geometry_int_at(kind_codes, row, -1)
-			if source_kind_code == 0:
-				road_source_rows += 1
-			elif source_kind_code == 1:
-				site_source_rows += 1
-			if samples.size() < ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT:
-				source_parts.append(_road_geometry_string_at(labels, row))
-		if not source_parts.is_empty() and samples.size() < ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT:
-			samples.append(
-				"{face=%d,sources=[%s]}" % [face_index, ", ".join(source_parts)]
-			)
-		row_cursor += source_count
-	if samples.is_empty() and first_unsourced_face >= 0:
-		samples.append("{face=%d,sources=[]}" % [first_unsourced_face])
-	return (
-		"{faces=%d,unsourced=%d,source_rows=%d,road=%d,site=%d,samples=%s}"
-		% [
-			counts.size(),
-			unsourced_count,
-			source_rows,
-			road_source_rows,
-			site_source_rows,
-			"[" + ", ".join(samples) + "]",
-		]
-	)
-
-func _road_geometry_string_at(values: PackedStringArray, index: int) -> String:
-	if index < 0 or index >= values.size():
-		return "unknown"
-	return "{" + values[index] + "}"
-
-func _road_geometry_int_at(values: PackedInt32Array, index: int, fallback: int) -> int:
-	if index >= 0 and index < values.size():
-		return values[index]
-	return fallback
-
-func _road_geometry_terrain_seam_quality_samples_label(patch_data: Dictionary) -> String:
-	if not patch_data.has("terrain_cdt_seam_quality_sample_edges"):
-		return "[]"
-	var edges: PackedVector3Array = (
-		patch_data["terrain_cdt_seam_quality_sample_edges"] as PackedVector3Array
-	)
-	var metrics: PackedFloat32Array = (
-		patch_data.get("terrain_cdt_seam_quality_sample_metrics", PackedFloat32Array())
-		as PackedFloat32Array
-	)
-	var kinds: PackedInt32Array = (
-		patch_data.get("terrain_cdt_seam_quality_sample_kinds", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var sample_count: int = mini(int(edges.size() / 2), int(metrics.size() / 2))
-	sample_count = mini(sample_count, kinds.size())
-	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
-	if sample_count <= 0:
-		return "[]"
-	var parts: Array[String] = []
-	for index in range(sample_count):
-		var start: Vector3 = edges[index * 2]
-		var end: Vector3 = edges[index * 2 + 1]
-		var length_m: float = metrics[index * 2]
-		var y_delta_m: float = metrics[index * 2 + 1]
-		parts.append(
-			"{kind=%s,start=(%.3f,%.3f,%.3f),end=(%.3f,%.3f,%.3f),length=%.3f,y_delta=%.3f,sources=%s}"
-			% [
-				_road_geometry_cdt_seam_quality_kind_label(kinds[index]),
-				start.x,
-				start.y,
-				start.z,
-				end.x,
-				end.y,
-				end.z,
-				length_m,
-				y_delta_m,
-				_road_geometry_cdt_sample_sources_label(
-					patch_data,
-					"terrain_cdt_seam_quality",
-					index
-				),
-			]
-		)
-	return "[" + ", ".join(parts) + "]"
-
-func _road_geometry_cdt_seam_quality_kind_label(kind: int) -> String:
-	match kind:
-		0:
-			return "merged_subbudget"
-		1:
-			return "retaining_wall_required"
-		2:
-			return "blocking_degenerate"
-	return "unknown"
-
-func _road_geometry_terrain_tie_in_widened_samples_label(patch_data: Dictionary) -> String:
-	if not patch_data.has("terrain_cdt_tie_in_widened_sample_points"):
-		return "[]"
-	var points: PackedVector3Array = (
-		patch_data["terrain_cdt_tie_in_widened_sample_points"] as PackedVector3Array
-	)
-	var metrics: PackedFloat32Array = (
-		patch_data.get("terrain_cdt_tie_in_widened_sample_metrics", PackedFloat32Array())
-		as PackedFloat32Array
-	)
-	var sample_count: int = mini(int(points.size() / 2), int(metrics.size() / 4))
-	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
-	if sample_count <= 0:
-		return "[]"
-	var parts: Array[String] = []
-	for index in range(sample_count):
-		var source: Vector3 = points[index * 2]
-		var seam: Vector3 = points[index * 2 + 1]
-		var distance_m: float = metrics[index * 4]
-		var required_distance_m: float = metrics[index * 4 + 1]
-		var y_delta_m: float = metrics[index * 4 + 2]
-		var slope_ratio: float = metrics[index * 4 + 3]
-		parts.append(
-			"{source=(%.3f,%.3f,%.3f),seam=(%.3f,%.3f,%.3f),distance=%.3f,required=%.3f,y_delta=%.3f,slope=%.3f,sources=%s}"
-			% [
-				source.x,
-				source.y,
-				source.z,
-				seam.x,
-				seam.y,
-				seam.z,
-				distance_m,
-				required_distance_m,
-				y_delta_m,
-				slope_ratio,
-				_road_geometry_cdt_sample_sources_label(
-					patch_data,
-					"terrain_cdt_tie_in_widened",
-					index
-				),
-			]
-		)
-	return "[" + ", ".join(parts) + "]"
-
-func _road_geometry_terrain_invalid_constraint_samples_label(patch_data: Dictionary) -> String:
-	if not patch_data.has("terrain_cdt_invalid_constraint_sample_edges"):
-		return "[]"
-	var edges: PackedVector3Array = (
-		patch_data["terrain_cdt_invalid_constraint_sample_edges"] as PackedVector3Array
-	)
-	var metadata: PackedInt32Array = (
-		patch_data.get("terrain_cdt_invalid_constraint_sample_metadata", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var sample_count: int = int(edges.size() / 2)
-	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
-	if sample_count <= 0:
-		return "[]"
-	var parts: Array[String] = []
-	for index in range(sample_count):
-		var start: Vector3 = edges[index * 2]
-		var end: Vector3 = edges[index * 2 + 1]
-		var road_owned := false
-		var stable_piece_id := -1
-		var local_loop_index := -1
-		var local_edge_index := -1
-		if metadata.size() >= (index + 1) * 4:
-			road_owned = metadata[index * 4] != 0
-			stable_piece_id = metadata[index * 4 + 1]
-			local_loop_index = metadata[index * 4 + 2]
-			local_edge_index = metadata[index * 4 + 3]
-		var source_label := _road_geometry_cdt_sample_sources_label(
-			patch_data,
-			"terrain_cdt_invalid_constraint",
-			index
-		)
-		if source_label == "[]":
-			source_label = "none"
-		parts.append(
-			"{road=%s,piece=%d,loop=%d,edge=%d,start=(%.3f,%.3f,%.3f),end=(%.3f,%.3f,%.3f),source=%s}"
-			% [
-				str(road_owned),
-				stable_piece_id,
-				local_loop_index,
-				local_edge_index,
-				start.x,
-				start.y,
-				start.z,
-				end.x,
-				end.y,
-				end.z,
-				source_label,
-			]
-		)
-	return "[" + ", ".join(parts) + "]"
-
-func _road_geometry_baked_vertex_count(patch_data: Dictionary) -> int:
-	if not _patch_has_baked_terrain_mesh(patch_data):
-		return 0
-	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
-	return vertices.size()
-
-func _road_geometry_retaining_wall_baked_vertex_count(patch_data: Dictionary) -> int:
-	if not _patch_has_retaining_wall_mesh(patch_data):
-		return 0
-	var vertices: PackedVector3Array = patch_data["terrain_retaining_wall_mesh_vertices"] as PackedVector3Array
-	return vertices.size()
-
-func _road_geometry_baked_mesh_stats_label(patch_data: Dictionary) -> String:
-	if not _patch_has_baked_terrain_mesh(patch_data):
-		return "none"
-	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
-	var min_vertex: Vector3 = vertices[0]
-	var max_vertex: Vector3 = vertices[0]
-	for vertex_variant in vertices:
-		var vertex: Vector3 = vertex_variant
-		min_vertex.x = minf(min_vertex.x, vertex.x)
-		min_vertex.y = minf(min_vertex.y, vertex.y)
-		min_vertex.z = minf(min_vertex.z, vertex.z)
-		max_vertex.x = maxf(max_vertex.x, vertex.x)
-		max_vertex.y = maxf(max_vertex.y, vertex.y)
-		max_vertex.z = maxf(max_vertex.z, vertex.z)
-
-	var uv_label := "none"
-	var uvs: PackedVector2Array = (
-		patch_data.get("terrain_mesh_uvs", PackedVector2Array()) as PackedVector2Array
-	)
-	if uvs.size() == vertices.size():
-		var min_uv: Vector2 = uvs[0]
-		var max_uv: Vector2 = uvs[0]
-		for uv_variant in uvs:
-			var uv: Vector2 = uv_variant
-			min_uv.x = minf(min_uv.x, uv.x)
-			min_uv.y = minf(min_uv.y, uv.y)
-			max_uv.x = maxf(max_uv.x, uv.x)
-			max_uv.y = maxf(max_uv.y, uv.y)
-		uv_label = "[(%.3f,%.3f)..(%.3f,%.3f)]" % [
-			min_uv.x,
-			min_uv.y,
-			max_uv.x,
-			max_uv.y,
-		]
-
-	var normal_label := "none"
-	var normals: PackedVector3Array = (
-		patch_data.get("terrain_mesh_normals", PackedVector3Array()) as PackedVector3Array
-	)
-	if normals.size() == vertices.size():
-		var min_normal_y: float = normals[0].y
-		var max_normal_y: float = normals[0].y
-		var min_normal_length := normals[0].length()
-		var max_normal_length := min_normal_length
-		var normal_y_sum := 0.0
-		for normal_variant in normals:
-			var normal: Vector3 = normal_variant
-			var normal_length := normal.length()
-			min_normal_y = minf(min_normal_y, normal.y)
-			max_normal_y = maxf(max_normal_y, normal.y)
-			min_normal_length = minf(min_normal_length, normal_length)
-			max_normal_length = maxf(max_normal_length, normal_length)
-			normal_y_sum += normal.y
-		normal_label = "y=[%.3f..%.3f],avg_y=%.3f,len=[%.3f..%.3f]" % [
-			min_normal_y,
-			max_normal_y,
-			normal_y_sum / float(maxi(1, normals.size())),
-			min_normal_length,
-			max_normal_length,
-		]
-
-	return "{local_bounds=[(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)],uv=%s,normal=%s}" % [
-		min_vertex.x,
-		min_vertex.y,
-		min_vertex.z,
-		max_vertex.x,
-		max_vertex.y,
-		max_vertex.z,
-		uv_label,
-		normal_label,
-	]
 
 func _record_terrain_debug_frame(
 	delta: float,

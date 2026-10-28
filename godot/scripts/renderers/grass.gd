@@ -156,7 +156,6 @@ func _process(_delta: float) -> void:
 			mask_mesh.mesh = source.mesh
 			mask_mesh.position = source.position
 			var mask_material := mask_mesh.material_override as ShaderMaterial
-			mask_material.set_shader_parameter("height_is_baked", patch["height_is_baked"])
 			mask_material.set_shader_parameter("patch_origin", patch_min)
 			for parameter in [&"heightmap", &"height_scale", &"heightmap_texture_size",
 					&"inner_sample_offset_texels", &"inner_sample_size_texels", &"patch_world_size_m"]:

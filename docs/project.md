@@ -489,6 +489,14 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   [D](terrain.md#terrain-07-d-record), [E](terrain.md#terrain-07-e-record),
   [F](terrain.md#terrain-07-f-record)).
 
+- **`TERRAIN-07-G` acceptance remains open (2026-10-28).** The exact/CDT terrain surface and its
+  frontend selector, refined jobs, baked meshes and water clip are deleted; gameplay, references
+  and benchmarks are graded-only. G1's stage, locality and bitwise rows pass. G2 fixes the bend's
+  five-pixel closed-coverage defect, but the full 33-fixture render suite still has the known T24
+  Kuopio T2 residual pixel, and matched retained memory rises 26.9% at 100k and 18.2% on Kuopio.
+  Neither acceptance target is relaxed; details and artifacts are in the
+  [Gate G record](terrain.md#terrain-07-g-record).
+
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
   Old saves break; continuous income and per-entity settlement windows are accepted gameplay

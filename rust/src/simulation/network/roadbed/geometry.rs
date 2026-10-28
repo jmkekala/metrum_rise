@@ -18,6 +18,7 @@ const QUERY_GRID_MAX_CELLS: usize = 256;
 
 /// Immutable triangle grid owning its triangles, for compiled terrain tiles.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg(test)]
 pub(crate) struct RoadSurfaceTriangleQueryIndex {
     grid: SurfaceTriangleGrid,
     triangles: Vec<[RoadVec3; 3]>,
@@ -34,6 +35,7 @@ pub(super) struct SurfaceTriangleGrid {
     cell_items: Vec<u32>,
 }
 
+#[cfg(test)]
 impl RoadSurfaceTriangleQueryIndex {
     /// Builds the bounded grid for a terrain tile without copying polygon wrappers.
     pub(crate) fn from_ground_triangles(

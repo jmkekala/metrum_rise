@@ -34,8 +34,9 @@ pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
 pub(crate) use placement::SpawnProfileAssetCandidates;
 pub(crate) use placement::construction_duration_hours;
+#[cfg(test)]
 pub(crate) use site::SiteRoads;
-pub(crate) use site::{BuildingSiteFoundation, BuildingSiteSurfaceClient};
+pub(crate) use site::BuildingSiteSurfaceClient;
 
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;

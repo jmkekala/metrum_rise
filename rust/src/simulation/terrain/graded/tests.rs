@@ -28,7 +28,7 @@ pub(super) fn compiled(graph: &RegionGraph) -> RoadbedSystem {
 }
 
 // A junction hub with arms at `arms` degrees, 60 m long.
-fn hub(arms: &[f32], sloped: bool) -> RegionGraph {
+pub(super) fn hub(arms: &[f32], sloped: bool) -> RegionGraph {
     let mut graph = RegionGraph::new();
     let centre = graph.add_node(point(0.0, 0.0, sloped), NodeType::Junction);
     for (index, angle) in arms.iter().enumerate() {
@@ -61,7 +61,7 @@ fn conflict() -> RegionGraph {
 }
 
 // A 53 x 53 heightmap of 10 m cells centred on the origin, heights from `height(x, z)`.
-fn terrain(height: impl Fn(f32, f32) -> f32) -> TerrainSystem {
+pub(super) fn terrain(height: impl Fn(f32, f32) -> f32) -> TerrainSystem {
     let mut terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
     for z in 0..53 {
         for x in 0..53 {

@@ -104,25 +104,6 @@ func _check_terrain_payload(simulation: SimulationNode) -> void:
 		renderer.free()
 
 func _check_geometry_debug() -> void:
-	var terrain := TerrainRenderer.new()
-	var water := WaterRenderer.new()
-	var payload := {
-		"road_clip_loop_counts": PackedInt32Array([4, 4, 4]),
-		"road_clip_loop_groups": PackedInt32Array([9, 9, 2]),
-		"road_clip_loop_roles": PackedInt32Array([TerrainRenderer.ROAD_CLIP_LOOP_ROLE_OUTER, TerrainRenderer.ROAD_CLIP_LOOP_ROLE_HOLE, TerrainRenderer.ROAD_CLIP_LOOP_ROLE_OUTER]),
-		"road_clip_loop_points": PackedVector3Array([
-			Vector3(0, 0, 0), Vector3(4, 0, 0), Vector3(4, 0, 3), Vector3(0, 0, 3),
-			Vector3(1, 0, 1), Vector3(2, 0, 1), Vector3(2, 0, 2), Vector3(1, 0, 2),
-			Vector3(-5, 0, -5), Vector3(-3, 0, -5), Vector3(-3, 0, -4), Vector3(-5, 0, -4),
-		]),
-	}
-	for renderer in [terrain, water]:
-		var stats: Dictionary = RenderDebug.clip_stats(renderer._road_clip_loop_groups_from_patch_data(payload))
-		_expect(int(stats["group_count"]) == 2 and int(stats["loop_count"]) == 3 and int(stats["point_count"]) == 12, "clip diagnostics must preserve group/hole counts")
-		_expect(is_equal_approx(float(stats["area"]), 13.0), "clip diagnostics must subtract hole area")
-		_expect(is_equal_approx(float(stats["max_bbox_x"]), 4.0) and is_equal_approx(float(stats["max_bbox_z"]), 3.0), "clip diagnostics must retain largest group dimensions")
-		_expect(RenderDebug.bounds_label(stats) == "[(-5.000,-5.000)..(4.000,3.000)]", "clip diagnostics must merge group bounds")
-		_expect(RenderDebug.bounds_label(RenderDebug.clip_stats(renderer._road_clip_loop_groups_from_patch_data({}))) == "none", "absent clipping must have no bounds")
 	var mesh := ArrayMesh.new()
 	for count in [3, 6]:
 		var vertices := PackedVector3Array()

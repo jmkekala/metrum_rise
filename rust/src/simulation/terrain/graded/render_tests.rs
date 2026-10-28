@@ -478,6 +478,38 @@ fn the_exact_mask_equals_coverage() {
     }
 }
 
+// The reference bend's outer tangent sits inside one GL0 lattice square. Check the rendered
+// pinhole neighbourhood densely against the roadbed's own closed coverage predicate.
+#[test]
+fn bend_outer_tangent_mask_equals_coverage() {
+    let terrain = super::tests::terrain(|_, _| 0.0);
+    let roadbed = compiled(&super::tests::hub(&[180.0, 45.0], false));
+    let tile = TileKey { x: 0, z: -1 };
+    let payload = bake_level(&terrain, &roadbed, &[tile], Level::Gl0)
+        .pop()
+        .expect("bend tile");
+    let frame = frame(
+        level_code(Level::Gl0),
+        tile,
+        anchor_hm(&terrain),
+        cell_hm(&terrain),
+    );
+    let mut pieces = Vec::new();
+    for iz in 0..=120 {
+        for ix in 0..=160 {
+            let world = [0.3 + ix as f64 * 0.005, -5.3 + iz as f64 * 0.005];
+            let local = [world[0] as f32, (world[1] + 64.0) as f32];
+            let covered = covered_height_at(&roadbed, world[0], world[1], &mut pieces).is_some();
+            let discarded = mask_sdf(frame, &payload, local) < 0.0;
+            assert_eq!(
+                discarded, covered,
+                "world {world:?} local {local:?} sdf {}",
+                mask_sdf(frame, &payload, local)
+            );
+        }
+    }
+}
+
 // The exact mask equals coverage across a bridge's mouth (`TERRAIN-07-D` round 9, the `bridge_t`
 // `under_bridge` dashed line): on a 2 cm grid over the 4 m either side of the mouth row (along
 // `z` at `x = 0`), `GL0` and `GL1`. Before the rows were named, 9,938 of 640,000 `GL0` points

@@ -62,8 +62,7 @@ func _process(_delta: float) -> void:
 	if _current_road_surface_generation() != surface_generation:
 		return
 
-	# 2. Validate the complete terrain batch without mutating scene resources. A bad engineered CDT
-	# keeps both the previous terrain batch and previous road generation visible.
+	# 2. Validate the complete terrain batch without mutating scene resources.
 	var road_mesh_ms := 0.0
 	var terrain_visuals_ms := 0.0
 	var prepared_terrain_update: Dictionary = {}
@@ -130,8 +129,8 @@ func _process(_delta: float) -> void:
 	road_tool.mark_network_topology_dirty()
 
 	var water_visuals_start_us := Time.get_ticks_usec()
-	if water and water.has_method("refresh_road_clipped_patches"):
-		water.refresh_road_clipped_patches(dirty_terrain_patch_keys)
+	if water and water.has_method("refresh_road_covered_patches"):
+		water.refresh_road_covered_patches(dirty_terrain_patch_keys)
 	var water_visuals_ms := float(Time.get_ticks_usec() - water_visuals_start_us) / 1000.0
 
 	# 6. Check whether any queued road endpoints are border connections.

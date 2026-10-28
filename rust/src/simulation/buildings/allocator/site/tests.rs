@@ -8,13 +8,11 @@ use super::derive::{
 };
 use super::geometry::{signed_polygon_area, site_radius_m};
 use super::grading::{
-    BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M, SiteGradingContext,
+    BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M,
     building_site_raw_tie_in_target_height, building_site_road_connection_lateral_offset_m,
     nearest_building_site_road_surface_sample,
 };
-use super::model::{
-    BuildingSiteSurfaceClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot,
-};
+use super::model::BuildingSiteSurfaceClient;
 use super::{BuildingSiteClient, building_site_support_tie_in_is_valid};
 use crate::assets::{Anchor, AnchorType, AssetManifest, MeshPart, SiteSurfaceMaterial};
 use crate::simulation::buildings::allocator::SiteRoads;
@@ -407,34 +405,6 @@ fn square_site_with_surface() -> BuildingSiteClient {
                 Vector2::new(1.0, -1.0),
             ],
         }],
-    }
-}
-
-fn flat_site_from_bounds(
-    min_x: f32,
-    min_z: f32,
-    max_x: f32,
-    max_z: f32,
-    support_height_m: f32,
-) -> BuildingSiteClient {
-    let footprint_world = vec![
-        Vector2::new(min_x, min_z),
-        Vector2::new(min_x, max_z),
-        Vector2::new(max_x, max_z),
-        Vector2::new(max_x, min_z),
-    ];
-    BuildingSiteClient {
-        structure_world: Vec::new(),
-        planting_world: Vec::new(),
-        footprint_world,
-        lot_footprint_world: [
-            Vector2::new(min_x, min_z),
-            Vector2::new(min_x, max_z),
-            Vector2::new(max_x, max_z),
-            Vector2::new(max_x, min_z),
-        ],
-        support_height_m,
-        surfaces: Vec::new(),
     }
 }
 

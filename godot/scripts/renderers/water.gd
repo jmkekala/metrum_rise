@@ -92,8 +92,6 @@ const WATER_PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME := 8
 const WATER_PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const WATER_PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const WATER_PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
-const ROAD_CLIP_LOOP_ROLE_OUTER := 0
-const ROAD_CLIP_LOOP_ROLE_HOLE := 1
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -681,7 +679,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"last_patch_data": patch_data,
 	}
 
-func refresh_road_clipped_patches(flat_pairs: PackedInt32Array) -> void:
+func refresh_road_covered_patches(flat_pairs: PackedInt32Array) -> void:
 	var dirty_keys: Array[Vector2i] = _dirty_patch_keys(flat_pairs)
 	if not dirty_keys.is_empty() and simulation_node.has_method("clear_water_patch_mesh_cache"):
 		simulation_node.clear_water_patch_mesh_cache(flat_pairs)
@@ -790,13 +788,11 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 		var total_elapsed_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 		if total_elapsed_ms >= 2.0:
 			_water_debug_log(
-				"water_upload key=(%d,%d) depth_nonzero=%d clip_loops=%d clip_points=%d signature_changed=%s mesh_cells=%d full=%d partial=%d conservative=%d dry=%d road_clipped=%d mesh_tris=%d texture_ms=%.3f mesh_ms=%.3f fetch_ms=%.3f total_ms=%.3f"
+				"water_upload key=(%d,%d) depth_nonzero=%d signature_changed=%s mesh_cells=%d full=%d partial=%d conservative=%d dry=%d road_clipped=%d mesh_tris=%d texture_ms=%.3f mesh_ms=%.3f fetch_ms=%.3f total_ms=%.3f"
 				% [
 					key.x,
 					key.y,
 					depth_nonzero_count,
-					int(patch_data.get("road_clip_loop_count", 0)),
-					int(patch_data.get("road_clip_point_count", 0)),
 					str(signature_changed),
 					int(mesh_stats.get("cells_total", 0)),
 					int(mesh_stats.get("full_cells", 0)),
@@ -1270,16 +1266,12 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var depth_sample_count: int = _water_patch_depth_sample_count(patch_data)
 		var baseline_sample_count: int = int(baseline_stats.get("total_samples", depth_sample_count))
 		var baseline_nonzero_count: int = int(baseline_stats.get("baseline_nonzero", -1))
-		var clip_stats: Dictionary = RenderDebug.clip_stats(_road_clip_loop_groups_from_patch_data(patch_data))
-		var road_clip_status: String = str(patch_data.get("road_clip_status", "ok"))
-		var road_clip_error: String = str(patch_data.get("road_clip_error", "none"))
-		var road_clip_source_count: int = int(patch_data.get("road_clip_source_count", 0))
 		var mesh_stats: Dictionary = patch.get(
 			"mesh_stats",
 			_empty_water_mesh_stats(int(patch.get("lod_step", 1)))
 		)
 		lines.append(
-			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f clip_status=%s clip_error=%s clip_sources=%d clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) mesh_lod=%d mesh_cells=%d mesh_full=%d mesh_partial=%d mesh_conservative=%d mesh_dry=%d mesh_road_clipped=%d mesh_tris=%d"
+			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f mesh_lod=%d mesh_cells=%d mesh_full=%d mesh_partial=%d mesh_conservative=%d mesh_dry=%d mesh_road_clipped=%d mesh_tris=%d"
 			% [
 				key.x,
 				key.y,
@@ -1302,16 +1294,6 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				baseline_sample_count,
 				float(baseline_stats.get("baseline_max", -1.0)),
 				float(baseline_stats.get("baseline_sum", -1.0)),
-				road_clip_status,
-				road_clip_error,
-				road_clip_source_count,
-				int(clip_stats.get("group_count", 0)),
-				int(clip_stats.get("loop_count", 0)),
-				int(clip_stats.get("point_count", 0)),
-				float(clip_stats.get("area", 0.0)),
-				RenderDebug.bounds_label(clip_stats),
-				float(clip_stats.get("max_bbox_x", 0.0)),
-				float(clip_stats.get("max_bbox_z", 0.0)),
 				int(mesh_stats.get("lod_step", patch.get("lod_step", 1))),
 				int(mesh_stats.get("cells_total", 0)),
 				int(mesh_stats.get("full_cells", 0)),
@@ -1370,34 +1352,6 @@ func _road_geometry_water_border_line() -> String:
 			float(depth_stats.get("sum", 0.0)),
 		]
 	)
-
-func _patch_has_road_clip_loops(patch_data: Dictionary) -> bool:
-	if (
-		not patch_data.has("road_clip_loop_counts")
-		or not patch_data.has("road_clip_loop_groups")
-		or not patch_data.has("road_clip_loop_roles")
-		or not patch_data.has("road_clip_loop_points")
-	):
-		return false
-	var counts: PackedInt32Array = patch_data["road_clip_loop_counts"] as PackedInt32Array
-	var groups: PackedInt32Array = patch_data["road_clip_loop_groups"] as PackedInt32Array
-	var roles: PackedInt32Array = patch_data["road_clip_loop_roles"] as PackedInt32Array
-	var points: PackedVector3Array = patch_data["road_clip_loop_points"] as PackedVector3Array
-	if counts.size() == 0:
-		return false
-	if groups.size() != counts.size() or roles.size() != counts.size():
-		return false
-	var expected_points := 0
-	for index in range(counts.size()):
-		var count: int = counts[index]
-		if count < 3:
-			return false
-		if groups[index] < 0:
-			return false
-		if roles[index] != ROAD_CLIP_LOOP_ROLE_OUTER and roles[index] != ROAD_CLIP_LOOP_ROLE_HOLE:
-			return false
-		expected_points += count
-	return expected_points == points.size()
 
 func _patch_visible_depth_count(patch_data: Dictionary) -> int:
 	return int(patch_data.get("depth_nonzero_count", 1))
@@ -1487,67 +1441,6 @@ func _water_patch_depth_sample_count(patch_data: Dictionary) -> int:
 func _patch_cover_generation(patch_data: Dictionary) -> int:
 	return int(patch_data.get("cover_generation", 0))
 
-func _road_clip_loop_groups_from_patch_data(patch_data: Dictionary) -> Array:
-	if not _patch_has_road_clip_loops(patch_data):
-		return []
-	var counts: PackedInt32Array = patch_data["road_clip_loop_counts"] as PackedInt32Array
-	var group_indices: PackedInt32Array = patch_data["road_clip_loop_groups"] as PackedInt32Array
-	var roles: PackedInt32Array = patch_data["road_clip_loop_roles"] as PackedInt32Array
-	var points: PackedVector3Array = patch_data["road_clip_loop_points"] as PackedVector3Array
-	var groups_by_id: Dictionary = {}
-	var group_ids: Array = []
-	var cursor := 0
-	for loop_index in range(counts.size()):
-		var count: int = counts[loop_index]
-		var group_id: int = group_indices[loop_index]
-		var loop_points := PackedVector2Array()
-		for offset in range(count):
-			var point: Vector3 = points[cursor + offset]
-			loop_points.append(Vector2(point.x, point.z))
-		var loop_bounds := _polygon_bounds(loop_points)
-		var loop_entry := {
-			"points": loop_points,
-			"bounds": loop_bounds,
-			"role": roles[loop_index],
-		}
-		if not groups_by_id.has(group_id):
-			groups_by_id[group_id] = {
-				"group_id": group_id,
-				"outer_loops": [],
-				"hole_loops": [],
-				"bounds": loop_bounds,
-				"has_bounds": false,
-			}
-			group_ids.append(group_id)
-		var group_entry: Dictionary = groups_by_id[group_id]
-		if bool(group_entry["has_bounds"]):
-			group_entry["bounds"] = _merge_bounds(group_entry["bounds"], loop_bounds)
-		else:
-			group_entry["bounds"] = loop_bounds
-			group_entry["has_bounds"] = true
-		if roles[loop_index] == ROAD_CLIP_LOOP_ROLE_HOLE:
-			var hole_loops: Array = group_entry["hole_loops"]
-			hole_loops.append(loop_entry)
-		else:
-			var outer_loops: Array = group_entry["outer_loops"]
-			outer_loops.append(loop_entry)
-		cursor += count
-	group_ids.sort()
-	var loop_groups: Array = []
-	for group_id_variant in group_ids:
-		var group_id: int = int(group_id_variant)
-		var group_entry: Dictionary = groups_by_id[group_id]
-		var outer_loops: Array = group_entry["outer_loops"]
-		if outer_loops.is_empty():
-			continue
-		loop_groups.append({
-			"group_id": group_id,
-			"outer_loops": outer_loops,
-			"hole_loops": group_entry["hole_loops"],
-			"bounds": group_entry["bounds"],
-		})
-	return loop_groups
-
 func _empty_water_mesh_stats(lod_step: int) -> Dictionary:
 	return {
 		"lod_step": lod_step,
@@ -1560,27 +1453,6 @@ func _empty_water_mesh_stats(lod_step: int) -> Dictionary:
 		"emitted_vertices": 0,
 		"emitted_triangles": 0,
 	}
-
-func _polygon_bounds(polygon: PackedVector2Array) -> Rect2:
-	if polygon.size() == 0:
-		return Rect2()
-	var min_x := polygon[0].x
-	var max_x := polygon[0].x
-	var min_y := polygon[0].y
-	var max_y := polygon[0].y
-	for point in polygon:
-		min_x = minf(min_x, point.x)
-		max_x = maxf(max_x, point.x)
-		min_y = minf(min_y, point.y)
-		max_y = maxf(max_y, point.y)
-	return Rect2(Vector2(min_x, min_y), Vector2(max_x - min_x, max_y - min_y))
-
-func _merge_bounds(a: Rect2, b: Rect2) -> Rect2:
-	var min_x := minf(a.position.x, b.position.x)
-	var min_y := minf(a.position.y, b.position.y)
-	var max_x := maxf(a.position.x + a.size.x, b.position.x + b.size.x)
-	var max_y := maxf(a.position.y + a.size.y, b.position.y + b.size.y)
-	return Rect2(Vector2(min_x, min_y), Vector2(max_x - min_x, max_y - min_y))
 
 func _mesh_lod_step_for_patch_center(center_x: float, center_z: float) -> int:
 	var camera: Camera3D = get_viewport().get_camera_3d()

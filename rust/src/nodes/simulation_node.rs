@@ -130,13 +130,13 @@ use crate::nodes::sim::render::water::{
 use crate::simulation::buildings::allocator::ExplicitServicePlacementRejection;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::road_edit::RoadPreviewValidation;
-use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainSystem};
+use crate::simulation::terrain::TerrainPatchSnapshot;
 use crate::simulation::vegetation::VegetationConfig;
 use crate::simulation::water::WaterPatchSnapshot;
 
 use crate::debug_log;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 

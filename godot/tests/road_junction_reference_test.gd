@@ -5,15 +5,13 @@
 ## Without it the test exits at once. Each fixture is rendered flat and on a 2.5% slope, in three views:
 ## oblique (terrain), oblique_roads (terrain hidden, grey) and plan (top-down orthographic, 60 x 37.5 m);
 ## bridges add a fourth, side (the deck's side from 12 m, TERRAIN-07-B's fascias).
-## METRUM_ROAD_JUNCTION_TERRAIN=compare (TERRAIN-07-D) renders each fixture through the production
-## terrain renderer twice in one session, the exact cut (refined patches) and B (graded tiles over
-## plain patches), in the spike's views plus distance renders, adds the spike's fixtures and 8%
-## slopes, and counts background pinholes in plan_terrain. METRUM_ROAD_JUNCTION_FIXTURES limits the
-## fixtures (comma list of names), so a long set can run as several sessions. In compare mode the
-## structures render B only (the exact cut fails at their open chain ends), over ground sculpted
+## Every fixture renders through the production graded terrain in the close, plan, and distance
+## views and counts background pinholes in plan_terrain. METRUM_ROAD_JUNCTION_FIXTURES limits the
+## fixtures (comma list of names), so a long set can run as several sessions. Structures render
+## over ground sculpted
 ## after the commits (a hollow under the bridge, a mound over the tunnel), with a view from under
 ## the bridge at its road mouth and one at the tunnel's portal; kuopio_t2_wall loads the Kuopio
-## reference save and compares both terrains at its conflict wall site (T2).
+## reference save at its conflict wall site (T2).
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -44,9 +42,6 @@ var _failures := 0
 var _records: Array[Dictionary] = []
 var _output := ""
 var simulation: SimulationNode
-# "" (the exact cut's checker meshes, the road views) or "compare" (production terrain, exact
-# then B).
-var _terrain_mode := ""
 var _pinholes := {}
 
 func _initialize() -> void:
@@ -68,7 +63,6 @@ func _run() -> void:
 	if _failures != 0:
 		quit(1)
 		return
-	_terrain_mode = OS.get_environment("METRUM_ROAD_JUNCTION_TERRAIN")
 	var only := OS.get_environment("METRUM_ROAD_JUNCTION_FIXTURES").split(",", false)
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
@@ -76,9 +70,9 @@ func _run() -> void:
 	for fixture in _fixtures():
 		if not only.is_empty() and not only.has(fixture.name):
 			continue
-		# Structures render without terrain in the legacy mode: the exact cut fails at their open
-		# chain ends. Compare mode renders their B half only, where the fixture asks.
-		if _terrain_mode == "compare" and not fixture.get("terrain", true) and not fixture.has("b_only"):
+		# These legacy road-only structure fixtures deliberately have no terrain contract. The
+		# graded bridge/tunnel fixtures below name b_only and exercise their mouths and walls.
+		if not fixture.get("terrain", true) and not fixture.has("b_only"):
 			continue
 		for slope: Array in _slopes(fixture):
 			await _reference(fixture, slope[0], slope[1])
@@ -86,7 +80,7 @@ func _run() -> void:
 		"vendor": RenderingServer.get_video_adapter_vendor(), "capture_size": [CAPTURE_SIZE.x, CAPTURE_SIZE.y],
 		"world": {"size_m": WORLD_M, "cell_m": 8.0, "chunk_m": 128.0, "slope": "2.5% rising toward +x"},
 		"conventions": CONVENTIONS, "lighting": "fixed directional light and ambient colour; weather scenario 0 (clear); no time-of-day API is used",
-		"fixtures": _records, "failures": _failures, "terrain_mode": _terrain_mode, "pinholes": _pinholes}
+		"fixtures": _records, "failures": _failures, "terrain_mode": "graded", "pinholes": _pinholes}
 	var file := FileAccess.open(_output.path_join("manifest.json"), FileAccess.WRITE)
 	_expect(file != null, "Reference manifest must open")
 	if file != null:
@@ -136,52 +130,50 @@ func _fixtures() -> Array[Dictionary]:
 			continuation["side"] = [Vector2(arm * 0.5, 12.0), Vector2(arm * 0.5, 0)]
 		result.append(t)
 		result.append(continuation)
-	if _terrain_mode == "compare":
-		# The B spike's fixtures (TERRAIN-07-D item 6). A street grid of closed 96 m blocks with a
-		# T split at the origin, the last commit.
-		result.append({"name": "city_grid_t", "distance": true, "roads": [
-			_road(Vector2(-150, 0), Vector2(150, 0)), _road(Vector2(-150, 96), Vector2(150, 96)),
-			_road(Vector2(-150, -96), Vector2(150, -96)), _road(Vector2(-96, -150), Vector2(-96, 150)),
-			_road(Vector2(96, -150), Vector2(96, 150)), _road(Vector2(0, 0), Vector2(0, 96))]})
-		# The T on flat ground, then the terrain sloped under it (roads stay): cut beside the east
-		# arm, fill beside the west arm, cross-fall across the side arm. fill_corner looks at the
-		# kerb curve between the west arm and the side arm from about 7 m, at the road's height,
-		# where the level road stands on a fill of about 0.5 m: off the lattice lines the graded
-		# cut edge may sag onto the skirt by up to k s / 2 (T34 (b), 12.5 cm at GL0); the
-		# straight edges lie on GL0 lines and do not sag.
-		result.append({"name": "t_cutfill", "terrain_after": true, "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))],
-			"edge_views": [{"view": "fill_corner", "from": Vector2(-11.0, 11.0), "eye_m": 0.8, "at": Vector2(-6.1, 6.1), "at_m": -0.1}]})
-		# A 3 m mound across the side arm and a 2 m hollow under the west arm, sculpted before the
-		# roads, so the roads' profiles cut and fill and the mound's flanks fall across them.
-		result.append({"name": "t_mound", "sculpt": [[Vector2(0, 40), 30.0, 0.15], [Vector2(-45, 0), 25.0, -0.10]],
-			"roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]})
-		result[0]["distance"] = true
-		# TERRAIN-07-C's structure walls at a road mouth (TERRAIN-07-D round 3): the side road of
-		# the T made a bridge over a hollow sculpted after the commits, and a tunnel under a
-		# mound, each seen at its mouth.
-		for fixture in result:
-			if fixture.name == "bridge_t":
-				fixture["b_only"] = true
-				fixture["sculpt_after"] = [[Vector2(0, 32), 26.0, -0.25]]
-				fixture["mouth_views"] = [
-					{"view": "under_bridge", "from": Vector2(7.0, 24.0), "eye_m": 1.0, "at": Vector2(0.0, 7.0), "at_m": -0.6},
-					{"view": "mouth_side", "from": Vector2(18.0, 14.0), "eye_m": 2.0, "at": Vector2(0.0, 9.0), "at_m": -1.0}]
-			elif fixture.name == "tunnel_t":
-				fixture["b_only"] = true
-				fixture["sculpt_after"] = [[Vector2(0, 46), 30.0, 0.3]]
-				fixture["mouth_views"] = [
-					{"view": "portal", "from": Vector2(6.0, -12.0), "eye_m": 2.5, "at": Vector2(0.0, 14.0), "at_m": 2.0}]
-		# The Kuopio reference save's conflict wall site (TERRAIN-07-C round 4, T2 (c)).
-		result.append({"name": "kuopio_t2_wall", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
-			"focus": Vector2(-16.3, 1182.8), "roads": []})
-		# TERRAIN-07-F: exercise the production grass mask on Kuopio before and after the
-		# established 60 m probe spur changes the graded cells under it. Each state reloads the
-		# save so its exact renderer precedes its graded renderer's asynchronous result stream.
-		result.append({"name": "kuopio_grass_before", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
-			"focus": Vector2(31.45, -6.71), "roads": [], "grass": true})
-		result.append({"name": "kuopio_grass_after", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
-			"focus": Vector2(31.45, -6.71), "grass": true,
-			"roads": [_road(Vector2(31.45, -6.71), Vector2(57.23, 47.47))]})
+	# The B spike's fixtures (TERRAIN-07-D item 6). A street grid of closed 96 m blocks with a
+	# T split at the origin, the last commit.
+	result.append({"name": "city_grid_t", "distance": true, "roads": [
+		_road(Vector2(-150, 0), Vector2(150, 0)), _road(Vector2(-150, 96), Vector2(150, 96)),
+		_road(Vector2(-150, -96), Vector2(150, -96)), _road(Vector2(-96, -150), Vector2(-96, 150)),
+		_road(Vector2(96, -150), Vector2(96, 150)), _road(Vector2(0, 0), Vector2(0, 96))]})
+	# The T on flat ground, then the terrain sloped under it (roads stay): cut beside the east
+	# arm, fill beside the west arm, cross-fall across the side arm. fill_corner looks at the
+	# kerb curve between the west arm and the side arm from about 7 m, at the road's height,
+	# where the level road stands on a fill of about 0.5 m: off the lattice lines the graded
+	# cut edge may sag onto the skirt by up to k s / 2 (T34 (b), 12.5 cm at GL0); the
+	# straight edges lie on GL0 lines and do not sag.
+	result.append({"name": "t_cutfill", "terrain_after": true, "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))],
+		"edge_views": [{"view": "fill_corner", "from": Vector2(-11.0, 11.0), "eye_m": 0.8, "at": Vector2(-6.1, 6.1), "at_m": -0.1}]})
+	# A 3 m mound across the side arm and a 2 m hollow under the west arm, sculpted before the
+	# roads, so the roads' profiles cut and fill and the mound's flanks fall across them.
+	result.append({"name": "t_mound", "sculpt": [[Vector2(0, 40), 30.0, 0.15], [Vector2(-45, 0), 25.0, -0.10]],
+		"roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]})
+	result[0]["distance"] = true
+	# TERRAIN-07-C's structure walls at a road mouth (TERRAIN-07-D round 3): the side road of
+	# the T made a bridge over a hollow sculpted after the commits, and a tunnel under a
+	# mound, each seen at its mouth.
+	for fixture in result:
+		if fixture.name == "bridge_t":
+			fixture["b_only"] = true
+			fixture["sculpt_after"] = [[Vector2(0, 32), 26.0, -0.25]]
+			fixture["mouth_views"] = [
+				{"view": "under_bridge", "from": Vector2(7.0, 24.0), "eye_m": 1.0, "at": Vector2(0.0, 7.0), "at_m": -0.6},
+				{"view": "mouth_side", "from": Vector2(18.0, 14.0), "eye_m": 2.0, "at": Vector2(0.0, 9.0), "at_m": -1.0}]
+		elif fixture.name == "tunnel_t":
+			fixture["b_only"] = true
+			fixture["sculpt_after"] = [[Vector2(0, 46), 30.0, 0.3]]
+			fixture["mouth_views"] = [
+				{"view": "portal", "from": Vector2(6.0, -12.0), "eye_m": 2.5, "at": Vector2(0.0, 14.0), "at_m": 2.0}]
+	# The Kuopio reference save's conflict wall site (TERRAIN-07-C round 4, T2 (c)).
+	result.append({"name": "kuopio_t2_wall", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
+		"focus": Vector2(-16.3, 1182.8), "roads": []})
+	# TERRAIN-07-F: exercise the production grass mask on Kuopio before and after the
+	# established 60 m probe spur changes the graded cells under it.
+	result.append({"name": "kuopio_grass_before", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
+		"focus": Vector2(31.45, -6.71), "roads": [], "grass": true})
+	result.append({"name": "kuopio_grass_after", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
+		"focus": Vector2(31.45, -6.71), "grass": true,
+		"roads": [_road(Vector2(31.45, -6.71), Vector2(57.23, 47.47))]})
 	return result
 
 # [label, rise over 256 m]: flat and 2.5%, with the spike's 8% on the T, four-way, bend and grid.
@@ -193,7 +185,7 @@ func _slopes(fixture: Dictionary) -> Array:
 	if fixture.has("sculpt"):
 		return [["flat", 0.0]]
 	var slopes := [["flat", 0.0], ["slope", SLOPE_RISE_M]]
-	if _terrain_mode == "compare" and fixture.name in ["t", "four_way", "bend_45", "city_grid_t"]:
+	if fixture.name in ["t", "four_way", "bend_45", "city_grid_t"]:
 		slopes.append(["steep", STEEP_RISE_M])
 	return slopes
 
@@ -212,55 +204,6 @@ func _commit(road: Dictionary) -> bool:
 		await process_frame
 	_expect(false, "Reference road commit did not settle: %s" % points)
 	return false
-
-func _terrain_node() -> Node3D:
-	# Production terrain payload meshes with a lit material: a 20 m checker gives the slope a visible cue.
-	var result := Node3D.new()
-	var renderer := TerrainScript.new()
-	var layout: Dictionary = simulation.get_terrain_patch_layout()
-	var requests := PackedInt32Array()
-	var pending := {}
-	for z in int(layout.patch_rows):
-		for x in int(layout.patch_cols):
-			requests.append_array(PackedInt32Array([x, z, 2000]))
-			pending[Vector2i(x, z)] = true
-	simulation.request_terrain_patch_payloads(requests)
-	var material := StandardMaterial3D.new()
-	material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	var checker := Image.create(2, 2, false, Image.FORMAT_RGB8)
-	checker.set_pixel(0, 0, Color(0.30, 0.45, 0.24))
-	checker.set_pixel(1, 1, Color(0.30, 0.45, 0.24))
-	checker.set_pixel(1, 0, Color(0.36, 0.52, 0.28))
-	checker.set_pixel(0, 1, Color(0.36, 0.52, 0.28))
-	material.albedo_texture = ImageTexture.create_from_image(checker)
-	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-	material.uv1_triplanar = true
-	material.uv1_world_triplanar = true
-	material.uv1_scale = Vector3.ONE / 40.0
-	var deadline := Time.get_ticks_msec() + 30000
-	while not pending.is_empty() and Time.get_ticks_msec() < deadline:
-		var ready: Dictionary = simulation.poll_ready_terrain_patch_payloads(16)
-		var retries: PackedInt64Array = ready.get("retry_requests", PackedInt64Array())
-		var again := PackedInt32Array()
-		for index in range(0, retries.size(), 4):
-			if pending.has(Vector2i(retries[index], retries[index + 1])):
-				again.append_array(PackedInt32Array([retries[index], retries[index + 1], retries[index + 2]]))
-		if not again.is_empty():
-			simulation.request_terrain_patch_payloads(again)
-		for data in ready.get("patches", []):
-			var key := Vector2i(data["patch_x"], data["patch_z"])
-			if not pending.has(key):
-				continue
-			pending.erase(key)
-			var instance := MeshInstance3D.new()
-			instance.mesh = renderer._terrain_patch_mesh_from_data(data, 1, 1)
-			instance.position = Vector3(data["world_origin_x"] + data["world_size_x"] * 0.5, 0.0, data["world_origin_z"] + data["world_size_z"] * 0.5)
-			instance.material_override = material
-			result.add_child(instance)
-		await process_frame
-	_expect(pending.is_empty(), "terrain capture must load every patch")
-	renderer.free()
-	return result
 
 func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	var label := "%s_%s" % [fixture.name, slope_name]
@@ -291,12 +234,11 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 		_expect(simulation.get_edge_class(edge) == fixture["class"], "%s: edge %d takes class %d" % [label, edge, fixture["class"]])
 		for frame in range(4):
 			await process_frame
-	if _terrain_mode == "compare":
-		# Ground moved under (or over) a structure after it was built: the roads stay.
-		for brush: Array in fixture.get("sculpt_after", []):
-			simulation.sculpt_terrain(brush[0], brush[1], brush[2])
-		for frame in range(10):
-			await process_frame
+	# Ground moved under (or over) a structure after it was built: the roads stay.
+	for brush: Array in fixture.get("sculpt_after", []):
+		simulation.sculpt_terrain(brush[0], brush[1], brush[2])
+	for frame in range(10):
+		await process_frame
 	var state: Dictionary = simulation.get_road_benchmark_state()
 	var viewport := SubViewport.new()
 	viewport.size = CAPTURE_SIZE
@@ -339,56 +281,7 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	var road_chunks: int = road._road_chunk_instances.size()
 	_expect(road_chunks > 0, "%s must have road chunk meshes" % label)
 	var images: Array[Dictionary] = []
-	if _terrain_mode == "compare":
-		for graded in ([true] if fixture.has("b_only") else [false, true]):
-			await _compare_views(fixture, label, scene, camera, environment.environment, focus, graded, images)
-		_finish_record(fixture, label, rise_m, state, road_chunks, images, failures_before)
-		simulation.reparent(root)
-		road.free()
-		viewport.free()
-		await process_frame
-		return
-	var terrain: Node3D = await _terrain_node() if fixture.get("terrain", true) else Node3D.new()
-	scene.add_child(terrain)
-	var sky_colour := Color(0.62, 0.74, 0.88)
-	var grey := Color(0.5, 0.5, 0.5)
-	var views := [
-		{"view": "oblique", "terrain": true},
-		{"view": "oblique_roads", "terrain": false},
-		{"view": "plan", "terrain": false, "ortho": true},
-	]
-	if fixture.has("side"):
-		views.append({"view": "side", "terrain": false, "side": fixture.side})
-	for view: Dictionary in views:
-		# Hiding terrain nodes is purely visual: it removes the coplanar z-fight over unclipped asphalt.
-		terrain.visible = view.terrain
-		environment.environment.background_color = sky_colour if view.terrain else grey
-		var ortho: bool = view.get("ortho", false)
-		if ortho:
-			camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-			camera.size = PLAN_HEIGHT_M # keep-height: width = 37.5 * 1.6 = 60 m
-			camera.position = focus + Vector3(0.0, 100.0, 0.0)
-			camera.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
-		var target := focus
-		var side: Array = view.get("side", [])
-		if not side.is_empty():
-			camera.projection = Camera3D.PROJECTION_PERSPECTIVE
-			camera.fov = 40.0
-			target = _surface(side[1]) - Vector3(0.0, 0.3, 0.0)
-			camera.look_at_from_position(_surface(side[0]) + Vector3(0.0, 1.0, 0.0), target, Vector3.UP)
-		for frame in range(6):
-			await process_frame
-		await RenderingServer.frame_post_draw
-		var png := "%s_%s.png" % [label, view.view]
-		_expect(viewport.get_texture().get_image().save_png(_output.path_join(png)) == OK, "Reference image must save")
-		var pose := {"position": [camera.position.x, camera.position.y, camera.position.z], "pitch_deg": camera.rotation_degrees.x, "look_target": [target.x, target.y, target.z]}
-		if ortho:
-			pose["projection"] = "orthogonal"
-			pose["ortho_size_m"] = [PLAN_HEIGHT_M * float(CAPTURE_SIZE.x) / float(CAPTURE_SIZE.y), PLAN_HEIGHT_M]
-		else:
-			pose["fov_deg"] = camera.fov
-		images.append({"view": view.view, "image": png, "camera": pose, "terrain_visible": view.terrain,
-			"background": "sky" if view.terrain else "neutral grey"})
+	await _compare_views(fixture, label, scene, camera, environment.environment, focus, images)
 	_finish_record(fixture, label, rise_m, state, road_chunks, images, failures_before)
 	simulation.reparent(root)
 	road.free()
@@ -405,8 +298,8 @@ func _finish_record(fixture: Dictionary, label: String, rise_m: float, state: Di
 	print("road_junction_reference %s nodes=%s edges=%s chunks=%d" % [label, record.nodes, record.live_edges, road_chunks])
 
 # The production terrain renderer uploads nothing while the network generation is unacknowledged
-# (network_renderer.gd acknowledges it in the game), and the exact half's refined patches leave a
-# newer one; each terrain built after this reads the published state whole.
+# (network_renderer.gd acknowledges it in the game); each terrain built after this reads the
+# published state whole.
 func _acknowledge_network(label: String) -> void:
 	var deadline := Time.get_ticks_msec() + 10000
 	while simulation.is_network_dirty() and Time.get_ticks_msec() < deadline:
@@ -414,20 +307,18 @@ func _acknowledge_network(label: String) -> void:
 		await process_frame
 	_expect(not simulation.is_network_dirty(), "%s: the network render must be acknowledged" % label)
 
-# The production terrain renderer beside the SimulationNode in the capture scene: the exact cut
-# (refined patches) or B (graded tiles over plain patches). Water is an empty stand-in.
-func _production_terrain(scene: Node3D, graded: bool) -> Node3D:
+# The production graded terrain renderer beside the SimulationNode. Water is an empty stand-in.
+func _production_terrain(scene: Node3D) -> Node3D:
 	if scene.get_node_or_null("Water") == null:
 		var water := Node3D.new()
 		water.name = "Water"
 		scene.add_child(water)
 	var terrain := TerrainScript.new()
 	terrain.name = "Terrain"
-	terrain.graded_tiles_enabled = graded
 	scene.add_child(terrain)
 	return terrain
 
-# Waits until the terrain has no pending patch work and, for B, no tile list or bake in flight and
+# Waits until the terrain has no pending patch work, tile list or bake in flight and
 # no count queued, for three frames in a row at the current camera.
 func _settle_terrain(terrain, label: String) -> void:
 	var stable := 0
@@ -444,10 +335,10 @@ func _settle_terrain(terrain, label: String) -> void:
 # The spike's views of one terrain mode, then the distance renders where the fixture asks:
 # oblique, the side arm's two sidewalk edges and a corner from 2.5 m, plan_terrain (counting
 # background pixels: every one is a pinhole), and the junction from 200 m to 3 km.
-func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: Camera3D, environment: Environment, focus: Vector3, graded: bool, images: Array[Dictionary]) -> void:
-	var mode := "B" if graded else "exact"
+func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: Camera3D, environment: Environment, focus: Vector3, images: Array[Dictionary]) -> void:
+	var mode := "graded"
 	await _acknowledge_network("%s %s" % [label, mode])
-	var terrain := _production_terrain(scene, graded)
+	var terrain := _production_terrain(scene)
 	var grass: Node3D = null
 	if fixture.get("grass", false):
 		grass = GrassScript.new()

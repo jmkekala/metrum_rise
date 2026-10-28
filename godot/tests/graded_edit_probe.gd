@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Graded tile probe (TERRAIN-07-D item 5; opt-in, not part of run.sh, needs a rendering device):
-## loads a save and renders its terrain through the production renderer at one camera, the exact
-## cut and then the graded tiles in one session, recording per mode the time until the terrain
-## settles and the video memory; for the graded tiles also the slots each level uses, then a road
+## loads a save and renders its graded terrain through the production renderer at one camera,
+## recording the time until the terrain settles and the video memory, the slots each level uses, then a road
 ## committed beside the camera and the frame that installs the commit's dirty tiles
 ## (edit_install_ms), with the creation counters before and after (nothing may be created).
 ## Env: METRUM_GRADED_PROBE_SAVE (save path), METRUM_GRADED_PROBE_MODS (asset pack directory,
@@ -89,23 +88,19 @@ func _run() -> void:
 	camera.current = true
 	_report["focus"] = [focus.x, focus.y, focus.z]
 	_report["empty"] = _memory()
-	for graded in [false, true]:
-		var mode := "graded" if graded else "exact"
-		var start_us := Time.get_ticks_usec()
-		var terrain := TerrainScript.new()
-		terrain.name = "Terrain"
-		terrain.graded_tiles_enabled = graded
-		scene.add_child(terrain)
-		var entry := {"settled": await _settle(terrain), "settle_ms": float(Time.get_ticks_usec() - start_us) / 1000.0}
-		entry.merge(_memory())
-		if graded:
-			entry["pools"] = terrain.graded_tiles.get_pool_counters()
-			entry["edit"] = await _edit(terrain, road)
-		_report[mode] = entry
-		print("graded_edit_probe %s: %s" % [mode, JSON.stringify(entry)])
-		terrain.free()
-		for frame in 4:
-			await process_frame
+	var start_us := Time.get_ticks_usec()
+	var terrain := TerrainScript.new()
+	terrain.name = "Terrain"
+	scene.add_child(terrain)
+	var entry := {"settled": await _settle(terrain), "settle_ms": float(Time.get_ticks_usec() - start_us) / 1000.0}
+	entry.merge(_memory())
+	entry["pools"] = terrain.graded_tiles.get_pool_counters()
+	entry["edit"] = await _edit(terrain, road)
+	_report["graded"] = entry
+	print("graded_edit_probe graded: %s" % JSON.stringify(entry))
+	terrain.free()
+	for frame in 4:
+		await process_frame
 	var out := OS.get_environment("METRUM_GRADED_PROBE_OUT")
 	if not out.is_empty():
 		var file := FileAccess.open(out, FileAccess.WRITE)
@@ -115,7 +110,7 @@ func _run() -> void:
 	print("graded_edit_probe: %d failures" % _failures)
 	quit(0 if _failures == 0 else 1)
 
-# Until the terrain has no pending patch work and, graded, no tile list or bake in flight and no
+# Until the terrain has no pending patch work, tile list or bake in flight and no
 # count queued, for three frames in a row.
 func _settle(terrain) -> bool:
 	var stable := 0

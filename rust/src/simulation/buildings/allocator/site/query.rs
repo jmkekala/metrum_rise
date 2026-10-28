@@ -322,21 +322,12 @@ impl BuildingAllocator {
 
 impl BuildingSiteTerrainSnapshot {
     /// Returns ordered paving regions from the captured local sites.
+    #[cfg(test)]
     pub(crate) fn paving_surfaces(&self) -> Vec<super::model::BuildingSiteSurfaceClient> {
         self.sites
             .iter()
             .flat_map(|site| site.surfaces.iter().cloned())
             .collect()
-    }
-}
-
-impl BuildingSiteTerrainClient {
-    fn bounds(&self) -> (f32, f32, f32, f32) {
-        site_surface_bounds(&self.footprint_world, &self.surfaces)
-    }
-
-    fn overlaps_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> bool {
-        overlaps(self.bounds(), (min_x, min_z, max_x, max_z))
     }
 }
 

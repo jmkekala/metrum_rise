@@ -627,7 +627,7 @@ Replaced by [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) (approa
 triangulated around roads. It is the base heightmap plus a per-tile grading layer, a pure function of
 the outer chains, the pads and the base; the terrain shader discards it exactly inside the road
 footprint, and road skirts from the outer chains cover the interpolation at the seam. The variant's
-text, which still describes the exact cut on `road` until `TERRAIN-07-G`, is archived in
+text for the deleted exact cut is archived in
 [`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#4-the-first-required-variant-is-rust-stitched-terrain-topology).
 
 ### 5. Terrain Runtime Rewrites Are Allowed, But The Ownership Contract Is Not Optional

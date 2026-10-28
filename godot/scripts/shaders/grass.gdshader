@@ -13,7 +13,7 @@ uniform uint layer_salt = 0u;
 uniform vec2 near_fade_m = vec2(0.0);
 uniform vec2 patch_origin;
 uniform vec2 patch_world_size_m;
-// PlaneMesh intervals, or zero for a baked CDT mesh.
+// PlaneMesh intervals.
 uniform vec2 terrain_mesh_cells;
 uniform sampler2D heightmap : repeat_disable, filter_linear;
 uniform float height_scale = 20.0;

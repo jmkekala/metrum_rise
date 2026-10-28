@@ -499,9 +499,10 @@ bottoms, and a structure's ends and a tunnel's sides, stay open.
 
 ### Footprint and terrain
 
-**Terrain side superseded by [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) (approach B, user 2026-10-25; draft spec for
-review).** Terrain will be graded per 64 m tile from the outer chains, with an exact footprint mask
-in the terrain shader and road skirts, and the exact cut below is deleted at `TERRAIN-07-G`. The
+**Terrain side superseded by [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) (approach B, user 2026-10-25).** Terrain is
+graded per 64 m tile from the outer chains, with a closed-coverage footprint mask in the terrain
+shader and road skirts. `TERRAIN-07-G` deleted the exact/CDT cut; the historical contract below is
+archival and has no live implementation. The
 roadbed side stays as the contract terrain consumes:
 
 - grounded outer chains, road on the left, joined at bit-identical mouth corners, `f64` positions;
@@ -7606,8 +7607,11 @@ measures and judges each against its target. A gate landing later adds its own h
    108 MB/1.10 GB against shared as the user requested, and retain the corrected local mutation
    cost: the fresh 100k commit breakdown is 1.989/0.567/0.483 ms (mean 1.013, max 1.989); its
    existing path does not execute a user undo, while the small mutation fixture's undo is 0.074 ms.
-8. Measure the release game's peak retained memory before and after `TERRAIN-07-G`, separating
-   load/setup peak from the settled world, so legacy deletion has a game-level memory result.
+8. `TERRAIN-07-G2` measured release-game retained memory with load/setup separated from the
+   settled world. At 100k, settled RSS rises from 1,643,560 to 2,085,332 KiB (+26.9%; HWM +24.7%);
+   on Kuopio it rises from 1,636,248 to 1,934,196 KiB (+18.2%; HWM +16.1%). Heaptrack peak rises
+   from about 952 MiB to 1.17 GiB in both. This is an open Gate G miss, not setup-only churn;
+   method and hashes are in `terrain.md`'s Gate G record.
 9. Attribute `PERF-09` separately from terrain query work: the road control already misses the
    frame guards. H records matched control/terrain snapshot and frame shares and does not charge
    that inherited regression to Gate F or relax it.

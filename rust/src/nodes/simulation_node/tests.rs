@@ -9,7 +9,7 @@ use super::async_terrain::{
 };
 use super::*;
 use crate::nodes::sim::core::CityTreasury;
-use crate::simulation::terrain::TerrainPatchSnapshot;
+use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainSystem};
 use crate::simulation::water::WaterSystem;
 
 mod async_payload;

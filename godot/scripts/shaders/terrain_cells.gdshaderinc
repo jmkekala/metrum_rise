@@ -328,6 +328,8 @@ bool cell_nearer(CellSeamHit a, CellSeamHit b) {
 
 struct CellMask {
 	float sdf;
+	// Bilinear signed distance from lattice samples whose sign is closed top-triangle coverage.
+	float sampled_sdf;
 	int class_id;
 	// The road top at the nearest seam's nearest point (world metres) where the exact distance
 	// was taken, else -1e30: what the outer-band overlap compares the terrain with (T24 (a)).
@@ -348,6 +350,7 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 	}
 	CellMask mask;
 	mask.sdf = mix(mix(t[0].g, t[1].g, sx.y), mix(t[2].g, t[3].g, sx.y), sz.y);
+	mask.sampled_sdf = mask.sdf;
 	mask.road_top = -1e30;
 	float spacing_m = float(min(frame.spacing.x, frame.spacing.y)) * 0.5;
 	if (abs(mask.sdf) < 2.0 * spacing_m) {

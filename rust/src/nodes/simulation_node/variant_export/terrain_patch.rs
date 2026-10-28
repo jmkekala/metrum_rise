@@ -5,16 +5,6 @@
 use super::super::*;
 
 impl SimulationNode {
-    pub(in crate::nodes::simulation_node) fn terrain_patch_dict(
-        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        mask_bytes: &[u8],
-    ) -> VarDictionary {
-        let mut dict = Self::terrain_patch_metadata_dict(patch);
-        dict.set("height_bytes", Self::packed_f32_bytes(&patch.height_data));
-        Self::set_mask_bytes(&mut dict, patch, mask_bytes);
-        dict
-    }
-
     fn set_mask_bytes(
         dict: &mut VarDictionary,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -53,11 +43,6 @@ impl SimulationNode {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
         bytes
-    }
-
-    pub(in crate::nodes::simulation_node) fn packed_f32_bytes(values: &[f32]) -> PackedByteArray {
-        let bytes = Self::f32_bytes_vec(values);
-        PackedByteArray::from(bytes.as_slice())
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_patch_payload_dict(
