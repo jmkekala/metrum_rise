@@ -1013,6 +1013,25 @@ moves its entities between the tiers' phase buckets.
   run, also kept in the report (`perf07_table`). The gate's "no worse" limits stay on the raw
   maximum and p99. The threshold and the overhead are measured in the part 7 results.
 
+- **Open regression (`PERF-09`, attributed 2026-10-28).** 100k 1× no longer meets the
+  acceptance on `road`: on `d456913e` a full day measures a 6.32 ms mean frame (agent tick 5.04,
+  slot work 0.18, snapshot 1.02 ms) and a 19.5 ms worst unpreempted frame (minute 0 after load,
+  13.1 ms of hourly work), against 4.12 ms (3.10, 0.23, 0.73) and 14.5 ms on `93bfaf61`, the
+  accepted commit, in the same boot. Method: release `$TEST_BINARY` of each commit, its own
+  prepared 100k city, `perf07_frame_budget` at 1×, `RAYON_NUM_THREADS=8`, pinned to the eight
+  performance cores, both locks; bisect steps measure the first 480 minutes
+  (`METRUM_PERF07_MINUTES=480`, 3.97 against 6.05 ms on the two ends). The first-parent bisect
+  ends at `209d3c9c`, the merge of main's weather and Finnish roads work (2026-10-22, after the
+  acceptance): its first parent measures 3.98 ms, the merge 7.15–7.18 ms (agent tick 5.28–5.32,
+  snapshot 1.57–1.59), and every later commit tested 5.9–6.1 ms. The cause is the merge's
+  `TRAFFIC-05` (walking priced at walking pace, so trips over about 280 m drive): the merge with
+  only that walking cost reverted, a diagnostic build, measures 4.02 ms (2.98, 0.75) and builds
+  the parent's city (140,520 jobs against 130,385). The extra time is car traffic: in the
+  profile, IDM speeds, connector lookups and turn speeds, lane claims, access egress paths and the
+  snapshot's car poses grow. This is a heavier workload caused by a correct fix, not a `ROAD-68`
+  or `TERRAIN-07` regression; the populated-city fixture changes (`ROAD-68-K22`, `K24`) leave
+  the 100k city unchanged. The acceptance stands: the car workload must fit 8 ms.
+
 **Pre-refactor baseline** (2026-10-15, `SIM-02-A` release `$TEST_BINARY`,
 `RAYON_NUM_THREADS=8`, one run each on an i9-12900K). Milliseconds; "boundary" frames ran an
 operational hour; movement and snapshot are the largest single values of those phases:

@@ -4360,7 +4360,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load miss accepted by the user, 2026-10-27, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); the Load miss accepted by the user, 2026-10-27 ("Slower load time is ok"; Kuopio about +250 ms, saved about +200 ms, the town 1.07 s faster; the budget unchanged); for the user's review: T25 (a)'s memory side, T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | done 2026-10-27 (rounds 1-7, branch `terrain07-E`, [record](#terrain-07-e-record); T27 (f) and T43 (a) the user's exceptions beside the commit row; the background cell-set builds' window accepted by the user, 2026-10-27; four items carried to `ROAD-68-H` by the user, 2026-10-27): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user. Round 6: T27 (f) decided by the user (the click right after a fast drag may exceed 3.0 ms, exact in its frame; the accepted exception beside the budget); the real-display drag probe (a pose frame up to 17.7 ms building a patch's cell set whole); cell sets built off the frame paths, hidden without slots until they draw, their MultiMesh data on the CPU (no read-back), the commit taking over the preview's slots: under gamescope pose 1.8 ms, catch-up 0.8, commit 0.6, undo 0.8. Round 7: T43 (a) decided by the user; a hole check able to fail and the holes fixed (gate D's on `road` too, shown in renders; the grass on the asphalt and the zoning cells gate D's as well, for `TERRAIN-07-F`); a built set waits hidden under its patch node; the idle-frame matrix judges the steady state, after the background cell-set builds, whose window's cost the user accepted. Final runs on the real display: the drag probe 39 strokes, 0 failures, 0 holes in 13 loads, pose 1.55 ms, catch-up 0.62, fast click 0.82, commit 0.49, undo 0.85; the idle-frame matrix on the steady state (`5972bef8`): Kuopio's poses at the exact cut (`close` +0.01, `overview` -0.00, `ground` -0.02 ms GPU p50), `saved` +0.21 (T35's), `city` -0.41, `city_low` -0.13, 0 overflows. Carried to `ROAD-68-H` by the user, 2026-10-27 ([list](roads.md#road-68-h--acceptance-and-cleanup)): the pose install's 2 of 594 frames over the 1.0 ms share, the probe's 14-20 ms whole frames, the streaming installs' 1.04-1.05 ms (`TERRAIN-07-G`'s), T42 (a) | Preview, commit, undo and load |
-| `TERRAIN-07-F` | open | Consumers re-pointed |
+| `TERRAIN-07-F` | in progress (branch `terrain07-F`, rounds 1-11, [record](#terrain-07-f-record)): every consumer is re-pointed; the user decided T37's 250 m render-only vehicle LOD and T45's far-contact lift; round 11 fixes the stale grass mask and meets T37's corrected pose-gap bar, but the shared-owner index is slower than index-off and therefore misses the user's T44 criterion | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
 
 #### `TERRAIN-07-A` — grading core and queries, roads only
@@ -7639,9 +7639,15 @@ not taken.
 2. GPU grass: the exclusion from the grading textures (`sdf`, class) instead of rasterizing the CDT
    mesh into a coverage mask.
 3. Water: `mask_at` for the cells under roads instead of the road-clip suppression; depth stays on
-   the base ([T13](#terrain-07-open-questions)). Mist and water reflection on `ground_height_at`.
-4. Agents off lane and vehicle contacts on `surface_height_at` with the gather variant; building
-   render probes, cell zoning overlays and the Godot tools on the new queries.
+   the base ([T13](#terrain-07-open-questions)). The cells use the area form of `mask_at`, exact
+   over the cell rather than sampled points (T32 (a)). Mist reads the water surface, base plus
+   depth, and therefore stays on the base. The reflection keeps the base ground (T38 (a), pending
+   the user's review).
+4. Agents off lane and vehicle contacts on `surface_height_at` with the gather variant; an
+   off-lane vehicle within 250 m horizontally of the camera keeps the exact rigid contact solve,
+   while one farther away takes its render-only height and normal from one centre query (including
+   the road face where covered). Snapshot and interpolated rendering share this camera-relative
+   rule; walkers, on-lane vehicles, simulation state, picking and inspection remain exact.
 5. Site placement feasibility and the pad height solve read the base and the new cap constant
    instead of the CDT's ([T12](#terrain-07-open-questions)).
 
@@ -7649,6 +7655,357 @@ Acceptance: the consumers' existing tests pass (the vegetation suites,
 `vehicle_ground_support_test.gd`, the zoning, water and agent tests,
 `cars_and_walkers_enter_and_exit_on_compiled_yards`); vegetation placement digests are unchanged
 outside graded ground, and changes inside it are listed; vegetation patch invalidation stays local.
+
+#### `TERRAIN-07-F` record
+
+Rounds 1-4 moved every Rust consumer to the graded query API, made point queries prune exactly,
+replaced water's road-clip suppression with the exact cell-area query, moved site feasibility to
+the base and 64 m cap, and reduced the per-pose query work with seam runs, lazy second-pass seams
+and the allocator's 64 m site cells. Their detailed measurements and decisions are preserved in
+T19, T31, T32, T36, T37 and T40 below. Round 4 still measured the 100k culled snapshot above its
+control (1.29-1.30 ms against 0.85 ms), so T37 remained open; `PERF-07` also missed on the control
+and is tracked on `road` as `PERF-09`.
+
+**Round 5 (rebased onto `road` `d456913e`; 2026-10-27).** In progress.
+
+- The road query index carries the published piece's `grounded` bit and uses a fixed hasher. Local
+  graded queries walk the indexed meshes directly, in the same ascending piece order as the owner
+  map, with a reused scratch buffer; the public piece walk's pieces and order are checked against
+  the owner-map reference.
+- A query window gathers its grounded coverage triangles once and reuses them for every lattice
+  and mask point. The coverage test compares the gathered result bitwise with the old per-point
+  walk at every lattice point of its fixture. Both paths allocate only while their reused buffers
+  grow. Per query the bound is `O(P + V / 8 + T + S + K log K + Q(T + K))`: indexed pieces `P`,
+  seam-run vertices `V`, gathered coverage triangles `T`, local sites `S`, listed seams `K`, and
+  `Q` lattice points; no city-wide collection is scanned.
+- `intersect_world_surface` is the single ray entry point for the rendered roadbed and graded
+  ground. Godot inspection joins the other tools on it. GPU grass rasterizes the renderer's five
+  shared cell `MultiMesh` buffers into its private mask and classifies each fragment from the
+  grading textures' exact `sdf` and material class; no CPU grass placement or per-frame resource
+  creation was added.
+- The sculpt regression remains ignored with its existing name: it waits for `TERRAIN-07-E`'s
+  source-terrain undo. T25 (a), T38 (a), `WATER-05`'s buffer setting and T40 remain pending the
+  user's review.
+- **T37 pose A/B, fresh** (`road` `d456913e` control, branch Rust commit `64eae876`; release test
+  binaries sha256 `e70d7a20aacb` / `dab5f2ccba69`; 8 Rayon workers pinned to P-cores; C F F C,
+  one exclusive session; prepared cities validated first). Every culled/full product matched:
+  3,301 comparisons at 10k and 1,101 at 100k. Culled mean ms, C / F: 10k 0.217/0.202 versus
+  0.283/0.280 (side means 0.210 / 0.282, +0.072); 100k 0.925/0.865 versus 1.314/1.366 (side
+  means 0.895 / 1.340, +0.445). Full-pose side means: 10k 0.318 / 0.414; 100k 5.199 / 5.917.
+  The target is missed and not relaxed: T37 stays open. Round 5's indexed-piece and one-window
+  coverage changes are exact but do not recover measurable time against round 4's gap.
+- **Kuopio vegetation digest, fresh.** The round 5 branch lists 6,460 plants and equals round 3's
+  post-consumer digest record for record: 6,460 unchanged, zero removed, added or changed. Gate D's
+  renderer merge therefore changes no placement product. The `road` control has no Gate F digest
+  diagnostic; this comparison is against the recorded Gate F result, not a same-session timing.
+- **Landing session, fresh.** Release binaries for `road` `d456913e` and the round-5 tree prepared
+  and exactly continued the 10k, 30k and 100k cities before one exclusive session.
+  Eight preview-stage runs (C F F C twice) and four commit-breakdown runs (C F F C) exited zero.
+  Every `COMMIT_PRODUCTS` line at 0/10k/30k/100k was byte-identical across all four breakdowns
+  (one combined digest `ad8d1254cdea08d7`), and every prepared fixture reported `source=loaded`.
+  Preview terrain p50 was 4.810-4.838 ms control and 4.519-4.574 ms branch (side means 4.824 /
+  4.547 ms); the products and nine terrain patches matched. This timing predates only the
+  tile-width correction to the read-only `_near` gather; it does not exercise surface consumers.
+- **Verification boundary.** The first full `./run.sh --test` attempt passed all 1,977 Rust
+  library tests and four integration tests, then found the vehicle-ground clearance at 0.018709 m
+  instead of at least 0.02 m. After the surface-normal and quiet-tile corrections, the next full
+  attempt stopped in Rust with one two-ULP mismatch between the pruned and reference queries
+  (1,977 passed, one failed); expanding `_near` collection to every touched 64 m tile fixes that
+  exact regression. Fresh focused checks pass the 19 building-site tests, 35 graded-terrain tests,
+  the structure-mouth and pruned/reference regressions, and the Godot vehicle-ground test (4,840
+  poses, 2,482 tilted, minimum clearance 0.020000 m). A final whole-suite run, final-tree clippy
+  comparison, and the requested fresh 100k one-pass `PERF-07` control/branch pair did not complete
+  before the round cutoff, so this remains a WIP even though the landing products match.
+- **Size.** With dedicated test files and directories excluded, the branch holds 9,598 lines in
+  `roadbed.rs` plus `roadbed/**/*.rs` (control 9,342) and 5,906 lines in
+  `simulation/terrain/graded/**/*.rs` (control 5,410). The growth across Gate F is the consumer
+  queries, area coverage and site clients from rounds 1-4 plus round 5's direct indexed walks and
+  gathered coverage; no duplicate surface-height implementation remains.
+
+**Round 6 (2026-10-27).** WIP: implementation and correctness validation are complete, but the
+unchanged T37 target and `PERF-07` acceptance are not met.
+
+- The rendered grass comparison now loads the Kuopio save independently for its before and after
+  views, and renders both the exact cut and graded terrain around the same committed spur. The
+  graded grass shader no longer uses an illegal fragment-function return. All four GPU images in
+  `$ARTIFACTS/screenshots-T07F6/grass-verified/` render without shader, script, settle, RID,
+  ObjectDB or resource-leak diagnostics. Both paths keep blades off the road; the before/after
+  geometry is coherent. The graded path intentionally retains denser base-cell grass outside the
+  engineered mask than the exact cut, so the comparison is not pixel-identical.
+- Destroying or rebuilding a graded renderer now disposes the detached prewarmed cell nodes and
+  their multimeshes. The comparison exposed 15,192 leaked multimesh RIDs and 30,393 leaked ObjectDB
+  nodes before this lifecycle fix; the verified run leaves none. Disposal is
+  `O(prewarmed cell sets)` only on renderer teardown or rebuild, never in the frame path.
+- **T37 attribution, fresh profile, not acceptance timing.** The exact 100k prepared-city test
+  passes with 1,101 matching culled/full products in both release binaries (control `d456913e`,
+  sha256 `e70d7a20aacb`; branch Rust `9cd4af75`, `54769d0765ee`). Of samples kept under
+  `vehicle_ground_pose`, the branch spends 74.09% in `GradedSurface::prepare`; overlapping
+  inclusive families are the coverage path 25.03%, `sites_in_bounds` 16.33%, first-pass road
+  seams 12.92%, and the unstable seam sort 4.95%. Evaluation itself is 3.73%. The work is spread
+  across exact preparation families rather than one local leaf, and round 5's indexed walks did
+  not remove the per-pose preparation.
+- **`PERF-07`, fresh acceptance pair.** One exclusive, pinned, same-session C/F run uses the same
+  binaries and prepared 100k city. Control / branch: max unpreempted 18.288 / 21.068 ms; raw
+  p99.9 10.167 / 12.581 ms; max preempted-less-wait 11.085 / 13.435 ms; mean frame 6.179 /
+  8.608 ms; mean render snapshot 0.956 / 3.312 ms; unpreempted frames over 8 ms 525 / 67,363.
+  Both fail all three acceptance limits. The control reproduces `PERF-09`; Gate F adds 2.356 ms
+  to the mean snapshot and 2.429 ms to the mean frame, so the gate remains blocked.
+- **T37 decision requested.** Recommendation (a): authorize an exact, deterministic, unsaved
+  persistent local query/seam/coverage index (or preassembled 64 m query candidates), updated
+  atomically with road and site changes, with no stale-answer window; then remeasure. Option (b)
+  keeps the cache-free per-pose gather and leaves Gate F blocked. Sampling, reduced cadence and
+  per-agent/shared gather caches are rejected because they change exact semantics or reintroduce
+  density/edit-history dependence. The target is not relaxed.
+- **Verification and size.** Final-tree Clippy has the same 59-warning normalized baseline set
+  (zero added or removed). The final-tree `./run.sh --test` passes 1,978 Rust library tests and
+  four growth integrations, with 181 deliberately ignored library tests and the scaling test
+  ignored; all Godot bridge and rendered tests pass. All 19 retained Godot logs contain zero
+  script errors; the only `ERROR` log is the building-LOD test's deliberate malformed-glTF case,
+  which ends in `PASS`. The shader-global probe skips under the headless renderer and rendered
+  vegetation still explicitly requires a Forward+ display; the separate GPU grass run supplies
+  that gate's rendered evidence. With tests excluded, production remains 9,598 roadbed lines and
+  5,906 graded-surface lines, unchanged from round 5. T25 (a), T38 (a), `WATER-05`'s buffer
+  setting, and T40 remain pending the user's review.
+
+**Round 7 (2026-10-27).** WIP trial authorized by the user: T37 (a)'s unsaved local query-input
+index is built; the user decides whether to keep it after the fresh measurements.
+
+- `TerrainQueryIndex` is a sparse `BTreeMap` per 64 m tile. Each entry retains sorted road and
+  wall seams, the existing grounded-piece IDs that own exact coverage candidates, and canonical
+  site inputs. A point lookup is `O(log active tiles)` and filters only that entry to the original
+  exact query window; the warmed query path allocates nothing. Coverage deliberately keeps the
+  roadbed pieces' existing triangle grids: flattening a whole tile's triangles changed overlap
+  heights by one bit at a tile boundary.
+- Road commit/undo, site publication and base edits update the index at their existing atomic
+  publication boundaries; load/world replacement rebuilds it from unsaved state. Local road/site
+  maintenance is `O(changed tiles × local inputs)`, a base-only edit advances the generation in
+  `O(1)` because candidate geometry is unchanged, and a full rebuild is `O(input bounds × tiles
+  in cap/apron reach + local inputs)`. Debug and test builds compare a deterministic 1/256 sample
+  with the gather path; the mutation regression compares every indexed answer in its grid.
+- **Fresh correctness.** The road-commit/undo/site/base mutation regression passes and
+  compares the incremental index with a full rebuild after each geometry mutation plus indexed
+  height, mask and normal answers bitwise with gather answers over 1,394 points per state. The
+  graded module passes 36 tests with four deliberate benchmark ignores. The full Rust library
+  suite passes 1,979 tests with 182 deliberate ignores. Its first run found one direct-mutation
+  vegetation fixture that had not published the newly derived index; publishing its inserted
+  site before querying fixes that fixture and the full rerun passes. Clippy reports exactly the
+  59-warning baseline set, with no warning in changed code. `./run.sh --test` also passes its
+  Python API, Rust, integration, headless Godot, shader and gamescope lighting checks.
+- **Update cost.** The focused mutation fixture measures index maintenance at 0.178 ms for its
+  road commit, 0.074 ms for undo and 0.028 ms for site publication. The requested 100k commit
+  attribution did not run before this round's cutoff; these fixture numbers are not 100k evidence.
+- **Fresh T37 and memory.** One exclusive pinned C/F/F/C session on the same prepared cities keeps
+  all 3,301 / 1,101 pose products equal. At 10k, control/branch culled means are 0.210/0.450 ms
+  and full-pose means 0.322/0.585; at 100k they are 0.838/1.096 and 5.175/5.822 ms. The trial
+  improves round 6's historical 100k culled result by 0.244 ms but remains 0.259 ms above this
+  session's control. Retained input bytes / rebuild are 108,233,952 / 80.434 ms at 10k and
+  1,096,515,052 / 807.562 ms at 100k (tree overhead excluded); Kuopio is 5,433,504 bytes /
+  5.072 ms. This duplicated-input representation misses T37 and is not acceptable at 100k.
+- **Fresh `PERF-07`.** The same exclusive session's 100k 1x control / branch has max unpreempted
+  18.919 / 20.499 ms, raw p99.9 10.817 / 11.458 ms, max preempted-less-wait 13.729 / 18.930 ms,
+  mean frame 6.363 / 6.529 ms and mean snapshot 1.005 / 1.208 ms. Both fail every acceptance
+  guard. Against round 6's historical branch, the trial lowers mean snapshot by 2.104 ms and
+  mean frame by 2.079 ms, but it remains 0.203 / 0.166 ms slower than its fresh control.
+- **Size.** With the established dedicated-test exclusions, production is 9,624 roadbed lines
+  (round 6: 9,598; +26 for the candidate-piece coverage walk) and 6,440 graded-surface lines
+  (round 6: 5,906; +534 for the index, exact filtering, publication and diagnostics). This is
+  deliberate trial infrastructure rather than a second surface or answer cache.
+
+**Round 8 (2026-10-27).** WIP: the user's T37 vehicle-ground LOD is built on `road` `48de2212`;
+the round-7 index remains on `terrain07-F` only so its cost can be decided separately.
+
+- The named full-detail distance is 250 m. At or inside it, off-lane vehicles run the round-7
+  rigid contact solve bitwise; outside it, one prepared query at the vehicle centre supplies the
+  rendered height and normal (the road face where covered) and the existing 0.020 m clearance.
+  The snapshot and interpolated Godot path call the same solver with the camera position already
+  reported by `set_camera_aabb`; no second camera channel exists. The far path is allocation-free
+  once its per-worker scratch is warm. Walkers and lane-bound cars are unchanged.
+- Inspection and picking do not consume the approximate transform: picking names only lane and
+  junction agents, inspection reads authoritative simulation/lane/ground state, and the drawn
+  position is render-side camera-follow state. No simulation path reads `car_transforms`.
+- **Fresh pose timing.** One exclusive 8-P-core session brackets two runs of each variant with the
+  `road` `d456913e` control (release binary sha256 `e70d7a20aacb`; LOD-only scratch
+  `aab1b32d`, `7d58230d4c61`; LOD+index `d6cc330d`, `5a27b68addb3`). Every culled/full pair
+  matches: 3,301 comparisons at 10k and 1,101 at 100k. Culled/full side means in ms at 10k,
+  LOD-only / LOD+index: 150 m 0.515/0.690 / 0.408/0.559; 250 m 0.580/0.701 /
+  0.408/0.561; 400 m 0.546/0.715 / 0.428/0.546. Control is 0.214/0.320.
+  At 100k: 150 m 1.168/6.367 / 0.917/5.618; 250 m 1.254/6.118 / 0.860/5.744;
+  400 m 1.276/6.359 / 0.860/5.668. Control is 0.834/5.600. Thus the 250 m index
+  variant is 0.026 ms over the culled control; LOD alone remains 0.420 ms over it.
+- The timed camera poses 61.97 off-lane cars a frame at 10k: near/far at 150, 250 and 400 m are
+  0.527/61.443, 2.303/59.667 and 4.780/57.190. At 100k it poses 281.89: 23.0/258.89,
+  29.0/252.89 and 38.3/243.59. The centre-plane approximation's worst measured contact
+  clearance is -0.345 m at 10k (-0.303 m at the 400 m cut) and -0.288 m at 100k; the exact
+  250 m boundary remains under the Godot support test's 0.020 m clearance contract.
+- **Fresh `PERF-07`.** The same exclusive session's 100k 1x control / LOD-only / LOD+index
+  results are: mean snapshot 0.921/1.323/0.987 ms; mean frame 6.451/6.782/6.611 ms; max
+  unpreempted 20.640/19.215/19.505 ms; raw p99.9 10.787/11.204/11.127 ms; and max
+  preempted-less-wait 12.249/12.454/17.811 ms. All three variants fail all three acceptance
+  guards; the control miss remains `PERF-09`. At the default distance the index saves 0.336 ms
+  of snapshot work against LOD-only, but costs its existing 1.10 GB at 100k.
+- **Size.** With the established test exclusions, production is 9,653 roadbed lines (+29 for the
+  visible-face normal query) and 6,468 graded-surface lines (+28 for the combined centre query).
+  The LOD itself adds no persistent per-agent or per-query storage; round 7's separate index still
+  retains about 1.10 GB at 100k before tree overhead.
+- **Verification.** Final-tree Clippy has the same 59-warning normalized baseline set (zero added
+  or removed). The debug library suite passes 1,980 tests with 182 deliberate ignores. The
+  focused LOD, query-index, rendered-triangle and pruned/reference tests pass; T45 is the measured
+  acceptance miss, not a disabled test. `./run.sh --test` (DISPLAY and WAYLAND_DISPLAY unset)
+  exits 0: the library count is 1,980 passed, 0 failed and 182 ignored; all four growth tests pass;
+  the Godot vehicle regression passes 4,840 poses with 0.020000 m minimum clearance at the 250 m
+  boundary; and both Forward+ plot-lighting tests pass. There are no `SCRIPT ERROR` diagnostics.
+  The two Forward+-display-only vegetation scripts remain skipped; the compatibility terrain,
+  graded-cell and debug-visual shader scripts run under Xvfb.
+
+**Round 9 (2026-10-27).** WIP: the user's T44 shared-index trial and T45 contact lift are
+implemented; the user still chooses the index after the fresh timing comparison.
+
+- Each active 64 m query tile now retains only ascending roadbed piece IDs for seams/walls and
+  coverage. Seams and triangles remain stored once in their piece meshes; sites remain stored
+  once in the allocator and are read through its maintained `SiteCells`. A vehicle window that
+  crosses a tile boundary merges the touched tiles' IDs in ascending order. The warmed query is
+  allocation-free and bounded by the touched tiles' local owners; no city collection is scanned.
+- **Fresh retained memory, before timing.** Including vector capacities and a conservative
+  allowance for the `BTreeMap` keys, links and partially-filled nodes, 10k / 30k / 100k retain
+  426,072 / 1,210,152 / 4,373,672 bytes over 1,223 / 3,232 / 11,072 active tiles: 348 / 374 /
+  395 bytes per tile. The prepared cities contain 7,396 / 20,359 / 76,088 buildings, or 57.6 /
+  59.4 / 57.5 bytes per building. Linear projection from 100k is about 43.7 MB at 1M, against
+  about 10.97 GB for round 8's copied 1.0965 GB at 100k. Rebuilds take 8.57 / 26.93 / 117.65 ms.
+- **T45.** Far vehicles keep the centre query's rendered normal, evaluate every support contact
+  from the same prepared query, and raise the origin to the tightest support plus 0.020 m. The
+  fresh 10k, 30k and 100k diagnostics each measure minimum far clearance 0.019999988 m (the
+  nearest representable `f32` result to 0.020 m). The exact inclusive 250 m boundary is unchanged.
+  This is built and focused-tested on shared-index tip `1b78a9ca`, LOD-only tip `8e8d7f32` and
+  copied-index tip `29fa2784`.
+- **Fresh exactness before the final gate checks.** The mutation regression passes all 1,394
+  sampled points after road commit, undo, site publication and base edit; local index maintenance
+  is 0.039 / 0.036 / 0.004 / 0.000 ms in that fixture. The focused shared and LOD-only T45 tests
+  pass, as does the copied comparator's release test. A copied-index support footprint that crosses
+  a 64 m boundary uses one exact gather because a copied tile does not own its neighbour's inputs;
+  single-tile footprints keep the copied lookup. The shared index merges touched owner-ID lists.
+- **Size.** With the established dedicated-test exclusions, production is 9,687 roadbed lines and
+  6,463 graded-surface lines (round 8: 9,653 / 6,468). The canonical road-owner query helper adds
+  the roadbed lines; deleting the copied seam/site machinery reduces the graded code.
+- **Fresh matched pose timing.** One exclusive 8-P-core batch brackets every variant in reverse
+  order (release tips shared `1b78a9ca`, LOD-only `8e8d7f32`, copied `29fa2784`, control
+  `d456913e`). Every culled/full product matches: 3,301 comparisons at 10k and 1,101 at 100k.
+  Culled/full side means in ms at 10k are control 0.219/0.322, LOD-only 1.018/1.192, copied
+  0.885/1.021 and shared 1.250/1.391. At 100k they are 0.879/5.402, 2.951/8.301,
+  2.715/8.137 and 4.078/9.618 respectively. Every T45 variant keeps the measured clearance.
+  The shared index is 0.232/1.127 ms slower than LOD-only at 10k/100k culled, so its 251x memory
+  reduction does not produce the speedup T44 required; the copied index saves 0.133/0.236 ms but
+  keeps 108 MB/1.10 GB. T44 therefore recommends no index. Against round 8's historical T45-free
+  250 m values, contact lifting adds 0.438/1.697 ms to LOD-only culled work at 10k/100k and opens
+  T46; those cross-session deltas are context, not fresh paired timing.
+- **Fresh `PERF-07`.** The same session's control / copied / shared 100k 1x means are snapshot
+  0.994/3.011/4.677 ms and frame 6.447/8.498/10.154 ms. Max unpreempted is
+  18.615/20.442/21.841 ms, raw p99.9 10.522/13.107/14.720 ms, and max
+  preempted-less-wait 12.002/21.209/16.218 ms; frames over 16.7 ms are 1/30/15. Every variant
+  fails all three existing guards. Shared therefore adds 3.683 ms snapshot and 3.707 ms frame
+  mean over control while copied adds 2.016/2.051 ms; no target is relaxed.
+- **Final checks.** Clippy has the same 59-warning normalized baseline set (zero added or removed).
+  Two fresh full debug-library runs each pass 1,979 tests with 182 deliberate ignores and fail only
+  `bulldoze_vegetation_matches_brush_clear_and_preserves_neighbours`; the same test passes focused
+  (1 passed, 2,161 filtered). Every terrain/query test passes. Because `run.sh --test` stops at that
+  Rust failure, its Godot bridge half did not run; round 9 does not claim the gate passed or broaden
+  scope into the vegetation/global-state interaction. The final gameplay capture found and fixed a
+  separate shared-query exactness bug: a gathered window's quiet-tile test used an expanded box,
+  so a seam diagonally 88 m away could defeat the 64 m Euclidean-cap shortcut; unrelated authored
+  base reads could also leave a stale prepared base window. Both are now targeted in the mutation
+  regression. The fixed capture completes all four views with no `SCRIPT ERROR`; compared with
+  `capture-road-48de2212`, `t_junction.png` has no grass on asphalt and its zoning cells sit on the
+  graded verge/road edge without visible floating or clipping.
+
+**Round 10 (2026-10-27 night; rebased onto `road` `c64786e9`).** WIP: the final lazy-contact
+edit was not measured and the T-junction grass defect remained.
+
+- Distinct `TerrainQueryIndex` instances now have process-unique identities because thread-local
+  query scratch outlives `SimCore`; identity plus generation prevents reuse across equal-generation
+  worlds. A regression covers two indices with equal generations. The zoning sculpt regression is
+  re-enabled with a broad mound beyond Gate E's 64 m tie-in, and indexed/reference answers now
+  compare after road commit, undo, site placement and base edit.
+- Far vehicles prepare one bounded local list of immutable road-piece references for centre and
+  contacts. All-road poses avoid graded preparation and the first non-road contact gathers it
+  lazily. Height-only consumers no longer gather unused portal parts. Warm work is
+  `O(local query cells + local pieces + contacts * local cell triangles)`, with no per-agent
+  allocation or city scan.
+- **Fresh pre-final pose timing.** The last release binary before the final lazy-contact edit
+  measured 10k culled/full 0.3871/0.5615 ms and 100k 1.1956/6.7732 ms. Near/far counts were
+  2.30/59.67 and 29.00/252.89; minimum clearance was 0.019999988 / 0.0199999996 m. The shared
+  index retained 435,864 / 4,462,256 bytes and rebuilt in 27.2 / 283.6 ms. These are not timings
+  for round 10 tip `6d264a78`: its final edit removed a redundant first pass over contacts and
+  passed the focused far-pose test but was not timed.
+- A finer per-tile seam-reference trial measured 1.533 ms at 100k but retained 190,801,328 bytes
+  and rebuilt in 4.99 s (about 1.9 GB projected at 1M). It was rejected because the memory is not
+  marginal. The retained shared representation projects to about 44.6 MB at 1M.
+- **Verification boundary.** A pre-profile full library run passed 1,985 tests, ignored 184, and
+  found one vegetation failure; the index-identity fix followed. Focused index-identity,
+  vegetation, zoning-sculpt, far-LOD/contact, pruned/reference and road/undo/site/base mutation
+  checks then passed, but the full suite was not rerun after the final lazy edit. Clippy,
+  `./run.sh --test`, final matched timing and final line counts were not run. The gameplay capture
+  still had grass on the T-junction stem carriageway, crosswalk and sidewalks: the Round 9 clean
+  claim was incorrect, and Gate F remained blocked.
+
+**Round 11 (2026-10-28).** WIP: the grass defect is fixed and the corrected pose bar passes, but
+the retained shared index fails the user's T44 speed criterion against the index-off comparator.
+
+- **Grass root cause and fix.** A second road edit could rewrite a graded tile at the same level
+  and in the same GPU slot. Its SDF/class payload changed, but no cell instance moved, so the
+  private grass mask kept the first edit's through-road image and omitted the later T stem. This
+  was neither a transposed mask nor an omitted road-piece kind. Every same-level tile upload now
+  advances the mask revision of the resident patches meeting that 64 m tile; ordinary cell
+  rewrites use the same bounded invalidation helper. Work is `O(resident patches meeting one
+  changed tile)` per upload, with no steady-frame work or new resource. The renderer regression
+  asserts that an in-place edit advances the mask revision.
+- **Rendered evidence, fresh.** The gamescope/headless gameplay capture exits zero with no
+  `SCRIPT ERROR`; its 2x stem crop shows the stem carriageway, crosswalk and both sidewalks clear,
+  while grass remains on the verge. A second true T, with its stem pointing another way, is also
+  clear on the carriageway, three crosswalks and both sidewalks. The private-mask dumps show both
+  complete T shapes, including their stems across tile/patch splits; neither a transpose nor a
+  mirror can explain the result. Evidence: `$ARTIFACTS/road68/t07f11/capture-final3/` contains
+  `t_junction-stem-2x.png`, `junction_other_way-stem-2x.png`, both full views and their four mask
+  layers.
+- **Matched pose session, fresh.** Release binaries for control `c64786e9` and WIP `6c060c01`,
+  eight Rayon workers pinned to P-cores, one exclusive reverse bracket. Every run matches 3,301
+  products at 10k and 1,101 at 100k. Culled/full side means in ms:
+
+  | tier | control | shared tip | exact every distance | index off |
+  | --- | ---: | ---: | ---: | ---: |
+  | 10k | 0.224 / 0.326 | 0.295 / 0.473 | 0.408 / 0.591 | 0.167 / 0.273 |
+  | 100k | 0.811 / 5.164 | 1.090 / 5.581 | 2.133 / 7.092 | 0.682 / 4.933 |
+
+  The shared tip's 100k culled gap is +0.279 ms, within the corrected +0.42 ms landing bar, and
+  its exact-everywhere comparator shows that the decided LOD still saves 1.043 ms there. It poses
+  59.67/2.30 far/near cars at 10k and 252.89/29.00 at 100k; minimum far clearance is
+  0.019999988 / 0.0199999996 m. The shared index retains 435,864 / 4,462,256 bytes and its tip
+  rebuild side means are 26.3 / 278.5 ms.
+- **Matched `PERF-07`, fresh.** The same session's 100k 1x full-day side means, control / shared /
+  exact-everywhere, are 0.967 / 1.177 / 2.457 ms snapshot and 6.176 / 6.384 / 7.711 ms frame.
+  Shared adds 0.209 ms snapshot, inside the corrected +0.40 ms bar. The reverse-bracket max
+  unpreempted pairs are control 18.270/18.644, shared 18.968/18.482 and exact
+  20.334/20.514 ms; raw p99.9 pairs are 10.071/10.077, 10.665/10.649 and 12.077/11.935 ms.
+  Every variant still fails the existing guards; the control miss remains `PERF-09` and no target
+  is relaxed.
+- **T44 miss.** The shared tip is 0.128 / 0.408 ms slower culled than index-off at 10k / 100k
+  (0.201 / 0.648 ms full). It therefore does not satisfy the user's 2026-10-27 rule to retain the
+  shared index only when it gives any speed for marginal memory. Round 9's historical 100k values
+  were 0.879 control, 2.951 LOD-only and 4.078 shared; round 10's historical last pre-final shared
+  value was 1.1956. The current comparison supersedes those for the decision. Gate F does not land
+  with the slower index; removing it while preserving round 10's faster lazy contact path is the
+  remaining implementation step.
+- **Verification, fresh.** Clippy's normalized 59-warning set equals the baseline exactly. The
+  standalone debug library passes 1,987 tests, fails none and ignores 184; `./run.sh --test`
+  repeats those results and passes all four growth tests and every Godot bridge script before
+  `graded_tile_renderer_test.gd`. That script exposes another reason not to retain the shared
+  index: after its road edit/undo, the index returns a removed `PieceId` and
+  `wall_seams_in_bounds` panics when indexing the canonical piece map. The poisoned core leaves
+  two secondary renderer assertions failed, and the later asset, shader, vegetation and lighting
+  suites do not run. Skipping the missing piece would hide stale indexed state, so it is not used
+  as a workaround; removing the index is the same remaining T44 step. The one Gate-F-tagged ignore
+  remains the manual release query-index memory/rebuild benchmark.
+- **Size.** With the established production exclusions, `roadbed/` has 9,792 lines and
+  `simulation/terrain/graded/` 7,317. Round 11 adds no Rust production line; the growth from round
+  9 is Gate E's rebase plus round 10's consumer/query implementation.
 
 #### `TERRAIN-07-G` — acceptance and legacy deletion
 
@@ -8540,6 +8897,26 @@ measures it and the recommendation's condition decides; T2 was decided by the us
         spread over frames); `ROAD-68`'s click-to-committed under 16.7 ms stays binding; the
         3.0 ms row of the [budgets](#budgets) stays as written, with this exception recorded
         beside it. (g) is not taken: holding the click would break that commit target.
+31. **T31. Vegetation clearance on the graded surface (`TERRAIN-07-F` round 1) — decided by the
+    coordinator under the user's delegation, 2026-10-26, for review: the recommendation.**
+    - **Decision.** Clear every plant on `Road` and `Paved`, wild plants also on `Pad`; retain the
+      visible-road-surface test for decks and the allocator's wall/paving test for authored plants,
+      and read relief from the graded ground. This keeps plants out of paving and decks without
+      treating tunnel decks as ground.
+    - **Evidence after building it.** In the 2k city's 64 central patches, 209 of 1,334 plants
+      clear, every one on frontage or apron paving. On Kuopio the relief rule decides the hillside
+      change: 108 of 110 removals fail only graded relief, two fail relief and paving, and all 24
+      additions fail only legacy base relief. The round 5 control/branch digest records the changes
+      after gate D's quiet-tile correction.
+32. **T32. Water mesh cells under roads and pads (`TERRAIN-07-F` round 1) — decided by the
+    coordinator under the user's delegation, 2026-10-26, for review: the recommendation; built in
+    round 2.**
+    - A cell is dropped exactly when a grounded top triangle or a site footprint meets its closed
+      rectangle, the area form of `mask_at`; portal openings remain out. This replaces the exact
+      cut's clip loops without sampling a narrow road away. The 2k city's cells were bitwise the
+      legacy cells; among the reference junctions only one arm of the 40-degree Y differs, where
+      the legacy loop dropped a strip no road reaches.
+
 34. **T34. The cut edge above the road edge (`TERRAIN-07-D` round 8) — (b), decided by the user,
     2026-10-27: the cut arm under every road replaces the user's T4 decision (`TD11`'s fill
     arm).** Built in round 8.
@@ -8683,6 +9060,87 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       the levels stay `GL0` to 64 m and `GL1` to 128 m, and (b) is reverted (round 11): it took
       0.014 ms for 41 MiB of video memory and twice the prewarm. The gate's matrix on its tip
       records the poses fresh.
+36. **T36. The tie-in at the cap admits deep cuts and fills (`TERRAIN-07-F` round 2) — decided by
+    the coordinator under the user's delegation, 2026-10-27, for review: the recommendation.**
+    - T12 (a) keeps the allocator's rule at the 64 m grading cap. A pad whose 1:2 cone meets the
+      base anywhere within that reach is feasible; depth, volume and cost limits remain an
+      `EARTH-02` product decision. On Kuopio this admits the two yards the old 20 m rays refused;
+      flat-city verdicts remain exact. The source-terrain sculpt/undo test stays ignored until
+      `TERRAIN-07-E` lands its undo path.
+37. **T37. The off-lane pose path at 100k (`TERRAIN-07-F` round 3) — decided by the user,
+    2026-10-27: a render-only vehicle-ground LOD, default 250 m.**
+    - Within the horizontal full-detail distance from the camera, off-lane cars retain the exact
+      rigid contact solve bitwise. Beyond it, their height and tilt use one prepared query and one
+      evaluation at the centre: the rendered graded height and normal, or the visible road face's
+      height and normal where covered, plus the existing 0.020 m clearance. Snapshot poses and
+      Godot's interpolated poses call the same function with the same camera position. Walkers and
+      on-lane cars are unchanged. The poses are presentation only: picking selects lane/junction
+      agents, inspection reads authoritative simulation/lane/ground state, and no simulation path
+      reads a render snapshot's transforms. Off-lane cars at this distance are only a few pixels,
+      and the terrain beyond it already draws at 2-4 m cells, coarser than the centimetre-scale
+      exact support. The named default is 250 m; round 8 measures 150, 250 and 400 m.
+    - **Trial authorized by the user, 2026-10-27.** Round 7 builds and measures option (a): the
+      unsaved `TerrainQueryIndex`, whose sparse 64 m entries hold the sorted road seams, grounded
+      coverage-piece IDs, wall seams and canonical site inputs any point in the tile can need.
+      Coverage keeps the existing per-piece triangle grids as the exact triangle ownership (a
+      broad triangle union changes overlap bits); queries copy/filter an entry into warm scratch
+      and apply the existing exact per-window
+      pruning; no height, sample, tile payload, car or pose answer is retained. Road and site
+      publications rebuild only entries in the changed inputs' cap/apron reach, base publication
+      advances the generation (candidate geometry is unchanged), and load rebuilds the sparse
+      index. Lookup is `O(log active tiles)`; local maintenance is `O(changed tiles × local
+      inputs)`, full load rebuild is `O(input bounds × tiles in their cap reach + local inputs)`,
+      and the warmed query path allocates nothing.
+    - **Evidence through round 4.** Off-lane cars and walkers in view read one graded gather per
+      pose. Round 3 measured 1.72-1.76 ms at 100k against 0.81-0.83 control; round 4's bounded
+      seam runs, lazy second pass and 64 m site cells reduced it to 1.29-1.30 against 0.85. The
+      100k `PERF-07` control itself missed and is now `PERF-09`, but this path must still return
+      within its same-session control. Sharing gathers and per-agent caches remain ruled out by
+      density and invariant 2.
+    - **Round 5 exact levers.** Indexed pieces now carry `grounded` and their meshes are walked
+      directly through fixed-hash query cells; coverage triangles are gathered once per window.
+      Fresh C/F/F/C at 100k measures 0.895 / 1.340 ms by side mean (+0.445; 1,101 matching
+      products), and at 10k 0.210 / 0.282 ms (+0.072; 3,301 matching products). This is not
+      within the control, so T37 stays open and the target is not relaxed. `PERF-09` separately
+      owns the control's whole-frame regression.
+    - **Round 6 profile and choice.** A fresh exact 100k profile keeps all 1,101 pose products
+      equal. On the branch, 74.09% of retained `vehicle_ground_pose` samples are in preparation;
+      inclusive overlapping families include coverage (25.03%), site lookup (16.33%), first-pass
+      road seams (12.92%) and seam sorting (4.95%), while evaluation is 3.73%. There is no single
+      remaining local exact lever. Option (a), recommended: authorize a deterministic unsaved
+      persistent local query/seam/coverage index (or preassembled 64 m query candidates), updated
+      atomically with road/site edits and proved exact. Option (b): retain the cache-free gather
+      and leave Gate F blocked. Sampling, cadence changes and per-agent/shared gather caches alter
+      the contract or make cost depend on density/history and are rejected. The fresh `PERF-07`
+      pair also measures mean snapshots of 0.956 / 3.312 ms control/branch; both whole-frame runs
+      fail, and the branch is materially worse. T37 therefore awaits the user's decision.
+    - **Round 7 trial result (miss; user decision still required).** The authorized option (a)
+      trial is exact, but its per-tile duplication is not acceptable. One exclusive C/F/F/C
+      session measures 10k culled/full pose side means of 0.210/0.322 ms control and
+      0.450/0.585 ms branch; at 100k, 0.838/5.175 and 1.096/5.822 ms. All 3,301 and 1,101
+      comparisons match. The branch improves round 6's historical 100k culled result by
+      0.244 ms, but remains 0.259 ms above its fresh control and regresses round 5's 10k branch
+      result (0.282 -> 0.450 ms). At 100k the index retains 1,096,515,052 input bytes before tree
+      overhead and rebuilds in 807.562 ms (side mean); at 10k, 108,233,952 bytes and 80.434 ms;
+      Kuopio, 5,433,504 bytes and 5.072 ms. Recommendation: do not keep this duplicated-input
+      representation. If the user chooses to look further, share immutable seam/site owners and
+      store compact tile ranges while preserving each road piece's exact triangle-grid ownership;
+      establish the memory bound before another pose timing. If the user accepts what is left,
+      revert the trial and retain round 6 rather than paying this memory/load cost. Fresh
+      `PERF-07` control/branch mean snapshot is 1.005/1.208 ms and mean frame 6.363/6.529 ms
+      (round 6 branch: 3.312/8.608); both still fail all three acceptance guards.
+    - **Round 8 implementation and result.** The decided render LOD is implemented with a 250 m
+      inclusive exact radius and one centre height/normal evaluation outside it. At 100k the
+      default cut poses 29.0 off-lane cars near and 252.89 far per frame. Fresh culled/full side
+      means are 0.834/5.600 ms control, 1.254/6.118 LOD-only and 0.860/5.744 LOD+index; all
+      1,101 comparisons match. `PERF-07` mean snapshot/frame is 0.921/6.451,
+      1.323/6.782 and 0.987/6.611 ms respectively, and every variant fails every guard. The LOD
+      makes the index variant nearly level with the pose control but does not make its 1.10 GB
+      retained input acceptable by itself ([T44](#terrain-07-open-questions)). The centre plane
+      can put a contact 0.345 m below the exact surface in the measured cities, so its visual
+      clearance requirement remains open ([T45](#terrain-07-open-questions)); the exact boundary
+      still keeps 0.020 m.
+
 38. **T38. The water reflection's ground where graded cells draw (`TERRAIN-07-D` round 10) —
     (a) decided by the coordinator under the user's delegation, 2026-10-27 night, for review.**
     - **Evidence.** The reflection world mirrors each resident patch's `PlaneMesh` node as a
@@ -8712,6 +9170,16 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       primitives). (c) (b) only for patches meeting water.
     - **Recommendation.** (a) for gate D; (c) when the mirror gains roads and bridges, which
       the reflected grading belongs to.
+40. **T40. A site lookup finer than the 512 m site chunks (`TERRAIN-07-F` round 4) — taken
+    pending the user's review, 2026-10-27: (a).**
+    - A query window previously visited 806 buildings for 38 sites at 100k (655 for 37 at 10k),
+      and that chunk walk held 22% of the 100k pose profile. No existing finer index included
+      sites without parcels.
+    - **Taken.** The allocator derives 64 m `SiteCells` from site-client bounds and maintains it
+      with rebuild, replace, push, swap-remove and undo restore. A rectangle visits each site once
+      and retains the old radius test, so it returns the same site set in an irrelevant order.
+      The index is derived and unsaved. This reversible choice remains pending the user's review.
+
 42. **T42. The level a preview and a commit stage each tile at (`TERRAIN-07-E` round 5) — (a)
     taken pending the user's review, 2026-10-27.**
     - **Evidence.** Round 1 staged every dirty tile at `GL0`, which the budgets were measured
@@ -8752,6 +9220,62 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       samples). The commit stays exact in its frame, and click-to-committed under 16.7 ms stays
       binding; the breakdown keeps measuring it, and the [budgets](#budgets) record it in T27
       (f)'s exception beside the commit row.
+
+44. **T44. Keep a query-input index after the vehicle-ground LOD — the matched shared trial misses
+    the user's 2026-10-27 retention criterion.** At the 250 m default, round 8's fresh
+    100k culled/full means are 1.254/6.118 ms with LOD
+    alone, 0.860/5.744 ms with LOD plus the index, and 0.834/5.600 ms on the road control.
+    `PERF-07` snapshot/frame means are 1.323/6.782, 0.987/6.611 and 0.921/6.451 ms. The index
+    still retains 1,096,515,052 input bytes before tree overhead and rebuilds in about 0.8 s.
+    The user chose (c): round 9 stores only compact road-piece references in a tile, while road
+    meshes and allocator sites remain the single owners. Fresh retained totals including tree
+    overhead are 0.426 / 1.210 / 4.374 MB at 10k / 30k / 100k, projecting to about 43.7 MB at
+    1M versus about 10.97 GB for the copied representation. The user chooses between shared and
+    LOD-only after the fresh matched timing; the copied representation is preserved only as its
+    comparison branch. Round 9's matched 10k/100k culled side means are LOD-only 1.018/2.951 ms,
+    copied 0.885/2.715 and shared 1.250/4.078. The shared trial is slower than no index and the
+    copied gain does not justify its 108 MB/1.10 GB, so **recommendation: keep no index** pending
+    the user's final choice. Round 10's last pre-final shared binary reduced those culled means to
+    0.3871/1.1956 ms while retaining 0.436/4.462 MB at 10k/100k; its final lazy-contact edit was
+    not measured, so these are historical context rather than the final choice. Round 11's matched
+    index-off comparator is faster than the shared tip: 0.167 versus 0.295 ms culled at 10k and
+    0.682 versus 1.090 ms at 100k (full 0.273/0.473 and 4.933/5.581). The user's criterion keeps a
+    shared index only if it gives any speed for marginal memory; it gives none. **Recommendation:
+    remove the shared index, retaining round 10's lazy all-road/contact path on the canonical
+    gather.** `run.sh --test` independently exposes a stale removed `PieceId` from that index after
+    the graded renderer test's edit/undo. That removal is not implemented in round 11, so the gate
+    remains WIP.
+45. **T45. The far centre-plane solve can cross the rendered surface — decided by the user,
+    2026-10-27: (b).** The
+    one-evaluation rule keeps the exact 0.020 m clearance at and inside 250 m, but outside it the
+    worst contact in the fresh pose runs is 0.345 m below the exact surface at 10k and 0.288 m
+    below at 100k (0.303 m below at the 10k 400 m cut). A centre height and normal cannot bound
+    a surface change under the other contacts. Options: (a) accept this measured visual LOD error;
+    (b) permit contact evaluations from the same prepared query, keeping the centre normal but
+    lifting the height to clear the exact contacts; (c) add a conservative fixed lift, which has
+    no global bound and visibly floats cars on flat ground. **Recommendation: (b):** preparation
+    dominated the exact profile, so it preserves the one-preparation saving while restoring the
+    support invariant. **Decision:** keep the centre query's normal, evaluate contact heights from
+    that same prepared query, and lift the car to the tightest contact plus 0.020 m. Round 9's
+    10k/30k/100k diagnostics each measure 0.019999988 m minimum far clearance; the inclusive
+    250 m boundary keeps the prior exact solve.
+46. **T46. T45's contact lift removes the vehicle-ground LOD's speedup — the matched exact
+    comparator disproves the historical inference; still open for the user.**
+    The fresh round-9 LOD-only culled side mean is 1.018 ms at 10k and 2.951 ms at 100k. Round 8's
+    historical centre-only path was 0.580/1.254 ms, while the pre-LOD exact graded paths were
+    0.282/1.340 ms without the copied index (round 5/6) and 0.450/1.096 ms with it (round 7).
+    T45 necessarily evaluates the contacts and additionally evaluates the centre normal, so the
+    far path now does more graded query work than the exact contact plane. These historical values
+    are not a same-session exact-only control, but the fresh regression is too large to leave
+    implicit. Options: (a) remove T37's camera LOD and use the exact rigid contact solve at every
+    distance; (b) keep the decided centre-normal visual rule and accept its measured cost;
+    (c) first run one matched exact-only comparator, then choose (a) unless it disproves the
+    historical result. Round 10's last pre-final shared binary measured 0.3871/1.1956 ms culled at
+    10k/100k, but no exact comparator ran and its final lazy-contact edit was not measured.
+    Round 11's matched exact-everywhere comparator is slower than the shared 250 m LOD at both
+    tiers: 0.408 versus 0.295 ms culled at 10k and 2.133 versus 1.090 ms at 100k (full
+    0.591/0.473 and 7.092/5.581). Thus (c)'s measurement supports (b), not (a): keep the decided
+    LOD. This remains pending the user's review as requested; no decision is taken here.
 
 #### Superseded `ROAD-68` questions
 
