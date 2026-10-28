@@ -264,10 +264,6 @@ impl SimulationNode {
             "terrain_source_generation",
             generation(fingerprint.terrain_source_generation),
         );
-        dict.set(
-            "terrain_visual_generation",
-            generation(fingerprint.terrain_visual_generation),
-        );
         dict.set("plan_ms", preview.times.plan_ms);
         dict.set("roadbed_ms", preview.times.roadbed_ms);
         dict.set("payload_ms", preview.times.payload_ms);

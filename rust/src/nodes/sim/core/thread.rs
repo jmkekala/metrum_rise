@@ -14,7 +14,6 @@ use super::road_preview::RoadPreview;
 use super::road_tool_context::{RoadToolPublication, RoadToolShared};
 use super::snapshot::RenderSnapshot;
 use super::state::SimCore;
-use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::debug::{CrashCommand, CrashSimSnapshot};
 use crate::nodes::sim::editing::BulldozeTarget;
 
@@ -81,7 +80,6 @@ fn finalize_network_render_products(core: &mut SimCore) -> Option<RoadToolPublic
     crate::thread_pools::install(|| {
         core.rebuild_network_surface_terrain_internal();
         core.precompute_road_mesh_data();
-        core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
         core.publish_road_tool_view()
     })
 }
@@ -266,16 +264,14 @@ pub(crate) fn run_sim_thread(
                     }
                     if crate::debug::Channel::Perf.enabled() {
                         println!(
-                            "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_and_terrain_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3} collect_refined_ms={:.3} refined_cache_invalidated={} refined_prebuild=validated_before_accept",
+                            "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_and_terrain_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3}",
                             road_total.elapsed().as_secs_f64() * 1000.0,
                             road_lock_wait_ms,
                             outcome.add_internal_ms,
                             outcome.finalize_ms,
                             outcome.surface_ms,
                             outcome.mesh_ms,
-                            outcome.snapshot_ms,
-                            outcome.collect_refined_ms,
-                            outcome.invalidated_refined_cache_entries
+                            outcome.snapshot_ms
                         );
                     }
                     let _ = completion.try_send(super::road_commit::RoadCommitAck {

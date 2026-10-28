@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Terrain patch and refined terrain variant export helpers.
+//! Source terrain patch variant export helpers.
 
 use super::super::*;
 
 impl SimulationNode {
-    /// Exports one native height buffer shared by preview and refined render uploads, with its
-    /// shading masks. `mask_bytes` is the worker's bake when there is one; otherwise, as for a
-    /// synchronous road preview, the masks are baked here.
     pub(in crate::nodes::simulation_node) fn terrain_patch_dict(
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         mask_bytes: &[u8],
@@ -37,30 +34,12 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
         dict.set("patch_x", i64::try_from(patch.patch_x).unwrap_or(0));
         dict.set("patch_z", i64::try_from(patch.patch_z).unwrap_or(0));
-        dict.set(
-            "sample_width",
-            i64::try_from(patch.sample_width).unwrap_or(0),
-        );
-        dict.set(
-            "sample_height",
-            i64::try_from(patch.sample_height).unwrap_or(0),
-        );
-        dict.set(
-            "texture_width",
-            i64::try_from(patch.texture_width).unwrap_or(0),
-        );
-        dict.set(
-            "texture_height",
-            i64::try_from(patch.texture_height).unwrap_or(0),
-        );
-        dict.set(
-            "inner_offset_x",
-            i64::try_from(patch.inner_offset_x).unwrap_or(0),
-        );
-        dict.set(
-            "inner_offset_z",
-            i64::try_from(patch.inner_offset_z).unwrap_or(0),
-        );
+        dict.set("sample_width", i64::try_from(patch.sample_width).unwrap_or(0));
+        dict.set("sample_height", i64::try_from(patch.sample_height).unwrap_or(0));
+        dict.set("texture_width", i64::try_from(patch.texture_width).unwrap_or(0));
+        dict.set("texture_height", i64::try_from(patch.texture_height).unwrap_or(0));
+        dict.set("inner_offset_x", i64::try_from(patch.inner_offset_x).unwrap_or(0));
+        dict.set("inner_offset_z", i64::try_from(patch.inner_offset_z).unwrap_or(0));
         dict.set("world_origin_x", f64::from(patch.world_origin_x));
         dict.set("world_origin_z", f64::from(patch.world_origin_z));
         dict.set("world_size_x", f64::from(patch.world_size_x));
@@ -81,95 +60,17 @@ impl SimulationNode {
         PackedByteArray::from(bytes.as_slice())
     }
 
-    pub(crate) fn refined_patch_cache_key(
-        patch_x: usize,
-        patch_z: usize,
-        render_step_m: f32,
-    ) -> RefinedTerrainPatchCacheKey {
-        RefinedTerrainPatchCacheKey {
-            patch_x,
-            patch_z,
-            render_step_mm: (render_step_m.max(f32::EPSILON) * 1000.0).round() as u32,
-        }
-    }
-
-    pub(in crate::nodes::simulation_node) fn cached_refined_terrain_patch_dict(
-        cached: &CachedRefinedTerrainPatch,
-        include_debug: bool,
-        mask_bytes: &[u8],
-    ) -> VarDictionary {
-        let mut dict = Self::terrain_patch_dict(&cached.patch, mask_bytes);
-        let road_clip_query = RoadClipLoopQuery {
-            cdt_road_loops: Vec::new(),
-            source_count: cached.clip_source_count,
-            road_source_count: cached.road_clip_source_count,
-            road_loop_count: cached.road_clip_loop_count,
-            site_loop_count: cached.site_clip_loop_count,
-            clip_error_label: cached.clip_error_label,
-        };
-        Self::append_road_clip_status(&mut dict, &road_clip_query);
-        Self::append_cached_cdt_terrain_mesh(&mut dict, cached, include_debug);
-        dict
-    }
-
-    /// Exports a non-renderable refined terrain payload without raw heightmap fallback bytes.
-    pub(in crate::nodes::simulation_node) fn failed_refined_terrain_patch_dict(
-        cached: &CachedRefinedTerrainPatch,
-        error_label: &'static str,
-    ) -> VarDictionary {
-        let mut dict = Self::terrain_patch_metadata_dict(&cached.patch);
-        let road_clip_query = RoadClipLoopQuery {
-            cdt_road_loops: Vec::new(),
-            source_count: cached.clip_source_count,
-            road_source_count: cached.road_clip_source_count,
-            road_loop_count: cached.road_clip_loop_count,
-            site_loop_count: cached.site_clip_loop_count,
-            clip_error_label: cached.clip_error_label,
-        };
-        Self::append_road_clip_status(&mut dict, &road_clip_query);
-        dict.set(
-            "terrain_requires_road_clipping",
-            cached.requires_road_clipping,
-        );
-        Self::append_empty_cdt_failure(&mut dict, error_label, false);
-        dict
-    }
-
     pub(in crate::nodes::simulation_node) fn terrain_patch_payload_dict(
         payload: &TerrainPatchPayload,
     ) -> VarDictionary {
-        let requires_engineered_refinement = match &payload.data {
-            TerrainPatchPayloadData::Regular { .. } => false,
-            TerrainPatchPayloadData::Refined { patch } => patch.requires_engineered_refinement,
-            TerrainPatchPayloadData::RefinedFailure { patch, .. } => {
-                patch.requires_engineered_refinement
-            }
-        };
-        let mut dict = match &payload.data {
-            TerrainPatchPayloadData::Regular {
-                patch,
-                height_bytes,
-            } => {
-                let mut dict = Self::terrain_patch_metadata_dict(patch);
-                dict.set(
-                    "height_bytes",
-                    PackedByteArray::from(height_bytes.as_slice()),
-                );
-                Self::set_mask_bytes(&mut dict, patch, &payload.mask_bytes);
-                dict
-            }
-            TerrainPatchPayloadData::Refined { patch } => {
-                Self::cached_refined_terrain_patch_dict(patch, false, &payload.mask_bytes)
-            }
-            TerrainPatchPayloadData::RefinedFailure { patch, error_label } => {
-                Self::failed_refined_terrain_patch_dict(patch, error_label)
-            }
-        };
+        let TerrainPatchPayloadData::Regular {
+            patch,
+            height_bytes,
+        } = &payload.data;
+        let mut dict = Self::terrain_patch_metadata_dict(patch);
+        dict.set("height_bytes", PackedByteArray::from(height_bytes.as_slice()));
+        Self::set_mask_bytes(&mut dict, patch, &payload.mask_bytes);
         dict.set("render_step_mm", i64::from(payload.key.render_step_mm));
-        dict.set(
-            "terrain_requires_engineered_refinement",
-            requires_engineered_refinement,
-        );
         dict.set(
             "surface_generation",
             i64::try_from(payload.surface_generation).unwrap_or(i64::MAX),

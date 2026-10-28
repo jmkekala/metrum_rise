@@ -81,7 +81,6 @@ impl RoadAddOutcome {
         }
     }
 }
-
 impl SimCore {
     /// Accepts a road only after its roadbed builds, restoring the staged checkpoint otherwise.
     #[cfg(test)]
@@ -250,19 +249,6 @@ impl SimCore {
             self.heightmap.mark_render_patch_dirty(patch_x, patch_z);
         }
         self.bump_terrain_payload_patch_generations(&patch_keys);
-        // Road grading rays probe up to the envelope cap beyond loops taken up to the cap
-        // (the tile halo) beyond their tile, so new heights move the road margins of patches
-        // within twice the cap; the stroke's end refreshes them (`ROAD-68-D`).
-        let reach_m =
-            radius + 2.0 * crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M;
-        self.road_ownership_pending_patch_keys.extend(
-            self.heightmap.render_patch_keys_for_world_bounds(
-                pos.x - reach_m,
-                pos.y - reach_m,
-                pos.x + reach_m,
-                pos.y + reach_m,
-            ),
-        );
         self.terrain_dirty = true;
     }
 
@@ -334,9 +320,6 @@ impl SimCore {
             self.undo_action_in_pool();
             return;
         }
-        self.refresh_road_locked_terrain_patch_state(
-            crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-        );
         // Terrain-authoring APIs publish their snapshot immediately rather than passing through the
         // simulation command finalizer. Build the matching road delta here so NetworkRenderer does
         // not repeatedly observe a newer source generation paired with the previous mesh.
@@ -484,7 +467,7 @@ impl SimCore {
         // zero-distance plant and reproduces its ID after unrelated authored removals.
         let id = ((u64::from(plant.x.to_bits()) << 32) | u64::from(plant.z.to_bits())) as usize;
         let height = |x, z| {
-            self.heightmap.sample_visual_height_world(x, z) * config::HEIGHT_SCALE
+            self.heightmap.sample_height_world(x, z) * config::HEIGHT_SCALE
                 + BULLDOZE_HIGHLIGHT_Y_OFFSET_M
         };
         let points = (0..16)
@@ -2560,7 +2543,7 @@ impl SimCore {
 #[cfg(test)]
 mod tests {
     use super::{BulldozeTargetKind, SimCore};
-    use crate::nodes::sim::core::{PendingDemandSpawnAction, ROAD_LOCKED_TERRAIN_RENDER_STEP_M};
+    use crate::nodes::sim::core::PendingDemandSpawnAction;
 
     use crate::simulation::buildings::allocator::Building;
     use crate::simulation::core::config::WorldConfig;
@@ -3796,10 +3779,6 @@ mod tests {
             .rebuild_cch_and_check(&core.region_graph);
         core.rebuild_network_surface_terrain_internal();
         core.precompute_road_mesh_data();
-        let cache_inputs =
-            core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
-        core.insert_refined_terrain_patch_cache_entries(cache_entries);
     }
 
     // `TERRAIN-07-E`: the commit stages its graded tiles, and its undo record keeps the ones it
@@ -3923,186 +3902,6 @@ mod tests {
         assert_eq!(core.treasury.balance, 10_000.0);
         assert_eq!(core.treasury.lifetime_build_cost, 0.0);
         assert!(!core.transit_network.road_edit_is_staged());
-    }
-
-    #[test]
-    fn undoing_road_restore_invalidates_road_locked_terrain_state() {
-        let mut core = test_core();
-        core.benchmark_mode = false;
-        core.add_road_internal(
-            vec![Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)],
-            1,
-            1,
-        );
-        assert_eq!(core.region_graph.edge_count(), 1);
-
-        finalize_network_render_for_test(&mut core);
-        let previous_mesh = core.cached_road_mesh_chunks.clone();
-        assert!(!previous_mesh.is_empty());
-
-        let stale_road_locked_patches = core.road_locked_terrain_patch_keys.clone();
-        assert!(!stale_road_locked_patches.is_empty());
-        assert!(!core.refined_terrain_patch_cache.is_empty());
-        let dirty_keys = core
-            .heightmap
-            .dirty_render_patches()
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        for (patch_x, patch_z) in dirty_keys {
-            core.heightmap.clear_render_patch_dirty(patch_x, patch_z);
-        }
-
-        assert!(core.undo_action_internal());
-        assert_eq!(core.region_graph.edge_count(), 0);
-        assert!(
-            !core.refined_terrain_patch_cache.is_empty(),
-            "bounded road undo must retain the immutable previous terrain generation"
-        );
-        assert!(
-            !core.transit_network.roadbed.is_current(),
-            "removed road coverage must remain queued for local cleanup"
-        );
-        assert_eq!(core.cached_road_mesh_chunks.len(), previous_mesh.len());
-        assert!(previous_mesh.iter().all(|(chunk, mesh)| {
-            Arc::ptr_eq(
-                core.cached_road_mesh_chunks
-                    .get(chunk)
-                    .expect("undo invalidation must retain the cached chunk"),
-                mesh,
-            )
-        }));
-        assert!(core.terrain_dirty);
-        assert!(core.network_dirty);
-
-        core.rebuild_network_surface_terrain_internal();
-        for key in &stale_road_locked_patches {
-            assert!(
-                core.heightmap.dirty_render_patches().contains(key),
-                "former road-locked patch {key:?} must be re-uploaded after undo"
-            );
-        }
-
-        let cache_inputs =
-            core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        assert!(cache_inputs.is_empty());
-        assert!(core.road_locked_terrain_patch_keys.is_empty());
-        assert!(
-            core.refined_terrain_patch_cache.is_empty(),
-            "ownership refresh may discard a previous patch only after no engineered owner remains"
-        );
-    }
-
-    #[test]
-    fn undoing_road_restore_invalidates_derived_render_cache() {
-        let mut core = test_core();
-        core.benchmark_mode = false;
-        core.add_road_internal(
-            vec![
-                Vector3::new(-40.0, 0.0, 32.0),
-                Vector3::new(40.0, 0.0, 32.0),
-            ],
-            1,
-            1,
-        );
-        finalize_network_render_for_test(&mut core);
-        assert!(!core.road_locked_terrain_patch_keys.is_empty());
-        assert!(!core.refined_terrain_patch_cache.is_empty());
-
-        core.add_road_internal(
-            vec![
-                Vector3::new(-40.0, 0.0, 160.0),
-                Vector3::new(40.0, 0.0, 160.0),
-            ],
-            1,
-            1,
-        );
-        finalize_network_render_for_test(&mut core);
-        assert_eq!(core.region_graph.edge_count(), 2);
-        for key in &core.road_locked_terrain_patch_keys {
-            let ledger = core
-                .refined_terrain_assembly_ledgers
-                .get(key)
-                .expect("road-owned dirty patches must retain their local assembly scope");
-            assert!(
-                ledger.full_dirty_at.is_none(),
-                "road-only ownership refresh must not replace exact query chunks with full scope"
-            );
-            assert!(!ledger.road_tile_dirty_at.is_empty());
-        }
-        let previous_windows = core
-            .refined_terrain_patch_cache
-            .values()
-            .flat_map(|patch| patch.windows.iter().cloned())
-            .collect::<Vec<_>>();
-        let previous_mesh = core.cached_road_mesh_chunks.clone();
-        assert!(!previous_mesh.is_empty());
-        let global_generation_before_undo = core.terrain_payload_global_generation;
-
-        assert!(core.undo_action_internal());
-        assert_eq!(core.region_graph.edge_count(), 1);
-        assert_eq!(
-            core.terrain_payload_global_generation, global_generation_before_undo,
-            "bounded road undo must preserve patch-local generation semantics"
-        );
-        assert!(
-            !core.refined_terrain_patch_cache.is_empty(),
-            "undo must keep the complete post-edit generation as an immutable reuse source"
-        );
-        assert_eq!(core.cached_road_mesh_chunks.len(), previous_mesh.len());
-        assert!(previous_mesh.iter().all(|(chunk, mesh)| {
-            Arc::ptr_eq(
-                core.cached_road_mesh_chunks
-                    .get(chunk)
-                    .expect("undo invalidation must retain the cached chunk"),
-                mesh,
-            )
-        }));
-        assert!(core.network_dirty);
-
-        core.rebuild_network_surface_terrain_internal();
-        let cache_inputs =
-            core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        assert!(
-            !cache_inputs.is_empty(),
-            "undo must enqueue at least one locally revised refined patch"
-        );
-        let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
-        let entry_count = cache_entries.len();
-        let entry_keys = cache_entries
-            .iter()
-            .map(|entry| entry.key)
-            .collect::<Vec<_>>();
-        assert!(
-            cache_entries.iter().any(|entry| entry.reused_windows > 0),
-            "undoing remote road coverage must reuse unchanged fixed terrain tiles"
-        );
-        assert!(
-            cache_entries
-                .iter()
-                .flat_map(|entry| &entry.windows)
-                .any(|window| {
-                    previous_windows
-                        .iter()
-                        .any(|previous| Arc::ptr_eq(window, previous))
-                }),
-            "unchanged undo tiles must retain their previous-generation Arc identity"
-        );
-        assert_eq!(
-            core.insert_refined_terrain_patch_cache_entries(cache_entries),
-            entry_count,
-            "every locally rebuilt undo patch must be complete, current, and publishable"
-        );
-        for key in entry_keys {
-            let published = core
-                .refined_terrain_patch_cache
-                .get(&key)
-                .expect("publishable undo generation must replace its cache entry");
-            assert_eq!(
-                published.surface_generation,
-                core.terrain_payload_generation_for_patch(key.patch_x, key.patch_z)
-            );
-        }
     }
 
     #[test]

@@ -13,13 +13,13 @@ use super::super::{
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_abutment_faces, emit_chain_strips, triangle_is_too_small};
-use crate::config;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{
     BRIDGE_DECK_DEPTH_M, RoadSection, RoadVec3, RoadbedSystem, SpanPiece, StripKind,
 };
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::graded::{GradedSurface, QueryScratch, SiteSource};
 use godot::prelude::{Vector2, Vector3};
 
 const BRIDGE_PIER_GROUND_EMBED_M: f32 = 0.08;
@@ -34,8 +34,16 @@ pub(in crate::simulation::network::render::road) fn emit_bridge_structures(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     terrain: &TerrainSystem,
+    sites: &dyn SiteSource,
     coverage: &CompiledSurfaceCoverage,
 ) {
+    let surface = GradedSurface {
+        terrain,
+        roadbed,
+        sites,
+        query_index: None,
+    };
+    let mut scratch = QueryScratch::default();
     for &edge_idx in &coverage.edge_indices {
         if graph.edge(edge_idx).class != EdgeClass::Bridge {
             continue;
@@ -44,13 +52,14 @@ pub(in crate::simulation::network::render::road) fn emit_bridge_structures(
             continue;
         };
         mesh.set_owner(NetworkMeshOwner::Edge(edge_idx));
-        emit_compiled_bridge_concrete(mesh, terrain, span);
+        emit_compiled_bridge_concrete(mesh, &surface, &mut scratch, span);
     }
 }
 
 fn emit_compiled_bridge_concrete(
     mesh: &mut NetworkMeshData,
-    terrain: &TerrainSystem,
+    surface: &GradedSurface<'_>,
+    scratch: &mut QueryScratch,
     span: &SpanPiece,
 ) {
     let sections = span.sections();
@@ -93,12 +102,13 @@ fn emit_compiled_bridge_concrete(
         previous = Some((section.s_m, [left, right]));
     }
 
-    emit_compiled_bridge_piers(mesh, terrain, sections);
+    emit_compiled_bridge_piers(mesh, surface, scratch, sections);
 }
 
 fn emit_compiled_bridge_piers(
     mesh: &mut NetworkMeshData,
-    terrain: &TerrainSystem,
+    surface: &GradedSurface<'_>,
+    scratch: &mut QueryScratch,
     sections: &[RoadSection],
 ) {
     let mut last_emitted_s_m = f32::NEG_INFINITY;
@@ -109,9 +119,8 @@ fn emit_compiled_bridge_piers(
         }
 
         let top_y = section.center_height_m - BRIDGE_DECK_DEPTH_M as f32;
-        let base_y = terrain
-            .sample_visual_height_world(section.center_xz.x as f32, section.center_xz.y as f32)
-            * config::HEIGHT_SCALE
+        let base_y = surface.ground_height_at(section.center_xz.x, section.center_xz.y, scratch)
+            as f32
             - BRIDGE_PIER_GROUND_EMBED_M;
         if top_y - base_y < BRIDGE_PIER_MIN_CLEARANCE_M {
             continue;

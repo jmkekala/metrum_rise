@@ -3,24 +3,14 @@
 //! Building-site apron grading and road/terrain tie-in validation.
 
 use super::geometry::{SITE_POINT_EPS_M, point_in_polygon_slice, signed_polygon_area};
-#[cfg(test)]
-use super::model::BuildingSiteClient;
-use super::model::BuildingSiteTerrainSnapshot;
 use crate::config::SIDEWALK_WIDTH;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
-use crate::simulation::terrain::cdt::{
-    MAX_TERRAIN_TIE_IN_SLOPE_RATIO, TerrainCdtTieInGuideSample, TerrainCdtVertex,
-};
-use crate::simulation::terrain::{
-    TerrainSystem, TerrainVisualSource, terrain_cdt_local_sample_margin_m,
-};
+use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
-use std::collections::HashSet;
 
-const BUILDING_SITE_GRADING_SAMPLE_KEY_SCALE: f64 = 1000.0;
 const BUILDING_SITE_GRADING_RING_MULTIPLIERS: [f32; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
 const BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M: f32 = 2.0;
 const BUILDING_SITE_SUPPORT_TIE_IN_EPS_M: f32 = 0.05;
@@ -64,34 +54,8 @@ impl<'a> SiteRoads<'a> {
         }
     }
 }
-
-/// Immutable inputs for exporting building-site grading into one terrain-CDT window.
-pub(crate) struct BuildingSiteGradingRequest<'a> {
-    terrain: &'a dyn TerrainVisualSource,
-    roads: SiteRoads<'a>,
-    world_bounds: (f32, f32, f32, f32),
-    render_step_m: f32,
-}
-
-impl<'a> BuildingSiteGradingRequest<'a> {
-    /// Binds one terrain window to the road-surface state used for grading samples.
-    pub(crate) fn new(
-        terrain: &'a dyn TerrainVisualSource,
-        roads: SiteRoads<'a>,
-        world_bounds: (f32, f32, f32, f32),
-        render_step_m: f32,
-    ) -> Self {
-        Self {
-            terrain,
-            roads,
-            world_bounds,
-            render_step_m,
-        }
-    }
-}
-
 pub(super) struct SiteGradingContext<'a> {
-    terrain: &'a dyn TerrainVisualSource,
+    terrain: &'a TerrainSystem,
     roads: SiteRoads<'a>,
     safe_step_m: f32,
     max_distance_m: f32,
@@ -99,7 +63,7 @@ pub(super) struct SiteGradingContext<'a> {
 
 impl<'a> SiteGradingContext<'a> {
     pub(super) fn new(
-        terrain: &'a dyn TerrainVisualSource,
+        terrain: &'a TerrainSystem,
         graph: &'a RegionGraph,
         road_surface: &'a RoadbedSystem,
         safe_step_m: f32,
@@ -114,66 +78,12 @@ impl<'a> SiteGradingContext<'a> {
     }
 }
 
-pub(super) struct SiteGradingGuideSink<'a> {
-    samples: &'a mut Vec<TerrainCdtTieInGuideSample>,
-    sample_keys: &'a mut HashSet<(i64, i64)>,
-}
-
-impl<'a> SiteGradingGuideSink<'a> {
-    pub(super) fn new(
-        samples: &'a mut Vec<TerrainCdtTieInGuideSample>,
-        sample_keys: &'a mut HashSet<(i64, i64)>,
-    ) -> Self {
-        Self {
-            samples,
-            sample_keys,
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 struct FootprintEdge {
     start: Vector2,
     end: Vector2,
     outward: Vector2,
     sample_count: u32,
-}
-
-impl BuildingSiteTerrainSnapshot {
-    pub(crate) fn append_terrain_cdt_site_grading_guides_for_world_bounds(
-        &self,
-        request: BuildingSiteGradingRequest<'_>,
-        tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
-        sample_keys: &mut HashSet<(i64, i64)>,
-    ) {
-        let (min_x, min_z, max_x, max_z) = request.world_bounds;
-        let safe_step_m = request.render_step_m.max(f32::EPSILON);
-        let max_distance_m =
-            terrain_cdt_local_sample_margin_m(request.terrain.terrain(), safe_step_m);
-        let context = SiteGradingContext {
-            terrain: request.terrain,
-            roads: request.roads,
-            safe_step_m,
-            max_distance_m,
-        };
-        let mut sink = SiteGradingGuideSink::new(tie_in_guide_samples, sample_keys);
-        for site in &self.sites {
-            let (site_min_x, site_min_z, site_max_x, site_max_z) =
-                super::geometry::polygon_slice_bounds(&site.footprint_world);
-            if site_min_x - max_distance_m > max_x
-                || site_max_x + max_distance_m < min_x
-                || site_min_z - max_distance_m > max_z
-                || site_max_z + max_distance_m < min_z
-            {
-                continue;
-            }
-            append_building_site_grading_guides_from_parts(
-                &site.footprint_world,
-                &context,
-                &mut sink,
-            );
-        }
-    }
 }
 
 pub(crate) fn building_site_support_tie_in_is_valid(
@@ -230,7 +140,7 @@ pub(crate) fn solve_building_site_support_height(
                 })
                 .fold(f32::INFINITY, f32::min)
         };
-        let budget = distance * MAX_TERRAIN_TIE_IN_SLOPE_RATIO;
+        let budget = distance * crate::simulation::terrain::graded::TIE_IN_SLOPE as f32;
         low = low.max(height - budget);
         high = high.min(height + budget);
     }
@@ -251,7 +161,7 @@ pub(crate) fn solve_building_site_support_height(
         for d in grading_ring_distances(context.safe_step_m, context.max_distance_m) {
             let target =
                 building_site_raw_tie_in_target_height(seam + outward * d, d, terrain, context.roads);
-            let budget = d * MAX_TERRAIN_TIE_IN_SLOPE_RATIO;
+            let budget = d * crate::simulation::terrain::graded::TIE_IN_SLOPE as f32;
             for &(lo, hi) in &intervals {
                 let a = lo.max(target - budget);
                 let b = hi.min(target + budget);
@@ -353,46 +263,6 @@ fn visit_footprint_grading_rays(
     true
 }
 
-#[cfg(test)]
-pub(super) fn append_building_site_grading_guides(
-    site: &BuildingSiteClient,
-    context: &SiteGradingContext<'_>,
-    sink: &mut SiteGradingGuideSink<'_>,
-) {
-    append_building_site_grading_guides_from_parts(&site.footprint_world, context, sink);
-}
-
-fn append_building_site_grading_guides_from_parts(
-    footprint_world: &[Vector2],
-    context: &SiteGradingContext<'_>,
-    sink: &mut SiteGradingGuideSink<'_>,
-) {
-    visit_footprint_grading_rays(footprint_world, context.safe_step_m, |seam, outward| {
-        append_building_site_grading_ray(seam, outward, context, sink);
-        true
-    });
-}
-
-fn append_building_site_grading_ray(
-    seam: Vector2,
-    outward: Vector2,
-    context: &SiteGradingContext<'_>,
-    sink: &mut SiteGradingGuideSink<'_>,
-) {
-    for distance_m in grading_ring_distances(context.safe_step_m, context.max_distance_m) {
-        let pos = seam + outward * distance_m;
-        // Road and site guides sample the same ground. Only the footprint boundary
-        // owns the pad elevation; CDT derives its tie-in from that constraint.
-        let height_m =
-            context.terrain.sample_visual_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE;
-        push_building_site_grading_sample(
-            TerrainCdtVertex::new(pos.x as f64, height_m, pos.y as f64),
-            &mut *sink.samples,
-            &mut *sink.sample_keys,
-        );
-    }
-}
-
 fn building_site_support_tie_in_ray_is_valid(
     seam_height_m: f32,
     seam: Vector2,
@@ -404,10 +274,11 @@ fn building_site_support_tie_in_ray_is_valid(
         let target_height_m = building_site_raw_tie_in_target_height(
             pos,
             distance_m,
-            context.terrain.terrain(),
+            context.terrain,
             context.roads,
         );
-        let max_delta_m = distance_m.max(0.0) * MAX_TERRAIN_TIE_IN_SLOPE_RATIO
+        let max_delta_m = distance_m.max(0.0)
+            * crate::simulation::terrain::graded::TIE_IN_SLOPE as f32
             + BUILDING_SITE_SUPPORT_TIE_IN_EPS_M;
         if (target_height_m - seam_height_m).abs() <= max_delta_m {
             return true;
@@ -542,26 +413,4 @@ fn corrected_footprint_outward(
     } else {
         outward
     }
-}
-
-fn push_building_site_grading_sample(
-    vertex: TerrainCdtVertex,
-    tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
-    sample_keys: &mut HashSet<(i64, i64)>,
-) {
-    if !vertex.x.is_finite() || !vertex.z.is_finite() || !vertex.height_m.is_finite() {
-        return;
-    }
-    let key = building_site_grading_sample_key(vertex.x, vertex.z);
-    if !sample_keys.insert(key) {
-        return;
-    }
-    tie_in_guide_samples.push(TerrainCdtTieInGuideSample { vertex });
-}
-
-fn building_site_grading_sample_key(x: f64, z: f64) -> (i64, i64) {
-    (
-        (x * BUILDING_SITE_GRADING_SAMPLE_KEY_SCALE).round() as i64,
-        (z * BUILDING_SITE_GRADING_SAMPLE_KEY_SCALE).round() as i64,
-    )
 }

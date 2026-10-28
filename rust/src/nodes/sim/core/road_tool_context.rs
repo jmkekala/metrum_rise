@@ -122,7 +122,7 @@ impl SimCore {
         let rebuilt = self.transit_network.roadbed.take_rebuilt_owners();
         let terrain_generations = (
             self.heightmap.source_generation(),
-            self.heightmap.visual_generation(),
+            self.heightmap.source_generation(),
         );
         let water_generation = self.watermap.render_generation();
         let graph_counts = (

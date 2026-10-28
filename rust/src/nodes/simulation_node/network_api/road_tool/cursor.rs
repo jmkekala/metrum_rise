@@ -66,7 +66,15 @@ impl SimulationNode {
         let border_snap_dist = border_snap_dist_m.min(half_w.min(half_h));
 
         let road_hit = query.roadbed.raycast(ray_origin, ray_dir);
-        let terrain_hit = query.terrain.raycast_visual_terrain(ray_origin, ray_dir);
+        let terrain_hit = query.with_graded_surface(|surface, scratch| {
+            surface
+                .raycast_surface(
+                    [ray_origin.x, ray_origin.y, ray_origin.z].map(f64::from),
+                    [ray_dir.x, ray_dir.y, ray_dir.z].map(f64::from),
+                    scratch,
+                )
+                .map(|[x, y, z]| Vector3::new(x as f32, y as f32, z as f32))
+        });
         let mut pos = match Self::road_tool_closest_cursor_hit(ray_origin, road_hit, terrain_hit) {
             Some((hit, true)) => hit,
             Some((mut hit, false)) => {
@@ -311,8 +319,10 @@ impl SimulationNode {
         altitude_offset_m: f32,
     ) -> f32 {
         query.roadbed.height_at(x, z).unwrap_or_else(|| {
-            query.terrain.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE
-                + altitude_offset_m
+            query.with_graded_surface(|surface, scratch| {
+                surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32
+                    + altitude_offset_m
+            })
         })
     }
 }

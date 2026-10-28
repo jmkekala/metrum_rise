@@ -13,7 +13,7 @@ use super::*;
 use crate::assets::SiteSurfaceMaterial;
 use crate::config::HEIGHT_SCALE;
 use crate::simulation::buildings::allocator::{
-    BuildingSiteSurfaceClient, SiteChange, SitePavingPartition, site_footprint_contains,
+    BuildingSiteSurfaceClient, SiteChange, site_footprint_contains,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::RoadbedSystem;
@@ -175,53 +175,9 @@ fn class_of(material: Option<SiteSurfaceMaterial>) -> u8 {
     }
 }
 
-/// The legacy paving partition's materials over `area` (`[min_x, min_z, max_x, max_z]`): the
-/// area's two triangles partitioned by `surfaces` in their order, as `(class, triangle XZ)`.
-pub(crate) fn partition_triangles(
-    surfaces: &[BuildingSiteSurfaceClient],
-    area: [f32; 4],
-) -> Vec<(u8, [[f64; 2]; 3])> {
-    let partition = SitePavingPartition::new(surfaces).expect("surfaces triangulate");
-    let [x0, z0, x1, z1] = area;
-    let corner = |x: f32, z: f32| Vector3::new(x, 0.0, z);
-    let mut out = Vec::new();
-    for triangle in [
-        [corner(x0, z0), corner(x1, z0), corner(x1, z1)],
-        [corner(x0, z0), corner(x1, z1), corner(x0, z1)],
-    ] {
-        partition.partition(triangle, |material, face| {
-            out.push((
-                class_of(material),
-                face.map(|p| [f64::from(p.x), f64::from(p.z)]),
-            ));
-        });
-    }
-    out
-}
-
-// Distance from an XZ point to a closed triangle, 0 inside.
-fn triangle_distance(t: &[[f64; 2]; 3], p: [f64; 2]) -> f64 {
-    let cross =
-        |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
-    let c = [cross(t[0], t[1]), cross(t[1], t[2]), cross(t[2], t[0])];
-    if c.iter().all(|&v| v >= 0.0) || c.iter().all(|&v| v <= 0.0) {
-        return 0.0;
-    }
-    (0..3)
-        .map(|i| {
-            let (a, b) = (t[i], t[(i + 1) % 3]);
-            let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
-            let len2 = dx * dx + dz * dz;
-            let s = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / len2).clamp(0.0, 1.0);
-            (p[0] - a[0] - dx * s).hypot(p[1] - a[1] - dz * s)
-        })
-        .fold(f64::INFINITY, f64::min)
-}
-
 /// Asserts that every lattice point of `payloads` (at `level` over `terrain`) inside `area`
-/// takes a material class of the partition triangles holding it, within the partition's f32
-/// output rounding (1e-4 m), and that the class is 0 outside `area`. Returns the points checked
-/// and how many were paved.
+/// takes the first authored surface's material class and that the class is 0 outside `area`.
+/// Returns the points checked and how many were paved.
 pub(crate) fn assert_classes_match_partition(
     terrain: &TerrainSystem,
     payloads: &[TilePayload],
@@ -229,7 +185,6 @@ pub(crate) fn assert_classes_match_partition(
     surfaces: &[BuildingSiteSurfaceClient],
     area: [f32; 4],
 ) -> (usize, usize) {
-    let triangles = partition_triangles(surfaces, area);
     let (mut xs, mut zs) = (Vec::new(), Vec::new());
     let (mut checked, mut paved) = (0, 0);
     for payload in payloads {
@@ -245,15 +200,20 @@ pub(crate) fn assert_classes_match_partition(
                     assert_eq!(class, 0, "paved outside the surfaces at ({x}, {z})");
                     continue;
                 }
-                let allowed: Vec<u8> = triangles
+                let expected = surfaces
                     .iter()
-                    .filter(|(_, t)| triangle_distance(t, [x, z]) <= 1e-4)
-                    .map(|(class, _)| *class)
-                    .collect();
-                assert!(
-                    allowed.contains(&class),
-                    "class {class} at ({x}, {z}) of {:?}; partition {allowed:?}",
-                    payload.tile
+                    .find(|surface| {
+                        let polygon: Vec<_> = surface
+                            .vertices_world
+                            .iter()
+                            .map(|point| [f64::from(point.x), f64::from(point.y)])
+                            .collect();
+                        polygon_holds(&polygon, x, z)
+                    })
+                    .map_or(0, |surface| class_of(Some(surface.material)));
+                assert_eq!(
+                    class, expected,
+                    "class at ({x}, {z}) of {:?}", payload.tile
                 );
                 checked += 1;
                 paved += usize::from(class != 0);

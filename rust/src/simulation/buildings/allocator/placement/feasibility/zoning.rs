@@ -113,7 +113,7 @@ impl BuildingAllocator {
         }
         let epoch = (
             env.terrain.source_generation(),
-            env.terrain.visual_generation(),
+            env.terrain.source_generation(),
             env.road_surface.generation(),
             self.building_ref_revision(),
             0, // Asset registration cannot change this footprint or its terrain verdict.

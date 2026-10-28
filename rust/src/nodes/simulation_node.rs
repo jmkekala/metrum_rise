@@ -114,10 +114,7 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
-    CachedTerrainCdtRoadInput, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
-    RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
-    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest,
+    DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, RenderSnapshot, RoadPreviewRequest,
     RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
     run_sim_thread,
 };
@@ -130,16 +127,9 @@ use crate::nodes::sim::render::water::{
     CachedWaterPatchMesh, WaterPatchMeshBuildInput, WaterPatchMeshCacheKey,
     water_patch_depth_signature,
 };
-use crate::simulation::buildings::allocator::{
-    BuildingSiteGradingRequest, BuildingSiteTerrainSnapshot, ExplicitServicePlacementRejection,
-};
+use crate::simulation::buildings::allocator::ExplicitServicePlacementRejection;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::road_edit::RoadPreviewValidation;
-use crate::simulation::terrain::cdt::{
-    TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
-    TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtVertex,
-    build_road_touched_terrain_patch,
-};
 use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainSystem};
 use crate::simulation::vegetation::VegetationConfig;
 use crate::simulation::water::WaterPatchSnapshot;
@@ -177,59 +167,13 @@ use async_terrain::{
     WaterPatchPayloadRequestState,
 };
 use variant_export::{
-    TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtRoads, TerrainCdtTileId, budget_ledger_entry_dict,
-    prepare_zoning_site_queries, zoning_buildable_geometries, zoning_geometry_feasibility,
+    budget_ledger_entry_dict, prepare_zoning_site_queries, zoning_buildable_geometries, zoning_geometry_feasibility,
     zoning_parcel_cell_dimensions, zoning_parcel_color, zoning_parcel_geometries_array,
     zoning_parcel_geometries_packed_dict, zoning_parcel_geometry_dict,
     zoning_parcel_surface_corners,
 };
 
-const TERRAIN_CDT_DIAGNOSTIC_STAGE_LABEL: &str = "cdt_triangulation";
-const TERRAIN_CDT_DIAGNOSTIC_STAGE_CODE: i64 = 0;
-const TERRAIN_CDT_BACKEND_NONE_LABEL: &str = "none";
-const TERRAIN_CDT_BACKEND_NONE_CODE: i64 = -1;
-const TERRAIN_CDT_BACKEND_SPADE_LABEL: &str = "spade";
-const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
-const TERRAIN_CDT_CONTRACT_REVISION: i64 = 15;
-const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
-const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
-const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
-const TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO: f32 = 256.0;
-const TERRAIN_CDT_PATHOLOGICAL_TRIANGLE_EDGE_M: f32 = 96.0;
 const CHEAT_MONEY_GRANT_AMOUNT: f64 = 1_000_000.0;
-
-#[derive(Clone, Copy)]
-struct TerrainCdtSiteGradingContext<'a> {
-    source: TerrainCdtSiteGradingSource<'a>,
-    roads: crate::simulation::buildings::allocator::SiteRoads<'a>,
-}
-
-#[derive(Clone, Copy)]
-enum TerrainCdtSiteGradingSource<'a> {
-    Snapshot(&'a BuildingSiteTerrainSnapshot),
-}
-
-impl TerrainCdtSiteGradingContext<'_> {
-    fn append_guides(
-        self,
-        terrain: &dyn crate::simulation::terrain::TerrainVisualSource,
-        world_bounds: (f32, f32, f32, f32),
-        render_step_m: f32,
-        tie_in_guide_samples: &mut Vec<crate::simulation::terrain::cdt::TerrainCdtTieInGuideSample>,
-        sample_keys: &mut HashSet<(i64, i64)>,
-    ) {
-        let request =
-            || BuildingSiteGradingRequest::new(terrain, self.roads, world_bounds, render_step_m);
-        match self.source {
-            TerrainCdtSiteGradingSource::Snapshot(snapshot) => snapshot
-                .append_terrain_cdt_site_grading_guides_for_world_bounds(
-                    request(),
-                    tie_in_guide_samples,
-                    sample_keys,
-                ),
-        }
-    }
-}
 
 #[derive(GodotClass)]
 #[class(base=Node3D)]
@@ -292,15 +236,6 @@ pub struct SimulationNode {
     /// Accumulated Godot render time (unused by sim, kept for potential UI use).
     pub(crate) time_passed: f64,
     base: Base<Node3D>,
-}
-
-struct RoadClipLoopQuery {
-    cdt_road_loops: Vec<TerrainCdtRoadLoop>,
-    source_count: usize,
-    road_source_count: usize,
-    road_loop_count: usize,
-    site_loop_count: usize,
-    clip_error_label: Option<&'static str>,
 }
 
 impl SimulationNode {

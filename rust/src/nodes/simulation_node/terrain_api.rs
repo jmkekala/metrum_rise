@@ -338,8 +338,6 @@ impl SimulationNode {
                 })
                 .collect::<Vec<_>>()
         };
-        let road_query_snapshot = self.road_tool.view.read().unwrap().clone();
-
         let mut accepted_count = 0_usize;
         let mut duplicate_count = 0_usize;
         let mut in_flight_count = 0_usize;
@@ -385,98 +383,27 @@ impl SimulationNode {
 
         if !build_requests.is_empty() {
             let request_count = build_requests.len();
-            let refined_request_count = build_requests
-                .iter()
-                .filter(|request| request.key.render_step_mm > 0)
-                .count();
             let core = Arc::clone(&self.core);
             let jobs = Arc::clone(&self.terrain_patch_payload_jobs);
             self.async_jobs.spawn(move || {
                 let worker_start = Instant::now();
                 let perf_enabled = crate::debug::Channel::Perf.enabled();
                 let snapshot_start = Instant::now();
-                let (sources, mut failed_requests, refused_requests) =
+                let (mut built, mut failed_requests, refused_requests) =
                     SimulationNode::try_prepare_terrain_patch_payload_sources(
                         &core,
                         build_requests,
                     );
                 let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
-
-                let input_start = Instant::now();
-                let build_jobs = sources
-                    .into_par_iter()
-                    .map(|source| {
-                        SimulationNode::terrain_patch_payload_build_job_for_source(
-                            &road_query_snapshot,
-                            source,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let (mut built, refined_requests, refined_inputs, mut stale_snapshot_requests) =
-                    SimulationNode::split_terrain_patch_payload_jobs(build_jobs);
-                failed_requests.append(&mut stale_snapshot_requests);
-                let input_ms = input_start.elapsed().as_secs_f64() * 1000.0;
-                if perf_enabled
-                    && (snapshot_ms >= 4.0 || input_ms >= 4.0 || refined_request_count > 0)
-                {
+                if perf_enabled && snapshot_ms >= 4.0 {
                     println!(
-                        "[DEBUG:perf] terrain_payload_worker_input requests={} refined_requests={} ready={} refined_inputs={} failed={} snapshot_lock_ms={:.3} input_ms={:.3}",
+                        "[DEBUG:perf] terrain_payload_worker_input requests={} ready={} failed={} snapshot_lock_ms={:.3}",
                         request_count,
-                        refined_request_count,
                         built.len(),
-                        refined_inputs.len(),
                         failed_requests.len(),
                         snapshot_ms,
-                        input_ms
                     );
                 }
-
-                let cdt_start = Instant::now();
-                let refined_entries = if refined_inputs.is_empty() {
-                    Vec::new()
-                } else {
-                    SimCore::build_refined_terrain_patch_cache_entries(refined_inputs)
-                };
-                let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
-                let refined_entry_count = refined_entries.len();
-                let refined_window_count = refined_entries
-                    .iter()
-                    .map(|entry| entry.windows.len())
-                    .sum::<usize>();
-                let refined_failed_window_count = refined_entries
-                    .iter()
-                    .flat_map(|entry| &entry.windows)
-                    .filter(|window| window.mesh_result.is_err())
-                    .count();
-                let refined_invalid_entry_count = refined_entries
-                    .iter()
-                    .filter(|entry| {
-                        SimulationNode::cached_refined_cdt_failure_label(entry).is_some()
-                    })
-                    .count();
-                let refined_road_loop_count = refined_entries
-                    .iter()
-                    .map(|entry| entry.road_clip_loop_count)
-                    .sum::<usize>();
-                let refined_site_loop_count = refined_entries
-                    .iter()
-                    .map(|entry| entry.site_clip_loop_count)
-                    .sum::<usize>();
-                let first_refined_error = refined_entries
-                    .iter()
-                    .find_map(|entry| {
-                        SimulationNode::cached_refined_cdt_failure_label(entry.as_ref())
-                    })
-                    .unwrap_or("none");
-                failed_requests.extend(Self::refined_requests_without_entries(
-                    &refined_requests,
-                    &refined_entries,
-                ));
-                Self::append_refined_terrain_patch_payloads_for_requests(
-                    &mut built,
-                    &refined_requests,
-                    &refined_entries,
-                );
                 built
                     .par_iter_mut()
                     .for_each(TerrainPatchPayload::bake_shading_masks);
@@ -486,23 +413,10 @@ impl SimulationNode {
                 job_state.completed.extend(built);
                 job_state.failed.append(&mut failed_requests);
                 job_state.refused.extend(refused_requests);
-                if perf_enabled
-                    && (worker_start.elapsed().as_secs_f64() * 1000.0 >= 8.0
-                        || cdt_ms >= 4.0
-                        || refined_request_count > 0)
-                {
+                if perf_enabled && worker_start.elapsed().as_secs_f64() * 1000.0 >= 8.0 {
                     println!(
-                        "[DEBUG:perf] terrain_payload_worker_done requests={} refined_requests={} refined_entries={} refined_windows={} failed_windows={} invalid_entries={} road_loops={} site_loops={} first_error={} cdt_ms={:.3} total_ms={:.3}",
+                        "[DEBUG:perf] terrain_payload_worker_done requests={} total_ms={:.3}",
                         request_count,
-                        refined_request_count,
-                        refined_entry_count,
-                        refined_window_count,
-                        refined_failed_window_count,
-                        refined_invalid_entry_count,
-                        refined_road_loop_count,
-                        refined_site_loop_count,
-                        first_refined_error,
-                        cdt_ms,
                         worker_start.elapsed().as_secs_f64() * 1000.0
                     );
                 }

@@ -1223,20 +1223,6 @@ fn profile_commits(
     );
     let initial_road_vertices = road_vertices(core);
     let mesh_s = lap();
-    // Godot also requested and uploaded the refined terrain of the road patches it showed, so a
-    // commit rebuilds only the tiles it changes. The fixture builds every road patch once here,
-    // which also checks that the whole city's terrain builds (`ROAD-68-D` part 6).
-    let patches: Vec<(usize, usize)> = (0..core.heightmap.render_patch_rows())
-        .flat_map(|z| (0..core.heightmap.render_patch_cols()).map(move |x| (x, z)))
-        .collect();
-    let refined =
-        crate::nodes::simulation_node::SimulationNode::build_road_terrain_patches(core, &patches)
-            .unwrap_or_else(|reason| panic!("the city's refined terrain must build: {reason}"));
-    core.insert_refined_terrain_patch_cache_entries(refined);
-    let refined_terrain_s = lap();
-    // `TERRAIN-07-A` `T2` and `T7`: the whole city's road tiles at `GL0`, outside timing.
-    // The census and every graded stage below read the sites through the chunk index, which
-    // is rebuilt only where a frame left it stale (its rebuild resets the vacancy order).
     prepare_graded_sites(core);
     let census = crate::simulation::terrain::graded::tests::graded_census(
         &core.heightmap,
@@ -1343,7 +1329,7 @@ fn profile_commits(
             "agent_invalidate_ms": m.agent_invalidate_ms,
             "lanes_and_reattach_ms": m.lanes_and_reattach_ms, "buildings_ms": m.buildings_ms,
             "routing_ms": m.routing_ms, "finalize_ms": m.finalize_ms, "mesh_ms": m.mesh_ms,
-            "snapshot_ms": m.snapshot_ms, "refined_state_ms": m.refined_state_ms,
+            "snapshot_ms": m.snapshot_ms,
             "core_work_ms": m.core_work_ms, "dirty_edges": m.dirty_edges,
         });
         // Frames until the rebuilt hierarchy is adopted (D7), then the adoption frame, which
@@ -1466,7 +1452,7 @@ fn profile_commits(
     eprintln!(
         "COMMIT_SETUP {}",
         serde_json::json!({"residents": residents, "frames_s": frames_s, "mesh_s": mesh_s,
-            "refined_terrain_s": refined_terrain_s, "graded_census_s": graded_census_s,
+            "graded_census_s": graded_census_s,
             "graded_walls_s": graded_walls_s, "samples_s": samples_s, "cell_copy_s": cell_copy_s,
             "site_removal_s": site_removal_s})
     );

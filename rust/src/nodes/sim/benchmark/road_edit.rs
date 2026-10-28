@@ -44,7 +44,6 @@ pub(crate) struct RoadEditMetrics {
     pub(crate) routing_ms: f64,
     pub(crate) mesh_ms: f64,
     pub(crate) snapshot_ms: f64,
-    pub(crate) refined_state_ms: f64,
     pub(crate) dirty_edges: usize,
     pub(crate) rebuilt_surface_chunks: usize,
     pub(crate) rebuilt_terrain_chunks: usize,
@@ -81,8 +80,7 @@ impl RoadEditMetrics {
             buildings_ms,
             routing_ms,
             mesh_ms,
-            snapshot_ms,
-            refined_state_ms
+            snapshot_ms
         );
         result.set("graded_adopted", self.graded_adopted as i64);
         result.set("graded_baked", self.graded_baked as i64);

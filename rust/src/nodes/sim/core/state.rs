@@ -13,10 +13,7 @@ use super::budget::{
 use super::frame::EconomyObserver;
 use super::schedule::{SimEvent, SimSystem, event_slot, simulation_schedule};
 use super::snapshot::SimulationSnapshot;
-use super::terrain_payloads::{
-    CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyLedger,
-    RefinedTerrainPatchCacheKey,
-};
+use crate::simulation::terrain::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use super::trips::TripEvent;
 use super::water_preview::{AuthoredWaterPatchFillDebug, WorldLakeFillPreview};
 use crate::debug_log;
@@ -52,7 +49,7 @@ use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use crate::simulation::network::roadbed::SurfaceChunkKey;
 use crate::simulation::resources::ResourceDepositSystem;
-use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
+use crate::simulation::terrain::{TerrainSystem, terrain_local_sample_margin_m};
 use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{AuthoredLakeFill, AuthoredOpenWaterFill};
@@ -324,35 +321,15 @@ pub struct SimCore {
     /// Edge ids touched by the most recent committed network edit and queued for one focused
     /// road-surface debug dump after the next terrain/mesh rebuild.
     pub(crate) last_surface_debug_edges: Vec<usize>,
-    /// Production refined terrain patches precomputed by the sim thread for Godot upload.
-    pub(crate) refined_terrain_patch_cache:
-        HashMap<RefinedTerrainPatchCacheKey, Arc<CachedRefinedTerrainPatch>>,
-    /// Sorted terrain render patches that must use road-locked refined terrain meshes.
-    pub(crate) road_locked_terrain_patch_keys: Vec<(usize, usize)>,
-    /// Required grading margin for each road-locked terrain render patch.
-    pub(crate) road_locked_terrain_patch_margins: BTreeMap<(usize, usize), f32>,
-    /// Render patches whose road margin above waits for a refresh (`ROAD-68-D`): a compile
-    /// changed pieces within the grading envelope cap of them, or a terrain edit changed heights
-    /// their road loops probe. Refreshing a patch's road ownership removes it.
-    pub(crate) road_ownership_pending_patch_keys: BTreeSet<(usize, usize)>,
-    /// Terrain patches owned by at least one indexed building site.
-    pub(crate) building_site_owned_terrain_patch_keys: HashSet<(usize, usize)>,
     /// Site boxes whose render-patch ownership the building removal queue left for later slots
     /// (`SIM-02-K`), oldest first: render state only, refreshed one a light slot. Derived.
     pub(crate) deferred_site_terrain_boxes: std::collections::VecDeque<(f32, f32, f32, f32)>,
-    /// Sorted terrain patches owned by roads, building sites, or both.
-    pub(crate) engineered_terrain_patch_keys: Vec<(usize, usize)>,
-    /// Required CDT query margin for every engineered-owned terrain patch.
-    pub(crate) engineered_terrain_patch_margins: BTreeMap<(usize, usize), f32>,
     /// Monotonic source revision allocator for asynchronous terrain payloads.
     pub(crate) terrain_payload_generation_counter: u64,
     /// Latest source revision that invalidates every terrain render patch.
     pub(crate) terrain_payload_global_generation: u64,
     /// Latest building-site source revision for individually affected render patches.
     pub(crate) terrain_payload_patch_generations: HashMap<(usize, usize), u64>,
-    /// Generation-stamped full/local refined-terrain assembly scopes by render patch.
-    pub(crate) refined_terrain_assembly_ledgers:
-        HashMap<(usize, usize), RefinedTerrainAssemblyLedger>,
     /// Current road render meshes keyed by deterministic road-surface chunk.
     pub(crate) cached_road_mesh_chunks: BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
     /// Upsert payloads accumulated for the unacknowledged road-render revision.
@@ -479,18 +456,10 @@ impl SimCore {
             terrain_query_index: Default::default(),
             terrain_query_index_update_us: 0,
             last_surface_debug_edges: Vec::new(),
-            refined_terrain_patch_cache: HashMap::new(),
-            road_locked_terrain_patch_keys: Vec::new(),
-            road_locked_terrain_patch_margins: BTreeMap::new(),
-            road_ownership_pending_patch_keys: BTreeSet::new(),
-            building_site_owned_terrain_patch_keys: HashSet::new(),
             deferred_site_terrain_boxes: Default::default(),
-            engineered_terrain_patch_keys: Vec::new(),
-            engineered_terrain_patch_margins: BTreeMap::new(),
             terrain_payload_generation_counter: 1,
             terrain_payload_global_generation: 1,
             terrain_payload_patch_generations: HashMap::new(),
-            refined_terrain_assembly_ledgers: HashMap::new(),
             cached_road_mesh_chunks: BTreeMap::new(),
             published_road_mesh_chunks: Arc::new(BTreeMap::new()),
             pending_road_mesh_chunks: Arc::new(BTreeSet::new()),
@@ -541,17 +510,11 @@ impl SimCore {
         for &key in patch_keys {
             self.terrain_payload_patch_generations
                 .insert(key, generation);
-            self.refined_terrain_assembly_ledgers
-                .entry(key)
-                .or_default()
-                .full_dirty_at = Some(generation);
         }
         self.road_terrain_inputs.note(patch_keys.iter().copied());
     }
 
-    /// Marks the terrain a road edit changed (`ROAD-68-D`, `ROAD-68-E`): the patches and tiles
-    /// of [`road_terrain_tiles`] get a new generation, and the ledger stamps the tiles, so the
-    /// refined build re-assembles only those tiles. Returns the sorted patch keys.
+    /// Marks the terrain patches a road edit changed and returns their sorted keys.
     pub(crate) fn bump_road_terrain_payload_generations(
         &mut self,
         changes: &crate::simulation::network::roadbed::TerrainChanges,
@@ -574,18 +537,10 @@ impl SimCore {
             return Vec::new();
         }
         let generation = self.next_terrain_payload_generation();
-        for (&key, patch_tiles) in &tiles {
-            self.road_ownership_pending_patch_keys.insert(key);
+        for &key in tiles.keys() {
             self.heightmap.mark_render_patch_dirty(key.0, key.1);
             self.terrain_payload_patch_generations
                 .insert(key, generation);
-            let ledger = self
-                .refined_terrain_assembly_ledgers
-                .entry(key)
-                .or_default();
-            for &tile in patch_tiles {
-                ledger.road_tile_dirty_at.insert(tile, generation);
-            }
         }
         self.road_terrain_inputs.note(tiles.keys().copied());
         tiles.into_keys().collect()
@@ -632,21 +587,7 @@ impl SimCore {
         }
         self.heightmap.clear_render_patch_dirty(patch_x, patch_z);
         let key = (patch_x, patch_z);
-        if let Some(ledger) = self.refined_terrain_assembly_ledgers.get_mut(&key) {
-            if ledger
-                .full_dirty_at
-                .is_some_and(|stamp| stamp <= generation)
-            {
-                ledger.full_dirty_at = None;
-            }
-            ledger
-                .road_tile_dirty_at
-                .retain(|_, stamp| *stamp > generation);
-            if ledger.full_dirty_at.is_none() && ledger.road_tile_dirty_at.is_empty() {
-                self.refined_terrain_assembly_ledgers.remove(&key);
-            }
-            self.road_terrain_inputs.note([key]);
-        }
+        self.road_terrain_inputs.note([key]);
         true
     }
 
@@ -1949,7 +1890,7 @@ impl SimCore {
     // O(boxes × patches a box touches × log).
     fn mark_building_site_terrain_only_boxes(&mut self, boxes: &[(f32, f32, f32, f32)]) {
         let margin_m =
-            terrain_cdt_local_sample_margin_m(&self.heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+            terrain_local_sample_margin_m(&self.heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
         let mut dirty_patch_keys = Vec::new();
         for &bounds in boxes {
             self.allocator.mark_building_site_terrain_bounds_dirty(
@@ -1968,10 +1909,6 @@ impl SimCore {
         }
         dirty_patch_keys.sort_unstable();
         dirty_patch_keys.dedup();
-        self.refresh_site_terrain_patch_ownership_for_keys(
-            ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-            &dirty_patch_keys,
-        );
         self.bump_terrain_payload_patch_generations(&dirty_patch_keys);
         // A road-touched source near these sites queries them with a wider margin (`ROAD-68-E`).
         let sites_margin_m =
@@ -1991,142 +1928,29 @@ impl SimCore {
     }
 }
 
-/// The render patches and 64 m CDT tiles whose refined terrain a road edit changes, by patch
-/// (`ROAD-68-D`, `ROAD-68-E`). A tile reads the roads through the loops inside its halo, which
-/// is also the grading envelope cap, and through the building sites within the CDT's local
-/// sample margin of its window (`terrain_cdt_local_sample_margin_m`, less than the cap; the
-/// site feasibility margin, which reaches past the cap since `TERRAIN-07-F` T12, is not the
-/// CDT's). So a tile changes
-/// only within the cap of a changed chain segment, or within the cap of a changed piece when a
-/// site's bounds overlap its window grown by that margin. `site_bounds(patch, bounds, out)`
-/// appends the bounds `[min_x, min_z, max_x, max_z]` of the sites overlapping `bounds`, for the
-/// patch the windows are in; it is asked once per patch, for the union of its candidate
-/// windows, and each candidate is tested against those sites (`ROAD-68-D` part 6: one site
-/// query per patch, not per visited tile). The commit stamps these tiles; the preview builds
-/// the same. `O((changed segments + changed pieces) * covered tiles * log)` plus one site query
-/// per patch and `O(candidate tiles * sites near them)` tests.
+/// Render patches whose terrain presentation a road edit can change. Work is bounded by the
+/// changed pieces and the graded surface's fixed reach, independent of city size.
 pub(crate) fn road_terrain_tiles(
     heightmap: &crate::simulation::terrain::TerrainSystem,
     changes: &crate::simulation::network::roadbed::TerrainChanges,
-    mut site_bounds: impl FnMut((usize, usize), [f32; 4], &mut Vec<[f32; 4]>),
+    mut _site_bounds: impl FnMut((usize, usize), [f32; 4], &mut Vec<[f32; 4]>),
 ) -> BTreeMap<(usize, usize), BTreeSet<(i64, i64)>> {
-    use crate::simulation::terrain::{TERRAIN_CDT_TILE_SPAN_MM, terrain_cdt_local_sample_margin_m};
     let mut tiles = BTreeMap::<(usize, usize), BTreeSet<(i64, i64)>>::new();
-    visit_road_terrain_tiles(heightmap, &changes.chains, |key, tile, _| {
-        tiles.entry(key).or_default().insert(tile);
-    });
-    let site_margin_m =
-        terrain_cdt_local_sample_margin_m(heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M) + 1.0;
-    let span_m = TERRAIN_CDT_TILE_SPAN_MM as f64 / 1000.0;
-    // Tiles near a changed piece that no changed segment stamped, with their window grown by
-    // the site margin.
-    let mut candidates = BTreeMap::<(usize, usize), BTreeMap<(i64, i64), [f32; 4]>>::new();
-    visit_road_terrain_tiles(heightmap, &changes.pieces, |key, tile, patch| {
-        if tiles
-            .get(&key)
-            .is_some_and(|patch_tiles| patch_tiles.contains(&tile))
-        {
-            return;
-        }
-        candidates
-            .entry(key)
-            .or_default()
-            .entry(tile)
-            .or_insert_with(|| {
-                // The tile's window: the tile inside its patch.
-                let window = [
-                    (tile.0 as f64 * span_m).max(f64::from(patch.0)),
-                    (tile.1 as f64 * span_m).max(f64::from(patch.1)),
-                    ((tile.0 + 1) as f64 * span_m).min(f64::from(patch.2)),
-                    ((tile.1 + 1) as f64 * span_m).min(f64::from(patch.3)),
-                ]
-                .map(|value| value as f32);
-                [
-                    window[0] - site_margin_m,
-                    window[1] - site_margin_m,
-                    window[2] + site_margin_m,
-                    window[3] + site_margin_m,
-                ]
-            });
-    });
-    let mut sites = Vec::new();
-    for (key, patch_candidates) in candidates {
-        // A site overlapping a candidate overlaps their union, so one query sees them all.
-        let union = patch_candidates.values().fold(
-            [
-                f32::INFINITY,
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-                f32::NEG_INFINITY,
-            ],
-            |union, near| {
-                [
-                    union[0].min(near[0]),
-                    union[1].min(near[1]),
-                    union[2].max(near[2]),
-                    union[3].max(near[3]),
-                ]
-            },
-        );
-        sites.clear();
-        site_bounds(key, union, &mut sites);
-        if sites.is_empty() {
-            continue;
-        }
-        for (tile, near) in patch_candidates {
-            if sites.iter().any(|site| {
-                site[0] <= near[2] && site[2] >= near[0] && site[1] <= near[3] && site[3] >= near[1]
-            }) {
-                tiles.entry(key).or_default().insert(tile);
-            }
-        }
-    }
-    tiles
-}
-
-// Visits every patch and tile within the grading envelope cap of each bounds, with the patch's
-// world bounds; a tile may be visited more than once.
-fn visit_road_terrain_tiles(
-    heightmap: &crate::simulation::terrain::TerrainSystem,
-    changed_bounds: &[[f64; 4]],
-    mut visit: impl FnMut((usize, usize), (i64, i64), (f32, f32, f32, f32)),
-) {
-    let margin_m = f64::from(crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M);
+    let margin_m = crate::simulation::terrain::graded::INPUT_MAX_MARGIN_M;
     let mut keys = Vec::new();
-    for bounds in changed_bounds {
-        let reach = [
-            bounds[0] - margin_m,
-            bounds[1] - margin_m,
-            bounds[2] + margin_m,
-            bounds[3] + margin_m,
-        ];
-        keys.clear();
+    for bounds in changes.chains.iter().chain(&changes.pieces) {
         heightmap.append_render_patch_keys_for_world_bounds(
-            reach[0] as f32,
-            reach[1] as f32,
-            reach[2] as f32,
-            reach[3] as f32,
+            bounds[0] as f32 - margin_m,
+            bounds[1] as f32 - margin_m,
+            bounds[2] as f32 + margin_m,
+            bounds[3] as f32 + margin_m,
             &mut keys,
         );
-        for &key in &keys {
-            let Some(patch) = heightmap.render_patch_world_bounds(key.0, key.1) else {
-                continue;
-            };
-            let inside = [
-                reach[0].max(f64::from(patch.0)),
-                reach[1].max(f64::from(patch.1)),
-                reach[2].min(f64::from(patch.2)),
-                reach[3].min(f64::from(patch.3)),
-            ];
-            if inside[0] <= inside[2] && inside[1] <= inside[3] {
-                for tile in
-                    crate::simulation::terrain::terrain_cdt_tile_keys_for_world_bounds(inside)
-                {
-                    visit(key, tile, patch);
-                }
-            }
-        }
     }
+    keys.sort_unstable();
+    keys.dedup();
+    tiles.extend(keys.into_iter().map(|key| (key, BTreeSet::new())));
+    tiles
 }
 
 // The first slot of the hour after `slot`'s.

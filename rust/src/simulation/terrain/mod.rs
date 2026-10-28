@@ -1,22 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Heightmap terrain system used for road grade, raycasting, and rendering.
-//!
-//! Two height arrays are maintained: `source_data` (user-sculpted, never modified by roads)
-//! and `data` (derived visual terrain outside client-owned surfaces). Ordinary grounded roads do
-//! not stamp their footprint into either array; road-touched render patches receive stitched mesh
-//! topology from the road surface runtime instead.
+//! Authoritative heightmap terrain used for grading, raycasting, and rendering.
 
-pub(crate) mod cdt;
 pub mod chunks;
 pub mod graded;
-pub(crate) mod grading;
 mod patch_masks;
 pub(crate) mod rect_clip;
-pub mod rect_loops;
-mod visual;
-
-pub(crate) use visual::{TerrainSourceCapture, TerrainVisualSource};
 
 pub use chunks::{
     TerrainChunkAsset, TerrainChunkLoadError, TerrainChunkLodAsset, TerrainChunkLodManifest,
@@ -34,9 +23,9 @@ use crate::simulation::network::graph::RegionGraph;
 const DEFAULT_TERRAIN_CHUNK_CELLS: usize = 64;
 /// Texels of neighbouring terrain each render patch texture carries beyond its own samples.
 pub(crate) const TERRAIN_RENDER_PATCH_BORDER_TEXELS: usize = 4;
-const TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
-const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
-const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;
+const TERRAIN_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
+const TERRAIN_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
+const TERRAIN_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;
 // Local height revisions use the shared world-zero-aligned 512 m chunk grid. The margin covers
 // draped overlays owned by a chunk centre but reaching past it: an 80 m x 120 m parcel extends
 // at most 72 m, a cell under 8 m. One terrain cell is added for bilinear sampling.
@@ -47,31 +36,14 @@ const HEIGHT_REVISION_MARGIN_M: f32 = 96.0;
 pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
 /// Span of the fixed world-aligned terrain CDT tile, the CDT, cache and ledger unit inside a
 /// render patch, in millimetres.
-pub(crate) const TERRAIN_CDT_TILE_SPAN_MM: i64 = 64_000;
-/// Halo around a CDT tile from which its road and site loops are taken.
-pub(crate) const TERRAIN_CDT_TILE_HALO_M: f32 = 64.0;
-
-/// CDT tile keys `(x, z)` whose tiles overlap world bounds, row by row (`ROAD-68-D`).
-pub(crate) fn terrain_cdt_tile_keys_for_world_bounds(
-    bounds: [f64; 4],
-) -> impl Iterator<Item = (i64, i64)> {
-    let tile = |value: f64, end: bool| {
-        let mm = (value * 1000.0).round() as i64;
-        (if end { mm - 1 } else { mm }).div_euclid(TERRAIN_CDT_TILE_SPAN_MM)
-    };
-    let (min_x, max_x) = (tile(bounds[0], false), tile(bounds[2], true));
-    let (min_z, max_z) = (tile(bounds[1], false), tile(bounds[3], true));
-    (min_z..=max_z).flat_map(move |z| (min_x..=max_x).map(move |x| (x, z)))
-}
-
-/// Returns the deterministic seam margin used by local terrain-CDT windows.
-pub(crate) fn terrain_cdt_local_sample_margin_m(
+/// Returns the deterministic margin used by bounded terrain grading queries.
+pub(crate) fn terrain_local_sample_margin_m(
     terrain: &TerrainSystem,
     render_step_m: f32,
 ) -> f32 {
-    TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M
-        .max(render_step_m.max(f32::EPSILON) * TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS)
-        .max(terrain.cell_size_m() * TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS)
+    TERRAIN_LOCAL_MIN_SAMPLE_MARGIN_M
+        .max(render_step_m.max(f32::EPSILON) * TERRAIN_LOCAL_SAMPLE_MARGIN_RENDER_STEPS)
+        .max(terrain.cell_size_m() * TERRAIN_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS)
 }
 
 /// Expands a road grading margin by the patch-selection safety pad used around grading rays.
@@ -79,7 +51,7 @@ pub(crate) fn terrain_cdt_local_sample_margin_m(
 /// A patch can be selected by the pad even when the road seam lies just beyond the unpadded
 /// grading margin. Clip-source queries must include the same pad or that selected patch can be
 /// misclassified as road-owned with no road sources.
-pub(crate) fn terrain_cdt_road_query_margin_m(
+pub(crate) fn terrain_road_query_margin_m(
     terrain: &TerrainSystem,
     render_step_m: f32,
     grading_margin_m: f32,
@@ -114,7 +86,7 @@ pub(crate) struct TerrainPatchSnapshot {
     pub world_size_x: f32,
     /// Patch height in world metres.
     pub world_size_z: f32,
-    /// Row-major visual-terrain samples including the border ring.
+    /// Row-major source-terrain samples including the border ring.
     pub height_data: Vec<f32>,
 }
 
@@ -141,7 +113,7 @@ pub(crate) fn render_frame_local(world_m: f64, centre_m: f32) -> f32 {
     (world_m - f64::from(centre_m)) as f32
 }
 
-/// Dual-buffer heightmap for the terrain surface.
+/// Authoritative heightmap for the terrain surface.
 #[derive(Clone)]
 pub struct TerrainSystem {
     /// Map width in height samples.
@@ -154,15 +126,10 @@ pub struct TerrainSystem {
     chunk_span_m: f32,
     /// Number of terrain intervals owned by one render patch along one axis.
     render_patch_interval_cells: usize,
-    /// Derived visual heightmap outside client-owned surfaces.
-    data: SparseChunkGrid<f32>,
-    /// Source heightmap as sculpted by the player, without road modifications.
-    /// Used for road grade calculation and slope cost — never written by road placement.
+    /// Source heightmap sculpted by the player and never written by road placement.
     source_data: SparseChunkGrid<f32>,
     /// Monotonic revision of authoritative terrain samples used by derived-query caches.
     source_generation: u64,
-    /// Revision of visual-only resets/writes; source edits are covered by source_generation.
-    visual_generation: u64,
     /// Render patches whose visible terrain textures must be refreshed.
     dirty_render_patches: HashSet<(usize, usize)>,
     /// Latest local height revision per 512 m region, including writes within the draping margin.
@@ -171,6 +138,60 @@ pub struct TerrainSystem {
     height_revision: u64,
     /// Revision of the latest whole-grid replacement; every region is at least this new.
     height_epoch: u64,
+}
+
+/// Bounded capture of source samples used to validate the site-feasibility cache.
+#[derive(Debug)]
+pub(crate) struct TerrainSourceCapture {
+    data: SparseChunkGrid<f32>,
+    // Explicit coverage distinguishes a reset-to-default chunk from an untouched sparse chunk.
+    chunks: HashSet<(usize, usize)>,
+}
+
+impl TerrainSourceCapture {
+    /// Starts an empty capture against the supplied terrain layout.
+    pub(crate) fn new(terrain: &TerrainSystem) -> Self {
+        Self {
+            data: terrain.source_data.empty_like(),
+            chunks: HashSet::new(),
+        }
+    }
+
+    /// Captures the source storage chunks intersecting the world bounds.
+    pub(crate) fn capture_region(
+        &mut self,
+        terrain: &TerrainSystem,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) {
+        let Some((x0, x1, z0, z1)) = terrain.grid_rect_for_world_bounds(min_x, min_z, max_x, max_z)
+        else {
+            return;
+        };
+        let size = self.data.chunk_size();
+        for z in z0 / size..=z1 / size {
+            for x in x0 / size..=x1 / size {
+                if self.chunks.insert((x, z)) {
+                    self.data.copy_rect_from(
+                        &terrain.source_data,
+                        x * size,
+                        (x + 1) * size - 1,
+                        z * size,
+                        (z + 1) * size - 1,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether every captured source sample still holds its value, exactly.
+    pub(crate) fn matches_current(&self, terrain: &TerrainSystem) -> bool {
+        self.chunks
+            .iter()
+            .all(|&(x, z)| self.data.chunk_values_match(&terrain.source_data, x, z))
+    }
 }
 
 impl TerrainSystem {
@@ -195,10 +216,8 @@ impl TerrainSystem {
             cell_size: safe_cell_size,
             chunk_span_m: safe_cell_size * safe_chunk_size.saturating_sub(1) as f32,
             render_patch_interval_cells: safe_chunk_size.saturating_sub(1).max(1),
-            data: SparseChunkGrid::new(width, height, safe_chunk_size, base_elevation),
             source_data: SparseChunkGrid::new(width, height, safe_chunk_size, base_elevation),
             source_generation: 0,
-            visual_generation: 0,
             dirty_render_patches: HashSet::new(),
             height_region_revisions: HashMap::new(),
             height_revision: 0,
@@ -232,7 +251,6 @@ impl TerrainSystem {
         if x < self.width && y < self.height {
             self.source_generation = self.source_generation.wrapping_add(1);
             self.source_data.set(x, y, value);
-            self.data.set(x, y, value);
             self.mark_render_patches_for_grid_rect(x, x, y, y);
         }
     }
@@ -253,12 +271,6 @@ impl TerrainSystem {
         self.get_height_interpolated(grid_x, grid_z)
     }
 
-    /// Samples the current visual terrain buffer at one world-space position.
-    pub(crate) fn sample_visual_height_world(&self, world_x: f32, world_z: f32) -> f32 {
-        let (grid_x, grid_z) = self.world_to_grid_coords(world_x, world_z);
-        self.interpolate_grid_height(&self.data, grid_x, grid_z)
-    }
-
     /// Returns the terrain sample spacing in metres.
     pub(crate) fn cell_size_m(&self) -> f32 {
         self.cell_size
@@ -269,12 +281,7 @@ impl TerrainSystem {
         self.source_generation
     }
 
-    /// Visual-only revision, checked together with the authoritative source revision.
-    pub(crate) fn visual_generation(&self) -> u64 {
-        self.visual_generation
-    }
-
-    /// Returns the latest source or visual height change that can move a draped overlay owned by
+    /// Returns the latest source height change that can move a draped overlay owned by
     /// one world-zero-aligned 512 m chunk. O(1); unrelated edits elsewhere leave it unchanged.
     pub(crate) fn height_revision_for_chunk(&self, chunk: (i32, i32)) -> u64 {
         self.height_region_revisions
@@ -284,7 +291,7 @@ impl TerrainSystem {
             .max(self.height_epoch)
     }
 
-    // O(regions touched); called after every local source or visual sample write.
+    // O(regions touched); called after every local source sample write.
     fn record_height_grid_rect(&mut self, min_x: usize, max_x: usize, min_z: usize, max_z: usize) {
         self.height_revision += 1;
         let (x0, z0) = self.grid_to_world_coords(min_x, min_z);
@@ -339,23 +346,13 @@ impl TerrainSystem {
 
     /// Casts a ray against the terrain surface and returns the intersection point.
     pub fn raycast_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Option<Vector3> {
-        self.raycast_height_field(ray_origin, ray_dir, false)
-    }
-
-    /// Casts a ray against the current visual terrain surface.
-    pub(crate) fn raycast_visual_terrain(
-        &self,
-        ray_origin: Vector3,
-        ray_dir: Vector3,
-    ) -> Option<Vector3> {
-        self.raycast_height_field(ray_origin, ray_dir, true)
+        self.raycast_height_field(ray_origin, ray_dir)
     }
 
     fn raycast_height_field(
         &self,
         ray_origin: Vector3,
         ray_dir: Vector3,
-        visual: bool,
     ) -> Option<Vector3> {
         let (half_w, half_h) = self.half_world_extents();
         let (entry_t, exit_t) = raycast_xz_interval(ray_origin, ray_dir, half_w, half_h)?;
@@ -368,12 +365,12 @@ impl TerrainSystem {
         };
         let prev_point = ray_origin + ray_dir * prev_t;
         let mut prev_diff = prev_point.y
-            - self.sample_height_world_impl(prev_point.x, prev_point.z, visual) * HEIGHT_SCALE;
+            - self.sample_height_world(prev_point.x, prev_point.z) * HEIGHT_SCALE;
 
         while prev_t < max_t {
             let t = (prev_t + step).min(max_t);
             let p = ray_origin + ray_dir * t;
-            let h = self.sample_height_world_impl(p.x, p.z, visual) * HEIGHT_SCALE;
+            let h = self.sample_height_world(p.x, p.z) * HEIGHT_SCALE;
             let diff = p.y - h;
 
             if diff == 0.0 || diff.signum() != prev_diff.signum() {
@@ -383,7 +380,7 @@ impl TerrainSystem {
                 for _ in 0..8 {
                     let t_mid = (t_low + t_high) * 0.5;
                     let pm = ray_origin + ray_dir * t_mid;
-                    let hm = self.sample_height_world_impl(pm.x, pm.z, visual) * HEIGHT_SCALE;
+                    let hm = self.sample_height_world(pm.x, pm.z) * HEIGHT_SCALE;
                     if (pm.y - hm).signum() == prev_diff.signum() {
                         t_low = t_mid;
                     } else {
@@ -399,14 +396,6 @@ impl TerrainSystem {
         }
 
         None
-    }
-
-    fn sample_height_world_impl(&self, world_x: f32, world_z: f32, visual: bool) -> f32 {
-        if visual {
-            self.sample_visual_height_world(world_x, world_z)
-        } else {
-            self.sample_height_world(world_x, world_z)
-        }
     }
 
     /// Modifies terrain height in a circular area with smooth falloff.
@@ -442,7 +431,6 @@ impl TerrainSystem {
                     let next_h = current_h + strength * falloff;
 
                     self.source_data.set(ux, uy, next_h);
-                    self.data.set(ux, uy, next_h);
                 }
             }
         }
@@ -494,7 +482,6 @@ impl TerrainSystem {
                     };
 
                     self.source_data.set(ux, uy, next_h);
-                    self.data.set(ux, uy, next_h);
                 }
             }
         }
@@ -576,7 +563,6 @@ impl TerrainSystem {
                 };
 
                 self.source_data.set(ux, uy, next_h);
-                self.data.set(ux, uy, next_h);
             }
         }
     }
@@ -653,51 +639,8 @@ impl TerrainSystem {
                 };
 
                 self.source_data.set(ux, uy, next_h);
-                self.data.set(ux, uy, next_h);
             }
         }
-    }
-
-    /// Synchronizes the visual data buffer with the source data.
-    pub fn reset_visuals_from_source(&mut self) {
-        self.visual_generation = self.visual_generation.wrapping_add(1);
-        self.data = self.source_data.clone();
-        self.mark_all_render_patches_dirty();
-    }
-
-    /// Synchronizes one world-space visual region from the authoritative source terrain.
-    pub(crate) fn reset_visual_region_from_source_world(
-        &mut self,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) {
-        let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) =
-            self.grid_rect_for_world_bounds(min_x, min_z, max_x, max_z)
-        else {
-            return;
-        };
-
-        self.dirty_render_patches_for_grid_rect(min_grid_x, max_grid_x, min_grid_z, max_grid_z);
-
-        self.visual_generation = self.visual_generation.wrapping_add(1);
-        // Road earthwork resets whole surface chunks; only samples that differ move overlays.
-        if let Some((x0, x1, z0, z1)) = self.data.copy_rect_from(
-            &self.source_data,
-            min_grid_x,
-            max_grid_x,
-            min_grid_z,
-            max_grid_z,
-        ) {
-            self.record_height_grid_rect(x0, x1, z0, z1);
-        }
-    }
-
-    /// Returns a dense row-major snapshot of the visual terrain buffer.
-    #[cfg(test)]
-    pub(crate) fn clone_visual_dense(&self) -> Vec<f32> {
-        self.data.clone_dense()
     }
 
     /// Returns a dense row-major snapshot of the authoritative source terrain buffer.
@@ -712,15 +655,6 @@ impl TerrainSystem {
             .into_iter()
             .map(|sample| sample * HEIGHT_SCALE)
             .collect()
-    }
-
-    /// Replaces the visual terrain buffer from a dense row-major snapshot.
-    #[cfg(test)]
-    pub(crate) fn replace_visual_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
-        self.data.replace_from_dense(dense)?;
-        self.visual_generation = self.visual_generation.wrapping_add(1);
-        self.mark_all_render_patches_dirty();
-        Ok(())
     }
 
     /// Replaces the authoritative source terrain buffer from a dense row-major snapshot.
@@ -874,8 +808,8 @@ impl TerrainSystem {
         }
     }
 
-    /// Returns one visual-terrain render patch with a neighboring-sample border ring.
-    pub(crate) fn visual_patch_snapshot(
+    /// Returns one source-terrain render patch with a neighboring-sample border ring.
+    pub(crate) fn source_patch_snapshot(
         &self,
         patch_x: usize,
         patch_z: usize,
@@ -897,7 +831,7 @@ impl TerrainSystem {
             .min(self.height - 1);
         let destination_x = TERRAIN_RENDER_PATCH_BORDER_TEXELS.saturating_sub(start_x);
         let destination_z = TERRAIN_RENDER_PATCH_BORDER_TEXELS.saturating_sub(start_z);
-        self.data.copy_rect_into(
+        self.source_data.copy_rect_into(
             source_min_x,
             source_max_x,
             source_min_z,
@@ -1120,7 +1054,7 @@ impl TerrainSystem {
         let (world_x, world_z) = self.grid_to_world_coords(grid_x, grid_z);
         Vector3::new(
             world_x,
-            self.data.get(grid_x, grid_z) * HEIGHT_SCALE,
+            self.source_data.get(grid_x, grid_z) * HEIGHT_SCALE,
             world_z,
         )
     }
@@ -1170,22 +1104,6 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn visual_height_uses_bilinear_visual_cells_in_world_units() {
-        let mut terrain = TerrainSystem::with_chunking(9, 9, 2.0, 4, 0.0);
-        let field = |x: f32, z: f32| 5.0 + 0.2 * x - 0.3 * z + 0.04 * x * z;
-        let visual: Vec<_> = (0..9)
-            .flat_map(|z| (0..9).map(move |x| (x, z)))
-            .map(|(x, z)| field((x as f32 - 4.0) * 2.0, (z as f32 - 4.0) * 2.0) / HEIGHT_SCALE)
-            .collect();
-        terrain.replace_visual_from_dense(&visual).unwrap();
-        for (x, z) in [(-7.3, -6.1), (0.7, 1.3), (5.2, 6.8), (-20.0, 20.0)] {
-            let height = terrain.sample_visual_height_world(x, z) * HEIGHT_SCALE;
-            assert!((height - field(x.clamp(-8.0, 8.0), z.clamp(-8.0, 8.0))).abs() < 1e-5);
-            assert_eq!(terrain.sample_height_world(x, z), 0.0);
-        }
-    }
-
-    #[test]
     fn height_revisions_follow_changed_samples_per_512m_chunk() {
         // 2048 m world centred on zero: chunks -2..=1 on each axis, 8 m samples.
         let mut terrain = TerrainSystem::with_chunking(257, 257, 8.0, 64, 0.0);
@@ -1206,11 +1124,10 @@ mod tests {
         assert_eq!(revision(&terrain, (1, 0)), revision(&terrain, (0, 0)));
         assert_eq!(revision(&terrain, (-1, 0)), 0);
 
-        // Resetting identical visual samples changes nothing a draped overlay can see.
+        // Unchanged source samples do not move a draped overlay.
         let before: Vec<_> = [(0, 0), (1, 0), (-2, -2)]
             .map(|chunk| revision(&terrain, chunk))
             .into();
-        terrain.reset_visual_region_from_source_world(-1024.0, -1024.0, 1024.0, 1024.0);
         let after: Vec<_> = [(0, 0), (1, 0), (-2, -2)]
             .map(|chunk| revision(&terrain, chunk))
             .into();
@@ -1297,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn visual_patch_snapshot_border_ring_samples_neighboring_terrain() {
+    fn source_patch_snapshot_border_ring_samples_neighboring_terrain() {
         let mut terrain =
             TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0).with_render_chunk_span(30.0);
         terrain.set_height(2, 3, 22.0);
@@ -1306,7 +1223,7 @@ mod tests {
         terrain.set_height(7, 7, 77.0);
 
         let patch = terrain
-            .visual_patch_snapshot(1, 1)
+            .source_patch_snapshot(1, 1)
             .expect("patch (1,1) should exist on a 9x9 terrain");
 
         assert_eq!(patch.patch_x, 1);

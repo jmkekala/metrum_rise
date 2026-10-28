@@ -3,7 +3,6 @@
 //! Async terrain and water request state types.
 
 use super::super::*;
-use crate::nodes::sim::core::RefinedTerrainAssemblyScope;
 
 /// Async water mesh preparation state shared with Rayon jobs.
 pub(crate) struct WaterPatchMeshAsyncState {
@@ -114,14 +113,6 @@ pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadData {
         patch: TerrainPatchSnapshot,
         height_bytes: Vec<u8>,
     },
-    Refined {
-        patch: Arc<CachedRefinedTerrainPatch>,
-    },
-    /// Diagnostic-only refined payload for a current generation that must not render raw terrain.
-    RefinedFailure {
-        patch: Arc<CachedRefinedTerrainPatch>,
-        error_label: &'static str,
-    },
 }
 
 pub(in crate::nodes::simulation_node) struct TerrainPatchPayload {
@@ -137,11 +128,7 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayload {
 impl TerrainPatchPayload {
     /// Bakes this payload's shading masks; called off the main thread before publication.
     pub(in crate::nodes::simulation_node) fn bake_shading_masks(&mut self) {
-        let patch = match &self.data {
-            TerrainPatchPayloadData::Regular { patch, .. } => patch,
-            TerrainPatchPayloadData::Refined { patch } => &patch.patch,
-            TerrainPatchPayloadData::RefinedFailure { .. } => return,
-        };
+        let TerrainPatchPayloadData::Regular { patch, .. } = &self.data;
         self.mask_bytes = patch.shading_mask_bytes();
     }
 }
@@ -150,50 +137,6 @@ impl TerrainPatchPayload {
 pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadRequestState {
     pub(in crate::nodes::simulation_node) request_id: u64,
     pub(in crate::nodes::simulation_node) surface_generation: u64,
-}
-
-pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadBuildJob {
-    Ready(TerrainPatchPayload),
-    Failed(TerrainPatchPayloadRequest),
-    // Boxed: the input dwarfs the other variants; one box per refined patch job.
-    Refined {
-        request: TerrainPatchPayloadRequest,
-        input: Box<RefinedTerrainPatchBuildInput>,
-    },
-}
-
-pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadBuildSource {
-    Ready(TerrainPatchPayload),
-    Refined(RefinedTerrainPatchBuildSource),
-}
-
-#[cfg(test)]
-impl TerrainPatchPayloadBuildSource {
-    pub(in crate::nodes::simulation_node) fn is_ready(&self) -> bool {
-        matches!(self, Self::Ready(_))
-    }
-
-    pub(in crate::nodes::simulation_node) fn previous_surface_generation(&self) -> Option<u64> {
-        let Self::Refined(source) = self else {
-            return None;
-        };
-        source
-            .previous
-            .as_ref()
-            .map(|previous| previous.surface_generation)
-    }
-}
-
-pub(in crate::nodes::simulation_node) struct RefinedTerrainPatchBuildSource {
-    pub(in crate::nodes::simulation_node) request: TerrainPatchPayloadRequest,
-    pub(in crate::nodes::simulation_node) patch: TerrainPatchSnapshot,
-    pub(in crate::nodes::simulation_node) previous: Option<Arc<CachedRefinedTerrainPatch>>,
-    pub(in crate::nodes::simulation_node) assembly_scope: RefinedTerrainAssemblyScope,
-    pub(in crate::nodes::simulation_node) requires_engineered_refinement: bool,
-    pub(in crate::nodes::simulation_node) requires_road_clipping: bool,
-    pub(in crate::nodes::simulation_node) road_locked_margin_m: f32,
-    pub(in crate::nodes::simulation_node) road_surface_generation: u64,
-    pub(in crate::nodes::simulation_node) sites: BuildingSiteTerrainSnapshot,
 }
 
 pub(in crate::nodes::simulation_node) struct WaterPatchPayload {

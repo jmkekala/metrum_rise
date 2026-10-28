@@ -49,7 +49,7 @@ impl SimCore {
             self.world_epoch,
             self.watermap.render_generation(),
             self.heightmap.source_generation(),
-            self.heightmap.visual_generation(),
+            self.heightmap.source_generation(),
         ];
         if key == self.mist_map_key {
             return;

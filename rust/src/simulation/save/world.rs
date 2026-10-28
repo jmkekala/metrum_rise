@@ -1101,7 +1101,6 @@ pub(super) fn load_terrain(
     let source_dense = unpack_f32_blob(&blob, w * h)?;
     t.replace_source_from_dense(&source_dense)
         .map_err(SaveLoadError::custom)?;
-    t.reset_visuals_from_source();
     Ok(t)
 }
 

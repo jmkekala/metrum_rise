@@ -8,6 +8,7 @@
 use super::SimCore;
 use super::road_edit_order::committed;
 use super::road_reference_probe::reference_fixtures;
+use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use godot::prelude::{Vector2, Vector3};
 
@@ -66,4 +67,63 @@ fn surface_queries_answer_from_the_graded_surface() {
         on_road > 0 && graded > 0,
         "road {on_road}, graded ground {graded}"
     );
+}
+
+fn reset_and_commit(core: &mut SimCore, fixture: usize, rise_m: f32) {
+    core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+        .expect("blank world");
+    core.treasury.balance = 1.0e9;
+    if rise_m > 0.0 {
+        core.slope_terrain_internal(
+            Vector2::ZERO,
+            256.0,
+            Vector2::new(-128.0, 0.0),
+            0.0,
+            Vector2::new(128.0, 0.0),
+            rise_m,
+            1.0,
+        );
+    }
+    let (_, strokes, order) = reference_fixtures().swap_remove(fixture);
+    for index in order {
+        let (ends, lanes) = strokes[index];
+        let points = ends
+            .map(|point| {
+                Vector3::new(
+                    point.x,
+                    core.get_world_surface_height_internal(point),
+                    point.y,
+                )
+            })
+            .to_vec();
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points,
+                fwd_lanes: lanes,
+                bkw_lanes: lanes,
+                snap_to_existing_roads: true,
+                preview: None,
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert!(outcome.committed, "stroke {index}: {}", outcome.rejection);
+    }
+}
+
+#[test]
+fn steep_t_near_query_matches_the_canonical_grade_at_the_south_reach() {
+    let (_, strokes, order) = reference_fixtures().swap_remove(0);
+    let mut core = committed(&strokes, &order, false);
+    reset_and_commit(&mut core, 0, 20.48);
+    let surface = GradedSurface {
+        terrain: &core.heightmap,
+        roadbed: &core.transit_network.roadbed,
+        sites: &core.allocator,
+        query_index: Some(&core.terrain_query_index),
+    };
+    let mut scratch = QueryScratch::default();
+    let (x, z) = (29.180_641_174_316_406, -96.002_975_463_867_19);
+    surface.gather_near(x + 6.0, z + 6.0, 6.01, &mut scratch);
+    let _ = surface.ground_height_near(x, z, &mut scratch);
 }

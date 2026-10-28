@@ -8,8 +8,7 @@ use super::derive::{
 };
 use super::geometry::{signed_polygon_area, site_radius_m};
 use super::grading::{
-    BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M, BuildingSiteGradingRequest,
-    SiteGradingContext, SiteGradingGuideSink, append_building_site_grading_guides,
+    BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M, SiteGradingContext,
     building_site_raw_tie_in_target_height, building_site_road_connection_lateral_offset_m,
     nearest_building_site_road_surface_sample,
 };
@@ -24,11 +23,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
-use crate::simulation::terrain::cdt::{
-    TerrainCdtInput, TerrainCdtPatch, TerrainCdtVertex, build_road_touched_terrain_patch,
-};
 use godot::prelude::{Vector2, Vector3};
-use std::collections::HashSet;
 
 #[test]
 fn site_radius_is_measured_from_the_indexed_lot_center() {
@@ -507,140 +502,6 @@ fn site_raycast_uses_physical_support_not_paving_offset() {
         .expect("ray should hit site surface");
 
     assert!((hit.y - 2.0).abs() <= f32::EPSILON);
-}
-
-#[test]
-fn site_grading_guides_are_soft_samples_outside_flat_support() {
-    let site = BuildingSiteClient {
-        support_height_m: 4.0,
-        surfaces: Vec::new(),
-        ..square_site_with_surface()
-    };
-    let terrain = TerrainSystem::with_chunking(8, 8, 1.0, 4, 0.0);
-    let graph = RegionGraph::new();
-    let road_surface = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
-    let mut samples = Vec::new();
-    let mut sample_keys = HashSet::new();
-
-    let context = SiteGradingContext::new(&terrain, &graph, &road_surface, 2.0, 16.0);
-    let mut sink = SiteGradingGuideSink::new(&mut samples, &mut sample_keys);
-    append_building_site_grading_guides(&site, &context, &mut sink);
-
-    assert!(
-        samples.iter().any(|sample| {
-            (sample.vertex.x + 6.0).abs() <= 0.001
-                && sample.vertex.z.abs() <= 1.001
-                && sample.vertex.height_m.abs() <= 0.001
-        }),
-        "apron samples must share the source terrain authority; CDT owns the final grade"
-    );
-    assert!(samples.iter().all(|sample| {
-        !site.contains_point(Vector2::new(sample.vertex.x as f32, sample.vertex.z as f32))
-    }));
-}
-
-#[test]
-fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
-    let terrain = TerrainSystem::with_chunking(257, 65, 1.0, 64, 0.0);
-    let graph = RegionGraph::new();
-    let road_surface = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
-    let snapshot = BuildingSiteTerrainSnapshot {
-        sites: vec![BuildingSiteTerrainClient {
-            surfaces: Vec::new(),
-            building_idx: 0,
-            lot_center: Vector2::new(60.0, 12.0),
-            footprint_world: vec![
-                Vector2::new(58.0, 10.0),
-                Vector2::new(62.0, 10.0),
-                Vector2::new(62.0, 14.0),
-                Vector2::new(58.0, 14.0),
-            ],
-            support_height_m: 4.0,
-        }],
-        max_site_radius_m: 3.0,
-    };
-    let mut samples = Vec::new();
-    let mut sample_keys = HashSet::new();
-
-    snapshot.append_terrain_cdt_site_grading_guides_for_world_bounds(
-        BuildingSiteGradingRequest::new(
-            &terrain,
-            SiteRoads::new(&graph, &road_surface),
-            (64.0, 0.0, 128.0, 64.0),
-            2.0,
-        ),
-        &mut samples,
-        &mut sample_keys,
-    );
-
-    assert!(
-        samples.iter().any(|sample| {
-            (sample.vertex.x - 64.0).abs() <= 0.001
-                && (sample.vertex.z - 12.0).abs() <= 0.001
-                && sample.vertex.height_m.abs() <= 0.001
-        }),
-        "the apron must enter the right tile even though the site footprint ends at x=62"
-    );
-}
-
-#[test]
-fn terrain_site_snapshot_preserves_stable_cdt_ownership() {
-    let mut allocator = BuildingAllocator::new();
-    allocator.push_site_client(square_site_with_surface());
-    let snapshot = allocator.terrain_site_snapshot_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
-    let direct = snapshot.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
-
-    assert_eq!(direct.len(), 1);
-    assert_eq!(
-        direct[0].vertices.len(),
-        allocator.building_sites[0].footprint_world.len()
-    );
-    for (vertex, point) in direct[0]
-        .vertices
-        .iter()
-        .zip(&allocator.building_sites[0].footprint_world)
-    {
-        assert_eq!(
-            (vertex.x, vertex.z),
-            (f64::from(point.x), f64::from(point.y))
-        );
-        assert_eq!(
-            vertex.height_m,
-            allocator.building_sites[0].support_height_m
-        );
-    }
-}
-
-#[test]
-fn neighboring_different_height_site_loops_with_grading_space_compile() {
-    let mut allocator = BuildingAllocator::new();
-    allocator
-        .building_sites
-        .push(flat_site_from_bounds(-5.0, -5.0, -1.0, 5.0, 0.0));
-    allocator
-        .building_sites
-        .push(flat_site_from_bounds(1.0, -5.0, 5.0, 5.0, 1.0));
-    let loops = allocator
-        .terrain_site_snapshot_for_world_bounds(-8.0, -8.0, 8.0, 8.0)
-        .terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
-    let source_samples = vec![
-        TerrainCdtVertex::new(-8.0, 0.0, -8.0),
-        TerrainCdtVertex::new(-8.0, 0.0, 8.0),
-        TerrainCdtVertex::new(8.0, 0.0, 8.0),
-        TerrainCdtVertex::new(8.0, 0.0, -8.0),
-    ];
-
-    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
-        TerrainCdtPatch::new(-8.0, -8.0, 8.0, 8.0, [0.0; 4]),
-        loops,
-        source_samples,
-    ))
-    .expect("different-height pads reserve space outside their footprints for grading");
-
-    assert_eq!(
-        mesh.stats.building_site_constraint_edges, mesh.stats.road_constraint_edges,
-        "site CDT ownership loops must be tracked separately from hard road seams"
-    );
 }
 
 #[test]

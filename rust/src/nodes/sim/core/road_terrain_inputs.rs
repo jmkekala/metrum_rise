@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::state::SimCore;
-use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
+use crate::simulation::terrain::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
 
 /// One render patch's inputs to the preview's graded tiles, as the core held them.
@@ -196,10 +196,10 @@ pub(crate) fn road_terrain_sites_margin_m(
 ) -> f32 {
     let step_m = ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
     let site_margin_m =
-        crate::simulation::terrain::terrain_cdt_local_sample_margin_m(heightmap, step_m);
-    crate::simulation::terrain::terrain_cdt_road_query_margin_m(
+        crate::simulation::terrain::terrain_local_sample_margin_m(heightmap, step_m);
+    crate::simulation::terrain::terrain_road_query_margin_m(
         heightmap,
         step_m,
-        crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M.max(site_margin_m),
+        crate::simulation::terrain::graded::INPUT_MAX_MARGIN_M.max(site_margin_m),
     ) + 1.0
 }

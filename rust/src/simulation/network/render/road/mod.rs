@@ -6,6 +6,7 @@ use crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{RoadVec3, RoadbedSystem, SurfaceChunkKey};
 use crate::simulation::terrain::render_frame_local;
+use crate::simulation::terrain::graded::{NoSites, SiteSource};
 use crate::{debug, debug_log};
 use godot::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,6 +58,7 @@ impl RoadRenderer {
             graph,
             terrain,
             roadbed,
+            &NoSites,
             &compiled_surface,
             &compiled_surface,
         );
@@ -81,6 +83,7 @@ impl RoadRenderer {
         graph: &RegionGraph,
         lane_system: &mut crate::simulation::network::lanes::LaneSystem,
         terrain: &crate::simulation::terrain::TerrainSystem,
+        sites: &dyn SiteSource,
         roadbed: &RoadbedSystem,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
         lanes_built_after: Option<u64>,
@@ -105,6 +108,7 @@ impl RoadRenderer {
                 graph,
                 terrain,
                 roadbed,
+                sites,
                 target_chunks,
                 pieces,
                 &compiled_surface,
@@ -161,6 +165,7 @@ impl RoadRenderer {
         &self,
         graph: &RegionGraph,
         terrain: &crate::simulation::terrain::TerrainSystem,
+        sites: &dyn SiteSource,
         roadbed: &RoadbedSystem,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
         built_after: u64,
@@ -176,6 +181,7 @@ impl RoadRenderer {
             graph,
             terrain,
             roadbed,
+            sites,
             target_chunks,
             &coverage.rebuilt(),
             &coverage,
@@ -192,6 +198,7 @@ fn emit_chunks(
     graph: &RegionGraph,
     terrain: &crate::simulation::terrain::TerrainSystem,
     roadbed: &RoadbedSystem,
+    sites: &dyn SiteSource,
     target_chunks: &BTreeSet<SurfaceChunkKey>,
     pieces: &CompiledSurfaceCoverage,
     covered: &CompiledSurfaceCoverage,
@@ -203,7 +210,7 @@ fn emit_chunks(
         chunk_origin_z_m,
         target_chunks.clone(),
     );
-    emit_into(&mut mesh, graph, terrain, roadbed, pieces, covered);
+    emit_into(&mut mesh, graph, terrain, roadbed, sites, pieces, covered);
     mesh.into_partitioned_chunks()
 }
 
@@ -215,6 +222,7 @@ fn emit_into(
     graph: &RegionGraph,
     terrain: &crate::simulation::terrain::TerrainSystem,
     roadbed: &RoadbedSystem,
+    sites: &dyn SiteSource,
     pieces: &CompiledSurfaceCoverage,
     covered: &CompiledSurfaceCoverage,
 ) {
@@ -226,7 +234,9 @@ fn emit_into(
             || {
                 crosswalks::prepare_crosswalks(mesh, graph, roadbed, pieces);
                 standard_surface::emit_piece_surfaces(mesh, graph, roadbed, pieces);
-                standard_surface::emit_bridge_structures(mesh, graph, roadbed, terrain, pieces);
+                standard_surface::emit_bridge_structures(
+                    mesh, graph, roadbed, terrain, sites, pieces,
+                );
                 standard_surface::emit_compiled_lane_markings(mesh, graph, roadbed, pieces);
             },
             || {

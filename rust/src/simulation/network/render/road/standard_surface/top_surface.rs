@@ -201,6 +201,7 @@ mod tests {
             &graph,
             &mut LaneSystem::new(),
             &TerrainSystem::new(4, 4),
+            &crate::simulation::terrain::graded::NoSites,
             &roadbed,
             &targets,
             None,

@@ -7,39 +7,16 @@ use super::async_terrain::{
     TerrainPatchPayloadKey, TerrainPatchPayloadRequest, WaterPatchPayloadAsyncState,
     WaterPatchPayloadKey,
 };
-use super::variant_export::{
-    TerrainCdtSourceExport, TerrainCdtTriangleBufferExport, TerrainCdtWindowBounds,
-};
-#[cfg(test)]
 use super::*;
 use crate::nodes::sim::core::CityTreasury;
 use crate::simulation::terrain::TerrainPatchSnapshot;
-use crate::simulation::terrain::cdt::{
-    TerrainCdtRoadLoopSourceEdge, TerrainCdtRoadPiece, TerrainCdtRoadSupport,
-};
 use crate::simulation::water::WaterSystem;
 
 mod async_payload;
-mod cdt;
-mod cdt_roadbed;
 mod global_pool;
 mod road_tool;
 mod shutdown;
 mod zoning;
-
-fn export_has_world_xz(
-    export: &TerrainCdtTriangleBufferExport,
-    patch: &TerrainPatchSnapshot,
-    world_x: f32,
-    world_z: f32,
-) -> bool {
-    let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
-    let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
-    export.vertices.iter().any(|vertex| {
-        (vertex.x - (world_x - center_x)).abs() <= 0.001
-            && (vertex.z - (world_z - center_z)).abs() <= 0.001
-    })
-}
 
 fn test_patch() -> TerrainPatchSnapshot {
     TerrainPatchSnapshot {
@@ -91,80 +68,6 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
     graph
 }
 
-fn test_cached_refined_terrain_patch(
-    contract_revision: i64,
-    surface_generation: u64,
-) -> CachedRefinedTerrainPatch {
-    CachedRefinedTerrainPatch {
-        site_surfaces: Vec::new(),
-        site_foundations: Vec::new(),
-        key: RefinedTerrainPatchCacheKey {
-            patch_x: 0,
-            patch_z: 0,
-            render_step_mm: 2000,
-        },
-        contract_revision,
-        surface_generation,
-        patch: test_patch(),
-        input_road_loops: 0,
-        input_source_samples: 0,
-        windows: Vec::new(),
-        mesh_buffers: None,
-        requires_engineered_refinement: false,
-        requires_road_clipping: false,
-        clip_source_count: 0,
-        road_clip_source_count: 0,
-        road_clip_loop_count: 0,
-        site_clip_loop_count: 0,
-        omitted_margin_clip_loop_count: 0,
-        clip_error_label: None,
-        clip_query_margin_m: 8.0,
-        cdt_ms: 0.0,
-        reused_windows: 0,
-    }
-}
-
-fn assert_refined_payload_cache_key(payload: &TerrainPatchPayload, patch_x: usize) {
-    let TerrainPatchPayloadData::Refined { patch } = &payload.data else {
-        panic!("expected refined terrain payload");
-    };
-    assert_eq!(patch.key.patch_x, patch_x);
-}
-
-fn empty_cdt_stats() -> TerrainCdtStats {
-    TerrainCdtStats {
-        input_vertices: 0,
-        constraint_edges: 0,
-        road_constraint_edges: 0,
-        building_site_constraint_edges: 0,
-        accepted_faces: 0,
-        rejected_road_faces: 0,
-        preserved_road_constraint_edges: 0,
-        preserved_building_site_constraint_edges: 0,
-        spade_missing_road_constraint_edges: 0,
-        rejected_road_constraint_edges: 0,
-        internal_road_constraint_edges: 0,
-        invalid_constraint_edges: 0,
-        max_face_y_delta_m: 0.0,
-        max_face_slope_ratio: 0.0,
-        longest_triangle_edge_m: 0.0,
-        road_seam_faces: 0,
-        road_seam_max_y_delta_m: 0.0,
-        road_seam_max_slope_ratio: 0.0,
-        retaining_wall_faces: 0,
-        retaining_wall_max_y_delta_m: 0.0,
-        retaining_wall_max_slope_ratio: 0.0,
-        accepted_seam_edges: 0,
-        merged_subbudget_seam_edges: 0,
-        retaining_wall_required_seam_edges: 0,
-        retaining_wall_required_seam_faces: 0,
-        blocking_degenerate_seam_edges: 0,
-        tie_in_widened_source_samples: 0,
-        tie_in_widened_max_y_delta_m: 0.0,
-        tie_in_widened_max_slope_ratio: 0.0,
-    }
-}
-
 fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
     let config = WorldConfig::default();
     let mut core = SimCore {
@@ -180,46 +83,7 @@ fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
     core
 }
 
-fn source_export_for_samples(
-    samples: &[&[TerrainCdtRoadBoundarySource]],
-) -> TerrainCdtSourceExport {
-    let mut export = TerrainCdtSourceExport::with_sample_capacity(samples.len());
-    for sources in samples {
-        export.push_sources(sources);
-    }
-    export
-}
-
-fn span_source() -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::RoadBoundary {
-        piece: TerrainCdtRoadPiece::Span(123),
-        chain: 1,
-        segment: 2,
-        support: TerrainCdtRoadSupport::Structure,
-    }
-}
-
-fn standard_span_source() -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::RoadBoundary {
-        piece: TerrainCdtRoadPiece::Span(123),
-        chain: 1,
-        segment: 2,
-        support: TerrainCdtRoadSupport::Grounded,
-    }
-}
-
-fn node_source() -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::RoadBoundary {
-        piece: TerrainCdtRoadPiece::Node(77),
-        chain: 0,
-        segment: 3,
-        support: TerrainCdtRoadSupport::Grounded,
-    }
-}
-
-// A flat, empty 2.56 km world: no water, roads or building sites, so every candidate the
-// scatter rejects below was rejected by the generator and not by footprint clearance.
-/// Flat isolated vegetation fixture shared by generator and edit regressions.
+// A flat, empty 2.56 km world shared by the vegetation generator and edit regressions.
 pub(super) fn vegetation_test_core(
     config: crate::simulation::vegetation::VegetationConfig,
 ) -> SimCore {

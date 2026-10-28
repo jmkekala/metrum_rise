@@ -73,15 +73,4 @@ impl SimulationNode {
         }
     }
 
-    /// Returns terrain patches whose raw heightmap payloads are forbidden by engineered ownership.
-    #[func]
-    pub fn get_engineered_terrain_patches(&self) -> PackedInt32Array {
-        let snapshot = self.snapshot.read().unwrap();
-        let mut packed = PackedInt32Array::new();
-        for &(patch_x, patch_z) in snapshot.engineered_terrain_patch_keys.iter() {
-            packed.push(i32::try_from(patch_x).unwrap_or(i32::MAX));
-            packed.push(i32::try_from(patch_z).unwrap_or(i32::MAX));
-        }
-        packed
-    }
 }

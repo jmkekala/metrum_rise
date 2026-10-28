@@ -117,7 +117,7 @@ impl SimCore {
         [
             self.road_tool_surface_generation,
             self.heightmap.source_generation(),
-            self.heightmap.visual_generation(),
+            self.heightmap.source_generation(),
             self.transit_network.roadbed.generation(),
             self.allocator.building_ref_revision(),
             self.allocator.registry.revision(),

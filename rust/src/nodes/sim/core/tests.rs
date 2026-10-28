@@ -12,11 +12,11 @@ pub(super) mod fields;
 pub(super) mod graded_stage;
 mod road_edit_order;
 mod road_families;
+mod road_mesh_seams;
 mod road_reference_probe;
 mod road_plan_scaling;
 mod road_preview;
 mod road_terrain_plan;
-mod terrain_seams;
 mod routing_adoption;
 mod zoning_buildability;
 
@@ -225,7 +225,6 @@ fn test_core_uses_terrain_render_span_for_road_surface_chunks() {
         "road render chunks must start at the terrain world minimum"
     );
 }
-
 #[test]
 fn stale_terrain_acknowledgement_preserves_newer_patch_dirtiness() {
     let mut core = test_core();
@@ -256,29 +255,6 @@ fn stale_terrain_batch_acknowledgement_reports_remaining_dirtiness() {
     assert!(core.acknowledge_terrain_render_patches(&[(0, 0, current_generation)]));
     assert!(!core.terrain_dirty);
     assert!(!core.heightmap.dirty_render_patches().contains(&(0, 0)));
-}
-
-#[test]
-fn full_engineered_terrain_refresh_does_not_depend_on_dirty_patches() {
-    let mut core = test_core();
-    for (patch_x, patch_z, generation) in core.terrain_dirty_patch_states() {
-        core.acknowledge_terrain_render_patch(patch_x, patch_z, generation);
-    }
-    core.engineered_terrain_patch_keys.push((0, 0));
-    core.engineered_terrain_patch_margins.insert((0, 0), 8.0);
-
-    core.refresh_all_engineered_terrain_patch_state(
-        crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-    );
-
-    assert!(
-        core.engineered_terrain_patch_keys.is_empty(),
-        "a full refresh must rescan all render patches even when no patch was already dirty"
-    );
-    assert!(
-        core.heightmap.dirty_render_patches().contains(&(0, 0)),
-        "ownership transitions must dirty the affected terrain patch"
-    );
 }
 
 #[test]
@@ -819,7 +795,7 @@ fn planned_topology_rejection_restores_split_dependents() {
         .heightmap
         .render_patch_keys_for_world_bounds(-120.0, -100.0, 120.0, 120.0)
         .into_iter()
-        .map(|(x, z)| ((x, z), core.heightmap.visual_patch_snapshot(x, z)))
+        .map(|(x, z)| ((x, z), core.heightmap.source_patch_snapshot(x, z)))
         .collect::<Vec<_>>();
     let undo_count = core.undo_stack.len();
     let lane_count = core.transit_network.lane_system.lanes.len();
@@ -870,7 +846,7 @@ fn planned_topology_rejection_restores_split_dependents() {
     assert_eq!(core.treasury.balance, 10_000.0);
     assert!(!core.transit_network.road_edit_is_staged());
     for ((x, z), before) in terrain_before {
-        assert_eq!(core.heightmap.visual_patch_snapshot(x, z), before);
+        assert_eq!(core.heightmap.source_patch_snapshot(x, z), before);
     }
 }
 

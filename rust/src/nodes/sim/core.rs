@@ -27,7 +27,6 @@ mod scenario;
 mod schedule;
 mod snapshot;
 mod state;
-mod terrain_payloads;
 mod thread;
 mod trips;
 mod water_preview;
@@ -62,12 +61,6 @@ pub(crate) use snapshot::{
     WaterRuntimeSnapshot, access_phase_target,
 };
 pub(crate) use state::PendingDemandSpawnAction;
-pub(crate) use terrain_payloads::{
-    CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
-    CachedTerrainCdtRoadInput, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyLedger,
-    RefinedTerrainAssemblyScope, RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey,
-    RefinedTerrainPatchBuildInput, RefinedTerrainPatchCacheKey,
-};
 pub(crate) use thread::run_sim_thread;
 pub(crate) use water_preview::{
     AuthoredWaterPatchFillDebug, WorldLakeFillPreview, WorldLakeFillPreviewStatus,

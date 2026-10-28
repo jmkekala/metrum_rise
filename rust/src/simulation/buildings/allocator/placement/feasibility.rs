@@ -210,7 +210,7 @@ impl BuildingAllocator {
         }
         let epoch = (
             env.terrain.source_generation(),
-            env.terrain.visual_generation(),
+            env.terrain.source_generation(),
             env.road_surface.generation(),
             self.building_ref_revision(),
             self.registry.revision(),

@@ -12,6 +12,7 @@ use super::model::{
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::graded::{SiteBuffer, SiteSource};
+use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector2;
 #[cfg(test)]
 use godot::prelude::Vector3;
@@ -251,6 +252,96 @@ fn push_graded_site(site: &BuildingSiteClient, out: &mut SiteBuffer) {
     for surface in &site.surfaces {
         out.push_surface(surface.material, &surface.vertices_world);
     }
+}
+
+impl BuildingAllocator {
+    pub(crate) fn terrain_site_snapshot_for_world_bounds(
+        &self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> BuildingSiteTerrainSnapshot {
+        let sites = self
+            .site_candidate_indices_for_bounds(min_x, min_z, max_x, max_z)
+            .into_iter()
+            .filter_map(|building_idx| {
+                let site = self.building_sites.get(building_idx)?;
+                site.overlaps_bounds(min_x, min_z, max_x, max_z).then(|| {
+                    BuildingSiteTerrainClient {
+                        building_idx,
+                        lot_center: site_lot_center(site),
+                        footprint_world: site.footprint_world.clone(),
+                        support_height_m: site.support_height_m,
+                        surfaces: site.surfaces.clone(),
+                    }
+                })
+            })
+            .collect();
+        BuildingSiteTerrainSnapshot {
+            sites,
+            max_site_radius_m: self.max_site_radius_m,
+        }
+    }
+
+    pub(crate) fn append_building_site_bounds_for_world_bounds(
+        &self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        out: &mut Vec<[f32; 4]>,
+    ) {
+        out.extend(
+            self.site_candidate_indices_for_bounds(min_x, min_z, max_x, max_z)
+                .into_iter()
+                .filter_map(|building_idx| {
+                    let bounds = self.building_sites.get(building_idx)?.bounds();
+                    overlaps(bounds, (min_x, min_z, max_x, max_z))
+                        .then_some(<[f32; 4]>::from(bounds))
+                }),
+        );
+    }
+
+    pub(crate) fn mark_building_site_terrain_bounds_dirty(
+        &self,
+        terrain: &mut TerrainSystem,
+        bounds: (f32, f32, f32, f32),
+        margin_m: f32,
+    ) {
+        let (min_x, min_z, max_x, max_z) = bounds;
+        let margin_m = margin_m.max(0.0);
+        terrain.mark_render_patches_for_world_bounds(
+            min_x - margin_m,
+            min_z - margin_m,
+            max_x + margin_m,
+            max_z + margin_m,
+        );
+    }
+}
+
+impl BuildingSiteTerrainSnapshot {
+    /// Returns ordered paving regions from the captured local sites.
+    pub(crate) fn paving_surfaces(&self) -> Vec<super::model::BuildingSiteSurfaceClient> {
+        self.sites
+            .iter()
+            .flat_map(|site| site.surfaces.iter().cloned())
+            .collect()
+    }
+}
+
+impl BuildingSiteTerrainClient {
+    fn bounds(&self) -> (f32, f32, f32, f32) {
+        site_surface_bounds(&self.footprint_world, &self.surfaces)
+    }
+
+    fn overlaps_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> bool {
+        overlaps(self.bounds(), (min_x, min_z, max_x, max_z))
+    }
+}
+
+fn overlaps(site: (f32, f32, f32, f32), query: (f32, f32, f32, f32)) -> bool {
+    site.0 <= query.2 && site.2 >= query.0 && site.1 <= query.3 && site.3 >= query.1
 }
 
 /// The building sites meeting some rectangles, copied from the allocator

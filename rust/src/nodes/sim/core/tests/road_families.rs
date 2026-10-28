@@ -11,7 +11,7 @@
 //! checked here.
 
 use super::road_edit_order::{ARM_M, Stroke, committed};
-use super::terrain_seams::open_road_edges_where;
+use super::road_mesh_seams::open_road_edges_where;
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::simulation::network::roadbed::PieceId;

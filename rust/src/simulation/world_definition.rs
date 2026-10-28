@@ -386,8 +386,6 @@ pub(crate) fn load_world_definition_from_sqlite(
             }
         }
     }
-    terrain.reset_visuals_from_source();
-
     let mut lake_fills = Vec::new();
     let mut open_water_fills = Vec::new();
     if format_version >= 2 {

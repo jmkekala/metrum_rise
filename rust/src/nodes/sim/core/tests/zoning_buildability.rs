@@ -268,7 +268,7 @@ fn hillside_houses() -> SimCore {
         core.zoning.parcels().len(),
         core.allocator.buildings.len(),
         core.heightmap.source_generation(),
-        core.heightmap.visual_generation(),
+        core.heightmap.source_generation(),
     );
     for id in [6, 7, 8, 9, 16] {
         let p = core.zoning.parcel_by_raw_id(id).unwrap();
@@ -304,7 +304,7 @@ fn hillside_houses() -> SimCore {
             core.zoning.parcels().len(),
             core.allocator.buildings.len(),
             core.heightmap.source_generation(),
-            core.heightmap.visual_generation()
+            core.heightmap.source_generation()
         ),
         "zoning must not engineer the ground"
     );

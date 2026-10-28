@@ -9,8 +9,7 @@
 //! a metre above the surface drawn there, and its rays could not see land, so a lake behind a
 //! hill polled like the lake in view.
 
-use crate::config::HEIGHT_SCALE;
-use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use crate::simulation::water::WaterSystem;
 use godot::prelude::Vector3;
 
@@ -21,7 +20,7 @@ const MIN_WATER_DEPTH_M: f32 = 0.05;
 // crosses is stepped over.
 const STEP_M: f32 = 4.0;
 
-/// Height of the visible water surface (visual terrain plus visible depth, as the water renderer
+/// Height of the visible water surface (graded terrain plus visible depth, as the water renderer
 /// draws it) where the ray from `origin` along unit `direction` first comes down onto water, or
 /// NaN where it meets land first, rises, or meets nothing within `max_distance_m` along it.
 ///
@@ -29,7 +28,8 @@ const STEP_M: f32 = 4.0;
 /// found within one step: O(`max_distance_m` / `STEP_M`) terrain and depth samples.
 pub(crate) fn first_water_surface(
     water: &WaterSystem,
-    terrain: &TerrainSystem,
+    surface: &GradedSurface<'_>,
+    scratch: &mut QueryScratch,
     origin: Vector3,
     direction: Vector3,
     max_distance_m: f32,
@@ -44,17 +44,17 @@ pub(crate) fn first_water_surface(
     while t < max_distance_m {
         t += step;
         let p = origin + direction * t;
-        let ground = terrain.sample_visual_height_world(p.x, p.z) * HEIGHT_SCALE;
+        let ground = surface.ground_height_at(f64::from(p.x), f64::from(p.z), scratch) as f32;
         let depth = water.visible_depth_world(p.x, p.z);
         let wet = depth > MIN_WATER_DEPTH_M;
-        let surface = if wet { ground + depth } else { ground };
-        if p.y <= surface {
+        let water_or_ground = if wet { ground + depth } else { ground };
+        if p.y <= water_or_ground {
             if !wet {
                 return f32::NAN;
             }
             // Raw ground + depth rises toward a dry bank, while the drawn dry vertex takes
             // its wet neighbours' level. Refine only a candidate crossing, not every march step.
-            let drawn = display_water_surface(water, terrain, p.x, p.z);
+            let drawn = display_water_surface(water, surface, scratch, p.x, p.z);
             if p.y <= ground.max(drawn) {
                 return if ground < drawn { drawn } else { f32::NAN };
             }
@@ -68,21 +68,22 @@ pub(crate) fn first_water_surface(
 /// O(1) indexed samples; shared by the reflection vote and camera clearance.
 pub(crate) fn display_water_surface(
     water: &WaterSystem,
-    terrain: &TerrainSystem,
+    surface: &GradedSurface<'_>,
+    scratch: &mut QueryScratch,
     world_x: f32,
     world_z: f32,
 ) -> f32 {
     if water.visible_depth_world(world_x, world_z) <= 0.001 {
         return f32::NAN;
     }
-    let (gx, gz) = terrain.world_to_grid_coords(world_x, world_z);
+    let (gx, gz) = surface.terrain.world_to_grid_coords(world_x, world_z);
     let x0 = gx.floor() as usize;
     let z0 = gz.floor() as usize;
     let tx = gx.fract();
     let tz = gz.fract();
-    let vertex = |x, z| {
-        let (wx, wz) = terrain.grid_to_world_coords(x, z);
-        smoothed_water_vertex(water, terrain, wx, wz)
+    let mut vertex = |x, z| {
+        let (wx, wz) = surface.terrain.grid_to_world_coords(x, z);
+        smoothed_water_vertex(water, surface, scratch, wx, wz)
     };
     let a = vertex(x0, z0);
     let d = vertex(x0 + 1, z0 + 1);
@@ -96,9 +97,15 @@ pub(crate) fn display_water_surface(
     }
 }
 
-fn smoothed_water_vertex(water: &WaterSystem, terrain: &TerrainSystem, x: f32, z: f32) -> f32 {
-    let cell = terrain.cell_size_m();
-    let ground = terrain.sample_visual_height_world(x, z) * HEIGHT_SCALE;
+fn smoothed_water_vertex(
+    water: &WaterSystem,
+    surface: &GradedSurface<'_>,
+    scratch: &mut QueryScratch,
+    x: f32,
+    z: f32,
+) -> f32 {
+    let cell = surface.terrain.cell_size_m();
+    let ground = surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32;
     let depth = water.visible_depth_world(x, z);
     let mut sum = 0.0;
     let mut weight = 0.0;
@@ -111,7 +118,13 @@ fn smoothed_water_vertex(water: &WaterSystem, terrain: &TerrainSystem, x: f32, z
     ] {
         let d = water.visible_depth_world(x + dx, z + dz);
         if d > 0.001 {
-            sum += (terrain.sample_visual_height_world(x + dx, z + dz) * HEIGHT_SCALE + d) * w;
+            sum += (surface.ground_height_at(
+                f64::from(x + dx),
+                f64::from(z + dz),
+                scratch,
+            ) as f32
+                + d)
+                * w;
             weight += w;
         }
     }
@@ -119,7 +132,12 @@ fn smoothed_water_vertex(water: &WaterSystem, terrain: &TerrainSystem, x: f32, z
         for (dx, dz) in [(-cell, -cell), (cell, -cell), (-cell, cell), (cell, cell)] {
             let d = water.visible_depth_world(x + dx, z + dz);
             if d > 0.001 {
-                sum += terrain.sample_visual_height_world(x + dx, z + dz) * HEIGHT_SCALE + d;
+                sum += surface.ground_height_at(
+                    f64::from(x + dx),
+                    f64::from(z + dz),
+                    scratch,
+                ) as f32
+                    + d;
                 weight += 1.0;
             }
         }
@@ -216,6 +234,11 @@ pub(crate) fn select_planes(levels: &[f32], weights: &[f32], previous: &[f32]) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::HEIGHT_SCALE;
+    use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::roadbed::RoadbedSystem;
+    use crate::simulation::terrain::TerrainSystem;
+    use crate::simulation::terrain::graded::NoSites;
     use crate::simulation::core::config::WorldConfig;
 
     // A flat world with a lake two metres deep over its western half.
@@ -285,33 +308,59 @@ mod tests {
             }
         }
         terrain.replace_source_from_dense(&ground).unwrap();
-        terrain.reset_visuals_from_source();
         water.replace_baseline_depth_from_dense(&depths).unwrap();
-        assert!((display_water_surface(&water, &terrain, -6.0, 1.0) - 2.0).abs() < 1e-4);
+        let roadbed = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
+        let surface = GradedSurface {
+            terrain: &terrain,
+            roadbed: &roadbed,
+            sites: &NoSites,
+            query_index: None,
+        };
+        let mut scratch = QueryScratch::default();
+        assert!(
+            (display_water_surface(&water, &surface, &mut scratch, -6.0, 1.0) - 2.0).abs()
+                < 1e-4
+        );
         // Raw terrain + interpolated depth reads 3 m here; the rendered shore is at 2 m.
-        assert!((display_water_surface(&water, &terrain, -4.0, 1.0) - 2.0).abs() < 1e-4);
+        assert!(
+            (display_water_surface(&water, &surface, &mut scratch, -4.0, 1.0) - 2.0).abs()
+                < 1e-4
+        );
         let level = first_water_surface(
             &water,
-            &terrain,
+            &surface,
+            &mut scratch,
             Vector3::new(-6.0, 3.0, 1.0),
             Vector3::DOWN,
             8.0,
         );
         assert!((level - 2.0).abs() < 1e-4);
-        assert!(display_water_surface(&water, &terrain, 16.0, 1.0).is_nan());
+        assert!(display_water_surface(&water, &surface, &mut scratch, 16.0, 1.0).is_nan());
     }
 
     #[test]
     fn a_ray_onto_the_lake_reads_its_surface_and_one_onto_land_reads_none() {
         let (terrain, water) = lake_world();
-        let ground = terrain.sample_visual_height_world(-500.0, 0.0) * HEIGHT_SCALE;
+        let ground = terrain.sample_height_world(-500.0, 0.0) * HEIGHT_SCALE;
+        let roadbed = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
+        let surface = GradedSurface {
+            terrain: &terrain,
+            roadbed: &roadbed,
+            sites: &NoSites,
+            query_index: None,
+        };
+        let mut scratch = QueryScratch::default();
         let origin = Vector3::new(0.0, ground + 100.0, 0.0);
         let west = Vector3::new(-1.0, -0.2, 0.0).normalized();
-        let level = first_water_surface(&water, &terrain, origin, west, 3000.0);
+        let level = first_water_surface(&water, &surface, &mut scratch, origin, west, 3000.0);
         assert!((level - (ground + 2.0)).abs() < 1e-3, "lake read {level}");
         let east = Vector3::new(1.0, -0.2, 0.0).normalized();
-        assert!(first_water_surface(&water, &terrain, origin, east, 3000.0).is_nan());
+        assert!(
+            first_water_surface(&water, &surface, &mut scratch, origin, east, 3000.0).is_nan()
+        );
         // A ray that ends before it comes down reads nothing.
-        assert!(first_water_surface(&water, &terrain, origin, west, 50.0).is_nan());
+        assert!(
+            first_water_surface(&water, &surface, &mut scratch, origin, west, 50.0).is_nan()
+        );
     }
 }

@@ -53,6 +53,9 @@ pub use tile::{
 };
 pub use walls::WallFace;
 
+/// Maximum local reach considered by road and site grading selection.
+pub(crate) const INPUT_MAX_MARGIN_M: f32 = TILE_M as f32;
+
 #[cfg(test)]
 mod portal_tests;
 #[cfg(test)]

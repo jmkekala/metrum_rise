@@ -426,18 +426,12 @@ impl SimCore {
             } = state;
             let restored_dense_terrain = terrain.is_some();
             let mut sync_trans_graph = false;
-            let old_engineered_patch_keys = if restored_dense_terrain {
-                self.engineered_terrain_patch_keys.clone()
-            } else {
-                Default::default()
-            };
             let mut restored_topology_scope = None;
 
             if let Some(t_data) = terrain {
                 self.heightmap
                     .replace_source_from_dense(&t_data)
                     .expect("undo terrain snapshot must match the live terrain dimensions");
-                self.heightmap.reset_visuals_from_source();
                 sync_trans_graph = true;
             }
             if let Some(w_data) = water {
@@ -508,7 +502,7 @@ impl SimCore {
                 self.transit_network.flow_fields.mark_all_dirty();
                 if restored_dense_terrain {
                     self.zoning.invalidate_cell_lot_assets();
-                    self.reset_network_render_state(old_engineered_patch_keys);
+                    self.reset_network_render_state();
                 } else if let Some((edge_ids, node_ids)) = restored_topology_scope {
                     self.debug_assert_closure_compiles(&edge_ids, &node_ids);
                     self.reset_local_network_render_state(
@@ -583,29 +577,8 @@ impl SimCore {
         }
     }
 
-    fn reset_network_render_state(&mut self, old_engineered_patch_keys: Vec<(usize, usize)>) {
-        for &(patch_x, patch_z) in &old_engineered_patch_keys {
-            if let Some((min_x, min_z, max_x, max_z)) =
-                self.heightmap.render_patch_world_bounds(patch_x, patch_z)
-            {
-                self.heightmap
-                    .reset_visual_region_from_source_world(min_x, min_z, max_x, max_z);
-            } else {
-                self.heightmap.mark_render_patch_dirty(patch_x, patch_z);
-            }
-        }
-
+    fn reset_network_render_state(&mut self) {
         self.transit_network.roadbed.clear();
-        self.refined_terrain_patch_cache.clear();
-        self.refined_terrain_assembly_ledgers.clear();
-        self.road_locked_terrain_patch_keys.clear();
-        self.road_locked_terrain_patch_margins.clear();
-        // Every formerly engineered patch re-derives its road and site ownership on the restored
-        // heights; the recompile stamps the road patches too (`ROAD-68-D`).
-        self.road_ownership_pending_patch_keys = old_engineered_patch_keys.into_iter().collect();
-        self.building_site_owned_terrain_patch_keys.clear();
-        self.engineered_terrain_patch_keys.clear();
-        self.engineered_terrain_patch_margins.clear();
         self.road_terrain_inputs.note_all();
         self.terrain_dirty = true;
         self.mark_network_render_dirty();

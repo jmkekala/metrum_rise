@@ -230,15 +230,12 @@ impl SimCore {
         self.transit_network.flow_fields.mark_all_dirty();
         self.clear_world_transient_state();
         self.heightmap.mark_all_render_patches_dirty();
-        self.refresh_all_engineered_terrain_patch_state(
-            crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-        );
         self.terrain_dirty = true;
         self.water_dirty = true;
         self.mark_network_render_dirty();
         // Loading advances the render-facing road generation after the persisted
-        // surface was rebuilt. Stamp a matching mesh generation before water and
-        // refined-terrain payload workers consume the refreshed snapshot.
+        // surface was rebuilt. Stamp a matching mesh generation before water payload workers
+        // consume the refreshed snapshot.
         self.precompute_road_mesh_data();
         // The census input copy's pending row changes replace those the reconstruction above
         // recorded (`SIM-02-I`).

@@ -2,18 +2,12 @@
 
 //! Variant export helpers for `SimulationNode`.
 
-mod cdt;
 mod economy;
 mod terrain_patch;
 mod water;
 mod world;
 mod zoning;
 
-pub(super) use cdt::{TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtRoads, TerrainCdtTileId};
-#[cfg(test)]
-pub(super) use cdt::{
-    TerrainCdtSourceExport, TerrainCdtTriangleBufferExport, TerrainCdtWindowBounds,
-};
 pub(super) use economy::budget_ledger_entry_dict;
 pub(super) use zoning::{
     prepare_zoning_site_queries, zoning_buildable_geometries, zoning_geometry_feasibility,

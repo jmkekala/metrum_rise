@@ -88,11 +88,6 @@ impl SimCore {
         let t1 = Instant::now();
         self.transit_network
             .finalize_bulk_load(&mut self.region_graph, &mut self.allocator);
-        // A bulk road build is a world-scale change: refresh the world's terrain ownership once,
-        // as a load does, instead of leaving it to the first road commit (`ROAD-68-D` part 6).
-        self.refresh_all_engineered_terrain_patch_state(
-            crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-        );
         godot_print!(
             "[bench] finalize_bulk_load: {:.1}s  RSS {}MB  lanes={}",
             t1.elapsed().as_secs_f32(),

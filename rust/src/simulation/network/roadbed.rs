@@ -44,7 +44,7 @@ pub(crate) use span::incident_direction;
 pub use span::{MouthSection, SpanPiece};
 pub(crate) use system::RoadbedScratch;
 pub use system::{RebuiltOwners, RoadbedDelta, RoadbedRestore, RoadbedSystem};
-pub use terrain::{ChainSegment, TerrainChanges, TerrainLoop, TerrainLoopError, terrain_loops};
+pub use terrain::TerrainChanges;
 pub(crate) use walkways::{FootpathJoin, NodeWalkways, SidewalkEnd};
 
 /// Road chunk key `(x, z)` in the terrain-aligned render grid of a [`RoadbedSystem`].

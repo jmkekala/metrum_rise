@@ -292,7 +292,7 @@ impl GradedSurface<'_> {
         }
         let [tx, tz] = [x, z].map(|value| (value / TILE_M).floor() * TILE_M);
         let tile = grown([tx, tz, tx + TILE_M, tz + TILE_M], GL0_M);
-        if self.quiet(scratch) || self.quiet_for(tile, x, z, scratch) {
+        if self.quiet_for(tile, x, z, scratch) {
             return scratch.base.at(x, z);
         }
         self.ground_prepared(&cell, scratch)

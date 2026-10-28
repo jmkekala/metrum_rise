@@ -4,6 +4,7 @@
 //! preview (`ROAD-68-E`): the commit's own plan, compiled pieces and their dependency
 //! fingerprint, built on the road tool's context without the core lock.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -24,6 +25,7 @@ use crate::simulation::network::road_edit::{
 };
 use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem, SurfaceChunkKey};
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use crate::simulation::water::WaterSystem;
 
 /// One road-tool stroke submitted for preview or commit planning.
@@ -110,6 +112,26 @@ pub(crate) struct RoadToolQuerySnapshot {
 }
 
 impl RoadToolQuerySnapshot {
+    /// Runs a query against the preview snapshot's canonical graded surface, reusing one
+    /// scratch buffer per road-tool thread. The snapshot has no persistent query index, so the
+    /// bounded source gathers read its captured roadbed and site patches directly.
+    pub(crate) fn with_graded_surface<T>(
+        &self,
+        query: impl FnOnce(&GradedSurface<'_>, &mut QueryScratch) -> T,
+    ) -> T {
+        thread_local! {
+            static SCRATCH: RefCell<QueryScratch> = RefCell::default();
+        }
+        let sites = super::graded_stage::PreviewSites::new(&self.terrain, &self.terrain_inputs);
+        let surface = GradedSurface {
+            terrain: &self.terrain,
+            roadbed: &self.roadbed,
+            sites: &sites,
+            query_index: None,
+        };
+        SCRATCH.with_borrow_mut(|scratch| query(&surface, scratch))
+    }
+
     /// Prepares and validates one stroke against this snapshot: the profile, endpoint and water
     /// checks of the hover path. Returns the prepared points and the validation.
     /// O(stroke points + endpoint snap lookups).
@@ -174,7 +196,6 @@ pub(crate) struct RoadPreviewFingerprint {
     pub(crate) surface_generation: u64,
     pub(crate) roadbed_generation: u64,
     pub(crate) terrain_source_generation: u64,
-    pub(crate) terrain_visual_generation: u64,
 }
 
 impl RoadPreviewFingerprint {
@@ -188,7 +209,6 @@ impl RoadPreviewFingerprint {
             surface_generation,
             roadbed_generation: roadbed.generation(),
             terrain_source_generation: terrain.source_generation(),
-            terrain_visual_generation: terrain.visual_generation(),
         }
     }
 
@@ -391,9 +411,14 @@ impl RoadPreviewContext {
         let built_after = self.view.roadbed.generation();
         let chunks = (self.view.road_mesh_generation == Some(built_after))
             .then(|| {
+                let sites = super::graded_stage::PreviewSites::new(
+                    &self.view.terrain,
+                    &self.view.terrain_inputs,
+                );
                 RoadRenderer.generate_preview_chunks(
                     &self.replica,
                     &self.view.terrain,
+                    &sites,
                     &roadbed,
                     &target_chunks,
                     built_after,

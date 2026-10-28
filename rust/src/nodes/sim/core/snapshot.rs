@@ -328,8 +328,6 @@ pub struct RenderSnapshot {
     pub road_mesh_chunk_origin_x_m: f32,
     /// World-space Z origin used to resolve committed road chunk keys.
     pub road_mesh_chunk_origin_z_m: f32,
-    /// Sorted terrain patches whose raw heightmap payloads are forbidden.
-    pub engineered_terrain_patch_keys: Arc<Vec<(usize, usize)>>,
     /// Current simulation day.
     pub current_day: u32,
     /// Current minute since operational midnight.
@@ -406,7 +404,6 @@ impl Default for RenderSnapshot {
             road_mesh_chunk_span_m: 0.0,
             road_mesh_chunk_origin_x_m: 0.0,
             road_mesh_chunk_origin_z_m: 0.0,
-            engineered_terrain_patch_keys: Arc::new(Vec::new()),
             current_day: 1,
             current_minute_of_day: 0,
             current_day_fraction: 0.0,
@@ -557,8 +554,6 @@ impl SimCore {
             self.transit_network.roadbed.chunk_origin_m();
         snapshot.road_mesh_chunk_origin_x_m = road_chunk_origin_x_m;
         snapshot.road_mesh_chunk_origin_z_m = road_chunk_origin_z_m;
-        snapshot.engineered_terrain_patch_keys =
-            Arc::new(self.engineered_terrain_patch_keys.clone());
         snapshot.node_positions = node_positions;
         snapshot.current_day = self.time.day_index;
         snapshot.current_minute_of_day = self.time.minute_of_day;

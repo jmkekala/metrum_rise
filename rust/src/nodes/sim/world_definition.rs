@@ -611,14 +611,6 @@ impl SimCore {
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
         self.authored_water_patch_fill_debug_cache.clear();
-        self.refined_terrain_patch_cache.clear();
-        self.refined_terrain_assembly_ledgers.clear();
-        self.road_locked_terrain_patch_keys.clear();
-        self.road_locked_terrain_patch_margins.clear();
-        self.road_ownership_pending_patch_keys.clear();
-        self.building_site_owned_terrain_patch_keys.clear();
-        self.engineered_terrain_patch_keys.clear();
-        self.engineered_terrain_patch_margins.clear();
         self.terrain_payload_patch_generations.clear();
         self.road_terrain_inputs.note_all();
         self.terrain_stroke_active = false;

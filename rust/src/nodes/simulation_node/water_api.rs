@@ -14,13 +14,16 @@ pub(super) fn first_water_surfaces_for_rays(
         directions
             .par_iter()
             .map(|&direction| {
-                crate::nodes::sim::render::water_reflection::first_water_surface(
-                    &core.watermap,
-                    &core.heightmap,
-                    origin,
-                    direction,
-                    max_distance_m,
-                )
+                core.with_graded_surface(|surface, scratch| {
+                    crate::nodes::sim::render::water_reflection::first_water_surface(
+                        &core.watermap,
+                        surface,
+                        scratch,
+                        origin,
+                        direction,
+                        max_distance_m,
+                    )
+                })
             })
             .collect()
     })
@@ -643,14 +646,18 @@ impl SimulationNode {
     #[func]
     pub fn get_camera_water_surface_at(&self, pos: Vector2) -> f32 {
         let core = self.lock_core();
-        let level = crate::nodes::sim::render::water_reflection::display_water_surface(
-            &core.watermap,
-            &core.heightmap,
-            pos.x,
-            pos.y,
-        );
-        let ground =
-            core.heightmap.sample_visual_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE;
+        let (level, ground) = core.with_graded_surface(|surface, scratch| {
+            let level = crate::nodes::sim::render::water_reflection::display_water_surface(
+                &core.watermap,
+                surface,
+                scratch,
+                pos.x,
+                pos.y,
+            );
+            let ground =
+                surface.ground_height_at(f64::from(pos.x), f64::from(pos.y), scratch) as f32;
+            (level, ground)
+        });
         if level > ground {
             level + 0.05
         } else {

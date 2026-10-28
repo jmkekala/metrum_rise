@@ -27,7 +27,6 @@ use godot::prelude::Vector3;
 pub(crate) struct RoadEditPlan {
     request: RoadPreviewRequest,
     terrain_source_generation: u64,
-    terrain_visual_generation: u64,
     prepared: PreparedRoadInput,
     validation: RoadPreviewValidation,
     topology: Option<RoadTopologyPlan>,
@@ -142,7 +141,6 @@ impl RoadEditPlan {
         Self::new(
             request,
             terrain.source_generation(),
-            terrain.visual_generation(),
             prepared,
             validation,
             topology,
@@ -172,7 +170,6 @@ impl RoadEditPlan {
         }
         if self.request.surface_generation != core.road_tool_surface_generation
             || self.terrain_source_generation != core.heightmap.source_generation()
-            || self.terrain_visual_generation != core.heightmap.visual_generation()
             || self.topology_for(&core.region_graph).is_none()
         {
             return "stale";
@@ -259,7 +256,6 @@ impl RoadEditPlan {
     pub(super) fn new(
         request: RoadPreviewRequest,
         terrain_source_generation: u64,
-        terrain_visual_generation: u64,
         prepared: PreparedRoadInput,
         validation: RoadPreviewValidation,
         topology: Option<RoadTopologyPlan>,
@@ -267,7 +263,6 @@ impl RoadEditPlan {
         Self {
             request,
             terrain_source_generation,
-            terrain_visual_generation,
             prepared,
             validation,
             topology,
@@ -334,7 +329,6 @@ mod tests {
                 snap_to_existing_roads: true,
             },
             3,
-            5,
             prepared,
             RoadPreviewValidation::valid(0.0),
             None,

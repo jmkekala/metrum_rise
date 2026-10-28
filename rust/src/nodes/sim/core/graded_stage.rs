@@ -39,13 +39,13 @@ use crate::simulation::terrain::graded::{
 /// The building sites the road tool's view captured per render patch
 /// ([`RoadTerrainInputs`]), answered with the allocator's own test: a graded bake from them
 /// equals the bake from the allocator, inputs included, while the captured patches are current.
-struct PreviewSites<'a> {
+pub(crate) struct PreviewSites<'a> {
     terrain: &'a TerrainSystem,
     inputs: &'a RoadTerrainInputs,
 }
 
 impl<'a> PreviewSites<'a> {
-    fn new(terrain: &'a TerrainSystem, inputs: &'a RoadTerrainInputs) -> Self {
+    pub(crate) fn new(terrain: &'a TerrainSystem, inputs: &'a RoadTerrainInputs) -> Self {
         Self { terrain, inputs }
     }
 }

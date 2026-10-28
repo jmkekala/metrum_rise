@@ -63,6 +63,7 @@ impl SimCore {
         if let Some(generated_chunks) = self.transit_network.try_generate_mesh_chunks(
             &self.region_graph,
             &self.heightmap,
+            &self.allocator,
             &target_chunks,
             lanes_built_after,
             &self.cached_road_mesh_chunks,

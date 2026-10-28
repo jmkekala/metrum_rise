@@ -14,7 +14,6 @@ use super::road_preview::{RoadPreview, RoadPreviewFingerprint, RoadPreviewReques
 use super::road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
 use super::road_tool_context::RoadToolPublication;
 use super::state::SimCore;
-use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::debug_log;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::simulation::network::lanes::LaneSystem;
@@ -64,8 +63,6 @@ pub(crate) struct RoadCommitOutcome {
     pub(crate) surface_ms: f64,
     pub(crate) mesh_ms: f64,
     pub(crate) snapshot_ms: f64,
-    pub(crate) collect_refined_ms: f64,
-    pub(crate) invalidated_refined_cache_entries: usize,
     /// The road-tool surface generation after the command.
     pub(crate) generation: u64,
 }
@@ -261,11 +258,6 @@ impl SimCore {
             self.transit_network.schedule_cch_rebuild(graph);
             edit_metrics.routing_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
         }
-        let collect_refined_start = Instant::now();
-        record_crash_phase_for_core(self, "add road terrain patch state");
-        let invalidated_refined_cache_entries =
-            self.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        let collect_refined_ms = collect_refined_start.elapsed().as_secs_f64() * 1000.0;
         edit_metrics.generation = self.road_tool_surface_generation;
         edit_metrics.committed = road_add.committed;
         edit_metrics.core_work_ms =
@@ -275,7 +267,6 @@ impl SimCore {
         edit_metrics.surface_ms = surface_ms;
         edit_metrics.mesh_ms = mesh_ms;
         edit_metrics.snapshot_ms = snapshot_ms;
-        edit_metrics.refined_state_ms = collect_refined_ms;
         self.last_road_edit_metrics = edit_metrics;
         let rejection_reason = if road_add.committed {
             String::new()
@@ -310,8 +301,6 @@ impl SimCore {
             surface_ms,
             mesh_ms,
             snapshot_ms,
-            collect_refined_ms,
-            invalidated_refined_cache_entries,
             generation: self.road_tool_surface_generation,
         }
     }

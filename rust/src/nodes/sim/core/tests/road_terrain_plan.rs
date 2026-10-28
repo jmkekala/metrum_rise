@@ -5,7 +5,7 @@
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
-use crate::nodes::sim::core::{RefinedTerrainPatchBuildInput, RoadEditPlan};
+use crate::nodes::sim::core::RoadEditPlan;
 use crate::simulation::network::roadbed::RoadbedSystem;
 use godot::prelude::Vector2;
 
@@ -55,10 +55,6 @@ fn prepare_with_lanes(
             snap_to_existing_roads: true,
         },
     )
-}
-
-fn inputs(core: &mut SimCore) -> Vec<RefinedTerrainPatchBuildInput> {
-    core.collect_refined_terrain_patch_build_inputs(2.0)
 }
 
 pub(super) fn commit_ready(core: &mut SimCore, points: Vec<Vector3>) -> RoadEditPlan {
@@ -398,10 +394,7 @@ fn a_terrain_edit_that_steepens_a_road_past_one_in_three_is_refused() {
         &mut core,
         vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 0.0, 0.0)],
     );
-    let (source, visual) = (
-        core.heightmap.clone_source_dense(),
-        core.heightmap.clone_visual_dense(),
-    );
+    let source = core.heightmap.clone_source_dense();
     let profile = core.region_graph.edge(0).physical_geometry.clone();
     core.start_terrain_stroke_internal();
     core.sculpt_terrain_stroke_step_internal(
@@ -420,10 +413,6 @@ fn a_terrain_edit_that_steepens_a_road_past_one_in_three_is_refused() {
         core.heightmap.clone_source_dense() == source,
         "the source terrain is restored"
     );
-    assert!(
-        core.heightmap.clone_visual_dense() == visual,
-        "the visual terrain is restored"
-    );
     assert_eq!(core.region_graph.edge(0).physical_geometry, profile);
 }
 
@@ -439,10 +428,7 @@ fn a_large_terrain_stroke_undoes_to_the_terrain_before_it() {
         &mut core,
         vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 0.0, 0.0)],
     );
-    let (source, visual) = (
-        core.heightmap.clone_source_dense(),
-        core.heightmap.clone_visual_dense(),
-    );
+    let source = core.heightmap.clone_source_dense();
     let profile = core.region_graph.edge(0).physical_geometry.clone();
     let undo_count = core.undo_stack.len();
     core.start_terrain_stroke_internal();
@@ -462,10 +448,6 @@ fn a_large_terrain_stroke_undoes_to_the_terrain_before_it() {
     assert!(
         core.heightmap.clone_source_dense() == source,
         "the source terrain is restored"
-    );
-    assert!(
-        core.heightmap.clone_visual_dense() == visual,
-        "the visual terrain is restored"
     );
     assert_eq!(core.region_graph.edge(0).physical_geometry, profile);
 }
@@ -645,11 +627,10 @@ fn kuopio_saved_reference_loads_as_saved() {
         roadbed.failed_nodes()
     );
 }
-
 // `TERRAIN-07-A` `T2` and `T7` on Kuopio: every road tile of the reference save baked at
 // `GL0` and `GL1`; prints the conflict samples and row maxima.
 #[test]
-#[ignore = "TERRAIN-07-A census: cargo test --release --lib kuopio_graded_census -- --ignored --nocapture"]
+#[ignore = "manual Kuopio graded census"]
 fn kuopio_graded_census() {
     let mut core = test_core();
     core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
@@ -672,7 +653,7 @@ fn kuopio_graded_census() {
 // `GL3` step, baked one tile at a time as the residency bakes them: the largest seam and edge
 // rows and every tile a level cannot represent. The save comes from `METRUM_GRADED_ROWS_SAVE`.
 #[test]
-#[ignore = "TERRAIN-07-D census: METRUM_GRADED_ROWS_SAVE=<save> cargo test --release --lib graded_slot_rows_census -- --ignored --nocapture"]
+#[ignore = "manual graded slot-row census"]
 fn graded_slot_rows_census() {
     use crate::simulation::terrain::graded::{
         BakeError, Level, PatchTilesScratch, bake_tiles, graded_tiles_in_rect,
@@ -755,7 +736,7 @@ fn graded_slot_rows_census() {
 // chain point, the road top there, and the hidden graded ground just inside and outside the
 // chain: whether the terrain lies below the road top (the overlap's condition).
 #[test]
-#[ignore = "TERRAIN-07-D diagnostic: cargo test --release --lib kuopio_plan_pinhole_sides -- --ignored --nocapture"]
+#[ignore = "manual Kuopio plan-pinhole diagnostic"]
 fn kuopio_plan_pinhole_sides() {
     use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
     let mut core = test_core();
@@ -825,7 +806,7 @@ fn kuopio_plan_pinhole_sides() {
 // whether a wall face of the chain's `GL0` tile covers that step (a face along the chain from
 // below the chain to above the surface there).
 #[test]
-#[ignore = "TERRAIN-07-D diagnostic: cargo test --lib kuopio_t2_edge_steps -- --ignored --nocapture"]
+#[ignore = "manual Kuopio terrain-edge diagnostic"]
 fn kuopio_t2_edge_steps() {
     use crate::simulation::terrain::graded::{
         GradedSurface, Level, QueryScratch, TILE_M, TileKey, bake_tiles,
@@ -1155,7 +1136,7 @@ fn a_kuopio_drag_converges_to_the_tiles_it_commits() {
 // case's earlier strokes committed first), baked alone at the stroke's full pose, a few times:
 // a frame's share cannot be faster than its slowest tile.
 #[test]
-#[ignore = "TERRAIN-07-E diagnostic: METRUM_DRAG_CASE=kuopio_08 METRUM_DRAG_ATTEMPT=22 cargo test --release --lib kuopio_drag_tile_costs -- --ignored --nocapture"]
+#[ignore = "manual Kuopio drag tile-cost diagnostic"]
 fn kuopio_drag_tile_costs() {
     use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
     use crate::simulation::terrain::graded::{Level, bake_tiles};
@@ -1257,7 +1238,7 @@ fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Va
 // With `METRUM_CONFLICT_DUMP_DIR` set, each site's graded samples, seams and top triangles are
 // written there as `site-<rank>.json` for renders.
 #[test]
-#[ignore = "TERRAIN-07-A census: cargo test --release --lib kuopio_wall_sites -- --ignored --nocapture"]
+#[ignore = "manual Kuopio graded-wall census"]
 fn kuopio_wall_sites() {
     use crate::simulation::terrain::graded::tests::{dump_site, wall_sites};
     let mut core = test_core();
@@ -1317,28 +1298,6 @@ fn kuopio_conflict_wall_closes_the_step() {
 
 // The regenerated reference's refined terrain builds clean. The refined patches the roads reach:
 // 27 on the legacy save as recorded before `ROAD-68-C`, 28 on the regenerated one.
-#[test]
-#[ignore = "TERRAIN-07: patch count and refined CDT patches of the legacy terrain pipeline"]
-fn kuopio_saved_reference_terrain_builds_clean() {
-    let mut core = test_core();
-    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
-    core.precompute_road_mesh_data();
-    let patches = SimCore::build_refined_terrain_patch_cache_entries(inputs(&mut core));
-    assert_eq!(patches.len(), 28);
-    for patch in patches {
-        assert!(
-            crate::nodes::simulation_node::SimulationNode::cached_refined_cdt_failure_label(&patch)
-                .is_none(),
-            "saved terrain {:?}: {:?}",
-            patch.key,
-            patch
-                .mesh_buffers
-                .as_ref()
-                .map(|b| b.omitted_pathological_terrain_faces)
-        );
-    }
-}
-
 fn kuopio_manifest() -> serde_json::Value {
     serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1642,83 +1601,6 @@ fn kuopio_saved_reference_profiles_preserve_quality_limits() {
 // The refined terrain after each recorded stroke: exported seams, tile seams, window bounds and
 // the CDT's constraint edges.
 #[test]
-#[ignore = "TERRAIN-07: exported and tile seams, window bounds and CDT constraints of the legacy terrain pipeline"]
-fn kuopio_recorded_terrain_builds_clean() {
-    replay_kuopio_recorded_cases(|case_id, stroke, core| {
-        let cold = SimCore::build_refined_terrain_patch_cache_entries(inputs(core));
-        let mut tile_heights = std::collections::BTreeMap::new();
-        for patch in &cold {
-            if let Some(buffers) = &patch.mesh_buffers {
-                let mut exported_heights = HashMap::new();
-                for point in &buffers.terrain_vertices {
-                    if let Some(previous) =
-                        exported_heights.insert((point.x.to_bits(), point.z.to_bits()), point.y)
-                    {
-                        assert!(
-                            (previous - point.y).abs() < 0.001,
-                            "{case_id} {} patch {:?}: exported seam at {point:?}, previous height {previous}",
-                            stroke["attempt"],
-                            patch.key
-                        );
-                    }
-                }
-                assert_eq!(
-                    buffers.omitted_pathological_terrain_faces, 0,
-                    "{case_id} attempt {} patch {:?}: terrain export removed faces",
-                    stroke["attempt"], patch.key
-                );
-            }
-            for window in &patch.windows {
-                let mesh = window.mesh_result.as_ref().unwrap();
-                let bounds = window.cdt_patch;
-                for vertex in &mesh.vertices {
-                    assert!(
-                        vertex.x >= bounds.min_x
-                            && vertex.x <= bounds.max_x
-                            && vertex.z >= bounds.min_z
-                            && vertex.z <= bounds.max_z,
-                        "{case_id} {}: vertex outside {:?}: {vertex:?}",
-                        stroke["attempt"],
-                        window.key
-                    );
-                    if vertex.x == bounds.min_x
-                        || vertex.x == bounds.max_x
-                        || vertex.z == bounds.min_z
-                        || vertex.z == bounds.max_z
-                    {
-                        let key = (
-                            (vertex.x * 1000.0).round() as i64,
-                            (vertex.z * 1000.0).round() as i64,
-                        );
-                        if let Some((previous, previous_window)) =
-                            tile_heights.insert(key, (vertex.height_m, window.key))
-                        {
-                            assert!(
-                                (previous - vertex.height_m).abs() < 0.001,
-                                "{case_id} {}: tile seam {key:?} height {previous} vs {} in {previous_window:?} and {:?}",
-                                stroke["attempt"],
-                                vertex.height_m,
-                                window.key
-                            );
-                        }
-                    }
-                }
-                assert_eq!(
-                    mesh.stats.invalid_constraint_edges, 0,
-                    "{case_id} attempt {} window {:?}: {:?}",
-                    stroke["attempt"], window.key, mesh.invalid_constraint_samples
-                );
-                assert_eq!(
-                    mesh.stats.spade_missing_road_constraint_edges, 0,
-                    "{case_id} attempt {} window {:?}: {:?}",
-                    stroke["attempt"], window.key, mesh.unpreserved_road_constraint_samples
-                );
-            }
-        }
-    });
-}
-
-#[test]
 fn orthogonal_zoning_block_terrain_previews_and_commits() {
     orthogonal_zoning_block_at_angle(0.0);
 }
@@ -1921,9 +1803,6 @@ fn bulk_trunk_world(background: usize) -> SimCore {
         .transit_network
         .finalize_bulk_load(&mut core_ref.region_graph, &mut core_ref.allocator);
     core.fit_lanes_to_road_surface();
-    core.refresh_all_engineered_terrain_patch_state(
-        crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-    );
     core
 }
 

@@ -380,9 +380,6 @@ fn street_grid_with_crosses(side_m: f32, crosses: usize) -> (SimCore, Vec<f32>, 
     // routing rebuild (D7) now instead of holding its first frames.
     core.transit_network.settle_cch();
     core.fit_lanes_to_road_surface();
-    // A bulk road build is a world-scale change: its terrain ownership is refreshed once here,
-    // as a load does, not left to the player's first commit (`ROAD-68-D` part 6).
-    core.refresh_all_engineered_terrain_patch_state(super::ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
     (core, row_z, half_x)
 }
 

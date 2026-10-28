@@ -245,13 +245,13 @@ fn a_terrain_edit_beside_a_sloped_junction_leaves_no_failed_node() {
     let mut core = committed(&strokes, &[0, 1], true);
     let at = Vector2::new(10.0, 10.0);
     let height = core.get_world_surface_height_internal(at);
-    let terrain_before = core.heightmap.clone_visual_dense();
+    let terrain_before = core.heightmap.clone_source_dense();
     core.level_terrain_internal(at, 12.0, height + 2.0, 1.0);
     let roadbed = &core.transit_network.roadbed;
     let failed: Vec<_> = roadbed.failed_nodes().to_vec();
     assert!(failed.is_empty(), "failed nodes after the edit: {failed:?}");
     assert!(
-        core.heightmap.clone_visual_dense() != terrain_before,
+        core.heightmap.clone_source_dense() != terrain_before,
         "the edit was rolled back: {:?}",
         core.last_road_rejection.as_ref().map(|r| &r.detail)
     );
@@ -269,7 +269,7 @@ fn an_8_percent_slope_under_a_flat_t_leaves_every_node_built() {
         ([Vector2::ZERO, Vector2::new(0.0, ARM_M)], 1),
     ];
     let mut core = committed(&strokes, &[0, 1], false);
-    let terrain_before = core.heightmap.clone_visual_dense();
+    let terrain_before = core.heightmap.clone_source_dense();
     core.slope_terrain_internal(
         Vector2::ZERO,
         256.0,
@@ -286,7 +286,7 @@ fn an_8_percent_slope_under_a_flat_t_leaves_every_node_built() {
         roadbed.failed_nodes()
     );
     assert!(
-        core.heightmap.clone_visual_dense() != terrain_before,
+        core.heightmap.clone_source_dense() != terrain_before,
         "the edit was rolled back: {:?}",
         core.last_road_rejection.as_ref().map(|r| &r.detail)
     );
