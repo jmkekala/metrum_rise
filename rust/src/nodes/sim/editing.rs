@@ -2328,10 +2328,7 @@ impl SimCore {
             }
         };
         let (changed_chunks, restore) = roadbed.install(delta);
-        let terrain_changes = self.transit_network.roadbed.take_terrain_changes();
-        let road_terrain_patches = self.bump_road_terrain_payload_generations(&terrain_changes);
-        self.record_graded_road_edit(&terrain_changes);
-        self.last_road_terrain_changes = terrain_changes;
+        let road_terrain_patches = self.publish_roadbed_terrain_changes();
         // Generated trees keep clear of walkways and poles beside them, possibly from a
         // neighboring terrain patch; the canopy margin covers both setbacks.
         for &chunk in &changed_chunks {
@@ -2369,6 +2366,25 @@ impl SimCore {
             );
         }
         (road_terrain_patches, restore, installed)
+    }
+
+    /// Publishes every pending canonical roadbed change to its terrain consumers.
+    ///
+    /// The work is local to the union of each replaced piece's old and new cap/apron reach:
+    /// `O(changed inputs * covered tiles * log local inputs)`, independent of city size.
+    pub(crate) fn publish_roadbed_terrain_changes(&mut self) -> Vec<(usize, usize)> {
+        let changes = self.transit_network.roadbed.take_terrain_changes();
+        if changes.pieces.is_empty()
+            && changes.chains.is_empty()
+            && changes.segments.is_empty()
+            && changes.portals.is_empty()
+        {
+            return Vec::new();
+        }
+        let patches = self.bump_road_terrain_payload_generations(&changes);
+        self.record_graded_road_edit(&changes);
+        self.last_road_terrain_changes = changes;
+        patches
     }
 
     /// Returns the ID of the nearest node to `pos` if `pos` is within

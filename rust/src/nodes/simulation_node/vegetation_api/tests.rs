@@ -63,25 +63,59 @@ fn commit_vegetation_test_road(core: &mut SimCore, points: [Vector3; 2]) {
     assert!(outcome.committed, "{}", outcome.rejection);
 }
 
+fn assert_terrain_query_index_fresh(core: &SimCore, stage: &str) {
+    let mut fresh = crate::simulation::terrain::graded::TerrainQueryIndex::default();
+    fresh.rebuild_all(&core.transit_network.roadbed, &core.allocator);
+    assert!(
+        core.terrain_query_index.same_inputs(&fresh),
+        "{stage}: incremental inputs differ from rebuild: {}",
+        core.terrain_query_index.difference(&fresh)
+    );
+}
+
 #[test]
 fn vegetation_gather_after_a_road_edit_and_undo_reads_only_live_pieces() {
     let mut core = core();
+    let cell_m = core.config.zone_cell_m;
+    core.allocator.prepare_building_site_query_index(cell_m);
     let y = 20.0;
     commit_vegetation_test_road(
         &mut core,
         [Vector3::new(-120.0, y, 10.0), Vector3::new(120.0, y, 10.0)],
     );
+    assert_terrain_query_index_fresh(&core, "first road commit");
     commit_vegetation_test_road(
         &mut core,
         [Vector3::new(0.0, y, 10.0), Vector3::new(0.0, y, 130.0)],
     );
+    assert_terrain_query_index_fresh(&core, "second road commit");
     commit_vegetation_test_road(
         &mut core,
         [Vector3::new(-120.0, y, 70.0), Vector3::new(-10.0, y, 70.0)],
     );
+    assert_terrain_query_index_fresh(&core, "third road commit");
+    commit_vegetation_test_road(
+        &mut core,
+        [Vector3::new(60.0, y, 10.0), Vector3::new(60.0, y, 80.0)],
+    );
+    assert_terrain_query_index_fresh(&core, "renderer-shaped road commit");
+    let _ = clear_site(&core, -10.0, 70.0, CANOPY_CLEAR_RADIUS_M, 3.0, false);
+    let side = core.get_hovered_edge_internal(0.0, 100.0);
+    assert!(side >= 0);
+    let index_generation = core.terrain_query_index.generation();
+    core.set_edge_class_internal(side, 1);
+    core.precompute_road_mesh_data();
+    assert_ne!(
+        core.terrain_query_index.generation(),
+        index_generation,
+        "the canonical roadbed publication must advance its derived query index"
+    );
+    let _ = clear_site(&core, -10.0, 70.0, CANOPY_CLEAR_RADIUS_M, 3.0, false);
+    assert_terrain_query_index_fresh(&core, "road class edit");
+    core.sculpt_terrain_internal(Vector2::new(0.0, 42.0), 26.0, -0.25);
+    assert_terrain_query_index_fresh(&core, "road regrade after base edit");
     assert!(core.undo_action_internal());
-    let cell_m = core.config.zone_cell_m;
-    core.allocator.prepare_building_site_query_index(cell_m);
+    assert_terrain_query_index_fresh(&core, "base edit undo");
 
     // This is the vegetation path that used to pass an index-retained, removed PieceId to
     // `RoadbedSystem::wall_seams_in_bounds` after the undo.
@@ -1742,6 +1776,8 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
     core.allocator.recompute_max_site_radius_m();
     let cell_m = core.config.zone_cell_m;
     core.allocator.prepare_building_site_query_index(cell_m);
+    core.terrain_query_index
+        .rebuild_all(&core.transit_network.roadbed, &core.allocator);
     let shrub = |x: f32, z: f32| Plant {
         x,
         z,

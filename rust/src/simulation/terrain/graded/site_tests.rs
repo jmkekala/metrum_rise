@@ -315,6 +315,7 @@ fn pads_hold_their_support_height_and_surfaces_their_partition_class() {
         terrain: &terrain,
         roadbed: &roadbed,
         sites: &sites,
+        query_index: None,
     };
     let mut scratch = QueryScratch::default();
     let (mut xs, mut zs) = (Vec::new(), Vec::new());
@@ -506,6 +507,7 @@ pub(crate) fn assert_walls_close_the_step(
         terrain,
         roadbed,
         sites,
+        query_index: None,
     };
     let mut scratch = QueryScratch::default();
     let (mut walled, mut highest) = (0, 0.0f64);
@@ -731,6 +733,7 @@ fn structure_mouths_wall_the_graded_ground() {
             terrain: &terrain,
             roadbed: &roadbed,
             sites: &NoSites,
+            query_index: None,
         };
         let mut scratch = QueryScratch::default();
         let (mut walled, mut highest, mut opened, mut banded) = (0, 0.0f64, 0, 0);
@@ -879,6 +882,7 @@ fn a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck() {
         terrain: &terrain,
         roadbed: &roadbed,
         sites: &NoSites,
+        query_index: None,
     };
     let mut scratch = QueryScratch::default();
     let (mut sampled, mut faces) = (0, 0);
@@ -1128,6 +1132,7 @@ pub(crate) fn assert_allocator_sites_bake(
         terrain,
         roadbed,
         sites: allocator,
+        query_index: None,
     };
     let mut scratch = QueryScratch::default();
     let (mut baked, mut pad_samples, mut paved) = (0, 0, 0);

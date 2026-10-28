@@ -5,7 +5,7 @@
 use super::*;
 use crate::nodes::simulation_node::SimulationNode;
 use crate::simulation::network::roadbed::RoadVec3;
-use crate::simulation::terrain::graded::QueryScratch;
+use crate::simulation::terrain::graded::{GradedSurface, QueryScratch, TerrainQueryIndex};
 use godot::prelude::Vector2;
 use std::sync::Arc;
 
@@ -94,67 +94,132 @@ fn place_yard_at(
     Ok(building)
 }
 
-fn assert_gather_path_live(core: &SimCore, stage: &str, x: f64, z: f64) {
-    let surface = core.graded_surface();
-    let (mut gathered, mut per_point) = (QueryScratch::default(), QueryScratch::default());
-    let cached = surface.ground_height_at(x, z, &mut gathered);
-    surface.base_height_at(180.0, 180.0, &mut gathered);
+fn assert_query_index_fresh(core: &SimCore, stage: &str, strict_inputs: bool) {
+    let mut fresh = TerrainQueryIndex::default();
+    fresh.rebuild_all(&core.transit_network.roadbed, &core.allocator);
+    if strict_inputs {
+        assert!(
+            core.terrain_query_index.same_inputs(&fresh),
+            "{stage}: incremental inputs differ from rebuild: {}",
+            core.terrain_query_index.difference(&fresh)
+        );
+    }
+    let (tiles, bytes) = core.terrain_query_index.memory();
+    assert!(tiles > 0 && bytes > 0, "a road or site fixture has indexed inputs");
+    let indexed = core.graded_surface();
+    let gathered = GradedSurface {
+        terrain: &core.heightmap,
+        roadbed: &core.transit_network.roadbed,
+        sites: &core.allocator,
+        query_index: None,
+    };
+    let (mut a_scratch, mut b_scratch) = (QueryScratch::default(), QueryScratch::default());
+    let cached = indexed.ground_height_at(0.37, 0.19, &mut a_scratch);
+    indexed.base_height_at(180.0, 180.0, &mut a_scratch);
     assert_eq!(
-        surface.ground_height_at(x, z, &mut gathered).to_bits(),
+        indexed
+            .ground_height_at(0.37, 0.19, &mut a_scratch)
+            .to_bits(),
         cached.to_bits(),
-        "{stage}: an authored-base lookup must invalidate the prepared query's base window"
+        "an authored-base lookup must invalidate the prepared query's base window"
     );
-    surface.gather_near(x, z, 2.5, &mut gathered);
+    let (x, z) = (-65.690_895_080_566_4, 36.011_367_797_851_56);
+    indexed.gather_near(x, z, 2.5, &mut a_scratch);
+    assert_eq!(
+        indexed.ground_height_near(x, z, &mut a_scratch).to_bits(),
+        gathered.ground_height_at(x, z, &mut b_scratch).to_bits(),
+        "a diagonal seam outside the cap must not disable a gathered tile's base shortcut"
+    );
     for (dx, dz) in [(2.5, -2.5), (-2.4, 1.3), (0.7, 2.5)] {
         let (cx, cz) = (x + dx, z + dz);
         assert_eq!(
-            surface
-                .surface_height_near(cx, cz, &mut gathered)
-                .to_bits(),
-            surface
-                .surface_height_at(cx, cz, &mut per_point)
-                .to_bits(),
-            "{stage}: gathered height at ({cx}, {cz})"
+            indexed.surface_height_near(cx, cz, &mut a_scratch).to_bits(),
+            gathered.surface_height_at(cx, cz, &mut b_scratch).to_bits(),
+            "indexed gathered contact at ({cx}, {cz})"
         );
-        assert_eq!(
-            surface.mask_near(cx, cz, &mut gathered),
-            surface.mask_at(cx, cz, &mut per_point),
-            "{stage}: gathered class at ({cx}, {cz})"
-        );
+    }
+    for z in (-220..=220).step_by(11) {
+        for x in (-220..=220).step_by(13) {
+            let (x, z) = (f64::from(x) + 0.37, f64::from(z) + 0.19);
+            let a = indexed.surface_height_at(x, z, &mut a_scratch);
+            let b = gathered.surface_height_at(x, z, &mut b_scratch);
+            assert_eq!(a.to_bits(), b.to_bits(), "height at ({x}, {z})");
+            let expected_height = a.to_bits();
+            assert_eq!(indexed.mask_at(x, z, &mut a_scratch), gathered.mask_at(x, z, &mut b_scratch));
+            let a = indexed.normal_at(x, z, &mut a_scratch);
+            let b = gathered.normal_at(x, z, &mut b_scratch);
+            assert_eq!(a.map(f64::to_bits), b.map(f64::to_bits), "normal at ({x}, {z})");
+            let expected_normal = a.map(f64::to_bits);
+            let a = indexed.surface_height_and_normal_at(x, z, &mut a_scratch);
+            let b = gathered.surface_height_and_normal_at(x, z, &mut b_scratch);
+            assert_eq!(
+                (a.0.to_bits(), a.1.map(f64::to_bits)),
+                (b.0.to_bits(), b.1.map(f64::to_bits)),
+                "surface pose at ({x}, {z})"
+            );
+            assert_eq!(a.0.to_bits(), expected_height);
+            if core.transit_network.roadbed.height_at(x as f32, z as f32).is_none() {
+                assert_eq!(a.1.map(f64::to_bits), expected_normal);
+            }
+        }
     }
 }
 
 #[test]
-fn graded_gather_stays_live_across_roads_undo_load_site_swap_remove_and_base_edits() {
+fn terrain_query_index_stays_fresh_across_road_load_site_and_base_mutations() {
     let (_, strokes, _) = road_reference_probe::reference_fixtures().swap_remove(0);
     let mut core = road_edit_order::committed(&strokes, &[0], true);
-    assert_gather_path_live(&core, "initial road", 0.37, 0.19);
+    assert_query_index_fresh(&core, "initial road", true);
     core.benchmark_mode = false;
     graded_edits::commit_stroke(&mut core, strokes[1]);
-    let edited = (strokes[1].0[0] + strokes[1].0[1]) * 0.5;
-    assert_gather_path_live(&core, "road commit", f64::from(edited.x), f64::from(edited.y));
+    let commit_us = core.terrain_query_index_update_us;
+    assert_query_index_fresh(&core, "road commit", true);
     assert!(core.undo_action_internal());
-    assert_gather_path_live(&core, "road undo", f64::from(edited.x), f64::from(edited.y));
+    let undo_us = core.terrain_query_index_update_us;
+    assert_query_index_fresh(&core, "road undo", true);
 
-    let path = temp_save_path("graded_gather_mutations");
+    let path = temp_save_path("terrain_query_index_mutations");
     core.save_game_settled(path.to_str().unwrap(), None).unwrap();
     core.load_game_internal(path.to_str().unwrap()).unwrap();
     let _ = std::fs::remove_file(&path);
     core.precompute_road_mesh_data();
-    assert_gather_path_live(&core, "load", f64::from(edited.x), f64::from(edited.y));
+    assert_query_index_fresh(&core, "load", true);
 
     let asset = register_yard(&mut core);
     let first = place_yard_at(&mut core, 0, 1.0, 0.25, &asset).expect("first site placement");
     place_yard_at(&mut core, 0, -1.0, 0.75, &asset).expect("second site placement");
-    assert_gather_path_live(&core, "sites", 0.37, 0.19);
+    let site_us = core.terrain_query_index_update_us;
+    assert_query_index_fresh(&core, "sites", true);
     assert!(core.bulldoze_building(first));
-    assert_gather_path_live(&core, "site swap-remove", 0.37, 0.19);
+    assert_query_index_fresh(&core, "site swap-remove", true);
 
     core.slope_terrain_internal(
         Vector2::new(48.0, 48.0), 24.0, Vector2::new(24.0, 48.0), 1.0,
         Vector2::new(72.0, 48.0), 8.0, 1.0,
     );
-    assert_gather_path_live(&core, "base edit", 48.0, 48.0);
+    let base_us = core.terrain_query_index_update_us;
+    assert_query_index_fresh(&core, "base", true);
+    eprintln!(
+        "TERRAIN_QUERY_INDEX_UPDATES commit_us={commit_us} undo_us={undo_us} site_us={site_us} base_us={base_us}"
+    );
+}
+
+#[test]
+#[ignore = "TERRAIN-07-F release query-index Kuopio memory and rebuild benchmark"]
+fn benchmark_kuopio_terrain_query_index() {
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    let started = std::time::Instant::now();
+    let mut rebuilt = TerrainQueryIndex::default();
+    rebuilt.rebuild_all(&core.transit_network.roadbed, &core.allocator);
+    let rebuild_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert!(core.terrain_query_index.same_inputs(&rebuilt));
+    let (tiles, bytes) = core.terrain_query_index.memory();
+    eprintln!("TERRAIN_QUERY_INDEX fixture=kuopio tiles={tiles} bytes={bytes} rebuild_ms={rebuild_ms:.3}");
 }
 
 fn settle_and_check_yards(core: &mut SimCore) -> usize {
@@ -2094,6 +2159,7 @@ fn kuopio_vegetation_placement_digest_dump() {
         terrain: &core.heightmap,
         roadbed: &core.transit_network.roadbed,
         sites: &core.allocator,
+        query_index: Some(&core.terrain_query_index),
     };
     let mut scratch = QueryScratch::default();
     let generator = core.vegetation;

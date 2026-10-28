@@ -135,6 +135,13 @@ impl SimCore {
     /// the sites within reach of the changed pieces copied). Nothing while the journal is off.
     pub(crate) fn record_graded_road_edit(&mut self, changes: &TerrainChanges) {
         self.graded_edits.awaiting = None;
+        let started = std::time::Instant::now();
+        self.terrain_query_index.update_roads(
+            &self.transit_network.roadbed,
+            &self.allocator,
+            changes,
+        );
+        self.terrain_query_index_update_us = started.elapsed().as_micros() as u64;
         if !self.graded_edits.enabled {
             return;
         }
@@ -190,6 +197,13 @@ impl SimCore {
 
     /// Records published site changes. Nothing while the journal is off or without changes.
     pub(crate) fn record_graded_site_edit(&mut self, changes: &[SiteChange]) {
+        let started = std::time::Instant::now();
+        self.terrain_query_index.update_sites(
+            &self.transit_network.roadbed,
+            &self.allocator,
+            changes,
+        );
+        self.terrain_query_index_update_us = started.elapsed().as_micros() as u64;
         if !self.graded_edits.enabled || changes.is_empty() {
             return;
         }
@@ -207,6 +221,15 @@ impl SimCore {
 
     /// Records base samples written inside `rect` (`[min_x, min_z, max_x, max_z]`).
     pub(crate) fn record_graded_base_edit(&mut self, rect: [f64; 4]) {
+        let started = std::time::Instant::now();
+        let mut tiles = Vec::new();
+        dirty_tiles_for_base_area(&self.heightmap, rect, Level::Gl0, &mut tiles);
+        self.terrain_query_index.update_base_tiles(
+            tiles,
+            &self.transit_network.roadbed,
+            &self.allocator,
+        );
+        self.terrain_query_index_update_us = started.elapsed().as_micros() as u64;
         if self.graded_edits.enabled {
             self.push_graded_edit(GradedEditKind::Base(rect));
         }
@@ -214,6 +237,10 @@ impl SimCore {
 
     /// Records a world-scale reset: every tile is dirty.
     pub(crate) fn record_graded_reset(&mut self) {
+        let started = std::time::Instant::now();
+        self.terrain_query_index
+            .rebuild_all(&self.transit_network.roadbed, &self.allocator);
+        self.terrain_query_index_update_us = started.elapsed().as_micros() as u64;
         if self.graded_edits.enabled {
             self.graded_edits.roadbed = Some(self.transit_network.roadbed.clone());
             self.push_graded_edit(GradedEditKind::All);

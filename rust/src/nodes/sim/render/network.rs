@@ -24,6 +24,10 @@ impl SimCore {
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
+        // This is also a canonical roadbed publisher (terrain syncs and property edits reach it
+        // without `publish_network_surface`). Publish the derived query index and terrain journal
+        // from the same old/new piece changes before any consumer can observe the new piece map.
+        self.publish_roadbed_terrain_changes();
         let roadbed = &self.transit_network.roadbed;
         if !roadbed.is_current() {
             return;
