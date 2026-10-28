@@ -293,7 +293,7 @@ func _sync_graded_mask(
 		if materials[index] != null:
 			var source_material := materials[index] as ShaderMaterial
 			for parameter in [
-				&"graded_texels", &"graded_rows", &"graded_seam_capacity", &"graded_edge_capacity"
+				&"graded_texels", &"graded_atlas"
 			]:
 				material.set_shader_parameter(parameter, source_material.get_shader_parameter(parameter))
 

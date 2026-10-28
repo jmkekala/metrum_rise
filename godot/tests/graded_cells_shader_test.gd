@@ -7,7 +7,7 @@ extends SceneTree
 
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
 const SIDE := 131
-const ROW_TEXELS := 768
+const ATLAS_WIDTH := 256
 const ROAD_EDGE_M := 20.0
 const BACKGROUND := Color(1.0, 0.0, 1.0)
 
@@ -26,16 +26,18 @@ func _texture(color: Color) -> ImageTexture:
 	image.fill(color)
 	return ImageTexture.create_from_image(image)
 
-# One GL0 slot: flat, the road west of x = 20 m (sdf negative there), seam 0 its edge, road on
-# its left (from z = 0 to z = 64).
+# One GL0 slot of a page: flat, the road west of x = 20 m (sdf negative there), seam 0 its edge,
+# road on its left (from z = 0 to z = 64); its header (run at atlas layer 0, no edges, the
+# heights from row 1, no lists) and its run, the seam and its heights.
 func _slot_pools() -> Array[Texture2DArray]:
-	var texels := Image.create_empty(SIDE, SIDE, false, Image.FORMAT_RGBAF)
+	var texels := Image.create_empty(SIDE, SIDE + 1, false, Image.FORMAT_RGBAF)
 	for j in SIDE:
 		for i in SIDE:
 			var x := float(i - 1) * 0.5
 			var sdf := clampf(x - ROAD_EDGE_M, -2.0, 2.0)
 			texels.set_pixel(i, j, Color(0.0, sdf, 0.0 if absf(sdf) < 2.0 else -1.0, 0.0))
-	var rows := Image.create_empty(ROW_TEXELS, 1, false, Image.FORMAT_RGBAF)
+	texels.set_pixel(0, SIDE, Color(0.0, 1.0, 1.0, 2.0))
+	var rows := Image.create_empty(ATLAS_WIDTH, 1, false, Image.FORMAT_RGBAF)
 	rows.set_pixel(0, 0, Color(ROAD_EDGE_M, 0.0, ROAD_EDGE_M, 64.0))
 	var texel_array := Texture2DArray.new()
 	texel_array.create_from_images([texels])
@@ -54,7 +56,7 @@ func _material(shader_path: String, pools: Array[Texture2DArray]) -> ShaderMater
 	material.set_shader_parameter("patch_world_size_m", Vector2(64.0, 64.0))
 	material.set_shader_parameter("ground_shadow_ambient", 1.0)
 	material.set_shader_parameter("graded_texels", pools[0])
-	material.set_shader_parameter("graded_rows", pools[1])
+	material.set_shader_parameter("graded_atlas", pools[1])
 	return material
 
 func _cells(mesh: Mesh, material: ShaderMaterial, custom: Color, mode: float) -> MultiMeshInstance3D:

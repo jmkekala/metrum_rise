@@ -54,7 +54,7 @@ func _run() -> void:
 	var graded := GradedTiles.new()
 	graded.setup(simulation, CELL_M, world_size, float(layout["patch_interval_cells"]) * CELL_M, [24, 24, 24, 24])
 	var created := _creation_counters(graded)
-	_expect(int(created["textures_created"]) == 8, "the pools are 4 levels x (texels, rows): %s" % created)
+	_expect(int(created["textures_created"]) == 4, "the world pages of GL0 and GL1 x (slots, atlas): %s" % created)
 	_expect(int(created["multimeshes_created"]) == (GradedTiles.CELL_MESHES + 1) * 4, "one cell set per patch of the 2 x 2 grid: %s" % created)
 
 	var resident := _resident_patches(host, layout, world_size, 1)
@@ -113,16 +113,21 @@ func _run() -> void:
 		rebaked += 1
 		_expect(batch.has(tile), "tile %s rebakes in the batch" % tile)
 		if int(now["level"]) == int(was["level"]):
-			_expect(int(now["slot"]) == int(was["slot"]), "tile %s rebakes into its own slot" % tile)
+			for page_id: int in was["copies"]:
+				if (now["copies"] as Dictionary).has(page_id):
+					_expect((now["copies"][page_id] as Vector3i).x == (was["copies"][page_id] as Vector3i).x, "tile %s rebakes into its own slot" % tile)
 	_expect(rebaked > 0, "the edit rebakes installed tiles")
 	_expect(graded._cell_mask_revision > mask_revision_before,
 		"an in-place tile upload must invalidate the grass mask")
 	_expect(batch.size() < graded.installed.size(), "the edit rebakes only its dirty tiles (%d of %d installed)" % [batch.size(), graded.installed.size()])
-	# Nothing is created after setup, neither while streaming nor by the edit: the cell sets are
-	# prewarmed, one per patch of the grid (round 5's populated edit created 16 materials and 24
-	# MultiMeshes for patches newly drawing cells).
+	# Nothing is created after setup but a block's pages (as its streaming first needs them), neither
+	# by the edit: the cell sets are prewarmed, one per patch of the grid (round 5's populated edit
+	# created 16 materials and 24 MultiMeshes for patches newly drawing cells).
 	var after := _creation_counters(graded)
 	for name: String in created.keys():
+		if name == "textures_created":
+			_expect(int(after[name]) - int(created[name]) == 2 * int(graded.counters["pages_created"]) - 4, "only pages create textures: %s" % after)
+			continue
 		_expect(after[name] == created[name], "nothing may be created after setup (%s): %s -> %s" % [name, created[name], after[name]])
 	# Each pooled cell set holds nine cell MultiMeshes, the wall MultiMesh and the graded levels'
 	# materials, two variants each (every cell mesh but the base cells'); the wall material is
@@ -136,6 +141,7 @@ func _run() -> void:
 	await _check_road_preview(graded, simulation, camera, resident)
 	await _check_moving_camera(graded, resident)
 	await _check_streaming(graded, camera, resident)
+	await _check_page_growth(graded, camera, resident)
 	_expect(_violations == 0, "no frame draws a PlaneMesh where its patch's list names a graded tile: up to %d" % _violations)
 
 	# Far away every tile is evicted and every slot freed.
@@ -214,6 +220,34 @@ func _check_streaming(graded: GradedTiles, camera: Vector3, resident: Dictionary
 		var listed := not (graded.patch_lists.get(key, {}).get("tiles", []) as Array).is_empty()
 		var cells: Dictionary = graded.patch_cells.get(key, {})
 		_expect(not listed or bool(cells.get("shown", false)), "streamed patch %s draws its set" % key)
+
+# A block whose page cannot take a copy moves to a larger page (docs/terrain.md "Growth"): its
+# tiles are asked again into the new page while its sets keep drawing the page they bind, then the
+# sets bind the new page in one frame, every instance naming its slot there, and no frame shows a
+# partial set or a PlaneMesh over listed tiles. Every block holding tiles moves here, the GL0 and
+# GL1 world pages too.
+func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> void:
+	_check_partial = true
+	var moves_before := int(graded.counters["page_moves"])
+	var moving := {}
+	for code in 4:
+		for block: Vector2i in graded._block_page[code].keys():
+			var page: Dictionary = graded._pages[graded._block_page[code][block]]
+			if (page["tiles"] as Dictionary).is_empty():
+				continue
+			_expect(graded._move_block(code, block, Vector2i(int(page["slots"]) * 2, int(page["layers"]))), "level %d block %s starts its move" % [code, block])
+			moving[Vector3i(code, block.x, block.y)] = int(graded._block_target[code][block])
+	_expect(not moving.is_empty(), "some block holds tiles to move")
+	_expect(await _settle(graded, camera, resident), "the moved blocks settle")
+	_expect(int(graded.counters["page_moves"]) - moves_before == moving.size(), "every block moved once: %d of %d" % [int(graded.counters["page_moves"]) - moves_before, moving.size()])
+	for marked: Vector3i in moving.keys():
+		var block := Vector2i(marked.y, marked.z)
+		_expect(int(graded._block_page[marked.x].get(block, -1)) == int(moving[marked]), "level %d block %s binds its new page" % [marked.x, block])
+	for tile: Vector2i in graded.installed.keys():
+		_expect(graded._tile_complete(tile, graded.installed[tile]), "tile %s has a copy in every page that draws it" % tile)
+	for key: Vector2i in resident.keys():
+		_check_cells(graded, key, resident)
+	_expect(_partial == 0 and _violations == 0, "no frame of the moves draws a partial set (%d) or a PlaneMesh over listed tiles (%d)" % [_partial, _violations])
 
 # A run from no residency to settled exercised T53 (a)'s window and kept its rule in every frame.
 func _expect_streamed(label: String) -> void:
@@ -594,9 +628,10 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 			var codes := int(data.b) | (int(data.a) << 9)
 			_expect(data.r < 2048.0 and data.b < 2048.0 and data.a < 2048.0, "custom channels are exact as half floats")
 			var own := codes & 7
-			var entry: Dictionary = graded._shown(tile)
+			var entry: Dictionary = graded._shown_in(tile, key)
 			if index != GradedTiles.CELL_BASE:
-				_expect(not entry.is_empty() and int(data.g) == int(entry["slot"]), "a graded instance names its slot")
+				var page := graded._patch_page(key, int(entry.get("level", 0)))
+				_expect(not entry.is_empty() and int(data.g) == (entry["copies"][page] as Vector3i).x, "a graded instance names its slot in its block's page")
 			else:
 				_expect(entry.is_empty() and int(data.g) == -1, "a base cell has no slot")
 			for side in 4:

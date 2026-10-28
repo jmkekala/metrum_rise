@@ -94,10 +94,11 @@ func check_cell_winding(tiles: GradedTiles) -> void:
 # parameters copied as terrain_graded_tiles.gd copies a patch's. The CDT's vertex tags this test
 # rendered before are deleted.
 func graded_paving(class_id: int) -> MultiMeshInstance3D:
-	var texels := Image.create_empty(SLOT_SIDE, SLOT_SIDE, false, Image.FORMAT_RGBAF)
+	# The slot layer and its header line (docs/terrain.md "Pages and the row atlas").
+	var texels := Image.create_empty(SLOT_SIDE, SLOT_SIDE + 1, false, Image.FORMAT_RGBAF)
 	texels.fill(Color(0.0, 2.0, -1.0, float(class_id)))
 	# No sample names a seam or edge: the rows are never read.
-	var rows := Image.create_empty(16, 1, false, Image.FORMAT_RGBAF)
+	var rows := Image.create_empty(256, 1, false, Image.FORMAT_RGBAF)
 	var texel_array := Texture2DArray.new()
 	texel_array.create_from_images([texels])
 	var row_array := Texture2DArray.new()
@@ -109,7 +110,7 @@ func graded_paving(class_id: int) -> MultiMeshInstance3D:
 		if not name.begins_with("graded_") and not name.begins_with("cell_"):
 			material.set_shader_parameter(name, terrain.get_shader_parameter(name))
 	material.set_shader_parameter("graded_texels", texel_array)
-	material.set_shader_parameter("graded_rows", row_array)
+	material.set_shader_parameter("graded_atlas", row_array)
 	material.set_shader_parameter("terrain_cell_m", 10.0)
 	material.set_shader_parameter("world_size", Vector2(64.0, 64.0))
 	material.set_shader_parameter("patch_world_size_m", Vector2(64.0, 64.0))
