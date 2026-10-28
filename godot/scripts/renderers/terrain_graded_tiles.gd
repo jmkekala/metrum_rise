@@ -1055,7 +1055,15 @@ func _free_slot(entry: Dictionary) -> void:
 func _exhaust(tile: Vector2i, code: int, request_key: String, token: int) -> void:
 	_wanted.erase(tile)
 	_exhausted[tile] = [code, request_key, token, false]
-	(_exhausted_order[code] as Array).append(tile)
+	var order: Array = _exhausted_order[code]
+	order.append(tile)
+	# A tile recorded again leaves its earlier entry behind: past twice the records, the order is
+	# rebuilt from them (amortized O(1)), so it stays bounded however long the pools stay exhausted.
+	if order.size() > 2 * _exhausted.size() + 64:
+		order.clear()
+		for waiting: Vector2i in _exhausted.keys():
+			if int(_exhausted[waiting][0]) == code and not bool(_exhausted[waiting][3]):
+				order.append(waiting)
 	counters["pool_exhausted"] += 1
 	MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [code, str(tile)])
 	for patch_key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
