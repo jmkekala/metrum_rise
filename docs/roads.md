@@ -7593,15 +7593,19 @@ measures and judges each against its target. A gate landing later adds its own h
 4. [`terrain.md`](terrain.md#terrain-07-open-questions) T42 (a), the preview's tiles at the
    renderer's distance rule without its hysteresis, pending the user's review: H checks it
    visually on the display.
-5. T37's valid round-12 no-index 100k culled gap: 1.471 ms against 0.836 ms control, +0.635 ms
-   against the unchanged +0.42 ms bar. Round 11's 0.682 ms index-off value gathered no terrain
-   geometry and is not evidence; H must not reuse it.
+5. T37's final matched 100k culled gap: 1.168 ms shared-index tip against 0.846 ms control,
+   +0.322 ms against the unchanged +0.42 ms bar; every one of 1,101 products matches. Round 11's
+   0.682 ms index-off value gathered no terrain geometry and remains invalid. T46 (b), keeping the
+   LOD (exact everywhere is 2.145 ms), was agreed by the user on 2026-10-28; H judges this gap.
 6. T45's far contacts keep at least the intended 0.020 m clearance within floating-point
-   representation: fresh minima 0.019999988 m at 10k and 0.0199999996 m at 100k.
-7. T44's round-12 candidate is no terrain query index, recorded pending the user's review, but its
-   prescribed speed premise was invalidated by the real canonical-gather run and T47 is open.
-   At H compare the copied index's 108 MB/1.10 GB and matched speed against a valid no-index run,
-   as requested by the user; also retain the shared-owner result and its corrected mutation cost.
+   representation: fresh minima 0.019999988377 m at 10k and 0.019999999553 m at 100k.
+7. T44 keeps the shared-owner index (T44 and T47 (a), agreed by the user on 2026-10-28): final
+   matched
+   culled means are 0.311/0.811 ms shared/no-index at 10k and 1.168/1.443 ms at 100k, while shared
+   retains 0.436/4.462 MB; `PERF-07` snapshots are 1.227/1.569 ms. At H compare the copied index's
+   108 MB/1.10 GB against shared as the user requested, and retain the corrected local mutation
+   cost: the fresh 100k commit breakdown is 1.989/0.567/0.483 ms (mean 1.013, max 1.989); its
+   existing path does not execute a user undo, while the small mutation fixture's undo is 0.074 ms.
 8. Measure the release game's peak retained memory before and after `TERRAIN-07-G`, separating
    load/setup peak from the settled world, so legacy deletion has a game-level memory result.
 9. Attribute `PERF-09` separately from terrain query work: the road control already misses the

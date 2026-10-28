@@ -448,31 +448,42 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   click after a fast drag (`terrain.md` T43, the user); the idle-frame matrix measures the
   steady state after the background builds, whose seconds after a load the user accepted;
   four close results go to `ROAD-68-H`'s final verification (`roads.md`).
-  status for gate `TERRAIN-07-F`, round 12: all Rust and Godot consumers use the graded surface;
+  Gate `TERRAIN-07-F` done 2026-10-28 (rounds 1-14; the real-display idle-frame matrix passes
+  every pose): all Rust and Godot
+  consumers use the graded surface;
   water suppression is an exact cell-area query, site feasibility reads the base and 64 m cap,
   inspection uses the visible-surface ray, and grass exclusion reads the graded cells' `sdf` and
   class. T37's render-only vehicle rule keeps exact rigid support through 250 m, then uses one
-  prepared query for the centre normal and contacts, lifting to 0.020 m clearance. Round 12 removes
-  the shared query index and its stale removed-piece result after edit/undo, but also proves round
-  11's index-off comparison invalid: the switch installed an empty ready index and gathered no
-  terrain geometry. Fresh matched 100k culled/full means are 0.836/5.126 ms control,
-  1.471/6.122 canonical gather and 2.856/8.125 exact at every distance. Every one of 1,101
-  products matches, but the gather-control culled gap is +0.635 ms, outside the unchanged
-  +0.42 ms bar. Fresh full-day snapshot/frame means are 0.995/6.213 ms control, 1.602/6.876
-  canonical gather and 3.331/8.619 exact; the +0.607 ms snapshot gap also misses its +0.40 ms
-  bar. The exact comparator still supports keeping the LOD. Round 11's shared result
-  remains historical evidence at 1.090 ms (+0.279 ms, 4.462 MB retained), but its mutation
-  publication was incorrect. T47 recommends restoring that shared-owner representation and
-  fixing its atomic local update before a new matched session; no target is relaxed. Round 11
-  also fixes the T-junction stem's grass
+  prepared query for the centre normal and contacts, lifting to 0.020 m clearance. Round 13
+  restores the 4.462 MB shared-owner query index and fixes its stale-piece cause: one canonical
+  roadbed publisher bypassed the local index/journal updater, leaving the generation unchanged
+  for thread-local scratch. Every publisher now drains the same old/new `TerrainChanges` through
+  one atomic boundary. The regression fails before that call and passes after it; lifecycle
+  products equal a fresh rebuild after every mutation. Fresh matched 100k culled/full means are
+  0.846/5.159 ms control, 1.168/5.605 shared, 1.443/6.085 valid no index and 2.145/7.060 exact
+  at every distance. Every one of 1,101 products matches; shared's +0.322 ms culled gap is inside
+  the unchanged +0.42 ms bar. Fresh full-day snapshot/frame means are 0.963/6.311 ms control,
+  1.227/6.609 shared and 1.569/7.181 valid no index; shared's +0.264 ms snapshot gap is inside the
+  unchanged +0.40 ms bar. T44 therefore keeps shared under the user's speed-for-marginal-memory
+  criterion; the user agreed T44, T46 (b) and T47 (a) on 2026-10-28, validated at `ROAD-68-H`.
+  Round 11's invalid empty-index number remains
+  marked invalid; no target is relaxed. Round 11 also fixes the T-junction stem's grass
   at the cause: an in-place tile upload rewrote the grading payload without invalidating grass's
   private mask. The fresh 2x crop has clear asphalt, crosswalk and both sidewalks; the final
   opposite-way T is also clear, and its dumped mask contains the complete differently oriented
-  stem across the tile/patch split. Round 12's focused vegetation and mutation regressions pass
-  without an index; the final full gates are recorded in the owning gate record. The performance
-  miss means no gate commit is made. The control regression stays
-  `PERF-09`; no target is relaxed. T25 (a), T38 (a), T40, T42, T46 and `WATER-05`'s buffer setting
-  remain pending the user's review. See the
+  stem across the tile/patch split. The first round-13 GPU matrix passed every pose except
+  `city_low`, whose graded frames varied between the 3.3 and 5.4 ms modes. Round 14's instrumented
+  gamescope attribution disproves the suspected upload loop: the 300-frame windows at `city` and
+  `city_low` each contain zero tile uploads, same-level uploads, mask-revision bumps and grass-mask
+  renders on gate E, the round-13 tip and the renderer-revert diagnostic. The cause was steady-frame
+  state submission: grass rebound all five mirrored cell buffers and their instance uniforms and
+  grading textures even when the patch revision was unchanged. Mirror synchronization is now
+  revision-driven; unchanged slots do one integer comparison, while a real payload change still
+  refreshes only the patches meeting that tile. Two fixed gamescope rounds put graded `city_low`
+  below exact (3.20 against 3.46 ms and 3.05 against 3.87 ms). Fresh captures keep both T stems
+  clear and all three load views stable. The final full gates are recorded in the owning gate
+  record; the control regression stays `PERF-09`. T25 (a), T38 (a), T40, T42 and
+  `WATER-05`'s buffer setting remain pending the user's review. See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records
   ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record),
   [D](terrain.md#terrain-07-d-record), [E](terrain.md#terrain-07-e-record),
@@ -1232,6 +1243,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TERRAIN-07-F` done (branch `terrain07-F`, rounds 1-14, 2026-10-28): every consumer reads the graded surface (grass exclusion, overlays, water suppression, site feasibility, inspection, vehicle ground). T37's 250 m vehicle-ground LOD with T45's 0.020 m contact lift; T44's shared-owner query index (4.46 MB at 100k), now published with the canonical roadbed piece map. Matched 100k gaps +0.322 ms culled pose and +0.264 ms snapshot against +0.42/+0.40 bars. Round 14 fixed grass rebinding unchanged mask mirrors every frame, the real-display matrix's `city_low` miss. T44, T46 (b) and T47 (a) agreed by the user, validated at `ROAD-68-H`.
 - `TERRAIN-07-E` done (branch `terrain07-E`, rounds 1-7, 2026-10-27): round 7 found that round 6's hole check could never fail (it compared a 32-bit float with a 64-bit constant); with it fixed, the renderer before round 6's fix fails after the second load and the tip passes 13 loads, and renders show `road`'s gate D tip with the same hole after a reload, and the grass on the asphalt and the zoning cells the same on gate D (gate F's). A built cell set now waits hidden under its patch's node, so starting to draw moves no node. The real-display probe passes (0 failures, 0 holes; pose 1.55 ms, commit 0.49, undo 0.85). The first idle-frame matrix read Kuopio's close and overview 0.6-0.8 ms over the exact cut: they were sampled inside the background cell-set builds after the load (about 3 s uncapped, 82 s at 60 Hz); once those finish the graded terrain costs what the exact cut does. The user accepted that window; the matrix now samples the steady state (`5972bef8`): Kuopio's poses at the exact cut (`close` +0.01, `overview` -0.00, `ground` -0.02 ms GPU p50), `saved` +0.21 (T35's), `city` -0.41, `city_low` -0.13, 0 overflows. The user carried four close results to `ROAD-68-H` (`roads.md`).
 - `TERRAIN-07-E` round 6 (branch `terrain07-E`, work in progress): the user accepted the click right after a fast drag taking its terrain past 3.0 ms (`terrain.md` T27 (f)). A drag probe on the real display found pose frames of up to 17.7 ms where a road first reached a patch: its cell set was built whole in that frame. Every resident patch now builds its set in the background, hidden and holding no instance-uniform slot until it draws, with its data kept on the CPU so a tile's move no longer reads the GPU buffer back; the commit takes over the preview's tiles without uploading them. Under gamescope every catch-up, commit and undo frame now fits 1.0 ms and pose frames take at most 1.8 ms (the sets starting to draw); the display run on these fixes is pending. A world load no longer leaks the previous renderer's cell sets.
 - `TERRAIN-07-E` round 5 (branch `terrain07-E`, work in progress): the road tool's preview now shows its graded terrain tiles in Godot: each frame hands the terrain renderer the tiles it changed, which draw from slots of their own over the installed tiles at the camera's levels (`terrain.md` T42, for review), and a commit's tiles install through the edit journal in one frame with the preview's released, never rebaked; the exact cut's preview patches and `road_terrain_preview.gd` are gone. Preview, committed tiles, a fresh bake and the bake after save and load are equal bit for bit in `road_junction_preview_test.gd`. Finer sampling bands take the worst tile from 2.67 to 2.30 ms; the click right after a fast drag still misses 3.0 ms because it is bound by its tiles' total work, so `terrain.md` T27 goes to the user (recommended: hold such a click until the preview has caught up, at most a few frames). A crossing committed across a trunk on a 10 m world panics in the exact cut's legacy road loops (named for `TERRAIN-07-G`).

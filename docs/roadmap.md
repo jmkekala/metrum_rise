@@ -388,21 +388,27 @@ updated extension deployed. The owning zoning document records reproduction and 
 
 `AUDIT-01` — `hardening`, `parked`, `P1`. Paused by user at a validated checkpoint; resume only when requested. Persistent state is in `audit-state/` at the project root. Audit the existing codebase in subsystem passes, fix confirmed obsolete/duplicate code and correctness/scaling findings, and distinguish source inspection from fresh correctness and performance validation. Coverage and acceptance evidence: [`code_audit.md`](code_audit.md). Exit: every source area has a documented pass, confirmed findings are resolved or explicitly tracked, and affected behavior is validated.
 
-`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 12 removes the shared terrain-query index,
-its copied candidate branches and the stale removed-piece failure after a road edit/undo. Exact
-regressions cover that vegetation gather and road, save/load, site swap-remove and base mutations.
-The first valid no-index bracket corrects round 11's comparator: the old switch installed an empty
-index marked ready and gathered no geometry. Fresh 100k culled/full side means are 0.836/5.126 ms
-control, 1.471/6.122 canonical gather and 2.856/8.125 exact at every distance, with all 1,101
-products equal. Canonical gather therefore misses the unchanged +0.42 ms bar by measuring a
-+0.635 ms gap; exact-everywhere confirms the 250 m LOD still saves 1.385 ms. T45's minimum far
-clearance is 0.0199999996 m. Fresh 100k full-day snapshot/frame means are 0.995/6.213 ms control,
-1.602/6.876 canonical gather and 3.331/8.619 exact; the +0.607 ms snapshot gap also misses its
-+0.40 ms bar. Round 11's shared result (1.090 ms, +0.279 ms, 4.462 MB retained) is
-historical and passed the bar, but its mutation maintenance was incorrect. T47 asks whether to
-restore that representation and fix its atomic local publication (recommended) or pursue another
-exact local preparation; no target is relaxed and no gate commit is made. `PERF-09` owns the
-control regression. T40 and T46 remain pending the user's review.
+`TERRAIN-07-F` — `refactor`, `done` 2026-10-28; the real-display GPU idle-frame matrix passes
+every pose (`city_low` graded -0.75 ms, six town rounds -0.16 ms).
+Round 13 restores the shared-owner terrain-query index and fixes its stale removed-piece cause:
+`precompute_road_mesh_data` published a new canonical piece map without draining the roadbed's
+old/new changes into the derived index and edit journal. Both publication paths now use one local,
+atomic boundary; the renderer-shaped regression fails before the call and passes after it, and
+mutation products equal a fresh rebuild. Fresh 100k culled/full side means are 0.846/5.159 ms
+control, 1.168/5.605 shared, 1.443/6.085 valid no index and 2.145/7.060 exact everywhere, with all
+1,101 products equal. Shared's +0.322 ms gap passes the unchanged +0.42 ms bar and exact confirms
+the LOD saves 0.977 ms. T45's minimum far clearance is 0.019999999553 m. Fresh 100k full-day
+snapshot/frame means are 0.963/6.311 ms control, 1.227/6.609 shared and 1.569/7.181 valid no index;
+shared's +0.264 ms snapshot gap passes the unchanged +0.40 ms bar. T44 keeps shared for 4.462 MB
+at 100k; copied inputs remain rejected at 1.10 GB. `PERF-09` owns the control regression; no target
+is relaxed. The user agreed T44, T46 (b) and T47 (a) on 2026-10-28, validated at `ROAD-68-H`;
+T40 remains pending the user's review.
+The round-13 matrix passed every pose except `city_low`; instrumented gamescope windows prove it
+was not an upload or mask-render loop (uploads, same-level uploads, revision bumps and mask renders
+were all zero). Grass instead rebound its five cell mirrors and their uniforms/textures every idle
+frame. Round 14 makes that synchronization revision-driven and adds a 120-frame settled-view
+regression. Two fixed gamescope rounds put graded `city_low` below exact, 3.20/3.05 ms against
+3.46/3.87 ms; the real-display matrix remains the gate.
 Evidence and acceptance:
 [`terrain.md`](terrain.md#terrain-07-f-record).
 
