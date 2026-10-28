@@ -133,9 +133,9 @@ const DRAW_NONE := 2
 var _collapsed: Dictionary = {}
 # Resident patches drawing nothing (DRAW_NONE) -> Vector2i(msec, process frame) since when.
 var _unready: Dictionary = {}
-## The view's reach in metres (terrain.gd sets it each frame from its camera): an unready patch
-## within it counts in `unready_in_view` (0: none is counted).
-var view_far_m := 0.0
+## The view's frustum (terrain.gd sets it each frame from its camera, Camera3D.get_frustum()): an
+## unready patch whose culling box meets it counts in `unready_in_view` (empty: none is counted).
+var view_planes: Array[Plane] = []
 ## While a world load waits for the render to settle (the load flow holds the game until
 ## terrain.gd's is_render_settled()), the graded work takes the whole frame, not the streaming
 ## install budget's spare time.
@@ -550,21 +550,30 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		counters["edit_install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 		counters["edit_install_ms_max"] = max(float(counters["edit_install_ms_max"]), float(counters["edit_install_ms_last"]))
 
-# The residency margin's check (T53 (a)): the unready patches whose rectangle lies within the
-# view's reach of the camera (horizontally, so a patch above or below it counts too). O(unready
-# patches): none once the residency has caught up.
+# The residency margin's check (T53 (a)): the unready patches whose culling box (the one Godot
+# culls the patch by) is not wholly outside a plane of the view's frustum. O(unready patches):
+# none once the residency has caught up.
 func _count_unready_in_view(resident_patches: Dictionary) -> void:
-	if view_far_m <= 0.0 or _unready.is_empty():
+	if view_planes.is_empty() or _unready.is_empty():
 		return
 	var in_view := 0
-	var eye := Vector2(_camera.x, _camera.z)
 	for key: Vector2i in _unready.keys():
 		var patch: Dictionary = resident_patches.get(key, {})
-		if patch.is_empty():
+		var node: Node3D = patch.get("node", null)
+		if node == null or not node.is_inside_tree():
 			continue
-		var rect: Rect2 = patch["rect"]
-		var gap := Vector2(max(rect.position.x - eye.x, eye.x - rect.end.x, 0.0), max(rect.position.y - eye.y, eye.y - rect.end.y, 0.0))
-		if gap.length() < view_far_m:
+		var box: AABB = node.global_transform * (patch["aabb"] as AABB)
+		var outside := false
+		for plane: Plane in view_planes:
+			# The box corner farthest along the plane's inward side: outside if even it is over.
+			var corner := box.position + Vector3(
+				box.size.x if plane.normal.x < 0.0 else 0.0,
+				box.size.y if plane.normal.y < 0.0 else 0.0,
+				box.size.z if plane.normal.z < 0.0 else 0.0)
+			if plane.is_point_over(corner):
+				outside = true
+				break
+		if not outside:
 			in_view += 1
 	counters["unready_in_view"] += in_view
 	counters["unready_in_view_max"] = max(int(counters["unready_in_view_max"]), in_view)
