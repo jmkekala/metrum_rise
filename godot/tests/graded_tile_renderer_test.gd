@@ -295,6 +295,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 		await process_frame
 	var idle_before := graded.get_pool_counters()
 	var mask_renders_before := grass.mask_renders
+	var mask_syncs_before := grass.mask_mirror_syncs
 	for frame in 120:
 		await process_frame
 	var idle_after := graded.get_pool_counters()
@@ -304,16 +305,21 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 		"a settled view advances no mask revision over 120 frames")
 	_expect(grass.mask_renders == mask_renders_before,
 		"a settled view renders no grass mask over 120 frames")
+	_expect(grass.mask_mirror_syncs == mask_syncs_before,
+		"a settled view rewrites no grass-mask mirror over 120 frames")
 
 	var edge: int = simulation.get_hovered_edge(0.0, 100.0)
 	_expect(edge >= 0, "the side road has an edge at (0, 100)")
 	var edit_mask_renders_before := grass.mask_renders
+	var edit_mask_syncs_before := grass.mask_mirror_syncs
 	simulation.set_edge_class(edge, 1)
 	simulation.sculpt_terrain(Vector2(0.0, 42.0), 26.0, -0.25)
 	await _acknowledge_network(simulation)
 	_expect(await _settle_production(terrain, simulation), "the bridge's terrain must settle: %s" % terrain.get_pending_render_work_counts())
 	_expect(grass.mask_renders > edit_mask_renders_before,
 		"a changed payload refreshes the grass mask")
+	_expect(grass.mask_mirror_syncs > edit_mask_syncs_before,
+		"a changed payload refreshes the grass-mask mirrors")
 	var faces := 0
 	for tile: Vector2i in graded.installed.keys():
 		faces += (graded.installed[tile]["walls"] as PackedFloat32Array).size() / GradedTiles.WALL_FACE_FLOATS

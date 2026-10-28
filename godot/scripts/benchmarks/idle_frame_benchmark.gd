@@ -268,8 +268,10 @@ func _capture(bench: Node, viewport_rid: RID, frames: int, step := Callable()) -
 
 func _activity_counters() -> Dictionary:
 	var mask_renders: Variant = _grass.get("mask_renders")
+	var mask_syncs: Variant = _grass.get("mask_mirror_syncs")
 	var out := {"uploads": 0, "same_level_uploads": 0, "mask_revision_bumps": 0,
-		"grass_mask_renders": int(mask_renders) if mask_renders != null else 0}
+		"grass_mask_renders": int(mask_renders) if mask_renders != null else 0,
+		"grass_mask_mirror_syncs": int(mask_syncs) if mask_syncs != null else 0}
 	var graded: Variant = _terrain.get("graded_tiles")
 	if graded != null:
 		var pools: Dictionary = graded.get_pool_counters()

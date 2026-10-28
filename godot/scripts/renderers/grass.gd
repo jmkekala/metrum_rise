@@ -55,6 +55,8 @@ var _keys: Array[Vector2i] = []
 # Private mask renders scheduled since setup. The renderer and idle-frame regression read this
 # monotonic counter; steady frames only compare revisions and do not advance it.
 var mask_renders := 0
+# Mirror visibility, buffers and bindings synchronized after a patch revision changed.
+var mask_mirror_syncs := 0
 
 func _ready() -> void:
 	if not GameSettings.GRASS_ENABLED:
@@ -257,6 +259,7 @@ func _sync_graded_mask(
 	if cells.is_empty():
 		if _graded_mask_revisions[slot] < 0:
 			return
+		mask_mirror_syncs += 1
 		for mirror: MultiMeshInstance3D in mirrors:
 			mirror.visible = false
 		_graded_mask_revisions[slot] = -1
@@ -265,6 +268,7 @@ func _sync_graded_mask(
 	var revision := int(cells.get("mask_revision", 0))
 	if _graded_mask_revisions[slot] == revision:
 		return
+	mask_mirror_syncs += 1
 	_graded_mask_revisions[slot] = revision
 	_render_mask_once(slot)
 	var rect: Rect2 = cells["rect"]
