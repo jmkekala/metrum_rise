@@ -3988,14 +3988,21 @@ km.
   the same border edges and every border vertex is a vertex of both. A shared vertex has the same
   `delta` on both sides (pointwise values) and its base comes from the same shader expression
   (`delta = 0` on an ungraded side), so it gets the same bits. No skirts between cells. The
-  existing seams between patches at different steps are unchanged.
+  existing seams between patches at different steps are unchanged. Across a patch border a side
+  takes what the neighbour patch draws: its set's cell there, else its `PlaneMesh` at its step,
+  and a set starting or stopping to draw rewrites the cells across its sides in the same frame
+  ([T53](#terrain-07-open-questions) (a), `TERRAIN-07-G` round 7; before, a side took the
+  neighbour tile's installed level even while that patch drew its `PlaneMesh`).
 - **Slot pools.** Per level, a `Texture2DArray` of RGBAF layers for the texels and one for the rows,
   sized by the [memory table](#data), prewarmed at renderer load as patch resources are today.
   Each graded level of a patch draws with its own material, which binds that level's two pools,
   so a draw adds two samplers to the base set (eight failed to link in GLES3, `TERRAIN-07-D`
   round 2).
-  Residency allocates and eviction frees. An exhausted pool is a typed error, logged and counted;
-  the sizes make it impossible within the distance rules.
+  Residency allocates and eviction frees. An exhausted pool is a typed error, logged and counted:
+  the tile is recorded with its level and token and asked again only when a slot of its level
+  frees (`TERRAIN-07-G` round 7; before, it was asked again every frame, and the bakes that found
+  no slot starved every farther tile). The sizes were meant to make it impossible within the
+  distance rules; the 100k city exceeds them ([T54](#terrain-07-open-questions), open).
 - **Uploads.** `Texture2DArray.update_layer` per dirty slot (as the `TERRAIN-06` mask pages are
   written) from one pooled `Image` per level, rewritten in place. No texture, material or mesh is
   created per edit. A tile rebaked at its installed level is rewritten into its own slot before
@@ -4099,21 +4106,60 @@ km.
   patch's set is not built yet (after a load or a step change) draws once it is: the preview's
   lag of [T27](#terrain-07-open-questions) (d) for a previewed tile, the streaming's otherwise. A
   drawing set whose patch changes step (a camera move) is still rewritten whole in that frame,
-  as before. After a world load the builds take the streaming budget's spare time until every
-  resident patch has its set (Kuopio: 1,296 sets, 8-22 s headless). Until a patch's set draws,
-  its PlaneMesh draws the base ground, also where its graded tiles are installed and a road lies
-  in a cut: open as [T53](#terrain-07-open-questions) (`TERRAIN-07-G` round 6).
+  as before. After a world load the builds take the whole frame while the load flow holds the
+  game ([what a patch draws](#godot-tile-renderer)); otherwise the streaming budget's spare time.
+- **What a patch draws** ([T53](#terrain-07-open-questions) (a), decided by the user,
+  2026-10-28; built in `TERRAIN-07-G` round 7, `_draw_state`). One rule, from the frame a patch
+  becomes resident: it draws its `PlaneMesh` only while its list is known to name no graded tile
+  and no preview tile meets it; otherwise its set, once the set is built and shows every tile its
+  list names (installed or previewed; a tile Rust refuses by contract, or whose level's pool is
+  exhausted ([T54](#terrain-07-open-questions)), draws its base cell, counted and logged, and a
+  patch none of whose listed tiles can show draws its `PlaneMesh`), and nothing until then. So no frame shows the base ground under a graded
+  road or a set with a listed tile missing. A patch whose list has not arrived draws nothing; a
+  patch drawing nothing shows the background (the sky) where it lies. A set that drew complete
+  keeps drawing through its patch's residency while its list is refreshed: an edit installs its
+  own tiles in its batch's frame, and a tile the refreshed list adds that the edit did not select
+  renders the base it rendered before, which its bake keeps. A list of an older generation (an
+  edit's patch, its new list in flight) counts the set's installed tiles with it, so a commit's
+  tiles keep drawing until the new list arrives. Drawing nothing is a collapsed `PlaneMesh` (the
+  node stays visible for grass and the water reflection, which keep drawing there) and a hidden
+  set. `has_pending_work()` counts a patch drawing nothing, so the settled signal implies none.
+  - **Residency margin.** A newly resident patch is ready after its list, its tiles' bakes and
+    installs and its set's build: `ready_ms_max` and `ready_frames_max` count it per patch. The
+    residency already reaches past the view: patches within the cull distance (8,000 m, or four
+    times the camera height) plus one patch, and two more patches before one is added or dropped
+    (`PATCH_RESIDENCY_HYSTERESIS_PATCHES`), so a patch enters the residency at least 1,530 m
+    beyond the cull distance along an axis, and with the game camera's far plane (9,000 m at the
+    farthest zoom) at least 530 m before it can enter the view. At the fastest keyboard pan (240
+    m/s scaled by the orbit distance over 400 m: 600 m/s at the farthest 1,000 m zoom), that is
+    0.88 s. The margin's check is `unready_in_view`: patches drawing nothing whose culling box
+    meets the camera's frustum, in any frame, recorded over the idle benchmark's camera paths
+    (`pan_high` moves 10 m a frame, the fastest pan at 60 fps). It costs no memory beyond today's
+    residency; the round 7 record has the measurement.
+  - **The world's "ready"** (the user, 2026-10-28). A world load (`input_manager.gd`, both load
+    paths and a new game) hands the game over only once `is_render_settled()` holds: until then it
+    takes no input (no camera control, no tool), and the simulation clock stays stopped
+    (`set_simulation_speed` refuses a running speed), and the graded work takes the whole frame
+    (`terrain.gd`'s `set_load_settling`, the renderer's `unbudgeted`). There is no loading screen
+    yet: meanwhile the screen shows what the renderer draws, the patches drawing nothing showing
+    the background, the rest their `PlaneMesh` or their sets, as they become ready. The hand-over
+    emits `world_ready`. A real loading screen over that wait is [`UI-08`](roadmap.md), not part
+    of `TERRAIN-07`. A camera jump (a teleport, a follow) can still bring patches into view
+    before they are ready: they show the background until they are.
 - **Settled** (`TERRAIN-07-G` round 6). `terrain.gd`'s `is_render_settled()` is the one signal a
-  capture of the drawn terrain waits for: no pending patch work and no graded tile work
-  (`terrain_graded_tiles.gd`'s `has_pending_work()`: tile and list requests, counts, results
-  deferred past a frame's budget, an edit batch, and the set builds of patches a shown tile waits
-  for or whose list names a tile; a set whose patch lists none stays hidden when built). The
-  reference test, the edit probe and the renderer test wait on it, and the reference test asserts
-  at every capture that no patch whose list names an installed tile (or that meets a previewed
-  one) draws its PlaneMesh (`patches_awaiting_cells()`; a tile a patch's list leaves out renders
-  the base there); the
-  benchmarks keep their own waits, so their load phases are measured as before. Round 5's
-  flipping sloped obliques were captures taken while cell set builds were still queued.
+  capture of the drawn terrain and a world load's hand-over wait for: no pending patch work and
+  no graded tile work (`terrain_graded_tiles.gd`'s `has_pending_work()`: tile and list requests,
+  counts, results deferred past a frame's budget, an edit batch, a resident patch drawing
+  nothing, and the set builds of patches a shown tile waits for or whose list names a tile; a set
+  whose patch lists none stays hidden when built). The reference test, the edit probe and the
+  renderer test wait on it. In every frame of the reference test's waits (each fixture streams in
+  from an empty residency, and its patches change step with the camera) and of the renderer
+  test, no patch draws its `PlaneMesh` where its list names a graded tile or has not arrived, or
+  where a preview tile meets it (`plane_violations()`), and no set draws with a listed tile
+  missing (`partial_sets()`, the renderer test outside its edits); settled, no patch draws
+  nothing (`hole_patches()`). The idle benchmark records the load to settled (`load_to_settled`)
+  apart from its own waits. Round 5's flipping sloped obliques were captures taken while cell
+  set builds were still queued.
 - **Instance uniforms.** The cells place themselves from instance uniforms (`cell_mode`, the patch
   rectangle, the lattice anchor), and Godot holds every instance's instance uniforms in one global
   buffer of `rendering/limits/global_shader_variables/buffer_size` vec4 slots, 16 per instance; an
@@ -4246,13 +4292,15 @@ km.
   user, 2026-10-27; built in the Rust half).**
   - *A frame stages a bounded share.* A pose's frame selects the pose's dirty tiles (`W`) and
     stages the first one of them in the pose's order; a frame without a new pose (a catch-up
-    frame, `advance_road_preview_terrain`) stages the next three. The order is fixed from the
+    frame, `advance_road_preview_terrain`) stages the next two (three until `TERRAIN-07-G` round
+    7, re-measured with T48 (a) and T49 (c) in the bake: three took 2.99-3.01 ms). The order is fixed from the
     inputs: the squared distance from the stroke's moving end (its last point) to the tile's
     square, then `(level, tile)`. Staging is the one rule above: a tile is gathered, adopted from
     the shown tiles when its inputs equal the pose's, else baked. The bounds are tile counts,
     never a clock, measured to fit 3.0 ms on four workers (`GradedPreview`, `POSE_FRAME_TILES`
     and `CATCH_UP_FRAME_TILES`): a single steep tile at a stroke's end bakes in 2.3-2.5 ms alone
-    (5.3 ms on one worker), so beside the selection a pose frame fits only with one.
+    (5.3 ms on one worker), so beside the selection a pose frame fits only with one (round 4's
+    measurement; round 7's in the [record](#terrain-07-g-record)).
   - *What shows.* After each frame the preview shows, for each tile of `W`, its exact bake of
     this pose's inputs once staged, else the tile an earlier pose showed, else the published
     tile; a tile outside `W` shows the published tile. Every shown tile is the exact bake of
@@ -4261,7 +4309,7 @@ km.
     A newer pose (or a pose without pieces, or a publication) supersedes the older pose's
     unstaged tiles; the shown tiles stay for adoption.
   - *Convergence.* Once the poses stop, the shown tiles are the last pose's after
-    `ceil((|W| - 1) / 3)` catch-up frames, bitwise its fresh bake and the commit's tiles.
+    `ceil((|W| - 1) / 2)` catch-up frames, bitwise its fresh bake and the commit's tiles.
   - *The commit.* The click offers the tiles the preview shows at that moment (the latest
     preview's, updated by each catch-up frame); the commit adopts those whose inputs match and
     bakes the rest in its own frame, so the committed tiles are exact at once. A click right
@@ -8314,14 +8362,13 @@ pass; line counts recorded; docs updated.
 
 #### `TERRAIN-07-G` record
 
-Acceptance open after round 6: T48 (a) and T49 (c) are built (T50 (a), T51 (a) decided by the
-user) and the rendered row passes; round 5's flipping reference views were captures taken before
-the renderer settled (the test fixed; the game's window is [T53](#terrain-07-open-questions), open
-for the user); round 6's session passes the reference preview, the converged commits, the undo,
-locality and the bitwise rows and misses the populated drags' pose frames (0-2 of 150 over 3.0
-ms, T48's and T49's bake cost, [T52](#terrain-07-open-questions)); the memory rise was a defect
-(an unbounded queue of finished tile results, fixed: the 100k city settles below road's), the
-larger slot pools' setup and GPU memory remaining (T50 (b)).
+Acceptance open after round 7: T53 (a) is built (a patch draws its set or nothing, the load hands
+over on the settled renderer) and the rendered row passes; the catch-up bound is re-measured (two
+tiles) and the populated drags' frames pass; misses for the user: on Kuopio's steepest strokes a
+single tile's bake alone exceeds 3.0 ms ([T27](#terrain-07-open-questions)), and the 100k city
+wants more `GL2` and `GL3` slots than the pools hold ([T54](#terrain-07-open-questions), found
+this round: its far graded terrain never installed, in every earlier round too); T50 (b)'s list
+atlas is decided and not built yet.
 None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
 surface on the Rust side, round 2 (`154ac169`, committed unverified by the coordinator) the
 frontend selector, refined-patch jobs, baked mesh, water road clip and exact-only test branches.
@@ -8331,6 +8378,86 @@ is listed in `$ARTIFACTS/road68/t07g3/audit.md`) and replaced round 2's unverifi
 fix "without a tolerance", a "known" Kuopio pinhole, a memory comparison that loaded no save and
 compared exact with graded, and the matrices cited as gate D's) with the results below.
 
+- **Round 7 (`TERRAIN-07-G` round 7; branch tip in the handoff).** Fresh unless marked. The
+  user decided T53 (a), the catch-up bound and T50 (b) on 2026-10-28 (evening) and amended T53's
+  load part (no loading screen; [`UI-08`](roadmap.md) added).
+  - **T53 (a) built** ([what a patch draws](#godot-tile-renderer)). One rule in
+    `terrain_graded_tiles.gd`'s `_draw_state` from residency on; the stitch across a patch border
+    taken from what the neighbour draws; the load flow (`input_manager.gd`) hands the game over on
+    `is_render_settled()`, the graded work unbudgeted until then. Tests that fail without it
+    (headless, release library `f6e9e848`, `$ARTIFACTS/road68/t07g7/renderer-*.log`): the renderer
+    test's streaming run (patches leaving and re-entering the residency) and first residency check
+    in every frame that no patch draws its `PlaneMesh` over listed graded tiles and no set draws
+    with a listed tile missing; with round 6's rule restored it fails 6 checks (up to 4 patches
+    over listed tiles, a partial set), with the fix 0. Its load check (the fixture saved and
+    loaded through the load flow) fails 5 checks with the hand-over not waiting (handed over at
+    frame 0, unsettled, the clock running). The reference test now checks the same rule in every
+    frame of its waits (each fixture streams in from an empty residency): with round 6's rule in
+    a copy of the scripts, `t` and `city_grid_t` fail on all six first settles (10-16 patches over
+    listed tiles, partial sets; `reverted-ref.log`).
+  - **Renders.** Every fixture on `933ce81e` (`t53-1`): PASS, 0 pinholes in the 33 plan views,
+    197 images all equal to round 6's (`final2-1`; one grass view 5 pixels, as round 6's two runs
+    differ). The three sloped obliques equal round 4's references in 5 of 5 runs (`stable-1`,
+    `-2`, `stable2-1..3`; `stable-3` ran into a broken edit of the script, not counted). The final
+    tree's run is in the handoff.
+  - **Load to ready** (the release game, the idle benchmark's new `load_to_settled` phase:
+    the first of three settled frames after the load call; gamescope headless, isolated profile,
+    library `f6e9e848` on both sides, the before side round 6's GDScript at `7e6bd113`;
+    `$ARTIFACTS/road68/t07g7/memory-{before,after}`). 100k: before **never settled** (150 s
+    limit: the renderer re-asked the bakes that found the `GL2` pool full every frame, T54),
+    round 6's own phases (historical) 28.1 s to idle plus 28.4 s of set builds; after 33.4 s to
+    the hand-over (load call 20.5 s), every set built. Kuopio: before 5.7 s to settled, then 1,027
+    set builds in the background for 89.8 s (5,389 frames); after 6.3 s to the hand-over with
+    every set built: **+0.6 s, for the user**.
+  - **Residency margin.** Kuopio, every camera path of the idle benchmark (`pan_high` 10 m a
+    frame, `pan_low`, `zoom_in`, both orbits): 0 unready patches in the view's frustum in any
+    frame, the longest a patch drew nothing 54 ms (one frame): the existing margin (patches
+    enter the residency 530 m or more beyond the far plane along an axis) holds; no memory added.
+    The 100k city (T54's pools exceeded): up to 57-66 unready patches a frame in the frustum on
+    the pans, patches unready for up to 27-30 s: the exhausted pools churn and a saturated
+    streaming budget starved the unready patches' set builds; their builds now go first and a
+    freed slot asks one waiting tile again instead of all. The re-run on the final tree is in the
+    handoff. **A miss for the user, attributed to T54.**
+  - **Exhausted pools (found, T54).** The 100k city's saved pose wants `GL2` 3,011 and `GL3` 7,489
+    slots against 2,048 each; round 6's renderer re-asked the failed bakes every frame, never
+    settled and starved every tile beyond the `GL2` ring. Now recorded and asked again only when a
+    slot frees (a test that fails with the old handling); 6,404 tiles counted, drawn as base
+    ground.
+  - **Catch-up bound** ([T27](#terrain-07-open-questions)). `CATCH_UP_FRAME_TILES` 3 -> 2,
+    `POSE_FRAME_TILES` stays 1. Session below: populated drags' catch-up frames at most 2.58 / 2.65
+    ms with two tiles (0 over), 3.03 ms with three (round 6's binary in the same session, 1
+    over); Kuopio's at most 3.95 / 3.37 ms with two (1 and 3 of 180 over), 3.19 with three (1 of
+    115): the frame is bound by its slowest tile, and a single Kuopio tile bakes alone in up to
+    3.64 ms (`kuopio_03` attempt 8; 3.15 `kuopio_08` attempt 22), so no count fits Kuopio:
+    **for the user** (T27, T52). Catch-up frames a stroke (converged drags): populated at most 4
+    -> 6 (45 -> 62 over 15 strokes), Kuopio at most 6 -> 9 (140 -> 199 over 39 strokes).
+  - **Timing session** (C F F C, four workers, P-cores, 22:27-22:35; C road's `503a2424` binary
+    `f91126e2`, cities `eedc8f7b`; F the release test build of `ec30669b`'s Rust (the round 7 tip's
+    Rust), cities prepared before the session, 2k generated; F6 round 6's `bin-F` (catch-up 3),
+    drags only). Reference preview, graded p50/p95 and commit: `sloped_t` F 1.889/2.384, 1.666
+    and 1.816/2.329, 1.519 (C 1.356/2.001, 1.740 and 1.284/1.987, 0.960); `sloped_branch` F
+    1.541/2.140, 1.464 and 1.551/2.098, 1.697 (C 1.287/2.423, 1.139 and 1.186/1.884, 1.462):
+    **pass**. Populated drags: converged commits at most 1.62 ms, undo at most 1.55 ms, pose
+    frames p95 2.20/2.24, maxima 2.31/2.60 ms, catch-up maxima 2.58/2.65 ms, 0 of 167 frames over
+    3.0 ms in either run (round 6's 3.69 ms pose did not recur): **pass**. Kuopio drags: pose
+    frames maxima 3.44/4.21 ms (2 and 5 of 295 over; C 3.00/3.01, 1 over each), catch-up 3.95/3.37
+    (1 and 3 over): **a miss** (single-tile bakes, above). Fast click (the accepted exception) F
+    at most 8.11 ms (C 4.22). Breakdown staging at 100k F 7.83 ms (C 4.05/3.99); F's two runs'
+    products equal, C's equal. Locality (F): p50 1.36/1.56/1.70/1.68 ms, maxima at most 2.06 ms,
+    products equal: **pass**. Bitwise: the three tests pass. Logs
+    `$ARTIFACTS/road68/t07g7/{stages,breakdown,drags,kuopio}-N-{C,F,F6}.log`.
+  - **Memory** (the same runs, round 6's method, before -> after T53, KiB): 100k setup peak
+    1,533,684 -> 1,537,428, settled maximum 5,429,780 -> 5,434,396, GPU 2,042,924 -> 2,043,572;
+    Kuopio 1,539,828 -> 1,554,356, 2,213,704 -> 2,229,676 (every set built during the load), GPU
+    1,821,604 -> 1,823,012. Against road (historical, round 5): 100k setup +198 MB and GPU +138 MB
+    remain (KiB / 1024), T50 (b)'s.
+  - **T50 (b) not built** (time; the brief's order). Its plan is corrected in
+    [T50](#terrain-07-open-questions): Godot updates a texture a whole layer at a time, so the
+    atlas is a `Texture2DArray` of row layers.
+  - **Line counts.** Production Rust: graded unchanged, `nodes/` 55,428 -> 55,432 (the catch-up
+    bound's comment). GDScript: `terrain_graded_tiles.gd` 1,960 -> 2,184 (the draw state, the
+    exhausted pools' records, the readiness counters and the two test probes), `input_manager.gd`
+    725 -> 767 (the hand-over), `terrain.gd` 3,300 -> 3,308.
 - **Round 6 (`TERRAIN-07-G` round 6, a debugging round; branch tip in the handoff).** Fresh
   unless marked. The user decided T50 (a) (with (b) for memory if the heap profile pointed at the
   pools), T51 (a) and T52 (a) on 2026-10-28, through the coordinator; none accepts a miss.
@@ -9229,6 +9356,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       layer uploads.
     - **Recommendation.** (a): graded tiles exist only where roads and sites are, so real cities
       use a fraction of the worst case; (b) if the measured maxima exceed 2,048.
+    - **Measured in `TERRAIN-07-G` round 7: exceeded.** At the 100k city's saved pose the
+      desired tiles want `GL2` 3,011 and `GL3` 7,489 slots against 2,048 each: see
+      [T54](#terrain-07-open-questions).
 24. **T24. Pinholes along a road's outer edge in plan view (`TERRAIN-07-D` round 6) — decided by
     the user, 2026-10-26: (a).** Built in round 6 as the [outer-band overlap](#the-exact-seam-mask);
     the exact cut keeps its pinhole (deleted in `TERRAIN-07-G`).
@@ -9503,6 +9633,14 @@ measures it and the recommendation's condition decides; T2 was decided by the us
         spread over frames); `ROAD-68`'s click-to-committed under 16.7 ms stays binding; the
         3.0 ms row of the [budgets](#budgets) stays as written, with this exception recorded
         beside it. (g) is not taken: holding the click would break that commit target.
+    - **`TERRAIN-07-G` round 7: the bounds re-measured with T48 (a) and T49 (c) in the bake (the
+      user, 2026-10-28: the catch-up frames spread, not accepted over 3.0 ms).** A catch-up frame
+      now stages two tiles (populated drags: at most 2.65 ms with two, 3.03 ms with three in the
+      same session); a pose frame still one. On Kuopio's steepest strokes one tile's bake alone
+      takes up to 3.64 ms on four workers, so a pose frame (up to 4.21 ms, 2-5 of 295 over) and a
+      catch-up frame with that tile (up to 3.95 ms) miss whatever the count: **open, for the
+      user** (less work per tile is the only lever, T52). Convergence takes `ceil((|W| - 1) / 2)`
+      catch-up frames: at most 6 a populated stroke and 9 a Kuopio stroke (4 and 6 before).
 31. **T31. Vegetation clearance on the graded surface (`TERRAIN-07-F` round 1) — decided by the
     coordinator under the user's delegation, 2026-10-26, for review: the recommendation.**
     - **Decision.** Clear every plant on `Road` and `Paved`, wild plants also on `Pad`; retain the
@@ -10078,6 +10216,24 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       texels of 16 bytes: 4.9 + 9.8 + 85.2 + 31.5 = 131 MB of GPU memory, less the atlases (the
       census's list texels of the resident tiles, a few MB on the reference inputs); `GL3`'s
       seam rows (1,664 capacity, 128 before T48) stay, 113 MB against 13 MB.
+    - **Round 7: (b) decided, not built yet; the plan corrected.** The user decided (b) on
+      2026-10-28 (round 6's heap profile left the slot pools as the remaining increase: setup
+      +214 MB, GPU +141 MB). Round 7 built T53 (a) and the catch-up bound first, in the brief's
+      order, and leaves (b) to the next round with one correction to the plan: Godot 4 updates a
+      texture only a whole layer at a time (`Texture2DArray.update_layer`, `ImageTexture.update`;
+      no sub-rectangle update in either renderer), so a list atlas that is one `Texture2D` of
+      2,048-texel rows would upload the whole atlas per install. The atlas is instead a
+      `Texture2DArray` of row layers per level (`W` texels by 1, `W` a power of two), a tile's
+      lists taking a run of whole layers (first-fit over free layer runs, freed at eviction, an
+      exhausted atlas the slot pools' typed error), so an install uploads only its own layers
+      and keeps no CPU copy of the others'. The run's first layer goes in one texel of the
+      slot's row (written by Godot before the row's upload); the seam channel keeps the offset
+      within the tile's lists, unchanged. The shader then reads the base texel once per exact-path
+      fragment with a list and each list texel at `(offset % W, base + offset / W)`: one more
+      fetch per fragment, the list loop's fetches unchanged. The census must give the resident
+      tiles' summed layers per level (twice the measured maximum, `T7`'s rule), with `W` chosen so
+      that `GL2`'s and `GL3`'s 2,048 slots fit the 2,048-layer limit (T23), and the grass mask
+      material binds the atlas as the cells' materials do.
 51. **T51. T49 (c)'s flag scope (`TERRAIN-07-G` round 4) — decided by the user, 2026-10-28
     (through the coordinator): (a), the flag as built.**
     - **Evidence.** Flagged tiles per level (round 4 census, same inputs): Kuopio (301 tiles)
@@ -10159,8 +10315,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
         2.04 ms), so that does not explain it; the record had no split. The drag record now
         splits the undo's selection and bake: in round 6's session every undo took at most
         1.45 ms (selection 0.78-0.82, adoption 0.58-0.67 ms); the stall did not recur.
-53. **T53. What a patch draws before its graded cells draw (`TERRAIN-07-G` round 6) — open, for
-    the user.**
+53. **T53. What a patch draws before its graded cells draw (`TERRAIN-07-G` round 6) — decided by
+    the user, 2026-10-28: (a); the load part amended by the user the same evening (no loading
+    screen); built in round 7.**
     - **Evidence.** Round 5's flipping sloped obliques (`t_steep`, `city_grid_t` slope and steep)
       were captures taken while cell set builds were still queued. A read-back at each capture
       (a diagnostic, not kept; `$ARTIFACTS/road68/t07g6/tipd-*`): the GPU layers of every
@@ -10213,6 +10370,53 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Recommendation.** (a). The reference test now waits on the settled signal and asserts
       the capture shows every installed tile, so its references are exact whatever is decided;
       T27 (d)'s preview lag is unaffected.
+    - **Decided by the user, 2026-10-28 (evening): (a).** A resident patch whose list names a
+      graded tile draws nothing until its set draws (no base ground under a graded road, no
+      partial state); a residency margin so streamed patches are ready before they enter the
+      view; the stitch across a patch border taken from what the neighbour patch draws; a patch
+      not ready in view (a camera jump) shows the background. **Amended by the user (about 21:35):**
+      the game has no loading screen yet and building one is not in `ROAD-68`'s or this round's
+      scope; the load flow does not hand the game over (camera control, input, the simulation
+      clock) until `is_render_settled()`, the set builds taking the whole frame meanwhile, and
+      whatever the screen shows during that wait is acceptable. A real loading screen is
+      [`UI-08`](roadmap.md) (feature, P2), outside `ROAD-68` and `TERRAIN-07`.
+    - **Built (round 7).** The rule, the margin and the world's "ready" in [what a patch
+      draws](#godot-tile-renderer); the measurements in the [record](#terrain-07-g-record).
+
+54. **T54. The 100k city wants more `GL2` and `GL3` slots than the pools hold (`TERRAIN-07-G`
+    round 7) — open, for the user; blocks the gate.**
+    - **Evidence** (fresh: the release game, library `f6e9e848`, the round 7 renderer, the 100k
+      save at its saved pose, gamescope headless, a diagnostic print of the renderer's state
+      every 60 frames, not kept; `$ARTIFACTS/road68/t07g7/memory-diag*`). The resident patches'
+      lists name 10,500 tiles, which want `GL2` 3,011 and `GL3` 7,489 slots at that camera; each
+      pool holds 2,048 (T23 (a), the Vulkan array depth limit; the AMD driver here reports no
+      more). Round 6's renderer installed 2,048 `GL2` tiles, then asked the closest wanted tiles
+      again every frame: each bake found the pool full and was asked again, so the 24 requests a
+      frame never reached a `GL3` tile and the city's terrain beyond about 1.5 km never installed
+      (its patches drew their `PlaneMesh` or base cells there: base ground under graded roads),
+      and its settled signal never held (`pool_exhausted` +22 a frame). Nothing reported it: the
+      idle benchmark waits for the load and the cell builds, not for the graded work.
+    - **Round 7's handling (built; not a fix of the capacity).** A tile that finds its level's
+      pool exhausted is recorded with its level and token, counted (`pool_exhausted`,
+      `exhausted`) and logged once, not asked again until a slot of that level frees, and drawn
+      as a refused tile is (its base cell; a patch none of whose listed tiles can show draws its
+      `PlaneMesh`); the renderer test fails with round 6's handling (never settles). With it the
+      100k city settles and its `GL3` pool fills: 4,096 tiles installed, 6,404 recorded as
+      exhausted (963 `GL2`, 5,441 `GL3`), each drawn as base ground: the miss, counted.
+    - **Options.** (a) T23 (b): several arrays per level, a patch's set binding the page its
+      tiles live in. A tile two patches draw must then live in both patches' pages, so pages
+      follow blocks of patches with the tiles along block borders held twice, or a set binds two
+      pages (two more samplers per draw, which GLES3 may not link, `TERRAIN-07-D` round 2).
+      (b) Layers holding several tiles each (an atlas per level, a whole layer uploaded per
+      install with a CPU copy of the others in it): more upload bytes per install and the
+      layers' CPU copies in memory. (c) Narrower `GL2` and `GL3` bands (fewer tiles per level
+      near the camera; `GL3`'s far tiles would still exceed 2,048 in a city this size): a level
+      rule change. (d) Draw far `GL3` tiles without slots (a coarser product beyond some
+      distance): a product change.
+    - **Recommendation.** (a) with pages by blocks of patches, designed in its own round with
+      T50 (b)'s list atlas (both change how a level's slots are allocated and bound), measured
+      for memory against road. Until then the 100k city's far graded terrain is base ground,
+      counted, and the gate cannot close.
 
 #### Superseded `ROAD-68` questions
 

@@ -521,8 +521,18 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   tiles queued without bound behind the renderer's install budget; the 100k city now settles
   below road's memory, and what remains is the larger slot pools at setup and on the GPU (the
   user's planned list atlas, T50). A populated drag's frame still bakes a tile in 2-3.7 ms (0-2 of 150 frames
-  over 3.0 ms), the cost of the two decided mask features (T52). No target is relaxed; details
-  are in the [Gate G record](terrain.md#terrain-07-g-record).
+  over 3.0 ms), the cost of the two decided mask features (T52). Round 7 built the user's T53 (a):
+  a terrain patch whose graded tiles are not all ready draws nothing instead of its ungraded
+  ground, and a world load hands the game over (input, camera, clock) only once the terrain has
+  settled, its cell sets built meanwhile at full speed (the 100k city ready in 33 s instead of
+  never settling; Kuopio 6.3 s against 5.7 s plus 90 s of background builds). There is no
+  loading screen yet (`UI-08`). A drag's catch-up frame now stages two tiles instead of three:
+  every populated drag frame fits 3.0 ms, but on Kuopio's steepest strokes one tile alone takes
+  up to 3.6 ms (for the user, T27). The round found that the 100k city wants three times more
+  level-2 and level-3 terrain slots than the pools hold, so its far graded terrain never
+  installed (T54, for the user; now counted instead of re-requested every frame). T50's list
+  atlas is decided and not built yet. No target is relaxed; details are in the [Gate G
+  record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
