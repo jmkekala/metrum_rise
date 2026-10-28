@@ -1460,7 +1460,10 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	# Into every page its patches' blocks use; at the same level each copy keeps its slot and is
 	# rewritten in place, before this frame draws.
 	var held: Dictionary = current["copies"] if same_level else {}
-	var copies := _place_copies(key, code, tile, held, same_level and int(current["token"]) == token, false)
+	# A rebake of the installed level, step and token (asked again for a page that lacks its copy)
+	# leaves the copies it already has unwritten; a GL3 step change rewrites them.
+	var fresh := same_level and int(current["step"]) == step and int(current["token"]) == token
+	var copies := _place_copies(key, code, tile, held, fresh, false)
 	if _place_failed:
 		# The tile stays as it was: waiting for its block's larger page (_wait_for_growth), or
 		# recorded (_exhausted) until a slot of the level frees.
