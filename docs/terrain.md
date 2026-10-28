@@ -8406,7 +8406,12 @@ compared exact with graded, and the matrices cited as gate D's) with the results
     next step ([T52](#terrain-07-open-questions)). GPU memory grows +141-146 MB, under T50's
     232 MB estimate.
   - **Gate checks (round 5, the Rust tree of `78f6ce76`, unchanged on the tip).** Clippy
-    `--all-targets`: 59 warnings, the baseline's set exactly. Missing docs: 0. RUNSH_PLACEHOLDER
+    `--all-targets`: 59 warnings, the baseline's set exactly. Missing docs: 0. `./run.sh --test` on `b7ea4ada` (DISPLAY and
+    WAYLAND_DISPLAY unset) passes to the end, exit 0: lib 1,835 passed, 0 failed, 176 ignored
+    (the full debug suite), `growth_scenario` 4/0, every Godot bridge, asset, rendered shader and
+    plot script with the same 44 success lines as round 4's passing run; no SCRIPT ERROR or parse
+    error. Skipped: the Forward+ vegetation tests (a display; vegetation's) and the headless
+    pass's shader global probe (it runs in the rendered pass).
   - **Line counts** (production `.rs`, as in round 3): unchanged from round 4 (no Rust change):
     graded 7,947, terrain 10,824, `nodes/` 55,353.
   - **Archive moves done:** `earthworks.md`'s legacy seam contract and `roads.md` "Footprint and
