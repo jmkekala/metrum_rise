@@ -4121,7 +4121,9 @@ km.
   own tiles in its batch's frame, and a tile the refreshed list adds that the edit did not select
   renders the base it rendered before, which its bake keeps. A list of an older generation (an
   edit's patch, its new list in flight) counts the set's installed tiles with it, so a commit's
-  tiles keep drawing until the new list arrives. Drawing nothing is a collapsed `PlaneMesh` (the
+  tiles keep drawing until the new list arrives. A patch drawing nothing whose list names a tile
+  builds its set first, as a patch a shown tile waits for does (urgent: at least one tile a frame
+  under the streaming budget). Drawing nothing is a collapsed `PlaneMesh` (the
   node stays visible for grass and the water reflection, which keep drawing there) and a hidden
   set. `has_pending_work()` counts a patch drawing nothing, so the settled signal implies none.
   - **Residency margin.** A newly resident patch is ready after its list, its tiles' bakes and
@@ -8363,12 +8365,13 @@ pass; line counts recorded; docs updated.
 #### `TERRAIN-07-G` record
 
 Acceptance open after round 7: T53 (a) is built (a patch draws its set or nothing, the load hands
-over on the settled renderer) and the rendered row passes; the catch-up bound is re-measured (two
-tiles) and the populated drags' frames pass; misses for the user: on Kuopio's steepest strokes a
-single tile's bake alone exceeds 3.0 ms ([T27](#terrain-07-open-questions)), and the 100k city
-wants more `GL2` and `GL3` slots than the pools hold ([T54](#terrain-07-open-questions), found
-this round: its far graded terrain never installed, in every earlier round too); T50 (b)'s list
-atlas is decided and not built yet.
+over on the settled renderer; no patch unready in view on any camera path) and the rendered row
+passes; the catch-up bound is re-measured (two tiles) and the populated drags' frames pass; for
+the user: on Kuopio's steepest strokes a single tile's bake alone exceeds 3.0 ms
+([T27](#terrain-07-open-questions)), Kuopio's load to ready is 0.5-0.6 s longer (its sets now
+built during the load), and the 100k city wants more `GL2` and `GL3` slots than the pools hold
+([T54](#terrain-07-open-questions), found this round: its far graded terrain never installed, in
+every earlier round too); T50 (b)'s list atlas is decided and not built yet.
 None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
 surface on the Rust side, round 2 (`154ac169`, committed unverified by the coordinator) the
 frontend selector, refined-patch jobs, baked mesh, water road clip and exact-only test branches.
@@ -8398,26 +8401,30 @@ compared exact with graded, and the matrices cited as gate D's) with the results
   - **Renders.** Every fixture on `933ce81e` (`t53-1`): PASS, 0 pinholes in the 33 plan views,
     197 images all equal to round 6's (`final2-1`; one grass view 5 pixels, as round 6's two runs
     differ). The three sloped obliques equal round 4's references in 5 of 5 runs (`stable-1`,
-    `-2`, `stable2-1..3`; `stable-3` ran into a broken edit of the script, not counted). The final
-    tree's run is in the handoff.
+    `-2`, `stable2-1..3`; `stable-3` ran into a broken edit of the script, not counted). Every
+    fixture again on the final tree `2e2fb591` (`final-1`): PASS, 0 pinholes, the same 197 images
+    equal to round 6's, no frame breaking the T53 checks.
   - **Load to ready** (the release game, the idle benchmark's new `load_to_settled` phase:
     the first of three settled frames after the load call; gamescope headless, isolated profile,
     library `f6e9e848` on both sides, the before side round 6's GDScript at `7e6bd113`;
     `$ARTIFACTS/road68/t07g7/memory-{before,after}`). 100k: before **never settled** (150 s
     limit: the renderer re-asked the bakes that found the `GL2` pool full every frame, T54),
     round 6's own phases (historical) 28.1 s to idle plus 28.4 s of set builds; after 33.4 s to
-    the hand-over (load call 20.5 s), every set built. Kuopio: before 5.7 s to settled, then 1,027
-    set builds in the background for 89.8 s (5,389 frames); after 6.3 s to the hand-over with
-    every set built: **+0.6 s, for the user**.
+    the hand-over (load call 20.5 s), every set built (final tree: 32.9 s). Kuopio: before 5.7 s
+    to settled, then 1,027 set builds in the background for 89.8 s (5,389 frames); after 6.3 s to
+    the hand-over with every set built (final tree: 6.2 s): **+0.5-0.6 s, for the user**.
   - **Residency margin.** Kuopio, every camera path of the idle benchmark (`pan_high` 10 m a
     frame, `pan_low`, `zoom_in`, both orbits): 0 unready patches in the view's frustum in any
     frame, the longest a patch drew nothing 54 ms (one frame): the existing margin (patches
     enter the residency 530 m or more beyond the far plane along an axis) holds; no memory added.
     The 100k city (T54's pools exceeded): up to 57-66 unready patches a frame in the frustum on
     the pans, patches unready for up to 27-30 s: the exhausted pools churn and a saturated
-    streaming budget starved the unready patches' set builds; their builds now go first and a
-    freed slot asks one waiting tile again instead of all. The re-run on the final tree is in the
-    handoff. **A miss for the user, attributed to T54.**
+    streaming budget starved the unready patches' set builds; now a listed patch drawing nothing
+    builds first, a patch none of whose listed tiles can show draws its `PlaneMesh` without
+    waiting for its set, and a freed slot asks one waiting tile again instead of all. On the
+    final tree `2e2fb591` (`memory-final`, the same method): **0 unready patches in the frustum on
+    all five paths, on both inputs**; on the 100k city no patch drew nothing at all, on Kuopio the
+    longest 53 ms. **Pass** (the 100k city's exhausted tiles still draw base ground: T54).
   - **Exhausted pools (found, T54).** The 100k city's saved pose wants `GL2` 3,011 and `GL3` 7,489
     slots against 2,048 each; round 6's renderer re-asked the failed bakes every frame, never
     settled and starved every tile beyond the `GL2` ring. Now recorded and asked again only when a
@@ -8449,11 +8456,20 @@ compared exact with graded, and the matrices cited as gate D's) with the results
   - **Memory** (the same runs, round 6's method, before -> after T53, KiB): 100k setup peak
     1,533,684 -> 1,537,428, settled maximum 5,429,780 -> 5,434,396, GPU 2,042,924 -> 2,043,572;
     Kuopio 1,539,828 -> 1,554,356, 2,213,704 -> 2,229,676 (every set built during the load), GPU
-    1,821,604 -> 1,823,012. Against road (historical, round 5): 100k setup +198 MB and GPU +138 MB
-    remain (KiB / 1024), T50 (b)'s.
+    1,821,604 -> 1,823,012. The final tree: 100k 1,566,616, 5,459,108, GPU 2,043,576; Kuopio
+    1,564,240, 2,237,220, GPU 1,823,144 (the setup peak varies by about 40 MB between runs of the
+    same scripts: 1,523,220-1,566,616 on the 100k). Against road (historical, round 5): 100k setup
+    +184-226 MB and GPU +138 MB remain (KiB / 1024), T50 (b)'s.
   - **T50 (b) not built** (time; the brief's order). Its plan is corrected in
     [T50](#terrain-07-open-questions): Godot updates a texture a whole layer at a time, so the
     atlas is a `Texture2DArray` of row layers.
+  - **Gate checks.** Clippy `--all-targets` on `2f5c2e60`: 59 warnings, the baseline's set
+    exactly. Missing docs: 0. `./run.sh --test` (started on `2f5c2e60`; its Godot tests ran on
+    `cc33a057`'s scripts, the Rust identical; DISPLAY and WAYLAND_DISPLAY unset): exit 0, lib
+    1,836 passed, 0 failed, 176 ignored (the full debug suite), `growth_scenario` 4/0, the Godot
+    suites' success lines as round 6's, the graded renderer test with its new checks 0 failures,
+    no SCRIPT ERROR or parse error. Skipped as before: the Forward+ vegetation tests (a display)
+    and the headless shader global probe.
   - **Line counts.** Production Rust: graded unchanged, `nodes/` 55,428 -> 55,432 (the catch-up
     bound's comment). GDScript: `terrain_graded_tiles.gd` 1,960 -> 2,184 (the draw state, the
     exhausted pools' records, the readiness counters and the two test probes), `input_manager.gd`
