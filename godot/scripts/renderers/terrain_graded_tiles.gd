@@ -1761,6 +1761,9 @@ func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 	var cells: Dictionary = patch_cells.get(key, {})
 	var state := _draw_state(key, patch, cells)
 	_set_ready(key, state != DRAW_NONE)
+	# A patch drawing nothing waits for its set as a shown tile does: its build goes first.
+	if state == DRAW_NONE and (cells.is_empty() or not _built(cells)):
+		_builds_urgent[key] = true
 	var patch_node: GeometryInstance3D = patch["node"]
 	_set_plane(key, patch_node, state == DRAW_PLANE)
 	var shown := not cells.is_empty() and bool(cells["shown"])
