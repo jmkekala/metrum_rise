@@ -242,7 +242,10 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 			# instance left naming its old slot shows.
 			(graded._pages[graded._block_target[code][block]]["free"] as Array).pop_back()
 	_expect(not moving.is_empty(), "some block holds tiles to move")
-	_expect(await _settle(graded, camera, resident), "the moved blocks settle")
+	# The camera climbs while the blocks move: tiles change level and install meanwhile, into the
+	# pages the sets bind as well as the new ones, so no drawing set misses one (_partial).
+	_expect(await _settle(graded, camera + Vector3(0.0, 260.0, 0.0), resident), "the moved blocks settle")
+	_expect(await _settle(graded, camera, resident), "the tiles settle back")
 	_expect(int(graded.counters["page_moves"]) - moves_before == moving.size(), "every block moved once: %d of %d" % [int(graded.counters["page_moves"]) - moves_before, moving.size()])
 	for marked: Vector3i in moving.keys():
 		var block := Vector2i(marked.y, marked.z)
