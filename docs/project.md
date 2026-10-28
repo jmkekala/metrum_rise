@@ -500,8 +500,14 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   build. Round 3 also restored what the deletion had broken: the first road commit after a load
   or bulk build again stages only its own terrain, and the water reflection reads the ground the
   water is drawn on again, which removes the retained-memory rise the first valid measurement
-  showed (the game's settled memory is now at or below road's). No target is relaxed; details are
-  in the [Gate G record](terrain.md#terrain-07-g-record).
+  showed (the game's settled memory is now at or below road's). Round 4 built both decisions:
+  every reference fixture, the bend, the road end and the Kuopio wall included, renders without
+  a sky pixel. Their cost is open for the user (`terrain.md` T50, T51): far from the camera the
+  extra mask candidates run to hundreds per lattice square and the slot pools would grow from
+  133 to 366 MB of GPU memory, and on hills the depth-writing variant covers about half of the
+  near tiles. The new bake work first tripled the preview's terrain stage (a miss); made parallel
+  it is back under 3.0 ms on the reference fixtures, with the populated tiers to re-measure.
+  No target is relaxed; details are in the [Gate G record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.

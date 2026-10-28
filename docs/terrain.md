@@ -3508,6 +3508,19 @@ seams 242, 244 and 212, edges 102, 108 and 119 at `GL0`-`GL2`; the 100k city's `
 113 edges. A wider band names more edges, so `GL2`, with the widest, names the most; its
 proposed 64 edges failed 1,079 of the save's 1,580 tiles.
 
+**Extra candidates** (T48 (a), `TERRAIN-07-G` round 4). After the seam heights, the squares'
+extra candidate lists of [the exact seam mask](#the-exact-seam-mask). The seams they list are
+rows too, which raised `GL3`'s seam rows past its lattice bound. Round 4 census
+(`graded_slot_rows_census`, every listed tile at every level of the Kuopio reference save, the
+14,000-resident populated save and the 100k city): list texels at most 2,343 (`GL0`, Kuopio), 1,546
+(`GL1`, Kuopio), 1,286 (`GL2`, populated), 447 (`GL3` step 2); squares with a list up to 3,394 of
+16,384 at `GL0`; the longest list 13-19 seams at `GL0`-`GL1`, 32-38 at `GL2`, 266-508 at `GL3`;
+seam rows up to 262 at `GL0`-`GL2` and 819 at `GL3` (step 8, Kuopio). Capacities, twice the
+measured maxima: list texels 4,800, 3,200, 2,600 and 960; `GL3` seams 1,664 (below the texel's
+2,048-row field). A tile over a capacity is refused (`BakeError::ExtraCapacity`,
+`extra_capacity`), like the seam and edge capacities. The memory and the `GL3` list length this costs are open
+([T50](#terrain-07-open-questions)).
+
 **Payload.** Per tile and level: the tile key, the level, the texels with apron, the rows, the
 conflict walls along its road seams and the structure walls along its wall seams
 ([retaining walls](#cliffs-coal-pits-retaining-walls)), and
@@ -3533,7 +3546,10 @@ within 8 km graded (rows included):
 | `GL2` | 35² × 16 B + 3 KB ≈ 23 KB | ≈ 2,870 between 512 m and 2 km, 3,200 slots | 73 MB |
 | `GL3` | 8² × 16 B + 0.8 KB ≈ 1.8 KB | ≈ 46,000 between 2 km and 8 km | 83 MB |
 
-That is about 190 MB in all. Graded tiles exist only where roads and sites are, so real cities
+That is about 190 MB in all. The pools as built (`TERRAIN-07-D`, 64/192/2,048/2,048 slots, rows 1,280 texels at
+`GL0`-`GL2` and 384 at `GL3`) hold 18.9, 17.7, 82.1 and 14.7 MB, 133 MB; with T48 (a)'s list
+capacities and `GL3`'s seam rows (`TERRAIN-07-G` round 4: rows 6,080, 4,480, 3,880 and 4,416 texels)
+23.8, 27.6, 167.3 and 146.8 MB, 366 MB, +232 MB of GPU memory ([T50](#terrain-07-open-questions)). Graded tiles exist only where roads and sites are, so real cities
 use a fraction of `GL2` and `GL3`. Rust holds the in-flight payloads (bounded by the per-frame
 request budget), the preview's staging (the dirty tiles of one pose) and per-worker bake scratch
 (about 300 KB at `GL0`, reused).
@@ -3708,16 +3724,44 @@ the spike's flood fill ([T3](#terrain-07-open-questions)).
 ### The exact seam mask
 
 Away from the edge the fragment shader takes the bilinear `sdf` of the four surrounding samples.
-Within two texels of zero it takes the exact signed distance to the nearest of the four samples'
-seams, with Rust's nearest-seam order and the side from the segment's cross product, and discards
-below zero. It works in tile-local coordinates interpolated from the instance mesh's local vertex,
-never world XZ: at 10 km from the origin an `f32` world coordinate has a 1 mm step. The test runs
-in every pass that runs the fragment shader (depth prepass, shadows), so cut-away terrain casts no
-shadow on the road. Cost: at most four segment distances per fragment in the band; its cost at full
-screen is an acceptance measurement. **Open ([T48](#terrain-07-open-questions)):** a seam shorter
-than the lattice spacing that no corner of a square names is missing from that square's
-candidates, and the mask then misclassifies ground beside it (`bend_45` and `terminal` at `GL1`);
-T48 (a), the per-square extra candidates, decided by the user, is to be built.
+Within two texels of zero it takes the exact signed distance to the nearest of the square's
+candidate seams, with Rust's nearest-seam order and the side from the segment's cross product, and
+discards below zero. It works in tile-local coordinates interpolated from the instance mesh's local
+vertex, never world XZ: at 10 km from the origin an `f32` world coordinate has a 1 mm step. The
+test runs in every pass that runs the fragment shader (depth prepass, shadows), so cut-away terrain
+casts no shadow on the road.
+
+**The rule, before and after T48 (a)** (`TERRAIN-07-G` round 4). One rule: the nearest of the
+square's candidates by the nearest-seam order, its side the sign. T48 (a) changes which seams are
+candidates, not the rule.
+
+| | Candidates of a lattice square | Cost per fragment in the band |
+| --- | --- | --- |
+| Before (to `TERRAIN-07-G` round 3) | the seams its four corners name | at most four segment distances |
+| After (T48 (a), round 4) | the seams its four corners name, then its extra candidates: every seam within `min(d, B)` of the square that no corner names, where `d` is the least over the named corners of the largest distance from a square vertex to that corner's seam and `B` the band | four plus the square's list (lists of up to 13-19 seams at `GL0`-`GL1`, 32-37 at `GL2`, 150-730 at `GL3`, round 4 census; [T50](#terrain-07-open-questions)) |
+
+Why the candidates are complete: the nearest seam of any point of the square is no farther than
+any corner's named seam, and the distance to a segment is convex, so it lies within `d`; where the
+exact path runs (bilinear `sdf` within two spacings of zero) it lies within `B` of the point, since
+otherwise every corner's `sdf` would be at least `B` minus its distance and the bilinear weights'
+mean corner distance is at most half the diagonal (`B >= 3` spacings). Pass 1's bins list every
+road seam within `B` of a bin, so the bins meeting the square hold them whether or not pruning
+ran; the list does not depend on the pruning, and the pruned bake stays bitwise the unpruned one.
+With all four corners named, the largest named corner distance plus half the diagonal bounds it
+too. A seam that a quartering of the square proves farther than some named seam everywhere in it
+(`|p - s| - |p - n|` is 2-Lipschitz) is left out. Bore seams and bridge mouth rows are tested
+directly (`graded/extras.rs`). The search runs in fixed chunks of four square rows on the bake's
+pool (lists shared within a chunk only), so the bytes do not depend on the worker count; cost
+`O(squares with a named corner x their bins' candidates within the reach)`.
+
+Storage: a texel's seam channel holds its named row plus 2048 times one more than the first row
+texel of the list of the square whose lower corner it is (an integer below 2^24, exact in `f32`);
+the lists follow the seam heights in the slot's row texture, `(count, row, row, row)` then four
+rows a texel, squares with equal lists in a row or column sharing one. Capacities in [Data](#data).
+Without the extra candidates a seam shorter than the lattice spacing whose region of nearest points
+held no corner of a square was missing from it, and the nearest named seam's clamped end put ground
+beside the convex vertex on the road's side (`bend_45` and `terminal` at `GL1`,
+[T48](#terrain-07-open-questions)).
 
 **Bridge mouths** (`TERRAIN-07-D` round 9). Coverage ends at a bridge's mouth row, which is a
 wall seam, not a road seam, so the samples there named only the road seams and the cut edge across
@@ -3741,11 +3785,20 @@ stands above the road top it is discarded as before, so no terrain shows over a 
 overlap is rendering only: the payload, coverage and every query stay exact.
 
 **Behind the road** ([T24](#terrain-07-open-questions) (a2), `TERRAIN-07-D` round 7; withdrawn in
-round 8). Round 7 kept the band's terrain above the road top too, writing a depth pushed behind
-the road along the view ray; writing `DEPTH` cost the graded variant its early depth test, 0.27-0.71
-ms of GPU on the matrix poses (round 8 record). With [T34](#terrain-07-open-questions) (b) the
-ground just inside a seam lies below the road top but at a conflict, so (a) keeps it, and the
-graded variant writes no `DEPTH`.
+round 8; scoped back in by [T49](#terrain-07-open-questions) (c), `TERRAIN-07-G` round 4). Round 7
+kept the band's terrain above the road top too, writing a depth pushed behind the road along the
+view ray; writing `DEPTH` cost the graded variant its early depth test, 0.27-0.71 ms of GPU on the
+matrix poses (round 8 record). With [T34](#terrain-07-open-questions) (b) the ground just inside a
+seam lies below the road top but at a conflict, so (a) keeps it, and the graded variant writes no
+`DEPTH`. T49 (c) is the one documented exception to that: the bake flags a tile (`behind`,
+`graded/behind.rs`) where its drawn terrain rises above the road top along a seam the mask may take
+in some square: per lattice triangle (the cells' `(i, j)`-`(i + 1, j + 1)` split) and candidate
+seam, the drawn terrain minus the road top is linear along the part of the seam inside the
+triangle, and the tile is flagged if it is positive at an end of that part. A flagged tile's cells
+draw in their level's behind-the-road MultiMesh with a third material variant
+(`terrain_graded_behind.gdshader`, `TERRAIN_GRADED_BEHIND`): (a2)'s depth push within one pixel
+inside a seam; every other cell keeps (a) and the early depth test. The rule (the mask) is the
+same in both variants; only what the band's ground above the road top does differs.
 
 The material class uses the same pattern with the material edges: away from an edge the nearest
 sample's class; near one, the class of a surrounding sample on the fragment's side of the nearest
@@ -4364,7 +4417,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load miss accepted by the user, 2026-10-27, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); the Load miss accepted by the user, 2026-10-27 ("Slower load time is ok"; Kuopio about +250 ms, saved about +200 ms, the town 1.07 s faster; the budget unchanged); for the user's review: T25 (a)'s memory side, T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | done 2026-10-27 (rounds 1-7, branch `terrain07-E`, [record](#terrain-07-e-record); T27 (f) and T43 (a) the user's exceptions beside the commit row; the background cell-set builds' window accepted by the user, 2026-10-27; four items carried to `ROAD-68-H` by the user, 2026-10-27): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user. Round 6: T27 (f) decided by the user (the click right after a fast drag may exceed 3.0 ms, exact in its frame; the accepted exception beside the budget); the real-display drag probe (a pose frame up to 17.7 ms building a patch's cell set whole); cell sets built off the frame paths, hidden without slots until they draw, their MultiMesh data on the CPU (no read-back), the commit taking over the preview's slots: under gamescope pose 1.8 ms, catch-up 0.8, commit 0.6, undo 0.8. Round 7: T43 (a) decided by the user; a hole check able to fail and the holes fixed (gate D's on `road` too, shown in renders; the grass on the asphalt and the zoning cells gate D's as well, for `TERRAIN-07-F`); a built set waits hidden under its patch node; the idle-frame matrix judges the steady state, after the background cell-set builds, whose window's cost the user accepted. Final runs on the real display: the drag probe 39 strokes, 0 failures, 0 holes in 13 loads, pose 1.55 ms, catch-up 0.62, fast click 0.82, commit 0.49, undo 0.85; the idle-frame matrix on the steady state (`5972bef8`): Kuopio's poses at the exact cut (`close` +0.01, `overview` -0.00, `ground` -0.02 ms GPU p50), `saved` +0.21 (T35's), `city` -0.41, `city_low` -0.13, 0 overflows. Carried to `ROAD-68-H` by the user, 2026-10-27 ([list](roads.md#road-68-h--acceptance-and-cleanup)): the pose install's 2 of 594 frames over the 1.0 ms share, the probe's 14-20 ms whole frames, the streaming installs' 1.04-1.05 ms (`TERRAIN-07-G`'s), T42 (a) | Preview, commit, undo and load |
 | `TERRAIN-07-F` | done 2026-10-28 (rounds 1-14, branch `terrain07-F`, [record](#terrain-07-f-record); the real-display idle-frame matrix passes every pose): every consumer is re-pointed; the shared-owner query index is restored, and every canonical roadbed publisher now atomically advances its derived index and edit journal. The fresh matched 100k pose/snapshot gaps are +0.322/+0.264 ms, inside the unchanged +0.42/+0.40 ms bars; all 1,101 products match. Round 14 attributes the `city_low` matrix miss to unchanged grass-mask mirrors being rebound every frame, makes the sync revision-driven and proves a settled 120-frame view uploads and renders no mask | Consumers re-pointed |
-| `TERRAIN-07-G` | implementation complete, acceptance open (2026-10-28, branch `terrain07-G`, [record](#terrain-07-g-record)): the exact/CDT surface and its Rust and Godot consumers are deleted and the game is graded-only. Round 1's stage, locality and bitwise rows passed before deletion; round 3 restored the world-scale road change reset round 1 had deleted (the first commit after a load or bulk build staged the whole city) and found no retained-memory increase. Misses, none relaxed: plan pinholes on `bend_45` and `terminal` ([T48](#terrain-07-open-questions) (a), decided by the user, to build) and on `kuopio_t2_wall` ([T49](#terrain-07-open-questions) (c), decided by the user, to build). Round 2's bilinear-field condition, which hid the first, is removed. | Acceptance and legacy deletion |
+| `TERRAIN-07-G` | implementation complete, acceptance open (2026-10-28, branch `terrain07-G`, [record](#terrain-07-g-record)): the exact/CDT surface and its Rust and Godot consumers are deleted and the game is graded-only. Round 1's stage, locality and bitwise rows passed before deletion; round 3 restored the world-scale road change reset round 1 had deleted (the first commit after a load or bulk build staged the whole city) and found no retained-memory increase. Round 4 built T48 (a) and T49 (c) ([T48, T49](#terrain-07-open-questions)): 0 plan pinholes on every fixture. Open, none relaxed: the terrain stage (the new bake work serial tripled it; parallel, the reference preview is under 3.0 ms, the populated tiers to re-run), and for the user T48's coarse-level cost and memory ([T50](#terrain-07-open-questions)) and T49's scope ([T51](#terrain-07-open-questions)). | Acceptance and legacy deletion |
 
 #### `TERRAIN-07-A` — grading core and queries, roads only
 
@@ -8222,7 +8275,10 @@ pass; line counts recorded; docs updated.
 
 #### `TERRAIN-07-G` record
 
-Acceptance open: the rendered row misses (T48, T49, below), none relaxed. Round 1 (`c193a165`) deleted the exact/CDT
+Acceptance open after round 4: T48 (a) and T49 (c) are built and the rendered row passes, but
+the terrain stage missed in round 4's session until the new bake work was made parallel (re-run
+pending), and T48's coarse-level cost and T49's scope are open for the user ([T50, T51](#terrain-07-open-questions)).
+None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
 surface on the Rust side, round 2 (`154ac169`, committed unverified by the coordinator) the
 frontend selector, refined-patch jobs, baked mesh, water road clip and exact-only test branches.
 The game, reference test and idle-frame benchmark have one terrain mode: graded. Round 3 audited
@@ -8231,6 +8287,61 @@ is listed in `$ARTIFACTS/road68/t07g3/audit.md`) and replaced round 2's unverifi
 fix "without a tolerance", a "known" Kuopio pinhole, a memory comparison that loaded no save and
 compared exact with graded, and the matrices cited as gate D's) with the results below.
 
+- **Round 4 (`TERRAIN-07-G` round 4, branch tip in the handoff).** Fresh unless marked.
+  - **T48 (a) built** ([the exact seam mask](#the-exact-seam-mask)): the rule before and after,
+    the per-square extra candidates, their capacities and census ([Data](#data)). Tests:
+    `bend_outer_tangent_mask_equals_coverage_at_gl1` un-ignored and passing, dense checks of
+    `terminal`'s cap at `GL1` and `GL2` added; all three fail with the extra candidates disabled
+    (`$ARTIFACTS/road68/t07g4/t48-reverted-test.log`); `the_exact_mask_equals_coverage` passes.
+  - **T49 (c) built** ([behind the road](#the-exact-seam-mask)): the bake's `behind` flag
+    (`the_behind_flag_marks_the_tiles_whose_terrain_rises_above_a_seam`: the conflict pair
+    flagged, the flat T not), the behind-the-road cell meshes and material variant. Flagged tiles
+    per level and input in [T51](#terrain-07-open-questions).
+  - **Rendered (release library of `861c47fe`, `screenshots-C.sh`, every fixture with the distance
+    views, the bridge and tunnel continuations and the bridge side view back on the graded
+    path).** 0 plan pinholes in all 33 plan views, `bend_45` (flat, 2.5%, 8%), `terminal` (flat,
+    2.5%) and `kuopio_t2_wall` included; 0 failures. Inspected at 4x: the bend's outer tangent,
+    the terminal cap, Kuopio's T2 edge at `(768, 468)`; the Kuopio oblique and the bridge side
+    view (deck fascia and pier). References in `$ARTIFACTS/road68/t07g4/references/` (index
+    there).
+  - **Timing session (C F F C, four workers, P-cores; C road's `503a2424` binary, F
+    `861c47fe`).** Reference preview (`benchmark_road_preview_stages`), graded p50/p95 and
+    commit: `sloped_t` C 1.139/1.460, 1.095 and 1.149/1.451, 1.037 ms; F 3.198/3.558, 2.226 and
+    3.173/3.546, 2.479 ms: **a miss** (3.0 ms). `sloped_branch` C 0.942/1.254, 0.963/1.278; F
+    2.640/3.410, 2.684/3.380 ms. Commit breakdown, the commit's graded staging (select plus
+    bake, maximum per tier at 0/2k/10k/30k/100k): C 2.10/3.40/3.27/2.67/3.96 and
+    2.25/3.37/3.38/2.85/4.10 ms; F 6.36/9.01/9.85/7.48/10.43 and 6.00/8.92/10.05/7.43/11.09 ms
+    (this first-build staging is not the converged-commit metric of round 1's drags; it shows the
+    factor). Every populated city loaded (2k generated in F's first run); F's products equal
+    between its runs; C's and F's differ only in the graded digests and the census (the payload
+    carries the lists). **Attribution:** the extra candidate search and the behind flag ran
+    serially after the tile's parallel sampling (profile: `square_extras`, `box_distance`,
+    `may_be_nearer`, `rises_above_a_seam` 20-25% of the preview stage's CPU). **Fixed** in
+    `6f6c910f` (both on the bake's pool, fixed chunks); short stage-only runs, same session as a
+    C control: `sloped_t` C 1.200/1.724, 1.225/1.964 ms; F 1.843/2.220, 1.827/2.440 ms;
+    `sloped_branch` C 1.038/1.824, 1.010/1.672; F 1.541/2.299, 1.530/2.197 ms, under 3.0 ms but
+    +0.6 ms. The full session (populated tiers, undo) on the final tip is the next round's.
+  - **Locality (F `861c47fe`, serial).** `benchmark_graded_tiles_locality` passes (local products
+    equal while remote edges grow 3/147/1,203/4,707), stage p50 2.184/2.433/2.488/2.405 ms: flat
+    in the city's size, higher than round 1's 0.518-0.953 ms (the serial search, since made
+    parallel).
+  - **Gate checks.** Debug `cargo test --lib` 1,835 passed, 0 failed, 176 ignored (manual
+    benchmarks and diagnostics only; no `TERRAIN-07` ignore). Clippy 59 warnings, the baseline's
+    set exactly. Missing docs 0. `./run.sh --test` on `6f6c910f` before the plot tests' port:
+    Rust half passes, every Godot bridge, asset and shader script passes (no SCRIPT ERROR), then
+    `plot_material_lighting_test` failed: it compared frontage paving drawn through the CDT's
+    vertex colour tags, which round 3 removed with the deletion (a test of deleted code); ported
+    to a graded cell carrying material class 1 or 2 (both plot tests pass in gamescope, every
+    threshold unchanged). The final `run.sh --test` is in the handoff.
+  - **Line counts** (production `.rs`, as in round 3): graded 7,383 -> 7,947 (`extras.rs` 412,
+    the extra candidate search with its completeness argument; `behind.rs` 118, the flag; the
+    rest in `tile.rs`). Not re-measured this round: the release game's retained memory (the
+    pools grow by up to 232 MB of GPU memory, T50), the undo row and the populated tiers on the
+    parallel search.
+  - **Restored graded checks (audit items 4 and 6).** `large_paved_yards_remain_flat_over_hills_and_depressions`
+    against the graded surface (pad query height, picking equals the query, the 40 m relief
+    refused); the reference test's bridge and tunnel continuations with their edge-class
+    assertions and the bridge side view (tunnels: no-crash only).
 - **Terrain stage, locality and bitwise (round 1, fresh then, on `99a86710` before deletion; not
   re-run).** The bake row's worst p50/p95 is 1.471/1.550 ms. Sloped T preview/commit is
   1.346/1.947 ms with a 1.500 ms commit; the sloped branch is 1.218/1.972 ms with a 0.962 ms commit.
@@ -9595,7 +9706,12 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     Its final matched +0.322 ms 100k culled gap is inside the unchanged +0.42 ms bar. Taken under
     the night delegation, then agreed by the user on 2026-10-28.
 48. **T48. The exact seam mask misses a seam no lattice corner names (`TERRAIN-07-G` round 3) —
-    decided by the user, 2026-10-28: (a).** To build in the next round (not yet built).
+    decided by the user, 2026-10-28: (a). Built in round 4** ([the exact seam
+    mask](#the-exact-seam-mask)'s rule before and after; its memory is [T50](#terrain-07-open-questions)).
+    `bend_outer_tangent_mask_equals_coverage_at_gl1` passes and dense checks of `terminal`'s cap
+    at `GL1` and `GL2` were added; with the extra candidates disabled they fail (240 of 19,481,
+    495 and 1,999 of 1,982,901 points, `$ARTIFACTS/road68/t07g4/t48-reverted-test.log`). Renders:
+    `bend_45` and `terminal` 0 plan pinholes at every slope (release library, round 4 record).
     - **Evidence.** `bend_45`'s `plan_terrain` shows the background at five pixels (flat, 2.5%
       and 8% alike: `(814-816, 367)`, `(821-822, 368)`, world about `(0.54-0.84, -4.97)`, just
       outside the outer arc's first chord, a 0.49 m segment). A per-pixel read-back from a
@@ -9635,8 +9751,14 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Recommendation.** (a). Its bake share and the band's fragment cost are measured before
       landing; the `GL1` test above becomes a passing test.
 49. **T49. `kuopio_t2_wall`'s plan pinhole after T24 (a2)'s withdrawal (`TERRAIN-07-G` round 3) —
-    decided by the user, 2026-10-28: (c)**, measured on the GPU matrix. To build in the next round
-    (not yet built).
+    decided by the user, 2026-10-28: (c)**, measured on the GPU matrix. **Built in round 4**
+    ([behind the road](#the-exact-seam-mask)): the bake's `behind` tile flag, the behind-the-road
+    cell meshes and material variant. Flagged tiles (round 4 census): Kuopio 144 of 301 at `GL0`,
+    141 at `GL1`, 134 at `GL2`; the populated save 0 of 1,580 at `GL0`-`GL2`; the 100k city 0 of
+    10,500 at `GL0`, 134 at `GL1`, 127 at `GL2`, 3,769 at `GL3` step 2. The flag is exact, not a
+    conflict count: besides the conflict walls, a cut's lattice interpolation rises above the road
+    top at convex seam vertices (the sloped T fixture's tiles are flagged), so on a hilly map about
+    half the near tiles draw the variant. Its GPU cost is the matrix's (coordinator).
     - **Evidence.** One background pixel at `(768, 468)` in the graded `plan_terrain`, fresh on
       road (`aa20f247`, the library of `99a86710`; the exact cut there has its own 1 at
       `(1230, 914)`) and on `terrain07-G` `154ac169`. It is not new in `TERRAIN-07-G`: `TERRAIN-07-D`
@@ -9659,6 +9781,60 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       other cell keeps early depth; exact like (a2), its cost bounded to those tiles, which the
       bake must flag.
     - **Recommendation.** (c), measured on the GPU matrix; (a) if the variant cannot be scoped.
+
+50. **T50. T48 (a)'s cost at the coarse levels: list length, payload, memory (`TERRAIN-07-G`
+    round 4) — open, for the user.**
+    - **Evidence.** Round 4 census (`graded_slot_rows_census`, release, every listed tile at
+      every level, single-tile bakes on four workers; inputs the Kuopio reference save, the
+      14,000-resident populated save and the 100k city; `$ARTIFACTS/road68/t07g4/census3-*.log`),
+      beside gate D's 100k census (`$ARTIFACTS/road68/t07d6/census-100k.log`):
+
+      | Level | Seam rows max, gate D 100k | Seam rows max, round 4 (Kuopio / populated / 100k) | List texels max | Longest list | Row bytes mean, 100k | Bake ms mean, 100k |
+      | --- | --- | --- | --- | --- | --- | --- |
+      | `GL0` | 245 | 215 / 244 / 248 | 2,343 / 1,720 / 1,718 | 17 / 13 / 13 | 7,568 | 2.78 |
+      | `GL1` | 245 | 224 / 246 / 254 | 1,546 / 1,180 / 1,194 | 19 / 14 / 14 | 6,720 | 0.98 |
+      | `GL2` | 205 | 254 / 260 / 262 | 1,282 / 1,286 / 1,248 | 37 / 33 / 32 | 8,457 | 0.72 |
+      | `GL3` step 2 | 44 | 432 / 412 / 398 | 419 / 447 / 415 | 266 / 164 / 150 | 7,276 | 0.63 |
+      | `GL3` step 4 | 36 | 688 / 507 / 515 | 342 / 382 / 399 | 607 / 339 / 348 | 8,364 | 1.06 |
+      | `GL3` step 8 | 25 | 795 / 615 / 609 | 309 / 337 / 345 | 730 / 611 / 603 | 9,920 | 2.64 |
+
+      At `GL0`-`GL2` the lists are short (13-37 seams) and the seam rows barely move. At `GL3`
+      a square is 20-80 m, the band 60-240 m, and nearly every seam within reach of a square can
+      be nearest somewhere in it: lists of 150-730 seams, which a fragment on the exact path
+      (bilinear `sdf` within two spacings, 40-160 m at `GL3`, most of a dense city's far view)
+      takes one segment distance each. The bounds are proven supersets; tightening them (the
+      vertex bound, then the largest named corner distance plus half the diagonal, then a
+      quartering Lipschitz test, all built) cut the lists 10-20% only. Memory with `T7`'s rule
+      and the fixed slot pools: 133 MB -> 366 MB of GPU memory ([Data](#data)), `GL2` 82 -> 167
+      MB and `GL3` 15 -> 147 MB. Bake: the round 4 session measured the serial first build at
+      three times road's preview bake (see the gate G record); in parallel the reference
+      preview is under 3.0 ms (short runs), the populated tiers are not re-measured.
+    - **Options.** (a) Keep it as built at every level, the `GL3` loop's cost measured on the
+      matrix. (b) One list atlas per level shared by its slots (memory follows use, not the worst
+      tile times the slots); the `GL3` list length stays. (c) The exact path's candidates at
+      `GL3` as before (four corners), with T48 (a) at `GL0`-`GL2`: a second rule at distance,
+      which needs the user's decision (sub-pixel slivers beyond 2 km). (d) A different `GL3`
+      mask altogether (for example the bilinear field only beyond 2 km, a contract change).
+    - **Recommendation.** None taken (a change of which levels take the exact path is the
+      user's). Measure (a) on the matrix first; if `GL3`'s fragment cost shows, (c) with (b) at
+      `GL0`-`GL2`.
+51. **T51. T49 (c)'s flag scope (`TERRAIN-07-G` round 4) — open, for the user.**
+    - **Evidence.** Flagged tiles per level (round 4 census, same inputs): Kuopio (301 tiles)
+      `GL0` 148, `GL1` 141, `GL2` 134, `GL3` steps 2/4/8 135/138/137; the populated save (1,580)
+      0, 0, 0, 396/76/119; the 100k city (10,500) 0, 134, 127, 3,769/1,676/1,417. The flag is
+      exact for what the outer-band overlap discards (drawn terrain above the road top along a
+      seam), not a conflict count: on slopes a cut's lattice interpolation rises above the road
+      top at convex seam vertices, so about half of hilly Kuopio's near tiles draw the variant;
+      on the flat populated city none does at `GL0`-`GL2`. At `GL3` the drawn terrain spans
+      20-80 m triangles across the seams and rises above the road top along a third of the 100k
+      city's tiles. Whether that is right at `GL3`: the definition is the same at every level and
+      matches what (a) would discard there, but a pinhole needs the road's raster to miss a pixel
+      the `f32` mask puts inside (about 1e-4 m at 1 km), which beyond 2 km is a fraction of a
+      pixel of 1-4 m.
+    - **Options.** (a) As built, the variant's cost measured on the matrix. (b) The flag at
+      `GL0`-`GL2` only (a second rule at distance). (c) T49 (a) (the variant everywhere).
+    - **Recommendation.** Measure (a) on the matrix (coordinator); decide with the `GL3` part
+      of T50.
 
 #### Superseded `ROAD-68` questions
 
