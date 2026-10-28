@@ -90,6 +90,8 @@ var pools: Array[Dictionary] = []
 # The device's array layer limit (L) and the block side (B) in patches at GL2 and GL3.
 var layer_limit := MIN_LAYER_LIMIT
 var block_patches := 1
+# The patch grid of the world (patches per axis).
+var _patch_grid := Vector2i.ZERO
 # Page id -> {id, code, block, texels, atlas (Texture2DArray), slots, layers, free (slots), runs
 # (free atlas runs as Vector2i(first, count), sorted by first), tiles and previews (tile key ->
 # true: the installed and preview copies it holds), bytes}.
@@ -193,6 +195,10 @@ var view_planes: Array[Plane] = []
 ## terrain.gd's is_render_settled()), the graded work takes the whole frame, not the streaming
 ## install budget's spare time.
 var unbudgeted := false
+## Whether terrain.gd's patch residency still has pending work this frame (its payloads,
+## acknowledgements, LOD refreshes): while a load settles, a block's page waits for it
+## (_block_lists_pending).
+var residency_settling := false
 var _uniform_names: PackedStringArray = PackedStringArray()
 # Tile key -> {level: Vector2i(code, step), token, bucket}: every tile a resident patch's list
 # names. It follows the changes: a patch entering, leaving or getting a new list adds and
@@ -350,6 +356,7 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	var tiles_per_side := int(ceil(span_m / TILE_M)) + 1
 	_cells_per_patch = tiles_per_side * tiles_per_side
 	var grid := Vector2i(int(ceil(world_size.x / span_m)), int(ceil(world_size.y / span_m)))
+	_patch_grid = grid
 	_cells_pool.clear()
 	var prewarm_us := Time.get_ticks_usec()
 	for _patch in grid.x * grid.y:
@@ -626,14 +633,24 @@ func _copy_pages(tile: Vector2i, code: int) -> Array[Array]:
 				pages.append([bound, block])
 	return pages
 
-# Whether a resident patch of block `block` (GL2 and GL3) still waits for its list.
+# Whether block `block`'s page (GL2 and GL3) must wait: a resident patch of the block still
+# waits for its list, or, while a world load settles (`unbudgeted`) and its patch residency is
+# still growing (`residency_settling`), a patch of the block within the world is not resident
+# yet (the load makes the patches near the camera resident over its frames; a page sized before
+# them moves its block once they list their tiles: the 100k load moved 44 blocks, about 20 s of
+# rebakes). Once the residency stops growing, a block straddling its edge takes its resident
+# patches' tiles.
 func _block_lists_pending(code: int, block: Vector2i) -> bool:
 	if code < 2:
 		return false
 	for z in block_patches:
 		for x in block_patches:
 			var key := block * block_patches + Vector2i(x, z)
-			if _resident.has(key) and not patch_lists.has(key) and not patch_lists_refused.has(key):
+			if not _resident.has(key):
+				if unbudgeted and residency_settling and key.x < _patch_grid.x and key.y < _patch_grid.y:
+					return true
+				continue
+			if not patch_lists.has(key) and not patch_lists_refused.has(key):
 				return true
 	return false
 

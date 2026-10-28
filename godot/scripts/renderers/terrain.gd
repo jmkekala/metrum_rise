@@ -513,6 +513,7 @@ func _process_graded_tiles() -> void:
 	# The view's frustum: an unready patch in it counts against the residency margin (T53 (a)).
 	graded_tiles.view_planes = camera.get_frustum()
 	eye.y -= float(simulation_node.get_world_surface_height(Vector2(eye.x, eye.z)))
+	graded_tiles.residency_settling = has_pending_render_work(false)
 	graded_tiles.process(eye, _graded_resident, _graded_changed, _graded_materials_changed)
 	_graded_changed.clear()
 	_graded_materials_changed.clear()
