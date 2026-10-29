@@ -4459,7 +4459,16 @@ km.
     some pose's inputs (no blend, no fallback, no partial tile), and the shown tiles after each
     frame depend only on the sequence of poses and frames, never on timing or the worker count.
     A newer pose (or a pose without pieces, or a publication) supersedes the older pose's
-    unstaged tiles; the shown tiles stay for adoption.
+    unstaged tiles; the shown tiles stay for adoption. **What the renderer draws** (`TERRAIN-12`,
+    [T60](#terrain-07-open-questions) (a), the user, 2026-10-29; `ROAD-68-H` round 4): only tiles
+    exact for the latest pose. An earlier pose's tile discards that pose's road footprint, so
+    until round 4 the background showed where the new pose's road did not cover it, and a pose
+    without pieces kept the earlier tiles drawn while the road tool drew no road. Now an unstaged
+    tile of `W` keeps an earlier pose's tile only where the move from the latest pose left its
+    inputs unchanged (a second selection, of the move), else the published tile draws until it
+    is staged; a pose that draws no road (no pieces, or invalid) and a publication draw no
+    preview terrain. The adoption pool above is unchanged, so every staged, committed and undone
+    tile is too.
   - *Convergence.* Once the poses stop, the shown tiles are the last pose's after
     `ceil((|W| - 1) / 2)` catch-up frames, bitwise its fresh bake and the commit's tiles.
   - *The commit.* The click offers the tiles the preview shows at that moment (the latest
@@ -11084,6 +11093,184 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (a settled heap checkpoint on both sides). (b) Attribute before landing.
     - **Recommendation.** (a), as T56's: Kuopio's equal tile count says it is not only the tiles
       held, so `TERRAIN-09` attributes it first; no target relaxed.
+60. **T60. The preview's terrain cut for a road the frame does not draw (`TERRAIN-12`, `ROAD-68-H`
+    round 4) — (a) for (1) and the existing rule for (2), decided by the user, 2026-10-29 (about
+    18:10), fixed in `ROAD-68-H` round 4 in the Rust staging (the root fix, which `TERRAIN-13`
+    keeps). This replaced the user's carry of about 17:30 (the holes to `TERRAIN-13`) once the
+    cause was found in the Rust staging, not in the GDScript renderer.**
+    - **Evidence** (fresh, `ROAD-68-H` round 4, `$ARTIFACTS/road68/h4/`). Reproduced in an isolated
+      profile from the user's dump (`dump-2026-10-29_17-01-40.sqlite`, 125 m strokes from the
+      world's centre) and on Kuopio (`kuopio_08`), with the drag probe swinging each stroke's end
+      a pose a frame and pausing between poses (`METRUM_GRADED_DRAG_SWEEP`, `_SWEEP_CONVERGE`),
+      rendered under gamescope with a magenta camera background looking down
+      (`METRUM_GRADED_DRAG_HOLE_PIXELS`): the background shows in the frame of each pose after a
+      pause and in its catch-up frames until the tiles it sits in are staged (the dump: 32 of 72
+      frames; `kuopio_08` attempt 22, 122 m on a slope: 47 frames, 2-3 of the 4 frames after each
+      pose), and through every frame of an invalid pose (`kuopio_08`: 5 frames in a row, attempts
+      21 and 22). The captures (`caps-dumpconv-all/`) show the earlier pose's whole footprint,
+      cut off at the tile edge where the staged tiles begin: the user's `6.png`. In the same
+      frames the renderer's per-frame check (`tile_draw_violations`) finds no tile drawing other
+      than what it shows: each resident tile of a drawing set is one instance in the cell mesh of
+      its base cell, installed tile or preview tile, from the slot that holds its copy in the page
+      its set binds. Round 3's lead (`_drop_preview` marking nothing) is refuted:
+      `_drop_preview` calls `_shown_changed`, and the dropped tile's cells are rewritten in its
+      frame.
+    - **Cause: what Rust gives the renderer to show, with the footprint discard.** Terrain is
+      discarded exactly inside the road footprint its bake holds (`terrain_surface.gdshaderinc`).
+      (1) T27 (d)'s rule for a pose's unstaged tiles ([corrections](#preview-commit-undo-and-load)):
+      each shows the tile an earlier pose showed (`GradedPreview::advance`,
+      `TileStage::overlay`), the exact bake of that pose, whose terrain is cut where that pose's
+      road lay, while the road surface is the new pose's (exact every frame). Where the earlier
+      footprint is not under the new road the background shows; where the new road is not over
+      it, the earlier terrain covers the road (the accepted lag the user saw on slopes). It lasts
+      until the catch-up frames stage the tile: on `kuopio_08` attempt 22 (122 m, sloped) the
+      pose's frame and 3 catch-up frames after each pose (up to 8 pending tiles), on the dump's
+      125 m strokes 3-4 frames. A drag that never pauses shows little of it: each pose restages
+      the tile at its moving end and the other tiles of its selection are mostly the published
+      ones. (2) A pose without pieces (an invalid stroke, here over the 1:3 grade) supersedes the
+      last pose's unstaged tiles but keeps its shown tiles shown (`GradedPreview::supersede`,
+      `road_preview.rs`), while the road tool draws no preview road for an invalid pose: the last
+      valid pose's footprint shows the background for as long as the stroke stays invalid (the
+      user's `5.png`). An invalid pose with pieces (a reserved overlap) stages and shows its own
+      tiles and draws no road either. (2) breaks this document's own rule (a tile outside the
+      pose's selection shows the published tile; a pose without pieces selects none); (1) is
+      T27 (d) as decided.
+    - **Why the checks missed it.** The rendered harness's "exact" pose measure is the road's
+      (the pose's road payload installed in its frame); the hole checks counted resident patches
+      drawing nothing (`hole_patches`) and inspected converged captures; the drag probe's strokes
+      grow along one line, so an earlier pose's footprint lies under the next pose's road but for
+      its end, and every probe stroke is valid; nothing read a moving frame's pixels. Round 4's
+      probe checks every recorded frame (the renderer's per-tile invariant, preview tiles shown
+      with no preview road drawn, and with the pixel option the background through the ground)
+      and swings its strokes on request; it fails on the tip.
+    - **The invariant `TERRAIN-13` tests in Rust, every frame of a drag:** every resident tile of a
+      drawing set draws exactly one of its base cell, its installed graded cells or its preview
+      graded cells, from the slot holding its copy in the page the set binds; and no preview tile
+      shows in a frame whose road does not draw the pose it was baked for, unless that tile's
+      inputs equal the drawn pose's (the fix below).
+    - **Options for (1).** (a) An unstaged tile keeps an earlier pose's tile only where that tile
+      is exact for the new pose: a pose also selects the tiles its move dirtied against the
+      previous pose's roadbed (the same selection with the previous pose's roadbed as `before`);
+      an unstaged tile outside that set keeps its earlier tile (its inputs unchanged, so it is
+      this pose's exact bake too), one inside it shows the published tile until staged. No hole
+      and no stale geometry; the accepted lag's other face (the road over or under the published
+      terrain on slopes) covers the moved tiles. Cost: a second selection a pose inside the
+      3.0 ms stage, to be measured. (b) Every unstaged tile shows the published tile (earlier
+      poses' tiles kept only for adoption): no hole and no second selection, but while dragging
+      every tile but the staged ones falls back to the published terrain each pose. (c) Keep
+      T27 (d) as it is: the holes are part of its accepted lag.
+    - **For (2):** a pose that draws no preview road shows no preview terrain: Rust hands the
+      renderer every shown tile as removed (keeping them for adoption) for a pose without pieces
+      or an invalid one. This is the existing rule, not a new design.
+    - **Recommendation.** (a) for (1), the fix for (2) as stated, both in `TERRAIN-13` beside its
+      renderer move (the Rust staging becomes part of its scope). For the user to confirm: the
+      decision of about 17:30 covers the GDScript side; the cause is in `graded_stage.rs`'s rule
+      and `road_preview.rs`'s supersede.
+    - **Decided by the user, 2026-10-29 (about 18:10): fix it in `ROAD-68-H` now, in the Rust
+      staging; (a) for (1), the existing rule for (2).** Built in round 4 (`graded_stage.rs`
+      `GradedPreview`): the renderer is handed a display apart from the adoption pool. A pose
+      also selects the tiles its move dirtied: the roadbed change between the latest pose and
+      this one (`RoadbedSystem::terrain_changes_from` over the owners either pose's delta
+      covered, every piece that can differ between two snapshots of one roadbed), selected as a
+      commit's tiles are but testing only the displayed tiles (`select_road_edit_where`; the
+      whole selection cost the populated drags' poses 0.4-0.6 ms, over the 3.0 ms stage); the
+      display keeps the pose's wanted tiles outside that set (inputs
+      unchanged, so this pose's exact bake), drops those inside (the published tile draws until
+      staged) and takes each frame's staged tiles. A latest pose over other terrain, sites or
+      levels keeps none. A pose without pieces, an invalid pose (a reserved overlap) and a
+      publication supersede the pending tiles and hand every displayed tile back; the adoption
+      pool, and so every staged and committed tile, is unchanged. The second selection's cost
+      is in each pose's selection time (`select_ms`, the 3.0 ms stage), measured in `ROAD-68-H`
+      [round 4](roads.md#round-4-terrain-12-fixed-in-the-rust-staging-the-poses-main-thread-work-attributed-the-runs-road-68-h-2026-10-29).
+    - **Proof** (fresh, gamescope, the probe's swing with pauses and every per-frame check, the
+      fixed library `069d2852` against round 3's `dca30744`, the same scripts): the user's dump, four
+      125 m strokes swung 30 degrees, 0 of 416 frames with the background (before: 43 of the
+      first stroke's 104, the case then stopped); the 100k populated city, the rows' T and
+      branch swung, 0 of 282; the renderer's invariant and the no-road check 0 everywhere. On
+      Kuopio's strokes the road-shaped holes are gone, but the pixel check finds two residuals
+      the fix does not cover, so the 39 strokes do not pass yet: [T61](#terrain-07-open-questions).
+61. **T61. Two residual frames with background pixels after T60's fix (`ROAD-68-H` round 4) —
+    (1) (a) and (2) (a), decided by the user, 2026-10-29 (about 18:50), both to be fixed in
+    `ROAD-68-H`; (1) built in round 4, (2) not yet (the round's rotation).**
+    - **Evidence** (fresh, `$ARTIFACTS/road68/h4/drag-after-kuopio-*`, `caps-after-kuopio/`;
+      Kuopio's cases stop at their first failing stroke, so 25 of the 39 strokes ran, 16 clean):
+      (1) **seam cracks while a pose catches up**: thin slits across the road at a 64 m tile
+      seam, just outside its edges, in catch-up and pose frames of the steeper strokes
+      (`kuopio_04` attempt 9: 24 frames; `kuopio_06` 15: 6; `kuopio_12` 35: 2 each in both
+      cases; `kuopio_03` 6: 2), 1-78 sampled pixels a frame (median 2), none once converged.
+      A tile staged for the pose meets a neighbour of the pose's selection still showing the
+      published tile; where the road's grading reaches across their seam their edges stand at
+      different heights, and the gap shows. T27 (d)'s per-tile staging made the same gaps before
+      the fix (then between two poses' tiles); the renderer's stitching matches lattices, not
+      two bakes' heights. (2) **The undo's frame**: in one frame after an undo the committed road
+      is gone while the terrain still discards its footprint (the whole road, 2,615 sampled
+      pixels), on 4 of the 25 strokes (`kuopio_01` 1, `kuopio_05` 11, `kuopio_07` 20,
+      `kuopio_08` 21): the undo's road chunks install a frame before its graded batch, with no
+      hold like the commit's (`road_tool.gd` `_hold_preview_until`); the preview is not
+      involved, and nothing in the fix touches undo. The library before the fix, on
+      `kuopio_01`, `_04` and `_05` (`drag-before-kuopio-*`): 49, 130 and 118 frames with the
+      background (and 4 frames of preview terrain without its road), the undo's frame among them
+      on `_01` and `_04`; after: 1, 24 and 1.
+    - **Options for (1).** (a) Show a pose's tiles all together: the display holds the latest
+      pose's whole selection once every tile of it is staged or kept, and the published tiles
+      until then; a complete selection meets the published tiles outside it seam for seam (the
+      selection is every tile the edit changes), so no gap and no hole, and the accepted lag (the
+      road on the published terrain) lasts until the pose has caught up. (b) Skirts: a preview
+      tile's sides draw a wall down to its neighbour where the neighbour shows another bake
+      (the renderer's wall faces), in `TERRAIN-13`'s renderer. (c) Accept the gaps as T27 (d)'s
+      lag (catch-up frames only, a few pixels).
+    - **Options for (2).** (a) The road tool holds the undone road's chunks until the undo's
+      graded batch installs, as the commit holds its preview (GDScript, in H). (b) Carry it to
+      `TERRAIN-13` with the renderer's move.
+    - **Recommendation.** (1) (a): exact and simplest, the lag as the user accepted it; (2) (a)
+      in H, a one-frame hand-over like the commit's. Not decided by the agent.
+    - **Decided by the user, 2026-10-29 (about 18:50): (1) (a) and (2) (a), both in `ROAD-68-H`.**
+      (1) in the Rust staging: the display is all or nothing per pose, the latest pose's whole
+      selection once every tile of it is staged or exactly kept, else the published tiles; never
+      a part-staged mix and never an earlier pose's set; T27 (d)'s two tiles a catch-up frame
+      unchanged. (2) in `road_tool.gd`: an undo holds the undone road's chunks until its graded
+      batch installs, the commit's hand-over (`_hold_preview_until`), with a check that fails
+      without it; redo and road deletion checked for the same gap.
+    - **(1) built in round 4** (`GradedPreview`: the exact tiles, T60's induction, kept apart from
+      the display, which takes them only when they are the whole selection): the graded drag
+      test asserts in every pose and catch-up frame that the displayed tiles are the whole
+      selection or none, and fails without the change (`1 of 6 selected tiles displayed`, the
+      swing's first pose; `1 of 4`, the T's); the adoption pool, the staging and so every
+      staged, committed and undone tile are unchanged. Proof runs and the lag in `ROAD-68-H`
+      [round 4](roads.md#round-4-terrain-12-fixed-in-the-rust-staging-the-poses-main-thread-work-attributed-the-runs-road-68-h-2026-10-29).
+    - **(2) not built in round 4.** The undo's graded batch comes from the edit journal through a
+      payload worker, a poll or more after the network renderer installs the undo's road chunks,
+      and Godot has no signal that an edit for that generation is still in flight: the hold
+      needs one (the journal's latest serial against the renderer's installed one) and must not
+      delay a commit's acknowledgement (the commit row). Next round; redo and road deletion not
+      yet checked.
+62. **T62. What T61 (1) (a) leaves (`ROAD-68-H` round 4) — (a), decided by the user,
+    2026-10-29 (about 19:15); to build in `ROAD-68-H` round 5.**
+    - **Evidence** (fresh, `$ARTIFACTS/road68/h4/drag-t61-*`, the 39 Kuopio strokes all run):
+      the cracks are gone, but (1) a pose that rebuilds an existing road's pieces (a junction)
+      draws its road while the published tiles, shown until its selection completes, still cut
+      the old pieces' footprint: the background shows where the new pieces do not cover it (14
+      pose and catch-up frames on one stroke, 3 frames around fast clicks on two); (2) in a
+      continuous drag (a pose a frame) the selection never completes: 0 of 624 pose frames show
+      preview terrain, and after each pause it appears 2-10 frames later (median about 5);
+      (3) a fast click installs none of its newly graded tiles in its frame (11 strokes): they
+      wait for their patch's list, as before for every tile the preview had not shown.
+    - **Options.** (a) Accept (2) and (3) as T27 (d)'s lag and fix (1) by holding the pose's
+      replaced road runs (the resident chunk's pieces the pose rebuilds) drawn until its
+      selection displays, so road and terrain change together. (b) Raise the per-frame tile
+      budget (the user kept two tiles a catch-up frame; the 3.0 ms stage binds). (c) Return to
+      T60's partial display and draw skirts on mixed seams (T61 (1) (b)).
+    - **Recommendation.** (a); not decided by the agent.
+    - **Decided by the user, 2026-10-29 (about 19:15): (a).** T61 (1) (a)'s all-or-nothing display
+      stays. Accepted as T27 (d)'s lag: no preview terrain while dragging continuously (it
+      appears once the pose's selection completes after a pause), and a fast click's newly
+      graded tiles waiting for their patch's list. To fix: the pose's replaced published road
+      runs stay drawn until its selection displays, so the road and the terrain change
+      together. Proof before it is done: no frame z-fights or doubles where the held old pieces
+      and the new preview pieces overlap (captures); the road's "exact pose" measure still holds,
+      or exactly how the held runs interact with it is stated; the 39 Kuopio strokes, the dump
+      and the 100k swing show 0 background frames once T61 (2) is built too. A hold that causes
+      flicker or breaks the exact measure goes back to the user as a question.
 
 #### Superseded `ROAD-68` questions
 

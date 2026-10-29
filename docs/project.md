@@ -371,7 +371,20 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   the base terrain variant no longer reads a tangent basis it never uses (Godot's per-pose
   tangent warning, 0 after). The gate is blocked by `TERRAIN-12`, found by the user in play:
   tile-shaped holes where the previous preview pose lay, for 1-2 frames
-  ([record](roads.md#round-3-sub-chunk-preview-payloads-the-poses-main-thread-work-the-city-scan-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
+  ([record](roads.md#round-3-sub-chunk-preview-payloads-the-poses-main-thread-work-the-city-scan-road-68-h-2026-10-29)).
+  Round 4 (2026-10-29): `TERRAIN-12` reproduced from the user's dump and fixed in the Rust
+  staging (T60 and T61 (1), the user's rules): the renderer is handed a pose's whole graded
+  selection, each tile its exact bake (unmoved ones kept through a second selection of the
+  move), or none, and no preview terrain for a pose that draws no road; the drag probe swings its
+  strokes and checks every frame (the renderer's invariant, no preview tile without its road, no
+  background pixel). T61 (2), the undo's one-frame hole, and T62 (a), holding a pose's replaced
+  road runs until its terrain displays, are decided and not yet built. By question 65 (a) with
+  (d) the rendered preview rows are carried to `TERRAIN-13` (the active row also to
+  `RENDER-30`). The populated
+  row now measures the steady state (question 64 (c)); the user widened `TERRAIN-13` (the graded
+  renderer's GDScript bookkeeping to Rust) and carried the GDScript share of the pose's
+  main-thread work there; the rest of the rows' misses is question 65
+  ([record](roads.md#round-4-terrain-12-fixed-in-the-rust-staging-the-poses-main-thread-work-attributed-the-runs-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
   compacted for quality to 7,229 production lines with every product bitwise unchanged.
   `ROAD-68-E` (implemented; acceptance open) previews each road pose synchronously in the frame that samples it,
   with the commit's own plan, pieces and road chunks, and the commit installs them; one preview

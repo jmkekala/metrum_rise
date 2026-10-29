@@ -3728,7 +3728,8 @@ These need a user decision; work that does not depend on them continues.
       the call and install from 14-15 to 7-10 ms (gamescope, full clock); the row still misses,
       its rest of frame the graded renderer's streaming after the load (question 64).
 64. **The populated row is sampled inside the graded renderer's streaming after the load
-    (`ROAD-68-H` round 3) — open.**
+    (`ROAD-68-H` round 3) — (c), decided by the user, 2026-10-29 (about 17:35); (a) built in
+    round 4, (b) is `TERRAIN-13`'s.**
     - **Evidence.** With the sub-chunk payloads the populated pose's call and install take 7-10 ms
       (from 14-15), but `populated_t`'s rest of frame stays 24-44 ms. Symbolized (Godot's debug
       file by build ID), that rest is GDScript walking dictionaries and arrays; PerfDebug names
@@ -3747,6 +3748,48 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation.** (c): (a) for the row, so it measures what the road tool costs, and (b) as
       its own measured track, since a 13-33 ms frame while tiles stream is a real cost. Not
       decided by the agent; the round measures the row as before (d) meanwhile.
+    - **(c), decided by the user, 2026-10-29 (about 17:35).** The populated row waits until the
+      graded renderer has settled after the load (its wanted tiles resident, no cell set build
+      pending) and measures the preview in the steady state; the streaming window's cost is
+      reported apart. Built in round 4 (`road_preview_replay.gd` `_wait_for_steady_terrain`:
+      `terrain.gd` `is_render_settled()` and no cell set build pending, three frames in a row, the
+      simulation paused; its frames, time and frames over 16.7 ms in each case's `steady_wait`).
+      (b) is `TERRAIN-13` (the user widened it at about 17:30: the graded renderer's GDScript
+      bookkeeping moves to Rust, its residency pass following the changed tiles); its own track,
+      not blocking `ROAD-68`.
+65. **The rendered rows' misses beyond the GDScript share (`ROAD-68-H` round 4) — (a) with (d),
+    decided by the user, 2026-10-29 (about 19:15).**
+    - **Evidence** (round 4, fresh, [record](#round-4-terrain-12-fixed-in-the-rust-staging-the-poses-main-thread-work-attributed-the-runs-road-68-h-2026-10-29)).
+      Paused rows (before the fixes) N 84.3 %, W 89.5 % (on T61 (1) (a)'s tip N 87.6 % (3,440 of 3,926), W 88.9 % (3,519 of 3,959));
+      stationary p95 up to 24 ms and stop → exact up to 17.5 ms; populated steady state (before
+      the fixes) x11 A 43.3 %, P 84.3 %, Wayland A 44.6 %, P 77.8 %. The paused pose's 14.5-14.9 M main-thread cycles are engine 43-45 %,
+      GDScript 26-27 %, the Rust call 21-23 %, libc 6-7 %, at 1.2 GHz when late: removing the
+      GDScript time would leave an estimated 2.5-3.3 % of poses late, and with the engine's
+      conversion of the GDScript-built preview meshes 1.8-2.6 %; the Rust call has no cut that
+      reaches the 2.5-3.5 M cycles a late pose needs (its largest function 0.35 M). The active
+      populated pose runs at 4.9 GHz; its late poses carry 12 M more cycles than its on-time ones:
+      the frame's render work while the city grows (`_surface_set_data` and
+      `octahedron_encode` 5 M, MultiMesh buffer sets, the building plot and construction site
+      transforms 1.8 M) and GDScript; without the GDScript time an estimated 55-58 % fit.
+    - **Options.** (a) Carry the moving and stationary rows whole to `TERRAIN-13`, which removes
+      the GDScript share and, with Rust calling `RenderingServer` directly, the engine's
+      conversion of the meshes GDScript builds, and re-measures them against the unchanged
+      targets; `ROAD-68` lands with the rows open there. (b) Keep them blocking and cut more in
+      H: the Rust call's serial main-thread work onto the pool or a frame earlier (a pipeline
+      change to "exact in the frame that samples it"); the engine's submission (driver, render
+      lists) is upstream Godot's. (c) [Question 62](#road-68-open-questions) (a): the rows at the
+      operating clock (the CPU power policy). For the active row: (d) a separate track for the
+      growing city's per-frame visual uploads and transforms on the main thread, as `RENDER-27`
+      and `RENDER-28` are (neither covers it: camera turns and agent draw distance), or (e) count
+      them in `RENDER-27`'s CPU-bound render frame.
+    - **Recommendation.** (a) for the paused and stationary rows; for the active row (a) with (d).
+      Not decided by the agent; no target relaxed.
+    - **(a) with (d), decided by the user, 2026-10-29 (about 19:15).** The paused and stationary
+      rows are carried whole to `TERRAIN-13` and re-measured there against the unchanged targets;
+      the active row is carried to `TERRAIN-13` and to `RENDER-30` (new: the growing city's
+      per-frame visual uploads and transforms on the main thread). `ROAD-68` lands with these
+      rows open there; H still runs them on its tip and records them with their attribution,
+      carried, not passed.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -9125,6 +9168,224 @@ wanted: `TERRAIN-07`'s renderer, not the road preview and not the engine
 (4.0 ms), `Vector3::octahedron_encode` (1.1 ms) and the copies in libc (3.7 ms), with `seal`
 (0.8 ms) and the packed-array conversions (0.7 ms) in the extension: the 11.5 MB upload that the
 sub-chunk payload removes.
+
+#### Round 4: `TERRAIN-12` fixed in the Rust staging, the pose's main-thread work attributed, the runs (`ROAD-68-H`, 2026-10-29)
+
+Fresh in this round unless marked; artefacts `$ARTIFACTS/road68/h4/`. **The user's decisions this
+round:** question 64 (c) (about 17:35); `TERRAIN-13` widened (about 17:30: the graded tile
+renderer's GDScript bookkeeping, its residency pass among it, and the other per-pose GDScript
+work move to Rust; H misses caused on that GDScript side are carried there; H lands before it);
+[T60](terrain.md#terrain-07-open-questions) (about 18:10: `TERRAIN-12` fixed here in the Rust
+staging, rule (a) and the existing rule for invalid poses; this replaced the 17:30 carry of the
+holes to `TERRAIN-13` once the cause was found outside the GDScript renderer).
+
+**`TERRAIN-12`: reproduced, the cause, the fix.** Reproduced in isolated profiles from the
+user's dump and on Kuopio with the drag probe's new swing (`METRUM_GRADED_DRAG_SWEEP`: the
+stroke's end swung to each side at its length, a pose a frame; `_SWEEP_CONVERGE`: caught up
+between poses, a player's pauses) and per-frame checks: the renderer's own state
+(`terrain_graded_tiles.gd` `tile_draw_violations`: every resident tile of a drawing set is one
+instance in the cell mesh of its base cell, installed tile or preview tile, from the slot holding
+its copy in the page its set binds), no preview tile shown while the road tool draws no preview
+road, and, rendered (`_HOLE_PIXELS`), the background's pixels through a magenta camera
+environment looking down. Before the fix (round 3's library `dca30744`): the dump's swing showed
+the background in 32 of 72 frames, `kuopio_08` attempt 22 (122 m, sloped) in 47 frames and five
+invalid-pose frames, attempt 21 in 84 and five; the renderer's invariant held in every frame. Round
+3's lead is refuted (`_drop_preview` calls `_shown_changed`). The cause, in the Rust staging with
+the terrain's exact footprint discard: T27 (d)'s unstaged tiles showed an earlier pose's bake,
+cut where that pose's road lay, until the catch-up staged them (on attempt 22: the pose's frame
+and 3 catch-up frames, holes in 2-3 of them); and a pose without pieces kept the last valid pose's
+tiles shown while no road was drawn. The fix (`graded_stage.rs`, T60 (a)): the renderer gets a
+display apart from the adoption pool; a pose also selects the tiles its move dirtied
+(`RoadbedSystem::terrain_changes_from` between the latest pose's roadbed and this one over the
+owners either delta covered, then the commit's selection, testing only the displayed tiles:
+selecting the whole move first cost the populated drags' poses 0.4-0.6 ms and took 1 and 3 of
+84 pose frames over 3.0 ms in the session at 18:30 (C 0 and 0), so it was cut); the display keeps the pose's wanted
+tiles outside that set and the frames' staged tiles; a pose without pieces, an invalid one and a
+publication hand every displayed tile back. The adoption pool is unchanged, so every staged,
+committed and undone tile is. Tests: the graded drag test now checks every pose's and catch-up
+frame's displayed tiles against their fresh bake, and a new test swings a stroke and ends it on a
+degenerate pose (every displayed tile handed back). **Why the checks missed it:** the harness's
+"exact" pose measure is the road's; the hole checks counted patches drawing nothing and read
+converged captures; the probe's strokes grew along one line and were all valid. The Rust tests
+above now check what the renderer is handed, frame by frame, against fresh bakes; the probe's
+swing fails on the old library.
+**Proof** (fresh, gamescope, the same probe and scripts on the fixed library `069d2852` and
+round 3's `dca30744`): the user's dump, four 125 m strokes swung 30 degrees with pauses, 0 of
+416 frames with the background after the fix (before: 43 of the first stroke's 104); the 100k
+populated city, the rows' T and branch swung, 0 of 282 after; the renderer's invariant and the
+no-road check 0 in every frame after. Kuopio: the cases stop at their first failing stroke, so 25
+of the 39 strokes ran; 16 are clean, 9 show two residuals the fix does not cover
+([T61](terrain.md#terrain-07-open-questions), for the user): seam cracks at a tile seam across
+the road while a pose catches up on steep strokes (1-78 sampled pixels a frame, median 2, none
+converged; `kuopio_04` attempt 9: 24 frames), and one frame after an undo in which the undone
+road is gone and the terrain still discards its footprint (4 strokes; there before the fix too).
+`kuopio_01`, `_04` and `_05` before the fix: 49, 130 and 118 frames; after: 1, 24 and 1. So the
+road-shaped holes the user saw are gone; T61 keeps `TERRAIN-12` open.
+
+**T61, decided by the user (about 18:50): (1) (a) and (2) (a), both in H.** (1) is built: the
+display is all or nothing per pose, the latest pose's whole selection once every tile of it is
+staged or exactly kept, else the published tiles (`GradedPreview`: T60's exact tiles kept apart
+from what the renderer draws). The graded drag test asserts it in every pose and catch-up frame
+and fails without it (`1 of 6 selected tiles displayed`). The change is in what the renderer is
+handed only: the adoption pool, the staging and the commit's adoption are untouched, so the
+commit path is too, and the commit breakdown's and bitwise rows of this round's first session
+stay valid for the tip (its second session's F, with T60's display, printed the same
+`COMMIT_PRODUCTS` as the control). Proof runs (fresh, gamescope, the fixed library `f07afeb2`, the probe's swing with pauses,
+`METRUM_GRADED_DRAG_CONTINUE` so every stroke runs): the dump 0 of 416 frames with the
+background, the 100k populated swing 0 of 282; all 39 Kuopio strokes: the renderer's invariant
+and the no-road check 0 in every frame, the seam cracks gone (no catch-up frame with a crack),
+but 25 frames on 9 strokes still show the background, none of them a crack or an earlier pose's
+cut: 8 undo frames (T61 (2), not built), 3 frames around a fast click on 2 strokes and 14
+pose and catch-up frames on 1 stroke where the pose rebuilds an existing road's pieces (its
+junction) and the published tiles, drawn until the pose's selection completes, still discard the
+old pieces' footprint the pose's road no longer covers; and 11 fast clicks install no batch
+frame (the probe's own expectation): a committed tile that is neither held, wanted nor shown by
+the preview waits for its patch's list (`_apply_edit`), and with all or nothing a fast click
+shows none. **The lag (finding for the user, the budget unchanged):** after each pause of the
+swing the preview terrain is absent for 2-10 frames (Kuopio, 1,014 poses: median about 5; the
+dump 3-4, the populated city 1-6), against its first tile in the pose's own frame before; in
+the probe's continuous drags (a pose a frame) **no pose frame shows preview terrain (0 of 624)**:
+each pose dirties more tiles (up to 18) than its frame and the catch-up stage, so the terrain
+shows only when the drag pauses. [T62](terrain.md#terrain-07-open-questions) (a), decided by the
+user (about 19:15): the lag and the fast click's waiting tiles accepted as T27 (d)'s; the
+junction holes to fix by holding the pose's replaced road runs drawn until its selection
+displays (round 5, with the three proofs T62 names). Converged poses are unchanged: the junction preview test's 43 captures on the final library are
+pixel-identical to round 3's (`h4/captures-final`; its 13 fixtures' 52 graded preview tiles
+bitwise). (2), the undo's hold, is not built: the undo's
+graded batch comes from the edit journal through a payload worker a poll or more after the
+network renderer installs the undo's road chunks, and Godot has no signal that an edit for that
+generation is still in flight; the hold needs one (the journal's latest serial against the
+renderer's installed one) without delaying a commit's acknowledgement. Redo and road deletion
+are not yet checked for the same gap. Both are the next round's first task.
+
+**The accepted lag** (T27 (d), not changed): after a pose, the road may sit under or over the
+published terrain on a slope until its tiles are staged: on `kuopio_08` attempt 22 (122 m,
+sloped) the pose's frame and 3 catch-up frames (up to 8 pending tiles; 33 ms at 120 Hz), on the
+dump's 125 m strokes 3-4 frames.
+
+**Question 62 (b): the pose's main-thread work, three ways** (fresh profiles on the user's
+display, the tip's library, `perf` with Godot's debug file by build ID as in round 3,
+`$ARTIFACTS/road68/h4/attrib3.py`: per sampled pose, the main thread's cycles between its sample
+and its exact frame; inside the Rust preview call by its dispatch and return, outside it the
+GDScript side by leaf symbol, the VM and the Variant, Dictionary, Array and string helpers it
+drives, the rest the engine; libc apart, shared by both). Paused rows (`sloped_t`,
+`sloped_branch`, Xwayland and Wayland, `pacing-profile-windowed-20261029T175758`): 14.5-14.9 M
+cycles a pose, the late poses at 1.16-1.21 GHz: **engine 43-45 %** (6.2-6.6 M: the Vulkan driver
+1.0 M, `RenderingServer::_surface_set_data` 0.78 M and `Vector3::octahedron_encode` 0.34 M
+converting the preview meshes GDScript builds, the forward renderer's lists, sorts and draws),
+**GDScript 26-27 %** (3.75-3.97 M, `GDScriptFunction::call` 1.2-1.3 M and its helpers), **the Rust
+preview call 21-23 %** (3.13-3.34 M; no function above 0.35 M: `SurfaceTriangleGrid::from_triangles`
+0.35, copies 0.45, `NetworkMeshData::seal` 0.14, the node layout 0.11), libc 6-7 %, Rust outside
+the call 1 %. Estimated per pose (its sample-to-frame time less its main-thread GDScript time,
+the main thread taken as the critical path): without the GDScript time 96.7-97.5 % of sampled
+poses would be exact within 16.7 ms (89.9-92.0 % as profiled), and without the engine's
+conversion of the GDScript-built meshes too 97.4-98.2 %. **No cut of the Rust call:** its share is
+spread over the plan, the roadbed compile's serial parts, the payload and packing, the largest
+function 0.35 M of 3.3 M, while a late pose needs 2.5-3.5 M fewer cycles at the idle clock. So
+the paused rows' miss is the GDScript share (carried to `TERRAIN-13` by the user's decision) and
+an engine and Rust share beyond it (question 65). Active populated row (100k, simulation at 1x,
+x11, `populated-windowed-profile-20261029T175856`): the main thread runs at 4.9 GHz (not the idle
+clock), 40-42 M cycles on time and 52-54 M late: engine 42-49 % (`_surface_set_data` 3.9 M and
+`octahedron_encode` 1.2 M, the driver 2.7 M, MultiMesh buffer sets 0.5 M), GDScript 18-23 %, the
+Rust call 19-26 %, libc 6-9 %, Rust outside the call up to 6 % (the simulation's building plot and
+construction site transforms, 1.8 M); without the GDScript time an estimated 55-58 % of poses.
+The late poses' extra 12 M cycles over the on-time ones are the frame's render work while the
+city grows (surface and MultiMesh uploads, the building and construction transforms) and
+GDScript; question 65.
+
+**Section 3: the tangent fix's proof** (`63b401b9`). The 43 preview captures that proved the
+payloads cannot prove it: `road_junction_preview_test.gd` draws the terrain with a plain unshaded
+`StandardMaterial3D`, so they render no terrain shader, no base cell and no lamp light. Instead
+(`$ARTIFACTS/road68/h4/tangent_capture.gd`, gamescope, the tip's library): the base variant
+(`terrain.gdshader`) on the graded renderer's own tangent-less code-3 base-cell lattice and on a
+`PlaneMesh` patch, in its own viewport (black background and ambient, no sky, clouds or
+`TIME`-driven input), under one street lamp at night through the lamp globals, with the lamps on
+and off, each with `63b401b9`'s parent's `terrain_surface.gdshaderinc` and with the tip's, twice:
+every pair of runs bit-identical, and before = after bit for bit in all eight images; the lamp
+lights 13,736 pixels of the base cells (up to 43 levels; on against off), and Godot printed the
+tangent warning 4 times a run before and 0 after. The `PlaneMesh` capture shows no lamp light (the
+lamp's cone misses its surface), so only the base cells, the case the fix touched, prove the
+light. **Why the reference renders differ run to run:** in two runs of one build
+(`h3/references-before`, `-before2`) the plan views differ only on one pixel row at a tile or
+patch seam (up to 13 levels, 94-192 pixels), the colour of whichever mesh rasterises the seam's
+pixels first, which follows a draw order that differs between runs; the Kuopio grass view differs
+over its grass (427,000 pixels, up to 50 levels), the grass's state when captured. Neither reads
+`TIME`; the preview captures avoid both (no grass, one unshaded material).
+
+**Section 4: the runs.** The Method without the FPS cap (VSync on, `MAX_FPS=0`), the user's
+display (DP-2, 3840x2160 at 120 Hz, before and after every batch), Xwayland (N) and native
+Wayland (W), each step holding `.run.lock` and the exclusive timing lock, P-cores, through
+`display-awake.sh` (the user allowed the display today and skipped the 18:00 backup).
+- *Before the fixes* (17:41-17:58, the tip's library `dca30744`, `h4/display-ready` batch 1):
+  paused rows N 84.3 % (3,277 of 3,889 sampled poses exact within 16.7 ms), W 89.5 % (3,537 of
+  3,953); stationary p95 12.0-24.4 ms, stop → exact 8.0-17.5 ms; populated 100k in the steady
+  state (question 64 (c)): x11 A 43.3 % (499 of 1,153), P 84.3 % (668 of 792), Wayland A
+  44.6 % (526 of 1,180), P 77.8 % (609 of 783); the steady wait before `populated_t` 8.9-9.1 s,
+  318-324 frames, 256-263 of them over 16.7 ms, the longest 46.5-47.8 ms (the streaming window,
+  reported apart), `populated_branch` 3 frames; 0 tangent warnings in every run (round 3:
+  31-1,031 a run).
+- *On T61 (1) (a)'s tip* (19:09-19:28, library `f07afeb2`, `h4/display-ready` batch 4; batch
+  2 on T60's library was stopped at 18:37 and is discarded, batch 3 never started): paused rows
+  N 87.6 % (3,440 of 3,926), W 88.9 % (3,519 of 3,959); stationary p95 up to 21.5 ms (max 28.6), stop → exact 5.7-17.5 ms; populated 100k in the
+  steady state: x11 A 42.6 % (487 of 1,143), P 82.7 % (653 of 790); Wayland A 44.2 % (511 of 1,157), P 87.8 % (696 of 793); the steady wait
+  before `populated_t` 8.9-9.4 s (317-335 frames, 256-268 over 16.7 ms, the longest 46.6-51.5 ms),
+  `populated_branch` 3 frames; 0 tangent warnings. The profile (N W) ran on this tip too
+  (`pacing-profile-windowed-*` of 19:27). Every row is carried (question 65).
+- *Timing session 1* (18:02-18:08, before the fixes; the commit and bitwise rows stand for the
+  tip, the fixes not touching the commit path): C = H1's F (`a880ce56`), F = the tip's Rust
+  (`9f9cb9ba`). Commit (click → acknowledged): every sample of every run under 16.7 ms, at most
+  14.81 ms (F, 100k); firsts at 100k C 11.96 / 13.93, F 14.81 / 13.77 ms. `COMMIT_PRODUCTS`
+  identical in all four runs; the sixteen locality product sets equal.
+- *Timing session 2* (18:30-18:34, T60's display with the whole move selection): F
+  (`abe995d8`) against C (`9f9cb9ba`): graded stage p50 +0.33-0.38 ms; populated drags 1 and 3 of
+  84 pose frames over 3.0 ms (C 0 and 0), which the selection over the displayed tiles cut;
+  `COMMIT_PRODUCTS` equal to session 1's.
+- *Timing session 3* (18:42-18:47, T60's display with the move selected among the displayed
+  tiles, `87bf539c`): populated drags F 0 and 0 of 84 pose frames over 3.0 ms (max 2.47, 2.99),
+  the pose's selection p50 0.64-0.71 ms against C's 0.58-0.59.
+- *Timing session 4* (19:04-19:09, T61 (1) (a), F = `h4/fin-release-test-bin` of the final
+  Rust, C = `9f9cb9ba`, the tip before the fixes; stages and drags C F F C): preview stages'
+  graded stage p50 C 1.38-1.64, F 1.48-1.84 ms, p95 C 2.01-2.10, F 2.33-2.69 ms; populated
+  drags: F 1 of 168 pose frames over 3.0 ms (3.84 ms: 10k, the first sample's second pose, one
+  tile's bake 2.61 ms beside a 1.23 ms selection), catch-up within 3.0 ms (max 2.80); the
+  control in the same session 1 pose frame (9.27 ms, 100k) and 1 catch-up frame (4.34 ms) over;
+  the pose's selection p50 C 0.55-0.60, F 0.71-0.81 ms (the move's selection about +0.2 ms).
+
+**Acceptance against every target** (fresh in this round; the display rows on T61 (1) (a)'s
+tip):
+
+| Target | Result | Status |
+| --- | --- | --- |
+| Moving, simulation paused (every sampled pose exact within 16.7 ms) | N 87.6 % (3,440 of 3,926), W 88.9 % (3,519 of 3,959) | Carried whole to `TERRAIN-13` (the user: 17:30 the GDScript share, 19:15 question 65 (a) the rest) |
+| Moving, simulation active (at least 99 %, misses attributed) | 100k, steady state: x11 A 42.6 % (487 of 1,143), P 82.7 % (653 of 790); Wayland A 44.2 % (511 of 1,157), P 87.8 % (696 of 793) | Carried to `TERRAIN-13` and `RENDER-30` (the user, question 65 (a) with (d), 19:15) |
+| Stationary (p99 and stop → exact under 16.7 ms) | p95 up to 21.5 ms (max 28.6), stop → exact 5.7-17.5 ms | Carried whole to `TERRAIN-13` (question 65 (a), 19:15) |
+| Commit (click → acknowledged under 16.7 ms) | every sample 0-100k, at most 14.81 ms (session 1) | Pass |
+| Locality (products bitwise, flat) | sixteen product sets equal; topology flat (`ROAD-72`) | Accepted as measured by the user (round 2) |
+| The terrain stage's 3.0 ms (pose and catch-up frames) | session 4: F 1 of 168 pose frames over (3.84 ms, a 2.61 ms one-tile bake beside the selection), the control 2 frames over in the same session; catch-up within | Miss for the user: a heavy single-tile bake (T52's class) plus the move selection's +0.2 ms p50 |
+| Bitwise preview = commit = undo = load | `COMMIT_PRODUCTS` equal in sessions 1 and 2; the graded drag test (commit, undo, load equal fresh bakes) passes; tangent captures bit-identical | Pass |
+| No frame shows a hole or stale terrain while a preview moves (`TERRAIN-12`) | the road-shaped holes and seam cracks gone; 25 background frames on 9 of 39 Kuopio strokes (undo frames, existing-road junction poses, fast clicks) | Open: T61 (2) and T62 (a) decided (18:50, 19:15), to build and prove in round 5 |
+
+**Carried** (each with its decision): carried items 1 (accepted by the user, round 3) and 2-15
+as rounds 1-3 judged them; the paused, stationary and active rows' GDScript share to
+`TERRAIN-13` (the user, about 17:30) and, by question 65 (a) with (d) (about 19:15), the
+paused and stationary rows whole and the active row to `TERRAIN-13` and `RENDER-30`;
+`TERRAIN-13` also holds question 64 (b). Left for the gate: T61 (2) and T62 (a) (decided, to
+build and prove), and the terrain stage's one populated pose frame over 3.0 ms (for the user).
+
+**Gate checks** (fresh, on the final Rust): `cargo clippy --all-targets` 59 warnings, the
+baseline's set exactly (file and message); `cargo doc` 0 missing docs; the graded stage tests
+pass (and two fail with the display made partial again); `./run.sh --test` with `DISPLAY` and
+`WAYLAND_DISPLAY` unset (19:28-19:47, the code of `11118414`): exit 0, the debug library suite
+1,846 passed, 0 failed, 177 ignored, `growth_scenario` 4 passed, every Godot suite passes with the
+eight rendered tests in gamescope's headless backend, nothing skipped, no `SCRIPT ERROR`. **Line counts** (production,
+from `git diff --numstat`): `roadbed/` 9,234 -> 9,267 (`terrain_changes_from`), `terrain/graded/`
+10,169 -> 10,180 (`filtered`, `select_road_edit_where`), `terrain/` 12,391 -> 12,402;
+`graded_stage.rs` +about 120 (the display rule). **Merge risks:** as round 3 (Linux and the RX
+7900 XTX only, macOS with `TERRAIN-10` open, the non-compiling rebased WIP commits between
+`3b1e587b` and `8bfd9ebf`, Godot's Wayland exit hang); the preview's display rule changes what
+the player sees while dragging (terrain only on a completed selection; T62). **Not the gate
+commit**: T61 (2) and T62 (a) are to build and prove (the user's order for round 5: T61 (2),
+T62 (a), the 0-background probe proof, the display rows on the final tip, docs, gate checks).
 
 ## Measurement and acceptance
 
