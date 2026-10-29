@@ -303,6 +303,7 @@ impl TransitNetwork {
         let edge_ids = &applied.edge_ids;
         for split in &plan.splits {
             topology::migrate_split_dependents(
+                graph,
                 edge_ids[split.edge_id],
                 edge_ids[split.new_edge_id],
                 (split.first_length_m / zoning.config.zone_cell_m).floor() as usize,

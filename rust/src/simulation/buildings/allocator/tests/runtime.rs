@@ -444,6 +444,48 @@ fn attachment_repair_candidates_are_checked_against_the_whole_city() {
     });
 }
 
+// A split moves the buildings fronting its edge, found in the 512 m chunks within reach of the
+// halves (`ROAD-72`), as the whole city's scan finds them, also while the chunk index is stale.
+#[test]
+fn split_frontages_come_from_the_split_edges_chunks() {
+    for stale in [false, true] {
+        let (graph, zoning, mut allocator) = two_distant_roads([0, 1]);
+        allocator.dirty_index = stale;
+        let edge = allocator.buildings[0].edge_idx;
+        let far = allocator.buildings[1].frontage_t;
+        let mut undo = Vec::new();
+        let halves = allocator.migrate_split_frontages(
+            &graph,
+            [edge, edge],
+            usize::MAX,
+            [100.0, 100.0],
+            zoning.config.zone_cell_m,
+            Some(&mut undo),
+        );
+        assert_eq!(halves, [1, 0], "stale index {stale}");
+        assert_eq!(undo.len(), 1);
+        assert_eq!(undo[0].0, 0, "only the building fronting the split edge moves");
+        assert_eq!(allocator.buildings[1].frontage_t.to_bits(), far.to_bits());
+    }
+}
+
+// A building attached to the split edge from outside its chunks is not found; test builds
+// catch it against the whole city's scan.
+#[test]
+#[should_panic(expected = "the split's chunk candidates hold every building fronting edge")]
+fn split_frontages_are_checked_against_the_whole_city() {
+    let (graph, zoning, mut allocator) = two_distant_roads([0, 0]);
+    let edge = allocator.buildings[0].edge_idx;
+    allocator.migrate_split_frontages(
+        &graph,
+        [edge, edge],
+        usize::MAX,
+        [100.0, 100.0],
+        zoning.config.zone_cell_m,
+        None,
+    );
+}
+
 #[test]
 fn test_allocator_tick_does_not_place_founding_buildings() {
     use crate::simulation::network::TransitNetwork;

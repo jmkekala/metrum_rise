@@ -677,6 +677,7 @@ fn apply_splits(
 /// Migrates zoning occupancy and buildings when an edge is split.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn migrate_split_dependents(
+    graph: &RegionGraph,
     edge_id: usize,
     new_edge_id: usize,
     split_x: usize,
@@ -701,6 +702,7 @@ pub(super) fn migrate_split_dependents(
     let occ_part1_len = split_x.min(old_occ_cells);
     let occ_part2_len = old_occ_cells.saturating_sub(split_x);
     let [buildings_part1, buildings_part2] = allocator.migrate_split_frontages(
+        graph,
         [edge_id, new_edge_id],
         split_x,
         [new_len_first, new_len_second],
@@ -1044,6 +1046,7 @@ pub fn split_edge(
     }
 
     migrate_split_dependents(
+        graph,
         edge_id,
         new_edge_id,
         split_x,

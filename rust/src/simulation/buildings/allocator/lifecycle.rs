@@ -1008,9 +1008,13 @@ impl BuildingAllocator {
     /// parameter is measured along its half, `lengths_m` long. The moved rows are recorded, so
     /// row-indexed tables and the census input copy (`SIM-02-I`) take them again; `undo`
     /// receives each row's previous edge, cell and frontage. Returns the buildings on each
-    /// half. O(B).
+    /// half. The rows are found in building order among the buildings of the 512 m chunks
+    /// within reach of the halves' geometry in `graph` (`ROAD-72`: the attachment repair's
+    /// candidates, which hold every building fronting them; test builds check it against the
+    /// whole city), `O(candidates log candidates)`; while the chunk index is stale, `O(B)`.
     pub(crate) fn migrate_split_frontages(
         &mut self,
+        graph: &RegionGraph,
         [edge_id, new_edge_id]: [usize; 2],
         split_x: usize,
         lengths_m: [f32; 2],
@@ -1018,12 +1022,30 @@ impl BuildingAllocator {
         mut undo: Option<&mut Vec<(usize, usize, usize, f32)>>,
     ) -> [usize; 2] {
         let traffic_debug = crate::debug::Channel::Traffic.enabled();
-        let mut moved = Vec::new();
+        let halves_edges = std::collections::HashSet::from([edge_id, new_edge_id]);
+        let fronting: Vec<usize> =
+            match self.attachment_repair_candidates(graph, &halves_edges, [], cell_m) {
+                Some(candidates) => candidates
+                    .into_iter()
+                    .filter(|&idx| self.buildings[idx].edge_idx == edge_id)
+                    .collect(),
+                None => (0..self.buildings.len())
+                    .filter(|&idx| self.buildings[idx].edge_idx == edge_id)
+                    .collect(),
+            };
+        debug_assert!(
+            self.buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.edge_idx == edge_id)
+                .map(|(idx, _)| idx)
+                .eq(fronting.iter().copied()),
+            "the split's chunk candidates hold every building fronting edge {edge_id}"
+        );
+        let mut moved = Vec::with_capacity(fronting.len());
         let mut halves = [0; 2];
-        for (building_idx, b) in self.buildings.iter_mut().enumerate() {
-            if b.edge_idx != edge_id {
-                continue;
-            }
+        for building_idx in fronting {
+            let b = &mut self.buildings[building_idx];
             if let Some(undo) = undo.as_deref_mut() {
                 undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
             }
