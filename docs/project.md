@@ -345,7 +345,11 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   cell lots, lane lifts and agent passes (median 21.8 ms at 100k residents); part 7 defers the
   commit's lots one frame and part 10 (done, 2026-10-29) brings every populated commit within a
   frame: first commits 9.6-13.8 ms at 10k-100k
-  ([commit stages, part 10](roads.md#commit-stages-part-10-the-gate-road-68-g-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
+  ([commit stages, part 10](roads.md#commit-stages-part-10-the-gate-road-68-g-2026-10-29)). `ROAD-68-H` round 1
+  (2026-10-29, in progress) removed the dead paths gates D-G and `TERRAIN-07-G` left, made
+  `./run.sh --test` run every rendered test under gamescope and passed the headless rows except
+  the commit's locality at 100k remote sites (for the user); the rendered rows and question 61
+  are open ([record](roads.md#round-1-cleanup-and-the-headless-rows-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
   compacted for quality to 7,229 production lines with every product bitwise unchanged.
   `ROAD-68-E` (implemented; acceptance open) previews each road pose synchronously in the frame that samples it,
   with the commit's own plan, pieces and road chunks, and the commit installs them; one preview

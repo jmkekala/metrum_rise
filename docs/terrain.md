@@ -876,6 +876,19 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### The level match test clears the cloud deck (2026-10-29)
+
+`./run.sh --test` had skipped `vegetation_level_match_test` (it needs a Forward+ display) since
+before the weather and sky landed (`46aec2ca`), which gave the weather globals a 45 % cloud deck by
+default (`project.godot`). The test fixes its light, backdrop and ambient but not the weather, so
+its stands rendered under that deck's shadow. Run in gamescope's headless backend since
+`ROAD-68-H` (RX 7900 XTX, RADV), the distant level drew `0.863-0.897` of the near level at `900 m`
+and 25 of 108 poses failed the `0.12` tolerance. With the vegetation shaders of `614dcaa0` it
+passed (`0.896-1.089`), and with today's shaders under a clear sky it passes (`0.896-1.077`), so
+the test now clears the deck (`weather_clouds.z = 0`) as it fixes the rest of its light. How the
+two levels compare under a real cloud shadow (the weather system's shape map, not the unset
+default) is not measured; the handover poses at `175 m` held `0.93-0.99` under the default deck.
+
 ### Pine rebuilt to the photo set — VEG-18 (2026-10-03)
 
 The authored pine read more like a broadleaf tree: crowns as short tufts on tall poles, an

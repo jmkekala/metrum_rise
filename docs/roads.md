@@ -8355,6 +8355,52 @@ the commit locality C F F C; the economy contract E F F E. Logs `$ARTIFACTS/road
   rule the fiscal rise is layout, not `SharedParcelStore`'s indirection on a hot path: judged
   within the contract (no limit crossed, work counts equal), recorded, not relaxed.
 
+**The carried items in round 1** (fresh unless marked):
+
+- 1 and 2 (the Godot terrain install per pose, the whole drag frames): the rendered drag probe on
+  the user's display, prepared (below), not yet run. 3: `TERRAIN-07-G`'s, kept there.
+- 4 (T42 (a)): captures for the user's visual check, prepared (below).
+- 5, 6 and 9 (T37's culled gap, T45's clearance, `PERF-09` apart from terrain): not re-measured.
+  They need the `SIM-02-K` prepared-snapshot run (`culled_snapshot_matches_full_pose_on_a_prepared_city`,
+  which prints the culled and full means and `far_min_clearance_m`) and the `PERF-07` day at 100k,
+  on a 100k `PERF-07` city of the current fixture revision (none exists: the saved one predates
+  `ROAD-68-G`'s fixture change) against `TERRAIN-07-F`'s control. The latest values stand as
+  historical (`TERRAIN-07-F`'s final matched session: +0.322 ms culled at 100k against the +0.42
+  ms bar; 0.019999988377 / 0.019999999553 m), and the graded tiles changed after them (T48, T49),
+  so round 2 measures them.
+- 7 (T44, the copied index against the shared one): the copied index's 108 MB / 1.10 GB at
+  10k / 100k against the shared 0.436 / 4.462 MB (historical, `TERRAIN-07-F`); the shared index's
+  local update costs the 100k commit 2.29-2.34 ms of its 13.7-14.6 ms first sample in this
+  session (C the same) and gains 0.45-0.57 ms with 100,000 remote sites (item 14). Judged: the
+  shared index keeps the commit row inside 16.7 ms at 1/250 of the copy's memory.
+- 8: superseded by `TERRAIN-07-G`'s T59 and [`TERRAIN-09`](roadmap.md) ([`terrain.md`](terrain.md#terrain-07-open-questions)).
+- 10: not built; no sample shows the contention (above).
+- 11 (question 58 (b)): nothing beyond the record; a frame later the lots' adoption frame takes
+  0.36-0.52 ms at 100k.
+- 12 (question 59 (b)): the commit's agent passes cost 0.24-0.27 ms at 100k, under 2 % of click
+  → committed, and +0.03-0.08 ms at 100,000 remote sites; the route index round with `PERF-07`
+  follows `ROAD-68-H`, as agreed.
+- 13 (question 60 (a)): the graph copy shows in the commit's frame as the tool snapshot's
+  0.49-0.58 ms at 100k (the serial clone of that graph 2.83-2.94 ms) and +0.56 ms at 100,000
+  remote sites, and no frame misses because of it. Whether 0.5 ms "shows" enough to open (b),
+  the persistent graph store, is the user's call; the measurement does not ask for it.
+- 14: products bitwise; the first commit not flat (+1.9-2.5 ms in its parts at 100,000 remote
+  sites), a miss for the user (above).
+- 15: layout by the profile (above).
+
+**`./run.sh --test` finds a stale test.** Run under gamescope for the first time,
+`vegetation_level_match_test.gd` failed 25 of 108 poses (the distant level at 0.863-0.897 of the
+near level at 900 m): since the weather and sky landed (`46aec2ca`) the weather globals default to
+a 45 % cloud deck, and the test, which fixes its own light, did not fix the weather. With
+`614dcaa0`'s vegetation shaders it passes, and under a clear sky with today's (0.896-1.077), so the
+test now clears the deck ([`terrain.md`](terrain.md#the-level-match-test-clears-the-cloud-deck-2026-10-29)).
+
+**Rendered rows, prepared** (`$ARTIFACTS/road68/h1/display-ready`): the preview rows (`sloped_t`,
+`sloped_branch`, `flat_cross`, `sloped_cross`, `dense`, the simulation paused, stationary and
+moving) and the drag probe (items 1 and 2) on the release library of the tip, each in a throwaway
+profile under `display-awake.sh`. The Moving row with the simulation active has no rendered
+harness ([question 61](#road-68-open-questions)).
+
 ## Measurement and acceptance
 
 ### Baseline (`ROAD-67-A`, legacy compiler)

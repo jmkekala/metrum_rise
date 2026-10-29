@@ -118,7 +118,14 @@ later sample at most 7.5 ms; products, locality products and agent records (1, 3
 workers, a late rebuild, a save in the hold) bitwise. The user's decisions of 2026-10-28 are
 recorded (questions 58 (b), 59 (b) in its own round with `PERF-07` after this gate, 60 (a)) and
 carried to `ROAD-68-H` with the commit's locality growth at 100k remote sites (1.6-3.1 ms) and the
-economy contract's fiscal hour means (1-4 % above the control, work identical, no limit crossed). The same session attributed the economy contract's baseline-30k rise to
+economy contract's fiscal hour means (1-4 % above the control, work identical, no limit crossed).
+`ROAD-68-H` round 1 (2026-10-29, branch `road68-H`, in progress): the dead paths gates D-G and
+`TERRAIN-07-G` left are removed with every product bitwise; `./run.sh --test` runs every rendered
+test in gamescope's headless backend and skips nothing (the vegetation level match test, unrun
+since the weather landed, now clears the default cloud deck); the commit row passes (first
+samples 6.2-14.6 ms at 0-100k), and the fiscal rise is layout by profile. Open: the commit's
+locality at 100k remote sites (+1.9-2.5 ms in its parts, for the user), the rendered rows on the
+user's display and `roads.md` question 61 (no rendered harness runs the simulation active). The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20). Its attribution (2026-10-25) found no road defect: the counts follow
 the city, whose 10k census needs fewer closure passes, and both scale within the limit per
