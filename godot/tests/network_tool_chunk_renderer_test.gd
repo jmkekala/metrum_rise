@@ -822,10 +822,10 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 		for stage in ["plan_ms", "roadbed_ms", "payload_ms", "packing_ms"]:
 			_expect(float(preview.get(stage, -1.0)) >= 0.0, "the preview reports its %s" % stage)
 		var chunks: Array = preview.get("road_chunks", [])
-		_expect(not chunks.is_empty() and chunks.size() * 2 == PackedInt32Array(preview.get("changed_chunks", PackedInt32Array())).size(), "every changed chunk has its update")
+		_expect(not chunks.is_empty() and chunks.size() * 2 <= PackedInt32Array(preview.get("changed_chunks", PackedInt32Array())).size(), "only changed chunks carry an update")
 		for chunk in chunks:
-			if not chunk.get("removed", false):
-				_expect(chunk.get("road_mesh_payload_validated", false), "preview chunks are sealed as committed chunks are")
+			_expect(chunk.get("road_mesh_payload_validated", false), "preview overlays are sealed as committed chunks are")
+			_expect(chunk.get("hidden") is PackedInt32Array and chunk.get("hidden_positions") is PackedVector3Array, "every preview chunk names the resident runs it replaces")
 	var hover: Dictionary = await _await_hover_validation(simulation, points)
 	_expect(hover.get("is_valid", false), "hover validation keeps its prepared profile: %s" % hover.get("invalid_reason", ""))
 	tool.fwd_lanes = 2

@@ -291,8 +291,8 @@ impl SimulationNode {
     #[func]
     pub fn get_road_mesh_data(&self, full_snapshot: bool) -> VarDictionary {
         if full_snapshot {
-            // A renderer rebuild is rare and necessarily uploads the whole network. Clone only
-            // the Arc handles under the sim lock, then pack Godot arrays after releasing it.
+            // A renderer rebuild is rare and necessarily uploads the whole network. Share the
+            // persistent chunk map under the sim lock, then pack Godot arrays after releasing it.
             let (chunks, generation, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m) = {
                 let core = self.lock_core();
                 let (chunk_origin_x_m, chunk_origin_z_m) =
@@ -306,7 +306,7 @@ impl SimulationNode {
                 )
             };
             return SimCore::road_mesh_chunks_dict(
-                &chunks,
+                &chunks.into_iter().collect(),
                 &BTreeSet::new(),
                 true,
                 generation,

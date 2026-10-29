@@ -8,7 +8,7 @@ use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::render::road::RoadRenderer;
 use crate::simulation::network::types::{NodeType, TransitFlags};
 use crate::simulation::terrain::render_frame_centre;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 fn fixture(
     points: &[Vector3],
@@ -396,7 +396,7 @@ fn assert_chunk_output(f: &mut (RegionGraph, LaneSystem, RoadbedSystem, TerrainS
         &f.2,
         &chunks,
         None,
-        &BTreeMap::new(),
+        &Default::default(),
     );
     let (ox, oz) = f.2.chunk_origin_m();
     let mut restored = Vec::new();
@@ -426,7 +426,7 @@ fn assert_chunk_output(f: &mut (RegionGraph, LaneSystem, RoadbedSystem, TerrainS
             &f.2,
             &BTreeSet::from([chunk]),
             None,
-            &BTreeMap::new(),
+            &Default::default(),
         );
         let actual = rebuilt
             .get(&chunk)

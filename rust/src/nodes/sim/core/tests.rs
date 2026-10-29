@@ -454,10 +454,12 @@ fn unacknowledged_local_road_generations_accumulate_chunk_payloads() {
 #[test]
 fn local_network_render_invalidation_preserves_unrelated_terrain_generation() {
     let mut core = test_core();
-    core.cached_road_mesh_chunks = std::collections::BTreeMap::from([(
+    core.cached_road_mesh_chunks = [(
         (0, 0),
         std::sync::Arc::new(crate::simulation::network::NetworkMeshData::new()),
-    )]);
+    )]
+    .into_iter()
+    .collect();
     core.cached_road_mesh_generation = core.road_tool_surface_generation;
     core.cached_network_node_positions = std::sync::Arc::new(vec![Vector3::new(12.0, 3.0, -8.0)]);
     core.cached_network_node_positions_dirty = false;

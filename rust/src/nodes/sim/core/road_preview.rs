@@ -18,8 +18,8 @@ use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::render::NetworkMeshData;
-use crate::simulation::network::render::road::RoadRenderer;
+use crate::simulation::network::render::RoadChunkMap;
+use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
     RoadPreviewValidation, prepare_road_input_for_tool, validate_road_candidate_fast,
 };
@@ -91,12 +91,16 @@ pub(crate) struct RoadToolQuerySnapshot {
     pub(crate) roadbed: Arc<RoadbedSystem>,
     /// Immutable authored-water state used by road placement validation.
     pub(crate) water: Arc<WaterSystem>,
-    /// The published road render chunks of `roadbed`'s generation, which a preview splices
-    /// its pieces into (`ROAD-68-E`); shared in `O(1)`.
-    pub(crate) road_mesh_chunks: Arc<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
-    /// The roadbed generation `road_mesh_chunks` were published at; the preview splices only
-    /// into chunks of its own roadbed generation.
+    /// Every published road render chunk of `roadbed`'s generation, as Godot shows them once it
+    /// installed `road_mesh_surface_generation`: a preview's overlays replace runs of these
+    /// (`ROAD-68-H` round 3); shared in `O(1)`.
+    pub(crate) road_mesh_chunks: RoadChunkMap,
+    /// The roadbed generation `road_mesh_chunks` were published at; the preview builds its
+    /// overlays only on chunks of its own roadbed generation.
     pub(crate) road_mesh_generation: Option<u64>,
+    /// The road mesh generation Godot records once it installed `road_mesh_chunks`; a preview's
+    /// hidden runs index the chunks of exactly this generation.
+    pub(crate) road_mesh_surface_generation: u64,
     /// What the road-touched graded terrain reads besides the heightmap, per render patch;
     /// shared in `O(1)` (`ROAD-68-E`).
     pub(crate) terrain_inputs: RoadTerrainInputs,
@@ -179,8 +183,9 @@ pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQue
         region_graph: Arc::new(core.region_graph.clone()),
         roadbed: Arc::new(core.transit_network.roadbed.clone()),
         water: Arc::new(core.watermap.clone()),
-        road_mesh_chunks: Arc::clone(&core.published_road_mesh_chunks),
+        road_mesh_chunks: core.cached_road_mesh_chunks.clone(),
         road_mesh_generation: core.road_mesh_lane_generation,
+        road_mesh_surface_generation: core.cached_road_mesh_generation,
         terrain_inputs: core.road_terrain_inputs.current(),
         fields: Arc::clone(&core.allocator.field_clearance),
         cells: crate::simulation::zoning::cells::CellStore::copy_of(&core.zoning.cells),
@@ -247,11 +252,12 @@ pub(crate) struct RoadPreviewPieces {
     /// The pose's staged graded tiles (`TERRAIN-07-E`): the commit adopts those whose inputs
     /// equal its own.
     pub(crate) graded: GradedPose,
-    /// The changed chunks' meshes as the commit publishes them, without the lane-derived layers
-    /// (crosswalk paint, road signs) of the rebuilt pieces; a changed chunk missing here is
-    /// empty. Sealed (render-validated) as the commit publishes them. `None` if the published
-    /// chunks could not be spliced.
-    pub(crate) chunks: Option<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
+    /// The changed chunks below the chunk (`ROAD-68-H` round 3): each one's overlay of rebuilt
+    /// pieces and the published runs it replaces, which compose the chunk the commit publishes
+    /// from these pieces (its lights and signs aside); a changed chunk missing here changes
+    /// nothing Godot shows. `None` if the view's chunks are not of its roadbed's generation or
+    /// a published run has no owner.
+    pub(crate) chunks: Option<BTreeMap<SurfaceChunkKey, PreviewChunk>>,
     /// The field or painted cells the delta's pieces newly cover, by the commit's own test
     /// against the view's indices (`ROAD-68` open question 25).
     pub(crate) overlap: Option<ReservedOverlap>,
@@ -415,23 +421,29 @@ impl RoadPreviewContext {
                     &self.view.terrain,
                     &self.view.terrain_inputs,
                 );
-                RoadRenderer.generate_preview_chunks(
+                // Every owner the delta covers, with whether it built a piece: a failed node's
+                // published piece goes too.
+                let closure: Vec<_> = delta
+                    .pieces()
+                    .map(|(id, mesh)| (id, mesh.is_some()))
+                    .chain(
+                        delta
+                            .failed_nodes()
+                            .map(|(node, _)| (crate::simulation::network::roadbed::PieceId::Node(node), false)),
+                    )
+                    .collect();
+                RoadRenderer.generate_preview_overlay(
                     &self.replica,
                     &self.view.terrain,
                     &sites,
                     &roadbed,
                     &target_chunks,
+                    &closure,
                     built_after,
                     &self.view.road_mesh_chunks,
                 )
             })
-            .flatten()
-            .map(|chunks| {
-                chunks
-                    .into_iter()
-                    .map(|(chunk, mesh)| (chunk, mesh.seal()))
-                    .collect()
-            });
+            .flatten();
         times.payload_ms = payload_start.elapsed().as_secs_f64() * 1000.0;
         let restore_start = Instant::now();
         self.replica.restore_undo_delta_local(&checkpoint);

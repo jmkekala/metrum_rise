@@ -12,6 +12,11 @@ use ownership::OwnedVertexRange;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
+/// Published road render chunks by chunk key (`ROAD-68-H` round 3): a persistent map, so the
+/// road tool's view shares the committed renderer's chunks in `O(1)` and a publication replaces a
+/// chunk in `O(log chunks)`.
+pub(crate) type RoadChunkMap = imbl::OrdMap<SurfaceChunkKey, Arc<NetworkMeshData>>;
+
 #[derive(Debug)]
 struct NetworkMeshChunkPartition {
     chunk_span_m: f32,

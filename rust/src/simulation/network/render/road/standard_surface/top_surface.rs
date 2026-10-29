@@ -205,7 +205,7 @@ mod tests {
             &roadbed,
             &targets,
             None,
-            &BTreeMap::new(),
+            &Default::default(),
         );
 
         let (span_m, (origin_x, origin_z)) = (roadbed.chunk_span_m(), roadbed.chunk_origin_m());

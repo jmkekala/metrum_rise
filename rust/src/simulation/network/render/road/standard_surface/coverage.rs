@@ -73,6 +73,36 @@ pub(in crate::simulation::network::render::road) fn build_compiled_surface_cover
     )
 }
 
+// Exactly `pieces`, as the chunks' coverage would list them: compiled-surface edges and valid
+// nodes, ascending. `O(pieces log pieces)`, independent of what else the chunks hold.
+pub(in crate::simulation::network::render::road) fn coverage_of_pieces(
+    graph: &RegionGraph,
+    pieces: impl IntoIterator<Item = PieceId>,
+) -> CompiledSurfaceCoverage {
+    let mut edge_indices = BTreeSet::new();
+    let mut node_ids = BTreeSet::new();
+    for piece in pieces {
+        match piece {
+            PieceId::Span(edge_idx) => {
+                if edge_idx < graph.edge_count() && edge_uses_compiled_surface(graph.edge(edge_idx)) {
+                    edge_indices.insert(edge_idx);
+                }
+            }
+            PieceId::Node(node_id) => {
+                if node_id < graph.node_count() as u32 {
+                    node_ids.insert(graph.get_valid_node(node_id));
+                }
+            }
+        }
+    }
+    CompiledSurfaceCoverage {
+        edge_indices: edge_indices.into_iter().collect(),
+        node_ids: node_ids.into_iter().collect(),
+        rebuilt_edges: Vec::new(),
+        rebuilt_nodes: Vec::new(),
+    }
+}
+
 fn coverage_from_bounds(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,

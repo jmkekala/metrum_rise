@@ -361,31 +361,102 @@ fn undo_rebuilds_lanes_locally_as_a_full_rebuild_would() {
     }
 }
 
+// The preview's chunks as Godot composes them over the view's published chunks (each one's hidden
+// runs dropped, its overlay merged) against the chunks the commit then published: layers,
+// crossing frames and owner runs bitwise (`ROAD-68-H` round 3). The overlays carry no lights or
+// signs. Returns whether an overlay paints a crossing.
+fn assert_preview_composes_committed(
+    core: &SimCore,
+    view_chunks: &crate::simulation::network::render::RoadChunkMap,
+    pieces: &crate::nodes::sim::core::road_preview::RoadPreviewPieces,
+    label: &str,
+) -> bool {
+    use crate::simulation::network::NetworkMeshData;
+    let chunks = pieces.chunks.as_ref().expect("the view's chunks compose");
+    assert!(!pieces.changed_chunks.is_empty());
+    let mut painted = false;
+    for chunk in &pieces.changed_chunks {
+        let published = view_chunks.get(chunk).map(|mesh| &**mesh);
+        let composed = match chunks.get(chunk) {
+            Some(preview) => {
+                assert!(
+                    preview.overlay.street_lights.is_empty() && preview.overlay.road_signs.is_empty(),
+                    "{label}: an overlay places no lights or signs"
+                );
+                let positions: usize = preview
+                    .hidden
+                    .iter()
+                    .map(|&[_, start, end]| (end - start) as usize)
+                    .sum();
+                assert_eq!(positions, preview.hidden_positions.len());
+                painted |= preview.overlay.road_crossings.iter().any(|paint| paint.z > 0.0);
+                Some(NetworkMeshData::compose_preview(
+                    published,
+                    &preview.overlay,
+                    &preview.hidden,
+                ))
+            }
+            None => None,
+        };
+        let shown = composed.as_ref().or(published);
+        match (shown, core.cached_road_mesh_chunks.get(chunk)) {
+            (Some(shown), Some(committed)) => assert!(
+                shown.same_surfaces(committed),
+                "{label}: chunk {chunk:?} composes the committed chunk"
+            ),
+            (Some(shown), None) => {
+                assert!(shown.is_empty(), "{label}: chunk {chunk:?} composes to nothing")
+            }
+            (None, committed) => assert!(
+                committed.is_none_or(|mesh| mesh.is_empty()),
+                "{label}: chunk {chunk:?} stays empty"
+            ),
+        }
+    }
+    painted
+}
+
 #[test]
-fn preview_chunks_are_the_committed_chunks_without_lane_layers() {
-    // A road apart from the through road: its closure has no crossing and no sign, so the
-    // lane-free preview chunks equal the commit's publication; the through road's published
-    // triangles (with their crossings) are spliced in unchanged.
+fn preview_chunks_compose_the_committed_chunks() {
+    // A road apart from the through road: its closure has no crossing and no sign; the through
+    // road's published runs (with their crossings) stay resident.
     let apart = [Vector2::new(-ARM_M, 120.0), Vector2::new(ARM_M, 120.0)];
     for sloped in [false, true] {
         let mut core = committed(&[THROUGH], &[0], sloped);
         let points = stroke(&core, apart);
         let mut context = context(&mut core);
+        let view_chunks = context.view.road_mesh_chunks.clone();
         let preview = Arc::new(preview(&mut context, &points));
         let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
-        let chunks = pieces.chunks.as_ref().expect("the view's chunks splice");
-        assert!(!pieces.changed_chunks.is_empty());
         commit(&mut core, &points, Some(Arc::clone(&preview)));
-        for chunk in &pieces.changed_chunks {
-            assert_eq!(
-                chunks.get(chunk).map(|mesh| format!("{mesh:?}")),
-                core.published_road_mesh_chunks
-                    .get(chunk)
-                    .map(|mesh| format!("{mesh:?}")),
-                "sloped {sloped}: chunk {chunk:?} is published as previewed"
-            );
-        }
+        assert_preview_composes_committed(&core, &view_chunks, pieces, &format!("sloped {sloped}"));
     }
+}
+
+#[test]
+fn a_preview_after_an_acknowledged_publication_composes_over_every_published_chunk() {
+    // Godot acknowledges each publication, which empties the upserts it had not yet installed. A
+    // view published afterwards still holds every published chunk (`ROAD-68-H` round 3), so a
+    // T on the through road composes over that road's published runs. Before, the view held only
+    // the unacknowledged upserts, and the preview spliced its pieces into nothing.
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    let mut core = committed(&[THROUGH], &[0], false);
+    let generation = core.road_tool_surface_generation;
+    assert!(core.acknowledge_network_render_generation(generation));
+    assert!(core.published_road_mesh_chunks.is_empty());
+    let points = stroke(&core, side);
+    let mut context = context(&mut core);
+    let view_chunks = context.view.road_mesh_chunks.clone();
+    assert!(!view_chunks.is_empty(), "the view holds the acknowledged chunks");
+    let preview = Arc::new(preview(&mut context, &points));
+    let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
+    let chunks = pieces.chunks.as_ref().expect("the view's chunks compose");
+    assert!(
+        chunks.values().any(|chunk| !chunk.hidden.is_empty()),
+        "the T replaces runs of the resident through road"
+    );
+    commit(&mut core, &points, Some(Arc::clone(&preview)));
+    assert_preview_composes_committed(&core, &view_chunks, pieces, "acknowledged");
 }
 
 #[test]
@@ -401,31 +472,25 @@ fn preview_chunks_with_crossings_and_signs_are_the_committed_chunks() {
             let mut core = committed(&[THROUGH], &[0], sloped);
             let points = stroke(&core, ends);
             let mut context = context(&mut core);
+            let view_chunks = context.view.road_mesh_chunks.clone();
             let preview = Arc::new(preview(&mut context, &points));
             let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
-            let chunks = pieces.chunks.as_ref().expect("the view's chunks splice");
-            let painted = chunks
-                .values()
-                .flat_map(|mesh| &mesh.road_crossings)
-                .any(|paint| paint.z > 0.0);
-            let signed = chunks.values().any(|mesh| !mesh.road_signs.is_empty());
-            let lit = chunks.values().any(|mesh| !mesh.street_lights.is_empty());
-            assert!(
-                painted && signed && lit,
-                "{name} sloped {sloped}: the preview paints zebras ({painted}), signs ({signed}) \
-                 and lights ({lit})"
-            );
             commit(&mut core, &points, Some(Arc::clone(&preview)));
             assert!(core.last_road_edit_metrics.preview_plan_reused);
-            for chunk in &pieces.changed_chunks {
-                assert_eq!(
-                    chunks.get(chunk).map(|mesh| format!("{mesh:?}")),
-                    core.published_road_mesh_chunks
-                        .get(chunk)
-                        .map(|mesh| format!("{mesh:?}")),
-                    "{name} sloped {sloped}: chunk {chunk:?} is published as previewed"
-                );
-            }
+            let label = format!("{name} sloped {sloped}");
+            let painted = assert_preview_composes_committed(&core, &view_chunks, pieces, &label);
+            let committed = |kind: fn(&crate::simulation::network::NetworkMeshData) -> bool| {
+                pieces.changed_chunks.iter().any(|chunk| {
+                    core.cached_road_mesh_chunks.get(chunk).is_some_and(|mesh| kind(mesh))
+                })
+            };
+            let signed = committed(|mesh| !mesh.road_signs.is_empty());
+            let lit = committed(|mesh| !mesh.street_lights.is_empty());
+            assert!(
+                painted && signed && lit,
+                "{label}: the preview paints zebras ({painted}); the commit signs ({signed}) and \
+                 lights ({lit}) them"
+            );
         }
     }
 }
@@ -449,7 +514,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
             snap_to_existing_roads: true,
         }));
         let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
-        let chunks = pieces.chunks.as_ref().expect("the view's chunks splice");
+        let view_chunks = context.view.road_mesh_chunks.clone();
         let outcome = core.commit_road(
             RoadCommitRequest {
                 points,
@@ -475,15 +540,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
             piece.is_some_and(|piece| piece.layout().boundaries.iter().any(|b| b.taper.is_some())),
             "sloped {sloped}: the widening is a node piece with a D4 taper"
         );
-        for chunk in &pieces.changed_chunks {
-            assert_eq!(
-                chunks.get(chunk).map(|mesh| format!("{mesh:?}")),
-                core.published_road_mesh_chunks
-                    .get(chunk)
-                    .map(|mesh| format!("{mesh:?}")),
-                "sloped {sloped}: chunk {chunk:?} is published as previewed"
-            );
-        }
+        assert_preview_composes_committed(&core, &view_chunks, pieces, &format!("sloped {sloped}"));
     }
 }
 
@@ -552,8 +609,9 @@ fn benchmark_road_preview_stages() {
             .collect();
         let mut stages = [(); 5].map(|()| Vec::new());
         let (mut graded_tiles, mut graded_adopted, mut graded_baked) = (0, 0, 0);
-        // Payload vertices over the first repetition's poses, all layers and the skirts'.
-        let (mut payload_vertices, mut skirt_vertices) = (0, 0);
+        // Payload vertices over the first repetition's poses: the overlays' (all layers and the
+        // skirts') and the hidden runs' positions.
+        let (mut payload_vertices, mut skirt_vertices, mut hidden_vertices) = (0, 0, 0);
         for repetition in 0..60 {
             for points in &strokes {
                 let start = Instant::now();
@@ -569,9 +627,10 @@ fn benchmark_road_preview_stages() {
                         .pieces
                         .as_ref()
                         .and_then(|pieces| pieces.chunks.as_ref());
-                    for mesh in chunks.into_iter().flat_map(|chunks| chunks.values()) {
-                        payload_vertices += mesh.vertex_count();
-                        skirt_vertices += mesh.skirt_vertices.len();
+                    for chunk in chunks.into_iter().flat_map(|chunks| chunks.values()) {
+                        payload_vertices += chunk.overlay.vertex_count();
+                        skirt_vertices += chunk.overlay.skirt_vertices.len();
+                        hidden_vertices += chunk.hidden_positions.len();
                     }
                 }
                 let graded = &preview.pieces.as_ref().unwrap().graded;
@@ -612,11 +671,12 @@ fn benchmark_road_preview_stages() {
         assert!(context.apply(&publication));
         let apply_ms = refresh_start.elapsed().as_secs_f64() * 1000.0;
         eprintln!(
-            "road_preview_stages fixture={name} workers={} poses=8 samples={} payload_vertices_per_pose={} skirt_vertices_per_pose={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} graded_ms_p50={:.3} graded_ms_p95={:.3} graded_tiles_per_pose={:.2} graded_adopted_per_pose={:.2} graded_baked_per_pose={:.2} commit_graded_ms={:.3} commit_graded_adopted={} commit_graded_baked={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} edges={}",
+            "road_preview_stages fixture={name} workers={} poses=8 samples={} payload_vertices_per_pose={} skirt_vertices_per_pose={} hidden_vertices_per_pose={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} graded_ms_p50={:.3} graded_ms_p95={:.3} graded_tiles_per_pose={:.2} graded_adopted_per_pose={:.2} graded_baked_per_pose={:.2} commit_graded_ms={:.3} commit_graded_adopted={} commit_graded_baked={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} edges={}",
             crate::thread_pools::install(rayon::current_num_threads),
             8 * 50,
             payload_vertices / 8,
             skirt_vertices / 8,
+            hidden_vertices / 8,
             plan.0,
             plan.1,
             roadbed.0,

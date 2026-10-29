@@ -480,7 +480,7 @@ impl TransitNetwork {
         sites: &dyn crate::simulation::terrain::graded::SiteSource,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
         lanes_built_after: Option<u64>,
-        published: &BTreeMap<SurfaceChunkKey, std::sync::Arc<NetworkMeshData>>,
+        published: &render::RoadChunkMap,
     ) -> Option<BTreeMap<SurfaceChunkKey, NetworkMeshData>> {
         self.roadbed.compile_dirty(graph);
         if !self.roadbed.is_current() {

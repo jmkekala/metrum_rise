@@ -607,7 +607,13 @@ func _road_chunk_frame_centre(
 		chunk_origin_z_m + float(key.y) * chunk_span_m + chunk_span_m * 0.5
 	)
 
-# Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure.
+# A road chunk's layers in payload order, as `NetworkMeshData` lists them (its owner runs index
+# these layers).
+const ROAD_CHUNK_LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]
+
+# Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure. The
+# mesh's `road_layer_surfaces` meta maps each layer to its surface (-1 when the layer is empty),
+# which the road tool's preview uses to collapse runs of a resident chunk (`ROAD-68-H` round 3).
 func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 	_ensure_road_mesh_materials()
 	# Rust certifies the exact immutable chunk buffers off the main thread. A missing
@@ -617,56 +623,22 @@ func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 		return false
 	var rust_validated: bool = certificate
 	# Road skirts (TERRAIN-07-B): the curb's stone, bottoms deepened with distance by the shader.
-	if not _append_road_surface(
-		arr_mesh,
-		chunk_data,
-		"skirt",
+	var materials: Array[Material] = [
 		WorldMaterials.road_skirt_material(),
-		rust_validated
-	):
-		return false
-	if not _append_road_surface(
-		arr_mesh,
-		chunk_data,
-		"curb",
 		WorldMaterials.road_sidewalk_face_material(),
-		rust_validated
-	):
-		return false
-	if not _append_road_surface(
-		arr_mesh,
-		chunk_data,
-		"raised_step",
 		WorldMaterials.road_sidewalk_face_material(),
-		rust_validated
-	):
-		return false
-	if not _append_road_surface(
-		arr_mesh,
-		chunk_data,
-		"sidewalk",
 		WorldMaterials.road_sidewalk_material(),
-		rust_validated
-	):
-		return false
-	if not _append_road_surface(
-		arr_mesh,
-		chunk_data,
-		"road",
 		WorldMaterials.road_asphalt_material(),
-		rust_validated
-	):
-		return false
-	if not _append_road_surface(arr_mesh, chunk_data, "marking", _marking_mat, rust_validated):
-		return false
-	if not _append_road_surface(
-		arr_mesh,
-		chunk_data,
-		"concrete",
+		_marking_mat,
 		WorldMaterials.road_concrete_material(),
-		rust_validated
-	):
-		return false
+	]
+	var surfaces := PackedInt32Array()
+	for index in ROAD_CHUNK_LAYERS.size():
+		var count := arr_mesh.get_surface_count()
+		if not _append_road_surface(arr_mesh, chunk_data, ROAD_CHUNK_LAYERS[index], materials[index], rust_validated):
+			return false
+		surfaces.append(count if arr_mesh.get_surface_count() > count else -1)
+	arr_mesh.set_meta("road_layer_surfaces", surfaces)
 	return arr_mesh.get_surface_count() > 0
 
 func _append_road_surface(

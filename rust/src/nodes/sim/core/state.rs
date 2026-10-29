@@ -331,7 +331,7 @@ pub struct SimCore {
     /// Latest building-site source revision for individually affected render patches.
     pub(crate) terrain_payload_patch_generations: HashMap<(usize, usize), u64>,
     /// Current road render meshes keyed by deterministic road-surface chunk.
-    pub(crate) cached_road_mesh_chunks: BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
+    pub(crate) cached_road_mesh_chunks: crate::simulation::network::render::RoadChunkMap,
     /// Upsert payloads accumulated for the unacknowledged road-render revision.
     ///
     /// Unlike the authoritative cache, this map contains only chunks the renderer must upload.
@@ -468,7 +468,7 @@ impl SimCore {
             terrain_payload_generation_counter: 1,
             terrain_payload_global_generation: 1,
             terrain_payload_patch_generations: HashMap::new(),
-            cached_road_mesh_chunks: BTreeMap::new(),
+            cached_road_mesh_chunks: Default::default(),
             published_road_mesh_chunks: Arc::new(BTreeMap::new()),
             pending_road_mesh_chunks: Arc::new(BTreeSet::new()),
             road_mesh_full_replace: true,

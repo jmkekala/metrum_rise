@@ -14,7 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::{NetworkMeshData, NetworkMeshOwner, TransitRenderer};
+use super::{NetworkMeshData, NetworkMeshOwner, RoadChunkMap, TransitRenderer};
+use crate::simulation::network::roadbed::PieceId;
 use standard_surface::CompiledSurfaceCoverage;
 
 mod chunks;
@@ -88,7 +89,7 @@ impl RoadRenderer {
         roadbed: &RoadbedSystem,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
         lanes_built_after: Option<u64>,
-        published: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
+        published: &RoadChunkMap,
     ) -> BTreeMap<SurfaceChunkKey, NetworkMeshData> {
         let road_debug = debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
@@ -154,43 +155,110 @@ impl RoadRenderer {
     }
 }
 
+/// One render chunk of a road-tool preview, below the chunk (`ROAD-68-H` round 3, open question
+/// 63 (b)): what Godot draws over the resident published chunk and which of its runs it
+/// collapses meanwhile. The published chunk with those runs dropped and the overlay merged is the
+/// chunk the commit publishes from the same pieces, lights and signs aside.
+#[derive(Debug)]
+pub(crate) struct PreviewChunk {
+    /// The rebuilt pieces' triangles in the chunk's frame, sealed, without street lights or
+    /// signs: the commit's own emission of exactly those pieces.
+    pub(crate) overlay: Arc<NetworkMeshData>,
+    /// `[layer, start, end]` vertex ranges of the published chunk's runs the overlay replaces,
+    /// by layer, ascending; empty where nothing is published.
+    pub(crate) hidden: Vec<[u32; 3]>,
+    /// The published chunk's positions in `hidden`'s ranges, in their order: what Godot puts
+    /// back when a run is shown again.
+    pub(crate) hidden_positions: Vec<Vector3>,
+}
+
 impl RoadRenderer {
-    /// The road-tool preview's replacement chunks (`ROAD-68-E`): the commit's local publication
-    /// of the pieces a roadbed built after generation `built_after`, spliced into the
-    /// `published` chunks of that generation, by the same emission and splice. Emission reads
-    /// only the graph, the pieces and the terrain (crosswalk paint, lights and signs too,
-    /// `ROAD-68-F`), so the chunks are the ones the commit publishes from the same pieces. `None`
-    /// if a published chunk holds a run without an owner.
-    /// `O(rebuilt pieces + target chunks' vertices)`.
+    /// The road-tool preview's sub-chunk payload (`ROAD-68-H` round 3): for each target chunk
+    /// with anything to change, the rebuilt pieces' triangles (`closure`'s owners with a piece,
+    /// emitted as the commit emits them) and the runs of the `published` chunk that `closure`'s
+    /// owners hold, which are exactly what the commit's splice drops (test builds check both
+    /// against the splice). `closure` holds every owner the preview's delta covers, with whether
+    /// it built a piece. `None` if a searched run has no owner.
+    /// `O(rebuilt pieces' triangles + closure * layers * log runs + hidden vertices)`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn generate_preview_chunks(
+    pub(crate) fn generate_preview_overlay(
         &self,
         graph: &RegionGraph,
         terrain: &crate::simulation::terrain::TerrainSystem,
         sites: &dyn SiteSource,
         roadbed: &RoadbedSystem,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
+        closure: &[(PieceId, bool)],
         built_after: u64,
-        published: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
-    ) -> Option<BTreeMap<SurfaceChunkKey, NetworkMeshData>> {
-        let coverage = standard_surface::build_compiled_surface_coverage_for_chunks(
+        published: &RoadChunkMap,
+    ) -> Option<BTreeMap<SurfaceChunkKey, PreviewChunk>> {
+        let rebuilt = standard_surface::coverage_of_pieces(
             graph,
-            roadbed,
-            target_chunks,
-            Some(built_after),
+            closure.iter().filter(|(_, built)| *built).map(|(id, _)| *id),
         );
-        let mut fresh = emit_chunks(
+        let mut overlay = emit_chunks(
             graph,
             terrain,
             roadbed,
             sites,
             target_chunks,
-            &coverage.rebuilt(),
-            &coverage,
+            &rebuilt,
+            &standard_surface::coverage_of_pieces(graph, []),
         );
-        splice_chunks(target_chunks, published, &mut fresh, |owner| {
-            coverage.keeps(owner)
-        })
+        let mut owners: Vec<_> = closure
+            .iter()
+            .map(|(id, _)| match *id {
+                PieceId::Span(edge) => NetworkMeshOwner::Edge(edge),
+                PieceId::Node(node) => NetworkMeshOwner::Node(node),
+            })
+            .collect();
+        owners.sort_unstable_by_key(|&owner| super::ownership::owner_order(owner));
+        owners.dedup();
+        #[cfg(debug_assertions)]
+        let splice = standard_surface::build_compiled_surface_coverage_for_chunks(
+            graph,
+            roadbed,
+            target_chunks,
+            Some(built_after),
+        );
+        #[cfg(debug_assertions)]
+        assert!(
+            splice.rebuilt_edges == rebuilt.edge_indices
+                && splice.rebuilt_nodes == rebuilt.node_ids,
+            "the overlay emits exactly the splice's fresh pieces"
+        );
+        #[cfg(not(debug_assertions))]
+        let _ = built_after;
+        let mut chunks = BTreeMap::new();
+        for &chunk in target_chunks {
+            let overlay = overlay.remove(&chunk).unwrap_or_default();
+            let mut hidden_positions = Vec::new();
+            let hidden = match published.get(&chunk) {
+                Some(mesh) => {
+                    let hidden = mesh.owner_vertex_ranges(&owners, &mut hidden_positions)?;
+                    #[cfg(debug_assertions)]
+                    assert_eq!(
+                        hidden,
+                        mesh.vertex_ranges_dropped(|owner| splice.keeps(owner)),
+                        "chunk {chunk:?}: the hidden runs are the runs the splice drops"
+                    );
+                    hidden
+                }
+                None => Vec::new(),
+            };
+            if overlay.is_empty() && hidden.is_empty() {
+                continue;
+            }
+            chunks.insert(
+                chunk,
+                PreviewChunk {
+                    overlay: overlay.seal(),
+                    hidden,
+                    hidden_positions,
+                },
+            );
+        }
+        Some(chunks)
     }
 }
 
@@ -269,7 +337,7 @@ fn emit_into(
 // the owners `keep` admits; `None` if a published chunk holds a run without an owner.
 fn splice_chunks(
     target_chunks: &BTreeSet<SurfaceChunkKey>,
-    published: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
+    published: &RoadChunkMap,
     fresh: &mut BTreeMap<SurfaceChunkKey, NetworkMeshData>,
     keep: impl Fn(NetworkMeshOwner) -> bool + Sync,
 ) -> Option<BTreeMap<SurfaceChunkKey, NetworkMeshData>> {

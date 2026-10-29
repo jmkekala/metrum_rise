@@ -637,7 +637,10 @@ questions 23 and 24). Zebras cut no triangle: the asphalt under a crossing's bar
 paint frame. Since
 `ROAD-68-G` part 2 a rebuilt chunk keeps its unchanged owners' triangles from the published chunk
 and emits only the pieces built since the last publication, whose lanes alone are lifted onto the
-new surface ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24)). The Rust to
+new surface ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24)). A preview
+sends its chunks below the chunk since `ROAD-68-H` round 3: the rebuilt pieces' triangles and the
+published runs they replace, which Godot collapses in the resident chunk
+([design](#round-3-sub-chunk-preview-payloads-the-poses-main-thread-work-the-city-scan-road-68-h-2026-10-29)). The Rust to
 Godot chunk payload stays byte-compatible, so Godot's committed-chunk renderer is unchanged apart
 from the chunk frame: `NetworkMeshData` layers, owner ranges, the generation and acknowledgement
 protocol, and removal tombstones. Layer 0, once reserved for road-owned earthwork, carries the
@@ -694,9 +697,15 @@ publisher, coarse preview ribbon or stale-result path. Reintroducing asynchrony 
 reason.
 
 As built (`ROAD-68-E` part 1): stages 1, 2 and the road half of 4. The road payload is every
-render chunk the stroke changes, built by the commit's own emission and splice
-(`RoadRenderer::generate_preview_chunks`) into the view's published chunks and sealed, so a
-stroke publishes exactly the previewed chunks. Since `ROAD-68-F` part 1 that holds for strokes
+render chunk the stroke changes, built by the commit's own emission and splice into the view's
+published chunks and sealed, so a stroke publishes exactly the previewed chunks. Since
+`ROAD-68-H` round 3 the payload is below the chunk
+(`RoadRenderer::generate_preview_overlay`): per changed chunk the rebuilt pieces' triangles,
+emitted as the commit emits them, and the vertex ranges of the published runs they replace, with
+those runs' positions; the published chunk with those runs dropped and the overlay merged is the
+committed chunk bitwise, lights and signs aside, so a stroke publishes exactly the previewed
+pieces. The view holds every published chunk (a persistent map shared in `O(1)`), not the
+unacknowledged upserts. Since `ROAD-68-F` part 1 that holds for strokes
 with crossings and signs too ([open question 26](#road-68-open-questions), closed): the
 emission (`emit_into`) reads only the graph, the pieces and the terrain, never lanes. Zebra
 paint frames and crossing signs take the pieces' crossings
@@ -704,10 +713,12 @@ paint frames and crossing signs take the pieces' crossings
 pedestrian lanes own them by), and street lights their span sections and the terminal cap's
 layout station. Tested bitwise in Rust
 (`preview_chunks_with_crossings_and_signs_are_the_committed_chunks`: a T and a pass-through
-continuation, flat and sloped) and in `road_junction_preview_test.gd` (every fixture, every
-layer, `road_crossings`, `street_lights` and `road_signs`). Godot's preview display swaps the
-chunk meshes, which carry the paint; the resident chunks' lights and signs stay shown until the
-commit installs its own. The field and cell checks of the preview's pieces and the parcel
+continuation, flat and sloped; since round 3 the composed chunks, and
+`a_preview_after_an_acknowledged_publication_composes_over_every_published_chunk`) and in
+`road_junction_preview_test.gd` (every fixture, every layer and `road_crossings`, as triangle
+sets of the composition). Godot's preview display draws the overlays, which carry the paint, over
+the resident chunks with the replaced runs collapsed; the overlays carry no lights or signs, and
+the resident chunks' lights and signs stay shown until the commit installs its own. The field and cell checks of the preview's pieces and the parcel
 corridor check run at the commit only ([open question 25](#road-68-open-questions)). The
 fingerprint is the road-tool surface
 generation, the roadbed generation and the source and visual terrain generations: the roadbed
@@ -832,6 +843,7 @@ that follow the lots, bitwise as planning in the commit
 | Terrain patch | `O((S + G) log (S + G))` for `S` local chain segments and `G` patch samples plus guides |
 | Height, band or ray query | `O(1)` chunk lookup plus `O(triangles in one grid cell)`, or the cells the ray crosses |
 | Chunk rebuild | `O(rebuilt pieces + changed chunks' vertices)`: the rebuilt pieces are emitted and the rest of each changed chunk is copied from its published mesh; lights and signs `O(covered edges)` |
+| Preview payload, per pose | `O(rebuilt pieces' triangles + closure owners * layers * log runs + hidden vertices)`: the overlay, the hidden runs by binary search and their positions; Godot stages the overlay and writes only the runs whose hiding changed (`ROAD-68-H` round 3) |
 
 No stage scans the city.
 

@@ -205,9 +205,11 @@ impl SimulationNode {
 
     /// The synchronous road preview (`ROAD-68-E`): plans the stroke on the road tool's context,
     /// compiles the pieces of its dirty closure and returns the validation, the dependency
-    /// fingerprint, the per-stage times and the render chunks the pieces change. A click on
-    /// the same stroke submits this preview, and the commit installs its pieces while the
-    /// fingerprint is current. Takes the context lock only, never the core lock.
+    /// fingerprint, the per-stage times and, for each render chunk the pieces change, the
+    /// rebuilt pieces' triangles and the published runs they replace (`road_chunks`, below the
+    /// chunk since `ROAD-68-H` round 3), indexing the resident chunks of `road_mesh_generation`.
+    /// A click on the same stroke submits this preview, and the commit installs its pieces while
+    /// the fingerprint is current. Takes the context lock only, never the core lock.
     #[func]
     pub fn preview_road(
         &self,
@@ -218,7 +220,7 @@ impl SimulationNode {
     ) -> VarDictionary {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
-        let (preview, span_m, origin, view_terrain, graded_epoch) = {
+        let (preview, span_m, origin, view_terrain, graded_epoch, road_mesh_generation) = {
             let mut context = self
                 .road_tool
                 .context
@@ -244,6 +246,7 @@ impl SimulationNode {
                 (origin_x, origin_z),
                 Arc::clone(&context.view.terrain),
                 context.graded.epoch(),
+                context.view.road_mesh_surface_generation,
             )
         };
         let mut dict = Self::road_candidate_validation_to_dictionary(
@@ -283,7 +286,7 @@ impl SimulationNode {
                 chunks.push(z);
             }
             if let Some(meshes) = &pieces.chunks {
-                road_chunks = Self::preview_road_chunk_updates(&pieces.changed_chunks, meshes);
+                road_chunks = Self::preview_road_chunk_updates(meshes);
             }
         }
         let cell_m = f64::from(view_terrain.cell_size_m());
@@ -300,6 +303,7 @@ impl SimulationNode {
             .is_some_and(|pieces| pieces.chunks.is_some());
         dict.set("has_road_chunks", has_road_chunks);
         dict.set("road_chunks", road_chunks);
+        dict.set("road_mesh_generation", generation(road_mesh_generation));
         dict.set("chunk_span_m", span_m);
         dict.set("chunk_origin_x_m", origin.0);
         dict.set("chunk_origin_z_m", origin.1);
@@ -429,29 +433,29 @@ impl SimulationNode {
         );
     }
 
-    // The preview's changed chunks in the committed publication's update format: a chunk the
-    // preview empties is `removed`.
+    // The preview's chunks below the chunk (`ROAD-68-H` round 3): each overlay in the committed
+    // publication's mesh format, with `hidden` (flat `[layer, start, end]` vertex ranges of the
+    // resident chunk's runs it replaces) and `hidden_positions` (their published positions).
     fn preview_road_chunk_updates(
-        changed: &[crate::simulation::network::roadbed::SurfaceChunkKey],
-        meshes: &std::collections::BTreeMap<
+        chunks: &std::collections::BTreeMap<
             crate::simulation::network::roadbed::SurfaceChunkKey,
-            Arc<crate::simulation::network::render::NetworkMeshData>,
+            crate::simulation::network::render::road::PreviewChunk,
         >,
     ) -> VarArray {
         let mut updates = VarArray::new();
-        for chunk in changed {
-            let mut update = match meshes.get(chunk) {
-                Some(mesh) => {
-                    let mut update = SimCore::network_mesh_data_dict(mesh);
-                    update.set("removed", false);
-                    update
-                }
-                None => {
-                    let mut removed = VarDictionary::new();
-                    removed.set("removed", true);
-                    removed
-                }
-            };
+        for (chunk, preview) in chunks {
+            let mut update = SimCore::network_mesh_data_dict(&preview.overlay);
+            let hidden: Vec<i32> = preview
+                .hidden
+                .iter()
+                .flatten()
+                .map(|&value| value as i32)
+                .collect();
+            update.set("hidden", PackedInt32Array::from(hidden.as_slice()));
+            update.set(
+                "hidden_positions",
+                PackedVector3Array::from(preview.hidden_positions.as_slice()),
+            );
             update.set("chunk_x", chunk.0);
             update.set("chunk_z", chunk.1);
             updates.push(&update.to_variant());

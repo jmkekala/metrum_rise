@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## The road tool's synchronous preview against the native bridge (`ROAD-68-E`): one frame
-## previews a stroke and shows its compiled chunks in place of the resident ones; a click commits
-## exactly that preview, which stays shown until the committed chunks are installed. The
+## previews a stroke and shows its rebuilt pieces over the resident chunks, whose replaced runs it
+## collapses (below the chunk since `ROAD-68-H` round 3); composed, they are the committed chunks.
+## A click commits exactly that preview, which stays shown until the committed chunks are
+## installed. The
 ## preview's graded tiles (`TERRAIN-07-E`), staged at the levels of a fixed camera, equal the
 ## commit's, a fresh bake and the bake after save and load, bitwise.
 extends SceneTree
@@ -38,6 +40,7 @@ const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
 const ZoningToolScript := preload("res://scripts/tools/zoning_tool.gd")
+const LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]
 var _failures := 0
 var simulation: SimulationNode
 var _capture_baseline_sky := {}
@@ -171,6 +174,10 @@ func _fixture(fixture: Dictionary) -> void:
 	tool._node_visuals_dirty = false
 	tool._node_visuals_visible = true
 	var originals: Dictionary = tool._road_chunk_instances.duplicate()
+	# The resident chunks' payloads, which the preview's hidden runs index.
+	var resident := {}
+	for chunk in simulation.get_road_mesh_data(true)["chunks"]:
+		resident[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = chunk
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.road_mesh_root, fixture["name"] + "_before", true)
 	if fixture["name"] == "water_reset":
@@ -200,19 +207,21 @@ func _fixture(fixture: Dictionary) -> void:
 	_expect(tool.blueprint_mesh.mesh == null, "the preview shows chunks, never a ribbon")
 	if not isolated and not fixture.get("sloped", false):
 		_expect_existing_road_height(preview)
-	var changed := {}
+	# Every resident chunk stays drawn, with exactly the payload's hidden runs collapsed; those
+	# runs are the resident chunk's own old curbs, markings and asphalt.
+	var collapsed_expected := 0
 	for chunk in preview["road_chunks"]:
-		changed[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = true
-	var hidden_expected := 0
+		var key := Vector2i(chunk["chunk_x"], chunk["chunk_z"])
+		var hidden: PackedInt32Array = chunk["hidden"]
+		if hidden.is_empty():
+			continue
+		collapsed_expected += 1
+		var held: Dictionary = tool._preview_display._collapsed.get(key, {})
+		_expect(held.get("instance") == originals.get(key) and held.get("runs", {}).size() == hidden.size() / 3, "the display collapses exactly the payload's runs of %s" % key)
+		_expect(resident.has(key) and _run_positions(resident[key], hidden) == chunk["hidden_positions"], "the hidden runs are the resident chunk's own geometry")
+	_expect(tool._preview_display._collapsed.size() == collapsed_expected, "only chunks with hidden runs are collapsed")
 	for key in originals:
-		if changed.has(key):
-			hidden_expected += 1
-	_expect(tool._preview_display._hidden.size() == hidden_expected, "exactly the changed resident chunks are replaced")
-	for original in tool._preview_display._hidden:
-		_expect(not original.visible, "old curbs and markings must not show through the preview")
-	for key in originals:
-		if not changed.has(key):
-			_expect(originals[key].visible, "unchanged chunks stay resident and visible")
+		_expect(originals[key].visible, "resident chunks stay drawn")
 	for instance in tool._preview_display._instances:
 		_expect(instance.position.y == 0.0, "preview must not lift roads away from terrain cutouts")
 	var instances: Array = tool._preview_display._instances.duplicate()
@@ -222,7 +231,7 @@ func _fixture(fixture: Dictionary) -> void:
 	_expect(tool._preview_sequence == sequence and instances == tool._preview_display._instances, "an unchanged stroke must not preview or upload again")
 	var malformed := preview.duplicate(true)
 	for chunk in malformed["road_chunks"]:
-		if not chunk.get("removed", false):
+		if not chunk.get("road_vertices", PackedVector3Array()).is_empty():
 			chunk["road_normals"] = PackedVector3Array()
 			break
 	_expect(not tool._preview_display.show(tool, malformed, sequence + 1), "incomplete mesh batches must fail atomically")
@@ -243,18 +252,18 @@ func _fixture(fixture: Dictionary) -> void:
 	tool.cancel_road()
 	for original in originals.values():
 		_expect(original.visible, "cancel must restore original road instances")
-	_expect(tool._preview_display._instances.is_empty(), "cancel must remove the preview chunks")
+	_expect(tool._preview_display._instances.is_empty() and tool._preview_display._collapsed.is_empty(), "cancel must remove the overlays and restore every collapsed run")
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.road_mesh_root, fixture["name"] + "_cancelled")
-	await _commit_previewed(tool, points, preview, not isolated, fixture["name"])
+	await _commit_previewed(tool, points, preview, resident, not isolated, fixture["name"])
 	tool.free()
 	terrain_stub.free()
 	await process_frame
 
 # Clicks the previewed stroke: the commit installs the preview's pieces, and the preview stays
 # shown until the committed generation's chunks are installed, which replace it in one call.
-# `crossed`: the stroke's closure holds crossings, whose paint and signs the preview must carry.
-func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictionary, crossed: bool, label: String) -> void:
+# `crossed`: the stroke's closure holds crossings, whose paint the preview must carry.
+func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictionary, resident: Dictionary, crossed: bool, label: String) -> void:
 	tool._begin_stroke(points[0], 0, Vector3.ZERO)
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
@@ -284,17 +293,22 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	tool._begin_stroke(_ground_point(-48.0, 40.0), 0, Vector3.ZERO)
 	tool.set_scripted_pointer(true, _ground_point(48.0, 40.0))
 	tool._process(1.0 / 60.0)
-	var next_keys: Array[Vector2i] = tool._preview_display._keys.duplicate()
+	# A next stroke the tool refuses (one crossing the cross's arm by its end) shows nothing.
+	var next_shows: bool = tool.is_valid and bool(tool._preview.get("has_road_chunks", false))
+	if next_shows:
+		_expect(tool._preview_display.sequence == 0 and not tool._preview_display._pending.is_empty(), "the next stroke waits for the chunks its runs index")
 	generation = simulation.get_network_render_generation()
 	_expect(tool.update_main_mesh(generation) == generation, "committed chunks must replace the source generation")
-	_expect(tool._swap_display == null and held._instances.is_empty(), "installing the committed chunks ends the preview in the same call")
-	for key in tool._road_chunk_instances:
-		_expect(tool._road_chunk_instances[key].visible != (key in next_keys), "the next stroke's preview hides exactly the installed chunks it replaces")
+	_expect(tool._swap_display == null and held._instances.is_empty() and held._collapsed.is_empty(), "installing the committed chunks ends the preview in the same call")
+	_expect(tool._preview_display.sequence > 0 or not next_shows, "the install shows the next stroke's preview in the same call")
+	for key in tool._preview_display._collapsed:
+		_expect(tool._preview_display._collapsed[key]["instance"] == tool._road_chunk_instances.get(key), "the next stroke collapses runs of exactly the installed chunks")
 	tool.cancel_road()
 	for instance in tool._road_chunk_instances.values():
 		_expect(instance.visible, "the committed generation must be visible")
-	# The preview chunks are the committed chunks, crosswalk paint, lights and signs included:
-	# both are built from the same pieces (`ROAD-68-F`, open question 26).
+	# The resident chunks with the hidden runs collapsed, under the overlays, draw the committed
+	# chunks' triangles, crosswalk paint included: both are built from the same pieces
+	# (`ROAD-68-F`, open question 26). Lights and signs are the commit's.
 	var committed := {}
 	for chunk in simulation.get_road_mesh_data(true)["chunks"]:
 		committed[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = chunk
@@ -302,21 +316,16 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	var signed := false
 	for chunk in preview["road_chunks"]:
 		var key := Vector2i(chunk["chunk_x"], chunk["chunk_z"])
-		_expect(committed.has(key) != chunk.get("removed", false), "a previewed chunk exists after the commit exactly when it was not removed")
-		if not committed.has(key) or chunk.get("removed", false):
-			continue
-		var names: Array[String] = ["road_crossings", "street_lights", "road_signs"]
-		for layer in ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]:
-			for field in ["vertices", "normals", "uvs", "colors"]:
-				names.append("%s_%s" % [layer, field])
-		for name in names:
-			_expect(chunk.get(name) == committed[key].get(name), "preview chunk %s %s equals the committed one" % [key, name])
+		_expect(chunk.get("street_lights", PackedFloat32Array()).is_empty() and chunk.get("road_signs", PackedFloat32Array()).is_empty(), "an overlay carries no lights or signs")
+		var composed := _triangles(resident.get(key, {}), chunk["hidden"])
+		_add_triangles(composed, chunk, PackedInt32Array())
+		_expect(composed == _triangles(committed.get(key, {}), PackedInt32Array()), "preview chunk %s composes the committed chunk's triangles" % key)
 		var crossings: PackedFloat32Array = chunk.get("road_crossings", PackedFloat32Array())
 		for index in range(2, crossings.size(), 4):
 			painted = painted or crossings[index] > 0.0
-		signed = signed or not chunk.get("road_signs", PackedFloat32Array()).is_empty()
+		signed = signed or not committed.get(key, {}).get("road_signs", PackedFloat32Array()).is_empty()
 	if crossed:
-		_expect(painted and signed, "a crossing stroke's preview carries crosswalk paint (%s) and signs (%s)" % [painted, signed])
+		_expect(painted and signed, "a crossing stroke's preview carries crosswalk paint (%s); its commit places signs (%s)" % [painted, signed])
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.road_mesh_root, preview.get("name", "fixture") + "_committed")
 	await _check_graded_tiles(shown, epoch, label)
@@ -393,6 +402,39 @@ static func _same_tiles(a: Dictionary, b: Dictionary) -> bool:
 			if a[key][field] != b[key][field]:
 				return false
 	return true
+
+# The positions of a chunk payload's runs `hidden` (flat `[layer, start, end]`), in order.
+static func _run_positions(chunk: Dictionary, hidden: PackedInt32Array) -> PackedVector3Array:
+	var positions := PackedVector3Array()
+	for index in range(0, hidden.size(), 3):
+		var vertices: PackedVector3Array = chunk[LAYERS[hidden[index]] + "_vertices"]
+		positions.append_array(vertices.slice(hidden[index + 1], hidden[index + 2]))
+	return positions
+
+# A chunk payload's triangles outside the runs `hidden`, counted by their exact attributes.
+static func _triangles(chunk: Dictionary, hidden: PackedInt32Array) -> Dictionary:
+	var triangles := {}
+	_add_triangles(triangles, chunk, hidden)
+	return triangles
+
+static func _add_triangles(triangles: Dictionary, chunk: Dictionary, hidden: PackedInt32Array) -> void:
+	for layer in LAYERS.size():
+		var name: String = LAYERS[layer]
+		var vertices: PackedVector3Array = chunk.get(name + "_vertices", PackedVector3Array())
+		var normals: PackedVector3Array = chunk.get(name + "_normals", PackedVector3Array())
+		var uvs: PackedVector2Array = chunk.get(name + "_uvs", PackedVector2Array())
+		var colors: PackedColorArray = chunk.get(name + "_colors", PackedColorArray())
+		var crossings: PackedFloat32Array = chunk.get("road_crossings", PackedFloat32Array()) if name == "road" else PackedFloat32Array()
+		var skip := {}
+		for index in range(0, hidden.size(), 3):
+			if hidden[index] == layer:
+				for vertex in range(hidden[index + 1], hidden[index + 2], 3):
+					skip[vertex] = true
+		for vertex in range(0, vertices.size(), 3):
+			if skip.has(vertex):
+				continue
+			var key := var_to_bytes([layer, vertices.slice(vertex, vertex + 3), normals.slice(vertex, vertex + 3), uvs.slice(vertex, vertex + 3), colors.slice(vertex, vertex + 3), crossings.slice(vertex * 4, vertex * 4 + 12)])
+			triangles[key] = int(triangles.get(key, 0)) + 1
 
 func _ground_point(x: float, z: float) -> Vector3:
 	return Vector3(x, simulation.get_world_surface_height(Vector2(x, z)), z)

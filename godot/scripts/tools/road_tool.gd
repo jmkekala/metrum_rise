@@ -400,8 +400,9 @@ func _road_mesh_installed(_generation: int) -> void:
 	# The acknowledgement may arrive in the same frame as the chunks it names.
 	_poll_road_commit_result()
 	_release_swapped_preview()
-	# A preview shown meanwhile (the next stroke of a chain) hides the chunks just installed.
-	_preview_display.refresh_originals(self)
+	# A preview made meanwhile (the next stroke of a chain) indexes the chunks just installed:
+	# it shows in this call.
+	_preview_display.resident_installed(self)
 
 func _begin_stroke(pos: Vector3, kind: int, direction: Vector3) -> void:
 	start_pos = pos

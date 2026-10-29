@@ -132,6 +132,91 @@ impl NetworkMeshData {
         });
     }
 
+    /// The vertex ranges of `owners`' runs in this published chunk, by layer, then in buffer
+    /// order, as `[layer, start, end]`, with their positions appended to `positions` in the same
+    /// order (`ROAD-68-H` round 3): the runs a preview's overlay replaces. `owners` ascend in
+    /// emission order, as each layer's runs do, so each owner is one binary search. `None` if a
+    /// searched run has no owner. `O(owners * layers * log runs + found vertices)`.
+    pub(super) fn owner_vertex_ranges(
+        &self,
+        owners: &[NetworkMeshOwner],
+        positions: &mut Vec<Vector3>,
+    ) -> Option<Vec<[u32; 3]>> {
+        let mut ranges = Vec::new();
+        for (layer, runs) in self.owner_ranges.iter().enumerate() {
+            let vertices = self.layer(layer).0;
+            for &owner in owners {
+                let order = owner_order(owner);
+                let index = runs.partition_point(|run| run.owner.map(owner_order) < Some(order));
+                let Some(run) = runs.get(index) else {
+                    continue;
+                };
+                if run.owner? != owner {
+                    continue;
+                }
+                let start = index.checked_sub(1).map_or(0, |previous| runs[previous].end);
+                positions.extend_from_slice(&vertices[start..run.end]);
+                ranges.push([layer as u32, start as u32, run.end as u32]);
+            }
+        }
+        Some(ranges)
+    }
+
+    /// Test builds: the `[layer, start, end]` ranges of the runs `keep` rejects, by layer, then
+    /// in buffer order: what [`Self::splice_owners`] drops, found by visiting every run.
+    #[cfg(debug_assertions)]
+    pub(super) fn vertex_ranges_dropped(
+        &self,
+        keep: impl Fn(NetworkMeshOwner) -> bool,
+    ) -> Vec<[u32; 3]> {
+        (0..LAYERS)
+            .flat_map(|layer| {
+                self.owner_runs(layer)
+                    .into_iter()
+                    .flatten()
+                    .filter(|(owner, _)| !keep(*owner))
+                    .map(move |(_, range)| [layer as u32, range.start as u32, range.end as u32])
+            })
+            .collect()
+    }
+
+    /// Tests: `published` with the `hidden` runs dropped and `overlay`'s merged in owner order,
+    /// as Godot composes a preview chunk; lights and signs are `overlay`'s.
+    #[cfg(test)]
+    pub(crate) fn compose_preview(
+        published: Option<&Self>,
+        overlay: &Self,
+        hidden: &[[u32; 3]],
+    ) -> Self {
+        let Some(published) = published else {
+            return Self::splice_owners(&Self::new(), overlay, |_| false)
+                .expect("an overlay's runs have owners");
+        };
+        let mut hidden_owners = std::collections::HashSet::new();
+        for &[layer, start, end] in hidden {
+            let run = published
+                .owner_runs(layer as usize)
+                .expect("published runs have owners")
+                .into_iter()
+                .find(|(_, range)| *range == (start as usize..end as usize))
+                .expect("a hidden range is one published run");
+            hidden_owners.insert(run.0);
+        }
+        Self::splice_owners(published, overlay, |owner| !hidden_owners.contains(&owner))
+            .expect("published runs have owners")
+    }
+
+    /// Tests: whether two meshes hold the same layers, crossing frames and owner runs (not
+    /// lights or signs).
+    #[cfg(test)]
+    pub(crate) fn same_surfaces(&self, other: &Self) -> bool {
+        (0..LAYERS).all(|layer| {
+            let (a, b) = (self.layer(layer), other.layer(layer));
+            a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3
+        }) && self.road_crossings == other.road_crossings
+            && self.owner_ranges == other.owner_ranges
+    }
+
     pub(super) fn record_owner_triangle(&mut self, layer: usize, end: usize) {
         let ranges = &mut self.owner_ranges[layer];
         if let Some(last) = ranges.last_mut()
@@ -153,7 +238,7 @@ const LAYERS: usize = 7;
 const ROAD_LAYER: usize = 4;
 
 // Emission order within a layer: every span by edge id, then every node piece by node id.
-fn owner_order(owner: NetworkMeshOwner) -> (u8, usize) {
+pub(super) fn owner_order(owner: NetworkMeshOwner) -> (u8, usize) {
     match owner {
         NetworkMeshOwner::Edge(edge) => (0, edge),
         NetworkMeshOwner::Node(node) => (1, node as usize),
