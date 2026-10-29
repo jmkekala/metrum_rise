@@ -55,7 +55,9 @@ func _run() -> void:
 	graded.setup(simulation, CELL_M, world_size, float(layout["patch_interval_cells"]) * CELL_M, [24, 24, 24, 24])
 	var created := _creation_counters(graded)
 	_expect(int(created["textures_created"]) == 4, "the world pages of GL0 and GL1 x (slots, atlas): %s" % created)
-	_expect(int(created["multimeshes_created"]) == (GradedTiles.CELL_MESHES + 1) * 4, "one cell set per patch of the 2 x 2 grid: %s" % created)
+	# A prewarmed set holds the five plain cell meshes and the walls' (round 10: the behind-the-road
+	# variant's four come with a flagged tile, _check_variant).
+	_expect(int(created["multimeshes_created"]) == (GradedTiles.CELL_PLAIN + 1) * 4, "one cell set per patch of the 2 x 2 grid: %s" % created)
 
 	var resident := _resident_patches(host, layout, world_size, 1)
 	_mark_changed(resident)
@@ -120,19 +122,22 @@ func _run() -> void:
 	_expect(graded._cell_mask_revision > mask_revision_before,
 		"an in-place tile upload must invalidate the grass mask")
 	_expect(batch.size() < graded.installed.size(), "the edit rebakes only its dirty tiles (%d of %d installed)" % [batch.size(), graded.installed.size()])
-	# Nothing is created after setup but a block's pages (as its streaming first needs them), neither
-	# by the edit: the cell sets are prewarmed, one per patch of the grid (round 5's populated edit
+	# Nothing is created after setup but a block's pages (as its streaming first needs them) and a
+	# set's behind-the-road variant (its first flagged tile, in the build path), neither by the
+	# edit: the cell sets are prewarmed, one per patch of the grid (round 5's populated edit
 	# created 16 materials and 24 MultiMeshes for patches newly drawing cells).
 	var after := _creation_counters(graded)
+	var variants := int(graded.counters["cell_variants_created"])
 	for name: String in created.keys():
 		if name == "textures_created":
 			_expect(int(after[name]) - int(created[name]) == 2 * int(graded.counters["pages_created"]) - 4, "only pages create textures: %s" % after)
 			continue
-		_expect(after[name] == created[name], "nothing may be created after setup (%s): %s -> %s" % [name, created[name], after[name]])
-	# Each pooled cell set holds nine cell MultiMeshes, the wall MultiMesh and the graded levels'
-	# materials, two variants each (every cell mesh but the base cells'); the wall material is
-	# one, made at setup.
-	_expect((int(after["materials_created"]) - 1) * (GradedTiles.CELL_MESHES + 1) == int(after["multimeshes_created"]) * (GradedTiles.CELL_MESHES - 1), "cell materials are pooled with their cells: %s" % after)
+		var variant_made := 4 * variants if name in ["materials_created", "multimeshes_created"] else 0
+		_expect(int(after[name]) - int(created[name]) == variant_made, "nothing may be created after setup (%s): %s -> %s" % [name, created[name], after[name]])
+	# Each cell set holds five cell MultiMeshes, the wall MultiMesh and the graded levels' four
+	# materials (every cell mesh but the base cells'), and a set given the variant four more of
+	# each; the wall material is one, made at setup.
+	_expect(int(after["materials_created"]) - 1 == 4 * (4 + variants) and int(after["multimeshes_created"]) == 4 * (GradedTiles.CELL_PLAIN + 1) + 4 * variants, "cell materials are pooled with their cells: %s" % after)
 	print("graded tile install ms max %.3f (poll %.3f, upload %.3f), uploads %d, installed %d, pool bytes %d, edit %d tiles in %.3f ms" % [
 		float(counters["install_ms_max"]), float(counters["poll_ms_max"]), float(counters["upload_ms_max"]),
 		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"]),
@@ -158,6 +163,8 @@ func _run() -> void:
 	for code in 4:
 		_expect(int(counters["free_%d" % code]) == int(counters["slots_%d" % code]), "level %d must free its slots" % code)
 	graded.clear()
+	await _check_variant(simulation, host, layout, world_size)
+	await _check_dispose_frees_every_set(simulation, host, layout, world_size)
 	await _check_exhausted_pools(simulation, host, layout, world_size)
 	await _check_refusals_are_asked_once(host, simulation, layout, world_size)
 	await _check_production_renderer(host, simulation)
@@ -297,7 +304,7 @@ func _expect_streamed(label: String) -> void:
 func _cell_record(cells: Dictionary) -> Array:
 	var out := []
 	var counts: Array[int] = cells["counts"]
-	for index in GradedTiles.CELL_MESHES:
+	for index in (cells["nodes"] as Array).size():
 		var written: Array = []
 		for data: Color in (cells["custom"][index] as Array).slice(0, counts[index]):
 			written.append(str(data))
@@ -342,6 +349,106 @@ class RefusingBridge extends Node:
 		_lists = []
 		_failed = []
 		return out
+
+# The renderer with every bake result flagged behind the road from `flag_all` on (the fixture's
+# flat roads flag none), as a hilly map's tiles are (T49 (c)).
+class FlaggingTiles extends GradedTiles:
+	var flag_all := false
+
+	func _install(tile: Dictionary, resident_patches: Dictionary) -> void:
+		if flag_all:
+			tile["behind"] = true
+		super(tile, resident_patches)
+
+# `TERRAIN-07-G` round 10: a set holds the behind-the-road variant's meshes and materials only once
+# its patch shows a flagged tile. Settled with no flag, every set holds the five plain cell meshes;
+# then every rebake is flagged and the camera climbs, so drawing sets take flagged tiles: each
+# such set gains the variant in the build path, the tiles waiting meanwhile, and in no frame does
+# a drawing set show a flagged tile outside its variant's mesh (nor a partial set, a PlaneMesh
+# over listed tiles or a hole). Settled, the per-tile cells equal a rewrite of the patch.
+func _check_variant(simulation: SimulationNode, host: Node3D, layout: Dictionary, world_size: Vector2) -> void:
+	var graded := FlaggingTiles.new()
+	graded.setup(simulation, CELL_M, world_size, float(layout["patch_interval_cells"]) * CELL_M, [24, 24, 24, 24])
+	var resident := _resident_patches(host, layout, world_size, 1)
+	_mark_changed(resident)
+	var camera := Vector3(0.0, 40.0, 10.0)
+	_check_partial = true
+	_expect(await _settle(graded, camera, resident), "the unflagged tiles settle")
+	for key: Vector2i in graded.patch_cells.keys():
+		_expect((graded.patch_cells[key]["nodes"] as Array).size() == GradedTiles.CELL_PLAIN, "patch %s with no flagged tile holds five cell meshes" % key)
+		_check_cells(graded, key, resident)
+	_expect(int(graded.counters["cell_variants_created"]) == 0, "no set holds the variant without a flagged tile")
+	graded.flag_all = true
+	var missing := 0
+	var holes := 0
+	for target_height: float in [300.0, 40.0]:
+		var stable := 0
+		for frame in TIMEOUT_FRAMES:
+			camera.y = move_toward(camera.y, target_height, 40.0)
+			_frame(graded, camera, resident)
+			missing += _flagged_outside_variant(graded)
+			holes = max(holes, graded.hole_patches())
+			await process_frame
+			stable = stable + 1 if camera.y == target_height and not graded.has_pending_work() else 0
+			if stable >= 3:
+				break
+		_expect(stable >= 3, "the flagged tiles settle at %.0f m" % target_height)
+	_expect(missing == 0, "no frame draws a flagged tile outside its set's variant: %d" % missing)
+	_expect(holes == 0 and _violations == 0 and _partial == 0, "the variant's tiles change no patch's draw state: holes %d, planes %d, partial %d" % [holes, _violations, _partial])
+	var flagged := 0
+	for tile: Vector2i in graded.installed.keys():
+		if bool(graded.installed[tile]["behind"]):
+			flagged += 1
+	_expect(flagged > 0 and int(graded.counters["cell_variants_created"]) > 0 and int(graded.counters["variant_waits"]) > 0,
+		"flagged tiles waited for their sets' variant: %d flagged, %s" % [flagged, graded.counters])
+	print("graded behind variant: %d flagged tiles, %d sets given the variant, %d waits" % [flagged, int(graded.counters["cell_variants_created"]), int(graded.counters["variant_waits"])])
+	for key: Vector2i in graded.patch_cells.keys():
+		var cells: Dictionary = graded.patch_cells[key]
+		_expect(bool(cells["variant"]) == graded._patch_flagged(cells), "patch %s holds the variant as its flagged tiles need it" % key)
+		var moved := _cell_record(cells)
+		graded._rebuild_patch_cells(key, resident)
+		_expect(moved == _cell_record(cells), "patch %s: the per-tile cells equal the patch's rewrite" % key)
+		_check_cells(graded, key, resident)
+	graded.dispose()
+
+# Drawing sets showing a flagged tile outside the variant's mesh of its level.
+func _flagged_outside_variant(graded: GradedTiles) -> int:
+	var count := 0
+	for key: Vector2i in graded.patch_cells.keys():
+		var cells: Dictionary = graded.patch_cells[key]
+		if not bool(cells["shown"]):
+			continue
+		for tile: Vector2i in cells["tiles"]:
+			var entry: Dictionary = graded._shown_in(tile, key)
+			if entry.is_empty() or not bool(entry["behind"]):
+				continue
+			var at: Vector2i = cells["where"][GradedTiles._cell_place(cells, tile)]
+			if at.x != int(entry["level"]) + GradedTiles.CELL_BEHIND:
+				count += 1
+	return count
+
+# A world's renderer is set up, loads, is replaced by the next load's and shut down, as terrain.gd
+# does (dispose, then a new renderer): every cell set's nodes are freed, roots included, so the
+# orphan node count returns to its value before the first setup (round 9C: each set's root
+# leaked, one orphan per set per load).
+func _check_dispose_frees_every_set(simulation: SimulationNode, host: Node3D, layout: Dictionary, world_size: Vector2) -> void:
+	await process_frame
+	var orphans := int(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT))
+	var camera := Vector3(0.0, 40.0, 10.0)
+	var span := float(layout["patch_interval_cells"]) * CELL_M
+	var resident := _resident_patches(host, layout, world_size, 1)
+	for load in 2:
+		var graded := GradedTiles.new()
+		graded.setup(simulation, CELL_M, world_size, span, [24, 24, 24, 24])
+		_expect(int(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)) > orphans, "the prewarmed sets are detached nodes")
+		_mark_changed(resident)
+		_expect(await _settle(graded, camera, resident), "load %d settles" % load)
+		graded.dispose()
+		# PREDELETE after dispose() finds no set left: dropping the renderer frees nothing twice.
+		graded = null
+	await process_frame
+	var left := int(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)) - orphans
+	_expect(left == 0, "setup, load, reload and shutdown leave no orphan node: %d" % left)
 
 # A request Rust refuses by contract is asked once at its token and counted, never again every
 # frame (round 5's populated save re-asked 827,447 refusals and never settled); an edit that
@@ -652,7 +759,9 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 	var counts: Array[int] = cells["counts"]
 	var shown := bool(cells["shown"])
 	# Its graded materials bind the pages its block uses (docs/terrain.md "Pages and the row atlas").
-	for index in GradedTiles.CELL_MESHES:
+	_expect(nodes.size() == (GradedTiles.CELL_MESHES if bool(cells["variant"]) else GradedTiles.CELL_PLAIN)
+		and (cells["materials"] as Array).size() == nodes.size(), "patch %s holds its variant's meshes with it" % key)
+	for index in nodes.size():
 		if index == GradedTiles.CELL_BASE:
 			continue
 		var code := index - GradedTiles.CELL_BEHIND if index >= GradedTiles.CELL_BEHIND else index

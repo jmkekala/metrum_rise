@@ -53,9 +53,12 @@ const POLL_BATCH := 4
 # The cell meshes of a patch: GL0-GL3 (0-3), the base cells (CELL_BASE) and GL0-GL3 of the tiles
 # whose bake flags them behind the road (CELL_BEHIND + level, T49 (c)): their cells draw the
 # behind-the-road variant, which writes depth, so every other cell keeps the early depth test.
+# Every set holds the first CELL_PLAIN; the variant's four meshes and materials only a set whose
+# patch has shown a flagged tile (_add_variant, `TERRAIN-07-G` round 10).
 const CELL_MESHES := 9
 const CELL_BASE := 4
 const CELL_BEHIND := 5
+const CELL_PLAIN := 5
 # Wall face instances per patch, prewarmed with its cells: at most 42 faces per patch on the
 # Kuopio reference save and none on the populated save (TERRAIN-07-D round 6 census, GL0). A
 # patch with more draws the first ones and counts and logs the rest.
@@ -159,6 +162,14 @@ var _dirty_walls: Dictionary = {}
 # the set is built), taken first (_advance_builds).
 var _builds: Dictionary = {}
 var _builds_urgent: Dictionary = {}
+# The behind-the-road variant (T49 (c)) on demand: patch key -> true for the sets the build path
+# adds it to, first (_advance_builds), and the flagged tiles waiting for it in a set of theirs, so
+# no set draws a flagged tile without its variant: tile key -> its bake result (installed once
+# its sets hold the variant) and tile key -> its preview tile (shown then: the preview's lag,
+# T27 (d)). An edit batch with a flagged tile waits whole (_install_edit_batch).
+var _variants_wanted: Dictionary = {}
+var _variant_waits: Dictionary = {}
+var _preview_waits: Dictionary = {}
 # Patches whose set may start or stop drawing.
 var _dirty_shown: Dictionary = {}
 # What a resident patch draws (_draw_state, T53 (a)): its PlaneMesh, its set or nothing.
@@ -277,6 +288,9 @@ var counters := {
 	# Cell sets built (_build_tiles), and the patches waiting for one.
 	"cell_builds": 0,
 	"cell_prewarm_ms": 0.0,
+	# Sets given the behind-the-road variant (_add_variant), and flagged tiles that waited for it.
+	"cell_variants_created": 0,
+	"variant_waits": 0,
 	# T53 (a): the most milliseconds and frames a resident patch drew nothing before it was
 	# ready, and the unready patches within the view distance, summed over frames and the most in
 	# one frame (the residency margin's acceptance: 0 while the camera pans).
@@ -744,6 +758,8 @@ func _bind_page(cells: Dictionary, key: Vector2i) -> bool:
 		changed = true
 		var page: Dictionary = page_store.by_id.get(page_id, {})
 		for index in [code, code + CELL_BEHIND]:
+			if index >= (cells["materials"] as Array).size():
+				continue
 			var material: ShaderMaterial = cells["materials"][index]
 			material.set_shader_parameter("graded_texels", page.get("texels", null))
 			material.set_shader_parameter("graded_atlas", page.get("atlas", null))
@@ -816,8 +832,11 @@ func desired_level(distance_m: float, current_code: int) -> Vector2i:
 	return Vector2i(3, 8)
 
 # The cell sets' nodes are not reference counted: they go with the renderer (terrain.gd makes a
-# new one per world load, after clear(), which returns every set to the pool). Before round 6 each
-# load leaked the previous renderer's 1,296 Kuopio sets.
+# new one per world load and disposes of the last). Before round 6 each load leaked the previous
+# renderer's 1,296 Kuopio sets; until `TERRAIN-07-G` round 10 dispose() freed each set's nodes but
+# not their root (round 9C: one orphan per set per load). A renderer dropped without dispose()
+# frees its sets here, each through its root, once; after dispose() there are none left. A held
+# set's root under a patch node the scene already freed went with it. O(sets).
 func _notification(what: int) -> void:
 	if what != NOTIFICATION_PREDELETE:
 		return
@@ -869,6 +888,9 @@ func clear() -> void:
 	_unready.clear()
 	_builds.clear()
 	_builds_urgent.clear()
+	_variants_wanted.clear()
+	_variant_waits.clear()
+	_preview_waits.clear()
 	_dirty_shown.clear()
 	_desired.clear()
 	_tile_lists.clear()
@@ -882,14 +904,13 @@ func clear() -> void:
 	_wanted.clear()
 	_lists_wanted.clear()
 
-# Releases the prewarmed cell Nodes that are intentionally detached while pooled. A Node owner
-# cannot free them with its scene subtree, so renderer replacement and shutdown call this before
-# dropping the RefCounted renderer.
+## Frees the cell sets, which are Nodes detached while pooled (no scene owner frees them).
+## Renderer replacement and shutdown call it before dropping the renderer; clear() first returns
+## every set to the pool.
 func dispose() -> void:
 	clear()
 	for cells: Dictionary in _cells_pool:
-		for node: Node in cells["nodes"] + [cells["walls"]]:
-			node.free()
+		(cells["root"] as Node).free()
 	_cells_pool.clear()
 
 ## One frame: polls finished work and installs it within the install budget, keeps the tiles of
@@ -935,6 +956,8 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	for key: Vector2i in changed_patches.keys():
 		_patch_changed(key, resident_patches)
 	_advance_builds(start_us, resident_patches)
+	if not (_variant_waits.is_empty() and _preview_waits.is_empty()):
+		_take_variant_waits(resident_patches)
 	if not _lists_wanted.is_empty():
 		_request_patch_lists(resident_patches)
 	if not _wanted.is_empty():
@@ -982,7 +1005,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 				parts["cells_%d" % index] = 0
 				parts["cell_triangles_%d" % index] = 0
 			for cells: Dictionary in patch_cells.values():
-				for index in CELL_MESHES:
+				for index in (cells["nodes"] as Array).size():
 					var node: MultiMeshInstance3D = cells["nodes"][index]
 					if node.is_visible_in_tree():
 						var count := node.multimesh.visible_instance_count
@@ -1103,11 +1126,19 @@ func release_preview(first_epoch: int, last_epoch: int) -> void:
 		var token := int(preview[key]["token"])
 		if token >= first_epoch and token <= last_epoch:
 			_drop_preview(key)
+	_drop_preview_waits(first_epoch, last_epoch)
 	_apply_cell_changes(_resident)
 	_apply_wall_changes(_resident)
 
 func _show_preview_tile(tile: Dictionary) -> void:
 	var key := Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))
+	# A flagged tile shows once its sets hold the variant (the preview's lag, T27 (d)); the tile
+	# shows what it showed meanwhile.
+	_preview_waits.erase(key)
+	if bool(tile["behind"]) and _variant_missing(key):
+		counters["variant_waits"] += 1
+		_preview_waits[key] = tile
+		return
 	var code := int(tile["level"])
 	var current: Dictionary = preview.get(key, {})
 	var same_level := not current.is_empty() and int(current["level"]) == code
@@ -1126,7 +1157,15 @@ func _show_preview_tile(tile: Dictionary) -> void:
 	preview[key] = {"code": code if code < 3 else base_code(step), "level": code, "step": step, "token": int(tile["token"]), "walls": walls, "behind": bool(tile["behind"]), "copies": copies}
 	_shown_changed(key, before)
 
+# Drops the preview tiles of epochs `first_epoch` to `last_epoch` waiting for a set's variant.
+func _drop_preview_waits(first_epoch: int, last_epoch: int) -> void:
+	for key: Vector2i in _preview_waits.keys():
+		var token := int(_preview_waits[key]["token"])
+		if token >= first_epoch and token <= last_epoch:
+			_preview_waits.erase(key)
+
 func _drop_preview(key: Vector2i) -> void:
+	_preview_waits.erase(key)
 	var entry: Dictionary = preview.get(key, {})
 	if entry.is_empty():
 		return
@@ -1296,12 +1335,33 @@ func _install(tile: Dictionary, resident_patches: Dictionary) -> void:
 	var token := int(tile["token"])
 	if int(requested.get(request_key, -1)) != token:
 		return
-	requested.erase(request_key)
+	var flagged := bool(tile["behind"])
 	if int(_edit_batch.get(key, -1)) == token:
-		# Part of an edit: it waits for the batch's other tiles.
+		# Part of an edit: it waits for the batch's other tiles (and, flagged, its sets' variant).
+		requested.erase(request_key)
+		if flagged:
+			_variant_missing(key)
 		_edit_staged[key] = tile
 		return
+	# A later result of the tile supersedes one that waited (an older level's or token's).
+	_drop_variant_wait(key)
+	if flagged and _variant_missing(key):
+		# Still requested while it waits (_take_variant_waits).
+		counters["variant_waits"] += 1
+		_variant_waits[key] = tile
+		return
+	requested.erase(request_key)
 	_upload(key, tile, resident_patches)
+
+# Drops the bake result of `key` waiting for its sets' variant, and its request.
+func _drop_variant_wait(key: Vector2i) -> void:
+	var tile: Dictionary = _variant_waits.get(key, {})
+	if tile.is_empty():
+		return
+	_variant_waits.erase(key)
+	var request_key := "%d,%d,%d,%d" % [key.x, key.y, int(tile["level"]), int(tile["step"])]
+	if int(requested.get(request_key, -1)) == int(tile["token"]):
+		requested.erase(request_key)
 
 func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> void:
 	var code := int(tile["level"])
@@ -1367,6 +1427,15 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 		_edit_release = -1
 	if _edit_batch.is_empty() or _edit_staged.size() < _edit_batch.size():
 		return 0
+	# A flagged tile's sets take the variant first (queued as it staged): the batch installs whole
+	# once none lacks it.
+	var waiting := false
+	for key: Vector2i in _edit_staged:
+		if bool(_edit_staged[key]["behind"]) and _variant_missing(key):
+			waiting = true
+	if waiting:
+		counters["variant_waits"] += 1
+		return 0
 	for key: Vector2i in _edit_staged.keys():
 		if not _adopt_preview(key, _edit_staged[key]):
 			_upload(key, _edit_staged[key], resident_patches)
@@ -1379,6 +1448,7 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 		for key: Vector2i in preview.keys():
 			if int(preview[key]["token"]) <= _edit_release:
 				_drop_preview(key)
+		_drop_preview_waits(0, _edit_release)
 		_edit_release = -1
 	return count
 
@@ -1449,6 +1519,8 @@ func _apply_edit(edit: Dictionary) -> void:
 		_edit_batch[key] = int(tile_tokens[key])
 		tile["token"] = int(tile_tokens[key])
 		tile["preview_epoch"] = int(edit.get("preview_epoch", -1))
+		if bool(tile["behind"]):
+			_variant_missing(key)
 		_edit_staged[key] = tile
 	_edit_release = max(_edit_release, int(edit.get("preview_epoch", -1)))
 
@@ -2054,6 +2126,9 @@ func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 	var where: Array[Vector2i] = cells["where"]
 	where.fill(Vector2i(-1, -1))
 	cells["rect_hm"] = rect_hm
+	# The build path gives the set the variant its patch's flagged tiles draw in.
+	if not bool(cells["variant"]) and _patch_flagged(cells):
+		_add_variant(cells)
 	for node: MultiMeshInstance3D in cells["nodes"]:
 		node.multimesh.visible_instance_count = 0
 		node.visible = false
@@ -2071,11 +2146,12 @@ func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 # starting to draw (or rewritten while drawing) takes them: a node with instance uniforms set holds
 # Godot instance-uniform slots (16 each, `TERRAIN-07-D` round 7) whatever its material, so a set
 # built off the frame paths that never drew holds none (`TERRAIN-07-E` round 6: setting them on
-# every prebuilt set overflowed the buffer). O(1).
-func _set_cell_meshes(cells: Dictionary) -> void:
+# every prebuilt set overflowed the buffer). From cell mesh `first` on (a variant added to a drawing
+# set, _add_variant). O(1).
+func _set_cell_meshes(cells: Dictionary, first := 0) -> void:
 	var step := int(cells["step"])
 	var nodes: Array = cells["nodes"]
-	for index in CELL_MESHES:
+	for index in range(first, nodes.size()):
 		var node: MultiMeshInstance3D = nodes[index]
 		# GL3 cells take the finest GL3 mesh (step 2): a coarser instance clamps the extra
 		# vertices onto its sides.
@@ -2084,7 +2160,8 @@ func _set_cell_meshes(cells: Dictionary) -> void:
 		node.multimesh.mesh = _meshes[min(code, 6)]
 		node.set_instance_shader_parameter("cell_patch_rect_hm", cells["rect_hm"])
 		node.set_instance_shader_parameter("cell_lattice_anchor_hm", lattice_anchor_hm)
-	(nodes[CELL_BASE] as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 2.0)
+	if first <= CELL_BASE:
+		(nodes[CELL_BASE] as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 2.0)
 
 # Writes the set's next tiles, each as it stands (its shown level's cell, else a base cell); with
 # `start_us` >= 0 it stops once the frame's install budget is spent and at least `minimum` tiles
@@ -2116,7 +2193,7 @@ func _build_tiles(cells: Dictionary, patch: Dictionary, resident_patches: Dictio
 		built += 1
 		written += 1
 	cells["built"] = built
-	for index in CELL_MESHES:
+	for index in nodes.size():
 		_set_cell_count(nodes[index], counts, index, counts[index])
 	var walls_us := Time.get_ticks_usec()
 	_rebuild_patch_walls(cells, patch)
@@ -2129,6 +2206,7 @@ func _build_tiles(cells: Dictionary, patch: Dictionary, resident_patches: Dictio
 # lasts. A set first syncs its material, then writes its tiles; a built set starts drawing if a
 # tile of it shows graded. O(tiles written this frame + uniforms synced).
 func _advance_builds(start_us: int, resident_patches: Dictionary) -> void:
+	_add_wanted_variants(start_us)
 	var minimum := 1
 	while not (_builds_urgent.is_empty() and _builds.is_empty()):
 		var urgent := not _builds_urgent.is_empty()
@@ -2160,6 +2238,36 @@ func _advance_builds(start_us: int, resident_patches: Dictionary) -> void:
 		_builds.erase(key)
 		_builds_urgent.erase(key)
 		_dirty_shown[key] = true
+
+# The sets a flagged tile waits for take the variant, first in the build path: the first of them
+# in every frame, then the rest while the frame's install budget lasts. O(sets given it x
+# _add_variant).
+func _add_wanted_variants(start_us: int) -> void:
+	var added := 0
+	while not _variants_wanted.is_empty():
+		if added > 0 and _over_budget(start_us):
+			return
+		var key := Vector2i.ZERO
+		for queued: Vector2i in _variants_wanted:
+			key = queued
+			break
+		_variants_wanted.erase(key)
+		var cells: Dictionary = patch_cells.get(key, {})
+		if not cells.is_empty() and not bool(cells["variant"]):
+			_add_variant(cells)
+			added += 1
+
+# The flagged tiles whose sets all hold the variant now: a bake result installs, a preview tile
+# shows (where its preview still wants it). O(waiting tiles).
+func _take_variant_waits(resident_patches: Dictionary) -> void:
+	for key: Vector2i in _variant_waits.keys():
+		if not _variant_missing(key):
+			var tile: Dictionary = _variant_waits[key]
+			_variant_waits.erase(key)
+			_install(tile, resident_patches)
+	for key: Vector2i in _preview_waits.keys():
+		if not _variant_missing(key):
+			_show_preview_tile(_preview_waits[key])
 
 # What resident patch `key` draws (T53 (a), decided by the user, 2026-10-28): its PlaneMesh only
 # while its list is known to name no tile and no preview tile lies in it; otherwise its set once
@@ -2355,7 +2463,8 @@ func has_pending_work() -> bool:
 		requested.is_empty() and patch_lists_requested.is_empty() and _lists_wanted.is_empty()
 		and _counts.is_empty() and _wanted.is_empty() and _deferred.is_empty()
 		and _edit_batch.is_empty() and _builds_urgent.is_empty() and _unready.is_empty()
-		and _growth_waits.is_empty()
+		and _growth_waits.is_empty() and _variants_wanted.is_empty() and _variant_waits.is_empty()
+		and _preview_waits.is_empty()
 	):
 		return true
 	for code in 4:
@@ -2477,6 +2586,7 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 func _acquire_cells(patch: Dictionary) -> Dictionary:
 	var cells: Dictionary = _cells_pool.pop_back() if not _cells_pool.is_empty() else _new_cells()
 	var aabb: AABB = patch["aabb"]
+	cells["aabb"] = aabb
 	for node: MultiMeshInstance3D in cells["nodes"] + [cells["walls"]]:
 		node.multimesh.custom_aabb = aabb
 		node.custom_aabb = aabb
@@ -2496,40 +2606,14 @@ func _bind_materials(cells: Dictionary, bound: bool) -> void:
 	if not bound:
 		(nodes[CELL_BASE] as GeometryInstance3D).material_override = null
 
-# One patch's cell resources: nine cell MultiMeshes (GL0-GL3, the base cells, GL0-GL3 behind the
-# road), the graded levels' materials by cell mesh (none at CELL_BASE, which takes the patch's)
-# and the wall MultiMesh.
+# One patch's cell resources: the five plain cell MultiMeshes (GL0-GL3, the base cells), the graded
+# levels' materials by cell mesh (none at CELL_BASE, which takes the patch's) and the wall
+# MultiMesh; the behind-the-road variant's four come with its first flagged tile (_add_variant).
 func _new_cells() -> Dictionary:
 	var nodes: Array = []
-	# No buffer is written here: the set's first build writes its instances' identity transforms
-	# one by one (_begin_build), so the RenderingServer keeps the MultiMesh's data on the CPU from
-	# the start. A bulk buffer lives on the GPU only, and the first per-instance write after it
-	# reads the whole buffer back, stalling on the GPU (0.5-2.1 ms a MultiMesh on the real
-	# display, `TERRAIN-07-E` round 6), which a pose's first tile moving into a level's mesh paid.
-	for index in CELL_MESHES:
-		var multimesh := MultiMesh.new()
-		multimesh.transform_format = MultiMesh.TRANSFORM_3D
-		multimesh.use_custom_data = true
-		multimesh.instance_count = _cells_per_patch
-		multimesh.visible_instance_count = 0
-		counters["multimeshes_created"] += 1
-		var node := MultiMeshInstance3D.new()
-		node.name = "GradedCells%d" % index
-		node.multimesh = multimesh
-		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		node.visible = false
-		nodes.append(node)
-	# One material per graded level and variant, so a draw binds only its page's two samplers
-	# (bound per patch, _bind_page).
 	var materials: Array[ShaderMaterial] = []
-	materials.resize(CELL_MESHES)
-	for index in CELL_MESHES:
-		if index == CELL_BASE:
-			continue
-		var material := ShaderMaterial.new()
-		material.shader = GRADED_BEHIND_SHADER if index >= CELL_BEHIND else GRADED_SHADER
-		counters["materials_created"] += 1
-		materials[index] = material
+	for index in CELL_PLAIN:
+		_add_cell_mesh(nodes, materials, index)
 	var wall_multimesh := MultiMesh.new()
 	wall_multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	wall_multimesh.mesh = _wall_mesh
@@ -2550,23 +2634,19 @@ func _new_cells() -> Dictionary:
 	for node: Node in nodes + [walls]:
 		root.add_child(node)
 	# The record of what each cell MultiMesh holds (_rebuild_patch_cells, _update_tile_cell): per
-	# mesh the custom data and tile of each instance and the instance count, per tile place its
-	# (mesh, instance), all sized once here.
+	# mesh the custom data and tile of each instance (the variant's with it) and the instance
+	# count, per tile place its (mesh, instance), all sized once here.
 	var records := []
 	var tile_at := []
-	for index in CELL_MESHES:
-		var custom: Array[Color] = []
-		custom.resize(_cells_per_patch)
-		records.append(custom)
-		var tiles: Array[Vector2i] = []
-		tiles.resize(_cells_per_patch)
-		tile_at.append(tiles)
+	_add_cell_records(records, tile_at, CELL_PLAIN)
 	var where: Array[Vector2i] = []
 	where.resize(_cells_per_patch)
 	var counts: Array[int] = []
 	counts.resize(CELL_MESHES)
 	return {
 		"root": root, "nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null,
+		# Whether it holds the behind variant's meshes, and the culling box its nodes take.
+		"variant": false, "aabb": AABB(),
 		"custom": records, "tile_at": tile_at, "where": where, "counts": counts,
 		"first": Vector2i.ZERO, "last": Vector2i(-1, -1), "tiles": [] as Array[Vector2i], "step": -1, "rect_hm": Vector4i.ZERO,
 		# Its patch, and the page its materials bind per level (-1: none).
@@ -2576,6 +2656,112 @@ func _new_cells() -> Dictionary:
 		# and whether it drew complete in its patch's residency (_draw_state).
 		"built": -1, "synced": false, "shown": false, "complete": false, "values": [], "sync_next": 0, "local": false,
 	}
+
+# Cell mesh `index` of a set: its MultiMesh of the patch's tile places and its node, and its
+# material (none for the base cells). No buffer is written here: the set's first build writes its
+# instances' identity transforms one by one (_begin_build, _add_variant), so the RenderingServer
+# keeps the MultiMesh's data on the CPU from the start. A bulk buffer lives on the GPU only, and
+# the first per-instance write after it reads the whole buffer back, stalling on the GPU (0.5-2.1
+# ms a MultiMesh on the real display, `TERRAIN-07-E` round 6), which a pose's first tile moving
+# into a level's mesh paid. One material per graded level and variant, so a draw binds only its
+# page's two samplers (bound per patch, _bind_page).
+func _add_cell_mesh(nodes: Array, materials: Array[ShaderMaterial], index: int) -> void:
+	var multimesh := MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.use_custom_data = true
+	multimesh.instance_count = _cells_per_patch
+	multimesh.visible_instance_count = 0
+	counters["multimeshes_created"] += 1
+	var node := MultiMeshInstance3D.new()
+	node.name = "GradedCells%d" % index
+	node.multimesh = multimesh
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	node.visible = false
+	nodes.append(node)
+	if index == CELL_BASE:
+		materials.append(null)
+		return
+	var material := ShaderMaterial.new()
+	material.shader = GRADED_BEHIND_SHADER if index >= CELL_BEHIND else GRADED_SHADER
+	counters["materials_created"] += 1
+	materials.append(material)
+
+# `meshes` more cell meshes' records: per instance its custom data and tile.
+func _add_cell_records(records: Array, tile_at: Array, meshes: int) -> void:
+	for index in meshes:
+		var custom: Array[Color] = []
+		custom.resize(_cells_per_patch)
+		records.append(custom)
+		var tiles: Array[Vector2i] = []
+		tiles.resize(_cells_per_patch)
+		tile_at.append(tiles)
+
+# Gives a set the behind-the-road variant's four cell meshes and materials (T49 (c)), as its patch
+# takes its first flagged tile: in the build path only (_begin_build, _advance_builds), never in a
+# frame path. They take the set's state as it stands, so a set drawing its patch draws on: empty
+# meshes under its root with its culling box (and, built, their identity transforms), materials
+# binding its pages and holding its synced parameters, the meshes and instance uniforms of a
+# drawing set and its bound materials. A set keeps them through the pool (`TERRAIN-07-G` round
+# 10): each set creates them at most once, so streaming creates and frees no node, and a set that
+# never met a flagged tile holds none. O(the variant's instances + the patch material's uniforms).
+func _add_variant(cells: Dictionary) -> void:
+	var nodes: Array = cells["nodes"]
+	var materials: Array[ShaderMaterial] = cells["materials"]
+	var aabb: AABB = cells["aabb"]
+	for index in range(CELL_BEHIND, CELL_MESHES):
+		_add_cell_mesh(nodes, materials, index)
+		var node: MultiMeshInstance3D = nodes[index]
+		node.multimesh.custom_aabb = aabb
+		node.custom_aabb = aabb
+		if bool(cells["local"]):
+			for instance in _cells_per_patch:
+				node.multimesh.set_instance_transform(instance, Transform3D.IDENTITY)
+		(cells["root"] as Node).add_child(node)
+	_add_cell_records(cells["custom"], cells["tile_at"], CELL_MESHES - CELL_PLAIN)
+	cells["variant"] = true
+	counters["cell_variants_created"] += 1
+	var pages: Array = cells["pages"]
+	var values: Array = cells["values"]
+	for index in range(CELL_BEHIND, CELL_MESHES):
+		var material := materials[index]
+		var page: Dictionary = page_store.by_id.get(int(pages[index - CELL_BEHIND]), {})
+		material.set_shader_parameter("graded_texels", page.get("texels", null))
+		material.set_shader_parameter("graded_atlas", page.get("atlas", null))
+		for at in values.size():
+			if values[at] != null:
+				material.set_shader_parameter(_uniform_names[at], values[at])
+	if bool(cells["shown"]):
+		_set_cell_meshes(cells, CELL_BEHIND)
+		for index in range(CELL_BEHIND, CELL_MESHES):
+			(nodes[index] as GeometryInstance3D).material_override = materials[index]
+	# The grass mask mirrors the set's meshes.
+	_cell_mask_revision += 1
+	counters["mask_revision_bumps"] += 1
+	cells["mask_revision"] = _cell_mask_revision
+
+# Whether a tile shown or installed in the set's patch is flagged behind the road: the set must
+# hold the variant (a preview dropped shows the installed tile again). O(the patch's tiles).
+func _patch_flagged(cells: Dictionary) -> bool:
+	for tile: Vector2i in cells["tiles"]:
+		if bool(preview.get(tile, {}).get("behind", false)) or bool(installed.get(tile, {}).get("behind", false)):
+			return true
+	return false
+
+# Whether a set of the patches meeting `tile` lacks the variant: each such set is queued for it
+# (the build path adds it), and the flagged tile waits until none lacks it. O(1).
+func _variant_missing(tile: Vector2i) -> bool:
+	var missing := false
+	for key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
+		var cells: Dictionary = patch_cells.get(key, {})
+		if cells.is_empty() or bool(cells["variant"]):
+			continue
+		var first: Vector2i = cells["first"]
+		var last: Vector2i = cells["last"]
+		if tile.x < first.x or tile.y < first.y or tile.x > last.x or tile.y > last.y:
+			continue
+		_variants_wanted[key] = true
+		missing = true
+	return missing
 
 # The patch material parameters whose change means the graded material must be synced: the
 # textures and per-patch values terrain.gd swaps on commits, masks, water and overlays.

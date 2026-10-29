@@ -280,6 +280,10 @@ func _sync_graded_mask(
 	var materials: Array = cells["materials"]
 	for index in mirrors.size():
 		var mirror := mirrors[index] as MultiMeshInstance3D
+		# A set without the behind-the-road variant has no cells to mirror there.
+		if index >= sources.size():
+			mirror.visible = false
+			continue
 		var cell_source := sources[index] as MultiMeshInstance3D
 		mirror.multimesh = cell_source.multimesh
 		mirror.position = source.position
