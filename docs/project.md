@@ -358,7 +358,17 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   (`PERF-11`). The user decided the next round (questions 62 and 63): no FPS cap in the Method
   with Wayland reported beside Xwayland, the pose's main-thread work cut to fit the idle clock,
   sub-chunk preview payloads; targets unchanged
-  ([record](roads.md#round-2-the-pacing-check-the-active-rendered-row-the-carried-items-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
+  ([record](roads.md#round-2-the-pacing-check-the-active-rendered-row-the-carried-items-road-68-h-2026-10-29)).
+  Round 3 (2026-10-29): a preview pose sends its rebuilt pieces and the published runs they
+  replace, which Godot collapses in the resident chunk (11.5 -> 2.8 MB a pose at 100k, call and
+  install 14-15 -> 7-10 ms; committed payloads, composed chunks and 43 preview captures bitwise
+  the control's), and the road tool's view holds every published chunk (a latent bug left it the
+  unacknowledged upserts); `ROAD-72` makes a split's building migration local (topology 0.48 ->
+  0.06 ms at 100,000 remote sites). The rows still miss: paused 78.7 % Xwayland / 90.4 % Wayland
+  without the FPS cap (main-thread work at the idle clock unchanged), populated 27-29 % active,
+  57-62 % paused, its T's rest of frame the graded renderer's streaming after the load (question
+  64, open); the commit row passes (at most 13.0 ms at 100k); the user accepted carried item 1
+  ([record](roads.md#round-3-sub-chunk-preview-payloads-the-poses-main-thread-work-the-city-scan-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
   compacted for quality to 7,229 production lines with every product bitwise unchanged.
   `ROAD-68-E` (implemented; acceptance open) previews each road pose synchronously in the frame that samples it,
   with the commit's own plan, pieces and road chunks, and the commit installs them; one preview

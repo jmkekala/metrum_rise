@@ -3724,6 +3724,29 @@ These need a user decision; work that does not depend on them continues.
       part of a road chunk, not the whole 512 m chunk (11.5 MB a pose at 100k); it is also the main
       lever for [question 62](#road-68-open-questions) (b). Nothing is built for it in round 2; the
       next round builds it, reruns the row and attributes the engine's rest-of-frame time.
+    - **Built in round 3 (2026-10-29):** the payload falls from 11.5 to 2.8 MB a pose at 100k and
+      the call and install from 14-15 to 7-10 ms (gamescope, full clock); the row still misses,
+      its rest of frame the graded renderer's streaming after the load (question 64).
+64. **The populated row is sampled inside the graded renderer's streaming after the load
+    (`ROAD-68-H` round 3) — open.**
+    - **Evidence.** With the sub-chunk payloads the populated pose's call and install take 7-10 ms
+      (from 14-15), but `populated_t`'s rest of frame stays 24-44 ms. Symbolized (Godot's debug
+      file by build ID), that rest is GDScript walking dictionaries and arrays; PerfDebug names
+      it: `terrain.gd`'s frame rises to 47 ms while each case runs after its load and falls under
+      2 ms once the load settles, nearly all the graded tile renderer's residency pass (13-33 ms a
+      frame, growing with the wanted tiles, 2,145 to 6,923) and the patch residency (6-7 ms
+      against its 4 ms budget). The idle-frame matrix met the same window and, by the user's
+      decision (`TERRAIN-07-E` round 7, `5972bef8`), waits for the cell set builds after a load;
+      the preview harness does not wait.
+    - **Options.** (a) The populated row waits, as the idle matrix does, until the graded renderer
+      has settled after the load (its wanted tiles resident and no cell set build pending), so it
+      measures the preview in the steady state; the streaming's own cost is reported apart. (b)
+      Make the graded renderer's residency pass follow the changed tiles instead of every wanted
+      tile each frame (a `TERRAIN-07` track: the same cost shows after every load and camera jump
+      at 100k). (c) Both. (d) Count the window in the row as it is (a miss).
+    - **Recommendation.** (c): (a) for the row, so it measures what the road tool costs, and (b) as
+      its own measured track, since a 13-33 ms frame while tiles stream is a real cost. Not
+      decided by the agent; the round measures the row as before (d) meanwhile.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -8236,8 +8259,10 @@ on `road`, changes 37 files under `rust/src`, 1,813 lines added and 195 removed.
 gate that measured them: they do not block that gate and are neither relaxed nor accepted; H
 measures and judges each against its target. A gate landing later adds its own here.
 
-1. Godot terrain install per pose ([`terrain.md`](terrain.md#budgets), the 1.0 ms share proposed
-   within this spec's 2.0 ms Godot stage): 2 of 594 frames over 1.0 ms, 1.55 and 1.39 ms
+1. **Accepted by the user for `ROAD-68` (2026-10-29, round 3: round 2's one install at 1.009 ms
+   against the 1.0 ms share, inside the 2.0 ms stage).** Godot terrain install per pose
+   ([`terrain.md`](terrain.md#budgets), the 1.0 ms share proposed within this spec's 2.0 ms Godot
+   stage): 2 of 594 frames over 1.0 ms, 1.55 and 1.39 ms
    (`kuopio_12` attempts 34 and 36, four cell sets starting to draw; binding their materials is
    about 65 % of a flip), within the 2.0 ms stage. The final probe: `TERRAIN-07-E` round 7,
    `windowed-20261027T185026` ([record](terrain.md#terrain-07-e-record)).
@@ -8767,6 +8792,11 @@ commits between `ROAD-68-G` part 10's `3b1e587b` and `8bfd9ebf` do not compile o
 Branch `road68-H` on round 2's `fcda122e`. Built from the user's decisions on questions 62 (d)
 and (b) and 63 (b).
 
+**The user's decision (2026-10-29, during round 3):** carried item 1 is accepted for `ROAD-68`:
+the single pose install of round 2's drag probe at 1.009 ms against the proposed 1.0 ms share
+(1 of 594), inside the 2.0 ms Godot stage. That row carries the user's decision for the gate;
+every other row still passes or carries its own decision.
+
 **Sub-chunk preview payloads: the design** (written before the code, question 63 (b)). A pose
 used to send every render chunk the stroke changes whole, as the commit publishes it (the
 spliced chunk: kept owners' triangles copied from the published chunk, rebuilt pieces emitted),
@@ -8829,6 +8859,213 @@ that is 11.5 MB a pose, nearly all of it triangles Godot already shows.
   composed resident and overlay meshes hold the committed chunk's triangles; the preview's
   pixels at converged poses equal the control's (gamescope captures). The committed payloads:
   the commit breakdown's `COMMIT_PRODUCTS` against the control.
+
+**Built** (`f8d06a12`). `RoadRenderer::generate_preview_overlay` emits the delta's built pieces
+through the commit's `emit_chunks` with an empty light and sign coverage, and finds each changed
+chunk's hidden runs with `NetworkMeshData::owner_vertex_ranges` (one `partition_point` per closure
+owner and layer over the chunk's owner runs); test builds compare the overlay's pieces with the
+splice's fresh coverage and the hidden runs with the runs the splice drops
+(`vertex_ranges_dropped`). `generate_preview_chunks` is gone. The committed renderer's cache is a
+`RoadChunkMap` (`imbl::OrdMap`), which the view clones in `O(1)` with the road mesh generation
+Godot records for it (`road_mesh_surface_generation`). The bridge sends each overlay in the
+committed chunk format with `hidden` (flat `[layer, start, end]`) and `hidden_positions`, and the
+dictionary's `road_mesh_generation`. In Godot, `_fill_road_chunk_mesh` records each layer's surface
+(`road_layer_surfaces` meta) and `road_preview_display.gd` keeps the collapsed runs per resident
+instance with their saved positions, applies a pose's changes after staging, and shows a preview
+of a generation not installed yet from `resident_installed`. Lines: `render/` 4,317 -> 4,474;
+`roadbed/` 9,234 and `terrain/graded/` 10,169 unchanged.
+
+**Proof** (fresh, 2026-10-29):
+
+- **Rust, debug** (`cargo test --lib`, 308 s): 1,845 passed, 0 failed, 177 ignored. The
+  preview tests compare each changed chunk's composition (`compose_preview`: the view's published
+  chunk without the hidden runs, the overlay merged in owner order) with the committed chunk:
+  layers, crossing frames and owner runs bitwise (`preview_chunks_compose_the_committed_chunks`,
+  `preview_chunks_with_crossings_and_signs_are_the_committed_chunks` (the overlays paint the
+  zebras; the commit places the signs and lights), `a_widening_continuation_previews_its_committed_chunks`),
+  and every preview of the suite runs the two test-build assertions.
+  `a_preview_after_an_acknowledged_publication_composes_over_every_published_chunk` acknowledges
+  the fixture's publication (the unacknowledged upserts empty) before the context: the view holds
+  the chunks, the T hides runs of the resident through road and composes the committed chunk.
+  Before, the view took the empty upserts, so the preview's splice had nothing to keep.
+- **Godot** (gamescope, the round's release library): `road_junction_preview_test.gd` passes (the
+  display collapses exactly the payload's runs, the hidden runs are the resident chunk's own
+  positions, cancel restores every run, a chain's next stroke waits for the commit's chunks and
+  shows in their install call, and each previewed chunk's composition holds the committed chunk's
+  triangles, every attribute and crossing frame, as a multiset); `network_tool_chunk_renderer_test.gd`
+  and `road_preview_stream_test.gd` pass.
+- **Pixels.** The junction preview test's captures (`METRUM_JUNCTION_PREVIEW_CAPTURE`: before,
+  the converged preview, cancelled and committed for each fixture, rendered on the GPU in
+  gamescope, so the collapsed runs are drawn as Godot draws them), control (`fcda122e`'s scripts
+  and tests on H1's library, the tip's Rust) against this round: **43 of 43 images identical**,
+  every pixel (`$ARTIFACTS/road68/h3/captures-ctl`, `captures-new`, `compare.py`).
+- **The populated pose** (the 100k commit city paused, `populated_t` and `populated_branch`,
+  gamescope, MAX_FPS=0, 20 samples after 4 warm-ups; before = `fcda122e`'s scripts on H1's
+  library, after = this round, 15:46-15:50; not acceptance timing, both at full clock): road
+  payload of the final pose **11.53 -> 2.80 MB** (`populated_t`) and **11.48 -> 2.76 MB**
+  (`populated_branch`), the whole pose's packed bytes p50 11.54 -> 2.81 MB;
+  p50 ms before -> after: payload 3.03 -> 1.41 and 3.30 -> 2.10, packing 1.38 -> 0.38 and
+  1.49 -> 0.50, the call 7.99 -> 5.22 and 9.02 -> 7.23, the install 6.01 -> 1.79 and
+  6.05 -> 2.40 (plan, roadbed and graded unchanged: 0.5, 1.0-1.2, 1.6-2.7). What is left is the
+  closure's own pieces: the split trunk's two halves (544 m) and the edges at its end nodes,
+  emitted, packed and uploaded each pose. The rest of the T's frame stays 42 ms (engine time,
+  below).
+
+**ROAD-72** (`20ab7a37`). `BuildingAllocator::migrate_split_frontages` takes the buildings fronting
+the split edge from `attachment_repair_candidates` over the two halves (the 512 m building chunks
+within reach of their segments: the largest lot, the repair's search and the edge's frontage
+offset), filtered to the split edge, in building order, so the moved rows, their undo entries and
+their record are the scan's; the whole city only while the chunk index is stale. Test builds
+assert the set equals the whole city's scan, so every split in the debug suite checks it;
+`split_frontages_come_from_the_split_edges_chunks` (fresh and stale index) and
+`split_frontages_are_checked_against_the_whole_city` (a building attached from another chunk
+trips the check). `O(candidates log candidates)` against `O(B)`.
+
+**The paused preview rows on the display** (fresh, 2026-10-29 15:51-16:09, the user's display,
+DP-2 at 3840x2160, 120 Hz; the round's release library (`dca30744…`), 1920x1080 windowed, vsync,
+no FPS cap, four workers, P-cores, both locks, `display-awake.sh`, a throwaway profile; N W W N
+interleaved, 100 samples after 8 warm-ups; `$ARTIFACTS/road68/h3/rows-windowed-20261029T155115/`).
+Sampled poses exact within 16.7 ms: **N (Xwayland) 3,040 of 3,862 (78.7 %), W (native Wayland)
+3,575 of 3,954 (90.4 %)**; every miss `late_exact`. N's first run of `sloped_t` and
+`sloped_branch` paced at 60 Hz (frames p50 16.8 ms; the window opened before the display ran at
+120 Hz): without it N is 2,621 of 3,128 (83.8 %). Round 2 measured 85.2 % N and 90.4 % W with
+the whole-chunk payload: the synthetic fixtures' 128 m chunks were already small, so the rows do
+not move. Two runs a cell, ms:
+
+| Fixture | Variant | Frame interval p50 / p95 | Exact within 16.7 ms | Stationary p50 / p95 / max | Stop → exact | Moving age p50 / p95 / max |
+| --- | --- | --- | --- | --- | --- | --- |
+| `sloped_t` | N | 16.8 / 24.4 (60 Hz); 8.5 / 17.9 | 206 of 358; 335 of 391 | 16.48 / 24.16 / 24.87; 8.16 / 13.24 / 18.12 | 20.08; 13.91 | 16.52 / 26.73 / 145.35; 13.59 / 22.12 / 64.49 |
+| `sloped_t` | W | 8.4 / 16.6; 8.4 / 14.9 | 358 of 394; 380 of 397 | 8.31 / 11.52 / 12.52; 8.30 / 14.74 / 16.43 | 15.36; 8.35 | 13.42 / 22.86 / 69.99; 13.97 / 18.60 / 68.09 |
+| `sloped_branch` | N | 16.8 / 23.1 (60 Hz); 8.5 / 17.3 | 213 of 376; 349 of 394 | 16.44 / 23.19 / 26.59; 8.06 / 12.90 / 15.55 | 25.36; 9.16 | 16.52 / 24.35 / 32.87; 13.50 / 21.21 / 26.04 |
+| `sloped_branch` | W | 8.4 / 17.3; 8.4 / 14.5 | 352 of 394; 387 of 400 | 8.34 / 15.74 / 24.27; 8.26 / 10.22 / 14.32 | 9.13; 7.73 | 13.61 / 22.22 / 26.78; 13.56 / 22.39 / 24.95 |
+| `flat_cross` | N | 8.7 / 20.2; 8.6 / 18.8 | 296 of 385; 328 of 392 | 8.86 / 13.70 / 15.66; 9.18 / 18.07 / 24.84 | 13.12; 12.75 | 14.31 / 20.92 / 66.25; 14.08 / 19.97 / 73.07 |
+| `flat_cross` | W | 8.5 / 17.0; 8.5 / 17.8 | 354 of 395; 348 of 393 | 9.63 / 16.80 / 20.54; 8.32 / 16.82 / 21.80 | 8.41; 11.82 | 14.51 / 18.86 / 71.37; 13.86 / 20.45 / 70.44 |
+| `sloped_cross` | N | 8.5 / 19.9; 8.6 / 19.1 | 314 of 392; 329 of 392 | 8.72 / 19.59 / 26.34; 10.55 / 20.60 / 22.96 | 13.82; 9.73 | 14.25 / 20.71 / 33.25; 14.23 / 20.70 / 30.72 |
+| `sloped_cross` | W | 8.4 / 17.9; 8.7 / 18.3 | 342 of 395; 352 of 395 | 8.43 / 16.55 / 23.80; 9.81 / 19.95 / 26.50 | 10.45; 13.12 | 14.40 / 19.39 / 26.96; 14.16 / 20.88 / 28.27 |
+| `dense` | N | 8.4 / 19.6; 8.4 / 18.4 | 327 of 389; 343 of 393 | 8.32 / 18.34 / 22.36; 8.17 / 12.92 / 23.92 | 8.51; 13.67 | 13.53 / 20.67 / 28.53; 13.36 / 22.71 / 24.56 |
+| `dense` | W | 8.5 / 18.0; 8.4 / 16.6 | 340 of 394; 362 of 397 | 8.53 / 14.36 / 19.45; 8.29 / 14.79 / 22.92 | 13.37; 9.10 | 13.96 / 23.65 / 28.44; 13.83 / 19.71 / 24.75 |
+
+One W run (`dense`, the second) hung in Godot's exit after writing its metrics and was stopped;
+its numbers are complete.
+
+**The populated rows on the display** (fresh, 16:25:31-16:37:38, as above; the 100k commit city,
+`populated_t` and `populated_branch` at the commit breakdown's first edit site, A P A on Xwayland,
+then on native Wayland; `populated-windowed-20261029T162531/`,
+`populated-windowed-wayland-20261029T163119/`; a first attempt, 16:09-16:15, was stopped: an
+exit-hang watchdog added after the rows' hang killed each run after its first case's metrics,
+which are written per case; fixed to wait for every expected case). Sampled poses exact within
+16.7 ms: **A (the simulation at 1x) 229 of 803 (28.5 %) on Xwayland, 213 of 790 (27.0 %) on
+Wayland; P (paused) 358 of 629 (56.9 %) and 394 of 637 (61.9 %)**; round 2: 0 of 590 and 0 of
+493 (60 FPS cap, whole chunks). Every miss `late_exact`. p50 ms, late poses:
+
+| Case | Variant | Exact within 16.7 ms (Xwayland; Wayland) | Call / install / rest, late p50 (Xwayland) |
+| --- | --- | --- | --- |
+| `populated_t` | A | 0 of 115, 0 of 114; 0 of 115, 0 of 109 | 5.6 / 2.1 / 42.5-42.7 |
+| `populated_t` | P | 35 of 233; 46 of 240 | 5.2 / 2.0 / 23.3 |
+| `populated_branch` | A | 102 of 282, 127 of 292; 103 of 282, 110 of 284 | 6.3-6.5 / 2.2 / 10.9-11.8 |
+| `populated_branch` | P | 323 of 396; 348 of 397 | 8.9 / 3.2 / 5.5 |
+
+The preview's own share is now the call (5-7 ms p50) and the install (2.0-2.3 ms); the misses are
+the rest of the frame: on the T the graded renderer's streaming after the load (question 64), and
+with the simulation active the simulation's share (the branch's rest 11-12 ms active against
+5.5 ms paused), which round 2 left unattributed by function. One Wayland run (P) hung at exit
+after writing every case's metrics and was stopped by the watchdog; its numbers are complete.
+
+**Section 2: the pose's main-thread work at the idle clock.** Not cut in this round beyond the
+payload. The sub-chunk payload removes the populated pose's 11.5 MB (call and install 14-15 ms to
+7-10 ms at full clock), but on the synthetic fixtures the 128 m chunks were small already: their
+payload stage stays 0.40-0.43 ms p50 and the rows do not move (78.7 % N, 90.4 % W). The rows'
+profile after the change (16:37:38-16:38:23, N and W on `sloped_t` and `sloped_branch` under
+`perf record`, `pacing-profile-windowed-20261029T163738/`, `profile-N.txt`, `profile-W.txt`;
+round 2's method, attribution not timing): between a pose's sample and its exact frame the main
+thread executes **14.1-14.6 M cycles p50 on time or late, as in round 2**, the pool workers
+15.5-18.0 M; the late poses run at 1.18-1.25 GHz (main busy 11.9-12.7 ms, the call 7.9-8.8 ms,
+the rest of the frame 6.4-7.2 ms wall), the on-time ones at 2.2-2.3 GHz p50 (call 3.9-4.3 ms).
+So the work a pose must lose to fit 16.7 ms at the idle clock is unchanged: the call's own
+stages (plan, roadbed, graded, payload; 2.4-2.8 ms at operating clock headless) and the frame's
+engine part (3.1-3.6 ms of the late rest in Godot). Carried to the next round (question 62 (b)).
+
+**The landing session** (fresh, 2026-10-29 16:17:51-16:23:43, one hold of both locks,
+`taskset -c 0,2,4,6,8,10,12,14`, `METRUM_DEBUG=0`, no restic, compiler, cargo or Godot process;
+release library tests: C = H1's F (`$TEST_BINARY` sha256 `a880ce56…`, the Rust of `fcda122e`),
+F = this round (`9f9cb9ba…`, the Rust of `20ab7a37`), each with its own saved cities, every
+populated tier `loaded`; `$ARTIFACTS/road68/h3/session/`, `breakdown-table.txt`,
+`locality-table.txt`, `drags-table.txt`). C F F C each:
+
+- **Commit** (click → committed generation installed and acknowledged, first samples, ms): 0: C
+  6.09, 6.17, F 6.25, 7.02; 10k: C 10.27, 9.31, F 9.58, 9.73; 30k: C 9.90, 10.23, F 10.36,
+  10.33; 100k: C 14.71, 14.55, **F 12.97, 12.56**. Every sample of every run fits 16.7 ms. At
+  100k the topology stage takes C 0.33-0.41, F 0.03 ms (`ROAD-72`).
+- **Bitwise.** All four breakdown runs print the same `COMMIT_PRODUCTS` (the city's road payload
+  vertices, every sample's republished chunks and payload vertices among them), so the committed
+  and published chunk payloads are bitwise round 2's; all sixteen locality product sets are equal,
+  C and F alike.
+- **Locality.** The topology stage at 100,000 remote sites: C 0.475, 0.483 ms, **F 0.055, 0.056**
+  (0.03-0.08 at 0 sites): `ROAD-72` makes it flat. First commits at 100,000 sites C 18.30, 20.43,
+  F 15.10, 17.45 ms (0 sites: C 12.71, 14.93, F 13.67, 13.46); the remaining growth is round 1's
+  accepted parts (terrain query index, graph copy).
+- **Preview stages** (four workers): payload p50 0.400-0.428 ms C and F, totals p50 2.37-2.82 ms;
+  `sloped_branch` sends 9,973 overlay vertices and 6,475 hidden positions a pose against 11,706
+  chunk vertices; `sloped_t`'s closure is its whole 128 m chunk (9,845 both).
+- **Populated drags:** pose frames at most 2.67 / 2.86 ms (C), 2.64 / 2.61 ms (F), none over the
+  3.0 ms stage; fast clicks at most 3.37 (C) and 2.67 ms (F).
+
+**Acceptance against every target** (fresh in this round unless marked):
+
+| Target | Result | Status |
+| --- | --- | --- |
+| Moving, simulation paused (every sampled pose exact within 16.7 ms) | N 78.7 % (83.8 % without one run paced at 60 Hz), W 90.4 %; every miss one frame late | Miss: the pose's main-thread work at the idle clock (question 62 (b)) not cut yet |
+| Moving, simulation active (at least 99 %, misses attributed) | 100k: A 28.5 % Xwayland, 27.0 % Wayland (paused 56.9 %, 61.9 %); round 2 0 % | Miss: the graded renderer's streaming after the load (question 64) and the simulation's share (unattributed by function) |
+| Stationary (p99 and stop → exact under 16.7 ms) | W p95 10.2-20.0, stop → exact 7.7-15.4 ms; N p95 12.9-24.2, 8.5-25.4 ms | Miss |
+| Commit (click → acknowledged under 16.7 ms) | every sample 0-100k, at most 12.97 ms (F) | Pass |
+| Locality (products bitwise, flat) | bitwise; topology flat since `ROAD-72`; the first commit's accepted growth | Accepted as measured by the user (round 2) |
+| The terrain stage's 3.0 ms (populated drags) | pose frames at most 2.64 ms | Pass |
+| Bitwise preview = commit = undo = load | composition tests; `COMMIT_PRODUCTS` equal to C; 43 of 43 captures identical | Pass |
+| Carried item 1 (one pose install at 1.009 ms against the 1.0 ms share) | round 2's probe | The user's decision: accepted (2026-10-29) |
+
+**Carried items** beyond item 1: as round 2 judged them (5, 6 and 9 measured there; the rest as
+round 1); no code of theirs changed in this round.
+
+**Gate checks** (fresh, on `e184bec6`, the Rust of every later commit; the debug suite above ran on
+`20ab7a37`'s Rust): GATECHECKS
+
+**Merge risks.** Every rendered result ran on Linux with the RX 7900 XTX (Vulkan); the sub-chunk
+display writes a resident surface's position stream in place, which relies on Godot 4.7's layout
+(positions as their own `f32` stream, checked on this GPU; the display refuses a surface whose
+position stride is not 12 bytes), and macOS is unvalidated with `TERRAIN-10` open. The rebased WIP
+commits between `ROAD-68-G` part 10's `3b1e587b` and `8bfd9ebf` do not compile on their own. Godot's
+Wayland driver hung at exit in two of this round's runs after writing its metrics (the harness's
+watchdog stops it); the game itself was not seen to hang.
+
+**Section 2: the populated pose's rest of frame, named** (fresh analysis of round 2's active
+profile, `$ARTIFACTS/road68/h2/populated-windowed-profile-20261029T134516/`; not a new run).
+Godot's executable is stripped; its debug file, fetched by the executable's ELF build ID
+(`15425c02056a6250959df0305a18e5d0d4755b75`, debuginfod.archlinux.org, sha256 `f896470d…`, as
+`TERRAIN-07-G` round 9C) and registered in perf's build-ID cache, resolves its addresses
+(`$ARTIFACTS/road68/h3/frames_sym.py`: the main thread's samples between each pose's sample and
+its exact frame, and after the install, by symbol). In the late `populated_t` poses (95, the
+simulation at 1x) the main thread's rest of frame is 37.6 ms a pose, 33.0 of it in Godot, and
+that is **the GDScript interpreter and the Variant containers it drives**:
+`GDScriptFunction::call` 5.6 ms, `Variant::hash_compare` 2.5, `Dictionary::getptr` 2.2,
+`Array::_ref` and `_unref` 3.6, `Dictionary` copies and releases 2.6, `Variant` references and
+assignments 2.9, string reference counts 1.4, and the long tail of the same; the renderer's own
+functions (draw lists, the forward renderer's lists) take under 1 ms. `populated_branch` at the
+same site has 6.2 ms of rest (GDScript 0.3 ms). So the T's rest of frame is one of our scripts
+walking dictionaries and arrays each frame: not the engine, not `RENDER-27`, and not the road
+tool's install. **Which script** (fresh, 16:23-16:25, gamescope, the populated cases paused with
+Godot's PerfDebug summaries, `METRUM_DEBUG_PERF=1`, `$ARTIFACTS/road68/h3/perfdebug-20261029T162345/`;
+attribution, not timing): the terrain renderer, `terrain.gd`'s frame, rises from 8 to 47 ms a
+frame while each case runs after its load and falls back to under 2 ms once it settles, almost
+all of it the graded tile renderer's residency pass (`graded_residency_ms` 13.0, 24.5 and 33.0 ms
+in three successive summaries, as its wanted tiles grow 2,145, 4,917 and 6,923 while the 100k
+city's tiles stream in) and the patch residency (6.0-6.9 ms a frame against its 4.0 ms budget);
+texture memory grows from 494 to 1,124 MB meanwhile. So the populated row is sampled inside the
+graded renderer's streaming after the load, whose per-frame GDScript work grows with the tiles
+wanted: `TERRAIN-07`'s renderer, not the road preview and not the engine
+([question 64](#road-68-open-questions)). The window's install part before this round was Godot's `_surface_set_data`
+(4.0 ms), `Vector3::octahedron_encode` (1.1 ms) and the copies in libc (3.7 ms), with `seal`
+(0.8 ms) and the packed-array conversions (0.7 ms) in the extension: the 11.5 MB upload that the
+sub-chunk payload removes.
 
 ## Measurement and acceptance
 
