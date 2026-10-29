@@ -348,9 +348,15 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   ([commit stages, part 10](roads.md#commit-stages-part-10-the-gate-road-68-g-2026-10-29)). `ROAD-68-H` round 1
   (2026-10-29, in progress) removed the dead paths gates D-G and `TERRAIN-07-G` left, made
   `./run.sh --test` run every rendered test under gamescope and passed the headless rows except
-  the commit's locality at 100k remote sites (for the user); on the user's display the preview
-  rows miss 16.7 ms on 26-38 % of sampled poses by presentation pacing (the frames' own work 2-3
-  ms), for the user, and question 61 is open ([record](roads.md#round-1-cleanup-and-the-headless-rows-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
+  the commit's locality at 100k remote sites, which the user accepted as measured (later tracks
+  `ROAD-71`, `ROAD-72`, `TERRAIN-11`; [record](roads.md#round-1-cleanup-and-the-headless-rows-road-68-h-2026-10-29)).
+  Round 2 (2026-10-29): the preview rows' late poses on the user's display run the same work at
+  the P-cores' idle clock (70 % of sampled poses on time with the 60 FPS cap, 85-90 % without),
+  not presentation pacing; the new populated row (simulation at 1x on the 100k city) misses at
+  0 of 590, each pose re-emitting whole 512 m road chunks (11.5 MB); the routing adoption frame's
+  125 ms agent tick is the movement scratch re-prepared for the new revision plus waiting replans
+  (`PERF-11`); both rows are for the user (questions 62 and 63,
+  [record](roads.md#round-2-the-pacing-check-the-active-rendered-row-the-carried-items-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
   compacted for quality to 7,229 production lines with every product bitwise unchanged.
   `ROAD-68-E` (implemented; acceptance open) previews each road pose synchronously in the frame that samples it,
   with the commit's own plan, pieces and road chunks, and the commit installs them; one preview

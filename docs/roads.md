@@ -3634,8 +3634,8 @@ These need a user decision; work that does not depend on them continues.
       `ROAD-68-G` closes; (b), a persistent graph store, becomes its own measured track if the
       copy shows in a frame. `ROAD-68-G` builds nothing for it. H checks whether the copy shows
       in a frame ([carried to H](#road-68-h--acceptance-and-cleanup)).
-61. **The rendered Moving row with the simulation active (`ROAD-68-H` round 1) — open, for the
-    user.**
+61. **The rendered Moving row with the simulation active (`ROAD-68-H` round 1) — (a), decided by
+    the user, 2026-10-29; the row misses (question 63).**
     - **Evidence.** The [Moving target](#targets) asks for the simulation active on the populated
       fixture (at least 99% of sampled poses exact within 16.7 ms, every miss attributed). No
       rendered harness runs that case: the gameplay harness pauses the simulation for every
@@ -3654,6 +3654,52 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation.** (a): the target's own fixture and collector, and the populated city the
       commit row already uses. Not built in round 1 (it is new harness work and the rendered
       session is the user's display); `ROAD-68-H` stays open on this row until it runs.
+    - **(a), decided by the user, 2026-10-29; run in `ROAD-68-H` round 2:** the populated cases
+      `populated_t` and `populated_branch` on the commit breakdown's 100k city at 1x; 0 of 590
+      sampled poses exact within 16.7 ms (0 of 493 paused), attributed in part
+      ([round 2](#round-2-the-pacing-check-the-active-rendered-row-the-carried-items-road-68-h-2026-10-29));
+      [question 63](#road-68-open-questions).
+62. **The rendered preview rows at the CPU's idle clock (`ROAD-68-H` round 2) — open, for the
+    user.**
+    - **Evidence.** On the user's display the five preview rows put 70.4 % of sampled poses on time
+      with the Method's settings, 85.2 % without the FPS cap and 90.4 % without it on Godot's
+      Wayland driver, in one session; every miss is one frame late. Profiled, a pose executes the
+      same 14 M main-thread and 16-17 M pool cycles between its sample and its exact frame whether
+      on time or late; every late pose ran at 1.18-1.26 GHz, the on-time ones at 1.7-2.4 GHz p50.
+      The P-cores' power policy (`powersave`, `balance_performance`) sets that clock from their
+      recent load, and a paused preview with a frame cap is a light load. The headless stage
+      runs, back to back, run at operating clock (the preview's stages 2.4-2.8 ms there against
+      4-6 ms on time and 8-11 ms late on the display). This is [question 27](#road-68-open-questions)'s
+      open half (the 16.7 ms frame at the idle clock), now measured on the display.
+    - **Options.** (a) The [Method](#method) fixes the CPU power policy for the rendered runs (the
+      `performance` governor or energy preference for the run, a machine setting that needs root),
+      as question 27 (a) states the stage budgets at operating clock; the default-policy numbers
+      stay recorded beside each run. (b) Keep the default policy and make a pose fit at the idle
+      clock: at 1.2 GHz the main thread's 14 M cycles alone take 11.7 ms, so about a third of the
+      main thread's work between sample and frame must go (question 27 (b)). (c) Keep the clock
+      up while the road tool previews (question 27 (d)): power spent to hide the cost. (d) Measure
+      without the FPS cap: 85-90 %, still a miss.
+    - **Recommendation.** (a), with one rendered run under the `performance` policy to confirm the
+      rows at operating clock (the agent cannot change the policy); not decided by the agent.
+63. **The populated rendered row's misses (`ROAD-68-H` round 2) — open, for the user.**
+    - **Evidence.** 0 of 590 sampled poses within 16.7 ms with the simulation at 1x on the 100k
+      city (0 of 493 paused), at full clock. (1) The preview re-emits every render chunk the
+      stroke changes, whole (the [preview contract](#constructive-roadbed-road-68): the commit
+      publishes exactly the previewed chunks); the game's worlds use 512 m chunks (the synthetic
+      fixtures 128 m), so a pose carries 11.5 MB of road chunks (0.53-0.63 MB on the fixtures):
+      the call 8.1-9.9 ms and the install 6.3-6.6 ms p50, about 15 ms before the rest of the frame.
+      (2) The rest of the paused frame, 4.5 ms on the branch and 26.6 ms on the T, is the engine's
+      main-thread time, not named (Arch's Godot is stripped). (3) The simulation adds 6-22 ms of it
+      and 0.6-0.9 ms to the call; consistent with `RENDER-28` and `RENDER-27`, not shown.
+    - **Options.** (a) Smaller road render chunks in the game's worlds (128 m, as the fixtures):
+      the payload falls with the chunk's content, the city draws more chunks (the GPU matrix
+      measures it). (b) Chunk payloads below the chunk: the preview sends the changed pieces'
+      meshes and the display keeps the rest of each chunk, so the payload follows the edit; the
+      commit's "exactly the previewed chunks" becomes exactly the previewed pieces. (c) Keep whole
+      512 m chunks and accept the miss. For (2) and (3), any option: name the engine's time with
+      an unmodified upstream Godot built with symbols, then judge it against the separate tracks.
+    - **Recommendation.** (a) measured first (the smallest change), (b) if (a) costs the render
+      frame; then rerun the row and attribute the engine's time. Not decided by the agent.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -8462,6 +8508,212 @@ user. The Moving row with the simulation active has no rendered harness
 does not run the rendered tests there) and has [`TERRAIN-10`](roadmap.md) open: graded patches
 drawing nothing on another developer's Mac. The commit's locality at 100,000 remote sites and
 question 61 are open for the user.
+
+#### Round 2: the pacing check, the active rendered row, the carried items (`ROAD-68-H`, 2026-10-29)
+
+Branch `road68-H` on round 1's `9e7782cd`. Not the gate: the rendered preview rows and the
+populated row miss (below) and need the user's decisions.
+
+**The user's decisions (2026-10-29, about 13:20).**
+
+- **Locality** (round 1: products bitwise, the first commit +1.9-2.5 ms in its parts at 100,000
+  remote sites): accepted as measured for `ROAD-68`. Later tracks in the roadmap:
+  [question 60](#road-68-open-questions) (b), the persistent graph store (`ROAD-71`), and the
+  terrain query index update's cost on the commit (`TERRAIN-11`). The topology adoption's +0.44 ms
+  is attributed below (`ROAD-72`).
+- **The rendered preview's pacing:** confirmed in this round before the user decides (below,
+  [question 62](#road-68-open-questions)).
+- **[Question 61](#road-68-open-questions) (a):** a populated case in the rendered preview matrix
+  with the simulation active, run on the display, every miss attributed, the routing adoption
+  frame's agent tick at 100k included (below; the row's misses are [question 63](#road-68-open-questions)).
+
+**Fresh and historical.** Everything in this record is fresh unless marked: the user's display
+(DP-2, 3840x2160 at 120 Hz; a 1920x1080 window, vsync) on 2026-10-29 13:25-13:53, round 1's
+release library of the tip (sha256 `cca536b7…`; Rust = `3e662826`'s, unchanged in this round),
+four workers, P-cores, `.run.lock` with the exclusive timing lock, under `display-awake.sh`, a
+throwaway Godot profile (`$ARTIFACTS/road68/h2/display-ready`). Round 1's numbers are historical
+here.
+
+**1. The pacing check.** The five preview rows of round 1 (100 samples after 8 warm-ups) in three
+variants, interleaved C N W W N C in one session (13:25:59-13:32:02,
+`pacing-windowed-20261029T132601/`): C the Method's settings (60 FPS cap, Godot's x11 driver
+through Xwayland), the same-session control; N vsync with no FPS cap (the harness's
+`METRUM_GAMEPLAY_BENCHMARK_MAX_FPS=0`, which clamped to 1 before this round); W as N with Godot's
+native Wayland driver (`--display-driver wayland`). The display refreshes at 120 Hz, not 60, so N
+and W pace at 8.3 ms. Sampled poses exact within 16.7 ms: **C 2,614 of 3,712 (70.4 %), N 3,335 of
+3,916 (85.2 %), W 3,579 of 3,958 (90.4 %)**; every miss is `late_exact` (none stale or
+superseded). Two runs a cell, ms:
+
+| Fixture | Variant | Frame interval p50 / p95 | Sampled poses exact within 16.7 ms | Stationary p50 / p95 / max | Moving displayed age p50 / p95 / max |
+| --- | --- | --- | --- | --- | --- |
+| `sloped_t` | C | 16.9 / 26.2; 16.7 / 25.7 | 271 of 377; 261 of 374 | 12.7 / 21.5 / 24.9; 13.6 / 20.8 / 24.8 | 13.5 / 22.7 / 147.0; 14.1 / 23.4 / 64.3 |
+| `sloped_t` | N | 8.7 / 18.8; 8.6 / 18.6 | 339 of 389; 329 of 389 | 8.2 / 16.6 / 21.8; 8.3 / 16.9 / 25.0 | 13.7 / 23.0 / 68.0; 13.8 / 23.4 / 76.2 |
+| `sloped_t` | W | 8.4 / 16.1; 8.5 / 17.1 | 366 of 396; 348 of 393 | 8.3 / 13.9 / 17.6; 8.3 / 11.1 / 15.4 | 13.8 / 23.9 / 61.8; 13.7 / 23.4 / 74.7 |
+| `sloped_branch` | C | 16.8 / 27.2; 17.0 / 24.5 | 244 of 371; 280 of 381 | 13.8 / 22.3 / 26.7; 13.2 / 20.7 / 22.9 | 14.6 / 22.9 / 27.6; 13.6 / 21.8 / 26.3 |
+| `sloped_branch` | N | 8.6 / 19.0; 8.6 / 18.7 | 330 of 388; 338 of 394 | 8.3 / 15.8 / 22.8; 8.0 / 16.5 / 29.4 | 13.9 / 23.5 / 33.9; 13.5 / 22.6 / 29.9 |
+| `sloped_branch` | W | 8.5 / 17.6; 8.4 / 16.6 | 347 of 397; 359 of 394 | 9.2 / 17.7 / 22.8; 8.2 / 12.5 / 17.2 | 13.9 / 22.9 / 27.6; 14.1 / 21.4 / 30.5 |
+| `flat_cross` | C | 17.0 / 29.0; 17.0 / 27.4 | 236 of 358; 237 of 364 | 14.9 / 24.5 / 31.4; 12.8 / 19.0 / 21.0 | 14.3 / 25.5 / 33.0; 14.3 / 24.9 / 34.6 |
+| `flat_cross` | N | 8.4 / 19.5; 8.6 / 19.7 | 315 of 390; 325 of 387 | 8.2 / 11.9 / 23.5; 8.2 / 15.6 / 22.7 | 13.7 / 23.0 / 65.2; 14.2 / 21.4 / 67.5 |
+| `flat_cross` | W | 8.4 / 16.7; 8.6 / 17.1 | 362 of 396; 350 of 394 | 8.5 / 17.8 / 22.3; 9.3 / 16.1 / 25.6 | 14.2 / 19.1 / 66.2; 13.7 / 21.3 / 67.8 |
+| `sloped_cross` | C | 16.8 / 27.3; 17.0 / 26.9 | 254 of 373; 224 of 362 | 15.2 / 23.6 / 29.3; 13.4 / 22.4 / 25.9 | 13.6 / 24.5 / 36.1; 14.9 / 25.2 / 31.2 |
+| `sloped_cross` | N | 8.5 / 18.9; 9.2 / 20.5 | 339 of 396; 317 of 389 | 9.2 / 19.4 / 26.7; 11.1 / 21.4 / 28.1 | 14.0 / 21.0 / 25.8; 14.0 / 21.7 / 30.8 |
+| `sloped_cross` | W | 8.5 / 17.5; 8.4 / 17.3 | 346 of 395; 357 of 395 | 8.4 / 12.2 / 18.4; 8.6 / 21.0 / 30.5 | 13.9 / 20.8 / 27.1; 14.3 / 19.5 / 28.9 |
+| `dense` | C | 16.4 / 28.0; 16.7 / 27.2 | 312 of 382; 295 of 370 | 12.2 / 23.0 / 30.3; 11.9 / 21.6 / 25.9 | 11.9 / 21.7 / 29.4; 12.2 / 22.1 / 31.3 |
+| `dense` | N | 8.5 / 18.0; 8.4 / 17.6 | 357 of 399; 346 of 395 | 8.4 / 18.1 / 26.5; 8.4 / 16.0 / 22.8 | 13.3 / 23.0 / 26.9; 13.2 / 20.2 / 29.3 |
+| `dense` | W | 8.4 / 14.0; 8.4 / 16.1 | 381 of 400; 363 of 398 | 8.3 / 10.7 / 13.6; 8.3 / 11.5 / 12.5 | 13.6 / 18.2 / 24.6; 13.4 / 22.3 / 29.8 |
+
+No variant meets the target, so the late poses were profiled. **Where a pose's time goes.** The
+preview is synchronous: the pose is sampled in the road tool's `_process`, `preview_road` runs,
+its chunks and tiles install, and the rest of the frame (the other nodes, the draw) follows to
+`frame_post_draw`. In every variant every part of a late pose takes about twice an on-time pose's
+(p50, C): the call 8.4-10.9 against 4.9-6.4 ms, the install 3.6-5.4 against 2.1-3.0, the rest
+4.7-7.0 against 3.0-4.4. **The late frames' profile** (13:38:36-13:39:23,
+`pacing-profile-windowed-20261029T133836/`, C and W on `sloped_t` and `sloped_branch` under
+`perf record`, every Godot thread sampled every 500,000 reference cycles with its core cycles in
+the same group, on `CLOCK_MONOTONIC_RAW`, Godot's clock; aligned with the poses by the main thread's
+extension samples, 84-92 % of which fall inside the preview calls; attribution, not timing): per
+pose, between its sample and its exact frame, the main thread executes **14.1-14.6 M cycles
+whether on time or late**, the four pool workers 15.6-17.5 M; the on-time poses ran at a p50 clock
+of 1.73-2.40 GHz (p95 2.7-4.0), **every late pose at 1.18-1.26 GHz** (p95 1.35-1.47) on both
+threads. The work is the same; the clock is not. Godot's other threads take under 2 ms of any
+window (other processes were not recorded). The CPU's power management (`intel_pstate`, the
+`powersave` governor, `balance_performance`) sets the clock from the cores' recent load: with the
+60 FPS cap they idle longer between frames than at 120 Hz without it, and the on-time poses' clock
+falls from 2.27-2.40 GHz (W) to 1.73-1.86 GHz (C). At 1.2 GHz the main
+thread's 14 M cycles alone take 11.7 ms. **Attribution: the frames' work runs at the P-cores' idle
+clock** (question 27's open half: since terrain is in the preview the 16.7 ms frame is missed at
+the idle clock); round 1's "presentation pacing" is corrected: the long frame intervals were the
+slow frames, not vsync. Not a separate track: a miss for the user,
+[question 62](#road-68-open-questions).
+
+**2. The active rendered row ([question 61](#road-68-open-questions) (a)).** The preview matrix
+gains `populated_t` and `populated_branch`, run only when named: they load a saved city
+(`METRUM_GAMEPLAY_BENCHMARK_SAVE_PATH`), wait for the load flow's hand-over, run the simulation at
+`METRUM_GAMEPLAY_PREVIEW_SPEED` (default 1x) and drag `sloped_t`'s and `sloped_branch`'s pointer
+paths through the production road tool at the commit breakdown's first edit site
+(`trunk_branch_starts`: 100 m west of the grid on the west border trunk, here (-3300, -325)),
+mirrored to the trunk's north side (no setup roads), with the same schema-2 collector, the same
+orthographic camera and the Method's 60 FPS cap; the road state must not change, agents and
+buildings may. The city is the commit breakdown's 100k city (the populated fixture of the
+[Targets](#targets); `road` `8b3ce801`'s snapshot, whose commit products equal the tip's, round 1),
+on 512 m chunks as the game's worlds. A P A (A the simulation at 1x, P the same city paused,
+13:39:23-13:45:16, `populated-windowed-20261029T133923/`):
+
+| Case | Variant | Sampled poses exact within 16.7 ms | Frame interval p50 / p95 | Call / install / rest p50 | Stationary p50 / p95 / max |
+| --- | --- | --- | --- | --- | --- |
+| `populated_t` | A | 0 of 93; 0 of 98 | 66.0 / 99.0; 65.6 / 91.9 | 8.8 / 6.5 / 48.6; 8.7 / 6.5 / 46.2 | 63.3 / 91.5 / 191.5; 62.9 / 82.2 / 187.5 |
+| `populated_t` | P | 0 of 164 | 46.0 / 59.3 | 8.1 / 6.3 / 26.6 | 55.2 / 60.6 / 62.3 |
+| `populated_branch` | A | 0 of 199; 0 of 200 | 27.8 / 54.7; 28.0 / 57.1 | 9.8 / 6.6 / 10.5; 9.9 / 6.6 / 10.5 | 22.0 / 30.2 / 107.9; 21.9 / 29.7 / 100.6 |
+| `populated_branch` | P | 0 of 329 | 20.3 / 21.7 | 8.9 / 6.3 / 4.5 | 20.4 / 21.4 / 25.0 |
+
+**The row misses: 0 of 590 sampled poses within 16.7 ms with the simulation active (0 of 493
+paused).** Every miss is `late_exact`. The simulation ran (3,985-4,322 pathfinds a case; agents
+and buildings changed). Attribution (the active profile, 13:45:16-13:47:17, as above; the payload
+by key from a gamescope run of P, 13:53:25):
+
+- **The preview's own work in a 512 m chunk world** (`ROAD-68`'s): each pose re-emits whole road
+  chunks: 11.48-11.53 MB of road chunk payload (graded tiles 28-37 KB) against 0.53-0.63 MB on
+  the 128 m synthetic fixtures. The call takes 8.1-9.9 ms p50 (payload 3.0-3.5, packing 1.4-1.6,
+  graded 1.8-2.2, roadbed 1.0-1.2, plan 0.5) and the install 6.3-6.6 ms, at 4.95 GHz (no idle
+  clock here): about 15 ms of every pose's frame before anything else runs. The site's trunk edge
+  (544 m) spans two 512 m chunks, one of them holding the grid's west edge. A miss for the user
+  ([question 63](#road-68-open-questions)).
+- **The rest of the frame, paused:** 4.5 ms on the branch, 26.6 ms on the T (the main thread's
+  engine binary: 32 ms of 48 ms busy per active T pose; Arch's Godot is stripped, so perf cannot
+  name the engine or GDScript functions). Unattributed.
+- **The simulation's share** (A against P, same city and camera): the rest +6.0 ms (branch) and
+  +20-22 ms (T), the call +0.6-0.9 ms; the pool's busy time in a pose window 45-75 ms (the agent
+  tick shares the pool). Consistent with the agents' render update (`RENDER-28`) and the CPU-bound
+  render frame (`RENDER-27`) but not shown to be them: unattributed by function, so it blocks.
+
+**The routing adoption frame's agent tick** (a heavy run, not timing, 13:52:55-13:53:25: H1's F
+binary, its saved 100k commit city, the breakdown on the game's path, eight workers, `perf record`
+with LBR call stacks; `$ARTIFACTS/road68/h2/adoption/`): 125.2, 28.9 and 20.4 ms in samples 0-2
+(round 1: 125.0, 29.5, 19.3; `following_frame_agent_ms` 4.8-5.0). **What runs:** sample 0's tick
+is 38 % the movement pass's route scratch re-prepared on every pool worker for the commit's new
+network revision (`prepare_movement_scratch` → `TripQueryScratch::prepare` →
+`ConnectorTargets::prepare`, `O(lanes)` per scratch, nine scratches; a tenth of the window's
+samples are page faults: the scratch's first growth after the load), 34 % replans of the agents
+whose routes the commit invalidated (`plan_network_replan`, CCH `sweep_up`), the rest the ordinary
+movement pass; samples 1 and 2: 42-49 % the scratch, 8-12 % replans, no page faults. **Why one
+frame:** D7 holds every frame until the rebuilt hierarchy is adopted; the adoption frame's tick is
+the first on the new revision, so it re-prepares every scratch and serves every replan that waited
+for the new routing, and nothing spreads that work. **Track:** not question 59's route index (it
+narrows the commit's three agent passes, 0.24-0.27 ms, not the next tick) and not `PERF-09` (a
+day without edits): new, `PERF-11`. It holds the sim thread (and the core) for 125 ms, so agents
+stop moving for about seven frames; no render frame waits for it, and the rendered row has no
+commit.
+
+**3. The carried items.**
+
+- **The drag probe's health check** (round 1: `pool_exhausted` stopped `kuopio_11`'s last stroke).
+  From the code: the preview path counted `pool_exhausted` whenever a tile found no room, both
+  when its page was full and its block grows (T27 (d)'s lag since T54, drawn by a later pose) and
+  when the page cannot grow (its cap or the budget). The renderer now counts the first as
+  `preview_page_waits` and keeps `pool_exhausted` for the second, as the install path's `_exhaust`
+  records it; the probe still fails on any `pool_exhausted` and records the waits. The 39 strokes
+  (13:47:17-13:49:13, `drag-windowed-20261029T134717/`): **39 of 39, 0 failures**;
+  `kuopio_11` attempt 32 had 2 page waits and no exhaustion.
+- **1 (the Godot terrain install per pose):** pose installs at most 1.009 ms, **1 of 594 over the
+  1.0 ms share** (`kuopio_07` attempt 19; round 1 0 of 580 at most 0.985); the fast click's at most
+  1.233 ms (1 over), the undo's 1.509 ms (5 over), all within the 2.0 ms Godot stage. A miss of the
+  share by 0.009 ms, for the user.
+- **2 (the whole drag frames beyond first use):** pose frame intervals p50 11.7 / p95 18.8 ms, 71
+  of 624 over 16.7 ms (18 over 20, max 136.7 on `kuopio_01`'s first stroke). The profile (the same
+  method, 13:50:55-13:52:54, `drag-windowed-profile-20261029T135054/`; frames now carry their end
+  time): unlike the synthetic rows, the Kuopio frames run at full clock (p50 4.6-5.0 GHz by kind); a pose frame over 16.7
+  ms executes 76 M main-thread cycles against 44 M within it (15.5 against 9.7 ms busy), the extra
+  in the engine binary (10.2 against 5.9 ms) and the drivers (+0.9 ms), the extension +0.9 ms
+  (2.5 against 1.6), the GPU 2.9 against 2.5 ms; commits, fast clicks and undos alike. The long
+  frames are the CPU-bound render frame on Kuopio, not the roadbed or the terrain: attributed to
+  `RENDER-27` (its function-level split needs a Godot with symbols); the three largest (180, 146
+  and 79 ms) are `kuopio_01`'s first use.
+- **6 (T45's far-contact clearance):** the tip's 10k and 100k `PERF-07` cities of the current
+  fixture revision, prepared by H1's F binary (24 s and 430 s, a heavy run,
+  `$ARTIFACTS/road68/h2/clearance.log`), then the `SIM-02-K` prepared-snapshot pose test: every
+  culled pose equals the full pose (3,301 comparisons at 10k, 1,101 at 100k), far contacts at
+  59.67 / 2.30 far / near cars a frame (10k) and 252.89 / 29.00 (100k), the shared index 435,864 /
+  4,462,256 bytes, all as `TERRAIN-07-F` round 13; **minimum far clearance 0.01999998837709427 m
+  (10k) and 0.019999999552965164 m (100k)**, equal to round 13's. The 100k minimum is the `f32`
+  nearest 0.02; the 10k minimum lies 1.1e-8 m under it. Judged: the intended clearance holds
+  within floating-point rounding, as round 13 judged it.
+- **5 and 9** (T37's culled gap, `PERF-09` apart from terrain): ITEMS_5_9_PLACEHOLDER
+- **14 (locality), the topology adoption's +0.44 ms** (round 1's logs, C and F alike:
+  `topology_ms` 0.026-0.031 ms at 0 remote sites, 0.471-0.480 ms at 100,000): the split's
+  `BuildingAllocator::migrate_split_frontages` scans every building for those fronting the split
+  edge (`O(B)`, documented so); 100,000 remote buildings at about 4.4 ns each. By reading and
+  scaling, not profiled. A later track (`ROAD-72`): find the edge's buildings through the
+  allocator's existing `building_chunks` over the edge's chunks. Accepted with the locality.
+- 3, 4, 7, 8, 10-13, 15: as round 1 judged them (unchanged code; historical).
+
+**Acceptance against every target** (fresh in this round unless marked historical):
+
+| Target | Result | Status |
+| --- | --- | --- |
+| Moving, simulation paused (every sampled pose exact within 16.7 ms) | 62-74 % (round 1), 70.4 % C, 85.2 % N, 90.4 % W; the late poses' same work at the idle clock | Miss, question 62 |
+| Moving, simulation active (99 %, misses attributed) | 0 of 590 at 100k (0 of 493 paused): the preview's whole 512 m chunks (11.5 MB a pose); rest of frame partly unattributed | Miss, question 63 |
+| Stationary (p99 and stop → exact under 16.7 ms) | p95 19.0-24.5 ms in C, 10.7-21.0 ms in W; stop → exact 8.0-27.2 ms in C, 6.5-22.9 ms in W | Miss, question 62 |
+| Commit (click → acknowledged under 16.7 ms) | every sample, 0-100k (round 1, historical) | Pass |
+| Locality (products bitwise, flat) | bitwise; +1.9-2.5 ms at 100,000 (round 1, historical) | Accepted as measured by the user |
+| The terrain stage's 3.0 ms (populated drags) | pose frames at most 2.91 ms (round 1, historical) | Pass |
+| Bitwise preview = commit = undo = load | (round 1, historical; no Rust change since) | Pass |
+
+**Gate checks** (fresh, on `fdadedc9`; the later commits change docs). `cargo clippy --all-targets`:
+59 warnings, the baseline's set exactly (no Rust changed, so cargo replayed round 1's checked
+results). `cargo doc`: 0 missing docs (its eight link warnings are `TERRAIN-07-G`'s).
+`./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY` unset (13:57-14:15): exit 0; the debug
+library suite 1,842 passed, 0 failed, 177 ignored; `growth_scenario` 4 passed; every Godot suite
+passes (the graded tile renderer tests with the split counter among them), the seven rendered
+tests in gamescope's headless backend, nothing skipped, no `SCRIPT ERROR`.
+
+**Line counts:** no Rust changed in this round: `roadbed/` 9,234, `terrain/graded/` 10,169,
+`terrain/` 12,391 (round 1).
+
+**Merge risks.** Every rendered result ran on Linux with the RX 7900 XTX (Vulkan; the shader tests
+in the Compatibility renderer); macOS is unvalidated and has `TERRAIN-10` open. The rebased WIP
+commits between `ROAD-68-G` part 10's `3b1e587b` and `8bfd9ebf` do not compile on their own
+(bisecting through them needs a skip). The rendered rows depend on the CPU's power policy
+(question 62).
 
 ## Measurement and acceptance
 
