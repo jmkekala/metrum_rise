@@ -719,6 +719,12 @@ fn road_commit_run(
     let outcome = commit_trunk_branch(&mut city.core, start, std::time::Instant::now(), None);
     assert!(outcome.committed, "{}", outcome.rejection_reason);
     assert!(city.core.transit_network.cch_adoption_pending());
+    // Whether the commit deferred its lots to the next frame (`ROAD-68-G` part 7), so the run
+    // covers that adoption too.
+    eprintln!(
+        "ROAD68G_COMMIT {label} lots_deferred={}",
+        city.core.cell_lots_pending()
+    );
     if save_in_hold {
         save_fingerprint(&mut city.core, &scratch_save_path(&format!("{label}_hold")));
     }
@@ -764,6 +770,7 @@ fn road68g_commit_determinism() {
     for (name, threads, delay_ms, save_in_hold) in [
         ("threads_1", 1, 0, false),
         ("threads_3", 3, 0, false),
+        ("threads_4", 4, 0, false),
         ("late_rebuild_8", 8, 400, false),
         ("late_rebuild_1", 1, 400, false),
         ("save_in_hold", 8, 0, true),
