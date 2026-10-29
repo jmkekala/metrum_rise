@@ -476,7 +476,7 @@ fn the_coverage_raster_equals_the_predicate_at_every_lattice_point() {
                     &mut triangles,
                     &mut bits,
                 );
-                coverage::rasterize(&triangles, &xs, &zs, &mut road);
+                coverage::rasterize(&triangles, &xs, &zs, &mut Vec::new(), &mut road);
                 coverage::gather(
                     &roadbed,
                     [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]],

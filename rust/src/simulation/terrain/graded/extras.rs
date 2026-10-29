@@ -198,34 +198,24 @@ impl Reach<'_> {
                         [area[0], area[3]],
                         [area[2], area[3]],
                     ];
+                    let corner_seams =
+                        names.map(|code| (code != NO_SEAM).then(|| named.seam(code)));
+                    // Each named corner's seam's distance at each vertex, once for both bounds.
+                    let at_vertices = corner_seams
+                        .map(|seam| seam.map(|seam| vertices.map(|[x, z]| seam.at(x, z).distance)));
                     // The farthest any point of the square lies from a corner's named seam is at a
                     // vertex (the distance to a segment is convex); the least of those over the
                     // named corners bounds every point's nearest distance, and the band bounds it
                     // where the mask reads it.
-                    let reach = names
-                        .iter()
-                        .filter(|&&code| code != NO_SEAM)
-                        .map(|&code| {
-                            let seam = named.seam(code);
-                            vertices
-                                .iter()
-                                .map(|&[x, z]| seam.at(x, z).distance)
-                                .fold(0.0, f64::max)
-                        })
+                    let reach = (at_vertices.iter().flatten())
+                        .map(|distances| distances.iter().copied().fold(0.0, f64::max))
                         .fold(band, f64::min);
                     // Every point lies within half the diagonal of some corner, so with all four
                     // corners named their largest named distance plus half the diagonal bounds it
                     // too.
-                    let reach = if names.iter().all(|&code| code != NO_SEAM) {
+                    let reach = if let [Some(a), Some(b), Some(c), Some(d)] = at_vertices {
                         let half = 0.5 * (area[2] - area[0]).hypot(area[3] - area[1]);
-                        let farthest = (0..4)
-                            .map(|k| {
-                                named
-                                    .seam(names[k])
-                                    .at(vertices[k][0], vertices[k][1])
-                                    .distance
-                            })
-                            .fold(0.0, f64::max);
+                        let farthest = [a[0], b[1], c[2], d[3]].into_iter().fold(0.0, f64::max);
                         reach.min(farthest + half)
                     } else {
                         reach
@@ -247,13 +237,12 @@ impl Reach<'_> {
                     candidates.extend(unbinned.clone());
                     candidates.sort_unstable();
                     candidates.dedup();
-                    let corner_seams =
-                        names.map(|code| (code != NO_SEAM).then(|| named.seam(code)));
+                    let mut tests = NearTests::new(area, &corner_seams);
                     candidates.retain(|&code| {
                         let seam = named.seam(code);
                         !names.contains(&code)
                             && box_distance(area, seam) <= reach
-                            && may_be_nearer(seam, &corner_seams, area, SPLITS)
+                            && tests.may_be_nearer(seam)
                     });
                     if !candidates.is_empty() {
                         let same = |at: u32| {
@@ -283,34 +272,65 @@ impl Reach<'_> {
     }
 }
 
-// Quarterings of a square `may_be_nearer` tries before it keeps a seam.
-const SPLITS: u32 = 1;
+// Whether a seam may be at least as near as every corner's named seam at some point of a
+// square: `g = |p - seam| - |p - n|` changes by at most twice the distance moved, so where `g`
+// exceeds a rectangle's diagonal at its centre for some named `n`, the seam is farther than `n`
+// everywhere in it; the square is tried, then, unless that holds for it, each of its quarters
+// once. Exact: it keeps every seam that is the nearest somewhere, and some that are not. The
+// named seams' distances at the five centres are the same for every candidate of the square,
+// so each is taken once, when a candidate first needs it (`TERRAIN-07-G` round 9).
+struct NearTests<'a> {
+    named: &'a [Option<&'a Seam>; 4],
+    // The square, then its quarters.
+    areas: [[f64; 4]; 5],
+    // Per area its centre, diagonal and each corner's named seam's distance there, once taken.
+    centres: [Option<NearCentre>; 5],
+}
 
-// Whether `seam` may be at least as near as every corner's named seam at some point of `area`:
-// `g = |p - seam| - |p - n|` changes by at most twice the distance moved, so where `g` exceeds
-// the area's diagonal at its centre for some named `n`, `seam` is farther than `n` everywhere in
-// it; otherwise each quarter is tried, `splits` times. Exact: it keeps every seam that is the
-// nearest somewhere, and some that are not. `O(4^splits x named seams)`.
-fn may_be_nearer(seam: &Seam, named: &[Option<&Seam>; 4], area: [f64; 4], splits: u32) -> bool {
-    let (x, z) = (0.5 * (area[0] + area[2]), 0.5 * (area[1] + area[3]));
-    let diagonal = (area[2] - area[0]).hypot(area[3] - area[1]);
-    let own = seam.at(x, z).distance;
-    if named
-        .iter()
-        .flatten()
-        .any(|other| own - other.at(x, z).distance > diagonal)
-    {
-        return false;
+#[derive(Clone, Copy)]
+struct NearCentre {
+    x: f64,
+    z: f64,
+    diagonal: f64,
+    named: [Option<f64>; 4],
+}
+
+impl<'a> NearTests<'a> {
+    fn new(area: [f64; 4], named: &'a [Option<&'a Seam>; 4]) -> Self {
+        let (x, z) = (0.5 * (area[0] + area[2]), 0.5 * (area[1] + area[3]));
+        Self {
+            named,
+            areas: [
+                area,
+                [area[0], area[1], x, z],
+                [x, area[1], area[2], z],
+                [area[0], z, x, area[3]],
+                [x, z, area[2], area[3]],
+            ],
+            centres: [None; 5],
+        }
     }
-    splits == 0
-        || [
-            [area[0], area[1], x, z],
-            [x, area[1], area[2], z],
-            [area[0], z, x, area[3]],
-            [x, z, area[2], area[3]],
-        ]
-        .into_iter()
-        .any(|quarter| may_be_nearer(seam, named, quarter, splits - 1))
+
+    // Whether `seam` is farther than some named seam everywhere in area `k`.
+    fn farther(&mut self, seam: &Seam, k: usize) -> bool {
+        let (area, named) = (self.areas[k], self.named);
+        let centre = *self.centres[k].get_or_insert_with(|| {
+            let (x, z) = (0.5 * (area[0] + area[2]), 0.5 * (area[1] + area[3]));
+            NearCentre {
+                x,
+                z,
+                diagonal: (area[2] - area[0]).hypot(area[3] - area[1]),
+                named: named.map(|other| other.map(|other| other.at(x, z).distance)),
+            }
+        });
+        let own = seam.at(centre.x, centre.z).distance;
+        (centre.named.iter().flatten()).any(|&other| own - other > centre.diagonal)
+    }
+
+    // The module's rule for `seam`. `O(5 x named seams)` the first time, `O(5)` after.
+    fn may_be_nearer(&mut self, seam: &Seam) -> bool {
+        !self.farther(seam, 0) && (1..5).any(|k| !self.farther(seam, k))
+    }
 }
 
 // Distance in XZ from the rectangle `[x0, z0, x1, z1]` to the seam: 0 where it meets the

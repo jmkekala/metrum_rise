@@ -8,6 +8,7 @@
 use crate::simulation::network::roadbed::{
     CoverageTriangle, GroundedPieceScratch, PieceId, RoadVec3, RoadbedSystem,
 };
+use rayon::prelude::*;
 
 // Bounds padding. The predicate is exact (it holds no point outside a triangle's closed XZ box),
 // so the closed rectangle would visit every triangle that can hold one of its points; the pad,
@@ -41,16 +42,47 @@ pub(super) fn covering_triangles(
     bits.dedup();
 }
 
+// Lattice rows one task of `rasterize` raises: a fixed partition of the lattice, so the raster
+// does not depend on the worker count.
+const RASTER_ROWS: usize = 16;
+
 /// Rasterizes `triangles` ([`covering_triangles`] of the lattice) over the lattice `xs` x `zs`
 /// (sorted, row-major by `z`): `road[k]` is the highest covering triangle's height at lattice
 /// point `k`, `-inf` where none covers it. Heights are `+ 0.0` so a negative zero never decides
-/// a maximum. `O(K)` for the `K` lattice points in the triangles' boxes.
-pub(super) fn rasterize(triangles: &[[RoadVec3; 3]], xs: &[f64], zs: &[f64], road: &mut Vec<f32>) {
+/// a maximum. In bands of rows on the shared pool (`TERRAIN-07-G` round 9: one thread raised a
+/// steep Kuopio tile's raster while the others waited, about a third of its bake): a point's
+/// value is the maximum over the triangles holding it whatever their order, and each band
+/// raises the triangles whose `z` extent (`spans`, reused) meets its rows, so the bytes are the
+/// one-pass raster's. `O(K + T x bands)` for the `K` lattice points in the triangles' boxes.
+pub(super) fn rasterize(
+    triangles: &[[RoadVec3; 3]],
+    xs: &[f64],
+    zs: &[f64],
+    spans: &mut Vec<[f64; 2]>,
+    road: &mut Vec<f32>,
+) {
     road.clear();
     road.resize(xs.len() * zs.len(), f32::NEG_INFINITY);
-    for triangle in triangles {
-        raise_covered(triangle, xs, zs, road);
+    if xs.is_empty() {
+        return;
     }
+    spans.clear();
+    spans.extend(triangles.iter().map(|triangle| {
+        let [_, min_z, _, max_z] = triangle_box(triangle);
+        [min_z, max_z]
+    }));
+    let spans = &spans[..];
+    road.par_chunks_mut(RASTER_ROWS * xs.len())
+        .zip(zs.par_chunks(RASTER_ROWS))
+        .for_each(|(out, rows)| {
+            // A triangle holds a point of these rows only if its extent meets theirs.
+            let (first, last) = (rows[0], rows[rows.len() - 1]);
+            for (triangle, &[min_z, max_z]) in triangles.iter().zip(spans) {
+                if max_z >= first && min_z <= last {
+                    raise_covered(triangle, xs, rows, out);
+                }
+            }
+        });
 }
 
 // The rectangle whose triangles the coverage of a lattice visits: its closed box grown by the

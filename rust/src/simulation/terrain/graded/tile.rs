@@ -332,6 +332,8 @@ pub(super) struct BakeScratch {
     pieces: Vec<PieceId>,
     // The grounded top triangles that can cover the lattice, in visit order (the raster's).
     covering: Vec<[RoadVec3; 3]>,
+    // Each covering triangle's `z` extent, for the raster's row bands.
+    covering_spans: Vec<[f64; 2]>,
     // The tile's inputs, gathered before its samples; a bake hands them to its payload and
     // keeps the payload's old buffers.
     inputs: TileInputs,
@@ -737,6 +739,7 @@ fn bake_tile(
         first,
         second,
         covering,
+        covering_spans,
         road,
         nearest,
         row_of,
@@ -774,7 +777,7 @@ fn bake_tile(
     list_first_pass(seams, bins, base, band, prune, seam_bins, pairs, &mut stats);
     first.build(bins.len(), pairs);
 
-    rasterize(covering, xs, zs, road);
+    rasterize(covering, xs, zs, covering_spans, road);
     portals.rasterize(xs, zs, decks);
     // Without sites every lattice point is outside pads and surfaces: the rasters stay empty,
     // which reads as no pad, class 0 and no edge. The nearest edges are searched in the row

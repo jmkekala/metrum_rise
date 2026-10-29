@@ -705,6 +705,9 @@ fn graded_slot_rows_census() {
         // Wall faces per tile, then per patch over the tiles it lists (an upper bound of the
         // faces the patch draws: each face draws in the patch holding its midpoint).
         let mut faces = std::collections::HashMap::new();
+        // Every product of every tile in tile order, by its bits (`TERRAIN-07-G` round 9: a
+        // bake change that must keep every payload bitwise compares this before and after).
+        let mut digest = std::collections::hash_map::DefaultHasher::new();
         for &tile in &tiles {
             let started = std::time::Instant::now();
             let baked = bake_tiles(terrain, roadbed, sites, &[tile], level, &mut out);
@@ -712,6 +715,17 @@ fn graded_slot_rows_census() {
             match baked {
                 Ok(()) => {
                     let payload = &out[0];
+                    {
+                        use std::hash::Hash;
+                        let words = (payload.seam_heights.iter().flatten())
+                            .chain(payload.extras.iter().flatten())
+                            .map(|value| value.to_bits());
+                        let digest = &mut digest;
+                        crate::simulation::terrain::graded::tests::payload_digest([payload])
+                            .hash(digest);
+                        words.for_each(|word| word.hash(digest));
+                        (&payload.square_extras, payload.behind).hash(digest);
+                    }
                     row_bytes += 16
                         * (2 * payload.seams.len() + payload.edges.len() + payload.extras.len());
                     seams_max = seams_max.max(out[0].seams.len());
@@ -741,10 +755,11 @@ fn graded_slot_rows_census() {
                 Err(error) => panic!("{error:?}"),
             }
         }
+        let digest = format!("{:016x}", std::hash::Hasher::finish(&digest));
         eprintln!(
             "GRADED_ROWS {}",
             serde_json::json!({
-                "level": format!("{level:?}"), "tiles": tiles.len(),
+                "level": format!("{level:?}"), "tiles": tiles.len(), "digest": digest,
                 "seam_capacity": level.seam_capacity(), "edge_capacity": level.edge_capacity(),
                 "row_seams_max": seams_max, "row_edges_max": edges_max,
                 "extra_capacity": level.extra_capacity(), "row_extras_max": extras_max,
