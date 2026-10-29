@@ -186,6 +186,11 @@ func _run() -> void:
 		push_error("This regression needs a rendering display; the dummy renderer draws no pixels.")
 		quit(2)
 		return
+	# The weather globals default to a cloud deck (project.godot), whose shadow would fall on the
+	# stands; clear it, so both levels stand under this test's fixed light alone.
+	var clouds: Vector4 = ProjectSettings.get_setting("shader_globals/weather_clouds")["value"]
+	clouds.z = 0.0
+	RenderingServer.global_shader_parameter_set("weather_clouds", clouds)
 	var catalogue := Species.build_meshes()
 	_viewport = SubViewport.new()
 	# The pose grid multiplies the pixel walk, so the viewport is smaller than one pose would need.

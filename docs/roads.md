@@ -3634,6 +3634,26 @@ These need a user decision; work that does not depend on them continues.
       `ROAD-68-G` closes; (b), a persistent graph store, becomes its own measured track if the
       copy shows in a frame. `ROAD-68-G` builds nothing for it. H checks whether the copy shows
       in a frame ([carried to H](#road-68-h--acceptance-and-cleanup)).
+61. **The rendered Moving row with the simulation active (`ROAD-68-H` round 1) — open, for the
+    user.**
+    - **Evidence.** The [Moving target](#targets) asks for the simulation active on the populated
+      fixture (at least 99% of sampled poses exact within 16.7 ms, every miss attributed). No
+      rendered harness runs that case: the gameplay harness pauses the simulation for every
+      matrix (`gameplay_road_benchmark.gd` sets the speed to 0 and records it in each run's
+      metadata; the preview, graded drag and idle matrices set it again), and the preview matrix
+      (`road_preview_replay.gd`) builds a blank 512 m world without agents. The headless
+      populated drags (`benchmark_populated_graded_drags`) step the simulation between poses but
+      render nothing, so by the [Method](#method) they cannot establish the row.
+    - **Options.** (a) Extend the preview matrix with a populated case: load a saved populated city
+      (the commit breakdown's 10k or 30k, saved for Godot), run the simulation at 1x, and drag
+      `sloped_t`'s and `sloped_branch`'s pointer paths through the production road tool there,
+      with the same schema-2 collector, so each miss carries the frame's simulation and render
+      shares. (b) The same in the graded drag probe on Kuopio with agents spawned (no populated
+      economy, so it misses the agent pass's cost). (c) Judge the row from the paused rendered
+      runs plus the headless populated drags (does not meet the Method).
+    - **Recommendation.** (a): the target's own fixture and collector, and the populated city the
+      commit row already uses. Not built in round 1 (it is new harness work and the rendered
+      session is the user's display); `ROAD-68-H` stays open on this row until it runs.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -8210,6 +8230,130 @@ measures and judges each against its target. A gate landing later adds its own h
     limit crossed, in the fiscal day's planning and census; not profiled (question 36's rule).
     The candidate is the parcel store's copy-on-write indirection (`SharedParcelStore`, part 7). H
     profiles it against a same-session control and attributes it.
+
+#### Round 1: cleanup and the headless rows (`ROAD-68-H`, 2026-10-29)
+
+Branch `road68-H` from `road` `8b3ce801`. Not the gate: the rendered rows run on the user's
+display, and question 61 is open.
+
+**Dead paths.** Method (fresh): the crate's top modules made private for one `cargo check --lib`,
+so rustc reports every item no non-test code reaches, and the same check at `27797b92` (`road`
+just before gate D); the items the later check adds are what gates D-G and `TERRAIN-07-G` left
+behind (`$ARTIFACTS/road68/h1/new-dead.txt`, 14). All but one are reached by tests (accessors the
+tests read, the populated fixtures). The same comparison for Godot-facing `#[func]` methods
+without a GDScript caller finds none new, and for GDScript symbols without a reference finds
+`render_debug.gd`'s terrain clip diagnostics. Following callers finds one more. Removed:
+
+- `RoadbedDelta::base_generation`: no caller;
+- `RoadTerrainInputs::global_generation` and `stroke_active`: read only to bump the inputs'
+  revision, for the refined terrain sources that `TERRAIN-07-E` retired; nothing consumed them,
+  so the revision now moves only when a patch's sites change;
+- `render_debug.gd`'s `clip_stats`, `polygon_area` and `bounds_label`, whose terrain clip
+  callers `TERRAIN-07-G` deleted;
+- comments that still named the refined terrain, the visual buffer, the CDT and the road-locked
+  terrain state, in Rust and in the Godot tests.
+
+`git grep 'ignore = "ROAD-68'` under `rust/` returns nothing. The ignores that name a gate or a
+tracked item are release benchmarks and manual diagnostics, none a disabled test
+(`$ARTIFACTS/road68/h1/ignores.txt`: `SIM-02-A/I/K`, `PERF-01/02/06/07`, `ROAD-68-G` (the commit
+breakdown and locality), `ROAD-68-K22`, `TERRAIN-07-E` (the populated drags)).
+
+**`./run.sh --test` runs every rendered test.** The terrain shader tests, the debug-view shader
+globals (`debug_visual_modes_test.gd`, now rendered only: its headless run in the bridge list
+skipped the probe), the vegetation level and wind tests and the plot lighting tests go through
+one helper, `run_rendered_godot_test`: gamescope's headless backend with `DISPLAY` and
+`WAYLAND_DISPLAY` unset, `$DISPLAY` only without gamescope, and a failure when neither renders.
+`xvfb-run` is gone from the suite.
+
+**Legacy references** in [`terrain.md`](terrain.md) (the `TERRAIN-07` status, the deleted types
+named as live, the runtime contract's refined and visual-buffer rules) and
+[`earthworks.md`](earthworks.md) (its current-runtime sections, the roads-first status and the
+building-site target still described the stitched CDT cut as live) now describe the graded
+terrain; the stitched-CDT text moved to the
+[archive](archive/terrain_legacy_surface_2026-10-25.md#moved-at-road-68-h-2026-10-29).
+
+**Line counts** (production, part 6's counter): `roadbed/` 9,239 -> 9,234; `terrain/graded/`
+10,169 (unchanged); `terrain/` 12,393 -> 12,391.
+
+**The landing session** (fresh, 2026-10-29 12:03:43-12:15:40, one hold of both locks,
+`taskset -c 0,2,4,6,8,10,12,14`, `METRUM_DEBUG=0`, no restic, compiler, cargo or Godot process at
+the start or after any run; release library tests). C = `road` `8b3ce801` before the cleanup
+(`$TEST_BINARY` sha256 `01b89e93…`), F = `3e662826`, the cleanup's code (sha256 `a880ce56…`; the
+later commits change GDScript and docs), E = `road` `a0cfe039` with `ROAD-68-G` part 10's
+locality harness (sha256 `aec1c293…`, the economy contract's control from before `ROAD-68-G`).
+Each binary's 10k, 30k and 100k cities prepared first; every populated tier `loaded`. Runs: the
+preview stages C F F C (four workers); the commit breakdown C F F C on the game's path
+(`METRUM_COMMIT_PREVIEW`, eight workers, tiers 0 to 100k) and F F a frame later
+(`METRUM_COMMIT_NEXT_TICK=frame`); the populated graded drags C F F C (four workers, 0 to 100k);
+the commit locality C F F C; the economy contract E F F E. Logs `$ARTIFACTS/road68/h1/session/`,
+`perf/`, tables `breakdown-table.txt`, `breakdown-summary.txt`, `locality-table.txt`,
+`drags-table.txt`, `perf-summary.txt`.
+
+- **Commit** (click → committed generation installed and acknowledged, every first sample):
+
+  | Tier | C first | F first (at once) | F first (a frame later) | F later samples, max |
+  | --- | --- | --- | --- | --- |
+  | 0 | 7.14, 5.98 | 6.16, 6.47 | 6.36, 6.68 | 7.56 (all tiers) |
+  | 10k | 9.76, 10.55 | 9.23, 8.99 | 10.75, 9.51 | |
+  | 30k | 10.20, 11.61 | 11.16, 10.09 | 10.02, 11.14 | |
+  | 100k | 15.26, 11.38 | 14.61, 13.73 | 13.73, 12.91 | |
+
+  Every sample of every run at every tier fits 16.7 ms (C's later samples at most 7.24). At
+  100k the commit's agent passes take 0.24-0.27 ms (question 59, item 12: under 2 % of the
+  13.7-14.6 ms) and the tool snapshot with its graph copy 0.49-0.58 ms (question 60, item 13);
+  the routing adoption comes 220-264 ms after the click, the adoption frame waiting 13-36 ms for
+  it; a frame later the lots' adoption frame takes 0.36-0.52 ms at 100k.
+- **Bitwise.** All six breakdown runs print the same `COMMIT_PRODUCTS`, C's and `ROAD-68-G`
+  part 10's F2 among them, so the cleanup changed no product; all sixteen locality product sets
+  are equal (C, F, every tier) and equal part 10's.
+- **Preview stages** (unchanged): payload p50 0.387-0.406 ms, graded p50 1.37-1.69 / p95
+  1.82-2.12 ms, totals p50 2.36-2.78 ms on the sloped T and branch, C and F alike.
+- **Populated drags** (`TERRAIN-07-E`'s frame paths): pose frames at most 2.57-2.91 ms, none of
+  502 over 3.0 ms; converged commits at most 1.66 ms, undos at most 1.98 ms; the fast click's
+  accepted exception at most 8.38 ms (T27 (f)).
+- **Superseded routing rebuilds (item 10).** At 100k every drags run has three or four pairs of
+  routing rebuilds running at once (the fast click's rebuild still running when its undo's
+  starts, up to three together); the 0-30k rebuilds never overlap. The pose frames timed inside
+  those windows take 0.70-1.47 ms, none near its 3.0 ms stage, and no commit, undo or pose frame
+  of the session misses its stage. No sample shows the contention, so nothing is built; the
+  overlap itself stays measured (`drags-table.txt`).
+- **Locality (item 14).** Products bitwise from 0 to 100,000 remote sites (above). First sample,
+  ms (C runs; F runs): 0 sites 15.74, 13.91; 16.76, 16.14 · 1,000 13.05, 12.53; 12.80, 12.04 ·
+  10,000 15.22, 15.59; 16.89, 12.92 · 100,000 18.76, 18.58; 15.71, 17.13; second and third
+  samples 9.6-14.8 ms. Not flat. F's parts from 0 to 100,000 sites: the terrain query index update
+  +0.45-0.57 ms and the graded stage +0.1-0.4 ms (`TERRAIN-07-F`'s T44 and `TERRAIN-07`'s), the
+  rest of the roadbed stage +0.3; the topology adoption +0.42-0.45 (C the same; not questions 59
+  or 60, unattributed); the tool snapshot's graph copy +0.56-0.57 (question 60); the agent passes
+  +0.03-0.08 (question 59); the lanes +0.1: about 1.9-2.5 ms in all, inside a render publication
+  that varies by 1-3 ms between runs (5.7-8.9 ms). A miss for the user: not one of the separate
+  tracks.
+- **Economy contract (item 15)**, E F F E, `tools/perf_contract.py`, eight workers: work counts
+  identical in all four runs, households 5,311 and 15,180, no time limit fails, and the same seven
+  work-count limits fail in E and F (question 20).
+
+  | Hour mean | E1 | F | F | E2 |
+  | --- | --- | --- | --- | --- |
+  | baseline 10k | 0.830 ms | 0.836 ms | 0.832 ms | 0.838 ms |
+  | baseline 30k | 4.174 ms | 4.099 ms | 4.166 ms | 4.101 ms |
+  | fiscal 10k | 6.025 ms | 6.149 ms | 6.232 ms | 6.081 ms |
+  | fiscal 30k | 25.758 ms | 26.750 ms | 26.917 ms | 25.949 ms |
+
+  The baseline means lie inside E's spread. The fiscal means are 1.1-3.4 % (10k) and 3.1-4.5 %
+  (30k) above E, as part 10's session 1 measured; at 30k the fiscal day's planning takes
+  483.7/484.4 ms against 458.9/461.2 and its census 353.8/350.4 against 345.4/341.5. The
+  isolated phases do not differ (planning at 30k E 4.84/4.39, F 4.57/4.37 ms; census E
+  23.31/22.09, F 22.93/23.45).
+
+  **Profile (item 15, fresh, not timing).** `perf record` of `perf_contract_fiscal_day` at 30k,
+  E and F alternating (E F E F, eight workers, P-cores; `-D 5000` skips the 4.6 s city load, so
+  the samples fall inside the fiscal day; `$ARTIFACTS/road68/h1/profile/`): 55K and 56K samples, cycles
+  43.85 G against 44.15 G (+0.7 %). The same symbols lead in the same order, every one of the top
+  30 within 0.37 percentage points of its share in E; no copy-on-write symbol (`Arc::make_mut`,
+  a parcel store clone or drop) appears, and the parcel store's own symbols (the parcel
+  iterator, `visit_in_bounds`, the edge projection) hold 0.07-0.19 % each in both. The work is
+  identical by the counts and by the profile, so by [question 36](#road-68-open-questions)'s
+  rule the fiscal rise is layout, not `SharedParcelStore`'s indirection on a hot path: judged
+  within the contract (no limit crossed, work counts equal), recorded, not relaxed.
 
 ## Measurement and acceptance
 
