@@ -1028,8 +1028,17 @@ void fragment() {
 	}
 	}
 	if (terrain_visual_debug_mode == 0) {
+#ifdef TERRAIN_GRADED
 		EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
 			NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
+#else
+		// The base variant writes no normal map (only the graded paving does): with the default map
+		// the lamp light reads the surface normal alone and the tangent basis drops out, so passing
+		// the defaults gives the same light. Reading TANGENT made Godot warn each time it bound one
+		// of the base cells' tangent-less lattices (`ROAD-68-H` round 3).
+		EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, vec3(0.0), vec3(0.0),
+			vec3(0.5, 0.5, 1.0), 1.0, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
+#endif
 	}
 }
 
