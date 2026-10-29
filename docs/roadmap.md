@@ -124,8 +124,11 @@ economy contract's fiscal hour means (1-4 % above the control, work identical, n
 test in gamescope's headless backend and skips nothing (the vegetation level match test, unrun
 since the weather landed, now clears the default cloud deck); the commit row passes (first
 samples 6.2-14.6 ms at 0-100k), and the fiscal rise is layout by profile. Open: the commit's
-locality at 100k remote sites (+1.9-2.5 ms in its parts, for the user), the rendered rows on the
-user's display and `roads.md` question 61 (no rendered harness runs the simulation active). The same session attributed the economy contract's baseline-30k rise to
+locality at 100k remote sites (+1.9-2.5 ms in its parts, for the user); the rendered preview rows
+on the user's display (four to eight times below the legacy baseline, but 62-74 % of sampled poses
+exact within 16.7 ms and the stationary p95 20-26 ms, the frames' own CPU and GPU time 2-3 ms:
+presentation pacing, for the user); the drag probe's whole frames (installs within the 1.0 ms
+share on every pose); `roads.md` question 61 (no rendered harness runs the simulation active). The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20). Its attribution (2026-10-25) found no road defect: the counts follow
 the city, whose 10k census needs fewer closure passes, and both scale within the limit per
