@@ -8357,9 +8357,42 @@ the commit locality C F F C; the economy contract E F F E. Logs `$ARTIFACTS/road
 
 **The carried items in round 1** (fresh unless marked):
 
-- 1 and 2 (the Godot terrain install per pose, the whole drag frames): the rendered drag probe on
-  the user's display, prepared (below), not yet run. 3: `TERRAIN-07-G`'s, kept there.
-- 4 (T42 (a)): captures for the user's visual check, prepared (below).
+- 1 and 2 (the Godot terrain install per pose, the whole drag frames): the drag probe on the
+  user's display (13:05:41-13:07:38, the tip's release library, 1920x1080, vsync,
+  `drag-windowed-20261029T130543/summary.txt`; its two checks stale since `TERRAIN-07-G`, the
+  catch-up share and the pages and variants made on demand, fixed first, `d4172ccb`). 38 of 39
+  strokes: one more probe check, `pool_exhausted` on `kuopio_11` attempt 32 (a full page during a
+  preview, which the renderer handles by T27 (d)'s lag since T54), stopped that case's last
+  stroke; 0 holes in 13 loads, 0 instance-uniform overflows, no `SCRIPT ERROR`. Item 1: pose
+  installs at most 0.985 ms, **none of 580 over the 1.0 ms share** (was 2 of 594), catch-up at
+  most 0.61, commit 0.71; the fast click's install at most 1.24 (1 over 1.0) and the undo's 1.25
+  ms (6 over), within the 2.0 ms Godot stage. Item 2: the pose frames' intervals p50 11.7 / p95
+  19.1 ms, 17 of 608 over 20 ms, the commit frames' p95 28.0 / max 33.7 ms, with the terrain
+  install at most 1.25 ms and the GPU at most 4.2 ms in every frame: not the terrain install.
+  The three largest (183, 140 and 85 ms) are `kuopio_01`'s first strokes after the first load
+  (first use); the rest are not attributed in this round (a frame profile on the display is
+  owed), a miss for the user. 3: `TERRAIN-07-G`'s, kept there.
+- 4 (T42 (a)): captures for the user's visual check (`$ARTIFACTS/road68/h1/references/t42/`,
+  index): the drag probe under gamescope with the camera at 70 m and 150 m, past the `GL0` and
+  `GL1` level ends inside their hysteresis, each stroke's converged preview and its settled
+  commit (8 strokes each); not judged by the agent.
+- **Reference renders** (fresh, `screenshots-C.sh`, the tip's release library, gamescope):
+  every fixture, 197 images in close, plan, oblique and distance (200 m to 3 km) views, equal to
+  `TERRAIN-07-G` round 10's final renders by that round's comparison (no pixel of any image
+  differs by more than 40 levels), 0 pinholes in all 33 plan views, 0 failures
+  (`$ARTIFACTS/road68/h1/references/index.txt`).
+
+**Gate checks** (fresh). `cargo clippy --all-targets` on `5e02102d` (the Rust of every later
+commit): 59 warnings, `ROAD-68-G` part 10's set exactly. Missing docs 0 (`cargo doc`; its eight
+link warnings are `TERRAIN-07-G`'s). `./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY` unset on
+`82cfe7a3`: exit 0; the debug library suite 1,842 passed, 0 failed, 177 ignored;
+`growth_scenario` 4 passed; every Godot suite passes and nothing is skipped: the terrain overlay,
+graded cells and debug-view shader tests, the vegetation level match and wind gate tests and both
+plot lighting tests ran in gamescope's headless backend, no `SCRIPT ERROR`. Later commits change
+the drag probe (not in the suite) and docs. Bitwise (release F, not timed):
+`road68g_commit_determinism` differences null at 1, 3 and 4 workers, a rebuild delayed at 1 and
+8, and a save in the hold, digest `b41ab4b79632ebc4` (part 10's); the three graded preview =
+commit = undo = load tests pass.
 - 5, 6 and 9 (T37's culled gap, T45's clearance, `PERF-09` apart from terrain): not re-measured.
   They need the `SIM-02-K` prepared-snapshot run (`culled_snapshot_matches_full_pose_on_a_prepared_city`,
   which prints the culled and full means and `far_min_clearance_m`) and the `PERF-07` day at 100k,
@@ -8395,11 +8428,40 @@ a 45 % cloud deck, and the test, which fixes its own light, did not fix the weat
 `614dcaa0`'s vegetation shaders it passes, and under a clear sky with today's (0.896-1.077), so the
 test now clears the deck ([`terrain.md`](terrain.md#the-level-match-test-clears-the-cloud-deck-2026-10-29)).
 
-**Rendered rows, prepared** (`$ARTIFACTS/road68/h1/display-ready`): the preview rows (`sloped_t`,
-`sloped_branch`, `flat_cross`, `sloped_cross`, `dense`, the simulation paused, stationary and
-moving) and the drag probe (items 1 and 2) on the release library of the tip, each in a throwaway
-profile under `display-awake.sh`. The Moving row with the simulation active has no rendered
-harness ([question 61](#road-68-open-questions)).
+**Rendered rows** (`$ARTIFACTS/road68/h1/display-ready`; fresh, the user's display, taken by
+this agent on the coordinator's word, 2026-10-29 13:02-13:04; release library of the tip, sha256
+`cca536b7…`, Rust = `3e662826`'s; 1920x1080 windowed, vsync, 60 FPS cap, four workers, P-cores,
+both locks, under `display-awake.sh`, a throwaway profile; two runs, 100 samples after 8
+warm-ups; `preview-windowed-20261029T130204/summary.txt`). The preview matrix, the simulation
+paused, ms:
+
+| Fixture | Stationary p50 / p95 / max | Stop → exact | Moving displayed age p50 / p95 / max | Sampled poses exact within 16.7 ms | Sample → exact frame p50 / p95 / max |
+| --- | --- | --- | --- | --- | --- |
+| `sloped_t` | 13.29 / 20.29 / 26.53; 12.56 / 21.31 / 32.40 | 14.18; 13.37 | 13.61 / 21.81 / 156.70; 13.72 / 22.29 / 65.88 | 251 of 365; 260 of 377 | 13.5 / 21.7 / 156.7; 13.6 / 22.5 / 65.9 |
+| `sloped_branch` | 14.17 / 20.70 / 25.54; 13.31 / 22.04 / 25.38 | 14.94; 7.55 | 13.60 / 20.84 / 25.28; 14.92 / 22.96 / 28.30 | 285 of 385; 236 of 362 | 13.5 / 20.8 / 25.3; 14.5 / 22.6 / 26.6 |
+| `flat_cross` | 13.39 / 24.77 / 29.15; 15.05 / 25.86 / 29.78 | 24.76; 11.60 | 13.95 / 24.35 / 29.80; 14.34 / 23.51 / 66.78 | 245 of 373; 233 of 367 | 13.9 / 24.4 / 29.8; 14.1 / 23.5 / 30.2 |
+| `sloped_cross` | 14.45 / 21.66 / 31.15; 14.79 / 22.29 / 30.74 | 12.30; 21.72 | 14.38 / 24.35 / 34.73; 15.27 / 26.56 / 36.23 | 237 of 369; 221 of 357 | 14.4 / 25.1 / 34.7; 15.1 / 26.8 / 36.2 |
+| `dense` | 11.65 / 21.76 / 23.59; 11.15 / 20.96 / 27.57 | 22.65; 6.70 | 12.48 / 23.04 / 27.77; 13.69 / 25.50 / 30.77 | 258 of 357; 241 of 342 | 12.0 / 23.3 / 27.8; 13.1 / 25.5 / 30.8 |
+
+(Stationary p99 needs ten samples above it; 100 samples give none.) Against `ROAD-67-A`'s legacy
+baseline (stationary p50 57-92 ms, moving p50 53-120 ms) every row is four to eight times lower,
+but **the Moving and Stationary targets miss**: 62-74 % of sampled poses render their exact
+result within 16.7 ms, the rest one frame later (every miss is `late_exact`, none stale or
+superseded), and the stationary p95 is 20-26 ms. Attribution: the frames themselves are cheap
+(the viewport's CPU time p50 1.1-1.9 / p95 2.3-3.4 ms, GPU 1.6-2.0 ms in every case), but the
+frame intervals run p50 16.1-17.3 / p95 24-32 ms: about half the frames are recorded over 16.7
+ms and a frame often takes two refresh periods, with the scripted input arriving 6-10 ms late at
+the median. The time goes to presentation pacing (vsync with the 60 FPS cap on KDE's Xwayland),
+not to the roadbed, the terrain or the frame's own work; that is no `ROAD-68` or `TERRAIN-07` cost
+the round could change, but it is not one of the separate tracks either, so it is a miss for the
+user. The Moving row with the simulation active has no rendered harness
+([question 61](#road-68-open-questions)).
+
+**Merge risks.** Every terrain and road acceptance ran on Linux with the RX 7900 XTX under Vulkan
+(and the Compatibility renderer for the shader tests); macOS is unvalidated (`./run.sh --test`
+does not run the rendered tests there) and has [`TERRAIN-10`](roadmap.md) open: graded patches
+drawing nothing on another developer's Mac. The commit's locality at 100,000 remote sites and
+question 61 are open for the user.
 
 ## Measurement and acceptance
 
