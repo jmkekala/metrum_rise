@@ -4415,9 +4415,13 @@ km.
     pose, the current preview's for the commit and the kept tiles for undo.
   - *Where the kept tiles come from.* Rust holds no copy of a resident tile (invariant 2), so it
     has no replaced tile to keep at the commit. The undo record's kept tiles are baked from the
-    pre-commit inputs by a pure job on the shared pool after the commit (the roadbed and the
+    pre-commit inputs by a pure job on the background pool after the commit (the roadbed and the
     heightmap before it in `O(1)`, the sites of the tiles' windows copied), never in the commit's
-    frame. Undo adopts the kept tiles whose inputs equal the restored ones and bakes the rest,
+    frame. The inputs are taken at the commit's graded stage, but the commit queues the job only
+    after its last stage, beside its lot plan and routing rebuild (`ROAD-68-G` part 10,
+    [`roads.md`](roads.md#road-68-g--commit-consequences-inside-one-frame)): the two pools share
+    the CPUs, and a bake queued at the graded stage took the cores of the commit's later stages.
+    Undo adopts the kept tiles whose inputs equal the restored ones and bakes the rest,
     so a site the demand pass placed meanwhile, or a job not yet finished, costs a bake, never a
     stale tile; undo never waits for the job (no pool worker waits for a pure job). The simulation
     has no redo; a commit of the same stroke after undo stands for it in the tests.

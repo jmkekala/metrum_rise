@@ -65,7 +65,7 @@ moves and road removals, and turn the remaining silent skips into placement reje
 Before `ROAD-68-E` the roadbed was compacted for quality (2026-10-24, user decision): duplication,
 dead code and needless parameters removed, `roadbed/` at 7,229 production lines (7,545 before),
 with every product bitwise unchanged under a product-hash probe that later gates keep.
-`ROAD-68-G` (2026-10-24, D7) is implemented: a commit, undo, road bulldoze or other topology edit
+`ROAD-68-G` (2026-10-24, D7; done 2026-10-29 with part 10, below) is implemented: a commit, undo, road bulldoze or other topology edit
 rebuilds the CCH as a pure job on a graph copy and adopts it one frame later, the simulation frame
 holding meanwhile, deterministically across worker counts, a late rebuild and a save in the hold.
 That takes the CCH build (312 ms at 100k residents) off the commit. Part 2 found the measured
@@ -110,7 +110,15 @@ attachment repair test only the buildings in the 512 m chunks its edit reaches, 
 the whole city's test in test builds: flat from 0 to 100k remote sites (0.07-0.17 ms, 2.8-8.1
 before). First commits 14.4-18.2 ms (control 24.5-32.3), three of twelve populated first samples
 still over 16.7 ms; the agent passes and the graph copy still grow with the city (roads.md
-questions 59 and 60, open). The same session attributed the economy contract's baseline-30k rise to
+questions 59 and 60). Part 10 (2026-10-29, branch `road68-G10` on `TERRAIN-07-G`) closes the
+gate: the rebase drops the legacy terrain state with `TERRAIN-07-G`, and the commit queues its
+undo record's kept terrain tiles after its last stage, so their bake no longer takes the commit's
+cores. Every populated first commit takes 9.6-13.8 ms at 10k-100k (control 21.1-27.5) and every
+later sample at most 7.5 ms; products, locality products and agent records (1, 3, 4 and 8
+workers, a late rebuild, a save in the hold) bitwise. The user's decisions of 2026-10-28 are
+recorded (questions 58 (b), 59 (b) in its own round with `PERF-07` after this gate, 60 (a)) and
+carried to `ROAD-68-H` with the commit's locality growth at 100k remote sites (1.6-3.1 ms) and the
+economy contract's fiscal hour means (1-4 % above the control, work identical, no limit crossed). The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20). Its attribution (2026-10-25) found no road defect: the counts follow
 the city, whose 10k census needs fewer closure passes, and both scale within the limit per

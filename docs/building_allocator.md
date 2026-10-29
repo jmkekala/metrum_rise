@@ -362,7 +362,9 @@ Important invariant:
 A building removal's swap-remove keeps a current index in step (`keep_index_across_swap_remove`,
 `SIM-02-K`): the removed building leaves its zone and chunk lists, the last building takes its
 place there, the vacancy lists drop the removed building and rename the last one, and the
-explicit-site count and the counts of buildings at the support and lot-radius maxima follow. The
+list of explicit cell sites (`explicit_cell_sites`, ascending; it replaced their count in
+`ROAD-68-G` part 7, and a road commit's deferred lot plan snapshots it as `ExplicitSiteSnapshot`)
+and the counts of buildings at the support and lot-radius maxima follow. The
 removal queue's repair (`rebuild_zone_index_after_removals`) then returns the vacancy lists to
 building order and recomputes the admission order, which is what a rebuild gives (`ALLOC-03`), and
 recomputes the maxima or chunk bounds only when a removal may have lowered them. Any other stale

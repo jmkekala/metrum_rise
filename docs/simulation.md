@@ -810,6 +810,10 @@ field diffusion and other read-only precomputation.
   sharing no worker with it; the shared pool runs only work a caller waits for (`install`). A
   pure job's owner that finds it unstarted runs it in the background pool. The no-wait rule
   below covers the workers of both pools (`thread_pools::on_pool_worker`).
+  The pools share no worker but do share the CPUs: background work queued while a caller's
+  work runs takes that work's cores. A road commit therefore queues its background jobs (the lot
+  plan, the routing rebuild after it, the undo record's kept terrain tiles) after its last
+  stage (`ROAD-68-G` parts 7, 8 and 10; [`roads.md`](roads.md#commit-stages-part-10-the-gate-road-68-g-2026-10-29)).
 - **Not a declared kind.** A road commit, an undo or a road bulldoze starts it between frames, not
   a slot, and its adoption counts frames, because the clock does not move while it waits.
 - **The wait gate is the frame.** Every phase of a frame reads routing: the flow-field refresh,
@@ -890,7 +894,8 @@ field diffusion and other read-only precomputation.
   one frame later; nothing simulated reads them before the adoption.
 
 **`ROAD-68-G` part 8 (2026-10-27): the routing rebuild after the lot plan, and the adoption tick
-a frame after the commit** ([`roads.md`](roads.md) question 58; record under
+a frame after the commit** ([`roads.md`](roads.md) question 58 (b), agreed by the user
+2026-10-28; record under
 [`ROAD-68-G`](roads.md#commit-stages-part-8-road-68-g-2026-10-27)).
 
 - **Unstarted jobs.** `PureJob::unstarted` makes a job queued nowhere and a `JobStart` that

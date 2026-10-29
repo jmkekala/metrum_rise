@@ -2332,6 +2332,13 @@ and a road bulldoze ([`roads.md`](roads.md) D7) therefore never route between th
 
 - The edit rebuilds the hierarchy as a [pure job](simulation.md#pure-jobs) on an immutable copy of
   the edited graph. A commit uses its road-tool snapshot's copy, so it copies the graph once.
+- A commit whose edit queued cell-lot regions leaves its lots, attachment repair and entrance
+  update to a pure job adopted by the next frame, the hold's, before anything else
+  (`ROAD-68-G` part 7, [pure jobs](simulation.md#pure-jobs)); its routing rebuild starts when
+  that lot plan ends (part 8), and the sim thread ticks one frame after such a commit
+  ([`roads.md`](roads.md) question 58 (b)). The repair tests only the buildings in the 512 m
+  chunks the edit reaches (part 9). No route reader runs before the adoption, so none sees the
+  entrances before they are updated.
 - For `CCH_ADOPTION_FRAMES` (1) frame the simulation frame holds: no flow-field refresh, agent
   tick, timed event or slot runs, and the clock stays. Those are all the route readers inside
   the simulation, so queries wait by not being issued. The next frame adopts the result and

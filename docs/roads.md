@@ -905,7 +905,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
 | `ROAD-68-E` | implemented, acceptance open (2026-10-25, part 2 round 7) | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; part 2 the user's decisions on the open questions (order-independent strokes, overlap checks, node moves, pinned knots, the cell store's journal-synced view copy); open: the terrain stage's budget (`TERRAIN-07`) and question 21 (b)'s preview half (paused, question 33) |
 | `ROAD-68-F` | done (2026-10-25, part 2 round 4) | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and overlap queries: part 1 builds zebra paint, street lights and signs from the pieces for preview and commit alike (question 26 met); part 2 the road families without terrain (roads without sidewalks, mixed profiles, bridge decks, tunnel road pieces, one overlap walk), and round 4 fixed the preview payload's codegen regression. Moved to `TERRAIN-07`: bridge abutments and tunnel portals (`TERRAIN-07-C`, with closing the grounded chains at structures, open question 19), building sites, driveways and paving (`TERRAIN-07-C`), bridge fascias (`TERRAIN-07-B`). Left open: question 17's item on footpaths in a sector without a sidewalk |
-| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); part 7 (on `terrain07-E`) defers the commit's lots one frame (question 33 (c)), bitwise: first commits 16.0–17.3 ms at 10k–100k (control 25.8–29.7); part 8 starts the routing rebuild after the lot plan and the adoption tick a frame after the commit (question 58): adoption frames 0.3–2.3 ms, first commits 14.9–17.9 ms (three of twelve populated first samples miss), locality products bitwise from 0 to 100k remote sites but about 3 ms dearer at 100k; part 9 (rebased onto gate E) makes the adoption's attachment repair follow the edit (flat to 100k remote sites): first commits 14.4–18.2 ms (three of twelve populated first samples miss), the agent passes and graph copy open ([open questions 21, 59 and 60](#road-68-open-questions)) |
+| `ROAD-68-G` | done (2026-10-29, part 10) | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); part 7 (on `terrain07-E`) defers the commit's lots one frame (question 33 (c)), bitwise: first commits 16.0–17.3 ms at 10k–100k (control 25.8–29.7); part 8 starts the routing rebuild after the lot plan and the adoption tick a frame after the commit (question 58): adoption frames 0.3–2.3 ms, first commits 14.9–17.9 ms (three of twelve populated first samples miss), locality products bitwise from 0 to 100k remote sites but about 3 ms dearer at 100k; part 9 (rebased onto gate E) makes the adoption's attachment repair follow the edit (flat to 100k remote sites): first commits 14.4–18.2 ms (three of twelve populated first samples miss), the agent passes and graph copy open ([open questions 21, 59 and 60](#road-68-open-questions)); part 10 rebased onto `TERRAIN-07-G` (the legacy terrain state gone) and queues the commit's kept terrain tiles after its last stage: every populated first commit 9.6–13.8 ms at 10k–100k (control 21.1–27.5), every later sample at most 7.5 ms, products and agent records bitwise; questions 58 (b), 59 (b) and 60 (a) agreed by the user and carried to H with the locality growth and the fiscal contract means ([record](#commit-stages-part-10-the-gate-road-68-g-2026-10-29)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
 **Plan changes (2026-10-24, user).** Pre-D work, before terrain:
@@ -1624,7 +1624,9 @@ These need a user decision; work that does not depend on them continues.
 21. **The commit's other stages exceed a frame (`ROAD-68-G` measurement) — cell lots decided
     2026-10-24 (user): profile and speed up lot regeneration first; if it still does not fit,
     `ROAD-68-E` builds the lots in the preview and the commit installs them (option (b)). The
-    other stages stay open until the commit fits a frame.** With the CCH
+    other stages stay open until the commit fits a frame. The commit fits since `ROAD-68-G` part
+    10 (2026-10-29); the open parts are questions 59 (b) and 60 (a), agreed by the user
+    (2026-10-28) and validated at `ROAD-68-H`.** With the CCH
     off the commit (D7), part 1 measured click → acknowledgement at 2.4 s at 100k residents.
     Part 2 ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24))
     found that the harness never acknowledged an upload; with Godot's acknowledgements modelled,
@@ -1812,6 +1814,15 @@ These need a user decision; work that does not depend on them continues.
       state their largest stage. Option (d) is [open question 59](#road-68-open-questions), the
       graph copy question 60 ([commit stages, part
       9](#commit-stages-part-9-road-68-g-2026-10-28)). Target and locality still open.
+    - **`ROAD-68-G` part 10 (2026-10-29, fresh, branch `road68-G10` on `road` `a0cfe039`, the
+      gate).** Rebased onto `TERRAIN-07-G`, which removed the legacy terrain state; the commit
+      queues its undo record's kept terrain tiles after its last stage, so their bake no longer
+      takes the commit's cores. In the second landing session every populated first commit takes
+      9.6-13.8 ms (control 21.1-27.5) and every later sample at most 7.5 ms: the target is met at
+      every tier ([commit stages, part 10](#commit-stages-part-10-the-gate-road-68-g-2026-10-29)).
+      The open parts of this question are [question 59](#road-68-open-questions) (b), the agent
+      passes, in its own round after the gate, and question 60 (a), the graph copy, kept until
+      it shows in a frame; both agreed by the user (2026-10-28) and validated at `ROAD-68-H`.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -3537,8 +3548,8 @@ These need a user decision; work that does not depend on them continues.
       `AgentSystem::place_arrival_carrier_at_home`, which leaves the buckets first (test
       `arrival_carrier_placed_at_home_leaves_the_lane_snapshot`). Carriers in the game drive in
       and enter their homes through the tick, which keeps the buckets.
-58. **The tick after a commit that deferred its lots (`ROAD-68-G` part 8) — (b) taken pending
-    the user's review, 2026-10-27.**
+58. **The tick after a commit that deferred its lots (`ROAD-68-G` part 8) — (b), agreed by the
+    user, 2026-10-28; validated at `ROAD-68-H`.**
     - **Evidence.** The sim thread runs a tick at once after its commands whenever the tick's
       deadline passed during them (`begin_due_sim_tick`). In a populated city the previous tick
       itself takes a few milliseconds, so a 15-17 ms commit always overruns the next deadline,
@@ -3560,8 +3571,12 @@ These need a user decision; work that does not depend on them continues.
       `a_deferred_lot_plan_moves_the_next_tick_a_frame_past_the_commit`); the breakdown measures
       the game's frame with `METRUM_COMMIT_NEXT_TICK=frame`
       ([commit stages, part 8](#commit-stages-part-8-road-68-g-2026-10-27)).
-59. **The commit's agent passes visit every agent (`ROAD-68-G` part 9, question 21 (d)) —
-    open.**
+    - **Agreed by the user, 2026-10-28; validated at `ROAD-68-H`:** (b), the next tick moves one
+      frame past a commit that deferred its lots. H checks nothing beyond this record
+      ([carried to H](#road-68-h--acceptance-and-cleanup)).
+59. **The commit's agent passes visit every agent (`ROAD-68-G` part 9, question 21 (d)) — (b),
+    agreed by the user, 2026-10-28, in its own round after `ROAD-68-G` closes; validated at
+    `ROAD-68-H`.**
     - **Evidence.** A commit runs three parallel scans over the whole agent store
       (`AgentSystem::invalidate_lane_ids_for_edges`, then the detached-agent search and the
       route-state test of `reattach_invalidated_lanes_for_edges`), `O(A / P)` each. In part 8's
@@ -3587,7 +3602,13 @@ These need a user decision; work that does not depend on them continues.
       measured against a same-session control, since its maintenance runs in every tick. Not
       started at night (2026-10-28): it adds per-tick work to the agent tick, which the commit's
       0.1-1 ms does not justify without that measurement.
-60. **The commit's graph copy (`ROAD-68-G` part 9) — open.**
+    - **Agreed by the user, 2026-10-28; validated at `ROAD-68-H`:** (b), the route index by node,
+      so the commit's agent passes visit only the edit's agents, in its own round with `PERF-07`
+      against a same-session control, not before `ROAD-68-G` closes; `ROAD-68-G` builds nothing
+      for it. H checks the passes' cost against click → committed at 100k, then that round runs
+      ([carried to H](#road-68-h--acceptance-and-cleanup)).
+60. **The commit's graph copy (`ROAD-68-G` part 9) — (a), agreed by the user, 2026-10-28;
+    validated at `ROAD-68-H`.**
     - **Evidence.** A commit copies the live graph once (`publish_committed_road_tool_view`,
       `RegionGraph::clone_on_pool`); the road tool's view and the routing rebuild share that
       copy, an offered copy serves undo and bulldoze, and the preview's replica follows by
@@ -3609,6 +3630,10 @@ These need a user decision; work that does not depend on them continues.
       reads instead of the whole graph: smaller, still `O(edges)`.
     - **Recommendation.** (a) until `ROAD-68-G` closes; then (b) as its own measured track if the
       copy shows in a frame. Not decided at night.
+    - **Agreed by the user, 2026-10-28; validated at `ROAD-68-H`:** (a), keep the graph copy until
+      `ROAD-68-G` closes; (b), a persistent graph store, becomes its own measured track if the
+      copy shows in a frame. `ROAD-68-G` builds nothing for it. H checks whether the copy shows
+      in a frame ([carried to H](#road-68-h--acceptance-and-cleanup)).
 
 Spec corrections in `ROAD-68-A`:
 
@@ -7929,6 +7954,187 @@ the same way, after the session: exit 0, the library 1,983 / 0 / 180, `tests/gro
 untouched (gate E's count, 9,617, stands). The part adds about 100 production lines (the
 candidate search 63, the split admission pass 25, the adoption's call 12) and 71 test lines.
 
+#### Commit stages, part 10: the gate (`ROAD-68-G`, 2026-10-29)
+
+Branch `road68-G10`: parts 1-9 (`road68-G9`, `febc30fa`) rebased from gate E (`c64786e9`) onto
+`road` `a0cfe039` (`TERRAIN-07-G`'s gate), then the rebase's fixes and part 10. `road68-G9` stays
+for the hashes the earlier records cite; part 9's `1e8bd3d3` is `e570573d` here, part 8's
+`9e647b86` is `10715797`, part 7's `35ed7721` is `ff998211` (the full map is
+`$ARTIFACTS/road68/g10/hashmap.txt`).
+
+**The rebase.** Git reported no conflict, but two merges brought back what `TERRAIN-07-G` deleted,
+and the crate did not compile until `8bfd9ebf` removed them:
+
+- part 7 (`bb19de50`, here `3b1e587b`) moved the commit's road-locked terrain patch state after
+  the tool snapshot; on a base that no longer has it, the move re-added the call
+  (`refresh_road_locked_terrain_patch_state`). It is gone: the commit's last stage is the tool
+  snapshot, and its background jobs start after it;
+- part 8's locality fixture refreshed the deleted engineered terrain ownership after its
+  background's bulk build; it now resets the graded terrain once, as `road`'s populated city does
+  (`subsume_world_scale_road_changes`, `bump_global_terrain_payload_generation`).
+
+Every other overlap merged at its meaning (the core state's pending lots beside `road`'s camera
+position, the sim thread, the editors' adoption calls, undo, world resets, save and load, the
+breakdown's stage list without `refined_state_ms` and with `road`'s `terrain_query_index_ms`, the
+allocator's explicit-site list replacing its count, the site query, the docs).
+
+**Part 10: the undo record's kept terrain tiles are queued last** (`10477798`, found by the first
+landing session below). A commit's graded stage queued the bake of the tiles its undo record keeps
+(`TERRAIN-07-E`, [`terrain.md`](terrain.md#preview-commit-undo-and-load)) on the background pool
+at once. That pool has its own workers but shares the eight CPUs with the shared pool the
+commit's later stages run on. In session 1 the bake ran from about 4-5 ms after the click while
+the agent pass, the lanes and the publication ran; each populated first sample that missed 16.7
+ms (below) had the bake running 5.6-10.9 ms beside a slower stage (the 100k agent pass 9.71 ms
+against 2.7-4.0 in the other runs). The job is now made unstarted, with its inputs taken where
+they were (`PureJob::unstarted`), and the commit queues it after its lot plan and routing jobs
+(`SimCore::take_kept_graded_tiles_start`), as part 7 did for those. Its result depends only on
+the inputs; undo never waited for it and still does not (it bakes what the job has not), and a
+test that waits runs the job if nobody started it. In session 2 the bake ends 0.2-4.5 ms after
+the acknowledgement at every tier, before the next frame.
+
+**Landing sessions** (fresh, 2026-10-29, one hold of both locks each, `taskset -c
+0,2,4,6,8,10,12,14`, `METRUM_DEBUG=0`, no restic, compiler, cargo or Godot process at the start or
+after any run; release library tests). C = `road` `a0cfe039` with a test-only harness (the
+locality fixture, `zoned_city_in_world`, the cell store's named digest and `profile_commits`'s
+site-removal switch from parts 8 and 9; `$TEST_BINARY` sha256 `aec1c293…`), the same C in both.
+Session 1 (10:24:21-10:35) ran F1 = `5e31ad31` (sha256 `b3689483…`, the rebased parts and the
+rebase's fixes); session 2 (10:48:58-10:54:15) F2 = `10477798` (sha256 `4ce7421b…`, part 10).
+Each binary's 10k, 30k and 100k cities were prepared before its session; every populated tier's
+`COMMIT_FIXTURE` is `loaded`. Each session: the preview stages C F F C (four workers), the
+breakdown C F F C on the game's path (`METRUM_COMMIT_PREVIEW`, eight workers, tiers 0 to 100k),
+the breakdown F F with `METRUM_COMMIT_NEXT_TICK=frame` (the game's adoption frame, question 58
+(b)) and the locality fixture C F F C; session 1 also the economy contract C F F C. All twelve
+breakdown runs of both sessions print bitwise identical `COMMIT_PRODUCTS`, C's included.
+
+Click → ack, ms: the first sample of each run, and the median of each run's three samples. C's
+two runs; F's four (two at once, two a frame later: the same commit, timed the same way):
+
+| Tier | C first (session 1 / 2) | F1 first (session 1) | F2 first (session 2) | C median (session 2) | F2 median |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 7.17, 7.40 / 8.44, 7.31 | 7.04, 6.75, 7.21, 7.04 | 5.56, 6.07, 6.04, 6.24 | 3.55, 4.26 | 3.11, 4.07, 4.23, 4.45 |
+| 10k | 21.33, 21.29 / 27.45, 26.16 | 12.48, 12.32, 11.56, 11.41 | 10.23, 9.63, 10.75, 9.67 | 7.94, 8.65 | 3.42, 3.33, 4.29, 3.67 |
+| 30k | 19.80, 20.12 / 21.11, 24.10 | 13.38, 12.74, 12.05, **17.50** | 10.40, 10.65, 12.09, 11.67 | 8.24, 7.33 | 4.80, 4.12, 4.11, 4.38 |
+| 100k | 24.65, 25.72 / 23.60, 25.42 | 15.14, **17.26**, **20.76**, 14.58 | 12.48, 12.22, 11.45, 13.79 | 11.76, 13.12 | 7.21, 7.54, 7.05, 7.04 |
+
+F1's medians: 3.58-4.33 (0), 3.98-4.28 (10k), 4.89-5.45 (30k), 7.88-8.77 ms (100k).
+
+- **Against 16.7 ms.** Session 1: three of twelve populated first samples miss (30k 17.50, 100k
+  17.26 and 20.76), each attributed to the kept tiles' bake beside the commit's later stages
+  (above): the 100k 20.76 ms sample's agent pass took 9.71 ms with the bake running 4.8-15.7 ms,
+  the 17.26 ms sample's publication 5.43 ms (3.3-3.6 in the others) with the bake 5.2-10.8 ms,
+  the 30k 17.50 ms sample's publication 7.43 and lanes 5.36 ms with the bake 4.2-10.7 ms.
+  Session 2, after part 10: **every sample of every run at every tier fits**, the first samples
+  9.63-13.79 ms at 10k-100k, every later sample at most 7.54 ms in F2 (C up to 13.12). The 100k
+  agent pass is 0.26-0.83 ms (C 1.91-2.89).
+- **What the first 100k sample spends** (F2, four runs; C's two in brackets): the graded and
+  roadbed stage (`surface`) 4.08-4.25 (4.01, 4.10), of which `road`'s terrain query index update
+  2.23-2.34 (`TERRAIN-07-F`'s T44, [carried to H](#road-68-h--acceptance-and-cleanup) item 7);
+  the render publication 3.32-4.05 (3.68, 3.70); the lanes and reattachment 1.53-1.79 (2.18,
+  3.60); the plan, undo, topology and marks 0.84-0.88 (0.81, 0.83); the tool snapshot's graph
+  copy 0.50-0.54 (1.94, 2.50); the agent pass 0.26-0.83 (1.91, 2.89); C's lots and entrances
+  (`buildings`) 7.68, 8.39 are the frame after in F. The legacy terrain state (6.3-8.1 ms of part
+  9's misses, historical) is gone with `TERRAIN-07-G`.
+- **The adoption frame** (the first after the commit, which adopts the lots). At once (the
+  harness default) it waits 9.4-14.6 ms for the plan at the populated first samples; a frame later
+  (the game since question 58) it takes 0.31-0.46 ms at every populated tier and 0.09-0.10 at 0,
+  the attachment repair 0.16-0.19 ms of it.
+- **Routing adoption, separately** (D7's hold): at 100k the rebuild takes 256-287 ms and
+  the routing adoption comes 242-262 ms after the click, the adoption frame waiting 26-37 ms for
+  it (C: 301-305, 268-278 and 54-64 ms); at 30k 41-46, 32-43 and under 0.3 ms; at 10k 12-14, 7-22
+  and under 0.3 ms.
+- **Preview stages** unchanged in both sessions: payload p50 0.389-0.429 ms (C 0.388-0.427),
+  graded p50 1.37-1.74 / p95 1.84-2.16 ms (C 1.41-1.70 / 1.94-2.17), totals p50 2.37-2.84 ms (C
+  2.46-2.81), on the sloped T and branch.
+
+**Locality** (both sessions, C F F C). The local products (republished chunks, graded tile
+digests, the neighbourhood's cell claims, generated cells, 1,264 parcels and 1,264 buildings) are
+bitwise identical at 0, 1,000, 10,000 and 100,000 remote sites, between the runs, between C and F
+and between the sessions. Click → ack per sample in session 2, ms (F2's two runs; C's in
+brackets):
+
+| Remote sites | Sample 0 | Sample 1 | Sample 2 |
+| --- | --- | --- | --- |
+| 0 | 12.35, 14.69 (30.91, 34.30) | 11.27, 10.19 | 11.21, 11.26 |
+| 1,000 | 12.01, 12.45 (33.24, 31.53) | 11.33, 10.77 | 11.34, 10.77 |
+| 10,000 | 14.40, 15.38 (34.64, 36.46) | 13.99, 10.73 | 9.93, 9.52 |
+| 100,000 | 15.42, 16.28 (42.00, 41.35) | 12.38, **16.73** | 11.86, 11.55 |
+
+- The neighbourhood's own first commit now fits (12.35-14.69 ms; session 1 16.73-16.80; part 9
+  17.6-19.6, historical), its publication 6.3-7.2 ms (session 1 10.4-10.5, with the bake beside it).
+- **Not flat at 100,000 sites:** the first sample gains 1.6-3.1 ms. Its parts (F2, sample 0, 0 →
+  100,000 sites): the roadbed stage +0.8-0.9 ms, of which the terrain query index update +0.56-0.59
+  (`TERRAIN-07-F`'s T44, carried to H item 7); the graded stage +0.5-0.7; the topology adoption
+  +0.42-0.43 (in C too: 0.03 → 0.49); the graph copy +0.50-0.62 ([question 60](#road-68-open-questions)
+  (a), agreed); the agent passes +0.05 (question 59 (b), agreed); the lanes +0.1. One second
+  sample at 100,000 sites took 16.73 ms (the other run 12.38): its roadbed stage 4.34 ms against
+  2.28, the terrain query index update 3.46 against 1.81 of it, and its publication 7.44 against
+  6.62. The adoption's repair stays flat (0.06-0.19 ms), except five of F's 48 samples in the two
+  sessions at 1.2-3.0 ms, each a third sample (at 0, 10,000 and 100,000 sites), as part 9's at
+  1,000; not attributed.
+  `ROAD-68-H` owns the populated locality check, so this is carried there (item 14).
+
+**Bitwise** (fresh, not timed). `road68g_commit_determinism`
+(`nodes::sim::core::populated_city::envelope`) commits a T branch on the 2,000-resident city,
+which defers its lots in every run (`ROAD68G_COMMIT … lots_deferred=true`, new), and runs six game
+hours: against the eight-worker reference, one, three and four workers (four added in this part),
+a rebuild delayed 400 ms at one and at eight workers, and a save inside the hold give identical
+hourly fingerprints (6) and saved tables (72), agent records among them: reference digest
+`b41ab4b79632ebc4` on F1, F2 and C. This is the acceptance's third row.
+
+**Economy performance contract** ([`PERF-01`](economy.md#performance-contract-perf-01perf-05)).
+Parts 7-9 changed the tick path: the parcel store is shared copy-on-write (`SharedParcelStore`:
+a read goes through an `Arc`, a write through `Arc::make_mut`), every frame checks for a pending
+lot plan (`O(1)`), and the allocator keeps its explicit cell sites as a list. Session 1 ran the
+contract C F F C on cities C generated before it (the fixture revision is the same in both: the
+fixture sources are equal), `tools/perf_contract.py --binary "$TEST_BINARY"`, eight workers:
+
+| Hour mean | C1 | F1 | F1 | C2 |
+| --- | --- | --- | --- | --- |
+| baseline 10k | 0.866 ms | 0.836 ms | 0.837 ms | 0.854 ms |
+| baseline 30k | 4.302 ms | 4.244 ms | 4.166 ms | 4.237 ms |
+| fiscal 10k | 6.090 ms | 6.242 ms | 6.162 ms | 5.975 ms |
+| fiscal 30k | 26.007 ms | 26.433 ms | 26.839 ms | 25.932 ms |
+| runner time | 71.3 s | 71.4 s | 71.2 s | 71.4 s |
+
+Work counts are identical in all four runs, the households end at 5,311 and 15,180 in each, no
+time limit fails, and the same seven work-count limits fail in C and F (question 20). The baseline
+means lie inside C's spread. The fiscal means are 0.07-0.27 ms (1.2-4.5 %) above C's two runs at 10k
+and 0.43-0.91 ms (1.6-3.5 %) at 30k, in the fiscal day's planning (473.8 and 478.2 against 461.9
+and 462.8 ms a day at 30k) and census; the isolated phases do not differ. Not attributed: by
+[question 36](#road-68-open-questions)'s rule it is layout only once a profile shows identical
+work, and none was taken; the candidate is the parcel store's copy-on-write indirection on the
+fiscal day's parcel writes. Carried to H (item 15). Part 10 changes only the commit, so session 2
+did not repeat the contract.
+
+**Decisions** ([open questions 58-60](#road-68-open-questions), the user, 2026-10-28; recorded
+here, validated at `ROAD-68-H`): 58 (b), the next tick moves one frame past a commit that
+deferred its lots; 59 (b), the route index by node for the commit's agent passes, in its own
+round with `PERF-07` after this gate; 60 (a), the graph copy kept, (b) a persistent graph store
+as its own track if the copy shows in a frame. Nothing is built for 59 or 60 here. The superseded
+routing rebuild ([carried to H](#road-68-h--acceptance-and-cleanup) item 10, `terrain.md` T57
+(d)): no sample of either session runs a commit beside a superseded rebuild (each sample's
+rebuild is adopted before the next commit), so neither session shows that contention and nothing
+is built for it here; it stays carried.
+
+**Checks** (fresh). The debug `cargo test --lib` on `8bfd9ebf` and on `10477798`: 1,842 passed,
+0 failed, 177 ignored (`TERRAIN-07-G`'s 1,837 / 0 / 176 plus this gate's tests and its locality
+benchmark). `./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY` unset on `10477798`: exit 0,
+the library as above, `tests/growth_scenario.rs` 4 passed, every Godot script passes (the graded
+tile renderer among them) with no `SCRIPT ERROR`; skipped as before: the shader global probe
+(headless renderer) and the rendered vegetation tests (Forward+ display). `cargo clippy
+--all-targets` on `5e31ad31` and on `200569e9`: 59 warnings, `TERRAIN-07-G`'s set exactly; on
+`10477798` it found one more, the kept tiles' job field never read outside tests, which
+`200569e9` allows as dead there as the crate does for such fields (an attribute: no code
+changes, so the sessions' F2 stands for it). No compiler warning in any build (missing docs 0).
+`git grep 'ignore = "ROAD-68-G'` returns nothing, and no `ROAD-68-*` ignore on a disabled test
+remains (the `release ROAD-68-G …` and `ROAD-68-K22 …` ignores mark release benchmarks).
+`roadbed/` is untouched: 9,239 production lines on `road` and on the tip by part 6's counter
+(every non-test file, `#[cfg(test)]` items, `tests/` and `fixtures.rs` excluded; gate E's 9,617
+was another counter). The round's production change is net +20 lines (`graded_stage.rs` +20;
+`road_commit.rs` 0: the rebase fix removed the terrain state call and part 10 added the kept
+tiles' start), plus 7 test lines and the locality fixture's reset; the whole gate, parts 1-10
+on `road`, changes 37 files under `rust/src`, 1,813 lines added and 195 removed.
+
 ### `ROAD-68-H` — acceptance and cleanup
 
 1. The [rendered runs](#targets), with the simulation paused and active, and the populated
@@ -7983,6 +8189,27 @@ measures and judges each against its target. A gate landing later adds its own h
     locks; on `road` too ([`terrain.md`](terrain.md#terrain-07-open-questions) T57 (d), carried by
     the user on 2026-10-29 with the populated drag's 3.79 ms first pose accepted for
     `TERRAIN-07-G`; the allocator half is `PERF-10`).
+11. [Question 58](#road-68-open-questions) (b), the next tick a frame past a commit that
+    deferred its lots: agreed by the user, 2026-10-28; validated at `ROAD-68-H`. H checks nothing
+    beyond the record.
+12. [Question 59](#road-68-open-questions) (b), the route index by node for the commit's agent
+    passes: agreed by the user, 2026-10-28; validated at `ROAD-68-H`. H checks the passes' cost
+    against click → committed at 100k, then runs that round with `PERF-07` against a same-session
+    control.
+13. [Question 60](#road-68-open-questions) (a), the commit's graph copy kept: agreed by the user,
+    2026-10-28; validated at `ROAD-68-H`. H checks whether the copy shows in a frame; if it does,
+    (b), a persistent graph store, is its own measured track.
+14. The commit's locality (`ROAD-68-G` part 10's sessions, [record](#commit-stages-part-10-the-gate-road-68-g-2026-10-29)):
+    products bitwise from 0 to 100,000 remote sites, but the first commit gains 1.6-3.1 ms at
+    100,000 (the terrain query index update and the graded stage, `TERRAIN-07`'s; the topology
+    adoption +0.4 ms, in the control too; the graph copy and agent passes of questions 60 and 59),
+    and one second sample took 16.73 ms there (its terrain query index update 3.46 ms against
+    1.81). H's populated locality check judges it.
+15. The economy contract's fiscal hour means on `ROAD-68-G` part 10's first session: 1.2-4.5 %
+    (10k) and 1.6-3.5 % (30k) above the same-session control, with identical work counts and no
+    limit crossed, in the fiscal day's planning and census; not profiled (question 36's rule).
+    The candidate is the parcel store's copy-on-write indirection (`SharedParcelStore`, part 7). H
+    profiles it against a same-session control and attributes it.
 
 ## Measurement and acceptance
 
