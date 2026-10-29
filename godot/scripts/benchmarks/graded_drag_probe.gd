@@ -11,8 +11,9 @@
 ## a commit's or undo's edit batch that frame's graded work (the staged tiles' uploads, the
 ## preview's release and the swaps); with the bytes uploaded, the patches drawing graded cells, the
 ## frame's wall time and the viewport's last measured GPU time. It checks the renderer's bookkeeping: no pool exhausted, no
-## bake failed, nothing created by a drag or an edit, each batch's tiles installed with the
-## preview released, and a catch-up of one share a frame.
+## bake failed, nothing created by a drag or an edit beyond the pages and variants the renderer
+## creates on demand, each batch's tiles installed with the preview released, and a catch-up of
+## one share a frame.
 ## Env: METRUM_GRADED_DRAG_CASES (case ids, comma-separated; default every case),
 ## METRUM_GRADED_DRAG_DISTANCE (the camera's orbit distance from the stroke's end, m; default 40,
 ## so the tiles around the click take GL0, the dearest to upload), METRUM_GRADED_DRAG_CAPTURE_DIR
@@ -24,8 +25,9 @@ const MANIFEST := "res://../benchmarks/fixtures/kuopio-terrain/placements.json"
 const POSES := 8
 # The Godot terrain install share of a pose, commit or undo frame (`terrain.md` budgets).
 const SHARE_MS := 1.0
-# Tiles a catch-up frame stages (`GradedPreview`'s CATCH_UP_FRAME_TILES).
-const CATCH_UP_FRAME_TILES := 3
+# Tiles a catch-up frame stages (`graded_stage.rs`'s CATCH_UP_FRAME_TILES, two since
+# `TERRAIN-07-G` round 7).
+const CATCH_UP_FRAME_TILES := 2
 const CATCH_UP_LIMIT := 64
 const EDIT_FRAME_LIMIT := 600
 const SETTLE_FRAME_LIMIT := 6000
@@ -148,8 +150,19 @@ func _stroke(case_id: String, stroke: Dictionary) -> Dictionary:
 		return record
 	await _capture(record, "commit")
 	var after: Dictionary = _graded.get_pool_counters()
+	# The renderer creates two things on demand since `TERRAIN-07-G`: a page (its two textures)
+	# when a block's page fills (T54), and a set's behind-the-road variant (four MultiMeshes and
+	# four materials) with its patch's first flagged tile (round 10). Anything else fails.
+	var pages := int(after["pages_created"]) - int(before["pages_created"])
+	var variants := int(after["cell_variants_created"]) - int(before["cell_variants_created"])
+	var on_demand := {"textures_created": 2 * pages, "materials_created": 4 * variants,
+		"multimeshes_created": 4 * variants}
 	for name: String in CREATED + HEALTH:
-		_expect(int(after[name]) == int(before[name]), record, "%s changed by %d" % [name, int(after[name]) - int(before[name])])
+		var changed := int(after[name]) - int(before[name])
+		_expect(changed == int(on_demand.get(name, 0)), record, "%s changed by %d (%d on demand)"
+			% [name, changed, int(on_demand.get(name, 0))])
+	record["pages_created"] = pages
+	record["variants_created"] = variants
 	_expect(record.fast.committed and record.converged.committed, record, "both clicks commit")
 	_expect(_holes == 0, record, "%d frames drew a resident patch with nothing (a hole)" % _holes)
 	_holes = 0
