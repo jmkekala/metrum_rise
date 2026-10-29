@@ -7484,6 +7484,11 @@ measures and judges each against its target. A gate landing later adds its own h
 9. Attribute `PERF-09` separately from terrain query work: the road control already misses the
    frame guards. H records matched control/terrain snapshot and frame shares and does not charge
    that inherited regression to Gate F or relax it.
+10. Stop a superseded routing rebuild (`ROAD-68-G10`, or H): a commit's rebuild runs to its end
+    beside the undo's that supersedes it, and the frame's pool then waits for CPUs and allocator
+    locks; on `road` too ([`terrain.md`](terrain.md#terrain-07-open-questions) T57 (d), carried by
+    the user on 2026-10-29 with the populated drag's 3.79 ms first pose accepted for
+    `TERRAIN-07-G`; the allocator half is `PERF-10`).
 
 ## Measurement and acceptance
 

@@ -489,7 +489,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   [D](terrain.md#terrain-07-d-record), [E](terrain.md#terrain-07-e-record),
   [F](terrain.md#terrain-07-f-record)).
 
-- **`TERRAIN-07-G` acceptance remains open (2026-10-28).** The exact/CDT terrain surface and its
+- **`TERRAIN-07-G` acceptance remains open (2026-10-29).** The exact/CDT terrain surface and its
   frontend selector, refined jobs, baked meshes and water clip are deleted; gameplay, references
   and benchmarks are graded-only. The stage, locality and bitwise rows passed before deletion.
   Round 3 found that the earlier bend fix hid its cause: at the plan view's 1 m lattice the edge
@@ -544,8 +544,15 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   and allocator locks while background routing rebuilds run (on `road` too; options for the user,
   `terrain.md` T57). An exact speed-up of the steepest Kuopio tiles (the road coverage pass in
   parallel, no product changed) leaves 2-3 of 299 drag frames over 3.0 ms instead of up to 4.3 ms
-  (for the user, T27); the terrain renderer's page allocator moved into its own script. No target
-  is relaxed; details are in the [Gate G record](terrain.md#terrain-07-g-record).
+  (for the user, T27); the terrain renderer's page allocator moved into its own script. The user
+  accepted T56, T57 and T27 on 2026-10-29 and asked for the startup memory and a leak to be fixed
+  first. Round 10 fixed both: each world load leaked one node per terrain cell set, and every set
+  was prewarmed with the meshes of the depth-writing variant that only conflict tiles draw; a set
+  now gets them with its first such tile, and the game's memory before a save loads is at road's
+  (6 MiB below). Renders, install counts and products are unchanged. Two rows wait for the user:
+  Kuopio's drag frames in the gate session exceed the numbers the user accepted on the same
+  binary (T58), and the settled memory is above road's (T59). No target is relaxed; details are
+  in the [Gate G record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.

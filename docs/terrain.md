@@ -3905,7 +3905,9 @@ triangle, and the tile is flagged if it is positive at an end of that part. A fl
 draw in their level's behind-the-road MultiMesh with a third material variant
 (`terrain_graded_behind.gdshader`, `TERRAIN_GRADED_BEHIND`): (a2)'s depth push within one pixel
 inside a seam; every other cell keeps (a) and the early depth test. The rule (the mask) is the
-same in both variants; only what the band's ground above the road top does differs.
+same in both variants; only what the band's ground above the road top does differs. A cell set
+holds the variant's four MultiMeshes and materials only once its patch shows a flagged tile
+(`TERRAIN-07-G` round 10, [cell sets](#godot-tile-renderer)).
 
 **The push stays within the depth range** (`TERRAIN-07-G` round 5). The push moves the fragment
 `push_fall / ray_fall` metres along its ray, `push_fall` the ground's rise doubled plus the pixel
@@ -4162,7 +4164,7 @@ km.
   re-levelled every desired tile per 8 m of travel, so a level could switch up to 8 m late), at
   `O(tiles due + buckets passed)` per frame instead of `O(desired)`.
 - **Cells per tile** (T26 (a), round 8). Each pooled cell set records what its five
-  `MultiMesh`es hold: per mesh the instance count and each instance's custom data and tile, per
+  `MultiMesh`es (nine with the behind-the-road variant) hold: per mesh the instance count and each instance's custom data and tile, per
   tile place of the patch its (mesh, instance). A tile installed at a new slot or lattice, or
   evicted, rewrites its own instance in every patch drawing cells that holds it (in place while
   its mesh is unchanged, else a swap-remove from the old mesh, whose last instance takes its
@@ -4186,7 +4188,23 @@ km.
   `MultiMesh`es for patches newly drawing cells). Each cell `MultiMesh` holds the most tiles a
   patch meets (`(ceil(span / 64 m) + 1)^2`, 81 on 510 m patches) and the wall `MultiMesh` 256
   faces (the census's most per patch: 42 on Kuopio). The memory this costs on a large, mostly
-  empty world is [T25](#terrain-07-open-questions). A set's four graded materials are bound to
+  empty world is [T25](#terrain-07-open-questions). A prewarmed set holds the five plain cell
+  `MultiMesh`es (`GL0`-`GL3` and the base cells), four graded materials and the walls'; the
+  behind-the-road variant's four `MultiMesh`es and materials ([T49](#terrain-07-open-questions)
+  (c)) come with the patch's first flagged tile (`TERRAIN-07-G` round 10; from round 4 to 9 every
+  set held all nine, which the 100k city's setup paid for its 1,600 sets: +95.8 MiB of `MultiMesh`
+  arrays, round 9C). The build path adds them, never a frame path: a set begun for a patch with a
+  flagged tile, installed or previewed, takes them as its build starts, and a flagged result
+  arriving for a patch whose set lacks them waits until the build path has added them (first in
+  `_advance_builds`, at least one set a frame, the rest within the streaming install budget), as
+  a bake in flight waits: a streamed tile installs a frame later, an edit's batch waits whole and
+  installs in one frame, a preview tile shows a frame later (the preview's lag, T27 (d)), each
+  showing what it showed meanwhile, so no set draws a flagged tile outside its variant and no
+  patch's draw state changes for it (T53 (a)). The variant takes the set's state as it stands
+  (its pages, its synced parameters, and its meshes, instance uniforms and bound materials if it
+  draws). A set keeps its variant through the pool: each set creates it at most once, streaming
+  creates and frees no node, and the most sets holding it is the most that ever met a flagged tile
+  (at most the grid's). A set's graded materials are bound to
   its nodes only while it draws a patch (bound as it starts drawing, unbound as it stops; the base
   cells take the patch's material then): binding a made material creates nothing, and a node with
   no material holds no instance uniform slot (`TERRAIN-07-D` round 9).
@@ -4211,7 +4229,10 @@ km.
   every prebuilt set and overflowed the buffer). Slots held by cell sets: 5 per set that has
   drawn since the world load (as the released sets of gate D held them), at most
   5 x the resident patches. The renderer frees its sets' nodes with itself (each world load
-  makes a new one; before round 6 every load leaked the previous world's sets). A set's
+  makes a new one; before round 6 every load leaked the previous world's sets): `dispose()` frees
+  each pooled set through its root, and a renderer dropped without it frees its sets on deletion
+  (until `TERRAIN-07-G` round 10 `dispose()` freed a set's nodes but left its root, one orphan node
+  per set per load, round 9C). A set's
   MultiMeshes keep their data on the CPU from its first build, which writes the instances'
   identity transforms one by one: a bulk buffer lives on the GPU only, and the first
   per-instance write after it reads the whole buffer back, stalling 0.5-2.1 ms (a pose's
@@ -8482,17 +8503,19 @@ pass; line counts recorded; docs updated.
 
 #### `TERRAIN-07-G` record
 
-Acceptance open after round 9: T54 (a) and T50 (b) are built together (pages by blocks of
-patches with the row atlas): the 100k city installs all 10,500 wanted tiles, none exhausted,
-settled, with no patch unready in view on any camera path; the mask's rule is unchanged (its
-Rust port now reads the packed bytes) and every reference render equals round 7's. For the user:
-the 100k city's video memory is 722 MB above road's, 276 MB of it the pages' bytes and about
-450 MB below Godot's own accounting ([T56](#terrain-07-open-questions), attributed in round 9C);
-the undo stall is the frame's pool waiting on the background pool's allocator locks and CPUs
-([T57](#terrain-07-open-questions); the stage's own frees fixed in round 9, road stalls too); on
-Kuopio's steepest strokes 2-3 of 299 pose frames still exceed 3.0 ms after round 9's exact bake
-levers ([T27](#terrain-07-open-questions)). Kuopio's load to ready about 0.5 s longer than round
-6's was accepted by the user (2026-10-29). T55 (the whole-map view) is informational.
+After round 10 every row passes or carries the user's decision of 2026-10-29 but two, for the
+user: T54 (a) and T50 (b) are built together (pages by blocks of patches with the row atlas): the
+100k city installs all 10,500 wanted tiles, none exhausted, settled, with no patch unready in view
+on any camera path; the mask's rule is unchanged and every reference render equals round 9's.
+Decided by the user: T56 (the 100k city's video memory +705 MiB, accepted; reductions
+`TERRAIN-09`), T57 (the populated drag's pose during two routing rebuilds, accepted; `ROAD-68-G10`
+and `PERF-10`), T27 on Kuopio (accepted as T48's and T49's cost at 2-3 of 299 pose frames over 3.0
+ms, maximum 3.31 ms), Kuopio's load to ready about 0.5 s longer than round 6's (accepted). The
+startup memory, not accepted, is now at road's (round 10: the setup heap 6.2 MiB below road's) and
+the cell-set root leak is fixed. For the user: round 10's session measured Kuopio's pose frames
+over the accepted numbers on the same binary (4 and 2 of 299 over 3.0 ms, maxima 3.70 and 3.37 ms,
+one of them a one-off 3.21 ms selection stall; [T58](#terrain-07-open-questions)), and the settled
+RSS above road's (100k +332 MiB, Kuopio +221 MiB; [T59](#terrain-07-open-questions)). T55 (the whole-map view) is informational.
 None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
 surface on the Rust side, round 2 (`154ac169`, committed unverified by the coordinator) the
 frontend selector, refined-patch jobs, baked mesh, water road clip and exact-only test branches.
@@ -8502,6 +8525,105 @@ is listed in `$ARTIFACTS/road68/t07g3/audit.md`) and replaced round 2's unverifi
 fix "without a tolerance", a "known" Kuopio pinhole, a memory comparison that loaded no save and
 compared exact with graded, and the matrices cited as gate D's) with the results below.
 
+- **Round 10 (`TERRAIN-07-G` round 10, the gate round; branch tip in the handoff).** Fresh
+  unless marked. The user's decisions of 2026-10-29 (about 08:55), each recorded in its question:
+  T57's populated drag pose (3.79 ms during two routing rebuilds) accepted, stopping superseded
+  rebuilds carried to `ROAD-68-G10`/`H` (`roads.md`), the allocator's measurement `PERF-10`; T27
+  on Kuopio (2-3 of 299 pose frames over 3.0 ms, maximum 3.31 ms) accepted as T48's and T49's
+  cost; T56 accepted, its reductions `TERRAIN-09`; the startup memory (+178 MiB of heap at the
+  gameplay setup, +19.6 MiB RSS at the menu, round 9C) not accepted, reduced before landing; the
+  cell-set root leak fixed before landing. Round 10 changes GDScript only: the Rust is
+  `6091b9c9`'s (`git diff 6091b9c9 -- rust` empty), so its binaries are round 9's (`bin-F`
+  `090c3c19`, release library `d397cbde`).
+  - **The leak** (`e800f7d8`). `dispose()` freed each pooled set's nodes but not their root, and
+    `NOTIFICATION_PREDELETE`, which frees the roots, found the pool already empty: one orphan per
+    set per load (round 9C: 1,600 at setup, 1,825 on the 100k city, 2,896 on Kuopio, `road` too).
+    `dispose()` now frees each pooled set through its root, once (its nodes go with it); a
+    renderer dropped without it still frees its sets on deletion, and after it there is nothing
+    left to free. Test: setup, load, a second renderer's setup and load (a reload, as terrain.gd
+    does), shutdown; Godot's orphan node count returns to its value before the first setup (the
+    headless renderer test, `$ARTIFACTS/road68/t07g10/renderer-tip.log`); with the old
+    `dispose()` it fails with 8 orphans, the two loads' four sets
+    (`renderer-reverted-leak.log`).
+  - **The behind-the-road variant only where it draws** (`e800f7d8`, [cell sets](#godot-tile-renderer)).
+    A prewarmed set holds the five plain cell meshes; the variant's four `MultiMesh`es and
+    materials come in the build path with the patch's first flagged tile, and a flagged result
+    meeting a set without them waits for them (a streamed tile a frame, an edit's batch whole, a
+    preview tile under T27 (d)'s lag), so no set draws a flagged tile outside its variant and no
+    draw state changes for it (T53 (a)). Pooled sets keep their variant: created at most once per
+    set, no node created or freed while streaming, at most the sets that ever met a flagged tile.
+    The rule the variant draws is unchanged (no shader changed). Tests (the renderer test with
+    every bake result flagged from a settled unflagged state, the camera climbing 40 -> 300 -> 40
+    m): every set without a flagged tile holds five cell meshes; 6 flagged tiles, 2 sets given the
+    variant, 8 waits; in no frame does a drawing set show a flagged tile outside its variant, and
+    no frame has a hole, a PlaneMesh over listed tiles or a partial set; settled, each set holds
+    the variant exactly when its patch has a flagged tile and its per-tile cells equal a rewrite
+    of the patch; the creation counters are the plain sets' plus four of each per variant. With
+    every set prewarmed with the variant (the round 9 behaviour) the test fails 9 times
+    (`renderer-reverted-eager.log`). Grass mirrors a set's meshes as it holds them.
+  - **Renders** (the release library `d397cbde` with the tip's scripts,
+    `$ARTIFACTS/road68/t07g10/final-1`): every fixture's render equals round 9's
+    (`t07g9/final-1`): 197 images, 0 differing, 0 pinholes in the 33 plan views
+    (`kuopio_t2_wall` among them), 0 failures, PASS. The 100k city at its saved pose installs the
+    same 10,500 tiles in the same pages as round 9 (1/1/23/48, slots 64/192/6,647/10,930, 409 MB,
+    73 pages created, 0 moves), Kuopio its 301 (1/1/5/11, 62 MB); 0 unready patches in view on
+    all five paths; load to settled 48.4 s and 6.2 s (round 9: 46.0 and 6.0); memory by round 9's
+    method (`t07g10/memory-final`): setup 1,345,168 / 1,346,024 KiB (round 9: 1,538,068 /
+    1,552,804), settled maximum 5,425,988 / 1,956,536 (5,459,448 / 2,220,564), GPU 2,624,720 /
+    1,482,436 (2,624,788 / 1,742,768).
+  - **Memory, round 9C's method** (fresh, one session, 09:22-09:36: road `aa20f247`'s library
+    `155fd81a` against the tip's scripts on the release library `d397cbde`, isolated profiles,
+    gamescope headless; `$ARTIFACTS/road68/t07g10/mem/`, `phase-table.txt`, `heap-groups.json`).
+    **The startup row is at road's:** the gameplay setup's live heap at the checkpoint (before the
+    save loads) 795.108 MiB on road, 788.958 MiB on the tip, **-6.150 MiB** (round 9C: +178.055),
+    by round 9C's groups (its symbol table of the same Godot binary): the `MultiMesh` interpolation
+    arrays equal (the 1,600 prewarmed sets now hold the five plain cell `MultiMesh`es and the walls',
+    9,600 `MultiMesh`es and 6,400 materials on both sides), other Godot allocations -5.534, shader
+    creation -1.862, other `MultiMesh` context +1.050, `Variant` vectors +0.367 MiB; the Rust
+    extension and RADV within 0.03 MiB. Setup RSS (the normal runs) 1,524.0 / 1,529.2 MiB on road
+    against 1,545.7 / 1,523.9 on the tip (the 100k and the Kuopio run: the tip's own two runs differ
+    by 21.8 MiB at the same phase, before any save loads), video memory at setup 801.3 / 801.2 MiB.
+    The real menu: RSS 500.6 against 499.8 MiB (round 9C's +19.6 not reproduced; the menu holds no
+    world and no terrain renderer). Settled and after the camera paths: the 100k city's video
+    memory 1,600.7 -> 2,305.3 and 1,857.0 -> 2,562.5 MiB (T56's +704.6 / +705.4, accepted), its RSS
+    6,350.3 -> 6,682.2 (+331.8) and 6,687.4 -> 6,682.2 MiB (-5.2); Kuopio's video memory 1,087.3 ->
+    1,087.1 and 1,633.4 -> 1,449.3 MiB (-184.1), its RSS 3,242.3 -> 3,463.7 (+221.4) and 3,570.7 ->
+    3,842.3 MiB (+271.6) (round 9C: +304.7 at the 100k city's settled, +346.8 / +237.4 on Kuopio).
+    At the 100k city's settled point road holds 2,048 of the 10,500 wanted tiles and the tip all of
+    them (round 9C); the settled RSS rise is not attributed further (T59). Sets given the variant: 161 of
+    the 100k city's 225 at settled (185 after the paths), 29 of Kuopio's 1,296.
+  - **Timing session** (C F F C, four workers, P-cores, 09:08-09:15; C `t07f13/bin-tip`, F
+    round 9's `bin-F`, the tip's Rust; both sides' cities loaded). Reference preview, graded
+    p50/p95 and commit: `sloped_t` F 1.701/2.099, 1.788 and 1.673/1.948, 1.941 (C 1.217/1.850,
+    1.059 and 1.377/2.026, 1.142); `sloped_branch` F 1.460/2.035, 1.816 and 1.430/2.054, 1.521
+    (C 1.236/2.020, 1.017 and 1.158/1.766, 1.161): **pass**. Populated drags: pose frames p95
+    2.10/2.13 ms, maxima 2.45/2.72, 0 of 210 over 3.0 ms; catch-up maxima 2.85/2.51; converged
+    commits at most 1.53 ms, undos at most 1.50 ms: **pass** this session (round 9's 3.79 ms is
+    T57's, accepted). Kuopio drags: F pose maxima 3.70/3.37 ms, 4 and 2 of 299 over 3.0 ms
+    (`kuopio_08` 22 pose 8 3.70 and 3.37, `kuopio_04` 10 pose 6 3.31 and 3.11, `kuopio_03` 7
+    pose 8 3.11: T27's tiles, bake 2.5-3.4 ms; and `kuopio_05` 13 pose 4 3.68 ms, of which the
+    selection 3.21 ms against at most 0.57 ms in the other seven runs, both binaries, this round
+    and round 9: a one-off stall, not profiled), catch-up 3.15/2.89 (1 and 0 of 199 over); C
+    2.77/3.80 (0 and 2 over), catch-up 3.11/2.55. **Over the numbers the user accepted** (2-3 of
+    299, maximum 3.31 ms) on the same binary: for the user (T58). Fast click (accepted exception) F at
+    most 7.97 ms populated. Breakdown staging at 100k F 8.24/8.12 ms (C 4.02/4.31; T43 (a));
+    products equal per side and F's to round 9's F; Kuopio drag digests equal round 9's.
+    Locality (F): p50 1.35/1.58/1.74/1.69 ms, maxima at most 2.35 ms: **pass**. Bitwise: the
+    three tests pass. Logs `$ARTIFACTS/road68/t07g10/{stages,breakdown,drags,kuopio}-N-{C,F}.log`.
+  - **GPU matrix** (historical: the coordinator's on round 8's tip `cabdf002`, recorded in round
+    9 as the frame row). Round 10 changes no payload byte and no shader; the draw path changes
+    only in which sets hold the variant's (empty unless flagged) meshes, so it is not re-run.
+  - **Gate checks** (on `e800f7d8`, the round's code). Clippy `--all-targets`: 59 warnings,
+    round 9's set exactly (`clippy-vs-r9.diff` empty). Missing docs: 0. `./run.sh --test`
+    (DISPLAY and WAYLAND_DISPLAY unset): exit 0; the full debug suite (lib) 1,837 passed, 0
+    failed, 176 ignored; `growth_scenario` 4/0; every Godot suite's success line as round 9's
+    (the graded tile renderer among them; `vehicle_ground_support_test`'s tilted count, which
+    varies between runs, 2,492 against 2,488); skipped as before: the Forward+ vegetation tests
+    and the headless shader global probe; no SCRIPT ERROR (`$ARTIFACTS/road68/t07g10/run-sh-test.log`).
+  - **Line counts.** GDScript: `terrain_graded_tiles.gd` 2,678 -> 2,864 (the variant on demand:
+    its creation split out of `_new_cells`, the flagged tiles' waits in the three paths that show
+    a tile, their retry and their drops, and their comments), `grass.gd` 331 -> 335, the renderer
+    test 764 -> 873. Rust unchanged.
 - **Round 9 (`TERRAIN-07-G` round 9, a debugging round; branch tip in the handoff).** Fresh
   unless marked. The user's decisions of 2026-10-29 (morning): Kuopio's load to ready +0.5-0.6 s
   (round 7: 6.2-6.3 s against 5.7 s) accepted; T27's single-tile bake gets one bounded attempt
@@ -9995,6 +10117,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       parallel (15%, with a sort that keeps the lists' order), and finer work division inside a
       steep tile's sampling bands; neither attempted (one attempt, the brief). The 3.0 ms row and
       T48 and T49 are unchanged.
+    - **Accepted by the user, 2026-10-29 (about 08:55), for `TERRAIN-07-G`:** Kuopio's 2-3 of
+      299 pose frames over 3.0 ms (maximum 3.31 ms after round 9's levers) as T48's and T49's
+      cost. The 3.0 ms row stays as written; the remaining exact levers above stay named.
 31. **T31. Vegetation clearance on the graded surface (`TERRAIN-07-F` round 1) — decided by the
     coordinator under the user's delegation, 2026-10-26, for review: the recommendation.**
     - **Decision.** Clear every plant on `Road` and `Paved`, wild plants also on `Pad`; retain the
@@ -10827,7 +10952,7 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       the starting number for road level-of-detail work.
 
 56. **T56. The 100k city's video memory with every wanted tile held (`TERRAIN-07-G` round 8) —
-    open, for the user; partly attributed.**
+    accepted by the user, 2026-10-29, the reductions a follow-up (`TERRAIN-09`).**
     - **Evidence** (fresh, the round 8 record's memory runs, release game, round 6's method):
       with pages the 100k city holds all 10,500 wanted tiles (round 7: 4,096, the rest drawn as
       base ground). Video memory by amdgpu's DRM fdinfo: 2,624 MB against road's 1,902 MB
@@ -10854,9 +10979,21 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       findings are recorded there. Godot 4.7.2 exposes the device memory report
       (`RenderingDevice.get_driver_and_device_memory_report`, `get_device_memory_by_object_type`
       and their driver counterparts) for that round.
+    - **Round 9C's attribution** (fresh then, on `cabdf002` against road `aa20f247`;
+      `$ARTIFACTS/road68/t07g9c/attribution.md`): the 100k city's video memory after its camera
+      paths 1,857.0 -> 2,562.5 MiB (+705.5; Kuopio 1,601.4 -> 1,417.7, -183.8). Vulkan's allocator
+      took 704 MiB more device-local blocks (2 x 256 + 128 + 64 MiB): +474.6 MiB of live
+      allocations and +229.4 MiB of unused block capacity. The pages' physical bytes at settled are
+      +359.4 MiB (176.0 -> 535.4 MiB; road installs 2,048 of the 10,500 wanted tiles there, the tip
+      all of them); active pages leave 6,058 of 17,833 slots unused, and 11 pooled empty pages hold
+      94.2 MiB (`_release_page` keeps up to four per size class); no page moved.
+    - **Accepted by the user, 2026-10-29 (about 08:55), for `TERRAIN-07-G`,** with the reductions
+      as a follow-up (`TERRAIN-09` in the roadmap): a bound on pooled empty pages, smaller page
+      headroom, and the allocator's retained blocks.
 
 57. **T57. The populated drags' undo stalls: the frame's pool waits on the background pool
-    (`TERRAIN-07-G` round 9) — open, for the user; the stage's own part fixed.**
+    (`TERRAIN-07-G` round 9) — the stage's own part fixed; the rest accepted by the user,
+    2026-10-29, carried to `ROAD-68-G10`/`H` and `PERF-10`.**
     - **Evidence** (fresh: perf with call stacks and every context switch, recording only the
       session's 30k tier of `benchmark_populated_graded_drags`, four workers, P-cores; round 8's
       F (`ed42f3c8`'s Rust) and road's control `t07f13/bin-tip`; `$ARTIFACTS/road68/t07g9/undo/`).
@@ -10897,6 +11034,44 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Recommendation.** (a) measured in a round of its own (it reaches the lock waits and the
       allocator's returns on every frame path, the road tool's and the simulation's), with (d)
       as an independent cleanup. The 3.0 ms row stays as written; the stall is road's too.
+    - **Decided by the user, 2026-10-29 (about 08:55):** the populated drag's 3.79 ms first pose
+      during two background routing rebuilds is accepted for `TERRAIN-07-G`. (d), stopping
+      superseded routing rebuilds, is carried to `ROAD-68-G10`/`ROAD-68-H`; (a), a different
+      allocator (mimalloc) measured in its own round, is `PERF-10` in the roadmap (the frame
+      threads waited 8-21 ms a run on glibc's allocator locks, round 9). The 3.0 ms row is
+      unchanged.
+
+58. **T58. Kuopio's pose frames in the gate session against T27's accepted numbers (`TERRAIN-07-G`
+    round 10) — open, for the user.**
+    - **Evidence** (fresh, the round 10 session, `$ARTIFACTS/road68/t07g10/kuopio-N-{C,F}.log`). F
+      is round 9's binary (the tip's Rust is unchanged). Pose frames over 3.0 ms: run 2 four of
+      299 (`kuopio_08` 22 pose 8 3.70 ms, bake 3.39; `kuopio_05` 13 pose 4 3.68 ms, of which the
+      selection 3.21 ms; `kuopio_04` 10 pose 6 3.31; `kuopio_03` 7 pose 8 3.11), run 3 two
+      (`kuopio_08` 22 3.37, `kuopio_04` 10 3.11). Road's control C: 0 and 2 (maximum 3.80 ms,
+      `kuopio_03` 7). The user accepted 2-3 of 299 at a maximum of 3.31 ms (round 9's session).
+      All but one are T27's tiles (bake 2.5-3.4 ms; their spread between runs of one binary is
+      0.3-0.4 ms). `kuopio_05` 13 pose 4 is not: its selection takes 0.26-0.47 ms in the other
+      seven runs of this round and round 9 on both binaries; a one-off stall, not profiled (T57's
+      kind, the frame's pool waiting, is the likely class; no routing rebuild runs in the Kuopio
+      drags).
+    - **Options.** (a) Read T27's acceptance as covering the run-to-run spread of the same tiles
+      and the stall as T57's class (`PERF-10` measures the allocator). (b) Profile the stall
+      first (perf on the Kuopio drags, a debugging round) before landing.
+    - **Recommendation.** (a): the same binary the user's numbers came from, road's own control
+      at 3.80 ms in the same session; the 3.0 ms row stays as written.
+
+59. **T59. The settled RSS above road's (`TERRAIN-07-G` round 10) — open, for the user.**
+    - **Evidence** (fresh, round 9C's method, `$ARTIFACTS/road68/t07g10/mem/phase-table.txt`): at
+      the settled snapshot the 100k city's RSS is 6,350.3 MiB on road and 6,682.2 on the tip
+      (+331.8; after the camera paths 6,687.4 against 6,682.2, -5.2), Kuopio's 3,242.3 against
+      3,463.7 (+221.4; after the paths +271.6). Round 9C measured +304.7 at the 100k city's
+      settled point and +346.8 / +237.4 on Kuopio. At that point road holds 2,048 of the 100k
+      city's 10,500 wanted tiles, the tip all of them (T54 (a)); Kuopio holds 301 on both. Not
+      attributed further: no heap capture of the settled phase was taken this round.
+    - **Options.** (a) Accept for `TERRAIN-07-G` and attribute it with `TERRAIN-09`'s reductions
+      (a settled heap checkpoint on both sides). (b) Attribute before landing.
+    - **Recommendation.** (a), as T56's: Kuopio's equal tile count says it is not only the tiles
+      held, so `TERRAIN-09` attributes it first; no target relaxed.
 
 #### Superseded `ROAD-68` questions
 
