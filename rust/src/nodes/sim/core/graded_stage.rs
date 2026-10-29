@@ -11,7 +11,7 @@
 //! - The commit selects its own dirty tiles over the live roadbed and sites, adopts the matching
 //!   preview's staged tiles whose inputs equal the committed ones and bakes the rest. Its undo
 //!   record keeps the tiles the commit replaced (T20 (a)): a pure job bakes them from the
-//!   pre-commit inputs after the commit, off the frame.
+//!   pre-commit inputs, off the frame, queued when the commit's last stage ends.
 //! - Undo selects its own dirty tiles and adopts the kept tiles whose inputs equal the restored
 //!   ones; a tile whose inputs changed meanwhile outside the undo stack (a site the demand pass
 //!   placed) is baked again, so a kept tile is never stale.
@@ -29,6 +29,7 @@ use std::time::Instant;
 use super::road_terrain_inputs::RoadTerrainInputs;
 use super::state::SimCore;
 use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
+use crate::simulation::core::pure_job::{JobStart, PureJob};
 use crate::simulation::network::roadbed::{RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{
@@ -343,6 +344,11 @@ impl GradedPreview {
 /// whose inputs equal the restored ones; until the job finishes it has none to adopt and bakes.
 pub(crate) struct GradedUndo {
     kept: Arc<OnceLock<Result<TileStage, BakeError>>>,
+    // The job that fills `kept`, and its start until the commit queues it after its last stage
+    // (`ROAD-68-G` part 10, [`SimCore::take_kept_graded_tiles_start`]). Dropped unstarted with
+    // the record, it never runs.
+    job: PureJob<()>,
+    start: Option<JobStart>,
     // The commit's level rule: undo selects by it, so the kept tiles meet its own.
     rule: LevelRule,
     // When the job started and finished (benchmarks: the frames after the commit share the
@@ -357,9 +363,11 @@ impl GradedUndo {
         self.kept.get().and_then(|kept| kept.as_ref().ok())
     }
 
-    /// Waits for the job (tests: a pool worker must never wait for a pure job).
+    /// Waits for the job, running it here if nobody started it (tests: a pool worker must
+    /// never wait for a pure job).
     #[cfg(test)]
     pub(crate) fn wait(&self) -> Result<&TileStage, BakeError> {
+        self.job.completion().wait();
         self.kept.wait().as_ref().map_err(|error| *error)
     }
 
@@ -479,8 +487,10 @@ impl SimCore {
             return None;
         }
         // The tiles the commit replaced: the same dirty tiles over the pre-commit roadbed and
-        // the same sites (a commit changes none), baked off the frame on the background pool,
-        // which the commit's own later stages and the next frames do not share.
+        // the same sites (a commit changes none), baked off the frame on the background pool.
+        // That pool shares the CPUs with the commit's later stages, so the commit queues the
+        // job after its last stage (`ROAD-68-G` part 10): queued here, the bake took their
+        // cores, up to 9.7 ms of a 100k commit's agent pass.
         let wanted = self.graded_scratch.selected().to_vec();
         let windows = wanted
             .iter()
@@ -495,7 +505,7 @@ impl SimCore {
             let span = Arc::new(OnceLock::new());
             (Arc::clone(&span), span)
         };
-        crate::thread_pools::spawn(move || {
+        let (job, start) = PureJob::unstarted(move || {
             #[cfg(test)]
             let started = Instant::now();
             let staged = match &sites {
@@ -516,10 +526,19 @@ impl SimCore {
         });
         Some(GradedUndo {
             kept,
+            job,
+            start: Some(start),
             rule,
             #[cfg(test)]
             span,
         })
+    }
+
+    /// The start of the kept tiles' job of the newest undo record, which the commit that made it
+    /// queues after its last stage, beside its other background jobs (`ROAD-68-G` part 10).
+    /// `None` when the record keeps no graded tiles (benchmark mode) or was started. O(1).
+    pub(crate) fn take_kept_graded_tiles_start(&mut self) -> Option<JobStart> {
+        self.undo_stack.back_mut()?.graded.as_mut()?.start.take()
     }
 
     /// Undo's graded tiles once the roadbed is restored and published (`TERRAIN-07-E`): the

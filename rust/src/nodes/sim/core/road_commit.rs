@@ -266,8 +266,10 @@ impl SimCore {
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
         // The background jobs start after the commit's last stage (`ROAD-68-G` part 7), so they
         // take none of its workers' cores. The routing rebuild starts when the lot plan ends
-        // (part 8), so the plan, which the next frame adopts, has the background pool to
-        // itself; the rebuild's adoption frame comes later.
+        // (part 8), so it does not share the background pool with the plan, which the next
+        // frame adopts; the rebuild's adoption frame comes later. The undo record's kept
+        // terrain tiles (`TERRAIN-07-E`) are queued last (part 10).
+        let kept_tiles = self.take_kept_graded_tiles_start();
         if let Some(graph) = routing_graph {
             record_crash_phase_for_core(self, "add road cch rebuild scheduled");
             let routing_start = Instant::now();
@@ -291,6 +293,9 @@ impl SimCore {
                 }
                 None => routing.start(),
             }
+        }
+        if let Some(kept_tiles) = kept_tiles {
+            kept_tiles.start();
         }
         edit_metrics.generation = self.road_tool_surface_generation;
         edit_metrics.committed = road_add.committed;
