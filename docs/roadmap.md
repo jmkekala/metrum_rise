@@ -128,13 +128,16 @@ the user accepted the commit's locality as measured (later tracks `ROAD-71`, `TE
 `ROAD-72` for the topology stage's +0.44 ms, a split scanning every building); the rendered preview
 rows' late poses run the same work at the P-cores' idle clock (1.2 GHz against 1.7-2.4 on time;
 70 % on time with the Method's settings, 85-90 % without the FPS cap), not presentation pacing
-(`roads.md` question 62, for the user); the populated row with the simulation active (question 61
-(a), built) misses at 100k, 0 of 590 within 16.7 ms: each pose re-emits whole 512 m road chunks
-(11.5 MB) and the engine's frame time is partly unattributed (question 63, for the user); the
+(`roads.md` question 62); the populated row with the simulation active (question 61 (a), built)
+misses at 100k, 0 of 590 within 16.7 ms: each pose re-emits whole 512 m road chunks (11.5 MB) and
+the engine's frame time is partly unattributed (question 63). The user decided (2026-10-29) the
+next round's work: the Method drops the FPS cap and reports Wayland beside Xwayland, the pose's
+main-thread work is cut to fit the idle clock (62 (d), (b)), and preview payloads go below the
+chunk (63 (b)), targets unchanged; the
 routing adoption frame's 125 ms agent tick is the movement scratch re-prepared for the new
 revision and the waiting replans (`PERF-11`); the drag probe passes 39 of 39 strokes with
 preview page waits apart from pool exhaustion, its long frames the CPU-bound render frame
-(`RENDER-27`). Not measured: carried items 5, 6 and 9 (they need two 100k `PERF-07` cities). The same session attributed the economy contract's baseline-30k rise to
+(`RENDER-27`); carried items 5 (culled gap +0.279 ms against +0.42) and 6 (clearance) pass, and 9 puts the terrain query's snapshot share at +0.23 ms beside the control's own `PERF-09` guard miss. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20). Its attribution (2026-10-25) found no road defect: the counts follow
 the city, whose 10k census needs fewer closure passes, and both scale within the limit per

@@ -355,8 +355,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   not presentation pacing; the new populated row (simulation at 1x on the 100k city) misses at
   0 of 590, each pose re-emitting whole 512 m road chunks (11.5 MB); the routing adoption frame's
   125 ms agent tick is the movement scratch re-prepared for the new revision plus waiting replans
-  (`PERF-11`); both rows are for the user (questions 62 and 63,
-  [record](roads.md#round-2-the-pacing-check-the-active-rendered-row-the-carried-items-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
+  (`PERF-11`). The user decided the next round (questions 62 and 63): no FPS cap in the Method
+  with Wayland reported beside Xwayland, the pose's main-thread work cut to fit the idle clock,
+  sub-chunk preview payloads; targets unchanged
+  ([record](roads.md#round-2-the-pacing-check-the-active-rendered-row-the-carried-items-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
   compacted for quality to 7,229 production lines with every product bitwise unchanged.
   `ROAD-68-E` (implemented; acceptance open) previews each road pose synchronously in the frame that samples it,
   with the commit's own plan, pieces and road chunks, and the commit installs them; one preview
