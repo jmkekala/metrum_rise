@@ -14,7 +14,7 @@ use metrum_rise::simulation::network::types::{
 };
 use metrum_rise::simulation::terrain::TerrainSystem;
 use metrum_rise::simulation::terrain::graded::NoSites;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 const EXPECTED_RENDER_CHUNK_SPAN_M: f32 = 510.0;
@@ -84,7 +84,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
                             &NoSites,
                             black_box(&fixture.target_chunks),
                             None,
-                            &BTreeMap::new(),
+                            &Default::default(),
                         )
                         .expect("the clean benchmark surface must stay published");
                     black_box(mesh_map_shape(&chunks));
@@ -117,7 +117,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
                 &NoSites,
                 &fixture.target_chunks,
                 None,
-                &BTreeMap::new(),
+                &Default::default(),
             )
             .expect("the diagnostic dirty warmup must publish successfully");
         assert_eq!(
@@ -142,7 +142,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
                             &NoSites,
                             black_box(&fixture.target_chunks),
                             None,
-                            &BTreeMap::new(),
+                            &Default::default(),
                         )
                         .expect("the local dirty compile must publish successfully");
                     black_box(mesh_map_shape(&chunks));
@@ -239,7 +239,7 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
             &NoSites,
             &target_chunks,
             None,
-            &BTreeMap::new(),
+            &Default::default(),
         )
         .expect("the initial benchmark surface must publish");
     let expected_signature = mesh_map_signature(&expected_chunks);
