@@ -489,7 +489,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   [D](terrain.md#terrain-07-d-record), [E](terrain.md#terrain-07-e-record),
   [F](terrain.md#terrain-07-f-record)).
 
-- **`TERRAIN-07-G` acceptance remains open (2026-10-29).** The exact/CDT terrain surface and its
+- **`TERRAIN-07-G` done (2026-10-29).** The exact/CDT terrain surface and its
   frontend selector, refined jobs, baked meshes and water clip are deleted; gameplay, references
   and benchmarks are graded-only. The stage, locality and bitwise rows passed before deletion.
   Round 3 found that the earlier bend fix hid its cause: at the plan view's 1 m lattice the edge
@@ -549,9 +549,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   first. Round 10 fixed both: each world load leaked one node per terrain cell set, and every set
   was prewarmed with the meshes of the depth-writing variant that only conflict tiles draw; a set
   now gets them with its first such tile, and the game's memory before a save loads is at road's
-  (6 MiB below). Renders, install counts and products are unchanged. Two rows wait for the user:
-  Kuopio's drag frames in the gate session exceed the numbers the user accepted on the same
-  binary (T58), and the settled memory is above road's (T59). No target is relaxed; details are
+  (6 MiB below). Renders, install counts and products are unchanged. The user accepted the last two
+  rows: Kuopio's drag frames in the gate session over the numbers accepted before, on the same
+  binary (T58), and the settled memory above road's, attributed with `TERRAIN-09` (T59). No target is relaxed; details are
   in the [Gate G record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from

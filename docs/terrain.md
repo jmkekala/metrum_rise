@@ -8503,8 +8503,7 @@ pass; line counts recorded; docs updated.
 
 #### `TERRAIN-07-G` record
 
-After round 10 every row passes or carries the user's decision of 2026-10-29 but two, for the
-user: T54 (a) and T50 (b) are built together (pages by blocks of patches with the row atlas): the
+Done after round 10 (2026-10-29): every row passes or carries the user's decision. T54 (a) and T50 (b) are built together (pages by blocks of patches with the row atlas): the
 100k city installs all 10,500 wanted tiles, none exhausted, settled, with no patch unready in view
 on any camera path; the mask's rule is unchanged and every reference render equals round 9's.
 Decided by the user: T56 (the 100k city's video memory +705 MiB, accepted; reductions
@@ -8514,8 +8513,9 @@ ms, maximum 3.31 ms), Kuopio's load to ready about 0.5 s longer than round 6's (
 startup memory, not accepted, is now at road's (round 10: the setup heap 6.2 MiB below road's) and
 the cell-set root leak is fixed. For the user: round 10's session measured Kuopio's pose frames
 over the accepted numbers on the same binary (4 and 2 of 299 over 3.0 ms, maxima 3.70 and 3.37 ms,
-one of them a one-off 3.21 ms selection stall; [T58](#terrain-07-open-questions)), and the settled
-RSS above road's (100k +332 MiB, Kuopio +221 MiB; [T59](#terrain-07-open-questions)). T55 (the whole-map view) is informational.
+one of them a one-off 3.21 ms selection stall; [T58](#terrain-07-open-questions) (a), accepted by
+the user), and the settled RSS above road's (100k +332 MiB, Kuopio +221 MiB;
+[T59](#terrain-07-open-questions) (a), accepted, attributed with `TERRAIN-09`). T55 (the whole-map view) is informational.
 None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
 surface on the Rust side, round 2 (`154ac169`, committed unverified by the coordinator) the
 frontend selector, refined-patch jobs, baked mesh, water road clip and exact-only test branches.
@@ -11042,7 +11042,7 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       unchanged.
 
 58. **T58. Kuopio's pose frames in the gate session against T27's accepted numbers (`TERRAIN-07-G`
-    round 10) — open, for the user.**
+    round 10) — decided by the user, 2026-10-29: (a).**
     - **Evidence** (fresh, the round 10 session, `$ARTIFACTS/road68/t07g10/kuopio-N-{C,F}.log`). F
       is round 9's binary (the tip's Rust is unchanged). Pose frames over 3.0 ms: run 2 four of
       299 (`kuopio_08` 22 pose 8 3.70 ms, bake 3.39; `kuopio_05` 13 pose 4 3.68 ms, of which the
@@ -11060,7 +11060,8 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Recommendation.** (a): the same binary the user's numbers came from, road's own control
       at 3.80 ms in the same session; the 3.0 ms row stays as written.
 
-59. **T59. The settled RSS above road's (`TERRAIN-07-G` round 10) — open, for the user.**
+59. **T59. The settled RSS above road's (`TERRAIN-07-G` round 10) — decided by the user,
+    2026-10-29: (a), attributed with `TERRAIN-09`.**
     - **Evidence** (fresh, round 9C's method, `$ARTIFACTS/road68/t07g10/mem/phase-table.txt`): at
       the settled snapshot the 100k city's RSS is 6,350.3 MiB on road and 6,682.2 on the tip
       (+331.8; after the camera paths 6,687.4 against 6,682.2, -5.2), Kuopio's 3,242.3 against
