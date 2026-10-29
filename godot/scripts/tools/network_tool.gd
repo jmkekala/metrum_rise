@@ -34,6 +34,13 @@ var _road_chunk_span_m: float = 0.0
 var _road_chunk_origin_x_m: float = 0.0
 var _road_chunk_origin_z_m: float = 0.0
 var _staged_road_mesh_update: Dictionary = {}
+# T61 (2), docs/terrain.md: an install made while a graded terrain edit is still to draw keeps
+# the chunks it replaces drawn and its own hidden until the graded renderer has installed the
+# edits up to `_held_serial` (the journal's serial read at the install), so the road and the
+# terrain cut under it change in one frame (the undo's frame had the road gone over the cut).
+var _held_chunks: Array[MeshInstance3D] = []
+var _hidden_chunks: Array[MeshInstance3D] = []
+var _held_serial: int = -1
 # Populated only while benchmark/diagnostic preview meshes are staged.
 var _road_upload_metrics: Dictionary = {}
 var blueprint_mesh: MeshInstance3D # The preview line/spline
@@ -482,6 +489,9 @@ func _commit_road_mesh_update(
 ) -> int:
 	if invalidate_nodes:
 		mark_network_nodes_dirty()
+	var hold := -1 if full_replace else _chunk_hold_serial()
+	if hold < 0:
+		release_held_chunks(true)
 	# Lights and signs exist only on the scene's RoadTool (`_setup_visuals`); tests that assemble a
 	# tool by hand have neither.
 	var props := _street_lights != null and _road_signs != null
@@ -496,7 +506,7 @@ func _commit_road_mesh_update(
 	for chunk_data in validated_updates:
 		var key := Vector2i(chunk_data["chunk_x"], chunk_data["chunk_z"])
 		if chunk_data["removed"]:
-			_remove_road_chunk(key)
+			_retire_road_chunk(key, hold >= 0)
 			if props:
 				_street_lights.remove_chunk(key)
 				_road_signs.remove_chunk(key)
@@ -513,10 +523,14 @@ func _commit_road_mesh_update(
 			key, origin, signs if typeof(signs) == TYPE_PACKED_FLOAT32_ARRAY else PackedFloat32Array()
 		)
 	for key in staged_instances:
-		_remove_road_chunk(key)
+		_retire_road_chunk(key, hold >= 0)
 		var instance: MeshInstance3D = staged_instances[key]
+		if hold >= 0:
+			instance.visible = false
+			_hidden_chunks.append(instance)
 		road_mesh_root.add_child(instance)
 		_road_chunk_instances[key] = instance
+	_held_serial = maxi(_held_serial, hold)
 	_road_mesh_generation = surface_generation
 	_road_chunk_span_m = chunk_span_m
 	_road_chunk_origin_x_m = chunk_origin_x_m
@@ -528,8 +542,54 @@ func _commit_road_mesh_update(
 func _road_mesh_installed(_generation: int) -> void:
 	pass
 
+# The graded edit serial an install must wait for before it draws (T61 (2)), or -1 to draw it
+# now. RoadTool reads it from Rust and its terrain's graded renderer.
+func _chunk_hold_serial() -> int:
+	return -1
+
+# Whether the graded renderer has installed the edits up to `serial`.
+func _held_edit_installed(_serial: int) -> bool:
+	return true
+
+# Called once held chunks were swapped for the installed ones.
+func _held_chunks_released() -> void:
+	pass
+
+## Swaps the chunks an install held (T61 (2)) for the installed ones once the graded renderer
+## has installed the edits it waited for, or now with `force`. NetworkRenderer calls it each
+## frame after the terrain has processed, so the swap draws in the edit batch's frame.
+## O(held chunks).
+func release_held_chunks(force: bool = false) -> void:
+	if _held_serial < 0 or (not force and not _held_edit_installed(_held_serial)):
+		return
+	for instance in _held_chunks:
+		_free_road_chunk_instance(instance)
+	for instance in _hidden_chunks:
+		if is_instance_valid(instance):
+			instance.visible = true
+	_held_chunks.clear()
+	_hidden_chunks.clear()
+	_held_serial = -1
+	_held_chunks_released()
+
+# Takes `key`'s resident chunk out of the index: kept drawn while `hold` (unless an earlier held
+# install put it there, never drawn), else freed.
+func _retire_road_chunk(key: Vector2i, hold: bool) -> void:
+	if not hold or not _road_chunk_instances.has(key):
+		_remove_road_chunk(key)
+		return
+	var instance: MeshInstance3D = _road_chunk_instances[key]
+	_road_chunk_instances.erase(key)
+	var hidden := _hidden_chunks.find(instance)
+	if hidden >= 0:
+		_hidden_chunks.remove_at(hidden)
+		_free_road_chunk_instance(instance)
+	else:
+		_held_chunks.append(instance)
+
 func reset_main_mesh_chunks() -> void:
 	discard_staged_main_mesh_update()
+	release_held_chunks(true)
 	for key in _road_chunk_instances.keys():
 		_remove_road_chunk(key)
 	if _street_lights:
@@ -553,6 +613,9 @@ func _remove_road_chunk(key: Vector2i) -> void:
 		return
 	var instance: MeshInstance3D = _road_chunk_instances[key]
 	_road_chunk_instances.erase(key)
+	_free_road_chunk_instance(instance)
+
+func _free_road_chunk_instance(instance: MeshInstance3D) -> void:
 	if is_instance_valid(instance):
 		if instance.get_parent() != null:
 			instance.get_parent().remove_child(instance)

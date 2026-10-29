@@ -384,7 +384,16 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   row now measures the steady state (question 64 (c)); the user widened `TERRAIN-13` (the graded
   renderer's GDScript bookkeeping to Rust) and carried the GDScript share of the pose's
   main-thread work there; the rest of the rows' misses is question 65
-  ([record](roads.md#round-4-terrain-12-fixed-in-the-rust-staging-the-poses-main-thread-work-attributed-the-runs-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
+  ([record](roads.md#round-4-terrain-12-fixed-in-the-rust-staging-the-poses-main-thread-work-attributed-the-runs-road-68-h-2026-10-29)). Round 5
+  (2026-10-29): an undo, a road deletion or any other road chunk install made while a graded
+  terrain edit has not drawn keeps the replaced chunks drawn until it does (T61 (2), the journal's
+  serial against the renderer's); a preview pose keeps its replaced road runs drawn until its
+  terrain displays (T62 (a)). The drag probe shows the background in 1 of 6,739 frames (a fast
+  click's batch frame), but the held runs double and z-fight with the new junction pieces: back to
+  the user as T64, with one populated drag pose frame of 9.67 ms under background adoption; the
+  commit row (at most 12.01 ms at 100k) and every bitwise row pass, and `TERRAIN-14`, `ROAD-73`
+  and `UI-09` are new rows
+  ([record](roads.md#round-5-the-undo-hold-the-junction-hold-the-runs-on-the-final-tip-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
   compacted for quality to 7,229 production lines with every product bitwise unchanged.
   `ROAD-68-E` (implemented; acceptance open) previews each road pose synchronously in the frame that samples it,
   with the commit's own plan, pieces and road chunks, and the commit installs them; one preview

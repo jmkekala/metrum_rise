@@ -10,6 +10,7 @@
 //! renderer reads keeps nothing.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::state::SimCore;
 use crate::simulation::buildings::allocator::{SiteChange, SiteSnapshot};
@@ -90,6 +91,9 @@ pub(crate) struct GradedEditJournal {
     roadbed: Option<RoadbedSystem>,
     // The serial of the road install recorded last, until its staged tiles attach.
     awaiting: Option<u64>,
+    // `serial`, readable without the core lock: the road tool holds an install's replaced road
+    // chunks until the renderer has installed the edits recorded up to it (T61 (2)).
+    latest: Arc<AtomicU64>,
 }
 
 // The world rectangles a selection's site snapshot covers: each change's bounds grown by the
@@ -114,6 +118,13 @@ impl SimCore {
         std::mem::take(&mut journal.edits)
     }
 
+    /// The journal's latest serial, shared: read without the core lock (`T61 (2)`, the road
+    /// tool's undo hold). Release-stored after the edit is recorded, so a reader that saw a
+    /// publication made after the edit sees its serial.
+    pub(crate) fn graded_edit_serial(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.graded_edits.latest)
+    }
+
     fn push_graded_edit(&mut self, kind: GradedEditKind) {
         let journal = &mut self.graded_edits;
         journal.serial += 1;
@@ -129,6 +140,7 @@ impl SimCore {
             kind,
             staged: None,
         });
+        journal.latest.store(journal.serial, Ordering::Release);
     }
 
     /// Records a roadbed install with the terrain changes it took (`O(1)` roadbed snapshots,

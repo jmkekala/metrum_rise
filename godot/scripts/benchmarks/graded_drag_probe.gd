@@ -29,7 +29,11 @@
 ## manifest's world; its strokes from METRUM_GRADED_DRAG_STROKES, `x0,z0,x1,z1;...`) and
 ## METRUM_GRADED_DRAG_ATTEMPTS (the strokes' attempt numbers to run) and
 ## METRUM_GRADED_DRAG_HOLE_PIXELS (rendered runs: the background drawn magenta, the camera looking
-## down, and every frame's magenta pixels counted: the sky through the ground).
+## down, and every frame's magenta pixels counted: the sky through the ground). Each frame row
+## records the road tool's holds: `runs_held` (T62 (a), the pose's replaced runs drawn beside its
+## overlay) and `chunks_held` (T61 (2), an install's replaced chunks drawn until its edit); with a
+## capture directory, METRUM_GRADED_DRAG_CAPTURE_HELD saves the first 24 frames drawn with
+## replaced runs held as held_<n>.png (the overlap check for z-fighting and doubled pieces).
 extends RefCounted
 
 const MANIFEST := "res://../benchmarks/fixtures/kuopio-terrain/placements.json"
@@ -305,6 +309,8 @@ func _magenta_background() -> void:
 # with a capture directory the first frames showing any are saved as hole_<n>.png.
 var _hole_captures := 0
 var _capture_all := not OS.get_environment("METRUM_GRADED_DRAG_CAPTURE_ALL").is_empty()
+var _held_captures := 0
+var _capture_held := not OS.get_environment("METRUM_GRADED_DRAG_CAPTURE_HELD").is_empty()
 func _magenta_pixels() -> int:
 	var image := _bench.get_viewport().get_texture().get_image()
 	image.convert(Image.FORMAT_RGBA8)
@@ -432,6 +438,14 @@ func _next_frame() -> void:
 	if _kind in ["pose", "catch_up", "sweep"] and int(row["preview_shown"]) > 0 and not road_drawn:
 		_unroaded += 1
 		row["unroaded"] = true
+	var display: RefCounted = tool._swap_display if tool._swap_display != null else tool._preview_display
+	row["runs_held"] = display.sequence > 0 and display._runs_held and not display._targets.is_empty()
+	row["chunks_held"] = tool._held_serial >= 0
+	if row["runs_held"] and _capture_held and not _capture_dir.is_empty() and _held_captures < 24:
+		DirAccess.make_dir_recursive_absolute(_capture_dir)
+		var image := _bench.get_viewport().get_texture().get_image()
+		image.save_png(_capture_dir.path_join("held_%02d_%s_%d.png" % [_held_captures, _kind, _frames.size()]))
+		_held_captures += 1
 	if _hole_pixels:
 		row["magenta"] = _magenta_pixels()
 		if int(row["magenta"]) > 0 and _kind != "settled":

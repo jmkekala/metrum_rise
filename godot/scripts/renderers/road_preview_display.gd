@@ -4,8 +4,9 @@
 ## below the chunk since `ROAD-68-H` round 3 (`docs/roads.md`). Rust sends, for each chunk a
 ## stroke changes, an overlay of the rebuilt pieces and the runs of the resident chunk they
 ## replace. The resident chunk stays drawn with those runs collapsed in its vertex buffer (three
-## equal positions draw nothing), the overlays draw the rebuilt pieces, and a run shown again gets
-## its published positions back. Everything is staged before anything visible changes. Replaced
+## equal positions draw nothing) once the pose's graded terrain displays, and beside the overlays
+## until then, over the published terrain's cut (T62 (a)); the overlays draw the rebuilt pieces,
+## and a run shown again gets its published positions back. Everything is staged before anything visible changes. Replaced
 ## overlay nodes and their ArrayMeshes are recycled as detached spares.
 extends RefCounted
 
@@ -27,6 +28,11 @@ var _pending: Dictionary = {}
 var _pending_sequence: int = 0
 # The shown preview, re-shown when an install replaces the resident chunks it indexes.
 var _shown: Dictionary = {}
+# The shown preview's resident runs (`_resident_target` by key), and whether they are held drawn:
+# until the pose's graded selection displays, the published terrain cuts the replaced pieces'
+# footprint, so the runs stay drawn beside the overlay (T62 (a), docs/terrain.md).
+var _targets: Dictionary = {}
+var _runs_held := false
 # Never displayed. Staging fills only these, so a failed batch cannot touch the visible one.
 # Trimmed to the displayed count on install: the pool is one staging set, not cursor history.
 var _spare: Array[MeshInstance3D] = []
@@ -53,7 +59,8 @@ func show(tool: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 	if not chunks is Array or chunks.is_empty():
 		return false
 	# The hidden runs index the resident chunks of exactly this generation.
-	if int(preview.get("road_mesh_generation", -1)) != tool._road_mesh_generation:
+	# Held chunks (T61 (2)) are not drawn yet: wait for them as for an install.
+	if int(preview.get("road_mesh_generation", -1)) != tool._road_mesh_generation or tool._held_serial >= 0:
 		clear()
 		_pending = preview
 		_pending_sequence = preview_sequence
@@ -91,7 +98,9 @@ func show(tool: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 	# overlays swap in this call, so no frame shows a replaced run beside its rebuilt piece or
 	# neither.
 	_pending = {}
-	_apply_runs(targets)
+	_targets = targets
+	_runs_held = tool.get("_graded_displayed") == false
+	_apply_runs({} if _runs_held else targets)
 	_recycle(_instances)
 	for instance in staged:
 		tool.road_mesh_root.add_child(instance)
@@ -117,9 +126,20 @@ func resident_installed(tool: Node3D) -> void:
 	if not show(tool, preview, preview_sequence):
 		clear()
 
+## Collapses the shown preview's replaced runs once its graded selection displays, or draws them
+## again while it does not (T62 (a)). O(the preview's runs) when it changes, else O(1).
+func hold_runs(held: bool) -> void:
+	if held == _runs_held:
+		return
+	_runs_held = held
+	if sequence > 0:
+		_apply_runs({} if held else _targets)
+
 ## Restores every collapsed run and removes the overlays.
 func clear() -> void:
 	_apply_runs({})
+	_targets = {}
+	_runs_held = false
 	_keys.clear()
 	_recycle(_instances)
 	_pending = {}

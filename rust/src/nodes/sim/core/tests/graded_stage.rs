@@ -416,6 +416,12 @@ fn check_frame(
         displayed.len(),
         stats.wanted
     );
+    // T62 (a): the road tool holds the replaced road runs drawn exactly while this is false.
+    assert_eq!(
+        context.graded.display_complete(),
+        displayed.len() == stats.wanted,
+        "{label}: the display's completeness is the selection's"
+    );
     assert_eq!(
         stage_bits(displayed),
         self::fresh(&context.view.terrain, roadbed, &core.allocator, displayed),

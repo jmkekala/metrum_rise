@@ -895,6 +895,7 @@ These defaults apply unless the user overrides them:
 | D6 | Roads without sidewalks | Keep the current raised 0.75 m shoulder. |
 | D7 | Routing at commit | Confirmed by the user, 2026-10-23. Rebuild the CCH on an immutable graph snapshot as a scheduled job and adopt it at a fixed tick offset. Route queries issued meanwhile wait for adoption. If the job is late, the simulation blocks at the adoption tick, so results do not depend on machine speed. Revisit if the query backlog at adoption is too large at 100k buildings. |
 | D8 | Crosswalks | Right outside the curve (user-confirmed 2026-10-24). On crossable arms the mouth moves 3 m beyond the corner tangent station, and the 3 m zebra fills that straight approach: its inner edge is where the curb stops curving. The crossing is square to the road at the strip's middle, its kerb points at the two carriageway edges; sidewalk lanes end on that line, as `ROAD-64` requires. A footpath beside a crossable arm moves only its mouth; the zebra stays right outside the curve, and the node piece covers the run between them (user, 2026-10-24, [open question 17](#road-68-open-questions)). Which arms cross (user-confirmed 2026-10-24, "keep the old behaviour"): every arm of a junction of three or more; exactly one arm of every degree-two node, bend or pass-through, as the legacy `ROAD-64` rule did; none at a road end, whose sidewalk wraps the cap. Only car roads with sidewalks cross, and node overrides adjust the rule. A pass-through node has no node piece, so its crossing is span-owned: it lies on the arm's span from the node out to 3 m, where the span keeps a section row on the crossing line; that row's carriageway-edge vertices are the kerb points. No other zebra sits on a span. |
+| D9 | Preview ghost style (`ROAD-73`, todo) | A product decision for the road preview only (the user, 2026-10-29): where terrain or buildings hide the preview, it draws a translucent blue pass with a rim glow, optionally blurred; drawing it through terrain only via the stencil is a design choice left to `ROAD-73`. It is not rule 5's render masking: the committed road and the terrain stay unmasked, and the probes check the raw state. |
 
 ## Implementation plan (`ROAD-68`)
 
@@ -9386,6 +9387,122 @@ from `git diff --numstat`): `roadbed/` 9,234 -> 9,267 (`terrain_changes_from`), 
 the player sees while dragging (terrain only on a completed selection; T62). **Not the gate
 commit**: T61 (2) and T62 (a) are to build and prove (the user's order for round 5: T61 (2),
 T62 (a), the 0-background probe proof, the display rows on the final tip, docs, gate checks).
+
+#### Round 5: the undo hold, the junction hold, the runs on the final tip (`ROAD-68-H`, 2026-10-29)
+
+Fresh in this round unless marked; artefacts `$ARTIFACTS/road68/h5/`. **The user's decisions
+recorded this round:** session 4's terrain stage, F 1 of 168 populated pose frames over 3.0 ms
+(3.84 ms: a 2.61 ms one-tile bake beside a 1.23 ms selection), accepted as measured (about
+19:55; [T63](terrain.md#terrain-07-open-questions)), in T52's and T58's class, heavy single-tile
+bakes to the new `TERRAIN-14`; it covers that measurement only. From the user's discussion of the
+evening, three roadmap rows: `TERRAIN-14` (a cheaper bake first, then asynchronous staging),
+`ROAD-73` (a ghost style for the hidden preview, [D9](#product-decisions)) and `UI-09` (the main
+menu's scene change inside its dialog handlers).
+
+**T61 (2): the undo hold, built.** Rust keeps the graded edit journal's latest serial in a shared
+atomic (`get_graded_edit_serial`, no core lock) and hands the edits over in serial order (one
+edit selection on a payload worker at a time); the graded renderer reports the serial whose tiles
+draw (`installed_edit_serial`). A road chunk install made while the journal is ahead of the
+renderer keeps the chunks it replaces drawn and its own hidden until the renderer has installed
+the edits up to that serial; `NetworkRenderer` swaps them in the edit batch's frame (after the
+terrain's process). Nothing waits in Rust: the commit's acknowledgement and the generation's
+install are unchanged (the commit row below). The simulation has no redo; road deletion shares
+the install path and the hold (covered by the code, no probe step deletes a road). Details in
+[T61](terrain.md#terrain-07-open-questions).
+
+**T62 (a): the junction hold, built; it doubles and z-fights.** Rust marks every pose and
+catch-up frame with `graded_displayed` (the display holds the pose's whole selection); until
+then the road tool keeps the pose's replaced published runs drawn beside its overlay. The
+junction frames' background is gone, but where the held runs and the new pieces overlap (the
+junction) both draw at the same heights, triangulated differently: the two asphalts alternate in
+saw-tooth patches, the new zebras are partly covered and the old curb runs across the new
+branch's mouth (`h5/zfight-compare.png`, the populated T at 40 m, a held catch-up frame beside
+the same pose displayed). **The exact-pose measure** (the pose's road payload installed in its
+frame) still holds as defined, since the overlay is installed in the pose's frame, but such a
+frame also draws the replaced runs, which the measure does not see: 1,724 of Kuopio's 6,039
+probe frames and 116 of the populated swing's 282 drew held runs. Back to the user as
+[T64](terrain.md#terrain-07-open-questions) (1), not worked around.
+
+**The 0-background proof** (gamescope, the round 5 library `h5/lib`, the probe's swing with
+pauses and every per-frame check, `METRUM_GRADED_DRAG_CONTINUE`): the user's dump 0 of 416
+frames; the 100k populated swing 0 of 282; Kuopio's 39 strokes 1 of 6,039 frames (`kuopio_06`
+attempt 17, the fast click's batch frame, a 4-pixel slit, the same frame as round 4: a newly
+graded committed tile waiting for its list beside an installed one; [T64](terrain.md#terrain-07-open-questions)
+(2)); the renderer's invariant and the no-road check 0 in every frame; 26 frames drew with chunks
+held, none with the background. **Fails without:** the same library with both holds switched off
+in the frozen scripts (`h5/mut/`) on round 4's failing cases: 22 frames on 6 strokes (the undo
+frames of `kuopio_01` 1 and 2, `_03` 8, `_05` 12, `_07` 19 and 20, 406-8,188 sampled pixels; 17
+junction frames on `kuopio_03` 8). The 14 fast clicks without a batch frame are T62's accepted
+lag (the probe's own expectation still reports them).
+
+**The junction preview test** asserted the collapsed runs in the pose's own frame; with T62 (a)
+the runs collapse once the pose's selection displays, so the test now runs the pose's catch-up
+frames first (`_converge_preview`) and checks that the runs stay drawn until then. Its 43
+captures on the final library, so converged, are pixel-identical to round 4's (`h5/captures-final2`;
+the 13 fixtures' 52 graded preview tiles bitwise); without the convergence 11 preview captures
+showed the held runs (`h5/captures-final`, the test's old frame).
+
+**Timing session** (20:26-20:33, `h5/session/`, the user's all-clear; C = round 4's final Rust
+`h4/fin-release-test-bin`, F = this round's `h5/fin-release-test-bin`; stages, breakdown, drags
+and locality C F F C; the journal path changed, so the breakdown and bitwise rows ran; every
+breakdown city `loaded`):
+- Preview stages, graded stage p50 C 1.77-1.78 / 1.50-1.54, F 1.79-1.80 / 1.52-1.55 ms
+  (`sloped_t` / `sloped_branch`); total p50 C 2.83-2.84 / 2.44-2.54, F 2.86-2.87 / 2.52-2.57 ms.
+- Commit, click → acknowledged, every sample 0-100k: C at most 13.05 ms, F at most 12.01 ms; the
+  100k first samples C 13.05 / 10.86, F 12.01 / 10.72 ms. `COMMIT_PRODUCTS` identical in all
+  four runs; the locality products identical in all four runs.
+- Populated graded drags: F 1 of 161 parsed pose frames over 3.0 ms (run 3: 9.67 ms, 100k sample
+  1 pose 3, its selection 8.60 ms while the previous commit's lot adoption and routing adoption
+  ran on the pool, carried item 10's and T57 (d)'s contention); catch-up within 3.0 ms (max
+  2.91); C 0 of 168 (max 2.55); the pose's selection p50 C 0.70, F 0.67-0.68 ms. One of run 2's
+  twelve rows printed a malformed line (interleaved output) and is not counted. **A miss on the
+  final tip, larger than T63's accepted 3.84 ms, for the user** (not accepted by T63).
+
+**The display batch** (20:32-20:50, the final library `h5/lib`, `h5/display-ready`; the Method
+without the FPS cap, DP-2 3840x2160 at 120 Hz before and after, each step holding `.run.lock`
+and the exclusive timing lock, through `display-awake.sh`; all carried by question 65 (a) with
+(d), not passed): paused rows N 82.9 % (3,238 of 3,907 sampled poses exact within 16.7 ms), W
+87.3 % (3,446 of 3,947); stationary p95 up to 25.31 ms (max 30.08), stop → exact 7.56-22.25 ms;
+populated 100k in the steady state: x11 A 50.3 % (591 of 1,175), P 84.1 % (659 of 784), Wayland
+A 43.6 % (505 of 1,159), P 83.1 % (660 of 794); 0 tangent warnings; the profile (N W) ran. The
+paused N row is lower than round 4's 87.6 % on T61 (1) (a)'s tip (W 88.9 -> 87.3 %); not
+attributed this round (the row is carried whole to `TERRAIN-13`); the Wayland populated step's
+first run ended by the watchdog after its metrics (Godot's Wayland exit hang, as in round 4).
+
+**Acceptance against every target** (the final tip; fresh in this round unless marked):
+
+| Target | Result | Status |
+| --- | --- | --- |
+| Moving, simulation paused (every sampled pose exact within 16.7 ms) | N 82.9 % (3,238 of 3,907), W 87.3 % (3,446 of 3,947) | Carried whole to `TERRAIN-13` (the user: 17:30 the GDScript share, 19:15 question 65 (a) the rest) |
+| Moving, simulation active (at least 99 %, misses attributed) | 100k, steady state: x11 A 50.3 % (591 of 1,175), P 84.1 % (659 of 784); Wayland A 43.6 % (505 of 1,159), P 83.1 % (660 of 794) | Carried to `TERRAIN-13` and `RENDER-30` (question 65 (a) with (d), 19:15) |
+| Stationary (p99 and stop → exact under 16.7 ms) | p95 up to 25.31 ms (max 30.08), stop → exact 7.56-22.25 ms | Carried whole to `TERRAIN-13` (question 65 (a), 19:15) |
+| Commit (click → acknowledged under 16.7 ms) | every sample 0-100k, F at most 12.01 ms (C 13.05) | Pass |
+| Locality (products bitwise, flat) | the locality products identical in all four runs; topology flat (`ROAD-72`) | Accepted as measured by the user (round 2); products pass |
+| The terrain stage's 3.0 ms (pose and catch-up frames) | populated drags F 1 of 161 pose frames over, 9.67 ms (a selection under the previous commit's adoption jobs); catch-up within (max 2.91); the control 0 of 168. Round 4's 3.84 ms frame accepted as measured (T63, 19:55) | Miss for the user (larger than T63's accepted frame; carried item 10's and T57 (d)'s contention) |
+| Bitwise preview = commit = undo = load | `COMMIT_PRODUCTS` identical in all four runs; the debug suite passes (the graded drag test checks `display_complete` against the selection in every frame) | Pass |
+| No frame shows a hole or stale terrain while a preview moves (`TERRAIN-12`) | dump 0 of 416, 100k swing 0 of 282, Kuopio 1 of 6,039 (a fast click's batch frame, 4 sampled pixels); the undo's and the junction's frames gone; but T62 (a)'s held runs double and z-fight with the new pieces | Open for the user: [T64](terrain.md#terrain-07-open-questions) (1) and (2) |
+
+**Carried** (each with its decision): carried items 1 (accepted, round 3) and 2-15 as rounds 1-3
+judged them; the paused and stationary rows whole to `TERRAIN-13`, the active row to
+`TERRAIN-13` and `RENDER-30` (question 65 (a) with (d)); `TERRAIN-13` also holds question 64 (b);
+round 4's 3.84 ms terrain stage frame accepted as measured (T63). Open for the user: T64 (the
+held runs' z-fighting and doubling; the fast click's crack) and the 9.67 ms drag pose frame.
+
+**Gate checks** (fresh, on the final code): `cargo clippy --all-targets` 59 warnings, the
+baseline's set exactly (diff 0); `cargo doc` 0 missing docs; `./run.sh --test` with `DISPLAY` and
+`WAYLAND_DISPLAY` unset (20:50-21:09): exit 0, the debug library suite 1,846 passed, 0 failed,
+177 ignored, `growth_scenario` 4 passed, every Godot suite passes (23, the rendered ones in
+gamescope's headless backend), nothing skipped, no `SCRIPT ERROR`. **Line counts** (production, from `git
+diff --numstat` against round 4's tip): `roadbed/` unchanged (9,267, round 4's count),
+`terrain/graded/` unchanged; Rust +about 40 (`graded_edits.rs` +12, `graded_tiles_api.rs` +19,
+`graded_stage.rs` +7, `preview.rs` +6, `simulation_node.rs` +4); GDScript +about 120
+(`network_tool.gd` +63, the chunk hold; `road_tool.gd` +28; `road_preview_display.gd` +20;
+`terrain_graded_tiles.gd` +14; the probe +14). **Merge risks:** Linux and the RX 7900 XTX only,
+macOS with `TERRAIN-10` open (the graded patches draw nothing there; unvalidated); the
+non-compiling rebased WIP commits between `3b1e587b` and `8bfd9ebf` (G10's rebase; bisect skips
+them); Godot's Wayland exit hang; a chunk install held for a graded edit waits as long as that
+edit's batch (a batch that never installs would keep the old road drawn); every accepted and
+carried miss above. **Not the gate commit:** T64 and the 9.67 ms frame wait for the user.
 
 ## Measurement and acceptance
 

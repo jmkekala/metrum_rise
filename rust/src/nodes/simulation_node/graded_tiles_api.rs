@@ -173,6 +173,9 @@ pub(crate) struct GradedResidencyJobs {
     tiles: Vec<TileResult>,
     patches: Vec<(GradedPatchRequest, Vec<TileKey>)>,
     edits: Vec<EditResult>,
+    // An edit selection is on a payload worker: the next waits for it, so Godot takes the edits
+    // in serial order (the road tool's undo hold compares serials, T61 (2)).
+    selecting: bool,
     failed_tiles: Vec<(GradedTileRequest, Failure)>,
     failed_patches: Vec<(GradedPatchRequest, Failure)>,
     buffers: Vec<Vec<u8>>,
@@ -578,6 +581,19 @@ impl SimulationNode {
         accepted
     }
 
+    /// The graded edit journal's latest serial (0 before any edit): every edit up to it is
+    /// recorded, and Godot's poll hands the edits over in serial order. The road tool holds an
+    /// install's replaced road chunks drawn until the renderer has installed the edits up to the
+    /// serial it read after the install (`docs/terrain.md` T61 (2)). Lock-free, `O(1)`.
+    #[func]
+    pub fn get_graded_edit_serial(&self) -> i64 {
+        i64::try_from(
+            self.graded_edit_serial
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+        .unwrap_or(i64::MAX)
+    }
+
     /// Returns finished graded residency work: `edits` (per published edit its `serial`, `all`
     /// for a reset, and per level `level`, `step` and the dirty `tiles`, flat `(x, z)` pairs in
     /// key order; Godot rebakes the tiles it holds at that level; a commit's or undo's own tiles
@@ -700,6 +716,9 @@ impl SimulationNode {
     // Takes the core's graded edit journal (starting it on the first call) without waiting for
     // the core, and selects the edits' dirty tiles on a payload worker.
     fn spawn_graded_edit_selection(&self) {
+        if self.graded_jobs.lock().unwrap().selecting {
+            return;
+        }
         let Some(edits) =
             Self::try_lock_shared_core(&self.core).map(|mut core| core.take_graded_edits())
         else {
@@ -709,6 +728,7 @@ impl SimulationNode {
             return;
         }
         let jobs = Arc::clone(&self.graded_jobs);
+        jobs.lock().unwrap().selecting = true;
         self.async_jobs.spawn(move || {
             let selections: Vec<GradedEditSelection> = with_scratch(&SELECT, |scratch| {
                 edits.iter().map(|edit| edit.select(scratch)).collect()
@@ -736,7 +756,9 @@ impl SimulationNode {
                     }
                 })
                 .collect();
-            jobs.lock().unwrap().edits.extend(results);
+            let mut jobs = jobs.lock().unwrap();
+            jobs.edits.extend(results);
+            jobs.selecting = false;
         });
     }
 }

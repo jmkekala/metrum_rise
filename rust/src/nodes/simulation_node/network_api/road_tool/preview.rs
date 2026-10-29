@@ -220,7 +220,7 @@ impl SimulationNode {
     ) -> VarDictionary {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
-        let (preview, span_m, origin, view_terrain, graded_epoch, road_mesh_generation) = {
+        let (preview, span_m, origin, view_terrain, graded_epoch, road_mesh_generation, displayed) = {
             let mut context = self
                 .road_tool
                 .context
@@ -247,6 +247,7 @@ impl SimulationNode {
                 Arc::clone(&context.view.terrain),
                 context.graded.epoch(),
                 context.view.road_mesh_surface_generation,
+                context.graded.display_complete(),
             )
         };
         let mut dict = Self::road_candidate_validation_to_dictionary(
@@ -295,6 +296,7 @@ impl SimulationNode {
             &graded_tiles,
             &graded_removed,
             graded_epoch,
+            displayed,
             cell_m,
         );
         let has_road_chunks = preview
@@ -335,7 +337,7 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
         let mut tiles = Vec::new();
         let mut removed = Vec::new();
-        let (pose, epoch, cell_m) = {
+        let (pose, epoch, displayed, cell_m) = {
             let mut context = self
                 .road_tool
                 .context
@@ -346,14 +348,15 @@ impl SimulationNode {
                 context.graded.take_shown_changes(&mut tiles, &mut removed);
             }
             let cell_m = f64::from(context.view.terrain.cell_size_m());
-            (pose, context.graded.epoch(), cell_m)
+            let displayed = context.graded.display_complete();
+            (pose, context.graded.epoch(), displayed, cell_m)
         };
         if let Some(pose) = pose {
             dict.set("graded_ms", pose.frame_ms);
             dict.set("graded_adopted", pose.stats.adopted as i64);
             dict.set("graded_baked", pose.stats.baked as i64);
             dict.set("graded_pending", pose.pending as i64);
-            Self::set_graded_preview_changes(&mut dict, &tiles, &removed, epoch, cell_m);
+            Self::set_graded_preview_changes(&mut dict, &tiles, &removed, epoch, displayed, cell_m);
         }
         dict
     }
@@ -410,12 +413,14 @@ impl SimulationNode {
 
     // The shown graded tiles' changes of a preview frame: `graded_tiles` (packed as
     // `poll_graded_tile_results` packs its tiles, the token the epoch), `graded_removed` (flat
-    // `(x, z)` pairs of the tiles shown no more) and `graded_epoch`.
+    // `(x, z)` pairs of the tiles shown no more), `graded_epoch` and `graded_displayed` (the
+    // display holds the latest pose's whole selection, T62 (a)).
     fn set_graded_preview_changes(
         dict: &mut VarDictionary,
         tiles: &[crate::simulation::terrain::graded::StagedTile],
         removed: &[crate::simulation::terrain::graded::TileKey],
         epoch: u64,
+        displayed: bool,
         cell_m: f64,
     ) {
         let epoch = i64::try_from(epoch).unwrap_or(i64::MAX);
@@ -427,6 +432,7 @@ impl SimulationNode {
         let flat: Vec<i32> = removed.iter().flat_map(|tile| [tile.x, tile.z]).collect();
         dict.set("graded_removed", PackedInt32Array::from(flat.as_slice()));
         dict.set("graded_epoch", epoch);
+        dict.set("graded_displayed", displayed);
         dict.set(
             "graded_pack_ms",
             pack_start.elapsed().as_secs_f64() * 1000.0,

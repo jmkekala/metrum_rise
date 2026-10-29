@@ -15,7 +15,7 @@
 ## distance + angle HUD label.
 ## Rust methods called: preview_road(), advance_road_preview_terrain(),
 ## release_road_preview_terrain(), add_road_with_snap(), get_road_commit_result(),
-## get_road_tool_cursor_pos(), get_road_tool_start_direction().
+## get_road_tool_cursor_pos(), get_road_tool_start_direction(), get_graded_edit_serial().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
 ## Drawing is continuous: an accepted road starts the next one at its end, using its end
 ## direction for straight-road snapping, until right-click/Esc, a connection to existing roads,
@@ -86,6 +86,10 @@ var _road_preview_material: ShaderMaterial
 # The latest pose's graded tiles still to stage (`TERRAIN-07-E`, T27 (d)): each frame without a
 # new pose stages the next share until none is left.
 var _graded_pending := 0
+# Whether the latest pose's graded selection displays (Rust's `graded_displayed`): until it
+# does, the published tiles show and the preview keeps the resident road runs the pose replaces
+# drawn beside its overlay (T62 (a)), so the road and its terrain cut change together.
+var _graded_displayed := true
 # The preview epoch a queued commit adopted: its graded tiles show until the commit's edit
 # installs the committed ones, or until the commit is refused.
 var _graded_commit_epoch := -1
@@ -181,6 +185,7 @@ func _process(delta):
 	elif _graded_pending > 0 and _commit_request_id == 0 and current_path != null:
 		# A frame without a new pose stages the next share of the pose's graded tiles.
 		_show_graded(simulation_node.advance_road_preview_terrain())
+		_preview_display.hold_runs(not _graded_displayed)
 	# Project the HUD label world position to screen space each frame so the label
 	# stays the same pixel size regardless of camera zoom.
 	if _info_label and _info_label.visible and is_inside_tree():
@@ -356,6 +361,8 @@ func _graded_renderer():
 # milliseconds the renderer took.
 func _show_graded(frame: Dictionary) -> float:
 	_graded_pending = int(frame.get("graded_pending", 0))
+	if frame.has("graded_displayed"):
+		_graded_displayed = bool(frame["graded_displayed"])
 	var graded = _graded_renderer()
 	return graded.show_preview(frame) if graded != null else 0.0
 
@@ -391,10 +398,31 @@ func _hold_preview_until(generation: int) -> void:
 	_release_swapped_preview()
 
 func _release_swapped_preview() -> void:
-	if _swap_display != null and _road_mesh_generation >= _swap_generation:
+	# Chunks held for a graded edit (T61 (2)) draw the preview's state with it until they swap.
+	if _swap_display != null and _road_mesh_generation >= _swap_generation and _held_serial < 0:
 		_swap_display.reset()
 		_swap_display = null
 		_swap_generation = -1
+
+# Any install (an undo, a commit, a deletion) made while the graded journal holds an edit the
+# renderer has not installed waits for it (T61 (2)): until then the replaced chunks draw over the
+# terrain cut they were baked with. A held commit keeps its preview drawn too
+# (`_release_swapped_preview`). The acknowledgement is not delayed: only the drawing waits.
+func _chunk_hold_serial() -> int:
+	var graded = _graded_renderer()
+	if graded == null or not is_instance_valid(simulation_node):
+		return -1
+	var serial := int(simulation_node.get_graded_edit_serial())
+	return serial if serial > graded.installed_edit_serial() else -1
+
+func _held_edit_installed(serial: int) -> bool:
+	var graded = _graded_renderer()
+	return graded == null or graded.installed_edit_serial() >= serial
+
+func _held_chunks_released() -> void:
+	_release_swapped_preview()
+	# A preview that waited for the held chunks shows on the installed ones.
+	_preview_display.resident_installed(self)
 
 func _road_mesh_installed(_generation: int) -> void:
 	# The acknowledgement may arrive in the same frame as the chunks it names.

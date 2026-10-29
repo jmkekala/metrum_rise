@@ -37,6 +37,9 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	var perf_enabled := PerfDebug.is_enabled()
 	var total_start_us := Time.get_ticks_usec() if perf_enabled else 0
+	# After the terrain's process (the scene order): chunks held for a graded edit swap in the
+	# frame its batch installed (T61 (2)).
+	road_tool.release_held_chunks()
 	if not simulation_node.is_network_dirty():
 		if road_tool.needs_main_mesh_hydration():
 			var generation := _current_road_surface_generation()

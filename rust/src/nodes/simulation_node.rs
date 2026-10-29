@@ -217,6 +217,8 @@ pub struct SimulationNode {
     terrain_patch_payload_jobs: Arc<Mutex<TerrainPatchPayloadAsyncState>>,
     /// Graded terrain residency work in flight and waiting for Godot's poll (`TERRAIN-07-D`).
     graded_jobs: Arc<Mutex<graded_tiles_api::GradedResidencyJobs>>,
+    /// The graded edit journal's latest serial (`T61 (2)`), read without the core lock.
+    graded_edit_serial: Arc<std::sync::atomic::AtomicU64>,
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
     /// Payload and mesh jobs in flight on Rayon's pool, waited for when the node is freed.
     async_jobs: Arc<async_jobs::AsyncJobs>,
@@ -404,6 +406,7 @@ impl INode3D for SimulationNode {
         let water_patch_mesh_jobs = Arc::new(Mutex::new(WaterPatchMeshAsyncState::new()));
         let terrain_patch_payload_jobs = Arc::new(Mutex::new(TerrainPatchPayloadAsyncState::new()));
         let water_patch_payload_jobs = Arc::new(Mutex::new(WaterPatchPayloadAsyncState::new()));
+        let graded_edit_serial = core.graded_edit_serial();
         let core_arc = Arc::new(Mutex::new(core));
 
         let snapshot = Arc::new(RwLock::new(initial_snapshot));
@@ -432,6 +435,7 @@ impl INode3D for SimulationNode {
             junction_stalls: None,
             terrain_patch_payload_jobs,
             graded_jobs: Default::default(),
+            graded_edit_serial,
             water_patch_payload_jobs,
             async_jobs: Default::default(),
             benchmark_mode,

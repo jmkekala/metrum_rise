@@ -121,6 +121,10 @@ var last_edit_batch: Array = []
 var preview: Dictionary = {}
 # The highest preview epoch the edits in the batch release when it installs (-1: none).
 var _edit_release := -1
+# The serial of the last edit taken (Rust hands them over in serial order), and the one the
+# last edit batch installed up to: installed_edit_serial() (T61 (2)).
+var _edit_serial_taken := 0
+var _edit_serial_batched := 0
 # The resident patches of the last process() call, for preview changes between frames.
 var _resident: Dictionary = {}
 # Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
@@ -1077,6 +1081,14 @@ func _apply_wall_changes(resident_patches: Dictionary) -> void:
 			_rebuild_patch_walls(patch_cells[key], resident_patches[key])
 	_dirty_walls.clear()
 
+## The serial of the last graded edit whose tiles draw (docs/terrain.md T61 (2)): every edit
+## taken once no batch waits, else those up to the last installed batch. The road tool holds an
+## install's replaced road chunks until this reaches the journal's serial it read then. A batch
+## waiting on its variant or results keeps it back; an edit no held tile takes leaves nothing to
+## wait for. O(1).
+func installed_edit_serial() -> int:
+	return _edit_serial_taken if _edit_batch.is_empty() and _edit_release < 0 else _edit_serial_batched
+
 ## Shows one road preview frame's graded tiles (TERRAIN-07-E, docs/terrain.md "Preview, commit,
 ## undo and load"): `changes` holds `graded_tiles` (packed as poll_graded_tile_results packs its
 ## tiles, the token the preview epoch) and `graded_removed` (flat (x, z) pairs), as preview_road
@@ -1450,6 +1462,7 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 	var count := _edit_staged.size()
 	_edit_batch.clear()
 	_edit_staged.clear()
+	_edit_serial_batched = _edit_serial_taken
 	# The committed tiles replace the preview's in the same frame.
 	if _edit_release >= 0:
 		for key: Vector2i in preview.keys():
@@ -1493,6 +1506,7 @@ func _adopt_preview(key: Vector2i, tile: Dictionary) -> bool:
 func _apply_edit(edit: Dictionary) -> void:
 	counters["edits"] += 1
 	var serial := int(edit["serial"])
+	_edit_serial_taken = serial
 	if bool(edit["all"]):
 		for tile: Vector2i in installed.keys():
 			_dirty_tile(tile, serial)

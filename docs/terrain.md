@@ -11244,6 +11244,25 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       needs one (the journal's latest serial against the renderer's installed one) and must not
       delay a commit's acknowledgement (the commit row). Next round; redo and road deletion not
       yet checked.
+    - **(2) built in round 5** (`ROAD-68-H`, 2026-10-29). Rust keeps the edit journal's latest
+      serial in a shared atomic, stored as each edit is recorded (`get_graded_edit_serial`, no
+      core lock), and hands the edits to Godot in serial order (one edit selection on a payload
+      worker at a time); the renderer reports the serial whose tiles draw
+      (`installed_edit_serial`: every edit taken once no batch waits, else those up to the last
+      installed batch). Any road chunk install made while the serial is ahead of the renderer's
+      (`network_tool.gd` `_commit_road_mesh_update`, through `road_tool.gd`'s
+      `_chunk_hold_serial`) keeps the chunks it replaces drawn and its own hidden until the
+      renderer has installed the edits up to that serial; `NetworkRenderer` swaps them each frame
+      after the terrain processed (`release_held_chunks`), so in the edit batch's frame. A commit
+      held this way keeps its preview drawn until the swap. Nothing waits in Rust: the
+      acknowledgement and the generation's install are unchanged, only the drawing waits.
+      **Redo**: the simulation has none (only the asset editor's document has a redo). **Road
+      deletion** (the bulldoze) shares the path, a chunk install with its edit in flight, so the
+      same hold covers it; no probe step deletes a road, so it is covered by the code, not proven
+      by a run. Proof (fresh, round 5): the undo frames show no background on any of the 39
+      Kuopio strokes (26 frames drawn with chunks held), and with the hold switched off in the
+      frozen scripts the round 4 strokes fail again (the undo frames of `kuopio_01` 1 and 2,
+      `_03` 8, `_05` 12, `_07` 19 and 20, 406-8,188 sampled pixels): [T64](#terrain-07-open-questions).
 62. **T62. What T61 (1) (a) leaves (`ROAD-68-H` round 4) — (a), decided by the user,
     2026-10-29 (about 19:15); to build in `ROAD-68-H` round 5.**
     - **Evidence** (fresh, `$ARTIFACTS/road68/h4/drag-t61-*`, the 39 Kuopio strokes all run):
@@ -11271,6 +11290,72 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       or exactly how the held runs interact with it is stated; the 39 Kuopio strokes, the dump
       and the 100k swing show 0 background frames once T61 (2) is built too. A hold that causes
       flicker or breaks the exact measure goes back to the user as a question.
+    - **Built in round 5** (`road_preview_display.gd` `hold_runs`, Rust's `graded_displayed` on
+      every pose and catch-up frame, `GradedPreview::display_complete`): a pose's replaced runs
+      stay drawn beside its overlay until its selection displays. The junction frames' background
+      is gone (`kuopio_03` attempt 8: 17 frames before, 0), but the held runs double and z-fight
+      with the new pieces where they overlap: back to the user as [T64](#terrain-07-open-questions).
+63. **T63. The terrain stage's one populated pose frame over 3.0 ms (`ROAD-68-H` round 4,
+    session 4) — accepted as measured by the user, 2026-10-29 (about 19:55).**
+    - **Evidence** (fresh in round 4, `$ARTIFACTS/road68/h4/session4/`): the populated drags on T61
+      (1) (a)'s tip, F 1 of 168 pose frames over the 3.0 ms terrain stage, 3.84 ms (10k, the first
+      sample's second pose: one tile's bake 2.61 ms beside a 1.23 ms selection), catch-up frames
+      within 3.0 ms; the move's selection about +0.2 ms at p50; the control (`9f9cb9ba`, before
+      the fixes) 2 frames over in the same session (a 9.27 ms pose frame and a 4.34 ms catch-up
+      frame).
+    - **Decided by the user (about 19:55): accepted as measured**, in T52's and T58's class (a
+      heavy single-tile bake); heavy single-tile bakes belong to `TERRAIN-14` (a cheaper bake
+      first, asynchronous staging only after). The acceptance covers that measurement only: a
+      new or larger miss on `ROAD-68-H`'s final tip is reported to the user, not accepted.
+    - **Round 5's final tip (fresh, session 20:26-20:33, `$ARTIFACTS/road68/h5/session/`), for the
+      user:** F 1 of 161 parsed populated pose frames over 3.0 ms, 9.67 ms (100k, sample 1, pose
+      3: its selection 8.60 ms, its bake 1.07 ms), while the previous commit's lot adoption and
+      routing adoption jobs ran on the pool (carried item 10's and T57 (d)'s contention, the class
+      of round 4's 9.27 ms control frame); the control 0 of 168 in this session. A larger miss
+      than the accepted 3.84 ms, so not covered by this acceptance.
+64. **T64. T62 (a)'s held runs double and z-fight; one fast-click crack left (`ROAD-68-H` round 5)
+    — for the user.**
+    - **Evidence** (fresh, gamescope, the round 5 library `h5/lib`, the probe's swing with pauses
+      and every per-frame check, `$ARTIFACTS/road68/h5/`). With T61 (2) and T62 (a) built, the
+      background shows in 1 frame of the whole probe: the dump 0 of 416 frames, the 100k swing 0 of
+      282, Kuopio's 39 strokes 1 of 6,039 (the renderer's invariant and the no-road check 0
+      everywhere). With both switched off in the frozen scripts (`h5/mut/`, the same library) the
+      strokes that failed in round 4 fail again: 22 frames on 6 strokes (`kuopio_01` 1 and 2,
+      `_03` 8, `_05` 12, `_07` 19 and 20: the undo's frame, 406-8,188 sampled pixels; `_03` 8: 17
+      junction frames). The held runs draw in 1,724 of Kuopio's 6,039 frames and 116 of the
+      populated swing's 282: every frame of a pose near an existing road until its selection
+      displays, so in a continuous drag every such pose frame (T62's accepted lag).
+    - **(1) The hold doubles and z-fights** (`caps-close-populated/held_*.png`, the populated T at
+      40 m, against the same pose displayed, `save_00_preview.png`; `zfight-compare.png`): the
+      replaced runs (the main road's straight pieces) draw through the new junction piece, coplanar
+      and triangulated differently, so the two asphalts alternate in saw-tooth patches, the new
+      zebras are partly covered, and the old curb and sidewalk run on across the new branch's
+      mouth. The pieces lie at the same heights, so no draw order separates them: in every held
+      frame where old and new overlap. **The road's exact-pose measure** (the pose's road payload
+      installed in its frame) still holds as defined: the overlay is installed in the pose's frame;
+      but the frame also draws the replaced published runs until the selection displays, which the
+      measure does not see.
+    - **(2) The fast click's batch frame on `kuopio_06` attempt 17**: a thin diagonal slit, 4 sampled
+      pixels, in the frame the fast commit's edit batch installs (`caps-h5-kuopio/hole_00_*.png`);
+      the same frame and count in round 4 (`h4/drag-t61-kuopio-*`). Neither hold is active. The
+      batch installs the committed tiles held, wanted or shown by the preview, and a newly graded
+      committed tile waits for its patch's list (T62 (3), the accepted lag): where the commit's
+      grading reaches across their seam the installed tile and the waiting one stand at different
+      heights for that frame.
+    - **Options for (1).** (a) The held runs move into a held mesh drawn with a stencil test, the
+      overlay writing the stencil (Godot 4.7's spatial stencil modes): the old pieces draw only
+      where the new ones do not, no z-fight, no doubling; render state, not geometry, so not rule
+      5's masking of missing topology, but for the user to judge. (b) Drop the hold (the junction's
+      background frames return, 17 on `kuopio_03` attempt 8, 1-2 on others) and carry them with
+      the accepted lag. (c) Hold the whole earlier display (the replaced runs without the new
+      overlay) until the selection displays: no overlap, but the preview road near an existing
+      road then shows only after a pause (as its terrain does). (d) Draw the held runs below the
+      overlay by a depth offset: a render workaround, not recommended.
+    - **Options for (2).** (a) The fast click's batch waits until its newly graded tiles' lists
+      arrive, installing them together (the commit's terrain later by those frames). (b) Accept it
+      with T62 (3)'s lag.
+    - **Recommendation.** (1) (a), else (c); (2) (a). Not decided by the agent: the gate commit
+      waits for these.
 
 #### Superseded `ROAD-68` questions
 
