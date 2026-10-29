@@ -345,8 +345,9 @@ impl GradedPreview {
 pub(crate) struct GradedUndo {
     kept: Arc<OnceLock<Result<TileStage, BakeError>>>,
     // The job that fills `kept`, and its start until the commit queues it after its last stage
-    // (`ROAD-68-G` part 10, [`SimCore::take_kept_graded_tiles_start`]). Dropped unstarted with
-    // the record, it never runs.
+    // (`ROAD-68-G` part 10, [`SimCore::take_kept_graded_tiles_start`]). Held for its drop: an
+    // unstarted job dropped with the record never runs. Only tests read it (`wait`).
+    #[cfg_attr(not(test), allow(dead_code))]
     job: PureJob<()>,
     start: Option<JobStart>,
     // The commit's level rule: undo selects by it, so the kept tiles meet its own.
