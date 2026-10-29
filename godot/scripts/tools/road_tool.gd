@@ -86,10 +86,6 @@ var _road_preview_material: ShaderMaterial
 # The latest pose's graded tiles still to stage (`TERRAIN-07-E`, T27 (d)): each frame without a
 # new pose stages the next share until none is left.
 var _graded_pending := 0
-# Whether the latest pose's graded selection displays (Rust's `graded_displayed`): until it
-# does, the published tiles show and the preview keeps the resident road runs the pose replaces
-# drawn beside its overlay (T62 (a)), so the road and its terrain cut change together.
-var _graded_displayed := true
 # The preview epoch a queued commit adopted: its graded tiles show until the commit's edit
 # installs the committed ones, or until the commit is refused.
 var _graded_commit_epoch := -1
@@ -185,7 +181,6 @@ func _process(delta):
 	elif _graded_pending > 0 and _commit_request_id == 0 and current_path != null:
 		# A frame without a new pose stages the next share of the pose's graded tiles.
 		_show_graded(simulation_node.advance_road_preview_terrain())
-		_preview_display.hold_runs(not _graded_displayed)
 	# Project the HUD label world position to screen space each frame so the label
 	# stays the same pixel size regardless of camera zoom.
 	if _info_label and _info_label.visible and is_inside_tree():
@@ -361,8 +356,6 @@ func _graded_renderer():
 # milliseconds the renderer took.
 func _show_graded(frame: Dictionary) -> float:
 	_graded_pending = int(frame.get("graded_pending", 0))
-	if frame.has("graded_displayed"):
-		_graded_displayed = bool(frame["graded_displayed"])
 	var graded = _graded_renderer()
 	return graded.show_preview(frame) if graded != null else 0.0
 

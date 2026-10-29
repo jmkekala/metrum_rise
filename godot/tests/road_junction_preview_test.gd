@@ -211,10 +211,6 @@ func _fixture(fixture: Dictionary) -> void:
 	_expect(tool.blueprint_mesh.mesh == null, "the preview shows chunks, never a ribbon")
 	if not isolated and not fixture.get("sloped", false):
 		_expect_existing_road_height(preview)
-	# T62 (a): until the pose's graded selection displays, its replaced runs stay drawn beside the
-	# overlay; the catch-up frames complete the selection.
-	_expect(tool._graded_displayed or tool._preview_display._collapsed.is_empty(), "the replaced runs stay drawn until the pose's terrain displays")
-	_converge_preview(tool, fixture["name"])
 	# Every resident chunk stays drawn, with exactly the payload's hidden runs collapsed; those
 	# runs are the resident chunk's own old curbs, markings and asphalt.
 	var collapsed_expected := 0
@@ -255,7 +251,6 @@ func _fixture(fixture: Dictionary) -> void:
 	tool.set_scripted_pointer(true, points[-1])
 	tool._queue_preview_update()
 	tool._process(1.0 / 60.0)
-	_converge_preview(tool, fixture["name"])
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.road_mesh_root, fixture["name"])
 	tool.cancel_road()
@@ -268,15 +263,6 @@ func _fixture(fixture: Dictionary) -> void:
 	tool.free()
 	terrain_stub.free()
 	await process_frame
-
-# Runs the pose's catch-up frames until its graded selection displays (T62 (a)): its replaced runs
-# then collapse.
-func _converge_preview(tool: Node3D, label: String) -> void:
-	var frames := 0
-	while not tool._graded_displayed and frames < 64:
-		tool._process(1.0 / 60.0)
-		frames += 1
-	_expect(tool._graded_displayed, "%s: the pose's graded selection displays after its catch-up frames" % label)
 
 # Clicks the previewed stroke: the commit installs the preview's pieces, and the preview stays
 # shown until the committed generation's chunks are installed, which replace it in one call.

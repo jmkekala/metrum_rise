@@ -381,13 +381,6 @@ impl GradedPreview {
         &self.display
     }
 
-    /// Whether the display holds the latest pose's whole selection (T61 (1) (a)): true for a
-    /// pose that wants no tile, false while the published tiles show in its place. The road
-    /// tool keeps the pose's replaced published road runs drawn until then (T62 (a)). `O(1)`.
-    pub(crate) fn display_complete(&self) -> bool {
-        self.display.len() == self.wanted.len()
-    }
-
     /// The displayed tiles changed since the last call, for the renderer: into `changed` the
     /// tiles displayed now with a payload it does not hold, into `removed` the tiles it holds
     /// that are displayed no more. `O(display + sent log display)`.

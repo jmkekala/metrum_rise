@@ -30,13 +30,16 @@
 ## METRUM_GRADED_DRAG_ATTEMPTS (the strokes' attempt numbers to run) and
 ## METRUM_GRADED_DRAG_HOLE_PIXELS (rendered runs: the background drawn magenta, the camera looking
 ## down, and every frame's magenta pixels counted: the sky through the ground). Each frame row
-## records the road tool's holds: `runs_held` (T62 (a), the pose's replaced runs drawn beside its
-## overlay) and `chunks_held` (T61 (2), an install's replaced chunks drawn until its edit); with a
-## capture directory, METRUM_GRADED_DRAG_CAPTURE_HELD saves the first 24 frames drawn with
-## replaced runs held as held_<n>.png (the overlap check for z-fighting and doubled pieces).
+## records `chunks_held` (T61 (2), an install's replaced chunks drawn until its edit); with a
+## capture directory, METRUM_GRADED_DRAG_CLIP saves every recorded frame but the settling ones as
+## clip_<n>_<kind>.png (comparison clips, `ROAD-68-H` round 6). METRUM_GRADED_DRAG_VEGETATION=<n>
+## (`ROAD-68-H` round 7) adds a vegetation row to every frame (the plants drawn on a drawn road
+## around the stroke, and the drawn plants against Rust's placement now) and records n frames after
+## the converged click, the last of which must show the vegetation of the committed road.
 extends RefCounted
 
 const MANIFEST := "res://../benchmarks/fixtures/kuopio-terrain/placements.json"
+const Vegetation := preload("res://scripts/renderers/vegetation.gd")
 const POSES := 8
 # The Godot terrain install share of a pose, commit or undo frame (`terrain.md` budgets).
 const SHARE_MS := 1.0
@@ -74,6 +77,25 @@ var _sweep_deg := 0.0
 var _sweep_converge := false
 var _continue := not OS.get_environment("METRUM_GRADED_DRAG_CONTINUE").is_empty()
 var _hole_pixels := false
+# METRUM_GRADED_DRAG_VEGETATION=<frames> (`ROAD-68-H` round 7): every recorded frame counts the
+# plants drawn on a drawn road around the stroke (a drawn vegetation instance whose trunk stands
+# inside a visible road chunk's triangles), and the drawn plants Rust's placement for the current
+# road would not draw or would draw and are not (`extra`, `missing`, per drawn patch); after the
+# converged commit that many more frames are recorded (`after`), and the last must show none.
+var _veg_after := int(OS.get_environment("METRUM_GRADED_DRAG_VEGETATION"))
+var _vegetation: Node
+var _veg_region := Rect2()
+# Per stroke: drawn patch node id -> its trunks (in its own frame); visible road chunk node
+# id -> its triangles binned by VEG_CELL_M cell; patch key -> the node id last frame; Rust's
+# placement per (patch key, understory, land cover epoch).
+var _veg_trunks := {}
+var _veg_roads := {}
+var _veg_ids := {}
+var _veg_rust := {}
+const VEG_CELL_M := 4.0
+# Recorded frames with a plant drawn on a drawn road, and the last such frame's index and kind.
+var _veg_frames := 0
+var _veg_last := ""
 
 func run(bench: Node) -> void:
 	_bench = bench
@@ -133,6 +155,7 @@ func run(bench: Node) -> void:
 			_finish("%s: the loaded world did not settle: %s" % [fixture.case_id, loaded])
 			return
 		_graded = bench.terrain.get("graded_tiles")
+		_vegetation = bench.terrain.get_node_or_null("../Vegetation")
 		# The settle includes every resident patch's cell set build (off the frame paths).
 		_report.loads.append({"case": fixture.case_id, "settle_ms": float(Time.get_ticks_usec() - load_us) / 1000.0,
 			"cell_builds": int(_graded.counters["cell_builds"]), "patches_with_cells": _graded.patch_cells.size()})
@@ -169,6 +192,13 @@ func _stroke(case_id: String, stroke: Dictionary) -> Dictionary:
 	var start := Vector2(float(stroke.start_xz[0]), float(stroke.start_xz[1]))
 	var end := Vector2(float(stroke.end_xz[0]), float(stroke.end_xz[1]))
 	var record := {"case": case_id, "attempt": int(stroke.attempt), "ok": false}
+	# The stroke's reach, its swing included, with a margin for the junction it rebuilds.
+	var arm := start.distance_to(end)
+	_veg_region = Rect2(start - Vector2.ONE * arm, Vector2.ONE * 2.0 * arm).grow(16.0)
+	_veg_trunks.clear()
+	_veg_roads.clear()
+	_veg_ids.clear()
+	_veg_rust.clear()
 	_bench.camera.set_focus_padding(1.0)
 	if _hole_pixels:
 		# Looking down on the whole swing, so no frame shows the horizon.
@@ -206,6 +236,14 @@ func _stroke(case_id: String, stroke: Dictionary) -> Dictionary:
 		if not await _settle(record):
 			return record
 	record["converged"] = await _drag(record, start, end, stroke, true)
+	if _veg_after > 0 and _vegetation != null:
+		# Recorded into the converged drag's frames: whether the plants on the road clear.
+		_kind = "after"
+		for frame in range(_veg_after):
+			await _next_frame()
+		var last: Dictionary = _frames[-1]["veg"]
+		_expect(int(last["on_road"]) == 0 and int(last["extra"]) == 0 and int(last["missing"]) == 0, record,
+			"%d frames after the commit the vegetation is not the committed road's: %s" % [_veg_after, str(last)])
 	if not await _settle(record):
 		return record
 	await _capture(record, "commit")
@@ -239,7 +277,10 @@ func _check_frames(record: Dictionary) -> void:
 	_expect(_tile_holes == 0, record, "%d frames drew a set's tile other than it shows" % _tile_holes)
 	_expect(_unroaded == 0, record, "%d frames showed preview terrain without its preview road" % _unroaded)
 	_expect(_pixel_holes == 0, record, "%d frames showed the background through the ground" % _pixel_holes)
-	record["frame_holes"] = {"patches": _holes, "tiles": _tile_holes, "unroaded": _unroaded, "pixels": _pixel_holes}
+	record["frame_holes"] = {"patches": _holes, "tiles": _tile_holes, "unroaded": _unroaded, "pixels": _pixel_holes,
+		"plants_on_road": _veg_frames, "plants_on_road_last": _veg_last}
+	_veg_frames = 0
+	_veg_last = ""
 	_holes = 0
 	_tile_holes = 0
 	_unroaded = 0
@@ -309,8 +350,8 @@ func _magenta_background() -> void:
 # with a capture directory the first frames showing any are saved as hole_<n>.png.
 var _hole_captures := 0
 var _capture_all := not OS.get_environment("METRUM_GRADED_DRAG_CAPTURE_ALL").is_empty()
-var _held_captures := 0
-var _capture_held := not OS.get_environment("METRUM_GRADED_DRAG_CAPTURE_HELD").is_empty()
+var _clip := not OS.get_environment("METRUM_GRADED_DRAG_CLIP").is_empty()
+var _clip_frames := 0
 func _magenta_pixels() -> int:
 	var image := _bench.get_viewport().get_texture().get_image()
 	image.convert(Image.FORMAT_RGBA8)
@@ -438,18 +479,20 @@ func _next_frame() -> void:
 	if _kind in ["pose", "catch_up", "sweep"] and int(row["preview_shown"]) > 0 and not road_drawn:
 		_unroaded += 1
 		row["unroaded"] = true
-	var display: RefCounted = tool._swap_display if tool._swap_display != null else tool._preview_display
-	row["runs_held"] = display.sequence > 0 and display._runs_held and not display._targets.is_empty()
 	row["chunks_held"] = tool._held_serial >= 0
-	if row["runs_held"] and _capture_held and not _capture_dir.is_empty() and _held_captures < 24:
+	if _clip and not _capture_dir.is_empty() and _kind != "settled":
 		DirAccess.make_dir_recursive_absolute(_capture_dir)
-		var image := _bench.get_viewport().get_texture().get_image()
-		image.save_png(_capture_dir.path_join("held_%02d_%s_%d.png" % [_held_captures, _kind, _frames.size()]))
-		_held_captures += 1
+		_bench.get_viewport().get_texture().get_image().save_png(_capture_dir.path_join("clip_%05d_%s.png" % [_clip_frames, _kind]))
+		_clip_frames += 1
 	if _hole_pixels:
 		row["magenta"] = _magenta_pixels()
 		if int(row["magenta"]) > 0 and _kind != "settled":
 			_pixel_holes += 1
+	if _veg_after > 0 and _vegetation != null:
+		row["veg"] = _vegetation_row()
+		if int(row["veg"]["on_road"]) > 0:
+			_veg_frames += 1
+			_veg_last = "%d %s" % [_frames.size(), _kind]
 	if int(counters["preview_frames"]) != int(_seen["preview_frames"]):
 		row["preview_ms"] = float(counters["preview_install_ms_last"])
 		row["preview_tiles"] = int(counters["preview_tiles_last"])
@@ -489,6 +532,146 @@ func _capture(record: Dictionary, label: String) -> void:
 	await RenderingServer.frame_post_draw
 	var path := _capture_dir.path_join("%s_%02d_%s.png" % [record["case"], int(record["attempt"]), label])
 	_expect(_bench.get_viewport().get_texture().get_image().save_png(path) == OK, record, "capture " + path)
+
+# The frame's vegetation row (METRUM_GRADED_DRAG_VEGETATION), over the drawn patches (stand-ins
+# too) meeting the stroke's region: the plants drawn on a visible road chunk (`on_road`) and on the
+# preview's overlays (`on_preview`; vegetation follows only committed roads), the drawn plants
+# Rust's placement now leaves out (`extra`) and those it places that are not drawn (`missing`), the
+# patches replaced since the last frame (`uploads`), those whose stamped generations are not their
+# owner's current ones (`stale`) and of those the queued ones, the vegetation's upload queue, and
+# the two counters its staleness sweep follows.
+func _vegetation_row() -> Dictionary:
+	var epoch := int(_bench.simulation_node.get_land_cover_epoch())
+	var trunks := PackedVector2Array()
+	var row := {"on_road": 0, "extra": 0, "missing": 0, "uploads": 0, "stale": 0, "queued": 0,
+		"queue": _vegetation.queue.size(), "revision": int(_bench.terrain.get_surface_commit_revision()),
+		"epoch": epoch}
+	for drawn: Dictionary in [_vegetation.patches, _vegetation.standins]:
+		for key: Vector3i in drawn:
+			var node: Node3D = drawn[key]
+			var origin := Vector2(node.position.x, node.position.z)
+			var span: float = _vegetation._key_span(key)
+			if not Rect2(origin, Vector2.ONE * span).intersects(_veg_region):
+				continue
+			var id := node.get_instance_id()
+			if _veg_ids.has(key) and _veg_ids[key] != id:
+				row.uploads += 1
+			_veg_ids[key] = id
+			if not _veg_trunks.has(id):
+				_veg_trunks[id] = _patch_trunks(node)
+			var local: Dictionary = _veg_trunks[id]
+			var understory := bool(node.get_meta("understory"))
+			var cached := "%s %s %d" % [key, understory, epoch]
+			if not _veg_rust.has(cached):
+				_veg_rust[cached] = _placement(origin, span, understory, bool(node.get_meta("near_band")))
+			var placed: Dictionary = _veg_rust[cached]
+			for at: Vector2 in local:
+				if _veg_region.has_point(origin + at):
+					trunks.append(origin + at)
+					row.extra += 0 if placed.has(at) else 1
+			for at: Vector2 in placed:
+				if not local.has(at) and _veg_region.has_point(origin + at):
+					row.missing += 1
+			var generations: Vector2i = _vegetation._owner_generations(_vegetation._owner_key(key), null)
+			if ((generations.x >= 0 and generations.x != int(node.get_meta("surface_generation")))
+					or generations.y != int(node.get_meta("vegetation_generation"))):
+				row.stale += 1
+				row.queued += 1 if _vegetation.queued.has(key) else 0
+	row.on_road = _on_road(trunks, false)
+	row["on_preview"] = _on_road(trunks, true)
+	row["plants"] = trunks.size()
+	return row
+
+# A drawn patch's plant trunks in its own frame, as a set: the instance origins of its visible
+# levels, its shadow proxies and hedge runs left out.
+func _patch_trunks(node: Node3D) -> Dictionary:
+	var out := {}
+	for child in node.get_children():
+		if (not child is MultiMeshInstance3D or not child.visible or child.get_meta("shadow_proxy", false)
+				or int(child.get_meta("lod", 0)) == Vegetation.HEDGE_RUN_LOD):
+			continue
+		var multimesh: MultiMesh = child.multimesh
+		for i in multimesh.instance_count:
+			var at := multimesh.get_instance_transform(i).origin
+			out[Vector2(at.x, at.z)] = true
+	return out
+
+# Rust's placement for a patch now, as its upload would draw it (vegetation.gd `_upload_patch`):
+# each plant's trunk in the patch's frame, computed as the upload does, the species without a
+# distant level left out of a patch outside the near band.
+func _placement(origin: Vector2, span: float, understory: bool, near_band: bool) -> Dictionary:
+	var data: PackedFloat32Array = _bench.simulation_node.get_decorative_tree_patch(origin, span, understory)
+	var out := {}
+	for i in range(0, data.size(), 6):
+		var species := int(data[i + 5]) & Vegetation.SPECIES_MASK
+		if not near_band and (_vegetation.meshes[species][0] as Array).size() == 1:
+			continue
+		if fmod(absf(data[i] * 0.754877 + data[i + 2] * 0.56984), 1.0) >= _vegetation.density_fraction:
+			continue
+		var at := Vector3(data[i] - origin.x, 0.0, data[i + 2] - origin.y)
+		out[Vector2(at.x, at.z)] = true
+	return out
+
+# How many trunks stand inside a visible road chunk's triangles: the road drawn, an install's held
+# chunks (T61 (2)) included and its hidden ones not; with `preview` the preview's overlays instead
+# (road_preview_display.gd names them RoadPreview_<x>_<z>).
+func _on_road(trunks: PackedVector2Array, preview: bool) -> int:
+	var binned: Array[Dictionary] = []
+	for chunk in _bench.road_tool.road_mesh_root.get_children():
+		if not chunk is MeshInstance3D or not chunk.visible or String(chunk.name).begins_with("RoadPreview_") != preview:
+			continue
+		var id: int = chunk.get_instance_id()
+		if not _veg_roads.has(id):
+			_veg_roads[id] = _road_cells(chunk)
+		if not (_veg_roads[id] as Dictionary).is_empty():
+			binned.append(_veg_roads[id])
+	var count := 0
+	for at in trunks:
+		var cell := Vector2i((at / VEG_CELL_M).floor())
+		var inside := false
+		for cells in binned:
+			var triangles: Array = cells.get(cell, [])
+			for t in range(0, triangles.size(), 3):
+				var a: Vector2 = triangles[t]
+				var b: Vector2 = triangles[t + 1]
+				var c: Vector2 = triangles[t + 2]
+				var d1 := (b - a).cross(at - a)
+				var d2 := (c - b).cross(at - b)
+				var d3 := (a - c).cross(at - c)
+				if not ((d1 < 0.0 or d2 < 0.0 or d3 < 0.0) and (d1 > 0.0 or d2 > 0.0 or d3 > 0.0)):
+					inside = true
+					break
+			if inside:
+				break
+		count += 1 if inside else 0
+	return count
+
+# A road chunk's triangles meeting the stroke's region, in world xz, binned by VEG_CELL_M cell;
+# vertical faces cover no ground and are left out. Once per chunk node.
+func _road_cells(chunk: MeshInstance3D) -> Dictionary:
+	var out := {}
+	var mesh: Mesh = chunk.mesh
+	var box := mesh.get_aabb()
+	var shift := chunk.position
+	if not Rect2(Vector2(box.position.x + shift.x, box.position.z + shift.z), Vector2(box.size.x, box.size.z)).intersects(_veg_region):
+		return out
+	for surface in mesh.get_surface_count():
+		var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
+		for v in range(0, vertices.size(), 3):
+			var a := Vector2(vertices[v].x + shift.x, vertices[v].z + shift.z)
+			var b := Vector2(vertices[v + 1].x + shift.x, vertices[v + 1].z + shift.z)
+			var c := Vector2(vertices[v + 2].x + shift.x, vertices[v + 2].z + shift.z)
+			var low := a.min(b).min(c)
+			var high := a.max(b).max(c)
+			if absf((b - a).cross(c - a)) < 1e-6 or not Rect2(low, high - low).grow(0.01).intersects(_veg_region):
+				continue
+			for x in range(floori(low.x / VEG_CELL_M), floori(high.x / VEG_CELL_M) + 1):
+				for z in range(floori(low.y / VEG_CELL_M), floori(high.y / VEG_CELL_M) + 1):
+					var cell := Vector2i(x, z)
+					if not out.has(cell):
+						out[cell] = []
+					out[cell].append_array([a, b, c])
+	return out
 
 func _expect(condition: bool, record: Dictionary, message: String) -> void:
 	if condition:

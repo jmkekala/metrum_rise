@@ -325,7 +325,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Constructive roadbed (`ROAD-68`, in progress, branch `road`)**: the legacy road-surface
+- **Constructive roadbed (`ROAD-68`, in progress, branch `road`; `ROAD-68-H`, the last gate, done
+  on branch `road68-H` 2026-10-29/30, rounds 6-7, its misses carried or accepted by the user's decisions, question 66 (a) on 2026-10-30; on `road` since 2026-10-30)**: the legacy road-surface
   compiler (about 145k lines) is retired. Its rendered baseline missed 16.7 ms on every sampled
   moving pose, and `ROAD-67`, which ported its semantics, is superseded. Junctions will be built
   directly from their arms (corners, round joins, mouth stations, heights `plane + level`) and feed
@@ -393,14 +394,27 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   the user as T64, with one populated drag pose frame of 9.67 ms under background adoption; the
   commit row (at most 12.01 ms at 100k) and every bitwise row pass, and `TERRAIN-14`, `ROAD-73`
   and `UI-09` are new rows
-  ([record](roads.md#round-5-the-undo-hold-the-junction-hold-the-runs-on-the-final-tip-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
+  ([record](roads.md#round-5-the-undo-hold-the-junction-hold-the-runs-on-the-final-tip-road-68-h-2026-10-29)).
+  Round 6 (2026-10-29): by the user's T64 decision (about 21:45) the junction hold is removed and
+  the preview is round 4's united junction again (43 captures identical); the undo hold stays;
+  `TERRAIN-12` is done for the hole classes fixed (dump 0 of 416, 100k swing 0 of 282, the undo
+  frames 0), with the junction frames and the fast click's crack (17 of Kuopio's 6,038 frames)
+  carried to the new root-cause question T65 (one rule for when the drawn road and the graded
+  terrain change), and the 9.67 ms drag frame class to the new `PERF-12`
+  ([record](roads.md#round-6-the-users-t64-change-t65-the-runs-on-the-final-tip-road-68-h-2026-10-29)).
+  Round 7 (2026-10-29): the plants round 6's clip showed on the road after the undo are the
+  vegetation's own lag, not the undo hold (the same with the hold off): it updates an edit's
+  patches up to 42 frames after the click, so plants stand on a new road meanwhile (612 of
+  15,310 Kuopio frames, all converged); carried to T65 as its third layer, no code change
+  ([record](roads.md#round-7-plants-on-the-road-after-the-undo-the-vegetations-own-lag-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
   compacted for quality to 7,229 production lines with every product bitwise unchanged.
-  `ROAD-68-E` (implemented; acceptance open) previews each road pose synchronously in the frame that samples it,
+  `ROAD-68-E` (done; its open items closed by `TERRAIN-07` and `ROAD-68-G`, confirmed at `ROAD-68-H`) previews each road pose synchronously in the frame that samples it,
   with the commit's own plan, pieces and road chunks, and the commit installs them; one preview
   mode remains (D3). The preview builds the touched terrain patches with the commit's functions
   and the commit installs them when its own sources match; undo puts the pre-edit terrain back.
   Edits rebuild only the terrain near changed chain segments, so a split trunk's far half keeps
-  its tiles; the preview's terrain stage still misses its 3.0 ms budget on the sloped fixtures.
+  its tiles; since `TERRAIN-07` the preview's terrain is the graded surface's, its stage within
+  3.0 ms but for the user's recorded exceptions.
   Part 2 makes strokes ignore the pieces their own edit rebuilds (sloped T
   junctions no longer depend on drawing order), refuses commits whose pieces newly cover fields
   or painted cells, and refuses node moves, crosswalk overrides and edge class changes whose

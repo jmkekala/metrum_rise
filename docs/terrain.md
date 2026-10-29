@@ -4468,7 +4468,12 @@ km.
     inputs unchanged (a second selection, of the move), else the published tile draws until it
     is staged; a pose that draws no road (no pieces, or invalid) and a publication draw no
     preview terrain. The adoption pool above is unchanged, so every staged, committed and undone
-    tile is too.
+    tile is too. `TERRAIN-12` is done (`ROAD-68-H` round 6) for the hole classes this and T61 fix
+    (the corridors, the seam cracks, the undo's frame); a pose that rebuilds an existing road's
+    pieces (a junction) still shows the background where the published tiles cut the replaced
+    pieces until its selection displays, and a fast click's newly graded tile waits for its
+    patch's list beside an installed one: both carried to [T65](#terrain-07-open-questions)
+    (the user, 2026-10-29), not accepted.
   - *Convergence.* Once the poses stop, the shown tiles are the last pose's after
     `ceil((|W| - 1) / 2)` catch-up frames, bitwise its fresh bake and the commit's tiles.
   - *The commit.* The click offers the tiles the preview shows at that moment (the latest
@@ -11263,8 +11268,17 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       Kuopio strokes (26 frames drawn with chunks held), and with the hold switched off in the
       frozen scripts the round 4 strokes fail again (the undo frames of `kuopio_01` 1 and 2,
       `_03` 8, `_05` 12, `_07` 19 and 20, 406-8,188 sampled pixels): [T64](#terrain-07-open-questions).
+    - **Kept in round 7** (`ROAD-68-H`, 2026-10-29). The pine and ground plants standing on the
+      road in round 6's `kuopio_03` attempt 8 clip are not the hold's: with the hold switched off
+      on the same library the same stroke shows plants on the drawn road too (32 plants on the
+      converged commit's road for 10 frames), and the hold decides only which road draws in its
+      own frames, not when the plants change. They are the vegetation's own lag, carried to
+      [T65](#terrain-07-open-questions) as its third layer; so by the coordinator's rule for this
+      round the hold stays. The user reviewed the comparison clips on 2026-10-30 and took the
+      final tip (the undo hold).
 62. **T62. What T61 (1) (a) leaves (`ROAD-68-H` round 4) — (a), decided by the user,
-    2026-10-29 (about 19:15); to build in `ROAD-68-H` round 5.**
+    2026-10-29 (about 19:15); built in `ROAD-68-H` round 5, removed in round 6 (the user's T64 (1)
+    (b), about 21:45); the junction frames carried to [T65](#terrain-07-open-questions).**
     - **Evidence** (fresh, `$ARTIFACTS/road68/h4/drag-t61-*`, the 39 Kuopio strokes all run):
       the cracks are gone, but (1) a pose that rebuilds an existing road's pieces (a junction)
       draws its road while the published tiles, shown until its selection completes, still cut
@@ -11295,6 +11309,11 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       stay drawn beside its overlay until its selection displays. The junction frames' background
       is gone (`kuopio_03` attempt 8: 17 frames before, 0), but the held runs double and z-fight
       with the new pieces where they overlap: back to the user as [T64](#terrain-07-open-questions).
+    - **Removed in round 6** (the user's T64 (1) (b), 2026-10-29 about 21:45): the road tool no
+      longer holds a pose's replaced runs (`road_preview_display.gd` `hold_runs`, `_targets`; the
+      road tool's `_graded_displayed`; Rust's `GradedPreview::display_complete` and the pose's
+      `graded_displayed`, which fed only the hold), so the preview draws round 4's united junction.
+      The junction's background frames return and are carried to T65, not accepted.
 63. **T63. The terrain stage's one populated pose frame over 3.0 ms (`ROAD-68-H` round 4,
     session 4) — accepted as measured by the user, 2026-10-29 (about 19:55).**
     - **Evidence** (fresh in round 4, `$ARTIFACTS/road68/h4/session4/`): the populated drags on T61
@@ -11313,8 +11332,14 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       routing adoption jobs ran on the pool (carried item 10's and T57 (d)'s contention, the class
       of round 4's 9.27 ms control frame); the control 0 of 168 in this session. A larger miss
       than the accepted 3.84 ms, so not covered by this acceptance.
+    - **Not accepted by the user (2026-10-29, about 21:20); carried to `PERF-12`** (a new roadmap
+      row beside `PERF-10` and `ROAD-68`'s carried item 10): frame-critical preview and commit
+      stages share the Rayon workers with background commit jobs, so a background job can delay a
+      frame's stage; the fix (a separate owned pool for frame work, or background jobs that yield)
+      after `ROAD-68`. `ROAD-68-H` lands with it open there.
 64. **T64. T62 (a)'s held runs double and z-fight; one fast-click crack left (`ROAD-68-H` round 5)
-    — for the user.**
+    — decided by the user, 2026-10-29 (about 21:45): (1) (b), the hold dropped; (2) carried; both
+    remaining frame classes to [T65](#terrain-07-open-questions).**
     - **Evidence** (fresh, gamescope, the round 5 library `h5/lib`, the probe's swing with pauses
       and every per-frame check, `$ARTIFACTS/road68/h5/`). With T61 (2) and T62 (a) built, the
       background shows in 1 frame of the whole probe: the dump 0 of 416 frames, the 100k swing 0 of
@@ -11356,6 +11381,110 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       with T62 (3)'s lag.
     - **Recommendation.** (1) (a), else (c); (2) (a). Not decided by the agent: the gate commit
       waits for these.
+    - **Decided by the user, 2026-10-29 (about 21:20): (1) (a) with a fallback, (2) (a).** (1) the
+      stencil-tested held mesh, so the junction looks as before the hold; if Godot 4.7's stencil
+      cannot guarantee the order (overlay before held runs) or still doubles, (b). (2) the fast
+      click's batch waits for its newly graded tiles' lists and installs them with the rest.
+    - **Changed by the user, 2026-10-29 (about 21:45), before either landed: (1) (b), drop the
+      junction hold; (2) carried, not built; T61 (2), the undo hold, stays as built.** The reason,
+      in the user's terms: the hand-over fixes T60-T64 have become a series of small fixes for one
+      coupling (the preview road updates in its frame, the graded terrain lags by T27 (d), and the
+      terrain discards its own baked road footprint, so every path where road and terrain change
+      at different times made its own hole). The junction's background frames and the fast
+      click's crack are carried to [T65](#terrain-07-open-questions), the root-cause question, not
+      accepted. Round 6 had built both (a)s on its branch when the change came: a stencil
+      prototype (the overlay writing the stencil, the held runs drawn from a Rust copy of the
+      replaced runs in the transparent pass, stencil-tested; a rendered test drew the overlay over
+      a coplanar and a 1 cm nearer held quad in either submission order without a doubled pixel)
+      and the batch wait; both were discarded unmerged, nothing of them is on the branch.
+65. **T65. One rule for when the drawn road and the graded terrain change (`ROAD-68-H` round 6,
+    the user's question, 2026-10-29 about 21:45) — a root-cause design question for after
+    `ROAD-68-H`.**
+    - **The coupling.** The preview road updates in its own frame; the graded terrain lags it
+      (T27 (d): a pose's tiles stage two a frame, and T61 (1) (a) shows them only once the pose's
+      whole selection is staged); and each terrain tile discards its own baked road footprint
+      (the seam mask, [`TERRAIN-07`](#graded-terrain-surface-terrain-07)). So every path where the
+      road drawn and the terrain drawn come from different road versions shows the background
+      where they disagree, and each path grew its own hand-over rule:
+      - **a pose's tiles** (T60, T61 (1) (a)): the Rust staging displays only tiles exact for the
+        latest pose, all or none (`graded_stage.rs` `GradedPreview`, the move's second selection);
+      - **a commit** (`TERRAIN-07-E`): the preview stays drawn until the committed chunks install
+        (`road_tool.gd` `_hold_preview_until`, `_release_swapped_preview`), and the edit batch
+        adopts the preview's tiles or installs the committed ones in one frame
+        (`terrain_graded_tiles.gd` `_install_edit_batch`, `_adopt_preview`, `_edit_release`);
+      - **an undo, a deletion, any install with an edit in flight** (T61 (2)): the replaced
+        chunks stay drawn until the renderer installs the edit (the journal's serial,
+        `network_tool.gd` `_held_chunks`, `_hidden_chunks`, `release_held_chunks`,
+        `_retire_road_chunk`; `road_tool.gd` `_chunk_hold_serial`; the renderer's
+        `installed_edit_serial`; about 120 lines);
+      - **a junction rebuilt by a pose** (T62 (a)): held runs, built in round 5, z-fought,
+        removed in round 6 (T64 (1) (b));
+      - **a fast click** (T62 (3), T64 (2)): the newly graded tiles wait for their patch's list.
+    - **Evidence.** Each rule removed its own frames: T60 the road-shaped corridors (43 of 104
+      frames on the dump's first stroke, 0 after), T61 (1) (a) the seam cracks (24 frames on
+      `kuopio_04` attempt 9, 0 after), T61 (2) the undo frames (6 strokes, 406-8,188 sampled
+      pixels, 0 after), T62 (a) the junction frames (17 on `kuopio_03` attempt 8, 0, but
+      z-fighting). What is left on the final tip is listed in `ROAD-68-H`
+      [round 6](roads.md#round-6-the-users-t64-change-t65-the-runs-on-the-final-tip-road-68-h-2026-10-29):
+      the junction frames and the fast click's crack.
+    - **Options.** (1) Remove the lag (`TERRAIN-14`: a cheaper bake first; small poses only, so
+      a junction or a long stroke still lags). (2) The terrain's cut-out follows the road
+      actually drawn rather than the bake, so a timing mismatch cannot show a hole: a
+      `TERRAIN-07` seam-mask design change. Spike it first; open problems: terrain under bridge
+      decks (the cut must not open under a deck), a hill in front of a road (a screen-space cut
+      must not show the road through the hill), the shadow pass (a cut drawn into the depth
+      buffer is not in the shadow map), and draw order (the road must draw before the terrain
+      tests it). (3) Fold the hand-over rules into one Rust rule: per area the displayed road and
+      terrain come from one road version, with the preview's exception explicit, in
+      `TERRAIN-13`'s renderer move.
+    - **Recommendation** (the user's own): spike (2), then (3). Owned by `TERRAIN-12` (the
+      carried frames) and `TERRAIN-13` (the renderer move); the carried junction frames and the
+      fast click's crack belong here, not accepted.
+    - **A third layer: the vegetation (`ROAD-68-H` round 7, 2026-10-29).** Round 6's clip of
+      `kuopio_03` attempt 8 showed a pine and ground plants standing on the drawn road in the
+      final tip's panel (the undo's frame; the converged commit's last frames), not in the
+      no-holds panel. The cause is not the undo hold (T61 (2)) but the vegetation, which changes
+      at its own time, older than `ROAD-68` (`vegetation.gd`'s queue is unchanged since
+      2026-10-17):
+      - Rust's placement is current from the edit: the commit's or undo's
+        `publish_network_surface` installs the roadbed, updates the terrain query index and bumps
+        the terrain payload generations, and `get_decorative_tree_patch` re-evaluates the
+        clearance on every fetch.
+      - The renderer's staleness sweep (`get_land_cover_epoch`, `get_surface_commit_revision`,
+        `_is_patch_stale`) sees a commit the next frame (it bumps the vegetation generations over
+        its changed chunks, `invalidate_vegetation_over`) and an undo when the undo's terrain
+        patches commit with its chunks (on that stroke the undo bumped no vegetation generation).
+        Staleness is per owning terrain patch, so every vegetation patch of the touched terrain
+        patches queues at once (118-125 on that stroke).
+      - `_queue_patch` puts a patch that already draws behind every patch that draws nothing, and
+        the upload loop stops after the first upload past `UPLOAD_BUDGET_USEC` (2 ms). After that
+        stroke's converged commit the queue took 38 frames to drain, with the stroke's own
+        patches anywhere in it.
+      - Until they upload, a committed road shows the plants it clears, and the ground of an
+        undone road lacks the plants it returns. Where the drawn road and the drawn plants come
+        from different edits, plants stand on the drawn road. That happens after a commit, and
+        in an undo's frames when the vegetation followed the undo before its chunks installed;
+        the round 6 clip's final-tip panel happened to catch both.
+      - **Evidence** (fresh, gamescope, the final library, the probe's new vegetation check
+        `METRUM_GRADED_DRAG_VEGETATION=240`, `$ARTIFACTS/road68/h7/`). Kuopio's 39 strokes at the
+        game's frame pace: 612 of 15,310 frames show plants on a committed drawn road (up to
+        214 plants), 5 of them held frames. With the hold switched off on the same library: 602
+        frames, none held. After the converged click plants stand on the road on 27 strokes
+        (535 frames; with the hold off 524), the last at most 41 frames after the click. Every
+        stroke's vegetation equals Rust's placement at most 42 frames after its click (median
+        17) and stays so; the 240th frame shows none on all 39 in both runs. `kuopio_03` attempt
+        8 with every frame captured: the hold off shows 32 plants on the converged commit's
+        road for 10 frames (round 6's picture); the final tip and round 5's no-holds scripts
+        and library, in their runs, none, their vegetation not having followed the undo before
+        the commit.
+      - **Transient, older than the hold; carried here, no code change** (the coordinator's rule
+        under the user's 21:45 direction, night delegation; reviewed by the user 2026-10-30, who took
+        the final tip's undo hold from the comparison clips). A local fix
+        (the edit's patches first in the queue, or invalidation per vegetation patch rather than
+        per terrain patch) would shorten the lag, not remove it. Removing it needs (3)'s rule:
+        the drawn plants follow the road version drawn. Plants under a preview road belong to
+        the same layer: the vegetation follows only committed roads, so a preview over a forest
+        shows the plants its commit will clear (48-50 under the swing's poses on that stroke).
 
 #### Superseded `ROAD-68` questions
 

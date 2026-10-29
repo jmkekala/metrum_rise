@@ -14,7 +14,8 @@ described here only where they consume road geometry.
 
 ## Status
 
-**`ROAD-68` — in progress on branch `road` (2026-10-23).** The legacy road-surface compiler is
+**`ROAD-68` — in progress on branch `road` (2026-10-23); every gate closed on branch `road68-H`
+(2026-10-29), done when `road` takes it.** The legacy road-surface compiler is
 retired and is being replaced by the [constructive roadbed](#constructive-roadbed-road-68) below.
 Gate status is in the [implementation plan](#implementation-plan-road-68).
 
@@ -916,10 +917,10 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-B` | done | Profiles, spans, meshes, queries and render chunks |
 | `ROAD-68-C` | done | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
-| `ROAD-68-E` | implemented, acceptance open (2026-10-25, part 2 round 7) | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; part 2 the user's decisions on the open questions (order-independent strokes, overlap checks, node moves, pinned knots, the cell store's journal-synced view copy); open: the terrain stage's budget (`TERRAIN-07`) and question 21 (b)'s preview half (paused, question 33) |
+| `ROAD-68-E` | done (implemented 2026-10-25, part 2 round 7; its two open items closed by 2026-10-29) | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; part 2 the user's decisions on the open questions (order-independent strokes, overlap checks, node moves, pinned knots, the cell store's journal-synced view copy). The items left open then are closed: the terrain stage's budget by `TERRAIN-07` (done 2026-10-29; the user's exceptions in `terrain.md`'s budgets and `ROAD-68-H`'s acceptance), and question 21 (b)'s preview half is not needed: by question 33 (c) the preview plans lots only if the commit misses a frame, and the commit fits one since `ROAD-68-G` part 10 (`ROAD-68-H` round 6: at most 13.79 ms at 100k). The row was left at "acceptance open" until the final audit corrected it |
 | `ROAD-68-F` | done (2026-10-25, part 2 round 4) | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and overlap queries: part 1 builds zebra paint, street lights and signs from the pieces for preview and commit alike (question 26 met); part 2 the road families without terrain (roads without sidewalks, mixed profiles, bridge decks, tunnel road pieces, one overlap walk), and round 4 fixed the preview payload's codegen regression. Moved to `TERRAIN-07`: bridge abutments and tunnel portals (`TERRAIN-07-C`, with closing the grounded chains at structures, open question 19), building sites, driveways and paving (`TERRAIN-07-C`), bridge fascias (`TERRAIN-07-B`). Left open: question 17's item on footpaths in a sector without a sidewalk |
 | `ROAD-68-G` | done (2026-10-29, part 10) | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); part 7 (on `terrain07-E`) defers the commit's lots one frame (question 33 (c)), bitwise: first commits 16.0–17.3 ms at 10k–100k (control 25.8–29.7); part 8 starts the routing rebuild after the lot plan and the adoption tick a frame after the commit (question 58): adoption frames 0.3–2.3 ms, first commits 14.9–17.9 ms (three of twelve populated first samples miss), locality products bitwise from 0 to 100k remote sites but about 3 ms dearer at 100k; part 9 (rebased onto gate E) makes the adoption's attachment repair follow the edit (flat to 100k remote sites): first commits 14.4–18.2 ms (three of twelve populated first samples miss), the agent passes and graph copy open ([open questions 21, 59 and 60](#road-68-open-questions)); part 10 rebased onto `TERRAIN-07-G` (the legacy terrain state gone) and queues the commit's kept terrain tiles after its last stage: every populated first commit 9.6–13.8 ms at 10k–100k (control 21.1–27.5), every later sample at most 7.5 ms, products and agent records bitwise; questions 58 (b), 59 (b) and 60 (a) agreed by the user and carried to H with the locality growth and the fiscal contract means ([record](#commit-stages-part-10-the-gate-road-68-g-2026-10-29)) |
-| `ROAD-68-H` | open | Rendered acceptance and final cleanup |
+| `ROAD-68-H` | gate commit on `road68-H` (2026-10-29/30, rounds 6-7); on `road` 2026-10-30 after the user's review (the comparison clips: the final tip's undo hold; question 66 (a)) | Rendered acceptance and final cleanup: every target passes or is carried by the user's decisions (question 65 to `TERRAIN-13` and `RENDER-30`, T63, `PERF-12`, T65); the terrain stage's 3.01 ms catch-up frame accepted as measured by the user ([question 66](#road-68-open-questions) (a)), [acceptance](#round-6-the-users-t64-change-t65-the-runs-on-the-final-tip-road-68-h-2026-10-29) |
 
 **Plan changes (2026-10-24, user).** Pre-D work, before terrain:
 - open questions 14 (D5 footpath junctions) and 15 (drawing-order dependence)
@@ -2090,7 +2091,8 @@ These need a user decision; work that does not depend on them continues.
       labels and rebuild every tile a renumbered piece reaches (the whole trunk), which misses
       the budget for no geometric reason.
     - **Recommendation.** (a) now; (b) when the debug inspector needs edge ids again.
-29. **The commit's terrain at city scale (`ROAD-68-D` part 6) — open, target missed.**
+29. **The commit's terrain at city scale (`ROAD-68-D` part 6) — superseded by `TERRAIN-07`
+    (2026-10-25; the header said "open" until the final audit).**
     - **`TERRAIN-07` (2026-10-25):** superseded: the graded bake follows the dirty tiles (spike: 1.64-2.52
       ms per populated edit at 2k and 30k); the 3.0 ms target moves to `TERRAIN-07`'s budgets.
     - **Evidence.** With the city's refined terrain built and `ROAD-68-E`'s chain rule, a T
@@ -3791,6 +3793,32 @@ These need a user decision; work that does not depend on them continues.
       per-frame visual uploads and transforms on the main thread). `ROAD-68` lands with these
       rows open there; H still runs them on its tip and records them with their attribution,
       carried, not passed.
+66. **The terrain stage's frames over 3.0 ms on H's final tip (`ROAD-68-H` round 6) — (a),
+    decided by the user, 2026-10-30 (about 07:18; recorded by the coordinator 2026-10-30, the user
+    asleep).**
+    - **Evidence** (round 6, fresh, [record](#round-6-the-users-t64-change-t65-the-runs-on-the-final-tip-road-68-h-2026-10-29)).
+      Populated graded drags, C F F C: F 2 of 161 pose frames over 3.0 ms, 10.23 ms (30k:
+      selection 3.94, bake 6.29) and 4.30 ms (100k: bake 3.70), both while the previous commit's
+      lot and routing adoption jobs ran on the pool; and one catch-up frame at 3.01 ms (10k, one
+      3.01 ms bake, no background job). The control: 0 of 168 pose frames over, one catch-up frame
+      at 3.11 ms under the same jobs. The pose's selection p50 is C 0.52-0.54, F 0.52-0.56 ms.
+    - **What the user's decisions cover.** The two pose frames are the class carried to `PERF-12`
+      at 21:20 (frame stages sharing Rayon workers with background commit jobs; "H lands with it
+      open there"). No decision covers the 3.01 ms catch-up frame: T63 (19:55) accepted round 4's
+      3.84 ms frame, one heavy one-tile bake, as measured, not the class.
+    - **Options.** (a) Accept the catch-up frame as measured, as T63 did round 4's frame of the
+      same class (a single tile's bake at the budget; the control shows a 3.11 ms frame in the
+      same session). (b) Carry it to `TERRAIN-14` (the cheaper bake per tile, the user's order of
+      2026-10-29), re-measured there against the unchanged 3.0 ms; `ROAD-68` lands with it open
+      there. (c) Keep `ROAD-68-H` open until `TERRAIN-14` cuts the bake.
+    - **Recommendation.** (a), consistent with T63; (b) if the user prefers not to accept
+      single-frame misses. The coordinator confirms the two pose frames as `PERF-12`'s class.
+      Not decided by the agent; no target relaxed; `road` is not fast-forwarded before the user
+      answers.
+    - **Decision (the user, 2026-10-30): (a).** The catch-up frame is accepted as measured, as T63
+      accepted round 4's; the two pose frames stay `PERF-12`'s class, the 3.0 ms target unchanged.
+      With the comparison clips reviewed (the user took the final tip, the undo hold kept),
+      `road` takes `ROAD-68-H`.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -9503,6 +9531,241 @@ non-compiling rebased WIP commits between `3b1e587b` and `8bfd9ebf` (G10's rebas
 them); Godot's Wayland exit hang; a chunk install held for a graded edit waits as long as that
 edit's batch (a batch that never installs would keep the old road drawn); every accepted and
 carried miss above. **Not the gate commit:** T64 and the 9.67 ms frame wait for the user.
+
+#### Round 6: the user's T64 change, T65, the runs on the final tip (`ROAD-68-H`, 2026-10-29)
+
+Fresh in this round unless marked; artefacts `$ARTIFACTS/road68/h6/`. **The user's decisions
+recorded this round** ([T64](terrain.md#terrain-07-open-questions)): about 21:20, (1) (a) the
+stencil-tested held mesh with (b) as the fallback, (2) (a) the fast click's batch waiting for its
+new tiles' lists, and the 9.67 ms populated drag pose frame not accepted but carried to the new
+`PERF-12` (frame-critical stages share the Rayon workers with background commit jobs; a separate
+owned pool for frame work or yielding background jobs, after `ROAD-68`); about 21:45, before
+either (a) landed, **(1) (b), the junction hold dropped; (2) carried, not built; T61 (2), the undo
+hold, kept**, with a new root-cause question, [T65](terrain.md#terrain-07-open-questions): the
+hand-over fixes T60-T64 are small fixes for one coupling (the preview road updates in its frame,
+the graded terrain lags by T27 (d), and the terrain discards its own baked road footprint), so
+the junction frames and the fast click's crack are carried there, not accepted. Both (a)s had
+been built on the branch (a stencil prototype whose rendered test showed no doubled pixel over a
+coplanar or nearer held quad in either submission order, and the batch wait) and were discarded
+unmerged. The user also asked for comparison clips of the remaining frame classes
+(`h6/clips/`, below).
+
+**T62 (a) removed.** The road tool no longer holds a pose's replaced runs: `road_preview_display.gd`
+`hold_runs` and `_targets`, the road tool's `_graded_displayed`, and what fed them in Rust
+(`GradedPreview::display_complete`, the pose's and catch-up frame's `graded_displayed`, and the
+graded drag test's check of it) are gone; the probe's `runs_held` row and its held captures go
+with them. The preview is round 4's united junction again: the junction preview test's 43
+captures are pixel-identical to round 4's (`h6/captures-final` against `h4/captures-final`; the 13
+fixtures' 52 graded preview tiles bitwise), and the test is round 4's again apart from T61 (2)'s
+recorder stub. The probe gains `METRUM_GRADED_DRAG_CLIP` (every frame saved, for the clips).
+
+**The probe on the final tip** (gamescope, the final library `h6/lib`, the swing with pauses and
+every per-frame check, `METRUM_GRADED_DRAG_CONTINUE`): the user's dump 0 of 416 frames with the
+background; the 100k populated swing 0 of 282; Kuopio's 39 strokes 17 of 6,038 frames on two
+strokes, both carried to T65: `kuopio_03` attempt 8, 16 frames (the junction rebuilt by a pose:
+3 sweep, 6 catch-up and 2 pose frames at 167 sampled pixels while the pose's selection has not
+displayed, and the fast click's commit and wait frames at 22, the preview held through the
+commit's hand-over over the same gap; round 4's mutation count was 17) and `kuopio_06` attempt
+17, 1 frame (the fast click's batch frame, the 4-pixel crack, as in rounds 4 and 5). **The undo
+frames 0** (T61 (2); 27 frames drew with chunks held); the renderer's invariant, the patch holes
+and the no-road check 0 in every frame. The 14 fast clicks without a batch frame are T62's
+accepted lag (the probe's own expectation still reports them).
+
+**The comparison clips** (`h6/clips/`, the user's request of 21:35, revised at 21:45; gamescope,
+every frame, isolated profiles): the Kuopio junction stroke (`kuopio_03` attempt 8), an undo
+(`kuopio_01` attempt 1) and the fast click (`kuopio_06` attempt 17), each with (1) no holds (round
+5's scripts with both holds off in the frozen scripts, the round 5 library) beside (2) the final
+tip, at real speed and then at about 8 fps; `h6/clips/README.txt` says what each shows.
+
+**Timing session** (22:22-22:29, `h6/session/`, `timing-queue/h6.req`; C = round 5's final Rust
+`h5/fin-release-test-bin`, F = this round's `h6/fin-release-test-bin`, whose only Rust change is
+T62 (a)'s feed removed; F's cities prepared first; stages, breakdown, drags and locality C F F C;
+every breakdown city `loaded`):
+- Preview stages, graded stage p50 C 1.75-1.84 / 1.56-1.61, F 1.79-1.85 / 1.53-1.59 ms
+  (`sloped_t` / `sloped_branch`); total p50 C 2.81-2.94 / 2.63-2.69, F 2.85-2.94 / 2.56-2.72 ms.
+  One F line was interleaved with a log line and read by hand.
+- Commit, click → acknowledged, every sample 0-100k: C at most 14.05 ms, F at most 13.79 ms; the
+  100k first samples C 10.53 / 14.05, F 13.79 / 13.34 ms. `COMMIT_PRODUCTS` identical in all four
+  runs; the locality products identical in all four runs.
+- Populated graded drags: F run 2 0 of 77 pose frames over 3.0 ms, one catch-up frame at 3.01 ms
+  (10k, a 3.01 ms bake, no background job); F run 3 2 of 84 pose frames over: 10.23 ms (30k,
+  sample 0, pose 5: selection 3.94 ms, bake 6.29 ms) and 4.30 ms (100k, sample 2, pose 2: bake
+  3.70 ms), both while the previous commit's lot adoption and routing adoption jobs ran on the
+  pool; C run 1 0 of 84 pose frames over, one catch-up frame at 3.11 ms under the same jobs; C run
+  4 0. The pose's selection p50 C 0.52-0.54, F 0.52-0.56 ms. One of F run 2's rows printed a
+  malformed line (interleaved output) and is not counted. **A miss on the final tip for the
+  user**, not accepted: the frame class the user carried to `PERF-12` at 21:20 (pool contention
+  with background adoption jobs) together with heavy one-tile bakes (T63's class, `TERRAIN-14`);
+  the change from round 5 removes one boolean from the pose's dictionary and cannot reach either
+  stage, and the control showed the same class in a catch-up frame. The catch-up frame was later
+  accepted as measured by the user ([question 66](#road-68-open-questions) (a), 2026-10-30).
+
+**The display batch** (22:29-22:47, the final library `h6/lib`, `h6/display-ready`; the Method
+without the FPS cap, DP-2 3840x2160 at 120 Hz before and after, each step holding `.run.lock` and
+the exclusive timing lock, through `display-awake.sh`; carried by question 65 (a) with (d), not
+passed): paused rows N 87.0 % (3,423 of 3,934 sampled poses exact within 16.7 ms; the two N runs
+86.2 % and 87.8 %), W 90.1 % (3,565 of 3,958); stationary p95 up to 24.92 ms (max 38.20), stop →
+exact 9.03-23.47 ms; populated 100k in the steady state: x11 A 46.4 % (543 of 1,169), P 82.5 % (649
+of 787), Wayland A 43.9 % (508 of 1,156), P 85.2 % (674 of 791); 0 tangent warnings; the profile
+(N W) ran (the Wayland step ended by the watchdog after its metrics, Godot's Wayland exit hang).
+**Round 4's control row in the same batch** (6c174e0d's scripts, round 4's library `h4/lib`, one
+paused Xwayland run): N 88.6 % (1,742 of 1,966). Round 5's 82.9 % against round 4's 87.6 % is so
+attributed to the junction hold (its held runs and its per-frame GDScript, both removed this round,
+not separable now): without it the final tip's N runs are 86.2 % and 87.8 %, round 4's code 88.6 %
+beside them, a gap within the final tip's own run-to-run spread (1.6 points).
+
+**Acceptance against every target** (the final tip; fresh in this round unless marked):
+
+| Target | Result | Status |
+| --- | --- | --- |
+| Moving, simulation paused (every sampled pose exact within 16.7 ms) | N 87.0 % (3,423 of 3,934), W 90.1 % (3,565 of 3,958); round 4's code N 88.6 % in the same batch | Carried whole to `TERRAIN-13` (the user: 17:30 the GDScript share, 19:15 question 65 (a) the rest) |
+| Moving, simulation active (at least 99 %, misses attributed) | 100k, steady state: x11 A 46.4 % (543 of 1,169), P 82.5 % (649 of 787); Wayland A 43.9 % (508 of 1,156), P 85.2 % (674 of 791) | Carried to `TERRAIN-13` and `RENDER-30` (question 65 (a) with (d), 19:15) |
+| Stationary (p99 and stop → exact under 16.7 ms) | p95 up to 24.92 ms (max 38.20), stop → exact 9.03-23.47 ms | Carried whole to `TERRAIN-13` (question 65 (a), 19:15) |
+| Commit (click → acknowledged under 16.7 ms) | every sample 0-100k, F at most 13.79 ms (C 14.05) | Pass |
+| Locality (products bitwise, flat) | the locality products identical in all four runs; topology flat (`ROAD-72`) | Accepted as measured by the user (round 2); products pass |
+| The terrain stage's 3.0 ms (pose and catch-up frames) | populated drags F 2 of 161 pose frames over (10.23 ms at 30k: selection 3.94, bake 6.29; 4.30 ms at 100k: bake 3.70), both under the previous commit's lot and routing adoption jobs, and 1 catch-up frame at 3.01 ms; the control 0 of 168 pose frames, 1 catch-up frame at 3.11 ms under the same jobs. Round 4's 3.84 ms frame accepted as measured (T63, 19:55) | Miss on the final tip for the user, attributed to the class carried to `PERF-12` (the user, 21:20: background jobs delaying a frame's stage) with heavy one-tile bakes (`TERRAIN-14`); the pose frames not accepted by the agent; the catch-up frame accepted as measured by the user ([question 66](#road-68-open-questions) (a), 2026-10-30) |
+| Bitwise preview = commit = undo = load | `COMMIT_PRODUCTS` identical in all four runs; the debug suite passes; the 43 junction captures and 52 graded preview tiles bitwise against round 4 | Pass |
+| No frame shows a hole or stale terrain while a preview moves (`TERRAIN-12`) | dump 0 of 416, 100k swing 0 of 282, the undo frames 0; Kuopio 17 of 6,038 frames on two strokes: 16 junction frames (`kuopio_03` attempt 8) and the fast click's 4-pixel crack (`kuopio_06` attempt 17); the renderer's invariant and the no-road check 0 | `TERRAIN-12` done for the hole classes fixed; the junction frames and the crack carried to [T65](terrain.md#terrain-07-open-questions) (the user, 21:45), not accepted. Round 7 (fresh, the same frames): plants on a committed road up to 41 frames after its click, the vegetation's own lag, not the undo hold; carried to T65 (the coordinator's rule; the user took the final tip's undo hold from the comparison clips, 2026-10-30) |
+
+**Carried** (each with its decision): carried items 1 (accepted, round 3) and 2-15 as rounds 1-3
+judged them; the paused and stationary rows whole to `TERRAIN-13`, the active row to
+`TERRAIN-13` and `RENDER-30` (question 65 (a) with (d)); round 4's 3.84 ms terrain stage frame
+accepted as measured (T63); the 9.67 ms frame class to `PERF-12` (the user, 21:20); the junction
+frames and the fast click's crack to T65 (the user, 21:45), owned by `TERRAIN-12` and
+`TERRAIN-13`.
+
+**Gate checks** (fresh, on the final code): `cargo clippy --all-targets` 59 warnings, the
+baseline's set exactly (diff 0); `cargo doc` 0 missing docs; `./run.sh --test` with `DISPLAY` and
+`WAYLAND_DISPLAY` unset (22:47-23:07): exit 0, the debug library suite 1,846 passed, 0 failed,
+177 ignored, `growth_scenario` 4 passed, every Godot suite passes (23, the rendered ones in
+gamescope's headless backend), nothing skipped, no `SCRIPT ERROR`. **Line counts** (production,
+`git diff --numstat` against round 5's tip): `roadbed/` unchanged (9,267), `terrain/graded/`
+unchanged; Rust production -13 (`graded_stage.rs` -7, `preview.rs` -6 net), its test -6;
+GDScript -30 (`road_preview_display.gd` -19 net, `road_tool.gd` -7, the probe -4 net with the clip
+capture);
+the junction test -14. **Merge risks:** Linux and the RX 7900 XTX only, macOS with `TERRAIN-10`
+open (the graded patches draw nothing there; unvalidated); the non-compiling rebased WIP commits
+between `3b1e587b` and `8bfd9ebf` (G10's rebase; bisect skips them); Godot's Wayland exit hang; a
+chunk install held for a graded edit waits as long as that edit's batch (a batch that never
+installs would keep the old road drawn); the junction frames and the fast click's crack (T65);
+the drag frames under background jobs (`PERF-12`); every accepted and carried miss above. No
+stencil state ships (the prototype was discarded), so no platform risk from it.
+
+#### Round 7: plants on the road after the undo, the vegetation's own lag (`ROAD-68-H`, 2026-10-29)
+
+Fresh in this round unless marked; artefacts `$ARTIFACTS/road68/h7/`; the final library is round
+6's (`h6/lib`, no Rust change since). **The finding** (the coordinator, from round 6's clip
+`k03a8`): the final-tip panel draws a tall pine and small plants on the road where the no-holds
+panel draws none, in the undo's frame and in the converged commit's last frames.
+
+**The check.** The drag probe's `METRUM_GRADED_DRAG_VEGETATION=<n>` (check-only, off by default)
+adds a vegetation row to every recorded frame over the stroke's reach:
+- the plants drawn on the drawn road: a drawn vegetation instance whose trunk stands inside a
+  visible road chunk's triangles, held chunks included, the preview's overlays counted apart;
+- the drawn plants against Rust's placement for the current state (`get_decorative_tree_patch`
+  as the upload asks it): `extra` drawn and not placed, `missing` placed and not drawn;
+- the stale and queued patches and the vegetation's upload queue.
+
+After the converged click it records n more frames, and the last must equal Rust's placement with
+no plant on the road, so a stroke whose vegetation never catches up fails. The per-frame counts
+catch what the clip showed: with the undo hold switched off they count 32 plants on the converged
+commit's road for 10 frames.
+
+**Cause: the vegetation's own lag, not the hold** ([T65](terrain.md#terrain-07-open-questions),
+the third layer). Rust's placement is current from the edit (`publish_network_surface` installs
+the roadbed; a commit bumps the vegetation generations, `invalidate_vegetation_over`), and the
+renderer's staleness sweep sees a commit the next frame, an undo when its terrain patches commit
+with its chunks. But every vegetation patch of the touched
+terrain patches queues at once (118-125 on `kuopio_03` attempt 8), a patch that already draws
+behind every one that draws nothing (`vegetation.gd` `_queue_patch`, unchanged since 2026-10-17),
+and the upload loop stops past 2 ms (`UPLOAD_BUDGET_USEC`): the queue took 38 frames to drain after
+that stroke's converged commit, the stroke's own patches anywhere in it. The hold only decides
+which road draws in its own frames.
+
+| `kuopio_03` attempt 8, every frame captured | Frames with plants on the committed road | Converged after the converged click |
+| --- | --- | --- |
+| Final tip (the undo hold) | 1 (the fast click's wait, 50 plants) | 17 frames |
+| Final tip, the hold switched off (`h7/mut`) | 13 (the converged commit's road 10 frames, 32 plants) | 20 frames |
+| Round 6's no-holds variant (round 5's scripts and library) | 2 (the fast click's wait) | 19 frames |
+
+Which variant shows the plants on the converged road depends on whether its vegetation followed
+the undo before the commit (the hold-off run did, as round 6's final-tip run had), not on the hold.
+**Kuopio's 39 strokes** (the game's frame pace, no capture; the final tip / the hold switched off):
+
+| | Final tip | Hold off |
+| --- | --- | --- |
+| Frames with plants on a committed drawn road | 612 of 15,310 (5 held) | 602 of 15,310 |
+| After the converged click: strokes, frames, the last from the click | 27, 535, at most 41 | 27, 524, at most 41 |
+| The most plants on the road in one frame | 214 | 214 |
+| Vegetation equal to Rust's placement after the click | at most 42 frames (median 17), all 39 | at most 42 (median 17), all 39 |
+| The 240th frame after the click | none on the road, nothing extra or missing, all 39 | the same |
+
+**Decision** (the coordinator's rule, the user's 21:45 direction, night delegation; for the user's
+review): not caused by the hold and transient, so recorded under T65 with these counts; no code
+change, the undo hold stays (T61 (2)). **Reviewed by the user, 2026-10-30:** from the comparison
+clips they took the final tip (the right-hand panel, the undo hold), so the hold stays. Plants under a preview road are the same layer (the
+vegetation follows only committed roads; 48-50 plants under the swing's poses on that stroke).
+
+**The probe on the final tip** (gamescope, the final library, the swing with pauses and every
+per-frame check, `METRUM_GRADED_DRAG_CONTINUE`; the vegetation check off): the user's dump 0 of
+416 frames with the background, the 100k populated swing 0 of 282, Kuopio's 39 strokes 17 of
+6,038, round 6's two classes carried to T65: `kuopio_03` attempt 8, 16 junction frames (3 sweep,
+9 catch-up and 2 pose frames at 167 sampled pixels; the fast click's commit and wait frames at
+22); `kuopio_06` attempt 17, the fast click's 4-pixel crack. The undo frames 0 (25 frames drew
+with chunks held); the renderer's invariant, the patch holes and the no-road check 0 in every
+frame; the 14 fast clicks without a batch frame are T62's accepted lag, as before.
+
+**The junction captures** (gamescope, the final library): the junction preview test's 43 captures
+pixel-identical to round 4's (`h4/captures-final`), its 13 fixtures' 52 graded preview tiles
+bitwise; the test passes.
+
+**The clips, regenerated** (`h7/clips/`, `README.txt` says what each shows): `k01a1` and `k03a8`
+with their zoom, round 6's no-holds variant (round 5's scripts and library) beside the final tip,
+every frame of the same probe runs as the table above, the first 60 frames after the converged
+click added; and `k03a8-veg-zoom`, the final tip with the hold switched off beside the final tip,
+the run that shows round 6's plants on the converged road (frames 92-101).
+
+**Gate checks** (fresh): no production code changed; the probe's GDScript is compiled with the
+main scene, so `./run.sh --test` ran with `DISPLAY` and `WAYLAND_DISPLAY` unset (00:15-00:32): exit
+0, the debug library suite 1,846 passed, 0 failed, 177 ignored, `growth_scenario` 4 passed, every
+Godot suite passes (the same set as round 6's run), nothing skipped, no `SCRIPT ERROR`. No Rust changed,
+so Clippy, `cargo doc` and a timing session were not run (round 6's results stand for the same
+Rust). **Line counts**: `roadbed/` and `terrain/graded/` unchanged; the probe +187 net (the
+vegetation check); production code 0.
+
+#### The final audit: the economy contract on the gate tip (`ROAD-68-H`, 2026-10-30)
+
+Round 1's contract ran on round 1's build; rounds 3-6 changed Rust since, so the coordinator
+re-ran it on the gate tip's release binary (the clean tree's build, the same artefact as round 6's
+`$TEST_BINARY`) against round 1's control E (`road` `a0cfe039` with `ROAD-68-G` part 10's
+harness), on the same cities: E F F E, `tools/perf_contract.py`, eight workers, P-cores,
+00:41-00:46, the machine idle.
+
+| Hour mean | E1 | F | F | E2 |
+| --- | --- | --- | --- | --- |
+| baseline 10k | 0.850 ms | 0.855 ms | 0.822 ms | 0.872 ms |
+| baseline 30k | 4.250 ms | 4.138 ms | 4.322 ms | 4.321 ms |
+| fiscal 10k | 6.091 ms | 6.140 ms | 6.052 ms | 6.083 ms |
+| fiscal 30k | 26.829 ms | 26.040 ms | 26.456 ms | 25.727 ms |
+| runner time | 71.7 s | 76.5 s | 76.3 s | 71.2 s |
+
+Work counts identical in all four runs, households 5,311 and 15,180, no time limit fails, the
+same seven work-count limits fail in E and F (question 20). Every F hour mean lies inside E's
+spread, round 1's fiscal rise included (item 15: layout, by round 1's profile).
+
+**The runner time** is new: every test's snapshot load is slower in F (30k 4.94-4.96 s against
+E's 4.54-4.58, 10k 1.85 against 1.67-1.69), where round 1's F loaded as E did (4.54 s). The tick
+is not affected. A profile of the 30k load (locating, not timing; round 1's F `3e662826` against
+the gate tip) puts the whole difference in the save's reservation check
+(`validate_reservations` -> `ZoningSystem::cells_overlap_road_points_world` ->
+`FrameGeometry::rectangle_corners`, 6,424 -> 7,297 of 11,839 / 12,628 samples), whose source
+(zoning, save, the roadbed's mesh, query and geometry) is unchanged since round 1; the gate tip
+executes 2.6 % fewer instructions (69.24 G -> 67.43 G) in 7.9 % more cycles (25.15 G -> 27.14
+G), with `rectangle_corners` now inlined into its caller. Identical work by the source and the
+counts, so by [question 36](#road-68-open-questions)'s rule it is layout, recorded, not relaxed.
+`ROAD-68`'s acceptance has no load-time target; reported for the user, not accepted by the
+agent. The check is 55 % of a 30k load, so its hot loop is the place to look when load time is
+next measured.
 
 ## Measurement and acceptance
 
