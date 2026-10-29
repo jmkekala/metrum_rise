@@ -3224,18 +3224,12 @@ Terminology:
 
 ### Purpose and status
 
-**Specification adopted by the user (2026-10-25); of its gates `TERRAIN-07-B` (road skirts and
-bridge fascias) and `TERRAIN-07-A` (the grading core and queries, roads only, beside the legacy
-path in `simulation/terrain/graded/`, read by no consumer yet) are done; `TERRAIN-07-C` (round 1:
-sites, pads, paving and conflict walls; round 2: two exact levers, free structure ends capped and
-structure-only node pieces off the terrain; round 3: wall runs at structure mouths, so bridges
-and tunnels are built from roads in play, and the terrain's abutment and headwall faces; round
-4: the roadbed's abutment face; round 5: the portal opening over a tunnel's bore,
-[T22](#terrain-07-open-questions) 5) is done, with the populated full-edit budget miss
-carried to `TERRAIN-07-E`'s frame paths under T20 (a) ([T21](#terrain-07-open-questions), for
-review).**
-`TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
-replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
+**Specification adopted by the user (2026-10-25); every gate, `TERRAIN-07-A` to `TERRAIN-07-G`,
+is done (2026-10-29): the graded surface is the game's only terrain surface and the exact cut's
+code is deleted ([gate G record](#terrain-07-g-record); each gate's record is in the
+[implementation plan](#implementation-plan)).**
+`TERRAIN-07` rewrote the terrain surface core on the Rust and Godot sides. It
+replaced the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
 render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
 grading and footprint distance layer per 64 m tile near roads and sites, an exact seam mask in the
 terrain shader and road skirts.
@@ -3326,8 +3320,8 @@ bytes in a conflict could depend on which tiles were baked with it ([T1](#terrai
 (2) Ties between seams used a `1e-12` tolerance and iteration order; this specification uses a
 total order.
 
-The legacy surface sections of this document, the code that still runs on `road` until
-[`TERRAIN-07-G`](#terrain-07-g--acceptance-and-legacy-deletion) deletes it, are archived in
+The legacy surface sections of this document, for the code
+[`TERRAIN-07-G`](#terrain-07-g--acceptance-and-legacy-deletion) deleted, are archived in
 [`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md).
 
 ### Ownership boundaries
@@ -3469,8 +3463,8 @@ ties in at the slope ratio `k = 0.5` (1:2).
 **Material edges.** The sides of each site surface polygon (`SiteSurfaceMaterial`: asphalt or
 concrete), oriented with the surface on the left and keyed like seams (the bits of `a` then `b`,
 unique). The material class at a point is the first surface, in canonical site order and then
-authored order, that contains it (closed: a point on a side is inside), which is the rule
-`SitePavingPartition` applies today. Correction (`TERRAIN-07-C`): canonical site order is the
+authored order, that contains it (closed: a point on a side is inside), which is the rule the
+deleted `SitePavingPartition` applied. Correction (`TERRAIN-07-C`): canonical site order is the
 order of the sites' content (footprint corner count and bits, support height bits, then the
 surfaces' materials and corner bits), not building order: the allocator swap-removes buildings,
 so a removal far away would renumber two overlapping sites and change a tile it never touched
@@ -4391,8 +4385,8 @@ km.
   dirty tiles from them, and Godot rebakes the ones it holds and installs them together. Site
   publications, terrain brushes and world resets are journalled likewise.
 - **Undo.** The roadbed's undo swaps its pieces back (`ROAD-68-E`). The undo record keeps the
-  tiles the commit replaced, as the exact cut's record keeps the refined terrain entries it
-  replaced (`SimulationSnapshot::refined_terrain`), and undo swaps them back: no rebake
+  tiles the commit replaced, as the exact cut's record kept the refined terrain entries it
+  replaced (the deleted `SimulationSnapshot::refined_terrain`), and undo swaps them back: no rebake
   ([T20](#terrain-07-open-questions) (a), which takes [T9](#terrain-07-open-questions) (b));
   redo swaps likewise. A kept tile is bitwise the rebake of the restored inputs (invariant 9);
   `TERRAIN-07-E` tests that equality, and an input changed meanwhile outside the undo stack
@@ -4533,9 +4527,9 @@ the road, one site chunk lookup and the seams near the point
 | `raycast_base(origin, dir)` | the authored base | `intersect_terrain_internal` | terrain brushes |
 
 Godot's `get_world_surface_height` and `intersect_world_surface` answer from `surface_height_at` and
-`raycast_surface` since `TERRAIN-07-D` round 2 (`SimCore::graded_surface_height` and
-`intersect_graded_surface`, which ready the site index as the old ray query did); the Rust
-consumers of `get_world_surface_height_internal` and `_near` move in `TERRAIN-07-F`.
+`raycast_surface` since `TERRAIN-07-D` round 2; since `TERRAIN-07-F` they go through
+`get_world_surface_height_internal` and `intersect_world_surface_internal`, which read the graded
+surface for every Rust consumer too, after the Godot entry points ready the site index.
 
 `Graded` means `delta != 0` outside footprints. Consumer caches keep keying on the existing
 per-patch terrain payload generations, which the dirty tile selection bumps for the patches
@@ -11420,9 +11414,9 @@ diagnostic decoding overhead; it does **not** compare with the old production re
 incorrectly returned zero. Three warmups precede 21 samples, with 128 / 16 / 1 repetitions
 respectively; setup is excluded. These timings do not cover full diagnostic formatting or frames.
 
-Terrain, including refined and road-preview patches, exports a single native `height_bytes` buffer
-(`AUDIT-01-G8`). The retired parallel `height_data` export and frontend fallback are removed;
-failed refinement payloads still omit drawable heights intentionally. Terrain and water share
+Terrain exports a single native `height_bytes` buffer per patch (`AUDIT-01-G8`; the refined and
+road-preview patches it also covered were deleted by `TERRAIN-07-G`). The retired parallel
+`height_data` export and frontend fallback are removed. Terrain and water share
 `render_debug.gd` for count/min/max/sum with the same 0.001 visibility threshold and summation
 order. This is stateless, explicitly requested diagnostic work, not simulation state.
 
@@ -11432,7 +11426,8 @@ decode the same byte payload and produce equal statistics; eliminating the redun
 conversion is included. Setup is excluded; three warmups precede 21 measured samples.
 
 Five alternating native bridge process pairs on eight physical P cores measure completed
-asynchronous payload requests for blank nonzero terrain, with regular and refined paths:
+asynchronous payload requests for blank nonzero terrain, with regular and refined paths
+(historical: `TERRAIN-07-G` deleted the refined path):
 
 | Authored patch span | Regular before → after (ms) | Refined before → after (ms) | Removed duplicate height bytes per refined payload |
 | --- | ---: | ---: | ---: |
@@ -12343,19 +12338,16 @@ Required direction:
 
 Current repository state:
 
-- road edits retain bounded local graph deltas; road undo restores the affected pre-edit compiled
-  surface records, removes post-edit owners, and rebuilds old-plus-restored surface, earthwork, and
-  query chunks without cold-compiling an unchanged junction; the immutable previous refined
-  generation stays reusable, while attached zoning removal uses an index-stable local parcel
-  journal rather than cloning the zoning system
-- accepted road placement and failed adoption retain an exact touched-storage-chunk visual
-  checkpoint, so undo/rollback restores prior visual overrides as well as graph and split references;
-  the remaining dense authoring-undo limitation below is separate from `RoadEditPlan`
-- road bulldoze and undo queue their graph/surface/terrain work on the simulation thread; the
-  Godot input path never performs the road-surface, road-mesh, or refined-CDT rebuild synchronously
+- road edits retain bounded local graph deltas; road undo restores the edit's roadbed pieces and
+  the graded tiles its record keeps ([`roads.md`](roads.md#preview-commit-undo-and-load),
+  [preview, commit, undo and load](#preview-commit-undo-and-load)) without rebuilding an unchanged
+  junction, while attached zoning removal uses an index-stable local parcel journal rather than
+  cloning the zoning system
+- road bulldoze and undo queue their graph, roadbed and terrain work on the simulation thread; the
+  Godot input path never rebuilds the roadbed, the road meshes or the graded tiles synchronously
 - building deletion retains an operation-local inverse journal for touched buildings, sites,
   agents, households, and freight records rather than cloning complete runtime systems
-- terrain-authoring and water-authoring undo still capture dense visual terrain or baseline-depth
+- terrain-authoring and water-authoring undo still capture dense source terrain or baseline-depth
   snapshots for compatibility with the pre-sparse mutation path
 
 Required direction:
@@ -12438,10 +12430,10 @@ Current deterministic rules:
   - `Coal`
   - `Erase`
 - terrain brush picking uses `intersect_terrain()` and therefore targets authored source terrain,
-  not the visible engineered surface
+  not the visible graded surface
 - `Raise`, `Lower`, `Level`, `Smooth`, and `Slope` write authoritative source terrain only
-- completing a terrain brush stroke rebuilds touched engineered-ground clients and derived terrain
-  outputs from the updated source terrain
+- completing a terrain brush stroke re-grades the touched graded tiles and rebuilds the derived
+  terrain outputs from the updated source terrain
 - terrain brushes must not directly deform road top surfaces, placed flat pads, or future local
   earthwork meshes
 - selecting `Raise`, `Lower`, `Level`, `Smooth`, or `Slope` opens a terrain brush submenu on the bottom toolbar
@@ -12598,10 +12590,9 @@ Deterministic terrain-render rules:
   - stable in code rather than camera-dependent
 - each terrain render patch owns local GPU resources for that patch only
 - rebuilding or uploading one patch may read only:
-  - the local visual-terrain window for that patch
+  - the patch's base terrain window
   - one fixed border sample ring if needed for interpolation, normals, or shading continuity
-  - exact indexed contributor and grading-influence coverage required by local engineered-ground
-    clients
+  - the patch's graded tiles ([`TERRAIN-07`](#graded-terrain-surface-terrain-07))
 - unchanged patches must keep their existing GPU resources
 - camera motion alone must not rebuild or reupload already resident unchanged patch textures
 - camera motion may change the mesh-detail tier of an already resident patch, but that change must
@@ -12619,12 +12610,11 @@ Deterministic terrain-render rules:
   terrain chunks; the renderer must reflect that locality instead of reintroducing full-world
   uploads
 - asynchronous terrain payload workers may hold the authoritative simulation lock only while
-  validating a request revision and copying bounded patch-local terrain/site inputs; road clipping,
-  road/site grading, CDT input construction, triangulation, and Godot payload conversion must run
-  after that lock is released
+  validating a request revision and copying bounded patch-local terrain/site inputs; grading and
+  Godot payload conversion must run after that lock is released
 - Rayon terrain/water workers must never block or spin waiting for the simulation mutex: an agent
   tick can hold that mutex while waiting for Rayon. Snapshot acquisition uses `try_lock`; contention
-  returns the unchanged request through the existing frame-driven retry protocol. Completed refined
+  returns the unchanged request through the existing frame-driven retry protocol. Completed
   payloads remain queued until nonblocking Godot polling can insert their cache entries with current
   generation checks, before exposing them as ready. Publication is `O(B)` for the completed batch,
   with an `O(1)` busy path; no terrain geometry is rebuilt or discarded merely because the lock is busy
@@ -12887,7 +12877,7 @@ Deterministic rules:
   coverage / contour-style masking before increasing `terrain_cell_m` density
 - these visual passes must never change:
   - source terrain
-  - visual terrain ownership rules
+  - the graded terrain's ownership rules
   - authored water records
   - runtime baseline water depth state
   - save schema

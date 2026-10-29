@@ -16,7 +16,9 @@
 >
 > On 2026-10-28 `TERRAIN-07-G` deleted that code and moved the rest of its contract here: the
 > legacy seam contract left in `earthworks.md` and the road side of the exact cut in `roads.md`,
-> "Footprint and terrain" ([the last section](#moved-at-terrain-07-g-2026-10-28)).
+> "Footprint and terrain" ([that section](#moved-at-terrain-07-g-2026-10-28)). On 2026-10-29
+> `ROAD-68-H` moved the parts of `earthworks.md` that still described that runtime as current
+> ([the last section](#moved-at-road-68-h-2026-10-29)).
 >
 > Mixed sections were split: their parts about water, base patch residency and streaming, and the
 > Godot bridge stayed in `terrain.md`. Each block below names where it came from. Relative link
@@ -825,3 +827,174 @@ The road side is rewritten:
   [T14](../terrain.md#terrain-07-open-questions)). The grounded chains that end at a structure close
   across its mouth with a wall run (open ends above), so the legacy terrain builds those patches
   and the edit commits (`TERRAIN-07-C` round 3, open question 19).
+
+## Moved at `ROAD-68-H` (2026-10-29)
+
+*Moved when `ROAD-68-H` cleaned up after `TERRAIN-07-G`: the parts of `earthworks.md` that still
+described the deleted stitched-CDT runtime as current. The text is unchanged; it describes
+deleted code.*
+
+### From `earthworks.md`: Section 7, "Invalidation Must Stay Chunk-Local", the road click-completion plan
+
+Road click-completion plans retain local structural stamp writes, road/site CDT tiles and joined
+patch buffers. Road-only preview compilation reads terrain and indexed road contributors while
+retaining the solved local geometry. It builds no structural terrain stamps, cutout patches or
+terrain mesh products in the default road-only mode (`ROAD-28`). Optional full preview
+(`ROAD-29`) compiles these same local products off-lock during hover, captures indexed site
+inputs and temporarily substitutes draw meshes. A matching click revalidates and shares that
+immutable terrain plan. Otherwise, after click, a local copy-on-write overlay applies source resets
+and stamp writes in the
+same interleaved sorted-chunk order as commit. Planned bordered textures, CDT boundary/background
+samples, road grading and building-site grading all read that final visual result. Explicit chunk
+coverage preserves reset-to-default samples; untouched chunks still read the pinned resident grid.
+Work/storage is bounded by touched storage chunks and stamp samples, not total map size. Commit
+checks exact road/site/source/visual dependencies, coverage, patch snapshots and ownership before
+adopting the entire planned mesh batch. Structural stamps separately require matching source/grid
+dependencies and ordered support triangles. Complete patch/tile/seam buffers retain Arc identity;
+only payload generation metadata changes. A different query margin must select the identical
+road/site contributors. Mismatches roll back, rather than replacing ready geometry through fresh
+tile or patch assembly. Plan-less subsystem callers retain the cold compiler.
+Ordinary grounded roads are CDT-only, not height-stamped. After click, the simulation command
+captures local building-site footprints/support heights and paving regions using the prepared
+allocator index, then compiles grading against planned roads plus unchanged resident owners. Neither capture nor status checking may
+rebuild the city index; unprepared inputs remain provisional/pending. Exact local site comparisons
+detect added/removed footprints and height/ID/material changes. Planned building grading, coverage and final
+quality validation govern full placement readiness, with exact post-topology checks at adoption.
+Hover displays the canonical road/junction scene over unchanged terrain; terrain integration is
+completed before atomic placement using the production exporters/builders. Planned ownership can restore regular terrain where a cutout
+disappears. Ownership is resolved before CDT assembly using the same cached per-loop grading
+calculation as live patches, combining retained owners with planned replacements. Superseded
+owners contribute only to the dirty envelope, not final ownership. Padded query hits cannot claim
+ordinary patches; missing clipping inputs cannot release genuinely owned patches. Captured sites
+use the live footprint-overlap rule and grading margin. Patch clip queries then use the resulting
+production margin. Work remains bounded to affected patches and indexed local owners: O(local
+query/ordering work + unique local loops × affected patches + uncached grading samples), with
+cached grading evaluated once per loop and patch compilation parallelized through Rayon.
+Structural ownership/clip discovery now consumes the final ordered resets/writes before CDT
+assembly. Resident per-loop caches depend on source and visual-only revisions; changed overlays
+use a local cache without replacing live entries. Unchanged overlays retain resident cache reuse.
+Site dependencies are captured using each patch's final clip-query margin, not a fixed margin.
+Visual-only changes stale the road candidate. Preview display has no terrain-residency requirement
+and leaves all terrain resources, samples, payload caches and acknowledgments unchanged during
+motion, idle and cancellation. Occasional clipping/z-fighting and exposed old cutouts are accepted
+until placement. Road splits/attachment repair preserve authored site pose and support height;
+the click-captured site set is checked again after topology adoption. Complete commit plans publish
+their existing terrain buffers directly after road, visual-sample, coverage and ownership checks,
+without a second CDT assembly. Failure restores exact local visual samples as well as graph/split
+references. Road-preview readiness and complete placement readiness are separate; see `ROAD-28`
+and the adoption contract in `roads.md`.
+
+The local compiler frontier includes every edge dirtied by final profile solving and every affected
+node, not only the inserted stroke. This same frontier drives preview products and commit's old/new
+earthwork coverage. Grading guides sample a common terrain field; retained road seams own their
+contact heights. Shared tile sides use the uncut local grading halo and keep canonical boundary
+samples. Out-of-core samples, false beyond-endpoint constraint intersections and independently
+heighted guide slivers are rejected or corrected at input construction, never concealed by dropping
+terrain faces. A nonzero omitted-face count prevents readiness and publication. Contributor/window
+validation authorizes buffer composition only; final acceptance also requires present, valid render
+buffers for every clipped patch. Cold compilation, cache insertion and planned adoption share that
+gate; an ordinary loop-free patch does not require a clipped mesh.
+
+### From `earthworks.md`: Current Runtime, section 3, "Terrain Density Is A Blend-Quality Input, Not The Seam Carrier", opening paragraph
+
+The current runtime no longer relies on the visual terrain heightfield to carry the ordinary
+grounded-road seam. Road-touched terrain patches are stitched in Rust, and terrain density now
+affects far-field blend quality and patch cost rather than correctness under the road footprint.
+
+### From `earthworks.md`: Current Runtime, section 5, "Current Terrain Runtime Is A Compatible Base, Not The Final Visual Carrier"
+
+### 5. Current Terrain Runtime Is A Compatible Base, Not The Final Visual Carrier
+
+The current terrain runtime is sufficient for the road-first stitched terrain cut:
+
+- it keeps separate authoritative `source terrain` and derived `visual terrain`
+- it supports chunk-local reset and restamp of touched visual regions
+- it accepts road-touched patch mesh ownership from Rust for ordinary grounded roads and still
+  accepts structural earthwork inputs for explicit bridge / tunnel / retaining cases
+
+But it is not sufficient as the final near-footprint visual carrier because the current visual
+terrain remains a single-height field.
+
+Current deterministic conclusion:
+
+- a terrain-runtime rewrite is allowed if needed, but it is not by itself an earthworks solution
+- do not expect the current visual terrain heightfield, even at a denser cell size, to represent
+  all near-footprint cut / fill detail by itself
+- ordinary grounded-road near-footprint ownership is now the client-owned top surface plus stitched
+  terrain patch topology; structural cases may still use client-owned local earthwork geometry
+
+### From `earthworks.md`: "Roads-First Rewrite Status", the stitched-CDT status and hardcut rules
+
+The roads-first rewrite is live for ordinary grounded-road terrain ownership. The piece / profile
+carrier owns the road footprint, and Rust now generates the road-touched terrain patch topology that
+cuts the terrain to the outer sidewalk / shoulder edge.
+
+For the roads-first rewrite, the following are deterministic and implemented:
+
+- the current corridor-sheet prototype is retired as the target solution
+- the logical graph and the visible road carrier are split: graph owns connectivity, while the
+  visible road system owns deterministic geometry pieces
+- the minimum required visual piece set is `Span`, `Bend`, `Terminal`, and `JunctionN`
+- roads compile explicit top-surface ownership and exact footprint constraints near the terrain seam
+- tie-in boundaries are specified to use dense local sampling at a maximum `2 m` longitudinal
+  spacing
+- committed clients stay fixed under later terrain-authoring edits
+- local road ownership uses chunk-local rebuild boundaries and one explicit visible-world query
+  order
+- road-touched terrain patches are currently generated in Rust as baked terrain `ArrayMesh`
+  payloads whose boundary vertices reuse the road / sidewalk seam height
+- ordinary grounded-road tie-ins now include grade-limited guide rings generated from final
+  road-owned footprint loops inside `RoadSurfaceSystem`; guide rails are constrained only for a
+  single clean convex loop, while concave junction mouths and multi-loop footprints stay sample-only,
+  and ordinary `Standard` / node footprint sources never emit retaining-wall mesh
+- the Spade CDT terrain-patch hardcut in [`roads.md`](../roads.md) is now the live
+  road-touched terrain patch path; the provisional seam-strip / cell-triangle hybrid has been
+  removed rather than polished further
+
+The following are current hardcut implementation rules:
+
+- grounded `Standard` roads send grouped road footprint loops into road-touched terrain patches
+  and those patches return baked mesh vertices / normals / UVs generated by Rust
+- the Godot terrain renderer no longer performs terrain-road polygon clipping; it only uploads the
+  baked mesh or the normal rectangular terrain mesh
+- grounded `Standard` roads do not render an ordinary visible closure strip, seam carpet, or second
+  support mesh; the CDT terrain patch mesh is the seam carrier
+- `Terminal`, `Bend`, and `JunctionN` node pieces must compile final asphalt, curb / shoulder, and
+  sidewalk regions as band-owned surfaces whose mouth seams, material seams, and outer footprint
+  edges survive through `i_overlay` ownership cleanup and local Spade CDT triangulation
+- bend / junction full-roadbed closure carriers are legacy debt, not the target rendered ownership
+  path; explicit curb / shoulder and sidewalk carriers must claim their seams and heights, and
+  remaining non-road residuals must be rejected or debug-counted instead of filled by a generic
+  closure carrier
+- node-piece terrain clips and local earthwork / skirt roots must be extracted from the canonical
+  final band-owned top mesh. If the final owned-region outline introduces boundary vertices, those
+  vertices must be inserted into the canonical node arrangement and rendered top mesh before CDT
+  input is built. A point that is merely covered by an existing top-surface triangle is not enough
+  for export; non-explicit boundary vertices and sampled boundary heights are geometry errors. A
+  node path must not reconstruct a later outer boundary loop that contains vertices outside the
+  canonical rendered node top-surface coverage.
+- road / earthwork seam math shares the road-surface `RoadVec2` / `RoadVec3` representation and
+  explicit quantized keys through the owning Rust stages; Godot vectors remain bridge, upload, and
+  debug payloads rather than authoritative seam identity.
+- visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
+  water meshes receive the same grouped road footprint loops after a network edit and suppress
+  cells that touch the outer-loop-minus-hole road-owned area, so water is no longer allowed to
+  render under grounded road-owned asphalt, shoulder / curb, or sidewalk
+- clipped patch topology is validated against flat, diagonal, sloped, bend, terminal,
+  `JunctionN`, production authored DEM road cases, and a compact baked Kuopio imported-DEM
+  fixture, including steep ordinary tie-ins without wall teeth, raised ridge / valley terminals
+  and bends, steep multiway junctions, convex constrained grading-envelope rails, concave
+  junction-footprint sample-only grading envelopes, edit-order-stable emitted terrain-CDT topology,
+  bridge-midspan, and tunnel-portal structural stamping
+- imported DEM JunctionN clipping now reports and removes road-owned internal chords from the
+  terrain seam constraint set only when both sides of the exact constraint classify as road-owned
+  against the final footprint; exposed seam constraints remain hard CDT constraints with source
+  provenance
+- terrain suppression / masking is not accepted as the live seam solution; road-shaped terrain holes
+  must continue to be produced by terrain mesh topology
+- no current `ROAD-01` blocker remains for real-world DEM validation; any future terrain closure
+  variant beyond the structural retaining-wall path should be tracked as a new explicit earthworks
+  item
+
+That means the building-site target below extends the same clipped-topology ownership model to
+area clients; it is not a substitute for the road-to-terrain boundary that already ships.
