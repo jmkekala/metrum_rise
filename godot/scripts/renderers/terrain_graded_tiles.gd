@@ -2516,6 +2516,61 @@ func partial_sets() -> int:
 				break
 	return partial
 
+## Tiles of drawing sets that draw other than what they show (`TERRAIN-12`): per drawing set of a
+## resident patch, each of its tiles must be exactly one live instance, in the cell mesh of what
+## it shows there now (its base cell, or the graded level of its installed or preview tile,
+## _cell_mesh), whose custom data in the MultiMesh itself is _cell_custom's now, and a graded
+## instance's slot must hold that tile's copy in the page the set's material binds. Returned as
+## {holes: tiles drawn from the wrong mesh, a vacated slot or an unbound page; stitches: tiles
+## with only a stale side code}. For the probe and tests, every frame of a drag; O(drawing sets'
+## tiles).
+func tile_draw_violations() -> Dictionary:
+	var out := {"holes": 0, "stitches": 0}
+	var rendered := DisplayServer.get_name() != "headless"
+	for key: Vector2i in _resident.keys():
+		var cells: Dictionary = patch_cells.get(key, {})
+		if cells.is_empty() or not bool(cells["shown"]) or not _built(cells):
+			continue
+		var patch: Dictionary = _resident[key]
+		var where: Array[Vector2i] = cells["where"]
+		var counts: Array[int] = cells["counts"]
+		var tile_at: Array = cells["tile_at"]
+		var records: Array = cells["custom"]
+		var nodes: Array = cells["nodes"]
+		var instances := 0
+		for index in counts.size():
+			if index < nodes.size():
+				var node: MultiMeshInstance3D = nodes[index]
+				if node.multimesh.visible_instance_count != counts[index] or node.visible != (counts[index] > 0):
+					out["holes"] += 1
+			instances += counts[index]
+		if instances != (cells["tiles"] as Array).size():
+			out["holes"] += 1
+		for tile: Vector2i in cells["tiles"]:
+			var at: Vector2i = where[_cell_place(cells, tile)]
+			var mesh_index := _cell_mesh(tile, key)
+			if at.x != mesh_index or at.y < 0 or at.y >= counts[at.x] or tile_at[at.x][at.y] != tile:
+				out["holes"] += 1
+				continue
+			var custom: Color = records[at.x][at.y]
+			# The MultiMesh itself where a rendering device keeps its data (headless keeps none).
+			if rendered and (nodes[at.x] as MultiMeshInstance3D).multimesh.get_instance_custom_data(at.y) != custom:
+				out["holes"] += 1
+				continue
+			var want := _cell_custom(tile, cells["first"], patch, _resident, key)
+			if mesh_index != CELL_BASE:
+				var entry := _shown_in(tile, key)
+				var level := int(entry["level"])
+				var page_id := _patch_page(key, level)
+				var page: Dictionary = page_store.by_id.get(page_id, {})
+				var holders: Dictionary = page.get("previews" if preview.get(tile, {}) == entry else "tiles", {})
+				if int(cells["pages"][level]) != page_id or not holders.has(tile) or int(custom.g) != int(want.g):
+					out["holes"] += 1
+					continue
+			if custom != want:
+				out["holes" if int(custom.r) != int(want.r) or int(custom.b) & 7 != int(want.b) & 7 else "stitches"] += 1
+	return out
+
 ## Resident patches drawing nothing: their PlaneMesh collapsed with no drawing set of theirs under
 ## it (a hole showing the sky). For tests and the probe; O(resident patches).
 func hole_patches() -> int:

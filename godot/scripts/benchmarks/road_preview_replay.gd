@@ -5,7 +5,11 @@
 ## The populated cases (`docs/roads.md` question 61 (a)) load the saved populated city
 ## (METRUM_GAMEPLAY_BENCHMARK_SAVE_PATH) instead, run its simulation at
 ## METRUM_GAMEPLAY_PREVIEW_SPEED (default 1x) and drag sloped_t's and sloped_branch's pointer
-## paths at the commit breakdown's first edit site; they run only when selected by name.
+## paths at the commit breakdown's first edit site; they run only when selected by name. They
+## measure the steady state (`docs/roads.md` question 64 (c), the user, 2026-10-29): after the
+## load and the camera's move to the site the preview waits until the graded renderer has settled
+## (its wanted tiles resident, no cell set build pending), and the streaming window before it is
+## reported apart (`steady_wait`).
 extends RefCounted
 
 const Metrics := preload("res://scripts/benchmarks/road_benchmark_metrics.gd")
@@ -97,6 +101,11 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	var idle: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
 	if not idle.get("ok", false):
 		return {"ok": false, "error": "fixture settlement", "wait": idle}
+	var steady := {}
+	if populated:
+		steady = await _wait_for_steady_terrain(bench)
+		if not steady.ok:
+			return {"ok": false, "error": "the graded terrain did not settle", "wait": steady}
 	var tool: Node = bench.road_tool
 	var speed := 0.0
 	if populated:
@@ -112,7 +121,8 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	var result := {"case_id": name, "mode": mode, "ok": false,
 		"setup_ms": float(Time.get_ticks_usec() - setup_us) / 1000.0,
 		"stationary": [], "moving": [], "state_before": state, "simulation_speed": speed,
-		"anchor": [scenario.get("centre", Vector2.ZERO).x, scenario.get("centre", Vector2.ZERO).y]}
+		"anchor": [scenario.get("centre", Vector2.ZERO).x, scenario.get("centre", Vector2.ZERO).y],
+		"steady_wait": steady}
 	if populated and float(state.simulation_speed) != speed:
 		return {"ok": false, "error": "simulation speed not applied", "state": state}
 	# The populated cases sample the simulation's published state once a frame (moving phase).
@@ -256,6 +266,31 @@ func _load_populated(bench: Node) -> Dictionary:
 			idle["load_ms"] = bench._elapsed_ms(load_us)
 			return idle
 	return {"ok": false, "error": "populated load did not settle"}
+
+# Question 64 (c): waits, with the simulation paused, until the terrain renderer has settled
+# (terrain.gd is_render_settled: no patch or graded tile work, no patch drawing nothing) and no
+# cell set build is pending, three frames in a row, as the idle-frame matrix waits since
+# `5972bef8`. Returns {ok, ms, frames, frame_ms_max, frames_over_16_7}: the streaming window
+# after the load and the camera's move, reported apart from the steady state.
+func _wait_for_steady_terrain(bench: Node) -> Dictionary:
+	var graded: Variant = bench.terrain.get("graded_tiles")
+	var start_us := Time.get_ticks_usec()
+	var last_us := start_us
+	var out := {"ok": false, "frames": 0, "frame_ms_max": 0.0, "frames_over_16_7": 0}
+	var stable := 0
+	while stable < 3 and bench._elapsed_ms(start_us) < bench.settle_timeout_sec * 1000.0:
+		await bench.get_tree().process_frame
+		var now := Time.get_ticks_usec()
+		var frame_ms := float(now - last_us) / 1000.0
+		last_us = now
+		out.frames += 1
+		out.frame_ms_max = maxf(out.frame_ms_max, frame_ms)
+		out.frames_over_16_7 += 1 if frame_ms > 16.7 else 0
+		var settled: bool = bench.terrain.is_render_settled() and (graded == null or int(graded.cell_builds_pending()) == 0)
+		stable = stable + 1 if settled else 0
+	out.ok = stable >= 3
+	out["ms"] = bench._elapsed_ms(start_us)
+	return out
 
 # sloped_t's and sloped_branch's pointer paths at the commit breakdown's first edit site
 # (`trunk_branch_starts`: 100 m west of the street grid on the west border trunk nearest z = 0),

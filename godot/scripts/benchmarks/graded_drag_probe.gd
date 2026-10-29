@@ -19,6 +19,17 @@
 ## so the tiles around the click take GL0, the dearest to upload), METRUM_GRADED_DRAG_CAPTURE_DIR
 ## (rendered runs only: a PNG of the converged preview before its click and of the settled commit,
 ## for T42's visual check; the capture adds a frame before the click, so a timing run leaves it unset).
+## Every recorded frame is also checked for holes (`TERRAIN-12`): each drawing set's tiles draw what
+## they show (`tile_draw_violations`), and no preview tile shows while the road tool draws no preview
+## road (its bake's footprint, where the terrain discards, would show the sky). Check-only options:
+## METRUM_GRADED_DRAG_SWEEP (degrees: before its drags each stroke is swept, its end swinging that
+## far to each side of the stroke at the stroke's length, a pose a frame, as a player swings a
+## stroke on a slope, then cancelled; with METRUM_GRADED_DRAG_SWEEP_CONVERGE each pose caught up
+## before the next, a swing with pauses), METRUM_GRADED_DRAG_SAVE (a save to load instead of the
+## manifest's world; its strokes from METRUM_GRADED_DRAG_STROKES, `x0,z0,x1,z1;...`) and
+## METRUM_GRADED_DRAG_ATTEMPTS (the strokes' attempt numbers to run) and
+## METRUM_GRADED_DRAG_HOLE_PIXELS (rendered runs: the background drawn magenta, the camera looking
+## down, and every frame's magenta pixels counted: the sky through the ground).
 extends RefCounted
 
 const MANIFEST := "res://../benchmarks/fixtures/kuopio-terrain/placements.json"
@@ -49,6 +60,16 @@ var _last_us := 0
 var _seen := {}
 # Recorded frames with a resident patch drawing nothing.
 var _holes := 0
+# TERRAIN-12's checks: recorded frames with a set's tile drawing other than what it shows, with a
+# preview tile shown and no preview road drawn, and (METRUM_GRADED_DRAG_HOLE_PIXELS) with the
+# background showing through the ground; the sweep's swing (degrees, 0: none).
+var _tile_holes := 0
+var _unroaded := 0
+var _pixel_holes := 0
+var _sweep_deg := 0.0
+var _sweep_converge := false
+var _continue := not OS.get_environment("METRUM_GRADED_DRAG_CONTINUE").is_empty()
+var _hole_pixels := false
 
 func run(bench: Node) -> void:
 	_bench = bench
@@ -70,8 +91,15 @@ func run(bench: Node) -> void:
 	var distance_text := OS.get_environment("METRUM_GRADED_DRAG_DISTANCE")
 	if distance_text.is_valid_float():
 		_distance = float(distance_text)
+	if OS.get_environment("METRUM_GRADED_DRAG_SWEEP").is_valid_float():
+		_sweep_deg = float(OS.get_environment("METRUM_GRADED_DRAG_SWEEP"))
+	_sweep_converge = not OS.get_environment("METRUM_GRADED_DRAG_SWEEP_CONVERGE").is_empty()
 	if bench.mode != "headless":
 		_capture_dir = OS.get_environment("METRUM_GRADED_DRAG_CAPTURE_DIR")
+		_hole_pixels = not OS.get_environment("METRUM_GRADED_DRAG_HOLE_PIXELS").is_empty()
+	var save := OS.get_environment("METRUM_GRADED_DRAG_SAVE")
+	if not save.is_empty():
+		manifest = {"source_world_sha256": FileAccess.get_sha256(save), "cases": [{"case_id": "save", "save": save, "segments": _save_strokes()}]}
 	bench.input_manager.set_process(false)
 	bench.input_manager.set_process_input(false)
 	bench.input_manager.set_process_unhandled_input(false)
@@ -89,7 +117,9 @@ func run(bench: Node) -> void:
 		if not selected.is_empty() and not fixture.case_id in selected:
 			continue
 		bench._stop_scripted_tool()
-		if not bench.input_manager.menu_load_world_definition(world):
+		var loads: bool = (bench.input_manager.menu_load_game_from_path(fixture.save) if fixture.has("save")
+			else bench.input_manager.menu_load_world_definition(world))
+		if not loads:
 			_finish("the source world failed to load")
 			return
 		bench.input_manager.set_simulation_speed(0.0)
@@ -110,14 +140,21 @@ func run(bench: Node) -> void:
 		if int(_report.loads[-1]["holes"]) > 0:
 			_failures.append("%s: %d resident patches draw nothing after the load" % [fixture.case_id, int(_report.loads[-1]["holes"])])
 			push_error("[GRADED_DRAG] " + _failures[-1])
+		if _hole_pixels:
+			_magenta_background()
 		bench.input_manager.current_tool = bench.input_manager.Tool.ROAD
 		bench.input_manager._activate_tool_logic(bench.input_manager.Tool.ROAD, true)
+		var attempts := OS.get_environment("METRUM_GRADED_DRAG_ATTEMPTS").split(",", false)
 		for stroke in fixture.segments:
+			if not attempts.is_empty() and not str(int(stroke.attempt)) in attempts:
+				continue
 			var record := await _stroke(str(fixture.case_id), stroke)
 			_report.strokes.append(record)
 			bench._write_metrics()
 			print("[GRADED_DRAG] %s" % JSON.stringify(_stroke_line(record)))
-			if not record.ok:
+			# A stroke whose commit or edit failed leaves the case's city unknown; one that only
+			# showed holes does not (METRUM_GRADED_DRAG_CONTINUE: go on, to check every stroke).
+			if not record.ok and not (_continue and record.get("committed_both", false)):
 				break
 	_report["summary"] = _summary()
 	print("[GRADED_DRAG_SUMMARY] %s" % JSON.stringify(_report.summary))
@@ -129,11 +166,30 @@ func _stroke(case_id: String, stroke: Dictionary) -> Dictionary:
 	var end := Vector2(float(stroke.end_xz[0]), float(stroke.end_xz[1]))
 	var record := {"case": case_id, "attempt": int(stroke.attempt), "ok": false}
 	_bench.camera.set_focus_padding(1.0)
-	_bench.camera.focus_on(_bench._surface_point(end), _distance)
+	if _hole_pixels:
+		# Looking down on the whole swing, so no frame shows the horizon.
+		var reach := start.distance_to(end) * (1.2 if _sweep_deg > 0.0 else 0.6)
+		_bench.camera.focus_on(_bench._surface_point(start.lerp(end, 0.0 if _sweep_deg > 0.0 else 0.5)), reach)
+		_bench.camera.orbit(Vector2(0.0, 100000.0))
+	else:
+		_bench.camera.focus_on(_bench._surface_point(end), _distance)
 	if not await _settle(record):
 		return record
 	var failures := _failures.size()
 	var before: Dictionary = _graded.get_pool_counters()
+	if _hole_pixels:
+		_begin_frames()
+		_kind = "settled"
+		await _next_frame()
+		_expect(int(_frames[-1].get("magenta", 0)) == 0, record, "the settled view shows no background: %d pixels" % int(_frames[-1].get("magenta", 0)))
+	if _sweep_deg > 0.0:
+		record["sweep"] = await _sweep(record, start, end, stroke)
+		if not await _settle(record):
+			return record
+	if stroke.get("sweep_only", false):
+		_check_frames(record)
+		record.ok = _failures.size() == failures
+		return record
 	record["fast"] = await _drag(record, start, end, stroke, false)
 	if not await _settle(record):
 		return record
@@ -166,11 +222,106 @@ func _stroke(case_id: String, stroke: Dictionary) -> Dictionary:
 	# The preview's page-full lag (T27 (d)) is expected; a pool exhausted is a failure (HEALTH).
 	record["preview_page_waits"] = int(after["preview_page_waits"]) - int(before["preview_page_waits"])
 	_expect(record.fast.committed and record.converged.committed, record, "both clicks commit")
-	_expect(_holes == 0, record, "%d frames drew a resident patch with nothing (a hole)" % _holes)
-	_holes = 0
+	record["committed_both"] = record.fast.committed and record.converged.committed
+	_check_frames(record)
 	_expect(_graded.hole_patches() == 0, record, "after the stroke a resident patch draws nothing")
 	record.ok = _failures.size() == failures
 	return record
+
+# The stroke's per-frame hole counts (patches drawing nothing; TERRAIN-12's tiles, preview tiles
+# without their road, background pixels), each a failure, then reset for the next stroke.
+func _check_frames(record: Dictionary) -> void:
+	_expect(_holes == 0, record, "%d frames drew a resident patch with nothing (a hole)" % _holes)
+	_expect(_tile_holes == 0, record, "%d frames drew a set's tile other than it shows" % _tile_holes)
+	_expect(_unroaded == 0, record, "%d frames showed preview terrain without its preview road" % _unroaded)
+	_expect(_pixel_holes == 0, record, "%d frames showed the background through the ground" % _pixel_holes)
+	record["frame_holes"] = {"patches": _holes, "tiles": _tile_holes, "unroaded": _unroaded, "pixels": _pixel_holes}
+	_holes = 0
+	_tile_holes = 0
+	_unroaded = 0
+	_pixel_holes = 0
+
+# Swings the stroke's end from `_sweep_deg` on one side of the stroke to as far on the other and
+# back, at the stroke's length, a pose a frame (a player swinging a preview over a slope), then
+# cancels it: a moving preview whose earlier poses' tiles lie where its road no longer is.
+func _sweep(record: Dictionary, start: Vector2, end: Vector2, stroke: Dictionary) -> Dictionary:
+	var tool: Node = _bench.road_tool
+	var segment := {"draw_mode": 0, "fwd_lanes": int(stroke.fwd_lanes), "bkw_lanes": int(stroke.bkw_lanes)}
+	var arm := end - start
+	var poses := 4 * maxi(1, int(_sweep_deg / 5.0))
+	var swing := func(pose: int) -> Vector3:
+		# A triangle wave: 0 -> +sweep -> -sweep -> 0 over the poses.
+		var t := float(pose) / poses
+		var phase := 4.0 * t if t < 0.25 else (2.0 - 4.0 * t if t < 0.75 else 4.0 * t - 4.0)
+		return _bench._surface_point(start + arm.rotated(deg_to_rad(_sweep_deg) * phase))
+	_begin_frames()
+	_kind = "sweep"
+	_bench._begin_scripted_road(Vector2.ZERO, segment, _bench._surface_point(start), swing.call(0))
+	for pose in range(1, poses + 1):
+		await _next_frame()
+		if _sweep_converge:
+			# A pause in the swing: the pose's tiles all staged before the next pose moves them.
+			_kind = "catch_up"
+			var catch_up := 0
+			while tool._graded_pending > 0 and catch_up < CATCH_UP_LIMIT:
+				await _next_frame()
+				catch_up += 1
+			_kind = "sweep"
+		tool.set_scripted_pointer(true, swing.call(pose))
+		tool._queue_preview_update()
+	await _next_frame()
+	var invalid := 0
+	for row in _frames:
+		invalid += 0 if bool(row.get("valid", true)) else 1
+	tool.cancel_road()
+	await _next_frame()
+	return {"poses": poses, "invalid_frames": invalid, "frames": _frames}
+
+# The save's strokes: METRUM_GRADED_DRAG_STROKES, `x0,z0,x1,z1` each, `;`-separated, two-lane.
+func _save_strokes() -> Array:
+	var strokes := []
+	for text: String in OS.get_environment("METRUM_GRADED_DRAG_STROKES").split(";", false):
+		var v := text.split_floats(",", false)
+		if v.size() == 4:
+			strokes.append({"attempt": strokes.size(), "start_xz": [v[0], v[1]], "end_xz": [v[2], v[3]],
+				"fwd_lanes": 1, "bkw_lanes": 1, "sweep_only": _sweep_deg > 0.0})
+	return strokes
+
+# The background a plain magenta and the ambient light a plain grey (no sky, fog or reflections),
+# so a pixel of exactly that colour is the background showing through the ground: the camera's own
+# environment, which overrides the world's (the day cycle keeps setting that one's sky).
+func _magenta_background() -> void:
+	var environment := Environment.new()
+	_bench.get_viewport().get_camera_3d().environment = environment
+	environment.background_mode = Environment.BG_COLOR
+	environment.background_color = Color(1.0, 0.0, 1.0)
+	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	environment.ambient_light_color = Color(0.5, 0.5, 0.5)
+	environment.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
+	environment.fog_enabled = false
+	environment.volumetric_fog_enabled = false
+
+# Pixels of the last drawn frame that are the magenta background, every second pixel each way;
+# with a capture directory the first frames showing any are saved as hole_<n>.png.
+var _hole_captures := 0
+var _capture_all := not OS.get_environment("METRUM_GRADED_DRAG_CAPTURE_ALL").is_empty()
+func _magenta_pixels() -> int:
+	var image := _bench.get_viewport().get_texture().get_image()
+	image.convert(Image.FORMAT_RGBA8)
+	var data := image.get_data()
+	var width := image.get_width()
+	var count := 0
+	for y in range(0, image.get_height(), 2):
+		var row := y * width * 4
+		for x in range(0, width, 2):
+			var at := row + x * 4
+			if data[at] >= 250 and data[at + 1] <= 5 and data[at + 2] >= 250:
+				count += 1
+	if (count > 0 or _capture_all) and not _capture_dir.is_empty() and _hole_captures < 12 and _kind != "settled":
+		DirAccess.make_dir_recursive_absolute(_capture_dir)
+		image.save_png(_capture_dir.path_join("hole_%02d_%s_%d.png" % [_hole_captures, _kind, _frames.size()]))
+		_hole_captures += 1
+	return count
 
 # Drags the stroke in POSES poses, a pose a frame; `converge` stages the catch-up frames before
 # the click, else the click follows the last pose's frame at once. Then waits for the commit's
@@ -266,9 +417,25 @@ func _next_frame() -> void:
 		"cell_builds": int(counters["cell_builds"]) - int(_seen["cell_builds"]),
 		# Resident patches drawing nothing (sky through the ground): a failure in any frame.
 		"holes": _graded.hole_patches(),
+		"tile_draw": _graded.tile_draw_violations(),
+		"valid": bool(_bench.road_tool._preview.get("is_valid", false)),
+		"preview_shown": _graded.preview.size(),
 	}
 	if int(row["holes"]) > 0:
 		_holes += 1
+	if int(row["tile_draw"]["holes"]) > 0:
+		_tile_holes += 1
+	# A preview tile discards its bake's road footprint: it shows only beside its road (the
+	# preview's display, or the held one until the commit's chunks install), outside an edit.
+	var tool: Node = _bench.road_tool
+	var road_drawn: bool = tool._preview_display.sequence > 0 or tool._swap_display != null
+	if _kind in ["pose", "catch_up", "sweep"] and int(row["preview_shown"]) > 0 and not road_drawn:
+		_unroaded += 1
+		row["unroaded"] = true
+	if _hole_pixels:
+		row["magenta"] = _magenta_pixels()
+		if int(row["magenta"]) > 0 and _kind != "settled":
+			_pixel_holes += 1
 	if int(counters["preview_frames"]) != int(_seen["preview_frames"]):
 		row["preview_ms"] = float(counters["preview_install_ms_last"])
 		row["preview_tiles"] = int(counters["preview_tiles_last"])

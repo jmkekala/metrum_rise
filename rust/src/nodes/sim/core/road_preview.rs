@@ -332,12 +332,14 @@ impl RoadPreviewContext {
             .is_valid
             .then(|| self.compile_plan_pieces(&plan, &mut times))
             .flatten();
-        if pieces.is_none() {
-            // A pose without pieces supersedes the last pose's unstaged graded tiles.
+        let overlap = pieces.as_ref().and_then(|pieces| pieces.overlap);
+        if pieces.is_none() || overlap.is_some() {
+            // A pose that draws no road (no pieces, or invalid) supersedes the last pose's
+            // unstaged graded tiles and shows no preview terrain (T60 (2)).
             self.graded.supersede();
         }
         // The commit would refuse the overlap; the preview shows it before the click.
-        let validation = match pieces.as_ref().and_then(|pieces| pieces.overlap) {
+        let validation = match overlap {
             Some(overlap) => validation.with_invalid_reason(overlap.reason()),
             None => validation,
         };
@@ -403,12 +405,19 @@ impl RoadPreviewContext {
             .points
             .last()
             .map_or([0.0; 2], |end| [f64::from(end.x), f64::from(end.z)]);
+        // Every owner the delta covers, a failed node's too: the pieces this pose can differ in.
+        let owners = delta.pieces().map(|(id, _)| id).chain(
+            delta
+                .failed_nodes()
+                .map(|(node, _)| crate::simulation::network::roadbed::PieceId::Node(node)),
+        );
         let graded = self.graded.stage_pose(
             &self.view.terrain,
             &self.view.roadbed,
             &roadbed,
             &self.view.terrain_inputs,
             &terrain_changes,
+            owners,
             end,
         );
         times.graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;

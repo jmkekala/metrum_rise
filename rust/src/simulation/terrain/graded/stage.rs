@@ -79,6 +79,17 @@ impl TileStage {
         Self { tiles }
     }
 
+    /// The held tiles `keep` accepts, in order; the payloads are shared. `O(n)`.
+    pub fn filtered(&self, mut keep: impl FnMut(Level, TileKey) -> bool) -> Self {
+        let tiles = self
+            .tiles
+            .iter()
+            .filter(|held| keep(held.level, held.tile))
+            .cloned()
+            .collect();
+        Self { tiles }
+    }
+
     /// Bytes of the held texels and rows: what a stage keeps at rest.
     pub fn payload_bytes(&self) -> usize {
         self.tiles
@@ -233,7 +244,6 @@ impl StageScratch {
     /// level some candidate may take, over the candidates that take it), in `(level, tile)`
     /// order, kept in the scratch for [`stage_tiles`]. `O(one selection)`: each candidate is
     /// tested once, at its own level.
-    #[allow(clippy::too_many_arguments)]
     pub fn select_road_edit(
         &mut self,
         terrain: &TerrainSystem,
@@ -242,6 +252,23 @@ impl StageScratch {
         sites: &impl SiteSource,
         changes: &TerrainChanges,
         rule: &LevelRule,
+    ) -> &[(Level, TileKey)] {
+        self.select_road_edit_where(terrain, before, after, sites, changes, rule, |_| true)
+    }
+
+    /// [`Self::select_road_edit`] over the candidate tiles `keep` accepts only: whether each of
+    /// those is dirty, testing no other (`TERRAIN-12`, T60 (a): which of the tiles a preview
+    /// displays a move dirtied). `O(the change's candidates + kept candidates' tests)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn select_road_edit_where(
+        &mut self,
+        terrain: &TerrainSystem,
+        before: &RoadbedSystem,
+        after: &RoadbedSystem,
+        sites: &impl SiteSource,
+        changes: &TerrainChanges,
+        rule: &LevelRule,
+        keep: impl Fn(TileKey) -> bool,
     ) -> &[(Level, TileKey)] {
         self.wanted.clear();
         let cell_m = f64::from(terrain.cell_size_m());
@@ -259,7 +286,7 @@ impl StageScratch {
                 sites,
                 changes,
                 level,
-                |tile| rule.level_of(tile) == level,
+                |tile| keep(tile) && rule.level_of(tile) == level,
                 &mut self.select,
                 &mut self.dirty,
             );

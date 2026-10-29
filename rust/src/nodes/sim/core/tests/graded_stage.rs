@@ -406,6 +406,21 @@ fn check_frame(
         posed >= stats.adopted + stats.baked,
         "{label}: the staged tiles are the pose's"
     );
+    // TERRAIN-12 (T60, T61 (1) (a)): what the renderer draws is the pose's whole selection or
+    // nothing, never a part of it beside published tiles, and only the pose's exact tiles, never
+    // an earlier pose's whose road lies elsewhere.
+    let displayed = context.graded.displayed();
+    assert!(
+        displayed.is_empty() || displayed.len() == stats.wanted,
+        "{label}: {} of {} selected tiles displayed: a mix with published tiles",
+        displayed.len(),
+        stats.wanted
+    );
+    assert_eq!(
+        stage_bits(displayed),
+        self::fresh(&context.view.terrain, roadbed, &core.allocator, displayed),
+        "{label}: every displayed tile is the pose's exact bake"
+    );
     Arc::clone(stage)
 }
 
@@ -560,6 +575,83 @@ fn graded_tiles_of_drags_commits_undo_and_loads_equal_fresh_bakes() {
 // a click after the converged drag commits, bitwise: the commit adopts the shown tiles whose
 // inputs match and bakes the rest in its own frame. The two drags' pose frames show the same
 // tiles: they depend on the pose sequence only.
+// TERRAIN-12 (T60): a stroke swung sideways after it converged hands the renderer only tiles
+// exact for each pose (checked in check_frame), keeping those the move left unchanged; a pose
+// that draws no road hands every displayed tile back.
+#[test]
+fn a_swung_preview_displays_only_exact_tiles_and_an_invalid_pose_none() {
+    let case = &cases()[0];
+    let mut core = committed_on(case.world_m, &case.roads, &[0], true);
+    core.benchmark_mode = false;
+    core.refresh_road_terrain_inputs();
+    let mut context =
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(&core).expect("current roadbed"));
+    let start = case.drag[0];
+    let mut shown = Arc::new(TileStage::default());
+    let (mut kept, mut renderer) = (0, std::collections::BTreeMap::new());
+    for (index, x) in [0.0f32, 12.0, 24.0, 24.0].into_iter().enumerate() {
+        let end = Vector2::new(x, case.drag[1].y);
+        let pose = preview(&mut context, &stroke(&core, [start, end]));
+        let pieces = pose.pieces.as_ref().expect("the swing's poses are valid");
+        let label = format!("swing pose {index}");
+        shown = check_frame(
+            &label,
+            &context,
+            &pieces.roadbed,
+            &core,
+            (&pieces.graded, POSE_FRAME_TILES),
+            &shown,
+        );
+        let (mut changed, mut removed) = (Vec::new(), Vec::new());
+        context
+            .graded
+            .take_shown_changes(&mut changed, &mut removed);
+        for tile in &removed {
+            renderer.remove(&(tile.x, tile.z));
+        }
+        kept += renderer.len();
+        for tile in changed.drain(..) {
+            renderer.insert((tile.tile.x, tile.tile.z), tile);
+        }
+        while let Some(graded) = context.catch_up_graded() {
+            let label = format!("swing pose {index} catch-up");
+            shown = check_frame(
+                &label,
+                &context,
+                &pieces.roadbed,
+                &core,
+                (&graded, CATCH_UP_FRAME_TILES),
+                &shown,
+            );
+            context
+                .graded
+                .take_shown_changes(&mut changed, &mut removed);
+            for tile in &removed {
+                renderer.remove(&(tile.x, tile.z));
+            }
+            for tile in changed.drain(..) {
+                renderer.insert((tile.tile.x, tile.tile.z), tile);
+            }
+        }
+    }
+    assert!(kept > 0, "a pose keeps the tiles its move left unchanged");
+    assert!(!renderer.is_empty(), "the converged pose's tiles are drawn");
+    // A pose that compiles nothing (a stroke too short to plan) draws no road: no preview terrain.
+    let pose = preview(&mut context, &stroke(&core, [start, start]));
+    assert!(pose.pieces.is_none(), "the degenerate stroke has no pieces");
+    let (mut changed, mut removed) = (Vec::new(), Vec::new());
+    context
+        .graded
+        .take_shown_changes(&mut changed, &mut removed);
+    assert!(changed.is_empty(), "nothing new is shown");
+    assert_eq!(
+        removed.len(),
+        renderer.len(),
+        "every drawn tile is handed back"
+    );
+    assert!(context.graded.displayed().is_empty());
+}
+
 #[test]
 fn a_commit_right_after_a_fast_drag_bakes_what_the_preview_had_not() {
     let case = &cases()[3];

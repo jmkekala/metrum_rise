@@ -760,6 +760,39 @@ impl RoadbedSystem {
         }
     }
 
+    /// What differs for the terrain between `earlier` and this roadbed (`TERRAIN-12`, T60 (a)):
+    /// [`Self::take_terrain_changes`]'s accounting over the pieces of `owners` (sorted, unique)
+    /// that are not the same published piece on both sides, written into `out`. Two snapshots of
+    /// one roadbed, each with a preview's delta installed, differ only in the owners their deltas
+    /// cover, so those owners give every difference. `O(owners * (log pieces + chain vertices))`.
+    pub fn terrain_changes_from(
+        &self,
+        earlier: &RoadbedSystem,
+        owners: &[PieceId],
+        out: &mut TerrainChanges,
+    ) {
+        let mut chains = ChainChanges::default();
+        out.pieces.clear();
+        out.portals.clear();
+        for id in owners {
+            let (old, new) = (earlier.pieces.get(id), self.pieces.get(id));
+            let same = match (old, new) {
+                (Some(old), Some(new)) => Arc::ptr_eq(old.parts().0, new.parts().0),
+                (old, new) => old.is_none() && new.is_none(),
+            };
+            if same {
+                continue;
+            }
+            for (piece, sign) in [(old, -1), (new, 1)] {
+                let Some(piece) = piece else { continue };
+                out.pieces.push(piece.mesh().bounds_xz());
+                out.portals.extend(portal_bounds(piece.mesh()));
+                chains.count(piece, sign);
+            }
+        }
+        (out.chains, out.segments) = chains.take();
+    }
+
     /// Sorted render chunks changed by compiles since the mesh publisher last took them.
     pub fn changed_chunks(&self) -> impl Iterator<Item = SurfaceChunkKey> + '_ {
         self.changed_chunks.iter().copied()
