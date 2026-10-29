@@ -15,7 +15,9 @@
 ## preview released, and a catch-up of one share a frame.
 ## Env: METRUM_GRADED_DRAG_CASES (case ids, comma-separated; default every case),
 ## METRUM_GRADED_DRAG_DISTANCE (the camera's orbit distance from the stroke's end, m; default 40,
-## so the tiles around the click take GL0, the dearest to upload).
+## so the tiles around the click take GL0, the dearest to upload), METRUM_GRADED_DRAG_CAPTURE_DIR
+## (rendered runs only: a PNG of the converged preview before its click and of the settled commit,
+## for T42's visual check; the capture adds a frame before the click, so a timing run leaves it unset).
 extends RefCounted
 
 const MANIFEST := "res://../benchmarks/fixtures/kuopio-terrain/placements.json"
@@ -35,6 +37,7 @@ var _bench: Node
 var _graded: RefCounted
 var _viewport: RID
 var _distance := 40.0
+var _capture_dir := ""
 var _report: Dictionary
 var _failures: Array[String] = []
 # The frames of the drag or edit being recorded, and the kind of the frame now running.
@@ -65,6 +68,8 @@ func run(bench: Node) -> void:
 	var distance_text := OS.get_environment("METRUM_GRADED_DRAG_DISTANCE")
 	if distance_text.is_valid_float():
 		_distance = float(distance_text)
+	if bench.mode != "headless":
+		_capture_dir = OS.get_environment("METRUM_GRADED_DRAG_CAPTURE_DIR")
 	bench.input_manager.set_process(false)
 	bench.input_manager.set_process_input(false)
 	bench.input_manager.set_process_unhandled_input(false)
@@ -141,6 +146,7 @@ func _stroke(case_id: String, stroke: Dictionary) -> Dictionary:
 	record["converged"] = await _drag(record, start, end, stroke, true)
 	if not await _settle(record):
 		return record
+	await _capture(record, "commit")
 	var after: Dictionary = _graded.get_pool_counters()
 	for name: String in CREATED + HEALTH:
 		_expect(int(after[name]) == int(before[name]), record, "%s changed by %d" % [name, int(after[name]) - int(before[name])])
@@ -178,6 +184,7 @@ func _drag(record: Dictionary, start: Vector2, end: Vector2, stroke: Dictionary,
 		_expect(tool._graded_pending == 0, record, "the preview converges")
 		_expect(catch_up == ceili(float(pending) / CATCH_UP_FRAME_TILES), record,
 			"one share a catch-up frame: %d frames for %d tiles" % [catch_up, pending])
+		await _capture(record, "preview")
 	var out := {"valid": bool(tool._preview.get("is_valid", false)), "pending_after_poses": pending,
 		"catch_up_frames": catch_up, "committed": false}
 	# The click, before the road tool's processing of this frame; no chained stroke follows it.
@@ -275,6 +282,15 @@ func _settle(record: Dictionary) -> bool:
 		record["error"] = "the terrain did not settle"
 		record["wait"] = wait
 	return stable >= 3
+
+# Saves the frame now drawn as <case>_<attempt>_<label>.png when a capture directory is set.
+func _capture(record: Dictionary, label: String) -> void:
+	if _capture_dir.is_empty():
+		return
+	DirAccess.make_dir_recursive_absolute(_capture_dir)
+	await RenderingServer.frame_post_draw
+	var path := _capture_dir.path_join("%s_%02d_%s.png" % [record["case"], int(record["attempt"]), label])
+	_expect(_bench.get_viewport().get_texture().get_image().save_png(path) == OK, record, "capture " + path)
 
 func _expect(condition: bool, record: Dictionary, message: String) -> void:
 	if condition:
