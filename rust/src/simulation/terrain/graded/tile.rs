@@ -445,8 +445,9 @@ pub(super) fn bake_tiles_with(
 /// bake gathers its window and assembles its inputs first ([`tile_inputs`]) and stops there
 /// when they equal the held tile's, so a stage gathers each wanted tile once. On return
 /// `held[i]` is `Some` for an adopted tile and `None` for a baked one, whose bake is `out[i]`
-/// (`out` resized to one payload per wanted tile, its buffers reused). The bytes are the bake's
-/// whatever `held` holds. Returns the error of the lowest failing `(level, tile)`.
+/// (`out` grown to at least one payload per wanted tile, its buffers reused; the payloads past
+/// them are left as they are, so nothing is freed here). The bytes are the bake's whatever
+/// `held` holds. Returns the error of the lowest failing `(level, tile)`.
 pub(super) fn bake_unless_held(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
@@ -459,14 +460,17 @@ pub(super) fn bake_unless_held(
         return Err(BakeError::SitesUnavailable);
     }
     debug_assert_eq!(held.len(), wanted.len(), "one held slot per wanted tile");
-    out.resize_with(wanted.len(), TilePayload::default);
+    if out.len() < wanted.len() {
+        out.resize_with(wanted.len(), TilePayload::default);
+    }
     let inputs = Inputs {
         terrain,
         roadbed,
         sites,
     };
     let failure = crate::thread_pools::install(|| {
-        out.par_iter_mut()
+        out[..wanted.len()]
+            .par_iter_mut()
             .zip(held.par_iter_mut())
             .zip(wanted.par_iter())
             .filter_map(|((payload, held), &(level, tile))| {

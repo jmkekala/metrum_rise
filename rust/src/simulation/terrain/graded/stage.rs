@@ -200,18 +200,32 @@ impl LevelRule {
 
 /// Reused buffers of the staging. Payloads a stage drops are kept until nothing else shares
 /// them and their buffers reused by later bakes, so a drag allocates no texel buffer once warm.
+/// A stage frees no payload on its thread (`TERRAIN-07-G` round 9): what the bound below leaves
+/// over is freed on the background pool.
 #[derive(Default)]
 pub struct StageScratch {
     select: SelectScratch,
     dirty: Vec<TileKey>,
     wanted: Vec<(Level, TileKey)>,
     adopted: Vec<Option<Arc<TilePayload>>>,
+    // The bake buffers: a stage's bakes take the first slots, one per wanted tile; the slots
+    // past them, and an adopted tile's, keep their buffers for later bakes.
     baked: Vec<TilePayload>,
     retired: Vec<Arc<TilePayload>>,
 }
 
-// Retired payloads kept for reuse at most: a drag's few poses' worth of `GL0` tiles.
+// Retired payloads, and spare bake buffers, kept for reuse at most: a drag's few poses' worth
+// of `GL0` tiles.
 const RETIRED_MAX: usize = 64;
+
+// Frees `items` on the background pool. A payload freed on a stage's thread can have the
+// allocator hand its pages back to the system there, inside the frame (`TERRAIN-07-G` round 9:
+// glibc trimmed the heap under the stage, 1.2 ms of one profiled 30k undo).
+fn free_off_thread<T: Send + 'static>(items: Vec<T>) {
+    if !items.is_empty() {
+        crate::thread_pools::spawn(move || drop(items));
+    }
+}
 
 impl StageScratch {
     /// The tiles a road change from `before` to `after` can alter, each at the level `rule`
@@ -273,25 +287,22 @@ impl StageScratch {
         }
         if self.retired.len() > RETIRED_MAX {
             let excess = self.retired.len() - RETIRED_MAX;
-            self.retired.drain(..excess);
+            free_off_thread(self.retired.drain(..excess).collect());
         }
     }
 
-    // Moves the retired payloads nothing else shares into the bake buffers.
+    // Moves the retired payloads nothing else shares into the bake buffers, after the buffers
+    // the last stage left unused. `O(bake buffers + retired)`; frees nothing here.
     fn recycle(&mut self) {
-        self.baked.clear();
-        let mut kept = 0;
-        for index in 0..self.retired.len() {
-            let payload = std::mem::take(&mut self.retired[index]);
-            match Arc::try_unwrap(payload) {
-                Ok(payload) => self.baked.push(payload),
-                Err(shared) => {
-                    self.retired[kept] = shared;
-                    kept += 1;
-                }
-            }
+        // A slot whose payload a bake took holds no buffer: dropping it frees nothing.
+        self.baked.retain(|payload| payload.texels.capacity() > 0);
+        let unshared = self
+            .retired
+            .extract_if(.., |payload| Arc::get_mut(payload).is_some());
+        self.baked.extend(unshared.filter_map(Arc::into_inner));
+        if self.baked.len() > RETIRED_MAX {
+            free_off_thread(self.baked.split_off(RETIRED_MAX));
         }
-        self.retired.truncate(kept);
     }
 }
 
@@ -369,4 +380,59 @@ pub fn stage_tiles(
     }
     stats.bake_ms = bake_start.elapsed().as_secs_f64() * 1000.0;
     Ok((TileStage { tiles }, stats))
+}
+
+#[cfg(test)]
+impl StageScratch {
+    // The texel buffers of the bake buffers held for later bakes, in slot order.
+    fn spare_texels(&self) -> Vec<*const [f32; 4]> {
+        self.baked
+            .iter()
+            .filter(|payload| payload.texels.capacity() > 0)
+            .map(|payload| payload.texels.as_ptr())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::NoSites;
+    use super::super::tests::{compiled, fixtures};
+    use super::*;
+
+    // `TERRAIN-07-G` round 9 (the 30k undo stall): a stage frees no bake buffer on its thread.
+    // The buffers of retired tiles that a stage leaves unused, because it adopts every tile,
+    // stay in the scratch for later bakes through any number of such stages; freeing them in the
+    // stage had glibc trim the heap there (madvise, 1.2 ms in one profiled undo).
+    #[test]
+    fn stages_that_adopt_every_tile_keep_the_spare_bake_buffers() {
+        let (_, graph, terrain) = fixtures().remove(0);
+        let roadbed = compiled(&graph);
+        let wanted: Vec<(Level, TileKey)> = (-2..1)
+            .flat_map(|x| (-2..1).map(move |z| (Level::Gl0, TileKey { x, z })))
+            .collect();
+        let mut scratch = StageScratch::default();
+        let none = TileStage::default();
+        let stage = |held: &TileStage, scratch: &mut StageScratch| {
+            stage_tiles(&terrain, &roadbed, &NoSites, &wanted, held, scratch).unwrap()
+        };
+        let (first, _) = stage(&none, &mut scratch);
+        let (second, stats) = stage(&none, &mut scratch);
+        assert_eq!(stats.baked, wanted.len());
+        scratch.retire(first, &second);
+        let (third, stats) = stage(&second, &mut scratch);
+        assert_eq!(stats.adopted, wanted.len());
+        let spares = scratch.spare_texels();
+        assert_eq!(spares.len(), wanted.len(), "the retired tiles' buffers");
+        scratch.retire(second, &third);
+        for _ in 0..3 {
+            let (next, stats) = stage(&third, &mut scratch);
+            assert_eq!(stats.adopted, wanted.len());
+            assert!(
+                scratch.spare_texels().starts_with(&spares),
+                "the spares are kept"
+            );
+            scratch.retire(next, &third);
+        }
+    }
 }
