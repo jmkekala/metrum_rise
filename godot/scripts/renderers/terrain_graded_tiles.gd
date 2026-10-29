@@ -251,6 +251,8 @@ var counters := {
 	"results_deferred": 0,
 	"evictions": 0,
 	"pool_exhausted": 0,
+	# Preview tiles a full page left to a later pose while its block grows (T27 (d)'s lag).
+	"preview_page_waits": 0,
 	# Pages created (not reused from the free pool), blocks moved to a larger page and moves
 	# started (docs/terrain.md "Pages and the row atlas").
 	"pages_created": 0,
@@ -1146,9 +1148,14 @@ func _show_preview_tile(tile: Dictionary) -> void:
 	var copies := _place_copies(key, code, tile, current["copies"] if same_level else {}, false, true)
 	if _place_failed:
 		# The preview's lag (T27 (d)): a page that is full draws the tile once a later pose finds
-		# room (its block grows meanwhile).
-		counters["pool_exhausted"] += 1
-		MetrumDebug.log("terrain", "graded level %d page full at preview tile %s" % [code, str(key)])
+		# room (its block grows meanwhile). A page that cannot grow (its cap or the budget) is the
+		# level's pool exhausted, as the install path records it (_exhaust).
+		if _place_waits:
+			counters["preview_page_waits"] += 1
+			MetrumDebug.log("terrain", "graded level %d page full at preview tile %s" % [code, str(key)])
+		else:
+			counters["pool_exhausted"] += 1
+			MetrumDebug.log("terrain", "graded pool %d exhausted at preview tile %s" % [code, str(key)])
 		return
 	if not current.is_empty() and not same_level:
 		_free_copies(key, current, true)

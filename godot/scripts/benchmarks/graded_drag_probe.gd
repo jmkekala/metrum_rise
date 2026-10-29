@@ -163,6 +163,8 @@ func _stroke(case_id: String, stroke: Dictionary) -> Dictionary:
 			% [name, changed, int(on_demand.get(name, 0))])
 	record["pages_created"] = pages
 	record["variants_created"] = variants
+	# The preview's page-full lag (T27 (d)) is expected; a pool exhausted is a failure (HEALTH).
+	record["preview_page_waits"] = int(after["preview_page_waits"]) - int(before["preview_page_waits"])
 	_expect(record.fast.committed and record.converged.committed, record, "both clicks commit")
 	_expect(_holes == 0, record, "%d frames drew a resident patch with nothing (a hole)" % _holes)
 	_holes = 0
@@ -253,6 +255,8 @@ func _next_frame() -> void:
 	var counters: Dictionary = _graded.counters
 	var row := {
 		"kind": _kind, "frame_ms": float(now - _last_us) / 1000.0,
+		# The frame's end on Godot's clock, to place a profile's samples (`ROAD-68-H` round 2).
+		"end_us": now,
 		"gpu_ms": RenderingServer.viewport_get_measured_render_time_gpu(_viewport),
 		"terrain_ms": float(counters["install_ms_last"]),
 		"uploads": int(counters["uploads"]) - int(_seen["uploads"]),
