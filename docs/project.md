@@ -538,8 +538,14 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   The 100k city now installs every one of its 10,500 wanted tiles (none left as ungraded ground),
   every reference render is unchanged, and Kuopio holds 190 MB less video memory than road; the
   100k city's video memory and load time grew with the tiles it now holds (details and the
-  user's rows in the record). A whole-map view is analysed for later (`RENDER-29`). No target is
-  relaxed; details are in the [Gate G record](terrain.md#terrain-07-g-record).
+  user's rows in the record). A whole-map view is analysed for later (`RENDER-29`). Round 9 found
+  why one undo in about fifty stalls: the terrain stage freed spare buffers in the frame and the
+  allocator handed the memory back there (fixed), and the frame's worker threads wait for CPUs
+  and allocator locks while background routing rebuilds run (on `road` too; options for the user,
+  `terrain.md` T57). An exact speed-up of the steepest Kuopio tiles (the road coverage pass in
+  parallel, no product changed) leaves 2-3 of 299 drag frames over 3.0 ms instead of up to 4.3 ms
+  (for the user, T27); the terrain renderer's page allocator moved into its own script. No target
+  is relaxed; details are in the [Gate G record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
