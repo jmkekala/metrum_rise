@@ -8750,6 +8750,74 @@ commits between `ROAD-68-G` part 10's `3b1e587b` and `8bfd9ebf` do not compile o
 (bisecting through them needs a skip). The rendered rows depend on the CPU's power policy
 (question 62).
 
+#### Round 3: sub-chunk preview payloads, the pose's main-thread work, the city scan (`ROAD-68-H`, 2026-10-29)
+
+Branch `road68-H` on round 2's `fcda122e`. Built from the user's decisions on questions 62 (d)
+and (b) and 63 (b).
+
+**Sub-chunk preview payloads: the design** (written before the code, question 63 (b)). A pose
+used to send every render chunk the stroke changes whole, as the commit publishes it (the
+spliced chunk: kept owners' triangles copied from the published chunk, rebuilt pieces emitted),
+and Godot hid each resident chunk and drew the replacement. In a 512 m chunk of the 100k city
+that is 11.5 MB a pose, nearly all of it triangles Godot already shows.
+
+- **Unit: the owner.** The preview sends pieces, the unit the published chunk already records
+  per layer (one owner run per span or node piece, in emission order: spans by edge id, then
+  node pieces by node id) and the unit the dirty closure rebuilds. Not a finer grid: cells
+  would clip triangles at new lines, so the preview's vertices could not be the committed
+  chunk's.
+- **Payload per changed chunk.** (1) The *overlay*: the rebuilt pieces' triangles routed into
+  the chunk's frame, which is the `fresh` mesh the commit's splice merges, by the same emission.
+  It carries no street lights or signs: the display never showed the preview's (the resident
+  ones stay until the commit's install), so placing them along every covered edge each pose is
+  dropped. (2) The *hidden runs*: per layer, the vertex range of each run of the published
+  chunk whose owner the preview replaces (rebuilt, or gone: exactly the runs the splice drops),
+  found by binary search in the chunk's owner runs for each owner of the edit's closure. (3) The
+  published positions of those ranges, which Godot restores when a run is shown again. The
+  preview dictionary names the road mesh generation the ranges index.
+- **The published chunks the view holds.** The ranges index the chunk Godot shows, so the road
+  tool's view holds every published chunk (the committed renderer's cache, now a persistent map
+  shared in `O(1)`), not the upserts not yet acknowledged it held before: after Godot
+  acknowledged a publication, a later view held none of the chunks that publication did not
+  change, and a preview there spliced its pieces into nothing and hid the chunk's other roads
+  (a latent bug, found by reading; the round's test shows it).
+- **Composition in Godot.** The resident chunk stays drawn. Each hidden run's positions are
+  collapsed in its vertex buffer (`ArrayMesh.surface_update_vertex_region`; Godot 4.7 stores a
+  surface's positions as their own `f32` stream ahead of the normals, 12 bytes a vertex,
+  checked on the GPU in gamescope: the region update leaves normals and custom data untouched,
+  and writing the saved positions back restores them), so its triangles have three equal
+  vertices and draw nothing; the overlay draws the rebuilt pieces in the same chunk frame. A run
+  no longer hidden gets its positions back. Every overlay mesh is filled detached first; then,
+  in one call, runs collapse and restore and the overlays swap, so no frame shows a replaced
+  owner beside its rebuilt piece (doubled) or neither (missing). The drawn triangles are the
+  committed chunk's: the kept runs from the resident buffer, which the splice copies verbatim,
+  and the rebuilt pieces from the overlay, the emission's own vertices.
+- **The junction preview's chunk hiding** (the resident instance's `visible = false`) is not
+  reused: hiding a whole chunk is what forced the whole chunk to be resent. The display's
+  detached staging, spare instances and atomic swap are kept.
+- **Generation guard.** The display composes only when Godot's installed road mesh generation
+  is the one the preview's ranges index. Otherwise (a publication Godot has not installed yet:
+  the next stroke of a chain in the frames before the commit's chunks install) it shows no
+  preview and shows the latest one in the install call itself (`_road_mesh_installed`).
+- **Commit and undo** publish as before: whole changed chunks, spliced, with lights and signs.
+  The published chunk stays the one source for what is committed. Godot's committed renderer
+  replaces the resident instances, and the held preview is released in the same install call:
+  its overlays go, the collapsed runs of the instances the install replaced go with them, and
+  those of instances it kept are restored.
+- **Complexity per pose.** Emission `O(rebuilt pieces' triangles)`; the hidden runs
+  `O(closure owners * layers * log runs)`; their positions `O(hidden vertices)`; packing
+  `O(overlay + hidden vertices)`; Godot `O(overlay vertices)` to stage and
+  `O(changed runs' vertices)` of region writes, none while the closure keeps its owners. Nothing
+  per pose follows the chunk's content. The commit's publication stays
+  `O(rebuilt pieces + chunk vertices)`.
+- **Proof.** Rust: for every changed chunk, the published chunk with the hidden runs dropped and
+  the overlay merged equals the committed chunk bitwise, layers, crossings and owner ranges
+  (lights and signs are the commit's); test builds assert at every preview that the hidden runs
+  are exactly the runs the full splice drops and the overlay is its fresh mesh. Godot: the
+  composed resident and overlay meshes hold the committed chunk's triangles; the preview's
+  pixels at converged poses equal the control's (gamescope captures). The committed payloads:
+  the commit breakdown's `COMMIT_PRODUCTS` against the control.
+
 ## Measurement and acceptance
 
 ### Baseline (`ROAD-67-A`, legacy compiler)
