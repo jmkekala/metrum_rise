@@ -264,15 +264,10 @@ impl SimCore {
             (None, self.publish_road_tool_view())
         };
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
-        let collect_refined_start = Instant::now();
-        record_crash_phase_for_core(self, "add road terrain patch state");
-        let invalidated_refined_cache_entries =
-            self.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        let collect_refined_ms = collect_refined_start.elapsed().as_secs_f64() * 1000.0;
-        // The background jobs start last (`ROAD-68-G` part 7): neither reads the terrain patch
-        // state, and started before it they took its workers' cores. The routing rebuild starts
-        // when the lot plan ends (part 8), so the plan, which the next frame adopts, has the
-        // background pool to itself; the rebuild's adoption frame comes later.
+        // The background jobs start after the commit's last stage (`ROAD-68-G` part 7), so they
+        // take none of its workers' cores. The routing rebuild starts when the lot plan ends
+        // (part 8), so the plan, which the next frame adopts, has the background pool to
+        // itself; the rebuild's adoption frame comes later.
         if let Some(graph) = routing_graph {
             record_crash_phase_for_core(self, "add road cch rebuild scheduled");
             let routing_start = Instant::now();

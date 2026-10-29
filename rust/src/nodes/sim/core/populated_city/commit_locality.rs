@@ -183,12 +183,11 @@ fn add_background(core: &mut SimCore, count: usize) {
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
     // As the street grid leaves a bulk build: routing installed, lanes on the surface and the
-    // terrain ownership refreshed once (`ROAD-68-D` part 6).
+    // graded terrain reset once, a world-scale road change (`ROAD-68-D` part 6).
     core.transit_network.settle_cch();
     core.fit_lanes_to_road_surface();
-    core.refresh_all_engineered_terrain_patch_state(
-        crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-    );
+    core.subsume_world_scale_road_changes();
+    core.bump_global_terrain_payload_generation();
 }
 
 // The commits' products in the neighbourhood, without ids: each sample's published chunks and
