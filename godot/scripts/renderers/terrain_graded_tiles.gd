@@ -6,7 +6,8 @@
 ## layers, a block of patches binding one page per level, a tile held in each page its patches'
 ## blocks use), in-place uploads from pooled Images per level, and per patch one MultiMesh per
 ## cell mesh (the base cells and GL0-GL3) whose instances carry the tile's place in the patch, slot
-## and stitching codes, each graded level with its own material binding its block's page. It does no
+## and stitching codes, each graded level with its own material binding its block's page (the
+## pages' allocator and row atlas uploads are terrain_graded_pages.gd's). It does no
 ## geometry: positions, stitching, clamping and the mask are terrain_cells.gdshaderinc's, the
 ## values Rust's. Nothing is created per edit; the counters in get_pool_counters() prove it.
 ## An edit (item 5) dirties the tiles Rust selects for it at the level each is held at: they
@@ -27,6 +28,7 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const GRADED_SHADER := preload("res://assets/materials/terrain_graded.gdshader")
 const GRADED_BEHIND_SHADER := preload("res://assets/materials/terrain_graded_behind.gdshader")
 const WALL_SHADER := preload("res://assets/materials/terrain_graded_walls.gdshader")
+const GradedPages := preload("res://scripts/renderers/terrain_graded_pages.gd")
 const TILE_M := 64.0
 # Level distances with their hysteresis (T5, TD10): GL0 to 64 m, GL1 to 128 m, GL2 to 2 km,
 # GL3 beyond, at the patch LOD rule's steps (2 to 5 km, 4 to 12 km, 8 beyond). Tuned by the GPU
@@ -38,21 +40,9 @@ const LEVEL_HYSTERESIS_M := 32.0
 # GL0 and GL1 have one page each for the world, sized by their bands' bound (the memory table);
 # GL2 and GL3 one per block of patches and level, sized for the block's listed tiles.
 const WORLD_PAGE_SLOTS := [64, 192]
-# Texels of a row atlas layer (residency.rs ATLAS_WIDTH, checked against the layout at setup).
-const ATLAS_WIDTH := 256
-const ATLAS_LAYER_BYTES := ATLAS_WIDTH * 16
 # Atlas layers a block page holds per slot: the census's mean rows (455-620 texels) take two or
 # three layers.
 const PAGE_LAYERS_PER_SLOT := 3
-# The layer limit without a RenderingDevice (Compatibility, headless): what Vulkan and GLES3 both
-# guarantee. Never above 2,048: a slot reaches the shader in a half-float instance channel.
-const MIN_LAYER_LIMIT := 256
-const MAX_LAYER_LIMIT := 2048
-# The graded pages' memory budget (texel and atlas layers of every page, free pooled ones
-# included): a page the budget refuses leaves its tiles exhausted (counted, T53 (a)'s rule).
-const GRADED_PAGE_BUDGET_MB := 1024
-# Free pages kept per level and size for reuse before a new one is created.
-const FREE_PAGES_KEPT := 4
 # Patch cells: a patch meets at most (ceil(span / 64 m) + 1)^2 tiles (9 x 9 on a 510 m patch),
 # the instances of each cell MultiMesh (_cells_per_patch). A tile's place in its patch is
 # column + PATCH_TILE_ROW * row in one instance channel (terrain_cells.gdshaderinc).
@@ -84,20 +74,14 @@ var patch_span_m := 510.0
 var world_min := Vector2.ZERO
 var lattice_anchor_hm := Vector2i.ZERO
 var levels: Array[Dictionary] = []
-# Per level: the slot layer's side, the pooled upload Images, the zero layers new pages start from
-# and the most slots a page of the level holds.
-var pools: Array[Dictionary] = []
+# The pages (terrain_graded_pages.gd): each level's layer shapes, every page by id, its slots and
+# atlas runs, the budget and the free pool.
+var page_store := GradedPages.new()
 # The device's array layer limit (L) and the block side (B) in patches at GL2 and GL3.
-var layer_limit := MIN_LAYER_LIMIT
+var layer_limit := GradedPages.MIN_LAYER_LIMIT
 var block_patches := 1
 # The patch grid of the world (patches per axis).
 var _patch_grid := Vector2i.ZERO
-# Page id -> {id, code, block, texels, atlas (Texture2DArray), slots, layers, free (slots), runs
-# (free atlas runs as Vector2i(first, count), sorted by first), tiles and previews (tile key ->
-# true: the installed and preview copies it holds), bytes}.
-var _pages: Dictionary = {}
-var _next_page := 0
-var _page_bytes := 0
 # Per level code: block -> the page its patches' sets bind; block -> the larger page a growing
 # block moves to (its tiles fill it, then the sets bind it); block -> tiles that found the
 # bound page full and wait for the move.
@@ -108,9 +92,6 @@ var _block_waiting: Array[Dictionary] = [{}, {}, {}, {}]
 # and the tiles waiting for a move -> the same.
 var _growth_dirty: Dictionary = {}
 var _growth_waits: Dictionary = {}
-# Free pages for reuse: "code,slots,layers" -> Array of page ids.
-var _free_pages: Dictionary = {}
-const NO_COPY := Vector3i(-1, 0, 0)
 # A block page not made yet because a resident patch of the block waits for its list.
 const PAGE_PENDING := -2
 # Tile key -> {code, level, step, token, walls, behind, copies}: what each installed tile shows;
@@ -334,18 +315,19 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	levels.clear()
 	for level: Dictionary in layout.get("levels", []):
 		levels.append(level)
-	layer_limit = _device_layer_limit()
+	layer_limit = GradedPages.device_layer_limit()
 	# B: the largest block of patches whose tiles fit a quarter of the layers (docs/terrain.md
 	# "Blocks"), so a full block's slots and its tiles' mean atlas runs fit one page.
 	block_patches = 1
 	while _block_tiles(block_patches + 1) <= layer_limit / 4:
 		block_patches += 1
-	pools.clear()
+	page_store.counters = counters
+	page_store.levels.clear()
 	for code in levels.size():
 		var cap: int = WORLD_PAGE_SLOTS[code] if code < 2 else _block_tiles(block_patches)
 		if code < pool_slots.size():
 			cap = int(pool_slots[code])
-		pools.append(_new_level(levels[code], mini(cap, layer_limit)))
+		page_store.add_level(levels[code], mini(cap, layer_limit))
 	_reset_pages()
 	_build_meshes()
 	_wall_material = ShaderMaterial.new()
@@ -364,51 +346,24 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	counters["cell_sets_prewarmed"] = grid.x * grid.y
 	counters["cell_prewarm_ms"] = float(Time.get_ticks_usec() - prewarm_us) / 1000.0
 
-# The device's array layer limit (docs/terrain.md "Layer limit"): the RenderingDevice's, else
-# what Vulkan and GLES3 both guarantee, never above the half-float slot channel's 2,048.
-static func _device_layer_limit() -> int:
-	var device := RenderingServer.get_rendering_device()
-	if device == null:
-		return MIN_LAYER_LIMIT
-	return clampi(int(device.limit_get(RenderingDevice.LIMIT_MAX_TEXTURE_ARRAY_LAYERS)), MIN_LAYER_LIMIT, MAX_LAYER_LIMIT)
-
 # The tiles a block of `patches` x `patches` patches meets at most: T(B).
 func _block_tiles(patches: int) -> int:
 	var side := int(ceil(float(patches) * patch_span_m / TILE_M)) + 1
 	return side * side
 
-# A level's layer shapes: the slot layer (side x (side + 1), its last line the header), the
-# pooled upload Images and the zero layers new pages start from, the most slots a page holds and
-# the most atlas layers a tile's rows take.
-func _new_level(level: Dictionary, cap: int) -> Dictionary:
-	var side := int(level["side"])
-	counters["images_created"] += 5
-	return {
-		"side": side,
-		"cap": cap,
-		"max_layers": int(ceil(float(level["max_row_texels"]) / ATLAS_WIDTH)),
-		"texel_image": Image.create_empty(side, side + 1, false, Image.FORMAT_RGBAF),
-		"atlas_image": Image.create_empty(ATLAS_WIDTH, 1, false, Image.FORMAT_RGBAF),
-		"run_image": Image.create_empty(ATLAS_WIDTH, 1, false, Image.FORMAT_RGBAF),
-		"zero_texels": Image.create_empty(side, side + 1, false, Image.FORMAT_RGBAF),
-		"zero_atlas": Image.create_empty(ATLAS_WIDTH, 1, false, Image.FORMAT_RGBAF),
-	}
-
 # Drops every page and creates the world pages of GL0 and GL1, sized by their bands' bound and
 # the most rows a tile can hold (at most the layer limit), so they never fill.
 func _reset_pages() -> void:
-	_pages.clear()
-	_free_pages.clear()
-	_page_bytes = 0
+	page_store.reset()
 	for code in 4:
 		_block_page[code].clear()
 		_block_target[code].clear()
 		_block_waiting[code].clear()
 	_growth_waits.clear()
 	_growth_dirty.clear()
-	for code in mini(2, pools.size()):
+	for code in mini(2, page_store.levels.size()):
 		var size := _page_size(code, Vector2i.ZERO, Vector2i.ZERO)
-		_block_page[code][Vector2i.ZERO] = _new_page(code, Vector2i.ZERO, size.x, size.y)
+		_block_page[code][Vector2i.ZERO] = page_store.create(code, Vector2i.ZERO, size.x, size.y)
 
 # --- Pages (docs/terrain.md "Pages and the row atlas"). ---
 
@@ -449,85 +404,15 @@ func _block_listed(block: Vector2i) -> int:
 				seen[tile] = true
 	return seen.size()
 
-# A page of `slots` slot layers and `layers` atlas layers for `block` at level `code`: a pooled
-# free one of that size, else created within the budget (-1: the budget refuses it). O(slots +
-# layers).
-func _new_page(code: int, block: Vector2i, slots: int, layers: int) -> int:
-	var size_key := "%d,%d,%d" % [code, slots, layers]
-	var pooled: Array = _free_pages.get(size_key, [])
-	var page: Dictionary = {}
-	if not pooled.is_empty():
-		page = _pages[pooled.pop_back()]
-	else:
-		var level: Dictionary = pools[code]
-		var side := int(level["side"])
-		var bytes := slots * side * (side + 1) * 16 + layers * ATLAS_LAYER_BYTES
-		while _page_bytes + bytes > GRADED_PAGE_BUDGET_MB * 1048576 and _drop_free_page():
-			pass
-		if _page_bytes + bytes > GRADED_PAGE_BUDGET_MB * 1048576:
-			return -1
-		# Every layer starts from one shared zero image.
-		var texel_layers: Array[Image] = []
-		texel_layers.resize(slots)
-		texel_layers.fill(level["zero_texels"])
-		var atlas_layers: Array[Image] = []
-		atlas_layers.resize(layers)
-		atlas_layers.fill(level["zero_atlas"])
-		var texels := Texture2DArray.new()
-		texels.create_from_images(texel_layers)
-		var atlas := Texture2DArray.new()
-		atlas.create_from_images(atlas_layers)
-		counters["textures_created"] += 2
-		counters["pages_created"] += 1
-		page = {"id": _next_page, "code": code, "slots": slots, "layers": layers, "texels": texels, "atlas": atlas, "bytes": bytes}
-		_pages[_next_page] = page
-		_next_page += 1
-		_page_bytes += bytes
-	var free: Array[int] = []
-	for slot in range(slots - 1, -1, -1):
-		free.append(slot)
-	var runs: Array[Vector2i] = [Vector2i(0, layers)]
-	page["block"] = block
-	page["free"] = free
-	page["runs"] = runs
-	page["tiles"] = {}
-	page["previews"] = {}
-	return int(page["id"])
-
-# Drops one pooled free page (its textures go with their last reference). Returns whether one was.
-func _drop_free_page() -> bool:
-	for size_key: String in _free_pages.keys():
-		var pooled: Array = _free_pages[size_key]
-		if pooled.is_empty():
-			continue
-		var page: Dictionary = _pages[pooled.pop_back()]
-		_pages.erase(int(page["id"]))
-		_page_bytes -= int(page["bytes"])
-		return true
-	return false
-
-# Returns a page holding no copy to the free pool (dropped past FREE_PAGES_KEPT of its size).
-func _release_page(page_id: int) -> void:
-	var page: Dictionary = _pages[page_id]
-	var size_key := "%d,%d,%d" % [int(page["code"]), int(page["slots"]), int(page["layers"])]
-	if not _free_pages.has(size_key):
-		_free_pages[size_key] = []
-	var pooled: Array = _free_pages[size_key]
-	if pooled.size() < FREE_PAGES_KEPT:
-		pooled.append(page_id)
-		return
-	_pages.erase(page_id)
-	_page_bytes -= int(page["bytes"])
-
 # The size of block `block`'s page at level `code`: its listed tiles plus an eighth and 8,
 # rounded up to 32 slots, at most the level's cap, and three atlas layers a slot, at most the
 # layer limit (docs/terrain.md "Page size"); at least `least` (slots, layers). The world pages of
 # GL0 and GL1 keep their band's slots and the most rows a tile can hold, and grow only their
 # layers. O(the block's tiles).
 func _page_size(code: int, block: Vector2i, least: Vector2i) -> Vector2i:
-	var cap := int(pools[code]["cap"])
+	var cap := int(page_store.levels[code]["cap"])
 	if code < 2:
-		return Vector2i(cap, mini(layer_limit, maxi(least.y, cap * int(pools[code]["max_layers"]))))
+		return Vector2i(cap, mini(layer_limit, maxi(least.y, cap * int(page_store.levels[code]["max_layers"]))))
 	var listed := _block_listed(block)
 	var slots := mini(cap, maxi(least.x, ((listed + listed / 8 + 8 + 31) / 32) * 32))
 	return Vector2i(slots, mini(layer_limit, maxi(least.y, slots * PAGE_LAYERS_PER_SLOT)))
@@ -536,69 +421,11 @@ func _page_size(code: int, block: Vector2i, least: Vector2i) -> Vector2i:
 # the budget).
 func _first_page(code: int, block: Vector2i) -> int:
 	var size := _page_size(code, block, Vector2i.ZERO)
-	var page_id := _new_page(code, block, size.x, size.y)
+	var page_id := page_store.create(code, block, size.x, size.y)
 	if page_id >= 0:
 		_block_page[code][block] = page_id
 		_bind_block(code, block, false)
 	return page_id
-
-# The first of the page's free atlas runs at least `count` layers long (-1: none). O(runs).
-static func _find_run(runs: Array[Vector2i], count: int) -> int:
-	for index in runs.size():
-		if runs[index].y >= count:
-			return index
-	return -1
-
-# Takes `count` layers from the page's first free run long enough (-1: none). O(runs).
-static func _take_run(page: Dictionary, count: int) -> int:
-	var runs: Array[Vector2i] = page["runs"]
-	var index := _find_run(runs, count)
-	if index < 0:
-		return -1
-	var run := runs[index]
-	if run.y == count:
-		runs.remove_at(index)
-	else:
-		runs[index] = Vector2i(run.x + count, run.y - count)
-	return run.x
-
-# Returns layers [first, first + count) to the page's free runs, merged with its neighbours.
-# O(runs).
-static func _free_run(page: Dictionary, first: int, count: int) -> void:
-	var runs: Array[Vector2i] = page["runs"]
-	var index := 0
-	while index < runs.size() and runs[index].x < first:
-		index += 1
-	runs.insert(index, Vector2i(first, count))
-	if index + 1 < runs.size() and first + count == runs[index + 1].x:
-		runs[index] = Vector2i(first, count + runs[index + 1].y)
-		runs.remove_at(index + 1)
-	if index > 0 and runs[index - 1].x + runs[index - 1].y == first:
-		runs[index - 1] = Vector2i(runs[index - 1].x, runs[index - 1].y + runs[index].y)
-		runs.remove_at(index)
-
-# Whether `page` can take a copy of `layers` atlas layers, `held` its copy there (x < 0: none):
-# a free slot for a new copy, and a run unless the held one is long enough.
-static func _can_place(page: Dictionary, held: Vector3i, layers: int) -> bool:
-	if held.x < 0 and (page["free"] as Array).is_empty():
-		return false
-	if layers > 0 and (held.x < 0 or layers > held.z) and _find_run(page["runs"], layers) < 0:
-		return false
-	return true
-
-# Places a copy in `page` (_can_place holds): the held slot kept, else a free one, and the held
-# run kept while long enough, else a new one (the held run freed after). Returns the copy,
-# Vector3i(slot, first atlas layer, layers).
-static func _place(page: Dictionary, held: Vector3i, layers: int) -> Vector3i:
-	var copy := held
-	if layers > 0 and (held.x < 0 or layers > held.z):
-		var first := _take_run(page, layers)
-		if held.x >= 0 and held.z > 0:
-			_free_run(page, held.y, held.z)
-		copy = Vector3i(held.x, first, layers)
-	if copy.x < 0:
-		copy.x = (page["free"] as Array).pop_back()
-	return copy
 
 # The pages a copy of `tile` at level `code` goes into, as [page id, block]: per block of the
 # resident patches drawing it, its page (made as the block first needs one, once every resident
@@ -688,12 +515,12 @@ var _place_waits := false
 func _place_copies(key: Vector2i, code: int, tile: Dictionary, held: Dictionary, fresh: bool, is_preview: bool) -> Dictionary:
 	_place_failed = false
 	_place_waits = false
-	var layers := (tile["rows"] as PackedByteArray).size() / ATLAS_LAYER_BYTES
+	var layers := (tile["rows"] as PackedByteArray).size() / GradedPages.ATLAS_LAYER_BYTES
 	var wanted := _copy_pages(key, code)
 	for pair: Array in wanted:
 		var page_id := int(pair[0])
-		var page: Dictionary = _pages.get(page_id, {})
-		if not page.is_empty() and _can_place(page, held.get(page_id, NO_COPY), layers):
+		var page: Dictionary = page_store.by_id.get(page_id, {})
+		if not page.is_empty() and GradedPages.can_place(page, held.get(page_id, GradedPages.NO_COPY), layers):
 			continue
 		_place_failed = true
 		if page_id == PAGE_PENDING:
@@ -708,11 +535,11 @@ func _place_copies(key: Vector2i, code: int, tile: Dictionary, held: Dictionary,
 	var copies := {}
 	for pair: Array in wanted:
 		var page_id := int(pair[0])
-		var page: Dictionary = _pages[page_id]
-		var before: Vector3i = held.get(page_id, NO_COPY)
-		var copy := _place(page, before, layers)
+		var page: Dictionary = page_store.by_id[page_id]
+		var before: Vector3i = held.get(page_id, GradedPages.NO_COPY)
+		var copy := GradedPages.place(page, before, layers)
 		if not (fresh and copy == before):
-			_write_copy(page, copy, tile)
+			page_store.write_copy(page, copy, tile)
 		copies[page_id] = copy
 		var holders: Dictionary = page["previews"] if is_preview else page["tiles"]
 		holders[key] = true
@@ -730,43 +557,16 @@ func _wait_for_growth(key: Vector2i, code: int, block: Vector2i) -> void:
 	_growth_waits[key] = Vector3i(code, block.x, block.y)
 	_wanted.erase(key)
 
-# Writes a tile's slot layer, its header's first channel set to its run's first atlas layer
-# (residency.rs `pack_slot`), and its run into its copy in `page`. O(slot texels + rows).
-func _write_copy(page: Dictionary, copy: Vector3i, tile: Dictionary) -> void:
-	var level: Dictionary = pools[int(page["code"])]
-	var upload_start_us := Time.get_ticks_usec()
-	var side := int(level["side"])
-	var image: Image = level["texel_image"]
-	image.set_data(side, side + 1, false, Image.FORMAT_RGBAF, tile["texels"])
-	var header := image.get_pixel(0, side)
-	header.r = float(copy.y)
-	image.set_pixel(0, side, header)
-	(page["texels"] as Texture2DArray).update_layer(image, copy.x)
-	var rows: PackedByteArray = tile["rows"]
-	var count := rows.size() / ATLAS_LAYER_BYTES
-	if count > 0:
-		var run: Image = level["run_image"]
-		run.set_data(ATLAS_WIDTH, count, false, Image.FORMAT_RGBAF, rows)
-		var layer: Image = level["atlas_image"]
-		for index in count:
-			layer.blit_rect(run, Rect2i(0, index, ATLAS_WIDTH, 1), Vector2i.ZERO)
-			(page["atlas"] as Texture2DArray).update_layer(layer, copy.y + index)
-	counters["upload_ms_max"] = max(float(counters["upload_ms_max"]), float(Time.get_ticks_usec() - upload_start_us) / 1000.0)
-	counters["uploads"] += 1
-	counters["upload_bytes"] += (tile["texels"] as PackedByteArray).size() + rows.size()
-
 # Frees `tile`'s copy in page `page_id`: its slot and run, and with its last copy the page (a
 # block's own page, or a growing block's target; the world pages stay). A freed slot asks one
 # tile that found the level exhausted again (it stays recorded until it installs or finds no
 # slot again). O(the page's free runs).
 func _free_copy(tile: Vector2i, page_id: int, copy: Vector3i, is_preview: bool) -> void:
-	var page: Dictionary = _pages.get(page_id, {})
+	var page: Dictionary = page_store.by_id.get(page_id, {})
 	if page.is_empty():
 		return
 	var code := int(page["code"])
-	(page["free"] as Array).append(copy.x)
-	if copy.z > 0:
-		_free_run(page, copy.y, copy.z)
+	GradedPages.vacate(page, copy)
 	(page["previews"] if is_preview else page["tiles"]).erase(tile)
 	var block: Vector2i = page["block"]
 	if int(_block_target[code].get(block, -1)) >= 0:
@@ -789,17 +589,17 @@ func _free_copy(tile: Vector2i, page_id: int, copy: Vector3i, is_preview: bool) 
 func _page_emptied(code: int, block: Vector2i, page_id: int) -> void:
 	var target := int(_block_target[code].get(block, -1))
 	if page_id == target:
-		var bound: Dictionary = _pages.get(int(_block_page[code].get(block, -1)), {})
+		var bound: Dictionary = page_store.by_id.get(int(_block_page[code].get(block, -1)), {})
 		if not bound.is_empty() and not (bound["tiles"] as Dictionary).is_empty():
 			return
 		_block_target[code].erase(block)
-		_release_page(page_id)
+		page_store.release(page_id)
 		_end_waits(code, block)
 		return
 	if target >= 0:
 		return
 	_block_page[code].erase(block)
-	_release_page(page_id)
+	page_store.release(page_id)
 	_bind_block(code, block, false)
 
 # Frees every copy of `entry` (installed or preview tile `tile`).
@@ -817,14 +617,14 @@ func _free_copies(tile: Vector2i, entry: Dictionary, is_preview: bool) -> void:
 func _grow(code: int, block: Vector2i, layers: int) -> bool:
 	var target := int(_block_target[code].get(block, -1))
 	var from_id := target if target >= 0 else int(_block_page[code].get(block, -1))
-	var from: Dictionary = _pages.get(from_id, {})
+	var from: Dictionary = page_store.by_id.get(from_id, {})
 	if from.is_empty():
 		return false
 	var slots := int(from["slots"])
 	var atlas := int(from["layers"])
 	var least := Vector2i(
 		slots * 2 if (from["free"] as Array).is_empty() else slots,
-		atlas * 2 if _find_run(from["runs"], maxi(layers, 1)) < 0 else atlas)
+		atlas * 2 if GradedPages.find_run(from["runs"], maxi(layers, 1)) < 0 else atlas)
 	var size := _page_size(code, block, least)
 	if size.x <= slots and size.y <= atlas:
 		return false
@@ -836,24 +636,24 @@ func _grow(code: int, block: Vector2i, layers: int) -> bool:
 # page. O(the block's tiles).
 func _move_block(code: int, block: Vector2i, size: Vector2i) -> bool:
 	var target := int(_block_target[code].get(block, -1))
-	var page_id := _new_page(code, block, size.x, size.y)
+	var page_id := page_store.create(code, block, size.x, size.y)
 	if page_id < 0:
 		return false
 	if target >= 0:
 		# A move to a target that ran out too starts again at the larger page.
-		var old: Dictionary = _pages[target]
+		var old: Dictionary = page_store.by_id[target]
 		for tile: Vector2i in (old["tiles"] as Dictionary).keys():
 			(installed[tile]["copies"] as Dictionary).erase(target)
 		for tile: Vector2i in (old["previews"] as Dictionary).keys():
 			(preview[tile]["copies"] as Dictionary).erase(target)
 		(old["tiles"] as Dictionary).clear()
 		(old["previews"] as Dictionary).clear()
-		_release_page(target)
+		page_store.release(target)
 	_block_target[code][block] = page_id
 	counters["page_growths"] += 1
 	MetrumDebug.log("terrain", "graded level %d block %s grows to %d slots, %d layers" % [code, str(block), size.x, size.y])
 	# Its tiles are asked again for the target's copies (nothing is kept on the CPU).
-	var bound: Dictionary = _pages.get(int(_block_page[code].get(block, -1)), {})
+	var bound: Dictionary = page_store.by_id.get(int(_block_page[code].get(block, -1)), {})
 	if not bound.is_empty():
 		for tile: Vector2i in (bound["tiles"] as Dictionary).keys():
 			_wanted[tile] = true
@@ -872,7 +672,7 @@ func _advance_growth() -> void:
 		var target := int(_block_target[code].get(block, -1))
 		if target < 0:
 			continue
-		var bound: Dictionary = _pages.get(int(_block_page[code].get(block, -1)), {})
+		var bound: Dictionary = page_store.by_id.get(int(_block_page[code].get(block, -1)), {})
 		var complete := true
 		if not bound.is_empty():
 			for tile: Vector2i in bound["tiles"]:
@@ -892,23 +692,23 @@ func _switch_block(code: int, block: Vector2i) -> void:
 	var target := int(_block_target[code][block])
 	var old_id := int(_block_page[code].get(block, -1))
 	_block_target[code].erase(block)
-	var moved: Dictionary = _pages[target]
+	var moved: Dictionary = page_store.by_id[target]
 	if code >= 2 and (moved["tiles"] as Dictionary).is_empty() and (moved["previews"] as Dictionary).is_empty():
 		# Every tile left the block meanwhile: neither page holds a copy it draws.
-		_release_page(target)
+		page_store.release(target)
 		target = -1
 		_block_page[code].erase(block)
 	else:
 		_block_page[code][block] = target
 	if old_id >= 0:
-		var old: Dictionary = _pages[old_id]
+		var old: Dictionary = page_store.by_id[old_id]
 		for tile: Vector2i in (old["tiles"] as Dictionary).keys():
 			(installed[tile]["copies"] as Dictionary).erase(old_id)
 		for tile: Vector2i in (old["previews"] as Dictionary).keys():
 			(preview[tile]["copies"] as Dictionary).erase(old_id)
 		(old["tiles"] as Dictionary).clear()
 		(old["previews"] as Dictionary).clear()
-		_release_page(old_id)
+		page_store.release(old_id)
 	_bind_block(code, block, true)
 	_end_waits(code, block)
 	counters["page_moves"] += 1
@@ -936,13 +736,13 @@ func _bind_block(code: int, block: Vector2i, rewrite: bool) -> void:
 func _bind_page(cells: Dictionary, key: Vector2i) -> bool:
 	var bound: Array = cells["pages"]
 	var changed := false
-	for code in pools.size():
+	for code in page_store.levels.size():
 		var page_id := _patch_page(key, code)
 		if int(bound[code]) == page_id:
 			continue
 		bound[code] = page_id
 		changed = true
-		var page: Dictionary = _pages.get(page_id, {})
+		var page: Dictionary = page_store.by_id.get(page_id, {})
 		for index in [code, code + CELL_BEHIND]:
 			var material: ShaderMaterial = cells["materials"][index]
 			material.set_shader_parameter("graded_texels", page.get("texels", null))
@@ -1041,7 +841,7 @@ func clear() -> void:
 	# Every block page is empty now: the moves end with them.
 	for code in 4:
 		for block: Vector2i in _block_target[code].keys():
-			_release_page(int(_block_target[code][block]))
+			page_store.release(int(_block_target[code][block]))
 		_block_target[code].clear()
 		_block_waiting[code].clear()
 	_growth_waits.clear()
@@ -1598,7 +1398,7 @@ func _adopt_preview(key: Vector2i, tile: Dictionary) -> bool:
 	var token := int(tile["token"])
 	installed[key] = {"code": shown["code"], "level": shown["level"], "step": shown["step"], "token": token, "walls": shown["walls"], "behind": shown["behind"], "copies": shown["copies"]}
 	for page_id: int in shown["copies"]:
-		var page: Dictionary = _pages[page_id]
+		var page: Dictionary = page_store.by_id[page_id]
 		(page["previews"] as Dictionary).erase(key)
 		(page["tiles"] as Dictionary)[key] = true
 	preview.erase(key)
@@ -2003,7 +1803,7 @@ func _request_tiles() -> void:
 		var blocked := false
 		for pair: Array in _copy_pages(tile, level.x):
 			var page_id := int(pair[0])
-			var page: Dictionary = _pages.get(page_id, {})
+			var page: Dictionary = page_store.by_id.get(page_id, {})
 			if not page.is_empty() and (held.has(page_id) or not (page["free"] as Array).is_empty()):
 				continue
 			blocked = true
@@ -2836,14 +2636,14 @@ func _sync_material(cells: Dictionary, source: ShaderMaterial, start_us := -1) -
 ## pooled ones included), and the layer limit and block side.
 func get_pool_counters() -> Dictionary:
 	var out := counters.duplicate()
-	for code in pools.size():
+	for code in page_store.levels.size():
 		var pages := 0
 		var slots := 0
 		var free := 0
 		var layers := 0
 		var free_layers := 0
 		for page_id: int in _block_page[code].values() + _block_target[code].values():
-			var page: Dictionary = _pages[page_id]
+			var page: Dictionary = page_store.by_id[page_id]
 			pages += 1
 			slots += int(page["slots"])
 			free += (page["free"] as Array).size()
@@ -2855,7 +2655,7 @@ func get_pool_counters() -> Dictionary:
 		out["free_%d" % code] = free
 		out["layers_%d" % code] = layers
 		out["free_layers_%d" % code] = free_layers
-	out["pool_bytes"] = _page_bytes
+	out["pool_bytes"] = page_store.bytes
 	out["layer_limit"] = layer_limit
 	out["block_patches"] = block_patches
 	out["growing"] = _growth_waits.size()
