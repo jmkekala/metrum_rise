@@ -367,7 +367,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   0.06 ms at 100,000 remote sites). The rows still miss: paused 78.7 % Xwayland / 90.4 % Wayland
   without the FPS cap (main-thread work at the idle clock unchanged), populated 27-29 % active,
   57-62 % paused, its T's rest of frame the graded renderer's streaming after the load (question
-  64, open); the commit row passes (at most 13.0 ms at 100k); the user accepted carried item 1
+  64, open); the commit row passes (at most 13.0 ms at 100k); the user accepted carried item 1;
+  the base terrain variant no longer reads a tangent basis it never uses (Godot's per-pose
+  tangent warning, 0 after). The gate is blocked by `TERRAIN-12`, found by the user in play:
+  tile-shaped holes where the previous preview pose lay, for 1-2 frames
   ([record](roads.md#round-3-sub-chunk-preview-payloads-the-poses-main-thread-work-the-city-scan-road-68-h-2026-10-29)). Before `ROAD-68-E`, `roadbed/` was
   compacted for quality to 7,229 production lines with every product bitwise unchanged.
   `ROAD-68-E` (implemented; acceptance open) previews each road pose synchronously in the frame that samples it,

@@ -8951,7 +8951,7 @@ its numbers are complete.
 **The populated rows on the display** (fresh, 16:25:31-16:37:38, as above; the 100k commit city,
 `populated_t` and `populated_branch` at the commit breakdown's first edit site, A P A on Xwayland,
 then on native Wayland; `populated-windowed-20261029T162531/`,
-`populated-windowed-wayland-20261029T163119/`; a first attempt, 16:09-16:15, was stopped: an
+`populated-windowed-wayland-20261029T163120/`; a first attempt, 16:09-16:15, was stopped: an
 exit-hang watchdog added after the rows' hang killed each run after its first case's metrics,
 which are written per case; fixed to wait for every expected case). Sampled poses exact within
 16.7 ms: **A (the simulation at 1x) 229 of 803 (28.5 %) on Xwayland, 213 of 790 (27.0 %) on
@@ -9022,12 +9022,71 @@ populated tier `loaded`; `$ARTIFACTS/road68/h3/session/`, `breakdown-table.txt`,
 | The terrain stage's 3.0 ms (populated drags) | pose frames at most 2.64 ms | Pass |
 | Bitwise preview = commit = undo = load | composition tests; `COMMIT_PRODUCTS` equal to C; 43 of 43 captures identical | Pass |
 | Carried item 1 (one pose install at 1.009 ms against the 1.0 ms share) | round 2's probe | The user's decision: accepted (2026-10-29) |
+| No frame shows a hole or stale terrain while a preview moves (`terrain.md` "What a patch draws") | the user's play, `TERRAIN-12` | **Blocker**, not fixed in round 3 |
 
 **Carried items** beyond item 1: as round 2 judged them (5, 6 and 9 measured there; the rest as
 round 1); no code of theirs changed in this round.
 
 **Gate checks** (fresh, on `e184bec6`, the Rust of every later commit; the debug suite above ran on
-`20ab7a37`'s Rust): GATECHECKS
+`20ab7a37`'s Rust): `cargo clippy --all-targets` 59 warnings, the baseline's set exactly
+(compared by file and message), every target compiling; `cargo doc` 0 missing docs (its link
+warnings `TERRAIN-07-G`'s); `./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY` unset
+(16:38:30-16:56:49): exit 0, the debug library suite 1,845 passed, 0 failed, 177 ignored,
+`growth_scenario` 4 passed, all 22 Godot suites pass with the seven rendered tests in
+gamescope's headless backend, nothing skipped, no `SCRIPT ERROR`. Line counts as above.
+
+**The terrain tangent warning** (found by the user in play, 2026-10-29; fixed in this round).
+Godot printed "Attempting to use a shader (res://assets/materials/terrain.gdshader) that requires
+tangents with a mesh that doesn't contain tangents" each time a terrain surface instance took a
+material: 31-76 times a preview row run and 609-1,031 a populated run (about one a pose), none for
+the `terrain_graded*` shaders. Cause (checked in gamescope with a probe, `h3/probe-tangent/`): the
+mesh is the graded renderer's cell lattice (`terrain_graded_tiles.gd` `_build_meshes`, positions and
+indices only), which the base cells draw with the patch's `terrain.gdshader` material; the base
+variant's fragment passes `TANGENT` and `BINORMAL` to the street lamp light
+(`terrain_surface.gdshaderinc`), and Godot asks the mesh for tangents. The graded variants draw the
+same lattice without the warning: they assign `TANGENT` and `BINORMAL` in their paving branch before
+the lamp reads them (measured; Godot's exact rule not read). **Fix (b), not (a):** the base variant
+passes no tangent basis and the default normal map to the lamp, as `terrain_graded_walls.gdshader`
+already does. It writes no normal map (only the graded paving does), so with the default map
+(`xy` exactly 0, `z` 1, depth 1) the lamp's normal is the surface normal and the tangent terms are
+multiplied by zero: the same light, by construction. (a), a +X tangent on the shared lattices,
+would also need normals and would feed the base variant a tangent its light ignores, at 16 more
+bytes a vertex. Test: `terrain_tangent_test.gd` (rendered, Forward+, in `run.sh`'s rendered list)
+draws a tangent-less lattice with each of the four terrain shaders and reads Godot's file log: it
+fails before the fix (2 warnings for `terrain.gdshader`) and passes after. The junction references
+(`road_junction_reference_test.gd`, gamescope, 197 images, before and after on the round's
+library): 580 warnings before, 0 after; the images differ by at most 21 levels in 93 of 197, inside
+the renders' own run-to-run noise (two runs of the same build: 96 of 197 images, up to 50 levels;
+the five images that differ only across the fix, by 1-16 pixels of at most 10 levels, are as
+noisy), so the pixel comparison cannot prove equality beyond the noise, and the algebra above does.
+**Cost of the warning:** in round 2's symbolized populated profile (about one warning a pose) the
+printing shows as `String::sprintf` 0.16 ms a pose (the warning's `vformat` among its callers) and
+the writes about 0.01 ms: at most about 0.2 ms a pose at full clock, perhaps 0.7 ms at the idle
+clock; a matched measurement is left with the timing runs (`$ARTIFACTS/road68/h3/timing-pending`).
+The preview rows and populated runs of this round still carried the warning; the run after the fix
+that shows 0 such warnings in a preview row and a populated run is part of those runs.
+
+**`TERRAIN-12`, a gate blocker** (reported by the user, 2026-10-29 about 17:00, in normal play on
+`road` `8b3ce801`, a debug build): while a road preview is dragged, the terrain where the road's
+previous pose lay is missing for 1-2 frames, the sky showing through a road-shaped corridor with
+jagged, cell-scale edges, sometimes a thin sliver along the road's edge: tile-shaped holes, not
+128 m patches. Evidence: `$ARTIFACTS/road68/bugs/dump-17-01/` (screenshots `4.png`-`7.png`, the dump
+`dump-2026-10-29_17-01-40.{sqlite,png,txt}`, `godot2026-10-29T17.02.45.log`). It breaks
+[`terrain.md`](terrain.md) "What a patch draws" (no frame shows a set with a listed tile missing) and
+is stale geometry in a moving pose, so it blocks the gate; the rendered harness's "exact" pose
+measure (the road's) and the converged-pose hole checks did not catch it. Not fixed in this round
+(the coordinator's instruction). **Lead, by reading** (`terrain_graded_tiles.gd`): a pose's frame
+calls `show_preview` from the road tool (`road_tool.gd` `_show_graded`, in the pose's own frame,
+after `preview_road`), which first drops the tiles Rust lists in `graded_removed` through
+`_drop_preview` (erase the preview entry, `_free_copies` → `_free_copy`: vacate the slots, maybe
+empty and unbind the page), then shows the new tiles through `_show_preview_tile`, which ends in
+`_shown_changed(key, before)` → `_cell_changed` and `_await_cells` (the cells of the patches meeting
+the tile marked, rewritten in the same call by `_apply_cell_changes`). `_drop_preview` calls no
+`_shown_changed`, so a dropped tile's cells are not marked and keep sampling the vacated preview
+slot (blank once the page empties or the slot is reused) until another change rewrites them, which
+fits "the previous pose's corridor, for a frame or two". `release_preview` (at a click or cancel)
+takes the same path. The user also saw the preview road sink under the old terrain on slopes for a
+while: T27 (d)'s accepted lag, not this defect.
 
 **Merge risks.** Every rendered result ran on Linux with the RX 7900 XTX (Vulkan); the sub-chunk
 display writes a resident surface's position stream in place, which relies on Godot 4.7's layout
