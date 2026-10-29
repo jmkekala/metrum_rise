@@ -546,8 +546,8 @@ environmental cell spacing. `environment_overlay_test.gd` covers cadence/cache l
 RGBA image uploads across world-size changes (`AUDIT-01-F6/G4`).
 Environmental intensity controls the terrain blend through the image's alpha channel, and the
 texture clamps at world edges. `terrain_overlay_shader_test.gd` verifies actual rendered pixels
-(`AUDIT-01-G5`). `./run.sh --test` runs this additional regression when `xvfb-run` is installed;
-otherwise it explicitly reports the rendering check as skipped. It can also run from a graphical
+(`AUDIT-01-G5`). `./run.sh --test` runs this regression in gamescope's headless backend (since
+`ROAD-68-H`; `$DISPLAY` only without gamescope, and the run fails when neither renders). It can also run from a graphical
 session with `godot --path godot --rendering-method gl_compatibility --script res://tests/terrain_overlay_shader_test.gd`.
 Gameplay keyboard shortcuts expose all five values through `input_manager.gd`; WorldEditor also
 selects mode `4` while the coal-resource tools are active.

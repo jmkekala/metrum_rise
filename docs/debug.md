@@ -753,8 +753,9 @@ While closed, the console does no work except watch for its key.
 - the channel command;
 - the dump's channel state and lines.
 
-`godot/tests/debug_visual_modes_test.gd` runs in the bridge list and again on a rendered display
-(Xvfb or `$DISPLAY`, Linux only). It covers:
+`godot/tests/debug_visual_modes_test.gd` runs on a rendered display: `./run.sh --test` runs it in
+gamescope's headless backend (`$DISPLAY` only without gamescope, Linux only; since `ROAD-68-H`, not
+in the headless bridge list too). It covers:
 
 - the visual mode registry and starting values;
 - switching every mode by command and by its picker, aliases, indices, refusals on `events`,
