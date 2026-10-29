@@ -234,7 +234,7 @@ pub(crate) struct BuildingRemovalUndo {
 
 /// A snapshot of simulation state for undo history.
 pub(crate) struct SimulationSnapshot {
-    /// The source terrain, dense: undo restores it and the visual buffer from it.
+    /// The source terrain, dense: undo restores it.
     pub(crate) terrain: Option<Vec<f32>>,
     /// Water runtime state.
     pub(crate) water: Option<WaterRuntimeSnapshot>,

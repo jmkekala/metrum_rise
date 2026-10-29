@@ -151,11 +151,6 @@ pub struct RoadbedDelta {
 type BuiltNode = Result<Option<Arc<NodePiece>>, NodeError>;
 
 impl RoadbedDelta {
-    /// Generation of the roadbed the delta was compiled from.
-    pub fn base_generation(&self) -> u64 {
-        self.base_generation
-    }
-
     /// The rebuilt span and node pieces, by owner in install order; `None` where the owner has
     /// no piece. A failed node is absent.
     pub fn pieces(&self) -> impl Iterator<Item = (PieceId, Option<&PieceMesh>)> + '_ {

@@ -97,7 +97,7 @@ pub(crate) struct RoadToolQuerySnapshot {
     /// The roadbed generation `road_mesh_chunks` were published at; the preview splices only
     /// into chunks of its own roadbed generation.
     pub(crate) road_mesh_generation: Option<u64>,
-    /// What road-touched refined terrain sources read besides the heightmap, per render patch;
+    /// What the road-touched graded terrain reads besides the heightmap, per render patch;
     /// shared in `O(1)` (`ROAD-68-E`).
     pub(crate) terrain_inputs: RoadTerrainInputs,
     /// Committed field reservations, shared in `O(1)`: the preview tests its pieces against

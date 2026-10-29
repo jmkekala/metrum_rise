@@ -64,7 +64,7 @@ impl SimCore {
             roadbed: None,
             graded: None,
             // The authoritative source terrain: the stroke solve, the lots and the graded base
-            // read it, and the visual buffer equals it (`TERRAIN-07-E`, authoritative undo).
+            // read it (`TERRAIN-07-E`, authoritative undo).
             terrain: if inc_terrain {
                 Some(self.heightmap.clone_source_dense())
             } else {

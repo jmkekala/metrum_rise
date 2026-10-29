@@ -266,8 +266,7 @@ impl GradedInputs {
         if !core.transit_network.roadbed.is_current() {
             return None;
         }
-        // The site chunk index is derived and rebuilt on demand, as the refined terrain
-        // payloads prepare it.
+        // The site chunk index is derived and rebuilt on demand.
         let zone_cell_m = core.config.zone_cell_m;
         core.allocator
             .prepare_building_site_query_index(zone_cell_m);

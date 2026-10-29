@@ -328,6 +328,33 @@ create_isolated_godot_profile() {
     export XDG_CONFIG_HOME="$asset_test_profile/config"
 }
 
+# Rendered Godot tests need a real renderer. They run in gamescope's headless backend, which
+# renders offscreen on the GPU and takes no display, with the session's display variables unset
+# so nothing can fall back to it; on $DISPLAY only without gamescope. Never xvfb-run: without
+# DRI3 Godot's x11 driver fails there and falls back to the session's display. gamescope exits 0
+# whatever its child returns, so the test's status comes back through a file. Usage:
+# run_rendered_godot_test <width> <height> <godot arguments...>. Fails when nothing can render.
+run_rendered_godot_test() {
+    local width="$1" height="$2" status_file status
+    shift 2
+    if command -v gamescope >/dev/null 2>&1; then
+        status_file=$(mktemp "$asset_test_profile/rendered-test.XXXXXX") || return 1
+        env -u WAYLAND_DISPLAY -u DISPLAY timeout 600 gamescope --backend headless \
+            -W "$width" -H "$height" -- sh -c '"$@"; echo $? > "$0"' "$status_file" godot "$@"
+        status=$(cat "$status_file" 2>/dev/null)
+        rm -f "$status_file"
+        [ "$status" = 0 ] && return 0
+        echo "Rendered Godot test failed (status ${status:-none}): $*" >&2
+        return 1
+    fi
+    if [ -n "${DISPLAY:-}" ]; then
+        godot "$@"
+        return $?
+    fi
+    echo "Rendered Godot tests need gamescope or a display: $*" >&2
+    return 1
+}
+
 godot_import_metadata_has_missing_outputs() {
     local import_file="$1"
     local dest
@@ -1061,7 +1088,7 @@ if [ $TEST -eq 1 ]; then
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test \
         zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
-        debug_visual_modes_test junction_debug_overlay_test road_rejection_report_test \
+        junction_debug_overlay_test road_rejection_report_test \
         agent_inspector_test street_lamp_grid_test graded_tile_renderer_test; do
         bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
@@ -1097,80 +1124,36 @@ if [ $TEST -eq 1 ]; then
             exit 1
         fi
     done
-    if [ "$METRUM_PLATFORM" = "linux" ] && command -v xvfb-run >/dev/null 2>&1; then
-        echo "Running rendered terrain shader tests..."
-        if ! xvfb-run -a godot --display-driver x11 --rendering-method gl_compatibility \
-            --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
-            exit 1
-        fi
-        if ! xvfb-run -a godot --display-driver x11 --rendering-method gl_compatibility \
-            --audio-driver Dummy --resolution 128x128 --script res://tests/graded_cells_shader_test.gd; then
-            exit 1
-        fi
-        # Headless cannot show what the shaders receive; this run reads the debug-view globals.
-        if ! xvfb-run -a godot --display-driver x11 --rendering-method gl_compatibility \
-            --audio-driver Dummy --resolution 128x128 --script res://tests/debug_visual_modes_test.gd; then
-            exit 1
-        fi
-    elif [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
-        echo "Running rendered terrain shader tests on $DISPLAY..."
-        if ! godot --display-driver x11 --rendering-method gl_compatibility \
-            --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
-            exit 1
-        fi
-        if ! godot --display-driver x11 --rendering-method gl_compatibility \
-            --audio-driver Dummy --resolution 128x128 --script res://tests/graded_cells_shader_test.gd; then
-            exit 1
-        fi
-        if ! godot --display-driver x11 --rendering-method gl_compatibility \
-            --audio-driver Dummy --resolution 128x128 --script res://tests/debug_visual_modes_test.gd; then
-            exit 1
-        fi
-    elif [ "$METRUM_PLATFORM" = "linux" ]; then
-        echo "Rendered terrain shader tests skipped: no xvfb-run and no DISPLAY."
-    else
-        echo "Rendered terrain shader tests skipped on macOS: the Xvfb/X11 path is Linux-only and a direct macOS renderer path is not yet validated."
-    fi
-    # Forward+ only: both compare what the shipped renderer draws, and the compatibility
-    # backend does not draw it. There is no Xvfb path for Vulkan here.
-    if [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
-        echo "Running rendered vegetation level match test on $DISPLAY..."
-        if ! godot --audio-driver Dummy --resolution 640x480 \
-            --script res://tests/vegetation_level_match_test.gd; then
-            exit 1
-        fi
-        echo "Running rendered vegetation wind gate test on $DISPLAY..."
-        if ! godot --audio-driver Dummy --resolution 640x480 \
-            --script res://tests/vegetation_wind_gate_test.gd; then
-            exit 1
-        fi
-    else
-        echo "Rendered vegetation tests skipped: they need a Forward+ display."
-    fi
-    # Plot and paving lighting (RENDER-13), Forward+: on $DISPLAY, else in gamescope's headless
-    # backend. gamescope exits 0 whatever its child returns, so the test's status comes back
-    # through a file and a failure fails the run.
-    for plot_test_script in plot_material_lighting_test plot_dawn_lighting_test; do
-        plot_test_command=(godot --path "$asset_test_project" --audio-driver Dummy --resolution 640x480 \
-            --script "res://tests/${plot_test_script}.gd" -- --asset-editor)
-        if [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
-            echo "Running $plot_test_script on $DISPLAY..."
-            if ! "${plot_test_command[@]}"; then
+    # Rendered tests: the terrain shaders and the debug-view shader globals on the compatibility
+    # renderer, the vegetation comparisons and the plot and paving lighting (RENDER-13) on
+    # Forward+, which the compatibility backend does not draw.
+    if [ "$METRUM_PLATFORM" = "linux" ]; then
+        for rendered_test_script in terrain_overlay_shader_test graded_cells_shader_test \
+            debug_visual_modes_test; do
+            echo "Running rendered $rendered_test_script..."
+            if ! run_rendered_godot_test 128 128 --path "$asset_test_project" --display-driver x11 \
+                --rendering-method gl_compatibility --audio-driver Dummy --resolution 128x128 \
+                --script "res://tests/${rendered_test_script}.gd"; then
                 exit 1
             fi
-        elif [ "$METRUM_PLATFORM" = "linux" ] && command -v gamescope >/dev/null 2>&1; then
-            echo "Running $plot_test_script in gamescope's headless backend..."
-            plot_test_status="$asset_test_profile/${plot_test_script}.status"
-            env -u WAYLAND_DISPLAY timeout 600 gamescope --backend headless -W 640 -H 480 -- \
-                sh -c '"$@"; echo $? > "$0"' "$plot_test_status" "${plot_test_command[@]}"
-            if [ "$(cat "$plot_test_status" 2>/dev/null)" != 0 ]; then
-                echo "$plot_test_script failed (status $(cat "$plot_test_status" 2>/dev/null || echo none))"
+        done
+        for rendered_test_script in vegetation_level_match_test vegetation_wind_gate_test; do
+            echo "Running rendered $rendered_test_script..."
+            if ! run_rendered_godot_test 640 480 --path "$asset_test_project" --audio-driver Dummy \
+                --resolution 640x480 --script "res://tests/${rendered_test_script}.gd"; then
                 exit 1
             fi
-        else
-            echo "$plot_test_script skipped: it needs a Forward+ display or gamescope."
-        fi
-    done
+        done
+        for rendered_test_script in plot_material_lighting_test plot_dawn_lighting_test; do
+            echo "Running rendered $rendered_test_script..."
+            if ! run_rendered_godot_test 640 480 --path "$asset_test_project" --audio-driver Dummy \
+                --resolution 640x480 --script "res://tests/${rendered_test_script}.gd" -- --asset-editor; then
+                exit 1
+            fi
+        done
+    else
+        echo "Rendered Godot tests skipped on macOS: the gamescope path is Linux-only and a direct macOS renderer path is not yet validated."
+    fi
     exit 0
 fi
 

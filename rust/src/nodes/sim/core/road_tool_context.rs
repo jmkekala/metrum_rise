@@ -307,8 +307,8 @@ impl RoadToolShared {
     }
 
     /// Takes newer terrain inputs into the context and the view, between publications: the
-    /// Godot thread publishes them after inserting refined entries its payload jobs built, so
-    /// the next preview reuses them as the commit will (`ROAD-68-E`).
+    /// Godot thread publishes them when it drains terrain payload jobs while patches are noted,
+    /// so the next preview reads them as the commit will (`ROAD-68-E`).
     pub(crate) fn publish_terrain_inputs(&self, inputs: RoadTerrainInputs) {
         let mut context = self
             .context

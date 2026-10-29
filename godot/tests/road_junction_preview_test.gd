@@ -447,14 +447,14 @@ func _capture_terrain() -> Node3D:
 			instance.mesh = renderer._terrain_patch_mesh_from_data(data, 1, 1)
 			instance.position = Vector3(data["world_origin_x"] + data["world_size_x"] * 0.5, 0.0, data["world_origin_z"] + data["world_size_z"] * 0.5)
 			var material := StandardMaterial3D.new()
-			# The production terrain shader renders both sides of the CDT winding.
+			# Both sides draw, so the capture does not depend on the patch mesh's winding.
 			material.cull_mode = BaseMaterial3D.CULL_DISABLED
 			material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 			material.albedo_color = Color(0.22, 0.34, 0.18)
 			instance.material_override = material
 			result.add_child(instance)
 		await process_frame
-	# Elevated bridges can have no ground cutout. The payload ownership flags above govern CDT.
+	# Elevated bridges can have no ground cutout.
 	_expect(pending.is_empty(), "terrain capture must load all four central patches with current road ownership")
 	renderer.free()
 	return result

@@ -53,8 +53,9 @@ impl SimulationNode {
     ) -> (Vec<TerrainPatchPayload>, Vec<TerrainPatchPayloadRequest>) {
         let drained =
             Self::finish_terrain_patch_payload_jobs(&self.core, &self.terrain_patch_payload_jobs);
-        // The entries just inserted reach the road tool's terrain inputs now, not at the next
-        // edit's publication (`ROAD-68-E`). `O(noted patches)`, never blocking on the core.
+        // Patches noted since the last publication reach the road tool's terrain inputs now,
+        // not at the next edit's publication (`ROAD-68-E`). `O(noted patches)`, never blocking
+        // on the core.
         if !drained.0.is_empty()
             && let Some(mut core) = Self::try_lock_shared_core(&self.core)
             && core.road_terrain_inputs.has_changes()

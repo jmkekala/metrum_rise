@@ -131,8 +131,7 @@ impl Dependencies {
 
     // Whether the inputs whose generation moved between the epochs `then` (the capture's, or the
     // last check's) and `now` still hold their captured values: an unmoved generation leaves
-    // its inputs unchanged, so only the moved ones are compared. The solve reads the base, not
-    // the visual buffer.
+    // its inputs unchanged, so only the moved ones are compared. The solve reads the base.
     fn matches(
         &self,
         then: Epoch,

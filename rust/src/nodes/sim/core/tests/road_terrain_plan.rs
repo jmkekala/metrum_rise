@@ -1640,8 +1640,6 @@ fn kuopio_saved_reference_profiles_preserve_quality_limits() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// The refined terrain after each recorded stroke: exported seams, tile seams, window bounds and
-// the CDT's constraint edges.
 #[test]
 fn orthogonal_zoning_block_terrain_previews_and_commits() {
     orthogonal_zoning_block_at_angle(0.0);
@@ -1850,8 +1848,7 @@ fn bulk_trunk_world(background: usize) -> SimCore {
     core
 }
 
-// The patches whose refined terrain one T-branch commit on the trunk built: every cache entry
-// it added or replaced.
+// The graded tiles one T-branch commit on the trunk bakes.
 fn tiles_graded_by_trunk_branch(core: &mut SimCore) -> Vec<(i32, i32)> {
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);

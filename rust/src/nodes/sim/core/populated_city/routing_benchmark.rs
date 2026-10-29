@@ -1269,7 +1269,7 @@ pub(super) fn profile_commits(
     };
     for (sample, start) in starts.into_iter().enumerate() {
         // Godot also uploads and acknowledges every terrain patch dirtied before the click
-        // (`acknowledge_uploads`), so the commit's road-locked terrain state walks its own.
+        // (`acknowledge_uploads`), so the commit publishes only the terrain patches it dirties.
         let terrain = core.terrain_dirty_patch_states();
         core.acknowledge_terrain_render_patches(&terrain);
         // The roadbed before the commit, for the graded terrain's dirty tiles (`O(1)`).

@@ -177,7 +177,7 @@ func _run() -> void:
 func _benchmark(renderer: Node3D, source: RenderSource) -> void:
 	# Time the production update/bridge/upload path separately from correctness oracles and setup.
 	# Lane cars are smoothing only; off-lane cars add the native support solve. This synthetic
-	# surface has no CDT/site owners; the Rust Kuopio batch bench covers those.
+	# surface has no road or site owners; the Rust Kuopio batch bench covers those.
 	for grounded in [0, 1]:
 		for count in [100, 1000, 5000, 20000]:
 			var packed := PackedFloat32Array()

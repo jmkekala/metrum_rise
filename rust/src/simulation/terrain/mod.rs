@@ -233,9 +233,7 @@ impl TerrainSystem {
         self
     }
 
-    /// Sets the height at a specific grid coordinate.
-    ///
-    /// Updates both source and visual buffers.
+    /// Sets the height at a specific grid coordinate and marks the render patches over it.
     pub fn set_height(&mut self, x: usize, y: usize, value: f32) {
         if x < self.width && y < self.height {
             self.source_generation = self.source_generation.wrapping_add(1);

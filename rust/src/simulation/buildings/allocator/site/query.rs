@@ -396,7 +396,7 @@ impl BuildingSiteClient {
 
     #[cfg(test)]
     pub(super) fn height_at(&self, pos: Vector2) -> Option<f32> {
-        // Aprons are owned by engineered terrain, not an independent flat plane.
+        // Aprons are owned by the graded terrain, not an independent flat plane.
         self.contains_point(pos).then_some(self.support_height_m)
     }
 

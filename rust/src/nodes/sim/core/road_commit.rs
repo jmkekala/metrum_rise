@@ -69,7 +69,7 @@ pub(crate) struct RoadCommitOutcome {
 
 impl SimCore {
     /// Validates and commits one road stroke, then refreshes lanes, agents, entrances, routing,
-    /// road meshes and road-locked terrain. A rejected stroke leaves the network unchanged and is
+    /// road meshes and the graded terrain. A rejected stroke leaves the network unchanged and is
     /// reported on `events` with its exact inputs.
     ///
     /// `road_total` starts the command's wall-clock measurement; `edit_metrics` arrives with

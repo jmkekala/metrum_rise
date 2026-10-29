@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The road tool's terrain inputs (`ROAD-68-E`): per render patch, the building sites within the
-//! widest road query margin, which the preview's graded tiles read (`TERRAIN-07-E`; the exact
-//! cut's preview patches, which also read the patch's refined cache entry, assembly ledger and
-//! site ownership, are retired), in a persistent map the road tool's view shares in `O(1)`.
+//! widest road query margin, which the preview's graded tiles read (`TERRAIN-07-E`), in a
+//! persistent map the road tool's view shares in `O(1)`.
 //!
-//! The core notes every patch whose inputs may have changed (generation bumps, ledger stamps
-//! and acknowledgements, cache inserts and removals, ownership refreshes, site changes) and
-//! rebuilds only those patches when it publishes; a world reset rebuilds every patch. Only a
-//! patch noted for a site change queries the sites again: the other notes change the entry or
-//! the ledger, and the patch keeps its sites and site ownership. A missed
-//! note cannot change a commit: the commit compares its own sources with the preview's and
-//! builds its terrain itself on any difference. Docs: `docs/roads.md` "Preview, commit, undo
-//! and load".
+//! The core notes every patch whose inputs may have changed and rebuilds only those patches
+//! when it publishes; a world reset rebuilds every patch. Only a patch noted for a site change
+//! queries the sites again; any other noted patch keeps its sites. A missed note cannot change a
+//! commit: the commit compares its own sources with the preview's and builds its terrain itself
+//! on any difference. Docs: `docs/roads.md` "Preview, commit, undo and load".
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -34,10 +30,6 @@ pub(crate) struct RoadTerrainPatchInputs {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RoadTerrainInputs {
     pub(crate) patches: imbl::OrdMap<(usize, usize), Arc<RoadTerrainPatchInputs>>,
-    /// The core's global terrain payload generation.
-    pub(crate) global_generation: u64,
-    /// True while a batched terrain stroke is open: refined sources wait for its end.
-    pub(crate) stroke_active: bool,
     /// Increases whenever any of the above changes; a newer revision replaces an older one.
     pub(crate) revision: u64,
 }
@@ -126,12 +118,7 @@ impl SimCore {
         };
         let sites_changed = std::mem::take(&mut log.sites_changed);
         let all = std::mem::replace(&mut log.all, false);
-        let global_generation = self.terrain_payload_global_generation;
-        let stroke_active = self.terrain_stroke_active;
-        let changed = all
-            || !keys.is_empty()
-            || self.road_terrain_inputs.inputs.global_generation != global_generation
-            || self.road_terrain_inputs.inputs.stroke_active != stroke_active;
+        let changed = all || !keys.is_empty();
         if !keys.is_empty() {
             self.allocator
                 .prepare_building_site_query_index(self.config.zone_cell_m);
@@ -151,8 +138,6 @@ impl SimCore {
                 .insert(key, Arc::new(inputs));
         }
         let inputs = &mut self.road_terrain_inputs.inputs;
-        inputs.global_generation = global_generation;
-        inputs.stroke_active = stroke_active;
         if changed {
             inputs.revision += 1;
         }
