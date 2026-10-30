@@ -9,6 +9,8 @@
 ## In every frame no patch draws its PlaneMesh where its list names a graded tile or has not
 ## arrived, and while patches stream in no set draws with a listed tile missing (T53 (a)); a
 ## world load hands the game over only once the production renderer has settled.
+## A rendered Forward+ run enables FSR 2 and checks the actual instance transforms and custom
+## data after hidden builds, level moves and recycling (TERRAIN-10); headless keeps the CPU checks.
 extends SceneTree
 
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
@@ -43,6 +45,17 @@ func _expect(condition: bool, message: String) -> void:
 func _run() -> void:
 	var host := Node3D.new()
 	root.add_child(host)
+	if DisplayServer.get_name() != "headless" and RenderingServer.get_current_rendering_method() == "forward_plus":
+		root.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR2
+		root.scaling_3d_scale = 0.5
+		var render_camera := Camera3D.new()
+		host.add_child(render_camera)
+		render_camera.position = Vector3(0.0, 80.0, 80.0)
+		render_camera.look_at(Vector3.ZERO)
+		render_camera.make_current()
+		# Activate motion-vector buffers before the cell sets are created.
+		for frame in 3:
+			await process_frame
 	var simulation := SimulationNode.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
@@ -794,6 +807,12 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 		var multimesh: MultiMesh = (nodes[index] as MultiMeshInstance3D).multimesh
 		var written: Array = (cells["custom"][index] as Array).slice(0, counts[index])
 		_expect(multimesh.visible_instance_count == written.size(), "visible instances match the written ones")
+		if DisplayServer.get_name() != "headless":
+			for instance in written.size():
+				_expect(multimesh.get_instance_transform(instance).is_equal_approx(Transform3D.IDENTITY),
+					"patch %s mesh %d cell %d keeps its identity transform" % [key, index, instance])
+				_expect(multimesh.get_instance_custom_data(instance) == written[instance],
+					"patch %s mesh %d cell %d keeps its tile data" % [key, index, instance])
 		total += written.size()
 		for data: Color in written:
 			# The tile's place in the patch (column + 32 row) and the codes in two channels.

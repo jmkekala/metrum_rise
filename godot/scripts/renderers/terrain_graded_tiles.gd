@@ -59,6 +59,8 @@ const CELL_MESHES := 9
 const CELL_BASE := 4
 const CELL_BEHIND := 5
 const CELL_PLAIN := 5
+# Three transform rows followed by custom data, as MultiMesh.TRANSFORM_3D packs them.
+const CELL_INSTANCE_FLOATS := 16
 # Wall face instances per patch, prewarmed with its cells: at most 42 faces per patch on the
 # Kuopio reference save and none on the populated save (TERRAIN-07-D round 6 census, GL0). A
 # patch with more draws the first ones and counts and logs the rest.
@@ -2025,6 +2027,7 @@ func _update_cell_tiles(resident_patches: Dictionary) -> void:
 				touched[key] = true
 	_dirty_cell_tiles.clear()
 	for key: Vector2i in touched.keys():
+		_flush_cell_buffers(patch_cells[key])
 		_dirty_shown[key] = true
 
 # The grading payload shown by `tile` changed. Grass mirrors the cell buffers, so each resident
@@ -2064,7 +2067,7 @@ func _update_tile_cell(cells: Dictionary, tile: Vector2i, patch: Dictionary, res
 		if records[at.x][at.y] == custom:
 			return false
 		records[at.x][at.y] = custom
-		(nodes[at.x] as MultiMeshInstance3D).multimesh.set_instance_custom_data(at.y, custom)
+		_write_cell(cells, at.x, at.y, custom)
 		_frame_write_us += Time.get_ticks_usec() - write_us
 		_frame_written += 1
 		return true
@@ -2076,18 +2079,44 @@ func _update_tile_cell(cells: Dictionary, tile: Vector2i, patch: Dictionary, res
 		records[at.x][at.y] = records[at.x][end]
 		tile_at[at.x][at.y] = moved
 		where[_cell_place(cells, moved)] = at
-		(nodes[at.x] as MultiMeshInstance3D).multimesh.set_instance_custom_data(at.y, records[at.x][at.y])
+		_write_cell(cells, at.x, at.y, records[at.x][at.y])
 	_set_cell_count(nodes[at.x], counts, at.x, end)
 	var index := counts[mesh_index]
 	records[mesh_index][index] = custom
 	tile_at[mesh_index][index] = tile
 	where[place] = Vector2i(mesh_index, index)
-	(nodes[mesh_index] as MultiMeshInstance3D).multimesh.set_instance_custom_data(index, custom)
+	_write_cell(cells, mesh_index, index, custom)
 	_set_cell_count(nodes[mesh_index], counts, mesh_index, index + 1)
 	_frame_write_us += Time.get_ticks_usec() - write_us
 	_frame_written += 1
 	_frame_moved += 1
 	return true
+
+# Edit the authoritative CPU buffer, never Godot's partial per-instance cache (TERRAIN-10).
+# Its motion-vector buffer switches can lose both transforms and unchanged custom data after
+# hidden writes or count changes. All identity transforms are already in this buffer. O(1).
+static func _write_cell(cells: Dictionary, mesh_index: int, index: int, custom: Color) -> void:
+	var buffer: PackedFloat32Array = cells["buffers"][mesh_index]
+	var offset := index * CELL_INSTANCE_FLOATS + 12
+	buffer[offset] = custom.r
+	buffer[offset + 1] = custom.g
+	buffer[offset + 2] = custom.b
+	buffer[offset + 3] = custom.a
+	cells["buffer_dirty"][mesh_index] = 1
+
+# One complete publication per changed mesh in this batch. Never read MultiMesh.buffer back
+# or mix bulk and per-instance writes: that would stall on GPU read-back. O(dirty meshes x the
+# bounded patch capacity), the same whole dirty region Godot uploaded for partial writes.
+func _flush_cell_buffers(cells: Dictionary) -> void:
+	var start_us := Time.get_ticks_usec()
+	var dirty: PackedByteArray = cells["buffer_dirty"]
+	var nodes: Array = cells["nodes"]
+	for index in nodes.size():
+		if dirty[index] == 0:
+			continue
+		(nodes[index] as MultiMeshInstance3D).multimesh.buffer = cells["buffers"][index]
+		dirty[index] = 0
+	_frame_write_us += Time.get_ticks_usec() - start_us
 
 static func _set_cell_count(node: MultiMeshInstance3D, counts: Array[int], index: int, count: int) -> void:
 	counts[index] = count
@@ -2153,12 +2182,6 @@ func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 	for node: MultiMeshInstance3D in cells["nodes"]:
 		node.multimesh.visible_instance_count = 0
 		node.visible = false
-		if not bool(cells["local"]):
-			# The shader places the vertices, so every instance keeps the identity transform
-			# (a new instance's is zero). Once per set: the data stays on the CPU (_new_cells).
-			for instance in _cells_per_patch:
-				node.multimesh.set_instance_transform(instance, Transform3D.IDENTITY)
-	cells["local"] = true
 	if bool(cells["shown"]):
 		_set_cell_meshes(cells)
 	return cells
@@ -2200,13 +2223,14 @@ func _build_tiles(cells: Dictionary, patch: Dictionary, resident_patches: Dictio
 	var written := 0
 	while built < tiles.size():
 		if start_us >= 0 and written >= minimum and _over_budget(start_us):
+			_flush_cell_buffers(cells)
 			cells["built"] = built
 			return false
 		var tile := tiles[built]
 		var mesh_index := _cell_mesh(tile, cells["key"])
 		var custom := _cell_custom(tile, first, patch, resident_patches, cells["key"])
 		var index := counts[mesh_index]
-		(nodes[mesh_index] as MultiMeshInstance3D).multimesh.set_instance_custom_data(index, custom)
+		_write_cell(cells, mesh_index, index, custom)
 		records[mesh_index][index] = custom
 		tile_at[mesh_index][index] = tile
 		where[_cell_place(cells, tile)] = Vector2i(mesh_index, index)
@@ -2214,6 +2238,7 @@ func _build_tiles(cells: Dictionary, patch: Dictionary, resident_patches: Dictio
 		built += 1
 		written += 1
 	cells["built"] = built
+	_flush_cell_buffers(cells)
 	for index in nodes.size():
 		_set_cell_count(nodes[index], counts, index, counts[index])
 	var walls_us := Time.get_ticks_usec()
@@ -2732,7 +2757,10 @@ func _new_cells() -> Dictionary:
 	# count, per tile place its (mesh, instance), all sized once here.
 	var records := []
 	var tile_at := []
-	_add_cell_records(records, tile_at, CELL_PLAIN)
+	var buffers := []
+	_add_cell_records(records, tile_at, buffers, CELL_PLAIN)
+	var buffer_dirty := PackedByteArray()
+	buffer_dirty.resize(CELL_MESHES)
 	var where: Array[Vector2i] = []
 	where.resize(_cells_per_patch)
 	var counts: Array[int] = []
@@ -2742,22 +2770,21 @@ func _new_cells() -> Dictionary:
 		# Whether it holds the behind variant's meshes, and the culling box its nodes take.
 		"variant": false, "aabb": AABB(),
 		"custom": records, "tile_at": tile_at, "where": where, "counts": counts,
+		"buffers": buffers, "buffer_dirty": buffer_dirty,
 		"first": Vector2i.ZERO, "last": Vector2i(-1, -1), "tiles": [] as Array[Vector2i], "step": -1, "rect_hm": Vector4i.ZERO,
 		# Its patch, and the page its materials bind per level (-1: none).
 		"key": Vector2i.ZERO, "pages": [-1, -1, -1, -1],
 		# The tiles its build has written (-1: not begun), whether it synced its material for
 		# this build and whether it draws its patch.
 		# and whether it drew complete in its patch's residency (_draw_state).
-		"built": -1, "synced": false, "shown": false, "complete": false, "values": [], "sync_next": 0, "local": false,
+		"built": -1, "synced": false, "shown": false, "complete": false, "values": [], "sync_next": 0,
 	}
 
 # Cell mesh `index` of a set: its MultiMesh of the patch's tile places and its node, and its
-# material (none for the base cells). No buffer is written here: the set's first build writes its
-# instances' identity transforms one by one (_begin_build, _add_variant), so the RenderingServer
-# keeps the MultiMesh's data on the CPU from the start. A bulk buffer lives on the GPU only, and
-# the first per-instance write after it reads the whole buffer back, stalling on the GPU (0.5-2.1
-# ms a MultiMesh on the real display, `TERRAIN-07-E` round 6), which a pose's first tile moving
-# into a level's mesh paid. One material per graded level and variant, so a draw binds only its
+# material (none for the base cells). The renderer owns the CPU buffers (_add_cell_records),
+# writes cells there and publishes complete changed meshes (_flush_cell_buffers). No per-instance
+# RenderingServer write follows a bulk upload, so no GPU read-back (TERRAIN-07-E round 6).
+# One material per graded level and variant, so a draw binds only its
 # page's two samplers (bound per patch, _bind_page).
 func _add_cell_mesh(nodes: Array, materials: Array[ShaderMaterial], index: int) -> void:
 	var multimesh := MultiMesh.new()
@@ -2780,8 +2807,8 @@ func _add_cell_mesh(nodes: Array, materials: Array[ShaderMaterial], index: int) 
 	counters["materials_created"] += 1
 	materials.append(material)
 
-# `meshes` more cell meshes' records: per instance its custom data and tile.
-func _add_cell_records(records: Array, tile_at: Array, meshes: int) -> void:
+# `meshes` more cell meshes' records and complete CPU buffers, allocated only in the build path.
+func _add_cell_records(records: Array, tile_at: Array, buffers: Array, meshes: int) -> void:
 	for index in meshes:
 		var custom: Array[Color] = []
 		custom.resize(_cells_per_patch)
@@ -2789,11 +2816,19 @@ func _add_cell_records(records: Array, tile_at: Array, meshes: int) -> void:
 		var tiles: Array[Vector2i] = []
 		tiles.resize(_cells_per_patch)
 		tile_at.append(tiles)
+		var buffer := PackedFloat32Array()
+		buffer.resize(_cells_per_patch * CELL_INSTANCE_FLOATS)
+		for instance in _cells_per_patch:
+			var offset := instance * CELL_INSTANCE_FLOATS
+			buffer[offset] = 1.0
+			buffer[offset + 5] = 1.0
+			buffer[offset + 10] = 1.0
+		buffers.append(buffer)
 
 # Gives a set the behind-the-road variant's four cell meshes and materials (T49 (c)), as its patch
 # takes its first flagged tile: in the build path only (_begin_build, _advance_builds), never in a
 # frame path. They take the set's state as it stands, so a set drawing its patch draws on: empty
-# meshes under its root with its culling box (and, built, their identity transforms), materials
+# meshes under its root with its culling box, materials
 # binding its pages and holding its synced parameters, the meshes and instance uniforms of a
 # drawing set and its bound materials. A set keeps them through the pool (`TERRAIN-07-G` round
 # 10): each set creates them at most once, so streaming creates and frees no node, and a set that
@@ -2807,11 +2842,8 @@ func _add_variant(cells: Dictionary) -> void:
 		var node: MultiMeshInstance3D = nodes[index]
 		node.multimesh.custom_aabb = aabb
 		node.custom_aabb = aabb
-		if bool(cells["local"]):
-			for instance in _cells_per_patch:
-				node.multimesh.set_instance_transform(instance, Transform3D.IDENTITY)
 		(cells["root"] as Node).add_child(node)
-	_add_cell_records(cells["custom"], cells["tile_at"], CELL_MESHES - CELL_PLAIN)
+	_add_cell_records(cells["custom"], cells["tile_at"], cells["buffers"], CELL_MESHES - CELL_PLAIN)
 	cells["variant"] = true
 	counters["cell_variants_created"] += 1
 	var pages: Array = cells["pages"]
