@@ -38,8 +38,8 @@ On the `road` branch:
   Clippy warnings and passes its own tests
 - save compatibility is not maintained; no road-surface geometry is saved, and load rebuilds every
   piece from the graph
-- the legacy compiler stays available for visual comparison at tag `road-legacy` (`d6c80f91`,
-  created in `ROAD-68-A`); `main` dropped it on 2026-10-30
+- the legacy compiler stays available for visual comparison at `d6c80f91`, the last commit before
+  `ROAD-68-A` removed it (tagged `road-legacy` until 2026-10-30)
 
 ### Why junctions can be constructed
 
