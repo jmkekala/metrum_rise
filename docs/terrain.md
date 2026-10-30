@@ -4239,17 +4239,50 @@ km.
   makes a new one; before round 6 every load leaked the previous world's sets): `dispose()` frees
   each pooled set through its root, and a renderer dropped without it frees its sets on deletion
   (until `TERRAIN-07-G` round 10 `dispose()` freed a set's nodes but left its root, one orphan node
-  per set per load, round 9C). A set's
-  MultiMeshes keep their data on the CPU from its first build, which writes the instances'
-  identity transforms one by one: a bulk buffer lives on the GPU only, and the first
-  per-instance write after it reads the whole buffer back, stalling 0.5-2.1 ms (a pose's
-  tile moving into a level's mesh paid it). A patch's first graded
-  tile is so a per-tile update and a flip, `O(1)` in the patch's tiles, in any frame. A tile whose
+  per set per load, round 9C). **Complete cell buffers (`TERRAIN-10`, 2026-10-30).** The
+  renderer owns preallocated CPU buffers (three identity transform rows and four custom floats
+  per instance), edits each changed cell in `O(1)`, and publishes each dirty mesh's complete
+  buffer at the batch boundary. It never follows a bulk upload with a per-instance
+  RenderingServer write or reads the buffer back, avoiding the earlier 0.5-2.1 ms read-back
+  stalls. Publication is `O(dirty meshes × patch capacity)` (81 cells per mesh on 510 m patches,
+  5,184 bytes), independent of city size; Godot's partial writes already uploaded that whole
+  dirty region. Idle frames publish nothing. Godot 4.7.2's partial instance cache can lose
+  transforms and unchanged custom data across motion-vector buffer switches during hidden
+  builds and count changes: at 50% FSR 2 the settled road cells had zero transforms and drew
+  sky rectangles. Reproduced on macOS M2 Pro under both Metal and Vulkan/MoltenVK; 100% drew
+  correctly, and changing the view distance alone did not reproduce it. The rendered
+  `graded_tile_renderer_test.gd` now enables FSR 2 and checks actual transforms and custom data
+  through builds, level moves and recycling (original renderer: 1,501 failures; fixed: zero on
+  both backends). Shader code, mesh formats, bounds and the complete-selection handoff are
+  unchanged. A patch's first graded tile remains a per-tile update and a flip, plus publication
+  of its changed meshes' bounded buffers. A tile whose
   patch's set is not built yet (after a load or a step change) draws once it is: the preview's
   lag of [T27](#terrain-07-open-questions) (d) for a previewed tile, the streaming's otherwise. A
   drawing set whose patch changes step (a camera move) is still rewritten whole in that frame,
   as before. After a world load the builds take the whole frame while the load flow holds the
   game ([what a patch draws](#godot-tile-renderer)); otherwise the streaming budget's spare time.
+- **`TERRAIN-10` macOS verification** (2026-10-30, M2 Pro, Godot 4.7.2). With 50% FSR 2,
+  the fresh 500 m one-road map and the supplied save draw correctly at five poses/zooms;
+  Metal and Vulkan rendered regressions pass. Headless graded renderer, surface debug,
+  junction preview and preview stream checks pass. The unchanged overlay shader still fails
+  two canopy-lighting assertions; macOS Compatibility still exceeds its 16 fragment samplers
+  (26–29 used). The full `./run.sh --test` stops in unchanged Rust road-reference hash checks
+  (1,843 passed, two failed, 177 ignored), before its Godot batch; Clippy passes without warnings.
+  Same-session unprofiled release smoke measurement: Rust `51811045`, renderer `51811045` versus
+  `ea22dddc`, four Rayon workers, Metal Forward+, 960 × 640 at 100%, the existing
+  `graded_edit_probe.gd` loading the one-road save and adding a parallel road. Three runs each:
+  four-tile edit installation 0.162–0.173 ms before, 0.145–0.172 ms after; zero new images,
+  textures, materials, meshes or MultiMeshes per edit. Setup is separate; these are local CPU
+  installation measurements, not a large-city or GPU speedup claim. Reproduce the timed probe
+  in an isolated project (captures/logs under `$ARTIFACTS`):
+
+  ```sh
+  RAYON_NUM_THREADS=4 METRUM_GRADED_PROBE_SAVE="$ARTIFACTS/one-road.sqlite" \
+    METRUM_GRADED_PROBE_AT="0,10" METRUM_GRADED_PROBE_ROAD="-100,70,100,70" \
+    METRUM_GRADED_PROBE_HEIGHT=60 METRUM_GRADED_PROBE_OUT="$ARTIFACTS/edit.json" \
+    perl -e 'alarm 900; exec @ARGV' godot --path "$ARTIFACTS/project" \
+    --audio-driver Dummy --resolution 960x640 --script res://tests/graded_edit_probe.gd
+  ```
 - **What a patch draws** ([T53](#terrain-07-open-questions) (a), decided by the user,
   2026-10-28; built in `TERRAIN-07-G` round 7, `_draw_state`). One rule, from the frame a patch
   becomes resident: it draws its `PlaneMesh` only while its list is known to name no graded tile
