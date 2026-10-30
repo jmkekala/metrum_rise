@@ -5,10 +5,9 @@
 use super::data::AgentSystem;
 use super::tick::{BuiltTripPlan, plan_building_origin_trip, plan_building_to_border_trip};
 use super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACTIVITY_HOME, ACTIVITY_SHOPPING, MODE_CAR, MODE_WALK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACTIVITY_HOME, ACTIVITY_SHOPPING, MODE_WALK,
     TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK, age_group_can_work,
 };
-use crate::config::AGENT_DRIVEWAY_SPEED_MS;
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::TransitNetwork;
@@ -641,23 +640,31 @@ impl AgentSystem {
         self.agents.access_flags[agent_idx] = plan.access_flags;
         self.agents.next_replan_time[agent_idx] = 0.0;
         self.agents.network_replan_failures[agent_idx] = 0;
-        self.agents.enter_lane(
-            agent_idx,
-            &transit_network.lane_system,
-            plan.planned_attach_lane_id,
-            plan.planned_attach_lane_d,
-            origin_node,
-        );
+        // A vehicle waits at the curb for a clear attach slot, as egress does: every occupant
+        // of a removed building shares this attach point (`TRAFFIC-11`). Walkers enter at once.
+        if plan.mode == MODE_WALK {
+            self.agents.enter_lane(
+                agent_idx,
+                &transit_network.lane_system,
+                plan.planned_attach_lane_id,
+                plan.planned_attach_lane_d,
+                origin_node,
+            );
+        } else {
+            self.agents.hold_for_lane_attach(
+                agent_idx,
+                &transit_network.lane_system,
+                plan.planned_attach_lane_id,
+                plan.planned_attach_lane_d,
+                origin_node,
+            );
+        }
         self.agents.lane_change_from_lane_id[agent_idx] = u32::MAX;
         self.agents.lane_change_start_d[agent_idx] = 0.0;
         self.agents.lane_change_length_m[agent_idx] = 0.0;
         self.agents.overtake_blocked_time_s[agent_idx] = 0.0;
         self.agents.overtake_cooldown_s[agent_idx] = 0.0;
-        self.agents.speed[agent_idx] = if plan.mode == MODE_CAR {
-            edge.speed_limit.min(AGENT_DRIVEWAY_SPEED_MS)
-        } else {
-            0.0
-        };
+        self.agents.speed[agent_idx] = 0.0;
         self.agents.current_path[agent_idx] = plan.current_path;
         self.agents.current_path_index[agent_idx] =
             if self.agents.current_path[agent_idx].len() >= 2 {
@@ -780,6 +787,7 @@ impl AgentSystem {
     }
 
     fn clear_access_plan_and_path(&mut self, agent_idx: usize) {
+        let pending_attach = self.agents.pending_lane_attach(agent_idx);
         self.agents.planned_attach_node[agent_idx] = u32::MAX;
         self.agents.planned_detach_node[agent_idx] = u32::MAX;
         self.agents.planned_attach_lane_id[agent_idx] = u32::MAX;
@@ -790,6 +798,8 @@ impl AgentSystem {
         self.agents.current_path[agent_idx].clear();
         self.agents.current_path_index[agent_idx] = 0;
         self.agents.network_replan_failures[agent_idx] = 0;
+        self.agents
+            .keep_pending_lane_attach(agent_idx, pending_attach);
     }
 }
 
@@ -801,6 +811,7 @@ mod tests {
         Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass,
     };
     use crate::simulation::buildings::allocator::Building;
+    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_ACCESS_EGRESS};
     use crate::simulation::economy::definitions::{
         load_runtime_economy_catalog, load_runtime_economy_tuning,
     };
@@ -1037,6 +1048,140 @@ mod tests {
         assert_eq!(agents.agents.target_building[agent_idx], 1);
         assert_eq!(agents.agents.transit[agent_idx], TRANSIT_NETWORK);
         assert_eq!(agents.agents.current_edge[agent_idx], edge_idx);
+    }
+
+    // `roads` 1 km one-way car roads, each with an origin building at d 50 m whose `trucks`
+    // vehicles stand in egress, and their home at d 950 m on the same lane. Evacuating every origin, then ticking, returns each
+    // agent's lane state as exact bits (`TRAFFIC-11`).
+    fn run_evacuated_egress_queue(
+        roads: usize,
+        trucks: usize,
+        ticks: usize,
+        workers: usize,
+    ) -> Vec<(usize, u32, u32)> {
+        use crate::config::{CAR_LENGTH, IDM_S_MIN};
+        use crate::simulation::core::time::TimeSystem;
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap()
+            .install(|| {
+                let mut graph = RegionGraph::new();
+                for road in 0..roads {
+                    let z = road as f32 * 40.0;
+                    let a = graph.add_node(Vector3::new(0.0, 0.0, z), NodeType::Junction);
+                    let b = graph.add_node(Vector3::new(1_000.0, 0.0, z), NodeType::Junction);
+                    let mut edge = create_test_edge(a, b);
+                    edge.geometry = vec![Vector3::new(0.0, 0.0, z), Vector3::new(1_000.0, 0.0, z)];
+                    edge.physical_geometry = edge.geometry.clone();
+                    edge.physical_length = 1_000.0;
+                    edge.speed_limit = 14.0;
+                    // No sidewalk: the occupants must drive, and only vehicle lanes have gaps.
+                    edge.allowed_types = TransitFlags::CAR;
+                    edge.bkw_lanes = 0;
+                    graph.add_edge(edge);
+                }
+                graph.rebuild_adjacency_list();
+                let mut network = TransitNetwork::new();
+                network.lane_system.rebuild(&mut graph);
+                network.cch_graph = CchGraph::build(&graph);
+                let mut allocator = BuildingAllocator::new();
+                let asset_id = register_residential_test_asset(&mut allocator, "egress_queue");
+                for road in 0..roads {
+                    for (x, t) in [(50.0, 0.05), (950.0, 0.95)] {
+                        let mut building = create_test_building(road, &asset_id, x, t, 0);
+                        building.center_y += road as f32 * 40.0;
+                        allocator.buildings.push(building);
+                    }
+                }
+                allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+                allocator.rebuild_zone_index();
+
+                let mut agents = AgentSystem::new();
+                for road in 0..roads {
+                    let (origin, home) = (2 * road, 2 * road + 1);
+                    let door = allocator.entrances[origin].door_pos;
+                    for _ in 0..trucks {
+                        let i = agents.spawn_housed_agent(home, door.x, door.y);
+                        agents.agents.has_car[i] = true;
+                        agents.agents.transit_mode[i] = MODE_CAR;
+                        agents.agents.transit[i] = TRANSIT_ACCESS_EGRESS;
+                        agents.agents.current_building[i] = origin;
+                        agents.agents.freight_shipment_id[i] = 1_000 + i as u64;
+                    }
+                }
+                let mut households = HouseholdSystem::new();
+                for road in 0..roads {
+                    agents.evacuate_building_for_removal(
+                        2 * road,
+                        &mut households,
+                        &mut allocator,
+                        &network,
+                        &graph,
+                    );
+                }
+                let clock = TimeSystem::new();
+                let min_gap = CAR_LENGTH + IDM_S_MIN - 1e-3;
+                let lanes = network.lane_system.lanes.len();
+                let mut on_lane: Vec<Vec<f32>> = vec![Vec::new(); lanes];
+                let mut held = 0;
+                for tick in 0..=ticks {
+                    if tick > 0 {
+                        agents.tick(&allocator, &mut network, &mut graph, 0.25, &clock);
+                    }
+                    on_lane.iter_mut().for_each(Vec::clear);
+                    let a = &agents.agents;
+                    held = 0;
+                    for i in 0..a.len() {
+                        if a.current_lane_id[i] < lanes {
+                            on_lane[a.current_lane_id[i]].push(a.lane_distance[i]);
+                            continue;
+                        }
+                        // A truck that could not attach waits at its attach point, trip kept.
+                        assert_eq!(a.transit[i], TRANSIT_NETWORK, "agent {i} tick {tick}");
+                        assert_eq!(a.transit_mode[i], MODE_CAR, "agent {i}");
+                        assert!(a.pending_lane_attach(i).is_some(), "agent {i} tick {tick}");
+                        assert_eq!(a.speed[i], 0.0);
+                        assert_eq!(a.target_building[i], a.home_building[i]);
+                        assert_eq!(a.freight_shipment_id[i], 1_000 + i as u64);
+                        held += 1;
+                    }
+                    for (lane, cars) in on_lane.iter_mut().enumerate() {
+                        cars.sort_by(f32::total_cmp);
+                        for pair in cars.windows(2) {
+                            assert!(
+                                pair[1] - pair[0] >= min_gap,
+                                "tick {tick} lane {lane}: cars stacked at {} and {} ({} on it)",
+                                pair[0],
+                                pair[1],
+                                cars.len()
+                            );
+                        }
+                    }
+                    // Evacuation itself steps no car onto a lane.
+                    assert!(tick > 0 || held == roads * trucks, "tick 0: {held} held");
+                }
+                assert!(held > 0 && held < roads * trucks, "{held} still held");
+                let a = &agents.agents;
+                (0..a.len())
+                    .map(|i| {
+                        (
+                            a.current_lane_id[i],
+                            a.lane_distance[i].to_bits(),
+                            a.speed[i].to_bits(),
+                        )
+                    })
+                    .collect()
+            })
+    }
+
+    #[test]
+    fn evacuated_egress_queue_waits_for_attach_gaps() {
+        // 80 roads x 64 trucks cross the parallel classification chunk, so 1 and 8 workers
+        // schedule the held trucks differently; the results must not differ.
+        let one = run_evacuated_egress_queue(80, 64, 40, 1);
+        let eight = run_evacuated_egress_queue(80, 64, 40, 8);
+        assert!(one == eight, "worker count changed the lane state");
     }
 
     #[test]

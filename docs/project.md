@@ -31,8 +31,12 @@ their first lane has room instead of stacking on its first metre; the saved 100k
 ends its day with hundreds of trucks on one point, and the waiting trucks cost less agent-tick
 time than the serial hold would. The hold shows the border's real throughput, which the stacking
 hid: at 10k about 1,900 trucks wait at the single border by the end of a day and the out-of-stock
-rate rises by about 0.02 ([TRAFFIC-07](traffic.md#junction-connectors)). A second way trucks
-reach a full lane (`TRAFFIC-11`) is open.
+rate rises by about 0.02 ([TRAFFIC-07](traffic.md#junction-connectors)). Vehicles placed on the
+road outside movement (a removed building's occupants, road-edit reattachment, an aborted
+driveway entry) likewise wait at their attach point for a gap: a business failing beside a jammed
+road no longer drops its whole truck queue onto one point, and the saved 100k day ends with no
+lane over capacity ([TRAFFIC-11](traffic.md#junction-connectors)). A car whose route loops back
+to a detach point behind it still detaches at once (`TRAFFIC-13`, open).
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
 Splitting an incident edge now retains its independently solved physical support knots, and the
@@ -1384,6 +1388,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TRAFFIC-11` done (branch `port-r11-traffic11` on `port-r1-traffic07`, 2026-10-30): the bulk attach onto full lanes was a building removal's evacuation, which put every occupant vehicle on the building's attach point with no gap check (the egress queue waiting there). Vehicles placed outside movement (evacuation, road-edit reattachment onto a taken spot, invalid-ingress return) now wait lane-less at the attach point and attach through the egress gap check and claim, off the serial pass while the slot is full; saves keep the hold. Saved 100k day: 0 lanes over capacity and 0 stacked cars at 00:00 and 24:00, 234 vehicles waiting at attach points at day's end. Results in [`traffic.md`](traffic.md#junction-connectors); new `TRAFFIC-13` (detach before a looping route ends).
 - `TRAFFIC-07` done (branch `port-r1-traffic07`, 2026-10-30; ported from Veeti's road-chain branch, `a0df7f77`): node-origin cars check the lane entry gap and claim the lane like connector entry, and wait at their node (`HeldEntry`, off the serial pass) when it is full. 100k lane audit, `dev` against the fix: 14 against 2 lanes over capacity at the end of the day, 3,708 against 81 stacked cars; envelope deterministic, the two 10k out-of-stock notes return (border throughput). Results and commands in [`traffic.md`](traffic.md#junction-connectors); `TRAFFIC-11` tracks the remaining bulk attach.
 - `main` takes `road` (2026-10-30, fast-forward): the constructive roadbed (`ROAD-68`) and the graded terrain surface (`TERRAIN-07`, `TERRAIN-10`, `TERRAIN-15`) replace the legacy road-surface compiler and terrain core on `main`. Saves from before `ROAD-68` do not load (save compatibility was not kept, by the user's decision). The carried misses stay open under their own IDs: `TERRAIN-13`, `TERRAIN-14`, `PERF-12`, `RENDER-30`, `UI-08` and `terrain.md` T65.
 - `TERRAIN-15` done (branch `terrain15`, 2026-10-30): the game is playable while the map streams. A load or a new game hands the game over (input, camera, clock) once the terrain within 2 km of the camera is ready, not once every patch out to 8 km has settled; the far terrain streams on within the frame budget, its unready patches showing the background. Playable after 2.5-3.1 s instead of 6.0 s on a Kuopio save, 2.4-2.7 s instead of 5.9 s on a new game, 38.9-39.4 s instead of 48.1 s at 100k, whose 20 s load call and GDScript set builds (`TERRAIN-13`) remain. See [`terrain.md`](terrain.md#godot-tile-renderer) and T53.

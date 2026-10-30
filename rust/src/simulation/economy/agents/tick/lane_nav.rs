@@ -25,6 +25,21 @@ pub(super) fn lane_origin_node(
     })
 }
 
+/// Returns the origin node of a lane-attach hold's lane when the hold is still valid: the lane
+/// exists on the car's live edge and `lane_d` lies on it. O(1).
+pub(super) fn held_attach_origin(
+    lane_id: usize,
+    lane_d: f32,
+    edge: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<u32> {
+    let lane = transit_network.lane_system.lanes.get(lane_id)?;
+    let origin = lane_origin_node(lane_id, transit_network, graph)?;
+    (lane.edge_id == edge && !graph.edge(edge).deleted && (0.0..=lane.length).contains(&lane_d))
+        .then_some(origin)
+}
+
 /// Returns the road node where a road lane ends for its travel direction.
 pub(super) fn lane_terminal_node(
     lane_id: usize,

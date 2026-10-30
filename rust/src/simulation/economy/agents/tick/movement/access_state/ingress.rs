@@ -2,14 +2,14 @@
 
 //! Local access-ingress movement from the planned network lane to a building door.
 
-use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_NETWORK};
+use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_NETWORK};
 use super::super::super::access::{
     advance_along_local_access_path, local_access_path, local_access_point,
     local_access_should_log_step, local_access_side_label, local_access_target_segment,
     planned_detach_is_legal,
 };
 use super::super::super::planning::plan_network_replan;
-use super::super::super::slices::{MovementSlices, enter_lane};
+use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_attach};
 use super::super::super::trip_failures::FailureCause;
 use super::super::network::apply_network_replan;
 use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
@@ -165,14 +165,26 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         ) {
             *s_pos_x.get_mut(i) = ingress_origin.x;
             *s_pos_y.get_mut(i) = ingress_origin.y;
-            enter_lane!(
-                slices,
-                i,
-                transit_network,
-                detach_lane_id,
-                detach_lane_d,
-                *s_plan_detach_n.get(i)
-            );
+            // A car returns to the lane through an attach gap, as egress does (`TRAFFIC-11`).
+            if *s_tmode.get(i) == MODE_WALK {
+                enter_lane!(
+                    slices,
+                    i,
+                    transit_network,
+                    detach_lane_id,
+                    detach_lane_d,
+                    *s_plan_detach_n.get(i)
+                );
+            } else {
+                hold_for_lane_attach!(
+                    slices,
+                    i,
+                    transit_network,
+                    detach_lane_id,
+                    detach_lane_d,
+                    *s_plan_detach_n.get(i)
+                );
+            }
             *s_speed.get_mut(i) = 0.0;
             s_path.get_mut(i).clear();
             if crate::debug::Channel::Traffic.enabled() {

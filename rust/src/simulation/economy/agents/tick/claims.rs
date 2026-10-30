@@ -7,10 +7,11 @@ use super::super::{
     MODE_WALK, TRANSIT_ACCESS_EGRESS, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use super::access::planned_detach_is_legal;
-use super::lane_nav::lane_origin_node;
+use super::lane_nav::{held_attach_origin, lane_origin_node};
 use super::traffic::{
     LaneChangeParams, choose_lane_change, connector_turn_speed, junction_car_speed,
-    lane_change_finished, lane_entry_slot_clear, planned_lane_change_target,
+    lane_attach_slot_clear, lane_change_finished, lane_entry_slot_clear,
+    planned_lane_change_target,
 };
 use crate::config::CAR_JUNCTION_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -209,6 +210,31 @@ fn classify_network_claims(
     let network = preparation.network;
     let lane_id = agents.current_lane_id[i];
     if lane_id == usize::MAX || lane_id >= network.lane_system.lanes.len() {
+        if lane_id == usize::MAX
+            && let Some((attach_lane, attach_d)) = agents.pending_lane_attach(i)
+        {
+            // A car waiting at its attach point stays off the serial pass until the slot is
+            // clear; an invalid hold goes to the serial pass, which drops it. O(log bucket), no
+            // allocation.
+            let attach_lane = attach_lane as usize;
+            let held = held_attach_origin(
+                attach_lane,
+                attach_d,
+                agents.current_edge[i],
+                network,
+                preparation.graph,
+            )
+            .is_some()
+                && preparation
+                    .lane_buckets
+                    .get(attach_lane)
+                    .is_some_and(|bucket| !lane_attach_slot_clear(bucket, attach_d));
+            return if held {
+                MovementClaimMode::HeldEntry
+            } else {
+                MovementClaimMode::Dynamic
+            };
+        }
         return if lane_id == usize::MAX && first_entry_is_held(agents, i, preparation) {
             MovementClaimMode::HeldEntry
         } else {

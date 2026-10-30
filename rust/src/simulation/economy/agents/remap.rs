@@ -3,6 +3,7 @@
 //! Agent index repair after graph, lane, building, and household remaps.
 
 use super::data::AgentSystem;
+use super::tick::lane_attach_slot_clear;
 use super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_IN_BUILDING,
     TRANSIT_INTERSECTION, TRANSIT_NETWORK,
@@ -284,6 +285,11 @@ impl AgentSystem {
                     })
                     .collect()
             });
+        // Vehicles reattached so far, by rebuilt lane, sorted by distance. Every car on the edit's
+        // lanes was detached, so these are the rebuilt lanes' whole occupancy: a car whose spot
+        // is taken waits there for an attach gap instead of stacking (`TRAFFIC-11`).
+        // O(reattached × log) per edit.
+        let mut reattached: HashMap<usize, Vec<(f32, usize)>> = HashMap::new();
         for (i, candidate) in detached {
             let old_edge = self.agents.current_edge[i];
             let old_node = self.agents.current_node[i];
@@ -308,10 +314,20 @@ impl AgentSystem {
                 continue;
             };
 
+            let room = self.agents.transit_mode[i] == MODE_WALK || {
+                let cars = reattached.entry(candidate.lane_id).or_default();
+                let clear = lane_attach_slot_clear(cars, candidate.lane_d);
+                if clear {
+                    let at = cars.partition_point(|car| car.0 < candidate.lane_d);
+                    cars.insert(at, (candidate.lane_d, i));
+                }
+                clear
+            };
             if traffic_debug {
                 crate::traffic_log!(
-                    "[ROAD_EDIT_AGENT_REATTACH] agent={} action=reattach transit={} mode={} old_edge={} old_node={} old_lane_d={:.2} old_pos=({:.2},{:.2}) new_edge={} new_node={} new_lane={} new_lane_d={:.2} snap_m={:.2} new_pos=({:.2},{:.2})",
+                    "[ROAD_EDIT_AGENT_REATTACH] agent={} action={} transit={} mode={} old_edge={} old_node={} old_lane_d={:.2} old_pos=({:.2},{:.2}) new_edge={} new_node={} new_lane={} new_lane_d={:.2} snap_m={:.2} new_pos=({:.2},{:.2})",
                     i,
+                    if room { "reattach" } else { "hold-for-gap" },
                     self.agents.transit[i],
                     self.agents.transit_mode[i],
                     old_edge,
@@ -328,13 +344,23 @@ impl AgentSystem {
                     candidate.pos.y,
                 );
             }
-            self.agents.enter_lane(
-                i,
-                lane_system,
-                candidate.lane_id,
-                candidate.lane_d,
-                candidate.origin_node,
-            );
+            if room {
+                self.agents.enter_lane(
+                    i,
+                    lane_system,
+                    candidate.lane_id,
+                    candidate.lane_d,
+                    candidate.origin_node,
+                );
+            } else {
+                self.agents.hold_for_lane_attach(
+                    i,
+                    lane_system,
+                    candidate.lane_id,
+                    candidate.lane_d,
+                    candidate.origin_node,
+                );
+            }
             self.agents.pos_x[i] = candidate.pos.x;
             self.agents.pos_y[i] = candidate.pos.y;
             self.agents.current_path[i].clear();
@@ -539,6 +565,7 @@ impl AgentSystem {
                 None => true,
             };
 
+        let pending_attach = self.agents.pending_lane_attach(i);
         self.agents.current_path[i].clear();
         self.agents.current_path_index[i] = 0;
         if should_drop_intersection_lane {
@@ -568,6 +595,7 @@ impl AgentSystem {
         self.agents.lane_change_length_m[i] = 0.0;
         self.agents.overtake_blocked_time_s[i] = 0.0;
         self.agents.overtake_cooldown_s[i] = 0.0;
+        self.agents.keep_pending_lane_attach(i, pending_attach);
     }
 }
 
@@ -1357,6 +1385,42 @@ mod tests {
             old_pos.distance_to(new_pos) < 0.5,
             "reattach moved the car too far: old={old_pos:?} new={new_pos:?}",
         );
+    }
+
+    #[test]
+    fn reattach_holds_a_car_whose_spot_is_taken() {
+        // Two cars 1 m apart, as when an edit merges two lanes into one: the first reattaches,
+        // the second waits at its point for an attach gap instead of stacking (`TRAFFIC-11`).
+        let (mut graph, mut lane_system) = make_simple_lane_system();
+        let lane = lane_system.edge_lanes[&0]
+            .iter()
+            .copied()
+            .find(|&id| {
+                let lane = &lane_system.lanes[id];
+                lane.lane_type == LaneType::Vehicle && lane.is_fwd
+            })
+            .expect("forward vehicle lane on edge 0");
+        let mut sys = AgentSystem::new();
+        for d in [75.0, 76.0] {
+            let pos = sample_lane_position_xz(&lane_system.lanes[lane], d).unwrap();
+            let i = sys.spawn_border_arrival_agent(usize::MAX, 0, pos.x, pos.y);
+            sys.agents.transit_mode[i] = MODE_CAR;
+            sys.agents.enter_lane(i, &lane_system, lane, d, 0);
+            sys.agents.speed[i] = 10.0;
+        }
+        let affected = HashSet::from([0usize]);
+        sys.invalidate_lane_ids_for_edges(&affected, &lane_system, &graph);
+        lane_system.rebuild_edges_incremental(&mut graph, &affected);
+        sys.reattach_invalidated_lanes_for_edges(&affected, &lane_system, &graph);
+
+        let a = &sys.agents;
+        assert_ne!(a.current_lane_id[0], usize::MAX);
+        assert_eq!(a.pending_lane_attach(0), None);
+        assert_eq!(a.current_lane_id[1], usize::MAX);
+        let (held_lane, held_d) = a.pending_lane_attach(1).expect("second car holds");
+        assert_eq!(held_lane as usize, a.current_lane_id[0]);
+        assert!((held_d - 76.0).abs() < 0.5, "{held_d}");
+        assert_eq!((a.transit[1], a.speed[1]), (TRANSIT_NETWORK, 0.0));
     }
 
     #[test]

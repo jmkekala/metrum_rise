@@ -97,6 +97,10 @@ pub const ACCESS_PATH_FROM_FLOW_FIELD: u8 = 0x04;
 pub const ACCESS_IMMIGRATION_ORIGIN: u8 = 0x08;
 /// Trip-plan bit: the network leg ends at a border freight terminal instead of a building ingress.
 pub const ACCESS_FREIGHT_BORDER_DESTINATION: u8 = 0x10;
+/// Lane-attach bit: a vehicle with no lane stands at `planned_attach_lane_id` /
+/// `planned_attach_lane_d` and steps onto that lane once the attach slot is clear and claimed,
+/// like an egress car at its handoff (`TRAFFIC-11`). Plan clears keep it with its attach point.
+pub const ACCESS_LANE_ATTACH_PENDING: u8 = 0x20;
 
 // Transit Modes
 /// Agent is walking on foot (sidewalks/crosswalks).

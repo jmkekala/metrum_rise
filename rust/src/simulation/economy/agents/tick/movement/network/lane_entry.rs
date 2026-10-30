@@ -3,13 +3,16 @@
 //! Network lane-entry bootstrap for agents without an active lane.
 
 use super::super::super::super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH, MODE_WALK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID,
+    ACCESS_ZERO_HOP_NODE_PATH, MODE_WALK, TRANSIT_NETWORK,
 };
 use super::super::super::claims::LaneClaimContext;
-use super::super::super::lane_nav::lane_origin_node;
+use super::super::super::lane_nav::{held_attach_origin, lane_origin_node};
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::{MovementSlices, enter_lane};
-use super::super::super::traffic::{claim_lane_entry, lane_entry_slot_clear};
+use super::super::super::traffic::{
+    claim_lane_entry, lane_attach_slot_clear, lane_entry_slot_clear,
+};
 use super::super::super::trip_failures::FailureCause;
 use super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::replan_watchdog::{
@@ -17,6 +20,7 @@ use super::super::replan_watchdog::{
     reset_network_replan_watchdog,
 };
 use super::apply_network_replan;
+use crate::config::AGENT_DRIVEWAY_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::determinism::stable_index;
 use crate::simulation::network::TransitNetwork;
@@ -37,6 +41,50 @@ pub(super) enum LaneEntryAction {
     Continue,
     /// Stop movement for this tick.
     Break,
+}
+
+/// Steps a car held by `AgentVec::hold_for_lane_attach` onto its attach lane once the slot is
+/// clear and claimed, exactly as egress attaches. Returns whether the hold handled this tick
+/// (attached or still waiting); `false` leaves a car without a hold to ordinary lane entry. A
+/// hold whose lane is gone is dropped, and the car repairs from its lane's origin node.
+/// O(log bucket), no allocation.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+pub(super) unsafe fn try_pending_lane_attach(
+    i: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    lane_buckets: &[Vec<(f32, usize)>],
+    lane_claims: &LaneClaimContext<'_>,
+    slices: &MovementSlices,
+) -> bool {
+    unsafe {
+        let s_access_flags = &slices.access_flags;
+        if *slices.lane_id.get(i) != usize::MAX
+            || *slices.transit.get(i) != TRANSIT_NETWORK
+            || (*s_access_flags.get(i) & ACCESS_LANE_ATTACH_PENDING) == 0
+        {
+            return false;
+        }
+        let lane_id = *slices.planned_attach_lane.get(i) as usize;
+        let lane_d = *slices.planned_attach_lane_d.get(i);
+        let edge = *slices.cur_e.get(i);
+        let Some(origin) = held_attach_origin(lane_id, lane_d, edge, transit_network, graph) else {
+            *s_access_flags.get_mut(i) &= !ACCESS_LANE_ATTACH_PENDING;
+            return false;
+        };
+        let clear = lane_buckets
+            .get(lane_id)
+            .is_some_and(|bucket| lane_attach_slot_clear(bucket, lane_d));
+        if !clear || !claim_lane_entry(i, lane_id, lane_claims) {
+            *slices.speed.get_mut(i) = 0.0;
+            return true;
+        }
+        enter_lane!(slices, i, transit_network, lane_id, lane_d, origin);
+        *s_access_flags.get_mut(i) &= !ACCESS_LANE_ATTACH_PENDING;
+        *slices.speed.get_mut(i) = graph.edge(edge).speed_limit.min(AGENT_DRIVEWAY_SPEED_MS);
+        true
+    }
 }
 
 /// Prepares an agent with no active lane by repairing its path or choosing a first lane.

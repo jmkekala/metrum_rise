@@ -502,7 +502,8 @@ pub(super) fn validate_loaded_agents(
                 agents.planned_detach_node[i] < graph.node_count() as u32
                     && agents.planned_detach_lane_id[i] != u32::MAX
             };
-            if !attach_ok || !detach_ok || (agents.access_flags[i] & 0xE0) != 0 {
+            // 0x20 is `ACCESS_LANE_ATTACH_PENDING`; the bits above it are unused.
+            if !attach_ok || !detach_ok || (agents.access_flags[i] & 0xC0) != 0 {
                 clear_agent_access_plan(agents, i);
             }
         }
@@ -557,6 +558,7 @@ fn repair_orphaned_loaded_network_agent(
     if agents.current_lane_id[i] != usize::MAX
         || !agents.current_path[i].is_empty()
         || agents.access_flags[i] & ACCESS_PLAN_VALID != 0
+        || agents.agents.pending_lane_attach(i).is_some()
     {
         return;
     }
@@ -642,7 +644,10 @@ fn clear_agent_access_plan(agents: &mut AgentSystem, i: usize) {
     agents.network_replan_failures[i] = 0;
 }
 
+// A car held at its attach point keeps standing there (`TRAFFIC-11`), as plan clears in a
+// running game keep it.
 fn clear_loaded_access_plan_fields(agents: &mut AgentSystem, i: usize) {
+    let pending_attach = agents.agents.pending_lane_attach(i);
     agents.planned_attach_node[i] = u32::MAX;
     agents.planned_detach_node[i] = u32::MAX;
     agents.planned_attach_lane_id[i] = u32::MAX;
@@ -650,6 +655,7 @@ fn clear_loaded_access_plan_fields(agents: &mut AgentSystem, i: usize) {
     agents.planned_attach_lane_d[i] = 0.0;
     agents.planned_detach_lane_d[i] = 0.0;
     agents.access_flags[i] = 0;
+    agents.agents.keep_pending_lane_attach(i, pending_attach);
 }
 
 pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_count: usize) {

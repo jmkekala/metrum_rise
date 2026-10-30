@@ -3,8 +3,8 @@
 //! Pre-movement network replan gates for immigration and exact access trips.
 
 use super::super::super::super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_IMMIGRATING,
-    TRANSIT_NETWORK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, MODE_CAR,
+    TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
 use super::super::super::lane_nav::lane_terminal_node;
@@ -397,7 +397,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn apply_netwo
         *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
         *s_plan_detach_lane.get_mut(i) = replan.planned_detach_lane_id as u32;
         *s_plan_detach_lane_d.get_mut(i) = replan.planned_detach_lane_d;
-        *s_access_flags.get_mut(i) = replan.access_flags;
+        // A car waiting to attach keeps waiting at its attach point under the new route.
+        let hold = *s_access_flags.get(i) & ACCESS_LANE_ATTACH_PENDING;
+        *s_access_flags.get_mut(i) = replan.access_flags | hold;
         *s_next_replan_time.get_mut(i) = 0.0;
         reset_network_replan_watchdog(i, slices);
     }

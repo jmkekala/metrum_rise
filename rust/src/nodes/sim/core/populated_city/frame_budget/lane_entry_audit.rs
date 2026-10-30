@@ -2,13 +2,16 @@
 
 //! `TRAFFIC-07` audit: runs a prepared snapshot's day and counts, every few game hours, the
 //! lanes holding more cars than fit and the cars stacked at one point of a lane, plus the cars
-//! waiting at a node for their first lane. A diagnostic of lane entry, not acceptance timing.
+//! waiting at a node for their first lane and at an attach point for a gap (`TRAFFIC-11`). A
+//! diagnostic of lane entry, not acceptance timing.
 
 use super::{FRAME_DT_S, MINUTES_PER_DAY, absolute_minute};
 use super::{cache_dir, residents, snapshot, timing_mode};
 use crate::config::{CAR_LENGTH, IDM_S_MIN};
 use crate::nodes::sim::core::state::SimCore;
-use crate::simulation::economy::agents::{MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+use crate::simulation::economy::agents::{
+    ACCESS_LANE_ATTACH_PENDING, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+};
 
 // Cars closer than this to a lane's start count as one stack.
 const STACK_RADIUS_M: f32 = 0.5;
@@ -20,7 +23,8 @@ fn audit(core: &SimCore) -> serde_json::Value {
     let lanes = &core.transit_network.lane_system.lanes;
     let mut count = vec![0_u32; lanes.len()];
     let mut at_start = vec![0_u32; lanes.len()];
-    let (mut held, mut held_freight) = (0_u32, 0_u32);
+    let (mut held, mut held_freight, mut held_at_attach) = (0_u32, 0_u32, 0_u32);
+    let mut attach_lanes = Vec::new();
     for i in 0..agents.len() {
         let on_road =
             agents.transit[i] == TRANSIT_NETWORK || agents.transit[i] == TRANSIT_INTERSECTION;
@@ -29,7 +33,10 @@ fn audit(core: &SimCore) -> serde_json::Value {
         }
         let lane = agents.current_lane_id[i];
         if lane >= lanes.len() {
-            if lane == usize::MAX
+            if lane == usize::MAX && (agents.access_flags[i] & ACCESS_LANE_ATTACH_PENDING) != 0 {
+                held_at_attach += 1;
+                attach_lanes.push(agents.planned_attach_lane_id[i] as usize);
+            } else if lane == usize::MAX
                 && agents.transit[i] == TRANSIT_NETWORK
                 && !agents.current_path[i].is_empty()
             {
@@ -60,6 +67,16 @@ fn audit(core: &SimCore) -> serde_json::Value {
             max_stack = max_stack.max(at_start[lane]);
         }
     }
+    // The lanes cars wait to attach to, and how many of them hold at least as many cars as fit.
+    attach_lanes.sort_unstable();
+    attach_lanes.dedup();
+    let attach_lanes_full = attach_lanes
+        .iter()
+        .filter(|&&lane| {
+            lane < lanes.len()
+                && count[lane] >= ((lanes[lane].length / spacing).floor() as u32).max(1)
+        })
+        .count();
     // The lanes the audit flags, with who is on them (diagnostic detail).
     let mut flagged = Vec::new();
     for (lane, &cars) in count.iter().enumerate() {
@@ -117,7 +134,8 @@ fn audit(core: &SimCore) -> serde_json::Value {
         "worst_lane_cars": count.get(worst_lane).copied().unwrap_or(0),
         "worst_lane_fit": lanes.get(worst_lane).map_or(0, |lane| (lane.length / spacing).floor() as u32),
         "stacked_lanes": stacked_lanes, "stacked_cars": stacked_cars, "max_stack": max_stack,
-        "held_at_node": held, "held_freight": held_freight,
+        "held_at_node": held, "held_freight": held_freight, "held_at_attach": held_at_attach,
+        "attach_lanes": attach_lanes.len(), "attach_lanes_full": attach_lanes_full,
     })
 }
 
@@ -127,7 +145,8 @@ fn trace_entries(
     core: &SimCore,
     previous_lane: &mut Vec<usize>,
     previous_count: &mut Vec<u32>,
-    previous_state: &mut Vec<(u8, usize, f32, u32)>,
+    previous_state: &mut Vec<(u8, usize, f32, u32, usize)>,
+    previous_removed: &mut u64,
 ) -> u32 {
     let agents = &core.agents.agents;
     let lanes = &core.transit_network.lane_system.lanes;
@@ -135,7 +154,9 @@ fn trace_entries(
     let mut count = vec![0_u32; lanes.len()];
     let mut reported = 0;
     previous_lane.resize(agents.len(), usize::MAX);
-    previous_state.resize(agents.len(), (0, usize::MAX, 0.0, u32::MAX));
+    previous_state.resize(agents.len(), (0, usize::MAX, 0.0, u32::MAX, usize::MAX));
+    let removed =
+        crate::debug::work::snapshot()[crate::debug::work::Work::BuildingsRemoved as usize];
     previous_count.resize(lanes.len(), 0);
     for i in 0..agents.len() {
         let on_road =
@@ -157,12 +178,11 @@ fn trace_entries(
             let fit = (lanes[lane].length / spacing).floor() as u32;
             if previous_count[lane] > fit {
                 reported += 1;
-                let removed = crate::debug::work::snapshot()
-                    [crate::debug::work::Work::BuildingsRemoved as usize];
                 eprintln!(
                     "TRAFFIC07_ENTRY {}",
                     serde_json::json!({
-                        "minute": absolute_minute(core), "buildings_removed_total": removed, "agent": i, "lane": lane, "fit": fit,
+                        "minute": absolute_minute(core), "buildings_removed_total": removed,
+                        "buildings_removed_in_frame": removed - *previous_removed, "agent": i, "lane": lane, "fit": fit,
                         "count_before": previous_count[lane], "count_now": count[lane],
                         "from_lane": previous_lane[i], "d": agents.lane_distance[i],
                         "transit": agents.transit[i], "freight": agents.freight_shipment_id[i] != 0,
@@ -174,7 +194,8 @@ fn trace_entries(
                         "lane_len": lanes[lane].length,
                         "prev_transit": previous_state[i].0, "prev_raw_lane": previous_state[i].1,
                         "prev_d": previous_state[i].2, "prev_node": previous_state[i].3,
-
+                        "prev_building": previous_state[i].4, "home": agents.home_building[i],
+                        "target": agents.target_building[i], "speed": agents.speed[i],
                     })
                 );
             }
@@ -185,9 +206,11 @@ fn trace_entries(
             lane,
             agents.lane_distance[i],
             agents.current_node[i],
+            agents.current_building[i],
         );
     }
     previous_count.copy_from_slice(&count);
+    *previous_removed = removed;
     reported
 }
 
@@ -214,7 +237,8 @@ fn traffic07_lane_entry_audit() {
     let trace = std::env::var("METRUM_AUDIT_TRACE").is_ok();
     let mut previous_lane: Vec<usize> = Vec::new();
     let mut previous_count: Vec<u32> = Vec::new();
-    let mut previous_state: Vec<(u8, usize, f32, u32)> = Vec::new();
+    let mut previous_state: Vec<(u8, usize, f32, u32, usize)> = Vec::new();
+    let mut previous_removed = 0;
     let mut traced = 0;
     loop {
         if trace && traced < 400 {
@@ -223,6 +247,7 @@ fn traffic07_lane_entry_audit() {
                 &mut previous_lane,
                 &mut previous_count,
                 &mut previous_state,
+                &mut previous_removed,
             );
         }
         let now = absolute_minute(core);

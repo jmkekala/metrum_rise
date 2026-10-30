@@ -24,6 +24,29 @@ macro_rules! enter_lane {
 }
 pub(super) use enter_lane;
 
+// Stands a vehicle off every lane at an attach point until movement finds the slot clear
+// (`LaneHoldMut::hold`). Same expansion rules as `enter_lane!`.
+macro_rules! hold_for_lane_attach {
+    ($s:expr, $i:expr, $network:expr, $id:expr, $distance:expr, $node:expr) => {{
+        let (s, i, id, distance, node) = ($s, $i, $id, $distance, $node);
+        let mode = *s.tmode.get(i);
+        crate::simulation::economy::agents::lane_state::LaneHoldMut {
+            agent: i,
+            lane: s.lane_id.get_mut(i),
+            edge: s.cur_e.get_mut(i),
+            node: s.cur_n.get_mut(i),
+            distance: s.lane_d.get_mut(i),
+            transit: s.transit.get_mut(i),
+            attach_lane: s.planned_attach_lane.get_mut(i),
+            attach_d: s.planned_attach_lane_d.get_mut(i),
+            flags: s.access_flags.get_mut(i),
+            speed: s.speed.get_mut(i),
+        }
+        .hold(&$network.lane_system, mode, id, distance, node);
+    }};
+}
+pub(super) use hold_for_lane_attach;
+
 // Safety invariant upheld by callers:
 // Rayon's `(0..n).into_par_iter()` visits each index `i` exactly once. All
 // mutable field accesses below index into disjoint SoA slots, so the raw

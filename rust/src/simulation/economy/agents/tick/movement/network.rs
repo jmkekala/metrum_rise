@@ -20,7 +20,7 @@ use crate::simulation::network::graph::RegionGraph;
 use detach::try_network_detach;
 use junction::{LaneEndAction, handle_lane_end};
 use lane_change::prepare_lane_change_and_overtake;
-use lane_entry::{LaneEntryAction, prepare_lane_entry};
+use lane_entry::{LaneEntryAction, prepare_lane_entry, try_pending_lane_attach};
 use pose::update_network_pose;
 pub(super) use replan::apply_network_replan;
 use replan::prepare_network_replan;
@@ -46,6 +46,9 @@ pub(super) unsafe fn handle_network_movement(
         let s_lane_id = &slices.lane_id;
         let s_lane_d = &slices.lane_d;
 
+        if try_pending_lane_attach(i, transit_network, graph, lane_buckets, lane_claims, slices) {
+            return;
+        }
         if !prepare_network_replan(
             i,
             sim_time,

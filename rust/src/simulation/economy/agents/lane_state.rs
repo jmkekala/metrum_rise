@@ -2,7 +2,9 @@
 
 //! Shared lane occupancy contract for movement, road edits, and snapshot restoration.
 
-use super::{AgentVec, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+use super::{
+    ACCESS_LANE_ATTACH_PENDING, AgentVec, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+};
 use crate::simulation::network::lanes::{Lane, LaneSystem, LaneType};
 
 /// Resolves a lane only when its transport type agrees with the agent's mode.
@@ -93,8 +95,107 @@ impl LaneStateMut<'_> {
     }
 }
 
+/// Disjoint fields of a lane-attach hold, shared by serial callers and the movement pass.
+pub(super) struct LaneHoldMut<'a> {
+    pub(super) agent: usize,
+    pub(super) lane: &'a mut usize,
+    pub(super) edge: &'a mut usize,
+    pub(super) node: &'a mut u32,
+    pub(super) distance: &'a mut f32,
+    pub(super) transit: &'a mut u8,
+    pub(super) attach_lane: &'a mut u32,
+    pub(super) attach_d: &'a mut f32,
+    pub(super) flags: &'a mut u8,
+    pub(super) speed: &'a mut f32,
+}
+
+impl LaneHoldMut<'_> {
+    /// Leaves the agent off every lane, waiting at `distance` on vehicle road lane `id` whose
+    /// origin is `node`; movement attaches it there through the egress gap check and claim.
+    /// A non-vehicle mode or lane is a simulation bug, as in [`LaneStateMut::enter`].
+    #[inline]
+    #[track_caller]
+    pub(super) fn hold(self, lanes: &LaneSystem, mode: u8, id: usize, distance: f32, node: u32) {
+        let agent = self.agent;
+        let lane = lane_for_mode(lanes, id, mode).unwrap_or_else(|reason| {
+            panic!("lane attach rejected: agent={agent} lane={id}: {reason}")
+        });
+        assert!(
+            mode != MODE_WALK && lane.edge_id != usize::MAX,
+            "lane attach rejected: agent={agent} lane={id} is not a vehicle road lane"
+        );
+        assert!(
+            distance.is_finite() && distance >= 0.0,
+            "lane attach rejected: agent={agent} lane={id} invalid distance={distance}"
+        );
+        *self.lane = usize::MAX;
+        *self.edge = lane.edge_id;
+        *self.node = node;
+        *self.distance = distance;
+        *self.transit = TRANSIT_NETWORK;
+        *self.attach_lane = id as u32;
+        *self.attach_d = distance;
+        *self.flags |= ACCESS_LANE_ATTACH_PENDING;
+        *self.speed = 0.0;
+    }
+}
+
 impl AgentVec {
-    /// Commits a serial lane transition through the same contract as parallel movement.
+    /// Stands vehicle `i` lane-less at `distance` on lane `id` (whose origin is `node`) until
+    /// movement finds the attach slot clear and claims it: placement outside the tick never
+    /// steps onto a lane, so it cannot overfill one (`TRAFFIC-11`). O(1).
+    #[track_caller]
+    pub(crate) fn hold_for_lane_attach(
+        &mut self,
+        i: usize,
+        lanes: &LaneSystem,
+        id: usize,
+        distance: f32,
+        node: u32,
+    ) {
+        LaneHoldMut {
+            agent: i,
+            lane: &mut self.current_lane_id[i],
+            edge: &mut self.current_edge[i],
+            node: &mut self.current_node[i],
+            distance: &mut self.lane_distance[i],
+            transit: &mut self.transit[i],
+            attach_lane: &mut self.planned_attach_lane_id[i],
+            attach_d: &mut self.planned_attach_lane_d[i],
+            flags: &mut self.access_flags[i],
+            speed: &mut self.speed[i],
+        }
+        .hold(lanes, self.transit_mode[i], id, distance, node);
+    }
+
+    /// Returns the attach point of a vehicle held by [`Self::hold_for_lane_attach`]. O(1).
+    pub(crate) fn pending_lane_attach(&self, i: usize) -> Option<(u32, f32)> {
+        ((self.access_flags[i] & ACCESS_LANE_ATTACH_PENDING) != 0
+            && self.transit[i] == TRANSIT_NETWORK
+            && self.current_lane_id[i] == usize::MAX
+            && self.planned_attach_lane_id[i] != u32::MAX
+            && self.planned_attach_lane_d[i] >= 0.0
+            && self.planned_attach_lane_d[i].is_finite())
+            .then(|| {
+                (
+                    self.planned_attach_lane_id[i],
+                    self.planned_attach_lane_d[i],
+                )
+            })
+    }
+
+    /// Restores a held attach point after a trip-plan clear: the car still stands at it, and
+    /// dropping it would move the car to its lane's origin node. O(1).
+    pub(crate) fn keep_pending_lane_attach(&mut self, i: usize, pending: Option<(u32, f32)>) {
+        if let Some((lane, distance)) = pending {
+            self.planned_attach_lane_id[i] = lane;
+            self.planned_attach_lane_d[i] = distance;
+            self.access_flags[i] |= ACCESS_LANE_ATTACH_PENDING;
+        }
+    }
+
+    /// Commits a serial lane transition through the same contract as parallel movement. A car on
+    /// a lane no longer waits to attach, so any lane-attach hold ends here.
     #[track_caller]
     pub(crate) fn enter_lane(
         &mut self,
@@ -104,6 +205,7 @@ impl AgentVec {
         distance: f32,
         node: u32,
     ) {
+        self.access_flags[i] &= !ACCESS_LANE_ATTACH_PENDING;
         LaneStateMut {
             agent: i,
             lane: &mut self.current_lane_id[i],

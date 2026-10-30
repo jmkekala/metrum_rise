@@ -3,7 +3,7 @@
 //! Save/load regressions for directed sidewalks and junction lane identities.
 
 use super::*;
-use crate::simulation::economy::agents::MODE_WALK;
+use crate::simulation::economy::agents::{ACCESS_LANE_ATTACH_PENDING, MODE_WALK};
 use crate::simulation::network::graph::Edge;
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::lanes::geometry::agent_lane_position;
@@ -310,6 +310,39 @@ fn loaded_network_and_ingress_plans_preserve_detach_without_origin_attach() {
             .iter()
             .all(|&id| id == lane_id as u32)
     );
+}
+
+#[test]
+fn loaded_cars_held_at_an_attach_point_keep_waiting() {
+    // A held car with its trip plan, and one whose plan a road edit cleared (`TRAFFIC-11`): load
+    // validation keeps both standing at the attach point, as the running game does.
+    let (graph, network) = fixture();
+    let lanes = &network.lane_system;
+    let lane_id = lanes.edge_lanes[&1]
+        .iter()
+        .copied()
+        .find(|&id| lanes.lanes[id].lane_type == LaneType::Vehicle)
+        .unwrap();
+    let mut agents = AgentSystem::new();
+    for cleared in [false, true] {
+        let i = add_agent(&mut agents, lane_id, &graph, lanes);
+        let (node, d) = (agents.current_node[i], agents.lane_distance[i]);
+        agents.hold_for_lane_attach(i, lanes, lane_id, d, node);
+        if cleared {
+            // As `clear_route_plan_after_road_edit` leaves it.
+            agents.access_flags[i] = ACCESS_LANE_ATTACH_PENDING;
+            agents.planned_attach_node[i] = u32::MAX;
+            agents.planned_detach_lane_id[i] = u32::MAX;
+            agents.planned_detach_node[i] = u32::MAX;
+            agents.current_path[i].clear();
+        }
+    }
+    let before = format!("{:?}", agents.agents);
+    validate_loaded_planned_lane_ids(&mut agents, lanes.lanes.len());
+    validate_loaded_agents(&mut agents, &graph, &BuildingAllocator::new()).unwrap();
+    assert_eq!(format!("{:?}", agents.agents), before);
+    let d = lanes.lanes[lane_id].length * 0.35;
+    assert!((0..2).all(|i| agents.pending_lane_attach(i) == Some((lane_id as u32, d))));
 }
 
 #[test]

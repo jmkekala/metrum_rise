@@ -342,6 +342,90 @@ Acceptance record (`TRAFFIC-07`, 2026-10-30; commands and results; the artifact 
   stacking used to hide. Border throughput stays a fixture question (`TRAFFIC-07` does not change
   it).
 
+A vehicle placed on the road outside the movement pass waits at its attach point the same way
+(`TRAFFIC-11`). `AgentVec::hold_for_lane_attach` leaves it off every lane (`TRANSIT_NETWORK`, no
+lane, edge and origin node of the attach lane) with the attach lane and distance in
+`planned_attach_lane_id` / `planned_attach_lane_d` and `ACCESS_LANE_ATTACH_PENDING` set. The claim
+classification marks it `HeldEntry` while `lane_attach_slot_clear` fails at that distance (one
+O(log bucket) test per held car and tick, no allocation, off the serial pass) and `Dynamic` once
+the slot is clear; the serial phase then claims the lane with `claim_lane_entry` and attaches at
+the driveway speed, exactly as egress does, so at most one car takes a lane per tick. Three
+placements use it: a building removal's evacuation (`start_building_origin_plan_on_network`), a
+road edit's reattachment when a rebuilt lane's spot is already taken by a car reattached earlier
+in the same pass (every car on the edit's lanes is detached, so those cars are the lane's whole
+occupancy; O(reattached × log) per edit), and a car whose ingress plan turns invalid on its
+driveway (it returns to its detach point). Walkers keep entering at once. Trip-plan clears and
+replans keep the hold with its attach point; a hold whose lane no longer exists, or no longer
+belongs to the car's edge, is dropped and the car repairs from the lane's origin node.
+
+Diagnosis (`TRAFFIC-11`, 2026-10-30). On the `TRAFFIC-07` branch (`3532b612`) the traced 100k
+audit (`METRUM_AUDIT_TRACE=1`, which now also records the buildings removed in the frame and each
+car's previous building) shows both bulk entries in a frame in which the economy removed buildings:
+at game minute 16,024, 14 removals, 22 trucks step onto lane 13,362 (edge 2,227, 380 m, 141 cars
+where 140 fit) at one distance, 296.98 m; at 16,504, 13 removals, 59 trucks onto lane 13,357 (edge
+2,226) at 343.02 m. Every truck of a group was in `TRANSIT_ACCESS_EGRESS` at the same building
+(57,760 and 57,711) the frame before, has its home as its new target and the driveway speed 3 m/s.
+That is the evacuation of a removed building: `remove_evacuated_building`
+(`buildings/allocator/lifecycle.rs:870`) calls `evacuate_referencing`
+(`agents/building_refs.rs:415`), which plans each occupant's trip home and calls
+`start_building_origin_plan_on_network` (`building_refs.rs:481`, `:509`, defined at `:601`). Its
+`enter_lane` (`building_refs.rs:644`) put every occupant on the building's attach lane at the
+attach distance without `lane_attach_slot_clear` or `claim_lane_entry`. The trucks were the egress
+queue waiting at that full attach slot, so a business failing beside a jammed road dumps its whole
+queue onto one point. The same unchecked placement existed in the road-edit reattachment
+(`agents/remap.rs:331`) and the invalid-ingress rollback (`movement/access_state/ingress.rs:168`);
+the audit day has no road edit and showed no ingress rollback.
+
+Acceptance record (`TRAFFIC-11`, 2026-10-30; the artifact folders stay local):
+
+- Regression: `building_refs::tests::evacuated_egress_queue_waits_for_attach_gaps` puts 64 egress
+  trucks at an origin building on each of 80 one-way 1 km roads (5,120 agents, across the parallel
+  classification chunk), evacuates every origin and ticks 40 times with 1 and 8 workers. With
+  `TRAFFIC-07` alone all 64 trucks of a road stand on the attach point after the evacuation
+  ("cars stacked at 50 and 50 (64 on it)"); with the hold none does, the held trucks keep target,
+  shipment id and speed 0, every lane keeps the static gap at every tick, and 1 and 8 workers give
+  bit-identical lane state. `remap::tests::reattach_holds_a_car_whose_spot_is_taken` covers the
+  road-edit hold.
+- Save and load: `save::agents::lanes::tests::loaded_cars_held_at_an_attach_point_keep_waiting`.
+  Load validation used to clear any access plan with a flag bit in `0xE0` and the plan fields of
+  plan-less network cars; the first 100k prepare with the hold failed its exact save/load
+  continuation check (`employed` 47,618 against 47,619 one hour after the reload) until load kept
+  the hold like the running game does.
+- Lane audit, same command as `TRAFFIC-07` (`perf_contract_prepare` then
+  `traffic07_lane_entry_audit`, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`, day 12 at 32×, the
+  fix-built city): 0 lanes over capacity and 0 cars stacked at a lane start at 00:00, 06:00,
+  12:00, 18:00 and 24:00; 2,579 trucks held at nodes at 00:00 and 3,385 at 24:00; 96 vehicles
+  held at an attach point at 00:00 and 234 at 24:00. The trace lists 51 entries onto a lane that
+  was full in the previous frame, all onto lanes of at most 100 m (connectors), at most 2 per lane
+  and frame, none leaving a lane over capacity. On the `TRAFFIC-07` branch's own city the same
+  binary ends the day with 0 lanes over capacity and 0 stacked cars (`TRAFFIC-07` alone: 2 lanes,
+  81 stacked) and 136 vehicles held at attach points. The committed tree gives the same counts on
+  the fix-built city; its held vehicles wait on 20 lanes at 00:00 and 27 at 24:00, only one of
+  which holds as many cars as fit, so they mostly wait for a gap at the attach point itself (a
+  queue standing through it) rather than for lane capacity. Whether any of them waits
+  indefinitely is not established.
+- `PERF-06` agent contract (`tools/perf_contract.py --agents`, 5 alternating pairs, cores
+  `0,2,..,14`, 8 workers; control: release test binary of `3532b612` built in the same session,
+  SHA-256 `b17c717a…`; fix `506daff0…`): identical work counts in all ten runs. The timings are
+  not comparable this session: another round's runs shared the machine (load average 4-7) and the
+  samples scatter 2-5× above the quiet `TRAFFIC-07` session in both binaries (10k network
+  0.33-1.22 ms control, 0.40-1.12 ms fix; medians 0.62 against 0.55 ms at 10k and 1.06 against
+  0.97 ms at 30k network, 0.67 against 0.80 and 1.39 against 1.92 ms egress, 0.30 against 0.48
+  and 0.49 against 0.38 ms ingress). The contract's fixture holds no car at an attach point; the
+  added per-tick work is one lane test per network car in `handle_network_movement` and a flag
+  test per lane-less network car in the classification. Same `TRAFFIC-07` 100k city, first two
+  game hours at 1×, 2 alternating pairs: mean agent tick 5.038 and 5.054 ms (control) against
+  5.078 and 5.097 ms (fix), +0.04 ms (0.8%) in both pairs. The two runs diverge at the window's
+  first evacuation, so the pair mixes the check's cost with different traffic.
+- Envelope (`tools/sim02_gate.py envelope determinism --bursts departures,settlements`,
+  `RAYON_NUM_THREADS=6`, fresh cities): PASS, determinism identical (repeat, 1 and 3 threads,
+  reload). The same 13 notes as `TRAFFIC-07`'s run; the 10k and 30k fiscal-stress values are
+  unchanged, and 30k baseline moves by at most 1.1% (bankruptcies 1.593 to 1.610 per 1,000
+  buildings and day, deliveries 129.15 to 128.52, employment 0.6013 to 0.6004, net income 8.57
+  to 8.53).
+- `./run.sh --test` (headless, isolated profile): exit code 0; debug library suite 1,850 passed,
+  0 failed, 178 ignored; no Godot script skipped and no script error.
+
 ## Junction Speeds
 
 Junction movement uses a cap separate from the parent road speed:
