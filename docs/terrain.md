@@ -4240,21 +4240,30 @@ km.
   each pooled set through its root, and a renderer dropped without it frees its sets on deletion
   (until `TERRAIN-07-G` round 10 `dispose()` freed a set's nodes but left its root, one orphan node
   per set per load, round 9C). **Complete cell buffers (`TERRAIN-10`, 2026-10-30).** The
-  renderer owns preallocated CPU buffers (three identity transform rows and four custom floats
-  per instance), edits each changed cell in `O(1)`, and publishes each dirty mesh's complete
-  buffer at the batch boundary. It never follows a bulk upload with a per-instance
+  renderer owns CPU buffers (three identity transform rows and four custom floats per
+  instance; each set's start as copies of one identity buffer built in setup, shared until the
+  set's first write), edits each changed cell in `O(1)`, and publishes each dirty mesh's
+  complete buffer at the batch boundary. It never follows a bulk upload with a per-instance
   RenderingServer write or reads the buffer back, avoiding the earlier 0.5-2.1 ms read-back
-  stalls. Publication is `O(dirty meshes × patch capacity)` (81 cells per mesh on 510 m patches,
-  5,184 bytes), independent of city size; Godot's partial writes already uploaded that whole
-  dirty region. Idle frames publish nothing. Godot 4.7.2's partial instance cache can lose
-  transforms and unchanged custom data across motion-vector buffer switches during hidden
-  builds and count changes: at 50% FSR 2 the settled road cells had zero transforms and drew
-  sky rectangles. Reproduced on macOS M2 Pro under both Metal and Vulkan/MoltenVK; 100% drew
+  stalls. Nor does it change the mesh of a MultiMesh holding a bulk upload: Godot re-creates the
+  AABB on a mesh change by reading such a buffer back from the GPU, custom AABB or not. So the
+  fixed cell meshes take their Mesh at creation, the base cells theirs at a set's first build,
+  and a later step change re-allocates the base MultiMesh (no buffer to read) before its build
+  publishes. Publication is `O(dirty meshes × patch capacity)` (81 cells per mesh on 510 m
+  patches, 5,184 bytes), independent of city size; Godot's partial writes already uploaded that
+  whole dirty region. Idle frames publish nothing. Why (Godot 4.7.2, `mesh_storage.cpp`): with
+  motion vectors on, a frame's first partial write flips the MultiMesh's buffer halves and
+  copies the previously written regions into the new half only up to the visible instance count,
+  and showing instances uploads them from that half. Writes made while `visible_instance_count`
+  is 0 in an earlier frame (a hidden build spanning frames) never reach it: at 50% FSR 2 the
+  settled road cells had zero transforms and drew sky rectangles. Any render scale below Native
+  (FSR 2) on any platform: reproduced on macOS M2 Pro under both Metal and Vulkan/MoltenVK and
+  on Linux (Vulkan); a WSL2 player reported it too. 100% (bilinear, no motion vectors) drew
   correctly, and changing the view distance alone did not reproduce it. The rendered
-  `graded_tile_renderer_test.gd` now enables FSR 2 and checks actual transforms and custom data
-  through builds, level moves and recycling (original renderer: 1,501 failures; fixed: zero on
-  both backends). Shader code, mesh formats, bounds and the complete-selection handoff are
-  unchanged. A patch's first graded tile remains a per-tile update and a flip, plus publication
+  `graded_tile_renderer_test.gd` enables FSR 2 and checks actual transforms and custom data
+  through builds, level moves and recycling (original renderer: 1,501 failures on macOS,
+  1,217-1,760 on Linux; fixed: zero), and `./run.sh --test` runs it rendered on Linux. Shader
+  code, mesh formats, bounds and the complete-selection handoff are unchanged. A patch's first graded tile remains a per-tile update and a flip, plus publication
   of its changed meshes' bounded buffers. A tile whose
   patch's set is not built yet (after a load or a step change) draws once it is: the preview's
   lag of [T27](#terrain-07-open-questions) (d) for a previewed tile, the streaming's otherwise. A
@@ -4283,6 +4292,31 @@ km.
     perl -e 'alarm 900; exec @ARGV' godot --path "$ARTIFACTS/project" \
     --audio-driver Dummy --resolution 960x640 --script res://tests/graded_edit_probe.gd
   ```
+- **`TERRAIN-10` Linux verification and follow-up** (2026-10-30, RX 7900 XTX with RADV,
+  i9-12900K, Godot 4.7.2; renderer `51811045` (before), Veeti's complete buffers (fix) and the
+  follow-up (final) on one release library of Rust `51811045`, in one session; unprofiled runs
+  pinned to the P-cores in gamescope's headless backend at 1600x1000 in isolated profiles, the
+  loads measured as [TERRAIN-15](#terrain-07-open-questions)'s (the idle benchmark's `saved`
+  pose and `[IDLE_BENCH] SETTLED` line, three 100k loads a renderer), the play checks with the
+  profile's `settings.cfg` at `render_scale=0.5` and `METRUM_IDLE_BENCH_SCREENSHOT_DIR`, the
+  prewarm by `setup()` on Kuopio's grid headless; `$ARTIFACTS/terrain10/`). The rendered regression at 50% FSR 2 failed 1,217
+  and 1,760 checks before (zero transforms and lost tile data) and none with FSR 2 off; fix
+  and final pass. In play the old renderer drew no hole on this machine at nine FSR 2 poses
+  (the Kuopio fixture, the 100k city, the macOS report's save): its builds there finish
+  within a frame. Fix and final drew those frames pixel-identical to it. The fix alone made
+  every set's first flip read its cell buffers back (above): on the 100k city, the frames
+  between the hand-over and settled over 33 ms rose from 73-86 to
+  113-117 a load and the slowest from 43-45 ms to 59-63 ms (flips 0.10 to 2.06 ms a frame, at
+  most 1.2 to 29.9 ms, profiled); final: 74-94 and 43-48 ms, flips 0.09 ms. Its first draft
+  re-allocated the base MultiMesh at every set's first build and handed over about 0.8 s later;
+  final hands over as before (37.0-38.2 s against 37.2-38.2 s). The fix's identity buffers
+  written per set took the cell-set prewarm on Kuopio's 1,296-patch grid from 25 ms and 55 MB
+  to 45 ms and 88 MB; final's shared template takes 29 ms and 55 MB. Kuopio and new-game loads
+  hand over and settle as before; the graded drag probe's catch-up, undo and commit frames
+  match before within noise. `./run.sh --test` on final: exit 0 (1,846 passed, 0 failed, 177
+  ignored; every Godot suite, the rendered FSR 2 check among them). A first run had stopped in
+  `road_junction_preview_test`, whose 20 s wait for a commit's staged tiles timed out once under
+  the suite's load; its terrain is a stub, and it passed alone twice and in the rerun.
 - **What a patch draws** ([T53](#terrain-07-open-questions) (a), decided by the user,
   2026-10-28; built in `TERRAIN-07-G` round 7, `_draw_state`). One rule, from the frame a patch
   becomes resident: it draws its `PlaneMesh` only while its list is known to name no graded tile

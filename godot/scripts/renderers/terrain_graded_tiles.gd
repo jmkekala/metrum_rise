@@ -153,6 +153,9 @@ var patch_cells: Dictionary = {}
 var _cell_mask_revision := 0
 var _cells_pool: Array[Dictionary] = []
 var _cells_per_patch := 81
+# A cell mesh's complete buffer with every instance's identity transform and zero custom data,
+# built once in setup; each set's buffers start as copies (_add_cell_records).
+var _identity_cells := PackedFloat32Array()
 var _meshes: Dictionary = {}
 var _wall_mesh: ArrayMesh = null
 var _wall_material: ShaderMaterial = null
@@ -359,6 +362,13 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	# (every resident patch may hold a graded tile), so neither streaming nor an edit creates one.
 	var tiles_per_side := int(ceil(span_m / TILE_M)) + 1
 	_cells_per_patch = tiles_per_side * tiles_per_side
+	_identity_cells = PackedFloat32Array()
+	_identity_cells.resize(_cells_per_patch * CELL_INSTANCE_FLOATS)
+	for instance in _cells_per_patch:
+		var offset := instance * CELL_INSTANCE_FLOATS
+		_identity_cells[offset] = 1.0
+		_identity_cells[offset + 5] = 1.0
+		_identity_cells[offset + 10] = 1.0
 	var grid := Vector2i(int(ceil(world_size.x / span_m)), int(ceil(world_size.y / span_m)))
 	_patch_grid = grid
 	_cells_pool.clear()
@@ -2179,6 +2189,19 @@ func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 	# The build path gives the set the variant its patch's flagged tiles draw in.
 	if not bool(cells["variant"]) and _patch_flagged(cells):
 		_add_variant(cells)
+	# Godot re-creates a MultiMesh's AABB on a mesh change, reading a bulk-uploaded buffer back from
+	# the GPU (custom AABB or not); a fresh allocation has no buffer, and the build publishes the
+	# set's CPU buffer whole. Only the base cells' mesh follows the step (_add_cell_mesh). A set's
+	# first build meets no buffer: its base mesh is assigned before anything is published.
+	var base: MultiMesh = (cells["nodes"][CELL_BASE] as MultiMeshInstance3D).multimesh
+	var base_mesh := _cell_mesh_for(CELL_BASE, step)
+	if base.mesh == null:
+		base.mesh = base_mesh
+	elif base.mesh != base_mesh:
+		base.instance_count = 0
+		base.instance_count = _cells_per_patch
+		base.mesh = base_mesh
+		cells["buffer_dirty"][CELL_BASE] = 1
 	for node: MultiMeshInstance3D in cells["nodes"]:
 		node.multimesh.visible_instance_count = 0
 		node.visible = false
@@ -2197,15 +2220,18 @@ func _set_cell_meshes(cells: Dictionary, first := 0) -> void:
 	var nodes: Array = cells["nodes"]
 	for index in range(first, nodes.size()):
 		var node: MultiMeshInstance3D = nodes[index]
-		# GL3 cells take the finest GL3 mesh (step 2): a coarser instance clamps the extra
-		# vertices onto its sides.
-		var level := index - CELL_BEHIND if index >= CELL_BEHIND else index
-		var code := level if level < 3 else (base_code(step) if index == CELL_BASE else base_code(2))
-		node.multimesh.mesh = _meshes[min(code, 6)]
+		node.multimesh.mesh = _cell_mesh_for(index, step)
 		node.set_instance_shader_parameter("cell_patch_rect_hm", cells["rect_hm"])
 		node.set_instance_shader_parameter("cell_lattice_anchor_hm", lattice_anchor_hm)
 	if first <= CELL_BASE:
 		(nodes[CELL_BASE] as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 2.0)
+
+# Cell mesh `index`'s Mesh for a patch of `step`. GL3 cells take the finest GL3 mesh (step 2): a
+# coarser instance clamps the extra vertices onto its sides. Only the base cells depend on the step.
+func _cell_mesh_for(index: int, step: int) -> Mesh:
+	var level := index - CELL_BEHIND if index >= CELL_BEHIND else index
+	var code := level if level < 3 else (base_code(step) if index == CELL_BASE else base_code(2))
+	return _meshes[min(code, 6)]
 
 # Writes the set's next tiles, each as it stands (its shown level's cell, else a base cell); with
 # `start_us` >= 0 it stops once the frame's install budget is spent and at least `minimum` tiles
@@ -2783,7 +2809,8 @@ func _new_cells() -> Dictionary:
 # Cell mesh `index` of a set: its MultiMesh of the patch's tile places and its node, and its
 # material (none for the base cells). The renderer owns the CPU buffers (_add_cell_records),
 # writes cells there and publishes complete changed meshes (_flush_cell_buffers). No per-instance
-# RenderingServer write follows a bulk upload, so no GPU read-back (TERRAIN-07-E round 6).
+# RenderingServer write follows a bulk upload and no mesh change meets one (the mesh is set here or
+# at the set's first build, _begin_build), so no GPU read-back (TERRAIN-07-E round 6, TERRAIN-10).
 # One material per graded level and variant, so a draw binds only its
 # page's two samplers (bound per patch, _bind_page).
 func _add_cell_mesh(nodes: Array, materials: Array[ShaderMaterial], index: int) -> void:
@@ -2792,6 +2819,9 @@ func _add_cell_mesh(nodes: Array, materials: Array[ShaderMaterial], index: int) 
 	multimesh.use_custom_data = true
 	multimesh.instance_count = _cells_per_patch
 	multimesh.visible_instance_count = 0
+	# Before any buffer, so the flip's mesh assignment changes nothing (_begin_build).
+	if index != CELL_BASE:
+		multimesh.mesh = _cell_mesh_for(index, 2)
 	counters["multimeshes_created"] += 1
 	var node := MultiMeshInstance3D.new()
 	node.name = "GradedCells%d" % index
@@ -2807,7 +2837,8 @@ func _add_cell_mesh(nodes: Array, materials: Array[ShaderMaterial], index: int) 
 	counters["materials_created"] += 1
 	materials.append(material)
 
-# `meshes` more cell meshes' records and complete CPU buffers, allocated only in the build path.
+# `meshes` more cell meshes' records and complete CPU buffers (copies of the identity buffer), in
+# setup's prewarm and the build path (_add_variant), never in a frame path.
 func _add_cell_records(records: Array, tile_at: Array, buffers: Array, meshes: int) -> void:
 	for index in meshes:
 		var custom: Array[Color] = []
@@ -2816,14 +2847,7 @@ func _add_cell_records(records: Array, tile_at: Array, buffers: Array, meshes: i
 		var tiles: Array[Vector2i] = []
 		tiles.resize(_cells_per_patch)
 		tile_at.append(tiles)
-		var buffer := PackedFloat32Array()
-		buffer.resize(_cells_per_patch * CELL_INSTANCE_FLOATS)
-		for instance in _cells_per_patch:
-			var offset := instance * CELL_INSTANCE_FLOATS
-			buffer[offset] = 1.0
-			buffer[offset + 5] = 1.0
-			buffer[offset + 10] = 1.0
-		buffers.append(buffer)
+		buffers.append(_identity_cells.duplicate())
 
 # Gives a set the behind-the-road variant's four cell meshes and materials (T49 (c)), as its patch
 # takes its first flagged tile: in the build path only (_begin_build, _advance_builds), never in a

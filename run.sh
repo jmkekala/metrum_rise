@@ -1125,9 +1125,9 @@ if [ $TEST -eq 1 ]; then
         fi
     done
     # Rendered tests: the terrain shaders and the debug-view shader globals on the compatibility
-    # renderer, the vegetation comparisons, the terrain variants on tangent-less cell meshes and
-    # the plot and paving lighting (RENDER-13) on Forward+, which the compatibility backend does
-    # not draw.
+    # renderer, the vegetation comparisons, the terrain variants on tangent-less cell meshes, the
+    # graded cells' instance data under FSR 2 (TERRAIN-10) and the plot and paving lighting
+    # (RENDER-13) on Forward+, which the compatibility backend does not draw.
     if [ "$METRUM_PLATFORM" = "linux" ]; then
         for rendered_test_script in terrain_overlay_shader_test graded_cells_shader_test \
             debug_visual_modes_test; do
@@ -1139,7 +1139,7 @@ if [ $TEST -eq 1 ]; then
             fi
         done
         for rendered_test_script in vegetation_level_match_test vegetation_wind_gate_test \
-            terrain_tangent_test; do
+            terrain_tangent_test graded_tile_renderer_test; do
             echo "Running rendered $rendered_test_script..."
             if ! run_rendered_godot_test 640 480 --path "$asset_test_project" --audio-driver Dummy \
                 --resolution 640x480 --script "res://tests/${rendered_test_script}.gd"; then
