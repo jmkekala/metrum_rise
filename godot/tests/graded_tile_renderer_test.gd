@@ -13,6 +13,7 @@ extends SceneTree
 
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
 const TerrainRenderer := preload("res://scripts/renderers/terrain.gd")
+const InputManager := preload("res://scripts/core/input_manager.gd")
 const GrassRenderer := preload("res://scripts/renderers/grass.gd")
 const TIMEOUT_FRAMES := 900
 const WORLD_M := 1020.0
@@ -612,9 +613,11 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	camera.free()
 	water.free()
 
-# T53 (a): a world load through the load flow (input_manager.gd) hands the game over only once the
-# terrain renderer has settled. Until then the clock refuses to run and the graded work takes the
-# whole frame; the frame it hands over in follows a settled one, every patch drawing.
+# T53 (a), TERRAIN-15: a world load through the load flow (input_manager.gd) hands the game over
+# once every patch within WORLD_READY_RADIUS_M of the camera draws its set or its PlaneMesh. Until
+# then the clock refuses to run and the graded work takes the whole frame; after it the rest
+# settles within the budget, no frame drawing a PlaneMesh where T53 (a) forbids it. The fixture's
+# world (1,020 m) lies within the radius, so every patch draws at the hand-over here.
 func _check_load_hand_over(simulation: SimulationNode, terrain) -> void:
 	var path := OS.get_temp_dir().path_join("metrum_graded_load_%d.sqlite" % OS.get_process_id())
 	_expect(simulation.save_game(path), "the fixture saves")
@@ -625,8 +628,10 @@ func _check_load_hand_over(simulation: SimulationNode, terrain) -> void:
 	_expect(input_manager.menu_load_game_from_path(path), "the fixture loads through the load flow")
 	_expect(not input_manager.is_world_ready(), "the load holds the game while the terrain renders")
 	_expect(terrain.graded_tiles.unbudgeted, "the graded work takes the whole frame while the load waits")
+	_expect(terrain.unready_patches_near_camera(InputManager.WORLD_READY_RADIUS_M) > 0,
+		"the loaded world's patches near the camera are not ready at the load")
 	var handed := -1
-	var settled := false
+	var near_ready := false
 	var held := true
 	for frame in TIMEOUT_FRAMES:
 		await process_frame
@@ -640,14 +645,26 @@ func _check_load_hand_over(simulation: SimulationNode, terrain) -> void:
 		input_manager._await_world_ready()
 		if input_manager.is_world_ready():
 			handed = frame
-			settled = terrain.is_render_settled()
+			near_ready = terrain.unready_patches_near_camera(InputManager.WORLD_READY_RADIUS_M) == 0
 			break
-	_expect(handed > 0, "the load hands the game over once the terrain settles (frame %d)" % handed)
+	_expect(handed > 0, "the load hands the game over once the terrain near the camera is ready (frame %d)" % handed)
 	_expect(held, "the clock stays stopped until the hand-over")
-	_expect(settled, "the game is handed over on a settled frame")
+	_expect(near_ready, "the game is handed over on a frame with every patch near the camera ready")
 	_expect(terrain.graded_tiles.hole_patches() == 0 and terrain.graded_tiles.plane_violations() == 0,
-		"at the hand-over every patch draws its set or its PlaneMesh")
+		"at the hand-over every patch near the camera draws its set or its PlaneMesh")
 	_expect(not terrain.graded_tiles.unbudgeted, "the hand-over returns the graded work to its budget")
+	var settled := -1
+	var violations := 0
+	for frame in TIMEOUT_FRAMES:
+		await process_frame
+		if simulation.is_network_dirty():
+			simulation.acknowledge_network_render(simulation.get_network_render_generation())
+		violations += terrain.graded_tiles.plane_violations()
+		if terrain.is_render_settled():
+			settled = frame
+			break
+	_expect(settled >= 0, "the terrain settles within its budget after the hand-over")
+	_expect(violations == 0, "no frame after the hand-over draws a PlaneMesh T53 (a) forbids: %d" % violations)
 	input_manager.set_simulation_speed(1.0)
 	_expect(is_equal_approx(input_manager._simulation_speed, 1.0), "the clock runs after the hand-over")
 	input_manager.set_simulation_speed(0.0)

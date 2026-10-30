@@ -4280,16 +4280,22 @@ km.
     meets the camera's frustum, in any frame, recorded over the idle benchmark's camera paths
     (`pan_high` moves 10 m a frame, the fastest pan at 60 fps). It costs no memory beyond today's
     residency; the round 7 record has the measurement.
-  - **The world's "ready"** (the user, 2026-10-28). A world load (`input_manager.gd`, both load
-    paths and a new game) hands the game over only once `is_render_settled()` holds: until then it
-    takes no input (no camera control, no tool), and the simulation clock stays stopped
+  - **The world's "ready"** (the user, 2026-10-28; the near ring by `TERRAIN-15`, the user,
+    2026-10-30). A world load (`input_manager.gd`, both load paths and a new game) hands the game
+    over once every patch of the world within `WORLD_READY_RADIUS_M` (2,000 m, where `GL2` ends)
+    of the camera's ground point draws what it draws settled: resident, its list arrived or
+    refused, and not drawing nothing (`terrain.gd`'s `unready_patches_near_camera`,
+    `terrain_graded_tiles.gd`'s `unready_near`, O(patches within the radius)). Until then it takes
+    no input (no camera control, no tool), the simulation clock stays stopped
     (`set_simulation_speed` refuses a running speed), and the graded work takes the whole frame
-    (`terrain.gd`'s `set_load_settling`, the renderer's `unbudgeted`). There is no loading screen
-    yet: meanwhile the screen shows what the renderer draws, the patches drawing nothing showing
-    the background, the rest their `PlaneMesh` or their sets, as they become ready. The hand-over
-    emits `world_ready`. A real loading screen over that wait is [`UI-08`](roadmap.md), not part
-    of `TERRAIN-07`. A camera jump (a teleport, a follow) can still bring patches into view
-    before they are ready: they show the background until they are.
+    (`terrain.gd`'s `set_load_settling`, the renderer's `unbudgeted`). From the hand-over the
+    farther patches stream on within the frame budget while the player plays, each drawing
+    nothing (the background) until its set draws, by the rule above; `is_render_settled()` holds
+    once they are done. There is no loading screen yet: before the hand-over the screen shows what
+    the renderer draws. The hand-over emits `world_ready`. A real loading screen over that wait is
+    [`UI-08`](roadmap.md), not part of `TERRAIN-07`. A camera jump (a teleport, a follow) can
+    still bring patches into view before they are ready: they show the background until they
+    are.
 - **Settled** (`TERRAIN-07-G` round 6). `terrain.gd`'s `is_render_settled()` is the one signal a
   capture of the drawn terrain and a world load's hand-over wait for: no pending patch work and
   no graded tile work (`terrain_graded_tiles.gd`'s `has_pending_work()`: tile and list requests,
@@ -10891,6 +10897,26 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       [`UI-08`](roadmap.md) (feature, P2), outside `ROAD-68` and `TERRAIN-07`.
     - **Built (round 7).** The rule, the margin and the world's "ready" in [what a patch
       draws](#godot-tile-renderer); the measurements in the [record](#terrain-07-g-record).
+    - **The load part changed by the user, 2026-10-30 (`TERRAIN-15`): the game is playable while
+      the map streams.** The load flow hands the game over once the patches within 2 km of the
+      camera are ready instead of every resident patch out to 8 km; the rest stream within the
+      frame budget, drawing nothing until ready as (a) states. Measured (fresh, 2026-10-30; the
+      release game, the final `ROAD-68` library on both sides, gamescope headless 1600x1000, an
+      isolated profile, the idle benchmark's `saved` pose, its `[IDLE_BENCH] SETTLED` line, the
+      old and the new hand-over in one session, not pinned; `$ARTIFACTS/terrain15/load-*`): the
+      game is playable after a Kuopio save's load in 2.5-3.1 s instead of 6.0 s, after a new game
+      on Kuopio in 2.4-2.7 s instead of 5.9 s, and after the 100k city's in 38.9-39.4 s instead of
+      48.1 s (its load call alone 19.9-20.1 s); the terrain settles at the same time as before
+      (Kuopio 5.9-6.3 s against 6.0, the new game 6.2-6.6 against 5.9, 100k 47.9-48.4 against
+      48.0), the far ring's bakes running off the main thread either way. The frames played while
+      it streams: Kuopio 147-151 frames, 13-18 of them over 33.3 ms, at most 46.6-49.9 ms; the new
+      game 161-165, 18-19 over, at most 48.2-61.1; 100k 229-231, 157-169 over, at most 95.4-95.5
+      ms (the city's own steady frame there p50 19.9-20.7, p95 40.4-45.0 ms). A budgeted hold was
+      tried and rejected: the near ring took 75.3 s at 100k (3.4 s on Kuopio), the per-frame
+      request and upload caps waiting on the slower frames' builds. What the 100k near ring still
+      waits for is the set builds' GDScript (49 ms of a held frame's 62 ms, PerfDebug's
+      `graded_residency_ms`), which `TERRAIN-13` moves to Rust, and the load call, outside the
+      terrain.
 
 54. **T54. The 100k city wants more `GL2` and `GL3` slots than the pools hold (`TERRAIN-07-G`
     round 7) — decided by the user, 2026-10-28 (late evening): (a), several pages per level by

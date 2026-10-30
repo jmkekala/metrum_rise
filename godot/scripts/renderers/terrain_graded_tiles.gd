@@ -2496,6 +2496,24 @@ func has_pending_work() -> bool:
 			return true
 	return false
 
+## The world's patches within `radius_m` of the ground point `centre` (XZ, to the nearest point of
+## each patch's rectangle) that do not yet draw what they draw once settled: not resident, their
+## list not arrived (nor refused), or drawing nothing (T53 (a)). As of the last process() call.
+## O(patches within the radius).
+func unready_near(centre: Vector2, radius_m: float) -> int:
+	var first := ((centre - Vector2.ONE * radius_m - world_min) / patch_span_m).floor()
+	var last := ((centre + Vector2.ONE * radius_m - world_min) / patch_span_m).floor()
+	var count := 0
+	for z in range(maxi(int(first.y), 0), mini(int(last.y), _patch_grid.y - 1) + 1):
+		for x in range(maxi(int(first.x), 0), mini(int(last.x), _patch_grid.x - 1) + 1):
+			var key := Vector2i(x, z)
+			var origin := world_min + Vector2(key) * patch_span_m
+			if centre.clamp(origin, origin + Vector2.ONE * patch_span_m).distance_to(centre) > radius_m:
+				continue
+			if not _resident.has(key) or _unready.has(key) or not (patch_lists.has(key) or patch_lists_refused.has(key)):
+				count += 1
+	return count
+
 ## Resident patches drawing their PlaneMesh where T53 (a) forbids it: their list has not arrived
 ## or names a tile that can show (not refused, its pool not exhausted), or a preview tile meets
 ## them. Read from the patch nodes, for tests, which check it in every frame: always 0.

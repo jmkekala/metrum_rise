@@ -10,10 +10,11 @@
 ## The Building Inspector helper is always present in the scene and can be
 ## opened by the active selection workflow. With no tool active, a click on an agent opens the
 ## agent inspector instead, which follows the agent with the camera until Esc.
-## A world load hands the game over (camera controls, input, the simulation clock) only once the
-## terrain renderer reports is_render_settled(), the world's "ready" (docs/terrain.md "Godot tile
-## renderer", T53 (a)); until then the screen shows what the renderer draws and the graded work
-## takes the whole frame.
+## A world load hands the game over (camera controls, input, the simulation clock) once the
+## terrain within WORLD_READY_RADIUS_M of the camera draws what it draws settled, the world's
+## "ready" (docs/terrain.md "Godot tile renderer", T53 (a), TERRAIN-15); until then the screen shows
+## what the renderer draws and the graded work takes the whole frame. The farther terrain streams on
+## within the frame budget while the player plays, its unready patches showing the background.
 extends Node
 
 ## Emitted when a loaded world is handed over to the player (is_world_ready()).
@@ -47,6 +48,10 @@ const SAVES_DIR := "user://saves"
 const WORLD_CAMERA_NEAR_CLIP_M := 0.5
 const WORLD_CAMERA_MIN_FAR_M := 9000.0
 const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
+# A world load hands the game over once every patch within this distance of the camera draws what it
+# draws settled (TERRAIN-15): the graded levels' detailed ring (GL2 ends at 2 km, terrain_graded_tiles.gd
+# LEVEL_END_M); the farther patches stream on within the frame budget.
+const WORLD_READY_RADIUS_M := 2000.0
 const GameSettings := preload("res://scripts/core/game_settings.gd")
 const CAMERA_INPUT_PROCESS_PRIORITY := -300
 const CAMERA_SETTLE_PROCESS_PRIORITY := -200
@@ -172,12 +177,12 @@ func _process(delta):
 func is_world_ready() -> bool:
 	return _world_ready
 
-# The load flow's hold (T53 (a)): the world is ready once the terrain renderer has settled, every
-# resident patch drawing its PlaneMesh or its complete graded set. Checked once per frame, before
-# the renderers' frames (this node's process priority), so the frame it hands over in follows a
-# settled one. O(1).
+# The load flow's hold (T53 (a), TERRAIN-15): the world is ready once every patch within
+# WORLD_READY_RADIUS_M of the camera draws its PlaneMesh or its complete graded set. Checked once
+# per frame, before the renderers' frames (this node's process priority), so the frame it hands
+# over in follows one with the near ring ready. O(patches within the radius).
 func _await_world_ready() -> void:
-	if terrain_node != null and not terrain_node.is_render_settled():
+	if terrain_node != null and terrain_node.unready_patches_near_camera(WORLD_READY_RADIUS_M) > 0:
 		return
 	if terrain_node != null:
 		terrain_node.set_load_settling(false)
@@ -499,8 +504,8 @@ func _refresh_after_world_load():
 	if zoning_overlay: zoning_overlay.full_refresh()
 	if agents_node:
 		agents_node.update_swarm()
-	# The game is handed over once the terrain renderer settles (_await_world_ready); a scene
-	# without one has nothing to wait for.
+	# The game is handed over once the terrain near the camera is ready (_await_world_ready); a
+	# scene without a terrain renderer has nothing to wait for.
 	_world_ready = false
 	if terrain_node != null:
 		terrain_node.set_load_settling(true)

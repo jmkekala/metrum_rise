@@ -598,6 +598,15 @@ func has_pending_render_work(include_background_cache: bool = true) -> bool:
 func is_render_settled() -> bool:
 	return not has_pending_render_work(false) and (graded_tiles == null or not graded_tiles.has_pending_work())
 
+## The world's patches within `radius_m` of the camera's ground point that do not yet draw what
+## they draw once settled (graded_tiles.unready_near; none before a world is set up, as
+## is_render_settled). O(patches within the radius).
+func unready_patches_near_camera(radius_m: float) -> int:
+	var camera := get_viewport().get_camera_3d()
+	if camera == null or graded_tiles == null:
+		return 0
+	return graded_tiles.unready_near(Vector2(camera.global_position.x, camera.global_position.z), radius_m)
+
 ## While a world load waits for is_render_settled() (the load flow holds the game), the graded
 ## renderer's work takes the whole frame instead of the streaming budget's spare time; the frame
 ## time does not matter then. The load flow turns it off as it hands the game over.

@@ -16,6 +16,7 @@
 extends RefCounted
 
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
+const InputManager := preload("res://scripts/core/input_manager.gd")
 
 # Offsets are from the world centre, so poses stay meaningful for any pinned world.
 const POSES := [
@@ -127,8 +128,10 @@ func run(bench: Node) -> void:
 	# load flow hands the game over.
 	var ready := await _wait_for_settled(bench, load_start_us)
 	_report.phases.append(ready.merged({"phase": "load_to_settled"}))
-	print("[IDLE_BENCH] SETTLED t_us=%d load_to_settled_ms=%.1f frames=%d handed_over=%s" % [
-		Time.get_ticks_usec(), float(ready.ms), int(ready.frames), str(ready.handed_over)])
+	print("[IDLE_BENCH] SETTLED t_us=%d load_call_ms=%.1f load_to_settled_ms=%.1f frames=%d handed_over=%s near_ready_ms=%.1f near_ready_frames=%d handed_over_ms=%.1f handed_over_frames=%d after_handover_frames=%d after_handover_max_ms=%.1f after_handover_over_16_7=%d after_handover_over_33_3=%d" % [
+		Time.get_ticks_usec(), load_call_ms, float(ready.ms), int(ready.frames), str(ready.handed_over),
+		float(ready.near_ready_ms), int(ready.near_ready_frames), float(ready.handed_over_ms), int(ready.handed_over_frames),
+		int(ready.after_handover_frames), float(ready.after_handover_max_ms), int(ready.after_handover_over_16_7), int(ready.after_handover_over_33_3)])
 	# The graded pages at the world's ready (docs/terrain.md "Pages and the row atlas"): the tiles
 	# installed and exhausted, the desired tiles per level, and per level the pages, slots and
 	# atlas layers with their free parts.
@@ -388,15 +391,38 @@ func _selected_poses(text: String) -> Array:
 
 # From `start_us` (the load call) to the first of three frames in a row on which the terrain
 # renderer has settled, and whether the load flow had handed the game over then (input_manager's
-# is_world_ready, where it has one). Returns {ok, ms, frames, handed_over}.
+# is_world_ready, where it has one). On the way: the first frame with every patch within
+# WORLD_READY_RADIUS_M of the camera ready (`near_ready`), the frame the load flow handed the game
+# over in (`handed_over`), and the frame intervals from that hand-over to the settled frame (the
+# frames the player plays while the rest streams). Returns {ok, ms, frames, handed_over,
+# near_ready_ms, near_ready_frames, handed_over_ms, handed_over_frames, after_handover_frames,
+# after_handover_max_ms, after_handover_over_16_7, after_handover_over_33_3}.
 func _wait_for_settled(bench: Node, start_us: int) -> Dictionary:
 	var frames := 0
 	var stable := 0
 	var first_ms := 0.0
 	var first_frames := 0
+	var radius_m := InputManager.WORLD_READY_RADIUS_M
+	var report := {"near_ready_ms": -1.0, "near_ready_frames": -1, "handed_over_ms": -1.0, "handed_over_frames": -1,
+		"after_handover_frames": 0, "after_handover_max_ms": 0.0, "after_handover_over_16_7": 0, "after_handover_over_33_3": 0}
+	var last_us := Time.get_ticks_usec()
 	while bench._elapsed_ms(start_us) < bench.settle_timeout_sec * 1000.0:
 		await bench.get_tree().process_frame
 		frames += 1
+		var now_us := Time.get_ticks_usec()
+		var interval_ms := float(now_us - last_us) / 1000.0
+		last_us = now_us
+		if int(report["handed_over_frames"]) >= 0:
+			report["after_handover_frames"] += 1
+			report["after_handover_max_ms"] = maxf(float(report["after_handover_max_ms"]), interval_ms)
+			report["after_handover_over_16_7"] += 1 if interval_ms > 16.7 else 0
+			report["after_handover_over_33_3"] += 1 if interval_ms > 33.3 else 0
+		if int(report["near_ready_frames"]) < 0 and _terrain.unready_patches_near_camera(radius_m) == 0:
+			report["near_ready_ms"] = bench._elapsed_ms(start_us)
+			report["near_ready_frames"] = frames
+		if int(report["handed_over_frames"]) < 0 and bench.input_manager.has_method("is_world_ready") and bench.input_manager.is_world_ready():
+			report["handed_over_ms"] = bench._elapsed_ms(start_us)
+			report["handed_over_frames"] = frames
 		if bench.simulation_node.is_network_dirty() or not _terrain.is_render_settled():
 			stable = 0
 			continue
@@ -406,8 +432,8 @@ func _wait_for_settled(bench: Node, start_us: int) -> Dictionary:
 		stable += 1
 		if stable >= 3:
 			var handed: Variant = bench.input_manager.is_world_ready() if bench.input_manager.has_method("is_world_ready") else null
-			return {"ok": true, "ms": first_ms, "frames": first_frames, "handed_over": handed}
-	return {"ok": false, "ms": bench._elapsed_ms(start_us), "frames": frames, "handed_over": null}
+			return report.merged({"ok": true, "ms": first_ms, "frames": first_frames, "handed_over": handed})
+	return report.merged({"ok": false, "ms": bench._elapsed_ms(start_us), "frames": frames, "handed_over": null})
 
 # The idle frame is measured in the steady state: the graded renderer builds its cell sets off
 # the frame paths (a world's sets after its load, hidden sets whose patch took a new step after a
