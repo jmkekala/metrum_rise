@@ -4275,7 +4275,7 @@ km.
   Metal and Vulkan rendered regressions pass. Headless graded renderer, surface debug,
   junction preview and preview stream checks pass. The unchanged overlay shader still fails
   two canopy-lighting assertions; macOS Compatibility still exceeds its 16 fragment samplers
-  (26–29 used). The full `./run.sh --test` stops in unchanged Rust road-reference hash checks
+  (26–29 used, `TERRAIN-16`). The full `./run.sh --test` stops in unchanged Rust road-reference hash checks
   (1,843 passed, two failed, 177 ignored), before its Godot batch; Clippy passes without warnings.
   Same-session unprofiled release smoke measurement: Rust `51811045`, renderer `51811045` versus
   `ea22dddc`, four Rayon workers, Metal Forward+, 960 × 640 at 100%, the existing
