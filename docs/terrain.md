@@ -4258,7 +4258,7 @@ km.
   is 0 in an earlier frame (a hidden build spanning frames) never reach it: at 50% FSR 2 the
   settled road cells had zero transforms and drew sky rectangles. Any render scale below Native
   (FSR 2) on any platform: reproduced on macOS M2 Pro under both Metal and Vulkan/MoltenVK and
-  on Linux (Vulkan); a WSL2 player reported it too. 100% (bilinear, no motion vectors) drew
+  on Linux (Vulkan). 100% (bilinear, no motion vectors) drew
   correctly, and changing the view distance alone did not reproduce it. The rendered
   `graded_tile_renderer_test.gd` enables FSR 2 and checks actual transforms and custom data
   through builds, level moves and recycling (original renderer: 1,501 failures on macOS,
@@ -4275,8 +4275,9 @@ km.
   Metal and Vulkan rendered regressions pass. Headless graded renderer, surface debug,
   junction preview and preview stream checks pass. The unchanged overlay shader still fails
   two canopy-lighting assertions; macOS Compatibility still exceeds its 16 fragment samplers
-  (26–29 used, `TERRAIN-16`). The full `./run.sh --test` stops in unchanged Rust road-reference hash checks
-  (1,843 passed, two failed, 177 ignored), before its Godot batch; Clippy passes without warnings.
+  (26–29 used, `TERRAIN-16`; Compatibility has no FSR 2, so `TERRAIN-10` cannot occur there).
+  The full `./run.sh --test` stops in unchanged Rust road-reference hash checks (1,843 passed,
+  two failed, 177 ignored), before its Godot batch; Clippy passes without warnings.
   Same-session unprofiled release smoke measurement: Rust `51811045`, renderer `51811045` versus
   `ea22dddc`, four Rayon workers, Metal Forward+, 960 × 640 at 100%, the existing
   `graded_edit_probe.gd` loading the one-road save and adding a parallel road. Three runs each:
