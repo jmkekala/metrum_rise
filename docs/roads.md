@@ -14,9 +14,9 @@ described here only where they consume road geometry.
 
 ## Status
 
-**`ROAD-68` — in progress on branch `road` (2026-10-23); every gate closed on branch `road68-H`
-(2026-10-29), done when `road` takes it.** The legacy road-surface compiler is
-retired and is being replaced by the [constructive roadbed](#constructive-roadbed-road-68) below.
+**`ROAD-68` — done (2026-10-23 to 2026-10-30); every gate closed on branch `road68-H`
+(2026-10-29), on `road` and `main` since 2026-10-30.** The legacy road-surface compiler is
+retired and replaced by the [constructive roadbed](#constructive-roadbed-road-68) below.
 Gate status is in the [implementation plan](#implementation-plan-road-68).
 
 The legacy compiler (`rust/src/simulation/network/surface/`, about 145k lines in 437 files, of which
@@ -38,8 +38,8 @@ On the `road` branch:
   Clippy warnings and passes its own tests
 - save compatibility is not maintained; no road-surface geometry is saved, and load rebuilds every
   piece from the graph
-- the legacy compiler stays available for visual comparison on `main` and at tag `road-legacy`
-  (`d6c80f91`, created in `ROAD-68-A`)
+- the legacy compiler stays available for visual comparison at tag `road-legacy` (`d6c80f91`,
+  created in `ROAD-68-A`); `main` dropped it on 2026-10-30
 
 ### Why junctions can be constructed
 

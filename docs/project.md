@@ -330,7 +330,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Constructive roadbed (`ROAD-68`, in progress, branch `road`; `ROAD-68-H`, the last gate, done
+- **Constructive roadbed (`ROAD-68`, done 2026-10-30, on `main`; `ROAD-68-H`, the last gate, done
   on branch `road68-H` 2026-10-29/30, rounds 6-7, its misses carried or accepted by the user's decisions, question 66 (a) on 2026-10-30; on `road` since 2026-10-30)**: the legacy road-surface
   compiler (about 145k lines) is retired. Its rendered baseline missed 16.7 ms on every sampled
   moving pose, and `ROAD-67`, which ported its semantics, is superseded. Junctions will be built
@@ -1376,6 +1376,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `main` takes `road` (2026-10-30, fast-forward): the constructive roadbed (`ROAD-68`) and the graded terrain surface (`TERRAIN-07`, `TERRAIN-10`, `TERRAIN-15`) replace the legacy road-surface compiler and terrain core on `main`. Saves from before `ROAD-68` do not load (save compatibility was not kept, by the user's decision). The carried misses stay open under their own IDs: `TERRAIN-13`, `TERRAIN-14`, `PERF-12`, `RENDER-30`, `UI-08` and `terrain.md` T65.
 - `TERRAIN-15` done (branch `terrain15`, 2026-10-30): the game is playable while the map streams. A load or a new game hands the game over (input, camera, clock) once the terrain within 2 km of the camera is ready, not once every patch out to 8 km has settled; the far terrain streams on within the frame budget, its unready patches showing the background. Playable after 2.5-3.1 s instead of 6.0 s on a Kuopio save, 2.4-2.7 s instead of 5.9 s on a new game, 38.9-39.4 s instead of 48.1 s at 100k, whose 20 s load call and GDScript set builds (`TERRAIN-13`) remain. See [`terrain.md`](terrain.md#godot-tile-renderer) and T53.
 - `ROAD-68-G` done (branch `road68-G10`, part 10, 2026-10-29): a road commit is acknowledged within one frame at every populated tier. Rebased onto `TERRAIN-07-G` (the legacy terrain state is gone), the commit plans its lots in a job the next frame adopts, starts its routing rebuild after that plan, repairs only the attachments its edit reaches, and now queues its undo record's kept terrain tiles after its last stage. Every populated first commit takes 9.6-13.8 ms at 10k-100k residents (control 21.1-27.5 ms); products, locality products and agent records are bitwise unchanged ([`roads.md`](roads.md#commit-stages-part-10-the-gate-road-68-g-2026-10-29)).
 - `TERRAIN-07-F` done (branch `terrain07-F`, rounds 1-14, 2026-10-28): every consumer reads the graded surface (grass exclusion, overlays, water suppression, site feasibility, inspection, vehicle ground). T37's 250 m vehicle-ground LOD with T45's 0.020 m contact lift; T44's shared-owner query index (4.46 MB at 100k), now published with the canonical roadbed piece map. Matched 100k gaps +0.322 ms culled pose and +0.264 ms snapshot against +0.42/+0.40 bars. Round 14 fixed grass rebinding unchanged mask mirrors every frame, the real-display matrix's `city_low` miss. T44, T46 (b) and T47 (a) agreed by the user, validated at `ROAD-68-H`.

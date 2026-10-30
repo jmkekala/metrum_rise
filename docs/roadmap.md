@@ -28,8 +28,9 @@ Simulation engine: **`SIM-02` is done (2026-10-22)**. Its scheduler remains auth
 the road refactor. `PERF-07` accepts 30k at both speeds and 100k at 1× on unpreempted frames;
 100k at 32× remains `PERF-08`. See the [engine contract](simulation.md#sim-02-scheduler-refactor).
 
-**`ROAD-68` — `refactor`, `in_progress`, `P1` (2026-10-23; every gate `A`-`H` closed on branch
-`road68-H` 2026-10-29, `ROAD-68-H` round 6; done when `road` takes it):** replace the legacy road-surface
+**`ROAD-68` — `refactor`, `done`, `P1` (2026-10-23; every gate `A`-`H` closed on branch
+`road68-H` 2026-10-29, `ROAD-68-H` round 6; done 2026-10-30 when `road` took it, on `main` the same day;
+its carried misses are tracked under their own IDs):** replace the legacy road-surface
 compiler (`simulation/network/surface/`, about 145k lines) with a constructive roadbed. Junctions
 are built directly from their arms: sorted arms, curb-return corners, round joins and mouth
 stations, with heights `plane + level` and no booleans, noding or height authority. Spans and nodes
