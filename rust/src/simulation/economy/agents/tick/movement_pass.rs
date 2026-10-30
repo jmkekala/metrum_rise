@@ -76,6 +76,10 @@ impl AgentSystem {
             &mut self.movement_query_shards,
             &mut self.movement_serial_query,
             |i| unsafe {
+                if movement_claim_modes[i] == MovementClaimMode::HeldEntry {
+                    *slices.speed.get_mut(i) = 0.0;
+                    return;
+                }
                 if movement_claim_modes[i] == MovementClaimMode::Dynamic {
                     return;
                 }

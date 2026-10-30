@@ -20,6 +20,7 @@ use godot::prelude::Vector2;
 use preemption::RunQueueWaits;
 use std::time::Instant;
 
+mod lane_entry_audit;
 mod preemption;
 // Kept out of `populated_city.rs`, whose bytes are part of the snapshot fixture revision.
 mod snapshot_cull;

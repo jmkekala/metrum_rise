@@ -7481,6 +7481,8 @@ alternatives and the evidence. The user reviews these on return.
   a border hold that keeps waiting trucks off the per-tick serial pass, render-visible checks
   (`./run.sh --test`) and own `PERF-07` cities, and it does not shorten the queue, which is the
   borders' throughput (`TRAFFIC-07`).
+  Landed later as `TRAFFIC-07` (2026-10-30, `traffic.md#junction-connectors`) with a hold that
+  skips the serial pass; the two 10k out-of-stock notes came back.
 - **`SIM-02-K` part 6 — pedestrians keep car spacing.** Walkers are in the lane buckets, so the
   connector entry claim and the end-of-tick overlap correction space them by `CAR_LENGTH +
   IDM_S_MIN` (2.7 m), one walker per 0.7 s per crossing at 4 m/s. The measured walking trips run

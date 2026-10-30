@@ -3,10 +3,16 @@
 //! Lane-transition arbitration regressions and isolated movement measurements.
 
 use super::*;
+use crate::config::{CAR_LENGTH, IDM_S_MIN};
 use crate::simulation::economy::agents::{
-    MODE_CAR, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK,
+    TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
+use crate::simulation::network::graph::Edge;
 use crate::simulation::network::lanes::{Lane, LaneSuccessors, LaneType};
+use crate::simulation::network::types::{
+    EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+};
 use godot::prelude::Vector3;
 
 // Isolate the movement boundary: two connectors merge into each independent exit lane.
@@ -343,4 +349,131 @@ fn benchmark_empty_lane_claim_reset() {
             samples[10]
         );
     }
+}
+
+// Border-origin freight: `groups` independent one-lane roads, each with `cars` trucks waiting at
+// the start node with a valid route and no lane (`TRAFFIC-07`).
+fn node_entry_fixture(groups: usize, cars: usize) -> (AgentSystem, TransitNetwork, RegionGraph) {
+    let mut agents = AgentSystem::new();
+    let mut network = TransitNetwork::new();
+    let mut graph = RegionGraph::new();
+    for group in 0..groups {
+        let z = group as f32 * 10.0;
+        let start = graph.add_node(Vector3::new(0.0, 0.0, z), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(2_000.0, 0.0, z), NodeType::Junction);
+        let geometry = vec![Vector3::new(0.0, 0.0, z), Vector3::new(2_000.0, 0.0, z)];
+        let edge = graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 0,
+            speed_limit: 14.0,
+            base_cost: 150.0,
+            physical_length: 2_000.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: geometry.clone(),
+            physical_geometry: geometry.clone(),
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+        let lane = network.lane_system.lanes.len();
+        network.lane_system.lanes.push(Lane {
+            edge_id: edge,
+            geometry,
+            length: 2_000.0,
+            cum_dist: vec![0.0, 2_000.0],
+            ..Default::default()
+        });
+        network.lane_system.edge_lanes.insert(edge, vec![lane]);
+        for _ in 0..cars {
+            let i = agents.spawn_housed_agent(usize::MAX, 0.0, z);
+            agents.transit_mode[i] = MODE_CAR;
+            agents.transit[i] = TRANSIT_NETWORK;
+            agents.current_node[i] = start;
+            agents.current_path[i] = vec![end];
+            agents.current_path_index[i] = 0;
+            agents.access_flags[i] = ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION;
+            agents.freight_target_border_node[i] = end;
+            agents.freight_shipment_id[i] = 1_000 + i as u64;
+        }
+    }
+    (agents, network, graph)
+}
+
+// Runs the fixture for `ticks` and returns every agent's lane state as exact bits.
+fn run_node_entry(
+    groups: usize,
+    cars: usize,
+    ticks: usize,
+    workers: usize,
+) -> Vec<(usize, u32, u32)> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .unwrap()
+        .install(|| {
+            let (mut agents, mut network, mut graph) = node_entry_fixture(groups, cars);
+            let allocator = BuildingAllocator::new();
+            let clock = TimeSystem::new();
+            for _ in 0..ticks {
+                agents.tick(&allocator, &mut network, &mut graph, 0.25, &clock);
+            }
+            let min_gap = CAR_LENGTH + IDM_S_MIN - 1e-3;
+            for group in 0..groups {
+                let mut on_lane: Vec<f32> = Vec::new();
+                for i in group * cars..(group + 1) * cars {
+                    if agents.current_lane_id[i] == group {
+                        on_lane.push(agents.lane_distance[i]);
+                        continue;
+                    }
+                    // A car that could not enter waits at its node with its trip and cargo.
+                    assert_eq!(agents.current_lane_id[i], usize::MAX, "agent {i}");
+                    assert_eq!(agents.transit[i], TRANSIT_NETWORK);
+                    assert_eq!(agents.current_node[i], group as u32 * 2);
+                    assert_eq!(agents.current_path[i], [group as u32 * 2 + 1]);
+                    assert_eq!(agents.current_path_index[i], 0);
+                    assert_eq!(agents.speed[i], 0.0);
+                    assert_eq!(agents.freight_shipment_id[i], 1_000 + i as u64);
+                    assert_eq!(
+                        agents.access_flags[i],
+                        ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION
+                    );
+                }
+                on_lane.sort_by(f32::total_cmp);
+                for pair in on_lane.windows(2) {
+                    assert!(
+                        pair[1] - pair[0] >= min_gap,
+                        "group {group}: cars stacked at {} and {} ({} on the lane)",
+                        pair[0],
+                        pair[1],
+                        on_lane.len()
+                    );
+                }
+                assert!(!on_lane.is_empty() && on_lane.len() < cars, "group {group}");
+            }
+            (0..agents.len())
+                .map(|i| {
+                    (
+                        agents.current_lane_id[i],
+                        agents.lane_distance[i].to_bits(),
+                        agents.speed[i].to_bits(),
+                    )
+                })
+                .collect()
+        })
+}
+
+#[test]
+fn node_origin_cars_wait_for_an_entry_gap() {
+    // 80 roads x 64 trucks cross the parallel classification chunk, so 1 and 8 workers differ
+    // in how the held cars are scheduled; the results must not.
+    let one = run_node_entry(80, 64, 24, 1);
+    let eight = run_node_entry(80, 64, 24, 8);
+    assert!(one == eight, "worker count changed the lane state");
 }

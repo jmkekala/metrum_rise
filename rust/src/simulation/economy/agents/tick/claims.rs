@@ -3,19 +3,21 @@
 //! Deterministic lane reservations and dynamic-handoff dispatch for movement.
 
 use super::super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_ACCESS_EGRESS,
-    TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH, MODE_CAR,
+    MODE_WALK, TRANSIT_ACCESS_EGRESS, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use super::access::planned_detach_is_legal;
+use super::lane_nav::lane_origin_node;
 use super::traffic::{
     LaneChangeParams, choose_lane_change, connector_turn_speed, junction_car_speed,
-    lane_change_finished, planned_lane_change_target,
+    lane_change_finished, lane_entry_slot_clear, planned_lane_change_target,
 };
 use crate::config::CAR_JUNCTION_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::data::{AgentSystem, AgentVec, MovementClaimMode};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::lanes::LaneType;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -157,6 +159,47 @@ fn classify_agent_claims(
     }
 }
 
+// A valid node-origin route whose first lane has no entry gap. `prepare_lane_entry` makes the same
+// two checks (first-edge candidates for a path, the planned detach lane for a zero-hop route), so
+// a full entry needs no serial handoff and no route retry. Empty or unplanned routes keep the
+// ordinary deterministic repair. Cost per held agent and tick: O(node degree + lanes on the first
+// edge) lookups plus one O(log bucket) gap test per lane; no allocation.
+fn first_entry_is_held(agents: &AgentVec, i: usize, p: &ClaimPreparation<'_>) -> bool {
+    if agents.transit_mode[i] == MODE_WALK || (agents.access_flags[i] & ACCESS_PLAN_VALID) == 0 {
+        return false;
+    }
+    let node = agents.current_node[i];
+    let path = &agents.current_path[i];
+    let Some(&next) = path.get(agents.current_path_index[i]) else {
+        // Zero-hop: the planned detach lane starts at this node.
+        let detach_lane = agents.planned_detach_lane_id[i] as usize;
+        return path.is_empty()
+            && (agents.access_flags[i] & ACCESS_ZERO_HOP_NODE_PATH) != 0
+            && detach_lane != usize::MAX
+            && node == agents.planned_detach_node[i]
+            && lane_origin_node(detach_lane, p.network, p.graph) == Some(node)
+            && !lane_entry_slot_clear(detach_lane, p.lane_buckets);
+    };
+    let Some(edge_id) = p.graph.get_edge_between_nodes(node, next) else {
+        return false;
+    };
+    let forward = p.graph.edge(edge_id).start_node == node;
+    let Some(ids) = p.network.lane_system.edge_lanes.get(&edge_id) else {
+        return false;
+    };
+    let mut any = false;
+    for &id in ids {
+        let lane = &p.network.lane_system.lanes[id];
+        if lane.is_fwd == forward && lane.lane_type == LaneType::Vehicle {
+            any = true;
+            if lane_entry_slot_clear(id, p.lane_buckets) {
+                return false;
+            }
+        }
+    }
+    any
+}
+
 #[inline(always)]
 fn classify_network_claims(
     agents: &AgentVec,
@@ -166,7 +209,11 @@ fn classify_network_claims(
     let network = preparation.network;
     let lane_id = agents.current_lane_id[i];
     if lane_id == usize::MAX || lane_id >= network.lane_system.lanes.len() {
-        return MovementClaimMode::Dynamic;
+        return if lane_id == usize::MAX && first_entry_is_held(agents, i, preparation) {
+            MovementClaimMode::HeldEntry
+        } else {
+            MovementClaimMode::Dynamic
+        };
     }
     let remaining = agent_network_claim_distance(agents, i, network) * preparation.delta;
     if remaining <= 0.0 {

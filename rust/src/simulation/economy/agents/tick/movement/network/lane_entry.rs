@@ -5,9 +5,11 @@
 use super::super::super::super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH, MODE_WALK,
 };
+use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::{MovementSlices, enter_lane};
+use super::super::super::traffic::{claim_lane_entry, lane_entry_slot_clear};
 use super::super::super::trip_failures::FailureCause;
 use super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::replan_watchdog::{
@@ -48,6 +50,8 @@ pub(super) unsafe fn prepare_lane_entry(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
+    lane_buckets: &[Vec<(f32, usize)>],
+    lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> LaneEntryAction {
     unsafe {
@@ -79,6 +83,13 @@ pub(super) unsafe fn prepare_lane_entry(
                     lane_origin_node(planned_detach_lane_id, transit_network, graph)
                 && detach_origin == *s_plan_detach_n.get(i)
             {
+                if *s_tmode.get(i) != MODE_WALK
+                    && (!lane_entry_slot_clear(planned_detach_lane_id, lane_buckets)
+                        || !claim_lane_entry(i, planned_detach_lane_id, lane_claims))
+                {
+                    *s_speed.get_mut(i) = 0.0;
+                    return LaneEntryAction::Break;
+                }
                 let parent_edge = transit_network.lane_system.lanes[planned_detach_lane_id].edge_id;
                 enter_lane!(
                     slices,
@@ -236,8 +247,20 @@ pub(super) unsafe fn prepare_lane_entry(
                             if !valid_lanes.is_empty() {
                                 let choice_seed =
                                     lane_entry_choice_seed(i, *s_cur_n.get(i), next_node, best_e);
-                                let chosen =
-                                    valid_lanes[stable_index(choice_seed, valid_lanes.len())];
+                                let start = stable_index(choice_seed, valid_lanes.len());
+                                let chosen = (0..valid_lanes.len())
+                                    .map(|offset| valid_lanes[(start + offset) % valid_lanes.len()])
+                                    .find(|&lane| {
+                                        *s_tmode.get(i) == MODE_WALK
+                                            || (lane_entry_slot_clear(lane, lane_buckets)
+                                                && claim_lane_entry(i, lane, lane_claims))
+                                    });
+                                let Some(chosen) = chosen else {
+                                    // A valid route waits at its node, preserving cargo, target,
+                                    // schedule and retry state. Occupancy is never overfilled.
+                                    *s_speed.get_mut(i) = 0.0;
+                                    return;
+                                };
                                 enter_lane!(
                                     slices,
                                     i,
@@ -256,7 +279,7 @@ pub(super) unsafe fn prepare_lane_entry(
                                 s_path.get_mut(i).clear();
                             }
                         });
-                        if s_path.get(i).is_empty() {
+                        if s_path.get(i).is_empty() || *s_lane_id.get(i) == usize::MAX {
                             return LaneEntryAction::Break;
                         }
                     } else {

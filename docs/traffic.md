@@ -280,6 +280,68 @@ entry also uses a per-tick claim to avoid two cars grabbing the same zero-distan
 Car exits check outgoing-lane occupancy and acquire the same reservation (`AUDIT-01-A11`). A
 blocked car waits at the connector end with its route intact until the outgoing entry clears.
 
+A car that starts at a node (border-origin freight, an arrival carrier, a replan at a node, or a
+zero-hop route onto its planned detach lane) enters its first lane under the same two checks
+(`TRAFFIC-07`): `lane_entry_slot_clear` on the candidate lanes of the first edge, starting at
+the stable choice and wrapping, then `claim_lane_entry` on the first clear one. A car that finds
+no lane it may enter holds at its node with its path, access plan, freight shipment, target and
+scheduler state untouched, and stays in the raw network counts. The claim classification marks a
+car with a valid plan, no lane and no clear first lane `HeldEntry`: it skips the serial handoff
+pass and is not processed at all that tick (speed 0), so a queue at a border costs one gap test per
+lane of the first edge, per held car and tick (O(node degree + lanes on the first edge) lookups
+and one O(log bucket) test per lane, no allocation), done in the parallel classification. The
+first tick the slot is clear it classifies `Dynamic` again and takes the entry in the serial
+phase. An occupancy snapshot taken at the start of the tick decides both the hold and the entry,
+so the result does not depend on the worker count. Pedestrians keep entering unchecked.
+
+Acceptance record (`TRAFFIC-07`, 2026-10-30; commands and results; the artifact folders stay local):
+
+- Regression: `movement_pass::tests::node_origin_cars_wait_for_an_entry_gap` puts 64 trucks at the
+  start node of each of 80 one-lane roads (the 5,120 agents cross the parallel classification
+  chunk) and ticks 24 times with 1 and 8 workers. On `dev` all 64 trucks of a road stack at
+  distance 0; with the hold none do, the waiting trucks keep path, plan, shipment id and speed 0,
+  and the lane state is bit-identical for 1 and 8 workers. Debug `cargo test --lib`: 1,847 passed,
+  178 ignored, 0 failed.
+- Lane audit: `frame_budget::lane_entry_audit::traffic07_lane_entry_audit` (ignored, release)
+  loads a prepared snapshot, runs one game day and counts, every `METRUM_AUDIT_EVERY_MINUTES`
+  (default 240), the lanes holding more cars than fit (`floor(length / 2.7) + 1`), the cars within
+  0.5 m of a lane's start, and the trucks held at nodes; `METRUM_AUDIT_TRACE=1` lists every car that
+  steps onto a lane that was already full in the previous frame, with its previous state. Each engine
+  builds its own 100k city (`perf_contract_prepare`, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`), day
+  12 at 32×. `dev`: 11 lanes over capacity at 00:00 and 14 at 24:00 (one lane held 868 cars where
+  197 fit, then 925), 685 and 754 cars within 0.5 m of one lane start, 2,872 and 3,708 cars
+  stacked on 14 and 15 lanes, 12 and 5 trucks held. With the hold: 0 lanes over capacity and 0
+  stacked cars at 00:00, 2 lanes over at 24:00 (200 cars where 140 fit; 81 cars stacked), 2,636 and
+  3,463 trucks held at nodes. None of the 81 entries that took a lane above capacity came from node
+  entry (on `dev` 255 of the first 400 entries onto a full lane did, within 40 game minutes); all
+  81 were trucks that left the access-egress state onto one lane in one tick (22 and 59 trucks at
+  a single attach point), tracked as `TRAFFIC-11`.
+- `PERF-06` agent contract (`tools/perf_contract.py --agents`, 3 alternating `dev`/fix pairs, cores
+  `0,2,..,14`, 8 workers): identical work counts; 10k network tick 0.255, 0.238, 0.255 ms
+  (`dev`) against 0.239, 0.240, 0.235 ms; 30k network 0.718, 0.533, 0.468 against 0.663, 0.462,
+  0.545 ms. Same fix-built 100k city, first two game hours at 1×, 3 alternating pairs: mean agent
+  tick 5.065–5.091 ms with `HeldEntry` against 5.300–5.315 ms with held cars left on the serial
+  pass (the earlier prototype's approach), 0.22 ms less. Each engine's own city at 1×: 4.925 and
+  4.948 ms (`dev`, 12 held trucks) against 5.044 and 5.026 ms (fix, 2,636 held); the cities
+  differ, so that pair does not isolate the hold.
+- `./run.sh --test`: Rust suite plus the headless and rendered Godot scripts.
+- Envelope (`tools/sim02_gate.py envelope determinism --bursts departures,settlements`,
+  `RAYON_NUM_THREADS=6`, fresh cities): PASS with no failures; determinism identical (repeat, 1
+  and 3 threads, reload). The committed baseline is stale on `dev`: the unmodified `dev` tip raises
+  13 notes of its own (10k baseline out-of-stock 0.173 against a band of 0.055–0.114; 30k baseline
+  employment 0.600, net income 8.45 and deliveries 127 against 0.65–0.69, 12.2–13.6 and
+  164–177), so the comparison is fix against `dev` in one session. At 30k the main metrics move
+  by 1.5% or less in the baseline workload apart from out-of-stock (+3.8%), by at most 5.1% in
+  fiscal stress and by at most 2.2% in the arrivals workload; at 10k the fix raises the
+  out-of-stock rate in all three city sizes (0.97×, 1.00×, 1.03×) by +0.021, +0.021, +0.017 in the
+  baseline workload (0.173 to 0.194 at 1.00×) and by +0.024, +0.020, +0.018 in fiscal stress (0.786
+  to 0.806 at 1.00×, which crosses its band edge at 0.787): the two 10k out-of-stock notes of the
+  earlier prototype. Cause: the hold shows the border's real throughput. One single-lane trunk per
+  10,000 residents cannot pass the imports; the fix-built 10k city has 1,404 trucks waiting at its
+  border at 00:00 of day 12 and 1,919 at 24:00 (the road holds 1,100–2,600 vehicles), which the
+  stacking used to hide. Border throughput stays a fixture question (`TRAFFIC-07` does not change
+  it).
+
 ## Junction Speeds
 
 Junction movement uses a cap separate from the parent road speed:
@@ -791,5 +853,6 @@ The measured ignored tests are
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild
   must keep connector lanes and `next_lanes` in sync
-- network entry at a node does not claim the entry slot (`TRAFFIC-07`)
+- a border queue of held cars is not shortened by the entry hold: the borders' throughput (one
+  single-lane trunk per 10,000 residents in the perf fixture) is a separate fixture question
 - walkers keep car spacing (2.7 m) in lane buckets, connector entry claims and overlap correction

@@ -163,6 +163,8 @@ pub(crate) enum MovementClaimMode {
     Dynamic = 1,
     /// A fixed lateral candidate whose target already has a deterministic reservation owner.
     Lateral = 2,
+    /// Valid node-origin route whose first lane has no physical entry gap.
+    HeldEntry = 3,
 }
 
 /// Simulation-wide agent system.

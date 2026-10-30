@@ -26,6 +26,14 @@ spawning; save/load use the same checks ([TRAFFIC-02](traffic.md#shared-lane-occ
 The saved-city pedestrian/vehicle-lane mismatch remains under investigation; the original
 transition has not been reproduced.
 
+Cars that start at a node (border freight, arrival carriers, replans at a node) now wait there until
+their first lane has room instead of stacking on its first metre; the saved 100k city no longer
+ends its day with hundreds of trucks on one point, and the waiting trucks cost less agent-tick
+time than the serial hold would. The hold shows the border's real throughput, which the stacking
+hid: at 10k about 1,900 trucks wait at the single border by the end of a day and the out-of-stock
+rate rises by about 0.02 ([TRAFFIC-07](traffic.md#junction-connectors)). A second way trucks
+reach a full lane (`TRAFFIC-11`) is open.
+
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
 Splitting an incident edge now retains its independently solved physical support knots, and the
 topology-only junction finalizer adjusts those stations without rebuilding them from sparse control
@@ -1376,6 +1384,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TRAFFIC-07` done (branch `port-r1-traffic07`, 2026-10-30; ported from Veeti's road-chain branch, `a0df7f77`): node-origin cars check the lane entry gap and claim the lane like connector entry, and wait at their node (`HeldEntry`, off the serial pass) when it is full. 100k lane audit, `dev` against the fix: 14 against 2 lanes over capacity at the end of the day, 3,708 against 81 stacked cars; envelope deterministic, the two 10k out-of-stock notes return (border throughput). Results and commands in [`traffic.md`](traffic.md#junction-connectors); `TRAFFIC-11` tracks the remaining bulk attach.
 - `main` takes `road` (2026-10-30, fast-forward): the constructive roadbed (`ROAD-68`) and the graded terrain surface (`TERRAIN-07`, `TERRAIN-10`, `TERRAIN-15`) replace the legacy road-surface compiler and terrain core on `main`. Saves from before `ROAD-68` do not load (save compatibility was not kept, by the user's decision). The carried misses stay open under their own IDs: `TERRAIN-13`, `TERRAIN-14`, `PERF-12`, `RENDER-30`, `UI-08` and `terrain.md` T65.
 - `TERRAIN-15` done (branch `terrain15`, 2026-10-30): the game is playable while the map streams. A load or a new game hands the game over (input, camera, clock) once the terrain within 2 km of the camera is ready, not once every patch out to 8 km has settled; the far terrain streams on within the frame budget, its unready patches showing the background. Playable after 2.5-3.1 s instead of 6.0 s on a Kuopio save, 2.4-2.7 s instead of 5.9 s on a new game, 38.9-39.4 s instead of 48.1 s at 100k, whose 20 s load call and GDScript set builds (`TERRAIN-13`) remain. See [`terrain.md`](terrain.md#godot-tile-renderer) and T53.
 - `ROAD-68-G` done (branch `road68-G10`, part 10, 2026-10-29): a road commit is acknowledged within one frame at every populated tier. Rebased onto `TERRAIN-07-G` (the legacy terrain state is gone), the commit plans its lots in a job the next frame adopts, starts its routing rebuild after that plan, repairs only the attachments its edit reaches, and now queues its undo record's kept terrain tiles after its last stage. Every populated first commit takes 9.6-13.8 ms at 10k-100k residents (control 21.1-27.5 ms); products, locality products and agent records are bitwise unchanged ([`roads.md`](roads.md#commit-stages-part-10-the-gate-road-68-g-2026-10-29)).
