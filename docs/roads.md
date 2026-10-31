@@ -337,8 +337,10 @@ above 6.
   stations, kerb points)
 - per sector: its kind, `R`, `C` and sampled boundary curves
 
-Graph clips (`start_clip` / `end_clip`), the profile solve's hard zone, crosswalk placement and
-pedestrian corner routes all read the layout. `graph/rebuild/clips.rs` and
+Graph clips (`start_clip` / `end_clip`), the profile solve's hard zone, crosswalk placement,
+pedestrian corner routes and vehicle lane ends all read the layout: a vehicle lane ends on its arm's
+mouth section line at the clip (`MouthFrame`, `walkways.rs`), and junction connectors leave and
+join along that section's direction ([`TRAFFIC-12`](traffic.md#junction-connectors)). `graph/rebuild/clips.rs` and
 `junction_profile_crossing_core_m` no longer compute setbacks of their own, and pedestrian lanes
 compute no crossing or corner geometry of their own
 ([Pedestrian Junction Crossings](#pedestrian-junction-crossings)).

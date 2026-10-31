@@ -477,3 +477,7 @@ fn lane_visible_surface_height(
 /// Unit tests for the lane system.
 #[cfg(test)]
 pub mod tests;
+
+/// Junction connector trajectory invariants and the measurement the save sweep shares.
+#[cfg(test)]
+pub(crate) mod trajectory_tests;

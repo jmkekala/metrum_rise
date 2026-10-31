@@ -30,7 +30,7 @@ pub(crate) use geometry::{RoadSurfaceTriangleQueryIndex, triangulate_constrained
 pub use layout::{
     ArmBand, ArmInput, ArmKey, ArmKnot, ArmLayout, ArmSide, BoundaryBand, BoundaryTaper, CoreVertex,
     CoreVertexSource, Corner, CornerTangent, Crosswalk, EdgeEnd, JunctionLayout, LayoutError,
-    NodeKind, SectorBoundary, SectorKind, SectorLayout, Side,
+    NodeKind, SectionLine, SectorBoundary, SectorKind, SectorLayout, Side,
 };
 pub use mesh::{BRIDGE_DECK_DEPTH_M, OuterChain, PieceMesh, SKIRT_DEPTH_M, StripKind};
 pub(crate) use node::{check_node, terminal_plane};
@@ -45,7 +45,7 @@ pub use span::{MouthSection, SpanPiece};
 pub(crate) use system::RoadbedScratch;
 pub use system::{RebuiltOwners, RoadbedDelta, RoadbedRestore, RoadbedSystem};
 pub use terrain::TerrainChanges;
-pub(crate) use walkways::{FootpathJoin, NodeWalkways, SidewalkEnd};
+pub(crate) use walkways::{FootpathJoin, MouthFrame, NodeWalkways, SidewalkEnd};
 
 /// Road chunk key `(x, z)` in the terrain-aligned render grid of a [`RoadbedSystem`].
 pub type SurfaceChunkKey = (i32, i32);

@@ -8,6 +8,7 @@ mod commute_bounds;
 mod construction_throughput;
 mod graded_edits;
 mod graded_queries;
+mod junction_connector_sweep;
 pub(super) mod fields;
 pub(super) mod graded_stage;
 mod road_edit_order;

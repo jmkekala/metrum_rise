@@ -35,8 +35,8 @@
 
 use super::arms::{NodeArms, pass_through_crossings};
 use super::layout::{
-    ArmInput, ArmKey, ArmSide, EdgeEnd, JunctionLayout, NodeKind, SectorBoundary, SectorLayout,
-    Side, for_each_run_station, segment_crossing,
+    ArmInput, ArmKey, ArmSide, Corner, EdgeEnd, JunctionLayout, NodeKind, SectionLine,
+    SectorBoundary, SectorLayout, Side, for_each_run_station, segment_crossing,
 };
 use super::node::crossing_kerbs;
 use super::span::{SpanCrossing, crossing_kerbs_right_first, pass_through_crossing};
@@ -52,6 +52,46 @@ pub(crate) struct SidewalkEnd {
     pub(crate) station_m: f64,
     /// End point on the walkway centre, at the arm centreline's height there.
     pub(crate) point: RoadVec3,
+}
+
+/// Where the vehicle lanes of one arm end at a node (`TRAFFIC-12`): the arm's cross-section at
+/// the edge's clip there, which is the mouth station of a bend or junction layout (where the node
+/// piece ends and the span begins) and zero at a terminal or a node without a layout. Lanes end on
+/// its line and connectors leave and join it along its direction, so neither reads a lane
+/// polyline's end.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MouthFrame {
+    /// Horizontal metres along the arm's centreline from the node.
+    pub(crate) station_m: f64,
+    line: SectionLine,
+    // Centreline height at the station.
+    height_m: f64,
+}
+
+impl MouthFrame {
+    /// The frame of arm `key` of `node` at `station_m`: the section line the node's layout puts
+    /// there ([`ArmInput::section_line`] of the arm's own knots) and the centreline height there.
+    /// `None` for a degenerate edge. `O(edge points)`.
+    pub(crate) fn at(graph: &RegionGraph, node: u32, key: ArmKey, station_m: f64) -> Option<Self> {
+        let arms = NodeArms::single(graph, node, key)?;
+        Some(Self {
+            station_m,
+            line: arms.input(0).section_line(station_m),
+            height_m: arms.centreline_at(0, station_m).1,
+        })
+    }
+
+    /// The point at signed lateral offset `lateral_m` (positive to the left of the outward
+    /// direction) on the line, at the centreline height there.
+    pub(crate) fn point(&self, lateral_m: f64) -> RoadVec3 {
+        let xz = self.line.point(lateral_m);
+        RoadVec3::new(xz.x, self.height_m, xz.y)
+    }
+
+    /// Unit XZ direction away from the node, square to the line.
+    pub(crate) fn direction(&self) -> RoadVec2 {
+        self.line.direction()
+    }
 }
 
 /// A sidewalk corner route between two neighbouring arms, counter-clockwise from `from`'s left
@@ -130,11 +170,39 @@ impl NodeWalkways {
     /// for a pass-through node without a crossing and for the other nodes without a layout: the
     /// cases of [`NodeArms::collect`], a layout that fails (a placement rejection) or a bend or
     /// junction without a solved plane, which leaves it without a node piece too.
+    #[cfg(test)]
     pub(crate) fn collect(graph: &RegionGraph, node: u32) -> Option<Self> {
+        Self::collect_with_kerbs(graph, node).0
+    }
+
+    /// The walkways of `node` (as `collect`, which tests use alone) and its layout's kerb
+    /// corners, from one layout: the fitted carriageway-edge corners of its concave sectors, which
+    /// vehicle connectors keep clear of (`TRAFFIC-12`). The corners exist wherever the layout
+    /// does, a bend or junction without a solved plane included; empty without concave sectors.
+    pub(crate) fn collect_with_kerbs(
+        graph: &RegionGraph,
+        node: u32,
+    ) -> (Option<Self>, Option<Vec<Corner>>) {
         let Some(mut arms) = NodeArms::collect(graph, node) else {
-            return Self::pass_through(graph, node);
+            return (Self::pass_through(graph, node), None);
         };
-        let layout = arms.layout().ok()?;
+        let Ok(layout) = arms.layout() else {
+            return (None, None);
+        };
+        let kerbs = layout
+            .sectors
+            .iter()
+            .filter_map(|sector| sector.corner)
+            .collect();
+        (Self::from_layout(graph, node, &arms, &layout), Some(kerbs))
+    }
+
+    fn from_layout(
+        graph: &RegionGraph,
+        node: u32,
+        arms: &NodeArms,
+        layout: &JunctionLayout,
+    ) -> Option<Self> {
         let plane = match layout.kind {
             NodeKind::Terminal => None,
             NodeKind::Bend | NodeKind::Junction => {
@@ -203,7 +271,7 @@ impl NodeWalkways {
                 continue;
             };
             let (walk, route) =
-                push_sector_walk(&mut walkways.points, &layout, &arms, sector, [start, end]);
+                push_sector_walk(&mut walkways.points, layout, arms, sector, [start, end]);
             walkways.corners.push(SectorWalk {
                 sector: index,
                 from: sector.from_arm,

@@ -241,14 +241,129 @@ connection lane with:
 - `lane_type = LaneType::Vehicle`
 - `node_id = junction node`
 - `next_lanes = [target road lane]`
-- cubic Bezier geometry from the inbound lane neck to the outbound lane neck
-- at most `1 m` chord sampling, clamped to `8..64` steps
+- geometry from the inbound lane's end to the outbound lane's start, as below
+- samples at most `1 m` apart along the path and at most `0.15 rad` apart along an arc
 
-At true junctions (three or more vehicle arms) and user-authored vehicle connection nodes, connector control
-distance and sampling use the junction footprint span: the larger of the lane-mouth chord, the two
-mouth distances through the node center, and the widest incident roadbed span. This prevents
-two-lane to four-lane T-junctions and explicit connection nodes from degenerating into tiny lateral
-connector shims that cars traverse almost instantly.
+**Lane ends come from the roadbed's mouth frames (`TRAFFIC-12`).** Every vehicle lane ends at a
+node on its arm's `MouthFrame` (`roadbed/walkways.rs`): the arm's cross-section line at the edge's
+clip there (`start_clip` / `end_clip`, the station every system that maps edge stations to lanes
+reads), built from the arm's own knots exactly as the junction layout collects them
+(`NodeArms::single`, `ArmInput::section_line`). The graph sets the clip to the layout's mouth
+station at a bend or junction, where the node piece ends and the span begins (rounded to `f32`, so
+a lane end lies within a micrometre of the mouth row), and to zero at a terminal, a pass-through
+node and a node whose layout fails. A lane's end point is its lateral offset on that line, at the
+centreline height there; the lane polyline ends exactly on it (`LaneEnd::Mouth`), keeping only
+the points more than `1 mm` beyond the station, since the roadbed profile puts a knot at every
+mouth station that would otherwise stay as a zero-length end piece. The connector leaves and joins
+along the frame's direction, square to the line, and never reads a lane polyline's end piece:
+those pieces were zero-length, millimetres long or reversed at mouths and sharp bends, and a
+zero-length one sent the old connector off along `+x`. Building a frame is `O(edge points)`, once
+per edge end in the lane rebuild and once per incident edge end in the connector builder.
+
+**Curve.** One construction that always exists (`vehicle_junctions/turn.rs`, `VehicleTurn`), of
+straights and circular arcs only, so the heading is continuous and the curvature piecewise constant:
+
+- **Tangent arc**, where the entry direction and the exit direction meet ahead of both ends: a
+  straight along the entry, one arc and a straight along the exit, a fillet of the two tangent
+  lines. Its radius is the largest that fits between the ends, reduced by bisection (24 halvings)
+  until the arc keeps half a lane from every kerb corner of the layout (the fitted carriageway-edge
+  circles of its concave sectors): at a right-angle kerb-lane turn that is the arc concentric with
+  the kerb, and a large fillet no longer cuts a skewed junction's obtuse corner. The longer lead
+  keeps its straight. The arc never reaches past the tangent lines' intersection, so it neither
+  overshoots nor counter-steers. Construction and kerb bound from Veeti's road-chain branch
+  (`1ae3b22f`).
+- **Biarc** otherwise: straight on, a lateral shift, directions that meet behind an end, a U-turn,
+  or a tangent arc that no radius keeps off the kerbs (none on the swept maps). Two arcs with a
+  common tangent at their joint; the joint is the equal-tangent choice: both ends' tangent lines
+  are cut at the same distance `d > 0`, the joint is the midpoint of the two cut points and its
+  tangent runs between them. `d` exists for every pair of ends except parallel directions with the
+  exit level with or behind the entry, which no junction produces; coincident ends (a user
+  connection through a degree-two node) give a zero-length connector.
+
+There is no cubic and no fallback; the old junction-span cubic, whose handles (`0.55` of the
+footprint span) overshot short turns, is gone. Building a connector is `O(c)` for `c` kerb corners at
+the node, `O(24 c)` when the radius is reduced, only on a lane rebuild, and allocates nothing but
+its polyline.
+
+**Check.** Each connector is checked once per lane rebuild against the node's kerb corners
+(`NodeWalkways::collect_with_kerbs`, from the same layout as the walkways): the
+smallest distance from a corner's centre to the connector's straights and arcs, less the corner's
+radius, must not be negative (`O(c)`). A violation is logged on the `traffic` debug channel with the
+node and both lane ids and is counted by the save sweep; nothing clamps or repairs the curve.
+
+Acceptance record (`TRAFFIC-12`, 2026-10-31; commands and results; the artifact folders stay
+local):
+
+- Save sweep: `junction_connector_save_sweep` (ignored; `METRUM_SWEEP_SAVE=<save> $TEST_BINARY
+  nodes::sim::core::tests::junction_connector_sweep --ignored --nocapture`, optional
+  `METRUM_SWEEP_OUT=<file>` for one line per failing connector and the node layouts) loads a save,
+  whose load rebuilds every lane, and measures every vehicle connector at every node with
+  `lanes::trajectory_tests::measure_connectors`: the farthest probe (every `0.25 m`) outside the
+  compiled carriageway, a step heading against the chord (against both lane directions in turns
+  sharper than a right angle, whose exit heads against the chord), a counter-steer where the arm
+  directions meet ahead of both ends (beyond `1 mrad` and the f32 resolution of the two steps: the
+  demo save lies `8.5 km` from the origin, where f32 rounds points by `0.5 mm`), and a kink (a turn
+  over `0.2 rad` between steps or against a lane's end piece); and every lane end against its mouth
+  frame. `dev` against the fix (failing connectors, then outside / backward / counter-steer / kinks):
+
+  | Map | `dev` | Fix |
+  | --- | --- | --- |
+  | Demo save copy (39 nodes) | 117 of 156: 44 (max 4.75 m) / 31 / 89 / 103 | 0 of 161 |
+  | Kuopio reference save (80 nodes) | 335 of 440: 80 (max 5.65 m) / 65 / 206 / 288 | 0 of 440 |
+  | Saved 100k city (2,220 nodes) | 8,282 of 24,834: 0 / 0 / 8,272 / 8,282 | 0 of 24,834 |
+
+  Causes on `dev` (first match): a lane end piece under `3.2 mm`, so the builder used `+x` as its
+  direction (82 demo, 179 Kuopio; the knot the profile puts at every mouth station, cut on exactly);
+  an end piece off its arm by more than `0.05 rad` (4 demo); a lane end more than `1 cm` off its mouth
+  line, the trim by 3D lane length on curved and sloped arms (14 demo, 62 Kuopio; up to `0.71 m`);
+  and the junction-span cubic with good lane ends (17 demo, 94 Kuopio, every failure of the 100k city:
+  its right turns counter-steer and kink by `0.24 rad`). With the fix every lane end lies on its mouth
+  line, measured against the compiled roadbed's own mouth station (largest distance `0.0000 m`,
+  tolerance `1 cm`), its end piece within
+  `0.0077 rad` of the arm (tolerance `0.05 rad`) and at least `9.5 mm` long; no kerb violation is
+  logged; the largest step is `0.150 rad`; the tightest non-U-turn is a `1.73 m` tangent arc across a
+  pass-through node's slight kink (demo node 33) and the tightest junction turn a `3.58 m` biarc at a
+  50-degree bend (Kuopio node 29). RJ's six fixtures (`trajectory_tests`) are clean. The 45-degree
+  bend now gets two connectors: `dev`'s `+x` end directions made its inner lanes look collinear and
+  overlapping, so they were linked straight across the node piece. Span lanes (the mitred offset
+  inside a span): no vehicle lane of the demo or Kuopio save turns more than `0.014 rad` between steps
+  of at least `1 cm`, so no mitre spike or reversal was found inside a span.
+- Product probes: only the lanes component changes (20 of 20 reference entries, 133 of 141 roadbed
+  fixture entries); graph, nodes, layouts, spans, walkways and queries hashes stay bitwise equal.
+- Rendered top-down shots (`road_junction_reference_test.gd` with `METRUM_ROAD_JUNCTION_CONNECTORS=1`
+  and `METRUM_ROAD_JUNCTION_SAVE` / `METRUM_ROAD_JUNCTION_SAVE_FOCI` on a copy of the demo save,
+  gamescope headless, isolated profile) of a 90-degree bend with a zebra on one arm (node 19), the
+  skewed X (node 5) and a T (node 7): on `dev` connectors hook over the zebras and the sidewalk and
+  loop at both acute corners; with the fix every connector stays inside the carriageway between
+  the zebras' outer edges.
+- Gates: `cargo clippy --all-targets` warning set identical to `dev`; `./run.sh --test` exit 0 with
+  the debug library suite at 1,851 passed, 0 failed, 179 ignored, no Godot script skipped.
+- Road-edit preview: the connector build does not run in the preview path (lanes rebuild on
+  commit). `benchmark_road_preview_stages` (`RAYON_NUM_THREADS=4`, cores `0,2,..,14`, `dev`, fix,
+  fix, `dev` in one session): identical vertex counts; total p50 `sloped_t` 2.920, 2.770 ms (`dev`)
+  against 2.973, 2.891 ms, `sloped_branch` 2.787, 2.520 against 2.556, 2.603 ms.
+- `PERF-06` (`tools/perf_contract.py --agents`, 8 workers, one run each in the same session; its
+  fixture has no junction): identical work counts; network 10k 0.271 against 0.245 ms, 30k 0.861
+  against 0.631 ms; egress 0.729 / 1.436 against 0.567 / 1.474 ms; ingress 0.307 / 0.272 against
+  0.313 / 0.290 ms; single runs at a load average near 2 (another round shared the machine), so
+  within noise and not a speed claim.
+- 100k lane audit (`traffic07_lane_entry_audit`, day 12 at 32×, 8 workers, each engine its own
+  city): `dev` reproduces the `TRAFFIC-11` record exactly (0 lanes over capacity and 0 stacked cars
+  at every sample; 2,579 and 3,385 trucks held at nodes, 96 and 234 vehicles at attach points at
+  00:00 and 24:00). The fix: 0 lanes over capacity and 0 stacked cars at every sample; 2,682 and
+  3,664 held at nodes, 140 and 192 at attach points (a different city, so the holds are not
+  attributed). This city was prepared with the fix's first build, whose lane ends took the layout's
+  `f64` mouth station instead of the edge's `f32` clip (at most a micrometre apart).
+- Envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements`, `RAYON_NUM_THREADS=6`, both engines in one session): both PASS,
+  determinism identical (repeat, 1 and 3 threads, reload). Both raise the same 13 notes of the stale
+  baseline; the fix moves them by at most 2.6% apart from tiny rates (`dev` against fix): 10k
+  baseline out-of-stock 0.1944 / 0.1943; 10k fiscal stress deliveries 8.89 / 8.69, employment
+  0.07446 / 0.07450, final employment 0.00602 / 0.00592, net income 27.31 / 27.28, out-of-stock
+  0.8062 / 0.8080; 30k baseline bankruptcies 1.610 / 1.652, deliveries 128.5 / 129.4, employment
+  0.6004 / 0.6021, final employment 0.5418 / 0.5436, net income 8.53 / 8.58; 30k fiscal stress
+  employment 0.07682 / 0.07686, final employment 0.00624 / 0.00684. The 30k arrivals workload
+  moves by at most 3% on its main metrics (out-of-stock 0.218 / 0.225).
 
 Allowed turns are derived from `Node::lane_connections`:
 

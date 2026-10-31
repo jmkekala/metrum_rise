@@ -941,10 +941,17 @@ fn test_explicit_degree_two_vehicle_connection_uses_connector_span() {
     let conns = vehicle_conns_for_turn(&lanes, &graph, n_center, west_edge, east_edge);
     assert_eq!(conns.len(), 1);
     let conn = &lanes.lanes[conns[0]];
+    // The lane ends meet at this pass-through node, so the connector is as long as their chord:
+    // a junction-span connector here looped forward and back to the same point (`TRAFFIC-12`).
+    let chord = conn.geometry[0].distance_to(*conn.geometry.last().unwrap());
     assert!(
-        conn.length >= crate::config::LANE_WIDTH,
-        "explicit degree-two connector should not collapse to a tiny handoff: {:.2} m",
+        conn.length <= chord + 1.0e-3,
+        "explicit degree-two connector loops: {:.2} m over a {chord:.2} m chord",
         conn.length
+    );
+    assert!(
+        conn.geometry.windows(2).all(|p| p[1].x >= p[0].x),
+        "explicit straight connector must advance instead of looping backwards"
     );
     assert!(
         max_polyline_segment_m(&conn.geometry) <= 1.0 + 1.0e-4,

@@ -105,6 +105,21 @@ impl NodeArms {
             .then_some(arms)
     }
 
+    /// The one arm `key` of `node` (its valid node), with the knots, laterals and centreline
+    /// [`Self::collect`] gives it, whatever the node's other arms: an arm's knots depend on its
+    /// own edge and the node's position only. `None` for an edge without two distinct points.
+    /// `O(edge points)`.
+    pub(super) fn single(graph: &RegionGraph, node: u32, key: ArmKey) -> Option<Self> {
+        let pos = graph.node(graph.get_valid_node(node)).pos;
+        let mut arms = Self {
+            node,
+            position: RoadVec2::new(f64::from(pos.x), f64::from(pos.z)),
+            ..Self::default()
+        };
+        arms.push_arm(key, graph.edge(key.edge), false, false);
+        (arms.knots.len() >= 2 && arms.centreline.len() >= 2).then_some(arms)
+    }
+
     // `collect` in place: refills these arms with `node`'s, in their own vectors and `scratch`'s
     // incident lists, and returns false where `collect` returns `None` (the arms are then stale).
     pub(super) fn collect_into(

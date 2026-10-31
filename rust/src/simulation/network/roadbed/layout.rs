@@ -634,6 +634,31 @@ impl ArmKnot {
     }
 }
 
+/// An arm's cross-section at one station: the straight line between the offsets of the two
+/// knots around it, interpolated at the station's fraction. Mouth sections lie on it, and vehicle
+/// lanes end on it (`TRAFFIC-12`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SectionLine {
+    knots: [ArmKnot; 2],
+    t: f64,
+}
+
+impl SectionLine {
+    /// The point at signed lateral offset `lateral_m`, bitwise [`ArmInput::offset_point`]'s.
+    pub fn point(&self, lateral_m: f64) -> RoadVec2 {
+        let [start, end] = &self.knots;
+        start.offset(lateral_m).lerp(end.offset(lateral_m), self.t)
+    }
+
+    /// Unit direction away from the node, square to the line: the interpolated lateral axis
+    /// turned a quarter right.
+    pub fn direction(&self) -> RoadVec2 {
+        let [start, end] = &self.knots;
+        let lateral = start.lateral.lerp(end.lateral, self.t);
+        RoadVec2::new(lateral.y, -lateral.x).normalize()
+    }
+}
+
 impl ArmSide<'_> {
     // Unsigned offset of the carriageway edge.
     pub(super) fn core_offset(&self) -> f64 {
@@ -663,13 +688,22 @@ impl ArmInput<'_> {
     /// knots, offset along the interpolated lateral axes. At a knot station it returns that
     /// knot's offset point exactly. Mouth sections and node pieces must use this one function.
     pub fn offset_point(&self, station_m: f64, lateral_m: f64) -> RoadVec2 {
+        self.section_line(station_m).point(lateral_m)
+    }
+
+    /// The arm's cross-section line at `station_m`, on which [`Self::offset_point`] places every
+    /// lateral offset of that station.
+    pub fn section_line(&self, station_m: f64) -> SectionLine {
         let last_segment = self.knots.len() - 2;
         let segment = self.knots[1..]
             .partition_point(|knot| knot.station_m < station_m)
             .min(last_segment);
-        let (start, end) = (&self.knots[segment], &self.knots[segment + 1]);
+        let (start, end) = (self.knots[segment], self.knots[segment + 1]);
         let t = (station_m - start.station_m) / (end.station_m - start.station_m);
-        start.offset(lateral_m).lerp(end.offset(lateral_m), t)
+        SectionLine {
+            knots: [start, end],
+            t,
+        }
     }
 
     // Segments whose start station lies below `station_m`.

@@ -3,26 +3,44 @@
 //! Full and local lane reconstruction with deterministic indexed publication.
 
 use super::super::graph::{Edge, RegionGraph};
-use super::super::roadbed::{ArmKey, EdgeEnd, NodeWalkways, RoadProfile};
+use super::super::roadbed::{ArmKey, Corner, EdgeEnd, NodeWalkways, RoadProfile};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::{LaneEnd, build_one_lane};
 use super::pedestrian_junctions::{build_pedestrian_connections_at_node, footpath_end_insets};
-use super::vehicle_junctions::build_vehicle_connections_at_node;
+use super::vehicle_junctions::{
+    build_vehicle_connections_at_node, vehicle_lane_end, vehicle_mouth_frame,
+};
 use super::{LaneSystem, LaneType};
 use crate::config;
 use godot::prelude::Vector3;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-// Junction-layout walkways by valid node id, for one rebuild.
-type Walkways = HashMap<u32, NodeWalkways>;
+// Junction-layout products of one node for the lane rebuild: its walkways and the kerb corners
+// its vehicle connectors keep clear of.
+struct NodeLayoutLanes {
+    walkways: Option<NodeWalkways>,
+    kerb_corners: Option<Vec<Corner>>,
+}
 
-// Lays out `nodes` (valid ids); nodes without a layout have no entry. The same graph-to-layout
-// function node pieces use, so lanes need no compiled roadbed. O(sum of the nodes' layouts).
-// A full rebuild lays out every node on the shared pool; an incremental closure holds a handful
-// of nodes, which cost less to lay out than to dispatch to the pool.
+// Junction-layout products by valid node id, for one rebuild.
+type Walkways = HashMap<u32, NodeLayoutLanes>;
+
+// Lays out `nodes` (valid ids); nodes with neither walkways nor a layout have no entry. The same
+// graph-to-layout function node pieces use, so lanes need no compiled roadbed. O(sum of the
+// nodes' layouts). A full rebuild lays out every node on the shared pool; an incremental closure
+// holds a handful of nodes, which cost less to lay out than to dispatch to the pool.
 fn collect_walkways(graph: &RegionGraph, nodes: &[u32], parallel: bool) -> Walkways {
-    let walkways = |node: u32| Some((node, NodeWalkways::collect(graph, node)?));
+    let walkways = |node: u32| {
+        let (walkways, kerb_corners) = NodeWalkways::collect_with_kerbs(graph, node);
+        (walkways.is_some() || kerb_corners.is_some()).then_some((
+            node,
+            NodeLayoutLanes {
+                walkways,
+                kerb_corners,
+            },
+        ))
+    };
     if parallel {
         crate::thread_pools::install(|| {
             nodes
@@ -44,6 +62,14 @@ pub(super) fn sidewalk_offset(edge: &Edge, lane_idx: i8) -> f32 {
     let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
     let side = if lane_idx > 0 { -1.0 } else { 1.0 };
     side * centre_m * side_mul
+}
+
+/// Lateral offset of vehicle lane `lane_idx` in its edge's forward frame: forward lanes
+/// `0, 1, ..` and backward lanes `-1, -2, ..`, each half a lane further out than the last, on
+/// the driving side.
+pub(super) fn vehicle_lane_offset(lane_idx: i8) -> f32 {
+    let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+    (f32::from(lane_idx) + 0.5) * config::LANE_WIDTH * side_mul
 }
 
 impl LaneSystem {
@@ -77,12 +103,16 @@ impl LaneSystem {
         walkways: &Walkways,
         node_id: usize,
     ) {
+        let layout = walkways.get(&(node_id as u32));
         build_vehicle_connections_at_node(
             &mut self.lanes,
             lane_map,
             graph,
             node_id,
             &mut self.node_lanes,
+            layout
+                .and_then(|layout| layout.kerb_corners.as_deref())
+                .unwrap_or_default(),
         );
         build_pedestrian_connections_at_node(
             &mut self.lanes,
@@ -91,7 +121,7 @@ impl LaneSystem {
             node_id,
             &mut self.node_lanes,
             &mut self.crosswalks,
-            walkways.get(&(node_id as u32)),
+            layout.and_then(|layout| layout.walkways.as_ref()),
         );
         // Connectors are pushed one at a time; keep only the ids.
         if let Some(ids) = self.node_lanes.get_mut(&node_id) {
@@ -121,7 +151,22 @@ impl LaneSystem {
                 point: Vector3::new(point.x as f32, point.y as f32, point.z as f32),
             }
         };
-        let node_walkways = |node: u32| walkways.get(&graph.get_valid_node(node));
+        let node_walkways = |node: u32| {
+            walkways
+                .get(&graph.get_valid_node(node))
+                .and_then(|layout| layout.walkways.as_ref())
+        };
+        // Vehicle lanes end on their arms' mouth frames at the edge's clips (`TRAFFIC-12`).
+        let frames = ends_at.map(|(_, end)| vehicle_mouth_frame(graph, edge_idx, end));
+        let vehicle_ends = |lane_idx: i8| {
+            [0, 1].map(|index| {
+                let end = ends_at[index].1;
+                frames[index].map_or(LaneEnd::Inset(0.0), |frame| LaneEnd::Mouth {
+                    station_m: frame.station_m,
+                    point: vehicle_lane_end(&frame, end, lane_idx).point,
+                })
+            })
+        };
         // A footpath ends at its mouth in its node's layout; elsewhere its trim is a pure
         // function of the junction geometry, so partial rebuilds trim footpaths alike.
         let insets = if edge.primary_type == TransitType::Foot {
@@ -175,26 +220,29 @@ impl LaneSystem {
                 );
             };
 
-        let lane_w = config::LANE_WIDTH;
-        let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-
-        // 1. Forward Lanes
+        // 1. Forward Lanes (lane 0 is closest to the centre)
         for l in 0..edge.fwd_lanes {
-            // Lane 0 is closest to center
-            let lane_offset = (l as f32 + 0.5) * lane_w * side_mul;
-            build_lane(true, l as i8, LaneType::Vehicle, lane_offset, insets);
+            let lane_idx = l as i8;
+            let offset = vehicle_lane_offset(lane_idx);
+            build_lane(
+                true,
+                lane_idx,
+                LaneType::Vehicle,
+                offset,
+                vehicle_ends(lane_idx),
+            );
         }
 
         // 2. Backward Lanes
         for l in 0..edge.bkw_lanes {
-            // Lane 0 is closest to center
-            let lane_offset = -(l as f32 + 0.5) * lane_w * side_mul;
+            let lane_idx = -(l as i8) - 1;
+            let offset = vehicle_lane_offset(lane_idx);
             build_lane(
                 false,
-                -(l as i8) - 1,
+                lane_idx,
                 LaneType::Vehicle,
-                lane_offset,
-                insets,
+                offset,
+                vehicle_ends(lane_idx),
             );
         }
 

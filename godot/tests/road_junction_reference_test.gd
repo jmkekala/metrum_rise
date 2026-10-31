@@ -11,12 +11,16 @@
 ## over ground sculpted
 ## after the commits (a hollow under the bridge, a mound over the tunnel), with a view from under
 ## the bridge at its road mouth and one at the tunnel's portal; kuopio_t2_wall loads the Kuopio
-## reference save at its conflict wall site (T2).
+## reference save at its conflict wall site (T2). METRUM_ROAD_JUNCTION_CONNECTORS=1 draws the
+## `junction_connectors` debug overlay (arcs) over every view (TRAFFIC-12). METRUM_ROAD_JUNCTION_SAVE
+## names another save and METRUM_ROAD_JUNCTION_SAVE_FOCI its junctions to render (comma list of
+## name:x:z), each as a fixture of that name.
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
 const GrassScript := preload("res://scripts/renderers/grass.gd")
+const JunctionOverlayScript := preload("res://scripts/renderers/junction_debug_overlay.gd")
 const WORLD_M := 512.0
 const ARM_M := 80.0
 const SLOPE_RISE_M := 6.4 # over 256 m along +x: 2.5%
@@ -174,6 +178,10 @@ func _fixtures() -> Array[Dictionary]:
 	result.append({"name": "kuopio_grass_after", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
 		"focus": Vector2(31.45, -6.71), "grass": true,
 		"roads": [_road(Vector2(31.45, -6.71), Vector2(57.23, 47.47))]})
+	var save := OS.get_environment("METRUM_ROAD_JUNCTION_SAVE")
+	for focus: String in OS.get_environment("METRUM_ROAD_JUNCTION_SAVE_FOCI").split(",", false):
+		var parts := focus.split(":")
+		result.append({"name": parts[0], "save": save, "focus": Vector2(float(parts[1]), float(parts[2])), "roads": []})
 	return result
 
 # [label, rise over 256 m]: flat and 2.5%, with the spike's 8% on the T, four-way, bend and grid.
@@ -279,6 +287,11 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	road.remove_child(road.road_mesh_root)
 	scene.add_child(road.road_mesh_root)
 	var road_chunks: int = road._road_chunk_instances.size()
+	if OS.get_environment("METRUM_ROAD_JUNCTION_CONNECTORS") == "1":
+		_expect(MetrumDebug.set_visual_mode("junction_connectors", "arcs"), "junction_connectors must switch on")
+		var overlay := JunctionOverlayScript.new()
+		overlay.name = "JunctionDebugOverlay"
+		scene.add_child(overlay)
 	_expect(road_chunks > 0, "%s must have road chunk meshes" % label)
 	var images: Array[Dictionary] = []
 	await _compare_views(fixture, label, scene, camera, environment.environment, focus, images)

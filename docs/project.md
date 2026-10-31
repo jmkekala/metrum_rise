@@ -36,9 +36,10 @@ road outside movement (a removed building's occupants, road-edit reattachment, a
 driveway entry) likewise wait at their attach point for a gap: a business failing beside a jammed
 road no longer drops its whole truck queue onto one point, and the saved 100k day ends with no
 lane over capacity ([TRAFFIC-11](traffic.md#junction-connectors)). A car whose route loops back
-to a detach point behind it still detaches at once (`TRAFFIC-13`, open). Junction turn connectors still
-overshoot and hook at many real junctions; they are being rebuilt from the roadbed layout's mouth
-frames ([TRAFFIC-12](roadmap.md)). A closed ring of full lanes can stand still for days, now
+to a detach point behind it still detaches at once (`TRAFFIC-13`, open). Junction turn connectors are built
+from the roadbed layout's mouth frames as tangent arcs or biarcs and stay on the carriageway at
+every junction of the demo save, the Kuopio save and the 100k city
+([TRAFFIC-12](traffic.md#junction-connectors)). A closed ring of full lanes can stand still for days, now
 visible as waiting cars instead of stacking ([TRAFFIC-14](roadmap.md), open).
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
@@ -1391,6 +1392,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TRAFFIC-12` done (branch `port-rj2-connectors`, 2026-10-31): vehicle lanes end on their arms' roadbed mouth frames and junction connectors are one tangent-arc-or-biarc construction from those frames (no cubic), checked against the layout's kerb corners on every lane rebuild. Save sweep of every connector, `dev` against the fix: demo save 117 of 156 failing against 0 of 161, Kuopio 335 of 440 against 0, 100k city 8,282 of 24,834 against 0. Results in [`traffic.md`](traffic.md#junction-connectors).
 - `TRAFFIC-11` done (branch `port-r11-traffic11` on `port-r1-traffic07`, 2026-10-30): the bulk attach onto full lanes was a building removal's evacuation, which put every occupant vehicle on the building's attach point with no gap check (the egress queue waiting there). Vehicles placed outside movement (evacuation, road-edit reattachment onto a taken spot, invalid-ingress return) now wait lane-less at the attach point and attach through the egress gap check and claim, off the serial pass while the slot is full; saves keep the hold. Saved 100k day: 0 lanes over capacity and 0 stacked cars at 00:00 and 24:00, 234 vehicles waiting at attach points at day's end. Results in [`traffic.md`](traffic.md#junction-connectors); new `TRAFFIC-13` (detach before a looping route ends).
 - `TRAFFIC-07` done (branch `port-r1-traffic07`, 2026-10-30; ported from Veeti's road-chain branch, `a0df7f77`): node-origin cars check the lane entry gap and claim the lane like connector entry, and wait at their node (`HeldEntry`, off the serial pass) when it is full. 100k lane audit, `dev` against the fix: 14 against 2 lanes over capacity at the end of the day, 3,708 against 81 stacked cars; envelope deterministic, the two 10k out-of-stock notes return (border throughput). Results and commands in [`traffic.md`](traffic.md#junction-connectors); `TRAFFIC-11` tracks the remaining bulk attach.
 - `main` takes `road` (2026-10-30, fast-forward): the constructive roadbed (`ROAD-68`) and the graded terrain surface (`TERRAIN-07`, `TERRAIN-10`, `TERRAIN-15`) replace the legacy road-surface compiler and terrain core on `main`. Saves from before `ROAD-68` do not load (save compatibility was not kept, by the user's decision). The carried misses stay open under their own IDs: `TERRAIN-13`, `TERRAIN-14`, `PERF-12`, `RENDER-30`, `UI-08` and `terrain.md` T65.

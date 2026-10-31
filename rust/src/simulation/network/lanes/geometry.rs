@@ -60,6 +60,32 @@ pub enum LaneEnd {
         /// The end point.
         point: Vector3,
     },
+    /// Exactly at `point`, a vehicle lane's point on its arm's mouth frame at `station_m`
+    /// (`MouthFrame`, `TRAFFIC-12`). As [`Self::Layout`], but lane points less than
+    /// `MOUTH_KNOT_MERGE_M` beyond the station are dropped too: the roadbed profile puts a knot at
+    /// every mouth station, which would otherwise stay as a zero-length end piece whenever its
+    /// station rounds beyond the frame's, so the lane's end piece runs along the arm.
+    Mouth {
+        /// Horizontal centreline distance of the end from the node.
+        station_m: f64,
+        /// The end point.
+        point: Vector3,
+    },
+}
+
+// Lane points closer than this beyond a mouth station are replaced by the mouth point.
+const MOUTH_KNOT_MERGE_M: f64 = 1.0e-3;
+
+impl LaneEnd {
+    // The station beyond which lane points are kept, and the end point, of a layout or mouth
+    // end.
+    fn cut(self) -> Option<(f64, Vector3)> {
+        match self {
+            Self::Inset(_) => None,
+            Self::Layout { station_m, point } => Some((station_m, point)),
+            Self::Mouth { station_m, point } => Some((station_m + MOUTH_KNOT_MERGE_M, point)),
+        }
+    }
 }
 
 /// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and
@@ -125,7 +151,7 @@ pub fn build_one_lane(
     // A layout end replaces every lane point at or short of its station with the layout's own
     // point, so the lane ends exactly where the node's pedestrian connectors start. The points
     // are still index-aligned with `pts` here.
-    if let [LaneEnd::Layout { .. }, _] | [_, LaneEnd::Layout { .. }] = ends {
+    if ends.iter().any(|end| end.cut().is_some()) {
         geometry = cut_at_layout_ends(&geometry, pts, ends);
     }
     if let LaneEnd::Inset(inset) = ends[0]
@@ -197,19 +223,19 @@ fn cut_at_layout_ends(geometry: &[Vector3], pts: &[Vector3], ends: [LaneEnd; 2])
         None
     };
     let count = geometry.len();
-    let (first, start_point) = match ends[0] {
-        LaneEnd::Layout { station_m, point } => (
+    let (first, start_point) = match ends[0].cut() {
+        Some((station_m, point)) => (
             beyond(&mut (0..count), station_m).unwrap_or(count),
             Some(point),
         ),
-        LaneEnd::Inset(_) => (0, None),
+        None => (0, None),
     };
-    let (end, end_point) = match ends[1] {
-        LaneEnd::Layout { station_m, point } => (
+    let (end, end_point) = match ends[1].cut() {
+        Some((station_m, point)) => (
             beyond(&mut (0..count).rev(), station_m).map_or(0, |index| index + 1),
             Some(point),
         ),
-        LaneEnd::Inset(_) => (count, None),
+        None => (count, None),
     };
     let kept = geometry.get(first..end).unwrap_or_default();
     let mut cut = Vec::with_capacity(kept.len() + 2);
