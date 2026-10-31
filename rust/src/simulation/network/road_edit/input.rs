@@ -38,6 +38,10 @@ pub(crate) struct PreparedRoadInput {
     pub(crate) class: EdgeClass,
     /// True when endpoint proximity to existing graph nodes is treated as an authored snap.
     pub(crate) endpoint_snap_enabled: bool,
+    /// The road tool's tunnel intent (`ROAD-61`): the authored profile is kept on the tunnel
+    /// lattice and the validation graph splits the stroke at its portals
+    /// ([`super::tunnel`]). False for every stroke drawn without the toggle.
+    pub(crate) tunnel: bool,
     /// The least maximum grade a standard profile can keep under the stroke's pins and the
     /// source-delta limit, when that exceeds the hard maximum (`ROAD-68` open question 37):
     /// the stroke is refused as `road_too_steep`. `None` when the solve constructed the profile
@@ -128,19 +132,22 @@ fn prepare_snapped_road_input_to_visible_surface(
         points,
         class,
         endpoint_snap_enabled: true,
+        tunnel: false,
         forced_grade: forced_grade.filter(|_| class == EdgeClass::Standard),
     }
 }
 
 /// Prepares road-tool input with optional endpoint snapping to the existing road graph, pinned
 /// to every visible carriageway: the first pass of [`super::plan_road_edit`], which the commit,
-/// the preview and the editor's checks use (`ROAD-68` open question 16).
+/// the preview and the editor's checks use (`ROAD-68` open question 16). With `tunnel`, the
+/// tool's tunnel intent, the stroke keeps its authored profile instead (`ROAD-61`).
 pub(crate) fn prepare_road_input_for_tool(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
+    tunnel: bool,
 ) -> PreparedRoadInput {
     let excluded = RebuiltPieces::default();
     prepare_road_input_excluding(
@@ -149,21 +156,28 @@ pub(crate) fn prepare_road_input_for_tool(
         graph,
         roadbed,
         snap_to_existing_roads,
+        tunnel,
         &excluded,
     )
     .0
 }
 
 // As `prepare_road_input_for_tool`, reading no carriageway of the `excluded` pieces; also
-// returns the pieces whose carriageway the preparation read.
+// returns the pieces whose carriageway the preparation read. A tunnel stroke reads none.
 pub(super) fn prepare_road_input_excluding(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
+    tunnel: bool,
     excluded: &RebuiltPieces,
 ) -> (PreparedRoadInput, Vec<PieceId>) {
+    if tunnel {
+        let prepared =
+            super::tunnel::prepare_tunnel_input(raw_points, graph, snap_to_existing_roads);
+        return (prepared, Vec::new());
+    }
     if snap_to_existing_roads {
         let mut support = StrokeSupport::new(roadbed, graph, excluded);
         let prepared = prepare_snapped_road_input_to_visible_surface(
@@ -180,13 +194,14 @@ pub(super) fn prepare_road_input_excluding(
         points,
         class,
         endpoint_snap_enabled: false,
+        tunnel: false,
         forced_grade,
     };
     (prepared, Vec::new())
 }
 
 // Snaps prepared road endpoints to existing graph nodes using the same tolerance as commit.
-fn snap_road_endpoints_to_existing_nodes(prepared_points: &mut [Vector3], graph: &RegionGraph) {
+pub(super) fn snap_road_endpoints_to_existing_nodes(prepared_points: &mut [Vector3], graph: &RegionGraph) {
     if prepared_points.len() < 2 {
         return;
     }
@@ -385,7 +400,7 @@ fn solve_structural_transition_profile(points: &mut [Vector3]) {
 }
 
 // Into `simplified_points`, which allocates only to grow.
-fn simplify_road_alignment_points(points: &[Vector3], simplified_points: &mut Vec<Vector3>) {
+pub(super) fn simplify_road_alignment_points(points: &[Vector3], simplified_points: &mut Vec<Vector3>) {
     simplified_points.clear();
     if !points.is_empty() {
         simplified_points.push(points[0]);
@@ -650,7 +665,7 @@ fn profile_sample_run_m(a: RoadVerticalProfileSample, b: RoadVerticalProfileSamp
     ((b.x - a.x).hypot(b.z - a.z)).max(f32::EPSILON)
 }
 
-fn xz_distance(a: Vector3, b: Vector3) -> f32 {
+pub(super) fn xz_distance(a: Vector3, b: Vector3) -> f32 {
     (b.x - a.x).hypot(b.z - a.z)
 }
 

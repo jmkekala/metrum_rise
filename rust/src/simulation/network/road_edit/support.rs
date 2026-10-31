@@ -130,6 +130,7 @@ pub(crate) fn plan_road_edit(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
+    tunnel: bool,
 ) -> (
     PreparedRoadInput,
     RoadPreviewValidation,
@@ -143,6 +144,7 @@ pub(crate) fn plan_road_edit(
             graph,
             roadbed,
             snap_to_existing_roads,
+            tunnel,
             &excluded,
         );
         let (validation, topology) =

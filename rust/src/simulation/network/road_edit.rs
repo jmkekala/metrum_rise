@@ -17,6 +17,7 @@ mod input;
 mod support;
 #[cfg(test)]
 mod tests;
+mod tunnel;
 mod validation;
 
 pub(crate) use input::{PreparedRoadInput, prepare_road_input_for_tool};

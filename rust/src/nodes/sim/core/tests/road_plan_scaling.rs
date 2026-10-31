@@ -298,6 +298,7 @@ fn measure_populated_road_plan_scaling(
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            tunnel: false,
         };
         for iteration in 0..103 {
             let start = Instant::now();

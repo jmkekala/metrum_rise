@@ -2,31 +2,41 @@
 
 //! Road-tool query helpers shared by Godot-facing bridge methods.
 
-use crate::simulation::network::road_edit::RoadPreviewValidation;
+use crate::simulation::network::road_edit::{PreparedRoadInput, RoadPreviewValidation};
 use crate::simulation::network::roadbed::preview_candidate_roadbed_half_width_m;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::water::WaterSystem;
-use godot::prelude::Vector3;
 
 /// Stable preview rejection reason for a grounded roadbed that overlaps authored water.
 pub(crate) const ROAD_WATER_REQUIRES_BRIDGE_REASON: &str = "water_requires_bridge";
+/// Stable rejection reason for a tunnel stroke (`ROAD-61`) whose corridor, bore or approach,
+/// lies under or in authored water: its cover or a portal would be a water body.
+pub(crate) const TUNNEL_UNDER_WATER_REASON: &str = "tunnel_under_water";
 
-/// Applies the authored-water placement rule to an otherwise validated road candidate.
+/// Applies the authored-water placement rule to an otherwise validated road candidate: a
+/// grounded road needs a bridge over water, and a stroke drawn with the tunnel intent may not
+/// pass under it anywhere. O(corridor segments × water cells they touch).
 pub(crate) fn validate_road_candidate_against_water(
-    edge_class: EdgeClass,
-    prepared_points: &[Vector3],
+    prepared: &PreparedRoadInput,
     fwd_lanes: u8,
     bkw_lanes: u8,
     water: &WaterSystem,
     validation: RoadPreviewValidation,
 ) -> RoadPreviewValidation {
-    if !validation.is_valid || edge_class != EdgeClass::Standard || prepared_points.len() < 2 {
+    let (edge_class, prepared_points) = (prepared.class, &prepared.points[..]);
+    let checked = edge_class == EdgeClass::Standard || prepared.tunnel;
+    if !validation.is_valid || !checked || prepared_points.len() < 2 {
         return validation;
     }
     let half_width_m =
         preview_candidate_roadbed_half_width_m(prepared_points, edge_class, fwd_lanes, bkw_lanes);
     if water.road_corridor_overlaps_visible_water(prepared_points, half_width_m) {
-        return validation.with_invalid_reason(ROAD_WATER_REQUIRES_BRIDGE_REASON);
+        let reason = if prepared.tunnel {
+            TUNNEL_UNDER_WATER_REASON
+        } else {
+            ROAD_WATER_REQUIRES_BRIDGE_REASON
+        };
+        return validation.with_invalid_reason(reason);
     }
     validation
 }
@@ -52,14 +62,7 @@ mod tests {
             prepare(&[Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)]);
 
         assert_eq!(preview.class, EdgeClass::Standard);
-        let validation = validate_road_candidate_against_water(
-            preview.class,
-            &preview.points,
-            1,
-            1,
-            &water,
-            validation,
-        );
+        let validation = validate_road_candidate_against_water(&preview, 1, 1, &water, validation);
 
         assert!(!validation.is_valid);
         assert_eq!(validation.invalid_reason, ROAD_WATER_REQUIRES_BRIDGE_REASON);
@@ -75,14 +78,7 @@ mod tests {
         ]);
 
         assert_eq!(preview.class, EdgeClass::Bridge);
-        let validation = validate_road_candidate_against_water(
-            preview.class,
-            &preview.points,
-            1,
-            1,
-            &water,
-            validation,
-        );
+        let validation = validate_road_candidate_against_water(&preview, 1, 1, &water, validation);
 
         assert!(validation.is_valid);
     }
@@ -96,14 +92,7 @@ mod tests {
         ]);
 
         assert_eq!(preview.class, EdgeClass::Standard);
-        let validation = validate_road_candidate_against_water(
-            preview.class,
-            &preview.points,
-            1,
-            1,
-            &water,
-            validation,
-        );
+        let validation = validate_road_candidate_against_water(&preview, 1, 1, &water, validation);
 
         assert!(validation.is_valid);
     }
@@ -112,8 +101,14 @@ mod tests {
     fn prepare(points: &[Vector3]) -> (PreparedRoadInput, RoadPreviewValidation) {
         let terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
         let graph = RegionGraph::new();
-        let prepared =
-            prepare_road_input_for_tool(points, &terrain, &graph, &RoadbedSystem::new(30.0), false);
+        let prepared = prepare_road_input_for_tool(
+            points,
+            &terrain,
+            &graph,
+            &RoadbedSystem::new(30.0),
+            false,
+            false,
+        );
         let validation = validate_road_candidate_fast(&prepared, &terrain, &graph);
         (prepared, validation)
     }

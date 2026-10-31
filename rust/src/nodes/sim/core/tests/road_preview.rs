@@ -77,6 +77,7 @@ fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview 
         fwd_lanes: 1,
         bkw_lanes: 1,
         snap_to_existing_roads: true,
+        tunnel: false,
     })
 }
 
@@ -91,6 +92,7 @@ fn commit(
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            tunnel: false,
             preview,
         },
         std::time::Instant::now(),
@@ -512,6 +514,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
             fwd_lanes: 2,
             bkw_lanes: 2,
             snap_to_existing_roads: true,
+            tunnel: false,
         }));
         let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
         let view_chunks = context.view.road_mesh_chunks.clone();
@@ -521,6 +524,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
                 fwd_lanes: 2,
                 bkw_lanes: 2,
                 snap_to_existing_roads: true,
+                tunnel: false,
                 preview: Some(Arc::clone(&preview)),
             },
             std::time::Instant::now(),

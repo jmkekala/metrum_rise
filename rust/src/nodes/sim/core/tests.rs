@@ -19,6 +19,7 @@ mod road_reference_probe;
 mod road_plan_scaling;
 mod road_preview;
 mod road_terrain_plan;
+mod road_tunnels;
 mod routing_adoption;
 mod zoning_buildability;
 
@@ -581,6 +582,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
         fwd_lanes: 1,
         bkw_lanes: 1,
         snap_to_existing_roads: true,
+        tunnel: false,
     });
 
     assert!(!validation.is_valid);
@@ -813,6 +815,7 @@ fn planned_topology_rejection_restores_split_dependents() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            tunnel: false,
         },
     );
     assert!(plan.topology_for(&core.region_graph).is_some());
@@ -866,6 +869,7 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            tunnel: false,
         },
     );
     assert!(plan.topology_for(&core.region_graph).is_some());

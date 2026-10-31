@@ -44,6 +44,8 @@ static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionar
 	var fwd := int(attempt.get("fwd_lanes", 1))
 	var bkw := int(attempt.get("bkw_lanes", 1))
 	var snap := bool(attempt.get("snap", true))
+	# The attempt's tunnel intent (`ROAD-61`); the road tool re-asserts its own per preview.
+	simulation.set_road_tool_tunnel(bool(attempt.get("tunnel", false)))
 	if points.size() < 2:
 		return {"by": "tool", "reason": "too_short"}
 	var validation: Dictionary = {}

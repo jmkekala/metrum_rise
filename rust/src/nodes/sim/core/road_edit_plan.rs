@@ -137,6 +137,7 @@ impl RoadEditPlan {
             graph,
             roadbed,
             request.snap_to_existing_roads,
+            request.tunnel,
         );
         Self::new(
             request,
@@ -188,8 +189,7 @@ impl RoadEditPlan {
         let fwd = self.request.fwd_lanes.clamp(0, 255) as u8;
         let bkw = self.request.bkw_lanes.clamp(0, 255) as u8;
         let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
-            self.prepared.class,
-            &self.prepared.points,
+            &self.prepared,
             fwd,
             bkw,
             &core.watermap,
@@ -319,6 +319,7 @@ mod tests {
             &RegionGraph::new(),
             &RoadbedSystem::new(16.0),
             true,
+            false,
         );
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
@@ -327,6 +328,7 @@ mod tests {
                 fwd_lanes: 1,
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
+                tunnel: false,
             },
             3,
             prepared,

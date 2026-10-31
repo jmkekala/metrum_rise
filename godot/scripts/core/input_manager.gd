@@ -279,6 +279,10 @@ func _unhandled_input(event):
 				if event.ctrl_pressed:
 					_handle_save_game()
 			KEY_P: _toggle_agent_paths()
+			KEY_T:
+				if current_tool == Tool.ROAD:
+					road_tool.set_tunnel(not road_tool.tunnel_enabled)
+					get_viewport().set_input_as_handled()
 			KEY_SPACE:
 				_toggle_pause()
 				get_viewport().set_input_as_handled()

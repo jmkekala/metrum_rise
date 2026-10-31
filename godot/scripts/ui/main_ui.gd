@@ -50,6 +50,7 @@ var walkway_btn: Button
 var straight_btn: Button
 var spline_btn: Button
 var zoning_grid_snap_check: CheckBox
+var tunnel_check: CheckBox
 var zoning_combined_hbox: VBoxContainer
 var zoning_mode_menu: HBoxContainer
 var zoning_type_menu: HBoxContainer
@@ -237,6 +238,21 @@ func _build_ui():
 	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.zoning_grid_snap_enabled = enabled)
 	snap_row.add_child(zoning_grid_snap_check)
 	road_options_menu.add_child(snap_row)
+
+	var tunnel_row := HBoxContainer.new()
+	var tunnel_label := Label.new()
+	tunnel_label.text = "Structure"
+	tunnel_label.custom_minimum_size.x = 92.0
+	tunnel_row.add_child(tunnel_label)
+	tunnel_check = CheckBox.new()
+	tunnel_check.text = "Tunnel (T)"
+	tunnel_check.focus_mode = Control.FOCUS_NONE
+	tunnel_check.tooltip_text = "Keep the drawn height through the ground: a straight road runs level between its ends. Place both ends outside the hill; the stretch under 5 m of ground becomes a tunnel."
+	tunnel_check.toggled.connect(func(enabled: bool): road_tool.set_tunnel(enabled))
+	if road_tool:
+		road_tool.tunnel_toggled.connect(func(enabled: bool): tunnel_check.set_pressed_no_signal(enabled))
+	tunnel_row.add_child(tunnel_check)
+	road_options_menu.add_child(tunnel_row)
 	options_panel.visible = false 
 	# Store reference to toggle it
 	self.set_meta("options_panel", options_panel)

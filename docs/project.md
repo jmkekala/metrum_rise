@@ -51,6 +51,13 @@ wait at a full exit brake to a stop ([TRAFFIC-16](traffic.md#junction-speeds)); 
 saturated junctions (30k deliveries -13.5%), and the 100k ring it causes is detoured whenever it
 locks.
 
+The road tool can build a tunnel through a hill: with its tunnel toggle (`T` or the road options
+checkbox) a stroke keeps its drawn height through the ground, the stretch under 5 m of ground
+becomes a tunnel between two approaches in a cut, the terrain opens at its portals and cars drive
+through; tunnels under water, crossing tunnels and strokes without enough cover are refused with
+a reason. Tunnels have no lining or portal headers yet, and over a bore the cursor and trees still
+read the buried road as the ground ([ROAD-61](roads.md#road-tunnels-road-61)).
+
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
 Splitting an incident edge now retains its independently solved physical support knots, and the
 topology-only junction finalizer adjusts those stations without rebuilding them from sparse control
@@ -1401,6 +1408,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-61` logic (branch `port-r2-tunnels`, 2026-10-31, port round R2): a tunnel toggle in the road tool; tunnel strokes keep their authored profile on a 4 m lattice, split at their portals (5 m of cover) into a tunnel edge between standard approaches, with one cover rule for quick and exact checks and refusals for cover, short approaches, crossings and water. Lining and portal headers are round R8. See [`roads.md`](roads.md#road-tunnels-road-61).
 - `TRAFFIC-14` and `TRAFFIC-16` done (branch `port-r14d`, 2026-10-31): the `gridlock check` fixed slot (`Period::Minute`, slot 4) finds wait-for cycles in the lane buckets, detours one head of a confirmed cycle through one route query and the normal claim, or reports the cycle's junctions to a HUD notice and a junction highlight; save format 109 keeps the checker's state (Kuopio reference re-recorded). No box rule (rejected: 30k deliveries -41%). 100k to day 12: 21 detours, no cycle at day 12; check mean 0.21-0.71 ms in frame. See [`traffic.md`](traffic.md#gridlock-check-traffic-14).
 - `TRAFFIC-15` and `TRAFFIC-13` done (branch `port-r14b`, 2026-10-31): a car detaches when its step reaches its door, the lane's end included (movement now reaches every distance access legality accepts), and only on its route's last visit to the door's lane. The 100k city built from scratch to day 12 has no wait-for cycle (`dev`: a 334-car ring from day 9) and no vehicle planning an unreachable detach (`dev`: 2,375); envelope passes and the 10k out-of-stock rate returns to its band. See [`traffic.md`](traffic.md#detach-rule-traffic-15-traffic-13).
 - `TRAFFIC-12` done (branch `port-rj2-connectors`, 2026-10-31): vehicle lanes end on their arms' roadbed mouth frames and junction connectors are one tangent-arc-or-biarc construction from those frames (no cubic), checked against the layout's kerb corners on every lane rebuild. Save sweep of every connector, `dev` against the fix: demo save 117 of 156 failing against 0 of 161, Kuopio 335 of 440 against 0, 100k city 8,282 of 24,834 against 0. Results in [`traffic.md`](traffic.md#junction-connectors).

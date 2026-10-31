@@ -10212,6 +10212,138 @@ to the previous projected point. Interior polyline knots have no endpoint margin
 half-metre jumps. Retained projection is allocation-free `O(edge polyline segments)`; acquisition
 uses the existing node grid and edge R-tree. No additional spatial index or whole-network scan is used.
 
+## Road tunnels (`ROAD-61`)
+
+**Status (2026-10-31, round R2 of the road-feature port, branch `port-r2-tunnels`):** the tunnel
+logic is built; the tunnel lining, roof, headwalls and portal headers are not (round R8, the
+user's decision after playing this one). Ported from Veeti's road-chain branch (`b07b3781`,
+`55cf6f85`, logic only); the fork's profile logic lived in the deleted `surface/` compiler and its
+tool intent rode on a Junction / Over / Under / Tunnel crossing selector, which is not ported (grade
+separation is out of the port), so the logic is re-implemented on `road_edit` and the roadbed.
+
+**The problem.** The road tool picked Standard / Bridge / Tunnel from the stroke's two ends only
+(`road_edit/input.rs`, `prepare_road_input_points_in`). A stroke through a hill drawn with both
+ends on the ground is a standard road: the terrain-following solve erases its buried interior and
+the road climbs the hill. The three probe strokes of the fork's spec (`(x, height)` at z = 0 on
+flat ground at 0, one lane each way, no snapping), run on `dev` c2d49902 before the fix
+(`road_tunnels::tunnel_probes_without_tunnel_intent`, fresh 2026-10-31):
+
+| Stroke | Quick validation | Preview (exact plan) | Commit |
+| --- | --- | --- | --- |
+| `(-100,0), (-50,-6), (50,-6), (100,0)` | valid, 36 knots all at 0 | valid | a 200 m surface road at height 0: the buried interior is erased |
+| `(-50,-6), (50,-6)` | valid | valid | one tunnel edge at -6 with pavement (99 vertices) and 6 lanes |
+| `(-100,0), (-50,-6), (50,-6)` | valid | valid | one tunnel edge, -6 at its east end, 153 vertices, 6 lanes |
+
+The fork's other two failures (the fully buried stroke refused at commit, the mixed one without
+concrete) do not reproduce on `dev`: the constructive roadbed builds every edge's span. Quick
+validation and the exact plan agree on all three. The defect left is the first probe's: a tunnel
+cannot be drawn between two grounded ends, which is how a player draws one through a hill.
+
+**The tool.** The road tool has a tunnel toggle: `T` with the road tool active, or the
+"Tunnel (T)" checkbox in the road options (`road_tool.gd` `set_tunnel`, `main_ui.gd`). Rust holds
+the intent as `SimulationNode::road_tool_tunnel` (`set_road_tool_tunnel`), and every request the
+tool sends carries it: the hover check, the synchronous preview (`RoadPreviewRequest::tunnel`,
+part of `RoadPreview::is_for`, so a preview made without the intent is not the click's), the
+commit (`RoadCommitRequest::tunnel`, `SimCommand::AddRoad`; a fresh plan prepares the stroke with
+it), undo (the edit's topology record, as for any stroke) and the refusal report's
+`road_attempt` record (`tunnel`), which `road_attempt_replay.gd` sets before it replays. The tool
+re-asserts its intent before each preview, so a replay cannot leave Rust's copy stale. Without the
+toggle nothing changes: the class still comes from the ends.
+
+**The profile.** With the intent (`road_edit/tunnel.rs`) the stroke keeps its authored profile:
+the alignment is simplified as for any road, its ends snap to existing nodes, every height stays
+as drawn, and each segment is divided into equal steps of at most 4 m, so the knots interpolate
+the authored polyline. A straight stroke (two points) keeps the chord between its end heights; a
+curve keeps the heights the tool drew along it. No terrain-following solve runs, and a grounded end
+never erases the buried interior.
+
+**The bore.** A knot's cover is the source terrain's height above it. The bore runs from the
+first knot with the bore clearance of cover (5 m, the portal opening's `PORTAL_CLEARANCE_M`, so
+the opening ends where the ground becomes the bore's crown) to the last; the stretches before and
+after it are open approaches. `tunnel_bore` is the one rule: quick validation
+(`validate_road_candidate_fast`, through `profile_validation`) and the exact plan
+(`validate_road_edit`) read the same knots, so they accept and refuse the same strokes. The
+validation graph adds a portal node at each approach's last knot and splits the stroke there with
+its crossings in one ordered pass (`topology::process_intersections_splitting_at`); the edges are
+then classed (`classify_tunnel_stroke`) before the profiles are solved: tunnel between the
+portals, standard on the approaches. An approach is a standard road in a cut (within the 5 m
+source band), so the portal node is a pass-through between a standard span and a tunnel span: the
+standard span closes its chains across the mouth with a wall run and the tunnel span marks it a
+portal row, which the graded terrain opens (`TERRAIN-07-C`, [`terrain.md`](terrain.md) T22). An
+end inside the cover is a buried continuation and gets no portal (its free end is capped). The
+committed edges are ordinary `Standard` and `Tunnel` edges, so the save needs nothing new
+(format 109 unchanged). Buried spans publish their pavement like any span and their lanes are
+built like any edge's; a car drives through (below).
+
+**Refusals** (no geometry repair, no fallback), each with its reason in the tool:
+
+- `tunnel_cover`: no knot has 5 m of cover, or a knot between the portals has less (the stroke
+  leaves the hill in the middle); the tool shows the cover and the 5 m it needs.
+- `tunnel_approach_too_short`: an open approach shorter than 8 m (two lattice steps), so a
+  portal node would stand within a step of the stroke's end.
+- `tunnel_crossing`: the bore crosses another tunnel edge in plan at any height (tested on the
+  validation graph's local excerpt before the stroke is inserted), or another road meets it: a
+  junction inside the bore, a portal that is not a plain pass-through, or a buried end shared by
+  more than one other road. Tunnel junctions are out of scope.
+- `tunnel_under_water`: the stroke's corridor, bore or approach, overlaps visible water: its
+  cover or a portal would be a water body (`validate_road_candidate_against_water`, hover,
+  preview and commit alike).
+
+**Cost.** Preparation `O(stroke length / 4 m + points)` with one returned polyline and one
+alignment buffer; the bore `O(knots)`, allocation-free; the crossing test `O(bore segments ×
+tunnel segments in the local excerpt)`; the classification `O(stroke edges²)`, a handful of edges.
+All on the road-edit path only, nothing per tick, no city scan, no new index. Strokes without the
+intent run none of it.
+
+**Road-edit cost of other strokes (fresh, 2026-10-31 21:39).** `$TEST_BINARY
+nodes::sim::core::tests::road_preview::benchmark_road_preview_stages --exact --ignored
+--nocapture`, release, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks, load 1.6, `dev`
+c2d49902 (C) and this round (F), C F F C in one session. Products identical (payload 9,845 /
+9,973 vertices per pose, hidden 4,188 / 6,475, graded tiles 7.38 / 4.62). p50 ms, C1 C2 / F1 F2:
+
+| Stage | `sloped_t` | `sloped_branch` |
+| --- | --- | --- |
+| Plan | 0.417 0.414 / 0.425 0.415 | 0.359 0.365 / 0.368 0.373 |
+| Roadbed | 0.315 0.312 / 0.310 0.302 | 0.311 0.314 / 0.311 0.312 |
+| Payload | 0.362 0.357 / 0.365 0.362 | 0.360 0.356 / 0.363 0.357 |
+| Graded | 1.762 1.783 / 1.810 1.808 | 1.440 1.450 / 1.554 1.505 |
+| Total | 2.823 2.817 / 2.881 2.857 | 2.411 2.411 / 2.517 2.498 |
+
+The plan stage, the only one the change runs code in (a branch on the intent and the validation
+graph's `Result`), is within 0.01 ms; the graded stage, which the change does not touch, reads
+0.03-0.10 ms higher in both candidate runs: no speed claim either way, a layout effect is
+suspected and not investigated.
+
+**Tests** (`nodes/sim/core/tests/road_tunnels.rs`, Rust, no Godot):
+`tunnel_probes_without_tunnel_intent` (the table above, still true),
+`tunnel_probes_with_tunnel_intent` (quick = exact = commit on all three; the first commits
+standard / tunnel / standard, the second one tunnel, the third standard / tunnel; every edge
+publishes pavement and lanes; the authored -6 m knots survive), `a_straight_tunnel_keeps_the_chord_through_a_hill`
+(every physical point within 1 mm of the chord, 5 m of cover over the bore; without the intent the
+same stroke climbs the hill; undo removes it), `a_curved_tunnel_keeps_its_authored_profile`,
+`a_car_drives_through_the_tunnel` (a debug car enters the bore and reaches the far approach's
+end) and `invalid_tunnels_are_refused_with_a_reason` (water, two crossings, no cover, a short
+approach; hover, preview and commit refuse alike and the graph is unchanged); the six run in
+0.2 s, 1 ignored (below). Godot:
+`godot/tests/road_tunnels_test.gd` (in `run.sh --test`) drives the player's tool on a sculpted
+hill: `T` and the checkbox, a refused stroke past the hill, the preview's chord, the commit as two
+approaches and a tunnel, and a debug car passing under the hill's top and out of the east portal;
+with `METRUM_ROAD61_SCREENSHOT` on a rendered run it saves the west portal
+(`METRUM_ROAD61_VIEW` picks another orbit view). The rendered run (gamescope headless, isolated
+profile, 2026-10-31) shows the approach in its cut, the portal opening with its side walls and
+the debug car at the mouth; the hill stays closed over the bore.
+
+**Open (found by R2, pre-existing for every tunnel on `dev`, not fixed in this round):**
+
+- The visible-surface queries (`GradedSurface::surface_height_at` and its siblings, which the
+  cursor, zoning cell heights, vegetation and off-lane vehicles read) take the highest road
+  triangle at a point, so over a bore they answer the buried deck (0 m) instead of the hill
+  (10 m at x = -60 on the test hill). The graded bake leaves the hill closed. Recorded by the
+  ignored `the_surface_over_a_bore_is_the_hill`.
+- Trees are cleared along the bore over the whole hill, and the hill top shows two pale material
+  stripes along the bore's outer chains, far from either portal (the overhead render).
+- Tunnel lining, roof, headwall faces and portal headers: round R8.
+
 ## Road marking lighting — RENDER-12
 
 Lane lines use shared, non-emissive per-pixel lighting with roughness 1.0. Their existing

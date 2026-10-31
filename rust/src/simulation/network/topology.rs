@@ -844,6 +844,20 @@ pub fn process_intersections(
     zoning: &mut crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
+    process_intersections_splitting_at(network, graph, edge_id, &[], zoning, allocator);
+}
+
+/// As [`process_intersections`], also splitting `edge_id` at `extra`: `(geometry factor, node)`
+/// pairs of nodes the caller placed on the edge, such as a tunnel's portals (`ROAD-61`), applied
+/// with the crossings in the same ordered pass.
+pub(crate) fn process_intersections_splitting_at(
+    network: &mut TransitNetwork,
+    graph: &mut RegionGraph,
+    edge_id: usize,
+    extra: &[(f32, u32)],
+    zoning: &mut crate::simulation::zoning::ZoningSystem,
+    allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+) {
     let t0 = std::time::Instant::now();
 
     // 1. Scan for candidates
@@ -854,6 +868,12 @@ pub fn process_intersections(
     collect_crossing_splits(graph, edge_id, &candidates, &mut all_splits);
     collect_endpoint_snap_splits(graph, edge_id, &candidates, &mut all_splits);
     collect_interior_node_splits(graph, edge_id, &candidates, &mut all_splits);
+    if !extra.is_empty() {
+        all_splits
+            .entry(edge_id)
+            .or_default()
+            .extend_from_slice(extra);
+    }
 
     // 3. Emit per-split details before apply_splits consumes the map.
     if crate::debug::Channel::Traffic.enabled() {

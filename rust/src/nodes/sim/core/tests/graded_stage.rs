@@ -78,6 +78,7 @@ fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview 
         fwd_lanes: 1,
         bkw_lanes: 1,
         snap_to_existing_roads: true,
+        tunnel: false,
     })
 }
 
@@ -88,6 +89,7 @@ fn commit(core: &mut SimCore, points: &[Vector3], preview: Option<Arc<RoadPrevie
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            tunnel: false,
             preview,
         },
         std::time::Instant::now(),
@@ -233,6 +235,7 @@ pub(crate) fn drag(
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads: true,
+            tunnel: false,
         });
         let span = span(called);
         frames.push(match preview.pieces.as_ref() {
@@ -279,6 +282,7 @@ fn click(core: &mut SimCore, drag: Drag, [fwd_lanes, bkw_lanes]: [i32; 2]) -> se
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads: true,
+            tunnel: false,
             preview: Some(Arc::new(drag.preview)),
         },
         called,

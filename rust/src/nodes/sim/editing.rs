@@ -1198,6 +1198,8 @@ impl SimCore {
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
+                    // Plan-less callers draw without the tool's tunnel intent.
+                    tunnel: false,
                 },
             ))
         } else {
@@ -1247,6 +1249,7 @@ impl SimCore {
                 &self.region_graph,
                 &self.transit_network.roadbed,
                 snap_to_existing_roads,
+                false,
             )
             .0;
             &fresh_input
@@ -1264,8 +1267,7 @@ impl SimCore {
         let fast_validation =
             validate_road_candidate_fast(prepared_input, &self.heightmap, &self.region_graph);
         let fast_validation = validate_road_candidate_against_water(
-            prepared_input.class,
-            &prepared_input.points,
+            prepared_input,
             fwd_lanes_u8,
             bkw_lanes_u8,
             &self.watermap,
@@ -1285,8 +1287,7 @@ impl SimCore {
                     &self.region_graph,
                 );
                 let full_validation = validate_road_candidate_against_water(
-                    prepared_input.class,
-                    &prepared_input.points,
+                    prepared_input,
                     fwd_lanes_u8,
                     bkw_lanes_u8,
                     &self.watermap,

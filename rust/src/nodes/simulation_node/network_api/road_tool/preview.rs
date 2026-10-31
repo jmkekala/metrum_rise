@@ -8,6 +8,14 @@ use crate::simulation::network::road_edit::plan_road_edit;
 
 #[godot_api(secondary)]
 impl SimulationNode {
+    /// Sets the road tool's tunnel intent (`ROAD-61`), which every later hover check, preview,
+    /// commit and refusal report of the tool carries: with it a stroke keeps its drawn profile
+    /// through the ground, its covered stretch becomes a tunnel and its open ends approaches.
+    #[func]
+    pub fn set_road_tool_tunnel(&mut self, tunnel: bool) {
+        self.road_tool_tunnel = tunnel;
+    }
+
     /// Returns cheap synchronous hover feedback for a road-tool candidate.
     ///
     /// Returns prepared points and validation; the road tool's display comes from
@@ -42,6 +50,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
             });
             (query.surface_generation, validated)
         };
@@ -106,10 +115,10 @@ impl SimulationNode {
                 &query.region_graph,
                 &query.roadbed,
                 snap_to_existing_roads,
+                self.road_tool_tunnel,
             );
             let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
-                prepared_input.class,
-                &prepared_input.points,
+                &prepared_input,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
                 &query.water,
@@ -197,6 +206,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap: snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
             },
             int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
         );
@@ -233,6 +243,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
             }));
             context.last_preview = Some(Arc::clone(&preview));
             context
@@ -267,6 +278,7 @@ impl SimulationNode {
             "terrain_source_generation",
             generation(fingerprint.terrain_source_generation),
         );
+        dict.set("tunnel", preview.plan.request().tunnel);
         dict.set("plan_ms", preview.times.plan_ms);
         dict.set("roadbed_ms", preview.times.roadbed_ms);
         dict.set("payload_ms", preview.times.payload_ms);

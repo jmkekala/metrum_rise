@@ -8,6 +8,10 @@
 use super::input::{
     PREVIEW_CLEARANCE_M, PreparedRoadInput, ROAD_PROFILE_MAX_GRADE, is_surface_edge,
 };
+use super::tunnel::{
+    BoreRefusal, Portals, TUNNEL_COVER_M, TUNNEL_CROSSING_REASON, TUNNEL_MIN_APPROACH_M,
+    bore_crosses_a_tunnel, classify_tunnel_stroke, cover_m, portal_splits, tunnel_bore,
+};
 use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
 use crate::config;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -32,6 +36,8 @@ use std::collections::{HashMap, HashSet};
 const PREVIEW_VALID_REASON: &str = "";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
 const PREVIEW_TUNNEL_CLEARANCE_REASON: &str = "tunnel_clearance";
+const PREVIEW_TUNNEL_COVER_REASON: &str = "tunnel_cover";
+const PREVIEW_TUNNEL_APPROACH_REASON: &str = "tunnel_approach_too_short";
 const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_SAME_NODE_REASON: &str = "same_node_connection";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
@@ -266,6 +272,9 @@ fn profile_validation(
         validation.geometry_limit = ROAD_GRADE_MAX;
         return validation;
     }
+    if prepared_input.tunnel {
+        return tunnel_profile_validation(validation, prepared_points, terrain);
+    }
     if edge_class == EdgeClass::Bridge
         && bridge_profile_is_ground_transition(prepared_points, terrain)
     {
@@ -300,6 +309,35 @@ fn profile_validation(
     }
 
     validation
+}
+
+// The cover check of a stroke drawn with the tunnel intent (`ROAD-61`), on its own knots as the
+// exact plan splits it: the least cover between the portals as the clearance, or the refusal.
+// O(knots), allocation-free.
+fn tunnel_profile_validation(
+    mut validation: RoadPreviewValidation,
+    points: &[Vector3],
+    terrain: &TerrainSystem,
+) -> RoadPreviewValidation {
+    validation.required_clearance_m = TUNNEL_COVER_M;
+    match tunnel_bore(points, terrain) {
+        Ok([first, last]) => {
+            validation.clearance_m = points[first..=last]
+                .iter()
+                .map(|&point| cover_m(terrain, point))
+                .fold(f32::INFINITY, f32::min);
+            validation
+        }
+        Err(BoreRefusal::Cover { cover_m, .. }) => {
+            validation.clearance_m = cover_m;
+            validation.with_invalid_reason(PREVIEW_TUNNEL_COVER_REASON)
+        }
+        Err(BoreRefusal::Approach { length_m }) => {
+            validation.geometry_measured = length_m;
+            validation.geometry_limit = TUNNEL_MIN_APPROACH_M;
+            validation.with_invalid_reason(PREVIEW_TUNNEL_APPROACH_REASON)
+        }
+    }
 }
 
 // Records the steepest segment of `points` as the validation's grade and offending span.
@@ -401,7 +439,18 @@ fn validate_against_graph(
         );
     }
 
-    let Some(ValidationGraph {
+    // The profile check passed, so a tunnel stroke has its bore.
+    let bore = prepared_input
+        .tunnel
+        .then(|| tunnel_bore(prepared_points, terrain).ok())
+        .flatten();
+    if prepared_input.tunnel && bore.is_none() {
+        return (
+            validation.with_invalid_reason(PREVIEW_TUNNEL_COVER_REASON),
+            None,
+        );
+    }
+    let ValidationGraph {
         graph: validation_graph,
         new_edge_idx,
         required_edge_ids,
@@ -410,7 +459,7 @@ fn validate_against_graph(
         finalized,
         splits,
         stroke_ends,
-    }) = build_validation_graph(
+    } = match build_validation_graph(
         prepared_points,
         prepared_input.class,
         fwd_lanes,
@@ -418,12 +467,10 @@ fn validate_against_graph(
         existing_graph,
         prepared_input.endpoint_snap_enabled,
         terrain,
-    )
-    else {
-        return (
-            validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
-            None,
-        );
+        bore,
+    ) {
+        Ok(graph) => graph,
+        Err(reason) => return (validation.with_invalid_reason(reason), None),
     };
     if new_edge_idx >= validation_graph.edge_count()
         || validation_graph.edge(new_edge_idx).deleted
@@ -474,6 +521,10 @@ fn validate_against_graph(
     (validation, topology_plan)
 }
 
+// The local post-edit graph of a prepared stroke, or the refusal: a stroke whose ends meet one
+// node or whose excerpt is incomplete is `surface_geometry_invalid`; a tunnel stroke's `bore`
+// (`ROAD-61`) is split at its portals and refused when it meets another road.
+#[allow(clippy::too_many_arguments)]
 fn build_validation_graph(
     prepared_points: &[Vector3],
     edge_class: EdgeClass,
@@ -482,9 +533,10 @@ fn build_validation_graph(
     existing_graph: &RegionGraph,
     endpoint_snap_enabled: bool,
     terrain: &TerrainSystem,
-) -> Option<ValidationGraph> {
+    bore: Option<[usize; 2]>,
+) -> Result<ValidationGraph, &'static str> {
     if prepared_points.len() < 2 {
-        return None;
+        return Err(PREVIEW_SURFACE_GEOMETRY_REASON);
     }
 
     let mut validation_graph = RegionGraph::new();
@@ -535,13 +587,23 @@ fn build_validation_graph(
         *prepared_points.last().unwrap(),
     );
     if start_node == end_node {
-        return None;
+        return Err(PREVIEW_SURFACE_GEOMETRY_REASON);
     }
 
     let mut points = prepared_points.to_vec();
     points[0] = validation_graph.node(start_node).pos;
     let last_idx = points.len() - 1;
     points[last_idx] = validation_graph.node(end_node).pos;
+    let portals = match bore {
+        Some([first, last]) => {
+            let ends = [start_node, end_node].map(Some);
+            if bore_crosses_a_tunnel(&validation_graph, &points[first..=last], ends) {
+                return Err(TUNNEL_CROSSING_REASON);
+            }
+            Some(portal_splits(&mut validation_graph, &points, [first, last]))
+        }
+        None => None,
+    };
     let new_edge_idx = validation_graph.add_edge(build_surface_edge(
         start_node, end_node, points, fwd_lanes, bkw_lanes, edge_class,
     ));
@@ -551,8 +613,12 @@ fn build_validation_graph(
         );
     validation_graph.edge_mut(new_edge_idx).base_cost = base_cost;
     validation_graph.edge_mut(new_edge_idx).physical_length = physical_length;
-    let (finalized, splits) =
-        process_validation_graph_intersections(&mut validation_graph, new_edge_idx, terrain);
+    let (finalized, splits) = process_validation_graph_intersections(
+        &mut validation_graph,
+        new_edge_idx,
+        terrain,
+        portals.as_ref(),
+    )?;
 
     let mut required_edge_ids = validation_graph
         .edges()
@@ -593,10 +659,10 @@ fn build_validation_graph(
                 .iter()
                 .any(|id| !existing_graph.edge(*id).deleted && !copied_edges.contains_key(id))
     }) {
-        return None;
+        return Err(PREVIEW_SURFACE_GEOMETRY_REASON);
     }
 
-    Some(ValidationGraph {
+    Ok(ValidationGraph {
         graph: validation_graph,
         new_edge_idx,
         required_edge_ids,
@@ -684,11 +750,14 @@ fn push_incident_validation_edges(
     edge_ids.extend(existing_graph.node_adjacency(valid).iter().copied());
 }
 
+// A tunnel stroke's `portals` (its portal nodes and their splits of the new edge) split it with
+// its crossings, and its edges are classed before the profiles are solved.
 fn process_validation_graph_intersections(
     validation_graph: &mut RegionGraph,
     new_edge_idx: usize,
     terrain: &TerrainSystem,
-) -> (FinalizedRoadGeometry, Vec<PlannedRoadSplit>) {
+    portals: Option<&Portals>,
+) -> Result<(FinalizedRoadGeometry, Vec<PlannedRoadSplit>), &'static str> {
     let mut network = TransitNetwork::new();
     let world_config = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&world_config);
@@ -702,14 +771,24 @@ fn process_validation_graph_intersections(
     network.bulk_load = true;
     network.recorded_road_splits = Some(Vec::new());
     network.bulk_dirty_edges.insert(new_edge_idx);
-    topology::process_intersections(
+    topology::process_intersections_splitting_at(
         &mut network,
         validation_graph,
         new_edge_idx,
+        portals.map_or(&[][..], |portals| &portals.splits),
         &mut zoning,
         &mut allocator,
     );
     cleanup_validation_duplicate_edges(validation_graph);
+    if let Some(portals) = portals {
+        classify_tunnel_stroke(
+            validation_graph,
+            new_edge_idx,
+            network.recorded_road_splits.as_deref().unwrap_or_default(),
+            [start_node, end_node],
+            portals.nodes,
+        )?;
+    }
 
     let surface_dirty_nodes = road_insert_surface_dirty_nodes(
         validation_graph,
@@ -722,7 +801,7 @@ fn process_validation_graph_intersections(
     network.mark_surface_dirty_for_nodes(validation_graph, &surface_dirty_nodes);
 
     let finalized = network.finalize_road_geometry(validation_graph, Some(terrain));
-    (finalized, network.recorded_road_splits.take().unwrap())
+    Ok((finalized, network.recorded_road_splits.take().unwrap()))
 }
 
 fn cleanup_validation_duplicate_edges(graph: &mut RegionGraph) {

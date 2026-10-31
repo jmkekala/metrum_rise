@@ -102,6 +102,7 @@ fn reset_and_commit(core: &mut SimCore, fixture: usize, rise_m: f32) {
                 fwd_lanes: lanes,
                 bkw_lanes: lanes,
                 snap_to_existing_roads: true,
+                tunnel: false,
                 preview: None,
             },
             std::time::Instant::now(),

@@ -186,6 +186,9 @@ class MockRoadCandidateSimulation:
 	func release_road_preview_terrain() -> int:
 		return 0
 
+	func set_road_tool_tunnel(_tunnel: bool) -> void:
+		pass
+
 	func preview_road(points, _fwd, _bkw, _snap) -> Dictionary:
 		preview_calls += 1
 		last_preview_points = points

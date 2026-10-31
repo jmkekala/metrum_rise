@@ -33,6 +33,7 @@ pub(super) fn commit_stroke(core: &mut SimCore, (ends, lanes): Stroke) {
             fwd_lanes: lanes,
             bkw_lanes: lanes,
             snap_to_existing_roads: true,
+            tunnel: false,
             preview: None,
         },
         std::time::Instant::now(),

@@ -36,6 +36,8 @@ pub(crate) struct RoadPreviewRequest {
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
     pub(crate) snap_to_existing_roads: bool,
+    /// The road tool's tunnel intent (`ROAD-61`): part of the preview's and the plan's identity.
+    pub(crate) tunnel: bool,
 }
 
 /// Corridor clearance of a stroke against live parcels and field reservations.
@@ -151,11 +153,11 @@ impl RoadToolQuerySnapshot {
             &self.region_graph,
             &self.roadbed,
             request.snap_to_existing_roads,
+            request.tunnel,
         );
         let validation = validate_road_candidate_fast(&prepared, &self.terrain, &self.region_graph);
         let mut validation = validate_road_candidate_against_water(
-            prepared.class,
-            &prepared.points,
+            &prepared,
             fwd_lanes,
             bkw_lanes,
             &self.water,
@@ -283,12 +285,14 @@ impl RoadPreview {
         fwd_lanes: i32,
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
+        tunnel: bool,
     ) -> bool {
         let request = self.plan.request();
         request.points == points
             && request.fwd_lanes == fwd_lanes
             && request.bkw_lanes == bkw_lanes
             && request.snap_to_existing_roads == snap_to_existing_roads
+            && request.tunnel == tunnel
     }
 }
 
@@ -315,8 +319,7 @@ impl RoadPreviewContext {
         let validation = {
             let request = plan.request();
             validate_road_candidate_against_water(
-                plan.prepared().class,
-                &plan.prepared().points,
+                plan.prepared(),
                 request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 &self.view.water,

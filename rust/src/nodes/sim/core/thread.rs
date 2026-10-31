@@ -56,6 +56,8 @@ pub(crate) enum SimCommand {
         bkw_lanes: i32,
         /// Whether authored endpoints may snap to nearby existing road nodes.
         snap_to_existing_roads: bool,
+        /// The road tool's tunnel intent at submission (`ROAD-61`).
+        tunnel: bool,
         /// Dispatch timestamp for queue latency, independent of core mutex contention.
         enqueued_at: Instant,
         /// Single nonblocking acknowledgment after acceptance/rollback and query publication.
@@ -220,6 +222,7 @@ pub(crate) fn run_sim_thread(
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
+                    tunnel,
                     enqueued_at,
                     completion,
                     preview,
@@ -255,6 +258,7 @@ pub(crate) fn run_sim_thread(
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
+                                tunnel,
                                 preview,
                             },
                             road_total,

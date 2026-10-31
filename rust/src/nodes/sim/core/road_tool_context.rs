@@ -267,6 +267,7 @@ impl RoadToolShared {
         fwd_lanes: i32,
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
+        tunnel: bool,
     ) -> Option<Arc<RoadPreview>> {
         let context = self
             .context
@@ -275,7 +276,9 @@ impl RoadToolShared {
         context
             .last_preview
             .as_ref()
-            .filter(|preview| preview.is_for(points, fwd_lanes, bkw_lanes, snap_to_existing_roads))
+            .filter(|preview| {
+                preview.is_for(points, fwd_lanes, bkw_lanes, snap_to_existing_roads, tunnel)
+            })
             .cloned()
     }
 

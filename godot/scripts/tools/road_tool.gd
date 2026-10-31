@@ -11,9 +11,11 @@
 ## in one call. The preview's graded terrain tiles (`TERRAIN-07-E`) show on the terrain
 ## renderer's graded tiles from the frame that staged them; frames without a new pose stage the
 ## pose's rest, and the commit's edit replaces them with the committed tiles in one frame. Also
-## checkbox-controlled zoning-grid snapping, angle snapping (Shift draws free) and the
-## distance + angle HUD label.
-## Rust methods called: preview_road(), advance_road_preview_terrain(),
+## checkbox-controlled zoning-grid snapping, angle snapping (Shift draws free), the tunnel
+## toggle (`ROAD-61`; T or the options checkbox: Rust keeps the drawn profile through the ground,
+## the covered stretch becomes a tunnel and its open ends approaches) and the distance + angle HUD
+## label.
+## Rust methods called: set_road_tool_tunnel(), preview_road(), advance_road_preview_terrain(),
 ## release_road_preview_terrain(), add_road_with_snap(), get_road_commit_result(),
 ## get_road_tool_cursor_pos(), get_road_tool_start_direction(), get_graded_edit_serial().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
@@ -42,6 +44,9 @@ var altitude_offset: float = 0.0
 
 var draw_mode: int = 0 # 0: straight, 1: spline
 var zoning_grid_snap_enabled: bool = false
+# The tunnel intent, mirrored in Rust, which carries it in every preview, commit and refusal.
+var tunnel_enabled: bool = false
+signal tunnel_toggled(enabled: bool)
 
 # Border-check positions queued while roads are in-flight on the sim thread.
 # Drained by NetworkRenderer._process once the road is confirmed in the graph.
@@ -69,6 +74,7 @@ var _preview_points := PackedVector3Array()
 var _preview_fwd_lanes: int = -1
 var _preview_bkw_lanes: int = -1
 var _preview_snap_to_roads: bool = true
+var _preview_tunnel: bool = false
 # Counts preview_road calls; it names displayed results for the metrics trace only.
 var _preview_sequence: int = 0
 var _preview_drawn_sequence: int = 0
@@ -206,6 +212,14 @@ func adjust_lanes(fwd_delta: int, bkw_delta: int):
 	# Allow 0,0 for walkways
 	_update_lanes_label()
 
+func set_tunnel(enabled: bool) -> void:
+	if enabled == tunnel_enabled:
+		return
+	tunnel_enabled = enabled
+	simulation_node.set_road_tool_tunnel(enabled)
+	tunnel_toggled.emit(enabled)
+	_queue_preview_update()
+
 func adjust_altitude(delta: float):
 	altitude_offset += delta
 	_queue_preview_update()
@@ -301,6 +315,9 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 		return _preview
 	_preview_sequence += 1
 	var start_us := Time.get_ticks_usec()
+	# Re-asserted per preview: a debug replay may have set Rust's intent since; the click's
+	# commit and refusal report use the intent of the preview it submits.
+	simulation_node.set_road_tool_tunnel(tunnel_enabled)
 	_preview = simulation_node.preview_road(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
 	if preview_metrics != null:
 		preview_metrics.dispatch(_preview_sequence, start_us, Time.get_ticks_usec(), true)
@@ -310,6 +327,7 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	_preview_fwd_lanes = fwd_lanes
 	_preview_bkw_lanes = bkw_lanes
 	_preview_snap_to_roads = _snap_to_roads_enabled()
+	_preview_tunnel = tunnel_enabled
 	return _preview
 
 func _preview_is_for(points: PackedVector3Array) -> bool:
@@ -319,6 +337,7 @@ func _preview_is_for(points: PackedVector3Array) -> bool:
 		and fwd_lanes == _preview_fwd_lanes
 		and bkw_lanes == _preview_bkw_lanes
 		and _snap_to_roads_enabled() == _preview_snap_to_roads
+		and tunnel_enabled == _preview_tunnel
 		and int(_preview.get("surface_generation", -1)) == simulation_node.get_road_tool_surface_generation()
 	)
 
@@ -580,6 +599,20 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 				float(preview.get("clearance_m", 0.0)),
 				float(preview.get("required_clearance_m", 0.0)),
 			]
+		"tunnel_cover":
+			return "Tunnel cover %.1f m / %.1f m: draw the ends outside the hill" % [
+				float(preview.get("clearance_m", 0.0)),
+				float(preview.get("required_clearance_m", 0.0)),
+			]
+		"tunnel_approach_too_short":
+			return "Tunnel approach %.1f m, needs %.1f m: start further from the hill" % [
+				float(preview.get("geometry_measured", 0.0)),
+				float(preview.get("geometry_limit", 0.0)),
+			]
+		"tunnel_crossing":
+			return "Tunnels cannot cross other tunnels or meet roads underground"
+		"tunnel_under_water":
+			return "Tunnels cannot pass under water"
 		"water_requires_bridge":
 			return "Water crossing requires a bridge"
 		"field_overlap":

@@ -51,6 +51,7 @@ impl Fixture {
             &self.graph,
             &self.network.roadbed,
             true,
+            false,
         );
         let (validation, plan) = validate_road_edit(&prepared, 1, 1, &self.terrain, &self.graph);
         assert!(validation.is_valid, "{validation:?}");

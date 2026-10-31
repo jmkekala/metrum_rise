@@ -40,6 +40,8 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
     pub(crate) snap: bool,
+    /// The road tool's tunnel intent (`ROAD-61`), which a replay sets before it draws.
+    pub(crate) tunnel: bool,
 }
 
 /// Why one stroke was refused.
@@ -125,6 +127,7 @@ impl RoadRejection {
             fwd_lanes: attempt.fwd_lanes,
             bkw_lanes: attempt.bkw_lanes,
             snap: attempt.snap,
+            tunnel: attempt.tunnel,
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
         };
         let json = serde_json::to_string(&replay).expect("attempt records serialize");
@@ -142,6 +145,7 @@ struct AttemptRecord<'a> {
     fwd_lanes: i32,
     bkw_lanes: i32,
     snap: bool,
+    tunnel: bool,
     points: Vec<[f32; 3]>,
 }
 
@@ -182,6 +186,28 @@ fn validation_detail(
                 "the prepared road is {:.2} m long, too short to build",
                 polyline_length_m(prepared)
             ),
+            None,
+        ),
+        "tunnel_cover" => (
+            format!(
+                "the ground stands {:.2} m above the tunnel deck where the bore needs {:.2} m",
+                validation.clearance_m, validation.required_clearance_m
+            ),
+            None,
+        ),
+        "tunnel_approach_too_short" => (
+            format!(
+                "the open approach to a portal is {:.2} m long, at least {:.2} m needed",
+                validation.geometry_measured, validation.geometry_limit
+            ),
+            None,
+        ),
+        "tunnel_crossing" => (
+            "the tunnel crosses another tunnel or meets a road inside its bore".to_owned(),
+            None,
+        ),
+        "tunnel_under_water" => (
+            "the tunnel or its approach passes under visible water".to_owned(),
             None,
         ),
         "water_requires_bridge" => (
@@ -337,6 +363,7 @@ mod tests {
             fwd_lanes: 2,
             bkw_lanes: 1,
             snap: true,
+            tunnel: true,
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
@@ -357,6 +384,7 @@ mod tests {
             (2.into(), 1.into())
         );
         assert_eq!(record["snap"], true);
+        assert_eq!(record["tunnel"], true);
         // Every coordinate parses back to the submitted f32.
         let parsed: Vec<Vec<f64>> = serde_json::from_value(record["points"].clone()).unwrap();
         for (point, row) in points.iter().zip(&parsed) {
@@ -411,6 +439,7 @@ mod tests {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap: false,
+            tunnel: false,
         };
         let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, 0);
         assert_eq!(
