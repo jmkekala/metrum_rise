@@ -13,7 +13,8 @@ use super::{cache_dir, residents, snapshot, timing_mode};
 use crate::config::{CAR_LENGTH, IDM_S_MIN};
 use crate::nodes::sim::core::state::SimCore;
 use crate::simulation::economy::agents::{
-    ACCESS_LANE_ATTACH_PENDING, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+    ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, MODE_WALK, TRANSIT_INTERSECTION,
+    TRANSIT_NETWORK,
 };
 
 // Cars closer than this to a lane's start count as one stack.
@@ -23,6 +24,75 @@ const STACK_RADIUS_M: f32 = 0.5;
 fn in_play(agents: &crate::simulation::economy::agents::AgentVec, i: usize) -> bool {
     (agents.transit[i] == TRANSIT_NETWORK || agents.transit[i] == TRANSIT_INTERSECTION)
         && agents.transit_mode[i] != MODE_WALK
+}
+
+// A road lane's (origin, terminal) nodes.
+fn lane_nodes(core: &SimCore, lane: usize) -> Option<(u32, u32)> {
+    let l = core.transit_network.lane_system.lanes.get(lane)?;
+    if l.edge_id == usize::MAX {
+        return None;
+    }
+    let edge = core.region_graph.edge(l.edge_id);
+    Some(if l.is_fwd {
+        (edge.start_node, edge.end_node)
+    } else {
+        (edge.end_node, edge.start_node)
+    })
+}
+
+// `TRAFFIC-15`/`TRAFFIC-13`: the detach plans of the vehicles on the road, computed from the
+// agent columns alone, so the `dev` control and the fix count the same way.
+// - `at_lane_end`: the detach point is the detach lane's end (d >= length - 1e-4). On `dev` a
+//   car cannot detach at d >= length: no movement step ends there inside the lane.
+// - `beyond_lane_end`: d > length + 1e-4, which the planner's legality rejects.
+// - `looping`: the remaining route visits the detach lane before its last visit (the car is on
+//   it with route left, or the route still runs the lane's origin to its terminal, or it waits
+//   to attach to it behind the detach point). On `dev` such a car detaches on the first visit.
+// O(agents + route lengths), serial: a test diagnostic.
+fn detach_plans(core: &SimCore) -> serde_json::Value {
+    let agents = &core.agents.agents;
+    let lanes = &core.transit_network.lane_system.lanes;
+    let (mut planned, mut at_end, mut beyond_end, mut looping) = (0_u32, 0_u32, 0_u32, 0_u32);
+    let mut at_end_targets = std::collections::BTreeMap::<usize, u32>::new();
+    for i in 0..agents.len() {
+        if !in_play(agents, i) || (agents.access_flags[i] & ACCESS_PLAN_VALID) == 0 {
+            continue;
+        }
+        let detach = agents.planned_detach_lane_id[i] as usize;
+        let Some((origin, terminal)) = lane_nodes(core, detach) else {
+            continue;
+        };
+        planned += 1;
+        let d = agents.planned_detach_lane_d[i];
+        let length = lanes[detach].length;
+        if d >= length - 1e-4 {
+            at_end += 1;
+            *at_end_targets.entry(agents.target_building[i]).or_default() += 1;
+        }
+        beyond_end += u32::from(d > length + 1e-4);
+        let path = &agents.current_path[i];
+        let mut rest = &path[agents.current_path_index[i].min(path.len())..];
+        let lane = agents.current_lane_id[i];
+        if let Some((_, lane_terminal)) = lane_nodes(core, lane)
+            && rest.first() == Some(&lane_terminal)
+        {
+            rest = &rest[1..];
+        }
+        let on_detach_early = lane == detach && !rest.is_empty();
+        let runs_detach_lane = rest.windows(2).any(|w| w[0] == origin && w[1] == terminal);
+        let attaches_behind = lane == usize::MAX
+            && (agents.access_flags[i] & ACCESS_LANE_ATTACH_PENDING) != 0
+            && agents.planned_attach_lane_id[i] as usize == detach
+            && agents.planned_attach_lane_d[i] > d;
+        looping += u32::from(on_detach_early || runs_detach_lane || attaches_behind);
+    }
+    let mut top: Vec<(usize, u32)> = at_end_targets.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    top.truncate(5);
+    serde_json::json!({
+        "planned": planned, "at_lane_end": at_end, "beyond_lane_end": beyond_end,
+        "looping": looping, "at_lane_end_top_targets": top,
+    })
 }
 
 // Counts vehicles by lane from the agent columns. O(agents + lanes), serial: a test diagnostic
@@ -277,7 +347,7 @@ fn traffic07_lane_entry_audit() {
                 "TRAFFIC07_AUDIT {}",
                 serde_json::json!({
                     "residents": residents(), "minute": now - start, "audit": audit(core),
-                    "waits": waits.summary(now),
+                    "waits": waits.summary(now), "detach_plans": detach_plans(core),
                 })
             );
             waits.standing_queues(core, now - start);

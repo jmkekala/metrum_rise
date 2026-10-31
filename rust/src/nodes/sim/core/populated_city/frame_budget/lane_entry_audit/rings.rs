@@ -7,7 +7,7 @@
 
 use super::super::{FRAME_DT_S, absolute_minute};
 use super::super::{cache_dir, residents, snapshot, timing_mode};
-use super::in_play;
+use super::{detach_plans, in_play};
 use super::waits::wait_cycles;
 use crate::nodes::sim::core::populated_city::{
     PopulatedCity, crosses_for, fill_lots, paint_districts, side_m_for, street_grid_with_crosses,
@@ -15,7 +15,8 @@ use crate::nodes::sim::core::populated_city::{
 use crate::nodes::sim::core::state::SimCore;
 use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
 use crate::simulation::economy::agents::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, TRANSIT_ACCESS_EGRESS, TRANSIT_NETWORK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, TRANSIT_ACCESS_EGRESS,
+    TRANSIT_NETWORK,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -226,6 +227,15 @@ impl RingWatch {
                         .filter(|&i| in_play(&core.agents.agents, i))
                         .count(),
                     "held_at_node": held_at_node,
+                    "held_at_attach": (0..core.agents.agents.len())
+                        .filter(|&i| {
+                            let a = &core.agents.agents;
+                            a.transit[i] == TRANSIT_NETWORK
+                                && a.current_lane_id[i] == usize::MAX
+                                && (a.access_flags[i] & ACCESS_LANE_ATTACH_PENDING) != 0
+                        })
+                        .count(),
+                    "detach_plans": detach_plans(core),
                     "check_ms": started.elapsed().as_secs_f64() * 1e3,
                 })
             );
