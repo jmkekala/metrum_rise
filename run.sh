@@ -1102,6 +1102,14 @@ if [ $TEST -eq 1 ]; then
             exit 1
         fi
     done
+    # The locked ring city the gridlock notice test loads (`TRAFFIC-14`), written by Rust.
+    export METRUM_GRIDLOCK_FIXTURE="$asset_test_profile/gridlock-ring.sqlite"
+    if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib record_gridlock_saturation_fixture -- --ignored); then
+        exit 1
+    fi
+    if ! godot --headless --path "$asset_test_project" --script res://tests/gridlock_notice_test.gd; then
+        exit 1
+    fi
     export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"
     if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib generate_building_lod_fixtures -- --ignored); then
         exit 1

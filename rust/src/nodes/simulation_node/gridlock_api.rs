@@ -1,35 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The gridlock report (`TRAFFIC-14`): the junctions of the wait-for cycles the last gridlock
-//! check confirmed and could not detour, for the player's notice and overlay. Read-only; the
-//! check itself runs in the simulation's `gridlock check` slot.
+//! check confirmed and could not detour, for the player's notice and overlay. Read-only and read
+//! from the render snapshot, so it never waits for the core; the check itself runs in the
+//! simulation's `gridlock check` slot.
 
 use super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// The last gridlock check's report: `junctions` (node ids, ascending) and `positions`
-    /// (their world positions, same order) of the saturated cycles nothing could leave, plus the
-    /// counts `checks`, `waiting_lanes`, `cycles`, `confirmed`, `saturated`, `detours` and
-    /// `saturation_reports`. Empty while the simulation core is busy, so the caller keeps its
-    /// last report.
+    /// The last gridlock check's report, as of the latest render snapshot: `junctions` (node
+    /// ids, ascending) and `positions` (their world positions, same order) of the saturated
+    /// cycles nothing could leave, plus the counts `checks`, `waiting_lanes`, `cycles`,
+    /// `confirmed`, `saturated`, `detours` and `saturation_reports`.
     #[func]
     pub fn get_gridlock_report(&self) -> VarDictionary {
-        let Some(core) = self.try_lock_core() else {
-            return VarDictionary::new();
-        };
-        let report = core.agents.gridlock.report();
-        let mut junctions = PackedInt32Array::new();
-        let mut positions = PackedVector3Array::new();
-        for &node in &report.junctions {
-            if (node as usize) < core.region_graph.node_count() {
-                junctions.push(node as i32);
-                positions.push(core.region_graph.node(node).pos);
-            }
-        }
+        let snapshot = self.snapshot.read().unwrap();
+        let report = &snapshot.gridlock;
+        let junctions = &snapshot.gridlock_junctions;
         vdict! {
-            "junctions": junctions,
-            "positions": positions,
+            "junctions": junctions.iter().map(|&(node, _)| node as i32).collect::<PackedInt32Array>(),
+            "positions": junctions.iter().map(|&(_, pos)| pos).collect::<PackedVector3Array>(),
             "checks": report.checks as i64,
             "waiting_lanes": i64::from(report.waiting_lanes),
             "cycles": i64::from(report.cycles),

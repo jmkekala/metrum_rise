@@ -136,6 +136,11 @@ func _ready():
 	junction_debug_overlay.set_script(load("res://scripts/renderers/junction_debug_overlay.gd"))
 	get_parent().call_deferred("add_child", junction_debug_overlay)
 
+	var gridlock_display := Node3D.new()
+	gridlock_display.name = "GridlockDisplay"
+	gridlock_display.set_script(load("res://scripts/renderers/gridlock_display.gd"))
+	get_parent().call_deferred("add_child", gridlock_display)
+
 	agent_inspector = Node3D.new()
 	agent_inspector.name = "AgentInspector"
 	agent_inspector.set_script(load("res://scripts/renderers/agent_inspector.gd"))

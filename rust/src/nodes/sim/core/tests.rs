@@ -7,6 +7,7 @@ mod building_site_terrain;
 mod commute_bounds;
 mod construction_throughput;
 mod graded_edits;
+mod gridlock_fixture;
 mod graded_queries;
 mod junction_connector_sweep;
 pub(super) mod fields;

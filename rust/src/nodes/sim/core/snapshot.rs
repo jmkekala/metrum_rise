@@ -16,6 +16,7 @@ use crate::nodes::sim::render::vehicle_ground::ground_vehicle_basis;
 use crate::simulation::agriculture::FieldSite;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingSiteClient};
 use crate::simulation::core::weather::{WeatherSample, WeatherState};
+use crate::simulation::economy::agents::tick::GridlockReport;
 use crate::simulation::economy::agents::{Agent, MODE_CAR};
 use crate::simulation::economy::households::HouseholdBuildingUndo;
 use crate::simulation::economy::logistics::ShipmentBuildingUndo;
@@ -348,6 +349,12 @@ pub struct RenderSnapshot {
     pub agent_count: i32,
     /// Current city treasury balance in currency units.
     pub treasury_balance: f64,
+    // The last gridlock check's report (`TRAFFIC-14`), its junction list left empty, and its
+    // live junctions with their positions, so the notice reads it without locking `SimCore`.
+    // Copied into the recycled buffers each frame: O(reported junctions), no allocation once
+    // their capacity holds the list.
+    pub(crate) gridlock: GridlockReport,
+    pub(crate) gridlock_junctions: Vec<(u32, Vector3)>,
     /// Heightmap width in cells (for CSV logging on the main thread).
     pub heightmap_width: usize,
     /// Heightmap height in cells (for CSV logging on the main thread).
@@ -413,6 +420,8 @@ impl Default for RenderSnapshot {
             pathfind_count: 0,
             agent_count: 0,
             treasury_balance: 0.0,
+            gridlock: GridlockReport::default(),
+            gridlock_junctions: Vec::new(),
             heightmap_width: 0,
             terrain_world_size: godot::prelude::Vector2::ZERO,
             terrain_patch_cols: 0,
@@ -567,6 +576,19 @@ impl SimCore {
             .load(std::sync::atomic::Ordering::Relaxed);
         snapshot.agent_count = self.agents.len() as i32;
         snapshot.treasury_balance = self.treasury.balance;
+        let gridlock = self.agents.gridlock.report();
+        snapshot.gridlock = GridlockReport {
+            junctions: Vec::new(),
+            ..*gridlock
+        };
+        snapshot.gridlock_junctions.clear();
+        snapshot.gridlock_junctions.extend(
+            gridlock
+                .junctions
+                .iter()
+                .filter(|&&node| (node as usize) < self.region_graph.node_count())
+                .map(|&node| (node, self.region_graph.node(node).pos)),
+        );
         snapshot.heightmap_width = self.heightmap.width;
         snapshot.heightmap_height = self.heightmap.height;
         snapshot.terrain_world_size =
