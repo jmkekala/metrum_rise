@@ -862,7 +862,9 @@ pub(super) fn build_node_piece(
         outer_chains,
         wall_runs,
         strips,
-    );
+        plan.arms.buried(),
+    )
+    .map_err(|_| NodeError::Triangulation)?;
     let footprint = PieceFootprint::of_bounds(mesh.bounds_xz(), grid, footprint);
     Ok(NodePiece {
         node: plan.arms.node,

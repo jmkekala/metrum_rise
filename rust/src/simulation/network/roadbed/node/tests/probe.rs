@@ -1969,6 +1969,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
 // `bridge_pass_through`, `bridge_rural_t` and `width_bridge_pass_through`, flat and sloped),
 // whose bridge meets a road at its hub end, change with the abutment face hung there; every
 // other entry, the tunnels' among them, and the top-surface hashes are unchanged.
+// Re-recorded by `ROAD-61` round R8: the six tunnel entries (`tunnel_t`, `tunnel_bend` and
+// `tunnel_pass_through`, flat and sloped) change with the lining and headwalls the layer now
+// hashes, whose end wall replaces a buried free end's cap; every other entry and the top-surface
+// hashes are unchanged.
 const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("t/false", 0x3a3196117e3f00f3),
     ("four_way/false", 0x694f53237d5dd070),
@@ -2032,9 +2036,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bridge_bend/false", 0x4e1d11e189af360f),
     ("bridge_pass_through/false", 0xd8331298dd91b258),
     ("bridge_rural_t/false", 0xd4b525b794ec9395),
-    ("tunnel_t/false", 0xd8ec837c4448802f),
-    ("tunnel_bend/false", 0xa50d2f231833253f),
-    ("tunnel_pass_through/false", 0x303c028108500646),
+    ("tunnel_t/false", 0x5f61e6240ae7faf1),
+    ("tunnel_bend/false", 0x2b2d12c406ae3638),
+    ("tunnel_pass_through/false", 0x36ecd107cf513538),
     ("band_step_curved/false", 0x37629ac5df89e879),
     ("band_width_step_curved/false", 0xd3bc48a4d792eb19),
     ("t/true", 0x8e5e0a77ca65c074),
@@ -2099,9 +2103,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bridge_bend/true", 0x65fa10b8e747d953),
     ("bridge_pass_through/true", 0xf04c12c0e0dd199a),
     ("bridge_rural_t/true", 0x416fcacf8292544e),
-    ("tunnel_t/true", 0xe4b18086f4548d51),
-    ("tunnel_bend/true", 0x104995dd584ad084),
-    ("tunnel_pass_through/true", 0x51e1a348b4ccbc48),
+    ("tunnel_t/true", 0xe20ba2bfc2b33c61),
+    ("tunnel_bend/true", 0xb9fa02d0c5ce627f),
+    ("tunnel_pass_through/true", 0x34330bd74a80282d),
     ("band_step_curved/true", 0x023fc8a5bc92c4b7),
     ("band_width_step_curved/true", 0x673bc994f267b9d6),
     ("short_link_10", 0x0288e54ed509e89b),

@@ -26,10 +26,11 @@ pub(super) use model::{
     WIDTH_CHANGE_TAPER_WIDTH_FACTOR, edge_points, is_surface_edge,
 };
 
-use super::arms::span_end;
+use super::arms::{span_end, tunnels_continue};
+use super::lining::LiningEnd;
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
-use super::mesh::{PieceMesh, StripKind, build_span_mesh};
+use super::mesh::{PieceMesh, SpanEnd, StripKind, build_span_mesh};
 use super::node::plan_node;
 use super::profile::RoadProfile;
 use super::{RoadSection, RoadVec3};
@@ -210,12 +211,23 @@ pub(crate) fn build_span_piece(
     // closed below its slab by the abutment face, a tunnel's marked a portal row.
     let ends = [edge.start_node, edge.end_node]
         .map(|node| span_end(graph, graph.get_valid_node(node), edge_idx));
+    // A tunnel's span is lined (`ROAD-61`): open where another tunnel continues it, an end wall
+    // where it ends underground, a headwall at a portal row or where it opens onto a bridge.
+    let nodes = [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node));
+    let lining = (edge.class == EdgeClass::Tunnel).then(|| {
+        [0, 1].map(|end| match ends[end] {
+            SpanEnd::Cap(_) => LiningEnd::Closed,
+            SpanEnd::Shared if tunnels_continue(graph, nodes[end]) => LiningEnd::Open,
+            _ => LiningEnd::Portal,
+        })
+    });
     let mesh = build_span_mesh(
         &sections,
         (&start_mouth, &end_mouth),
         model.layout(),
         strips,
         ends,
+        lining,
     );
     let footprint = PieceFootprint::of_span(&mesh, model.layout().stride(), grid, footprint);
     // A crossing's kerbs are its section row's carriageway-edge vertices in the mesh, the
@@ -233,7 +245,7 @@ pub(crate) fn build_span_piece(
     });
     Some(SpanPiece {
         edge_idx,
-        nodes: [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node)),
+        nodes,
         sections: sections.into_boxed_slice(),
         start_mouth,
         end_mouth,

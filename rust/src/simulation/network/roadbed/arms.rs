@@ -533,7 +533,8 @@ pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> 
 /// - a bridge whose mouth row a grounded piece shares (another standard edge meets the node, so
 ///   the node's piece is grounded or the node passes through into a standard span) hangs its
 ///   abutment face below the slab's end edge, and a tunnel whose mouth row a grounded piece
-///   shares marks it a portal row, near which the graded terrain opens the ground (T22 5 (a));
+///   shares marks it a portal row, past which no graded cone reaches and where its headwall
+///   stands (`ROAD-61`);
 /// - any other end is closed by the piece it shares the row with.
 ///
 /// `O(degree)`.
@@ -564,6 +565,18 @@ pub(super) fn span_end(graph: &RegionGraph, node: u32, edge_idx: usize) -> SpanE
         EdgeClass::Tunnel if others().any(|class| class == EdgeClass::Standard) => SpanEnd::Portal,
         _ => SpanEnd::Shared,
     }
+}
+
+/// Whether only tunnels meet at `node`, two or more: a tunnel span's lining continues there into
+/// another tunnel's, or into the lining of the node piece where only tunnels meet (`ROAD-61`).
+/// `O(degree)`.
+pub(super) fn tunnels_continue(graph: &RegionGraph, node: u32) -> bool {
+    node_incidents(graph, node).is_some_and(|incidents| {
+        incidents.len() > 1
+            && incidents
+                .iter()
+                .all(|(key, _)| graph.edge(key.edge).class == EdgeClass::Tunnel)
+    })
 }
 
 fn ends_a_structure(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {

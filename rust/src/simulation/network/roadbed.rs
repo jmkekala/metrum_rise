@@ -13,6 +13,7 @@ pub(crate) mod fixtures;
 mod geometry;
 mod index;
 mod layout;
+mod lining;
 mod mesh;
 mod node;
 mod profile;
@@ -32,6 +33,7 @@ pub use layout::{
     CoreVertexSource, Corner, CornerTangent, Crosswalk, EdgeEnd, JunctionLayout, LayoutError,
     NodeKind, SectionLine, SectorBoundary, SectorKind, SectorLayout, Side,
 };
+pub use lining::{HEADWALL_HEIGHT_M, HEADWALL_WING_M, TUNNEL_LINING_HEIGHT_M};
 pub use mesh::{BRIDGE_DECK_DEPTH_M, OuterChain, PieceMesh, SKIRT_DEPTH_M, StripKind};
 pub(crate) use node::{check_node, terminal_plane};
 pub use node::{NodeError, NodePiece};

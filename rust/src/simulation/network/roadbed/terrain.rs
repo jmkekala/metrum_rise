@@ -26,8 +26,9 @@ pub struct TerrainChanges {
     /// segment from the vertex to itself.
     pub segments: Vec<[RoadVec3; 2]>,
     /// The bounds of [`Self::pieces`] whose piece has a portal row ([`PieceMesh::portal_rows`],
-    /// `TERRAIN-07-C`), in the same order: the graded terrain's portal opening reads only those
-    /// pieces' parts, so it changes only near them.
+    /// `TERRAIN-07-C`), in the same order: no graded cone reaches past a portal row
+    /// (`ROAD-61`), so a change of those pieces changes the ground within the cap of their
+    /// rows.
     pub portals: Vec<[f64; 4]>,
 }
 

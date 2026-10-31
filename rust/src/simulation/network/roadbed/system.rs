@@ -57,8 +57,8 @@ impl PublishedPiece {
     }
 
     // Whether the piece lies under the ground: a tunnel span, or a node piece where only
-    // tunnels meet (`ROAD-61`). Its top shows only where the graded terrain's portal opening
-    // cuts the ground, which the roadbed does not know: the surface queries take it apart.
+    // tunnels meet (`ROAD-61`). Its top is never on the visible surface, the hill over it is: the
+    // surface queries leave it out.
     pub(super) fn buried(&self) -> bool {
         match &self.piece {
             Piece::Span(span) => span.buried(),

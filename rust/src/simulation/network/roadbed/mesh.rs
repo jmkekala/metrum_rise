@@ -9,6 +9,7 @@
 //! the road.
 
 use super::geometry::{SurfaceTriangleGrid, bounds_xz, triangulate_constrained_rings_xz};
+use super::lining::{Lining, LiningEnd, LiningError, node_lining, span_lining};
 use super::profile::{Level, MAX_PROFILE_BANDS, RoadProfile};
 use super::span::MouthSection;
 use super::{BandKind, RoadSection, RoadVec2, RoadVec3};
@@ -72,8 +73,9 @@ pub(super) enum SpanEnd {
     /// A bridge's mouth shared with a grounded piece: the abutment face below the slab's end
     /// edge ([`PieceMesh::for_each_abutment_triangle`]).
     Abutment,
-    /// A tunnel's mouth shared with a grounded piece: its portal row, near which the graded
-    /// terrain opens the ground over the deck ([`PieceMesh::portal_rows`], T22 5 (a)).
+    /// A tunnel's mouth shared with a grounded piece: its portal row, past which no cone of the
+    /// graded terrain reaches and where the headwall stands ([`PieceMesh::portal_rows`],
+    /// `ROAD-61`).
     Portal,
 }
 
@@ -203,6 +205,8 @@ pub struct PieceMesh {
     // The portal rows of a tunnel span (`TERRAIN-07-C`): per mouth shared with a grounded piece
     // its end row's first and last vertex, the row the vertices between them.
     portals: Vec<[u32; 2]>,
+    // A buried piece's lining and headwalls (`ROAD-61`), empty for every other piece.
+    lining: Lining,
     bounds_xz: [f64; 4],
     // Top triangles only; items are triangle indices.
     grid: SurfaceTriangleGrid,
@@ -349,7 +353,7 @@ impl PieceMesh {
         }
     }
 
-    /// The portal rows of a tunnel span (`TERRAIN-07-C`, `docs/terrain.md` T22 5 (a)): per end
+    /// The portal rows of a tunnel span (`TERRAIN-07-C`, `ROAD-61`): per end
     /// row it shares with a grounded piece, the row's vertices from one corner to the other,
     /// bitwise the vertices the grounded piece's wall run across that mouth takes. Empty for
     /// every other piece. `O(1)` per row.
@@ -357,6 +361,40 @@ impl PieceMesh {
         self.portals
             .iter()
             .map(|&[first, last]| &self.positions[first as usize..=last as usize])
+    }
+
+    /// A lining or headwall vertex (`ROAD-61`): a mesh vertex below [`Self::positions`]' length,
+    /// else the lining's own vertex after them (a lining top above an outer-chain vertex, or a
+    /// headwall's outer corner).
+    pub fn lining_point(&self, vertex: u32) -> RoadVec3 {
+        let count = self.positions.len();
+        match (vertex as usize).checked_sub(count) {
+            Some(own) => self.lining.positions[own],
+            None => self.positions[vertex as usize],
+        }
+    }
+
+    /// The lining's triangles of a buried piece (`ROAD-61`): its walls on the outer chains, its
+    /// ceiling and the end wall where a bore ends underground, over [`Self::lining_point`]
+    /// indices, each wound so that `-(b - a) x (c - a)` faces into the bore. Empty for every
+    /// other piece.
+    pub fn lining_triangles(&self) -> &[[u32; 3]] {
+        &self.lining.triangles[..self.lining.headwalls]
+    }
+
+    /// The headwalls at a tunnel span's portal rows (`ROAD-61`), over [`Self::lining_point`]
+    /// indices, each in its row's vertical plane facing out of the tunnel, the lining's mouth open
+    /// in it. Empty for every other piece.
+    pub fn headwall_triangles(&self) -> &[[u32; 3]] {
+        &self.lining.triangles[self.lining.headwalls..]
+    }
+
+    /// Visits the lining's and the headwalls' triangles as world points, in their windings.
+    /// `O(triangles)`, without allocation.
+    pub fn for_each_lining_triangle(&self, mut visit: impl FnMut([RoadVec3; 3])) {
+        for triangle in &self.lining.triangles {
+            visit(triangle.map(|vertex| self.lining_point(vertex)));
+        }
     }
 
     /// XZ bounds `[min_x, min_z, max_x, max_z]` of every vertex.
@@ -559,14 +597,17 @@ pub(super) fn row_slots(profile: &RoadProfile) -> impl Iterator<Item = (f32, Lev
 
 /// Builds a span mesh from its sections, whose first and last rows are copied from the two
 /// mouth sections, with `strips` below its two outer chains, and each end row closed as `ends`
-/// says (`TERRAIN-07-C`): a cap ([`end_cap`]), a wall run, an abutment face or a portal row.
-/// `O(sections * bands)`; allocates only the mesh.
+/// says (`TERRAIN-07-C`): a cap ([`end_cap`]), a wall run, an abutment face or a portal row. A
+/// tunnel's span (`lining`, how the lining closes each end row) is lined (`ROAD-61`).
+/// `O(sections * bands)` plus the lining's `O(sections + bands log bands)`; allocates only the
+/// mesh.
 pub(super) fn build_span_mesh(
     sections: &[RoadSection],
     (start_mouth, end_mouth): (&MouthSection, &MouthSection),
     layout: &RowLayout,
     strips: Option<StripKind>,
     ends: [SpanEnd; 2],
+    lining: Option<[LiningEnd; 2]>,
 ) -> PieceMesh {
     let rows = sections.len();
     let stride = layout.stride();
@@ -667,6 +708,9 @@ pub(super) fn build_span_mesh(
                 });
                 abutment_runs.push(abutment);
             }
+            // A lined bore that ends underground is closed by its lining's end wall from the
+            // deck up to the ceiling; below the deck lies the earth (`ROAD-61`).
+            SpanEnd::Cap(_) if lining.is_some() => {}
             SpanEnd::Cap(kind) => {
                 faces.cap_kind = Some(kind);
                 end_cap(
@@ -683,6 +727,9 @@ pub(super) fn build_span_mesh(
             SpanEnd::Portal => faces.portals.push([first, last]),
         }
     }
+    faces.lining = lining
+        .map(|ends| span_lining(&positions, (rows, stride), &outer_chains, ends))
+        .unwrap_or_default();
     PieceMesh::new(
         positions,
         road_space,
@@ -703,6 +750,7 @@ struct EndFaces {
     cap_kind: Option<StripKind>,
     abutments: Vec<[u32; 2]>,
     portals: Vec<[u32; 2]>,
+    lining: Lining,
 }
 
 // The cap closing a structure's free end (`TERRAIN-07-C`): the polygon in the end row's vertical
@@ -762,6 +810,8 @@ impl PieceMesh {
     /// then curb faces), hanging `strips` from its chains: skirts where it stands on the terrain,
     /// none where only structures meet. `wall_runs` close the chains across its structure
     /// mouths ([`Self::wall_runs`]), each with whether it is a bridge's ([`Self::abutment_runs`]).
+    /// A node where only tunnels meet (`lined`) is lined along its chains (`ROAD-61`), or has no
+    /// mesh when the ring of its lining tops bounds no simple polygon.
     pub(super) fn from_groups(
         positions: Vec<RoadVec3>,
         road_space: Vec<[f32; 2]>,
@@ -769,23 +819,32 @@ impl PieceMesh {
         outer_chains: Vec<Box<[u32]>>,
         wall_runs: Vec<(OuterChain, bool)>,
         strips: Option<StripKind>,
-    ) -> Self {
+        lined: bool,
+    ) -> Result<Self, LiningError> {
         let group_starts = group_starts(groups.each_ref().map(|group| group.len() as u32));
         let triangles = groups.iter().flatten().copied().collect();
-        let outer_chains = outer_chains
+        let outer_chains: Vec<OuterChain> = outer_chains
             .into_iter()
             .map(|vertices| OuterChain { vertices })
             .collect();
         let (wall_runs, abutment_runs) = wall_runs.into_iter().unzip();
-        Self::new(
+        let lining = if lined {
+            node_lining(&positions, &outer_chains)?
+        } else {
+            Lining::default()
+        };
+        Ok(Self::new(
             positions,
             road_space,
             triangles,
             group_starts,
             (outer_chains, wall_runs, abutment_runs),
             strips,
-            EndFaces::default(),
-        )
+            EndFaces {
+                lining,
+                ..EndFaces::default()
+            },
+        ))
     }
 
     // Builds the bounds and top-triangle grid of grouped triangles.
@@ -801,6 +860,7 @@ impl PieceMesh {
             cap_kind,
             abutments,
             portals,
+            lining,
         }: EndFaces,
     ) -> Self {
         let top_count = group_starts[CURB_FACE_GROUP] as usize;
@@ -825,6 +885,7 @@ impl PieceMesh {
             cap_kind,
             abutments,
             portals,
+            lining,
             grid,
         }
     }

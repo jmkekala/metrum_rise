@@ -372,10 +372,8 @@ impl GradedSurface<'_> {
         normalized(normal)
     }
 
-    /// What the point is, in this order: road where a grounded road top triangle covers it or
-    /// a portal opening cuts it (a portal deck within the reach of its row, the ground's
-    /// rendered value at the point less than the clearance above it, T22 5 (a)), pad inside a
-    /// site's support footprint, paved on a site surface, graded where the graded value differs
+    /// What the point is, in this order: road where a grounded road top triangle covers it, pad
+    /// inside a site's support footprint, paved on a site surface, graded where the graded value differs
     /// from the base, else natural.
     pub fn mask_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> GroundClass {
         let answer = self.mask_at_unchecked(x, z, scratch);

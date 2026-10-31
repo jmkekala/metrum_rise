@@ -41,7 +41,7 @@ pub(super) struct ExtraScratch {
     // The list starts with their first texels while packing.
     starts: Vec<u32>,
     // The squares' lists back to back, each its length then its seam codes ascending (the
-    // window's seams, then the bore seams, then the wall seams, as the texels name them).
+    // window's seams, then the wall seams, as the texels name them).
     lists: Vec<u32>,
     // Per square with a list, in lattice point order: the point index of its lower corner and
     // the start of its list in `lists`. Squares with equal lists in a row or column of one

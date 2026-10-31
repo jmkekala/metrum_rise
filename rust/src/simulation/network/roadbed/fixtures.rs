@@ -353,7 +353,8 @@ impl Fnv {
     }
 
     // A piece's strip layer: its kind, then every strip triangle's points and bottom flags, then
-    // the abutment faces' (`TERRAIN-07-C`).
+    // the abutment faces' (`TERRAIN-07-C`), then a buried piece's lining and headwalls'
+    // (`ROAD-61`), which only tunnel pieces have.
     fn strips(&mut self, mesh: &PieceMesh) {
         self.debug(&mesh.strip_kind());
         let mut triangle = |points: [RoadVec3; 3], bottoms: [bool; 3]| {
@@ -363,7 +364,8 @@ impl Fnv {
                 .for_each(|bottom| self.word(u64::from(bottom)));
         };
         mesh.for_each_strip_triangle(&mut triangle);
-        mesh.for_each_abutment_triangle(triangle);
+        mesh.for_each_abutment_triangle(&mut triangle);
+        mesh.for_each_lining_triangle(|points| triangle(points, [false; 3]));
     }
 }
 

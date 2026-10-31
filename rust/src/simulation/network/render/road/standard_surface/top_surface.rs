@@ -11,12 +11,12 @@
 //! skirt layer in the curb's colour; a bridge's fascias go with its concrete (`bridge.rs`).
 
 use super::super::{
-    MeshLayer, NetworkMeshData, NetworkMeshOwner, curb_color, footpath_color, push_triangle,
+    MeshLayer, NetworkMeshData, NetworkMeshOwner, concrete_color, curb_color, footpath_color, push_triangle,
     push_triangle_preserving_winding_with_exact_normal, render_point, road_color,
     road_space_color, sidewalk_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
-use super::geometry::{emit_chain_strips, triangle_is_too_small};
+use super::geometry::{emit_chain_strips, emit_lining, triangle_is_too_small};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{BandKind, PieceMesh, RoadbedSystem, StripKind};
 use crate::simulation::network::types::TransitType;
@@ -80,6 +80,7 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
             road_space_color(edge),
         );
         emit_skirts(mesh, piece);
+        emit_lining(mesh, piece, concrete_color());
     }
     for &node in &coverage.node_ids {
         let Some(piece) = roadbed.node_piece(node) else {
@@ -115,6 +116,7 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
             road_color(),
         );
         emit_skirts(mesh, piece);
+        emit_lining(mesh, piece, concrete_color());
     }
 }
 

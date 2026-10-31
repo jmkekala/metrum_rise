@@ -7,7 +7,7 @@
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
-use crate::simulation::network::roadbed::PieceId;
+use crate::simulation::network::roadbed::{PieceId, RoadVec3, TUNNEL_LINING_HEIGHT_M};
 use crate::simulation::network::types::EdgeClass;
 
 // The probes of `docs/roads.md` "Road tunnels": `(x, height)` at z = 0 on flat ground at 0.
@@ -713,4 +713,152 @@ fn no_parcel_fronts_a_tunnel_or_a_bridge() {
         place(&mut bridge, (0.0, 14.0)),
         Err(ParcelPlacementError::NoRoadAttachment)
     );
+}
+
+// The lining and headwall triangles of every published piece of `core` as world points, each
+// with whether it is a headwall's, and the edges of every face the pieces publish (the deck's
+// top and curb faces, the skirts and caps, the lining's, the headwalls'), each with the number of
+// faces meeting it.
+#[allow(clippy::type_complexity)]
+fn lining_faces(
+    core: &SimCore,
+) -> (
+    Vec<([RoadVec3; 3], bool)>,
+    std::collections::HashMap<[[u64; 3]; 2], u32>,
+) {
+    let roadbed = &core.transit_network.roadbed;
+    let ids = (0..core.region_graph.edge_count())
+        .map(PieceId::Span)
+        .chain((0..core.region_graph.node_count() as u32).map(PieceId::Node));
+    let key = |p: RoadVec3| [p.x, p.y, p.z].map(f64::to_bits);
+    let (mut faces, mut edges) = (Vec::new(), std::collections::HashMap::new());
+    let mut count = |triangle: [RoadVec3; 3]| {
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            let mut edge = [key(triangle[a]), key(triangle[b])];
+            edge.sort();
+            *edges.entry(edge).or_insert(0) += 1;
+        }
+    };
+    for id in ids {
+        let Some(mesh) = roadbed.piece_mesh(id) else {
+            continue;
+        };
+        for triangle in mesh.triangles() {
+            count(triangle.map(|v| mesh.positions()[v as usize]));
+        }
+        mesh.for_each_strip_triangle(|points, _| count(points));
+        for (list, headwall) in [
+            (mesh.lining_triangles(), false),
+            (mesh.headwall_triangles(), true),
+        ] {
+            for triangle in list {
+                let points = triangle.map(|v| mesh.lining_point(v));
+                count(points);
+                faces.push((points, headwall));
+            }
+        }
+    }
+    (faces, edges)
+}
+
+// `ROAD-61` round R8: the bore is closed around its deck. The tunnel through the 1:2 hill is
+// lined from portal row to portal row, and a headwall stands at each row facing its approach.
+// Every edge of the lining and the headwalls is shared with another face, the deck's, a curb
+// face's, the lining's, a headwall's or the approach's skirt, bitwise, but for the headwalls'
+// outer edges, which meet the terrain: no open boundary edge. The lining faces into the bore.
+#[test]
+fn the_lining_closes_the_bore() {
+    let mut core = hill_core(80.0);
+    let result = run_stroke(&mut core, &THROUGH_HILL, true);
+    assert_eq!(result.committed, "committed", "{result:?}");
+    let (faces, edges) = lining_faces(&core);
+    let key = |p: RoadVec3| [p.x, p.y, p.z].map(f64::to_bits);
+    // A headwall's outer points are the only lining points off the deck's rows and the lining
+    // tops: its outer corners and the bottoms below its row's corners.
+    let lining_points: std::collections::HashSet<_> = faces
+        .iter()
+        .filter(|(_, headwall)| !headwall)
+        .flat_map(|(points, _)| points.map(key))
+        .collect();
+    let outer = |p: RoadVec3| !lining_points.contains(&key(p));
+    let (mut lining, mut headwalls) = (0, 0);
+    for &(points, headwall) in &faces {
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            let (p, q) = (points[a], points[b]);
+            if headwall && outer(p) && outer(q) {
+                continue;
+            }
+            let mut edge = [key(p), key(q)];
+            edge.sort();
+            assert!(edges[&edge] >= 2, "an open lining edge {p:?} - {q:?}");
+        }
+        let [a, b, c] = points;
+        let normal = -(b - a).cross(c - a);
+        let centroid = (a + b + c) / 3.0;
+        if headwall {
+            // Out of the tunnel, towards its approach.
+            assert!(normal.x * centroid.x > 0.0, "a headwall facing {normal:?}");
+            headwalls += 1;
+        } else {
+            let axis = RoadVec3::new(centroid.x, 0.5 * TUNNEL_LINING_HEIGHT_M, 0.0);
+            assert!(
+                normal.dot(axis - centroid) > 0.0,
+                "a lining face {points:?} facing {normal:?}"
+            );
+            lining += 1;
+        }
+    }
+    assert!(lining > 50 && headwalls > 10, "{lining} lining, {headwalls} headwall");
+}
+
+// `ROAD-61` round R8: a bore that ends underground is closed by an end wall, and where two
+// tunnels meet at a bend the node piece is lined, its lining sharing the spans' edges.
+#[test]
+fn the_lining_closes_buried_ends_and_bends() {
+    let mut core = flat_core();
+    let first = probe_points(PROBES[1]);
+    assert_eq!(run_stroke(&mut core, &first, false).committed, "committed");
+    // On from the east end, turning north.
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points: vec![Vector3::new(50.0, -6.0, 0.0), Vector3::new(60.0, -6.0, 60.0)],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            tunnel: false,
+            preview: None,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection_reason);
+    core.precompute_road_mesh_data();
+    let graph = &core.region_graph;
+    let tunnels = graph
+        .edges()
+        .iter()
+        .filter(|edge| !edge.deleted && edge.class == EdgeClass::Tunnel)
+        .count();
+    assert_eq!(tunnels, 2);
+    let roadbed = &core.transit_network.roadbed;
+    let bend = graph
+        .find_node_within(Vector3::new(50.0, -6.0, 0.0), 1.0)
+        .expect("the bend");
+    let node = roadbed.piece_mesh(PieceId::Node(bend)).expect("a bend piece");
+    assert!(!node.lining_triangles().is_empty(), "the bend is lined");
+    let (faces, edges) = lining_faces(&core);
+    let key = |p: RoadVec3| [p.x, p.y, p.z].map(f64::to_bits);
+    for (points, headwall) in &faces {
+        assert!(!headwall, "no portal underground");
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            let mut edge = [key(points[a]), key(points[b])];
+            edge.sort();
+            assert!(
+                edges[&edge] >= 2,
+                "an open lining edge {:?} - {:?}",
+                points[a],
+                points[b]
+            );
+        }
+    }
 }
