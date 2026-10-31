@@ -51,8 +51,12 @@ fn run_corner_store(streets: usize, cars: usize, ticks: usize, workers: usize) -
         .install(|| {
             let (mut network, mut graph) = corner_streets(streets);
             let mut allocator = BuildingAllocator::new();
-            let asset_id =
-                register_test_asset(&mut allocator, "test", "corner_store", ZoneClass::Commercial);
+            let asset_id = register_test_asset(
+                &mut allocator,
+                "test",
+                "corner_store",
+                ZoneClass::Commercial,
+            );
             let mut doors = Vec::new();
             for s in 0..streets {
                 let (street, approach) = (3 * s, 3 * s + 1);
@@ -83,7 +87,9 @@ fn run_corner_store(streets: usize, cars: usize, ticks: usize, workers: usize) -
                     let idx = agents.spawn_border_arrival_agent(usize::MAX, r, 0.0, 0.0);
                     agents.transit_mode[idx] = MODE_CAR;
                     let d = length - 200.0 + car as f32 * 10.0;
-                    agents.agents.enter_lane(idx, &network.lane_system, lane, d, r);
+                    agents
+                        .agents
+                        .enter_lane(idx, &network.lane_system, lane, d, r);
                     agents.speed[idx] = 10.0;
                     agents.target_building[idx] = s;
                     agents.current_path[idx] = vec![r, q];
@@ -100,7 +106,13 @@ fn run_corner_store(streets: usize, cars: usize, ticks: usize, workers: usize) -
             let mut detached = vec![false; n];
             let mut previous: Vec<usize> = agents.current_lane_id.clone();
             for tick in 0..ticks {
-                agents.tick(&allocator, &mut network, &mut graph, 0.25, &test_clock(0, 0));
+                agents.tick(
+                    &allocator,
+                    &mut network,
+                    &mut graph,
+                    0.25,
+                    &test_clock(0, 0),
+                );
                 for i in 0..n {
                     if detached[i] {
                         continue;
@@ -198,7 +210,13 @@ fn looping_route_detaches_only_on_its_last_visit() {
 
     let mut came_back = false;
     for tick in 0..2_400 {
-        agents.tick(&allocator, &mut network, &mut graph, 0.25, &test_clock(0, 0));
+        agents.tick(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.25,
+            &test_clock(0, 0),
+        );
         came_back |= agents.current_lane_id[idx] == westbound;
         if agents.transit[idx] == TRANSIT_ACCESS_INGRESS {
             assert!(came_back, "tick {tick}: detached before driving the loop");
