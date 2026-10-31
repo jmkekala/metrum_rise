@@ -10324,7 +10324,7 @@ same stroke climbs the hill; undo removes it), `a_curved_tunnel_keeps_its_author
 `a_car_drives_through_the_tunnel` (a debug car enters the bore and reaches the far approach's
 end) and `invalid_tunnels_are_refused_with_a_reason` (water, two crossings, no cover, a short
 approach; hover, preview and commit refuse alike and the graph is unchanged); the six run in
-0.2 s, 1 ignored (below). Godot:
+0.2 s (round R2b's tests below). Godot:
 `godot/tests/road_tunnels_test.gd` (in `run.sh --test`) drives the player's tool on a sculpted
 hill: `T` and the checkbox, a refused stroke past the hill, the preview's chord, the commit as two
 approaches and a tunnel, and a debug car passing under the hill's top and out of the east portal;
@@ -10333,15 +10333,91 @@ with `METRUM_ROAD61_SCREENSHOT` on a rendered run it saves the west portal
 profile, 2026-10-31) shows the approach in its cut, the portal opening with its side walls and
 the debug car at the mouth; the hill stays closed over the bore.
 
-**Open (found by R2, pre-existing for every tunnel on `dev`, not fixed in this round):**
+**The ground over a bore (round R2b, branch `port-r2b-tunnel-surface`, 2026-10-31).** R2 found
+that everything which reads the visible surface (`GradedSurface::surface_height_at` and its
+siblings: the cursor, zoning cell heights, off-lane vehicles, the inspector's ground) answered the
+buried deck over the whole bore, that vegetation cleared the bore across the hill, and that the hill
+showed pale stripes. The rule now: a tunnel span is on the ground surface only inside its portal
+opening (the graded terrain's opening within 10 m of a portal row where the ground stands less
+than 5 m above the deck, [`terrain.md`](terrain.md) T22 5 (a)); everywhere else over a bore the
+surface is the graded hill. The rule lives in the graded terrain's opening test, which `mask_at`
+and the bake already read; the roadbed only tells the exposed pieces from the buried ones (a tunnel
+span, or a node piece where only tunnels meet), see [`terrain.md`](terrain.md) "The ground over a
+tunnel bore". Fixed:
 
-- The visible-surface queries (`GradedSurface::surface_height_at` and its siblings, which the
-  cursor, zoning cell heights, vegetation and off-lane vehicles read) take the highest road
-  triangle at a point, so over a bore they answer the buried deck (0 m) instead of the hill
-  (10 m at x = -60 on the test hill). The graded bake leaves the hill closed. Recorded by the
-  ignored `the_surface_over_a_bore_is_the_hill`.
-- Trees are cleared along the bore over the whole hill, and the hill top shows two pale material
-  stripes along the bore's outer chains, far from either portal (the overhead render).
+- Surface heights: the surface queries take a buried deck only inside the opening; over the bore
+  of a tunnel through a 1:4 hill they answer the hill (exact to 1 cm at five stations and two
+  offsets), 2 m into either opening the deck.
+- Trees: vegetation's deck test and walkway setback read the exposed pieces only. The scatter of
+  both layers over the bore equals the same hill's without the tunnel, plant for plant; the
+  approaches and openings stay clear.
+- Buildings: a building fronts only a grounded road. Zoning cells already read standard edges
+  only, but parcel placement (with its preview and restore), explicit service frontage, lot
+  placement, the attachment repair and the road-side connection read only `no_building_spawn`, so
+  a parcel placed beside a tunnel's hill or beside a bridge attached to the structure's span
+  (checked first: `Ok(Tunnel)` on `e402c0b2`). One predicate, `Edge::takes_buildings` (live,
+  standard, not closed to buildings), now gates every one of them.
+- The inspector: not reproduced. Entering a lane sets an agent's transit to network or
+  intersection, and the inspector reads the lane in both, so a car in a tunnel is reported on its
+  lane (a regression test holds it there, under the hill). R2's Godot test never asserted the
+  reported position; it does now.
+- The pale stripes are not a consumer of the surface: on the 1:2 test cone the approaches'
+  tie-in cones cut the hill over the bore by up to 5.8 m out to the 64 m cap, where the ground
+  steps back up by 6.0 m, a cliff whose rock material reads as pale stripes. Open below.
+
+**Tests** (fresh, 2026-10-31): `the_surface_over_a_bore_is_the_hill` (un-ignored; the 1:4 hill
+replaces R2's 1:2 cone, whose hill over the bore the graded terrain cuts, below),
+`the_hill_over_a_bore_keeps_its_plants`, `no_parcel_fronts_a_tunnel_or_a_bridge` and the
+inspector regression `the_inspector_reports_a_car_in_a_tunnel_on_its_lane`. All four fail on
+`e402c0b2` (surface 0 m over the bore against a 12.5 m hill; no plant over the bore against the
+bare hill's; a parcel on the tunnel span; the inspector's lane position matched there, but the
+surface over the car read the deck it drives on) and pass after.
+Ignored: `a_steep_hill_over_a_bore_keeps_its_height` (below). Godot `road_tunnels_test.gd` adds
+the surface over the bore standing above the deck and the inspector's position inside the bore.
+On fixtures without a tunnel the graded tiles (`GL0`-`GL2`), the vegetation scatter and the surface
+queries hash bitwise equal before and after: a 1:4 hill with a surface road and a bridge
+(`1c612c59b9d809a0`, `757c8f1202962b63`, `716d91b544c120a9`) and the grown starter town
+(`254bb17558de5067`, `288abc8d84adaadd`, `28dcd1e2d4d01c09`), debug test binaries of `e402c0b2`
+and of this round.
+
+**Cost.** `RoadbedSystem::exposed_and_buried_heights_at` is one walk of the point's query cell,
+as `height_at`; `any_exposed_band_near_disc` is `any_band_near_disc` with buried pieces skipped;
+the far-vehicle local surface query leaves buried pieces out while it gathers; all
+allocation-free. A surface query over no buried deck costs what it did; over one it adds the
+point's preparation and portal gather. `Edge::takes_buildings` is `O(1)`. Nothing runs per tick
+that did not before, and no road-edit or bake stage changed.
+
+**Timing (fresh, 2026-10-31 23:24-23:25).** `$TEST_BINARY
+nodes::sim::core::tests::road_preview::benchmark_road_preview_stages --exact --ignored
+--nocapture`, release, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks, load 1.9 at the
+start; control R2's binary (`e402c0b2`'s code, C), this round's (`ccc6aeb4`, F), C F F C. Products
+identical (payload 9,845 / 9,973 vertices per pose, hidden 4,188 / 6,475, graded tiles 7.38 /
+4.62). p50 total ms, C1 C2 / F1 F2: `sloped_t` 2.804 2.841 / 2.779 2.797, `sloped_branch` 2.376
+2.504 / 2.419 2.500; plan, roadbed, payload and graded within the controls' spread. No claim
+either way.
+
+**Locality (fresh, same session, the populated-map check R2 skipped).**
+`road_plan_scaling::populated_tunnel_road_plan_scaling` (release, same binary and settings): a
+tunnel stroke through a 1:4 hill beside the measured T, planned while remote buildings, parcels,
+agents and roads grow; fixture construction is not timed. The prepared points are equal at every
+scale (asserted). p50 / p95 ms over 100 samples:
+
+| Remote buildings | Roads | Agents | Parcels | Compile | Readiness p50 | Preview p50 | Snapshot (once per edit) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 0 | 24 | 4 | 0.069 / 0.182 | 0.032 | 0.037 | 0.007 |
+| 1,000 | 4 | 6,024 | 1,004 | 0.102 / 0.190 | 0.039 | 0.044 | 0.007 |
+| 10,000 | 40 | 60,024 | 10,004 | 0.043 / 0.128 | 0.021 | 0.024 | 0.021 |
+| 100,000 | 391 | 600,024 | 100,004 | 0.042 / 0.097 | 0.021 | 0.023 | 0.220 |
+
+The stroke's planning cost follows its neighbourhood, not the city; the one-time snapshot grows
+with the city and is kept apart.
+
+**Open (`ROAD-61`):**
+
+- On a hill as steep as the 1:2 tie-in slope the approaches' cones cut the hill over the bore to
+  the cap ([`terrain.md`](terrain.md) "Open (`ROAD-61`, T22 design, found by round R2b)"). A fix
+  stops the cones past a portal row and needs a headwall at the mouth: round R8 or a T22 revision,
+  the user's call.
 - Tunnel lining, roof, headwall faces and portal headers: round R8.
 
 ## Road marking lighting — RENDER-12

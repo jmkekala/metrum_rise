@@ -4621,11 +4621,37 @@ the road, one site chunk lookup and the seams near the point
 | --- | --- | --- | --- |
 | `base_height_at(x, z)` | the base `b(p)` | `sample_height_world`, `get_height_at_internal` | terrain brushes and authoring tools, water depth ([T13](#terrain-07-open-questions)) |
 | `ground_height_at(x, z)` | the graded ground: `GL0` values (base plus the packed `f32` delta) on the `GL0` triangle under `p`, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)` diagonal, which the `TERRAIN-07-D` mesh follows; at a pad the pad; in a 64 m tile without a seam or pad within the cap the bilinear base, as `raycast_surface` marches it (correction, `TERRAIN-07-D` round 2: the two queries disagreed there by the `GL0` triangles' chord of the bilinear base, 3.7 mm at the grade breaks of `vehicle_ground_support_test.gd`); under a road the hidden inside-rule surface, so callers test `mask_at` first | `sample_visual_height_world`, `raycast_visual_terrain`'s heights | generated vegetation, grass, mist, water reflection, building render probes |
-| `surface_height_at(x, z)` | the visible surface: the road's `height_at` where covered, else `ground_height_at` | `get_world_surface_height_internal` and `_near` (road, site, CDT ground, visual terrain) | agents off lane, vehicle contacts, authored plants, picking, cell zoning overlays, Godot tools |
+| `surface_height_at(x, z)` | the visible surface: the highest road top where a road on or above the ground covers `p`; a buried deck (a tunnel span, or a node piece where only tunnels meet) only where the portal opening cuts the ground over it, `mask_at`'s rule (T22 5 (a)); else `ground_height_at`, so over a bore beyond its opening it is the hill (`ROAD-61`, round R2b of the road-feature port, 2026-10-31) | `get_world_surface_height_internal` and `_near` (road, site, CDT ground, visual terrain) | agents off lane, vehicle contacts, authored plants, picking, cell zoning overlays, Godot tools |
 | `normal_at(x, z)` | the rendered `GL0` normal: per lattice point today's base gradient (the central difference of the base over one base cell either side) plus the central difference of the packed delta over its four neighbours, interpolated over the `GL0` triangle; the shader computes the same (correction, `TERRAIN-07-D`: the base term was the 0.5 m difference, which the [renderer rule](#godot-tile-renderer) does not draw and which would crease the shading at every graded cell's border with a base cell) | (new) | vegetation slope tests |
 | `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }`; `Road` also where a portal opening cuts the ground (T22 5 (a)) | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
 | `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles), never ground a road covers or a portal opening cuts | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
 | `raycast_base(origin, dir)` | the authored base | `intersect_terrain_internal` | terrain brushes |
+
+**The ground over a tunnel bore (`ROAD-61`, round R2b, 2026-10-31).** A tunnel span is on the
+visible surface only inside its portal opening; everywhere else over a bore the surface is the
+graded ground. The roadbed marks a buried piece in its query index and answers the exposed and
+the buried top apart in one walk of the point's query cell
+(`RoadbedSystem::exposed_and_buried_heights_at`); `surface_height_at`, `surface_height_near` and
+the height-and-normal variants take a buried deck only where `mask_at`'s opening test holds there.
+Vegetation's deck test and walkway setback read the exposed pieces only, so the hill keeps its
+plants over a bore and loses them in the approach cuts and openings. Without a buried piece every
+answer is bitwise the old one (fresh hashes of the graded tiles at `GL0`-`GL2`, the vegetation
+scatter and the surface queries on a 1:4 hill with a surface road and a bridge, and on the grown
+starter town, equal before and after). Cost: a point over no buried deck costs what it did; one
+over a buried deck adds the point's preparation and portal gather (`O(P log P + T log T + S log
+S)` for the pieces, triangles and bore segments met), allocation-free once the scratch is warm.
+
+**Open (`ROAD-61`, T22 design, found by round R2b).** The approaches' grounded chains end at the
+mouth row, so their tie-in cones grade the ground over the bore: `g <= h + k d` within the cap of
+the mouth corners. The portal opening relies on it (its reach `R = H / k` is where ground graded at
+1:2 from the mouth stays below the crown). On a hill flatter than 1:2 the cut ends where the cone
+meets the hill (20 m past the mouth on a 1:4 hill). On a hill as steep as 1:2 the hill over the bore
+stays cut by up to the clearance (5.8 m on the axis of the 1:2 test cone) out to the 64 m cap, where
+the ground steps back up to the hill (6.0 m between x = -4.5 and -4 m on that cone): a cliff across the bore whose rock material reads as pale
+stripes near the top of a big hill (R2's overhead render). The surface queries read this graded
+ground faithfully. Recorded by the ignored
+`road_tunnels::a_steep_hill_over_a_bore_keeps_its_height`; a fix changes the grading over a bore
+(no cone past a portal row) and needs a headwall at the mouth, which is round R8's.
 
 Godot's `get_world_surface_height` and `intersect_world_surface` answer from `surface_height_at` and
 `raycast_surface` since `TERRAIN-07-D` round 2; since `TERRAIN-07-F` they go through

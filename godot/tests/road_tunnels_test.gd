@@ -3,8 +3,8 @@
 ## Road tunnels through the player's road tool (`ROAD-61`): on a sculpted hill the tool's tunnel
 ## toggle previews and commits a straight stroke between two ends outside the hill as a tunnel
 ## between two approaches, the T key flips the toggle and its checkbox, a stroke that never gets
-## the bore's cover is refused with its reason, and a debug car drives in at one portal and out
-## at the other. METRUM_ROAD61_SCREENSHOT, when set on a rendered run, saves the west portal
+## the bore's cover is refused with its reason, the surface over the bore stays the hill, and a
+## debug car drives in at one portal and out at the other, reported inside the bore. METRUM_ROAD61_SCREENSHOT, when set on a rendered run, saves the west portal
 ## (METRUM_ROAD61_VIEW picks another view).
 extends SceneTree
 
