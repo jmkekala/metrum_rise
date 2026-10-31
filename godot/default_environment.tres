@@ -1,4 +1,4 @@
-[gd_resource type="Environment" format=3]
+[gd_resource type="Environment" format=3 uid="uid://hc2rt3nqcnwk"]
 
 [resource]
 background_mode = 1
@@ -7,11 +7,8 @@ ambient_light_source = 2
 ambient_light_color = Color(0.54, 0.64, 0.7, 1)
 ambient_light_energy = 0.44
 tonemap_mode = 4
-glow_enabled = false
-glow_normalized = true
-glow_intensity = 0.15
-glow_bloom = 0.0
-glow_hdr_threshold = 1.5
 ssil_enabled = true
 ssil_radius = 6.0
-ssil_intensity = 1.0
+glow_normalized = true
+glow_intensity = 0.15
+glow_hdr_threshold = 1.5

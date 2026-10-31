@@ -26,7 +26,9 @@ mod tests;
 mod tick;
 
 pub(crate) use admission::QueuedAdmission;
-pub(crate) use building_economy::{produce_building_hour, refresh_activity_floor};
+pub(crate) use building_economy::{produce_building_hour_with_automation, refresh_activity_floor};
+#[cfg(test)]
+pub(crate) use metrics::building_operation_factors_with_automation;
 pub(crate) use data::{
     DailyPowerSettlementSummary, HouseholdBuildingUndo, PendingHouseholdArrivals,
 };

@@ -20,6 +20,7 @@ use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::extraction::ResourceExtractionSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
+use crate::simulation::grid::land_value::LandValueSystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
@@ -77,6 +78,7 @@ pub(crate) struct SaveGameView<'a> {
     pub zoning: &'a ZoningSystem,
     pub pollution: &'a PollutionSystem,
     pub noise: &'a NoiseSystem,
+    pub land_value: &'a LandValueSystem,
     pub demand: &'a DemandSystem,
     pub pending_demand_spawns: &'a VecDeque<PendingDemandSpawnAction>,
     /// Timing wheel and counters (`SIM-02`).
@@ -117,6 +119,7 @@ pub(crate) struct LoadedSimulation {
     pub pollution: PollutionSystem,
     pub noise: NoiseSystem,
     pub desirability: DesirabilitySystem,
+    pub land_value: LandValueSystem,
     pub demand: DemandSystem,
     pub pending_demand_spawns: VecDeque<PendingDemandSpawnAction>,
     /// Timing wheel and counters (`SIM-02`).
@@ -152,7 +155,7 @@ fn save_budget_history(
     budget_history: &VecDeque<DailyBudgetLedgerEntry>,
 ) -> SaveLoadResult<()> {
     let mut stmt = tx.prepare(
-        "INSERT INTO city_budget_history(sequence, day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, electricity_consumption_cost) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
+        "INSERT INTO city_budget_history(sequence, day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, lvt_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, ubi_dividends, mandatory_opex, debt_service, pre_ubi_surplus, daily_ubi_per_adult, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, electricity_consumption_cost) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40)",
     )?;
     for (sequence, entry) in budget_history.iter().enumerate() {
         stmt.execute(params![
@@ -170,11 +173,17 @@ fn save_budget_history(
             entry.residential_property_tax,
             entry.commercial_property_tax,
             entry.industrial_property_tax,
+            entry.lvt_tax,
             entry.utility_service_revenue,
             entry.benefits,
             entry.unemployment_benefits,
             entry.pensions,
             entry.child_support,
+            entry.ubi_dividends,
+            entry.mandatory_opex,
+            entry.debt_service,
+            entry.pre_ubi_surplus,
+            entry.daily_ubi_per_adult,
             entry.city_wages,
             entry.fuel_input_purchases,
             entry.imports_owa,
@@ -198,116 +207,54 @@ fn save_budget_history(
 fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudgetLedgerEntry>> {
     let mut history = VecDeque::new();
     let mut stmt = conn.prepare(
-        "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, electricity_consumption_cost FROM city_budget_history ORDER BY sequence",
+        "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, lvt_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, ubi_dividends, mandatory_opex, debt_service, pre_ubi_surplus, daily_ubi_per_adult, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, electricity_consumption_cost FROM city_budget_history ORDER BY sequence",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, f64>(1)?,
-            row.get::<_, f64>(2)?,
-            row.get::<_, f64>(3)?,
-            row.get::<_, f64>(4)?,
-            row.get::<_, f64>(5)?,
-            row.get::<_, f64>(6)?,
-            row.get::<_, f64>(7)?,
-            row.get::<_, f64>(8)?,
-            row.get::<_, f64>(9)?,
-            row.get::<_, f64>(10)?,
-            row.get::<_, f64>(11)?,
-            row.get::<_, f64>(12)?,
-            row.get::<_, f64>(13)?,
-            row.get::<_, f64>(14)?,
-            row.get::<_, f64>(15)?,
-            row.get::<_, f64>(16)?,
-            row.get::<_, f64>(17)?,
-            row.get::<_, f64>(18)?,
-            row.get::<_, f64>(19)?,
-            row.get::<_, f64>(20)?,
-            row.get::<_, f64>(21)?,
-            row.get::<_, f64>(22)?,
-            row.get::<_, f64>(23)?,
-            row.get::<_, f64>(24)?,
-            row.get::<_, f64>(25)?,
-            row.get::<_, f64>(26)?,
-            row.get::<_, f64>(27)?,
-            row.get::<_, f64>(28)?,
-            row.get::<_, f64>(29)?,
-            row.get::<_, f64>(30)?,
-            row.get::<_, f64>(31)?,
-            row.get::<_, f64>(32)?,
-        ))
+        Ok(DailyBudgetLedgerEntry {
+            day_index: i64_to_u32(row.get::<_, i64>(0)?)
+                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, 0))?,
+            income: row.get(1)?,
+            expenses: row.get(2)?,
+            net: row.get(3)?,
+            treasury: row.get(4)?,
+            tax_income: row.get(5)?,
+            income_tax: row.get(6)?,
+            household_vat: row.get(7)?,
+            business_profit_tax: row.get(8)?,
+            property_tax: row.get(9)?,
+            residential_property_tax: row.get(10)?,
+            commercial_property_tax: row.get(11)?,
+            industrial_property_tax: row.get(12)?,
+            lvt_tax: row.get(13)?,
+            utility_service_revenue: row.get(14)?,
+            benefits: row.get(15)?,
+            unemployment_benefits: row.get(16)?,
+            pensions: row.get(17)?,
+            child_support: row.get(18)?,
+            ubi_dividends: row.get(19)?,
+            mandatory_opex: row.get(20)?,
+            debt_service: row.get(21)?,
+            pre_ubi_surplus: row.get(22)?,
+            daily_ubi_per_adult: row.get(23)?,
+            city_wages: row.get(24)?,
+            fuel_input_purchases: row.get(25)?,
+            imports_owa: row.get(26)?,
+            construction_service_costs: row.get(27)?,
+            power_produced: row.get(28)?,
+            power_consumed: row.get(29)?,
+            power_unmet: row.get(30)?,
+            power_coverage: row.get(31)?,
+            coal_inventory: row.get(32)?,
+            coal_consumed: row.get(33)?,
+            electricity_fuel_cost: row.get(34)?,
+            electricity_wage_cost: row.get(35)?,
+            electricity_revenue: row.get(36)?,
+            electricity_net: row.get(37)?,
+            electricity_consumption_cost: row.get(38)?,
+        })
     })?;
     for row in rows {
-        let (
-            day_index,
-            income,
-            expenses,
-            net,
-            treasury,
-            tax_income,
-            income_tax,
-            household_vat,
-            business_profit_tax,
-            property_tax,
-            residential_property_tax,
-            commercial_property_tax,
-            industrial_property_tax,
-            utility_service_revenue,
-            benefits,
-            unemployment_benefits,
-            pensions,
-            child_support,
-            city_wages,
-            fuel_input_purchases,
-            imports_owa,
-            construction_service_costs,
-            power_produced,
-            power_consumed,
-            power_unmet,
-            power_coverage,
-            coal_inventory,
-            coal_consumed,
-            electricity_fuel_cost,
-            electricity_wage_cost,
-            electricity_revenue,
-            electricity_net,
-            electricity_consumption_cost,
-        ) = row?;
-        history.push_back(DailyBudgetLedgerEntry {
-            day_index: i64_to_u32(day_index)?,
-            income,
-            expenses,
-            net,
-            treasury,
-            tax_income,
-            income_tax,
-            household_vat,
-            business_profit_tax,
-            property_tax,
-            residential_property_tax,
-            commercial_property_tax,
-            industrial_property_tax,
-            utility_service_revenue,
-            benefits,
-            unemployment_benefits,
-            pensions,
-            child_support,
-            city_wages,
-            fuel_input_purchases,
-            imports_owa,
-            construction_service_costs,
-            power_produced,
-            power_consumed,
-            power_unmet,
-            power_coverage,
-            coal_inventory,
-            coal_consumed,
-            electricity_fuel_cost,
-            electricity_wage_cost,
-            electricity_revenue,
-            electricity_net,
-            electricity_consumption_cost,
-        });
+        history.push_back(row?);
     }
     Ok(history)
 }
@@ -398,8 +345,10 @@ fn write_snapshot(
     vegetation::save(tx, view.vegetation_edits)?;
     weather::save_weather_state(tx, view.weather)?;
     tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.day_index), i64::from(view.time.minute_of_day), view.time.seconds_per_day, view.agents.sim_time])?;
+    let budget_json =
+        serde_json::to_string(&view.treasury.budget).map_err(|e| SaveLoadError::custom(e.to_string()))?;
     tx.execute(
-        "INSERT INTO city_treasury(balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        "INSERT INTO city_treasury(balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, last_daily_lvt, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax, pending_lvt, budget_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             view.treasury.balance,
             view.treasury.lifetime_build_cost,
@@ -412,6 +361,7 @@ fn write_snapshot(
             view.treasury.last_daily_residential_property_tax,
             view.treasury.last_daily_commercial_property_tax,
             view.treasury.last_daily_industrial_property_tax,
+            view.treasury.last_daily_lvt,
             view.treasury.pending_income_tax,
             view.treasury.pending_household_vat,
             view.treasury.pending_business_profit_tax,
@@ -419,6 +369,8 @@ fn write_snapshot(
             view.treasury.pending_residential_property_tax,
             view.treasury.pending_commercial_property_tax,
             view.treasury.pending_industrial_property_tax,
+            view.treasury.pending_lvt,
+            budget_json,
         ],
     )?;
     tx.execute(
@@ -426,7 +378,7 @@ fn write_snapshot(
         params![view.service_policy.electricity_funding.clamp(0.0, 1.0)],
     )?;
     tx.execute(
-        "INSERT INTO city_fiscal_policy(unemployment_benefit_per_adult_per_day, unemployment_max_days, pension_per_elder_per_day, child_support_per_child_per_day, income_tax_rate, household_vat_rate, business_profit_tax_rate, residential_property_tax_per_home_per_day, commercial_property_tax_per_building_per_day, industrial_property_tax_per_building_per_day, property_tax_level_multiplier) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO city_fiscal_policy(unemployment_benefit_per_adult_per_day, unemployment_max_days, pension_per_elder_per_day, child_support_per_child_per_day, income_tax_rate, household_vat_rate, business_profit_tax_rate, residential_property_tax_per_home_per_day, commercial_property_tax_per_building_per_day, industrial_property_tax_per_building_per_day, property_tax_level_multiplier, lvt_rate, ubi_surplus_share, public_sector_wage_multiplier, automation_level) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             view.fiscal_policy.unemployment_benefit_per_adult_per_day,
             i64::from(view.fiscal_policy.unemployment_max_days),
@@ -439,6 +391,10 @@ fn write_snapshot(
             view.fiscal_policy.commercial_property_tax_per_building_per_day,
             view.fiscal_policy.industrial_property_tax_per_building_per_day,
             view.fiscal_policy.property_tax_level_multiplier,
+            view.fiscal_policy.lvt_rate,
+            view.fiscal_policy.ubi_surplus_share,
+            view.fiscal_policy.public_sector_wage_multiplier,
+            view.fiscal_policy.automation_level,
         ],
     )?;
     save_budget_history(tx, view.budget_history)?;
@@ -458,6 +414,7 @@ fn write_snapshot(
         view.pending_demand_spawns,
         view.pollution,
         view.noise,
+        view.land_value,
         maps,
     )?;
     world::save_supplier_roll(tx, &view.logistics.saved_supplier_roll(view.network))?;
@@ -655,72 +612,44 @@ pub(crate) fn load_from_sqlite(
             .restore_planning_setup(&setup, &allocator)
             .map_err(SaveLoadError::custom)?;
     }
-    type TreasuryRow = (
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-        f64,
-    );
-    let treasury_row: TreasuryRow = conn.query_row(
-        "SELECT balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax FROM city_treasury LIMIT 1",
+    let mut treasury = conn.query_row(
+        "SELECT balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, last_daily_lvt, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax, pending_lvt, budget_json FROM city_treasury LIMIT 1",
         [],
         |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get(7)?,
-                r.get(8)?,
-                r.get(9)?,
-                r.get(10)?,
-                r.get(11)?,
-                r.get(12)?,
-                r.get(13)?,
-                r.get(14)?,
-                r.get(15)?,
-                r.get(16)?,
-                r.get(17)?,
-            ))
+            let budget_json: String = r.get(20)?;
+            let budget: crate::nodes::sim::core::CityBudget = serde_json::from_str(&budget_json)
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        20,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+            Ok(CityTreasury {
+                balance: r.get(0)?,
+                lifetime_build_cost: r.get(1)?,
+                lifetime_tax_revenue: r.get(2)?,
+                last_daily_upkeep: r.get(3)?,
+                last_daily_income_tax: r.get(4)?,
+                last_daily_household_vat: r.get(5)?,
+                last_daily_business_profit_tax: r.get(6)?,
+                last_daily_property_tax: r.get(7)?,
+                last_daily_residential_property_tax: r.get(8)?,
+                last_daily_commercial_property_tax: r.get(9)?,
+                last_daily_industrial_property_tax: r.get(10)?,
+                last_daily_lvt: r.get(11)?,
+                pending_income_tax: r.get(12)?,
+                pending_household_vat: r.get(13)?,
+                pending_business_profit_tax: r.get(14)?,
+                pending_property_tax: r.get(15)?,
+                pending_residential_property_tax: r.get(16)?,
+                pending_commercial_property_tax: r.get(17)?,
+                pending_industrial_property_tax: r.get(18)?,
+                pending_lvt: r.get(19)?,
+                budget,
+            })
         },
     )?;
-    let mut treasury = CityTreasury {
-        balance: treasury_row.0,
-        lifetime_build_cost: treasury_row.1,
-        lifetime_tax_revenue: treasury_row.2,
-        last_daily_upkeep: treasury_row.3,
-        last_daily_income_tax: treasury_row.4,
-        last_daily_household_vat: treasury_row.5,
-        last_daily_business_profit_tax: treasury_row.6,
-        last_daily_property_tax: treasury_row.7,
-        last_daily_residential_property_tax: treasury_row.8,
-        last_daily_commercial_property_tax: treasury_row.9,
-        last_daily_industrial_property_tax: treasury_row.10,
-        pending_income_tax: treasury_row.11,
-        pending_household_vat: treasury_row.12,
-        pending_business_profit_tax: treasury_row.13,
-        pending_property_tax: treasury_row.14,
-        pending_residential_property_tax: treasury_row.15,
-        pending_commercial_property_tax: treasury_row.16,
-        pending_industrial_property_tax: treasury_row.17,
-    };
 
     world::repair_quarantined_loaded_parcels(
         &mut zoning,
@@ -776,6 +705,7 @@ pub(crate) fn load_from_sqlite(
     let mut desirability = DesirabilitySystem::new(&config);
     desirability.tick(&pollution, &noise);
     desirability.compose_back_rows(0..desirability.back.height, &pollution, &noise);
+    let land_value = world::load_land_value_system(&conn, &config, &pollution, &noise)?;
 
     let service_policy = conn.query_row(
         "SELECT electricity_funding FROM city_service_policy LIMIT 1",
@@ -808,6 +738,7 @@ pub(crate) fn load_from_sqlite(
         pollution,
         noise,
         desirability,
+        land_value,
         demand,
         pending_demand_spawns,
         scheduler,
@@ -842,64 +773,74 @@ fn validate_time_state(time: &TimeSystem, agent_sim_time: f32) -> SaveLoadResult
 }
 
 fn load_fiscal_policy(conn: &Connection) -> SaveLoadResult<CityFiscalPolicy> {
-    let row: (f32, i64, f32, f32, f32, f32, f32, f32, f32, f32, f32) = conn.query_row(
-        "SELECT unemployment_benefit_per_adult_per_day, unemployment_max_days, pension_per_elder_per_day, child_support_per_child_per_day, income_tax_rate, household_vat_rate, business_profit_tax_rate, residential_property_tax_per_home_per_day, commercial_property_tax_per_building_per_day, industrial_property_tax_per_building_per_day, property_tax_level_multiplier FROM city_fiscal_policy LIMIT 1",
+    let policy = conn.query_row(
+        "SELECT unemployment_benefit_per_adult_per_day, unemployment_max_days, pension_per_elder_per_day, child_support_per_child_per_day, income_tax_rate, household_vat_rate, business_profit_tax_rate, residential_property_tax_per_home_per_day, commercial_property_tax_per_building_per_day, industrial_property_tax_per_building_per_day, property_tax_level_multiplier, lvt_rate, ubi_surplus_share, public_sector_wage_multiplier, automation_level FROM city_fiscal_policy LIMIT 1",
         [],
         |r| {
-            Ok((
+            let mut policy = CityFiscalPolicy::default();
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_UNEMPLOYMENT_BENEFIT,
                 r.get(0)?,
-                r.get(1)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_UNEMPLOYMENT_MAX_DAYS,
+                r.get::<_, i64>(1)? as f32,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_PENSION,
                 r.get(2)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_CHILD_SUPPORT,
                 r.get(3)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_INCOME_TAX,
                 r.get(4)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_HOUSEHOLD_VAT,
                 r.get(5)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_BUSINESS_PROFIT_TAX,
                 r.get(6)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_RESIDENTIAL_PROPERTY_TAX,
                 r.get(7)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_COMMERCIAL_PROPERTY_TAX,
                 r.get(8)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_INDUSTRIAL_PROPERTY_TAX,
                 r.get(9)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER,
                 r.get(10)?,
-            ))
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_LVT_RATE,
+                r.get(11)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_UBI_SURPLUS_SHARE,
+                r.get(12)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_PUBLIC_WAGE_MULTIPLIER,
+                r.get(13)?,
+            );
+            policy.set_value(
+                crate::simulation::economy::fiscal::POLICY_AUTOMATION_LEVEL,
+                r.get(14)?,
+            );
+            Ok(policy)
         },
     )?;
-    let mut policy = CityFiscalPolicy::default();
-    policy.set_value(
-        crate::simulation::economy::fiscal::POLICY_UNEMPLOYMENT_BENEFIT,
-        row.0,
-    );
-    policy.set_value(
-        crate::simulation::economy::fiscal::POLICY_UNEMPLOYMENT_MAX_DAYS,
-        row.1 as f32,
-    );
-    policy.set_value(crate::simulation::economy::fiscal::POLICY_PENSION, row.2);
-    policy.set_value(
-        crate::simulation::economy::fiscal::POLICY_CHILD_SUPPORT,
-        row.3,
-    );
-    policy.set_value(crate::simulation::economy::fiscal::POLICY_INCOME_TAX, row.4);
-    policy.set_value(
-        crate::simulation::economy::fiscal::POLICY_HOUSEHOLD_VAT,
-        row.5,
-    );
-    policy.set_value(
-        crate::simulation::economy::fiscal::POLICY_BUSINESS_PROFIT_TAX,
-        row.6,
-    );
-    policy.set_value(
-        crate::simulation::economy::fiscal::POLICY_RESIDENTIAL_PROPERTY_TAX,
-        row.7,
-    );
-    policy.set_value(
-        crate::simulation::economy::fiscal::POLICY_COMMERCIAL_PROPERTY_TAX,
-        row.8,
-    );
-    policy.set_value(
-        crate::simulation::economy::fiscal::POLICY_INDUSTRIAL_PROPERTY_TAX,
-        row.9,
-    );
-    policy.set_value(
-        crate::simulation::economy::fiscal::POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER,
-        row.10,
-    );
     Ok(policy)
 }
 

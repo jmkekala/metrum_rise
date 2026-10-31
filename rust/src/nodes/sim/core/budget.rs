@@ -178,6 +178,8 @@ pub(crate) struct DailyBudgetLedgerEntry {
     pub(crate) commercial_property_tax: f64,
     /// Industrial property tax collected during the day.
     pub(crate) industrial_property_tax: f64,
+    /// Land Value Tax (LVT) collected during the day on unimproved land value.
+    pub(crate) lvt_tax: f64,
     /// Local utility and service revenue collected by city-owned providers.
     pub(crate) utility_service_revenue: f64,
     /// Total household transfer expense paid from the treasury.
@@ -188,6 +190,16 @@ pub(crate) struct DailyBudgetLedgerEntry {
     pub(crate) pensions: f64,
     /// Child-support expense paid from the treasury.
     pub(crate) child_support: f64,
+    /// Citizen's Dividend (UBI) expense paid from the treasury's net surplus pool.
+    pub(crate) ubi_dividends: f64,
+    /// Mandatory operating costs paid first in the priority budget waterfall.
+    pub(crate) mandatory_opex: f64,
+    /// Debt servicing expense paid second in the priority budget waterfall.
+    pub(crate) debt_service: f64,
+    /// Net fiscal surplus remaining after mandatory operating costs and debt servicing.
+    pub(crate) pre_ubi_surplus: f64,
+    /// Per-adult Citizen's Dividend allocated for the next operational day (`0.0` in deficit).
+    pub(crate) daily_ubi_per_adult: f32,
     /// City-owned service payroll expense.
     pub(crate) city_wages: f64,
     /// Treasury-funded service input and fuel purchase expense.
@@ -219,6 +231,142 @@ pub(crate) struct DailyBudgetLedgerEntry {
     /// Bills for all electricity delivered citywide, including imported power and unpaid usage.
     pub(crate) electricity_consumption_cost: f64,
 }
+
+/// Priority-ordered daily fiscal execution state and Citizen's Dividend (UBI) pool.
+///
+/// Enforces the strict waterfall execution priority:
+/// 1. Mandatory operating expenses (road upkeep, city service wages, city fuel/utility inputs,
+///    and statutory benefits) are paid first.
+/// 2. Mandatory debt servicing on sovereign debt is paid second.
+/// 3. Citizen's Dividend (UBI) is funded strictly from the remaining positive net surplus
+///    (`last_day_pre_ubi_surplus > 0.0`) when `treasury_balance > 0.0`. In any deficit,
+///    `daily_ubi_per_adult` automatically drops to `0.0`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CityBudget {
+    /// Total sovereign debt principal currently owed by the city.
+    pub debt_principal: f64,
+    /// Daily interest rate applied to `debt_principal`.
+    pub daily_debt_interest_rate: f64,
+    /// Gross revenues collected across the last closed calendar day.
+    pub last_day_gross_revenue: f64,
+    /// Land Value Tax (LVT) revenue collected across the last closed calendar day.
+    pub last_day_lvt_revenue: f64,
+    /// Mandatory operating costs paid first in the last closed calendar day.
+    pub last_day_mandatory_opex: f64,
+    /// Debt servicing paid second in the last closed calendar day.
+    pub last_day_debt_service: f64,
+    /// Net fiscal surplus remaining after mandatory operating costs and debt servicing.
+    pub last_day_pre_ubi_surplus: f64,
+    /// Total Citizen's Dividend pool allocated for the upcoming operational day.
+    pub active_ubi_pool: f64,
+    /// Remaining undisbursed balance in `active_ubi_pool` for the current operational day.
+    pub remaining_ubi_pool: f64,
+    /// Per-adult Citizen's Dividend payable during the current operational day (`0.0` in deficit).
+    pub daily_ubi_per_adult: f32,
+    /// Total Citizen's Dividend actually disbursed to households in the last closed calendar day.
+    pub last_day_ubi_paid: f64,
+    /// Political faction approvals, policy reform shock state, and municipal election clock.
+    #[serde(default)]
+    pub politics: crate::simulation::economy::politics::FactionManager,
+}
+
+impl CityBudget {
+    /// Executes the daily priority budget waterfall at calendar day close.
+    ///
+    /// Mandatory operating costs and debt servicing are accounted first. Only a positive
+    /// remaining net surplus (`last_day_pre_ubi_surplus > 0.0`) with a positive treasury
+    /// balance funds the upcoming day's Citizen's Dividend (`active_ubi_pool` and
+    /// `daily_ubi_per_adult`). In a deficit, UBI automatically drops to `0.0`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_daily_waterfall(
+        &mut self,
+        treasury_balance: &mut f64,
+        gross_revenue: f64,
+        lvt_revenue: f64,
+        mandatory_opex: f64,
+        ubi_paid_today: f64,
+        ubi_surplus_share: f32,
+        eligible_adults: u32,
+    ) {
+        let debt_service = if self.debt_principal > 0.0 && self.daily_debt_interest_rate > 0.0 {
+            (self.debt_principal * self.daily_debt_interest_rate).max(0.0)
+        } else {
+            0.0
+        };
+        if debt_service > 0.0 {
+            *treasury_balance -= debt_service;
+            crate::debug::money::record(
+                crate::debug::money::MoneyFlow::RoadUpkeep,
+                -debt_service,
+            );
+        }
+
+        let pre_ubi_surplus = gross_revenue - mandatory_opex - debt_service;
+        self.last_day_gross_revenue = gross_revenue;
+        self.last_day_lvt_revenue = lvt_revenue;
+        self.last_day_mandatory_opex = mandatory_opex;
+        self.last_day_debt_service = debt_service;
+        self.last_day_pre_ubi_surplus = pre_ubi_surplus;
+        self.last_day_ubi_paid = ubi_paid_today;
+
+        let share = f64::from(ubi_surplus_share.clamp(0.0, 1.0));
+        if pre_ubi_surplus > 0.0
+            && *treasury_balance > 0.0
+            && share > 0.0
+            && eligible_adults > 0
+        {
+            let raw_pool = (pre_ubi_surplus * share).min(*treasury_balance);
+            let per_adult_f64 = (raw_pool / f64::from(eligible_adults) * 100.0).floor() / 100.0;
+            let per_adult = (per_adult_f64 as f32).max(0.0);
+            let allocated_pool = (f64::from(per_adult) * f64::from(eligible_adults)).min(raw_pool);
+            self.active_ubi_pool = allocated_pool;
+            self.remaining_ubi_pool = allocated_pool;
+            self.daily_ubi_per_adult = per_adult;
+        } else {
+            self.active_ubi_pool = 0.0;
+            self.remaining_ubi_pool = 0.0;
+            self.daily_ubi_per_adult = 0.0;
+        }
+    }
+}
+
+/// Read-only preview of a staged policy reform before the player commits it.
+#[derive(Clone, Copy, Debug)]
+pub struct PolicyReformPreview {
+    /// Projected daily LVT revenue under the proposed `lvt_rate`.
+    pub projected_lvt_revenue: f64,
+    /// Projected pre-UBI daily fiscal surplus under the proposed tax rates.
+    pub projected_pre_ubi_surplus: f64,
+    /// Projected daily Citizen's Dividend (UBI) per adult (`0.0` if in deficit).
+    pub projected_daily_ubi_per_adult: f32,
+    /// True when the deficit circuit-breaker pauses UBI (`projected_pre_ubi_surplus <= 0.0` or `treasury <= 0.0`).
+    pub deficit_circuit_breaker_active: bool,
+    /// Projected citywide reservation wage.
+    pub projected_reservation_wage: f32,
+    /// Effective binding reservation wage floor (`0.0` when UBI is `0.0`).
+    pub binding_reservation_wage: f32,
+    /// Representative net daily wage in low-wage commercial workplaces.
+    pub reference_low_wage_net: f32,
+    /// Representative net daily wage in public-sector utility workplaces.
+    pub reference_public_sector_net: f32,
+    /// True when the projected reservation wage under active UBI exceeds `reference_low_wage_net`.
+    pub low_wage_shortage_warning: bool,
+    /// True when the projected reservation wage under active UBI exceeds `reference_public_sector_net`.
+    pub public_sector_wage_warning: bool,
+    /// Projected policy reform shock (`0.0..=30.0`).
+    pub projected_reform_shock: f32,
+    /// Current live faction states (`[FactionState; FACTION_COUNT]`).
+    pub baseline_factions: [crate::simulation::economy::politics::FactionState;
+        crate::simulation::economy::politics::FACTION_COUNT],
+    /// Previewed faction states (`[FactionState; FACTION_COUNT]`) with updated `target_approval` and `dominant_issue`.
+    pub preview_factions: [crate::simulation::economy::politics::FactionState;
+        crate::simulation::economy::politics::FACTION_COUNT],
+    /// Current target overall approval (`0.0..=100.0`).
+    pub baseline_overall_approval: f32,
+    /// Previewed target overall approval (`0.0..=100.0`).
+    pub preview_overall_approval: f32,
+}
+
 /// City-level fiscal ledger, separate from household budgets and building budgets.
 ///
 /// The balance may go negative: deficits are an explicit fiscal state rather than
@@ -246,6 +394,8 @@ pub struct CityTreasury {
     pub last_daily_commercial_property_tax: f64,
     /// Industrial property tax collected in the most recently finalized fiscal day.
     pub last_daily_industrial_property_tax: f64,
+    /// Land Value Tax (LVT) collected in the most recently finalized fiscal day.
+    pub last_daily_lvt: f64,
     /// Income tax collected since the last daily fiscal finalization.
     pub pending_income_tax: f64,
     /// Household VAT collected since the last daily fiscal finalization.
@@ -260,6 +410,10 @@ pub struct CityTreasury {
     pub pending_commercial_property_tax: f64,
     /// Industrial property tax collected since the last daily fiscal finalization.
     pub pending_industrial_property_tax: f64,
+    /// Land Value Tax (LVT) collected since the last daily fiscal finalization.
+    pub pending_lvt: f64,
+    /// Priority waterfall budget state and Citizen's Dividend (UBI) pool.
+    pub budget: CityBudget,
 }
 
 impl Default for CityTreasury {
@@ -286,6 +440,7 @@ impl CityTreasury {
             last_daily_residential_property_tax: 0.0,
             last_daily_commercial_property_tax: 0.0,
             last_daily_industrial_property_tax: 0.0,
+            last_daily_lvt: 0.0,
             pending_income_tax: 0.0,
             pending_household_vat: 0.0,
             pending_business_profit_tax: 0.0,
@@ -293,6 +448,8 @@ impl CityTreasury {
             pending_residential_property_tax: 0.0,
             pending_commercial_property_tax: 0.0,
             pending_industrial_property_tax: 0.0,
+            pending_lvt: 0.0,
+            budget: CityBudget::default(),
         }
     }
 
@@ -346,6 +503,11 @@ impl CityTreasury {
         }
     }
 
+    /// Records daily Land Value Tax (LVT) collected on unimproved land value.
+    pub(crate) fn collect_lvt(&mut self, amount: f64) {
+        self.record_tax(amount, TaxBucket::LandValue);
+    }
+
     /// Rolls the current pending fiscal window into daily reporting buckets.
     pub(crate) fn finalize_daily_tax_window(&mut self) {
         self.last_daily_income_tax = self.pending_income_tax;
@@ -355,6 +517,7 @@ impl CityTreasury {
         self.last_daily_residential_property_tax = self.pending_residential_property_tax;
         self.last_daily_commercial_property_tax = self.pending_commercial_property_tax;
         self.last_daily_industrial_property_tax = self.pending_industrial_property_tax;
+        self.last_daily_lvt = self.pending_lvt;
         self.pending_income_tax = 0.0;
         self.pending_household_vat = 0.0;
         self.pending_business_profit_tax = 0.0;
@@ -362,6 +525,7 @@ impl CityTreasury {
         self.pending_residential_property_tax = 0.0;
         self.pending_commercial_property_tax = 0.0;
         self.pending_industrial_property_tax = 0.0;
+        self.pending_lvt = 0.0;
     }
 
     fn record_tax(&mut self, amount: f64, bucket: TaxBucket) {
@@ -375,6 +539,7 @@ impl CityTreasury {
             TaxBucket::HouseholdVat => self.pending_household_vat += amount,
             TaxBucket::BusinessProfit => self.pending_business_profit_tax += amount,
             TaxBucket::Property => self.pending_property_tax += amount,
+            TaxBucket::LandValue => self.pending_lvt += amount,
         }
     }
 }
@@ -385,6 +550,7 @@ enum TaxBucket {
     HouseholdVat,
     BusinessProfit,
     Property,
+    LandValue,
 }
 
 /// City-wide household and job counts, read at the daily settlement boundary.
@@ -516,7 +682,23 @@ impl SimCore {
             .fiscal_policy
             .control(policy_id)
             .unwrap_or(previous_control);
+        let span = (new_control.max - new_control.min).max(1e-5);
+        let normalized_delta = ((new_control.value - previous_control.value).abs() / span).clamp(0.0, 1.0);
+        self.treasury
+            .budget
+            .politics
+            .record_policy_change(normalized_delta);
         self.follow_census_policy();
+        self.households.sync_labor_market(
+            &self.allocator,
+            &self.fiscal_policy,
+            self.treasury.budget.daily_ubi_per_adult,
+        );
+        let politics_inputs = self.build_politics_inputs();
+        self.treasury
+            .budget
+            .politics
+            .evaluate_targets(&politics_inputs);
         self.demand.refresh_household_diagnostics(
             &self.allocator,
             &self.households,
@@ -526,6 +708,235 @@ impl SimCore {
         );
         self.log_fiscal_policy_change(policy_id, previous_control.value, value, new_control.value);
         true
+    }
+
+    /// Atomically applies a batch of staged fiscal policy changes from the UI's "Apply Reform"
+    /// action. Returns the number of policy fields modified.
+    pub(crate) fn apply_policy_reform(&mut self, changes: &[(String, f32)]) -> usize {
+        let mut applied = 0usize;
+        for (policy_id, value) in changes {
+            if let Some(current) = self.fiscal_policy.control(policy_id)
+                && (current.value - *value).abs() <= 1e-6
+            {
+                continue;
+            }
+            if self.set_fiscal_policy_value(policy_id, *value) {
+                applied += 1;
+            }
+        }
+        applied
+    }
+
+    /// Computes a non-mutating preview of faction approval deltas, projected UBI payouts, and
+    /// reservation-wage labor shortage warnings for a staged set of policy slider values.
+    pub(crate) fn preview_policy_reform(
+        &self,
+        changes: &[(String, f32)],
+    ) -> PolicyReformPreview {
+        let mut proposed_policy = self.fiscal_policy;
+        let mut total_normalized_delta = 0.0_f32;
+        for (policy_id, value) in changes {
+            if let Some(prev) = proposed_policy.control(policy_id)
+                && proposed_policy.set_value(policy_id, *value)
+            {
+                let next = proposed_policy.control(policy_id).unwrap_or(prev);
+                let span = (next.max - next.min).max(1e-5);
+                total_normalized_delta +=
+                    ((next.value - prev.value).abs() / span).clamp(0.0, 1.0);
+            }
+        }
+
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+
+        let site_lvt_sum: f64 = self
+            .allocator
+            .buildings
+            .iter()
+            .filter(|b| {
+                !b.broken
+                    && !b.economy_broken
+                    && !b.is_deserted
+                    && !b.is_under_construction()
+                    && !self.allocator.is_city_service_building(b)
+            })
+            .map(|b| {
+                f64::from(
+                    self.land_value
+                        .daily_site_lvt(b, &self.config, &proposed_policy),
+                )
+            })
+            .sum();
+        let grid_potential =
+            self.land_value.total_assessed_land_value * 0.01 * f64::from(proposed_policy.lvt_rate);
+        let projected_lvt_revenue = site_lvt_sum.max(grid_potential);
+
+        let current_lvt_est: f64 = self
+            .allocator
+            .buildings
+            .iter()
+            .filter(|b| {
+                !b.broken
+                    && !b.economy_broken
+                    && !b.is_deserted
+                    && !b.is_under_construction()
+                    && !self.allocator.is_city_service_building(b)
+            })
+            .map(|b| {
+                f64::from(
+                    self.land_value
+                        .daily_site_lvt(b, &self.config, &self.fiscal_policy),
+                )
+            })
+            .sum::<f64>()
+            .max(
+                self.land_value.total_assessed_land_value
+                    * 0.01
+                    * f64::from(self.fiscal_policy.lvt_rate),
+            );
+
+        let base_surplus = if self.budget_history.is_empty()
+            && self.treasury.budget.last_day_gross_revenue == 0.0
+        {
+            (self.treasury.balance * 0.02).max(0.0)
+        } else {
+            self.treasury.budget.last_day_pre_ubi_surplus
+        };
+        let projected_pre_ubi_surplus = base_surplus + (projected_lvt_revenue - current_lvt_est);
+        let deficit_circuit_breaker_active =
+            projected_pre_ubi_surplus <= 0.0 || self.treasury.balance <= 0.0;
+
+        let eligible_adults = self.households.total_housed_adults(&self.allocator).max(8);
+        let share = f64::from(proposed_policy.ubi_surplus_share.clamp(0.0, 1.0));
+        let projected_daily_ubi_per_adult =
+            if !deficit_circuit_breaker_active && share > 0.0 && eligible_adults > 0 {
+                let raw_pool = (projected_pre_ubi_surplus * share).min(self.treasury.balance);
+                let per_adult = (raw_pool / f64::from(eligible_adults) * 100.0).floor() / 100.0;
+                (per_adult as f32).max(0.0)
+            } else {
+                0.0
+            };
+        self.finish_policy_reform_preview(
+            &proposed_policy,
+            total_normalized_delta,
+            projected_lvt_revenue,
+            projected_pre_ubi_surplus,
+            projected_daily_ubi_per_adult,
+            deficit_circuit_breaker_active,
+            &catalog,
+            &tuning,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_policy_reform_preview(
+        &self,
+        proposed_policy: &crate::simulation::economy::fiscal::CityFiscalPolicy,
+        total_normalized_delta: f32,
+        projected_lvt_revenue: f64,
+        projected_pre_ubi_surplus: f64,
+        projected_daily_ubi_per_adult: f32,
+        deficit_circuit_breaker_active: bool,
+        catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
+        tuning: &crate::simulation::economy::definitions::RuntimeEconomyTuning,
+    ) -> PolicyReformPreview {
+        let mut preview_lm = self.households.labor_market;
+        preview_lm.sync_policy_and_ubi(
+            proposed_policy,
+            projected_daily_ubi_per_adult,
+            catalog,
+            tuning,
+        );
+        let binding_reservation_wage = if projected_daily_ubi_per_adult > 0.0 {
+            preview_lm.reservation_wage
+        } else {
+            0.0
+        };
+
+        let low_wage_gross = catalog
+            .profile_for_id("grain_farm_basic")
+            .map_or(50.0, |p| p.average_daily_wage());
+        let public_gross = catalog
+            .profile_for_id("power_plant_basic")
+            .map_or(75.0, |p| p.average_daily_wage())
+            * proposed_policy.public_sector_wage_multiplier.clamp(0.50, 3.00);
+        let reference_low_wage_net = preview_lm.workplace_effective_net_wage(low_wage_gross, 0.05);
+        let reference_public_sector_net =
+            preview_lm.workplace_effective_net_wage(public_gross, 0.05);
+
+        let low_wage_shortage_warning = binding_reservation_wage > reference_low_wage_net
+            && proposed_policy.automation_level < 0.40;
+        let public_sector_wage_warning = binding_reservation_wage > reference_public_sector_net;
+
+        let mut baseline_politics = self.treasury.budget.politics;
+        let baseline_inputs = self.build_politics_inputs();
+        baseline_politics.evaluate_targets(&baseline_inputs);
+        let baseline_overall_approval: f32 = baseline_politics
+            .factions
+            .iter()
+            .map(|f| f.electorate_share * f.target_approval)
+            .sum::<f32>()
+            .clamp(0.0, 100.0);
+
+        let mut preview_politics = baseline_politics;
+        preview_politics.record_policy_change(total_normalized_delta);
+
+        let prop_burden = ((proposed_policy.residential_property_tax_per_home_per_day / 50.0)
+            + (proposed_policy.commercial_property_tax_per_building_per_day / 250.0)
+            + (proposed_policy.industrial_property_tax_per_building_per_day / 250.0))
+            / 3.0;
+        let mut projected_low_wage_shortage = baseline_inputs.low_wage_shortage_ratio;
+        if binding_reservation_wage > reference_low_wage_net {
+            let wage_gap = (binding_reservation_wage - reference_low_wage_net)
+                / reference_low_wage_net.max(1.0);
+            let auto_relief = proposed_policy.automation_level.clamp(0.0, 0.50) * 1.5;
+            projected_low_wage_shortage =
+                (projected_low_wage_shortage + wage_gap - auto_relief).clamp(0.0, 1.0);
+        }
+        let mut projected_ind_shortage = baseline_inputs.industrial_shortage_ratio;
+        if public_sector_wage_warning {
+            projected_ind_shortage = (projected_ind_shortage + 0.25).clamp(0.0, 1.0);
+        }
+
+        let preview_inputs = crate::simulation::economy::politics::PoliticsUpdateInputs {
+            lvt_rate: proposed_policy.lvt_rate,
+            property_tax_burden: prop_burden.clamp(0.0, 1.0),
+            income_and_vat_rate: proposed_policy.income_tax_rate
+                + proposed_policy.household_vat_rate,
+            business_profit_tax_rate: proposed_policy.business_profit_tax_rate,
+            daily_ubi_per_adult: projected_daily_ubi_per_adult,
+            base_subsistence_wage: preview_lm.base_subsistence_wage,
+            low_wage_shortage_ratio: projected_low_wage_shortage,
+            industrial_shortage_ratio: projected_ind_shortage,
+            ..baseline_inputs
+        };
+        preview_politics.evaluate_targets(&preview_inputs);
+        let preview_overall_approval: f32 = preview_politics
+            .factions
+            .iter()
+            .map(|f| f.electorate_share * f.target_approval)
+            .sum::<f32>()
+            .clamp(0.0, 100.0);
+
+        PolicyReformPreview {
+            projected_lvt_revenue,
+            projected_pre_ubi_surplus,
+            projected_daily_ubi_per_adult,
+            deficit_circuit_breaker_active,
+            projected_reservation_wage: preview_lm.reservation_wage,
+            binding_reservation_wage,
+            reference_low_wage_net,
+            reference_public_sector_net,
+            low_wage_shortage_warning,
+            public_sector_wage_warning,
+            projected_reform_shock: preview_politics.tax_reform_shock,
+            baseline_factions: baseline_politics.factions,
+            preview_factions: preview_politics.factions,
+            baseline_overall_approval,
+            preview_overall_approval,
+        }
     }
 
     /// Applies a live per-building service funding override from an inspector panel.
@@ -708,6 +1119,104 @@ impl SimCore {
             .is_some_and(|profile| profile.utility_service.as_deref() == Some(utility_service))
     }
 
+    /// Executes the priority budget waterfall at calendar day close, paying mandatory
+    /// operating costs and debt servicing first and allocating the next day's Citizen's
+    /// Dividend (UBI) strictly from any remaining positive net surplus.
+    pub(crate) fn execute_daily_budget_waterfall(&mut self) {
+        let tax_income = self.treasury.last_daily_income_tax
+            + self.treasury.last_daily_household_vat
+            + self.treasury.last_daily_business_profit_tax
+            + self.treasury.last_daily_property_tax
+            + self.treasury.last_daily_lvt;
+        let power = self.households.last_power_settlement();
+        let utility_service_revenue = f64::from(power.utility_local_revenue.max(0.0));
+        let gross_revenue = tax_income + utility_service_revenue;
+
+        let last_day = &self.households.last_day_totals;
+        let statutory_benefits = last_day.statutory_transfers();
+        let city_wages = f64::from(self.households.last_city_service_wages().total);
+        let (_, _, _, fuel_input_purchases) = self.city_service_daily_input_summary();
+        let imports_owa = f64::from(power.city_service_utility_owa_cost.max(0.0));
+        let internal_service_upkeep = self.treasury.last_daily_upkeep.max(0.0)
+            + f64::from(power.city_service_utility_local_cost.max(0.0));
+        let mandatory_opex = statutory_benefits
+            + city_wages
+            + fuel_input_purchases
+            + imports_owa
+            + internal_service_upkeep;
+        let ubi_paid_today = last_day.ubi_dividends;
+        let eligible_adults = self.households.total_housed_adults(&self.allocator);
+
+        let mut balance = self.treasury.balance;
+        self.treasury.budget.execute_daily_waterfall(
+            &mut balance,
+            gross_revenue,
+            self.treasury.last_daily_lvt,
+            mandatory_opex,
+            ubi_paid_today,
+            self.fiscal_policy.ubi_surplus_share,
+            eligible_adults,
+        );
+        self.treasury.balance = balance;
+        self.households.sync_labor_market(
+            &self.allocator,
+            &self.fiscal_policy,
+            self.treasury.budget.daily_ubi_per_adult,
+        );
+        let politics_inputs = self.build_politics_inputs();
+        self.treasury.budget.politics.advance_day(&politics_inputs);
+    }
+
+    pub(crate) fn build_politics_inputs(
+        &self,
+    ) -> crate::simulation::economy::politics::PoliticsUpdateInputs {
+        use crate::simulation::economy::labor_market::WageSector;
+        use crate::simulation::economy::politics::PoliticsUpdateInputs;
+
+        let fp = &self.fiscal_policy;
+        let prop_burden = ((fp.residential_property_tax_per_home_per_day / 50.0)
+            + (fp.commercial_property_tax_per_building_per_day / 250.0)
+            + (fp.industrial_property_tax_per_building_per_day / 250.0))
+            / 3.0;
+        let avg_grid = |data: &[f32]| -> f32 {
+            if data.is_empty() {
+                0.0
+            } else {
+                data.iter().copied().sum::<f32>() / data.len() as f32
+            }
+        };
+        let power = self.households.last_power_settlement();
+        let power_coverage = if power.demand_units > 0.0 {
+            power.coverage.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let lm = &self.households.labor_market;
+        let res_buildings = self.allocator.zone_index[0].len() as f32;
+        let com_buildings = self.allocator.zone_index[1].len() as f32;
+        let ind_buildings = self.allocator.zone_index[2].len() as f32;
+        let adult_pop = self.households.total_housed_adults(&self.allocator) as f32;
+
+        PoliticsUpdateInputs {
+            lvt_rate: fp.lvt_rate,
+            property_tax_burden: prop_burden.clamp(0.0, 1.0),
+            income_and_vat_rate: fp.income_tax_rate + fp.household_vat_rate,
+            business_profit_tax_rate: fp.business_profit_tax_rate,
+            daily_ubi_per_adult: self.treasury.budget.daily_ubi_per_adult,
+            base_subsistence_wage: lm.base_subsistence_wage,
+            low_wage_shortage_ratio: lm.sector_shortage_ratio
+                [WageSector::LowWageCommercial.index()],
+            industrial_shortage_ratio: lm.sector_shortage_ratio[WageSector::Industrial.index()],
+            average_pollution: avg_grid(&self.pollution.grid.data),
+            average_noise: avg_grid(&self.noise.grid.data),
+            power_coverage,
+            property_owner_weight: 20.0 + res_buildings * 1.5,
+            worker_youth_weight: 35.0 + adult_pop * 1.2,
+            industrialist_weight: 15.0 + (com_buildings + ind_buildings) * 2.0,
+            environmentalist_weight: 20.0 + adult_pop * 0.4,
+        }
+    }
+
     pub(super) fn record_daily_budget_ledger(&mut self, day_index: u32) {
         let construction_delta =
             (self.treasury.lifetime_build_cost - self.budget_last_lifetime_build_cost).max(0.0);
@@ -742,13 +1251,15 @@ impl SimCore {
         let tax_income = self.treasury.last_daily_income_tax
             + self.treasury.last_daily_household_vat
             + self.treasury.last_daily_business_profit_tax
-            + self.treasury.last_daily_property_tax;
+            + self.treasury.last_daily_property_tax
+            + self.treasury.last_daily_lvt;
         // Transfers post into the day's totals as each household settles (`SIM-02-G`).
         let last_day = &self.households.last_day_totals;
         let benefits = last_day.transfers();
         let unemployment_benefits = last_day.unemployment_benefits;
         let pensions = last_day.pensions;
         let child_support = last_day.child_support;
+        let ubi_dividends = last_day.ubi_dividends;
         let wages = self.households.last_city_service_wages();
         let city_wages = f64::from(wages.total);
         let power = self.households.last_power_settlement();
@@ -774,10 +1285,22 @@ impl SimCore {
             - electricity_wage_cost
             - f64::from(power.power_upkeep_utility_cost);
 
+        let debt_service = self.treasury.budget.last_day_debt_service;
+        let mandatory_opex = last_day.statutory_transfers()
+            + city_wages
+            + fuel_input_purchases
+            + imports_owa
+            + self.treasury.last_daily_upkeep.max(0.0)
+            + f64::from(power.city_service_utility_local_cost.max(0.0));
         let income = tax_income + utility_service_revenue;
-        let expenses =
-            benefits + city_wages + fuel_input_purchases + imports_owa + construction_service_costs;
+        let expenses = benefits
+            + city_wages
+            + fuel_input_purchases
+            + imports_owa
+            + construction_service_costs
+            + debt_service;
         let net = income - expenses;
+        let pre_ubi_surplus = income - mandatory_opex - debt_service;
 
         DailyBudgetLedgerEntry {
             day_index,
@@ -793,11 +1316,17 @@ impl SimCore {
             residential_property_tax: self.treasury.last_daily_residential_property_tax,
             commercial_property_tax: self.treasury.last_daily_commercial_property_tax,
             industrial_property_tax: self.treasury.last_daily_industrial_property_tax,
+            lvt_tax: self.treasury.last_daily_lvt,
             utility_service_revenue,
             benefits,
             unemployment_benefits,
             pensions,
             child_support,
+            ubi_dividends,
+            mandatory_opex,
+            debt_service,
+            pre_ubi_surplus,
+            daily_ubi_per_adult: self.treasury.budget.daily_ubi_per_adult,
             city_wages,
             fuel_input_purchases,
             imports_owa,
@@ -1548,6 +2077,7 @@ impl SimCore {
             ZoneType::Industrial,
             revenue.industrial_property_tax as f64,
         );
+        self.treasury.collect_lvt(revenue.land_value_tax as f64);
     }
 }
 
@@ -1715,5 +2245,334 @@ mod tests {
         let refunded = core.build_budget_ledger_entry(1, 0.0);
         assert_eq!(refunded.fuel_input_purchases, 70.0);
         assert_eq!(refunded.expenses - ledger.expenses, -52.5);
+    }
+
+    #[test]
+    fn budget_waterfall_pays_mandatory_opex_and_debt_first_then_allocates_ubi_from_surplus() {
+        let mut budget = super::CityBudget {
+            debt_principal: 10_000.0,
+            daily_debt_interest_rate: 0.005, // 50.0/day debt service
+            ..Default::default()
+        };
+        let mut treasury_balance = 5_000.0;
+        // Gross revenue = 1000, mandatory opex = 650, debt service = 50 -> pre_ubi_surplus = 300.
+        // With 50% UBI surplus share and 100 eligible adults -> 150 pool -> 1.50 per adult.
+        budget.execute_daily_waterfall(
+            &mut treasury_balance,
+            1_000.0,
+            400.0,
+            650.0,
+            0.0,
+            0.50,
+            100,
+        );
+        assert!((treasury_balance - 4_950.0).abs() < 1e-6);
+        assert!((budget.last_day_debt_service - 50.0).abs() < 1e-6);
+        assert!((budget.last_day_pre_ubi_surplus - 300.0).abs() < 1e-6);
+        assert!((budget.active_ubi_pool - 150.0).abs() < 1e-6);
+        assert!((budget.remaining_ubi_pool - 150.0).abs() < 1e-6);
+        assert!((budget.daily_ubi_per_adult - 1.50).abs() < 1e-5);
+    }
+
+    #[test]
+    fn budget_waterfall_drops_ubi_to_zero_when_in_deficit_or_negative_treasury() {
+        let mut budget = super::CityBudget {
+            debt_principal: 10_000.0,
+            daily_debt_interest_rate: 0.01, // 100.0/day debt service
+            active_ubi_pool: 200.0,
+            remaining_ubi_pool: 200.0,
+            daily_ubi_per_adult: 2.0,
+            ..Default::default()
+        };
+        let mut treasury_balance = 5_000.0;
+        // Case 1: Fiscal deficit (gross_revenue 500 < mandatory_opex 450 + debt_service 100 = 550)
+        budget.execute_daily_waterfall(
+            &mut treasury_balance,
+            500.0,
+            200.0,
+            450.0,
+            200.0,
+            0.80,
+            100,
+        );
+        assert!((budget.last_day_pre_ubi_surplus - (-50.0)).abs() < 1e-6);
+        assert_eq!(budget.active_ubi_pool, 0.0);
+        assert_eq!(budget.remaining_ubi_pool, 0.0);
+        assert_eq!(budget.daily_ubi_per_adult, 0.0);
+
+        // Case 2: Positive daily surplus, but treasury itself is in deficit (negative balance)
+        let mut negative_treasury = -10.0;
+        budget.execute_daily_waterfall(
+            &mut negative_treasury,
+            1_000.0,
+            400.0,
+            200.0,
+            0.0,
+            0.50,
+            100,
+        );
+        assert_eq!(budget.active_ubi_pool, 0.0);
+        assert_eq!(budget.remaining_ubi_pool, 0.0);
+        assert_eq!(budget.daily_ubi_per_adult, 0.0);
+    }
+
+    #[test]
+    fn household_settlement_disburses_ubi_dividend_from_active_pool() {
+        use crate::simulation::core::phases::daily_phase;
+        use crate::simulation::core::scheduler::SLOTS_PER_DAY;
+        use crate::simulation::economy::fiscal::POLICY_UBI_SURPLUS_SHARE;
+
+        let (mut core, farm, polygon) = farm_fixture();
+        core.commit_field_polygon_internal(farm, polygon).unwrap();
+        let household = add_farm_household(&mut core, farm);
+        assert!(core.set_fiscal_policy_value(POLICY_UBI_SURPLUS_SHARE, 0.50));
+
+        // Seed tax revenue so the calendar day closes with a positive net surplus.
+        core.treasury.collect_lvt(1_000.0);
+        core.treasury.finalize_daily_tax_window();
+        core.execute_daily_budget_waterfall();
+        assert!(core.treasury.budget.daily_ubi_per_adult > 0.0);
+        let expected_ubi = core.treasury.budget.daily_ubi_per_adult
+            * f32::from(core.households.households[household].adult_count);
+        assert!(expected_ubi > 0.0);
+
+        let budget_before = core.households.households[household].budget;
+        let handles = &mut core.households.handles;
+        handles.register_appended(core.households.households.len());
+        let phase = u64::from(daily_phase(handles.handle(household)));
+        let next = core.time.absolute_slot() + 1;
+        core.run_slots_through_for_test(
+            next + (phase + SLOTS_PER_DAY - next % SLOTS_PER_DAY) % SLOTS_PER_DAY,
+        );
+        assert!(
+            core.households.day_totals.ubi_dividends >= f64::from(expected_ubi) - 1e-3,
+            "expected UBI dividend {} to be recorded in day_totals (got {})",
+            expected_ubi,
+            core.households.day_totals.ubi_dividends
+        );
+        assert!(core.households.households[household].budget > budget_before);
+    }
+
+    #[test]
+    fn daily_entity_settlement_collects_lvt_from_unimproved_land_value_grid() {
+        use crate::simulation::core::phases::daily_phase;
+        use crate::simulation::core::scheduler::SLOTS_PER_DAY;
+        use crate::simulation::economy::fiscal::POLICY_LVT_RATE;
+
+        let (mut core, farm, polygon) = farm_fixture();
+        core.commit_field_polygon_internal(farm, polygon).unwrap();
+        let household = add_farm_household(&mut core, farm);
+        assert!(core.set_fiscal_policy_value(POLICY_LVT_RATE, 0.20));
+
+        // Run one full day of environment sweep slots so `core.land_value` is populated.
+        for slot in 0..SLOTS_PER_DAY {
+            core.advance_environment_sweep(slot);
+        }
+        let home_idx = core.households.households[household].home_building_id;
+        core.allocator.buildings[home_idx].level = 1;
+        let expected_lvt_l1 = core.land_value.daily_site_lvt(
+            &core.allocator.buildings[home_idx],
+            &core.config,
+            &core.fiscal_policy,
+        );
+        core.allocator.buildings[home_idx].level = 4;
+        let expected_lvt_l4 = core.land_value.daily_site_lvt(
+            &core.allocator.buildings[home_idx],
+            &core.config,
+            &core.fiscal_policy,
+        );
+        assert!(expected_lvt_l1 > 0.0);
+        assert_eq!(expected_lvt_l1.to_bits(), expected_lvt_l4.to_bits());
+
+        let handles = &mut core.households.handles;
+        handles.register_appended(core.households.households.len());
+        let phase = u64::from(daily_phase(handles.handle(household)));
+        let next = core.time.absolute_slot() + 1;
+        core.run_slots_through_for_test(
+            next + (phase + SLOTS_PER_DAY - next % SLOTS_PER_DAY) % SLOTS_PER_DAY,
+        );
+        assert!(
+            core.treasury.pending_lvt > 0.0 || core.treasury.last_daily_lvt > 0.0,
+            "expected LVT revenue to be collected during daily settlement"
+        );
+    }
+
+    #[test]
+    fn high_ubi_triggers_low_wage_labor_shortage_and_deficit_crisis_restores_employment() {
+        let (mut core, farm, polygon) = farm_fixture();
+        core.commit_field_polygon_internal(farm, polygon).unwrap();
+        let _household = add_farm_household(&mut core, farm);
+        core.allocator.buildings[farm].funded_job_capacity = 2;
+        assert!(core.allocator.buildings[farm].worker_count > 0);
+
+        // 1. Set a high UBI (200/day per adult) and expire the worker's job lock.
+        core.treasury.budget.daily_ubi_per_adult = 200.0;
+        core.households.sync_labor_market(
+            &core.allocator,
+            &core.fiscal_policy,
+            core.treasury.budget.daily_ubi_per_adult,
+        );
+        core.agents.job_lock_until_day.fill(0);
+        core.households.assign_agent_workplaces_from_census(
+            &mut core.agents,
+            &mut core.allocator,
+            &core.transit_network,
+            &core.region_graph,
+            480,
+        );
+        core.households.sync_labor_market(
+            &core.allocator,
+            &core.fiscal_policy,
+            core.treasury.budget.daily_ubi_per_adult,
+        );
+        assert_eq!(
+            core.allocator.buildings[farm].worker_count, 0,
+            "workers should refuse/quit low-wage job when UBI pushes reservation wage above offered net wage"
+        );
+        assert!(
+            core.households
+                .labor_market
+                .reservation_wage_refusals_by_sector
+                .iter()
+                .sum::<u32>()
+                > 0
+        );
+
+        // 2. Simulate a fiscal deficit crisis: execute_daily_waterfall drops UBI to 0.0.
+        core.treasury.budget.execute_daily_waterfall(
+            &mut core.treasury.balance,
+            100.0,
+            0.0,
+            500.0, // mandatory_opex > gross_revenue -> deficit!
+            200.0,
+            0.80,
+            2,
+        );
+        assert_eq!(core.treasury.budget.daily_ubi_per_adult, 0.0);
+        core.households.sync_labor_market(
+            &core.allocator,
+            &core.fiscal_policy,
+            core.treasury.budget.daily_ubi_per_adult,
+        );
+
+        // 3. With UBI at 0.0, reservation wage drops immediately and workers refill the farm.
+        core.households.assign_agent_workplaces_from_census(
+            &mut core.agents,
+            &mut core.allocator,
+            &core.transit_network,
+            &core.region_graph,
+            540,
+        );
+        assert!(
+            core.allocator.buildings[farm].worker_count > 0,
+            "workers must re-enter low-wage jobs after deficit circuit-breaker resets UBI to 0"
+        );
+    }
+
+    #[test]
+    fn sim_core_policy_reforms_and_daily_waterfall_drive_faction_approvals_and_elections() {
+        use crate::simulation::economy::fiscal::{POLICY_LVT_RATE, POLICY_UBI_SURPLUS_SHARE};
+        use crate::simulation::economy::politics::{FactionId, FactionIssue};
+
+        let (mut core, farm, polygon) = farm_fixture();
+        core.commit_field_polygon_internal(farm, polygon).unwrap();
+        let _household = add_farm_household(&mut core, farm);
+        core.treasury.budget.politics.election_cycle_days = 3;
+        core.treasury.budget.politics.days_until_election = 3;
+
+        let po_before = core.treasury.budget.politics.factions[FactionId::PropertyOwners.index()]
+            .target_approval;
+        let wy_before = core.treasury.budget.politics.factions[FactionId::WorkersAndYouth.index()]
+            .target_approval;
+
+        // Enact Georgist reform: 30% LVT + 60% UBI surplus share.
+        assert!(core.set_fiscal_policy_value(POLICY_LVT_RATE, 0.30));
+        assert!(core.set_fiscal_policy_value(POLICY_UBI_SURPLUS_SHARE, 0.60));
+        assert!(core.treasury.budget.politics.tax_reform_shock > 0.0);
+
+        // Close 3 days with positive LVT revenue to fund UBI and cross the election boundary.
+        for _ in 0..3 {
+            core.treasury.collect_lvt(800.0);
+            core.treasury.finalize_daily_tax_window();
+            core.execute_daily_budget_waterfall();
+        }
+
+        let politics = &core.treasury.budget.politics;
+        assert_eq!(politics.elections_completed, 1);
+        assert_eq!(politics.days_until_election, 3);
+        assert!(
+            politics.factions[FactionId::PropertyOwners.index()].target_approval < po_before,
+            "PropertyOwners target approval should drop under 30% LVT"
+        );
+        assert_eq!(
+            politics.factions[FactionId::PropertyOwners.index()].dominant_issue,
+            FactionIssue::LvtBurden
+        );
+        assert!(
+            politics.factions[FactionId::WorkersAndYouth.index()].target_approval > wy_before,
+            "WorkersAndYouth target approval should rise with UBI dividend and LVT"
+        );
+        assert_eq!(
+            politics.factions[FactionId::WorkersAndYouth.index()].dominant_issue,
+            FactionIssue::UbiDividend
+        );
+    }
+
+    #[test]
+    fn preview_policy_reform_computes_ghost_deltas_and_shortage_warnings_without_mutating_state() {
+        use crate::simulation::economy::fiscal::{
+            POLICY_AUTOMATION_LEVEL, POLICY_LVT_RATE, POLICY_UBI_SURPLUS_SHARE,
+        };
+        use crate::simulation::economy::politics::FactionId;
+
+        let (mut core, farm, polygon) = farm_fixture();
+        core.commit_field_polygon_internal(farm, polygon).unwrap();
+        let _household = add_farm_household(&mut core, farm);
+        core.treasury.balance = 50_000.0;
+        core.treasury.budget.last_day_gross_revenue = 2_000.0;
+        core.treasury.budget.last_day_pre_ubi_surplus = 1_500.0;
+
+        let policy_before = core.fiscal_policy;
+        let shock_before = core.treasury.budget.politics.tax_reform_shock;
+
+        let preview = core.preview_policy_reform(&[
+            (POLICY_LVT_RATE.to_owned(), 0.45),
+            (POLICY_UBI_SURPLUS_SHARE.to_owned(), 0.85),
+        ]);
+
+        // Must NOT mutate live SimCore state!
+        assert_eq!(core.fiscal_policy, policy_before);
+        assert_eq!(core.treasury.budget.politics.tax_reform_shock, shock_before);
+
+        // Preview reflects projected UBI, reservation wage warnings, and faction deltas.
+        assert!(preview.projected_daily_ubi_per_adult > 0.0);
+        assert!(preview.low_wage_shortage_warning);
+        let po_idx = FactionId::PropertyOwners.index();
+        let wy_idx = FactionId::WorkersAndYouth.index();
+        assert!(
+            preview.preview_factions[po_idx].target_approval
+                < preview.baseline_factions[po_idx].target_approval
+        );
+        assert!(
+            preview.preview_factions[wy_idx].target_approval
+                > preview.baseline_factions[wy_idx].target_approval
+        );
+
+        // Adding automation_level >= 0.40 clears the low_wage_shortage_warning.
+        let automated_preview = core.preview_policy_reform(&[
+            (POLICY_LVT_RATE.to_owned(), 0.45),
+            (POLICY_UBI_SURPLUS_SHARE.to_owned(), 0.85),
+            (POLICY_AUTOMATION_LEVEL.to_owned(), 0.45),
+        ]);
+        assert!(!automated_preview.low_wage_shortage_warning);
+
+        // Commit via apply_policy_reform updates live state.
+        let changed = core.apply_policy_reform(&[
+            (POLICY_LVT_RATE.to_owned(), 0.45),
+            (POLICY_UBI_SURPLUS_SHARE.to_owned(), 0.85),
+        ]);
+        assert_eq!(changed, 2);
+        assert!((core.fiscal_policy.lvt_rate - 0.45).abs() < 1e-5);
+        assert!((core.fiscal_policy.ubi_surplus_share - 0.85).abs() < 1e-5);
     }
 }

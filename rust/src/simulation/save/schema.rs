@@ -219,6 +219,16 @@ CREATE TABLE noise_state(
     grid_blob_f32_le BLOB NOT NULL,
     back_blob_f32_le BLOB NOT NULL
 );
+CREATE TABLE land_value_state(
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    infra_grid_blob BLOB NOT NULL,
+    infra_back_blob BLOB NOT NULL,
+    service_grid_blob BLOB NOT NULL,
+    service_back_blob BLOB NOT NULL,
+    density_grid_blob BLOB NOT NULL,
+    density_back_blob BLOB NOT NULL
+);
 CREATE TABLE network_nodes(
     node_id INTEGER PRIMARY KEY,
     x REAL NOT NULL,
@@ -556,13 +566,16 @@ CREATE TABLE city_treasury(
     last_daily_residential_property_tax REAL NOT NULL,
     last_daily_commercial_property_tax REAL NOT NULL,
     last_daily_industrial_property_tax REAL NOT NULL,
+    last_daily_lvt REAL NOT NULL,
     pending_income_tax REAL NOT NULL,
     pending_household_vat REAL NOT NULL,
     pending_business_profit_tax REAL NOT NULL,
     pending_property_tax REAL NOT NULL,
     pending_residential_property_tax REAL NOT NULL,
     pending_commercial_property_tax REAL NOT NULL,
-    pending_industrial_property_tax REAL NOT NULL
+    pending_industrial_property_tax REAL NOT NULL,
+    pending_lvt REAL NOT NULL,
+    budget_json TEXT NOT NULL
 );
 CREATE TABLE city_service_policy(
     electricity_funding REAL NOT NULL
@@ -578,7 +591,11 @@ CREATE TABLE city_fiscal_policy(
     residential_property_tax_per_home_per_day REAL NOT NULL,
     commercial_property_tax_per_building_per_day REAL NOT NULL,
     industrial_property_tax_per_building_per_day REAL NOT NULL,
-    property_tax_level_multiplier REAL NOT NULL
+    property_tax_level_multiplier REAL NOT NULL,
+    lvt_rate REAL NOT NULL,
+    ubi_surplus_share REAL NOT NULL,
+    public_sector_wage_multiplier REAL NOT NULL,
+    automation_level REAL NOT NULL
 );
 CREATE TABLE city_budget_history(
     sequence INTEGER PRIMARY KEY,
@@ -595,11 +612,17 @@ CREATE TABLE city_budget_history(
     residential_property_tax REAL NOT NULL,
     commercial_property_tax REAL NOT NULL,
     industrial_property_tax REAL NOT NULL,
+    lvt_tax REAL NOT NULL,
     utility_service_revenue REAL NOT NULL,
     benefits REAL NOT NULL,
     unemployment_benefits REAL NOT NULL,
     pensions REAL NOT NULL,
     child_support REAL NOT NULL,
+    ubi_dividends REAL NOT NULL,
+    mandatory_opex REAL NOT NULL,
+    debt_service REAL NOT NULL,
+    pre_ubi_surplus REAL NOT NULL,
+    daily_ubi_per_adult REAL NOT NULL,
     city_wages REAL NOT NULL,
     fuel_input_purchases REAL NOT NULL,
     imports_owa REAL NOT NULL,

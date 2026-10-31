@@ -28,6 +28,12 @@ impl SimulationNode {
         self.lock_core().get_desirability_image_data_internal()
     }
 
+    /// Returns the unimproved spatial land value image data as a PackedByteArray (RGBA8).
+    #[func]
+    pub fn get_land_value_image_data(&self) -> PackedByteArray {
+        self.lock_core().get_land_value_image_data_internal()
+    }
+
     // ── System ──
 
     /// Queues the latest authoring action for undo on the simulation thread.

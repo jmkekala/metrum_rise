@@ -6,9 +6,9 @@ use super::HouseholdSystem;
 use super::data::DailyHouseholdLedger;
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, UTILITY_SERVICE_POWER, building_operation_factors,
-    commercial_activity_floor, consume_hourly_production_inputs, economy_profile_for_building,
-    local_utility_service_costs, saleable_output_stock,
-    scaled_output_buffer_capacity_units_for_building, utility_service_index,
+    building_operation_factors_with_automation, commercial_activity_floor,
+    consume_hourly_production_inputs, economy_profile_for_building, local_utility_service_costs,
+    saleable_output_stock, scaled_output_buffer_capacity_units_for_building, utility_service_index,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -36,6 +36,7 @@ impl HouseholdSystem {
     /// sewage and electricity bills, distress liquidation, then business profit tax. The caller
     /// reports the window and then rolls its accumulators. Workers are paid at their own
     /// phases. O(ports).
+    #[allow(dead_code)]
     pub(crate) fn settle_building_day(
         &mut self,
         building_idx: usize,
@@ -44,10 +45,40 @@ impl HouseholdSystem {
         fiscal_policy: &CityFiscalPolicy,
         treasury_balance: &mut f64,
     ) -> FiscalRevenue {
+        self.settle_building_day_with_lvt(
+            building_idx,
+            allocator,
+            day,
+            fiscal_policy,
+            treasury_balance,
+            None,
+        )
+    }
+
+    /// Settles building `building_idx`'s 24-hour window including spatial Land Value Tax (LVT)
+    /// assessment on the site's unimproved land value. O(ports).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn settle_building_day_with_lvt(
+        &mut self,
+        building_idx: usize,
+        allocator: &mut BuildingAllocator,
+        day: &DaySettlement,
+        fiscal_policy: &CityFiscalPolicy,
+        treasury_balance: &mut f64,
+        land_value: Option<(
+            &crate::simulation::grid::land_value::LandValueSystem,
+            &crate::simulation::core::config::WorldConfig,
+        )>,
+    ) -> FiscalRevenue {
         let catalog = &*day.catalog;
         check_building_bankruptcy(allocator, building_idx);
-        let mut revenue =
-            charge_building_property_tax(allocator, building_idx, catalog, fiscal_policy);
+        let mut revenue = charge_building_property_and_lvt(
+            allocator,
+            building_idx,
+            catalog,
+            fiscal_policy,
+            land_value,
+        );
         self.settle_building_utilities(allocator, building_idx, day, treasury_balance);
         let city_owned = allocator
             .registry
@@ -208,32 +239,58 @@ impl HouseholdSystem {
         }
     }
 
-    /// Residential property tax of household `household_id` at its daily phase, paid as far as
-    /// its budget allows. O(1).
+    /// Residential property tax and Land Value Tax (LVT) of household `household_id` at its
+    /// daily phase, paid as far as its budget allows. O(1).
+    #[cfg(test)]
     pub(super) fn charge_household_property_tax(
         &mut self,
         household_id: usize,
         allocator: &BuildingAllocator,
         fiscal_policy: &CityFiscalPolicy,
     ) -> f32 {
+        self.charge_household_property_and_lvt(household_id, allocator, fiscal_policy, None)
+            .0
+    }
+
+    /// Residential property tax and Land Value Tax (LVT) of household `household_id` at its
+    /// daily phase, returning `(property_tax_paid, lvt_paid)`. O(1).
+    pub(super) fn charge_household_property_and_lvt(
+        &mut self,
+        household_id: usize,
+        allocator: &BuildingAllocator,
+        fiscal_policy: &CityFiscalPolicy,
+        land_value: Option<(
+            &crate::simulation::grid::land_value::LandValueSystem,
+            &crate::simulation::core::config::WorldConfig,
+        )>,
+    ) -> (f32, f32) {
         let household = &mut self.households[household_id];
         if household.member_count == 0 {
-            return 0.0;
+            return (0.0, 0.0);
         }
         let Some(home) = allocator.buildings.get(household.home_building_id) else {
-            return 0.0;
+            return (0.0, 0.0);
         };
         if !is_taxable_residential_home(home) {
-            return 0.0;
+            return (0.0, 0.0);
         }
-        let tax = daily_property_tax(ZoneType::Residential, home.level, fiscal_policy);
-        let paid = tax.min(household.budget.max(0.0));
-        if paid <= 0.0 {
-            return 0.0;
+        let prop_tax = daily_property_tax(ZoneType::Residential, home.level, fiscal_policy);
+        let paid_prop = prop_tax.min(household.budget.max(0.0));
+        if paid_prop > 0.0 {
+            household.budget -= paid_prop;
+            self.daily_ledgers[household_id].property_tax_paid += paid_prop;
         }
-        household.budget -= paid;
-        self.daily_ledgers[household_id].property_tax_paid += paid;
-        paid
+        let mut paid_lvt = 0.0;
+        if let Some((lv_grid, config)) = land_value {
+            let capacity = allocator.household_capacity(household.home_building_id).max(1) as f32;
+            let lvt_claim = lv_grid.daily_site_lvt(home, config, fiscal_policy) / capacity;
+            paid_lvt = lvt_claim.min(household.budget.max(0.0));
+            if paid_lvt > 0.0 {
+                household.budget -= paid_lvt;
+                self.daily_ledgers[household_id].property_tax_paid += paid_lvt;
+            }
+        }
+        (paid_prop, paid_lvt)
     }
 
     /// Bankruptcy check of every building at once, as their daily phases would run it.
@@ -482,11 +539,25 @@ fn check_building_bankruptcy(allocator: &mut BuildingAllocator, building_idx: us
 }
 
 // Daily property tax of a private commercial or industrial site. O(1).
+#[cfg(test)]
 fn charge_building_property_tax(
     allocator: &mut BuildingAllocator,
     building_idx: usize,
     catalog: &RuntimeEconomyCatalog,
     fiscal_policy: &CityFiscalPolicy,
+) -> FiscalRevenue {
+    charge_building_property_and_lvt(allocator, building_idx, catalog, fiscal_policy, None)
+}
+
+fn charge_building_property_and_lvt(
+    allocator: &mut BuildingAllocator,
+    building_idx: usize,
+    catalog: &RuntimeEconomyCatalog,
+    fiscal_policy: &CityFiscalPolicy,
+    land_value: Option<(
+        &crate::simulation::grid::land_value::LandValueSystem,
+        &crate::simulation::core::config::WorldConfig,
+    )>,
 ) -> FiscalRevenue {
     let mut revenue = FiscalRevenue::default();
     let is_city_service = allocator
@@ -500,14 +571,20 @@ fn charge_building_property_tax(
         return revenue;
     };
     let tax = daily_property_tax(tax_zone, building.level, fiscal_policy);
-    if tax <= 0.0 {
-        return revenue;
+    if tax > 0.0 {
+        building.operating_budget -= tax;
+        match tax_zone {
+            ZoneType::Commercial => revenue.commercial_property_tax = tax,
+            ZoneType::Industrial => revenue.industrial_property_tax = tax,
+            _ => {}
+        }
     }
-    building.operating_budget -= tax;
-    match tax_zone {
-        ZoneType::Commercial => revenue.commercial_property_tax = tax,
-        ZoneType::Industrial => revenue.industrial_property_tax = tax,
-        _ => {}
+    if let Some((lv_grid, config)) = land_value {
+        let lvt = lv_grid.daily_site_lvt(building, config, fiscal_policy);
+        if lvt > 0.0 {
+            building.operating_budget -= lvt;
+            revenue.land_value_tax = lvt;
+        }
     }
     revenue
 }
@@ -601,7 +678,18 @@ fn settle_building_profit_tax(
 /// inputs consumed and outputs stocked up to the output buffer. Power plants generate in their
 /// electricity phase, explicit work areas through their sites and service stores sell through
 /// the service-sales pool (`SIM-02-I`). O(ports).
+#[cfg(test)]
 pub(crate) fn produce_building_hour(catalog: &RuntimeEconomyCatalog, building: &mut Building) {
+    produce_building_hour_with_automation(catalog, building, 0.0);
+}
+
+/// One operational hour of production at `building` with workplace capital-for-labor
+/// `automation_level` (`0.0..=0.50`). O(ports).
+pub(crate) fn produce_building_hour_with_automation(
+    catalog: &RuntimeEconomyCatalog,
+    building: &mut Building,
+    automation_level: f32,
+) {
     let zone = building.zone_type;
     if building.broken
         || building.economy_broken
@@ -620,7 +708,8 @@ pub(crate) fn produce_building_hour(catalog: &RuntimeEconomyCatalog, building: &
         // Electricity dispatch consumes fuel only for generation demanded this hour.
         return;
     }
-    let factors = building_operation_factors(catalog, building, profile);
+    let factors =
+        building_operation_factors_with_automation(catalog, building, profile, automation_level);
     let throughput_factor = factors.throughput_factor;
     if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
         building.hourly_economy_activity = throughput_factor;

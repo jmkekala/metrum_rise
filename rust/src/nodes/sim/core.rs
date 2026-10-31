@@ -33,7 +33,7 @@ mod trips;
 mod water_preview;
 
 pub(crate) use budget::CityServicePolicy;
-pub use budget::CityTreasury;
+pub use budget::{CityBudget, CityTreasury, PolicyReformPreview};
 pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTimes};
 pub(crate) use graded_edits::{GradedEdit, GradedEditJournal, GradedEditSelection, GradedInstallTiles};
 pub(crate) use graded_stage::{GradedPose, GradedPreview, GradedUndo};

@@ -94,8 +94,50 @@ impl SimulationNode {
             "fiscal_policy_controls",
             fiscal_policy_controls_array(core.fiscal_policy),
         );
+        dict.set(
+            "city_budget",
+            city_budget_dict(
+                &core.treasury.budget,
+                core.land_value.total_assessed_land_value,
+            ),
+        );
+        dict.set(
+            "labor_market",
+            labor_market_dict(&core.households.labor_market),
+        );
+        dict.set("politics", politics_dict(&core.treasury.budget.politics));
         dict.set("services", services);
         dict
+    }
+
+    /// Returns political factions, approval ratings, dominant issues, and election countdown.
+    #[func]
+    pub fn get_politics_overview(&self) -> VarDictionary {
+        let core = self.lock_core();
+        politics_dict(&core.treasury.budget.politics)
+    }
+
+    /// Computes a non-mutating real-time preview of faction approval deltas, projected UBI
+    /// payouts, and reservation-wage labor shortage warnings for a dictionary of staged policy
+    /// values (`{ policy_id: value }`).
+    #[func]
+    pub fn preview_policy_reform(&self, proposed_policies: VarDictionary) -> VarDictionary {
+        let changes = parse_policy_changes_dict(&proposed_policies);
+        let core = self.lock_core();
+        let preview = core.preview_policy_reform(&changes);
+        policy_reform_preview_dict(&preview)
+    }
+
+    /// Atomically commits a dictionary of staged policy values (`{ policy_id: value }`) and
+    /// returns the updated economy overview dictionary.
+    #[func]
+    pub fn apply_policy_reform(&mut self, proposed_policies: VarDictionary) -> VarDictionary {
+        let changes = parse_policy_changes_dict(&proposed_policies);
+        {
+            let mut core = self.lock_core();
+            core.apply_policy_reform(&changes);
+        }
+        self.get_economy_overview()
     }
 
     /// Applies a live city service funding value. Returns `false` for unknown service ids.
@@ -164,12 +206,219 @@ fn fiscal_policy_controls_array(
     controls
 }
 
+fn city_budget_dict(
+    budget: &crate::nodes::sim::core::CityBudget,
+    total_assessed_land_value: f64,
+) -> VarDictionary {
+    let mut dict = VarDictionary::new();
+    dict.set("debt_principal", budget.debt_principal);
+    dict.set("daily_debt_interest_rate", budget.daily_debt_interest_rate);
+    dict.set("last_day_gross_revenue", budget.last_day_gross_revenue);
+    dict.set("last_day_lvt_revenue", budget.last_day_lvt_revenue);
+    dict.set("last_day_mandatory_opex", budget.last_day_mandatory_opex);
+    dict.set("last_day_debt_service", budget.last_day_debt_service);
+    dict.set("last_day_pre_ubi_surplus", budget.last_day_pre_ubi_surplus);
+    dict.set("active_ubi_pool", budget.active_ubi_pool);
+    dict.set("remaining_ubi_pool", budget.remaining_ubi_pool);
+    dict.set("daily_ubi_per_adult", f64::from(budget.daily_ubi_per_adult));
+    dict.set("last_day_ubi_paid", budget.last_day_ubi_paid);
+    dict.set("total_assessed_land_value", total_assessed_land_value);
+    dict
+}
+
+fn labor_market_dict(
+    lm: &crate::simulation::economy::labor_market::LaborMarket,
+) -> VarDictionary {
+    let mut dict = VarDictionary::new();
+    dict.set("base_subsistence_wage", f64::from(lm.base_subsistence_wage));
+    dict.set("reservation_wage", f64::from(lm.reservation_wage));
+    dict.set(
+        "ubi_reservation_elasticity",
+        f64::from(lm.ubi_reservation_elasticity),
+    );
+    dict.set(
+        "public_sector_wage_multiplier",
+        f64::from(lm.public_sector_wage_multiplier),
+    );
+    dict.set("automation_level", f64::from(lm.automation_level));
+    dict.set(
+        "active_daily_ubi_per_adult",
+        f64::from(lm.active_daily_ubi_per_adult),
+    );
+    let sector_names = [
+        "low_wage_commercial",
+        "industrial",
+        "skilled_private",
+        "public_sector",
+    ];
+    let mut sectors = VarDictionary::new();
+    for (idx, name) in sector_names.into_iter().enumerate() {
+        let mut s = VarDictionary::new();
+        s.set("funded_jobs", lm.funded_jobs_by_sector[idx] as i64);
+        s.set("filled_jobs", lm.filled_jobs_by_sector[idx] as i64);
+        s.set("open_vacancies", lm.open_vacancies_by_sector[idx] as i64);
+        s.set(
+            "reservation_wage_refusals",
+            lm.reservation_wage_refusals_by_sector[idx] as i64,
+        );
+        s.set("shortage_ratio", f64::from(lm.sector_shortage_ratio[idx]));
+        sectors.set(name, s);
+    }
+    dict.set("sectors", sectors);
+    dict
+}
+
+fn politics_dict(
+    politics: &crate::simulation::economy::politics::FactionManager,
+) -> VarDictionary {
+    use crate::simulation::economy::politics::FactionId;
+
+    let mut dict = VarDictionary::new();
+    dict.set("election_cycle_days", politics.election_cycle_days as i64);
+    dict.set("days_until_election", politics.days_until_election as i64);
+    dict.set("overall_approval", f64::from(politics.overall_approval));
+    dict.set("elections_completed", politics.elections_completed as i64);
+    dict.set("elections_won", politics.elections_won as i64);
+    dict.set(
+        "last_election_vote_share",
+        f64::from(politics.last_election_vote_share),
+    );
+    dict.set("last_election_won", politics.last_election_won);
+    dict.set("tax_reform_shock", f64::from(politics.tax_reform_shock));
+    dict.set(
+        "campaign_volatility",
+        f64::from(politics.current_campaign_volatility()),
+    );
+
+    let mut factions = VarArray::new();
+    for id in FactionId::ALL {
+        let state = &politics.factions[id.index()];
+        let mut f = VarDictionary::new();
+        f.set("id", GString::from(id.id_str()));
+        f.set("name", GString::from(id.display_name()));
+        f.set("electorate_share", f64::from(state.electorate_share));
+        f.set("target_approval", f64::from(state.target_approval));
+        f.set("approval", f64::from(state.approval));
+        f.set("campaign_volatility", f64::from(state.campaign_volatility));
+        f.set("dominant_issue", GString::from(state.dominant_issue.as_str()));
+        factions.push(&f.to_variant());
+    }
+    dict.set("factions", factions);
+    dict
+}
+
+fn parse_policy_changes_dict(proposed_policies: &VarDictionary) -> Vec<(String, f32)> {
+    let mut changes = Vec::with_capacity(proposed_policies.len());
+    for (k, v) in proposed_policies.iter_shared() {
+        let Ok(key) = k.try_to::<GString>() else {
+            continue;
+        };
+        let value = if let Ok(f) = v.try_to::<f64>() {
+            f as f32
+        } else if let Ok(i) = v.try_to::<i64>() {
+            i as f32
+        } else {
+            continue;
+        };
+        if value.is_finite() {
+            changes.push((key.to_string(), value));
+        }
+    }
+    changes
+}
+
+fn policy_reform_preview_dict(
+    preview: &crate::nodes::sim::core::PolicyReformPreview,
+) -> VarDictionary {
+    use crate::simulation::economy::politics::FactionId;
+
+    let mut dict = VarDictionary::new();
+    dict.set("projected_lvt_revenue", preview.projected_lvt_revenue);
+    dict.set(
+        "projected_pre_ubi_surplus",
+        preview.projected_pre_ubi_surplus,
+    );
+    dict.set(
+        "projected_daily_ubi_per_adult",
+        f64::from(preview.projected_daily_ubi_per_adult),
+    );
+    dict.set(
+        "deficit_circuit_breaker_active",
+        preview.deficit_circuit_breaker_active,
+    );
+    dict.set(
+        "projected_reservation_wage",
+        f64::from(preview.projected_reservation_wage),
+    );
+    dict.set(
+        "binding_reservation_wage",
+        f64::from(preview.binding_reservation_wage),
+    );
+    dict.set(
+        "reference_low_wage_net",
+        f64::from(preview.reference_low_wage_net),
+    );
+    dict.set(
+        "reference_public_sector_net",
+        f64::from(preview.reference_public_sector_net),
+    );
+    dict.set(
+        "low_wage_shortage_warning",
+        preview.low_wage_shortage_warning,
+    );
+    dict.set(
+        "public_sector_wage_warning",
+        preview.public_sector_wage_warning,
+    );
+    dict.set(
+        "projected_reform_shock",
+        f64::from(preview.projected_reform_shock),
+    );
+    dict.set(
+        "baseline_overall_approval",
+        f64::from(preview.baseline_overall_approval),
+    );
+    dict.set(
+        "preview_overall_approval",
+        f64::from(preview.preview_overall_approval),
+    );
+    dict.set(
+        "overall_delta",
+        f64::from(preview.preview_overall_approval - preview.baseline_overall_approval),
+    );
+
+    let mut factions = VarArray::new();
+    for id in FactionId::ALL {
+        let idx = id.index();
+        let base = &preview.baseline_factions[idx];
+        let next = &preview.preview_factions[idx];
+        let delta = next.target_approval - base.target_approval;
+        let mut f = VarDictionary::new();
+        f.set("id", GString::from(id.id_str()));
+        f.set("name", GString::from(id.display_name()));
+        f.set("electorate_share", f64::from(next.electorate_share));
+        f.set("current_approval", f64::from(base.approval));
+        f.set("baseline_target_approval", f64::from(base.target_approval));
+        f.set("preview_target_approval", f64::from(next.target_approval));
+        f.set("approval_delta", f64::from(delta));
+        f.set(
+            "dominant_issue",
+            GString::from(next.dominant_issue.as_str()),
+        );
+        factions.push(&f.to_variant());
+    }
+    dict.set("factions", factions);
+    dict
+}
+
 fn fiscal_policy_control_impact(policy_id: &str) -> (&'static str, &'static str, &'static str) {
     use crate::simulation::economy::fiscal::{
-        POLICY_BUSINESS_PROFIT_TAX, POLICY_CHILD_SUPPORT, POLICY_COMMERCIAL_PROPERTY_TAX,
-        POLICY_HOUSEHOLD_VAT, POLICY_INCOME_TAX, POLICY_INDUSTRIAL_PROPERTY_TAX, POLICY_PENSION,
-        POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER, POLICY_RESIDENTIAL_PROPERTY_TAX,
-        POLICY_UNEMPLOYMENT_BENEFIT, POLICY_UNEMPLOYMENT_MAX_DAYS,
+        POLICY_AUTOMATION_LEVEL, POLICY_BUSINESS_PROFIT_TAX, POLICY_CHILD_SUPPORT,
+        POLICY_COMMERCIAL_PROPERTY_TAX, POLICY_HOUSEHOLD_VAT, POLICY_INCOME_TAX,
+        POLICY_INDUSTRIAL_PROPERTY_TAX, POLICY_LVT_RATE, POLICY_PENSION,
+        POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER, POLICY_PUBLIC_WAGE_MULTIPLIER,
+        POLICY_RESIDENTIAL_PROPERTY_TAX, POLICY_UBI_SURPLUS_SHARE, POLICY_UNEMPLOYMENT_BENEFIT,
+        POLICY_UNEMPLOYMENT_MAX_DAYS,
     };
 
     match policy_id {
@@ -197,6 +446,10 @@ fn fiscal_policy_control_impact(policy_id: &str) -> (&'static str, &'static str,
             "revenue",
         ),
         POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER => ("property_tax", "Property Tax", "revenue"),
+        POLICY_LVT_RATE => ("lvt_tax", "Land Value Tax", "revenue"),
+        POLICY_UBI_SURPLUS_SHARE => ("ubi_dividends", "Citizen's Dividend (UBI)", "expense"),
+        POLICY_PUBLIC_WAGE_MULTIPLIER => ("city_wages", "Public Sector Wages", "expense"),
+        POLICY_AUTOMATION_LEVEL => ("net", "Workplace Automation", "revenue"),
         _ => ("net", "Policy Impact", "revenue"),
     }
 }

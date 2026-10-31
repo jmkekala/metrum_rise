@@ -23,7 +23,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::households::{
-    ElectricityProfiles, produce_building_hour, refresh_activity_floor,
+    ElectricityProfiles, produce_building_hour_with_automation, refresh_activity_floor,
 };
 
 // Hourly phase of `slot`.
@@ -53,7 +53,11 @@ impl SimCore {
                 };
                 let building = &mut self.allocator.buildings[building_idx];
                 refresh_activity_floor(&catalog, building);
-                produce_building_hour(&catalog, building);
+                produce_building_hour_with_automation(
+                    &catalog,
+                    building,
+                    self.fiscal_policy.automation_level,
+                );
                 self.agriculture
                     .produce_for_building(building_idx, &mut self.allocator, &catalog);
                 self.resource_extraction.produce_for_building(

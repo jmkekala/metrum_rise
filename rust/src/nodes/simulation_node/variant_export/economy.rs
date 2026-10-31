@@ -21,11 +21,17 @@ pub(in crate::nodes::simulation_node) fn budget_ledger_entry_dict(
     dict.set("residential_property_tax", entry.residential_property_tax);
     dict.set("commercial_property_tax", entry.commercial_property_tax);
     dict.set("industrial_property_tax", entry.industrial_property_tax);
+    dict.set("lvt_tax", entry.lvt_tax);
     dict.set("utility_service_revenue", entry.utility_service_revenue);
     dict.set("benefits", entry.benefits);
     dict.set("unemployment_benefits", entry.unemployment_benefits);
     dict.set("pensions", entry.pensions);
     dict.set("child_support", entry.child_support);
+    dict.set("ubi_dividends", entry.ubi_dividends);
+    dict.set("mandatory_opex", entry.mandatory_opex);
+    dict.set("debt_service", entry.debt_service);
+    dict.set("pre_ubi_surplus", entry.pre_ubi_surplus);
+    dict.set("daily_ubi_per_adult", f64::from(entry.daily_ubi_per_adult));
     dict.set("city_wages", entry.city_wages);
     dict.set("fuel_input_purchases", entry.fuel_input_purchases);
     dict.set("imports_owa", entry.imports_owa);

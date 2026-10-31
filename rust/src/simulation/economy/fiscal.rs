@@ -30,6 +30,14 @@ pub(crate) const POLICY_INDUSTRIAL_PROPERTY_TAX: &str =
     "industrial_property_tax_per_building_per_day";
 /// Stable policy id for per-level property-tax multiplier.
 pub(crate) const POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER: &str = "property_tax_level_multiplier";
+/// Stable policy id for Land Value Tax (LVT) daily rate on assessed unimproved land value.
+pub(crate) const POLICY_LVT_RATE: &str = "lvt_rate";
+/// Stable policy id for share of positive net fiscal surplus distributed as Citizen's Dividend (UBI).
+pub(crate) const POLICY_UBI_SURPLUS_SHARE: &str = "ubi_surplus_share";
+/// Stable policy id for public-sector wage multiplier.
+pub(crate) const POLICY_PUBLIC_WAGE_MULTIPLIER: &str = "public_sector_wage_multiplier";
+/// Stable policy id for workplace capital-for-labor automation level (`0.0..=0.50`).
+pub(crate) const POLICY_AUTOMATION_LEVEL: &str = "automation_level";
 
 const TRANSFER_MIN: f32 = 0.0;
 const TRANSFER_MAX: f32 = 200.0;
@@ -42,6 +50,11 @@ const PROPERTY_TAX_PER_DAY_MIN: f32 = 0.0;
 const PROPERTY_TAX_PER_DAY_MAX: f32 = 500.0;
 const PROPERTY_TAX_MULTIPLIER_MIN: f32 = 1.0;
 const PROPERTY_TAX_MULTIPLIER_MAX: f32 = 5.0;
+const LVT_RATE_MAX: f32 = 1.0;
+const UBI_SURPLUS_SHARE_MAX: f32 = 1.0;
+const PUBLIC_WAGE_MULTIPLIER_MIN: f32 = 0.50;
+const PUBLIC_WAGE_MULTIPLIER_MAX: f32 = 3.00;
+const AUTOMATION_LEVEL_MAX: f32 = 0.50;
 
 /// Tax revenue collected by economy subsystems during one deterministic phase.
 #[derive(Clone, Copy, Debug, Default)]
@@ -58,6 +71,8 @@ pub(crate) struct FiscalRevenue {
     pub commercial_property_tax: f32,
     /// Daily property tax collected from active private industrial buildings.
     pub industrial_property_tax: f32,
+    /// Daily Land Value Tax collected from unimproved spatial land value.
+    pub land_value_tax: f32,
 }
 
 /// Player-controlled fiscal policy used by live economy systems.
@@ -85,6 +100,14 @@ pub(crate) struct CityFiscalPolicy {
     pub(crate) industrial_property_tax_per_building_per_day: f32,
     /// Per-level multiplier applied to property tax above level 1.
     pub(crate) property_tax_level_multiplier: f32,
+    /// Daily Land Value Tax rate applied to unimproved land value (`0.0..=1.0`).
+    pub(crate) lvt_rate: f32,
+    /// Share of positive daily net fiscal surplus distributed as Citizen's Dividend / UBI (`0.0..=1.0`).
+    pub(crate) ubi_surplus_share: f32,
+    /// Multiplier applied to public-sector wages (`0.50..=3.00`, default `1.0`).
+    pub(crate) public_sector_wage_multiplier: f32,
+    /// Workplace capital-for-labor automation adoption level (`0.0..=0.50`, default `0.0`).
+    pub(crate) automation_level: f32,
 }
 
 impl CityFiscalPolicy {
@@ -123,6 +146,10 @@ impl CityFiscalPolicy {
                 .fiscal
                 .property_tax_level_multiplier
                 .clamp(PROPERTY_TAX_MULTIPLIER_MIN, PROPERTY_TAX_MULTIPLIER_MAX),
+            lvt_rate: 0.0,
+            ubi_surplus_share: 0.0,
+            public_sector_wage_multiplier: 1.0,
+            automation_level: 0.0,
         }
     }
 
@@ -170,6 +197,19 @@ impl CityFiscalPolicy {
                 self.property_tax_level_multiplier =
                     value.clamp(PROPERTY_TAX_MULTIPLIER_MIN, PROPERTY_TAX_MULTIPLIER_MAX);
             }
+            POLICY_LVT_RATE => {
+                self.lvt_rate = value.clamp(0.0, LVT_RATE_MAX);
+            }
+            POLICY_UBI_SURPLUS_SHARE => {
+                self.ubi_surplus_share = value.clamp(0.0, UBI_SURPLUS_SHARE_MAX);
+            }
+            POLICY_PUBLIC_WAGE_MULTIPLIER => {
+                self.public_sector_wage_multiplier =
+                    value.clamp(PUBLIC_WAGE_MULTIPLIER_MIN, PUBLIC_WAGE_MULTIPLIER_MAX);
+            }
+            POLICY_AUTOMATION_LEVEL => {
+                self.automation_level = value.clamp(0.0, AUTOMATION_LEVEL_MAX);
+            }
             _ => return false,
         }
         true
@@ -183,7 +223,7 @@ impl CityFiscalPolicy {
     }
 
     /// Returns stable UI control metadata for every live fiscal policy field.
-    pub(crate) fn controls(self) -> [FiscalPolicyControl; 11] {
+    pub(crate) fn controls(self) -> [FiscalPolicyControl; 15] {
         [
             FiscalPolicyControl::new(
                 POLICY_UNEMPLOYMENT_BENEFIT,
@@ -293,6 +333,46 @@ impl CityFiscalPolicy {
                 self.property_tax_level_multiplier,
                 PROPERTY_TAX_MULTIPLIER_MIN,
                 PROPERTY_TAX_MULTIPLIER_MAX,
+                0.05,
+            ),
+            FiscalPolicyControl::new(
+                POLICY_LVT_RATE,
+                "Land value tax",
+                "Taxes",
+                FiscalPolicyUnit::Percent,
+                self.lvt_rate,
+                0.0,
+                LVT_RATE_MAX,
+                0.01,
+            ),
+            FiscalPolicyControl::new(
+                POLICY_UBI_SURPLUS_SHARE,
+                "Citizen's dividend (UBI) share",
+                "Transfers",
+                FiscalPolicyUnit::Percent,
+                self.ubi_surplus_share,
+                0.0,
+                UBI_SURPLUS_SHARE_MAX,
+                0.01,
+            ),
+            FiscalPolicyControl::new(
+                POLICY_PUBLIC_WAGE_MULTIPLIER,
+                "Public wage multiplier",
+                "Transfers",
+                FiscalPolicyUnit::Multiplier,
+                self.public_sector_wage_multiplier,
+                PUBLIC_WAGE_MULTIPLIER_MIN,
+                PUBLIC_WAGE_MULTIPLIER_MAX,
+                0.05,
+            ),
+            FiscalPolicyControl::new(
+                POLICY_AUTOMATION_LEVEL,
+                "Workplace automation level",
+                "Transfers",
+                FiscalPolicyUnit::Percent,
+                self.automation_level,
+                0.0,
+                AUTOMATION_LEVEL_MAX,
                 0.05,
             ),
         ]
@@ -465,6 +545,15 @@ mod tests {
         assert_eq!(policy.unemployment_max_days, 0);
         assert!(policy.set_value(POLICY_PENSION, 500.0));
         assert!((policy.pension_per_elder_per_day - TRANSFER_MAX).abs() < f32::EPSILON);
+        assert!(policy.set_value(POLICY_LVT_RATE, 2.5));
+        assert!((policy.lvt_rate - LVT_RATE_MAX).abs() < f32::EPSILON);
+        assert!(policy.set_value(POLICY_UBI_SURPLUS_SHARE, 0.45));
+        assert!((policy.ubi_surplus_share - 0.45).abs() < f32::EPSILON);
+        assert!(policy.set_value(POLICY_PUBLIC_WAGE_MULTIPLIER, 0.1));
+        assert!(
+            (policy.public_sector_wage_multiplier - PUBLIC_WAGE_MULTIPLIER_MIN).abs()
+                < f32::EPSILON
+        );
         assert!(!policy.set_value("unknown", 1.0));
         assert!(!policy.set_value(POLICY_CHILD_SUPPORT, f32::NAN));
     }

@@ -41,6 +41,7 @@ use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::extraction::ResourceExtractionSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
+use crate::simulation::grid::land_value::LandValueSystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::sweep::EnvironmentSweep;
@@ -209,6 +210,8 @@ pub struct SimCore {
     pub noise: NoiseSystem,
     /// Composite desirability grid.
     pub desirability: DesirabilitySystem,
+    /// Unimproved spatial land value grid (`SIM-02-H`) used for Land Value Tax (LVT) assessment.
+    pub land_value: LandValueSystem,
     /// Global R/C/I demand counters.
     pub demand: DemandSystem,
     /// Demand building spawns scheduled across authored minutes to avoid hourly bursts.
@@ -412,6 +415,7 @@ impl SimCore {
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
             desirability: DesirabilitySystem::new(&config),
+            land_value: LandValueSystem::new(&config),
             demand: DemandSystem::new(),
             pending_demand_spawns: VecDeque::new(),
             next_spawn_id: 0,
@@ -1309,16 +1313,18 @@ impl SimCore {
     }
 
     /// Slot `slot`'s chunk of the rolling environment sweep (`SIM-02-H`): a share of the
-    /// emissions, or of the diffused rows, of pollution, noise and desirability.
+    /// emissions, or of the diffused rows, of pollution, noise, desirability and unimproved
+    /// land value.
     pub(super) fn advance_environment_sweep(&mut self, slot: u64) {
         self.allocator
             .building_handles
             .register_appended(self.allocator.buildings.len());
-        self.environment_sweep.advance(
+        self.environment_sweep.advance_with_land_value(
             slot,
             &mut self.pollution,
             &mut self.noise,
             &mut self.desirability,
+            &mut self.land_value,
             &self.allocator,
             &self.region_graph,
             &self.config,
@@ -1565,6 +1571,7 @@ impl SimCore {
             .log_daily_household_action_diagnostics(day_index);
         self.demand.close_exit_day();
         self.treasury.finalize_daily_tax_window();
+        self.execute_daily_budget_waterfall();
         self.record_daily_budget_ledger(day_index);
         self.log_daily_city_flow_diagnostics(day_index, removed_households);
         observer.day_closed(self);

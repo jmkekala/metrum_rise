@@ -768,6 +768,22 @@ pub(crate) fn building_operation_factors(
     )
 }
 
+/// Returns production factors including workplace capital-for-labor `automation_level` (`0.0..=0.50`).
+pub(crate) fn building_operation_factors_with_automation(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    automation_level: f32,
+) -> BuildingOperationFactors {
+    building_operation_factors_with_floor_and_automation(
+        catalog,
+        building,
+        profile,
+        building.commercial_activity_floor_scale,
+        automation_level,
+    )
+}
+
 // A store's funded staff, rounded up to whole workers, may refill its shelf above its funded
 // sales until it holds `stock_target_days` of them; bulk pantry purchases otherwise find it
 // sold out. It opens no job and stays within the authored output buffer. O(output ports).
@@ -791,6 +807,22 @@ pub(crate) fn building_operation_factors_with_floor_scale(
     profile: &EconomyProfileRuntime,
     floor_scale: f32,
 ) -> BuildingOperationFactors {
+    building_operation_factors_with_floor_and_automation(
+        catalog,
+        building,
+        profile,
+        floor_scale,
+        0.0,
+    )
+}
+
+fn building_operation_factors_with_floor_and_automation(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    floor_scale: f32,
+    automation_level: f32,
+) -> BuildingOperationFactors {
     let active_worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
         catalog,
         building,
@@ -799,8 +831,10 @@ pub(crate) fn building_operation_factors_with_floor_scale(
     );
     let effective_workers = building.worker_count.min(active_worker_capacity);
     let staffing_worker_capacity = physical_worker_capacity_for_profile(building, profile).max(1);
-    let mut staffing_factor =
-        (effective_workers as f32 / staffing_worker_capacity as f32).clamp(0.0, 1.0);
+    let auto_boost = 1.0 / (1.0 - automation_level.clamp(0.0, 0.50));
+    let mut staffing_factor = ((effective_workers as f32 / staffing_worker_capacity as f32)
+        * auto_boost)
+        .clamp(0.0, 1.0);
     let production_rate_scale = output_area_scale_for_building(building, profile);
     if is_sales_scaled_commercial_store(building, profile)
         && !shelf_below_target(building, profile, floor_scale, production_rate_scale)

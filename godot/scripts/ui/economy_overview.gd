@@ -9,6 +9,7 @@ extends Window
 const GameSettings = preload("res://scripts/core/game_settings.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const TrendGraph = preload("res://scripts/ui/economy_trend_graph.gd")
+const PolicyPoliticsPanel = preload("res://scripts/ui/policy_politics_panel.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
 const SERVICE_ELECTRICITY := "electricity"
@@ -54,6 +55,8 @@ var _policy_timeframe: OptionButton
 var _policy_rows: VBoxContainer
 var _policy_details: VBoxContainer
 var _policy_graph: Control
+var _tabs: TabContainer
+var _policy_politics_panel: Control
 var _budget_split: HSplitContainer
 var _budget_left_split: VSplitContainer
 var _budget_graphs_split: VSplitContainer
@@ -126,6 +129,7 @@ func _build_ui() -> void:
 	body.add_child(margin)
 
 	var tabs := TabContainer.new()
+	_tabs = tabs
 	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	UIStyle.set_font_size(tabs, CONTROL_FONT_SIZE)
@@ -140,8 +144,13 @@ func _build_ui() -> void:
 	tabs.add_child(services_tab)
 
 	var policy_tab := _build_policy_tab()
-	policy_tab.name = "Policy"
+	policy_tab.name = "Policy & Politics"
 	tabs.add_child(policy_tab)
+
+func open_policy_politics_tab() -> void:
+	if _tabs != null and _tabs.get_tab_count() >= 3:
+		_tabs.current_tab = 2
+	refresh()
 
 func _build_budget_tab() -> Control:
 	var root := VBoxContainer.new()
@@ -226,67 +235,17 @@ func _build_budget_tab() -> Control:
 	return root
 
 func _build_policy_tab() -> Control:
-	var root := HSplitContainer.new()
-	_policy_split = root
-	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root.split_offset = _layout_offset(KEY_POLICY_SPLIT, 520.0)
-	root.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
-
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size.x = UIStyle.scaled_px(360.0)
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-
-	_policy_rows = VBoxContainer.new()
-	_policy_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_policy_rows.add_theme_constant_override("separation", 10)
-	scroll.add_child(_policy_rows)
-	root.add_child(_section_panel("Controls", scroll))
-
-	var right := VBoxContainer.new()
-	right.custom_minimum_size.x = UIStyle.scaled_px(360.0)
-	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	right.add_theme_constant_override("separation", 8)
-	root.add_child(right)
-
-	var header := HBoxContainer.new()
-	header.add_theme_constant_override("separation", 8)
-	right.add_child(header)
-
-	var details_title := Label.new()
-	details_title.name = "PolicyDetailsTitle"
-	details_title.text = "Policy Impact"
-	details_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	details_title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	UIStyle.set_font_size(details_title, TITLE_FONT_SIZE)
-	header.add_child(details_title)
-
-	_policy_timeframe = _make_timeframe_selector()
-	_policy_timeframe.item_selected.connect(_on_policy_timeframe_changed)
-	header.add_child(_policy_timeframe)
-
-	var policy_split := VSplitContainer.new()
-	_policy_detail_split = policy_split
-	policy_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	policy_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	policy_split.split_offset = _layout_offset(KEY_POLICY_DETAIL_SPLIT, 250.0)
-	policy_split.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
-	right.add_child(policy_split)
-
-	_policy_details = VBoxContainer.new()
-	_policy_details.add_theme_constant_override("separation", 4)
-	var details_panel := _section_panel("Details", _policy_details)
-	details_panel.custom_minimum_size.y = UIStyle.scaled_px(170.0)
-	policy_split.add_child(details_panel)
-
-	_policy_graph = TrendGraph.new()
-	var graph_panel := _section_panel("Selected Policy Trend", _policy_graph)
-	graph_panel.custom_minimum_size.y = UIStyle.scaled_px(150.0)
-	policy_split.add_child(graph_panel)
-
-	return root
+	var panel := PolicyPoliticsPanel.new()
+	_policy_politics_panel = panel
+	_policy_split = panel
+	panel.split_offset = _layout_offset(KEY_POLICY_SPLIT, 500.0)
+	panel.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
+	panel.reform_applied.connect(func(updated: Dictionary) -> void:
+		_overview = updated
+		_refresh_budget_tab()
+		_refresh_services_tab()
+	)
+	return panel
 
 func _build_services_tab() -> Control:
 	var root := HSplitContainer.new()
@@ -401,12 +360,15 @@ func _refresh_budget_tab() -> void:
 	_clear(_budget_categories)
 	_add_category_header(_budget_categories, "Income", _money(_sum(entries, "income")), INCOME_COLOR)
 	_add_metric(_budget_categories, "Tax Income", _money(_sum(entries, "tax_income")), UIStyle.TEXT_DIM, INCOME_COLOR, 10.0)
+	_add_metric(_budget_categories, "Land Value Tax (LVT)", _money(_sum(entries, "lvt_tax")), UIStyle.TEXT_DIM, INCOME_COLOR, 20.0)
 	_add_metric(_budget_categories, "Utility/Service Revenue", _money(_sum(entries, "utility_service_revenue")), UIStyle.TEXT_DIM, INCOME_COLOR, 10.0)
 	_add_category_header(_budget_categories, "Expenses", _expense_money(_sum(entries, "expenses")), EXPENSE_COLOR)
 	_add_metric(_budget_categories, "Benefits", _expense_money(_sum(entries, "benefits")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
+	_add_metric(_budget_categories, "Citizen's Dividend (UBI)", _expense_money(_sum(entries, "ubi_dividends")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 20.0)
 	_add_metric(_budget_categories, "Unemployment", _expense_money(_sum(entries, "unemployment_benefits")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 20.0)
 	_add_metric(_budget_categories, "Pensions", _expense_money(_sum(entries, "pensions")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 20.0)
 	_add_metric(_budget_categories, "Child Support", _expense_money(_sum(entries, "child_support")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 20.0)
+	_add_metric(_budget_categories, "Debt Servicing", _expense_money(_sum(entries, "debt_service")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
 	_add_metric(_budget_categories, "City Wages", _expense_money(_sum(entries, "city_wages")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
 	_add_metric(_budget_categories, "Service Input Purchases", _expense_money(_sum(entries, "fuel_input_purchases")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
 	_add_metric(_budget_categories, "Imports/OWA", _expense_money(_sum(entries, "imports_owa")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
@@ -439,6 +401,10 @@ func _refresh_services_tab() -> void:
 	_refresh_service_details()
 
 func _refresh_policy_tab() -> void:
+	if _policy_politics_panel != null:
+		_policy_politics_panel.simulation_node = simulation_node
+		_policy_politics_panel.update_from_overview(_overview)
+		return
 	if _policy_rows == null:
 		return
 	_clear(_policy_rows)

@@ -15,6 +15,7 @@
 use std::ops::Range;
 
 use super::desirability::DesirabilitySystem;
+use super::land_value::LandValueSystem;
 use super::noise::NoiseSystem;
 use super::pollution::PollutionSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -54,6 +55,7 @@ impl EnvironmentSweep {
     /// Runs chunk `slot mod SLOTS_PER_DAY` of the day's sweep; the caller registers appended
     /// buildings' handles first. O(Hb/E + edges' points in He/E) in the first half and
     /// O(R/D × width) in the second; the first slot also zeroes two back grids, O(grid).
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance(
         &mut self,
@@ -112,6 +114,80 @@ impl EnvironmentSweep {
             pollution.swap_buffers();
             noise.swap_buffers();
             desirability.swap_buffers();
+            self.frozen = None;
+        }
+    }
+
+    /// Runs chunk `slot mod SLOTS_PER_DAY` of the day's sweep including the unimproved
+    /// [`LandValueSystem`] grid (`SIM-02-H`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance_with_land_value(
+        &mut self,
+        slot: u64,
+        pollution: &mut PollutionSystem,
+        noise: &mut NoiseSystem,
+        desirability: &mut DesirabilitySystem,
+        land_value: &mut LandValueSystem,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        config: &WorldConfig,
+    ) {
+        let chunk = slot % SLOTS_PER_DAY;
+        if chunk == 0 {
+            *self = Self {
+                frozen: Some(SweepCapacities {
+                    building_handles: allocator.building_handles.capacity() as u64,
+                    edges: graph.edge_count() as u64,
+                }),
+                next_chunk: 1,
+                next_edge: 0,
+            };
+            pollution.clear_back();
+            noise.clear_back();
+            land_value.clear_back();
+        } else if chunk != self.next_chunk {
+            self.frozen = None;
+        }
+        let Some(frozen) = self.frozen else {
+            return;
+        };
+        self.next_chunk = chunk + 1;
+        if chunk < EMISSION_CHUNKS {
+            for index in part(chunk, EMISSION_CHUNKS, frozen.building_handles) {
+                if let Some(building_idx) = allocator.building_handles.dense_at(index as usize) {
+                    let building = &allocator.buildings[building_idx];
+                    let is_service = allocator.is_city_service_building(building);
+                    pollution.emit_building(building, config);
+                    noise.emit_building(building, config);
+                    land_value.emit_building(building, is_service, config);
+                }
+            }
+            let end = part(chunk, EMISSION_CHUNKS, frozen.edges).end;
+            let edges = graph.edges();
+            let live_end = (end as usize).min(edges.len());
+            if let Some(chunk_edges) = edges.get(self.next_edge as usize..live_end) {
+                for edge in chunk_edges {
+                    noise.emit_edge(edge, config);
+                    land_value.emit_edge(edge, config);
+                }
+            }
+            self.next_edge = self.next_edge.max(end);
+            return;
+        }
+        let diffusion = chunk - EMISSION_CHUNKS;
+        let p_rows = rows(diffusion, pollution.back.height);
+        let n_rows = rows(diffusion, noise.back.height);
+        let d_rows = rows(diffusion, desirability.back.height);
+        let lv_rows = rows(diffusion, land_value.back.height);
+        pollution.diffuse_back_rows(p_rows);
+        noise.diffuse_back_rows(n_rows);
+        desirability.compose_back_rows(d_rows, pollution, noise);
+        land_value.diffuse_and_compose_back_rows(lv_rows, &pollution.back, &noise.back);
+        if chunk == SLOTS_PER_DAY - 1 {
+            pollution.swap_buffers();
+            noise.swap_buffers();
+            desirability.swap_buffers();
+            land_value.swap_buffers();
             self.frozen = None;
         }
     }
@@ -276,5 +352,50 @@ mod tests {
         assert_eq!(bits(&desirability.grid), bits(&expected_desirability.grid));
         assert!(noise.grid.data.contains(&100.0));
         assert_ne!(bits(&pollution.grid), start.0);
+    }
+
+    #[test]
+    fn one_sweep_with_land_value_equals_one_whole_grid_step() {
+        let (config, allocator, graph) = small_world();
+        let mut pollution = PollutionSystem::new(&config);
+        let mut noise = NoiseSystem::new(&config);
+        let mut desirability = DesirabilitySystem::new(&config);
+        let mut land_value = LandValueSystem::new(&config);
+
+        let mut expected_pollution = PollutionSystem::new(&config);
+        let mut expected_noise = NoiseSystem::new(&config);
+        let mut expected_desirability = DesirabilitySystem::new(&config);
+        let mut expected_land_value = LandValueSystem::new(&config);
+
+        expected_pollution.tick(&allocator, &config);
+        expected_noise.tick(&allocator, &graph, &config);
+        expected_desirability.tick(&expected_pollution, &expected_noise);
+        expected_land_value.tick(
+            &allocator,
+            &graph,
+            &expected_pollution,
+            &expected_noise,
+            &config,
+        );
+
+        let mut sweep = EnvironmentSweep::default();
+        for slot in 0..SLOTS_PER_DAY {
+            sweep.advance_with_land_value(
+                slot,
+                &mut pollution,
+                &mut noise,
+                &mut desirability,
+                &mut land_value,
+                &allocator,
+                &graph,
+                &config,
+            );
+        }
+        assert_eq!(sweep.frozen, None);
+        assert_eq!(bits(&land_value.grid), bits(&expected_land_value.grid));
+        assert_eq!(
+            land_value.total_assessed_land_value.to_bits(),
+            expected_land_value.total_assessed_land_value.to_bits()
+        );
     }
 }

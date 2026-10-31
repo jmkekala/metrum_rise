@@ -17,6 +17,7 @@ use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
+use crate::simulation::grid::land_value::LandValueSystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
@@ -579,6 +580,7 @@ impl SimCore {
         self.pollution = PollutionSystem::new(&self.config);
         self.noise = NoiseSystem::new(&self.config);
         self.desirability = DesirabilitySystem::new(&self.config);
+        self.land_value = LandValueSystem::new(&self.config);
         self.environment_sweep = Default::default();
         self.demand = DemandSystem::new();
         self.pending_demand_spawns.clear();

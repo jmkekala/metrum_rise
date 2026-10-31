@@ -82,6 +82,7 @@ impl SimCore {
                 zoning: &self.zoning,
                 pollution: &self.pollution,
                 noise: &self.noise,
+                land_value: &self.land_value,
                 demand: &self.demand,
                 pending_demand_spawns: &self.pending_demand_spawns,
                 scheduler: SavedScheduler {
@@ -180,6 +181,7 @@ impl SimCore {
         self.pollution = loaded.pollution;
         self.noise = loaded.noise;
         self.desirability = loaded.desirability;
+        self.land_value = loaded.land_value;
         self.demand = loaded.demand;
         self.pending_demand_spawns = loaded.pending_demand_spawns;
         self.next_spawn_id = loaded.scheduler.next_spawn_id;

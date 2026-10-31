@@ -55,12 +55,13 @@ impl SimCore {
                     continue;
                 }
                 observer.building_day_opened(self, building_idx);
-                let revenue = self.households.settle_building_day(
+                let revenue = self.households.settle_building_day_with_lvt(
                     building_idx,
                     &mut self.allocator,
                     &day,
                     &self.fiscal_policy,
                     &mut self.treasury.balance,
+                    Some((&self.land_value, &self.config)),
                 );
                 self.collect_fiscal_revenue(revenue);
                 observer.building_day_closed(self, building_idx);
@@ -96,12 +97,15 @@ impl SimCore {
                 let Some(household_id) = self.households.handles.resolve(handle) else {
                     continue;
                 };
-                let revenue = self.households.settle_household_day(
+                let revenue = self.households.settle_household_day_with_ubi(
                     household_id,
                     &self.allocator,
                     &day,
                     &self.fiscal_policy,
                     &mut self.treasury.balance,
+                    self.treasury.budget.daily_ubi_per_adult,
+                    &mut self.treasury.budget.remaining_ubi_pool,
+                    Some((&self.land_value, &self.config)),
                 );
                 self.collect_fiscal_revenue(revenue);
                 observer.household_day_closed(self, household_id);

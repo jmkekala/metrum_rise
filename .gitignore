@@ -6,3 +6,5 @@ logs/
 benchmark-results/
 audit-state/
 tools/__pycache__/
+Godot_v4.7*
+godot_errors.txt

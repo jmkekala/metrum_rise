@@ -34,6 +34,11 @@ impl SimCore {
     pub fn get_desirability_image_data_internal(&self) -> PackedByteArray {
         self.environment_image_data(&self.desirability.grid, [50, 255, 50])
     }
+
+    /// Returns the unimproved land value image data as a PackedByteArray (RGBA8).
+    pub fn get_land_value_image_data_internal(&self) -> PackedByteArray {
+        self.environment_image_data(&self.land_value.grid, [240, 200, 60])
+    }
 }
 
 fn grid_image_pixels(

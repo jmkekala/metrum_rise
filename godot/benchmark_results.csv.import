@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://dxdfsa5s1uq43"
+
+[deps]
+
+files=["res://benchmark_results.version.translation", "res://benchmark_results.agents.translation", "res://benchmark_results.map.translation", "res://benchmark_results.tick.translation", "res://benchmark_results.fps.translation", "res://benchmark_results.pathfind.translation"]
+
+source_file="res://benchmark_results.csv"
+dest_files=["res://benchmark_results.version.translation", "res://benchmark_results.agents.translation", "res://benchmark_results.map.translation", "res://benchmark_results.tick.translation", "res://benchmark_results.fps.translation", "res://benchmark_results.pathfind.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

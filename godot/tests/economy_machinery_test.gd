@@ -6,6 +6,8 @@ extends SceneTree
 
 const EconomyOverview = preload("res://scripts/ui/economy_overview.gd")
 const BuildingInspector = preload("res://scripts/ui/building_inspector.gd")
+const FactionApprovalBar = preload("res://scripts/ui/faction_approval_bar.gd")
+const PolicyPoliticsPanel = preload("res://scripts/ui/policy_politics_panel.gd")
 
 var _failures := 0
 
@@ -56,6 +58,40 @@ func _run() -> void:
 	var descriptor: Dictionary = JSON.parse_string(authoring.inspect_json(JSON.stringify(metadata)))["descriptor"]
 	_expect(descriptor["profiles"].any(func(profile): return profile["id"] == "machinery_factory_basic"), "Asset editor offers the new processor profile")
 	_expect(descriptor["selected_profile"]["profile"]["worker_capacity"] == 4 and not descriptor["fields"].has("worker_capacity"), "Machinery profile owns four read-only jobs")
+
+	# Verify FactionApprovalBar ghost bar and PolicyPoliticsPanel preview/commit workflow
+	var ghost_bar := FactionApprovalBar.new()
+	ghost_bar.set_faction_state("property_owners", "Property Owners", 0.25, 58.0, -14.5, "lvt_burden")
+	_expect(ghost_bar._delta_label.visible and ghost_bar._delta_label.text == "-14.5%", "Negative ghost delta displays on faction bar")
+	_expect(ghost_bar._issue_label.text == "LVT Impact", "Dominant issue badge displays LVT Impact")
+	ghost_bar.free()
+
+	var sim := SimulationNode.new()
+	var panel := PolicyPoliticsPanel.new()
+	panel.simulation_node = sim
+	var initial_overview: Dictionary = sim.get_economy_overview()
+	panel.update_from_overview(initial_overview)
+	_expect(not panel.has_staged_changes(), "Fresh policy panel has no staged changes")
+	_expect(panel._value_labels["ubi_surplus_share"].text == "0% (OFF)", "UBI slider defaults to 0% (OFF)")
+
+	# Stage LVT = 45% and UBI = 85% and verify real-time preview ghost deltas + warning badges
+	panel._on_slider_staged(0.45, "lvt_rate", "percent")
+	panel._on_slider_staged(0.85, "ubi_surplus_share", "percent")
+	_expect(panel.has_staged_changes(), "Dragging LVT/UBI sliders marks staged changes")
+	_expect(panel._low_wage_warning_badge.visible, "High UBI triggers low-wage labor shortage warning badge")
+	var po_bar = panel._faction_bars["property_owners"]
+	var wy_bar = panel._faction_bars["workers_and_youth"]
+	_expect(po_bar.approval_delta < 0.0, "Property Owners ghost bar shows negative delta under LVT hike")
+	_expect(wy_bar.approval_delta > 0.0, "Workers & Youth ghost bar shows positive delta under UBI + LVT")
+	_expect(float(sim.get_economy_overview()["fiscal_policy"]["lvt_rate"]) == 0.0, "Live SimulationNode state is untouched before Apply Reform")
+
+	# Commit via Apply Reform
+	panel._on_apply_reform_pressed()
+	_expect(not panel.has_staged_changes(), "Apply Reform clears staged state")
+	_expect(absf(float(sim.get_economy_overview()["fiscal_policy"]["lvt_rate"]) - 0.45) < 0.001, "Apply Reform commits LVT rate to SimulationNode")
+	panel.free()
+	sim.free()
+
 	if _failures == 0:
 		print("economy_machinery_test: PASS")
 	quit(0 if _failures == 0 else 1)

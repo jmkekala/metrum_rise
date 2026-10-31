@@ -40,6 +40,7 @@ enum ActionId {
 	CITY_STATS = 20,
 	CITY_ECONOMY = 21,
 	CITY_DEMAND = 22,
+	CITY_POLICY_POLITICS = 23,
 	TOOLS_OPEN_ASSET_EDITOR = 30,
 	HELP_SHORTCUTS = 40,
 	HELP_ABOUT = 41,
@@ -204,6 +205,7 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	var city_popup := _add_menu_popup(menu_bar, "City")
 	city_popup.add_item("City Statistics", ActionId.CITY_STATS)
 	city_popup.add_item("Economy Overview", ActionId.CITY_ECONOMY)
+	city_popup.add_item("Policy & Politics", ActionId.CITY_POLICY_POLITICS)
 	city_popup.add_item("Demand Overview", ActionId.CITY_DEMAND)
 	city_popup.id_pressed.connect(_on_city_menu_pressed)
 
@@ -369,6 +371,11 @@ func _on_city_menu_pressed(id: int) -> void:
 			))
 		ActionId.CITY_ECONOMY:
 			_open_window(_ensure_economy_overview_window())
+		ActionId.CITY_POLICY_POLITICS:
+			var econ_window := _ensure_economy_overview_window()
+			_open_window(econ_window)
+			if econ_window.has_method("open_policy_politics_tab"):
+				econ_window.open_policy_politics_tab()
 		ActionId.CITY_DEMAND:
 			_open_window(_ensure_text_window(
 				"demand_overview",

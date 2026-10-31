@@ -40,6 +40,7 @@ impl HouseholdSystem {
     /// unemployment benefit for its adults not paid a wage in its window, pensions and child
     /// support, while the treasury holds cash. When the treasury runs out, slot order
     /// decides who is paid. O(1).
+    #[cfg(test)]
     pub(super) fn pay_household_transfer(
         &mut self,
         household_id: usize,
@@ -47,17 +48,43 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
         policy: &CityFiscalPolicy,
     ) {
+        let mut zero_ubi_pool = 0.0;
+        self.pay_household_transfer_with_ubi(
+            household_id,
+            allocator,
+            treasury_balance,
+            policy,
+            0.0,
+            &mut zero_ubi_pool,
+        );
+    }
+
+    /// Pays household `household_id`'s daily statutory transfers and Citizen's Dividend (UBI)
+    /// at its daily phase (`SIM-02-G`).
+    ///
+    /// Statutory transfers are paid first; UBI is paid only from the remaining positive
+    /// `remaining_ubi_pool` and only while `treasury_balance > 0.0`. O(1).
+    pub(super) fn pay_household_transfer_with_ubi(
+        &mut self,
+        household_id: usize,
+        allocator: &BuildingAllocator,
+        treasury_balance: &mut f64,
+        policy: &CityFiscalPolicy,
+        daily_ubi_per_adult: f32,
+        remaining_ubi_pool: &mut f64,
+    ) {
         let household = &mut self.households[household_id];
         if household.member_count == 0 {
             return;
         }
         let ledger = &mut self.daily_ledgers[household_id];
+        let housed = allocator.household_capacity(household.home_building_id) > 0;
         // Each member's wage falls once in any 24-hour window, so the adults not paid in this
         // one are the household's unemployed, including workers an insolvent employer could
         // not pay before it closed (`SIM-02-G`).
         let unemployed = household.adult_count.saturating_sub(ledger.paid_workers);
         ledger.unemployed_adults = unemployed;
-        let unemployment_claim = if allocator.household_capacity(household.home_building_id) == 0 {
+        let unemployment_claim = if !housed {
             0.0
         } else if unemployed == 0 {
             household.unemployment_days_elapsed = 0;
@@ -74,11 +101,18 @@ impl HouseholdSystem {
             household.elder_count as f32 * policy.pension_per_elder_per_day.max(0.0);
         let child_support_claim =
             household.child_count as f32 * policy.child_support_per_child_per_day.max(0.0);
-        ledger.transfer_claim += unemployment_claim + pension_claim + child_support_claim;
+        let ubi_claim = if housed && daily_ubi_per_adult > 0.0 {
+            household.adult_count as f32 * daily_ubi_per_adult.max(0.0)
+        } else {
+            0.0
+        };
+        ledger.transfer_claim +=
+            unemployment_claim + pension_claim + child_support_claim + ubi_claim;
         let unemployment_paid = pay_transfer_claim(treasury_balance, unemployment_claim);
         let pension_paid = pay_transfer_claim(treasury_balance, pension_claim);
         let child_support_paid = pay_transfer_claim(treasury_balance, child_support_claim);
-        let paid = unemployment_paid + pension_paid + child_support_paid;
+        let ubi_paid = pay_ubi_claim(treasury_balance, remaining_ubi_pool, ubi_claim);
+        let paid = unemployment_paid + pension_paid + child_support_paid + ubi_paid;
         if paid <= 0.0 {
             return;
         }
@@ -86,13 +120,15 @@ impl HouseholdSystem {
         ledger.unemployment_benefit_income += unemployment_paid;
         ledger.pension_income += pension_paid;
         ledger.child_support_income += child_support_paid;
+        ledger.ubi_income += ubi_paid;
         let totals = &mut self.day_totals;
         totals.unemployment_benefits += f64::from(unemployment_paid);
         totals.pensions += f64::from(pension_paid);
         totals.child_support += f64::from(child_support_paid);
+        totals.ubi_dividends += f64::from(ubi_paid);
         debug_log!(
             "economy",
-            "household_transfer_recipient: household_id={} unemployed_adults={} elders={} children={} paid={:.1} unemployment={:.1} pension={:.1} child_support={:.1} unemployment_days_elapsed={}",
+            "household_transfer_recipient: household_id={} unemployed_adults={} elders={} children={} paid={:.1} unemployment={:.1} pension={:.1} child_support={:.1} ubi={:.1} unemployment_days_elapsed={}",
             household_id,
             unemployed,
             household.elder_count,
@@ -101,6 +137,7 @@ impl HouseholdSystem {
             unemployment_paid,
             pension_paid,
             child_support_paid,
+            ubi_paid,
             household.unemployment_days_elapsed
         );
     }
@@ -116,6 +153,29 @@ pub(super) fn pay_transfer_claim(treasury_balance: &mut f64, claim: f32) -> f32 
     } else {
         let paid = (*treasury_balance).max(0.0) as f32;
         *treasury_balance = 0.0;
+        paid
+    }
+}
+
+pub(super) fn pay_ubi_claim(
+    treasury_balance: &mut f64,
+    remaining_ubi_pool: &mut f64,
+    claim: f32,
+) -> f32 {
+    if claim <= 0.0 || *treasury_balance <= 0.0 || *remaining_ubi_pool <= 0.0 {
+        return 0.0;
+    }
+    let available = (*treasury_balance).min(*remaining_ubi_pool);
+    if available >= f64::from(claim) {
+        let amount = f64::from(claim);
+        *treasury_balance -= amount;
+        *remaining_ubi_pool = (*remaining_ubi_pool - amount).max(0.0);
+        claim
+    } else {
+        let paid = available.max(0.0) as f32;
+        let amount = f64::from(paid);
+        *treasury_balance = (*treasury_balance - amount).max(0.0);
+        *remaining_ubi_pool = (*remaining_ubi_pool - amount).max(0.0);
         paid
     }
 }

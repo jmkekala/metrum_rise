@@ -72,11 +72,13 @@ macro_rules! diffuse_emissions {
 pub mod data_grid;
 /// Land value and desirability calculation.
 pub mod desirability;
+/// Unimproved spatial land value grid and Land Value Tax (LVT) assessment.
+pub mod land_value;
 /// Traffic and industrial noise simulation.
 pub mod noise;
 /// Industrial pollution simulation.
 pub mod pollution;
-/// The day-long rolling sweep of pollution, noise and desirability.
+/// The day-long rolling sweep of pollution, noise, desirability and unimproved land value.
 pub mod sweep;
 
 #[cfg(test)]

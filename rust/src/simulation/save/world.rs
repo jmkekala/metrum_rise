@@ -32,6 +32,7 @@ use crate::simulation::extraction::{
     validate_extractor_reserve,
 };
 use crate::simulation::grid::data_grid::DataGrid;
+use crate::simulation::grid::land_value::LandValueSystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::graph::RegionGraph;
@@ -164,6 +165,7 @@ pub(super) fn save_world(
     pending_demand_spawns: &VecDeque<PendingDemandSpawnAction>,
     pollution: &PollutionSystem,
     noise: &NoiseSystem,
+    land_value: &LandValueSystem,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
     // Terrain
@@ -261,6 +263,19 @@ pub(super) fn save_world(
             usize_to_i64(noise.grid.height)?,
             pack_f32_slice(&noise.grid.data),
             pack_f32_slice(&noise.back.data)
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO land_value_state(width, height, infra_grid_blob, infra_back_blob, service_grid_blob, service_back_blob, density_grid_blob, density_back_blob) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            usize_to_i64(land_value.grid.width)?,
+            usize_to_i64(land_value.grid.height)?,
+            pack_f32_slice(&land_value.infra_grid.data),
+            pack_f32_slice(&land_value.infra_back.data),
+            pack_f32_slice(&land_value.service_grid.data),
+            pack_f32_slice(&land_value.service_back.data),
+            pack_f32_slice(&land_value.density_grid.data),
+            pack_f32_slice(&land_value.density_back.data),
         ],
     )?;
 
@@ -2245,6 +2260,49 @@ pub(super) fn load_grid_system<T: GridSystemLoader>(
     front.data = unpack_f32_blob(&raw.2, w * h)?;
     back.data = unpack_f32_blob(&raw.3, w * h)?;
     Ok(s)
+}
+
+pub(super) fn load_land_value_system(
+    conn: &Connection,
+    config: &WorldConfig,
+    pollution: &PollutionSystem,
+    noise: &NoiseSystem,
+) -> SaveLoadResult<LandValueSystem> {
+    let mut lv = LandValueSystem::new(config);
+    conn.query_row(
+        "SELECT width, height, infra_grid_blob, infra_back_blob, service_grid_blob, service_back_blob, density_grid_blob, density_back_blob FROM land_value_state LIMIT 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, Vec<u8>>(6)?,
+                row.get::<_, Vec<u8>>(7)?,
+            ))
+        },
+    )
+    .map_err(SaveLoadError::from)
+    .and_then(|raw| {
+        let (w, h) = (i64_to_usize(raw.0)?, i64_to_usize(raw.1)?);
+        if w != config.env_grid_width() || h != config.env_grid_height() {
+            return Err(SaveLoadError::custom(
+                "grid size mismatch in land_value_state",
+            ));
+        }
+        let len = w * h;
+        lv.infra_grid.data = unpack_f32_blob(&raw.2, len)?;
+        lv.infra_back.data = unpack_f32_blob(&raw.3, len)?;
+        lv.service_grid.data = unpack_f32_blob(&raw.4, len)?;
+        lv.service_back.data = unpack_f32_blob(&raw.5, len)?;
+        lv.density_grid.data = unpack_f32_blob(&raw.6, len)?;
+        lv.density_back.data = unpack_f32_blob(&raw.7, len)?;
+        lv.recompose_from_factors(pollution, noise);
+        Ok(lv)
+    })
 }
 
 fn validate_electricity_usage(

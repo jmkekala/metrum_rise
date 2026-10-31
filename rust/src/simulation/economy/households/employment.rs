@@ -491,6 +491,9 @@ impl HouseholdSystem {
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let target_days = household_demand_profile(&catalog).stock_target_days;
+        if self.labor_market.active_daily_ubi_per_adult > 0.0 {
+            self.release_below_reservation_workers(batch, agents, allocator, &catalog, &tuning);
+        }
         allocator
             .building_handles
             .register_appended(allocator.buildings.len());
@@ -587,22 +590,34 @@ impl HouseholdSystem {
                     .push_back((self.workplace_route_cache_pass, key));
             }
         }
-        let mut plans: Vec<_> = batch
+        let mut outcomes: Vec<_> = batch
             .par_iter()
-            .filter_map(|&agent_idx| {
+            .map(|&agent_idx| {
                 plan_agent_workplace(
                     agent_idx,
                     agents,
-                    allocator.buildings.len(),
+                    allocator,
                     &catalog,
                     &tuning,
                     target_days,
                     &self.households,
+                    &self.labor_market,
                     &home_job_options,
                     &current_job_options,
                 )
             })
             .collect();
+        for (refusals, _) in &outcomes {
+            for (dst, &count) in self
+                .labor_market
+                .reservation_wage_refusals_by_sector
+                .iter_mut()
+                .zip(refusals)
+            {
+                *dst = dst.saturating_add(count);
+            }
+        }
+        let mut plans: Vec<_> = outcomes.drain(..).filter_map(|(_, plan)| plan).collect();
         // Resolve resident workers first when their best available job is at home.
         plans.sort_unstable_by_key(|plan| {
             (
@@ -637,6 +652,56 @@ impl HouseholdSystem {
             plan_count,
             start.elapsed().as_secs_f64() * 1000.0,
         );
+    }
+
+    fn release_below_reservation_workers(
+        &mut self,
+        batch: &[usize],
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) {
+        let building_count = allocator.buildings.len();
+        let household_count = self.households.len();
+        for &agent_idx in batch {
+            if !job_search_due(agents, agent_idx, building_count, household_count) {
+                continue;
+            }
+            let work = agents.work_building[agent_idx];
+            if work >= building_count {
+                continue;
+            }
+            let hid = agents.household_id[agent_idx];
+            let reservation_wage = self.labor_market.effective_household_reservation_wage(
+                &self.households[hid],
+                catalog,
+                tuning,
+            );
+            if reservation_wage <= 0.0 {
+                continue;
+            }
+            let building = &allocator.buildings[work];
+            let Some(profile) = active_work_profile(catalog, building) else {
+                continue;
+            };
+            let is_service = allocator.is_city_service_building(building);
+            let gross = self
+                .labor_market
+                .workplace_gross_daily_wage(profile, is_service);
+            let net_wage = self.labor_market.workplace_effective_net_wage(gross, 0.0);
+            if net_wage < reservation_wage {
+                let sector = crate::simulation::economy::labor_market::classify_workplace_sector(
+                    building, profile, is_service,
+                );
+                let idx = sector.index();
+                self.labor_market.reservation_wage_refusals_by_sector[idx] = self
+                    .labor_market
+                    .reservation_wage_refusals_by_sector[idx]
+                    .saturating_add(1);
+                release_worker(&mut self.households, agents, allocator, agent_idx, work);
+            }
+        }
     }
 
     pub(crate) fn enforce_service_funding_staffing(
@@ -804,13 +869,15 @@ impl HouseholdSystem {
             return None;
         }
         let household_id = agents.household_id[agent_idx];
-        let wage = profile.average_daily_wage();
+        let city_funded = allocator.is_city_service_building(building);
+        let wage = self
+            .labor_market
+            .workplace_gross_daily_wage(profile, city_funded);
         if household_id >= self.households.len() || wage <= 0.0 {
             return None;
         }
         self.ensure_daily_ledger_len();
         let power_plant = profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER);
-        let city_funded = allocator.is_city_service_building(building);
         let within_paid_capacity = building.paid_workers_in_window < capacity;
         let building = &mut allocator.buildings[work];
         if within_paid_capacity && !city_funded && building.operating_budget < wage {
@@ -909,6 +976,7 @@ struct JobAssignmentPlan {
     agent_idx: usize,
     old_job: usize,
     choice_count: u8,
+    quit_below_reservation: bool,
     choices: [JobChoice; JOB_SEARCH_CANDIDATES],
     income_pressure: f32,
     stock_pressure: f32,
@@ -918,29 +986,32 @@ struct JobAssignmentPlan {
 fn plan_agent_workplace(
     i: usize,
     agents: &AgentSystem,
-    building_count: usize,
+    allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
     tuning: &RuntimeEconomyTuning,
     target_days: f32,
     households: &[Household],
+    labor_market: &crate::simulation::economy::labor_market::LaborMarket,
     home_job_options: &BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
     current_job_options: &BTreeMap<CurrentJobOptionKey, HomeJobOption>,
-) -> Option<JobAssignmentPlan> {
-    if agents.transit[i] != TRANSIT_IN_BUILDING {
-        return None;
-    }
-    if !age_group_can_work(agents.age_group[i]) {
-        return None;
+) -> (
+    [u32; crate::simulation::economy::labor_market::WAGE_SECTOR_COUNT],
+    Option<JobAssignmentPlan>,
+) {
+    let mut refusals = [0_u32; crate::simulation::economy::labor_market::WAGE_SECTOR_COUNT];
+    let building_count = allocator.buildings.len();
+    if agents.transit[i] != TRANSIT_IN_BUILDING || !age_group_can_work(agents.age_group[i]) {
+        return (refusals, None);
     }
 
     let home_idx = agents.home_building[i];
     if home_idx == usize::MAX || home_idx >= building_count {
-        return None;
+        return (refusals, None);
     }
 
     let hid = agents.household_id[i];
     if hid == usize::MAX || hid >= households.len() {
-        return None;
+        return (refusals, None);
     }
 
     let household = &households[hid];
@@ -950,31 +1021,73 @@ fn plan_agent_workplace(
         || agents.job_lock_until_day[i] <= agents.settlement_days
         || agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS;
     if !can_switch {
-        return None;
+        return (refusals, None);
     }
 
     let home_key = HomeJobOptionsKey {
         home_idx,
         has_car: agents.has_car[i],
     };
-    let options = home_job_options.get(&home_key)?;
+    let reservation_wage =
+        labor_market.effective_household_reservation_wage(household, catalog, tuning);
+    let offered_gross_wage = |building_idx: usize, fallback_wage: f32| -> f32 {
+        if let Some(b) = allocator.buildings.get(building_idx)
+            && allocator.is_city_service_building(b)
+        {
+            fallback_wage * labor_market.public_sector_wage_multiplier.clamp(0.50, 3.00)
+        } else {
+            fallback_wage
+        }
+    };
 
     let income_pressure = household_income_pressure(catalog, tuning, household);
     let stock_pressure =
         (1.0 - (household.stock_days / target_days.max(0.1)).clamp(0.0, 1.0)).clamp(0.0, 1.0);
 
-    let mut choices = [EMPTY_JOB_CHOICE; JOB_SEARCH_CANDIDATES];
-    let mut choice_count = 0usize;
+    let mut quit_below_reservation = false;
     let mut current_job_score = if old_job < building_count
         && agents.consecutive_unpaid_days[i] < JOB_UNPAID_ABANDON_DAYS
     {
-        current_job_options.get(&(home_key, old_job)).map(|option| {
-            W_INCOME * income_pressure + W_STOCK * stock_pressure + W_JOB * 1.0
-                - W_COMMUTE * option.commute_penalty
-        })
+        current_job_options
+            .get(&(home_key, old_job))
+            .and_then(|option| {
+                let gross = offered_gross_wage(old_job, option.average_daily_wage);
+                let net_wage =
+                    labor_market.workplace_effective_net_wage(gross, option.commute_penalty);
+                if reservation_wage > 0.0 && net_wage < reservation_wage {
+                    quit_below_reservation = true;
+                    None
+                } else {
+                    Some(
+                        W_INCOME * income_pressure + W_STOCK * stock_pressure + W_JOB * 1.0
+                            - W_COMMUTE * option.commute_penalty,
+                    )
+                }
+            })
     } else {
         None
     };
+
+    let Some(options) = home_job_options.get(&home_key) else {
+        if quit_below_reservation {
+            return (
+                refusals,
+                Some(JobAssignmentPlan {
+                    agent_idx: i,
+                    old_job,
+                    choice_count: 0,
+                    quit_below_reservation: true,
+                    choices: [EMPTY_JOB_CHOICE; JOB_SEARCH_CANDIDATES],
+                    income_pressure,
+                    stock_pressure,
+                }),
+            );
+        }
+        return (refusals, None);
+    };
+
+    let mut choices = [EMPTY_JOB_CHOICE; JOB_SEARCH_CANDIDATES];
+    let mut choice_count = 0usize;
     for option in options
         .options
         .iter()
@@ -982,14 +1095,31 @@ fn plan_agent_workplace(
         .copied()
     {
         let candidate = option.building_idx;
+        let gross = offered_gross_wage(candidate, option.average_daily_wage);
+        let net_wage = labor_market.workplace_effective_net_wage(gross, option.commute_penalty);
+        if reservation_wage > 0.0 && net_wage < reservation_wage {
+            if let Some(building) = allocator.buildings.get(candidate)
+                && let Some(profile) =
+                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            {
+                let sector = crate::simulation::economy::labor_market::classify_workplace_sector(
+                    building,
+                    profile,
+                    allocator.is_city_service_building(building),
+                );
+                refusals[sector.index()] = refusals[sector.index()].saturating_add(1);
+            }
+            if candidate == old_job {
+                quit_below_reservation = true;
+                current_job_score = None;
+            }
+            continue;
+        }
         let score = W_INCOME * income_pressure + W_STOCK * stock_pressure + W_JOB * 1.0
             - W_COMMUTE * option.commute_penalty;
         if candidate == old_job {
             current_job_score = Some(score);
         } else if old_job >= building_count || score >= GO_TO_WORK_THRESHOLD {
-            // Demand counts unemployed adults as the first available labor supply.
-            // Savings must not make those adults refuse every funded, reachable offer;
-            // income/stock pressure still controls voluntary switches from an existing job.
             insert_job_choice(
                 &mut choices,
                 &mut choice_count,
@@ -1002,20 +1132,38 @@ fn plan_agent_workplace(
     }
 
     if choice_count == 0 {
-        return None;
+        if quit_below_reservation {
+            return (
+                refusals,
+                Some(JobAssignmentPlan {
+                    agent_idx: i,
+                    old_job,
+                    choice_count: 0,
+                    quit_below_reservation: true,
+                    choices,
+                    income_pressure,
+                    stock_pressure,
+                }),
+            );
+        }
+        return (refusals, None);
     }
     if current_job_score.is_some_and(|score| score >= choices[0].score) {
-        return None;
+        return (refusals, None);
     }
 
-    Some(JobAssignmentPlan {
-        agent_idx: i,
-        old_job,
-        choice_count: choice_count as u8,
-        choices,
-        income_pressure,
-        stock_pressure,
-    })
+    (
+        refusals,
+        Some(JobAssignmentPlan {
+            agent_idx: i,
+            old_job,
+            choice_count: choice_count as u8,
+            quit_below_reservation,
+            choices,
+            income_pressure,
+            stock_pressure,
+        }),
+    )
 }
 
 // Lock length for `agent_idx` at `work_building`: a deterministic spread over
@@ -1105,6 +1253,13 @@ fn apply_workplace_plan(
         return;
     }
 
+    if plan.choice_count == 0 {
+        if plan.quit_below_reservation && plan.old_job < allocator.buildings.len() {
+            release_worker(households, agents, allocator, plan.agent_idx, plan.old_job);
+        }
+        return;
+    }
+
     for choice in plan
         .choices
         .iter()
@@ -1163,6 +1318,10 @@ fn apply_workplace_plan(
             plan.stock_pressure
         );
         return;
+    }
+
+    if plan.quit_below_reservation && plan.old_job < allocator.buildings.len() {
+        release_worker(households, agents, allocator, plan.agent_idx, plan.old_job);
     }
 }
 

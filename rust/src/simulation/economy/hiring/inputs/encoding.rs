@@ -603,6 +603,10 @@ pub(super) fn put_fiscal(out: &mut Writer, policy: &CityFiscalPolicy) {
         commercial_property_tax_per_building_per_day,
         industrial_property_tax_per_building_per_day,
         property_tax_level_multiplier,
+        lvt_rate,
+        ubi_surplus_share,
+        public_sector_wage_multiplier,
+        automation_level,
     } = policy;
     out.f32(*unemployment_benefit_per_adult_per_day);
     out.u32(*unemployment_max_days);
@@ -616,6 +620,10 @@ pub(super) fn put_fiscal(out: &mut Writer, policy: &CityFiscalPolicy) {
         *commercial_property_tax_per_building_per_day,
         *industrial_property_tax_per_building_per_day,
         *property_tax_level_multiplier,
+        *lvt_rate,
+        *ubi_surplus_share,
+        *public_sector_wage_multiplier,
+        *automation_level,
     ] {
         out.f32(value);
     }
@@ -625,7 +633,7 @@ pub(super) fn put_fiscal(out: &mut Writer, policy: &CityFiscalPolicy) {
 pub(super) fn read_fiscal(reader: &mut Reader<'_>) -> Result<CityFiscalPolicy, String> {
     let unemployment_benefit_per_adult_per_day = reader.f32()?;
     let unemployment_max_days = reader.u32()?;
-    let mut rates = [0.0; 9];
+    let mut rates = [0.0; 13];
     for rate in &mut rates {
         *rate = reader.f32()?;
     }
@@ -639,6 +647,10 @@ pub(super) fn read_fiscal(reader: &mut Reader<'_>) -> Result<CityFiscalPolicy, S
         commercial_property_tax_per_building_per_day,
         industrial_property_tax_per_building_per_day,
         property_tax_level_multiplier,
+        lvt_rate,
+        ubi_surplus_share,
+        public_sector_wage_multiplier,
+        automation_level,
     ] = rates;
     Ok(CityFiscalPolicy {
         unemployment_benefit_per_adult_per_day,
@@ -652,5 +664,9 @@ pub(super) fn read_fiscal(reader: &mut Reader<'_>) -> Result<CityFiscalPolicy, S
         commercial_property_tax_per_building_per_day,
         industrial_property_tax_per_building_per_day,
         property_tax_level_multiplier,
+        lvt_rate,
+        ubi_surplus_share,
+        public_sector_wage_multiplier,
+        automation_level,
     })
 }

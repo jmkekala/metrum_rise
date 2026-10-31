@@ -33,6 +33,8 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) pension_income: f32,
     /// Child-support transfer received during daily settlement.
     pub(crate) child_support_income: f32,
+    /// Citizen's Dividend (UBI) received during daily settlement.
+    pub(crate) ubi_income: f32,
     /// Eligible transfers before treasury cash limits, across all benefit categories.
     pub(crate) transfer_claim: f32,
     /// Residential property tax paid during daily settlement.
@@ -67,7 +69,10 @@ pub(crate) struct DailyHouseholdLedger {
 impl DailyHouseholdLedger {
     /// Total city transfer income received during the current ledger window.
     pub(crate) fn transfer_income(self) -> f32 {
-        self.unemployment_benefit_income + self.pension_income + self.child_support_income
+        self.unemployment_benefit_income
+            + self.pension_income
+            + self.child_support_income
+            + self.ubi_income
     }
 }
 
@@ -127,6 +132,9 @@ pub(crate) struct CityDayTotals {
     pub(crate) pensions: f64,
     /// Child support paid from the treasury.
     pub(crate) child_support: f64,
+    /// Citizen's Dividend (UBI) paid from the net fiscal surplus pool.
+    #[serde(default)]
+    pub(crate) ubi_dividends: f64,
     /// Coal burned by power plants in the day's hourly dispatches.
     pub(crate) coal_consumed_kg: f64,
     /// Operational providers that settled, by utility service; the next day's water and sewage
@@ -139,6 +147,11 @@ pub(crate) struct CityDayTotals {
 impl CityDayTotals {
     /// Treasury transfers paid to households during the day.
     pub(crate) fn transfers(&self) -> f64 {
+        self.unemployment_benefits + self.pensions + self.child_support + self.ubi_dividends
+    }
+
+    /// Statutory (mandatory) household transfers excluding the Citizen's Dividend (UBI).
+    pub(crate) fn statutory_transfers(&self) -> f64 {
         self.unemployment_benefits + self.pensions + self.child_support
     }
 }
@@ -335,6 +348,8 @@ pub struct HouseholdSystem {
     pub(crate) service_sales: super::service_sales::ServiceSales,
     /// Closed building accounts retained until the current fiscal day is reported.
     pub(crate) removed_electricity: super::electricity::RemovedBuildingElectricity,
+    /// Citywide labor market state, reservation wage parameters, and sector shortage counters.
+    pub labor_market: crate::simulation::economy::labor_market::LaborMarket,
 }
 
 /// Household records changed when one building is removed.
@@ -403,6 +418,7 @@ impl HouseholdSystem {
             electricity_hour: Default::default(),
             service_sales: Default::default(),
             removed_electricity: Default::default(),
+            labor_market: Default::default(),
         }
     }
 
@@ -846,6 +862,35 @@ impl HouseholdSystem {
             0.0
         };
         self.last_day_totals = closed;
+    }
+
+    /// Counts all adult residents in housed households eligible for the Citizen's Dividend (UBI).
+    pub(crate) fn total_housed_adults(&self, allocator: &BuildingAllocator) -> u32 {
+        self.households
+            .iter()
+            .filter(|h| h.member_count > 0 && allocator.household_capacity(h.home_building_id) > 0)
+            .map(|h| u32::from(h.adult_count))
+            .sum()
+    }
+
+    /// Synchronizes the labor market's reservation wage, policy multipliers, and sector shortage
+    /// diagnostics with the current fiscal policy and Citizen's Dividend (`daily_ubi_per_adult`).
+    pub(crate) fn sync_labor_market(
+        &mut self,
+        allocator: &BuildingAllocator,
+        fiscal: &crate::simulation::economy::fiscal::CityFiscalPolicy,
+        daily_ubi_per_adult: f32,
+    ) {
+        let Ok(catalog) = load_runtime_economy_catalog() else {
+            return;
+        };
+        let Ok(tuning) = load_runtime_economy_tuning() else {
+            return;
+        };
+        self.labor_market
+            .sync_policy_and_ubi(fiscal, daily_ubi_per_adult, &catalog, &tuning);
+        self.labor_market
+            .refresh_sector_diagnostics(allocator, &catalog);
     }
 
     /// Ends household `household_id`'s 24-hour ledger window at its daily phase: the budget

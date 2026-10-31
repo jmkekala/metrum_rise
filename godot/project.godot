@@ -1,10 +1,22 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
 config_version=5
+
+[animation]
+
+compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
 config/name="Metrum Rise"
-config/features=PackedStringArray("4.x", "Forward Plus")
 run/main_scene="res://scenes/Router.tscn"
+config/features=PackedStringArray("4.6", "Forward Plus")
 
 [autoload]
 
@@ -16,8 +28,16 @@ DebugConsole="*res://scripts/ui/debug_console/debug_console.gd"
 
 window/size/viewport_width=1920
 window/size/viewport_height=1080
-window/size/initial_screen=0
-window/stretch/mode="disabled"
+
+[rendering]
+
+textures/vram_compression/import_etc2_astc=true
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
+lights_and_shadows/positional_shadow/soft_shadow_filter_quality=3
+limits/global_shader_variables/buffer_size=1048576
+environment/defaults/default_clear_color=Color(0.53, 0.74, 0.92, 1)
+anti_aliasing/quality/screen_space_aa=1
+environment/defaults/default_environment="res://default_environment.tres"
 
 [shader_globals]
 
@@ -53,7 +73,6 @@ street_lamp_far_fade={
 "type": "vec2",
 "value": Vector2(500, 700)
 }
-
 night_sky_map={
 "type": "sampler2D",
 "value": ""
@@ -126,7 +145,6 @@ scene_window_clock={
 "type": "vec2",
 "value": Vector2(12, 45)
 }
-
 scene_sun_direction={
 "type": "vec3",
 "value": Vector3(-0.52, 0.58, -0.63)
@@ -167,14 +185,3 @@ terrain_grass_visual_debug_mode={
 "type": "int",
 "value": 0
 }
-
-[rendering]
-
-anti_aliasing/quality/screen_space_aa=1
-environment/defaults/default_clear_color=Color(0.53, 0.74, 0.92, 1)
-environment/defaults/default_environment="res://default_environment.tres"
-lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
-lights_and_shadows/positional_shadow/soft_shadow_filter_quality=3
-limits/global_shader_variables/buffer_size=1048576
-renderer/rendering_method="forward_plus"
-textures/vram_compression/import_etc2_astc=true

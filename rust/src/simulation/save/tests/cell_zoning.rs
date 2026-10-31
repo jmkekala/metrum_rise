@@ -109,6 +109,7 @@ fn write_snapshot(
             resource_deposits: &ResourceDepositSystem::from_world_config(config),
             pollution: &PollutionSystem::new(config),
             noise: &NoiseSystem::new(config),
+            land_value: &crate::simulation::grid::land_value::LandValueSystem::new(config),
             demand: &DemandSystem::new(),
             pending_demand_spawns: &VecDeque::new(),
             scheduler: crate::simulation::save::SavedScheduler::default(),

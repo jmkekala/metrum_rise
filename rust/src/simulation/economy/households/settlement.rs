@@ -19,6 +19,7 @@ impl HouseholdSystem {
     /// former midnight settlement: transfers, residential property tax, water and sewage, then
     /// the electricity bill. The window then closes; the caller reports it and opens the next.
     /// O(1).
+    #[allow(dead_code)]
     pub(crate) fn settle_household_day(
         &mut self,
         household_id: usize,
@@ -27,10 +28,51 @@ impl HouseholdSystem {
         fiscal_policy: &CityFiscalPolicy,
         treasury_balance: &mut f64,
     ) -> FiscalRevenue {
+        let mut zero_ubi_pool = 0.0;
+        self.settle_household_day_with_ubi(
+            household_id,
+            allocator,
+            day,
+            fiscal_policy,
+            treasury_balance,
+            0.0,
+            &mut zero_ubi_pool,
+            None,
+        )
+    }
+
+    /// Settles household `household_id`'s 24-hour window including Citizen's Dividend (UBI)
+    /// disbursement from the city's surplus-backed `remaining_ubi_pool` and spatial LVT. O(1).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn settle_household_day_with_ubi(
+        &mut self,
+        household_id: usize,
+        allocator: &BuildingAllocator,
+        day: &DaySettlement,
+        fiscal_policy: &CityFiscalPolicy,
+        treasury_balance: &mut f64,
+        daily_ubi_per_adult: f32,
+        remaining_ubi_pool: &mut f64,
+        land_value: Option<(
+            &crate::simulation::grid::land_value::LandValueSystem,
+            &crate::simulation::core::config::WorldConfig,
+        )>,
+    ) -> FiscalRevenue {
         self.ensure_daily_ledger_len();
-        self.pay_household_transfer(household_id, allocator, treasury_balance, fiscal_policy);
-        let residential_property_tax =
-            self.charge_household_property_tax(household_id, allocator, fiscal_policy);
+        self.pay_household_transfer_with_ubi(
+            household_id,
+            allocator,
+            treasury_balance,
+            fiscal_policy,
+            daily_ubi_per_adult,
+            remaining_ubi_pool,
+        );
+        let (residential_property_tax, land_value_tax) = self.charge_household_property_and_lvt(
+            household_id,
+            allocator,
+            fiscal_policy,
+            land_value,
+        );
         self.settle_household_utilities(household_id, day, treasury_balance);
         self.settle_household_electricity(
             household_id,
@@ -41,6 +83,7 @@ impl HouseholdSystem {
         self.finish_household_window(household_id);
         FiscalRevenue {
             residential_property_tax,
+            land_value_tax,
             ..FiscalRevenue::default()
         }
     }
