@@ -28,19 +28,6 @@ pub enum PieceId {
     Node(u32),
 }
 
-/// One part of a tunnel span with a portal row ([`RoadbedSystem::for_each_portal_part_in_bounds`],
-/// `TERRAIN-07-C`, `docs/terrain.md` T22 5 (a)).
-#[derive(Clone, Copy, Debug)]
-pub enum PortalPart<'a> {
-    /// A portal row's vertices, corner to corner ([`PieceMesh::portal_rows`]).
-    Row(&'a [RoadVec3]),
-    /// A top triangle: the deck the graded terrain opens near a portal row.
-    Top([RoadVec3; 3]),
-    /// An outer-chain segment, the deck on its left: a bore seam, along which the opening's
-    /// sides stand.
-    Bore([RoadVec3; 2]),
-}
-
 /// One wall-run segment ([`RoadbedSystem::wall_seams_in_bounds`], `TERRAIN-07-C`), with the
 /// abutment face's bottom edge below its ends where its run crosses a bridge's mouth
 /// (`TERRAIN-07-D`, the abutment band).
@@ -300,40 +287,33 @@ impl RoadbedSystem {
         })
     }
 
-    /// The highest top triangle's height at a world XZ point over the pieces that stand on or
-    /// above the ground, then apart over the buried ones: tunnel spans and node pieces where only
-    /// tunnels meet (`ROAD-61`). A buried deck is the visible surface only where the graded
-    /// terrain's portal opening cuts the ground, which the roadbed does not know
-    /// (`GradedSurface::surface_height_at`). Without a buried piece the first is
+    /// The highest top triangle's height at a world XZ point over the exposed pieces: every
+    /// piece but the buried ones (a tunnel span, or a node piece where only tunnels meet), which
+    /// lie under the ground (`ROAD-61`). Where no buried piece holds the point it equals
     /// [`Self::height_at`], bitwise. One walk of the point's query cell, as [`Self::height_at`];
     /// allocation-free.
-    pub fn exposed_and_buried_heights_at(&self, x: f32, z: f32) -> [Option<f32>; 2] {
-        self.exposed_and_buried_tops_at(x, z)
-            .map(|top| top.map(|(height_m, _)| height_m))
+    pub fn exposed_height_at(&self, x: f32, z: f32) -> Option<f32> {
+        self.exposed_top_at(x, z).map(|(height_m, _)| height_m)
     }
 
-    /// [`Self::exposed_and_buried_heights_at`] with each triangle's upward face normal, as
+    /// [`Self::exposed_height_at`] with the triangle's upward face normal, as
     /// [`Self::height_and_normal_at`] gives it.
-    pub fn exposed_and_buried_heights_and_normals_at(
-        &self,
-        x: f32,
-        z: f32,
-    ) -> [Option<(f32, Vector3)>; 2] {
-        self.exposed_and_buried_tops_at(x, z)
-            .map(|top| top.map(|(height_m, triangle)| (height_m, upward_normal(triangle))))
+    pub fn exposed_height_and_normal_at(&self, x: f32, z: f32) -> Option<(f32, Vector3)> {
+        self.exposed_top_at(x, z)
+            .map(|(height_m, triangle)| (height_m, upward_normal(triangle)))
     }
 
-    // The highest top triangle at the point over the exposed pieces and over the buried ones;
-    // ties keep the first in piece order, as `top_at`.
-    fn exposed_and_buried_tops_at(&self, x: f32, z: f32) -> [Option<(f32, [RoadVec3; 3])>; 2] {
+    // The highest top triangle at the point over the exposed pieces; ties keep the first in
+    // piece order, as `top_at`.
+    fn exposed_top_at(&self, x: f32, z: f32) -> Option<(f32, [RoadVec3; 3])> {
         let point = RoadVec2::new(f64::from(x), f64::from(z));
-        let mut best: [Option<(f32, [RoadVec3; 3])>; 2] = [None, None];
+        let mut best: Option<(f32, [RoadVec3; 3])> = None;
         for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
-            let slot = &mut best[usize::from(indexed.buried)];
-            if let Some((height_m, _, triangle)) = surface_at(&indexed.mesh, point, |_| true)
-                && slot.is_none_or(|(best_m, _)| height_m > best_m)
+            if !indexed.buried
+                && let Some((height_m, _, triangle)) = surface_at(&indexed.mesh, point, |_| true)
+                && best.is_none_or(|(best_m, _)| height_m > best_m)
             {
-                *slot = Some((height_m, triangle));
+                best = Some((height_m, triangle));
             }
         }
         best
@@ -398,7 +378,7 @@ impl RoadbedSystem {
     }
 
     /// [`Self::any_band_near_disc`] over the pieces on or above the ground: a buried piece
-    /// ([`Self::exposed_and_buried_heights_at`]) lies under the terrain (`ROAD-61`).
+    /// ([`Self::exposed_height_at`]) lies under the terrain (`ROAD-61`).
     pub fn any_exposed_band_near_disc(
         &self,
         center: RoadVec2,
@@ -842,46 +822,25 @@ impl RoadbedSystem {
         }
     }
 
-    /// Visits the parts of the tunnel spans with a portal row ([`PieceMesh::portal_rows`],
-    /// `TERRAIN-07-C`) whose bounds touch the XZ bounds, piece by piece in ascending piece order:
-    /// every portal row, the top triangles whose piece grid cells touch the bounds (a triangle
-    /// may come more than once), and the outer-chain segments whose own bounds touch them. No
-    /// terrain height is read. `pieces` is the caller's scratch. `O(P log P + T + V)` for the
-    /// pieces met, the triangles visited and their chain vertices.
-    pub fn for_each_portal_part_in_bounds(
+    /// Visits the tunnel mouths of `pieces`, grounded pieces (`ROAD-61`): per wall run across a
+    /// tunnel's mouth ([`PieceMesh::wall_runs`] that are no abutment runs), the piece's
+    /// positions and the run's vertices, corner to corner with the grounded road on their left
+    /// and the tunnel on their right; bitwise the tunnel span's portal row
+    /// ([`PieceMesh::portal_rows`]), a curb pair once at its lower vertex. No terrain height is
+    /// read. `O(runs)`.
+    pub fn for_each_tunnel_mouth(
         &self,
-        bounds_xz: [f64; 4],
-        pieces: &mut Vec<PieceId>,
-        mut visit: impl FnMut(PortalPart<'_>),
+        pieces: &[PieceId],
+        mut visit: impl FnMut(&[RoadVec3], &[u32]),
     ) {
-        self.portal_pieces_in_bounds(bounds_xz, pieces);
-        for id in pieces.iter() {
+        for id in pieces {
             let mesh = self.pieces[id].mesh();
-            mesh.portal_rows()
-                .for_each(|row| visit(PortalPart::Row(row)));
-            mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| {
-                visit(PortalPart::Top(mesh.triangle_points(triangle)));
-                false
-            });
-            for_each_segment_in_bounds(mesh, mesh.outer_chains(), bounds_xz, &mut |segment| {
-                visit(PortalPart::Bore(segment))
-            });
-        }
-    }
-
-    /// The tunnel spans with a portal row ([`PieceMesh::portal_rows`], `TERRAIN-07-C`) whose
-    /// bounds touch the XZ bounds, sorted and unique, into `pieces`. `O(P log P)` for the pieces
-    /// met.
-    pub fn portal_pieces_in_bounds(&self, bounds_xz: [f64; 4], pieces: &mut Vec<PieceId>) {
-        pieces.clear();
-        self.any_piece_in_bounds(bounds_xz, |id, mesh, _| {
-            if mesh.portal_rows().next().is_some() {
-                pieces.push(id);
+            for (run, &abutment) in mesh.wall_runs().iter().zip(mesh.abutment_runs()) {
+                if !abutment {
+                    visit(mesh.positions(), run.vertices());
+                }
             }
-            false
-        });
-        pieces.sort_unstable();
-        pieces.dedup();
+        }
     }
 
     /// The point-in-triangle predicate and height [`Self::height_at`] takes the highest of:

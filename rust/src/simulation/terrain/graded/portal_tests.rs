@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! `TERRAIN-07-C` portal opening acceptance (`docs/terrain.md` T22 5 (a)): pruned equals
-//! unpruned with the opening, the mask query equals the baked sign, the side walls close the
-//! opening along the bore seams, and a tunnel edit selects every tile it alters.
+//! Portal rows in the graded terrain (`TERRAIN-07-C`, `ROAD-61` round R8): no cone reaches past
+//! a tunnel's portal row, pruned equals unpruned with it, the queries answer what the bake packs,
+//! and a tunnel edit selects every tile it alters.
 
-use super::seams::segment_at;
 use super::site_tests::structure_mouth;
 use super::tests::{assert_exact_pruning, bake_with};
 use super::tile::Evaluation;
 use super::*;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::{PortalPart, RoadVec3, RoadbedSystem};
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::network::types::EdgeClass;
 
 fn compiled(graph: &RegionGraph) -> RoadbedSystem {
@@ -26,35 +25,43 @@ fn tiles(half: i32) -> Vec<TileKey> {
         .collect()
 }
 
-// The roadbed's portal rows (corner segments) and bore seams meeting `rect`.
-fn portal_parts(
-    roadbed: &RoadbedSystem,
-    rect: [f64; 4],
-) -> (Vec<[RoadVec3; 2]>, Vec<[RoadVec3; 2]>) {
-    let (mut rows, mut bores) = (Vec::new(), Vec::new());
-    roadbed.for_each_portal_part_in_bounds(rect, &mut Vec::new(), |part| match part {
-        PortalPart::Row(row) => rows.push([row[0], row[row.len() - 1]]),
-        PortalPart::Bore(segment) => bores.push(segment),
-        PortalPart::Top(_) => {}
-    });
-    (rows, bores)
-}
-
-// test: the tunnel continuing a road level into a 1:2 hill. The opening cuts the deck within
-// the reach of the portal row up to where the ground stands the clearance above it, the ground
-// beside it names the bore seams, and pruned equals unpruned at every level, batch, order and
-// worker count. At every `GL0` lattice point around the mouth the mask query reports `Road`
-// exactly where the bake's `sdf` is negative. Along the bore seams, every point sampled each
-// 5 cm within the reach where the rendered ground stands below the clearance and off the deck
-// edge is covered by a face of its tile between the seam's height and that ground (1 mm), the
-// deck side on its left where the ground beside stands higher.
+// test: the tunnel continuing a road level into a 1:2 hill, its portal row at x = 0. Past the row
+// the graded ground is the hill itself, out to the cap and across the bore's sides, though the
+// approach's cones would cut it there; before the row the approach's cut is graded. Pruned equals
+// unpruned at every level, batch, order and worker count, and every `GL0` lattice point's packed
+// value is the query's.
 #[test]
-fn a_tunnel_portal_opens_the_graded_ground() {
+fn no_cone_reaches_past_a_portal_row() {
     let (graph, terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
     let roadbed = compiled(&graph);
     let tiles = tiles(2);
     let gl0 = [TileKey { x: 0, z: 0 }, TileKey { x: 0, z: -1 }];
     assert_exact_pruning(&terrain, &roadbed, &NoSites, &tiles, &gl0, "tunnel portal");
+    let surface = GradedSurface {
+        terrain: &terrain,
+        roadbed: &roadbed,
+        sites: &NoSites,
+        query_index: None,
+    };
+    let mut scratch = QueryScratch::default();
+    let hill = |x: f64| 0.5 * (x + 20.0).max(0.0);
+    // On `GL0` lattice points past the row: a point between the row's line and the next lattice
+    // column reads the rendered triangle's blend of the cut and the hill.
+    for x in [0.5, 1.0, 5.0, 20.0, 40.0, 63.0] {
+        for z in [-30.0, -6.0, -2.0, 0.0, 2.0, 6.0, 30.0] {
+            let ground = surface.ground_height_at(x, z, &mut scratch);
+            assert!(
+                (ground - hill(x)).abs() < 1e-9,
+                "({x}, {z}): ground {ground}, hill {}",
+                hill(x)
+            );
+            assert_eq!(surface.surface_height_at(x, z, &mut scratch), ground);
+        }
+    }
+    // Before the row the approach lies in its cut: 5 m beside it, 2 m before the row, the
+    // ground stands below the hill.
+    let cut = surface.ground_height_at(-2.0, 7.0, &mut scratch);
+    assert!(cut < hill(-2.0) - 1.0, "approach cut {cut}");
     let payloads = bake_with(
         &terrain,
         &roadbed,
@@ -63,16 +70,6 @@ fn a_tunnel_portal_opens_the_graded_ground() {
         Level::Gl0,
         Evaluation::Lanes,
     );
-    let cut: u32 = payloads.iter().map(|p| p.stats.portal_cut).sum();
-    let named: u32 = payloads.iter().map(|p| p.stats.bore_named).sum();
-    assert!(cut > 100 && named > 20, "{cut} cut, {named} named");
-    let surface = GradedSurface {
-        terrain: &terrain,
-        roadbed: &roadbed,
-        sites: &NoSites,
-        query_index: None,
-    };
-    let mut scratch = QueryScratch::default();
     for payload in &payloads {
         let origin = payload.tile.origin();
         for j in 0..payload.samples[1] {
@@ -81,88 +78,28 @@ fn a_tunnel_portal_opens_the_graded_ground() {
                     origin[0] + (i as f64 - 1.0) * 0.5,
                     origin[1] + (j as f64 - 1.0) * 0.5,
                 );
-                if !(-6.0..=16.0).contains(&x) || z.abs() > 10.0 {
+                if !(-12.0..=12.0).contains(&x) || z.abs() > 12.0 {
                     continue;
                 }
                 let texel = payload.texels[j * payload.samples[0] + i];
-                assert_eq!(
-                    surface.mask_at(x, z, &mut scratch) == GroundClass::Road,
-                    texel[1].is_sign_negative(),
-                    "({x}, {z}) sdf {}",
-                    texel[1]
-                );
-            }
-        }
-    }
-    // Over the deck 5 m in, cut; 15 m in, the crown; 2.5 m beside the side 5 m in, ground.
-    for (x, z, road) in [(5.0, 0.0, true), (15.0, 0.0, false), (5.0, 6.0, false)] {
-        let mask = surface.mask_at(x, z, &mut scratch);
-        assert_eq!(mask == GroundClass::Road, road, "({x}, {z}): {mask:?}");
-    }
-
-    let (mut walled, mut highest) = (0, 0.0f64);
-    for payload in &payloads {
-        let origin = payload.tile.origin();
-        let rect = [origin[0], origin[1], origin[0] + TILE_M, origin[1] + TILE_M];
-        let (rows, bores) = portal_parts(&roadbed, rect);
-        let reaches = |x: f64, z: f64| {
-            rows.iter().any(|[a, b]| {
-                segment_at(a.to_array(), b.to_array(), x, z).distance <= PORTAL_REACH_M
-            })
-        };
-        for [a, b] in &bores {
-            let steps = ((b.x - a.x).hypot(b.z - a.z) / 0.05).ceil().max(1.0) as usize;
-            for step in 0..=steps {
-                let t = step as f64 / steps as f64;
-                let along = |p: f64, q: f64| p + (q - p) * t;
-                let (x, z, h) = (along(a.x, b.x), along(a.z, b.z), along(a.y, b.y));
-                if TileKey::at(x, z) != payload.tile || !reaches(x, z) {
-                    continue;
-                }
+                let base = surface.base_height_at(x, z, &mut scratch);
+                let packed = base + f64::from(texel[0]);
                 let ground = surface.ground_height_at(x, z, &mut scratch);
-                if (ground - h).abs() <= 1e-3 || ground >= h + PORTAL_CLEARANCE_M {
-                    continue;
-                }
-                let (lx, lz) = ((x - origin[0]) as f32, (z - origin[1]) as f32);
-                let (face, s) = payload
-                    .walls
-                    .iter()
-                    .find_map(|face| {
-                        let (dx, dz) = (face.b[0] - face.a[0], face.b[1] - face.a[1]);
-                        let s =
-                            ((lx - face.a[0]) * dx + (lz - face.a[1]) * dz) / (dx * dx + dz * dz);
-                        let off = (face.a[0] + dx * s - lx).hypot(face.a[1] + dz * s - lz);
-                        ((-1e-4..=1.0 + 1e-4).contains(&s) && off < 2e-3)
-                            .then_some((face, s.clamp(0.0, 1.0)))
-                    })
-                    .unwrap_or_else(|| panic!("no side wall at ({x}, {z}), {}", ground - h));
-                let lerp = |pair: [f32; 2]| f64::from(pair[0] + (pair[1] - pair[0]) * s);
-                let (bottom, top) = (lerp(face.bottom), lerp(face.top));
-                assert!(
-                    (bottom - h.min(ground)).abs() < 1e-3 && (top - h.max(ground)).abs() < 1e-3,
-                    "({x}, {z}): face {bottom}..{top}, seam {h}, ground {ground}"
-                );
-                let forward = f64::from(face.b[0] - face.a[0]) * (b.x - a.x)
-                    + f64::from(face.b[1] - face.a[1]) * (b.z - a.z)
-                    > 0.0;
                 assert_eq!(
-                    forward,
-                    ground > h,
-                    "({x}, {z}): the lower side on the left"
+                    packed,
+                    base + f64::from((ground - base) as f32),
+                    "({x}, {z})"
                 );
-                walled += 1;
-                highest = highest.max(ground - h);
+                if x > 0.0 {
+                    assert_eq!(texel[0], 0.0, "({x}, {z}) past the row");
+                }
             }
         }
     }
-    assert!(
-        walled > 50 && highest > 2.0,
-        "{walled} side wall points, highest {highest}"
-    );
 }
 
 // test: turning the continuation of the road into the hill from a bridge into a tunnel and
-// back (its chains and wall run stay the same bits, so only the portal parts change), and from
+// back (its chains and wall run stay the same bits, so only the portal rows change), and from
 // a road into a tunnel, selects every tile whose texels, seam row or walls change, and not all,
 // at `GL0` and `GL2`.
 #[test]

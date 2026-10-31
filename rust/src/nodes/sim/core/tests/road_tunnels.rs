@@ -436,16 +436,15 @@ fn gentle_tunnel_core() -> SimCore {
     core
 }
 
-// `ROAD-61` (found by round R2): a tunnel span is on the visible surface only inside its portal
-// opening, where the graded terrain cuts the ground over the deck (`mask_at`'s rule, T22 5 (a));
-// everywhere else over the bore the surface is the hill. Every visible-surface query (the
-// cursor's and the zoning cells' heights, off-lane vehicles, the agent inspector's ground)
-// answered the buried deck over the whole bore.
+// `ROAD-61` (found by round R2): over a bore the visible surface is the hill, from portal row to
+// portal row (round R8: no cone reaches past a portal row, so no opening cuts the ground over the
+// deck). Every visible-surface query (the cursor's and the zoning cells' heights, off-lane
+// vehicles, the agent inspector's ground) answered the buried deck over the whole bore.
 #[test]
 fn the_surface_over_a_bore_is_the_hill() {
     use crate::simulation::terrain::graded::GroundClass;
     let core = gentle_tunnel_core();
-    for x in [-50.0, -25.0, 0.0, 25.0, 50.0] {
+    for x in [-78.0, -50.0, -25.0, 0.0, 25.0, 50.0, 78.0] {
         for z in [0.0, 2.0] {
             let hill = cone_hill(100.0, 0.25, x, z);
             let heights = core.with_graded_surface(|surface, scratch| {
@@ -454,7 +453,6 @@ fn the_surface_over_a_bore_is_the_hill() {
                 let (with_normal, _) = surface.surface_height_and_normal_at(x, z, scratch);
                 surface.gather_near(x, z, 3.0, scratch);
                 let near = surface.surface_height_near(x, z, scratch);
-                surface.gather_heights_near(x, z, 3.0, scratch);
                 let (near_normal, _) = surface.surface_height_and_normal_near(x, z, scratch);
                 [at, with_normal, near, near_normal].map(|height| height as f32)
             });
@@ -467,13 +465,23 @@ fn the_surface_over_a_bore_is_the_hill() {
             }
         }
     }
-    // Inside the opening, 2 m in from each mouth, the surface is the deck.
+    // 2 m into the bore the ground is the hill, unmasked; 2 m before each mouth the surface is
+    // the approach's deck.
     for x in [-78.0, 78.0] {
+        core.with_graded_surface(|surface, scratch| {
+            let mask = surface.mask_at(f64::from(x), 0.0, scratch);
+            assert!(
+                matches!(mask, GroundClass::Natural | GroundClass::Graded),
+                "{mask:?} at {x}"
+            );
+        });
+    }
+    for x in [-82.0, 82.0] {
         let deck = core
             .transit_network
             .roadbed
             .height_at(x, 0.0)
-            .expect("the tunnel deck");
+            .expect("the approach deck");
         core.with_graded_surface(|surface, scratch| {
             let (x, z) = (f64::from(x), 0.0);
             assert_eq!(surface.mask_at(x, z, scratch), GroundClass::Road);
@@ -488,13 +496,12 @@ fn the_surface_over_a_bore_is_the_hill() {
     }
 }
 
-// Open (`ROAD-61`, found by round R2b, the graded terrain's T22 design): on a hill as steep as
-// the 1:2 tie-in slope the approaches' cones cut the hill over the bore by up to the bore
-// clearance (5 m) all the way to the 64 m cap, where the ground steps back up to the hill (the
-// pale rock stripes across the bore near the top of R2's test hill). The surface queries read
-// the graded ground as the terrain renders it, so they follow the cut.
+// `ROAD-61` (found by round R2b, fixed by round R8): on a hill as steep as the 1:2 tie-in slope
+// the approaches' cones cut the hill over the bore by up to the bore clearance (5 m) all the way
+// to the 64 m cap, where the ground stepped back up to the hill (the pale rock stripes across the
+// bore near the top of R2's test hill). No cone reaches past a portal row now, so the graded
+// ground over the bore is the hill.
 #[test]
-#[ignore = "ROAD-61 open: approach tie-in cones cut a 1:2 hill over the bore to the cap"]
 fn a_steep_hill_over_a_bore_keeps_its_height() {
     let mut core = hill_core(80.0);
     assert_eq!(
@@ -550,8 +557,8 @@ fn forest(core: &mut SimCore) {
     core.vegetation = VegetationGenerator::resolve(config, &core.config);
 }
 
-// `ROAD-61` (found by round R2): plants keep off the approach cuts and the portal openings, and
-// the hill over the bore keeps every plant it has without the tunnel. Vegetation read the
+// `ROAD-61` (found by round R2): plants keep off the approach roads, and the hill over the bore
+// keeps every plant it has without the tunnel, up to the portal rows (round R8). Vegetation read the
 // roadbed's highest triangle, the buried deck, and cleared the whole bore across the hill.
 #[test]
 fn the_hill_over_a_bore_keeps_its_plants() {
@@ -565,13 +572,13 @@ fn the_hill_over_a_bore_keeps_its_plants() {
         plants_along_the_stroke(&core),
         plants_along_the_stroke(&hill),
     );
-    // Beyond the approaches' cuts (20 m past each mouth) and a canopy footprint the ground is
-    // the same hill with and without the tunnel.
+    // Past the portal rows (at x = -80 and 80) and beyond a canopy footprint and the walkway
+    // setback from the approaches the ground is the same hill with and without the tunnel.
     let over_bore = |plants: &[(f32, f32)]| -> Vec<(f32, f32)> {
         plants
             .iter()
             .copied()
-            .filter(|&(x, _)| x.abs() < 50.0)
+            .filter(|&(x, _)| x.abs() < 74.0)
             .collect()
     };
     assert!(
@@ -579,11 +586,11 @@ fn the_hill_over_a_bore_keeps_its_plants() {
         "the forest covers the hill"
     );
     assert_eq!(over_bore(&tunnel), over_bore(&natural));
-    // The approach roads and the openings (10 m into the bore) hold no plant.
+    // The approach roads hold no plant.
     assert!(
         tunnel
             .iter()
-            .all(|&(x, z)| !(x.abs() > 70.0 && x.abs() < 100.0 && z.abs() < 3.0)),
+            .all(|&(x, z)| !(x.abs() > 80.0 && x.abs() < 100.0 && z.abs() < 3.0)),
         "{tunnel:?}"
     );
 }

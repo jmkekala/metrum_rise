@@ -31,7 +31,7 @@ mod tile;
 mod walls;
 
 pub use grade::{CAP_M, INSIDE_REACH_M, TIE_IN_SLOPE, overlap};
-pub use portal::{PORTAL_CLEARANCE_M, PORTAL_REACH_M};
+pub use portal::PORTAL_CLEARANCE_M;
 pub use query::{GradedSurface, GroundClass, QueryScratch};
 pub(crate) use query_index::TerrainQueryIndex;
 pub use residency::{

@@ -7,6 +7,7 @@
 //! seams it is given, which the bake prunes exactly and the queries do not prune at all.
 
 use super::grade::{CAP_M, Cones, INSIDE_REACH_M, cone, inside, inside_deep, settled};
+use super::portal::PortalWindow;
 use super::seams::{Seam, SeamKind};
 use crate::config::HEIGHT_SCALE;
 use crate::simulation::terrain::TerrainSystem;
@@ -69,9 +70,11 @@ impl Listed {
 /// highest covering road top triangle's height (`None` uncovered) and `pad` the support height
 /// of the first site footprint holding it (`None` outside every footprint), from the
 /// candidate seams (into `seams`), until no later candidate can change the value or the
-/// nearest seam. Seams beyond the cap are left out. Only road seams name the nearest seam,
-/// within `band` metres. The value and the nearest-seam order are order-free, so the result
-/// does not depend on the candidates' order. One lane of [`evaluate_lanes`]. `O(candidates)`.
+/// nearest seam. Seams beyond the cap are left out, and so are the seams `portals` hides from
+/// a point past a portal row (`ROAD-61`): neither their cone nor their name reaches it. Only
+/// road seams name the nearest seam, within `band` metres. The value and the nearest-seam order
+/// are order-free, so the result does not depend on the candidates' order. One lane of
+/// [`evaluate_lanes`]. `O(candidates)`, plus `O(rows)` per candidate at a point past a row.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate(
     x: f64,
@@ -82,8 +85,19 @@ pub(super) fn evaluate(
     seams: &[Seam],
     candidates: impl Iterator<Item = Listed>,
     band: f64,
+    portals: Option<&PortalWindow>,
 ) -> Value {
-    let [value] = evaluate_lanes(&[x], z, &[base], &[road], &[pad], seams, candidates, band);
+    let [value] = evaluate_lanes(
+        &[x],
+        z,
+        &[base],
+        &[road],
+        &[pad],
+        seams,
+        candidates,
+        band,
+        portals,
+    );
     value
 }
 
@@ -104,8 +118,12 @@ pub(super) fn evaluate_lanes<const N: usize>(
     seams: &[Seam],
     candidates: impl Iterator<Item = Listed>,
     band: f64,
+    portals: Option<&PortalWindow>,
 ) -> [Value; N] {
     let (mut lower, mut upper) = ([Cones::NONE.lower; N], [Cones::NONE.upper; N]);
+    // Per lane whether it lies past a portal row, where some seams are hidden from it.
+    let past: [bool; N] =
+        std::array::from_fn(|lane| portals.is_some_and(|portals| portals.past(xs[lane], z)));
     // Per lane the nearest road seam within the band: index, distance and height.
     let mut nearest = [None::<(u32, f64, f64)>; N];
     let (mut live, mut evaluated) = ([true; N], [0u32; N]);
@@ -153,8 +171,14 @@ pub(super) fn evaluate_lanes<const N: usize>(
         } else {
             seam.at_lanes(xs, z)
         };
+        // The lanes past a portal row the seam is hidden from.
+        let hidden: [bool; N] = std::array::from_fn(|lane| {
+            past[lane]
+                && live[lane]
+                && portals.is_some_and(|portals| portals.hides(seam, xs[lane], z))
+        });
         for lane in 0..N {
-            let take = live[lane] && distance[lane] <= CAP_M;
+            let take = live[lane] && distance[lane] <= CAP_M && !hidden[lane];
             let (cone_lower, cone_upper) = cone(height[lane], distance[lane]);
             lower[lane] = if take {
                 lower[lane].max(cone_lower)
@@ -172,6 +196,7 @@ pub(super) fn evaluate_lanes<const N: usize>(
         }
         for lane in 0..N {
             if live[lane]
+                && !hidden[lane]
                 && distance[lane] <= CAP_M
                 && distance[lane] < band
                 && nearest[lane].is_none_or(|(best, best_distance, _)| {

@@ -676,9 +676,8 @@ pub(crate) fn structure_mouth(
 // the bridge (`TERRAIN-07-D`, the abutment band) an abutment against the seam from the ground
 // up to the abutment face's bottom edge where the ground stands below that edge, and no face
 // where it stands between the edge and the deck (the roadbed's face closes it); at the tunnel's
-// portal row (T22 5 (a)) the terrain beyond is cut wherever the ground stands less than the
-// clearance above the seam, and no face on the seam covers those points (a headwall where it
-// stands higher). Pruned walls equal the walls over every seam.
+// portal row no face at all (`ROAD-61` round R8: the roadbed's headwall closes the row, with the
+// lining's mouth open in it). Pruned walls equal the walls over every seam.
 #[test]
 fn structure_mouths_wall_the_graded_ground() {
     use crate::simulation::network::types::EdgeClass;
@@ -742,14 +741,14 @@ fn structure_mouths_wall_the_graded_ground() {
                         let off = (face.a[0] + dx * s - lx).hypot(face.a[1] + dz * s - lz);
                         (-1e-4..=1.0 + 1e-4).contains(&s) && off < 2e-3
                     };
-                    if class == EdgeClass::Tunnel && ground < h + PORTAL_CLEARANCE_M {
+                    if class == EdgeClass::Tunnel {
                         assert!(
                             !payload
                                 .walls
                                 .iter()
                                 .filter(on_seam)
                                 .any(|face| covering(&face)),
-                            "{class:?}: a headwall at ({x}, {z}) over the opening"
+                            "{class:?}: a terrain face at ({x}, {z}) over the headwall"
                         );
                         opened += 1;
                         continue;
@@ -800,8 +799,8 @@ fn structure_mouths_wall_the_graded_ground() {
             }
         }
         // The rendered surface on the row interpolates the samples beside it: the hidden inside
-        // rule's on the road's side, the cones of the chains' end corners beyond (up to 1.0 m
-        // above the tunnel's mouth, all of it opened, 0.47 m below the bridge's).
+        // rule's on the road's side, the hill past the tunnel's row (no cone reaches past it),
+        // the cones of the chains' end corners beyond the bridge's (0.47 m below it).
         match class {
             EdgeClass::Tunnel => assert!(opened > 50 && walled == 0, "{opened} opened, {walled}"),
             _ => assert!(

@@ -14,6 +14,7 @@
 use super::grade::{
     CAP_M, Cones, ReachBounds, band_reach, base_reach, bind_reach, lift_reach, may_bind, may_lift,
 };
+use super::portal::PortalWindow;
 use super::sample::{BaseWindow, Listed};
 use super::seams::{Seam, SeamKind};
 use super::tile::{BakeStats, grown, meets};
@@ -22,12 +23,12 @@ use super::tile::{BakeStats, grown, meets};
 // road seam, which a sample within it may name as its nearest, and none for a pad seam, which no
 // sample names (`TERRAIN-07-C`), so its bind and lift reaches alone decide. The bake's two
 // passes and the selection take every seam's band from here, so they list alike. A wall seam
-// has no cone and is never listed (`TERRAIN-07-C`, T22 4 (a)), nor is a bore seam (T22 5 (a));
-// the bake keeps both out of the window and reads them apart.
+// has no cone and is never listed (`TERRAIN-07-C`, T22 4 (a)); the bake keeps it out of the
+// window and reads it apart.
 fn listing_band(seam: &Seam, band: f64) -> f64 {
     match seam.kind {
         SeamKind::Road => band,
-        SeamKind::Pad | SeamKind::Wall | SeamKind::Bore => 0.0,
+        SeamKind::Pad | SeamKind::Wall => 0.0,
     }
 }
 
@@ -388,13 +389,14 @@ pub(super) fn list_second_pass(
 /// seams within the cap. Every seam left out has a lower bound below the first-pass ground and
 /// an upper bound above the base, so `g = max(L, min(b, U))` equals its value over every seam
 /// within the cap, bitwise. Writes their deltas into `texels`, which starts at the tile's sample
-/// `first` (a row band's, `TERRAIN-07-E`); returns whether any is graded.
-/// `O(samples x their lists)`.
+/// `first` (a row band's, `TERRAIN-07-E`); returns whether any is graded. A seam `portals` hides
+/// from a sample past a portal row adds no cone, as in pass 1 (`ROAD-61`).
+/// `O(samples x their lists)`, plus `O(rows)` per listed seam at a sample past a row.
 pub(super) fn finish_second_pass(
     seams: &[Seam],
     lists: &BinLists,
     lifted: &[Lifted],
-    first: u32,
+    (first, portals): (u32, Option<&PortalWindow>),
     texels: &mut [[f32; 4]],
     stats: &mut BakeStats,
 ) -> bool {
@@ -403,9 +405,13 @@ pub(super) fn finish_second_pass(
         let mut cones = sample.cones;
         let list = lists.of(sample.bin as usize);
         stats.second_pass_candidates += list.len() as u64;
+        let past = portals.filter(|portals| portals.past(sample.x, sample.z));
         for listed in list {
-            let at = seams[listed.index as usize].at(sample.x, sample.z);
-            if at.distance <= CAP_M {
+            let seam = &seams[listed.index as usize];
+            let at = seam.at(sample.x, sample.z);
+            if at.distance <= CAP_M
+                && !past.is_some_and(|portals| portals.hides(seam, sample.x, sample.z))
+            {
                 cones.add(at.height, at.distance);
             }
         }

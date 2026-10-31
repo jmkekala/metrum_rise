@@ -165,7 +165,7 @@ pub(crate) fn payload_digest<'a>(payloads: impl IntoIterator<Item = &'a TilePayl
         (stats.window_seams, stats.listed, stats.candidates).hash(&mut hasher);
         (stats.reach_sum_m.to_bits(), stats.reach_max_m.to_bits()).hash(&mut hasher);
         (stats.second_pass_samples, stats.second_pass_candidates).hash(&mut hasher);
-        (stats.conflicts, stats.seam_conflicts, stats.portal_cut, stats.bore_named).hash(&mut hasher);
+        (stats.conflicts, stats.seam_conflicts).hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -642,7 +642,7 @@ fn the_graded_ground_never_lies_below_a_seam() {
         {
             let [x, h, z] = seam.a;
             let all = (0..seams.len() as u32).map(super::sample::Listed::unbounded);
-            let value = evaluate(x, z, base.at(x, z), None, None, &seams, all, 2.0);
+            let value = evaluate(x, z, base.at(x, z), None, None, &seams, all, 2.0, None);
             assert!(
                 value.height >= h,
                 "{name}: ground {} below seam {h}",

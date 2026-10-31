@@ -4,7 +4,7 @@
 //! can alter, from the changed seams' own reaches, so cost follows the edit and never the city.
 
 use super::grade::{CAP_M, TIE_IN_SLOPE, lift_reach};
-use super::portal::{PORTAL_REACH_M, PortalWindow};
+use super::portal::PortalWindow;
 use super::prune::{BinGrid, bin_side, box_distance};
 use super::sample::{BaseGrid, BaseWindow};
 use super::seams::{Seam, road_seam};
@@ -38,7 +38,7 @@ struct CandidateScratch {
     xs: Vec<f64>,
     zs: Vec<f64>,
     sites: SiteBuffer,
-    // The portal opening's parts around the candidate's lattice in the two roadbeds.
+    // The portal rows within the cap of the candidate's lattice in the two roadbeds.
     portals: PortalWindow,
     other_portals: PortalWindow,
     // The candidate's lattice rectangle.
@@ -60,11 +60,10 @@ thread_local! {
 /// - every tile whose lattice meets a changed piece and whose covering top triangles differ
 ///   between the two roadbeds (coverage and the road surface under the deep inside rule), so a
 ///   split trunk's far half, rebuilt bit for bit, marks nothing;
-/// - every tile whose lattice lies within the larger of the portal reach and the band of a
-///   changed piece with a portal row ([`TerrainChanges::portals`]) and whose portal parts
-///   ([`PortalWindow`]: the rows, decks and bore seams the portal opening reads, `TERRAIN-07-C`)
-///   differ between the two roadbeds. The windows hold only those pieces' parts, so an edit that
-///   replaces no portal piece reads none.
+/// - every tile whose lattice lies within the cap of a changed piece with a portal row
+///   ([`TerrainChanges::portals`]) and whose portal rows ([`PortalWindow`]: the rows no cone
+///   reaches past, `ROAD-61`) differ between the two roadbeds. An edit that replaces no portal
+///   piece reads none.
 ///
 /// A superset is safe: rebaking an unaffected tile reproduces its bits. `O(changed segments x
 /// tiles within the cap of each)` plus one window per candidate tile, in parallel.
@@ -116,7 +115,7 @@ pub fn dirty_tiles_for_road_changes_where(
     for bounds in &changes.pieces {
         push_tiles(grown(*bounds, apron + PIECE_PAD_M), &mut scratch.candidates);
     }
-    let portal_reach = PORTAL_REACH_M.max(band);
+    let portal_reach = CAP_M.max(band);
     for bounds in &changes.portals {
         push_tiles(
             grown(*bounds, apron + portal_reach + PIECE_PAD_M),
@@ -277,11 +276,10 @@ fn covering_triangles_changed(
     candidate.triangles != candidate.other_triangles
 }
 
-// Whether the portal parts the bake of the candidate's lattice (left in `candidate` by
-// `reached`) reads differ between the roadbeds, where a changed portal piece (`portals`, its
-// bounds) lies within the larger of the portal reach and the band of it: the opening reads
-// nothing else of the roadbed beyond the coverage, the seams and the finished values, which the
-// other tests follow.
+// Whether the portal rows the bake of the candidate's lattice (left in `candidate` by `reached`)
+// reads differ between the roadbeds, where a changed portal piece (`portals`, its bounds) lies
+// within the cap of it: past a row, the hiding reads nothing else of the roadbed beyond the
+// seams, which the other tests follow.
 fn portals_changed(
     before: &RoadbedSystem,
     after: &RoadbedSystem,
@@ -290,16 +288,16 @@ fn portals_changed(
     candidate: &mut CandidateScratch,
 ) -> bool {
     let rect = candidate.rect;
-    let near = grown(rect, PORTAL_REACH_M.max(band) + PIECE_PAD_M);
+    let near = grown(rect, CAP_M.max(band) + PIECE_PAD_M);
     if !portals.iter().any(|bounds| meets(*bounds, near)) {
         return false;
     }
-    candidate
-        .portals
-        .gather(before, rect, band, &mut candidate.pieces);
+    before.grounded_pieces_in_bounds(near, &mut candidate.pieces);
+    candidate.portals.gather(before, rect, &candidate.pieces);
+    after.grounded_pieces_in_bounds(near, &mut candidate.pieces);
     candidate
         .other_portals
-        .gather(after, rect, band, &mut candidate.pieces);
+        .gather(after, rect, &candidate.pieces);
     !candidate.portals.same(&candidate.other_portals)
 }
 
@@ -374,7 +372,7 @@ pub fn selection_site_reach_m(level: Level, cell_m: f64) -> f64 {
 /// level's reach. `None` for a change without pieces or segments. `O(changes)`.
 pub fn road_change_extent(changes: &TerrainChanges, level: Level, cell_m: f64) -> Option<[f64; 4]> {
     let (band, apron) = (level.band_m(cell_m), level.spacing_m(cell_m));
-    let reach = apron + PIECE_PAD_M + CAP_M.max(band).max(PORTAL_REACH_M) + TILE_M;
+    let reach = apron + PIECE_PAD_M + CAP_M.max(band) + TILE_M;
     let boxes = (changes.pieces.iter().copied())
         .chain(changes.portals.iter().copied())
         .chain(

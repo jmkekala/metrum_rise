@@ -22,8 +22,8 @@
 //! everywhere in it is left out. A road seam within `B` of a point `q` of the square is listed by
 //! pass 1 in `q`'s bin, at a bin distance at most `|q - s|`, so the bins meeting the square, read
 //! up to bin distance `min(d, B)`, hold every such seam whether or not pass 1 pruned: the list does
-//! not depend on the pruning. Bore seams and bridge mouth rows are not binned and are few: each is
-//! tested directly.
+//! not depend on the pruning. Bridge and tunnel mouth rows are not binned and are few: each is tested
+//! directly.
 
 use super::prune::{BinGrid, BinLists};
 use super::sample::NO_SEAM;
@@ -60,26 +60,23 @@ struct ExtraChunk {
 }
 
 /// The seams a tile's texels may name: the window's seams (the road seams first, `road_count`
-/// of them, then the pad seams, which no texel names), the bore seams, and the wall seams with
-/// whether each is a bridge mouth row (a wall seam with an abutment bottom, which texels name).
+/// of them, then the pad seams, which no texel names), and the wall seams with whether each is
+/// a mouth row texels name (a bridge's, with an abutment bottom, or a tunnel's portal row).
 pub(super) struct Named<'a> {
     pub(super) seams: &'a [Seam],
     pub(super) road_count: usize,
-    pub(super) bores: &'a [Seam],
     pub(super) walls: &'a [Seam],
-    pub(super) mouth: &'a [Option<[f64; 2]>],
+    pub(super) mouth: &'a [bool],
 }
 
 impl Named<'_> {
     fn seam(&self, code: u32) -> &Seam {
         let code = code as usize;
-        let (window, bores) = (self.seams.len(), self.bores.len());
+        let window = self.seams.len();
         if code < window {
             &self.seams[code]
-        } else if code < window + bores {
-            &self.bores[code - window]
         } else {
-            &self.walls[code - window - bores]
+            &self.walls[code - window]
         }
     }
 }
@@ -88,7 +85,7 @@ impl Named<'_> {
 /// `out.squares`, for the squares the cells address: lower corner index `1..len - 2` on each
 /// axis, the tile's own squares (the apron's are never a fragment's). `nearest` holds the final
 /// names, `bins` and `first` pass 1's lists, `band` the level's. `O(squares with a named corner x (16 seam distances
-/// + their bins' candidates up to distance d + bore and mouth rows))`, allocation-free once warm.
+/// + their bins' candidates up to distance d + mouth rows))`, allocation-free once warm.
 pub(super) fn square_extras(
     named: &Named<'_>,
     (xs, zs): (&[f64], &[f64]),
@@ -169,14 +166,12 @@ impl Reach<'_> {
         squares.clear();
         let width = xs.len();
         let window = named.seams.len() as u32;
-        let unbinned = (window..window + named.bores.len() as u32).chain(
-            named
-                .mouth
-                .iter()
-                .enumerate()
-                .filter(|(_, bottom)| bottom.is_some())
-                .map(|(k, _)| window + named.bores.len() as u32 + k as u32),
-        );
+        let unbinned = named
+            .mouth
+            .iter()
+            .enumerate()
+            .filter(|(_, mouth)| **mouth)
+            .map(|(k, _)| window + k as u32);
         below.clear();
         below.resize(width, NO_SEAM);
         for j in rows {

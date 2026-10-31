@@ -47,7 +47,7 @@ impl SimCore {
                 .height_and_normal_at(position.x, position.y)
                 .map(|(height, normal)| (f64::from(height), normal.to_array().map(f64::from)))
                 .unwrap_or_else(|| {
-                    surface.gather_heights_near(x, z, reach, scratch);
+                    surface.gather_near(x, z, reach, scratch);
                     gathered = true;
                     surface.surface_height_and_normal_near(x, z, scratch)
                 });
@@ -68,7 +68,7 @@ impl SimCore {
                     if !gathered {
                         // All-road poses need no graded preparation. The first rotated contact
                         // outside road coverage gathers once for the remaining ground reads.
-                        surface.gather_heights_near(x, z, reach, scratch);
+                        surface.gather_near(x, z, reach, scratch);
                         gathered = true;
                     }
                     surface.ground_height_near(f64::from(contact.x), f64::from(contact.y), scratch)
@@ -95,12 +95,7 @@ impl SimCore {
         // surface serves them all, with the per-point query's results (`TERRAIN-07-F`).
         self.with_graded_surface(|surface, scratch| {
             let (x, z) = (f64::from(position.x), f64::from(position.y));
-            surface.gather_heights_near(
-                x,
-                z,
-                f64::from(support.reach_m) + CONTACT_SLACK_M,
-                scratch,
-            );
+            surface.gather_near(x, z, f64::from(support.reach_m) + CONTACT_SLACK_M, scratch);
             vehicle_support_pose(support, position, heading, |point| {
                 let (x, z) = (f64::from(point.x), f64::from(point.y));
                 surface.surface_height_near(x, z, scratch) as f32
