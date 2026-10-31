@@ -17,7 +17,7 @@ use crate::simulation::economy::agents::{
     MODE_WALK, TRANSIT_NETWORK,
 };
 use crate::simulation::network::lanes::LaneType;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 // Static separation of two cars, as `lane_attach_slot_clear` uses.
 const SPACING: f32 = CAR_LENGTH + IDM_S_MIN;
@@ -58,8 +58,23 @@ pub(super) struct WaitBook {
     // `TRAFFIC-14`: car ids followed frame by frame (METRUM_AUDIT_FOLLOW) and frames left.
     follow: Vec<u64>,
     follow_left: u32,
+    follow_frames_printed: u32,
     // First car id of each followed car's next entry lanes in the previous traced frame.
     follow_first: HashMap<usize, u64>,
+    // Per followed car: its lane and, per next entry, (slot clear, cars, first car id) in the
+    // previous traced frame; and its contests (entries it saw clear and someone else took, with
+    // that car's agent index against its own, and entries it won).
+    follow_prev: HashMap<u64, (usize, Vec<(usize, bool, usize, u64)>)>,
+    follow_contests: BTreeMap<u64, Contests>,
+}
+
+#[derive(Default, serde::Serialize)]
+struct Contests {
+    agent: usize,
+    lost: u32,
+    lost_to_lower_index: u32,
+    won: u32,
+    clear_frames: u32,
 }
 
 fn hold(agents: &AgentVec, i: usize) -> Option<(HoldKind, usize)> {
@@ -417,7 +432,7 @@ impl<'a> Occupancy<'a> {
 
     fn describe(&self, i: usize) -> String {
         let agents = self.agents();
-        let truck = if agents.freight_shipment_id[i] != 0 {
+        let truck = if agents.freight_shipment_id[i] != u64::MAX {
             " truck"
         } else {
             ""
@@ -771,6 +786,12 @@ impl WaitBook {
         // has moved since the previous checkpoint.
         let mut moving_roots = std::collections::BTreeMap::<String, u32>::new();
         let mut moving_heads = Vec::new();
+        // Up to 24 more standing heads, oldest first, for the contest count.
+        let long_standing: Vec<u64> = standing
+            .iter()
+            .take(24)
+            .map(|&(_, head, _)| agents.render_id[head])
+            .collect();
         for &(lane, head, first) in &standing {
             let outcome = resolve(&occ, &mut steps, &mut memo, head);
             let root = match &outcome {
@@ -848,6 +869,7 @@ impl WaitBook {
         {
             self.follow = speed_samples.into_values().flatten().collect();
             self.follow.extend(moving_heads);
+            self.follow.extend(long_standing);
             self.follow_left = frames.parse().expect("METRUM_AUDIT_FOLLOW must be an integer");
         }
         self.heads = heads;
@@ -865,12 +887,54 @@ impl WaitBook {
         let occ = Occupancy::new(core);
         let agents = occ.agents();
         let lanes = &core.transit_network.lane_system.lanes;
+        // Per-frame lines for the first ten frames; contests for every frame.
+        let print = self.follow_frames_printed < 10;
+        self.follow_frames_printed += 1;
         for &id in &self.follow {
             let Some(&i) = occ.index_of.get(&id) else {
                 continue;
             };
             let lane = agents.current_lane_id[i];
             let d = agents.lane_distance[i];
+            let contests = self.follow_contests.entry(id).or_default();
+            contests.agent = i;
+            if let Some((prev_lane, prev_entries)) = self.follow_prev.get(&id) {
+                for &(entry, was_clear, cars, first) in prev_entries {
+                    if lane == entry {
+                        contests.won += 1;
+                    } else if was_clear && lane == *prev_lane {
+                        contests.clear_frames += 1;
+                        let now_first = occ.buckets[entry].first().map(|f| f.1);
+                        if occ.buckets[entry].len() > cars
+                            && let Some(other) = now_first
+                            && agents.render_id[other] != first
+                        {
+                            contests.lost += 1;
+                            contests.lost_to_lower_index += u32::from(other < i);
+                        }
+                    }
+                }
+            }
+            let now_entries: Vec<(usize, bool, usize, u64)> = if lane < lanes.len() {
+                occ.next_entries(i, lane)
+                    .into_iter()
+                    .map(|entry| {
+                        let bucket = &occ.buckets[entry];
+                        (
+                            entry,
+                            occ.in_the_way(entry, 0.0).is_none(),
+                            bucket.len(),
+                            bucket.first().map_or(u64::MAX, |f| agents.render_id[f.1]),
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            self.follow_prev.insert(id, (lane, now_entries));
+            if !print {
+                continue;
+            }
             let (ahead, entries) = if lane < lanes.len() {
                 let bucket = &occ.buckets[lane];
                 let slot = bucket.partition_point(|entry| (entry.0, entry.1) < (d, i));
@@ -910,13 +974,29 @@ impl WaitBook {
                 })
             );
         }
+        if self.follow_left == 0 {
+            eprintln!(
+                "TRAFFIC14_CONTESTS {}",
+                serde_json::json!({"frames": self.follow_frames_printed, "cars": &self.follow_contests})
+            );
+        }
     }
 }
 
-/// Every wait-for cycle among the cars now on lanes, each as its cars in chain order, found by
-/// following the blocker chain of every lane's head car. O(cars on lanes), memoised; a
-/// diagnostic for `TRAFFIC-14`.
-pub(super) fn wait_cycles(core: &SimCore) -> Vec<Vec<usize>> {
+/// One wait-for cycle and what option (a) of the round R14A brief could do with it: the cycle's
+/// cars in chain order; how many of them head a road lane at its end (a car already on a
+/// connector is committed to its turn); how many of those have another way out of their
+/// junction now, a connector whose entry and exit-lane entry are clear; and those ways.
+pub(super) struct CycleInfo {
+    pub(super) cars: Vec<usize>,
+    pub(super) road_heads: u32,
+    pub(super) heads_with_room: u32,
+    pub(super) ways_out: u32,
+}
+
+/// Every wait-for cycle among the cars now on lanes, found by following the blocker chain of
+/// every lane's head car. O(cars on lanes), memoised; a diagnostic for `TRAFFIC-14`.
+pub(super) fn wait_cycles(core: &SimCore) -> Vec<CycleInfo> {
     let occ = Occupancy::new(core);
     let mut steps = HashMap::new();
     let mut memo = HashMap::new();
@@ -930,9 +1010,57 @@ pub(super) fn wait_cycles(core: &SimCore) -> Vec<Vec<usize>> {
             let mut key = cycle.clone();
             key.sort_unstable();
             if seen.insert(key) {
-                cycles.push(cycle);
+                let (mut road_heads, mut heads_with_room, mut ways_out) = (0, 0, 0);
+                for &car in &cycle {
+                    if let Some(ways) = occ.ways_out(car) {
+                        road_heads += 1;
+                        heads_with_room += u32::from(ways > 0);
+                        ways_out += ways;
+                    }
+                }
+                cycles.push(CycleInfo {
+                    cars: cycle,
+                    road_heads,
+                    heads_with_room,
+                    ways_out,
+                });
             }
         }
     }
     cycles
+}
+
+impl Occupancy<'_> {
+    // For a car heading a road lane at its end, the connectors (or direct lanes) of that lane
+    // other than its planned ones whose entry, and whose exit lane's entry, are clear now; None
+    // for any other car.
+    fn ways_out(&self, i: usize) -> Option<u32> {
+        let agents = self.agents();
+        let lanes = &self.core.transit_network.lane_system.lanes;
+        let lane = agents.current_lane_id[i];
+        let l = lanes.get(lane)?;
+        if l.edge_id == usize::MAX || agents.lane_distance[i] + AT_END_M < l.length {
+            return None;
+        }
+        let planned = self.next_entries(i, lane);
+        let mut ways = 0;
+        for &succ in &l.next_lanes {
+            let s = &lanes[succ];
+            if planned.contains(&succ) || s.lane_type != LaneType::Vehicle {
+                continue;
+            }
+            let exit = if s.edge_id == usize::MAX {
+                s.next_lanes.first().copied()
+            } else {
+                Some(succ)
+            };
+            let Some(exit) = exit else {
+                continue;
+            };
+            let clear = self.in_the_way(succ, 0.0).is_none()
+                && (exit == succ || self.in_the_way(exit, 0.0).is_none());
+            ways += u32::from(clear);
+        }
+        Some(ways)
+    }
 }

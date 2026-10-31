@@ -107,7 +107,7 @@ fn ring_detail(core: &SimCore, key: &BTreeSet<usize>, entries: &Entries) -> serd
             continue;
         }
         let kind = match (
-            agents.freight_shipment_id[i] != 0,
+            agents.freight_shipment_id[i] != u64::MAX,
             (agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION) != 0,
         ) {
             (true, true) => "truck_to_border",
@@ -118,7 +118,7 @@ fn ring_detail(core: &SimCore, key: &BTreeSet<usize>, entries: &Entries) -> serd
         *kinds.entry(kind).or_default() += 1;
         let entry = per_lane.get_mut(&lane).expect("lane is in the key");
         entry.0 += 1;
-        entry.1 += u32::from(agents.freight_shipment_id[i] != 0);
+        entry.1 += u32::from(agents.freight_shipment_id[i] != u64::MAX);
         path_left.push(
             agents.current_path[i]
                 .len()
@@ -171,6 +171,11 @@ impl RingWatch {
     }
 
     fn frame(&mut self, core: &SimCore, label: &str) {
+        self.check(core, label, false);
+    }
+
+    // The last check of a run always prints its count line.
+    fn check(&mut self, core: &SimCore, label: &str, last: bool) {
         self.entries.note(core);
         let now = absolute_minute(core);
         if now < self.next {
@@ -179,9 +184,11 @@ impl RingWatch {
         self.next = now + self.every;
         let started = Instant::now();
         let cycles = wait_cycles(core);
-        let cars: usize = cycles.iter().map(Vec::len).sum();
+        let cars: usize = cycles.iter().map(|cycle| cycle.cars.len()).sum();
+        let with_way_out = cycles.iter().filter(|c| c.heads_with_room > 0).count();
         let mut new = 0;
-        for cycle in &cycles {
+        for info in &cycles {
+            let cycle = &info.cars;
             let key = ring_key(core, cycle);
             if self.seen.contains_key(&key) {
                 continue;
@@ -192,12 +199,14 @@ impl RingWatch {
                 serde_json::json!({
                     "label": label, "minute": now, "day": core.time.day_index,
                     "minute_of_day": core.time.minute_of_day, "cycle_cars": cycle.len(),
+                    "road_heads": info.road_heads, "heads_with_way_out": info.heads_with_room,
+                    "ways_out": info.ways_out,
                     "detail": ring_detail(core, &key, &self.entries),
                 })
             );
             self.seen.insert(key, now);
         }
-        if (cycles.len(), cars) != self.last_counts || new > 0 {
+        if (cycles.len(), cars) != self.last_counts || new > 0 || last {
             let held_at_node = (0..core.agents.agents.len())
                 .filter(|&i| {
                     let a = &core.agents.agents;
@@ -212,6 +221,10 @@ impl RingWatch {
                     "label": label, "minute": now, "day": core.time.day_index,
                     "minute_of_day": core.time.minute_of_day, "cycles": cycles.len(),
                     "cars_in_cycles": cars, "rings_seen": self.seen.len(), "new": new,
+                    "cycles_with_way_out": with_way_out,
+                    "vehicles_on_road": (0..core.agents.agents.len())
+                        .filter(|&i| in_play(&core.agents.agents, i))
+                        .count(),
                     "held_at_node": held_at_node,
                     "check_ms": started.elapsed().as_secs_f64() * 1e3,
                 })
@@ -262,7 +275,7 @@ fn traffic14_ring_formation() {
             core.step_frame(FRAME_DT_S);
         }
         watch.next = 0;
-        watch.frame(core, "build");
+        watch.check(core, "build", true);
         return;
     }
     panic!("the grid housed too few residents");
@@ -301,7 +314,7 @@ fn traffic14_rings_in_save() {
         core.step_frame(FRAME_DT_S);
     }
     watch.next = 0;
-    watch.frame(&core, "save");
+    watch.check(&core, "save", true);
 }
 
 #[test]

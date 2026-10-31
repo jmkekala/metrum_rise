@@ -50,7 +50,7 @@ fn audit(core: &SimCore) -> serde_json::Value {
                 && !agents.current_path[i].is_empty()
             {
                 held += 1;
-                held_freight += u32::from(agents.freight_shipment_id[i] != 0);
+                held_freight += u32::from(agents.freight_shipment_id[i] != u64::MAX);
             }
             continue;
         }
@@ -108,7 +108,7 @@ fn audit(core: &SimCore) -> serde_json::Value {
                 "transit={} mode={} freight={} path_left={} start={} detach_lane_here={}",
                 agents.transit[i],
                 agents.transit_mode[i],
-                agents.freight_shipment_id[i] != 0,
+                agents.freight_shipment_id[i] != u64::MAX,
                 agents.current_path[i]
                     .len()
                     .saturating_sub(agents.current_path_index[i]),
@@ -194,7 +194,7 @@ fn trace_entries(
                         "buildings_removed_in_frame": removed - *previous_removed, "agent": i, "lane": lane, "fit": fit,
                         "count_before": previous_count[lane], "count_now": count[lane],
                         "from_lane": previous_lane[i], "d": agents.lane_distance[i],
-                        "transit": agents.transit[i], "freight": agents.freight_shipment_id[i] != 0,
+                        "transit": agents.transit[i], "freight": agents.freight_shipment_id[i] != u64::MAX,
                         "access": agents.access_flags[i], "node": agents.current_node[i],
                         "lane_change_from": agents.lane_change_from_lane_id[i],
                         "path_left": agents.current_path[i].len().saturating_sub(agents.current_path_index[i]),
@@ -281,6 +281,19 @@ fn traffic07_lane_entry_audit() {
                 })
             );
             waits.standing_queues(core, now - start);
+            let cycles = waits::wait_cycles(core);
+            let mut sizes: Vec<usize> = cycles.iter().map(|c| c.cars.len()).collect();
+            sizes.sort_unstable_by(|a, b| b.cmp(a));
+            eprintln!(
+                "TRAFFIC14_CYCLES {}",
+                serde_json::json!({
+                    "minute": now - start, "cycles": cycles.len(),
+                    "cars": sizes.iter().sum::<usize>(), "largest": &sizes[..sizes.len().min(12)],
+                    "with_way_out": cycles.iter().filter(|c| c.heads_with_room > 0).count(),
+                    "road_heads": cycles.iter().map(|c| c.road_heads).sum::<u32>(),
+                    "heads_with_way_out": cycles.iter().map(|c| c.heads_with_room).sum::<u32>(),
+                })
+            );
             next += every_minutes;
         }
         if now >= next_report {
