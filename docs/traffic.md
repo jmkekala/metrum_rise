@@ -654,6 +654,45 @@ Road-lane speed prediction looks ahead to the next connector and brakes early if
 tight or blocked. Once in `TRANSIT_INTERSECTION`, the car remains capped by the connector's
 curvature speed until it exits to the target road lane.
 
+A connector head (no car ahead on its connector) brakes for its exit lane's entry slot the same
+way (`TRAFFIC-16`): while `lane_entry_slot_clear` fails for the connector's exit lane (the lane
+`exit_connector_lane` enters), its target speed is capped at `braking_speed_for_distance(0,
+distance to the connector's end)`, so it stands at the end at speed 0 until the exit clears, and
+starts from 0. One O(log bucket) slot test per connector head and tick, no allocation. Before,
+connector cars followed only their own bucket, and the head standing at a full exit kept its
+turn speed (the movement step re-clamps to the turn speed but never raises it).
+
+Acceptance record (`TRAFFIC-16`, round R14B, 2026-10-31; the artifact folders stay local):
+
+- Ring fixture (`movement_pass::ring_tests::traffic16_connector_heads_stop_at_a_blocked_exit`):
+  the locked four-lane ring's four connector heads read 0; on `dev` all four report their turn
+  speed. `traffic14_full_ring_locks` still locks (no ring rule yet) and stays ignored.
+- 1-day 100k audit of the `dev`-built snapshot (`traffic07_lane_entry_audit`, day 12 at 32×,
+  `RAYON_NUM_THREADS=8`, cores `0,2,..,14`): unmoved cars reporting more than 0.5 m/s at the
+  6-hour checkpoints, `dev` against the fix: 2,003 / 10, 2,027 / 23, 2,119 / 36, 2,140 / 29
+  (`dev`: 1,992-2,124 connector heads at the connector's end; fix: 10-34 connector heads and up
+  to 2 road-lane heads). The two connector heads followed frame by frame (`METRUM_AUDIT_FOLLOW`)
+  found their exit slot clear at the tick's start, accelerated (3.2 m/s) and lost the entry to
+  another car in that frame (`TRAFFIC-18`); the next frame they read 0. The road-lane heads were
+  not followed. Both engines: 0 lanes over capacity and 0 stacked
+  cars at every checkpoint; held at nodes 2,682 at 00:00 (2,210 of them freight) and 3,742
+  (fix) / 3,664 (`dev`) at 24:00. The snapshot already holds `dev`'s locked ring, which neither
+  fix releases.
+- **Traffic cost at saturation.** A head that stands at a blocked exit now starts from 0 when
+  the slot clears; it used to leave at its turn speed from a standstill. The exit lane's entry
+  slot therefore clears later and a saturated junction discharges more slowly. The 100k city
+  built from scratch with both fixes forms a 1,690-car wait-for cycle at day 10 10:30: two
+  columns of 35 full 30 m cross-street lanes, two full 380 m row lanes and their connectors.
+  It is absent at two later checks, present without a break from day 10 19:30 and at all five
+  checkpoints of that city's next day (47,630-50,086 cars unmoved per 6 hours, against
+  33,400-36,865 in the `dev` city). With `TRAFFIC-15`/`TRAFFIC-13` alone the same build has no
+  cycle. Envelope (both fixes, deterministic, PASS, 13 notes) against `TRAFFIC-15` alone: 30k
+  baseline deliveries 135.7 to 117.3, employment 0.623 to 0.601, net income 9.89 to 8.27,
+  bankruptcies 1.26 to 1.90, out-of-stock 0.207 to 0.265; 30k fiscal-stress deliveries 10.90
+  to 10.79; the other workloads move by at most 2.3% on their main metrics. Landing this before
+  the junction-box and gridlock rules of `TRAFFIC-14` is the user's decision (round R14B
+  handoff).
+
 ## Planned Lane Changes
 
 Planned lane changes solve a different problem from overtaking: a car may need to move to a sibling

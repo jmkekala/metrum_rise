@@ -281,8 +281,20 @@ pub(super) fn run_ring(ring: &mut Ring, ticks: usize, window: usize, dt: f32) ->
     }
 }
 
+// Asserts the lock: full as the city's ring (141 cars on a 380 m lane, 12 on a 30 m lane, 8 on
+// a 20 m connector), nobody moving over the window while trucks still wait.
+fn assert_locked(ring: &Ring, state: &RingState) {
+    assert_eq!(state.moved_in_window, 0, "{state:?}");
+    assert!(state.waiting > 0, "{state:?}");
+    for k in 0..4 {
+        let fit = (ring.network.lane_system.lanes[k].length / (CAR_LENGTH + IDM_S_MIN)) as usize;
+        assert!(state.per_lane[k] >= fit, "lane {k}: {state:?}");
+    }
+}
+
 #[test]
-#[ignore = "TRAFFIC-14: documents the current lock; the build round turns it into a progress test"]
+#[ignore = "TRAFFIC-14: documents the lock that remains after TRAFFIC-15/16 (no ring rule yet, \
+            round R14C); the ring rule turns it into a progress test"]
 fn traffic14_full_ring_locks() {
     // Circulating trucks every 12 m plus 120 trucks waiting at every corner: the corners
     // refill the ring whenever an entry clears, until every lane and connector is full.
@@ -292,12 +304,28 @@ fn traffic14_full_ring_locks() {
         "TRAFFIC14_RING_FIXTURE {state:?} stale connector heads {} entries {}",
         state.stale_connector_heads, state.entries
     );
-    // Full as the city's ring: 141 cars on a 380 m lane, 12 on a 30 m lane, 8 on a 20 m
-    // connector; nobody moves for the last 200 game seconds while trucks still wait.
-    assert_eq!(state.moved_in_window, 0, "{state:?}");
-    assert!(state.waiting > 0, "{state:?}");
-    for k in 0..4 {
-        let fit = (ring.network.lane_system.lanes[k].length / (CAR_LENGTH + IDM_S_MIN)) as usize;
-        assert!(state.per_lane[k] >= fit, "lane {k}: {state:?}");
-    }
+    assert_locked(&ring, &state);
+}
+
+#[test]
+fn traffic16_connector_heads_stop_at_a_blocked_exit() {
+    // The locked ring's four connector heads stand at their connector's end behind a full exit
+    // lane. They brake for that exit's entry slot and read 0, not their turn speed.
+    let mut ring = ring(12.0, 120, 0);
+    let state = run_ring(&mut ring, 4_000, 400, 0.5);
+    assert_locked(&ring, &state);
+    assert_eq!(state.stale_connector_heads, 0, "{state:?}");
+    let agents = &ring.agents;
+    let lanes = &ring.network.lane_system.lanes;
+    let heads: Vec<f32> = (4..8)
+        .map(|connector| {
+            let head = (0..agents.len())
+                .filter(|&i| agents.current_lane_id[i] == connector)
+                .max_by(|&a, &b| agents.lane_distance[a].total_cmp(&agents.lane_distance[b]))
+                .expect("a full connector");
+            assert!(agents.lane_distance[head] + 1.0 >= lanes[connector].length);
+            agents.speed[head]
+        })
+        .collect();
+    assert_eq!(heads, [0.0; 4]);
 }

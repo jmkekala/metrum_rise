@@ -89,7 +89,20 @@ impl AgentSystem {
                 };
                 let mut target_speed = idm_new_speed(cur_spd, v_max, gap, delta);
 
-                if transit == TRANSIT_NETWORK {
+                if transit == TRANSIT_INTERSECTION && gap == f32::MAX {
+                    // `TRAFFIC-16`: a connector head brakes for its exit lane's entry slot, as a
+                    // road lane brakes for its connector's below, so it stands at 0 while the
+                    // exit is blocked. The exit is the lane that `exit_connector_lane` enters.
+                    // One O(log bucket) slot test per connector head, no allocation.
+                    if let Some(connector) = transit_network.lane_system.lanes.get(lid)
+                        && let Some(&exit_lane) = connector.next_lanes.first()
+                        && !lane_entry_slot_clear(exit_lane, buckets)
+                    {
+                        let dist_to_end = (connector.length - my_d).max(0.0);
+                        target_speed =
+                            target_speed.min(braking_speed_for_distance(0.0, dist_to_end));
+                    }
+                } else if transit == TRANSIT_NETWORK {
                     if let Some(lane) = transit_network.lane_system.lanes.get(lid) {
                         let dist_to_end = (lane.length - my_d).max(0.0);
                         if lane.edge_id != usize::MAX

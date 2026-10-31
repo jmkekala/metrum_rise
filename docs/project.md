@@ -44,7 +44,9 @@ every junction of the demo save, the Kuopio save and the 100k city
 visible as waiting cars instead of stacking ([TRAFFIC-14](roadmap.md), open). The 100k city's only
 ring came from shoppers who could never reach a door at a lane's end and circled the block until it
 locked; with that fixed the city built to day 12 has no ring. Junction boxes and a gridlock check
-follow.
+follow. Connector heads that wait at a full exit now brake to a stop instead of reporting
+their turn speed; that fix slows saturated junctions enough to lock a 100k ring and is held for
+those rules ([TRAFFIC-16](traffic.md#junction-speeds)).
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
 Splitting an incident edge now retains its independently solved physical support knots, and the
