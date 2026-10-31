@@ -10,6 +10,7 @@ mod pose;
 mod replan;
 
 use super::super::super::{MODE_CAR, TRANSIT_INTERSECTION};
+use super::super::access::ACCESS_LANE_D_TOLERANCE_M;
 use super::super::claims::LaneClaimContext;
 use super::super::slices::MovementSlices;
 use super::super::traffic::{connector_turn_speed, junction_car_speed};
@@ -107,10 +108,35 @@ pub(super) unsafe fn handle_network_movement(
                 *s_lane_d.get_mut(i) += remaining_dist;
                 remaining_dist = 0.0;
 
-                if try_network_detach(i, lane_id, allocator, transit_network, lane_claims, slices) {
+                if try_network_detach(
+                    i,
+                    lane_id,
+                    *s_lane_d.get(i),
+                    allocator,
+                    transit_network,
+                    graph,
+                    lane_claims,
+                    slices,
+                ) {
                     break;
                 }
             } else {
+                // A step that reaches the lane's end passes every detach point left on the lane,
+                // the end itself included; detach there instead of leaving the lane (`TRAFFIC-15`).
+                // The speed pass does not brake for a detach point, mid-lane or here: the car
+                // detaches in the step that reaches it.
+                if try_network_detach(
+                    i,
+                    lane_id,
+                    lane.length + ACCESS_LANE_D_TOLERANCE_M,
+                    allocator,
+                    transit_network,
+                    graph,
+                    lane_claims,
+                    slices,
+                ) {
+                    break;
+                }
                 remaining_dist -= dist_to_end;
                 match handle_lane_end(
                     i,

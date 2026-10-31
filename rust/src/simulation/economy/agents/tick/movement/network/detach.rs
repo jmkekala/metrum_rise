@@ -5,22 +5,34 @@
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_ACCESS_INGRESS};
 use super::super::super::access::{local_access_point, local_access_side_label};
 use super::super::super::claims::LaneClaimContext;
+use super::super::super::lane_nav::lane_terminal_node;
 use super::super::super::slices::MovementSlices;
 use super::super::super::traffic::claim_lane_entry;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
+use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
 
 /// Attempts to detach from the current network lane into the target building's access path.
 ///
+/// The detach rule (`TRAFFIC-15`, `TRAFFIC-13`): a car detaches once its movement step has
+/// reached `reached_d` at or past the planned detach distance on the planned detach lane, and
+/// only on the route's last visit to that lane, when no route node is left beyond the lane's
+/// terminal node. A step that ends inside the lane reaches its `lane_d`; a step that reaches the
+/// lane's end reaches `length + ACCESS_LANE_D_TOLERANCE_M`, the planner's legality bound, so every
+/// legal detach point is reachable. O(1), no allocation.
+///
 /// Returns `true` when movement should stop for this tick.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn try_network_detach(
     i: usize,
     lane_id: usize,
+    reached_d: f32,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
+    graph: &RegionGraph,
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> bool {
@@ -47,7 +59,12 @@ pub(super) unsafe fn try_network_detach(
         if !access_plan_valid
             || planned_detach_lane_id == usize::MAX
             || lane_id != planned_detach_lane_id
-            || *s_lane_d.get(i) < *s_plan_detach_lane_d.get(i)
+            || reached_d < *s_plan_detach_lane_d.get(i)
+            || route_continues_past_lane(
+                s_path.get(i),
+                *s_path_idx.get(i),
+                lane_terminal_node(lane_id, transit_network, graph),
+            )
         {
             return false;
         }
@@ -116,8 +133,22 @@ pub(super) unsafe fn try_network_detach(
                 detach_d,
             );
         }
-        *s_lane_d.get_mut(i) = detach_d;
+        // Wait at the detach point; a lane-end point within the tolerance waits at the end.
+        *s_lane_d.get_mut(i) = detach_d.min(transit_network.lane_system.lanes[lane_id].length);
         *s_speed.get_mut(i) = 0.0;
         true
     }
+}
+
+// Whether the route still has a node to reach after this lane's terminal node: `path_idx` names
+// the next node, which is the current lane's terminal while the car drives toward it (the same
+// reading as `planned_next_connector`). A route that leaves the detach lane and comes back to a
+// detach point behind the car is not finished on its first visit (`TRAFFIC-13`).
+fn route_continues_past_lane(path: &[u32], path_idx: usize, terminal: Option<u32>) -> bool {
+    let next_idx = if terminal.is_some() && path.get(path_idx).copied() == terminal {
+        path_idx + 1
+    } else {
+        path_idx
+    };
+    next_idx < path.len()
 }

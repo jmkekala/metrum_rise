@@ -8,6 +8,11 @@ use crate::simulation::buildings::allocator::BuildingEntrance;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
+/// How far past its lane's end a planned attach or detach distance may lie (float noise of the
+/// frontage projection). Movement reaches every detach point up to this far past the end: a step
+/// that reaches the lane's end passes them all (`TRAFFIC-15`).
+pub(in crate::simulation::economy::agents::tick) const ACCESS_LANE_D_TOLERANCE_M: f32 = 1e-4;
+
 /// Returns whether a planned access attach still matches entrance and lane topology.
 pub(in crate::simulation::economy::agents::tick) fn planned_attach_is_legal(
     mode: u8,
@@ -24,7 +29,7 @@ pub(in crate::simulation::economy::agents::tick) fn planned_attach_is_legal(
     let Some(lane) = transit_network.lane_system.lanes.get(lane_id) else {
         return false;
     };
-    if lane_d < 0.0 || lane_d > lane.length + 1e-4 {
+    if lane_d < 0.0 || lane_d > lane.length + ACCESS_LANE_D_TOLERANCE_M {
         return false;
     }
     lane_terminal_node(lane_id, transit_network, graph) == Some(planned_attach_node)
@@ -46,7 +51,7 @@ pub(in crate::simulation::economy::agents::tick) fn planned_detach_is_legal(
     let Some(lane) = transit_network.lane_system.lanes.get(lane_id) else {
         return false;
     };
-    if lane_d < 0.0 || lane_d > lane.length + 1e-4 {
+    if lane_d < 0.0 || lane_d > lane.length + ACCESS_LANE_D_TOLERANCE_M {
         return false;
     }
     lane_origin_node(lane_id, transit_network, graph) == Some(planned_detach_node)
