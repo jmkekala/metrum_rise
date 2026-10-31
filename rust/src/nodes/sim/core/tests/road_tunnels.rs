@@ -196,11 +196,16 @@ fn tunnel_probes_with_tunnel_intent() {
 // A 256 m world with a cone-shaped hill centred on the origin: flat at 0 beyond `foot_m`, rising
 // at 1:2 to `0.5 * foot_m` at the top.
 fn hill_core(foot_m: f32) -> SimCore {
+    cone_hill_core(foot_m, 0.5)
+}
+
+// `hill_core` with the hill rising at `slope`.
+fn cone_hill_core(foot_m: f32, slope: f32) -> SimCore {
     let mut core = flat_core();
     for z in 0..257 {
         for x in 0..257 {
             let r = (x as f32 - 128.0).hypot(z as f32 - 128.0);
-            let height = (0.5 * (foot_m - r)).max(0.0);
+            let height = (slope * (foot_m - r)).max(0.0);
             core.heightmap
                 .set_height(x, z, height / crate::config::HEIGHT_SCALE);
         }
@@ -408,26 +413,249 @@ fn invalid_tunnels_are_refused_with_a_reason() {
     assert_eq!(result.quick, "tunnel_approach_too_short");
 }
 
-// Open (`ROAD-61`, found by round R2, pre-existing on `dev` for every tunnel): the visible-surface
-// queries (`GradedSurface::surface_height_at` and its siblings: the cursor, zoning cell heights,
-// vegetation, off-lane vehicles) take the highest road triangle at a point, so over a bore they
-// answer the buried deck instead of the hill. The graded bake leaves the hill closed; the queries
-// need the same rule. Ignored until that fix.
+// The natural height of `cone_hill_core(foot_m, slope)` at an XZ point.
+fn cone_hill(foot_m: f32, slope: f32, x: f32, z: f32) -> f32 {
+    (slope * (foot_m - x.hypot(z))).max(0.0)
+}
+
+// A tunnel through a 1:4 hill 25 m high, its bore from x = -80 to 80 (5 m of cover). The
+// approaches' tie-in cones (1:2) cut the hill within 20 m of each mouth; beyond, the graded
+// ground is the hill itself.
+fn gentle_tunnel_core() -> SimCore {
+    let mut core = cone_hill_core(100.0, 0.25);
+    let result = run_stroke(&mut core, &THROUGH_HILL, true);
+    assert_eq!(result.committed, "committed", "{result:?}");
+    assert_eq!(
+        stroke_classes(&result),
+        [EdgeClass::Standard, EdgeClass::Tunnel, EdgeClass::Standard],
+        "{result:?}"
+    );
+    core.precompute_road_mesh_data();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    core
+}
+
+// `ROAD-61` (found by round R2): a tunnel span is on the visible surface only inside its portal
+// opening, where the graded terrain cuts the ground over the deck (`mask_at`'s rule, T22 5 (a));
+// everywhere else over the bore the surface is the hill. Every visible-surface query (the
+// cursor's and the zoning cells' heights, off-lane vehicles, the agent inspector's ground)
+// answered the buried deck over the whole bore.
 #[test]
-#[ignore = "ROAD-61 open: surface queries read the buried deck over a bore"]
 fn the_surface_over_a_bore_is_the_hill() {
+    use crate::simulation::terrain::graded::GroundClass;
+    let core = gentle_tunnel_core();
+    for x in [-50.0, -25.0, 0.0, 25.0, 50.0] {
+        for z in [0.0, 2.0] {
+            let hill = cone_hill(100.0, 0.25, x, z);
+            let heights = core.with_graded_surface(|surface, scratch| {
+                let (x, z) = (f64::from(x), f64::from(z));
+                let at = surface.surface_height_at(x, z, scratch);
+                let (with_normal, _) = surface.surface_height_and_normal_at(x, z, scratch);
+                surface.gather_near(x, z, 3.0, scratch);
+                let near = surface.surface_height_near(x, z, scratch);
+                surface.gather_heights_near(x, z, 3.0, scratch);
+                let (near_normal, _) = surface.surface_height_and_normal_near(x, z, scratch);
+                [at, with_normal, near, near_normal].map(|height| height as f32)
+            });
+            let world = core.get_world_surface_height_internal(godot::prelude::Vector2::new(x, z));
+            for surface in heights.into_iter().chain([world]) {
+                assert!(
+                    (surface - hill).abs() < 0.01,
+                    "surface {surface} over the bore at ({x}, {z}), hill {hill}"
+                );
+            }
+        }
+    }
+    // Inside the opening, 2 m in from each mouth, the surface is the deck.
+    for x in [-78.0, 78.0] {
+        let deck = core
+            .transit_network
+            .roadbed
+            .height_at(x, 0.0)
+            .expect("the tunnel deck");
+        core.with_graded_surface(|surface, scratch| {
+            let (x, z) = (f64::from(x), 0.0);
+            assert_eq!(surface.mask_at(x, z, scratch), GroundClass::Road);
+            assert_eq!(surface.surface_height_at(x, z, scratch), f64::from(deck));
+            assert_eq!(
+                surface.surface_height_and_normal_at(x, z, scratch).0,
+                f64::from(deck)
+            );
+            surface.gather_near(x, z, 3.0, scratch);
+            assert_eq!(surface.surface_height_near(x, z, scratch), f64::from(deck));
+        });
+    }
+}
+
+// Open (`ROAD-61`, found by round R2b, the graded terrain's T22 design): on a hill as steep as
+// the 1:2 tie-in slope the approaches' cones cut the hill over the bore by up to the bore
+// clearance (5 m) all the way to the 64 m cap, where the ground steps back up to the hill (the
+// pale rock stripes across the bore near the top of R2's test hill). The surface queries read
+// the graded ground as the terrain renders it, so they follow the cut.
+#[test]
+#[ignore = "ROAD-61 open: approach tie-in cones cut a 1:2 hill over the bore to the cap"]
+fn a_steep_hill_over_a_bore_keeps_its_height() {
     let mut core = hill_core(80.0);
     assert_eq!(
         run_stroke(&mut core, &THROUGH_HILL, true).committed,
         "committed"
     );
     core.precompute_road_mesh_data();
-    for x in [-60.0, -30.0, 0.0, 30.0, 60.0] {
-        let surface = core.get_world_surface_height_internal(godot::prelude::Vector2::new(x, 0.0));
-        let hill = 0.5 * (80.0 - f32::abs(x));
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    for x in [-30.0, -8.0, 8.0, 30.0] {
+        let ground = core.with_graded_surface(|surface, scratch| {
+            surface.ground_height_at(f64::from(x), 0.0, scratch) as f32
+        });
+        let hill = cone_hill(80.0, 0.5, x, 0.0);
         assert!(
-            (surface - hill).abs() < 0.5,
-            "surface {surface} over the bore at x {x}, hill {hill}"
+            (ground - hill).abs() < 0.01,
+            "graded ground {ground} over the bore at x {x}, hill {hill}"
         );
     }
+}
+
+// Plants over the bore of `gentle_tunnel_core`, and over its approaches and openings, against
+// the same hill without a road: `(x, z)` of every plant of both layers in the strip `|z| < 6`.
+fn plants_along_the_stroke(core: &SimCore) -> Vec<(f32, f32)> {
+    use crate::nodes::simulation_node::vegetation_api::{
+        CANOPY_SALT, UNDERSTORY_SALT, scatter_layer,
+    };
+    let origin = godot::prelude::Vector2::new(-110.0, -110.0);
+    let vegetation = &core.vegetation;
+    [
+        (vegetation.canopy_cell_m, CANOPY_SALT, true),
+        (vegetation.understory_cell_m, UNDERSTORY_SALT, false),
+    ]
+    .into_iter()
+    .flat_map(|(cell_m, salt, canopy)| scatter_layer(core, origin, 220.0, cell_m, salt, canopy))
+    .collect::<Vec<_>>()
+    .as_chunks::<6>()
+    .0
+    .iter()
+    .map(|record| (record[0], record[2]))
+    .filter(|&(_, z)| z.abs() < 6.0)
+    .collect()
+}
+
+// A dense forest over the whole of `core`'s world.
+fn forest(core: &mut SimCore) {
+    use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
+    let config = VegetationConfig {
+        coverage: 1.0,
+        canopy_stems_per_ha: 400.0,
+        ..VegetationConfig::default()
+    };
+    core.vegetation = VegetationGenerator::resolve(config, &core.config);
+}
+
+// `ROAD-61` (found by round R2): plants keep off the approach cuts and the portal openings, and
+// the hill over the bore keeps every plant it has without the tunnel. Vegetation read the
+// roadbed's highest triangle, the buried deck, and cleared the whole bore across the hill.
+#[test]
+fn the_hill_over_a_bore_keeps_its_plants() {
+    let mut core = gentle_tunnel_core();
+    forest(&mut core);
+    let mut hill = cone_hill_core(100.0, 0.25);
+    forest(&mut hill);
+    hill.allocator
+        .prepare_building_site_query_index(hill.config.zone_cell_m);
+    let (tunnel, natural) = (
+        plants_along_the_stroke(&core),
+        plants_along_the_stroke(&hill),
+    );
+    // Beyond the approaches' cuts (20 m past each mouth) and a canopy footprint the ground is
+    // the same hill with and without the tunnel.
+    let over_bore = |plants: &[(f32, f32)]| -> Vec<(f32, f32)> {
+        plants
+            .iter()
+            .copied()
+            .filter(|&(x, _)| x.abs() < 50.0)
+            .collect()
+    };
+    assert!(
+        !over_bore(&natural).is_empty(),
+        "the forest covers the hill"
+    );
+    assert_eq!(over_bore(&tunnel), over_bore(&natural));
+    // The approach roads and the openings (10 m into the bore) hold no plant.
+    assert!(
+        tunnel
+            .iter()
+            .all(|&(x, z)| !(x.abs() > 70.0 && x.abs() < 100.0 && z.abs() < 3.0)),
+        "{tunnel:?}"
+    );
+}
+
+// `ROAD-61` (reported by round R2, not reproduced by R2b): the agent inspector reports a car in
+// a tunnel at its lane position, as the renderer draws it, not on the hill above it. Entering a
+// lane sets the transit to `TRANSIT_NETWORK` or `TRANSIT_INTERSECTION`, and the inspector reads
+// the lane in both, so the surface rule (the hill over the bore) never reaches a car on a lane.
+#[test]
+fn the_inspector_reports_a_car_in_a_tunnel_on_its_lane() {
+    use crate::nodes::sim::render::agent_inspection::agent_position;
+    use crate::nodes::sim::render::lane_pose::sample_lane_pose;
+    use crate::simulation::network::lanes::LaneType;
+    let mut core = gentle_tunnel_core();
+    core.transit_network.install_pending_cch();
+    let graph = &core.region_graph;
+    let tunnel = graph
+        .edges()
+        .iter()
+        .position(|edge| !edge.deleted && edge.class == EdgeClass::Tunnel)
+        .unwrap();
+    let start = graph.edge(tunnel).start_node;
+    let end = graph
+        .find_node_within(Vector3::new(100.0, 0.0, 0.0), 1.0)
+        .expect("the stroke's east end");
+    let (_, _, path) = core
+        .transit_network
+        .cch_graph
+        .find_path(
+            start,
+            end,
+            usize::MAX,
+            usize::MAX,
+            graph,
+            crate::simulation::network::types::TransitFlags::CAR,
+        )
+        .expect("a car route through the tunnel");
+    let lanes = &core.transit_network.lane_system;
+    let lane_id = lanes.edge_lanes[&tunnel]
+        .iter()
+        .copied()
+        .find(|&id| lanes.lanes[id].is_fwd && lanes.lanes[id].lane_type == LaneType::Vehicle)
+        .expect("a forward vehicle lane");
+    let at = lanes.lanes[lane_id].geometry[0];
+    let core_ref = &mut core;
+    let car = core_ref.agents.spawn_debug_car(
+        path,
+        &core_ref.transit_network.lane_system,
+        lane_id,
+        godot::prelude::Vector2::new(at.x, at.z),
+    );
+    core.time.speed_multiplier = 1.0;
+    let mut checked = 0;
+    for _ in 0..3_000 {
+        let lane_id = core.agents.agents.current_lane_id[car];
+        if let Some(lane) = core.transit_network.lane_system.lanes.get(lane_id)
+            && lane.edge_id != usize::MAX
+            && core.region_graph.edge(lane.edge_id).class == EdgeClass::Tunnel
+        {
+            let (pose, _) = sample_lane_pose(lane, core.agents.agents.lane_distance[car]).unwrap();
+            let reported = agent_position(&core, car);
+            assert_eq!(reported, pose, "the car in the tunnel");
+            // Away from the openings the hill stands over the car.
+            let surface = core
+                .get_world_surface_height_internal(godot::prelude::Vector2::new(pose.x, pose.z));
+            assert!(
+                pose.x.abs() > 70.0 || pose.y < surface - 4.0,
+                "{pose:?} under {surface}"
+            );
+            checked += 1;
+        }
+        core.step_frame(1.0 / 30.0);
+    }
+    assert!(checked > 0, "the car drove through the tunnel");
 }

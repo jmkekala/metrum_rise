@@ -20,37 +20,45 @@ enum CellScenario {
 #[test]
 #[ignore = "unprofiled scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::None);
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, false);
+}
+
+// `ROAD-61` locality: a tunnel stroke through a hill beside the measured T, planned as the
+// remote city grows.
+#[test]
+#[ignore = "unprofiled tunnel planning locality; run alone with --release --ignored --nocapture"]
+fn populated_tunnel_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, true);
 }
 
 #[test]
 #[ignore = "unprofiled field reservation scaling; run alone with --release --ignored --nocapture"]
 fn populated_field_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, true, CellScenario::None);
+    measure_populated_road_plan_scaling(false, false, true, CellScenario::None, false);
 }
 
 #[test]
 #[ignore = "unprofiled paved-site scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_paved_road_plan_scaling() {
-    measure_populated_road_plan_scaling(true, false, false, CellScenario::None);
+    measure_populated_road_plan_scaling(true, false, false, CellScenario::None, false);
 }
 
 #[test]
 #[ignore = "unprofiled cached zoning feasibility scaling; run alone with --release --ignored --nocapture"]
 fn populated_zoning_feasibility_scaling() {
-    measure_populated_road_plan_scaling(true, true, false, CellScenario::None);
+    measure_populated_road_plan_scaling(true, true, false, CellScenario::None, false);
 }
 
 #[test]
 #[ignore = "matched populated cell-reservation planning locality; run without competing work"]
 fn populated_cell_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::Placement);
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Placement, false);
 }
 
 #[test]
 #[ignore = "snapshot component diagnostic; run release alone without profiling"]
 fn populated_cell_snapshot_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::Snapshot);
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Snapshot, false);
 }
 
 fn measure_populated_road_plan_scaling(
@@ -58,6 +66,7 @@ fn measure_populated_road_plan_scaling(
     zoning_only: bool,
     fields: bool,
     scenario: CellScenario,
+    tunnel: bool,
 ) {
     let mut memory_phase = 0;
     let mut previous_memory_products = None;
@@ -66,6 +75,21 @@ fn measure_populated_road_plan_scaling(
     }
     let cells = scenario != CellScenario::None;
     let mut core = test_core();
+    if tunnel {
+        // A 1:4 cone hill 25 m high south of the T: the measured stroke tunnels through it.
+        let terrain = &mut core.heightmap;
+        for gz in 0..terrain.height {
+            for gx in 0..terrain.width {
+                let (x, z) = terrain.grid_to_world_coords(gx, gz);
+                if x.abs() > 110.0 || (z + 200.0).abs() > 110.0 {
+                    continue;
+                }
+                let height = (0.25 * (100.0 - x.hypot(z + 200.0))).max(0.0);
+                terrain.set_height(gx, gz, height / crate::config::HEIGHT_SCALE);
+            }
+        }
+        core.refresh_road_terrain_inputs();
+    }
     road_terrain_plan::commit_ready(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
@@ -292,13 +316,21 @@ fn measure_populated_road_plan_scaling(
         let mut status_samples = Vec::new();
         let mut preview_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
+        let points = if tunnel {
+            vec![
+                Vector3::new(0.0, 0.0, -320.0),
+                Vector3::new(0.0, 0.0, -80.0),
+            ]
+        } else {
+            vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)]
+        };
         let request = || RoadPreviewRequest {
             surface_generation: generation,
-            points: vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
+            points: points.clone(),
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            tunnel,
         };
         for iteration in 0..103 {
             let start = Instant::now();
@@ -332,7 +364,7 @@ fn measure_populated_road_plan_scaling(
             "ROAD_PLAN_SCALING {}",
             serde_json::json!({
                 "remote_buildings": remote_buildings, "remote_roads": background_roads,
-                "field_reservations": fields,
+                "field_reservations": fields, "tunnel": tunnel,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),

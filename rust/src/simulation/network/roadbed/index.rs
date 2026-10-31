@@ -131,6 +131,8 @@ pub(super) struct IndexedPiece {
     pub(super) mesh: Arc<PieceMesh>,
     // Whether this piece contributes terrain seams and coverage.
     pub(super) grounded: bool,
+    // Whether it lies under the ground (`PublishedPiece::buried`).
+    pub(super) buried: bool,
 }
 
 /// Query cells and render-chunk reference counts of the published pieces.
@@ -155,12 +157,14 @@ impl PieceIndex {
         mesh: &Arc<PieceMesh>,
         footprint: &PieceFootprint,
         grounded: bool,
+        buried: bool,
     ) {
         for &cell in footprint.query_cells.iter() {
             let entry = IndexedPiece {
                 id,
                 mesh: Arc::clone(mesh),
                 grounded,
+                buried,
             };
             if let Some(list) = self.cells.get_mut(&cell) {
                 let list = Arc::make_mut(list);

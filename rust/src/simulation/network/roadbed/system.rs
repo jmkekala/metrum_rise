@@ -56,6 +56,16 @@ impl PublishedPiece {
         }
     }
 
+    // Whether the piece lies under the ground: a tunnel span, or a node piece where only
+    // tunnels meet (`ROAD-61`). Its top shows only where the graded terrain's portal opening
+    // cuts the ground, which the roadbed does not know: the surface queries take it apart.
+    pub(super) fn buried(&self) -> bool {
+        match &self.piece {
+            Piece::Span(span) => span.buried(),
+            Piece::Node(node) => node.buried(),
+        }
+    }
+
     fn parts(&self) -> (&Arc<PieceMesh>, &PieceFootprint) {
         match &self.piece {
             Piece::Span(span) => (span.shared_mesh(), span.footprint()),
@@ -735,9 +745,9 @@ impl RoadbedSystem {
             self.changed_chains.count(old, -1);
         }
         if let Some(published) = published {
-            let grounded = published.grounded();
+            let (grounded, buried) = (published.grounded(), published.buried());
             let (mesh, footprint) = published.parts();
-            self.index.insert(id, mesh, footprint, grounded);
+            self.index.insert(id, mesh, footprint, grounded, buried);
             changed.extend(footprint.render_chunks().iter().copied());
             self.changed_bounds.push(published.mesh().bounds_xz());
             self.changed_portals.extend(portal_bounds(published.mesh()));

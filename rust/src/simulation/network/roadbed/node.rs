@@ -90,8 +90,10 @@ pub struct NodePiece {
     approaches: Box<[(ArmKey, RoadSection)]>,
     mesh: Arc<PieceMesh>,
     footprint: PieceFootprint,
-    // Whether the piece stands on the terrain (`NodeArms::grounded`).
+    // Whether the piece stands on the terrain (`NodeArms::grounded`), or lies under it with the
+    // tunnels that alone meet the node (`NodeArms::buried`).
     grounded: bool,
+    buried: bool,
 }
 
 impl NodePiece {
@@ -132,6 +134,11 @@ impl NodePiece {
     // bridges and tunnels meet it hangs no skirt and gives the terrain no seam or coverage.
     pub(super) fn grounded(&self) -> bool {
         self.grounded
+    }
+
+    // Whether only tunnels meet the node, so the piece lies under the ground with them.
+    pub(super) fn buried(&self) -> bool {
+        self.buried
     }
 
     pub(super) fn mouth(&self, key: ArmKey) -> Option<&Arc<MouthSection>> {
@@ -866,6 +873,7 @@ pub(super) fn build_node_piece(
         mesh: Arc::new(mesh),
         footprint,
         grounded,
+        buried: plan.arms.buried(),
     })
 }
 

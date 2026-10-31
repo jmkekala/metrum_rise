@@ -18,12 +18,14 @@ const LAMP_CLEAR_RADIUS_M: f32 = 4.0;
 const POLE_BEYOND_SURFACE_M: f64 = 0.75;
 
 /// Whether a tree trunk keeps clear of walkways and lamp poles. Generated and brushed trees
-/// both follow it; a yard planting's trees stand where its asset put them.
+/// both follow it; a yard planting's trees stand where its asset put them. A tunnel's walkways
+/// lie under the hill and set nothing back.
 pub(super) fn clear(core: &SimCore, x: f32, z: f32) -> bool {
     let surface = &core.transit_network.roadbed;
     let point = RoadVec2::new(f64::from(x), f64::from(z));
-    let near =
-        |radius, kinds: fn(BandKind) -> bool| surface.any_band_near_disc(point, radius, kinds);
+    let near = |radius, kinds: fn(BandKind) -> bool| {
+        surface.any_exposed_band_near_disc(point, radius, kinds)
+    };
     if near(WALKWAY_CLEAR_RADIUS_M, |kind| {
         matches!(kind, BandKind::Footpath | BandKind::Sidewalk)
     }) {

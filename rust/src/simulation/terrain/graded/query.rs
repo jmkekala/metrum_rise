@@ -167,23 +167,55 @@ impl GradedSurface<'_> {
         self.ground_prepared(&cell, scratch)
     }
 
-    /// The visible surface: the road's height where a road covers the point, else the graded
-    /// ground.
+    /// The visible surface: the road's height where a road on or above the ground covers the
+    /// point, a buried deck's where the portal opening cuts the ground over it (`mask_at`'s
+    /// rule, T22 5 (a)), else the graded ground: over a bore beyond its opening the surface is
+    /// the hill (`ROAD-61`). A point over no buried deck costs what it did.
     pub fn surface_height_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
-        match self.roadbed.height_at(x as f32, z as f32) {
-            Some(height) => f64::from(height),
-            None => self.ground_height_at(x, z, scratch),
+        match self
+            .roadbed
+            .exposed_and_buried_heights_at(x as f32, z as f32)
+        {
+            [Some(height), _] => f64::from(height),
+            [None, Some(deck)] if self.opens(x, z, scratch) => f64::from(deck),
+            [None, _] => self.ground_height_at(x, z, scratch),
         }
     }
 
-    /// Visible height and rendered normal at one point, prepared as one graded query window.
+    // Whether the portal opening cuts the ground at a point no road on or above the ground
+    // covers (`mask_at`'s rule), prepared for that point alone.
+    fn opens(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> bool {
+        self.prepare([x, z, x, z], scratch);
+        self.prepare_portals([x, z, x, z], scratch);
+        self.opened(x, z, scratch)
+    }
+
+    // `opens` from the last gather when its windows hold the point (`mask_near`'s preparation).
+    fn opens_near(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> bool {
+        let point = [x, z, x, z];
+        if !scratch.rect.is_some_and(|rect| holds(rect, point)) {
+            self.prepare(point, scratch);
+        }
+        if !scratch.portal_rect.is_some_and(|rect| holds(rect, point)) {
+            self.prepare_portals(point, scratch);
+        }
+        self.opened(x, z, scratch)
+    }
+
+    /// Visible height and rendered normal at one point, prepared as one graded query window; the
+    /// road's as [`Self::surface_height_at`] takes it.
     pub fn surface_height_and_normal_at(
         &self,
         x: f64,
         z: f64,
         scratch: &mut QueryScratch,
     ) -> (f64, [f64; 3]) {
-        if let Some((height, normal)) = self.roadbed.height_and_normal_at(x as f32, z as f32) {
+        let [exposed, buried] = self
+            .roadbed
+            .exposed_and_buried_heights_and_normals_at(x as f32, z as f32);
+        if let Some((height, normal)) =
+            exposed.or_else(|| buried.filter(|_| self.opens(x, z, scratch)))
+        {
             return (f64::from(height), normal.to_array().map(f64::from));
         }
         let cell = Cell::at(x, z);
@@ -208,7 +240,12 @@ impl GradedSurface<'_> {
         z: f64,
         scratch: &mut QueryScratch,
     ) -> (f64, [f64; 3]) {
-        if let Some((height, normal)) = self.roadbed.height_and_normal_at(x as f32, z as f32) {
+        let [exposed, buried] = self
+            .roadbed
+            .exposed_and_buried_heights_and_normals_at(x as f32, z as f32);
+        if let Some((height, normal)) =
+            exposed.or_else(|| buried.filter(|_| self.opens_near(x, z, scratch)))
+        {
             return (f64::from(height), normal.to_array().map(f64::from));
         }
         let cell = Cell::at(x, z);
@@ -324,9 +361,13 @@ impl GradedSurface<'_> {
 
     /// [`Self::surface_height_at`] from the last [`Self::gather_near`], bitwise.
     pub fn surface_height_near(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
-        match self.roadbed.height_at(x as f32, z as f32) {
-            Some(height) => f64::from(height),
-            None => self.ground_height_near(x, z, scratch),
+        match self
+            .roadbed
+            .exposed_and_buried_heights_at(x as f32, z as f32)
+        {
+            [Some(height), _] => f64::from(height),
+            [None, Some(deck)] if self.opens_near(x, z, scratch) => f64::from(deck),
+            [None, _] => self.ground_height_near(x, z, scratch),
         }
     }
 

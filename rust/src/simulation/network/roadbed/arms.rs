@@ -78,6 +78,8 @@ pub(crate) struct NodeArms {
     // Whether a standard edge meets the node. Where only bridges and tunnels meet, the piece is
     // part of the structure and stands off the terrain (`TERRAIN-07-C`).
     grounded: bool,
+    // Whether only tunnels meet the node: the piece lies under the ground with them.
+    buried: bool,
 }
 
 // The buffers arms are collected and laid out in, reused between nodes (`ROAD-68-K18`).
@@ -167,6 +169,9 @@ impl NodeArms {
         self.grounded = incidents
             .iter()
             .any(|(key, _)| graph.edge(key.edge).class == EdgeClass::Standard);
+        self.buried = incidents
+            .iter()
+            .all(|(key, _)| graph.edge(key.edge).class == EdgeClass::Tunnel);
         for (index, &(key, _)) in incidents.iter().enumerate() {
             let road = roads.iter().position(|&input| input == index);
             let crossable = road.is_some_and(|road| match &degree_two {
@@ -262,6 +267,11 @@ impl NodeArms {
     /// no coverage (`TERRAIN-07-C`).
     pub(super) fn grounded(&self) -> bool {
         self.grounded
+    }
+
+    /// Whether only tunnels meet the node, so its piece is buried with them (`ROAD-61`).
+    pub(super) fn buried(&self) -> bool {
+        self.buried
     }
 
     /// Number of arms.

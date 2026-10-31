@@ -86,6 +86,9 @@ func _run() -> void:
 		classes.append(_simulation.get_edge_class(edge))
 	classes.sort()
 	_expect(classes == [0, 0, 2], "the stroke must commit as two approaches and a tunnel, got %s" % [classes])
+	# Over the bore the visible surface is the hill, not the buried deck.
+	var over_bore: float = _simulation.get_world_surface_height(Vector2.ZERO)
+	_expect(over_bore > points[0].y + 5.0, "the surface over the bore must be the hill, got %.2f over a deck at %.2f" % [over_bore, points[0].y])
 
 	await _drive_through()
 	_press_t(input_manager)
@@ -137,6 +140,9 @@ func _drive_through() -> void:
 		var edge := int(details.get("lane_edge", -1))
 		if edge >= 0 and _simulation.get_edge_class(edge) == 2:
 			inside = true
+			# The inspector reports the car on its lane in the bore, not on the hill above it.
+			if absf(position.x) < 50.0:
+				_expect(position.y < _bore_cover_ground - 5.0, "the inspector reports the car inside the bore, got %s under ground of at least %.1f" % [position, _bore_cover_ground])
 			# The drawn car stands on the buried deck, never on the hill above it.
 			if details.has("drawn_position"):
 				var drawn: Vector3 = details["drawn_position"]

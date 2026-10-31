@@ -67,6 +67,8 @@ pub struct SpanPiece {
     // A standard edge's span stands on the terrain; a bridge's or tunnel's does not, so its
     // chains are no terrain loops (`ROAD-68-E` terrain changes).
     grounded: bool,
+    // A tunnel's span lies under the ground (`ROAD-61`).
+    buried: bool,
     mesh: Arc<PieceMesh>,
     footprint: PieceFootprint,
 }
@@ -151,6 +153,11 @@ impl SpanPiece {
         self.grounded
     }
 
+    // Whether the edge was a tunnel when the span was built.
+    pub(super) fn buried(&self) -> bool {
+        self.buried
+    }
+
     pub(super) fn nodes(&self) -> [u32; 2] {
         self.nodes
     }
@@ -232,6 +239,7 @@ pub(crate) fn build_span_piece(
         end_mouth,
         crossings,
         grounded: edge.class == EdgeClass::Standard,
+        buried: edge.class == EdgeClass::Tunnel,
         mesh: Arc::new(mesh),
         footprint,
     })

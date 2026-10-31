@@ -798,10 +798,15 @@ fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard
             // A committed field is worked land, so it clears plants exactly as a road deck or a
             // building pad does: the test is the same predicate, and nothing is destroyed, so the
             // stand returns if the field is redrawn or the farm is removed. The mask answers the
-            // ground; a bridge deck over it is the roadbed's visible surface.
+            // ground (a portal opening's cut included); a bridge deck over it is the roadbed's
+            // visible surface. A tunnel's deck lies under the hill, which keeps its plants.
+            let [road, _] = core
+                .transit_network
+                .roadbed
+                .exposed_and_buried_heights_at(p.x, p.y);
             if built
                 || core.watermap.visible_depth_world(p.x, p.y) > 0.001
-                || core.transit_network.roadbed.height_at(p.x, p.y).is_some()
+                || road.is_some()
                 || (yard && core.allocator.building_site_blocks_yard_plant(p))
                 || core.allocator.field_clearance.covers_point(p)
             {
