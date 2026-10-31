@@ -613,6 +613,15 @@ artifact folders stay local):
   employment +2.3%, net income +7.4%, bankruptcies -10.2%, out-of-stock +7.4% (0.225 to
   0.242). 10k fiscal stress moves by at most 0.5% on its main metrics apart from final
   employment (0.0059 to 0.0052). 14 notes against `dev`'s 13, all of the stale baseline.
+- `PERF-06` agent contract (`tools/perf_contract.py --agents`, 8 workers, cores `0,2,..,14`,
+  exclusive timing lock, load average 1.7 at the start; control `dev` then the branch with both
+  this rule and `TRAFFIC-16`, then the branch, then control): identical work counts in all four
+  runs. Single samples, ms, control / branch / branch / control: network 10k 0.666 / 0.839 /
+  0.280 / 1.226, 30k 0.840 / 0.638 / 0.620 / 2.046; egress 10k 0.540 / 0.475 / 0.485 / 0.795,
+  30k 1.252 / 1.281 / 1.699 / 1.312; ingress 10k 0.705 / 0.295 / 0.521 / 0.194, 30k 0.340 /
+  0.273 / 0.318 / 0.493. They scatter within each binary as widely as between them: no speed
+  claim either way. The contract's fixture has no connector and no lane-end detach; the added
+  work is one O(1) detach try per road-lane end event.
 
 ## Junction Speeds
 
