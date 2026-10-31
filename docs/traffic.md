@@ -349,7 +349,7 @@ local):
   within noise and not a speed claim.
 - 100k lane audit (`traffic07_lane_entry_audit`, day 12 at 32×, 8 workers, each engine its own
   city): `dev` reproduces the `TRAFFIC-11` record exactly (0 lanes over capacity and 0 stacked cars
-  at every sample; 2,579 and 3,385 trucks held at nodes, 96 and 234 vehicles at attach points at
+  at every sample; 2,579 and 3,385 vehicles held at nodes, 96 and 234 vehicles at attach points at
   00:00 and 24:00). The fix: 0 lanes over capacity and 0 stacked cars at every sample; 2,682 and
   3,664 held at nodes, 140 and 192 at attach points (a different city, so the holds are not
   attributed). This city was prepared with the fix's first build, whose lane ends took the layout's
@@ -420,16 +420,18 @@ Acceptance record (`TRAFFIC-07`, 2026-10-30; commands and results; the artifact 
 - Lane audit: `frame_budget::lane_entry_audit::traffic07_lane_entry_audit` (ignored, release)
   loads a prepared snapshot, runs one game day and counts, every `METRUM_AUDIT_EVERY_MINUTES`
   (default 240), the lanes holding more cars than fit (`floor(length / 2.7) + 1`), the cars within
-  0.5 m of a lane's start, and the trucks held at nodes; `METRUM_AUDIT_TRACE=1` lists every car that
+  0.5 m of a lane's start, and the vehicles held at nodes; `METRUM_AUDIT_TRACE=1` lists every car that
   steps onto a lane that was already full in the previous frame, with its previous state. Each engine
   builds its own 100k city (`perf_contract_prepare`, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`), day
-  12 at 32×. `dev`: 11 lanes over capacity at 00:00 and 14 at 24:00 (one lane held 868 cars where
+  12 at 32×. (Its freight count and its trace's "truck" label tested `freight_shipment_id != 0`,
+  but a vehicle with no shipment holds `u64::MAX`, so every vehicle counted as a truck; fixed in
+  round R14A. The held and traced counts below are vehicles.) `dev`: 11 lanes over capacity at 00:00 and 14 at 24:00 (one lane held 868 cars where
   197 fit, then 925), 685 and 754 cars within 0.5 m of one lane start, 2,872 and 3,708 cars
-  stacked on 14 and 15 lanes, 12 and 5 trucks held. With the hold: 0 lanes over capacity and 0
+  stacked on 14 and 15 lanes, 12 and 5 vehicles held. With the hold: 0 lanes over capacity and 0
   stacked cars at 00:00, 2 lanes over at 24:00 (200 cars where 140 fit; 81 cars stacked), 2,636 and
-  3,463 trucks held at nodes. None of the 81 entries that took a lane above capacity came from node
+  3,463 vehicles held at nodes. None of the 81 entries that took a lane above capacity came from node
   entry (on `dev` 255 of the first 400 entries onto a full lane did, within 40 game minutes); all
-  81 were trucks that left the access-egress state onto one lane in one tick (22 and 59 trucks at
+  81 were vehicles that left the access-egress state onto one lane in one tick (22 and 59 vehicles at
   a single attach point), tracked as `TRAFFIC-11`.
 - `PERF-06` agent contract (`tools/perf_contract.py --agents`, 3 alternating `dev`/fix pairs, cores
   `0,2,..,14`, 8 workers): identical work counts; 10k network tick 0.255, 0.238, 0.255 ms
@@ -437,7 +439,7 @@ Acceptance record (`TRAFFIC-07`, 2026-10-30; commands and results; the artifact 
   0.545 ms. Same fix-built 100k city, first two game hours at 1×, 3 alternating pairs: mean agent
   tick 5.065–5.091 ms with `HeldEntry` against 5.300–5.315 ms with held cars left on the serial
   pass (the earlier prototype's approach), 0.22 ms less. Each engine's own city at 1×: 4.925 and
-  4.948 ms (`dev`, 12 held trucks) against 5.044 and 5.026 ms (fix, 2,636 held); the cities
+  4.948 ms (`dev`, 12 held vehicles) against 5.044 and 5.026 ms (fix, 2,636 held); the cities
   differ, so that pair does not isolate the hold.
 - `./run.sh --test`: Rust suite plus the headless and rendered Godot scripts.
 - Envelope (`tools/sim02_gate.py envelope determinism --bursts departures,settlements`,
@@ -452,7 +454,7 @@ Acceptance record (`TRAFFIC-07`, 2026-10-30; commands and results; the artifact 
   baseline workload (0.173 to 0.194 at 1.00×) and by +0.024, +0.020, +0.018 in fiscal stress (0.786
   to 0.806 at 1.00×, which crosses its band edge at 0.787): the two 10k out-of-stock notes of the
   earlier prototype. Cause: the hold shows the border's real throughput. One single-lane trunk per
-  10,000 residents cannot pass the imports; the fix-built 10k city has 1,404 trucks waiting at its
+  10,000 residents cannot pass the imports; the fix-built 10k city has 1,404 vehicles waiting at its
   border at 00:00 of day 12 and 1,919 at 24:00 (the road holds 1,100–2,600 vehicles), which the
   stacking used to hide. Border throughput stays a fixture question (`TRAFFIC-07` does not change
   it).
@@ -476,16 +478,16 @@ belongs to the car's edge, is dropped and the car repairs from the lane's origin
 Diagnosis (`TRAFFIC-11`, 2026-10-30). On the `TRAFFIC-07` branch (`3532b612`) the traced 100k
 audit (`METRUM_AUDIT_TRACE=1`, which now also records the buildings removed in the frame and each
 car's previous building) shows both bulk entries in a frame in which the economy removed buildings:
-at game minute 16,024, 14 removals, 22 trucks step onto lane 13,362 (edge 2,227, 380 m, 141 cars
-where 140 fit) at one distance, 296.98 m; at 16,504, 13 removals, 59 trucks onto lane 13,357 (edge
-2,226) at 343.02 m. Every truck of a group was in `TRANSIT_ACCESS_EGRESS` at the same building
+at game minute 16,024, 14 removals, 22 vehicles step onto lane 13,362 (edge 2,227, 380 m, 141 cars
+where 140 fit) at one distance, 296.98 m; at 16,504, 13 removals, 59 vehicles onto lane 13,357 (edge
+2,226) at 343.02 m. Every vehicle of a group was in `TRANSIT_ACCESS_EGRESS` at the same building
 (57,760 and 57,711) the frame before, has its home as its new target and the driveway speed 3 m/s.
 That is the evacuation of a removed building: `remove_evacuated_building`
 (`buildings/allocator/lifecycle.rs:870`) calls `evacuate_referencing`
 (`agents/building_refs.rs:415`), which plans each occupant's trip home and calls
 `start_building_origin_plan_on_network` (`building_refs.rs:481`, `:509`, defined at `:601`). Its
 `enter_lane` (`building_refs.rs:644`) put every occupant on the building's attach lane at the
-attach distance without `lane_attach_slot_clear` or `claim_lane_entry`. The trucks were the egress
+attach distance without `lane_attach_slot_clear` or `claim_lane_entry`. The vehicles were the egress
 queue waiting at that full attach slot, so a business failing beside a jammed road dumps its whole
 queue onto one point. The same unchecked placement existed in the road-edit reattachment
 (`agents/remap.rs:331`) and the invalid-ingress rollback (`movement/access_state/ingress.rs:168`);
@@ -509,7 +511,8 @@ Acceptance record (`TRAFFIC-11`, 2026-10-30; the artifact folders stay local):
 - Lane audit, same command as `TRAFFIC-07` (`perf_contract_prepare` then
   `traffic07_lane_entry_audit`, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`, day 12 at 32×, the
   fix-built city): 0 lanes over capacity and 0 cars stacked at a lane start at 00:00, 06:00,
-  12:00, 18:00 and 24:00; 2,579 trucks held at nodes at 00:00 and 3,385 at 24:00; 96 vehicles
+  12:00, 18:00 and 24:00; 2,579 vehicles held at nodes at 00:00 (2,349 of them carry freight,
+  recounted in round R14A) and 3,385 at 24:00; 96 vehicles
   held at an attach point at 00:00 and 234 at 24:00. The trace lists 51 entries onto a lane that
   was full in the previous frame, all onto lanes of at most 100 m (connectors), at most 2 per lane
   and frame, none leaving a lane over capacity. On the `TRAFFIC-07` branch's own city the same
@@ -540,6 +543,76 @@ Acceptance record (`TRAFFIC-11`, 2026-10-30; the artifact folders stay local):
   to 8.53).
 - `./run.sh --test` (headless, isolated profile): exit code 0; debug library suite 1,850 passed,
   0 failed, 178 ignored; no Godot script skipped and no script error.
+
+### Detach rule (`TRAFFIC-15`, `TRAFFIC-13`)
+
+A car leaves the network for its destination's ingress in `try_network_detach`
+(`tick/movement/network/detach.rs`), under one rule:
+
+- It is on its planned detach lane, with a valid access plan.
+- Its movement step has reached the planned detach distance. A step that ends inside the lane
+  reaches the car's new `lane_d`. A step that reaches the lane's end passes every point left on
+  the lane, so it reaches `length + ACCESS_LANE_D_TOLERANCE_M` (1e-4 m), the same bound the
+  planner's access legality (`access/legality.rs`) accepts for `planned_detach_lane_d`. Every
+  legal detach point is therefore reachable, the lane's end included, and the end-of-lane try
+  runs before `handle_lane_end`.
+- The route is on its last visit to the lane: no node of `current_path` is left beyond the lane's
+  terminal node (`path_idx` names the next node, the lane's terminal while the car drives toward
+  it, the same reading as `planned_next_connector`). A route that leaves its detach lane and comes
+  back to a door behind the car does not detach on the first visit.
+- A car claims the detach slot (`claim_lane_entry` on the detach lane). While another car holds
+  it, the car waits at `min(planned_detach_lane_d, length)` with speed 0.
+
+The speed pass does not brake for a detach point, mid-lane or at the lane's end: a car detaches in
+the step that reaches the point, at the speed it has. Road-lane junction braking does not apply to
+a car on its last visit to its detach lane either, since `planned_next_connector` finds no next
+connector for it. Cost: O(1) per detach try (one terminal-node lookup), no allocation; the
+end-of-lane try runs once per road-lane end event.
+
+Before this rule a step had to end strictly inside the lane, so a door that projects onto the
+lane's end (a corner store at `frontage_t` 0 seen from the opposite lane), or a step that crossed
+the detach point and the lane's end together, was never reached: the car left the lane with a
+finished route, replanned at the end node and drove round the block for ever. And a route that
+came back to a door behind the car detached on its first visit and jumped back to the door.
+
+Acceptance record (`TRAFFIC-15`, `TRAFFIC-13`, round R14B, 2026-10-31; commands and results, the
+artifact folders stay local):
+
+- Regressions (`agents::tests::detach`, debug test profile): `corner_store_door_at_the_lane_end_is_reached`
+  drives 8 shoppers on each of 64 streets toward a corner store at `frontage_t` 0 of a 30 m
+  street, whose door is the end of the lane they arrive on (`planned_detach_lane_d` = length).
+  On `dev` the first shopper leaves that lane without detaching ("left its door's lane without
+  detaching"); with the rule all 512 detach from that lane, and 1 and 8 workers give
+  bit-identical outcomes. `looping_route_detaches_only_on_its_last_visit` attaches at 950 m of
+  a 1 km lane with its door at 50 m of the same lane, route `[1, 0]`: on `dev` it detaches on
+  the first tick; with the rule it drives to node 1, back to node 0 and detaches on the return.
+- 100k built from scratch to day 12 (`lane_entry_audit::rings::traffic14_ring_formation`,
+  release test binaries, `RAYON_NUM_THREADS=8`, cores `0,2,..,14`, one run at a time; wait-for
+  cycles checked every 30 game minutes from day 1 08:00). Control: `dev` code with this round's
+  diagnostics. The `TRAFFIC-15`/`TRAFFIC-13` commit alone:
+  - `dev`: a 334-car ring from day 9 21:00 (absent at the day 10 07:30 check, back at 08:30,
+    present at day 12 00:00). At day 12, 2,375 vehicles on the road plan a detach at their
+    lane's end, which `dev` cannot reach (top targets: buildings 57645 578, 57646 555, 57644
+    547, 57650 284, 57654 155); 68,955 vehicles on the road, 2,822 held at nodes, 140 at attach
+    points.
+  - With the rule: **0 cycles** at every check to day 12 00:00. At day 12, 491 vehicles plan a
+    lane-end detach, all reachable (0 plan one beyond the end); 66,759 vehicles on the road,
+    2,027 held at nodes, 60 at attach points.
+- Looping routes (`TRAFFIC-13`), vehicles on the road whose remaining route visits the detach
+  lane before its last visit, counted at each check: 0-2 during the `dev` build and 2-4 per
+  6-hour checkpoint of the `dev` 100k day; 13 at day 12 with the rule (they now keep their
+  route instead of detaching early).
+- Envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements`, `RAYON_NUM_THREADS=6`, same session as the `dev` control): PASS,
+  determinism identical (repeat, 1 and 3 threads, reload). Doors are reached, so shopping and
+  trips shift. 10k baseline out-of-stock 0.194 to 0.111, back inside its band (the `TRAFFIC-07`
+  note is gone). 30k baseline: employment 0.602 to 0.623, final employment 0.544 to 0.583, net
+  income 8.58 to 9.89, bankruptcies 1.65 to 1.26, deliveries 129.4 to 135.7, out-of-stock
+  0.236 to 0.207, which is below its band: a new note in the good direction. 30k fiscal stress
+  deliveries 10.97 to 10.90, a new note 0.1% under its band edge (10.91). Arrivals-30k:
+  employment +2.3%, net income +7.4%, bankruptcies -10.2%, out-of-stock +7.4% (0.225 to
+  0.242). 10k fiscal stress moves by at most 0.5% on its main metrics apart from final
+  employment (0.0059 to 0.0052). 14 notes against `dev`'s 13, all of the stale baseline.
 
 ## Junction Speeds
 

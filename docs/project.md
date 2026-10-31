@@ -28,21 +28,23 @@ transition has not been reproduced.
 
 Cars that start at a node (border freight, arrival carriers, replans at a node) now wait there until
 their first lane has room instead of stacking on its first metre; the saved 100k city no longer
-ends its day with hundreds of trucks on one point, and the waiting trucks cost less agent-tick
+ends its day with hundreds of vehicles on one point, and the waiting vehicles cost less agent-tick
 time than the serial hold would. The hold shows the border's real throughput, which the stacking
-hid: at 10k about 1,900 trucks wait at the single border by the end of a day and the out-of-stock
+hid: at 10k about 1,900 vehicles wait at the single border by the end of a day and the out-of-stock
 rate rises by about 0.02 ([TRAFFIC-07](traffic.md#junction-connectors)). Vehicles placed on the
 road outside movement (a removed building's occupants, road-edit reattachment, an aborted
 driveway entry) likewise wait at their attach point for a gap: a business failing beside a jammed
-road no longer drops its whole truck queue onto one point, and the saved 100k day ends with no
-lane over capacity ([TRAFFIC-11](traffic.md#junction-connectors)). A car whose route loops back
-to a detach point behind it still detaches at once (`TRAFFIC-13`, open). Junction turn connectors are built
+road no longer drops its whole egress queue onto one point, and the saved 100k day ends with no
+lane over capacity ([TRAFFIC-11](traffic.md#junction-connectors)). Cars now reach a door at their
+lane's very end and detach only on their route's last visit to the door's lane
+([TRAFFIC-15, TRAFFIC-13](traffic.md#detach-rule-traffic-15-traffic-13)). Junction turn connectors are built
 from the roadbed layout's mouth frames as tangent arcs or biarcs and stay on the carriageway at
 every junction of the demo save, the Kuopio save and the 100k city
 ([TRAFFIC-12](traffic.md#junction-connectors)). A closed ring of full lanes can stand still for days, now
 visible as waiting cars instead of stacking ([TRAFFIC-14](roadmap.md), open). The 100k city's only
-ring comes from shoppers who can never reach a door at a lane's end and circle the block until it
-locks (`TRAFFIC-15`, open); junction boxes and a gridlock check follow that fix.
+ring came from shoppers who could never reach a door at a lane's end and circled the block until it
+locked; with that fixed the city built to day 12 has no ring. Junction boxes and a gridlock check
+follow.
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
 Splitting an incident edge now retains its independently solved physical support knots, and the
@@ -1394,6 +1396,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TRAFFIC-15` and `TRAFFIC-13` done (branch `port-r14b`, 2026-10-31): a car detaches when its step reaches its door, the lane's end included (movement now reaches every distance access legality accepts), and only on its route's last visit to the door's lane. The 100k city built from scratch to day 12 has no wait-for cycle (`dev`: a 334-car ring from day 9) and no vehicle planning an unreachable detach (`dev`: 2,375); envelope passes and the 10k out-of-stock rate returns to its band. See [`traffic.md`](traffic.md#detach-rule-traffic-15-traffic-13).
 - `TRAFFIC-12` done (branch `port-rj2-connectors`, 2026-10-31): vehicle lanes end on their arms' roadbed mouth frames and junction connectors are one tangent-arc-or-biarc construction from those frames (no cubic), checked against the layout's kerb corners on every lane rebuild. Save sweep of every connector, `dev` against the fix: demo save 117 of 156 failing against 0 of 161, Kuopio 335 of 440 against 0, 100k city 8,282 of 24,834 against 0. Results in [`traffic.md`](traffic.md#junction-connectors).
 - `TRAFFIC-11` done (branch `port-r11-traffic11` on `port-r1-traffic07`, 2026-10-30): the bulk attach onto full lanes was a building removal's evacuation, which put every occupant vehicle on the building's attach point with no gap check (the egress queue waiting there). Vehicles placed outside movement (evacuation, road-edit reattachment onto a taken spot, invalid-ingress return) now wait lane-less at the attach point and attach through the egress gap check and claim, off the serial pass while the slot is full; saves keep the hold. Saved 100k day: 0 lanes over capacity and 0 stacked cars at 00:00 and 24:00, 234 vehicles waiting at attach points at day's end. Results in [`traffic.md`](traffic.md#junction-connectors); new `TRAFFIC-13` (detach before a looping route ends).
 - `TRAFFIC-07` done (branch `port-r1-traffic07`, 2026-10-30; ported from Veeti's road-chain branch, `a0df7f77`): node-origin cars check the lane entry gap and claim the lane like connector entry, and wait at their node (`HeldEntry`, off the serial pass) when it is full. 100k lane audit, `dev` against the fix: 14 against 2 lanes over capacity at the end of the day, 3,708 against 81 stacked cars; envelope deterministic, the two 10k out-of-stock notes return (border throughput). Results and commands in [`traffic.md`](traffic.md#junction-connectors); `TRAFFIC-11` tracks the remaining bulk attach.
