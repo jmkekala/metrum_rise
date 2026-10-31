@@ -5,6 +5,9 @@
 //! waiting at a node for their first lane and at an attach point for a gap (`TRAFFIC-11`). A
 //! diagnostic of lane entry, not acceptance timing.
 
+mod rings;
+mod waits;
+
 use super::{FRAME_DT_S, MINUTES_PER_DAY, absolute_minute};
 use super::{cache_dir, residents, snapshot, timing_mode};
 use crate::config::{CAR_LENGTH, IDM_S_MIN};
@@ -15,6 +18,12 @@ use crate::simulation::economy::agents::{
 
 // Cars closer than this to a lane's start count as one stack.
 const STACK_RADIUS_M: f32 = 0.5;
+
+// Whether car `i` drives on the road network (a vehicle, not a walker).
+fn in_play(agents: &crate::simulation::economy::agents::AgentVec, i: usize) -> bool {
+    (agents.transit[i] == TRANSIT_NETWORK || agents.transit[i] == TRANSIT_INTERSECTION)
+        && agents.transit_mode[i] != MODE_WALK
+}
 
 // Counts vehicles by lane from the agent columns. O(agents + lanes), serial: a test diagnostic
 // run a few times per game day.
@@ -232,14 +241,22 @@ fn traffic07_lane_entry_audit() {
     let core = &mut city.core;
     core.time.speed_multiplier = speed;
     let start = absolute_minute(core);
-    let end = start + MINUTES_PER_DAY;
+    // METRUM_AUDIT_DAYS runs more days; the wait report prints at every day end.
+    let days: u64 = std::env::var("METRUM_AUDIT_DAYS")
+        .map(|value| value.parse().expect("METRUM_AUDIT_DAYS must be an integer"))
+        .unwrap_or(1);
+    let end = start + days * MINUTES_PER_DAY;
     let mut next = start;
+    let mut next_report = start + MINUTES_PER_DAY;
+    let mut waits = waits::WaitBook::default();
+    let mut last_wait_minute = u64::MAX;
     let trace = std::env::var("METRUM_AUDIT_TRACE").is_ok();
     let mut previous_lane: Vec<usize> = Vec::new();
     let mut previous_count: Vec<u32> = Vec::new();
     let mut previous_state: Vec<(u8, usize, f32, u32, usize)> = Vec::new();
     let mut previous_removed = 0;
     let mut traced = 0;
+    let mut frame = 0_u64;
     loop {
         if trace && traced < 400 {
             traced += trace_entries(
@@ -251,18 +268,30 @@ fn traffic07_lane_entry_audit() {
             );
         }
         let now = absolute_minute(core);
+        if now != last_wait_minute {
+            waits.update(core, now);
+            last_wait_minute = now;
+        }
         if now >= next {
             eprintln!(
                 "TRAFFIC07_AUDIT {}",
                 serde_json::json!({
                     "residents": residents(), "minute": now - start, "audit": audit(core),
+                    "waits": waits.summary(now),
                 })
             );
+            waits.standing_queues(core, now - start);
             next += every_minutes;
+        }
+        if now >= next_report {
+            waits.report(core, now, now - start);
+            next_report += MINUTES_PER_DAY;
         }
         if now >= end {
             break;
         }
+        waits.trace_follow(core, frame);
+        frame += 1;
         core.step_frame(FRAME_DT_S);
     }
 }
