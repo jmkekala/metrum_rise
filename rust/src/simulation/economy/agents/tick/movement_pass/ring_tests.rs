@@ -3,8 +3,10 @@
 //! `TRAFFIC-14` ring fixture: one block of the populated-city grid as a closed ring of four
 //! one-way lanes (380 m, 30 m, 380 m, 30 m) joined by four 20 m corner connectors, the way the
 //! 100k city's locked block is built. Trucks circulate on looping routes while more wait at
-//! every corner to start there (node-origin entry, `TRAFFIC-07`). Isolated subsystem setup: no
-//! routing, buildings or economy.
+//! every corner to start there (node-origin entry, `TRAFFIC-07`). A variant adds a 390 m feeder
+//! road into corner 0 whose queue merges into the ring through its own connector, as through
+//! traffic from a crossing street does in the city. Isolated subsystem setup: no routing,
+//! buildings or economy.
 
 use super::*;
 use crate::config::{CAR_LENGTH, IDM_S_MIN};
@@ -27,7 +29,8 @@ const MOUTH_M: f32 = 10.0;
 const LAPS: usize = 40;
 
 /// The ring: agents, lanes and graph. Road lanes are 0..4, connector k (lane 4 + k) turns at
-/// corner k + 1 from road lane k onto road lane k + 1.
+/// corner k + 1 from road lane k onto road lane k + 1; with a feeder, lane 8 is the feeder road
+/// (node 4 to corner 0) and lane 9 its connector onto road lane 0.
 pub(super) struct Ring {
     pub agents: AgentSystem,
     pub network: TransitNetwork,
@@ -61,9 +64,9 @@ fn lane(edge_id: usize, node_id: usize, geometry: Vec<Vector3>, next: Option<usi
     }
 }
 
-/// Builds the ring with `spacing_m` between circulating trucks (0 for none) and `waiting`
-/// trucks held at every corner for their first lane.
-pub(super) fn ring(spacing_m: f32, waiting: usize) -> Ring {
+/// Builds the ring with `spacing_m` between circulating trucks (0 for none), `waiting` trucks
+/// held at every corner for their first lane and `feeder` trucks queued on the feeder road.
+pub(super) fn ring(spacing_m: f32, waiting: usize, feeder: usize) -> Ring {
     let mut agents = AgentSystem::new();
     let mut network = TransitNetwork::new();
     let mut graph = RegionGraph::new();
@@ -147,6 +150,45 @@ pub(super) fn ring(spacing_m: f32, waiting: usize) -> Ring {
             agents.current_node[i] = k as u32;
         }
     }
+    if feeder > 0 {
+        let (a, b) = (Vector3::new(-400.0, 0.0, 0.0), corner(0));
+        let source = graph.add_node(a, NodeType::Junction);
+        let edge = graph.add_edge(Edge {
+            start_node: source,
+            end_node: 0,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 0,
+            speed_limit: 13.89,
+            base_cost: 400.0 / 13.89,
+            physical_length: 400.0,
+            start_clip: MOUTH_M,
+            end_clip: MOUTH_M,
+            geometry: vec![a, b],
+            physical_geometry: vec![a, b],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+        let lanes = &mut network.lane_system.lanes;
+        let dir = (b - a).normalized();
+        lanes.push(lane(edge, usize::MAX, vec![a + dir * MOUTH_M, b - dir * MOUTH_M], Some(9)));
+        // Straight on through corner 0 onto road lane 0.
+        let start = lanes[0].geometry[0];
+        lanes.push(lane(usize::MAX, 0, vec![b - dir * MOUTH_M, start], Some(0)));
+        network.lane_system.edge_lanes.insert(edge, vec![8]);
+        let length = network.lane_system.lanes[8].length;
+        for slot in 0..feeder {
+            let i = truck(&mut agents, 0);
+            agents.current_lane_id[i] = 8;
+            agents.current_edge[i] = edge;
+            agents.current_node[i] = source;
+            agents.lane_distance[i] = length - slot as f32 * (CAR_LENGTH + IDM_S_MIN + 0.4);
+        }
+    }
     Ring {
         agents,
         network,
@@ -160,7 +202,7 @@ pub(super) fn ring(spacing_m: f32, waiting: usize) -> Ring {
 /// (a car's lane changed) over the whole run.
 #[derive(Debug)]
 pub(super) struct RingState {
-    pub per_lane: [usize; 8],
+    pub per_lane: Vec<usize>,
     pub waiting: usize,
     pub moved_in_window: usize,
     pub stale_connector_heads: usize,
@@ -187,7 +229,7 @@ pub(super) fn run_ring(ring: &mut Ring, ticks: usize, window: usize, dt: f32) ->
         entries += (0..n)
             .filter(|&i| ring.agents.current_lane_id[i] != before[i])
             .count();
-        let mut on_lane: [Vec<f32>; 8] = Default::default();
+        let mut on_lane: Vec<Vec<f32>> = vec![Vec::new(); ring.network.lane_system.lanes.len()];
         for i in 0..n {
             if let Some(cars) = on_lane.get_mut(ring.agents.current_lane_id[i]) {
                 cars.push(ring.agents.lane_distance[i]);
@@ -207,7 +249,7 @@ pub(super) fn run_ring(ring: &mut Ring, ticks: usize, window: usize, dt: f32) ->
     }
     let agents = &ring.agents;
     let lanes = &ring.network.lane_system.lanes;
-    let mut per_lane = [0; 8];
+    let mut per_lane = vec![0; lanes.len()];
     let mut waiting = 0;
     let mut stale_connector_heads = 0;
     for i in 0..n {
@@ -244,9 +286,12 @@ pub(super) fn run_ring(ring: &mut Ring, ticks: usize, window: usize, dt: f32) ->
 fn traffic14_full_ring_locks() {
     // Circulating trucks every 12 m plus 120 trucks waiting at every corner: the corners
     // refill the ring whenever an entry clears, until every lane and connector is full.
-    let mut ring = ring(12.0, 120);
+    let mut ring = ring(12.0, 120, 0);
     let state = run_ring(&mut ring, 4_000, 400, 0.5);
-    eprintln!("TRAFFIC14_RING_FIXTURE {state:?}");
+    eprintln!(
+        "TRAFFIC14_RING_FIXTURE {state:?} stale connector heads {} entries {}",
+        state.stale_connector_heads, state.entries
+    );
     // Full as the city's ring: 141 cars on a 380 m lane, 12 on a 30 m lane, 8 on a 20 m
     // connector; nobody moves for the last 200 game seconds while trucks still wait.
     assert_eq!(state.moved_in_window, 0, "{state:?}");
