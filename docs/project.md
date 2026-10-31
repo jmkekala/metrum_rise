@@ -40,7 +40,9 @@ to a detach point behind it still detaches at once (`TRAFFIC-13`, open). Junctio
 from the roadbed layout's mouth frames as tangent arcs or biarcs and stay on the carriageway at
 every junction of the demo save, the Kuopio save and the 100k city
 ([TRAFFIC-12](traffic.md#junction-connectors)). A closed ring of full lanes can stand still for days, now
-visible as waiting cars instead of stacking ([TRAFFIC-14](roadmap.md), open).
+visible as waiting cars instead of stacking ([TRAFFIC-14](roadmap.md), open). The 100k city's only
+ring comes from shoppers who can never reach a door at a lane's end and circle the block until it
+locks (`TRAFFIC-15`, open); junction boxes and a gridlock check follow that fix.
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
 Splitting an incident edge now retains its independently solved physical support knots, and the
