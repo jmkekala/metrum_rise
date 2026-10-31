@@ -213,6 +213,19 @@ reload tests now compare the counts at load and after every frame. A load does n
 a recount drops the carriers that arrived since the hour's count. The Kuopio fixture is
 re-recorded in format 108; only the version and the four zero counts change.
 
+Save format 109 (`TRAFFIC-14`, round R14D, 2026-10-31) adds the `gridlock_state` row: the gridlock
+check's last report (`checks`, `waiting_lanes`, `cycles`, `confirmed`, `saturated`, `detours`,
+`saturation_reports`) and four little-endian blobs, `junctions` (u32 saved node ids), `heads`
+(lane u32, head handle u64, slot first seen waiting u64, per lane whose head waited at the last
+check), `cycle_lengths` (u32 lanes per cycle), `cycle_lanes` (lane u32 and car count u32 per
+cycle lane) and `cycle_cars` (handle u64 and lane-distance bits u32 per car). Lane ids are live at
+the save and mapped through the lane-reference restore at load
+([`traffic.md`](traffic.md#gridlock-check-traffic-14)). Before it a load started the checker
+afresh, so a cycle seen at the check before a save was confirmed one check later than in the
+saved game. A whole city saved one frame after a check and loaded matches the unsaved one at the
+next three checks (`traffic14_saturated_ring_continues_across_a_save_file`). The Kuopio fixture is
+re-recorded in format 109; only the version and the new, empty row change (`sqldiff`).
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per
@@ -229,8 +242,9 @@ A declaration names:
     (a setup O(B + H + P), run beside its count since `SIM-02-K` part 5's thirteenth commit; a plan
     O(B + H + P + Q log H) a call in buildings, households, parcels
     and queued projects): splits
-    of the former whole-city pass, recorded as `SIM-02-K` debt for part 5 and the only
-    `CityScan` users.
+    of the former whole-city pass, recorded as `SIM-02-K` debt for part 5. The `gridlock check`
+    (`TRAFFIC-14`) also declares `CityScan`: its head scan reads every lane's bucket head once a
+    game minute, O(lanes / p).
   - `Events` — consumes this slot's [timed events](#deadlines-and-timed-events).
   - `Queue { quota }` — serves up to `quota` [requests](#request-queues) per slot.
   - `Rolling { period, chunks }` — advances one chunk of a [rolling snapshot](#snapshots).
@@ -270,6 +284,20 @@ queue-free
 slots without queue work, `QUEUE_FREE_SLOTS`, [Request queues](#request-queues)); and the calendar
 close (day, offset 0). The `sim` debug channel
 prints the list with costs, tiers, reads and writes.
+
+**Implemented in `TRAFFIC-14` (round R14C, landed in round R14D, 2026-10-31).**
+`Period::Minute` (`SLOTS_PER_MINUTE` slots) joins the fixed-slot periods; entity phases stay hourly or daily, and the schedule rejects
+a minute-long one. `gridlock check` is a `FixedSlot { period: Minute, offset: 4 }`
+(`GRIDLOCK_CHECK_SLOT`) declared after the calendar close: once a game minute, at a slot of the
+minute no planning setup or plan (slots 0 and 8 of the hour's first four minutes), census
+preparation (minute 58 slot 8, minute 59 slots 0, 9 and 13) or removal-window start (minute 4
+slot 0) uses. It reads agents, network and buildings and writes agents: the wait-for cycle check
+over the lane buckets the frame's agent tick left, with one route query per detour
+([`traffic.md`](traffic.md#gridlock-check-traffic-14)). Cost per call: O(lanes / p) head scan,
+one serial O(lanes) pass over a flat `u32` array, O(waiting lanes) walks, O(cars in cycles), no
+allocation in a steady state; measured at 100k in the `TRAFFIC-14` acceptance record.
+`FrameStepReport::gridlock_ms` (part of `minute_ms`) times it. The checker's state between two
+checks is saved (save format 109, [Save bytes](#save-bytes-road-68-k16)).
 
 **Implemented in `SIM-02-F`.** `EntityPhase { period }` systems cost `Phase`, the entities of
 one phase, and the schedule rejects any other cost for them. Three hourly ones follow the
