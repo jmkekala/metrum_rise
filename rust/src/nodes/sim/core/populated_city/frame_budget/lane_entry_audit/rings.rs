@@ -231,9 +231,7 @@ impl RingWatch {
             );
             self.last_counts = (cycles.len(), cars);
         }
-        for counts in &mut self.entries.window {
-            *counts = [0; 6];
-        }
+        self.entries.window.fill([0; 6]);
     }
 }
 

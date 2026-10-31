@@ -64,9 +64,12 @@ pub(super) struct WaitBook {
     // Per followed car: its lane and, per next entry, (slot clear, cars, first car id) in the
     // previous traced frame; and its contests (entries it saw clear and someone else took, with
     // that car's agent index against its own, and entries it won).
-    follow_prev: HashMap<u64, (usize, Vec<(usize, bool, usize, u64)>)>,
+    follow_prev: HashMap<u64, (usize, Vec<EntryState>)>,
     follow_contests: BTreeMap<u64, Contests>,
 }
+
+// A next entry lane as a followed car saw it: lane, slot clear, cars, first car id.
+type EntryState = (usize, bool, usize, u64);
 
 #[derive(Default, serde::Serialize)]
 struct Contests {
@@ -915,7 +918,7 @@ impl WaitBook {
                     }
                 }
             }
-            let now_entries: Vec<(usize, bool, usize, u64)> = if lane < lanes.len() {
+            let now_entries: Vec<EntryState> = if lane < lanes.len() {
                 occ.next_entries(i, lane)
                     .into_iter()
                     .map(|entry| {
