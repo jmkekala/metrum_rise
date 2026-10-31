@@ -21,6 +21,7 @@ use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
 use crate::simulation::pathing::cch::CchGraph;
+use crate::simulation::save::gridlock::round_trip_through_file;
 use godot::prelude::Vector3;
 
 // Block corners, counter-clockwise; edge k runs from corner k to corner k + 1.
@@ -409,9 +410,16 @@ fn run_checked(
         let before = place(&ring.agents);
         for tick in 0..interval {
             if reload_at == Some(check) && tick == interval / 2 {
-                let text = serde_json::to_string(&ring.agents.gridlock.save()).unwrap();
-                ring.agents.gridlock =
-                    GridlockChecker::restore(serde_json::from_str(&text).unwrap());
+                // Through the save file's `gridlock_state` row (save format 109).
+                let path = std::env::temp_dir().join(format!(
+                    "metrum_rise_gridlock_reload_{}.sqlite",
+                    std::process::id()
+                ));
+                let saved = ring.agents.gridlock.save(&ring.network);
+                let loaded = round_trip_through_file(&path, &saved).unwrap();
+                let _ = std::fs::remove_file(&path);
+                assert_eq!(loaded, saved);
+                ring.agents.gridlock = GridlockChecker::restore(loaded).unwrap();
                 ring.agents.gridlock.bind_loaded_lanes(&ring.network);
             }
             ring.agents
@@ -520,8 +528,9 @@ fn traffic14_ring_without_exits_stays_locked_and_reports_saturation() {
 
 #[test]
 fn traffic14_gridlock_check_continues_across_a_reload() {
-    // A reload between two checks, the checker's state saved and restored, matches the
-    // continuous run: same reports, same detours, same cars.
+    // A reload between two checks, the checker's state written to a save file's
+    // `gridlock_state` row and read back, matches the continuous run: same reports, same
+    // detours, same cars.
     let continuous = {
         let mut ring = ring(12.0, 120, 0);
         add_escapes(&mut ring);

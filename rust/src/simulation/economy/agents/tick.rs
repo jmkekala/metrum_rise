@@ -50,9 +50,7 @@ pub(crate) use planning::{
 pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
 pub(crate) use lane_buckets::LaneBucketScratch;
-pub(crate) use gridlock::GridlockChecker;
-#[cfg(test)]
-pub(crate) use gridlock::GridlockReport;
+pub(crate) use gridlock::{GridlockChecker, GridlockReport, SavedGridlock};
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
 pub(crate) use trip_failures::TripFailureLog;

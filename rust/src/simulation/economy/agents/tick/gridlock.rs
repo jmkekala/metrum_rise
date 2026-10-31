@@ -67,27 +67,54 @@ pub(crate) struct GridlockReport {
     pub(crate) junctions: Vec<u32>,
 }
 
-/// The checker's state that carries from one check to the next, as a save stores it.
-// The save file does not carry it yet: that needs save format 109 and a re-recorded Kuopio
-// reference (`TRAFFIC-14`, decision pending); until then only tests round-trip it.
-#[allow(dead_code)]
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The checker's state that carries from one check to the next, as the save file's
+/// `gridlock_state` row stores it (save format 109): the report, the stamps of the lanes whose
+/// head waited at the last check and that check's cycles, never the per-lane arrays. Lane ids
+/// are the live ones at a save and the loaded ones after [`Self::remap_lanes`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SavedGridlock {
-    report: GridlockReport,
-    // `(lane, head agent handle bits, slot it was first seen waiting)` for every lane that
-    // waited at the last check, ascending by lane.
-    heads: Vec<(u32, u64, u64)>,
-    cycles: CycleSet,
+    /// The last check's report.
+    pub(crate) report: GridlockReport,
+    /// `(lane, head agent handle bits, slot it was first seen waiting)` for every lane that
+    /// waited at the last check, ascending by lane.
+    pub(crate) heads: Vec<(u32, u64, u64)>,
+    /// Lanes in each of the last check's cycles.
+    pub(crate) cycle_lengths: Vec<u32>,
+    /// `(lane, cars on it)` per cycle lane, cycle by cycle, each cycle from its lowest lane.
+    pub(crate) cycle_lanes: Vec<(u32, u32)>,
+    /// `(agent handle bits, lane distance bits)` per car of the cycle lanes, lane by lane in
+    /// bucket order.
+    pub(crate) cycle_cars: Vec<(u64, u32)>,
+}
+
+impl SavedGridlock {
+    /// Maps every saved lane id through `remap` (saved id to loaded id). A lane the loaded
+    /// network has not got fails the load. O(heads + cycle lanes), plus the sort of the heads.
+    pub(crate) fn remap_lanes(
+        &mut self,
+        remap: impl Fn(u32) -> Option<u32>,
+    ) -> Result<(), &'static str> {
+        let missing = "saved gridlock lane has no loaded lane";
+        for (lane, _, _) in &mut self.heads {
+            *lane = remap(*lane).ok_or(missing)?;
+        }
+        self.heads.sort_unstable_by_key(|&(lane, _, _)| lane);
+        for (lane, _) in &mut self.cycle_lanes {
+            *lane = remap(*lane).ok_or(missing)?;
+        }
+        Ok(())
+    }
 }
 
 // Cycles of one check, flat: each cycle's lanes in canonical order (starting at its lowest lane)
 // and its cars, `(agent handle bits, lane distance bits)` lane by lane in bucket order.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CycleSet {
     lanes: Vec<u32>,
     lane_ends: Vec<u32>,
     cars: Vec<(u64, u32)>,
-    car_ends: Vec<u32>,
+    // Per entry of `lanes`: the end of that lane's cars in `cars`.
+    lane_car_ends: Vec<u32>,
 }
 
 impl CycleSet {
@@ -95,25 +122,51 @@ impl CycleSet {
         self.lanes.clear();
         self.lane_ends.clear();
         self.cars.clear();
-        self.car_ends.clear();
+        self.lane_car_ends.clear();
     }
 
     fn len(&self) -> usize {
         self.lane_ends.len()
     }
 
-    fn lanes(&self, cycle: usize) -> &[u32] {
+    fn lane_range(&self, cycle: usize) -> std::ops::Range<usize> {
         let start = cycle
             .checked_sub(1)
             .map_or(0, |prev| self.lane_ends[prev] as usize);
-        &self.lanes[start..self.lane_ends[cycle] as usize]
+        start..self.lane_ends[cycle] as usize
+    }
+
+    fn lanes(&self, cycle: usize) -> &[u32] {
+        &self.lanes[self.lane_range(cycle)]
     }
 
     fn cars(&self, cycle: usize) -> &[(u64, u32)] {
-        let start = cycle
+        let lanes = self.lane_range(cycle);
+        let start = lanes
+            .start
             .checked_sub(1)
-            .map_or(0, |prev| self.car_ends[prev] as usize);
-        &self.cars[start..self.car_ends[cycle] as usize]
+            .map_or(0, |prev| self.lane_car_ends[prev] as usize);
+        &self.cars[start..self.lane_car_ends[lanes.end - 1] as usize]
+    }
+
+    // Appends one cycle given as `(lane, cars on it)` from `lanes` and the cars from `cars`,
+    // rotated to start at its lowest lane. O(cycle lanes + cycle cars).
+    fn push_rotated(&mut self, lanes: &[(u32, u32)], cars: &[(u64, u32)]) {
+        let lowest = (0..lanes.len()).min_by_key(|&k| lanes[k].0).unwrap_or(0);
+        let mut offsets = Vec::with_capacity(lanes.len());
+        let mut end = 0;
+        for &(_, count) in lanes {
+            offsets.push(end);
+            end += count as usize;
+        }
+        for k in (lowest..lanes.len()).chain(0..lowest) {
+            let (lane, count) = lanes[k];
+            self.lanes.push(lane);
+            self.cars
+                .extend_from_slice(&cars[offsets[k]..offsets[k] + count as usize]);
+            self.lane_car_ends.push(self.cars.len() as u32);
+        }
+        self.lane_ends.push(self.lanes.len() as u32);
     }
 
     // Whether `other` holds a cycle with the same lanes and the same cars at the same places.
@@ -164,35 +217,76 @@ impl GridlockChecker {
         &self.report
     }
 
-    /// The state a save stores; [`Self::restore`] continues from it.
-    #[allow(dead_code)]
-    pub(crate) fn save(&self) -> SavedGridlock {
-        let check = self.report.checks;
-        let heads = if self.bound.is_some() {
-            (0..self.head.len())
-                .filter(|&lane| self.head_check[lane] == check && check > 0)
-                .map(|lane| (lane as u32, self.head[lane], self.head_since[lane]))
-                .collect()
-        } else {
-            self.restored_heads.clone()
-        };
-        SavedGridlock {
+    /// The state a save stores for `network`, the lanes the save writes; [`Self::restore`]
+    /// continues from it. A checker bound to other lanes (a topology edit since the last check)
+    /// saves no heads and no cycles: its next check would forget them. O(lanes) for the head
+    /// stamps, O(heads + cycle lanes + cycle cars) for the copy.
+    pub(crate) fn save(&self, network: &TransitNetwork) -> SavedGridlock {
+        let mut saved = SavedGridlock {
             report: self.report.clone(),
-            heads,
-            cycles: self.previous.clone(),
+            ..SavedGridlock::default()
+        };
+        let current = (
+            network.lane_system.lanes.len(),
+            network.lane_system.revision(),
+        );
+        let check = self.report.checks;
+        match self.bound {
+            Some(bound) if bound != current => return saved,
+            Some(_) => {
+                saved.heads = (0..self.head.len())
+                    .filter(|&lane| self.head_check[lane] == check && check > 0)
+                    .map(|lane| (lane as u32, self.head[lane], self.head_since[lane]))
+                    .collect();
+            }
+            None => saved.heads = self.restored_heads.clone(),
         }
+        let cycles = &self.previous;
+        for cycle in 0..cycles.len() {
+            let lanes = cycles.lane_range(cycle);
+            saved.cycle_lengths.push(lanes.len() as u32);
+            for k in lanes {
+                let start = k
+                    .checked_sub(1)
+                    .map_or(0, |prev| cycles.lane_car_ends[prev]);
+                saved
+                    .cycle_lanes
+                    .push((cycles.lanes[k], cycles.lane_car_ends[k] - start));
+            }
+        }
+        saved.cycle_cars = cycles.cars.clone();
+        saved
     }
 
-    /// A checker that continues from `saved`; the loaded lanes are bound by
-    /// [`Self::bind_loaded_lanes`] before the next check.
-    #[allow(dead_code)]
-    pub(crate) fn restore(saved: SavedGridlock) -> Self {
-        Self {
+    /// A checker that continues from `saved`, each cycle rotated back to start at its lowest
+    /// lane (a load may renumber lanes); the loaded lanes are bound by
+    /// [`Self::bind_loaded_lanes`] before the next check. Fails when the cycle counts do not
+    /// add up. O(heads + cycle lanes + cycle cars).
+    pub(crate) fn restore(saved: SavedGridlock) -> Result<Self, &'static str> {
+        let bad = "saved gridlock cycles do not add up";
+        let lane_total: usize = saved.cycle_lengths.iter().map(|&n| n as usize).sum();
+        let car_total: usize = saved.cycle_lanes.iter().map(|&(_, n)| n as usize).sum();
+        if lane_total != saved.cycle_lanes.len() || car_total != saved.cycle_cars.len() {
+            return Err(bad);
+        }
+        let mut previous = CycleSet::default();
+        let (mut lane, mut car) = (0, 0);
+        for &length in &saved.cycle_lengths {
+            let lanes = &saved.cycle_lanes[lane..lane + length as usize];
+            let cars: usize = lanes.iter().map(|&(_, n)| n as usize).sum();
+            if lanes.is_empty() {
+                return Err(bad);
+            }
+            previous.push_rotated(lanes, &saved.cycle_cars[car..car + cars]);
+            lane += lanes.len();
+            car += cars;
+        }
+        Ok(Self {
             report: saved.report,
             restored_heads: saved.heads,
-            previous: saved.cycles,
+            previous,
             ..Self::default()
-        }
+        })
     }
 
     /// Binds the lanes a load built to the restored state: the saved lane ids describe them, so
@@ -573,8 +667,8 @@ fn record_cycle(
                 .cars
                 .push((handles.handle(agent).to_bits(), d.to_bits()));
         }
+        cycles.lane_car_ends.push(cycles.cars.len() as u32);
     }
-    cycles.car_ends.push(cycles.cars.len() as u32);
 }
 
 // The lane `lane`'s head waits for, or `NONE`: the head is a car standing at the lane's end and

@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 108;
+pub const SAVE_VERSION: i64 = 109;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -199,6 +199,21 @@ CREATE TABLE scheduler_state(
     logistics_next_shipment_id INTEGER NOT NULL,
     freight_departure_first_minute INTEGER NOT NULL,
     freight_departure_counts BLOB NOT NULL
+);
+CREATE TABLE gridlock_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    checks INTEGER NOT NULL,
+    waiting_lanes INTEGER NOT NULL,
+    cycles INTEGER NOT NULL,
+    confirmed INTEGER NOT NULL,
+    saturated INTEGER NOT NULL,
+    detours INTEGER NOT NULL,
+    saturation_reports INTEGER NOT NULL,
+    junctions BLOB NOT NULL,
+    heads BLOB NOT NULL,
+    cycle_lengths BLOB NOT NULL,
+    cycle_lanes BLOB NOT NULL,
+    cycle_cars BLOB NOT NULL
 );
 CREATE TABLE timed_events(
     slot INTEGER NOT NULL,

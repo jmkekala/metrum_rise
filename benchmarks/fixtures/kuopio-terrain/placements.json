@@ -2,7 +2,7 @@
   "schema_version": 1,
   "input_contract": "recovered post-snap XZ endpoints of logged two-point strokes; source/visible Y resampled; not exact mouse replay",
   "log_sha256": "3975f21e178588338837ed3628734b225fe34a73b25138d04b076b3ff406983b",
-  "reference_save_sha256": "8fa19a1e73023cd275d6b089820b7943448b843424d1f4f2c9d859026ef1d295",
+  "reference_save_sha256": "6c3a8361575bb480d1ddcea755eb5615f014c107880b5084a1a6b052fb0599f8",
   "source_world_sha256": "07ae5ff39f9c905eccfec41b15ac4aa69de70fba50e96b34a19aeee991cabdbd",
   "source_terrain_sha256": "3da7d12fa3b49e8239ae074518aad02a8776adc82d8f4918c6b4789207be87ae",
   "reference_save": "benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",

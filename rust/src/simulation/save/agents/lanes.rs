@@ -67,13 +67,14 @@ pub(super) fn save_lane_references(
     Ok(())
 }
 
-/// Restores current and planned IDs after rebuilding lanes and building entrances.
+/// Restores current and planned IDs after rebuilding lanes and building entrances. Returns the
+/// map from saved lane ids to rebuilt ones, for the other saved lane references.
 pub(in crate::simulation::save) fn restore_lane_references(
     conn: &Connection,
     agents: &mut AgentSystem,
     graph: &RegionGraph,
     network: &mut TransitNetwork,
-) -> SaveLoadResult<()> {
+) -> SaveLoadResult<HashMap<usize, usize>> {
     let lanes = &network.lane_system;
     let mut remap = HashMap::new();
     let mut roads = conn.prepare("SELECT lane_id, edge_id, is_fwd, lane_idx FROM saved_lanes WHERE edge_id != -1 ORDER BY lane_id")?;
@@ -212,7 +213,7 @@ pub(in crate::simulation::save) fn restore_lane_references(
     if !network.frontage_delay_elapsed_s.is_finite() || network.frontage_delay_elapsed_s < 0.0 {
         return Err(SaveLoadError::custom("invalid saved frontage delay clock"));
     }
-    Ok(())
+    Ok(remap)
 }
 
 /// Checks the shared mode/ownership contract for a snapshot lane.
