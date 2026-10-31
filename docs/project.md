@@ -36,7 +36,10 @@ road outside movement (a removed building's occupants, road-edit reattachment, a
 driveway entry) likewise wait at their attach point for a gap: a business failing beside a jammed
 road no longer drops its whole truck queue onto one point, and the saved 100k day ends with no
 lane over capacity ([TRAFFIC-11](traffic.md#junction-connectors)). A car whose route loops back
-to a detach point behind it still detaches at once (`TRAFFIC-13`, open).
+to a detach point behind it still detaches at once (`TRAFFIC-13`, open). Junction turn connectors still
+overshoot and hook at many real junctions; they are being rebuilt from the roadbed layout's mouth
+frames ([TRAFFIC-12](roadmap.md)). A closed ring of full lanes can stand still for days, now
+visible as waiting cars instead of stacking ([TRAFFIC-14](roadmap.md), open).
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
 Splitting an incident edge now retains its independently solved physical support knots, and the
