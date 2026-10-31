@@ -152,6 +152,8 @@ fn ring_detail(core: &SimCore, key: &BTreeSet<usize>, entries: &Entries) -> serd
 struct RingWatch {
     every: u64,
     next: u64,
+    // Gridlock check timings (`TRAFFIC-14`) since the last check line: checks, sum, max (ms).
+    gridlock: (u64, f64, f64),
     seen: BTreeMap<BTreeSet<usize>, u64>,
     entries: Entries,
     last_counts: (usize, usize),
@@ -165,6 +167,7 @@ impl RingWatch {
         Self {
             every,
             next: absolute_minute(core),
+            gridlock: (0, 0.0, 0.0),
             seen: BTreeMap::new(),
             entries: Entries::default(),
             last_counts: (usize::MAX, 0),
@@ -175,6 +178,17 @@ impl RingWatch {
         self.check(core, label, false);
     }
 
+    // Adds a frame's gridlock check time; a frame runs at most a few checks, so the per-check
+    // time is the frame's share.
+    fn gridlock_frame(&mut self, checks: u64, ms: f64) {
+        if checks > 0 {
+            let per_check = ms / checks as f64;
+            self.gridlock.0 += checks;
+            self.gridlock.1 += ms;
+            self.gridlock.2 = self.gridlock.2.max(per_check);
+        }
+    }
+
     // The last check of a run always prints its count line.
     fn check(&mut self, core: &SimCore, label: &str, last: bool) {
         self.entries.note(core);
@@ -183,6 +197,18 @@ impl RingWatch {
             return;
         }
         self.next = now + self.every;
+        let (checks, sum_ms, max_ms) = std::mem::replace(&mut self.gridlock, (0, 0.0, 0.0));
+        eprintln!(
+            "TRAFFIC14_GRIDLOCK {}",
+            serde_json::json!({
+                "label": label, "minute": now, "day": core.time.day_index,
+                "minute_of_day": core.time.minute_of_day,
+                "report": core.agents.gridlock.report(),
+                "window_checks": checks,
+                "check_ms_mean": if checks > 0 { sum_ms / checks as f64 } else { 0.0 },
+                "check_ms_max": max_ms,
+            })
+        );
         let started = Instant::now();
         let cycles = wait_cycles(core);
         let cars: usize = cycles.iter().map(|cycle| cycle.cars.len()).sum();
@@ -280,7 +306,12 @@ fn traffic14_ring_formation() {
         );
         while core.time.day_index < stop_day {
             watch.frame(core, "build");
-            core.step_frame(FRAME_DT_S);
+            let checks = core.agents.gridlock.report().checks;
+            let frame = core.step_frame(FRAME_DT_S);
+            watch.gridlock_frame(
+                core.agents.gridlock.report().checks - checks,
+                frame.gridlock_ms,
+            );
         }
         watch.next = 0;
         watch.check(core, "build", true);
@@ -319,7 +350,12 @@ fn traffic14_rings_in_save() {
     );
     while absolute_minute(&core) < start + hours * 60 {
         watch.frame(&core, "save");
-        core.step_frame(FRAME_DT_S);
+        let checks = core.agents.gridlock.report().checks;
+        let frame = core.step_frame(FRAME_DT_S);
+        watch.gridlock_frame(
+            core.agents.gridlock.report().checks - checks,
+            frame.gridlock_ms,
+        );
     }
     watch.next = 0;
     watch.check(&core, "save", true);
@@ -403,4 +439,52 @@ fn traffic14_customize_cost() {
             })
         );
     }
+}
+
+#[test]
+#[ignore = "TRAFFIC-14 gridlock check cost on a prepared snapshot; release, P-cores"]
+fn traffic14_gridlock_check_cost() {
+    // The snapshot city stepped METRUM_RING_MINUTES game minutes (default 30, so the checker has
+    // run), then METRUM_GRIDLOCK_REPEATS (default 64) extra checks on the standing state, each
+    // timed alone. The extra checks see the same lanes, so after the first they confirm what the
+    // previous one saw: the cost of a check, not of a detour.
+    timing_mode();
+    let minutes: u64 = std::env::var("METRUM_RING_MINUTES")
+        .map(|value| value.parse().expect("METRUM_RING_MINUTES must be an integer"))
+        .unwrap_or(30);
+    let repeats: usize = std::env::var("METRUM_GRIDLOCK_REPEATS")
+        .map(|value| value.parse().expect("METRUM_GRIDLOCK_REPEATS must be an integer"))
+        .unwrap_or(64);
+    let mut city = snapshot::load_snapshot(residents(), &cache_dir());
+    let core = &mut city.core;
+    let start = absolute_minute(core);
+    while absolute_minute(core) < start + minutes {
+        core.step_frame(FRAME_DT_S);
+    }
+    let slot = core.time.absolute_slot();
+    let mut samples = Vec::with_capacity(repeats);
+    for _ in 0..repeats {
+        let started = Instant::now();
+        crate::thread_pools::install(|| {
+            core.agents.check_gridlock(
+                &core.allocator,
+                &core.transit_network,
+                &core.region_graph,
+                slot,
+            )
+        });
+        samples.push(started.elapsed().as_secs_f64() * 1e3);
+    }
+    samples.sort_by(f64::total_cmp);
+    eprintln!(
+        "TRAFFIC14_GRIDLOCK_COST {}",
+        serde_json::json!({
+            "residents": residents(), "day": core.time.day_index,
+            "minute_of_day": core.time.minute_of_day,
+            "lanes": core.transit_network.lane_system.lanes.len(),
+            "report": core.agents.gridlock.report(),
+            "ms_min": samples[0], "ms_median": samples[samples.len() / 2],
+            "ms_max": samples[samples.len() - 1],
+        })
+    );
 }

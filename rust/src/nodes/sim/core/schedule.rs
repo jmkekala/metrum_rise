@@ -132,6 +132,9 @@ pub(crate) enum SimSystem {
     DemandActions,
     /// The calendar close: the city's day totals become the day's budget report.
     CalendarClose,
+    /// The wait-for cycle check over the lanes (`TRAFFIC-14`): a confirmed cycle's head with a
+    /// free way out detours, and a cycle without one is reported as a gridlock.
+    GridlockCheck,
     /// Production of the buildings in the slot's hourly phase.
     BuildingHours,
     /// Consumption, utilities and leg timeouts of the households in the slot's hourly phase.
@@ -225,6 +228,11 @@ impl SimEvent {
         }
     }
 }
+
+/// Slot of each game minute the `gridlock check` runs in (`TRAFFIC-14`). No heavy slot of the hour
+/// falls on it: the planning setups and plans, the census preparation and the removal window's
+/// first slot sit at a minute's slots 0, 8, 9 and 13.
+pub(crate) const GRIDLOCK_CHECK_SLOT: u64 = 4;
 
 /// Dirty cell-lot regions the `cell lots` queue regenerates per slot (`SIM-02-H`).
 pub(super) const CELL_LOT_QUOTA: u32 = 1;
@@ -419,6 +427,23 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
                 | state::DEMAND
                 | state::TREASURY,
             cost: Cost::Constant,
+            tier: Tier::Full,
+        },
+        // Once a game minute, at a slot no planning, census or removal work uses (the minute's
+        // fifth): O(lanes / p) head scan of the lane buckets the last tick left, O(waiting lanes)
+        // walk, O(cars in cycles) fingerprints, one route query per detour
+        // (`docs/traffic.md#gridlock-check-traffic-14`). It reads every lane, so it grows with
+        // the city: `CityScan`.
+        Declaration {
+            system: SimSystem::GridlockCheck,
+            name: "gridlock check",
+            kind: SystemKind::FixedSlot {
+                period: Period::Minute,
+                offset: GRIDLOCK_CHECK_SLOT,
+            },
+            reads: state::AGENTS | state::NETWORK | state::BUILDINGS,
+            writes: state::AGENTS,
+            cost: Cost::CityScan,
             tier: Tier::Full,
         },
         Declaration {
@@ -830,6 +855,19 @@ impl SimCore {
                     if crate::debug::Channel::Sim.enabled() {
                         self.print_sim_console_summary(day_index, minute_of_day);
                     }
+                }
+                SimSystem::GridlockCheck => {
+                    let check_start = Instant::now();
+                    record_crash_phase_for_core(self, "gridlock check");
+                    run_sim_phase("gridlock check", || {
+                        self.agents.check_gridlock(
+                            &self.allocator,
+                            &self.transit_network,
+                            &self.region_graph,
+                            slot,
+                        )
+                    });
+                    report.gridlock_ms += check_start.elapsed().as_secs_f64() * 1000.0;
                 }
                 SimSystem::BuildingHours => self.run_building_hours(slot),
                 SimSystem::HouseholdHours => self.run_household_hours(slot),

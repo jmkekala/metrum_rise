@@ -106,6 +106,8 @@ pub(crate) struct FrameStepReport {
     pub(crate) hourly_ms: f64,
     /// Daily settlement steps, part of `minute_ms`.
     pub(crate) daily_ms: f64,
+    /// Gridlock checks (`TRAFFIC-14`), part of `minute_ms`.
+    pub(crate) gridlock_ms: f64,
     /// Authored minutes the clock crossed.
     pub(crate) elapsed_minutes: u16,
     /// Queued demand spawns placed.

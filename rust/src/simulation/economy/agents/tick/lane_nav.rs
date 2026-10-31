@@ -58,7 +58,7 @@ pub(super) fn lane_terminal_node(
     })
 }
 
-fn connector_targets_edge(
+pub(super) fn connector_targets_edge(
     conn_lane_id: usize,
     target_edge_id: usize,
     transit_network: &TransitNetwork,
@@ -79,7 +79,7 @@ fn connector_targets_edge(
         .is_some_and(|target_lane| target_lane.edge_id == target_edge_id)
 }
 
-fn connector_targets_lane(
+pub(super) fn connector_targets_lane(
     conn_lane_id: usize,
     target_lane_id: usize,
     transit_network: &TransitNetwork,
@@ -229,9 +229,20 @@ fn connection_lane_to_lane_unclaimed(
         .find(|&conn_lane_id| connector_targets_lane(conn_lane_id, target_lane_id, transit_network))
 }
 
-/// Returns the connector lane that should be used after the current road lane.
+/// Where a car at the end of a road lane goes next under its route: the road edge of its next
+/// path node, or its planned detach lane when that lane starts at the lane's terminal node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NextTarget {
+    /// The road edge from the lane's terminal node to the route's next node.
+    Edge(usize),
+    /// The planned detach lane, entered at its start (zero-hop access).
+    Lane(usize),
+}
+
+/// Returns where the car on road lane `lane_id` goes after the lane's end, read from its route
+/// as `planned_next_connector` reads it. O(node degree), no allocation.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn planned_next_connector(
+pub(super) fn planned_next_target(
     lane_id: usize,
     current_node: u32,
     path: &[u32],
@@ -241,20 +252,19 @@ pub(super) fn planned_next_connector(
     planned_detach_lane_id: usize,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
-) -> Option<usize> {
+) -> Option<NextTarget> {
     let lane = transit_network.lane_system.lanes.get(lane_id)?;
     if lane.edge_id == usize::MAX {
         return None;
     }
     let terminal_node = lane_terminal_node(lane_id, transit_network, graph)?;
-
     if (access_flags & ACCESS_PLAN_VALID) != 0
         && terminal_node == planned_detach_node
         && planned_detach_lane_id != usize::MAX
         && lane_origin_node(planned_detach_lane_id, transit_network, graph)
             == Some(planned_detach_node)
     {
-        return connection_lane_to_lane_unclaimed(lane_id, planned_detach_lane_id, transit_network);
+        return Some(NextTarget::Lane(planned_detach_lane_id));
     }
 
     let next_idx = if path.get(path_idx).copied() == Some(terminal_node) {
@@ -268,5 +278,38 @@ pub(super) fn planned_next_connector(
     if target_edge == current_edge && current_node != terminal_node {
         return None;
     }
-    connection_lane_to_edge(lane_id, target_edge, transit_network)
+    Some(NextTarget::Edge(target_edge))
+}
+
+/// Returns the connector lane that should be used after the current road lane.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn planned_next_connector(
+    lane_id: usize,
+    current_node: u32,
+    path: &[u32],
+    path_idx: usize,
+    access_flags: u8,
+    planned_detach_node: u32,
+    planned_detach_lane_id: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<usize> {
+    match planned_next_target(
+        lane_id,
+        current_node,
+        path,
+        path_idx,
+        access_flags,
+        planned_detach_node,
+        planned_detach_lane_id,
+        transit_network,
+        graph,
+    )? {
+        NextTarget::Lane(detach_lane_id) => {
+            connection_lane_to_lane_unclaimed(lane_id, detach_lane_id, transit_network)
+        }
+        NextTarget::Edge(target_edge) => {
+            connection_lane_to_edge(lane_id, target_edge, transit_network)
+        }
+    }
 }

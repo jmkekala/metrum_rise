@@ -144,6 +144,8 @@ impl MinuteLeveler {
 /// Calendar period of a periodic declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Period {
+    /// One game minute, `SLOTS_PER_MINUTE` slots (`TRAFFIC-14`'s gridlock check).
+    Minute,
     Hour,
     Day,
 }
@@ -151,6 +153,7 @@ pub(crate) enum Period {
 impl Period {
     pub(crate) fn slots(self) -> u64 {
         match self {
+            Self::Minute => SLOTS_PER_MINUTE,
             Self::Hour => SLOTS_PER_HOUR,
             Self::Day => SLOTS_PER_DAY,
         }
@@ -185,8 +188,9 @@ impl SystemKind {
         match self {
             Self::Events => 0,
             Self::FixedSlot { .. } => 1,
+            // `Schedule::new` rejects minute-long entity phases.
             Self::EntityPhase {
-                period: Period::Hour,
+                period: Period::Minute | Period::Hour,
             } => 2,
             Self::EntityPhase {
                 period: Period::Day,
@@ -338,12 +342,20 @@ impl<S: Copy> Schedule<S> {
                     "{} must cost its events",
                     declaration.name
                 ),
-                SystemKind::EntityPhase { .. } => assert_eq!(
-                    declaration.cost,
-                    Cost::Phase,
-                    "{} must cost its phase's entities",
-                    declaration.name
-                ),
+                SystemKind::EntityPhase { period } => {
+                    assert_ne!(
+                        period,
+                        Period::Minute,
+                        "{}: entity phases are hourly or daily",
+                        declaration.name
+                    );
+                    assert_eq!(
+                        declaration.cost,
+                        Cost::Phase,
+                        "{} must cost its phase's entities",
+                        declaration.name
+                    );
+                }
                 SystemKind::Queue { quota } => {
                     assert!(quota > 0, "{} serves no requests", declaration.name);
                     assert_eq!(
