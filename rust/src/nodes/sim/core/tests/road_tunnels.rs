@@ -659,3 +659,51 @@ fn the_inspector_reports_a_car_in_a_tunnel_on_its_lane() {
     }
     assert!(checked > 0, "the car drove through the tunnel");
 }
+
+// `ROAD-61` (checked by round R2b): a building fronts only a grounded road. Zoning cells already
+// read standard edges only; a parcel the player places beside a tunnel's hill or a bridge
+// attached to the structure's span, so its lot, driveway and entrance ran into the bore or off
+// the deck.
+#[test]
+fn no_parcel_fronts_a_tunnel_or_a_bridge() {
+    use crate::simulation::zoning::parcels::ParcelPlacementError;
+    let place = |core: &mut SimCore, at: (f32, f32)| {
+        let core = &mut *core;
+        // A 10 m frontage fits the 20 m approaches.
+        core.zoning
+            .place_or_rezone_parcel_at(at.0, at.1, 0, 10.0, 15.0, &core.region_graph)
+            .map(|id| {
+                let edge = core.zoning.parcels.get(id).unwrap().edge_idx();
+                core.region_graph.edge(edge).class
+            })
+    };
+    let mut tunnel = gentle_tunnel_core();
+    // Beside the bore on the hill, and beside the western approach for the control.
+    assert_eq!(
+        place(&mut tunnel, (0.0, 14.0)),
+        Err(ParcelPlacementError::NoRoadAttachment)
+    );
+    assert_eq!(place(&mut tunnel, (-90.0, 14.0)), Ok(EdgeClass::Standard));
+    let mut bridge = flat_core();
+    let result = run_stroke(
+        &mut bridge,
+        &[
+            Vector3::new(-100.0, 0.0, 0.0),
+            Vector3::new(100.0, 0.0, 0.0),
+        ],
+        false,
+    );
+    assert_eq!(result.committed, "committed", "{result:?}");
+    let edge = bridge
+        .region_graph
+        .edges()
+        .iter()
+        .position(|edge| !edge.deleted)
+        .unwrap();
+    bridge.set_edge_class_internal(edge as i32, 1);
+    assert_eq!(bridge.region_graph.edge(edge).class, EdgeClass::Bridge);
+    assert_eq!(
+        place(&mut bridge, (0.0, 14.0)),
+        Err(ParcelPlacementError::NoRoadAttachment)
+    );
+}

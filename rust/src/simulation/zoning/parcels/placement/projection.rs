@@ -54,8 +54,7 @@ pub(crate) fn project_buildable_road_point_at(
 
     for edge_idx in nearby_edges {
         let edge = graph.edge(edge_idx);
-        if edge.deleted
-            || edge.no_building_spawn
+        if !edge.takes_buildings()
             || edge.physical_length <= frontage_m
             || edge.physical_geometry.len() < 2
         {

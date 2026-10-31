@@ -253,8 +253,7 @@ fn buildable_edge(
         .edges()
         .get(edge_idx)
         .ok_or(ParcelPlacementError::NoRoadAttachment)?;
-    if edge.deleted
-        || edge.no_building_spawn
+    if !edge.takes_buildings()
         || edge.primary_type != crate::simulation::network::types::TransitType::Road
         || edge.physical_geometry.len() < 2
         || !edge.physical_length.is_finite()

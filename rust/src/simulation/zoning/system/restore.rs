@@ -151,8 +151,7 @@ impl ZoningSystem {
             return Err(ParcelPlacementError::NoRoadAttachment);
         }
         let edge = graph.edge(edge_idx);
-        if edge.deleted
-            || edge.no_building_spawn
+        if !edge.takes_buildings()
             || edge.physical_geometry.len() < 2
             || edge.physical_length <= frontage_m
         {

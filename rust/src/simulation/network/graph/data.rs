@@ -103,6 +103,13 @@ pub struct Edge {
 }
 
 impl Edge {
+    /// Whether a building may front this edge: a live standard road the player has not closed
+    /// to buildings. A bridge or tunnel span stands off the ground, so no lot, parcel, driveway
+    /// or entrance attaches to it (`ROAD-61`); zoning cells read standard edges only too.
+    pub fn takes_buildings(&self) -> bool {
+        !self.deleted && self.class == EdgeClass::Standard && !self.no_building_spawn
+    }
+
     /// Returns permitted traversal modes in one direction of a live edge.
     /// Walking is bidirectional; every other mode requires a lane in that direction.
     #[inline]

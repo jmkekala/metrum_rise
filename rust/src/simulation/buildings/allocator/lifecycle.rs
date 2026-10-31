@@ -338,7 +338,7 @@ impl BuildingAllocator {
         let compatibility = {
             let b = &self.buildings[i];
             let edge_ok = b.edge_idx < graph.edge_count() && !graph.edge(b.edge_idx).deleted;
-            if !edge_ok || graph.edge(b.edge_idx).no_building_spawn {
+            if !edge_ok || !graph.edge(b.edge_idx).takes_buildings() {
                 None
             } else {
                 match self.registry.get(&b.asset_id) {
@@ -1551,8 +1551,7 @@ impl BuildingAllocator {
             let Some(edge) = graph.get_edge(edge_idx) else {
                 continue;
             };
-            if edge.deleted
-                || edge.no_building_spawn
+            if !edge.takes_buildings()
                 || edge.physical_geometry.len() < 2
                 || edge.physical_length <= 1e-6
             {
@@ -1598,7 +1597,7 @@ impl BuildingAllocator {
         edge_t: f32,
     ) -> Option<Vector2> {
         let edge = graph.get_edge(edge_idx)?;
-        if edge.deleted || edge.no_building_spawn || edge.physical_geometry.len() < 2 {
+        if !edge.takes_buildings() || edge.physical_geometry.len() < 2 {
             return None;
         }
         let center = Self::sample_pos_on_edge(graph, edge_idx, edge_t);
