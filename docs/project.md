@@ -55,9 +55,12 @@ The road tool can build a tunnel through a hill: with its tunnel toggle (`T` or 
 checkbox) a stroke keeps its drawn height through the ground, the stretch under 5 m of ground
 becomes a tunnel between two approaches in a cut and cars drive through; tunnels under water,
 crossing tunnels and strokes without enough cover are refused with a reason. The tunnel is closed:
-a concrete lining (walls and ceiling) around the road, a headwall at each portal where the cut
-ends, no sky visible from inside, and the hill over the bore keeps its natural shape even when as
-steep as 1:2. Over a bore the cursor, zoning heights, vehicles and trees read the hill, and no
+a 0.5 m thick concrete lining (walls and ceiling) around the road, lit by lamp strips every 10 m,
+a headwall at each portal where the cut ends, its wing tops falling at 1:2 with the ground graded
+to them, no sky and no line of sun visible from inside, and the hill over the bore keeps its
+natural shape even when as steep as 1:2. A steep rock sliver up to a quarter metre wide can show
+in front of a wing's inner part (accepted, [TERRAIN-18](roadmap.md)); on a hill steeper than 1:2
+behind a portal the wings' grading still cuts stripes up the hill (open, for the user). Over a bore the cursor, zoning heights, vehicles and trees read the hill, and no
 parcel or building fronts a tunnel or a bridge ([ROAD-61](roads.md#road-tunnels-road-61)).
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.

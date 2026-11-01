@@ -10218,9 +10218,10 @@ uses the existing node grid and edge R-tree. No additional spatial index or whol
 
 ## Road tunnels (`ROAD-61`)
 
-**Status (2026-11-01, round R8 of the road-feature port, branch `port-r8-tunnel-lining`):** the
-tunnel logic (round R2), the ground over a bore (R2b) and the closed tunnel (R8: lining, ceiling,
-headwalls, no cone past a portal row) are built; see "The closed tunnel" below. Ported from Veeti's road-chain branch (`b07b3781`,
+**Status (2026-11-01, rounds R8 and R8b of the road-feature port, branches `port-r8-tunnel-lining`
+and `port-r8b-tunnel-polish`):** the tunnel logic (round R2), the ground over a bore (R2b) and the
+closed tunnel (R8: lining, ceiling, headwalls, no cone past a portal row; R8b: the lining's own
+layer, its thickness, lamp strips) are built; see "The closed tunnel" below. Ported from Veeti's road-chain branch (`b07b3781`,
 `55cf6f85`, logic only); the fork's profile logic lived in the deleted `surface/` compiler and its
 tool intent rode on a Junction / Over / Under / Tunnel crossing selector, which is not ported (grade
 separation is out of the port), so the logic is re-implemented on `road_edit` and the roadbed.
@@ -10439,9 +10440,12 @@ in `network/roadbed/lining.rs` and the graded bake.
 - **Headwall** (`PieceMesh::headwall_triangles`). At each portal row (a tunnel's mouth a grounded
   piece shares, and where a tunnel opens straight onto a bridge) the span stands a headwall in the
   row's vertical plane: from the skirt depth below the row's corners up to `HEADWALL_HEIGHT_M`
-  (5.5 m: the bore's 5 m of cover and a parapet) above them, `HEADWALL_WING_M` (11 m, where the
-  approach's cut rising at 1:2 from the corner reaches its top) beyond them along the row's line,
-  with the lining's mouth open in it from below. Its opening runs up the walls' end edges and along
+  (5.5 m: the bore's 5 m of cover and a parapet) above them, and its wings `HEADWALL_WING_M`
+  (11 m) beyond them along the row's line, with the lining's mouth open in it from below. A wing's
+  top (round R8c, the user's decision; `headwall_wing`) falls from the headwall's height above the
+  corner at `HEADWALL_WING_SLOPE` (the 1:2 tie-in slope) to its tip, level with the corner, so it
+  follows a hillside that falls away instead of standing flat above it; the terrain bake grades
+  the ground to it (below). Its opening runs up the walls' end edges and along
   the ceiling's, and its edges below the corners are the approach's skirt end edges, so it meets
   the lining, the deck and the grounded piece edge for edge; its outer edges meet the terrain. It
   faces out of the tunnel. Retaining wings along the cut were not needed: the cut's side slopes run
@@ -10449,17 +10453,47 @@ in `network/roadbed/lining.rs` and the graded bake.
 - **Terrain** ([`terrain.md`](terrain.md) T22, "The portal row"). No tie-in cone reaches past a
   portal row, so the hill over the bore stays natural and the cut ends at the row; the portal
   opening and its side walls are gone; under the approach's deck at the row the ground continues
-  the hill, so the step down to the deck lies where the mask discards it, not in the mouth.
-- **Rendering.** The lining and headwalls go in the road chunk's concrete layer (no payload field
-  is new), drawn on both sides by the concrete shader, which takes the cloud shadow
-  (`standard_light.gdshaderinc`). Their colour alpha is 0, which marks them: the lining takes no
-  sun, no sky reflection and 60% of the ambient light, and a shadow-only child of the chunk's
-  concrete layer (`tunnel_lining_shadow.gdshader`, keeping alpha-0 faces) casts their shadow, since
-  road chunks only receive shadows; so the ceiling shades the deck inside and the headwall the
-  approach. The interior is lit by the ambient alone, so it reads as enclosed and dark, as an
-  unlit bore does; lighting strips are an alternative for the user (below).
+  the hill, so the step down to the deck lies where the mask discards it, not in the mouth. Round
+  R8c: each portal row's two wings are cut-only seams of the bake (`SeamKind::Wing`, the upper
+  bound `h + k d` alone, from the roadbed's own `headwall_wing`), on both sides of the headwall's
+  plane beside the bore and hidden over the bore, so no ground stands above a wing's top, the hill
+  behind it is graded down at 1:2 from it, and where the top lies below the approach's cut (the
+  outer half on a slope like the test hills) the wing ends flush with the ground on both sides.
+- **Rendering** (round R8b). The lining, its end walls, the headwalls and the lining's shell are
+  the payload's own lining layer (`MeshLayer::Lining`, `lining_*` arrays; every chunk carries the
+  four arrays, empty without a tunnel), the road chunk's eighth surface, drawn on both sides in
+  the concrete material, which takes the cloud shadow (`standard_light.gdshaderinc`). Their colour
+  alpha is 0, which marks them: the lining takes no sun, no sky reflection and 60% of the ambient
+  light. Road chunks only receive shadows, so a chunk with a lining gets a shadow-only child
+  holding that layer again (`network_tool.gd::_add_lining_shadow`, `tunnel_lining_shadow.gdshader`);
+  a chunk without a tunnel gets none, and a bridge's concrete is never uploaded twice (R8 copied
+  every chunk's whole concrete layer and discarded the bridges' faces in the shader). So the
+  ceiling shades the deck inside and the headwall the approach.
+- **Thickness** (round R8b). The lining is `TUNNEL_LINING_THICKNESS_M` (0.5 m) thick: a shell of
+  outer walls that far outside the walls and a roof that far above the ceiling, buried in the
+  hill (`PieceMesh::shell_triangles`). Its feet at a mouth corner are a function of the row's two
+  corners (`shell_foot`), so pieces sharing a mouth share its edges bitwise; a node piece mitres
+  its chain vertices out and roofs itself with its ceiling's triangulation over the shell tops (no
+  new triangulation and no new failure). Why: R8's thin walls left a line of sun on the sidewalk
+  along their feet. With the lining the only caster (roads and terrain only receive shadows),
+  the nearest caster on the sun's ray from a point beside a wall's foot was that wall,
+  centimetres away, and a shadow map keeps a receiver lit within its bias of its caster. With the
+  shell the nearest caster is at least the thickness away. The bias is unchanged and no shader
+  hides anything. `O(chain vertices + ceiling triangles)` per lined piece.
+- **Lamp strips** (round R8b, the user's choice). On a lined span's walls and ceiling the lining's
+  UVs carry the lamp station along the bore (`x`) and the height above the deck (`y`): the rows'
+  stations scaled so that a whole number of `TUNNEL_LAMP_SPACING_M` (10 m) spacings fits the bore
+  (at least one), so the lamps sit symmetric in every span and evenly spaced within 5% of 10 m.
+  End walls, headwalls, the shell and lined node pieces carry `y = -1`: no lamps. The concrete
+  shader draws a 1.2 m emissive band across the ceiling at the middle of each spacing and lights
+  the walls with emission from the same coordinate, strongest under the ceiling and fading over
+  2.5 m along the bore. No `Light3D` per lamp: the cost is a few ALU operations per lining
+  fragment (none for a bridge's), nothing on the CPU. The deck is not brightened (its layers
+  carry no station); the interior keeps 60% of the ambient, so it stays readable.
+- **Bounds.** A lined piece's XZ bounds hold its lining (the headwalls' 11 m wings and the shell
+  reach past the deck), so a chunk a wing reaches into lists the piece when it alone is rebuilt.
 - **Whole-map view.** The lining is a few hundred triangles per tunnel, all in the chunk's
-  concrete layer under the hill, so a whole-map view drops it with the road chunks it already
+  lining layer under the hill, so a whole-map view drops it with the road chunks it already
   culls or simplifies by distance: from far away only the headwall shows, and a coarse view can
   draw the headwall alone (its triangles come after the lining's) or nothing. Nothing of it is
   built here.
@@ -10534,15 +10568,80 @@ prepared points equal at 0 / 1k / 10k / 100k remote buildings (asserted); compil
 0.024 0.036 0.024 0.024 ms; the once-per-edit snapshot 0.004 -> 0.210 ms and 0.003 -> 0.202 ms.
 Planning follows the stroke's neighbourhood; the round touches no planning code.
 
+**Rounds R8b and R8c (branch `port-r8b-tunnel-polish`, 2026-11-01).** The lining's own layer,
+its thickness and the lamp strips are described above; the wing tops under "Headwall" and
+"Terrain". Release test binaries, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks,
+C F F C against the control `9c633119` (R8's `8fcd4f07` plus the benchmark fixtures).
+
+- *Tests* (fresh): `the_lining_is_its_own_layer`, `the_lining_carries_the_lamp_station`,
+  `the_lining_shell_stands_a_thickness_out` (R8b), `the_ground_is_graded_to_the_headwall_wings`
+  (R8c); `no_cone_reaches_past_a_portal_row` now expects the wings' cones beside the bore and the
+  hill over it; the roadbed strip probe's six tunnel entries are re-recorded in R8b and again in
+  R8c, every other entry unchanged.
+- *Preview payload of tunnel-free strokes* (`ROAD-61` R8c item 1). R8b's candidate paid about
+  0.04 ms more payload than the control (p50, R8b's session, 08:25: `sloped_t` 0.365 0.356 (C) /
+  0.408 0.399 (F), `sloped_branch` 0.358 0.365 / 0.408 0.410). Profiled (`perf record --call-graph
+  lbr` on `benchmark_road_preview_stages`, both binaries): the lining layer's four empty arrays
+  cost nothing measurable (`render_payload_is_valid`, `owner_vertex_ranges` and the allocator kept
+  their samples); the excess was in the per-triangle chunk router
+  (`push_triangle_to_layer_with_crossing`, 1,296 to 1,994 samples), which copied the triangle onto
+  its stack in 16-byte stores and read its points back for the bounds in a 16-byte load that
+  straddled two of them: a failed store-to-load forward per triangle. `WorldTriangle` now borrows
+  the caller's arrays (`render/road/chunks.rs`). Fresh, 09:31 and 10:09 (load 1.83 and 1.84 at
+  the start): payload p50 `sloped_t` 0.361 / 0.378 0.375 / 0.355 and 0.358 / 0.372 0.385 / 0.355,
+  `sloped_branch` 0.353 / 0.374 0.374 / 0.351 and 0.399 / 0.382 0.383 / 0.366 (C / F F / C),
+  products identical (9,845 / 9,973 payload and 4,188 / 6,475 hidden vertices per pose, 7.38 /
+  4.62 graded tiles). The router and the clipper are back at the control's samples (1,704 against
+  1,680); a residual of about 0.02 ms (5%) remains, spread over the router's entry and
+  `push_layer_triangle`, whose code is the control's; not removed in this round (an `#[inline]` on
+  `push_layer_triangle` did not change it: 0.377 0.371 / 0.367 0.371). Graded stage unchanged
+  (p50 `sloped_t` 1.748 1.780 / 1.767 1.821, `sloped_branch` 1.513 / 1.510 1.502, one control
+  sample disturbed). A tunnel stroke (`benchmark_tunnel_preview_stages`, p50): roadbed 0.223
+  0.229 / 0.233 0.236, payload 0.312 0.318 / 0.371 0.373 (1,188 to 2,329 lining vertices per pose:
+  the shell and the wings' extra vertices), graded 2.861 2.859 / 2.864 2.874, total 3.553 3.579 /
+  3.637 3.649 ms, within the 0.5, 1.0 and 3.0 ms stage budgets at p50.
+- *Godot upload and the Rust chunk benchmark* (R8b's session, historical for R8b's code; R8c
+  changes neither the upload nor the chunks' layers): the bridge fixture's chunks lost their
+  shadow copies (4 copies of 7,200 vertices to none, stage p50 11.97 to 11.66-11.72 ms); the tunnel
+  fixture keeps its 4; `full_network_emit/64` 9.95 / 9.88 (C) against 9.68 / 9.67 ms.
+- *No change without tunnels* (fresh, R8c's final code against `9c633119`, R8's probe, not
+  committed): roadbed pieces, road payload buffers, graded tiles at `GL0`-`GL2`, vegetation and
+  surface queries on the 1:4 hill with a road and a bridge, the 1:2 hill with a road and the grown
+  starter town hash equal (R8's recorded values), and the payload's lining arrays are empty. A
+  bridge chunk's payload differs from R8's only by the lining layer: four more dictionary entries
+  (`lining_vertices`, `lining_normals`, `lining_uvs`, `lining_colors`), each an empty packed
+  array (in Godot the chunk mesh's `road_layer_surfaces` meta gains an eighth entry, `-1`: no surface);
+  its concrete arrays are bitwise R8's, and R8's shadow-only copy of its concrete is gone.
+- *Screenshots* (gamescope headless 1280x720, isolated profile, release library of the final
+  code, kept in `$ARTIFACTS`): R8's camera sheet, the wing close-ups before (R8b) and after, and
+  the variants below. Rendered sky test: 140,117 key pixels from the approach (control), 0 outside
+  the far mouth from the bore (713 through it).
+- *Cost.* Wing tops: two more headwall vertices per portal, nothing else in the roadbed. Bake:
+  two wing seams per portal row in windows within the cap of a portal, `O(rows)` per wing hide
+  test; elsewhere one kind test per candidate seam.
+
+**Wing grading on hills steeper than 1:2 (R8c, open, for the user).** On R8's Godot test hill,
+which rises steeper than 1:2 above the portals, the wings' 1:2 cut behind the headwall deepens up
+the hill until the wings' cap (53 m), while the hill over the bore stays natural: steep steps run
+up the hill along the lines through the portal's corners, and an arc at the cap (the overhead and
+portal shots). Grading the hill over the bore too would bring back R2's cut over the bore and its
+step at the cap; grading in front only leaves a large rock face where the hill stands above the
+lowered tops; no grading leaves rock above the lowered tops where the flat tops stood. The rule
+the user chose meets its acceptance on the 1:2 and 1:4 test hills; on steeper hills it needs a
+further decision (see the R8c handoff).
+
 **Open (`ROAD-61`):**
 
-- Slivers: beside the portal's corners the cut slopes and the hill meet across the row in one
-  lattice cell, so a steep rock sliver stands up to half a cell in front of the headwall's wings
-  (0.25 m at `GL0`); between the corners the mask cuts on the row.
-- The shadow map leaks a thin line of sun along the sidewalk at the walls' feet; the lining itself
-  takes no sun.
-- The headwall's wings stand above a hillside that falls away from the portal (flat top at
-  5.5 m).
+- Slivers (accepted by the user, 2026-11-01): beside the portal's corners, where a wing's top
+  stands above the cut in front of it, the cut and the ground graded to the wing meet across the
+  row in one lattice cell, so a steep rock sliver stands up to half a cell in front of the wing's
+  inner part (0.25 m at `GL0`); between the corners the mask cuts on the row, and along a wing's
+  outer part both sides meet the top. An exact crease along the wing lines is `TERRAIN-18`
+  ([`terrain.md`](terrain.md) T22).
+- Where the hill behind a portal rises steeper than 1:2 from the headwall's top, the hill over the
+  bore, which no wing grades, and the ground graded to the wings beside it meet in steps along the
+  lines through the row's corners up to the wings' cap, and the cut ends there in a step (above).
+- R8b's sun line at the walls' feet and the flat wing tops are closed (R8b, R8c).
 
 ## Road marking lighting — RENDER-12
 

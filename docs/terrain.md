@@ -4654,11 +4654,47 @@ in the mask like a bridge's mouth row, so the cut edge lies on the row. No terra
 a portal row: the headwall closes it. The portal opening (the cut over the deck within 10 m past
 a row, its bore seams and side walls) is gone. Selection: a changed piece with a portal row widens
 its candidates by the cap and compares the rows. Without a portal row nothing changes (bitwise on
-the 1:4 hill with a road and a bridge, a 1:2 hill with a road and the grown starter town). Known
-limit: beside the row's corners the cut slopes and the hill meet across the row in one lattice
-cell, a steep sliver up to half a cell in front of the headwall's wings. Test:
+the 1:4 hill with a road and a bridge, a 1:2 hill with a road and the grown starter town). Test:
 `graded::portal_tests::no_cone_reaches_past_a_portal_row`; `road_tunnels::
 a_steep_hill_over_a_bore_keeps_its_height` (un-ignored).
+
+**Wing grading (`ROAD-61` round R8c, the user's decision, 2026-11-01).** A headwall's wings run
+11 m beyond the row's corners in the row's plane, their tops falling at 1:2 from the headwall's
+height (5.5 m above the corner) to the corner's height at the tips
+([`roads.md`](roads.md#road-tunnels-road-61), `roadbed::headwall_wing`, no terrain height read).
+The bake grades the ground to them as it grades a cut: each portal row yields its two wings as
+`SeamKind::Wing` seams (`PortalWindow::push_wings`, from the same function, so the graded ground
+meets the wall's top bitwise), appended after the window's road and pad seams. A wing seam has a
+cut's cone only, `U = min(U, h + k d)` with no lower bound: never a sample's nearest seam, never a
+conflict wall's setter, never listed by pass 2 (it lifts nothing), and its bind reach is the full
+cone's, so pruned still equals unpruned. It reaches both sides of the headwall's plane, past the
+row too, but is hidden over its own row's bore (past the row, projecting strictly between its
+corners) and for a covered point between the corners that continues the hill across the mouth:
+the hill over a bore stays natural. Its cap is `CAP_M - HEADWALL_WING_M` (53 m), so a wing reaches
+no point farther than the cap from its row's corners, the reach every bake, query and the
+selection already gather portal rows over; no new gather and no new index. Cost: two seams per
+portal row in the windows within the cap of a portal, `O(rows)` for a wing's hide test; one kind
+test per candidate elsewhere. On the 1:2 and 1:4 test hills (`road_tunnels::
+the_ground_is_graded_to_the_headwall_wings`, both wings every 0.5 m): at the plane the ground
+stands at most 5 mm above the top on either side; 0.5, 1 and 2 m behind it never above the
+wing's 1:2 grading; the hill behind lies at most the parapet below the top (0.53 m at the corner
+on the 1:4 hill, where the hill over the bore meets the wing); from 5.5 m along, where the top
+lies below the approach's cut, the ground meets the top on both sides (the cut 25 cm in front
+graded to the top plus 0.12 m). **Open (for the user):** where the hill behind a portal rises
+steeper than 1:2 from the headwall's top (R8's Godot test hill), the wing's 1:2 cut behind it
+deepens up the hill to the wing's cap, while the hill over the bore stays natural: steps along the
+lines through the corners up to the cap and a step at the cap, seen as pale stripes from above.
+It is the cap limit R2 hit over the bore, now beside it; options in
+[`roads.md`](roads.md#road-tunnels-road-61) ("Wing grading on hills steeper than 1:2").
+
+**Accepted limit: the rock sliver (the user, 2026-11-01).** Along a wing's inner part the cut in
+front stands below the top and the ground behind is graded to it, a vertical step in the plane
+that a heightfield cannot hold: the lattice's triangles interpolate across the plane, so the step
+becomes a steep ramp up to half a lattice cell wide (0.25 m at `GL0`) in front of the wall where
+the plane falls between lattice lines (on the test hills the rows lie on lattice lines and the
+ramp lies behind the wall). Between the corners the mask cuts on the row; along a wing's outer
+part both sides meet the top and nothing steps. The exact fix, a crease in the graded cells along
+the wing lines so the drawn surface holds the step, is renderer work: `TERRAIN-18`.
 
 Godot's `get_world_surface_height` and `intersect_world_surface` answer from `surface_height_at` and
 `raycast_surface` since `TERRAIN-07-D` round 2; since `TERRAIN-07-F` they go through
