@@ -278,6 +278,60 @@ fn a_straight_tunnel_keeps_the_chord_through_a_hill() {
     assert!(core.region_graph.edges().iter().all(|edge| edge.deleted));
 }
 
+// `ROAD-61` round R8f: the bore's cover is checked across its whole section, at the shell's
+// outer faces and between them, not on the centre line alone. Through the 1:2 cone hill the
+// portals move in until the hill stands the bore clearance above both corners of the shell's
+// roof at each portal row, so the collar never stands above the hill there. A gully cut into the
+// hill's side up to 3 m from the centre line, its floor 2 m high, leaves the centre line 38 m of
+// cover but bares the shell's corner: quick, exact and commit refuse the stroke as
+// `tunnel_cover`, which the centre-line check accepted.
+#[test]
+fn a_tunnel_keeps_its_cover_across_the_whole_bore() {
+    use crate::simulation::network::roadbed::{COLLAR_HEIGHT_M, TUNNEL_LINING_THICKNESS_M};
+    let mut core = hill_core(80.0);
+    let result = run_stroke(&mut core, &THROUGH_HILL, true);
+    assert_eq!(result.committed, "committed", "{result:?}");
+    let ground = |x: f64, z: f64| {
+        f64::from(core.heightmap.sample_height_world(x as f32, z as f32))
+            * f64::from(crate::config::HEIGHT_SCALE)
+    };
+    let roadbed = &core.transit_network.roadbed;
+    let mut corners = 0;
+    for edge in 0..core.region_graph.edge_count() {
+        let Some(mesh) = roadbed.piece_mesh(PieceId::Span(edge)) else {
+            continue;
+        };
+        for row in mesh.portal_rows() {
+            let (a, b) = (row[0], row[row.len() - 1]);
+            for (corner, other) in [(a, b), (b, a)] {
+                let away = (corner - other) / (corner - other).length();
+                let foot = corner + away * TUNNEL_LINING_THICKNESS_M;
+                let roof = corner.y + COLLAR_HEIGHT_M;
+                // The lattice's corner point is the f32 knot's; within a millimetre.
+                assert!(
+                    ground(foot.x, foot.z) - roof >= -1e-3,
+                    "the roof's corner {foot:?} stands {} m above the hill",
+                    roof - ground(foot.x, foot.z)
+                );
+                corners += 1;
+            }
+        }
+    }
+    assert_eq!(corners, 4, "{result:?}");
+
+    let mut gully = hill_core(80.0);
+    for z in 131..257 {
+        for x in 125..=131 {
+            gully.heightmap.set_height(x, z, 2.0 / crate::config::HEIGHT_SCALE);
+        }
+    }
+    gully.precompute_road_mesh_data();
+    let result = run_stroke(&mut gully, &THROUGH_HILL, true);
+    let case = format!("{result:?}");
+    assert_eq!((result.quick, result.exact), ("tunnel_cover", "tunnel_cover"), "{case}");
+    assert_eq!(result.committed, "tunnel_cover", "{case}");
+}
+
 // Acceptance 3: a curved stroke keeps its authored profile: every knot lies on the authored
 // polyline, here a dip under the hill.
 #[test]
@@ -431,9 +485,10 @@ fn cone_hill(foot_m: f32, slope: f32, x: f32, z: f32) -> f32 {
     (slope * (foot_m - x.hypot(z))).max(0.0)
 }
 
-// A tunnel through a 1:4 hill 25 m high, its bore from x = -80 to 80 (5 m of cover). The
-// approaches' tie-in cones (1:2) cut the hill within 20 m of each mouth; beyond, the graded
-// ground is the hill itself.
+// A tunnel through a 1:4 hill 25 m high, its bore from x = -76 to 76: the first knots where the
+// hill stands 5 m over the whole section (round R8f; on the centre line it does from x = +-80, but
+// there the shell's corners, 5.5 m off it, have 4.95 m). The approaches run in a walled cut
+// within 24 m of each mouth; beyond, the graded ground is the hill itself.
 fn gentle_tunnel_core() -> SimCore {
     let mut core = cone_hill_core(100.0, 0.25);
     let result = run_stroke(&mut core, &THROUGH_HILL, true);
@@ -457,7 +512,7 @@ fn gentle_tunnel_core() -> SimCore {
 fn the_surface_over_a_bore_is_the_hill() {
     use crate::simulation::terrain::graded::GroundClass;
     let core = gentle_tunnel_core();
-    for x in [-78.0, -50.0, -25.0, 0.0, 25.0, 50.0, 78.0] {
+    for x in [-74.0, -50.0, -25.0, 0.0, 25.0, 50.0, 74.0] {
         for z in [0.0, 2.0] {
             let hill = cone_hill(100.0, 0.25, x, z);
             let heights = core.with_graded_surface(|surface, scratch| {
@@ -480,7 +535,7 @@ fn the_surface_over_a_bore_is_the_hill() {
     }
     // 2 m into the bore the ground is the hill, unmasked; 2 m before each mouth the surface is
     // the approach's deck.
-    for x in [-78.0, 78.0] {
+    for x in [-74.0, 74.0] {
         core.with_graded_surface(|surface, scratch| {
             let mask = surface.mask_at(x, 0.0, scratch);
             assert!(
@@ -489,7 +544,7 @@ fn the_surface_over_a_bore_is_the_hill() {
             );
         });
     }
-    for x in [-82.0, 82.0] {
+    for x in [-78.0, 78.0] {
         let deck = core
             .transit_network
             .roadbed
@@ -585,13 +640,13 @@ fn the_hill_over_a_bore_keeps_its_plants() {
         plants_along_the_stroke(&core),
         plants_along_the_stroke(&hill),
     );
-    // Past the portal rows (at x = -80 and 80) and beyond a canopy footprint and the walkway
+    // Past the portal rows (at x = -76 and 76) and beyond a canopy footprint and the walkway
     // setback from the approaches the ground is the same hill with and without the tunnel.
     let over_bore = |plants: &[(f32, f32)]| -> Vec<(f32, f32)> {
         plants
             .iter()
             .copied()
-            .filter(|&(x, _)| x.abs() < 74.0)
+            .filter(|&(x, _)| x.abs() < 70.0)
             .collect()
     };
     assert!(
@@ -603,7 +658,7 @@ fn the_hill_over_a_bore_keeps_its_plants() {
     assert!(
         tunnel
             .iter()
-            .all(|&(x, z)| !(x.abs() > 80.0 && x.abs() < 100.0 && z.abs() < 3.0)),
+            .all(|&(x, z)| !(x.abs() > 76.0 && x.abs() < 100.0 && z.abs() < 3.0)),
         "{tunnel:?}"
     );
 }

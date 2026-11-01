@@ -109,7 +109,7 @@ mod tests {
             false,
             false,
         );
-        let validation = validate_road_candidate_fast(&prepared, &terrain, &graph);
+        let validation = validate_road_candidate_fast(&prepared, (1, 1), &terrain, &graph);
         (prepared, validation)
     }
 

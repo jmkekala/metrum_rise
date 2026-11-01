@@ -1265,7 +1265,12 @@ impl SimCore {
         );
 
         let fast_validation =
-            validate_road_candidate_fast(prepared_input, &self.heightmap, &self.region_graph);
+            validate_road_candidate_fast(
+                prepared_input,
+                (fwd_lanes_u8, bkw_lanes_u8),
+                &self.heightmap,
+                &self.region_graph,
+            );
         let fast_validation = validate_road_candidate_against_water(
             prepared_input,
             fwd_lanes_u8,

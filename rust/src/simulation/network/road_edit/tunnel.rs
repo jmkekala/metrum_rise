@@ -4,8 +4,11 @@
 //!
 //! The stroke keeps its authored profile: a straight stroke the chord between its two ends, a
 //! curve the heights the tool drew along it. Preparation puts its knots on a lattice at most
-//! [`TUNNEL_LATTICE_M`] apart, and a knot's cover is the source terrain's height above it. The
-//! bore runs from the first knot with the bore clearance [`TUNNEL_COVER_M`] of cover to the last,
+//! [`TUNNEL_LATTICE_M`] apart, and a knot's cover is the least height of the source terrain above
+//! it across the bore's whole section ([`section_cover_m`], round R8f): on a lattice across the
+//! knot from one outer face of the lining's shell to the other, the cover over the shell's roof
+//! (the lining's height and its thickness, [`TUNNEL_COVER_M`]) at its corners and between them,
+//! not on the centre line alone. The bore runs from the first knot with that cover to the last,
 //! and every knot between them must have it; the stretches before and after it are open
 //! approaches. Quick validation and the exact plan read the same knots through [`tunnel_bore`],
 //! so they accept and refuse the same strokes.
@@ -24,6 +27,9 @@ use super::input::{
 use crate::config;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction::find_intersection_2d;
+use crate::simulation::network::roadbed::{
+    TUNNEL_LINING_THICKNESS_M, preview_candidate_roadbed_half_width_m,
+};
 use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::PORTAL_CLEARANCE_M;
@@ -44,8 +50,8 @@ pub(super) const TUNNEL_CROSSING_REASON: &str = "tunnel_crossing";
 /// Why a tunnel stroke's knots form no bore.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum BoreRefusal {
-    /// The cover at `knot`: the most of any knot when none reaches [`TUNNEL_COVER_M`], else the
-    /// least between the first and last that do.
+    /// The section cover at `knot` ([`section_cover_m`]): the most of any knot when none
+    /// reaches [`TUNNEL_COVER_M`], else the least between the first and last that do.
     Cover { cover_m: f32, knot: usize },
     /// An open approach shorter than [`TUNNEL_MIN_APPROACH_M`], with its length.
     Approach { length_m: f32 },
@@ -88,17 +94,63 @@ pub(super) fn cover_m(terrain: &TerrainSystem, point: Vector3) -> f32 {
     terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE - point.y
 }
 
-/// The bore of a prepared tunnel stroke: the indices of its first and last knot with the bore
-/// clearance of cover, every knot between them covered too and each open approach at least
-/// [`TUNNEL_MIN_APPROACH_M`] long. `O(knots)`, allocation-free.
+/// The half width of a tunnel stroke's section at the outer faces of the lining's shell: the
+/// roadbed's half width, on whose outer edges the lining's walls stand, and the lining's
+/// thickness (`ROAD-61` round R8f). Allocates one two-point edge; once per stroke.
+pub(super) fn tunnel_section_half_width_m(points: &[Vector3], fwd_lanes: u8, bkw_lanes: u8) -> f32 {
+    preview_candidate_roadbed_half_width_m(points, EdgeClass::Tunnel, fwd_lanes, bkw_lanes)
+        + TUNNEL_LINING_THICKNESS_M as f32
+}
+
+/// Knot `index`'s cover across the bore's section (`ROAD-61` round R8f): the least
+/// [`cover_m`] on a lattice across the knot, perpendicular in plan to the stroke there (the
+/// chord of its neighbours), from `-half_width_m` to `half_width_m` in equal steps of at most
+/// [`TUNNEL_LATTICE_M`], both shell corners and the centre among them. The section is level, so
+/// every lattice point stands at the knot's height. `O(half_width_m / TUNNEL_LATTICE_M)`,
+/// allocation-free.
+pub(super) fn section_cover_m(
+    terrain: &TerrainSystem,
+    points: &[Vector3],
+    index: usize,
+    half_width_m: f32,
+) -> f32 {
+    let knot = points[index];
+    let (before, after) = (points[index.saturating_sub(1)], points[(index + 1).min(points.len() - 1)]);
+    let (dx, dz) = (after.x - before.x, after.z - before.z);
+    let length = dx.hypot(dz);
+    if length == 0.0 || half_width_m <= 0.0 {
+        return cover_m(terrain, knot);
+    }
+    let (across_x, across_z) = (-dz / length, dx / length);
+    let steps = (half_width_m / TUNNEL_LATTICE_M).ceil() as i32;
+    (-steps..=steps)
+        .map(|step| {
+            let offset = half_width_m * step as f32 / steps as f32;
+            let point = Vector3::new(
+                knot.x + offset * across_x,
+                knot.y,
+                knot.z + offset * across_z,
+            );
+            cover_m(terrain, point)
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// The bore of a prepared tunnel stroke whose section reaches `half_width_m` to either side
+/// ([`tunnel_section_half_width_m`]): the indices of its first and last knot with the bore
+/// clearance of cover across the section ([`section_cover_m`]), every knot between them covered
+/// too and each open approach at least [`TUNNEL_MIN_APPROACH_M`] long.
+/// `O(knots x half_width_m / TUNNEL_LATTICE_M)`, allocation-free.
 pub(super) fn tunnel_bore(
     points: &[Vector3],
+    half_width_m: f32,
     terrain: &TerrainSystem,
 ) -> Result<[usize; 2], BoreRefusal> {
-    let covered = |index: usize| cover_m(terrain, points[index]) >= TUNNEL_COVER_M;
+    let cover_m = |index: usize| section_cover_m(terrain, points, index, half_width_m);
+    let covered = |index: usize| cover_m(index) >= TUNNEL_COVER_M;
     let Some(first) = (0..points.len()).find(|&index| covered(index)) else {
         let (knot, cover_m) = (0..points.len())
-            .map(|index| (index, cover_m(terrain, points[index])))
+            .map(|index| (index, cover_m(index)))
             .fold((0, f32::NEG_INFINITY), |best, knot| {
                 if knot.1 > best.1 { knot } else { best }
             });
@@ -109,7 +161,7 @@ pub(super) fn tunnel_bore(
         .find(|&index| covered(index))
         .unwrap_or(first);
     if let Some((knot, cover_m)) = (first..=last)
-        .map(|index| (index, cover_m(terrain, points[index])))
+        .map(|index| (index, cover_m(index)))
         .filter(|&(_, cover)| cover < TUNNEL_COVER_M)
         .fold(None, |least: Option<(usize, f32)>, knot| match least {
             Some(least) if least.1 <= knot.1 => Some(least),

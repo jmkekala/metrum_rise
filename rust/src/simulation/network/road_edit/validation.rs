@@ -10,7 +10,8 @@ use super::input::{
 };
 use super::tunnel::{
     BoreRefusal, Portals, TUNNEL_COVER_M, TUNNEL_CROSSING_REASON, TUNNEL_MIN_APPROACH_M,
-    bore_crosses_a_tunnel, classify_tunnel_stroke, cover_m, portal_splits, tunnel_bore,
+    bore_crosses_a_tunnel, classify_tunnel_stroke, portal_splits, section_cover_m, tunnel_bore,
+    tunnel_section_half_width_m,
 };
 use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
 use crate::config;
@@ -180,13 +181,16 @@ impl RoadPreviewValidation {
 }
 
 /// Validates a road-tool candidate using only prepared-profile samples and local endpoint graph
-/// checks, for synchronous editor feedback. O(prepared points + endpoint snap lookups).
+/// checks, for synchronous editor feedback; the lanes size a tunnel stroke's section.
+/// O(prepared points + endpoint snap lookups).
 pub(crate) fn validate_road_candidate_fast(
     prepared_input: &PreparedRoadInput,
+    (fwd_lanes, bkw_lanes): (u8, u8),
     terrain: &TerrainSystem,
     existing_graph: &RegionGraph,
 ) -> RoadPreviewValidation {
-    let mut validation = profile_validation(prepared_input, terrain, true);
+    let lanes = (fwd_lanes, bkw_lanes);
+    let mut validation = profile_validation(prepared_input, lanes, terrain, true);
     record_endpoint_height_debug(&mut validation, &prepared_input.points, terrain);
     let (start_existing, end_existing) = record_endpoint_snap_debug(
         &mut validation,
@@ -213,7 +217,8 @@ pub(crate) fn validate_road_edit(
     terrain: &TerrainSystem,
     existing_graph: &RegionGraph,
 ) -> (RoadPreviewValidation, Option<RoadTopologyPlan>) {
-    let new_edge_validation = profile_validation(prepared_input, terrain, false);
+    let new_edge_validation =
+        profile_validation(prepared_input, (fwd_lanes, bkw_lanes), terrain, false);
     if stroke_too_short(&prepared_input.points) {
         return (
             new_edge_validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON),
@@ -246,6 +251,7 @@ fn stroke_too_short(points: &[Vector3]) -> bool {
 // is also refused; the full check applies that rule once, to the validation corridor.
 fn profile_validation(
     prepared_input: &PreparedRoadInput,
+    (fwd_lanes, bkw_lanes): (u8, u8),
     terrain: &TerrainSystem,
     require_length: bool,
 ) -> RoadPreviewValidation {
@@ -272,7 +278,8 @@ fn profile_validation(
         return validation;
     }
     if prepared_input.tunnel {
-        return tunnel_profile_validation(validation, prepared_points, terrain);
+        let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes);
+        return tunnel_profile_validation(validation, prepared_points, half_width_m, terrain);
     }
     if edge_class == EdgeClass::Bridge
         && bridge_profile_is_ground_transition(prepared_points, terrain)
@@ -305,19 +312,20 @@ fn profile_validation(
 }
 
 // The cover check of a stroke drawn with the tunnel intent (`ROAD-61`), on its own knots as the
-// exact plan splits it: the least cover between the portals as the clearance, or the refusal.
-// O(knots), allocation-free.
+// exact plan splits it, across the section `half_width_m` to either side (round R8f): the least
+// cover between the portals as the clearance, or the refusal.
+// O(knots x half_width_m / TUNNEL_LATTICE_M), allocation-free.
 fn tunnel_profile_validation(
     mut validation: RoadPreviewValidation,
     points: &[Vector3],
+    half_width_m: f32,
     terrain: &TerrainSystem,
 ) -> RoadPreviewValidation {
     validation.required_clearance_m = TUNNEL_COVER_M;
-    match tunnel_bore(points, terrain) {
+    match tunnel_bore(points, half_width_m, terrain) {
         Ok([first, last]) => {
-            validation.clearance_m = points[first..=last]
-                .iter()
-                .map(|&point| cover_m(terrain, point))
+            validation.clearance_m = (first..=last)
+                .map(|index| section_cover_m(terrain, points, index, half_width_m))
                 .fold(f32::INFINITY, f32::min);
             validation
         }
@@ -435,7 +443,10 @@ fn validate_against_graph(
     // The profile check passed, so a tunnel stroke has its bore.
     let bore = prepared_input
         .tunnel
-        .then(|| tunnel_bore(prepared_points, terrain).ok())
+        .then(|| {
+            let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes);
+            tunnel_bore(prepared_points, half_width_m, terrain).ok()
+        })
         .flatten();
     if prepared_input.tunnel && bore.is_none() {
         return (

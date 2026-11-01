@@ -155,7 +155,12 @@ impl RoadToolQuerySnapshot {
             request.snap_to_existing_roads,
             request.tunnel,
         );
-        let validation = validate_road_candidate_fast(&prepared, &self.terrain, &self.region_graph);
+        let validation = validate_road_candidate_fast(
+            &prepared,
+            (fwd_lanes, bkw_lanes),
+            &self.terrain,
+            &self.region_graph,
+        );
         let mut validation = validate_road_candidate_against_water(
             &prepared,
             fwd_lanes,
