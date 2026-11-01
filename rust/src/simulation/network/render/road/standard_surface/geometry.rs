@@ -4,8 +4,8 @@
 //! emission of the strips a piece hangs from its outer chains.
 
 use super::super::{
-    MeshLayer, NetworkMeshData, push_triangle, push_triangle_preserving_winding_with_exact_normal,
-    render_point, world_point,
+    MeshLayer, NetworkMeshData, concrete_color, lining_color, push_triangle,
+    push_triangle_preserving_winding_with_exact_normal, render_point, world_point,
 };
 use crate::simulation::network::roadbed::{LiningPart, PieceMesh, RoadSection, RoadVec3};
 use godot::prelude::{Color, Vector2, Vector3};
@@ -123,7 +123,10 @@ const TUNNEL_LAMP_SPACING_M: f64 = 10.0;
 // number of lamp spacings fits the bore (at least one), so lamps at the middle of each spacing
 // sit symmetric in every span and evenly spaced within 5% of `TUNNEL_LAMP_SPACING_M`. Every
 // other face takes `y = -1`: no lamps. The concrete shader is triplanar in world space.
-pub(super) fn emit_lining(mesh: &mut NetworkMeshData, piece: &PieceMesh, color: Color) {
+// Round R8d: only the faces inside the bore, the walls, the ceiling and the end walls, take the
+// lining's colour (alpha 0: no sun, no sky, the lining's ambient); a headwall and the shell face
+// the open air (the shell where the hill leaves it bare) and take the outdoor concrete's.
+pub(super) fn emit_lining(mesh: &mut NetworkMeshData, piece: &PieceMesh) {
     let scale = piece.lining_bore_m().filter(|&bore| bore > 0.0).map(|bore| {
         (bore / TUNNEL_LAMP_SPACING_M).round().max(1.0) * TUNNEL_LAMP_SPACING_M / bore
     });
@@ -134,6 +137,10 @@ pub(super) fn emit_lining(mesh: &mut NetworkMeshData, piece: &PieceMesh, color: 
                 along.map(|at| Vector2::new((at.x * scale) as f32, at.y as f32))
             }
             _ => [Vector2::new(0.0, -1.0); 3],
+        };
+        let color = match part {
+            LiningPart::Bore | LiningPart::EndWall => lining_color(),
+            LiningPart::Headwall | LiningPart::Shell => concrete_color(),
         };
         push_triangle_preserving_winding_with_exact_normal(
             mesh,

@@ -1172,6 +1172,34 @@ fn the_lining_carries_the_lamp_station() {
     );
 }
 
+// `ROAD-61` round R8d: only the bore's faces keep the lining's lighting. Through the 1:2 hill
+// (two portals, no end wall) a lining-layer face carries the lining's colour (alpha 0: no sun,
+// no sky) exactly when it carries the lamp station, on the walls and the ceiling; the headwalls
+// and the shell, which face the open air where the hill leaves them bare, carry the outdoor
+// concrete's (alpha 1). The user's saves showed black headwalls and wings.
+#[test]
+fn only_the_bore_keeps_the_lining_light() {
+    let mut core = hill_core(80.0);
+    let result = run_stroke(&mut core, &THROUGH_HILL, true);
+    assert_eq!(result.committed, "committed", "{result:?}");
+    core.precompute_road_mesh_data();
+    let (mut bore, mut outdoor) = (0, 0);
+    for mesh in core.cached_road_mesh_chunks.values() {
+        let faces = mesh.lining_uvs.as_chunks::<3>().0;
+        for (uvs, colors) in faces.iter().zip(mesh.lining_colors.as_chunks::<3>().0) {
+            let lamps = uvs.iter().all(|uv| uv.y >= 0.0);
+            let alpha = if lamps { 0.0 } else { 1.0 };
+            assert!(colors.iter().all(|c| c.a == alpha), "{uvs:?} {colors:?}");
+            if lamps {
+                bore += 1;
+            } else {
+                outdoor += 1;
+            }
+        }
+    }
+    assert!(bore > 50 && outdoor > 50, "{bore} bore, {outdoor} outdoor");
+}
+
 // `ROAD-61` round R8c: the headwall's wing tops fall at 1:2 from the headwall's height at the
 // portal's corners to the corners' height at their tips (`headwall_wing`), and the bake grades
 // the ground to them as it grades a cut (`SeamKind::Wing`). Along both wings of the west portal
