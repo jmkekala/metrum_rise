@@ -366,8 +366,8 @@ impl PieceMesh {
     }
 
     /// A lining or headwall vertex (`ROAD-61`): a mesh vertex below [`Self::positions`]' length,
-    /// else the lining's own vertex after them (a lining top above an outer-chain vertex, or a
-    /// headwall's outer corner).
+    /// else the lining's own vertex after them (a lining top above an outer-chain vertex, a
+    /// headwall's outer corner, or a shell vertex).
     pub fn lining_point(&self, vertex: u32) -> RoadVec3 {
         let count = self.positions.len();
         match (vertex as usize).checked_sub(count) {
@@ -388,7 +388,15 @@ impl PieceMesh {
     /// indices, each in its row's vertical plane facing out of the tunnel, the lining's mouth open
     /// in it. Empty for every other piece.
     pub fn headwall_triangles(&self) -> &[[u32; 3]] {
-        &self.lining.triangles[self.lining.headwalls..]
+        &self.lining.triangles[self.lining.headwalls..self.lining.shell]
+    }
+
+    /// The lining's shell (`ROAD-61` round R8b), over [`Self::lining_point`] indices: outer walls
+    /// `TUNNEL_LINING_THICKNESS_M` outside the walls, facing away from the road, and the roof the
+    /// thickness above the ceiling over them, facing up, sharing no edge with the bore. Empty for
+    /// every other piece.
+    pub fn shell_triangles(&self) -> &[[u32; 3]] {
+        &self.lining.triangles[self.lining.shell..]
     }
 
     /// The length of a lined span's bore between its end rows' stations, metres; `None` for an
@@ -401,7 +409,8 @@ impl PieceMesh {
         })
     }
 
-    /// Visits the lining's and the headwalls' triangles as world points, in their windings, with their part and per vertex its station along the bore from the span's first
+    /// Visits the lining's, the headwalls' and the shell's triangles as world points, in their
+    /// windings, with their part and per vertex its station along the bore from the span's first
     /// row and its height above the deck vertex it stands on (`(0, 0)` for a vertex standing on
     /// none, a headwall's outer corner, and on a node piece the stations are 0).
     /// `O(triangles)`, without allocation.
@@ -914,7 +923,7 @@ impl PieceMesh {
             |triangle| triangle as u32,
         );
         Self {
-            // The lining's headwall wings reach beyond the deck (`ROAD-61`).
+            // The lining's headwall wings and shell reach beyond the deck (`ROAD-61`).
             bounds_xz: bounds_xz(positions.iter().chain(&lining.positions).copied()),
             seam_blocks: seam_blocks(&positions, &outer_chains),
             positions,

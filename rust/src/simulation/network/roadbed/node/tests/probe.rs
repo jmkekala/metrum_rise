@@ -270,6 +270,10 @@ fn check_abutments(name: &str, graph: &RegionGraph, span: &SpanPiece, edge: usiz
 // wings reach past the deck), so the six tunnel entries' spans change, and with them the queries
 // of those whose top-triangle walk over the piece's bounds meets more triangles. No other entry
 // changes.
+// Re-recorded by `ROAD-61` round R8b's lining shell: its feet stand the thickness outside the
+// walls, so where they reach past the deck and the wings the bounds, and with them the spans and
+// queries, change again: `tunnel_bend` and `tunnel_pass_through`, flat and sloped. No other entry
+// changes.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -1033,7 +1037,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xe9ee337eaf5047cd,
             0xda08c0c406e26bbf,
             0xc3bd732dc7c3d626,
-            0x8f17be91bd37f65b,
+            0xd50cb3db92d31eff,
             0x47b9e4ef0180be6c,
             0x288c234263a4ebfb,
             0x5ae2e488857bb391,
@@ -1045,7 +1049,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x4f05dc7283f3782d,
             0x07579bad55785ce6,
             0xa56e334196ab5f26,
-            0x3b17d8aa9c174177,
+            0x2f0eab4241797eaa,
             0xb453e5bd6aa15521,
             0x1901784ed6e13208,
             0x808d87d84942f9b0,
@@ -1837,7 +1841,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x5bb9074887d9d00a,
             0x605b0e92a436dba2,
             0xc3bd732dc7c3d626,
-            0xf2061268153e125e,
+            0xd924f1b5b7249452,
             0x783a19c1f4b3a36f,
             0x311032845969ae41,
             0x0d77d9bad3c12683,
@@ -1849,7 +1853,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x8315a3446fa6d340,
             0x01a2923d59ff37cc,
             0xa56e334196ab5f26,
-            0xb4f74b87f804a7c8,
+            0x9a3b9c41dd039ae9,
             0x6cce29be6e4ef515,
             0xea1a4633928b02ff,
             0x742acff099dc78fa,
@@ -1977,6 +1981,9 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
 // `tunnel_pass_through`, flat and sloped) change with the lining and headwalls the layer now
 // hashes, whose end wall replaces a buried free end's cap; every other entry and the top-surface
 // hashes are unchanged.
+// Re-recorded by `ROAD-61` round R8b: the same six tunnel entries change with the lining's shell
+// (outer walls the thickness outside the walls, a roof the thickness above the ceiling); every
+// other entry is unchanged.
 const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("t/false", 0x3a3196117e3f00f3),
     ("four_way/false", 0x694f53237d5dd070),
@@ -2040,9 +2047,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bridge_bend/false", 0x4e1d11e189af360f),
     ("bridge_pass_through/false", 0xd8331298dd91b258),
     ("bridge_rural_t/false", 0xd4b525b794ec9395),
-    ("tunnel_t/false", 0x5f61e6240ae7faf1),
-    ("tunnel_bend/false", 0x2b2d12c406ae3638),
-    ("tunnel_pass_through/false", 0x36ecd107cf513538),
+    ("tunnel_t/false", 0xb2f72fa1348048d8),
+    ("tunnel_bend/false", 0xe6869ca65a8f2aaa),
+    ("tunnel_pass_through/false", 0x0f6e99040aec700b),
     ("band_step_curved/false", 0x37629ac5df89e879),
     ("band_width_step_curved/false", 0xd3bc48a4d792eb19),
     ("t/true", 0x8e5e0a77ca65c074),
@@ -2107,9 +2114,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bridge_bend/true", 0x65fa10b8e747d953),
     ("bridge_pass_through/true", 0xf04c12c0e0dd199a),
     ("bridge_rural_t/true", 0x416fcacf8292544e),
-    ("tunnel_t/true", 0xe20ba2bfc2b33c61),
-    ("tunnel_bend/true", 0xb9fa02d0c5ce627f),
-    ("tunnel_pass_through/true", 0x34330bd74a80282d),
+    ("tunnel_t/true", 0x9c89779ed2ecc0e0),
+    ("tunnel_bend/true", 0x7e90aae9da3368ce),
+    ("tunnel_pass_through/true", 0xbb44e177b83e6103),
     ("band_step_curved/true", 0x023fc8a5bc92c4b7),
     ("band_width_step_curved/true", 0x673bc994f267b9d6),
     ("short_link_10", 0x0288e54ed509e89b),

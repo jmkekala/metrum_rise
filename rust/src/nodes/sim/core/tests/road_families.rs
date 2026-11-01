@@ -62,8 +62,10 @@ fn without_sidewalks(core: &mut SimCore, edges: &[usize]) {
 }
 
 // The XZ points of structure `edge`'s mouth rows where it meets another piece, without its free
-// end's (a road end without a piece, which its cap closes), and its headwalls' outer edges
-// (`ROAD-61`): the edges of one headwall face that are no lining face's, which meet the terrain.
+// end's (a road end without a piece, which its cap closes), and its headwalls' and its lining
+// shell's outer edges (`ROAD-61`): the edges of one headwall or shell face that are no lining
+// face's, which meet the terrain (a headwall's outer edges, the shell's feet and its ends in a
+// portal row's or a buried end row's plane).
 type StructureEnds = (Vec<Vec<(f64, f64)>>, Vec<[RoadVec3; 2]>);
 
 fn structure_ends(core: &SimCore, edge: usize) -> StructureEnds {
@@ -87,6 +89,7 @@ fn structure_ends(core: &SimCore, edge: usize) -> StructureEnds {
     let mut uses = std::collections::BTreeMap::new();
     for (list, headwall) in [
         (mesh.headwall_triangles(), true),
+        (mesh.shell_triangles(), true),
         (mesh.lining_triangles(), false),
     ] {
         for triangle in list {
@@ -160,7 +163,8 @@ fn structure_and_rural_road_chunks_are_watertight() {
             // face and the grounded piece's skirts end in vertical edges on the row's corner
             // lines, of different depths (T-vertices on one line, no gap). A tunnel is lined, its
             // walls on its deck's sides (`ROAD-61`), and its headwall's outer edges meet the
-            // terrain. Everything else is watertight.
+            // terrain, as do its lining shell's feet and ends (round R8b). Everything else is
+            // watertight.
             let (rows, headwalls) = match class {
                 Some(_) => structure_ends(&core, edges[0]),
                 None => Default::default(),

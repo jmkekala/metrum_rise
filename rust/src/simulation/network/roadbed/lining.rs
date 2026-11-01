@@ -4,13 +4,20 @@
 //! deck's outer chains and its ceiling over them, the end wall of a bore that ends underground,
 //! and the headwall at a portal row.
 //!
-//! Every vertex is a mesh vertex or a function of one ([`lining_top`]), so pieces that share a
-//! mouth share its lining edges bitwise: the walls' bottom edges are the outer chains, a mouth's
-//! ceiling edge joins the lining tops above its two corners, and a portal's headwall takes the
-//! row and those tops as the edge of its opening. The section is a box: walls straight up from
-//! the deck's outer edges, a flat ceiling between them (sized from the span's own sections). No
-//! terrain height is read. Triangles are wound so that `-(b - a) x (c - a)` faces into the bore,
-//! and out of the portal for a headwall.
+//! Every vertex is a mesh vertex or a function of one ([`lining_top`], [`shell_foot`]), so pieces
+//! that share a mouth share its lining edges bitwise: the walls' bottom edges are the outer
+//! chains, a mouth's ceiling edge joins the lining tops above its two corners, and a portal's
+//! headwall takes the row and those tops as the edge of its opening. The section is a box: walls
+//! straight up from the deck's outer edges, a flat ceiling between them (sized from the span's own
+//! sections). No terrain height is read. Triangles are wound so that `-(b - a) x (c - a)` faces
+//! into the bore, and out of the portal for a headwall.
+//!
+//! Round R8b: the lining has a thickness. Its shell, outer walls `TUNNEL_LINING_THICKNESS_M`
+//! outside the walls and a roof the thickness above the ceiling, is buried in the hill; it closes
+//! the lining against the sun as a solid wall does. Thin walls standing on the deck left a line of sun
+//! along their feet: a shadow map keeps a receiver lit within its bias of the nearest caster along
+//! the sun's ray, and beside a wall's foot that caster is the wall itself, centimetres away. The
+//! shell puts the nearest caster at least the thickness away.
 
 use super::geometry::triangulate_constrained_rings_xz;
 use super::mesh::{OuterChain, SKIRT_DEPTH_M};
@@ -26,10 +33,33 @@ pub const HEADWALL_HEIGHT_M: f64 = 5.5;
 /// (`ROAD-61`): where the approach's cut, rising at the 1:2 tie-in slope from the row's corner,
 /// reaches the headwall's top.
 pub const HEADWALL_WING_M: f64 = 2.0 * HEADWALL_HEIGHT_M;
+/// The lining's thickness (`ROAD-61` round R8b): its shell's outer walls stand this far outside
+/// its walls, beyond any shadow bias the sun's shadow map applies near a wall's foot.
+pub const TUNNEL_LINING_THICKNESS_M: f64 = 0.5;
 
 /// The lining top above an outer-chain vertex: the one function every piece takes it from.
 pub(super) fn lining_top(vertex: RoadVec3) -> RoadVec3 {
     RoadVec3::new(vertex.x, vertex.y + TUNNEL_LINING_HEIGHT_M, vertex.z)
+}
+
+/// The shell top above a shell foot: the lining's height and its thickness above it.
+fn shell_top(foot: RoadVec3) -> RoadVec3 {
+    RoadVec3::new(
+        foot.x,
+        foot.y + TUNNEL_LINING_HEIGHT_M + TUNNEL_LINING_THICKNESS_M,
+        foot.z,
+    )
+}
+
+/// The shell's foot outside a mouth corner `vertex`, away from the row's other corner `other`:
+/// the one function every piece sharing the row takes it from, so their shells meet bitwise.
+pub(super) fn shell_foot(vertex: RoadVec3, other: RoadVec3) -> RoadVec3 {
+    let away = RoadVec2::new(vertex.x - other.x, vertex.z - other.z).normalize();
+    RoadVec3::new(
+        vertex.x + TUNNEL_LINING_THICKNESS_M * away.x,
+        vertex.y,
+        vertex.z + TUNNEL_LINING_THICKNESS_M * away.y,
+    )
 }
 
 /// Which part of the closed tunnel a lining triangle belongs to.
@@ -41,21 +71,25 @@ pub enum LiningPart {
     EndWall,
     /// A portal's headwall, facing out of the tunnel.
     Headwall,
+    /// The shell (round R8b): the outer walls and the roof over them, buried.
+    Shell,
 }
 
 /// A buried piece's lining and its headwalls: the vertices it adds after the piece's positions
-/// (the lining tops, the headwalls' outer corners), and its triangles over the piece's positions
-/// followed by them: the bore's, the end walls', then the headwalls'.
+/// (the lining tops, the headwalls' outer corners, the shell's feet and tops), and its triangles
+/// over the piece's positions followed by them: the bore's, the end walls', the headwalls', then
+/// the shell's.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Lining {
     pub(super) positions: Vec<RoadVec3>,
-    // Per added vertex the mesh vertex it stands on (a lining top's chain vertex), or
-    // `NO_SOURCE` for a headwall's outer corner.
+    // Per added vertex the mesh vertex it stands on (a lining top's or a shell vertex's chain
+    // vertex), or `NO_SOURCE` for a headwall's outer corner.
     pub(super) sources: Vec<u32>,
     pub(super) triangles: Vec<[u32; 3]>,
-    // Indices in `triangles` of the first end-wall and headwall triangle.
+    // Indices in `triangles` of the first end-wall, headwall and shell triangle.
     pub(super) end_walls: usize,
     pub(super) headwalls: usize,
+    pub(super) shell: usize,
     // Whether the lining runs along a span's rows, whose stations measure the bore.
     pub(super) along_rows: bool,
 }
@@ -83,8 +117,55 @@ impl Lining {
             LiningPart::Bore
         } else if triangle < self.headwalls {
             LiningPart::EndWall
-        } else {
+        } else if triangle < self.shell {
             LiningPart::Headwall
+        } else {
+            LiningPart::Shell
+        }
+    }
+
+    // The shell along `chains` (their lining tops from `firsts`, the ceiling's triangles at
+    // `ceiling` in `triangles`): per chain vertex its foot (`feet` gives it per chain and
+    // position) and the shell top above it, per chain segment the outer wall between the feet
+    // and their tops, facing away from the road, and the roof: the ceiling's triangles over the
+    // shell tops standing for its lining tops, facing up. It shares no edge with the bore.
+    // `O(chain vertices + ceiling triangles)`.
+    fn shell(
+        &mut self,
+        positions: &[RoadVec3],
+        chains: &[OuterChain],
+        (firsts, ceiling): (&[u32], std::ops::Range<usize>),
+        feet: impl Fn(usize, usize) -> RoadVec3,
+    ) {
+        let count = positions.len();
+        self.shell = self.triangles.len();
+        let mut shell_firsts = Vec::with_capacity(chains.len());
+        for (c, chain) in chains.iter().enumerate() {
+            let vertices = chain.vertices();
+            let first = (count + self.positions.len()) as u32;
+            shell_firsts.push(first);
+            for (k, &vertex) in vertices.iter().enumerate() {
+                let foot = feet(c, k);
+                self.push(count, foot, vertex);
+                self.push(count, shell_top(foot), vertex);
+            }
+            for k in 0..vertices.len().saturating_sub(1) {
+                let (foot_a, top_a) = (first + 2 * k as u32, first + 2 * k as u32 + 1);
+                let (foot_b, top_b) = (foot_a + 2, top_a + 2);
+                // The inner walls' windings mirrored: these face away from the road.
+                self.triangles.push([foot_a, foot_b, top_b]);
+                self.triangles.push([foot_a, top_b, top_a]);
+            }
+        }
+        // A lining top `firsts[c] + k` stands for chain `c`'s vertex `k`, whose shell top is
+        // `shell_firsts[c] + 2 k + 1`.
+        let outer = |top: u32| {
+            let c = firsts.partition_point(|&first| first <= top) - 1;
+            shell_firsts[c] + 2 * (top - firsts[c]) + 1
+        };
+        for t in ceiling {
+            let [a, b, c] = self.triangles[t].map(outer);
+            self.triangles.push([a, c, b]);
         }
     }
 
@@ -189,6 +270,7 @@ pub(super) fn span_lining(
     // `rows - 1 - r`-th.
     let left_top = |row: usize| firsts[0] + row as u32;
     let right_top = |row: usize| firsts[1] + (rows - 1 - row) as u32;
+    let ceiling = lining.triangles.len();
     for row in 0..rows - 1 {
         let (a, b) = (left_top(row), right_top(row));
         let (c, d) = (left_top(row + 1), right_top(row + 1));
@@ -196,6 +278,7 @@ pub(super) fn span_lining(
         lining.triangles.push([a, b, d]);
         lining.triangles.push([a, d, c]);
     }
+    let ceiling = ceiling..lining.triangles.len();
     lining.end_walls = lining.triangles.len();
     lining.along_rows = true;
     let mut portals = Vec::new();
@@ -231,6 +314,14 @@ pub(super) fn span_lining(
     for (corners, tops, edge, outward) in portals {
         headwall(&mut lining, positions.len(), corners, tops, edge, outward);
     }
+    // A chain vertex's row is its index over the stride; its foot lies away from the row's
+    // other corner.
+    lining.shell(positions, chains, (&firsts, ceiling), |c, k| {
+        let vertex = chains[c].vertices()[k] as usize;
+        let row = vertex / stride * stride;
+        let other = if vertex == row { row + stride - 1 } else { row };
+        shell_foot(positions[vertex], positions[other])
+    });
     lining
 }
 
@@ -253,6 +344,7 @@ pub(super) fn node_lining(
         .collect();
     let points: Vec<RoadVec3> = ring.iter().map(|&(_, point)| point).collect();
     let triangles = triangulate_constrained_rings_xz(&[&points]).ok_or(LiningError)?;
+    let ceiling = lining.triangles.len();
     for triangle in triangles {
         let [a, b, c] = triangle.map(|point| {
             ring.iter()
@@ -269,7 +361,40 @@ pub(super) fn node_lining(
     }
     lining.end_walls = lining.triangles.len();
     lining.headwalls = lining.triangles.len();
+    let ceiling = ceiling..lining.triangles.len();
+    lining.shell(positions, chains, (&firsts, ceiling), |c, k| {
+        node_foot(positions, chains, c, k)
+    });
     Ok(lining)
+}
+
+// The shell's foot outside vertex `k` of chain `c` of a node piece whose chains run from mouth
+// corner to mouth corner, each mouth between one chain's last vertex and the next chain's first:
+// at a mouth corner [`shell_foot`] away from the mouth's other corner, as the span sharing the
+// mouth takes it; elsewhere the thickness out along the mitred normal of the chain's two
+// segments there, away from the road (its right).
+fn node_foot(positions: &[RoadVec3], chains: &[OuterChain], c: usize, k: usize) -> RoadVec3 {
+    let vertices = chains[c].vertices();
+    let at = |chain: usize, index: usize| positions[chains[chain].vertices()[index] as usize];
+    let n = chains.len();
+    let vertex = at(c, k);
+    if k == 0 {
+        let previous = (c + n - 1) % n;
+        return shell_foot(vertex, at(previous, chains[previous].vertices().len() - 1));
+    }
+    if k + 1 == vertices.len() {
+        return shell_foot(vertex, at((c + 1) % n, 0));
+    }
+    // The road lies on the counter-clockwise side of `along` in XZ; this is the other.
+    let right = |from: RoadVec3, to: RoadVec3| {
+        let along = RoadVec2::new(to.x - from.x, to.z - from.z).normalize();
+        RoadVec2::new(along.y, -along.x)
+    };
+    let (before, after) = (right(at(c, k - 1), vertex), right(vertex, at(c, k + 1)));
+    let mitre = (before + after).normalize();
+    // At most twice the thickness out, at a turn of 120 degrees or sharper.
+    let reach = TUNNEL_LINING_THICKNESS_M / mitre.dot(before).max(0.5);
+    RoadVec3::new(vertex.x + reach * mitre.x, vertex.y, vertex.z + reach * mitre.y)
 }
 
 // The headwall at a portal row (its corners `edge` and the lining tops `tops` above them; the

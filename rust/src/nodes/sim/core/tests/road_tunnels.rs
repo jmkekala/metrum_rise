@@ -717,8 +717,8 @@ fn no_parcel_fronts_a_tunnel_or_a_bridge() {
 
 // The lining and headwall triangles of every published piece of `core` as world points, each
 // with whether it is a headwall's, and the edges of every face the pieces publish (the deck's
-// top and curb faces, the skirts and caps, the lining's, the headwalls'), each with the number of
-// faces meeting it.
+// top and curb faces, the skirts and caps, the lining's, the headwalls', the shell's), each with
+// the number of faces meeting it.
 #[allow(clippy::type_complexity)]
 fn lining_faces(
     core: &SimCore,
@@ -756,6 +756,9 @@ fn lining_faces(
                 count(points);
                 faces.push((points, headwall));
             }
+        }
+        for triangle in mesh.shell_triangles() {
+            count(triangle.map(|v| mesh.lining_point(v)));
         }
     }
     (faces, edges)
@@ -987,6 +990,148 @@ fn the_lining_is_its_own_layer() {
     let chunks = &bridge.cached_road_mesh_chunks;
     assert!(chunks.values().any(|mesh| !mesh.concrete_vertices.is_empty()));
     assert!(chunks.values().all(|mesh| mesh.lining_vertices.is_empty()));
+}
+
+// `ROAD-61` round R8b: the lining has a thickness. Its shell's outer walls stand
+// `TUNNEL_LINING_THICKNESS_M` outside the walls' feet and face away from the bore, its roof
+// faces up, and every shell edge is shared with another shell face, bitwise, but the outer
+// walls' feet and the ends in a portal row's plane. So the nearest caster on the sun's ray from
+// the deck beside a wall's foot is at least the thickness away.
+#[test]
+fn the_lining_shell_stands_a_thickness_out() {
+    use crate::simulation::network::roadbed::TUNNEL_LINING_THICKNESS_M;
+    let mut core = hill_core(80.0);
+    let result = run_stroke(&mut core, &THROUGH_HILL, true);
+    assert_eq!(result.committed, "committed", "{result:?}");
+    let (_, edges) = lining_faces(&core);
+    let key = |p: RoadVec3| [p.x, p.y, p.z].map(f64::to_bits);
+    let roadbed = &core.transit_network.roadbed;
+    let mut shell = 0;
+    for id in (0..core.region_graph.edge_count()).map(PieceId::Span) {
+        let Some(mesh) = roadbed.piece_mesh(id) else {
+            continue;
+        };
+        let rows: Vec<[RoadVec3; 2]> = mesh
+            .portal_rows()
+            .map(|row| [row[0], row[row.len() - 1]])
+            .collect();
+        let in_row = |p: RoadVec3| {
+            rows.iter().any(|[a, b]| {
+                let along = (*b - *a).normalize();
+                let off = p - *a;
+                (off.x * along.z - off.z * along.x).abs() < 1e-6
+            })
+        };
+        let feet: Vec<RoadVec3> = mesh
+            .outer_chains()
+            .iter()
+            .flat_map(|chain| chain.vertices().iter().map(|&v| mesh.positions()[v as usize]))
+            .collect();
+        for triangle in mesh.shell_triangles() {
+            let points = triangle.map(|v| mesh.lining_point(v));
+            let [a, b, c] = points;
+            let normal = -(b - a).cross(c - a);
+            let centroid = (a + b + c) / 3.0;
+            let low = points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+            let roof = normal.y.abs() > 0.5;
+            if roof {
+                assert!(normal.y > 0.0, "a roof facing {normal:?}");
+            } else {
+                assert!(normal.z * centroid.z > 0.0, "an outer wall facing {normal:?}");
+                for point in points.iter().filter(|p| p.y == low) {
+                    let nearest = feet
+                        .iter()
+                        .map(|foot| (foot.x - point.x).hypot(foot.z - point.z))
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(
+                        (nearest - TUNNEL_LINING_THICKNESS_M).abs() < 1e-9,
+                        "a shell foot {nearest} m out"
+                    );
+                }
+            }
+            for (p, q) in [(0, 1), (1, 2), (2, 0)] {
+                let (p, q) = (points[p], points[q]);
+                let foot = !roof && p.y == low && q.y == low;
+                if foot || (in_row(p) && in_row(q)) {
+                    continue;
+                }
+                let mut edge = [key(p), key(q)];
+                edge.sort();
+                assert!(edges[&edge] >= 2, "an open shell edge {p:?} - {q:?}");
+            }
+            shell += 1;
+        }
+    }
+    assert!(shell > 50, "{shell} shell triangles");
+
+    // Round a bend between two tunnels the node piece's shell meets the spans' at their mouths:
+    // near the bend every shell edge but the feet is shared.
+    let mut bend = flat_core();
+    let first = probe_points(PROBES[1]);
+    assert_eq!(run_stroke(&mut bend, &first, false).committed, "committed");
+    let outcome = bend.commit_road(
+        RoadCommitRequest {
+            points: vec![Vector3::new(50.0, -6.0, 0.0), Vector3::new(60.0, -6.0, 60.0)],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            tunnel: false,
+            preview: None,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection_reason);
+    bend.precompute_road_mesh_data();
+    let (_, edges) = lining_faces(&bend);
+    let roadbed = &bend.transit_network.roadbed;
+    let near = |p: RoadVec3| (p.x - 50.0).hypot(p.z) < 12.0;
+    let mut checked = 0;
+    let ids = (0..bend.region_graph.edge_count())
+        .map(PieceId::Span)
+        .chain((0..bend.region_graph.node_count() as u32).map(PieceId::Node));
+    for id in ids {
+        let Some(mesh) = roadbed.piece_mesh(id) else {
+            continue;
+        };
+        // A shell point stands off the piece's deck: the mitre turns away from the road.
+        let on_deck = |p: RoadVec3| {
+            (0..mesh.top_triangle_count()).any(|t| {
+                let [a, b, c] = mesh.triangle_points(t);
+                let side = |u: RoadVec3, v: RoadVec3| {
+                    (v.x - u.x) * (p.z - u.z) - (v.z - u.z) * (p.x - u.x)
+                };
+                let (ab, bc, ca) = (side(a, b), side(b, c), side(c, a));
+                (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0)
+            })
+        };
+        for triangle in mesh.shell_triangles() {
+            let points = triangle.map(|v| mesh.lining_point(v));
+            for point in points {
+                let inner = mesh.lining_triangles().iter().flatten().any(|&v| {
+                    let q = mesh.lining_point(v);
+                    q.x == point.x && q.z == point.z
+                });
+                assert!(inner || !on_deck(point), "a shell point over the deck {point:?}");
+            }
+            let low = points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+            let wall = {
+                let [a, b, c] = points;
+                (b - a).cross(c - a).normalize().y.abs() < 0.5
+            };
+            for (p, q) in [(0, 1), (1, 2), (2, 0)] {
+                let (p, q) = (points[p], points[q]);
+                if !(near(p) && near(q)) || (wall && p.y == low && q.y == low) {
+                    continue;
+                }
+                let mut edge = [key(p), key(q)];
+                edge.sort();
+                assert!(edges[&edge] >= 2, "an open shell edge at the bend {p:?} - {q:?}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 20, "{checked} shell edges at the bend");
 }
 
 // `ROAD-61` round R8b: the lamp strips' coordinate. On a lined span's walls and ceiling the

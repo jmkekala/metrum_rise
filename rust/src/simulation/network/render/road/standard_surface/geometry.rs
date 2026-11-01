@@ -115,8 +115,9 @@ pub(super) fn emit_abutment_faces(mesh: &mut NetworkMeshData, piece: &PieceMesh,
 /// lining shader's `lamp_spacing_m` must match it.
 const TUNNEL_LAMP_SPACING_M: f64 = 10.0;
 
-// Emits a buried piece's lining and a tunnel span's headwalls (`ROAD-61`) into the lining layer
-// as the piece wound them, facing into the bore and out of the portal; the concrete material is drawn on both sides, so the lining also closes
+// Emits a buried piece's lining, a tunnel span's headwalls and the lining's shell (`ROAD-61`)
+// into the lining layer as the piece wound them, facing into the bore, out of the portal and
+// away from the bore; the concrete material is drawn on both sides, so the lining also closes
 // the bore seen from outside. On a span's walls and ceiling the UVs carry the lamp station and
 // the height above the deck (round R8b): the station along the bore scaled so that a whole
 // number of lamp spacings fits the bore (at least one), so lamps at the middle of each spacing
