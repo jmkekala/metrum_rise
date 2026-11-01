@@ -739,3 +739,72 @@ fn a_stale_context_commit_bakes_and_equals_a_fresh_bake() {
         );
     }
 }
+
+// `ROAD-61` round R8e: a tunnel stroke through the 1:2 hill, its approaches in walled cuts. The
+// preview's converged tiles (with the trough's walls), the commit, the undo and a recommit each
+// equal the fresh bake of the state they stand for, bitwise. (The test hill's heightmap is set
+// without a world config, so its save does not load; the load is the tunnel-free cases'.)
+#[test]
+fn tunnel_tiles_of_a_preview_commit_undo_and_load_equal_fresh_bakes() {
+    use super::road_tunnels::{THROUGH_HILL, hill_core};
+    let mut core = hill_core(80.0);
+    core.refresh_road_terrain_inputs();
+    let points = THROUGH_HILL.to_vec();
+    let mut context =
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(&core).expect("current roadbed"));
+    let request = |context: &RoadPreviewContext| RoadPreviewRequest {
+        surface_generation: context.view.surface_generation,
+        points: points.clone(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: false,
+        tunnel: true,
+    };
+    let mut pose = context.preview_road(request(&context));
+    let pieces = pose.pieces.as_mut().expect("the tunnel's pieces");
+    while let Some(graded) = context.catch_up_graded() {
+        pieces.graded = graded;
+    }
+    assert_eq!(pieces.graded.pending, 0, "converged");
+    let shown = Arc::clone(pieces.graded.stage.as_ref().expect("the pose's tiles bake"));
+    assert!(
+        shown.tiles().iter().any(|held| !held.payload.walls.is_empty()),
+        "the trough's walls are in the pose's tiles"
+    );
+    assert_eq!(
+        stage_bits(&shown),
+        fresh(&context.view.terrain, &pieces.roadbed, &core.allocator, &shown),
+        "the pose's tiles are the fresh bake"
+    );
+    let before = live_fresh(&mut core, &shown);
+    let commit = |core: &mut SimCore, preview: Option<Arc<RoadPreview>>| {
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points: points.clone(),
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: false,
+                tunnel: true,
+                preview,
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert!(outcome.committed, "{}", outcome.rejection);
+    };
+    commit(&mut core, Some(Arc::new(pose)));
+    let committed = last_tiles(&core);
+    assert_eq!(stage_bits(&committed), stage_bits(&shown), "commit = pose");
+    assert_eq!(
+        stage_bits(&committed),
+        live_fresh(&mut core, &committed),
+        "the commit's tiles are the fresh bake of the committed city"
+    );
+    assert!(core.undo_action_internal(), "undo");
+    let undone = last_tiles(&core);
+    assert_eq!(stage_bits(&undone), before, "undo restores the tiles");
+    assert_eq!(stage_bits(&undone), live_fresh(&mut core, &undone));
+    commit(&mut core, None);
+    let recommitted = last_tiles(&core);
+    assert_eq!(stage_bits(&recommitted), stage_bits(&committed), "recommit = commit");
+}

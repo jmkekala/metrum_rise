@@ -195,7 +195,7 @@ fn tunnel_probes_with_tunnel_intent() {
 
 // A 256 m world with a cone-shaped hill centred on the origin: flat at 0 beyond `foot_m`, rising
 // at 1:2 to `0.5 * foot_m` at the top.
-fn hill_core(foot_m: f32) -> SimCore {
+pub(super) fn hill_core(foot_m: f32) -> SimCore {
     cone_hill_core(foot_m, 0.5)
 }
 
@@ -215,7 +215,7 @@ fn cone_hill_core(foot_m: f32, slope: f32) -> SimCore {
 }
 
 // The straight stroke through the hill, both ends on the ground beyond its foot.
-const THROUGH_HILL: [Vector3; 2] = [
+pub(super) const THROUGH_HILL: [Vector3; 2] = [
     Vector3::new(-100.0, 0.0, 0.0),
     Vector3::new(100.0, 0.0, 0.0),
 ];
