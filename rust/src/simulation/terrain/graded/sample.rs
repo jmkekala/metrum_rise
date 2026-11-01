@@ -35,6 +35,9 @@ pub(super) struct Value {
     pub(super) nearest: u32,
     // Whether the cones conflicted (`L > U`) at a ground point.
     pub(super) conflict: bool,
+    // Whether the height is the overlap rule over `cones`: a ground point, or a covered one whose
+    // nearest road seam is retained (`ROAD-61` round R8e). Pass 2 may lift such a value.
+    pub(super) ground: bool,
     // The cone bounds over the seams evaluated.
     pub(super) cones: Cones,
     // Distance to the nearest road seam within the band, `+inf` without one.
@@ -72,9 +75,13 @@ impl Listed {
 /// candidate seams (into `seams`), until no later candidate can change the value or the
 /// nearest seam. Seams beyond the cap are left out, and so are the seams `portals` hides from
 /// a point past a portal row (`ROAD-61`): neither their cone nor their name reaches it. Only
-/// road seams name the nearest seam, within `band` metres. The value and the nearest-seam order
-/// are order-free, so the result does not depend on the candidates' order. One lane of
-/// [`evaluate_lanes`]. `O(candidates)`, plus `O(rows)` per candidate at a point past a row.
+/// road seams name the nearest seam, within `band` metres. A retained seam (a tunnel approach's,
+/// `ROAD-61` round R8e) bounds the value from below only, and a covered point whose nearest road
+/// seam is retained takes the ground's value: `troughs` says whether a candidate is retained, so
+/// a covered point is evaluated over the cones like a ground point. The value and the
+/// nearest-seam order are order-free, so the result does not depend on the candidates' order.
+/// One lane of [`evaluate_lanes`]. `O(candidates)`, plus `O(rows)` per candidate at a point past
+/// a row.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate(
     x: f64,
@@ -86,6 +93,7 @@ pub(super) fn evaluate(
     candidates: impl Iterator<Item = Listed>,
     band: f64,
     portals: Option<&PortalWindow>,
+    troughs: bool,
 ) -> Value {
     let [value] = evaluate_lanes(
         &[x],
@@ -97,6 +105,7 @@ pub(super) fn evaluate(
         candidates,
         band,
         portals,
+        troughs,
     );
     value
 }
@@ -119,6 +128,7 @@ pub(super) fn evaluate_lanes<const N: usize>(
     candidates: impl Iterator<Item = Listed>,
     band: f64,
     portals: Option<&PortalWindow>,
+    troughs: bool,
 ) -> [Value; N] {
     let (mut lower, mut upper) = ([Cones::NONE.lower; N], [Cones::NONE.upper; N]);
     // Per lane whether it lies past a portal row, where some seams are hidden from it.
@@ -128,9 +138,11 @@ pub(super) fn evaluate_lanes<const N: usize>(
     let mut nearest = [None::<(u32, f64, f64)>; N];
     let (mut live, mut evaluated) = ([true; N], [0u32; N]);
     // A ground lane's base; a covered or pad lane's value reads only the nearest road seam (the
-    // inside rule, or nothing: a pad is its support height).
+    // inside rule, or nothing: a pad is its support height). Among retained candidates a covered
+    // lane may take the ground's value, so it reads the cones like a ground lane.
     let ground: [Option<f64>; N] = std::array::from_fn(|lane| {
-        (roads[lane].is_none() && pads[lane].is_none()).then_some(bases[lane])
+        let covered = roads[lane].is_some();
+        ((!covered && pads[lane].is_none()) || (covered && troughs)).then_some(bases[lane])
     });
     for Listed {
         index,
@@ -189,7 +201,8 @@ pub(super) fn evaluate_lanes<const N: usize>(
             } else {
                 lower[lane]
             };
-            upper[lane] = if take {
+            // A retained seam bounds from below alone (`ROAD-61` round R8e).
+            upper[lane] = if take && !seam.retained {
                 upper[lane].min(cone_upper)
             } else {
                 upper[lane]
@@ -221,9 +234,14 @@ pub(super) fn evaluate_lanes<const N: usize>(
             lower: lower[lane],
             upper: upper[lane],
         };
+        let retained = nearest[lane].is_some_and(|(index, ..)| seams[index as usize].retained);
+        debug_assert!(
+            !retained || roads[lane].is_none() || troughs,
+            "a covered lane naming a retained seam reads the cones"
+        );
         value(
             bases[lane],
-            roads[lane],
+            (roads[lane], retained),
             pads[lane],
             cones,
             nearest[lane],
@@ -250,11 +268,15 @@ fn nearer(
 }
 
 // A sample's value from its evaluated cones and nearest road seam within the band (`(index,
-// distance, height)`): the inside rule where a road covers it, the support height in a pad,
-// the overlap rule elsewhere.
+// distance, height)`, `retained` with the road where that seam is retained): the inside rule
+// where a road covers it, the support height in a pad, the overlap rule elsewhere. A covered
+// point naming a retained seam takes the overlap rule too (`ROAD-61` round R8e): its own seam
+// adds the arm `h - k s` as a lower bound and no upper bound, so on both sides of the seam the
+// value is `max(L, min(b, U))`, the lattice edge on the seam is the ground's and the wall along
+// the seam reaches it exactly.
 fn value(
     base: f64,
-    road: Option<f32>,
+    (road, retained): (Option<f32>, bool),
     pad: Option<f64>,
     cones: Cones,
     nearest: Option<(u32, f64, f64)>,
@@ -262,6 +284,7 @@ fn value(
     band: f64,
 ) -> Value {
     let (class, height) = match (road, pad) {
+        (Some(_), _) if retained => (Class::Road, cones.ground(base)),
         (Some(road), _) => (
             Class::Road,
             match nearest.filter(|&(_, d, _)| d < INSIDE_REACH_M) {
@@ -282,6 +305,7 @@ fn value(
         },
         nearest: nearest.map_or(NO_SEAM, |(index, ..)| index),
         conflict: class == Class::Ground && cones.lower > cones.upper,
+        ground: class == Class::Ground || (class == Class::Road && retained),
         cones,
         nearest_distance: nearest.map_or(f64::INFINITY, |(_, d, _)| d),
         evaluated,

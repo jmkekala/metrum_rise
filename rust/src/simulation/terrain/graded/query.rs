@@ -795,15 +795,16 @@ impl GradedSurface<'_> {
         road: Option<f32>,
         scratch: &mut QueryScratch,
     ) -> f64 {
-        let (mut first, mut pad) = self.value(x, z, base, road, false, scratch);
+        let mut first = self.value(x, z, base, road, false, scratch);
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
         let continued =
             road.is_some() && continues_ground(&scratch.walls, x, z, first.nearest_distance, band);
         if continued {
-            (first, pad) = self.value(x, z, base, None, true, scratch);
+            first = self.value(x, z, base, None, true, scratch);
         }
-
-        if (road.is_some() && !continued) || pad.is_some() || first.height >= base {
+        // Only the overlap rule's values (a ground point's, or a covered one's naming a retained
+        // seam, `ROAD-61` round R8e) can be lifted.
+        if !first.ground || first.height >= base {
             return first.height;
         }
         self.gather_rest(scratch);
@@ -821,7 +822,7 @@ impl GradedSurface<'_> {
             {
                 let at = seam.at(x, z);
                 if at.distance <= CAP_M {
-                    cones.add(at.height, at.distance);
+                    cones.add(at.height, at.distance, seam.retained);
                 }
             }
         }
@@ -833,9 +834,10 @@ impl GradedSurface<'_> {
         height
     }
 
-    // The first-pass value at one point and whether a site pad holds it; with `continued`, the
-    // ground a covered point continues across a structure mouth, at a portal row the far side's
-    // (`PortalWindow::hides_at_mouth`).
+    // The first-pass value at one point; with `continued`, the ground a covered point continues
+    // across a structure mouth, at a portal row the far side's (`PortalWindow::hides_at_mouth`).
+    // A covered point reads the cones wherever a listed seam is retained (`ROAD-61` round R8e),
+    // `O(listed)` like the evaluation itself.
     fn value(
         &self,
         x: f64,
@@ -844,7 +846,7 @@ impl GradedSurface<'_> {
         road: Option<f32>,
         continued: bool,
         scratch: &QueryScratch,
-    ) -> (Value, Option<f64>) {
+    ) -> Value {
         let seams = &scratch.window;
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
         let portals = scratch.portals.active();
@@ -856,10 +858,8 @@ impl GradedSurface<'_> {
         });
         let site = scratch.sites.pad_at(x, z);
         let pad = (site != NO_SITE).then(|| scratch.sites.height(site));
-        (
-            evaluate(x, z, base, road, pad, seams, all, band, portals),
-            pad,
-        )
+        let troughs = seams.iter().any(|seam| seam.retained);
+        evaluate(x, z, base, road, pad, seams, all, band, portals, troughs)
     }
 
     // The rendered height of a `GL0` lattice point: the base plus the `f32` delta the bake

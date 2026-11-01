@@ -322,6 +322,9 @@ pub(super) struct BakeScratch {
     bin_floor: Vec<f64>,
     pairs: Vec<(u32, Listed)>,
     first: BinLists,
+    // Per bin whether pass 1 lists a retained seam there (`ROAD-61` round R8e): its covered
+    // points read the cones.
+    trough_bins: Vec<bool>,
     second: BinLists,
     pieces: Vec<PieceId>,
     // The grounded top triangles that can cover the lattice, in visit order (the raster's).
@@ -631,7 +634,18 @@ fn continue_ground_at_mouths(
                 portals.hides_at_mouth(&seams[listed.index as usize], x, z, band)
             })
         });
-        let ground = evaluate(x, z, base, None, pad(index as usize), seams, all, band, portals);
+        let ground = evaluate(
+            x,
+            z,
+            base,
+            None,
+            pad(index as usize),
+            seams,
+            all,
+            band,
+            portals,
+            false,
+        );
         texels[index as usize][0] = (ground.height - base) as f32;
     }
 }
@@ -735,6 +749,7 @@ fn bake_tile(
         bin_floor,
         pairs,
         first,
+        trough_bins,
         second,
         covering,
         covering_spans,
@@ -775,6 +790,10 @@ fn bake_tile(
     let prune = evaluation != Evaluation::Unpruned;
     list_first_pass(seams, bins, base, band, prune, seam_bins, pairs, &mut stats);
     first.build(bins.len(), pairs);
+    trough_bins.clear();
+    trough_bins.extend((0..bins.len()).map(|bin| {
+        (first.of(bin).iter()).any(|listed| seams[listed.index as usize].retained)
+    }));
 
     rasterize(covering, xs, zs, covering_spans, road);
     let shadow = portals.active();
@@ -813,6 +832,7 @@ fn bake_tile(
         columns,
         bins,
         first,
+        troughs: trough_bins,
         seams,
         base,
         road,
@@ -1076,6 +1096,7 @@ struct Sampling<'a> {
     columns: &'a [(u32, AxisStop)],
     bins: &'a BinGrid,
     first: &'a BinLists,
+    troughs: &'a [bool],
     seams: &'a [Seam],
     base: &'a BaseWindow,
     road: &'a [f32],
@@ -1106,6 +1127,7 @@ impl Sampling<'_> {
             columns,
             bins,
             first,
+            troughs,
             seams,
             base,
             road,
@@ -1180,6 +1202,7 @@ impl Sampling<'_> {
                         list.iter().copied(),
                         band,
                         portals,
+                        troughs[bin],
                     );
                     [value; LANES]
                 } else {
@@ -1193,6 +1216,7 @@ impl Sampling<'_> {
                         list.iter().copied(),
                         band,
                         portals,
+                        troughs[bin],
                     )
                 };
                 for lane in 0..run {
@@ -1201,11 +1225,7 @@ impl Sampling<'_> {
                     let delta = (value.height - base_m) as f32;
                     let (in_band, near_seam) =
                         (value.sdf < band, value.nearest_distance <= spacing);
-                    if evaluation != Evaluation::Unpruned
-                        && roads[lane].is_none()
-                        && pad_heights[lane].is_none()
-                        && value.height < base_m
-                    {
+                    if evaluation != Evaluation::Unpruned && value.ground && value.height < base_m {
                         out.lifted.push(Lifted {
                             sample: (row + i + lane) as u32,
                             bin: bin as u32,

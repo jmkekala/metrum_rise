@@ -39,11 +39,15 @@ impl Cones {
         upper: f64::INFINITY,
     };
 
-    /// Adds the cone of a seam at height `height`, `distance` from the point.
-    pub(super) fn add(&mut self, height: f64, distance: f64) {
+    /// Adds the cone of a seam at height `height`, `distance` from the point: its lower bound
+    /// alone where the seam is `retained` (a tunnel approach's road seam, `ROAD-61` round R8e),
+    /// whose ground stands natural above the road.
+    pub(super) fn add(&mut self, height: f64, distance: f64, retained: bool) {
         let (lower, upper) = cone(height, distance);
         self.lower = self.lower.max(lower);
-        self.upper = self.upper.min(upper);
+        if !retained {
+            self.upper = self.upper.min(upper);
+        }
     }
 
     /// The overlap rule on these bounds.
@@ -221,7 +225,7 @@ mod tests {
     fn bounds(cones: &[(f64, f64)]) -> Cones {
         let mut all = Cones::NONE;
         for &(height, distance) in cones {
-            all.add(height, distance);
+            all.add(height, distance, false);
         }
         all
     }

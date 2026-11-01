@@ -279,8 +279,9 @@ impl BinLists {
     }
 }
 
-/// A ground sample whose first-pass ground lies below its base (a cut's upper bound holds it
-/// there): what pass 2 needs to finish it.
+/// A sample graded by the overlap rule (a ground sample, or a covered one naming a retained seam,
+/// `ROAD-61` round R8e) whose first-pass ground lies below its base (a cut's upper bound holds
+/// it there): what pass 2 needs to finish it.
 #[derive(Clone, Copy)]
 pub(super) struct Lifted {
     pub(super) sample: u32,
@@ -416,7 +417,7 @@ pub(super) fn finish_second_pass(
             if at.distance <= CAP_M
                 && !past.is_some_and(|portals| portals.hides(seam, sample.x, sample.z))
             {
-                cones.add(at.height, at.distance);
+                cones.add(at.height, at.distance, seam.retained);
             }
         }
         let delta = (cones.ground(sample.base) - sample.base) as f32;
