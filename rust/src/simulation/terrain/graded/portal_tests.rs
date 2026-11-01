@@ -263,3 +263,108 @@ fn trough_texels_name_their_seam() {
         assert!(named > 50, "{level:?}: {named} trough texels");
     }
 }
+
+// test (`ROAD-61` round R8e): the trough's walls along the approach of `structure_mouth`'s tunnel
+// with a 2 m bump on the base 70 m before the row. Every face on a retained seam stands from the
+// seam's height up to the ground, its top within 1 mm of the higher of the base and the road at
+// both ends (the ground is natural on both sides of a retained seam, so no sawtooth), and faces
+// stand exactly where the road runs below the ground: from where the hill's foot rises above the
+// road up to the row, and again over the bump, on both sides of the road, none between and none
+// on a fill.
+#[test]
+fn the_trough_is_walled_where_the_road_runs_below_the_ground() {
+    let (graph, mut terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
+    // Base lattice x index 19 is x = -70 (10 m cells from x = -260).
+    for z in 0..53 {
+        terrain.set_height(19, z, 2.0 / crate::config::HEIGHT_SCALE);
+    }
+    let roadbed = compiled(&graph);
+    let retained = retained_seams(&roadbed);
+    let surface = GradedSurface {
+        terrain: &terrain,
+        roadbed: &roadbed,
+        sites: &NoSites,
+        query_index: None,
+    };
+    let mut scratch = QueryScratch::default();
+    let payloads = bake_with(&terrain, &roadbed, &NoSites, &tiles(2), Level::Gl0, Evaluation::Lanes);
+    let (mut hill_from, mut sides, mut bump) = (f64::INFINITY, [0, 0], 0);
+    for payload in &payloads {
+        let origin = payload.tile.origin();
+        for face in &payload.walls {
+            let ends = [face.a, face.b]
+                .map(|p| (f64::from(p[0]) + origin[0], f64::from(p[1]) + origin[1]));
+            let Some(seam) = retained
+                .iter()
+                .find(|seam| ends.iter().all(|&(x, z)| seam.at(x, z).distance < 1e-3))
+            else {
+                continue;
+            };
+            for (k, &(x, z)) in ends.iter().enumerate() {
+                let h = seam.at(x, z).height;
+                let base = surface.base_height_at(x, z, &mut scratch);
+                let case = format!("({x}, {z}): seam {h}, base {base}, face {face:?}");
+                assert!((f64::from(face.bottom[k]) - h).abs() < 1e-3, "{case}");
+                assert!((f64::from(face.top[k]) - base.max(h)).abs() < 1e-3, "{case}: top");
+            }
+            assert!(
+                (0..2).any(|k| face.top[k] > face.bottom[k]),
+                "a face without height: {face:?}"
+            );
+            let (x, z) = (0.5 * (ends[0].0 + ends[1].0), 0.5 * (ends[0].1 + ends[1].1));
+            if x > -40.0 {
+                hill_from = hill_from.min(ends[0].0.min(ends[1].0));
+                sides[usize::from(z > 0.0)] += 1;
+            } else {
+                assert!((-80.0..=-60.0).contains(&x), "a face at ({x}, {z}) between the cuts");
+                bump += 1;
+            }
+        }
+    }
+    // The walls end where the ground meets the road: the hill's foot at x = -20 rises at 1:2,
+    // so it reaches the road's edge 2 h beyond.
+    let edge = retained.iter().map(|seam| seam.a[1]).fold(f64::NEG_INFINITY, f64::max);
+    let meets = -20.0 + edge / 0.5;
+    assert!(
+        (hill_from - meets).abs() <= 0.5,
+        "the walls start at {hill_from}, the ground meets the road at {meets}"
+    );
+    assert!(sides[0] > 10 && sides[1] > 10 && bump > 4, "{sides:?} {bump}");
+}
+
+// test (`ROAD-61` round R8e): the row wall above the headwall's top. On the 1:2 hill the hill at
+// the portal row stands 10 m above the deck and the row wall closes it from the top
+// (`HEADWALL_HEIGHT_M` above the row) up to the ground along the whole row; on the 1:4 hill it
+// stands 5 m above the deck, below the top, and no face stands on the row.
+#[test]
+fn the_hill_meets_the_headwall_top() {
+    use crate::simulation::network::roadbed::HEADWALL_HEIGHT_M;
+    for (slope, walled) in [(0.5f32, true), (0.25, false)] {
+        let (graph, terrain) = structure_mouth(EdgeClass::Tunnel, slope);
+        let roadbed = compiled(&graph);
+        let payloads = bake_with(&terrain, &roadbed, &NoSites, &tiles(2), Level::Gl0, Evaluation::Lanes);
+        let hill = f64::from(slope) * 20.0;
+        let mut length = 0.0;
+        for payload in &payloads {
+            let origin = payload.tile.origin();
+            for face in &payload.walls {
+                let ends = [face.a, face.b]
+                    .map(|p| (f64::from(p[0]) + origin[0], f64::from(p[1]) + origin[1]));
+                if ends.iter().any(|&(x, _)| x.abs() > 1e-4) {
+                    continue;
+                }
+                for k in 0..2 {
+                    let bottom = f64::from(face.bottom[k]);
+                    assert!(bottom >= HEADWALL_HEIGHT_M - 1e-3, "{face:?}: below the top");
+                    assert!((f64::from(face.top[k]) - hill).abs() < 1e-3, "{face:?}: the hill");
+                }
+                length += (ends[1].0 - ends[0].0).hypot(ends[1].1 - ends[0].1);
+            }
+        }
+        if walled {
+            assert!(length > 6.9, "the row wall spans the row: {length} m");
+        } else {
+            assert_eq!(length, 0.0, "no row wall below the headwall's top");
+        }
+    }
+}

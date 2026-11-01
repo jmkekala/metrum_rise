@@ -1034,6 +1034,7 @@ fn bake_tile(
         &mut out.walls,
     );
     build_structure_walls(
+        &seams[..road_count],
         (wall_seams, wall_bottoms),
         portals,
         tile,

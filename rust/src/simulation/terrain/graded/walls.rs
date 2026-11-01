@@ -19,6 +19,7 @@ use super::portal::PortalWindow;
 use super::prune::box_distance;
 use super::seams::Seam;
 use super::tile::{TILE_M, TileKey};
+use crate::simulation::network::roadbed::HEADWALL_HEIGHT_M;
 
 // Slack on the setter tests' bounds, metres: rounding only keeps more setters, each evaluated
 // exactly.
@@ -109,7 +110,9 @@ fn union(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 /// sample at lattice point `(i, j)` (the base plus the packed delta). Pruned, a seam is only
 /// evaluated against the seams whose cone can rise above it at all (`h'_hi - k D > h_lo`,
 /// `D` between their boxes), found through the tile's road seams and then 16 m blocks of them,
-/// which leaves every walled `L` as it is: the others' lower bounds stay below the seam.
+/// which leaves every walled `L` as it is: the others' lower bounds stay below the seam. A
+/// retained seam (`ROAD-61` round R8e) gets no conflict wall: its structure walls
+/// ([`build_structure_walls`]) close every step above it, a neighbour's embankment included.
 /// `O(window seams x (1 + blocks) + road seams in the tile x their block's setters + crossings
 /// of the seams with setters x setters)`.
 #[allow(clippy::too_many_arguments)]
@@ -187,7 +190,7 @@ pub(super) fn build_walls(
         .push(scratch.block_setters.len() as u32);
     for index in 0..road_count {
         let seam = &seams[index];
-        if !in_tile(seam) {
+        if !in_tile(seam) || seam.retained {
             continue;
         }
         let block = block_of(seam);
@@ -277,12 +280,24 @@ pub(super) fn build_walls(
 /// edge, and the headwall's faces where it stands above the deck as before; between the two
 /// nothing, which the face and the slab close.
 ///
-/// Along a portal row's wall seam ([`PortalWindow::opens`], `ROAD-61`) no face: no cone
-/// reaches past the row, so the hill stands above the deck there, and the roadbed's headwall
-/// closes the row from below the deck to its top, with the lining's mouth open in it.
+/// Along a portal row's wall seam ([`PortalWindow::opens`], `ROAD-61`) the roadbed's headwall
+/// closes the row from below the deck to [`HEADWALL_HEIGHT_M`] above it, with the lining's
+/// mouth open in it; no cone reaches past the row, so the hill stands above the deck there, and
+/// the row wall closes it above the headwall's top (round R8e): faces where the surface stands
+/// above that top, from it up to the surface.
+///
+/// Along a tunnel approach's retained road seams (`roads`, [`Seam::retained`], round R8e) the
+/// trough's walls: faces wherever the surface stands above the road, from the road's edge up to
+/// it, ending exactly where the two meet and resuming where the road dips below the ground
+/// again. The approach's ground is natural beside it, so they run as far as the cut does; on a
+/// fill the skirt closes the sag, as along any road. They meet the row wall and the headwall at
+/// the row's corner, the chain's own vertex.
+///
 /// `heights(i, j)` is the finished sample at lattice point `(i, j)`. `O(wall seams x their
-/// crossings x portal rows)`.
+/// crossings x portal rows + retained seams x their crossings)`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_structure_walls(
+    roads: &[Seam],
     (walls, bottoms): (&[Seam], &[Option<[f64; 2]>]),
     portals: &PortalWindow,
     tile: TileKey,
@@ -291,9 +306,13 @@ pub(super) fn build_structure_walls(
     scratch: &mut WallScratch,
     out: &mut Vec<WallFace>,
 ) {
+    let above = |surface: f64, h: f64| surface > h;
+    // A face of the row and trough walls has height in the payload's `f32`: a lattice point on a
+    // retained seam where the ground stands below the road takes the road's height, which the
+    // `f32` delta rounds to within a few ulps either side of it.
+    let rises = |surface: f64, h: f64| surface as f32 > h as f32;
     for (seam, bottom) in walls.iter().zip(bottoms) {
         if let Some(bottom) = *bottom {
-            let above = |surface: f64, h: f64| surface > h;
             seam_walls(seam, tile, lattice, &heights, above, scratch, out);
             let below = |surface: f64, u: f64| surface < u;
             let edge = abutment_bottom(seam, bottom);
@@ -301,10 +320,20 @@ pub(super) fn build_structure_walls(
             continue;
         }
         if portals.opens(seam) {
+            let top = |p: [f64; 3]| [p[0], p[1] + HEADWALL_HEIGHT_M, p[2]];
+            let headwall = Seam {
+                a: top(seam.a),
+                b: top(seam.b),
+                ..*seam
+            };
+            seam_walls(&headwall, tile, lattice, &heights, rises, scratch, out);
             continue;
         }
         let differs = |surface: f64, h: f64| surface != h;
         seam_walls(seam, tile, lattice, &heights, differs, scratch, out);
+    }
+    for seam in roads.iter().filter(|seam| seam.retained) {
+        seam_walls(seam, tile, lattice, &heights, rises, scratch, out);
     }
 }
 
