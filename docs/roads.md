@@ -10043,7 +10043,7 @@ crossings and its legacy migration.
   route's lane witness at such nodes (handoff decision, `ROAD-74`).
 - **Cost (round R6, 2026-11-01, one C F F C session, P-cores, `RAYON_NUM_THREADS=4`, load
   1.8-2.2, release test binaries of `ef7c5f2b` and of the branch).** Preview stages
-  (`benchmark_road_preview_stages`), total p50 ms C/F/F/C: first fixture 2.75 / 2.92 / 3.47 /
+  (`benchmark_road_preview_stages`), total p50 ms C/F/F/C: `sloped_t` 2.75 / 2.92 / 3.47 /
   2.87, `sloped_branch` 3.05 / 2.63 / 2.56 / 2.56; the spread lies within each binary, no
   claim either way. Populated locality (`populated_road_plan_scaling`): products identical at
   every tier; compile p50 0.157 / 0.156 ms (branch) against 0.159 / 0.149 ms (control) at
