@@ -63,7 +63,8 @@ const CELL_PLAIN := 5
 const CELL_INSTANCE_FLOATS := 16
 # Wall face instances per patch, prewarmed with its cells: at most 42 faces per patch on the
 # Kuopio reference save and none on the populated save (TERRAIN-07-D round 6 census, GL0). A
-# patch with more draws the first ones and counts and logs the rest.
+# tunnel approach's trough walls (`ROAD-61` round R8e) take about 256 faces per side per 64 m at
+# GL0, so a patch that needs more grows its MultiMesh to the next power of two (_rebuild_patch_walls).
 const MAX_WALLS_PER_PATCH := 256
 # A visibility range no camera is within (metres): a patch's PlaneMesh while its cells draw it.
 const HIDDEN_RANGE_M := 0.001
@@ -2681,6 +2682,14 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 	var centre := rect.get_center()
 	var count := 0
 	var truncated := 0
+	# The faces' upper bound first: growing the MultiMesh drops the instances it holds.
+	var wanted := 0
+	for tile in _patch_tiles(rect):
+		var entry := _shown_in(tile, cells["key"])
+		if not entry.is_empty():
+			wanted += (entry["walls"] as PackedFloat32Array).size() / WALL_FACE_FLOATS
+	if wanted > multimesh.instance_count:
+		multimesh.instance_count = nearest_po2(wanted)
 	for tile in _patch_tiles(rect):
 		var entry := _shown_in(tile, cells["key"])
 		if entry.is_empty():
@@ -2692,7 +2701,7 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 			var middle := tile_origin + Vector2(faces[at] + faces[at + 2], faces[at + 1] + faces[at + 3]) * 0.5
 			if not rect.has_point(middle):
 				continue
-			if count == MAX_WALLS_PER_PATCH:
+			if count == multimesh.instance_count:
 				truncated += 1
 				continue
 			multimesh.set_instance_transform(count, Transform3D(Basis(
@@ -2702,7 +2711,7 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 			count += 1
 	if truncated > 0:
 		counters["walls_truncated"] += truncated
-		MetrumDebug.log("terrain", "graded walls: %d faces past the patch capacity %d" % [truncated, MAX_WALLS_PER_PATCH])
+		MetrumDebug.log("terrain", "graded walls: %d faces past the patch capacity %d" % [truncated, multimesh.instance_count])
 	multimesh.visible_instance_count = count
 	node.visible = count > 0
 
