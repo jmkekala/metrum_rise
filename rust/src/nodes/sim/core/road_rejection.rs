@@ -206,6 +206,13 @@ fn validation_detail(
             "the tunnel crosses another tunnel or meets a road inside its bore".to_owned(),
             None,
         ),
+        "junction_in_trench" => (
+            format!(
+                "the junction stands {:.2} m below the ground in a tunnel approach's trench",
+                validation.geometry_measured
+            ),
+            None,
+        ),
         "tunnel_under_water" => (
             "the tunnel or its approach passes under visible water".to_owned(),
             None,

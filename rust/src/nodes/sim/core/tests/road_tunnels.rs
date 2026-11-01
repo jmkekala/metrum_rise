@@ -480,6 +480,91 @@ fn invalid_tunnels_are_refused_with_a_reason() {
     assert_eq!(result.quick, "tunnel_approach_too_short");
 }
 
+// `ROAD-61` round R8f: a junction below the ground in a tunnel approach's trench is refused as
+// `junction_in_trench` (the user's decision; the terrain walls only the approach span, so the
+// junction's piece would step against the walls). A side road drawn off the western approach of
+// a tunnel through the 1:2 hill and through the 1:4 hill (its cut 24 m long), 3 to 30 m from the
+// portal, is refused by the preview's exact plan and the commit exactly where the approach's
+// deck lies below the source terrain, with that depth as the measurement, and is not refused
+// for the trench where it lies on the ground. The hover check sees no junction, as for every
+// junction refusal. A junction at the approach's far end, on the ground, commits.
+#[test]
+fn a_junction_in_a_tunnel_approach_trench_is_refused() {
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    let side_road = |core: &mut SimCore, points: Vec<Vector3>| {
+        core.precompute_road_mesh_data();
+        core.refresh_road_terrain_inputs();
+        let request = RoadPreviewRequest {
+            snap_to_existing_roads: true,
+            ..request(core, &points, false)
+        };
+        let view = road_tool_snapshot_from_core(core).expect("current roadbed");
+        let quick = view.validate(&request).1;
+        let exact = RoadPreviewContext::capture(view).preview_road(request).validation;
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points,
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                tunnel: false,
+                preview: None,
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        (quick, exact, outcome)
+    };
+    for (slope, foot) in [(0.5f32, 80.0f32), (0.25, 100.0)] {
+        let tunnel = || {
+            let mut core = cone_hill_core(foot, slope);
+            let result = run_stroke(&mut core, &THROUGH_HILL, true);
+            assert_eq!(result.committed, "committed", "{result:?}");
+            core
+        };
+        let portal = {
+            let core = tunnel();
+            (core.region_graph.edges().iter())
+                .filter(|edge| !edge.deleted && edge.class == EdgeClass::Tunnel)
+                .flat_map(|edge| [edge.start_node, edge.end_node])
+                .map(|node| core.region_graph.node(node).pos.x)
+                .fold(f32::INFINITY, f32::min)
+        };
+        let mut refused = 0;
+        for d in [3.0, 6.0, 12.0, 20.0, 30.0] {
+            let x = portal - d;
+            if x <= THROUGH_HILL[0].x {
+                continue;
+            }
+            let mut core = tunnel();
+            let end = Vector3::new(x, cone_hill(foot, slope, x, 40.0), 40.0);
+            let (quick, exact, outcome) =
+                side_road(&mut core, vec![Vector3::new(x, 0.0, 0.0), end]);
+            let depth = cone_hill(foot, slope, x, 0.0);
+            let case = format!("{slope} d {d} depth {depth}: {exact:?} {}", outcome.rejection);
+            assert!(quick.is_valid, "{case}");
+            if depth > 0.0 {
+                assert_eq!(exact.invalid_reason, "junction_in_trench", "{case}");
+                assert_eq!(outcome.rejection_reason, "junction_in_trench", "{case}");
+                assert!((exact.geometry_measured - depth).abs() < 1e-3, "{case}");
+                refused += 1;
+            } else {
+                assert_ne!(exact.invalid_reason, "junction_in_trench", "{case}");
+                assert_ne!(outcome.rejection_reason, "junction_in_trench", "{case}");
+            }
+        }
+        assert!(refused >= 2, "{slope}: {refused} junctions in the trench");
+        // The approach's far end, on the ground: continued west, then a side road there.
+        let mut core = tunnel();
+        let far = THROUGH_HILL[0];
+        let west = vec![far, Vector3::new(far.x - 30.0, 0.0, 0.0)];
+        assert!(side_road(&mut core, west).2.committed, "{slope}: west");
+        let (_, exact, outcome) =
+            side_road(&mut core, vec![far, Vector3::new(far.x, 0.0, -40.0)]);
+        assert!(outcome.committed, "{slope}: far end {exact:?} {}", outcome.rejection);
+    }
+}
+
 // The natural height of `cone_hill_core(foot_m, slope)` at an XZ point.
 fn cone_hill(foot_m: f32, slope: f32, x: f32, z: f32) -> f32 {
     (slope * (foot_m - x.hypot(z))).max(0.0)

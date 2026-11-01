@@ -9,9 +9,9 @@ use super::input::{
     PREVIEW_CLEARANCE_M, PreparedRoadInput, ROAD_PROFILE_MAX_GRADE, is_surface_edge,
 };
 use super::tunnel::{
-    BoreRefusal, Portals, TUNNEL_COVER_M, TUNNEL_CROSSING_REASON, TUNNEL_MIN_APPROACH_M,
-    bore_crosses_a_tunnel, classify_tunnel_stroke, portal_splits, section_cover_m, tunnel_bore,
-    tunnel_section_half_width_m,
+    BoreRefusal, JUNCTION_IN_TRENCH_REASON, Portals, TUNNEL_COVER_M, TUNNEL_CROSSING_REASON,
+    TUNNEL_MIN_APPROACH_M, bore_crosses_a_tunnel, classify_tunnel_stroke, junction_in_trench,
+    portal_splits, section_cover_m, tunnel_bore, tunnel_section_half_width_m,
 };
 use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
 use crate::config;
@@ -500,6 +500,18 @@ fn validate_against_graph(
         &source_node_ids,
     ) {
         return (refuse_geometry(validation, &refused), None);
+    }
+    // A junction in a tunnel approach's trench (`ROAD-61` round R8f), its depth below the ground
+    // as the measurement; the lowest node id reports.
+    let mut affected: Vec<u32> = finalized.affected_nodes.iter().copied().collect();
+    affected.sort_unstable();
+    if let Some(depth) = affected
+        .into_iter()
+        .find_map(|node| junction_in_trench(&validation_graph, node, terrain))
+    {
+        let mut validation = validation.with_invalid_reason(JUNCTION_IN_TRENCH_REASON);
+        validation.geometry_measured = depth;
+        return (validation, None);
     }
     if let Some(reason) = junction_rejection(&validation_graph, &finalized.affected_nodes) {
         return (validation.with_invalid_reason(reason), None);

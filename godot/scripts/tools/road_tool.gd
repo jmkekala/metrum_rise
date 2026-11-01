@@ -606,6 +606,10 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 			]
 		"tunnel_crossing":
 			return "Tunnels cannot cross other tunnels or meet roads underground"
+		"junction_in_trench":
+			return "Junction %.1f m below the ground in a tunnel approach: join where the road meets the ground" % [
+				float(preview.get("geometry_measured", 0.0)),
+			]
 		"tunnel_under_water":
 			return "Tunnels cannot pass under water"
 		"water_requires_bridge":

@@ -17,11 +17,13 @@
 //! standard roads in a cut, the bore a lined tunnel edge whose portal rows end the cut at a
 //! collar (`TERRAIN-07`, `docs/terrain.md` T22), and an end inside the bore is a buried
 //! continuation with no portal of its own. A bore meets no other road: a junction inside it, or a crossing
-//! with another tunnel at any height, refuses the stroke ([`TUNNEL_CROSSING_REASON`]).
+//! with another tunnel at any height, refuses the stroke ([`TUNNEL_CROSSING_REASON`]). Nor does an
+//! approach's trench below the ground (round R8f): any stroke that makes a junction there is
+//! refused ([`junction_in_trench`]).
 
 use super::PlannedRoadSplit;
 use super::input::{
-    PreparedRoadInput, simplify_road_alignment_points, snap_road_endpoints_to_existing_nodes,
+    PreparedRoadInput, is_surface_edge, simplify_road_alignment_points, snap_road_endpoints_to_existing_nodes,
     xz_distance,
 };
 use crate::config;
@@ -46,6 +48,8 @@ pub(super) const TUNNEL_COVER_M: f32 = PORTAL_CLEARANCE_M as f32;
 pub(super) const TUNNEL_MIN_APPROACH_M: f32 = 2.0 * TUNNEL_LATTICE_M;
 /// A bore that meets another road: a junction inside it or a crossing with another tunnel.
 pub(super) const TUNNEL_CROSSING_REASON: &str = "tunnel_crossing";
+/// A junction below the ground in a tunnel approach's trench ([`junction_in_trench`]).
+pub(super) const JUNCTION_IN_TRENCH_REASON: &str = "junction_in_trench";
 
 /// Why a tunnel stroke's knots form no bore.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -275,6 +279,51 @@ pub(super) fn classify_tunnel_stroke(
         }
     }
     Ok(())
+}
+
+/// How far below the source terrain ([`cover_m`], the cover the bore check reads) `node` of
+/// `graph` stands when it is a junction in a tunnel approach's trench (`ROAD-61` round R8f): three
+/// or more surface arms, one of them a tunnel or an approach (a standard edge whose far node has
+/// only it and a tunnel, the span sharing the mouth that the roadbed retains and the terrain
+/// walls, R8e), and the node below the ground. The node's piece is not retained, so the ground
+/// would be graded down to it in a cut and step against the walled trench at the piece's
+/// boundary. `None` for any other node. The far nodes of `node`'s arms must have complete
+/// incidence, as the validation graph gives an affected node's. `O(degree^2)`.
+pub(super) fn junction_in_trench(
+    graph: &RegionGraph,
+    node: u32,
+    terrain: &TerrainSystem,
+) -> Option<f32> {
+    let node = graph.get_valid_node(node);
+    let arms = |node: u32| {
+        let edges = if (node as usize) < graph.node_adjacency_count() {
+            graph.node_adjacency(node)
+        } else {
+            &[]
+        };
+        edges
+            .iter()
+            .copied()
+            .filter(|&edge_idx| is_surface_edge(graph.edge(edge_idx)))
+    };
+    if arms(node).count() < 3 {
+        return None;
+    }
+    let approach = |edge_idx: usize| {
+        let edge = graph.edge(edge_idx);
+        let ends = [edge.start_node, edge.end_node].map(|end| graph.get_valid_node(end));
+        let far = if ends[0] == node { ends[1] } else { ends[0] };
+        let mut others = arms(far).filter(|&other| other != edge_idx);
+        matches!((others.next(), others.next()),
+            (Some(other), None) if graph.edge(other).class == EdgeClass::Tunnel)
+    };
+    let in_approach = arms(node).any(|edge_idx| match graph.edge(edge_idx).class {
+        EdgeClass::Tunnel => true,
+        EdgeClass::Standard => approach(edge_idx),
+        EdgeClass::Bridge => false,
+    });
+    let depth = cover_m(terrain, graph.node(node).pos);
+    (in_approach && depth > 0.0).then_some(depth)
 }
 
 /// Whether the bore `points` crosses, in plan, a tunnel edge of `graph` that does not end at
