@@ -62,7 +62,8 @@ each mouth; no sky and no line of sun visible from inside. The approach runs in 
 vertical walls from the road's edge up to the natural ground, ending where the road reaches the
 ground, and a wall over the collar where the hill rises higher; the hill beside the cut and over
 the bore keeps its natural shape. Over a bore the cursor, zoning heights, vehicles and trees read the hill, and no
-parcel or building fronts a tunnel or a bridge ([ROAD-61](roads.md#road-tunnels-road-61)).
+parcel or building fronts a tunnel or a bridge ([ROAD-61](roads.md#road-tunnels-road-61), done
+2026-11-01).
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
 Splitting an incident edge now retains its independently solved physical support knots, and the
@@ -1414,6 +1415,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-61` done: the trough wall's foot (branch `port-r8g-pinhole`, 2026-11-01, port round R8g): a tunnel approach's walls stand from the skirt's bottom, so the road's edge lies inside them and no ray grazing their foot reaches the void under the hill (R8f's two sky pixels); 0 sky pixels on 216 keyed views of the user's dumps; no change without tunnels ([roads.md](roads.md#road-tunnels-road-61)).
 - `ROAD-61` tunnel collar and tool rules (branch `port-r8f-tunnel-collar`, 2026-11-01, port round R8f, option T): a flat concrete collar replaces the headwall and its wings; the tool checks cover across the bore's whole width, refuses a junction below the ground in a tunnel approach and never makes a tunnel without the toggle; a bend's lining closes; graded walls are lit from their own side (the quad's winding). No change without tunnels ([roads.md](roads.md#road-tunnels-road-61)).
 - `ROAD-61` tunnel mouths in the user's saves (branch `port-r8d-tunnel-mouths`, 2026-11-01, port round R8d): 32 mouths diagnosed; headwalls and the lining's shell take outdoor light (they were black); fins, wedges, stripes and the lining standing out on cross-sloping hills are open, with the terrain-owned portal (option T) recommended ([roads.md](roads.md#road-tunnels-road-61)).
 - `ROAD-61` walled tunnel approaches, terrain side (branch `port-r8e-tunnel-trench`, 2026-11-01, port round R8e, option T with walls): an approach's road seams are retained, so the hill beside it stays natural and walls stand from the road's edge up to the ground wherever the road runs below it; R8c's wing seams are gone; render patches grow their wall instances. The roadbed's collar (R8f) replaces the headwall wings next ([roads.md](roads.md#road-tunnels-road-61)).

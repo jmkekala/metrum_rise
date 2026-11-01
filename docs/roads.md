@@ -10218,10 +10218,12 @@ uses the existing node grid and edge R-tree. No additional spatial index or whol
 
 ## Road tunnels (`ROAD-61`)
 
-**Status (2026-11-01, rounds R8 and R8b of the road-feature port, branches `port-r8-tunnel-lining`
-and `port-r8b-tunnel-polish`):** the tunnel logic (round R2), the ground over a bore (R2b) and the
-closed tunnel (R8: lining, ceiling, headwalls, no cone past a portal row; R8b: the lining's own
-layer, its thickness, lamp strips) are built; see "The closed tunnel" below. Ported from Veeti's road-chain branch (`b07b3781`,
+**Status: done (2026-11-01, rounds R2 to R8g of the road-feature port; the last, R8g, on branch
+`port-r8g-pinhole`):** the tunnel logic (round R2), the ground over a bore (R2b), the closed
+tunnel (R8: lining, ceiling, no cone past a portal row; R8b: the lining's own layer, its
+thickness, lamp strips), the walled approaches (R8e), the collar and the tool's rules (R8f) and
+the trough wall's foot (R8g) are built; see "The closed tunnel" below. Later work stays open
+below (grade limit `ROAD-96`, trench junctions, flat-ground ramps). Ported from Veeti's road-chain branch (`b07b3781`,
 `55cf6f85`, logic only); the fork's profile logic lived in the deleted `surface/` compiler and its
 tool intent rode on a Junction / Over / Under / Tunnel crossing selector, which is not ported (grade
 separation is out of the port), so the logic is re-implemented on `road_edit` and the roadbed.
@@ -10821,6 +10823,47 @@ the control `86d3d87d` (R8e), both with R8's product probe and the gentle benchm
   0.214 ms (C), 0.003 -> 0.212 ms (F). Planning follows the stroke's neighbourhood: flat from 0
   to 100k (the 1k point is the noisy one in both).
 
+**The trough wall's foot (round R8g, 2026-11-01).** R8f's two sky pixels (dump B, `P-M9` and
+`P-M22`, present since R8e) are rays grazing the corner where a trough wall stands on the deck's
+outer edge. Evidence (FRESH, `$ARTIFACTS` probe: each key pixel's ray from the capture, cast in
+`f64` against dump B's roadbed pieces, skirts and baked `GL0` wall faces): the rays cross the
+chain's vertical plane 0.47 mm below (`P-M9`, span 13, 6 cm from a chain vertex) and 0.96 mm above
+(`P-M22`, span 33, mid-segment) the deck's edge, 45.7 and 48.8 m from the camera, where a pixel is
+about 0.1 m: within 1 % of a pixel of the corner line. The wall's bottom vertices lie on the chain
+within 7.5e-6 m and the skirt's top is the chain bitwise, so nothing is open in the geometry; the
+face stood exactly on the edge, meeting the deck in a T-junction between two meshes (its bottom
+split at lattice crossings, the deck's edge at section rows, each in its own `f32` frame), and a
+ray that the rasteriser let through between them above the skirt went on under the hill, where
+nothing is drawn. Both pinholes lie on curved approaches; the cause is not the curve.
+
+- *Fix* (`walls::build_structure_walls`, [`terrain.md`](terrain.md#graded-terrain-surface-terrain-07)
+  "Walled approaches"): a trough face stands from the skirt's bottom, `SKIRT_DEPTH_M` (0.5 m)
+  below the road's edge, so the edge lies inside it. The part below the edge lies behind the deck
+  from the road and under the ground from the hill (the ground stands at or above the edge along
+  every trough face). Same face count, one `f64` subtraction per face. Not a deeper skirt and no
+  mask (seam contract 10). Every other wall keeps its bottoms bitwise. A conflict wall's foot
+  meets the deck the same way, but beside a conflict wall the ground can dip below the road,
+  where an overlap would show against the skirt: left as it is (no pinhole seen; none of the
+  keyed views targets one).
+- *Test* `graded::portal_tests::the_roads_edge_lies_inside_every_trough_wall` (fails at
+  `ef7c5f2b`: the edge lies on the face's bottom; passes after);
+  `the_trough_is_walled_where_the_road_runs_below_the_ground` expects the new bottom.
+- *Sky key* (FRESH, gamescope headless, isolated profile, R8f's capture script and cameras, hour
+  13): R8f's 34 keyed views of dumps A, B and the junction copy: 0 key pixels (the R8f library on
+  the two pinhole views, same session: 1 and 1). Added views where the cause could show: every
+  trough wall run's end away from a portal row (where the ground meets the road; 41 ends, each
+  from both directions along the road at pitch -1.25 / 45 m and -0.85 / 30 m) and the middles of
+  the curved (0.15-0.50 rad of turn) and wide (17 m) approaches, 182 views on dumps A and B: 0
+  key pixels with this round's library; the R8f library shows 1 more (dump B, a wall end on the
+  most curved approach, at the wall's foot).
+- *No change without tunnels* (FRESH, same session): R8's product probe on the town, hill and
+  steep fixtures gives equal hashes with and without the fix (and R8f's).
+- *Cost*: not timed (the coordinator's decision, 2026-11-01): no added work, by construction. The
+  fix lowers the existing trough faces' two bottom values by `SKIRT_DEPTH_M` before their one
+  `f32` rounding; vertex and face counts, the code path and the payload size are unchanged and
+  nothing is allocated. The walls stay `O(retained seams x their lattice crossings)` per tile, one
+  `f64` subtraction per face more. R8f's measurements stand for the stage.
+
 **Open (`ROAD-61`):**
 
 - A grade limit for every road class (`ROAD-96`, planned): tunnels of +23.6 % and +26.1 % are
@@ -10828,8 +10871,6 @@ the control `86d3d87d` (R8e), both with R8's product probe and the gentle benchm
 - Junctions inside a trench (a per-edge trench flag so a side road can be a trench too, node
   pieces inheriting it) and the flat-ground ramp entry (a descending authored profile): later
   work, not in `ROAD-61`.
-- The pinhole at a trough wall's foot (2 pixels on 34 keyed views, above): the wall's bottom
-  edge and the deck's outer edge are split at different points.
 - The load leg of the tunnel stroke's bitwise stage test (the test hill has no world config to
   save).
 - The shared triangulator's centroid inside test (`triangulate_constrained_rings_xz`) can keep a

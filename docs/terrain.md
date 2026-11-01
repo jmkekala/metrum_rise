@@ -4693,6 +4693,18 @@ approach without changing its chains' bits dirties and rebakes its far tiles. Gr
   collar's flat top (`roadbed::COLLAR_HEIGHT_M` above the row, round R8f; faces where the surface
   stands above it, none where the hill stands exactly at it); `build_walls` gives retained seams no
   conflict wall.
+- A trough face stands from the skirt's bottom (`roadbed::SKIRT_DEPTH_M` below the road's edge)
+  up to the ground (round R8g), so the deck's edge lies inside the face. Standing on the edge, the
+  face met the deck in a T-junction between two meshes (its bottom split at lattice crossings,
+  the deck's edge at section rows, each in its own `f32` frame), and a ray from the road grazing
+  that corner within a millimetre could pass between them above the skirt into the void under
+  the hill: R8f's two sky pixels on dump B ([invariant 10](#invariants): fixed at the wall, not
+  with a deeper skirt or a mask). The part below the edge lies behind the deck seen from the road
+  and under the ground seen from the hill, which stands at or above the edge along every trough
+  face. Conflict walls, abutments and the row wall keep their bottoms bitwise; a conflict wall's
+  foot meets the deck the same way, but where the ground beside it dips below the road an
+  overlap would show against the skirt, so it is left as it is (no pinhole seen, though no keyed
+  view targets one; `ROAD-61` R8g in [`roads.md`](roads.md#road-tunnels-road-61)).
 - The wing seams of round R8c are gone from the terrain (`SeamKind::Wing` and its cap, hides and
   listing); the portal window keeps R8's hide past the row, a function of the row alone. No reach
   from the row along the approach: the trough is a property of the seam, so a future flat-ground
@@ -4709,7 +4721,8 @@ approach without changing its chains' bits dirties and rebakes its far tiles. Gr
 Tests: `roadbed::terrain::tests::a_tunnel_at_a_roads_end_changes_every_approach_segment`,
 `graded::portal_tests::{an_approach_changes_the_inputs_of_its_far_tiles,
 trough_texels_name_their_seam, the_trough_is_walled_where_the_road_runs_below_the_ground,
-the_hill_meets_the_collar, no_cone_reaches_past_a_portal_row}`,
+the_roads_edge_lies_inside_every_trough_wall, the_hill_meets_the_collar,
+no_cone_reaches_past_a_portal_row}`,
 `road_tunnels::side_by_side_tunnels_leave_each_others_bores_natural`.
 
 **The collar and the tool's rules (option T, `ROAD-61` round R8f, the roadbed and tool side).**
