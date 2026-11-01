@@ -618,6 +618,17 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	_expect(faces > 0, "the bridge's mouth has wall faces")
 	_expect(instances == faces, "every wall face draws once: %d instances of %d faces" % [instances, faces])
 	_expect(int(graded.counters["walls_truncated"]) == 0, "no patch runs out of wall instances")
+	# The wall quad's front face is the side the wall shader's normal points to (+Z for a face
+	# along +X): Godot's front faces are clockwise and a back face's normal is negated.
+	var quad := graded._wall_mesh.surface_get_arrays(0)
+	var corners: PackedVector3Array = quad[Mesh.ARRAY_VERTEX]
+	var order: PackedInt32Array = quad[Mesh.ARRAY_INDEX]
+	for t in range(0, order.size(), 3):
+		var p0 := corners[order[t]]
+		var p1 := corners[order[t + 1]]
+		var p2 := corners[order[t + 2]]
+		var turn := (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x)
+		_expect(turn < 0.0, "wall quad triangle %d is clockwise seen from its lit side" % (t / 3))
 	_expect(terrain.patch_payload_refused.is_empty(), "no payload request is refused after the bridge: %s" % terrain.patch_payload_refused)
 	print("graded walls: %d faces over %d installed tiles" % [faces, graded.installed.size()])
 	grass.free()

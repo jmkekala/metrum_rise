@@ -1,7 +1,9 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_disabled, diffuse_burley, specular_schlick_ggx, skip_vertex_transform;
-// The graded terrain's wall faces (TERRAIN-07-D round 4): conflict walls, abutments and headwalls
-// (rust/src/simulation/terrain/graded/walls.rs), one MultiMesh instance of a unit quad per face,
+// The graded terrain's wall faces (TERRAIN-07-D round 4): conflict walls, abutments, and a
+// tunnel's row and trough walls (rust/src/simulation/terrain/graded/walls.rs, ROAD-61), one
+// MultiMesh instance of a unit quad per face, wound to face the normal below (front faces are
+// clockwise; a back face's normal would be negated),
 // placed here in world space. VERTEX.x is 0 at the face's end a and 1 at b, VERTEX.y 0 at the
 // bottom and 1 at the top. The instance transform carries the face's eight values raw, so
 // MODEL_MATRIX (the patch node's translation times the instance) holds them in its basis

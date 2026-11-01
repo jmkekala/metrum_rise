@@ -819,11 +819,15 @@ func _build_meshes() -> void:
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		_meshes[code] = mesh
 		counters["meshes_created"] += 1
-	# The wall quad: x 0 at a face's end a and 1 at b, y 0 at its bottom and 1 at its top.
+	# The wall quad: x 0 at a face's end a and 1 at b, y 0 at its bottom and 1 at its top. Its
+	# triangles are clockwise seen from +Z, the side terrain_graded_walls.gdshader's normal points
+	# to (the face's lower side), so that side is the front face: with cull_disabled Godot
+	# negates a back face's normal, and the other winding lit every wall seen from the road as if
+	# it faced the hill (ROAD-61 round R8f).
 	var quad := []
 	quad.resize(Mesh.ARRAY_MAX)
 	quad[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 0)])
-	quad[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 3, 0, 3, 2])
+	quad[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 3, 1, 0, 2, 3])
 	_wall_mesh = ArrayMesh.new()
 	_wall_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, quad)
 	counters["meshes_created"] += 1
