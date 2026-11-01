@@ -862,3 +862,81 @@ fn the_lining_closes_buried_ends_and_bends() {
         }
     }
 }
+
+// `ROAD-61` round R8: the preview stages of a tunnel stroke through the 1:2 hill (lining,
+// headwalls and the portal rows' terrain included), eight end poses along the far side, against
+// the stage budgets (`docs/roads.md` "Stage budgets"). Medians and p95 over 50 repetitions after
+// 10 warm-up ones.
+#[test]
+#[ignore = "controlled release timing: cargo test --release --lib benchmark_tunnel_preview_stages -- --ignored --nocapture"]
+fn benchmark_tunnel_preview_stages() {
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    use std::time::Instant;
+    let mut core = hill_core(80.0);
+    core.precompute_road_mesh_data();
+    core.refresh_road_terrain_inputs();
+    let mut context =
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(&core).expect("current roadbed"));
+    let strokes: Vec<Vec<Vector3>> = (0..8)
+        .map(|pose| {
+            vec![
+                THROUGH_HILL[0],
+                Vector3::new(100.0 + 2.0 * pose as f32, 0.0, 1.5 * pose as f32),
+            ]
+        })
+        .collect();
+    let mut stages = [(); 5].map(|()| Vec::new());
+    let mut lining_vertices = 0;
+    for repetition in 0..60 {
+        for points in &strokes {
+            let start = Instant::now();
+            let preview = context.preview_road(request(&core, points, true));
+            let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+            assert!(preview.validation.is_valid, "{}", preview.validation.invalid_reason);
+            let pieces = preview.pieces.as_ref().expect("the pose's pieces");
+            assert!(pieces.graded.stage.is_ok(), "every pose bakes its graded tiles");
+            if repetition == 0 {
+                lining_vertices += pieces
+                    .chunks
+                    .iter()
+                    .flat_map(|chunks| chunks.values())
+                    .map(|chunk| chunk.overlay.concrete_vertices.len())
+                    .sum::<usize>();
+            }
+            if repetition >= 10 {
+                let times = preview.times;
+                for (samples, ms) in stages.iter_mut().zip([
+                    times.plan_ms,
+                    times.roadbed_ms,
+                    times.payload_ms,
+                    times.graded_ms,
+                    total_ms,
+                ]) {
+                    samples.push(ms);
+                }
+            }
+        }
+    }
+    let [plan, roadbed, payload, graded, total] = stages.map(|mut samples| {
+        samples.sort_by(f64::total_cmp);
+        let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
+        (at(0.5), at(0.95))
+    });
+    eprintln!(
+        "tunnel_preview_stages workers={} poses=8 samples=400 lining_vertices_per_pose={} \
+         plan_ms={:.3}/{:.3} roadbed_ms={:.3}/{:.3} payload_ms={:.3}/{:.3} \
+         graded_ms={:.3}/{:.3} total_ms={:.3}/{:.3}",
+        crate::thread_pools::install(rayon::current_num_threads),
+        lining_vertices / 8,
+        plan.0,
+        plan.1,
+        roadbed.0,
+        roadbed.1,
+        payload.0,
+        payload.1,
+        graded.0,
+        graded.1,
+        total.0,
+        total.1,
+    );
+}
