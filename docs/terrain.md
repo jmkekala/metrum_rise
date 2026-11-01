@@ -4707,6 +4707,47 @@ hill with `walls::build_structure_walls` along the approach and over the mouth, 
 bridge's mouth, with no wing seams; prototype stills and the open points in
 [`roads.md`](roads.md#road-tunnels-road-61) ("A mouth that fits the hill").
 
+**Walled approaches (option T, `ROAD-61` round R8e, the terrain side; the user's decision,
+2026-11-01: walls, not slopes).** A tunnel's approach span (a grounded span with a wall run
+across a tunnel's mouth, `PieceMesh::retained`, from topology alone) publishes its chain
+segments as *retained* seams (`Seam::retained`). The flag is part of `ChainChanges`' key and of
+the tile inputs (the retained seams' keys after the portal rows), so a span that becomes an
+approach without changing its chains' bits dirties and rebakes its far tiles. Grading:
+- a retained seam's cone is one-sided, `L = max(L, h - k d)` and no upper bound: beside the
+  approach the ground stays natural wherever no other seam cuts it;
+- a covered sample whose nearest road seam within the band is retained takes the overlap rule
+  `max(L, min(b, U))` over the same cones, its own seam's arm `h - k s` included, instead of the
+  inside rule. Both sides of the seam evaluate one function, so the lattice edge on the seam is
+  the ground's, and the seam stays named: the exact mask discards on the seam line. A bin whose
+  pass-1 list holds a retained seam evaluates its covered lanes like ground lanes (and sends them
+  to pass 2 when a cut holds them below the base); the queries decide the same over their
+  window, so they stay the bake's values bitwise. Pruning is unchanged and stays exact: a
+  retained seam's symmetric listing is a superset, and its lower bound is as before.
+- `walls::build_structure_walls` stands the trough's walls along every retained seam with
+  `above` (faces where the surface stands above the road, from the road's edge up to it, ending
+  exactly where they meet and resuming where the road dips again) and the row wall above the
+  headwall's top (`roadbed::HEADWALL_HEIGHT_M` above the row, the collar's height once `ROAD-61`
+  round R8f builds it); `build_walls` gives retained seams no conflict wall.
+- The wing seams of round R8c are gone from the terrain (`SeamKind::Wing` and its cap, hides and
+  listing); the portal window keeps R8's hide past the row, a function of the row alone. No reach
+  from the row along the approach: the trough is a property of the seam, so a future flat-ground
+  ramp entry walls its U-section the same way. Until round R8f the roadbed's headwall wings stand
+  ungraded in the natural hill. The paragraphs on wing grading and the sliver above describe the
+  superseded R8c design.
+- Cost: covered lanes of trough bins read their bins' candidates like ground lanes (at most the
+  band strip on the road side of each retained seam per tile); walls `O(retained seams x their
+  lattice crossings)` per tile; no new allocation (`trough_bins` is one reused `Vec<bool>`).
+  A trough wall takes about 256 faces per side per 64 m at `GL0`, past the 256 wall instances a
+  render patch prewarms: a patch now grows its wall MultiMesh to the next power of two when its
+  tiles' faces need more (`terrain_graded_tiles.gd`), where it dropped the rest before. Timings in
+  [`roads.md`](roads.md#road-tunnels-road-61) (round R8e).
+
+Tests: `roadbed::terrain::tests::a_tunnel_at_a_roads_end_changes_every_approach_segment`,
+`graded::portal_tests::{an_approach_changes_the_inputs_of_its_far_tiles,
+trough_texels_name_their_seam, the_trough_is_walled_where_the_road_runs_below_the_ground,
+the_hill_meets_the_headwall_top, no_cone_reaches_past_a_portal_row}`,
+`road_tunnels::side_by_side_tunnels_leave_each_others_bores_natural`.
+
 Godot's `get_world_surface_height` and `intersect_world_surface` answer from `surface_height_at` and
 `raycast_surface` since `TERRAIN-07-D` round 2; since `TERRAIN-07-F` they go through
 `get_world_surface_height_internal` and `intersect_world_surface_internal`, which read the graded

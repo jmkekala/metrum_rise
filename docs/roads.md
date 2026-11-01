@@ -10705,21 +10705,62 @@ short, wide and the junction, in `$ARTIFACTS`):
 Recommendation: option T, with the cover tested over the whole section (the shell's outer top
 corners at every knot, quick and exact validation alike, `O(knots)`), which no mouth design fixes.
 
+**Walled approaches, the terrain side (option T, round R8e, 2026-11-01).** The user chose option
+T with walls, not slopes: wherever the road runs below the ground in a tunnel's approach a
+vertical wall stands from the road's edge up to the graded ground, from the row's corner to where
+the ground meets the road, resuming where the road dips again; no fixed trough length, and the
+design stays general for a future flat-ground ramp entry (the trough is a property of the seam).
+A junction whose node lies below the source terrain inside an approach is to be refused
+(`junction_in_trench`, the tool half, round R8f). Landed (the terrain's mechanism in
+[`terrain.md`](terrain.md#graded-terrain-surface-terrain-07), "Walled approaches"): the roadbed
+flags an approach span's chain segments as retained (`PieceMesh::retained`, from
+`SpanEnd::WallRun { abutment: false }`), in the `ChainChanges` key and the tile inputs; a
+retained seam bounds the ground from below only and a covered sample naming it takes the
+ground's value, so the seam stays named and the mask is exact on it; the bake stands the trough's
+walls along retained seams and the row wall above the headwall's top; R8c's wing seams are gone
+from the terrain. The roadbed's headwall and its wings are unchanged until round R8f's collar:
+they stand ungraded in the natural hill. Measurements (FRESH, 2026-11-01):
+
+- No change without tunnels: the R8 product probe (town, hill and steep fixtures) gives equal
+  hashes on `bdabf8ed` and R8e, both release builds of the same session.
+- The user's dumps (A, B and the junction copy at M1; 8 hard cases, R8d's cameras plus two keyed
+  views per mouth from above, gamescope headless, isolated profile): 0 key-coloured sky pixels on
+  every keyed view after (before: up to 47 per view through the R8c frame). The first run showed
+  whole trough walls missing (up to 27,560 key pixels): a render patch drew at most 256 wall
+  faces, fixed (above). The fins, the wing grading's stripes up the steep hill and the
+  neighbour's cut between side-by-side tunnels are gone; the wings still stand.
+- `benchmark_tunnel_preview_stages` (release, 4 workers, P-cores, C F F C against `bdabf8ed` in
+  one session; graded p50/p95 ms): 1:2 hill control 2.878/3.135 and 2.883/3.142, R8e
+  2.879/3.147 and 2.878/3.143; 1:4 hill (`METRUM_TUNNEL_BENCH_HILL=gentle`, long walled cuts)
+  control 2.839/3.109 and 2.864/3.120, R8e 2.857/3.116 and 2.869/3.119; totals 3.57-3.66 p50,
+  3.91-3.97 p95 in all four. The graded p95 stays over the 3.0 ms stage as before R8e (R8c's
+  3.1 ms); R8e adds at most 0.01 ms. `benchmark_road_preview_stages` (tunnel-free strokes):
+  payload, skirt, hidden and graded tile counts identical; graded p50/p95 `sloped_t` 1.944/2.811
+  and 1.880/2.655 control, 1.881/2.678 and 1.826/2.386 R8e; `sloped_branch` 1.702/2.945 and
+  1.645/2.639 control, 1.597/2.487 and 1.710/3.056 R8e (noise).
+
 **Open (`ROAD-61`):**
 
+- Round R8f: the roadbed's collar (a flat-topped ring 0.5 m beyond the corners at the lining's
+  height plus 0.5 m) in place of the headwall and its wings, `headwall_wing` deleted, the row wall
+  then standing above the collar; `junction_in_trench`; the preview, commit, undo and load bitwise
+  test on a tunnel stroke (`graded_stage`).
 - Slivers (accepted by the user, 2026-11-01): beside the portal's corners, where a wing's top
   stands above the cut in front of it, the cut and the ground graded to the wing meet across the
   row in one lattice cell, so a steep rock sliver stands up to half a cell in front of the wing's
   inner part (0.25 m at `GL0`); between the corners the mask cuts on the row, and along a wing's
   outer part both sides meet the top. An exact crease along the wing lines is `TERRAIN-18`
-  ([`terrain.md`](terrain.md) T22).
+  ([`terrain.md`](terrain.md) T22). Since round R8e nothing grades the ground to a wing, so
+  there is no sliver to accept; the wings go with round R8f.
 - Where the hill behind a portal rises steeper than 1:2 from the headwall's top, the hill over the
   bore, which no wing grades, and the ground graded to the wings beside it meet in steps along the
   lines through the row's corners up to the wings' cap, and the cut ends there in a step (above).
+  Closed by round R8e: the approach no longer cuts the hill, and no wing seam grades it.
 - R8b's sun line at the walls' feet and the flat wing tops are closed (R8b, R8c); R8d's black
   headwalls are closed.
-- Fins, wedges and stripes at mouths on varied hills; the lining standing out where the hill falls
-  across the bore; side-by-side portals: R8d's open question above.
+- Fins, wedges and stripes at mouths on varied hills and side-by-side portals: option T (R8e
+  terrain side above, R8f roadbed side). The lining standing out where the hill falls across the
+  bore: the full-width cover check, still open.
 
 ## Road marking lighting — RENDER-12
 
