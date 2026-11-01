@@ -143,6 +143,34 @@ pub(super) fn save_network(
             ])?;
         }
     }
+    save_crosswalks(tx, graph, maps)
+}
+
+// 5. Crossing overrides (`ROAD-74`, save format 110): one row per authored arm that is still an
+// arm of its node, in saved ids and key order. Overrides on arms an edit removed from the node
+// are not saved. O(saved nodes x degree).
+fn save_crosswalks(tx: &Transaction, graph: &RegionGraph, maps: &SnapshotMaps) -> SaveLoadResult<()> {
+    let mut rows = Vec::new();
+    for (&old_node, &saved_node) in &maps.node_old_to_new {
+        for (&edge, &marked) in &graph.node(old_node).crosswalk_overrides {
+            let Some(&saved_edge) = maps.edge_old_to_new.get(&edge) else {
+                continue;
+            };
+            let arm = graph.edge(edge);
+            let incident = [arm.start_node, arm.end_node]
+                .into_iter()
+                .any(|end| graph.get_valid_node(end) == old_node);
+            if incident {
+                rows.push((saved_node, saved_edge, marked));
+            }
+        }
+    }
+    rows.sort_unstable();
+    let mut stmt =
+        tx.prepare("INSERT INTO road_crosswalks(node_id, edge_id, marked) VALUES (?1, ?2, ?3)")?;
+    for (node, edge, marked) in rows {
+        stmt.execute(params![i64::from(node), usize_to_i64(edge)?, marked])?;
+    }
     Ok(())
 }
 
@@ -249,6 +277,27 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 ));
             }
             graph.add_lane_connection(nid, fe, fl, te, tl);
+        }
+    }
+    {
+        let mut stmt = conn.prepare(
+            "SELECT node_id, edge_id, marked FROM road_crosswalks ORDER BY node_id, edge_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let node = i64_to_u32(row.get(0)?)?;
+            let edge = i64_to_usize(row.get(1)?)?;
+            let marked: bool = row.get(2)?;
+            if node as usize >= graph.node_count()
+                || !graph
+                    .get_edge(edge)
+                    .is_some_and(|arm| arm.start_node == node || arm.end_node == node)
+            {
+                return Err(SaveLoadError::custom(
+                    "crosswalk override names an edge that is not an arm of its node",
+                ));
+            }
+            graph.set_crosswalk_override(node, edge, marked);
         }
     }
     if !geometry.is_empty() || !physical_geometry.is_empty() {

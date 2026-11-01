@@ -287,3 +287,42 @@ fn a_road_removed_and_drawn_again_gets_a_new_arm_with_a_zebra() {
     assert!(core.has_crosswalk_internal(node, again as i32));
 }
 
+#[test]
+fn crosswalk_overrides_survive_a_save_file() {
+    let (mut core, node, side, west) = t_junction();
+    assert!(core.set_crosswalk_override_internal(node, side as i32, false));
+    assert!(core.set_crosswalk_override_internal(node, west as i32, true));
+    let arms = live_arms(&core, node);
+    let crossings = |core: &SimCore| -> Vec<bool> {
+        arms.iter()
+            .map(|&arm| core.has_crosswalk_internal(node, arm as i32))
+            .collect()
+    };
+    let saved = crossings(&core);
+    let path = temp_save_path("road_crosswalks");
+    core.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let rows: Vec<(i64, i64, i64)> = {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let mut statement = connection
+            .prepare("SELECT node_id, edge_id, marked FROM road_crosswalks ORDER BY node_id, edge_id")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let mut loaded = test_core();
+    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    loaded.precompute_road_mesh_data();
+    // This city saves every node and edge, so the ids are the live ones.
+    assert_eq!(
+        loaded.region_graph.node(node).crosswalk_overrides,
+        core.region_graph.node(node).crosswalk_overrides
+    );
+    assert_eq!(crossings(&loaded), saved);
+    assert_eq!(saved.iter().filter(|&&on| on).count(), 2);
+}
