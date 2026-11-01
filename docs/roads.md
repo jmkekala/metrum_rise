@@ -10377,6 +10377,9 @@ built like any edge's; a car drives through (below).
   validation graph's local excerpt before the stroke is inserted), or another road meets it: a
   junction inside the bore, a portal that is not a plain pass-through, or a buried end shared by
   more than one other road. Tunnel junctions are out of scope.
+- `tunnel_too_close` (round R8h): a grounded road over a bore whose deck would stand less than the
+  bore's cover (5 m) above the tunnel's deck over the bore's section; the tool shows the height
+  and the 5 m it needs. A road over a tunnel is otherwise a grade-separated crossing (below).
 - `tunnel_under_water`: the stroke's corridor, bore or approach, overlaps visible water: its
   cover or a portal would be a water body (`validate_road_candidate_against_water`, hover,
   preview and commit alike).
@@ -10941,6 +10944,61 @@ nothing is drawn. Both pinholes lie on curved approaches; the cause is not the c
   `f32` rounding; vertex and face counts, the code path and the payload size are unchanged and
   nothing is allocated. The walls stay `O(retained seams x their lattice crossings)` per tile, one
   `f64` subtraction per face more. R8f's measurements stand for the stage.
+
+**Roads over tunnels, and zoning above a bore (round R8h, 2026-11-01, `ROAD-98`).** The user's
+play-test of `dev` `dc979ad8` (dump C) found two bugs.
+
+- *A road on the hill over a tunnel was refused.* Cause (FRESH, dump C copy, release test binary
+  of `dc979ad8`): a snapped stroke's profile is pinned to the visible carriageways it crosses
+  (`StrokeSupport::height_at`), and that query read every piece, the tunnel's buried span among
+  them, so the profile dived to the bore's deck under the hill: across tunnel 6 from 149.2 m to
+  129.3 m, across tunnel 2 from 161 m to 144.3 m, both `road_too_steep` in the hover check, the
+  preview and the commit; without snapping the same strokes follow the hill. The user's stroke
+  reported `surface_geometry_invalid` from the same pin (its tunnel was gone by the time of the
+  dump). Fix: the support reads exposed pieces only
+  (`RoadbedSystem::for_each_exposed_carriageway_top_at`).
+- *Grade separation.* A stroke that is not a tunnel never splits an existing tunnel where it
+  crosses it, at any height (`topology::collect_crossing_splits`): no node, both edges intact.
+  The *clearance rule* (`tunnel::deck_over_tunnels_m`): over every lattice point of a crossed
+  bore's section (R8f's full-width lattice, out to the shell's outer faces) that the road's
+  footprint covers (its profile within its roadbed half width), the road's deck stands at least
+  the bore's cover, `TUNNEL_COVER_M` (5 m), above the tunnel's deck; otherwise `tunnel_too_close`.
+  Beside the deck the road's graded cut rises from it at 1:2, steeper than any road grade, so the
+  deck bounds the cut over the section. A portal row's knot is left to the trench rules
+  (`junction_in_trench`); the next knot, 4 m in, is checked. The hover check and the exact plan
+  read the same prepared points and excerpt (the exact plan after the junction rules); the bound
+  is the local excerpt, `O(log E + T x ceil(W / 4 m) x stroke points)` for the `T` tunnel knots
+  within reach, `ROAD_DECK_REACH_M` (32 m) bounding the excerpt query.
+- *The reverse order.* A tunnel stroke's section cover reads, at each lattice point, the lower of
+  the source terrain and the deck of a grounded road over it (`RoadDeck`,
+  `grounded_decks_near`): a tunnel drawn under a road in a cut keeps its cover under the road as
+  built, not under the hill. Without a road over the bore the cover is bitwise R8f's.
+- *Zoning above a bore* ([`zoning.md`](zoning.md)): the cell blocker and the painted-cell checks
+  (road edit and load) read exposed pieces only, so a tunnel neither clears, blocks nor refuses
+  the cells over its bore; on dump C all 469 cell candidates over tunnel 6 beside the long road
+  were missing before and are present after. The approach troughs keep what a road does. Lots
+  still treat a bore as a road (decision pending, see the round's report).
+- *Tests* (`nodes::sim::core::tests::road_over_tunnels`, all failing at `dc979ad8`, FRESH):
+  `a_road_over_a_tunnel_crosses_it_grade_separated` (hover = preview = commit, the preview's
+  pieces equal a fresh commit's bitwise, the tunnel edge and its nodes intact, undo restores every
+  piece), `a_road_too_close_above_a_tunnel_is_refused` (3 m in a cut), `a_tunnel_under_a_road_keeps_its_cover_under_the_road`,
+  `a_tunnel_under_a_road_keeps_the_roads_zoning_cells` (generated and painted, bitwise, undo), and
+  the ignored `the_users_dump_crosses_and_keeps_its_cells` (`METRUM_R8H_DUMP`, `METRUM_R8H_STROKES`).
+- *No change without tunnels* (FRESH): R8's probe on the town, hill and steep fixtures gives the
+  same hashes at `dc979ad8` and after (and R8g's).
+- *Cost* (FRESH, 2026-11-01 18:58, one C F F C session, release test binaries of `dc979ad8` (C)
+  and the fix (F), `RAYON_NUM_THREADS=4`, P-cores, exclusive timing lock, load 1.88 -> 1.79):
+  tunnel preview stages total p50/p95, 1:2 hill C 3.524/3.939 F 3.564/3.878 F 3.536/3.928 C
+  3.500/3.910 ms (plan p50 C 0.151 F 0.141 0.161 C 0.149), 1:4 hill C 3.477/3.895 F 3.515/3.967
+  3.553/3.954 C 3.479/3.889 ms (plan p50 C 0.138 F 0.153 0.174 C 0.155): the deck reads add at most
+  0.02 ms of plan, within the session's spread. Tunnel-free `road_preview_stages` total p50
+  sloped_t C 3.013 F 2.486 3.165 C 3.447, sloped_branch C 2.765 F 2.291 3.607 C 3.427 ms (noise;
+  the tunnel-free path adds one empty excerpt query). Locality (populated city, 0 / 1k / 10k / 100k
+  remote buildings, local products identical at every scale): the tunnel stroke compile p50 C
+  0.063 0.065 0.065 0.064, F 0.069 0.096 0.070 0.072 ms; the new road-over-tunnel stroke
+  (`populated_road_over_tunnel_plan_scaling`, F only: the control refuses it) compile p50 0.043
+  0.051 0.044 0.044 ms, hover check 0.020 0.024 0.020 0.020 ms, snapshot once per edit 0.004 ->
+  0.238 ms. Flat with the city.
 
 **Open (`ROAD-61`):**
 
