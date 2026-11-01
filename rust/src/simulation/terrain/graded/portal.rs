@@ -112,25 +112,25 @@ impl PortalWindow {
     /// ([`Self::past`]): its nearest point to the point, `Seam::at`'s exact clamp, lies on the
     /// road's side of the line of a row the point lies past, or on that line. `O(rows)`.
     pub(super) fn hides(&self, seam: &Seam, x: f64, z: f64) -> bool {
-        let [ax, _, az] = seam.a;
-        let [bx, _, bz] = seam.b;
-        let (dx, dz) = (bx - ax, bz - az);
-        let len2 = dx * dx + dz * dz;
-        let (qx, qz) = if len2 > 0.0 {
-            let t = ((x - ax) * dx + (z - az) * dz) / len2;
-            if t <= 0.0 {
-                (ax, az)
-            } else if t >= 1.0 {
-                (bx, bz)
-            } else {
-                (ax + dx * t, az + dz * t)
-            }
-        } else {
-            (ax, az)
-        };
+        let (qx, qz) = nearest_point(seam, x, z);
         self.rows
             .iter()
             .any(|row| row.past(x, z) && row.side(qx, qz) <= 0.0)
+    }
+
+    /// Whether `seam`'s cone is hidden from a covered point `(x, z)` that continues the ground
+    /// across a structure mouth (`grade::continues_ground`) within `band` of a portal row's
+    /// corner segment: the point takes the ground the row's far side has, so the hill over the
+    /// bore meets the row at its own height and the step down to the deck lies over the
+    /// approach, where the mask discards it. Its nearest point lies on the road's side of that
+    /// row's line, or on it. `O(rows)`.
+    pub(super) fn hides_at_mouth(&self, seam: &Seam, x: f64, z: f64, band: f64) -> bool {
+        let (qx, qz) = nearest_point(seam, x, z);
+        self.rows.iter().any(|row| {
+            let ([ax, az], [bx, bz]) = (row.a, row.b);
+            segment_at([ax, 0.0, az], [bx, 0.0, bz], x, z).distance < band
+                && row.side(qx, qz) <= 0.0
+        })
     }
 
     /// Whether a wall seam lies on a portal row: both its ends are vertices of one row, bitwise
@@ -150,5 +150,25 @@ impl PortalWindow {
     /// Whether two windows hold the same rows, bitwise.
     pub(super) fn same(&self, other: &Self) -> bool {
         self.rows == other.rows
+    }
+}
+
+// The nearest point of `seam` to the XZ point `(x, z)`, by `Seam::at`'s exact clamp.
+fn nearest_point(seam: &Seam, x: f64, z: f64) -> (f64, f64) {
+    let [ax, _, az] = seam.a;
+    let [bx, _, bz] = seam.b;
+    let (dx, dz) = (bx - ax, bz - az);
+    let len2 = dx * dx + dz * dz;
+    if len2 > 0.0 {
+        let t = ((x - ax) * dx + (z - az) * dz) / len2;
+        if t <= 0.0 {
+            (ax, az)
+        } else if t >= 1.0 {
+            (bx, bz)
+        } else {
+            (ax + dx * t, az + dz * t)
+        }
+    } else {
+        (ax, az)
     }
 }

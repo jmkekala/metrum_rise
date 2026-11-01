@@ -778,13 +778,14 @@ impl GradedSurface<'_> {
         road: Option<f32>,
         scratch: &mut QueryScratch,
     ) -> f64 {
-        let (mut first, mut pad) = self.value(x, z, base, road, scratch);
+        let (mut first, mut pad) = self.value(x, z, base, road, false, scratch);
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
         let continued =
             road.is_some() && continues_ground(&scratch.walls, x, z, first.nearest_distance, band);
         if continued {
-            (first, pad) = self.value(x, z, base, None, scratch);
+            (first, pad) = self.value(x, z, base, None, true, scratch);
         }
+
         if (road.is_some() && !continued) || pad.is_some() || first.height >= base {
             return first.height;
         }
@@ -798,6 +799,8 @@ impl GradedSurface<'_> {
         for (seam, distance) in &scratch.rest {
             if may_lift(seam.height_range().1, first.height, *distance)
                 && !past.is_some_and(|portals| portals.hides(seam, x, z))
+                // At a portal row the ground continued is the far side's (`ROAD-61`).
+                && !(continued && scratch.portals.hides_at_mouth(seam, x, z, band))
             {
                 let at = seam.at(x, z);
                 if at.distance <= CAP_M {
@@ -813,21 +816,29 @@ impl GradedSurface<'_> {
         height
     }
 
-    // The first-pass value at one point and whether a site pad holds it.
+    // The first-pass value at one point and whether a site pad holds it; with `continued`, the
+    // ground a covered point continues across a structure mouth, at a portal row the far side's
+    // (`PortalWindow::hides_at_mouth`).
     fn value(
         &self,
         x: f64,
         z: f64,
         base: f64,
         road: Option<f32>,
+        continued: bool,
         scratch: &QueryScratch,
     ) -> (Value, Option<f64>) {
         let seams = &scratch.window;
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
-        let all = (0..seams.len() as u32).map(Listed::unbounded);
+        let portals = scratch.portals.active();
+        let all = (0..seams.len() as u32).map(Listed::unbounded).filter(|listed| {
+            !(continued
+                && portals.is_some_and(|portals| {
+                    portals.hides_at_mouth(&seams[listed.index as usize], x, z, band)
+                }))
+        });
         let site = scratch.sites.pad_at(x, z);
         let pad = (site != NO_SITE).then(|| scratch.sites.height(site));
-        let portals = scratch.portals.active();
         (
             evaluate(x, z, base, road, pad, seams, all, band, portals),
             pad,

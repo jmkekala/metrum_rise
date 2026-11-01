@@ -581,7 +581,8 @@ struct Inputs<'a, S> {
 // The covered lattice points that continue the ground across a structure mouth
 // ([`continues_ground`]) take the ground's value, evaluated over every window seam, so a pruned
 // bake equals the unpruned one by construction; their `sdf` and nearest seam stay the road's,
-// so the mask is unchanged. Visits the lattice points within the band of each wall seam's box.
+// so the mask is unchanged. At a tunnel's portal row the ground is the far side's: no seam on
+// the approach's side of the row reaches them (`PortalWindow::hides_at_mouth`). Visits the lattice points within the band of each wall seam's box.
 // `O(points within the band of the wall seams x (walls + window seams))`.
 #[allow(clippy::too_many_arguments)]
 fn continue_ground_at_mouths(
@@ -622,19 +623,14 @@ fn continue_ground_at_mouths(
     points.dedup();
     for &index in points.iter() {
         let (i, j) = (index as usize % xs.len(), index as usize / xs.len());
-        let base = base_at(i, j);
-        let all = (0..seams.len() as u32).map(Listed::unbounded);
-        let ground = evaluate(
-            xs[i],
-            zs[j],
-            base,
-            None,
-            pad(index as usize),
-            seams,
-            all,
-            band,
-            portals,
-        );
+        let (x, z, base) = (xs[i], zs[j], base_at(i, j));
+        // At a portal row the ground continued is the far side's (`ROAD-61`).
+        let all = (0..seams.len() as u32).map(Listed::unbounded).filter(|listed| {
+            !portals.is_some_and(|portals| {
+                portals.hides_at_mouth(&seams[listed.index as usize], x, z, band)
+            })
+        });
+        let ground = evaluate(x, z, base, None, pad(index as usize), seams, all, band, portals);
         texels[index as usize][0] = (ground.height - base) as f32;
     }
 }

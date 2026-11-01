@@ -27,9 +27,9 @@ fn tiles(half: i32) -> Vec<TileKey> {
 
 // test: the tunnel continuing a road level into a 1:2 hill, its portal row at x = 0. Past the row
 // the graded ground is the hill itself, out to the cap and across the bore's sides, though the
-// approach's cones would cut it there; before the row the approach's cut is graded. Pruned equals
-// unpruned at every level, batch, order and worker count, and every `GL0` lattice point's packed
-// value is the query's.
+// approach's cones would cut it there; before the row the approach's cut is graded, and under
+// the deck at the row the ground continues the hill. Pruned equals unpruned at every level,
+// batch, order and worker count, and every `GL0` lattice point's packed value is the query's.
 #[test]
 fn no_cone_reaches_past_a_portal_row() {
     let (graph, terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
@@ -62,6 +62,17 @@ fn no_cone_reaches_past_a_portal_row() {
     // ground stands below the hill.
     let cut = surface.ground_height_at(-2.0, 7.0, &mut scratch);
     assert!(cut < hill(-2.0) - 1.0, "approach cut {cut}");
+    // Under the approach's deck at the row, where the mask discards the terrain, the ground
+    // continued across the mouth is the far side's, the hill: the step down to the deck lies
+    // over the approach, not in the lining's mouth.
+    for x in [-1.0, -0.5] {
+        let continued = surface.ground_height_at(x, 0.0, &mut scratch);
+        // The rendered value: the base plus the packed `f32` delta.
+        assert!(
+            (continued - hill(x)).abs() < 1e-5,
+            "under the deck at ({x}, 0): {continued}"
+        );
+    }
     let payloads = bake_with(
         &terrain,
         &roadbed,
