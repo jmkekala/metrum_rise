@@ -7,7 +7,7 @@ use super::super::{
     MeshLayer, NetworkMeshData, push_triangle, push_triangle_preserving_winding_with_exact_normal,
     render_point, world_point,
 };
-use crate::simulation::network::roadbed::{PieceMesh, RoadSection, RoadVec3};
+use crate::simulation::network::roadbed::{LiningPart, PieceMesh, RoadSection, RoadVec3};
 use godot::prelude::{Color, Vector2, Vector3};
 
 const BAND_EPSILON_M: f32 = 0.001;
@@ -111,18 +111,34 @@ pub(super) fn emit_abutment_faces(mesh: &mut NetworkMeshData, piece: &PieceMesh,
     });
 }
 
+/// The spacing of a tunnel's lamp strips along its bore (`ROAD-61` round R8b), metres; the
+/// lining shader's `lamp_spacing_m` must match it.
+const TUNNEL_LAMP_SPACING_M: f64 = 10.0;
+
 // Emits a buried piece's lining and a tunnel span's headwalls (`ROAD-61`) into the lining layer
-// as the piece wound them, facing into the bore and out of the portal; the concrete material is
-// drawn on both sides, so the lining also closes the bore seen from outside. UVs are unused: the
-// concrete shader is triplanar in world space.
+// as the piece wound them, facing into the bore and out of the portal; the concrete material is drawn on both sides, so the lining also closes
+// the bore seen from outside. On a span's walls and ceiling the UVs carry the lamp station and
+// the height above the deck (round R8b): the station along the bore scaled so that a whole
+// number of lamp spacings fits the bore (at least one), so lamps at the middle of each spacing
+// sit symmetric in every span and evenly spaced within 5% of `TUNNEL_LAMP_SPACING_M`. Every
+// other face takes `y = -1`: no lamps. The concrete shader is triplanar in world space.
 pub(super) fn emit_lining(mesh: &mut NetworkMeshData, piece: &PieceMesh, color: Color) {
-    piece.for_each_lining_triangle(|world| {
+    let scale = piece.lining_bore_m().filter(|&bore| bore > 0.0).map(|bore| {
+        (bore / TUNNEL_LAMP_SPACING_M).round().max(1.0) * TUNNEL_LAMP_SPACING_M / bore
+    });
+    piece.for_each_lining_triangle(|world, part, along| {
         let [a, b, c] = world.map(render_point);
+        let uvs = match (part, scale) {
+            (LiningPart::Bore, Some(scale)) => {
+                along.map(|at| Vector2::new((at.x * scale) as f32, at.y as f32))
+            }
+            _ => [Vector2::new(0.0, -1.0); 3],
+        };
         push_triangle_preserving_winding_with_exact_normal(
             mesh,
             MeshLayer::Lining,
             world,
-            [Vector2::ZERO; 3],
+            uvs,
             color,
             -((b - a).cross(c - a)),
         );

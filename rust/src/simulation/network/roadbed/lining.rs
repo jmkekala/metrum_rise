@@ -32,16 +32,36 @@ pub(super) fn lining_top(vertex: RoadVec3) -> RoadVec3 {
     RoadVec3::new(vertex.x, vertex.y + TUNNEL_LINING_HEIGHT_M, vertex.z)
 }
 
+/// Which part of the closed tunnel a lining triangle belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LiningPart {
+    /// The walls and the ceiling, facing into the bore.
+    Bore,
+    /// The end wall of a bore that ends underground, facing into it.
+    EndWall,
+    /// A portal's headwall, facing out of the tunnel.
+    Headwall,
+}
+
 /// A buried piece's lining and its headwalls: the vertices it adds after the piece's positions
 /// (the lining tops, the headwalls' outer corners), and its triangles over the piece's positions
-/// followed by them, the lining's first.
+/// followed by them: the bore's, the end walls', then the headwalls'.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Lining {
     pub(super) positions: Vec<RoadVec3>,
+    // Per added vertex the mesh vertex it stands on (a lining top's chain vertex), or
+    // `NO_SOURCE` for a headwall's outer corner.
+    pub(super) sources: Vec<u32>,
     pub(super) triangles: Vec<[u32; 3]>,
-    // Index in `triangles` of the first headwall triangle.
+    // Indices in `triangles` of the first end-wall and headwall triangle.
+    pub(super) end_walls: usize,
     pub(super) headwalls: usize,
+    // Whether the lining runs along a span's rows, whose stations measure the bore.
+    pub(super) along_rows: bool,
 }
+
+/// The source of a lining vertex that stands on no mesh vertex.
+pub(super) const NO_SOURCE: u32 = u32::MAX;
 
 /// Why a node piece's lining has no construction: the ring of its lining tops bounds no
 /// simple polygon.
@@ -49,10 +69,23 @@ pub(super) struct Lining {
 pub(super) struct LiningError;
 
 impl Lining {
-    // The index of the next added vertex, after the piece's `count` positions.
-    fn push(&mut self, count: usize, point: RoadVec3) -> u32 {
+    // The index of the next added vertex, after the piece's `count` positions, standing on mesh
+    // vertex `source`.
+    fn push(&mut self, count: usize, point: RoadVec3, source: u32) -> u32 {
         self.positions.push(point);
+        self.sources.push(source);
         (count + self.positions.len() - 1) as u32
+    }
+
+    /// The part `triangle` (an index in `triangles`) belongs to.
+    pub(super) fn part(&self, triangle: usize) -> LiningPart {
+        if triangle < self.end_walls {
+            LiningPart::Bore
+        } else if triangle < self.headwalls {
+            LiningPart::EndWall
+        } else {
+            LiningPart::Headwall
+        }
     }
 
     // The walls along `chains`, each chain vertex's top pushed once, in chain order; returns
@@ -65,7 +98,7 @@ impl Lining {
             let first = (count + self.positions.len()) as u32;
             firsts.push(first);
             for &vertex in vertices {
-                self.push(count, lining_top(positions[vertex as usize]));
+                self.push(count, lining_top(positions[vertex as usize]), vertex);
             }
             // The road lies left of the chain: these windings face it.
             for (k, pair) in vertices.windows(2).enumerate() {
@@ -163,6 +196,8 @@ pub(super) fn span_lining(
         lining.triangles.push([a, b, d]);
         lining.triangles.push([a, d, c]);
     }
+    lining.end_walls = lining.triangles.len();
+    lining.along_rows = true;
     let mut portals = Vec::new();
     for (end, closure) in ends.into_iter().enumerate() {
         let (row, inner) = if end == 0 {
@@ -232,6 +267,7 @@ pub(super) fn node_lining(
             .triangles
             .push(if up { [a, c, b] } else { [a, b, c] });
     }
+    lining.end_walls = lining.triangles.len();
     lining.headwalls = lining.triangles.len();
     Ok(lining)
 }
@@ -267,7 +303,7 @@ fn headwall(
     ];
     let mut ring: Vec<(u32, RoadVec3)> = points
         .into_iter()
-        .map(|point| (lining.push(count, point), point))
+        .map(|point| (lining.push(count, point, NO_SOURCE), point))
         .collect();
     ring.extend([(left_corner, left), tops[0], tops[1], (right_corner, right)]);
     for point in [
@@ -275,7 +311,7 @@ fn headwall(
         at(right, HEADWALL_WING_M, -SKIRT_DEPTH_M),
         at(right, HEADWALL_WING_M, HEADWALL_HEIGHT_M),
     ] {
-        ring.push((lining.push(count, point), point));
+        ring.push((lining.push(count, point, NO_SOURCE), point));
     }
     lining.plane_face((left, right), &[&ring], outward);
 }

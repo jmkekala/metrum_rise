@@ -365,7 +365,7 @@ impl Fnv {
         };
         mesh.for_each_strip_triangle(&mut triangle);
         mesh.for_each_abutment_triangle(&mut triangle);
-        mesh.for_each_lining_triangle(|points| triangle(points, [false; 3]));
+        mesh.for_each_lining_triangle(|points, _, _| triangle(points, [false; 3]));
     }
 }
 

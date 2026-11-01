@@ -988,3 +988,41 @@ fn the_lining_is_its_own_layer() {
     assert!(chunks.values().any(|mesh| !mesh.concrete_vertices.is_empty()));
     assert!(chunks.values().all(|mesh| mesh.lining_vertices.is_empty()));
 }
+
+// `ROAD-61` round R8b: the lamp strips' coordinate. On a lined span's walls and ceiling the
+// lining UVs carry the lamp station (a whole number of 10 m spacings over the bore, from 0) and
+// the height above the deck (the ceiling at the lining height); every other lining face carries
+// no lamps (`y = -1`).
+#[test]
+fn the_lining_carries_the_lamp_station() {
+    let mut core = hill_core(80.0);
+    let result = run_stroke(&mut core, &THROUGH_HILL, true);
+    assert_eq!(result.committed, "committed", "{result:?}");
+    core.precompute_road_mesh_data();
+    let (mut low, mut high, mut ceiling, mut unlit) = (f32::INFINITY, f32::NEG_INFINITY, 0, 0);
+    for mesh in core.cached_road_mesh_chunks.values() {
+        let faces = mesh.lining_uvs.as_chunks::<3>().0;
+        for (uvs, normals) in faces.iter().zip(mesh.lining_normals.as_chunks::<3>().0) {
+            if uvs.iter().all(|uv| uv.y == -1.0) {
+                unlit += 1;
+                continue;
+            }
+            assert!(uvs.iter().all(|uv| (0.0..=4.5).contains(&uv.y)), "{uvs:?}");
+            if normals[0].y < -0.5 {
+                assert!(uvs.iter().all(|uv| uv.y == 4.5), "a ceiling at {uvs:?}");
+                ceiling += 1;
+            }
+            for uv in uvs {
+                low = low.min(uv.x);
+                high = high.max(uv.x);
+            }
+        }
+    }
+    assert!(ceiling > 10 && unlit > 10, "{ceiling} ceiling, {unlit} unlit");
+    assert_eq!(low, 0.0);
+    let spacings = high / 10.0;
+    assert!(
+        spacings >= 1.0 && (spacings - spacings.round()).abs() < 1e-3,
+        "the bore's lamp station ends at {high}"
+    );
+}

@@ -98,7 +98,9 @@ pub struct NetworkMeshData {
     pub lining_vertices: Vec<Vector3>,
     /// Normals for the lining layer: into the bore and out of a portal.
     pub lining_normals: Vec<Vector3>,
-    /// UV coordinates for the lining layer (unused: the concrete shader is triplanar).
+    /// UV coordinates for the lining layer (round R8b): on a span's walls and ceiling `x` is the
+    /// lamp station along the bore, metres, and `y` the height above the deck (0 at a wall's
+    /// foot, the lining height at the ceiling); `y` is -1 on every face that carries no lamps.
     pub lining_uvs: Vec<Vector2>,
     /// Vertex colors for the lining layer.
     pub lining_colors: Vec<Color>,

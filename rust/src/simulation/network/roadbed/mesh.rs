@@ -9,7 +9,9 @@
 //! the road.
 
 use super::geometry::{SurfaceTriangleGrid, bounds_xz, triangulate_constrained_rings_xz};
-use super::lining::{Lining, LiningEnd, LiningError, node_lining, span_lining};
+use super::lining::{
+    Lining, LiningEnd, LiningError, LiningPart, NO_SOURCE, node_lining, span_lining,
+};
 use super::profile::{Level, MAX_PROFILE_BANDS, RoadProfile};
 use super::span::MouthSection;
 use super::{BandKind, RoadSection, RoadVec2, RoadVec3};
@@ -389,11 +391,52 @@ impl PieceMesh {
         &self.lining.triangles[self.lining.headwalls..]
     }
 
-    /// Visits the lining's and the headwalls' triangles as world points, in their windings.
+    /// The length of a lined span's bore between its end rows' stations, metres; `None` for an
+    /// unlined piece or a lined node piece, whose lining runs along no rows.
+    pub fn lining_bore_m(&self) -> Option<f64> {
+        let chain = self.outer_chains.first()?;
+        let (&first, &last) = (chain.vertices.first()?, chain.vertices.last()?);
+        self.lining.along_rows.then(|| {
+            f64::from(self.road_space[last as usize][0] - self.road_space[first as usize][0])
+        })
+    }
+
+    /// Visits the lining's and the headwalls' triangles as world points, in their windings, with their part and per vertex its station along the bore from the span's first
+    /// row and its height above the deck vertex it stands on (`(0, 0)` for a vertex standing on
+    /// none, a headwall's outer corner, and on a node piece the stations are 0).
     /// `O(triangles)`, without allocation.
-    pub fn for_each_lining_triangle(&self, mut visit: impl FnMut([RoadVec3; 3])) {
-        for triangle in &self.lining.triangles {
-            visit(triangle.map(|vertex| self.lining_point(vertex)));
+    pub fn for_each_lining_triangle(
+        &self,
+        mut visit: impl FnMut([RoadVec3; 3], LiningPart, [RoadVec2; 3]),
+    ) {
+        let count = self.positions.len();
+        let start = self
+            .outer_chains
+            .first()
+            .and_then(|chain| chain.vertices.first())
+            .map_or(0.0, |&first| self.road_space[first as usize][0]);
+        let along = |vertex: u32| {
+            let point = self.lining_point(vertex);
+            let source = match (vertex as usize).checked_sub(count) {
+                Some(own) => self.lining.sources[own],
+                None => vertex,
+            };
+            if source == NO_SOURCE {
+                return RoadVec2::ZERO;
+            }
+            let station = if self.lining.along_rows {
+                f64::from(self.road_space[source as usize][0] - start)
+            } else {
+                0.0
+            };
+            RoadVec2::new(station, point.y - self.positions[source as usize].y)
+        };
+        for (index, triangle) in self.lining.triangles.iter().enumerate() {
+            visit(
+                triangle.map(|vertex| self.lining_point(vertex)),
+                self.lining.part(index),
+                triangle.map(along),
+            );
         }
     }
 
