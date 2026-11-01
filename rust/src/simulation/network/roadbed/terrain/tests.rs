@@ -10,8 +10,9 @@ use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::roadbed::fixtures::{
     bend, connect, footpath_fixtures, point, t_junction,
 };
-use crate::simulation::network::roadbed::{RoadVec2, RoadVec3};
-use crate::simulation::network::types::NodeType;
+use crate::simulation::network::roadbed::{PieceId, RoadVec2, RoadVec3};
+use crate::simulation::network::types::{EdgeClass, NodeType};
+use godot::prelude::Vector3;
 
 fn compiled(graph: &RegionGraph) -> RoadbedSystem {
     let mut roadbed = RoadbedSystem::new(64.0);
@@ -296,4 +297,59 @@ fn coverage_and_heights_are_the_same_in_every_quarter_turn_and_mirror() {
         }
         assert!(on_curbs > 0, "{name}: no probe on a shared edge");
     }
+}
+
+// `ROAD-61` round R8e: a tunnel attached to the far end of an existing road turns that road's
+// span into an approach, whose seams the graded terrain retains. The span's chain vertices away
+// from the mouth keep their bits, so without the flag in the key the far half of its segments
+// cancelled out of the changes and the tiles there kept their cut. Every segment of the span is
+// reported, and recompiling the same tunnel reports none.
+#[test]
+fn a_tunnel_at_a_roads_end_changes_every_approach_segment() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(point(-120.0, 0.0, false), NodeType::Junction);
+    let mouth = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
+    let road = connect(&mut graph, west, mouth, 7.0, false);
+    graph.rebuild_intersection_clips();
+    let mut roadbed = compiled(&graph);
+    roadbed.take_terrain_changes();
+    let segments = |roadbed: &RoadbedSystem| {
+        let mesh = roadbed.piece_mesh(PieceId::Span(road)).expect("the road's span");
+        let mut all = Vec::new();
+        for chain in mesh.outer_chains() {
+            for pair in chain.vertices().windows(2) {
+                all.push([pair[0], pair[1]].map(|v| mesh.positions()[v as usize]));
+            }
+        }
+        (mesh.retained(), all)
+    };
+    let (retained, before) = segments(&roadbed);
+    assert!(!retained, "a road without a tunnel is no approach");
+
+    let east = graph.add_node(Vector3::new(80.0, -8.0, 0.0), NodeType::Junction);
+    let tunnel = connect(&mut graph, mouth, east, 7.0, false);
+    let edge = graph.edge_mut(tunnel);
+    edge.class = EdgeClass::Tunnel;
+    for point in edge.geometry.iter_mut() {
+        point.y = -8.0 * point.x / 80.0;
+    }
+    edge.physical_geometry = edge.geometry.clone();
+    graph.rebuild_intersection_clips();
+    roadbed.mark_edge_dirty(tunnel);
+    roadbed.mark_node_dirty(mouth);
+    roadbed.compile_dirty(&graph);
+    assert!(roadbed.failed_nodes().is_empty());
+    let (retained, after) = segments(&roadbed);
+    assert!(retained, "the road is the tunnel's approach");
+    let changes = roadbed.take_terrain_changes();
+    let reported = |[a, b]: [RoadVec3; 2]| changes.segments.contains(&[a, b]);
+    // The far end's segments keep their bits, and are reported all the same.
+    let kept = after.iter().filter(|segment| before.contains(segment)).count();
+    assert!(kept >= 4, "{kept} segments kept their bits");
+    let missing: Vec<_> = after.iter().copied().filter(|&s| !reported(s)).collect();
+    assert!(missing.is_empty(), "approach segments not reported: {missing:?}");
+
+    roadbed.mark_edge_dirty(tunnel);
+    roadbed.compile_dirty(&graph);
+    assert!(roadbed.take_terrain_changes().segments.is_empty());
 }

@@ -439,7 +439,7 @@ fn reached(
         return true;
     }
     let mut floor = changed_floor;
-    roadbed.for_each_grounded_seam_in_bounds(window, &mut scratch.pieces, |[a, b]| {
+    roadbed.for_each_grounded_seam_in_bounds(window, &mut scratch.pieces, |[a, b], _| {
         floor = floor.min(lowest(&road_seam(a, b)));
     });
     if sites.ready() {

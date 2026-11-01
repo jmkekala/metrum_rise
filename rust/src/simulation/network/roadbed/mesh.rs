@@ -209,6 +209,9 @@ pub struct PieceMesh {
     portals: Vec<[u32; 2]>,
     // A buried piece's lining and headwalls (`ROAD-61`), empty for every other piece.
     lining: Lining,
+    // Whether the piece is a tunnel's approach span, whose seams the graded terrain retains
+    // (`ROAD-61` round R8e).
+    retained: bool,
     bounds_xz: [f64; 4],
     // Top triangles only; items are triangle indices.
     grid: SurfaceTriangleGrid,
@@ -284,6 +287,15 @@ impl PieceMesh {
     /// bottom edge the terrain's abutment wall continues (`TERRAIN-07-D`, the abutment band).
     pub fn abutment_runs(&self) -> &[bool] {
         &self.abutment_runs
+    }
+
+    /// Whether the piece is a tunnel's approach (`ROAD-61` round R8e): a grounded span with a
+    /// wall run across a tunnel's mouth ([`Self::wall_runs`] that is no abutment run). The graded
+    /// terrain retains the ground beside its outer chains: their cones bound it from below only,
+    /// so walls stand wherever the road runs below the ground. Topology alone decides it; no
+    /// terrain height is read. A node piece is never an approach.
+    pub fn retained(&self) -> bool {
+        self.retained
     }
 
     /// The kind of strips hanging from the outer chains, `None` for a tunnel's road piece.
@@ -753,6 +765,7 @@ pub(super) fn build_span_mesh(
         match closure {
             SpanEnd::Shared => {}
             SpanEnd::WallRun { abutment } => {
+                faces.retained |= !abutment;
                 wall_runs.push(if end == 0 {
                     wall_run(&positions, (first..=last).rev())
                 } else {
@@ -803,6 +816,8 @@ struct EndFaces {
     abutments: Vec<[u32; 2]>,
     portals: Vec<[u32; 2]>,
     lining: Lining,
+    // A tunnel's approach span (`PieceMesh::retained`).
+    retained: bool,
 }
 
 // The cap closing a structure's free end (`TERRAIN-07-C`): the polygon in the end row's vertical
@@ -913,6 +928,7 @@ impl PieceMesh {
             abutments,
             portals,
             lining,
+            retained,
         }: EndFaces,
     ) -> Self {
         let top_count = group_starts[CURB_FACE_GROUP] as usize;
@@ -939,6 +955,7 @@ impl PieceMesh {
             abutments,
             portals,
             lining,
+            retained,
             grid,
         }
     }

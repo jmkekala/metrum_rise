@@ -560,19 +560,20 @@ impl RoadbedSystem {
         out: &mut Vec<[RoadVec3; 2]>,
     ) {
         out.clear();
-        self.for_each_grounded_seam_in_bounds(bounds_xz, pieces, |segment| out.push(segment));
+        self.for_each_grounded_seam_in_bounds(bounds_xz, pieces, |segment, _| out.push(segment));
         let key = |[a, b]: &[RoadVec3; 2]| [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits);
         out.sort_unstable_by_key(key);
         out.dedup_by_key(|segment| key(segment));
     }
 
     /// Appends grounded outer-chain segments from an already-local candidate piece list in
-    /// canonical segment order, without repeating the spatial piece lookup.
+    /// canonical segment order, without repeating the spatial piece lookup, each with whether
+    /// its piece is a tunnel's approach ([`PieceMesh::retained`]).
     pub(crate) fn grounded_seams_from_pieces(
         &self,
         bounds_xz: [f64; 4],
         pieces: &[PieceId],
-        out: &mut Vec<[RoadVec3; 2]>,
+        out: &mut Vec<([RoadVec3; 2], bool)>,
     ) {
         out.clear();
         for id in pieces {
@@ -590,24 +591,27 @@ impl RoadbedSystem {
                     let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
                     let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
                     if bounds_intersect(segment, bounds_xz) {
-                        out.push([a, b]);
+                        out.push(([a, b], mesh.retained()));
                     }
                 }
             }
         }
-        let key = |[a, b]: &[RoadVec3; 2]| [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits);
+        let key = |([a, b], retained): &([RoadVec3; 2], bool)| {
+            ([a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits), *retained)
+        };
         out.sort_unstable_by_key(key);
-        out.dedup_by_key(|segment| key(segment));
+        out.dedup_by_key(|segment| key(segment).0);
     }
 
-    /// [`Self::grounded_seams_in_bounds`] unsorted, in piece and chain order: a segment two
-    /// pieces share is visited twice. `O(P log P + V / 8 + S)` for the `S` segments in the runs
-    /// of eight that meet the bounds.
+    /// [`Self::grounded_seams_in_bounds`] unsorted, in piece and chain order, each segment with
+    /// whether its piece is a tunnel's approach ([`PieceMesh::retained`], `ROAD-61` round R8e):
+    /// a segment two pieces share is visited twice. `O(P log P + V / 8 + S)` for the `S`
+    /// segments in the runs of eight that meet the bounds.
     pub fn for_each_grounded_seam_in_bounds(
         &self,
         bounds_xz: [f64; 4],
         pieces: &mut Vec<PieceId>,
-        visit: impl FnMut([RoadVec3; 2]),
+        visit: impl FnMut([RoadVec3; 2], bool),
     ) {
         self.for_each_grounded_seam_in_bounds_where(bounds_xz, pieces, |_, _| true, visit);
     }
@@ -622,7 +626,7 @@ impl RoadbedSystem {
         bounds_xz: [f64; 4],
         pieces: &mut Vec<PieceId>,
         mut keep: impl FnMut([f64; 4], (f64, f64)) -> bool,
-        mut visit: impl FnMut([RoadVec3; 2]),
+        mut visit: impl FnMut([RoadVec3; 2], bool),
     ) {
         self.grounded_pieces_in_bounds(bounds_xz, pieces);
         for id in pieces.iter() {
@@ -639,7 +643,7 @@ impl RoadbedSystem {
                     let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
                     let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
                     if bounds_intersect(segment, bounds_xz) {
-                        visit([a, b]);
+                        visit([a, b], mesh.retained());
                     }
                 }
             }
@@ -653,7 +657,7 @@ impl RoadbedSystem {
         bounds_xz: [f64; 4],
         scratch: &mut GroundedPieceScratch,
         mut keep: impl FnMut([f64; 4], (f64, f64)) -> bool,
-        mut visit: impl FnMut([RoadVec3; 2]),
+        mut visit: impl FnMut([RoadVec3; 2], bool),
     ) {
         self.gather_grounded_indexed(bounds_xz, scratch);
         let mut walk = |mesh: &PieceMesh| {
@@ -669,7 +673,7 @@ impl RoadbedSystem {
                     let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
                     let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
                     if bounds_intersect(segment, bounds_xz) {
-                        visit([a, b]);
+                        visit([a, b], mesh.retained());
                     }
                 }
             }

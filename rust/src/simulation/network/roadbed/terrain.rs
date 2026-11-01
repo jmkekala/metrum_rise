@@ -33,9 +33,12 @@ pub struct TerrainChanges {
 }
 
 // An outer-chain segment as terrain grading reads it: its endpoints' coordinate bits, whether
-// its piece is a node, and whether it starts or ends its chain (where chains join). A
-// one-vertex chain is a segment from the vertex to itself that starts and ends its chain.
-type ChainSegmentKey = ([u64; 6], bool, bool, bool);
+// its piece is a node, whether it is a tunnel's approach (`PieceMesh::retained`, `ROAD-61`
+// round R8e: a tunnel attached to an existing road's far end republishes the span's segments
+// unchanged but retained, and the ground beside all of them changes), and whether it starts or
+// ends its chain (where chains join). A one-vertex chain is a segment from the vertex to itself
+// that starts and ends its chain.
+type ChainSegmentKey = ([u64; 6], bool, bool, bool, bool);
 
 // Net count of each grounded chain segment over the pieces published (`+1`) and replaced
 // (`-1`) since the last take, so a piece rebuilt unchanged, or a clear followed by the same
@@ -63,6 +66,7 @@ impl ChainChanges {
                 let key = (
                     segment_bits(mesh, start, end),
                     node,
+                    mesh.retained(),
                     index == 0,
                     index + 1 == segments,
                 );

@@ -83,7 +83,7 @@ pub struct QueryScratch {
     pieces: Vec<PieceId>,
     indexed_road_pieces: Vec<PieceId>,
     indexed_coverage_pieces: Vec<PieceId>,
-    road_segments: Vec<[RoadVec3; 2]>,
+    road_segments: Vec<([RoadVec3; 2], bool)>,
     wall_segments: Vec<WallSegment>,
     walls: Vec<Seam>,
     sites: SiteBuffer,
@@ -590,7 +590,7 @@ impl GradedSurface<'_> {
                 scratch
                     .portals
                     .gather(self.roadbed, rect, &scratch.indexed_road_pieces);
-                for &[a, b] in &scratch.road_segments {
+                for &([a, b], _) in &scratch.road_segments {
                     let seam = road_seam(a, b);
                     if binds(&seam, band) {
                         scratch.window.push(seam);
@@ -658,7 +658,7 @@ impl GradedSurface<'_> {
             window,
             &mut scratch.grounded,
             |bounds, heights| binds(bounds, heights, band),
-            |[a, b]| {
+            |[a, b], _| {
                 let seam = road_seam(a, b);
                 if binds(seam.box_xz(), seam.height_range(), band) {
                     listed.push(seam);
@@ -727,7 +727,7 @@ impl GradedSurface<'_> {
             window,
             &mut scratch.grounded,
             |_, _| true,
-            |[a, b]| sort(road_seam(a, b), band),
+            |[a, b], _| sort(road_seam(a, b), band),
         );
         sites.for_each_pad_seam(|seam| sort(seam, 0.0));
         scratch.rest_ready = true;
