@@ -715,9 +715,9 @@ fn no_parcel_fronts_a_tunnel_or_a_bridge() {
     );
 }
 
-// The lining and headwall triangles of every published piece of `core` as world points, each
-// with whether it is a headwall's, and the edges of every face the pieces publish (the deck's
-// top and curb faces, the skirts and caps, the lining's, the headwalls', the shell's), each with
+// The lining and collar triangles of every published piece of `core` as world points, each
+// with whether it is a collar's, and the edges of every face the pieces publish (the deck's
+// top and curb faces, the skirts and caps, the lining's, the collars', the shell's), each with
 // the number of faces meeting it.
 #[allow(clippy::type_complexity)]
 fn lining_faces(
@@ -747,14 +747,14 @@ fn lining_faces(
             count(triangle.map(|v| mesh.positions()[v as usize]));
         }
         mesh.for_each_strip_triangle(|points, _| count(points));
-        for (list, headwall) in [
+        for (list, collar) in [
             (mesh.lining_triangles(), false),
-            (mesh.headwall_triangles(), true),
+            (mesh.collar_triangles(), true),
         ] {
             for triangle in list {
                 let points = triangle.map(|v| mesh.lining_point(v));
                 count(points);
-                faces.push((points, headwall));
+                faces.push((points, collar));
             }
         }
         for triangle in mesh.shell_triangles() {
@@ -764,31 +764,53 @@ fn lining_faces(
     (faces, edges)
 }
 
-// `ROAD-61` round R8: the bore is closed around its deck. The tunnel through the 1:2 hill is
-// lined from portal row to portal row, and a headwall stands at each row facing its approach.
-// Every edge of the lining and the headwalls is shared with another face, the deck's, a curb
-// face's, the lining's, a headwall's or the approach's skirt, bitwise, but for the headwalls'
-// outer edges, which meet the terrain: no open boundary edge. The lining faces into the bore.
+// `ROAD-61` rounds R8, R8f: the bore is closed around its deck. The tunnel through the 1:2 hill
+// is lined from portal row to portal row, and a collar stands at each row facing its approach:
+// flat-topped at `COLLAR_HEIGHT_M` above the row and reaching `TUNNEL_LINING_THICKNESS_M` beyond
+// each corner, no farther (the wings are gone). Every edge of the lining and the collars is
+// shared with another face, the deck's, a curb face's, the lining's, the shell's, a collar's or
+// the approach's skirt, bitwise, but for the collars' own edges at or below the row (the shell's
+// feet and the skirt's bottom, which meet the terrain): the collar's outer edges above the row
+// are the shell's end edges, so the collar closes the shell's end. The
+// lining faces into the bore.
 #[test]
 fn the_lining_closes_the_bore() {
+    use crate::simulation::network::roadbed::{
+        COLLAR_HEIGHT_M, TUNNEL_LINING_THICKNESS_M,
+    };
     let mut core = hill_core(80.0);
     let result = run_stroke(&mut core, &THROUGH_HILL, true);
     assert_eq!(result.committed, "committed", "{result:?}");
     let (faces, edges) = lining_faces(&core);
     let key = |p: RoadVec3| [p.x, p.y, p.z].map(f64::to_bits);
-    // A headwall's outer points are the only lining points off the deck's rows and the lining
-    // tops: its outer corners and the bottoms below its row's corners.
+    // The portal rows: the deck's height there and the corners' reach across the road (the
+    // stroke runs along x, so a row runs along z).
+    let roadbed = &core.transit_network.roadbed;
+    let rows: Vec<(f64, f64, f64)> = (0..core.region_graph.edge_count())
+        .filter_map(|edge| roadbed.piece_mesh(PieceId::Span(edge)))
+        .flat_map(|mesh| mesh.portal_rows().collect::<Vec<_>>())
+        .map(|row| {
+            let reach = row.iter().map(|p| p.z.abs()).fold(0.0, f64::max);
+            (row[0].x, row[0].y, reach)
+        })
+        .collect();
+    assert_eq!(rows.len(), 2, "two portal rows");
+    // The deck's rows and the lining tops: every point a lining face (not a collar's) uses.
     let lining_points: std::collections::HashSet<_> = faces
         .iter()
-        .filter(|(_, headwall)| !headwall)
+        .filter(|(_, collar)| !collar)
         .flat_map(|(points, _)| points.map(key))
         .collect();
     let outer = |p: RoadVec3| !lining_points.contains(&key(p));
-    let (mut lining, mut headwalls) = (0, 0);
-    for &(points, headwall) in &faces {
+    let (mut lining, mut collars) = (0, 0);
+    for &(points, collar) in &faces {
         for (a, b) in [(0, 1), (1, 2), (2, 0)] {
             let (p, q) = (points[a], points[b]);
-            if headwall && outer(p) && outer(q) {
+            // A collar's own points at or below its row, the shell's feet and the skirt's bottom,
+            // meet the terrain: the edges between them are its only open ones.
+            let row = rows.iter().find(|row| (row.0 - p.x).abs() < 1e-6);
+            let low = |p: RoadVec3| row.is_some_and(|row| p.y <= row.1) && outer(p);
+            if collar && low(p) && low(q) {
                 continue;
             }
             let mut edge = [key(p), key(q)];
@@ -798,10 +820,19 @@ fn the_lining_closes_the_bore() {
         let [a, b, c] = points;
         let normal = -(b - a).cross(c - a);
         let centroid = (a + b + c) / 3.0;
-        if headwall {
-            // Out of the tunnel, towards its approach.
-            assert!(normal.x * centroid.x > 0.0, "a headwall facing {normal:?}");
-            headwalls += 1;
+        if collar {
+            // Out of the tunnel, towards its approach, in its row's plane, flat-topped at the
+            // shell's roof and the thickness beyond the corners.
+            assert!(normal.x * centroid.x > 0.0, "a collar facing {normal:?}");
+            let &(_, y, reach) = rows
+                .iter()
+                .find(|row| points.iter().all(|p| (p.x - row.0).abs() < 1e-6))
+                .expect("a collar stands in its row's plane");
+            for p in points {
+                assert!(p.y <= y + COLLAR_HEIGHT_M, "{p:?} above the collar's top");
+                assert!(p.z.abs() <= reach + TUNNEL_LINING_THICKNESS_M + 1e-9, "{p:?} a wing");
+            }
+            collars += 1;
         } else {
             let axis = RoadVec3::new(centroid.x, 0.5 * TUNNEL_LINING_HEIGHT_M, 0.0);
             assert!(
@@ -811,7 +842,18 @@ fn the_lining_closes_the_bore() {
             lining += 1;
         }
     }
-    assert!(lining > 50 && headwalls > 10, "{lining} lining, {headwalls} headwall");
+    assert!(lining > 50 && collars > 10, "{lining} lining, {collars} collar");
+    // The flat top spans the whole collar: both its top corners at the roof's height.
+    for &(x, y, reach) in &rows {
+        let tops = faces
+            .iter()
+            .filter(|(_, collar)| *collar)
+            .flat_map(|(points, _)| points)
+            .filter(|p| (p.x - x).abs() < 1e-6 && p.y == y + COLLAR_HEIGHT_M)
+            .map(|p| p.z.abs())
+            .fold(0.0, f64::max);
+        assert!((tops - reach - TUNNEL_LINING_THICKNESS_M).abs() < 1e-9, "top {tops} m");
+    }
 }
 
 // `ROAD-61` round R8: a bore that ends underground is closed by an end wall, and where two
@@ -851,8 +893,8 @@ fn the_lining_closes_buried_ends_and_bends() {
     assert!(!node.lining_triangles().is_empty(), "the bend is lined");
     let (faces, edges) = lining_faces(&core);
     let key = |p: RoadVec3| [p.x, p.y, p.z].map(f64::to_bits);
-    for (points, headwall) in &faces {
-        assert!(!headwall, "no portal underground");
+    for (points, collar) in &faces {
+        assert!(!collar, "no portal underground");
         for (a, b) in [(0, 1), (1, 2), (2, 0)] {
             let mut edge = [key(points[a]), key(points[b])];
             edge.sort();
@@ -867,7 +909,7 @@ fn the_lining_closes_buried_ends_and_bends() {
 }
 
 // `ROAD-61` round R8: the preview stages of a tunnel stroke through the 1:2 hill (lining,
-// headwalls and the portal rows' terrain included), eight end poses along the far side, against
+// collars and the portal rows' terrain included), eight end poses along the far side, against
 // the stage budgets (`docs/roads.md` "Stage budgets"). Medians and p95 over 50 repetitions after
 // 10 warm-up ones.
 // `METRUM_TUNNEL_BENCH_HILL=gentle` takes the 1:4 hill of `gentle_tunnel_core` instead (round
@@ -1182,9 +1224,9 @@ fn the_lining_carries_the_lamp_station() {
 
 // `ROAD-61` round R8d: only the bore's faces keep the lining's lighting. Through the 1:2 hill
 // (two portals, no end wall) a lining-layer face carries the lining's colour (alpha 0: no sun,
-// no sky) exactly when it carries the lamp station, on the walls and the ceiling; the headwalls
+// no sky) exactly when it carries the lamp station, on the walls and the ceiling; the collars
 // and the shell, which face the open air where the hill leaves them bare, carry the outdoor
-// concrete's (alpha 1). The user's saves showed black headwalls and wings.
+// concrete's (alpha 1). The user's saves showed black headwalls and wings (R8d).
 #[test]
 fn only_the_bore_keeps_the_lining_light() {
     let mut core = hill_core(80.0);

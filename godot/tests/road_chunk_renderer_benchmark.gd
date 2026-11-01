@@ -62,7 +62,7 @@ class BenchmarkRoadTool:
 var _failures: int = 0
 var _large_layer_arrays: Dictionary
 var _small_layer_arrays: Dictionary
-# The large chunk with a bridge's concrete (alpha 1), or with a tunnel's lining and headwalls.
+# The large chunk with a bridge's concrete (alpha 1), or with a tunnel's lining and collars.
 var _bridge_layer_arrays: Dictionary
 var _tunnel_layer_arrays: Dictionary
 

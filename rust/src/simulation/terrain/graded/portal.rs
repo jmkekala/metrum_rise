@@ -2,7 +2,7 @@
 
 //! Portal rows in the graded terrain (`TERRAIN-07-C`, `docs/terrain.md` T22 5, closed by
 //! `ROAD-61` round R8): no tie-in cone reaches past a tunnel's portal row, so the hill over the
-//! bore stays natural and the approach's cut ends at the row, where the roadbed's headwall
+//! bore stays natural and the approach's cut ends at the row, where the roadbed's collar
 //! stands.
 //!
 //! A portal row is the tunnel span's end row that a grounded piece shares; the grounded piece's
@@ -16,7 +16,8 @@
 //! Round R8e (option T): the approach's own road seams are retained
 //! ([`Seam::retained`]): they bound the ground from below only, so in front of the row the hill
 //! stands natural beside the approach and the bake walls the road up to it; nothing grades the
-//! ground to the headwall's wings any more (round R8c's wing seams are gone). The hide past the
+//! ground to the mouth's structure (round R8c's wing seams are gone, and round R8f's collar has
+//! no wings). The hide past the
 //! row is R8's, a function of the row alone: no reach along the approach.
 
 use super::grade::CAP_M;
@@ -25,7 +26,8 @@ use super::seams::{Seam, segment_at};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 
 /// The bore clearance `H`, metres: the cover a bore keeps over its deck from portal to portal
-/// (`ROAD-61`), the roadbed's headwall height above a portal row's corners.
+/// (`ROAD-61`), the roadbed's collar height above a portal row's corners (the lining's shell
+/// roof, `COLLAR_HEIGHT_M`).
 pub const PORTAL_CLEARANCE_M: f64 = 5.0;
 // Bounds padding, as coverage pads: the margin the dirty-tile selection's `PIECE_PAD_M` assumes.
 const PAD_M: f64 = 0.01;

@@ -65,7 +65,7 @@ pub struct QueryScratch {
     index_identity: u64,
     index_generation: u64,
     // The seams the first pass lists over `rect`: road seams in key order, unique, then the pad
-    // seams in key order, then the portal rows' headwall wings (`ROAD-61` round R8c).
+    // seams in key order.
     window: Vec<Seam>,
     // The other seams whose box comes within the cap of `rect`, with their box's distance from
     // it: only a point below its base after the first pass reads them, so they are gathered

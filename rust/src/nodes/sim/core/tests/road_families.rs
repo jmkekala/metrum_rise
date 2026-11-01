@@ -62,10 +62,10 @@ fn without_sidewalks(core: &mut SimCore, edges: &[usize]) {
 }
 
 // The XZ points of structure `edge`'s mouth rows where it meets another piece, without its free
-// end's (a road end without a piece, which its cap closes), and its headwalls' and its lining
-// shell's outer edges (`ROAD-61`): the edges of one headwall or shell face that are no lining
-// face's, which meet the terrain (a headwall's outer edges, the shell's feet and its ends in a
-// portal row's or a buried end row's plane).
+// end's (a road end without a piece, which its cap closes), and its collars' and its lining
+// shell's outer edges (`ROAD-61`): the edges of one collar or shell face that are no lining
+// face's, which meet the terrain (a collar's bottom edges, the shell's feet and its ends in a
+// buried end row's plane).
 type StructureEnds = (Vec<Vec<(f64, f64)>>, Vec<[RoadVec3; 2]>);
 
 fn structure_ends(core: &SimCore, edge: usize) -> StructureEnds {
@@ -87,8 +87,8 @@ fn structure_ends(core: &SimCore, edge: usize) -> StructureEnds {
     .collect();
     let mesh = span.mesh();
     let mut uses = std::collections::BTreeMap::new();
-    for (list, headwall) in [
-        (mesh.headwall_triangles(), true),
+    for (list, structure) in [
+        (mesh.collar_triangles(), true),
         (mesh.shell_triangles(), true),
         (mesh.lining_triangles(), false),
     ] {
@@ -97,8 +97,8 @@ fn structure_ends(core: &SimCore, edge: usize) -> StructureEnds {
                 let edge = [triangle[a], triangle[b]];
                 let entry = uses.entry([edge[0].min(edge[1]), edge[0].max(edge[1])]);
                 let (faces, lining) = entry.or_insert((0, false));
-                *faces += u32::from(headwall);
-                *lining |= !headwall;
+                *faces += u32::from(structure);
+                *lining |= !structure;
             }
         }
     }
@@ -162,10 +162,10 @@ fn structure_and_rural_road_chunks_are_watertight() {
             // terrain's abutment wall continues to the graded ground; the fascias, the abutment
             // face and the grounded piece's skirts end in vertical edges on the row's corner
             // lines, of different depths (T-vertices on one line, no gap). A tunnel is lined, its
-            // walls on its deck's sides (`ROAD-61`), and its headwall's outer edges meet the
+            // walls on its deck's sides (`ROAD-61`), and its collar's bottom edges meet the
             // terrain, as do its lining shell's feet and ends (round R8b). Everything else is
             // watertight.
-            let (rows, headwalls) = match class {
+            let (rows, outer_edges) = match class {
                 Some(_) => structure_ends(&core, edges[0]),
                 None => Default::default(),
             };
@@ -177,9 +177,9 @@ fn structure_and_rural_road_chunks_are_watertight() {
                 let on_row = |row: &Vec<(f64, f64)>, p| row.iter().any(|&q| near(p, q));
                 let on_both = |row: &Vec<(f64, f64)>| on_row(row, a) && on_row(row, b);
                 let vertical = (a.0, a.2) == (b.0, b.2);
-                // On a headwall's outer edge, which chunk lines may split.
+                // On a collar's or the shell's outer edge, which chunk lines may split.
                 let on_outer = |p: (f64, f64, f64)| {
-                    headwalls.iter().any(|&[s, t]| {
+                    outer_edges.iter().any(|&[s, t]| {
                         let d = t - s;
                         let along = ((p.0 - s.x) * d.x + (p.1 - s.y) * d.y + (p.2 - s.z) * d.z)
                             / d.length_squared();

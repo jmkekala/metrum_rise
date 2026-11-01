@@ -12,7 +12,7 @@
 //!
 //! The validation graph splits the stroke at its portals ([`portal_splits`]): the approaches are
 //! standard roads in a cut, the bore a lined tunnel edge whose portal rows end the cut at a
-//! headwall (`TERRAIN-07`, `docs/terrain.md` T22), and an end inside the bore is a buried
+//! collar (`TERRAIN-07`, `docs/terrain.md` T22), and an end inside the bore is a buried
 //! continuation with no portal of its own. A bore meets no other road: a junction inside it, or a crossing
 //! with another tunnel at any height, refuses the stroke ([`TUNNEL_CROSSING_REASON`]).
 
@@ -33,7 +33,7 @@ use godot::prelude::Vector3;
 /// and the exact plan both measure cover on.
 pub(super) const TUNNEL_LATTICE_M: f32 = 4.0;
 /// The cover a bore keeps over its deck from portal to portal: the bore clearance, which the
-/// lining's ceiling and the portal's headwall stand within (`ROAD-61`).
+/// lining's ceiling and the portal's collar stand within (`ROAD-61`).
 pub(super) const TUNNEL_COVER_M: f32 = PORTAL_CLEARANCE_M as f32;
 /// The shortest open approach before a portal, metres: two lattice steps, so the portal node
 /// stands clear of the stroke's end.

@@ -115,7 +115,7 @@ pub(super) fn emit_abutment_faces(mesh: &mut NetworkMeshData, piece: &PieceMesh,
 /// lining shader's `lamp_spacing_m` must match it.
 const TUNNEL_LAMP_SPACING_M: f64 = 10.0;
 
-// Emits a buried piece's lining, a tunnel span's headwalls and the lining's shell (`ROAD-61`)
+// Emits a buried piece's lining, a tunnel span's collars and the lining's shell (`ROAD-61`)
 // into the lining layer as the piece wound them, facing into the bore, out of the portal and
 // away from the bore; the concrete material is drawn on both sides, so the lining also closes
 // the bore seen from outside. On a span's walls and ceiling the UVs carry the lamp station and
@@ -124,7 +124,7 @@ const TUNNEL_LAMP_SPACING_M: f64 = 10.0;
 // sit symmetric in every span and evenly spaced within 5% of `TUNNEL_LAMP_SPACING_M`. Every
 // other face takes `y = -1`: no lamps. The concrete shader is triplanar in world space.
 // Round R8d: only the faces inside the bore, the walls, the ceiling and the end walls, take the
-// lining's colour (alpha 0: no sun, no sky, the lining's ambient); a headwall and the shell face
+// lining's colour (alpha 0: no sun, no sky, the lining's ambient); a collar and the shell face
 // the open air (the shell where the hill leaves it bare) and take the outdoor concrete's.
 pub(super) fn emit_lining(mesh: &mut NetworkMeshData, piece: &PieceMesh) {
     let scale = piece.lining_bore_m().filter(|&bore| bore > 0.0).map(|bore| {
@@ -140,7 +140,7 @@ pub(super) fn emit_lining(mesh: &mut NetworkMeshData, piece: &PieceMesh) {
         };
         let color = match part {
             LiningPart::Bore | LiningPart::EndWall => lining_color(),
-            LiningPart::Headwall | LiningPart::Shell => concrete_color(),
+            LiningPart::Collar | LiningPart::Shell => concrete_color(),
         };
         push_triangle_preserving_winding_with_exact_normal(
             mesh,

@@ -212,7 +212,7 @@ pub(crate) fn build_span_piece(
     let ends = [edge.start_node, edge.end_node]
         .map(|node| span_end(graph, graph.get_valid_node(node), edge_idx));
     // A tunnel's span is lined (`ROAD-61`): open where another tunnel continues it, an end wall
-    // where it ends underground, a headwall at a portal row or where it opens onto a bridge.
+    // where it ends underground, a collar at a portal row or where it opens onto a bridge.
     let nodes = [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node));
     let lining = (edge.class == EdgeClass::Tunnel).then(|| {
         [0, 1].map(|end| match ends[end] {

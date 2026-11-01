@@ -2,15 +2,15 @@
 
 //! The closed tunnel (`ROAD-61`, round R8): a buried piece's lining, its walls standing on the
 //! deck's outer chains and its ceiling over them, the end wall of a bore that ends underground,
-//! and the headwall at a portal row.
+//! and the collar at a portal row.
 //!
 //! Every vertex is a mesh vertex or a function of one ([`lining_top`], [`shell_foot`]), so pieces
 //! that share a mouth share its lining edges bitwise: the walls' bottom edges are the outer
 //! chains, a mouth's ceiling edge joins the lining tops above its two corners, and a portal's
-//! headwall takes the row and those tops as the edge of its opening. The section is a box: walls
+//! collar takes the row and those tops as the edge of its opening. The section is a box: walls
 //! straight up from the deck's outer edges, a flat ceiling between them (sized from the span's own
 //! sections). No terrain height is read. Triangles are wound so that `-(b - a) x (c - a)` faces
-//! into the bore, and out of the portal for a headwall.
+//! into the bore, and out of the portal for a collar.
 //!
 //! Round R8b: the lining has a thickness. Its shell, outer walls `TUNNEL_LINING_THICKNESS_M`
 //! outside the walls and a roof the thickness above the ceiling, is buried in the hill; it closes
@@ -26,33 +26,23 @@ use super::{RoadVec2, RoadVec3};
 /// The lining's clear height (`ROAD-61`): its walls stand this far above the deck's outer edges,
 /// where its ceiling spans.
 pub const TUNNEL_LINING_HEIGHT_M: f64 = 4.5;
-/// A portal headwall's height above its row's corners (`ROAD-61`): the bore's clearance of cover
-/// at the portal (5 m) and half a metre of parapet, so the hill above a portal stands behind it.
-pub const HEADWALL_HEIGHT_M: f64 = 5.5;
-/// How far a portal headwall reaches beyond each corner of its row along the row's line
-/// (`ROAD-61`): where the approach's cut, rising at the 1:2 tie-in slope from the row's corner,
-/// reaches the headwall's height, and where a wing's top, falling at that slope from it, reaches
-/// the corner's.
-pub const HEADWALL_WING_M: f64 = 2.0 * HEADWALL_HEIGHT_M;
-/// The fall of a headwall wing's top along the wing, metres per metre (`ROAD-61` round R8c, the
-/// user's decision): the terrain's 1:2 tie-in slope, at which the bake grades the ground to it.
-pub const HEADWALL_WING_SLOPE: f64 = 0.5;
 /// The lining's thickness (`ROAD-61` round R8b): its shell's outer walls stand this far outside
 /// its walls, beyond any shadow bias the sun's shadow map applies near a wall's foot.
 pub const TUNNEL_LINING_THICKNESS_M: f64 = 0.5;
+/// A portal collar's height above its row's corners (`ROAD-61` round R8f): the shell's roof, the
+/// lining's height and its thickness, the bore clearance of cover a portal keeps. Its flat top is
+/// the edge the terrain's row wall stands on where the hill rises above it.
+pub const COLLAR_HEIGHT_M: f64 = TUNNEL_LINING_HEIGHT_M + TUNNEL_LINING_THICKNESS_M;
 
 /// The lining top above an outer-chain vertex: the one function every piece takes it from.
 pub(super) fn lining_top(vertex: RoadVec3) -> RoadVec3 {
     RoadVec3::new(vertex.x, vertex.y + TUNNEL_LINING_HEIGHT_M, vertex.z)
 }
 
-/// The shell top above a shell foot: the lining's height and its thickness above it.
+/// The shell top above a shell foot: the lining's height and its thickness above it, the
+/// collar's height, so a portal's collar meets the shell's roof bitwise.
 fn shell_top(foot: RoadVec3) -> RoadVec3 {
-    RoadVec3::new(
-        foot.x,
-        foot.y + TUNNEL_LINING_HEIGHT_M + TUNNEL_LINING_THICKNESS_M,
-        foot.z,
-    )
+    RoadVec3::new(foot.x, foot.y + COLLAR_HEIGHT_M, foot.z)
 }
 
 /// The shell's foot outside a mouth corner `vertex`, away from the row's other corner `other`:
@@ -66,23 +56,6 @@ pub(super) fn shell_foot(vertex: RoadVec3, other: RoadVec3) -> RoadVec3 {
     )
 }
 
-/// A portal headwall's wing beside the row corner `corner`, away from the row's other corner
-/// `other` (`ROAD-61` round R8c): its top edge, from `HEADWALL_HEIGHT_M` above the corner down
-/// at `HEADWALL_WING_SLOPE` to its tip `HEADWALL_WING_M` beyond it, level with the corner. The
-/// one function the headwall and the terrain bake take a wing from, so the ground the bake
-/// grades to a wing meets its top bitwise. No terrain height is read.
-pub fn headwall_wing(corner: RoadVec3, other: RoadVec3) -> [RoadVec3; 2] {
-    let away = RoadVec2::new(corner.x - other.x, corner.z - other.z).normalize();
-    let at = |beyond: f64| {
-        RoadVec3::new(
-            corner.x + beyond * away.x,
-            corner.y + HEADWALL_HEIGHT_M - HEADWALL_WING_SLOPE * beyond,
-            corner.z + beyond * away.y,
-        )
-    };
-    [at(0.0), at(HEADWALL_WING_M)]
-}
-
 /// Which part of the closed tunnel a lining triangle belongs to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LiningPart {
@@ -90,26 +63,27 @@ pub enum LiningPart {
     Bore,
     /// The end wall of a bore that ends underground, facing into it.
     EndWall,
-    /// A portal's headwall, facing out of the tunnel.
-    Headwall,
+    /// A portal's collar, facing out of the tunnel: the ring between the lining's mouth and the
+    /// shell's end, and the skirt below the row.
+    Collar,
     /// The shell (round R8b): the outer walls and the roof over them, buried.
     Shell,
 }
 
-/// A buried piece's lining and its headwalls: the vertices it adds after the piece's positions
-/// (the lining tops, the headwalls' outer corners, the shell's feet and tops), and its triangles
-/// over the piece's positions followed by them: the bore's, the end walls', the headwalls', then
+/// A buried piece's lining and its collars: the vertices it adds after the piece's positions
+/// (the lining tops, the collars' own corners, the shell's feet and tops), and its triangles
+/// over the piece's positions followed by them: the bore's, the end walls', the collars', then
 /// the shell's.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Lining {
     pub(super) positions: Vec<RoadVec3>,
     // Per added vertex the mesh vertex it stands on (a lining top's or a shell vertex's chain
-    // vertex), or `NO_SOURCE` for a headwall's outer corner.
+    // vertex), or `NO_SOURCE` for a collar's own corner.
     pub(super) sources: Vec<u32>,
     pub(super) triangles: Vec<[u32; 3]>,
-    // Indices in `triangles` of the first end-wall, headwall and shell triangle.
+    // Indices in `triangles` of the first end-wall, collar and shell triangle.
     pub(super) end_walls: usize,
-    pub(super) headwalls: usize,
+    pub(super) collars: usize,
     pub(super) shell: usize,
     // Whether the lining runs along a span's rows, whose stations measure the bore.
     pub(super) along_rows: bool,
@@ -136,10 +110,10 @@ impl Lining {
     pub(super) fn part(&self, triangle: usize) -> LiningPart {
         if triangle < self.end_walls {
             LiningPart::Bore
-        } else if triangle < self.headwalls {
+        } else if triangle < self.collars {
             LiningPart::EndWall
         } else if triangle < self.shell {
-            LiningPart::Headwall
+            LiningPart::Collar
         } else {
             LiningPart::Shell
         }
@@ -271,7 +245,7 @@ pub(super) enum LiningEnd {
     Open,
     /// The bore ends underground: an end wall closes the row up to the ceiling.
     Closed,
-    /// A portal row: the headwall stands in the row's plane, the lining's mouth open in it.
+    /// A portal row: the collar stands in the row's plane, the lining's mouth open in it.
     Portal,
 }
 
@@ -331,9 +305,9 @@ pub(super) fn span_lining(
             }
         }
     }
-    lining.headwalls = lining.triangles.len();
+    lining.collars = lining.triangles.len();
     for (corners, tops, edge, outward) in portals {
-        headwall(&mut lining, positions.len(), corners, tops, edge, outward);
+        collar(&mut lining, positions.len(), corners, tops, edge, outward);
     }
     // A chain vertex's row is its index over the stride; its foot lies away from the row's
     // other corner.
@@ -381,7 +355,7 @@ pub(super) fn node_lining(
             .push(if up { [a, c, b] } else { [a, b, c] });
     }
     lining.end_walls = lining.triangles.len();
-    lining.headwalls = lining.triangles.len();
+    lining.collars = lining.triangles.len();
     let ceiling = ceiling..lining.triangles.len();
     lining.shell(positions, chains, (&firsts, ceiling), |c, k| {
         node_foot(positions, chains, c, k)
@@ -418,17 +392,19 @@ fn node_foot(positions: &[RoadVec3], chains: &[OuterChain], c: usize, k: usize) 
     RoadVec3::new(vertex.x + reach * mitre.x, vertex.y, vertex.z + reach * mitre.y)
 }
 
-// The headwall at a portal row (its corners `edge` and the lining tops `tops` above them; the
-// piece has `count` positions): in the row's vertical plane, from the skirt depth below the
-// corners up to `HEADWALL_HEIGHT_M` above them, and its wings `HEADWALL_WING_M` beyond them along
-// the row's line, their tops falling at the 1:2 tie-in slope to the corners' height at the tips
-// (`headwall_wing`, round R8c), with the lining's mouth open in it from below: the polygon runs
-// from the left wing's tip along its bottom to below the left corner, up to it, up the left
-// wall's end edge, across the ceiling's, down the right wall's, down below the right corner,
-// along the bottom to the right wing's tip, up it and back along the wings' tops, so it meets the
-// lining edge for edge and leaves the deck's row to the deck and the piece beyond it. Facing
-// `outward`, out of the tunnel.
-fn headwall(
+// The collar at a portal row (its corners `edge` and the lining tops `tops` above them; the
+// piece has `count` positions), round R8f: in the row's vertical plane, the ring between the
+// lining's mouth and the end of its shell, flat-topped at the shell's roof (`COLLAR_HEIGHT_M`
+// above the corners) and reaching the thickness beyond each corner to the shell's feet, with the
+// skirt below the row. Its corners are the shell's own functions of the row ([`shell_foot`],
+// [`shell_top`]), so its outer edges meet the shell's end edges bitwise. The polygon runs from
+// the left shell top down to its foot and the skirt depth below it, along the bottom to below the
+// left corner, up to it, up the left wall's end edge, across the ceiling's, down the right wall's,
+// down below the right corner, along the bottom to below the right foot, up to the right shell
+// top and back along the flat top, so it meets the lining edge for edge and leaves the deck's
+// row to the deck and the piece beyond it. Facing `outward`, out of the tunnel. The terrain
+// closes the row above the top where the hill stands higher (the row wall, `docs/terrain.md`).
+fn collar(
     lining: &mut Lining,
     count: usize,
     [left_corner, right_corner]: [u32; 2],
@@ -436,20 +412,13 @@ fn headwall(
     (left, right): (RoadVec3, RoadVec3),
     outward: RoadVec2,
 ) {
-    let along = RoadVec2::new(right.x - left.x, right.z - left.z).normalize();
-    let at = |corner: RoadVec3, beyond: f64, height: f64| {
-        RoadVec3::new(
-            corner.x + beyond * along.x,
-            corner.y + height,
-            corner.z + beyond * along.y,
-        )
-    };
-    let ([left_top, left_tip], [right_top, right_tip]) =
-        (headwall_wing(left, right), headwall_wing(right, left));
+    let below = |point: RoadVec3| RoadVec3::new(point.x, point.y - SKIRT_DEPTH_M, point.z);
+    let (left_foot, right_foot) = (shell_foot(left, right), shell_foot(right, left));
     let points = [
-        left_tip,
-        at(left, -HEADWALL_WING_M, -SKIRT_DEPTH_M),
-        at(left, 0.0, -SKIRT_DEPTH_M),
+        shell_top(left_foot),
+        left_foot,
+        below(left_foot),
+        below(left),
     ];
     let mut ring: Vec<(u32, RoadVec3)> = points
         .into_iter()
@@ -457,11 +426,10 @@ fn headwall(
         .collect();
     ring.extend([(left_corner, left), tops[0], tops[1], (right_corner, right)]);
     for point in [
-        at(right, 0.0, -SKIRT_DEPTH_M),
-        at(right, HEADWALL_WING_M, -SKIRT_DEPTH_M),
-        right_tip,
-        right_top,
-        left_top,
+        below(right),
+        below(right_foot),
+        right_foot,
+        shell_top(right_foot),
     ] {
         ring.push((lining.push(count, point, NO_SOURCE), point));
     }

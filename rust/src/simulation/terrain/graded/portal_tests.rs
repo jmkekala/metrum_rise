@@ -332,13 +332,13 @@ fn the_trough_is_walled_where_the_road_runs_below_the_ground() {
     assert!(sides[0] > 10 && sides[1] > 10 && bump > 4, "{sides:?} {bump}");
 }
 
-// test (`ROAD-61` round R8e): the row wall above the headwall's top. On the 1:2 hill the hill at
-// the portal row stands 10 m above the deck and the row wall closes it from the top
-// (`HEADWALL_HEIGHT_M` above the row) up to the ground along the whole row; on the 1:4 hill it
-// stands 5 m above the deck, below the top, and no face stands on the row.
+// test (`ROAD-61` rounds R8e, R8f): the row wall above the collar's flat top. On the 1:2 hill the
+// hill at the portal row stands 10 m above the deck and the row wall closes it from the top
+// (`COLLAR_HEIGHT_M` above the row) up to the ground along the whole row; on the 1:4 hill it
+// stands 5 m above the deck, exactly the collar's top, and no face stands on the row.
 #[test]
-fn the_hill_meets_the_headwall_top() {
-    use crate::simulation::network::roadbed::HEADWALL_HEIGHT_M;
+fn the_hill_meets_the_collar() {
+    use crate::simulation::network::roadbed::COLLAR_HEIGHT_M;
     for (slope, walled) in [(0.5f32, true), (0.25, false)] {
         let (graph, terrain) = structure_mouth(EdgeClass::Tunnel, slope);
         let roadbed = compiled(&graph);
@@ -355,7 +355,7 @@ fn the_hill_meets_the_headwall_top() {
                 }
                 for k in 0..2 {
                     let bottom = f64::from(face.bottom[k]);
-                    assert!(bottom >= HEADWALL_HEIGHT_M - 1e-3, "{face:?}: below the top");
+                    assert!(bottom >= COLLAR_HEIGHT_M - 1e-3, "{face:?}: below the top");
                     assert!((f64::from(face.top[k]) - hill).abs() < 1e-3, "{face:?}: the hill");
                 }
                 length += (ends[1].0 - ends[0].0).hypot(ends[1].1 - ends[0].1);
@@ -364,7 +364,7 @@ fn the_hill_meets_the_headwall_top() {
         if walled {
             assert!(length > 6.9, "the row wall spans the row: {length} m");
         } else {
-            assert_eq!(length, 0.0, "no row wall below the headwall's top");
+            assert_eq!(length, 0.0, "no row wall at the collar's top");
         }
     }
 }

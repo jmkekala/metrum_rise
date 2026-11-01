@@ -13,7 +13,7 @@
 ## An edit (item 5) dirties the tiles Rust selects for it at the level each is held at: they
 ## rebake with the edit's serial as their token and install together in one frame, each into
 ## its own slot when its level is unchanged. The tiles' wall faces (conflict walls, abutments,
-## headwalls) draw as instances of one quad in a pooled MultiMesh per patch, placed by
+## tunnel row and trough walls) draw as instances of one quad in a pooled MultiMesh per patch, placed by
 ## terrain_graded_walls.gdshader from the values in their instance transforms.
 ## The road preview's graded tiles (TERRAIN-07-E) draw over the installed ones from slots of
 ## their own (show_preview); a commit's or undo's edit carries the tiles it staged, which install

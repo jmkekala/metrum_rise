@@ -274,6 +274,9 @@ fn check_abutments(name: &str, graph: &RegionGraph, span: &SpanPiece, edge: usiz
 // walls, so where they reach past the deck and the wings the bounds, and with them the spans and
 // queries, change again: `tunnel_bend` and `tunnel_pass_through`, flat and sloped. No other entry
 // changes.
+// Re-recorded by `ROAD-61` round R8f: the collar replaces the headwall and its wings, so the six
+// tunnel entries' bounds shrink to the shell, and with them their spans and queries (the
+// pass-throughs' spans alone). No other entry changes.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -1025,10 +1028,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xc7e956e72dd72ebf,
             0x316cd30bc4c6d451,
             0x6916fbee27fd7d64,
-            0xa16d24f0d0ab4b8b,
+            0x7cad2997706c80c5,
             0x38af174d571d9151,
             0xdb984867d2251fb7,
-            0xfda52aa2164eb0a2,
+            0x8e7bf2e23f88088c,
         ],
     ),
     (
@@ -1037,10 +1040,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xe9ee337eaf5047cd,
             0xda08c0c406e26bbf,
             0xc3bd732dc7c3d626,
-            0xd50cb3db92d31eff,
+            0x868b1da6a7d00b2d,
             0x47b9e4ef0180be6c,
             0x288c234263a4ebfb,
-            0x5ae2e488857bb391,
+            0x1c660fdb6f0efe0b,
         ],
     ),
     (
@@ -1049,7 +1052,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x4f05dc7283f3782d,
             0x07579bad55785ce6,
             0xa56e334196ab5f26,
-            0x2f0eab4241797eaa,
+            0x3d573c6083f9cd81,
             0xb453e5bd6aa15521,
             0x1901784ed6e13208,
             0x808d87d84942f9b0,
@@ -1829,10 +1832,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x522ec5c67b80d40e,
             0x1ddcb9d3a4cff34d,
             0x6916fbee27fd7d64,
-            0x65e13f752aa14892,
+            0xfabed6fdceace920,
             0x809c7d55d4aaeb50,
             0xb0ef00b6f40076ff,
-            0xaf1ad0935db2d882,
+            0x0bfe5f41c78bc114,
         ],
     ),
     (
@@ -1841,10 +1844,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x5bb9074887d9d00a,
             0x605b0e92a436dba2,
             0xc3bd732dc7c3d626,
-            0xd924f1b5b7249452,
+            0xcbb6be8bc8d90b74,
             0x783a19c1f4b3a36f,
             0x311032845969ae41,
-            0x0d77d9bad3c12683,
+            0x6d9383aaa4548fb9,
         ],
     ),
     (
@@ -1853,7 +1856,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x8315a3446fa6d340,
             0x01a2923d59ff37cc,
             0xa56e334196ab5f26,
-            0x9a3b9c41dd039ae9,
+            0x792fbd16c812710e,
             0x6cce29be6e4ef515,
             0xea1a4633928b02ff,
             0x742acff099dc78fa,
@@ -1986,6 +1989,9 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
 // other entry is unchanged.
 // Re-recorded by `ROAD-61` round R8c: the same six tunnel entries change with the headwall's
 // wing tops falling at 1:2 to their tips; every other entry is unchanged.
+// Re-recorded by `ROAD-61` round R8f: the same six tunnel entries change with the collar in place
+// of the headwall and its wings (and the shell's tops computed as the collar's height in one
+// step, and a bend's node lining without the triangulator's sliver); every other entry is unchanged.
 const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("t/false", 0x3a3196117e3f00f3),
     ("four_way/false", 0x694f53237d5dd070),
@@ -2049,9 +2055,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bridge_bend/false", 0x4e1d11e189af360f),
     ("bridge_pass_through/false", 0xd8331298dd91b258),
     ("bridge_rural_t/false", 0xd4b525b794ec9395),
-    ("tunnel_t/false", 0xb16e378378bb98d2),
-    ("tunnel_bend/false", 0x9af928b70074d797),
-    ("tunnel_pass_through/false", 0x8b169835744e2d3e),
+    ("tunnel_t/false", 0x9a80bd4325829842),
+    ("tunnel_bend/false", 0x25ec9de2f2b9c2df),
+    ("tunnel_pass_through/false", 0x35cefc37c2835c7c),
     ("band_step_curved/false", 0x37629ac5df89e879),
     ("band_width_step_curved/false", 0xd3bc48a4d792eb19),
     ("t/true", 0x8e5e0a77ca65c074),
@@ -2116,9 +2122,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bridge_bend/true", 0x65fa10b8e747d953),
     ("bridge_pass_through/true", 0xf04c12c0e0dd199a),
     ("bridge_rural_t/true", 0x416fcacf8292544e),
-    ("tunnel_t/true", 0xe6d18ad62dcd03f6),
-    ("tunnel_bend/true", 0x10204debbd06a38d),
-    ("tunnel_pass_through/true", 0x30819937c2b09616),
+    ("tunnel_t/true", 0x325433505d341b02),
+    ("tunnel_bend/true", 0x457629880f59b079),
+    ("tunnel_pass_through/true", 0xc3ca85f4194972d4),
     ("band_step_curved/true", 0x023fc8a5bc92c4b7),
     ("band_width_step_curved/true", 0x673bc994f267b9d6),
     ("short_link_10", 0x0288e54ed509e89b),

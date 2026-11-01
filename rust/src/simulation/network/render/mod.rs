@@ -93,7 +93,7 @@ pub struct NetworkMeshData {
     /// Vertex colors for structural concrete.
     pub concrete_colors: Vec<Color>,
     /// Vertices for a tunnel's lining (`ROAD-61`): its walls, ceiling and end walls, the portals'
-    /// headwalls and the lining's buried shell, drawn in concrete; the one layer the lining's
+    /// collars and the lining's buried shell, drawn in concrete; the one layer the lining's
     /// shadow caster takes, so only chunks with a tunnel have one.
     pub lining_vertices: Vec<Vector3>,
     /// Normals for the lining layer: into the bore, out of a portal, the shell away from it.

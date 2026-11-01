@@ -533,7 +533,7 @@ pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> 
 /// - a bridge whose mouth row a grounded piece shares (another standard edge meets the node, so
 ///   the node's piece is grounded or the node passes through into a standard span) hangs its
 ///   abutment face below the slab's end edge, and a tunnel whose mouth row a grounded piece
-///   shares marks it a portal row, past which no graded cone reaches and where its headwall
+///   shares marks it a portal row, past which no graded cone reaches and where its collar
 ///   stands (`ROAD-61`);
 /// - any other end is closed by the piece it shares the row with.
 ///

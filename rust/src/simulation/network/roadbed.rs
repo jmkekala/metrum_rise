@@ -34,8 +34,7 @@ pub use layout::{
     NodeKind, SectionLine, SectorBoundary, SectorKind, SectorLayout, Side,
 };
 pub use lining::{
-    HEADWALL_HEIGHT_M, HEADWALL_WING_M, HEADWALL_WING_SLOPE, LiningPart, TUNNEL_LINING_HEIGHT_M,
-    TUNNEL_LINING_THICKNESS_M, headwall_wing,
+    COLLAR_HEIGHT_M, LiningPart, TUNNEL_LINING_HEIGHT_M, TUNNEL_LINING_THICKNESS_M,
 };
 pub use mesh::{BRIDGE_DECK_DEPTH_M, OuterChain, PieceMesh, SKIRT_DEPTH_M, StripKind};
 pub(crate) use node::{check_node, terminal_plane};

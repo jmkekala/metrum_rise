@@ -76,7 +76,7 @@ pub(super) enum SpanEnd {
     /// edge ([`PieceMesh::for_each_abutment_triangle`]).
     Abutment,
     /// A tunnel's mouth shared with a grounded piece: its portal row, past which no cone of the
-    /// graded terrain reaches and where the headwall stands ([`PieceMesh::portal_rows`],
+    /// graded terrain reaches and where the collar stands ([`PieceMesh::portal_rows`],
     /// `ROAD-61`).
     Portal,
 }
@@ -207,7 +207,7 @@ pub struct PieceMesh {
     // The portal rows of a tunnel span (`TERRAIN-07-C`): per mouth shared with a grounded piece
     // its end row's first and last vertex, the row the vertices between them.
     portals: Vec<[u32; 2]>,
-    // A buried piece's lining and headwalls (`ROAD-61`), empty for every other piece.
+    // A buried piece's lining and collars (`ROAD-61`), empty for every other piece.
     lining: Lining,
     // Whether the piece is a tunnel's approach span, whose seams the graded terrain retains
     // (`ROAD-61` round R8e).
@@ -377,9 +377,9 @@ impl PieceMesh {
             .map(|&[first, last]| &self.positions[first as usize..=last as usize])
     }
 
-    /// A lining or headwall vertex (`ROAD-61`): a mesh vertex below [`Self::positions`]' length,
+    /// A lining or collar vertex (`ROAD-61`): a mesh vertex below [`Self::positions`]' length,
     /// else the lining's own vertex after them (a lining top above an outer-chain vertex, a
-    /// headwall's outer corner, or a shell vertex).
+    /// collar's own corner, or a shell vertex).
     pub fn lining_point(&self, vertex: u32) -> RoadVec3 {
         let count = self.positions.len();
         match (vertex as usize).checked_sub(count) {
@@ -393,14 +393,15 @@ impl PieceMesh {
     /// indices, each wound so that `-(b - a) x (c - a)` faces into the bore. Empty for every
     /// other piece.
     pub fn lining_triangles(&self) -> &[[u32; 3]] {
-        &self.lining.triangles[..self.lining.headwalls]
+        &self.lining.triangles[..self.lining.collars]
     }
 
-    /// The headwalls at a tunnel span's portal rows (`ROAD-61`), over [`Self::lining_point`]
-    /// indices, each in its row's vertical plane facing out of the tunnel, the lining's mouth open
-    /// in it. Empty for every other piece.
-    pub fn headwall_triangles(&self) -> &[[u32; 3]] {
-        &self.lining.triangles[self.lining.headwalls..self.lining.shell]
+    /// The collars at a tunnel span's portal rows (`ROAD-61` round R8f), over
+    /// [`Self::lining_point`] indices, each in its row's vertical plane facing out of the tunnel:
+    /// the ring from the lining's mouth to the shell's end, flat-topped at
+    /// [`super::COLLAR_HEIGHT_M`] above the row. Empty for every other piece.
+    pub fn collar_triangles(&self) -> &[[u32; 3]] {
+        &self.lining.triangles[self.lining.collars..self.lining.shell]
     }
 
     /// The lining's shell (`ROAD-61` round R8b), over [`Self::lining_point`] indices: outer walls
@@ -421,10 +422,10 @@ impl PieceMesh {
         })
     }
 
-    /// Visits the lining's, the headwalls' and the shell's triangles as world points, in their
+    /// Visits the lining's, the collars' and the shell's triangles as world points, in their
     /// windings, with their part and per vertex its station along the bore from the span's first
     /// row and its height above the deck vertex it stands on (`(0, 0)` for a vertex standing on
-    /// none, a headwall's outer corner, and on a node piece the stations are 0).
+    /// none, a collar's own corner, and on a node piece the stations are 0).
     /// `O(triangles)`, without allocation.
     pub fn for_each_lining_triangle(
         &self,
@@ -939,7 +940,7 @@ impl PieceMesh {
             |triangle| triangle as u32,
         );
         Self {
-            // The lining's headwall wings and shell reach beyond the deck (`ROAD-61`).
+            // The lining's shell and collars reach beyond the deck (`ROAD-61`).
             bounds_xz: bounds_xz(positions.iter().chain(&lining.positions).copied()),
             seam_blocks: seam_blocks(&positions, &outer_chains),
             positions,

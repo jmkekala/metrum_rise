@@ -19,14 +19,14 @@ use super::portal::PortalWindow;
 use super::prune::box_distance;
 use super::seams::Seam;
 use super::tile::{TILE_M, TileKey};
-use crate::simulation::network::roadbed::HEADWALL_HEIGHT_M;
+use crate::simulation::network::roadbed::COLLAR_HEIGHT_M;
 
 // Slack on the setter tests' bounds, metres: rounding only keeps more setters, each evaluated
 // exactly.
 const SETTER_SLACK_M: f64 = 1.0e-6;
 
 /// One wall face along a seam: from `a` to `b` (tile-local XZ, metres from the tile origin, the
-/// lower side on the left of `a -> b`: the road for a conflict wall and a portal's headwall, the
+/// lower side on the left of `a -> b`: the road for a conflict wall and a portal's row wall, the
 /// space under the bridge for an abutment), standing from `bottom` to `top` (world heights,
 /// metres): a conflict wall from the seam's height up to the wall top, a structure wall
 /// (`TERRAIN-07-C`, T22 4 (a)) between the seam's height and the graded ground. Faces along a
@@ -267,30 +267,30 @@ pub(super) fn build_walls(
 /// tile, with vertices at its crossings with the lattice `xs` x `zs` and its cell diagonals,
 /// and where the lattice surface crosses the seam's height between two of them (both are linear
 /// there, so the crossing is exact). A face joins two consecutive vertices where the surface
-/// differs from the seam's height at either end, between the two: a portal's headwall where the
+/// differs from the seam's height at either end, between the two: a portal's row wall where the
 /// graded ground stands above a tunnel's mouth, an abutment where it stands below a bridge's.
 /// The terrain is masked on the road's side of the seam, so the faces close its cut edge
-/// against the structure's mouth row. A headwall runs along the seam (the road on its left), an
+/// against the structure's mouth row. A row wall runs along the seam (the road on its left), an
 /// abutment against it (the space under the bridge on its left).
 ///
 /// At a bridge's mouth (`bottoms`, per wall seam the abutment face's bottom edge below its ends,
 /// `TERRAIN-07-D`, the abutment band) the bridge span closes the row from the deck down to that
 /// edge with its slab and abutment face, so the abutment wall starts there: faces where the
 /// surface stands below the edge, from the surface up to it, meeting the face on its bottom
-/// edge, and the headwall's faces where it stands above the deck as before; between the two
+/// edge, and the faces above the deck where it stands above it as before; between the two
 /// nothing, which the face and the slab close.
 ///
-/// Along a portal row's wall seam ([`PortalWindow::opens`], `ROAD-61`) the roadbed's headwall
-/// closes the row from below the deck to [`HEADWALL_HEIGHT_M`] above it, with the lining's
-/// mouth open in it; no cone reaches past the row, so the hill stands above the deck there, and
-/// the row wall closes it above the headwall's top (round R8e): faces where the surface stands
-/// above that top, from it up to the surface.
+/// Along a portal row's wall seam ([`PortalWindow::opens`], `ROAD-61`) the roadbed's collar
+/// closes the row from below the deck to [`COLLAR_HEIGHT_M`] above it, with the lining's mouth
+/// open in it (round R8f); no cone reaches past the row, so the hill stands above the deck there,
+/// and the row wall closes it above the collar's flat top (round R8e): faces where the surface
+/// stands above that top, from it up to the surface.
 ///
 /// Along a tunnel approach's retained road seams (`roads`, [`Seam::retained`], round R8e) the
 /// trough's walls: faces wherever the surface stands above the road, from the road's edge up to
 /// it, ending exactly where the two meet and resuming where the road dips below the ground
 /// again. The approach's ground is natural beside it, so they run as far as the cut does; on a
-/// fill the skirt closes the sag, as along any road. They meet the row wall and the headwall at
+/// fill the skirt closes the sag, as along any road. They meet the row wall and the collar at
 /// the row's corner, the chain's own vertex.
 ///
 /// `heights(i, j)` is the finished sample at lattice point `(i, j)`. `O(wall seams x their
@@ -320,13 +320,13 @@ pub(super) fn build_structure_walls(
             continue;
         }
         if portals.opens(seam) {
-            let top = |p: [f64; 3]| [p[0], p[1] + HEADWALL_HEIGHT_M, p[2]];
-            let headwall = Seam {
+            let top = |p: [f64; 3]| [p[0], p[1] + COLLAR_HEIGHT_M, p[2]];
+            let collar = Seam {
                 a: top(seam.a),
                 b: top(seam.b),
                 ..*seam
             };
-            seam_walls(&headwall, tile, lattice, &heights, rises, scratch, out);
+            seam_walls(&collar, tile, lattice, &heights, rises, scratch, out);
             continue;
         }
         let differs = |surface: f64, h: f64| surface != h;
