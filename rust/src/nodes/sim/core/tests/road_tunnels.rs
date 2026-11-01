@@ -469,7 +469,7 @@ fn the_surface_over_a_bore_is_the_hill() {
     // the approach's deck.
     for x in [-78.0, 78.0] {
         core.with_graded_surface(|surface, scratch| {
-            let mask = surface.mask_at(f64::from(x), 0.0, scratch);
+            let mask = surface.mask_at(x, 0.0, scratch);
             assert!(
                 matches!(mask, GroundClass::Natural | GroundClass::Graded),
                 "{mask:?} at {x}"

@@ -94,7 +94,7 @@ impl PortalWindow {
                     .collect(),
             });
         });
-        self.rows.sort_unstable_by(|p, q| p.key.cmp(&q.key));
+        self.rows.sort_unstable_by_key(|row| row.key);
         self.rows.dedup_by(|p, q| p.key == q.key);
     }
 
