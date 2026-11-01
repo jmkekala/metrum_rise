@@ -619,8 +619,6 @@ impl GradedSurface<'_> {
                     },
                 );
                 scratch.window[roads..].sort_unstable_by_key(Seam::key);
-                // Then the portal rows' headwall wings (`ROAD-61` round R8c), always listed.
-                scratch.portals.push_wings(&mut scratch.window);
             } else {
                 scratch.coverage.clear();
                 scratch.sites.clear();
@@ -692,7 +690,6 @@ impl GradedSurface<'_> {
         self.roadbed
             .wall_seams_in_bounds(window, &scratch.pieces, &mut scratch.wall_segments);
         scratch.portals.gather(self.roadbed, rect, &scratch.pieces);
-        scratch.portals.push_wings(&mut scratch.window);
         scratch.walls.clear();
         scratch
             .walls

@@ -24,11 +24,11 @@ use super::tile::{BakeStats, grown, meets};
 // sample names (`TERRAIN-07-C`), so its bind and lift reaches alone decide. The bake's two
 // passes and the selection take every seam's band from here, so they list alike. A wall seam
 // has no cone and is never listed (`TERRAIN-07-C`, T22 4 (a)); the bake keeps it out of the
-// window and reads it apart. No sample names a headwall's wing either (`ROAD-61` round R8c).
+// window and reads it apart.
 fn listing_band(seam: &Seam, band: f64) -> f64 {
     match seam.kind {
         SeamKind::Road => band,
-        SeamKind::Pad | SeamKind::Wall | SeamKind::Wing => 0.0,
+        SeamKind::Pad | SeamKind::Wall => 0.0,
     }
 }
 
@@ -353,10 +353,6 @@ pub(super) fn list_second_pass(
     let lowest = floor.iter().copied().fold(f64::INFINITY, f64::min);
     pairs.clear();
     for (index, seam) in seams.iter().enumerate() {
-        // A headwall's wing has no lower bound (`ROAD-61` round R8c): it lifts nothing.
-        if seam.kind == SeamKind::Wing {
-            continue;
-        }
         let (heights, area) = (seam.height_range(), seam.box_xz());
         let reach = lift_reach(heights.1, lowest);
         if reach < 0.0 {

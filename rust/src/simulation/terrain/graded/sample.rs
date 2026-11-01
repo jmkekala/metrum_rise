@@ -7,7 +7,7 @@
 //! seams it is given, which the bake prunes exactly and the queries do not prune at all.
 
 use super::grade::{CAP_M, Cones, INSIDE_REACH_M, cone, inside, inside_deep, settled};
-use super::portal::{PortalWindow, WING_CAP_M};
+use super::portal::PortalWindow;
 use super::seams::{Seam, SeamKind};
 use crate::config::HEIGHT_SCALE;
 use crate::simulation::terrain::TerrainSystem;
@@ -183,20 +183,16 @@ pub(super) fn evaluate_lanes<const N: usize>(
         } else {
             seam.at_lanes(xs, z)
         };
-        // The lanes past a portal row the seam is hidden from. A headwall's wing (`ROAD-61`
-        // round R8c) is hidden only over its own row's bore, reaches only its own cap and bounds
-        // from above alone.
-        let wing = seam.kind == SeamKind::Wing;
-        let cap = if wing { WING_CAP_M } else { CAP_M };
+        // The lanes past a portal row the seam is hidden from.
         let hidden: [bool; N] = std::array::from_fn(|lane| {
             past[lane]
                 && live[lane]
                 && portals.is_some_and(|portals| portals.hides(seam, xs[lane], z))
         });
         for lane in 0..N {
-            let take = live[lane] && distance[lane] <= cap && !hidden[lane];
+            let take = live[lane] && distance[lane] <= CAP_M && !hidden[lane];
             let (cone_lower, cone_upper) = cone(height[lane], distance[lane]);
-            lower[lane] = if take && !wing {
+            lower[lane] = if take {
                 lower[lane].max(cone_lower)
             } else {
                 lower[lane]

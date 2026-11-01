@@ -17,7 +17,7 @@
 use super::grade::{CAP_M, TIE_IN_SLOPE};
 use super::portal::PortalWindow;
 use super::prune::box_distance;
-use super::seams::{Seam, SeamKind};
+use super::seams::Seam;
 use super::tile::{TILE_M, TileKey};
 
 // Slack on the setter tests' bounds, metres: rounding only keeps more setters, each evaluated
@@ -163,10 +163,8 @@ pub(super) fn build_walls(
         high: seams[index].height_range().1,
     };
     scratch.setters.clear();
-    // A headwall's wing sets no lower bound (`ROAD-61` round R8c), so it walls no road.
     scratch.setters.extend(
         (0..seams.len())
-            .filter(|&index| seams[index].kind != SeamKind::Wing)
             .map(setter)
             .filter(|setter| !prune || setter.rises(area, low)),
     );

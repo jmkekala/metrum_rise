@@ -13,34 +13,31 @@
 //! line or left of it. Everything is derived from the grounded pieces a bake or query gathers
 //! anyway; the roadbed reads no terrain height.
 //!
-//! Round R8c: each row also yields its headwall's two wings as [`SeamKind::Wing`] seams, their
-//! tops from [`headwall_wing`], the roadbed's own function, so the ground the bake grades to a
-//! wing meets the wall's top bitwise.
+//! Round R8e (option T): the approach's own road seams are retained
+//! ([`Seam::retained`]): they bound the ground from below only, so in front of the row the hill
+//! stands natural beside the approach and the bake walls the road up to it; nothing grades the
+//! ground to the headwall's wings any more (round R8c's wing seams are gone). The hide past the
+//! row is R8's, a function of the row alone: no reach along the approach.
 
 use super::grade::CAP_M;
 use super::prune::box_distance;
-use super::seams::{Seam, SeamKind, segment_at};
-use crate::simulation::network::roadbed::{HEADWALL_WING_M, PieceId, RoadbedSystem, headwall_wing};
+use super::seams::{Seam, segment_at};
+use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 
 /// The bore clearance `H`, metres: the cover a bore keeps over its deck from portal to portal
 /// (`ROAD-61`), the roadbed's headwall height above a portal row's corners.
 pub const PORTAL_CLEARANCE_M: f64 = 5.0;
-/// The cap of a headwall wing's cone (`ROAD-61` round R8c): the cap less the wing's length, so
-/// a wing reaches no point farther than the cap from its row's corners, the reach every bake and
-/// query gathers portal rows (and the pieces holding them) over.
-pub(super) const WING_CAP_M: f64 = CAP_M - HEADWALL_WING_M;
 // Bounds padding, as coverage pads: the margin the dirty-tile selection's `PIECE_PAD_M` assumes.
 const PAD_M: f64 = 0.01;
 
-// One portal row: its corner segment's key bits (the road on its left), its corners in XZ, its
-// vertices' bits and its headwall's wings (round R8c).
+// One portal row: its corner segment's key bits (the road on its left), its corners in XZ and
+// its vertices' bits.
 #[derive(Clone, Debug, PartialEq)]
 struct PortalRow {
     key: [u64; 6],
     a: [f64; 2],
     b: [f64; 2],
     vertices: Vec<[u64; 3]>,
-    wings: [Seam; 2],
 }
 
 impl PortalRow {
@@ -60,22 +57,6 @@ impl PortalRow {
             let [bx, bz] = self.b;
             segment_at([ax, 0.0, az], [bx, 0.0, bz], x, z).distance <= CAP_M
         }
-    }
-
-    // Whether the XZ point projects onto the row's line strictly between its corners.
-    fn between_corners(&self, x: f64, z: f64) -> bool {
-        let [ax, az] = self.a;
-        let [bx, bz] = self.b;
-        let (dx, dz) = (bx - ax, bz - az);
-        let t = (x - ax) * dx + (z - az) * dz;
-        t > 0.0 && t < dx * dx + dz * dz
-    }
-
-    // Whether `seam` is one of this row's wings and the XZ point lies over its bore: past the
-    // row, between its corners (round R8c). The hill over a bore stays natural: no wing grades
-    // it, as no cone of the approach does.
-    fn wing_over_bore(&self, seam: &Seam, x: f64, z: f64) -> bool {
-        self.wings.contains(seam) && self.past(x, z) && self.between_corners(x, z)
     }
 }
 
@@ -109,15 +90,6 @@ impl PortalWindow {
             }
             let [ax, ay, az] = bits(a.to_array());
             let [bx, by, bz] = bits(b.to_array());
-            let wing = |corner, other| {
-                let [top, tip] = headwall_wing(corner, other);
-                Seam {
-                    a: top.to_array(),
-                    b: tip.to_array(),
-                    kind: SeamKind::Wing,
-                    retained: false,
-                }
-            };
             rows.push(PortalRow {
                 key: [ax, ay, az, bx, by, bz],
                 a: [a.x, a.z],
@@ -126,7 +98,6 @@ impl PortalWindow {
                     .iter()
                     .map(|&v| bits(positions[v as usize].to_array()))
                     .collect(),
-                wings: [wing(a, b), wing(b, a)],
             });
         });
         self.rows.sort_unstable_by_key(|row| row.key);
@@ -138,12 +109,6 @@ impl PortalWindow {
         (!self.rows.is_empty()).then_some(self)
     }
 
-    /// Appends the rows' headwall wings ([`SeamKind::Wing`]) to `seams`, two per row in row
-    /// order. `O(rows)`.
-    pub(super) fn push_wings(&self, seams: &mut Vec<Seam>) {
-        seams.extend(self.rows.iter().flat_map(|row| row.wings));
-    }
-
     /// Whether the XZ point lies past some row of the window. `O(rows)`.
     pub(super) fn past(&self, x: f64, z: f64) -> bool {
         self.rows.iter().any(|row| row.past(x, z))
@@ -151,13 +116,8 @@ impl PortalWindow {
 
     /// Whether `seam`'s cone is hidden from the XZ point `(x, z)`, which lies past some row
     /// ([`Self::past`]): its nearest point to the point, `Seam::at`'s exact clamp, lies on the
-    /// road's side of the line of a row the point lies past, or on that line. A headwall's wing
-    /// (round R8c) grades both sides of its plane beside the bore and is hidden only over its own
-    /// row's bore, between the row's corners. `O(rows)`.
+    /// road's side of the line of a row the point lies past, or on that line. `O(rows)`.
     pub(super) fn hides(&self, seam: &Seam, x: f64, z: f64) -> bool {
-        if seam.kind == SeamKind::Wing {
-            return self.rows.iter().any(|row| row.wing_over_bore(seam, x, z));
-        }
         let (qx, qz) = nearest_point(seam, x, z);
         self.rows
             .iter()
@@ -169,17 +129,8 @@ impl PortalWindow {
     /// corner segment: the point takes the ground the row's far side has, so the hill over the
     /// bore meets the row at its own height and the step down to the deck lies over the
     /// approach, where the mask discards it. Its nearest point lies on the road's side of that
-    /// row's line, or on it; a headwall's wing when the point lies between that row's corners,
-    /// where it continues the hill over the bore, which no wing grades. `O(rows)`.
+    /// row's line, or on it. `O(rows)`.
     pub(super) fn hides_at_mouth(&self, seam: &Seam, x: f64, z: f64, band: f64) -> bool {
-        if seam.kind == SeamKind::Wing {
-            return self.rows.iter().any(|row| {
-                let ([ax, az], [bx, bz]) = (row.a, row.b);
-                row.wings.contains(seam)
-                    && row.between_corners(x, z)
-                    && segment_at([ax, 0.0, az], [bx, 0.0, bz], x, z).distance < band
-            });
-        }
         let (qx, qz) = nearest_point(seam, x, z);
         self.rows.iter().any(|row| {
             let ([ax, az], [bx, bz]) = (row.a, row.b);

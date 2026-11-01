@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Portal rows in the graded terrain (`TERRAIN-07-C`, `ROAD-61` round R8): no cone reaches past
-//! a tunnel's portal row (round R8c: but the headwall wings', beside the bore), pruned equals
-//! unpruned with it, the queries answer what the bake packs, and a tunnel edit selects every
-//! tile it alters.
+//! a tunnel's portal row, the approach's retained seams leave the hill beside it natural (round
+//! R8e), pruned equals unpruned with it, the queries answer what the bake packs, and a tunnel
+//! edit selects every tile it alters.
 
 use super::site_tests::structure_mouth;
 use super::tests::{assert_exact_pruning, bake_with};
-use super::grade::TIE_IN_SLOPE;
-use super::portal::{PortalWindow, WING_CAP_M};
 use super::tile::Evaluation;
 use super::*;
 use crate::simulation::network::graph::RegionGraph;
@@ -29,11 +27,11 @@ fn tiles(half: i32) -> Vec<TileKey> {
 }
 
 // test: the tunnel continuing a road level into a 1:2 hill, its portal row at x = 0. Past the row
-// the graded ground is the hill itself over the bore out to the cap, though the approach's cones
-// would cut it there, and beside the bore the hill cut only by the headwall wings' cones (round
-// R8c); before the row the approach's cut is graded, and under the deck at the row the ground
-// continues the hill. Pruned equals unpruned at every level, batch, order and worker count, and
-// every `GL0` lattice point's packed value is the query's.
+// the graded ground is the hill itself out to the cap, over the bore and beside it; before the
+// row the approach's seams are retained (round R8e), so beside the approach the ground is the
+// hill too, and under the deck at the row the ground continues the hill. Pruned equals unpruned
+// at every level, batch, order and worker count, and every `GL0` lattice point's packed value is
+// the query's.
 #[test]
 fn no_cone_reaches_past_a_portal_row() {
     let (graph, terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
@@ -49,45 +47,24 @@ fn no_cone_reaches_past_a_portal_row() {
     };
     let mut scratch = QueryScratch::default();
     let hill = |x: f64| 0.5 * (x + 20.0).max(0.0);
-    // The headwall's wings, and the hill under their cones' upper bounds beside the bore.
-    let mut pieces = Vec::new();
-    roadbed.grounded_pieces_in_bounds([-80.0, -80.0, 80.0, 80.0], &mut pieces);
-    let mut window = PortalWindow::default();
-    window.gather(&roadbed, [-80.0, -80.0, 80.0, 80.0], &pieces);
-    let mut wings = Vec::new();
-    window.push_wings(&mut wings);
-    assert_eq!(wings.len(), 2, "one portal row, two wings");
-    let half = wings.iter().map(|wing| wing.a[2].abs()).fold(f64::INFINITY, f64::min);
-    let graded = |x: f64, z: f64| {
-        wings.iter().fold(hill(x), |ground, wing| {
-            let at = wing.at(x, z);
-            if at.distance <= WING_CAP_M {
-                ground.min(at.height + TIE_IN_SLOPE * at.distance)
-            } else {
-                ground
-            }
-        })
-    };
-    // On `GL0` lattice points past the row: a point between the row's line and the next lattice
-    // column reads the rendered triangle's blend of the cut and the hill.
+    // On `GL0` lattice points past the row, over the bore and beside it.
     for x in [0.5, 1.0, 5.0, 20.0, 40.0, 63.0] {
         for z in [-30.0, -6.0, -2.0, 0.0, 2.0, 6.0, 30.0] {
             let ground = surface.ground_height_at(x, z, &mut scratch);
-            let expected = if z.abs() < half { hill(x) } else { graded(x, z) };
-            // A graded value is the base plus the packed `f32` delta.
-            let tolerance = if z.abs() < half { 1e-9 } else { 1e-5 };
             assert!(
-                (ground - expected).abs() < tolerance,
-                "({x}, {z}): ground {ground}, expected {expected}, hill {}",
+                (ground - hill(x)).abs() < 1e-9,
+                "({x}, {z}): ground {ground}, hill {}",
                 hill(x)
             );
             assert_eq!(surface.surface_height_at(x, z, &mut scratch), ground);
         }
     }
-    // Before the row the approach lies in its cut: 5 m beside it, 2 m before the row, the
-    // ground stands below the hill.
-    let cut = surface.ground_height_at(-2.0, 7.0, &mut scratch);
-    assert!(cut < hill(-2.0) - 1.0, "approach cut {cut}");
+    // Before the row the approach's seams are retained: 2 m before the row the hill stands
+    // natural beside the approach, where the walls close it down to the road.
+    for z in [-7.0, -4.0, 4.0, 7.0] {
+        let beside = surface.ground_height_at(-2.0, z, &mut scratch);
+        assert!((beside - hill(-2.0)).abs() < 1e-9, "beside the approach at z {z}: {beside}");
+    }
     // Under the approach's deck at the row, where the mask discards the terrain, the ground
     // continued across the mouth is the far side's, the hill: the step down to the deck lies
     // over the approach, not in the lining's mouth.
@@ -127,8 +104,8 @@ fn no_cone_reaches_past_a_portal_row() {
                     base + f64::from((ground - base) as f32),
                     "({x}, {z})"
                 );
-                if x > 0.0 && z.abs() < half {
-                    assert_eq!(texel[0], 0.0, "({x}, {z}) past the row over the bore");
+                if x > 0.0 {
+                    assert_eq!(texel[0], 0.0, "({x}, {z}) past the row");
                 }
             }
         }
@@ -219,4 +196,70 @@ fn an_approach_changes_the_inputs_of_its_far_tiles() {
     assert_eq!(tunnel.seams[..bridge.seams.len()], bridge.seams[..]);
     assert!(tunnel.seams.len() > bridge.seams.len(), "the retained seams are inputs");
     assert_ne!(bridge, tunnel);
+}
+
+// The road seams of `roadbed`'s tunnel approaches (`ROAD-61` round R8e), as the bake reads them.
+fn retained_seams(roadbed: &RoadbedSystem) -> Vec<super::seams::Seam> {
+    let mut pieces = Vec::new();
+    let mut out = Vec::new();
+    let all = [-1.0e4, -1.0e4, 1.0e4, 1.0e4];
+    roadbed.for_each_grounded_seam_in_bounds(all, &mut pieces, |[a, b], retained| {
+        if retained {
+            out.push(super::seams::Seam {
+                retained,
+                ..super::seams::road_seam(a, b)
+            });
+        }
+    });
+    out
+}
+
+// test (`ROAD-61` round R8e): along the approach's cut every `GL0` and `GL2` lattice point within
+// the band of a retained seam names a road seam, its `sdf` that seam's exact signed distance,
+// negative under the road: the exact mask discards on the seam line, which the trough's walls
+// stand on. (The option T prototype hid the approach's seams there: every trough texel was
+// unnamed, its `sdf` the band, and the mask cut a zigzag beside the walls.)
+#[test]
+fn trough_texels_name_their_seam() {
+    let (graph, terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
+    let roadbed = compiled(&graph);
+    let retained = retained_seams(&roadbed);
+    assert!(retained.len() >= 4, "the approach's chains are retained");
+    let cell_m = f64::from(terrain.cell_size_m());
+    for level in [Level::Gl0, Level::Gl2] {
+        let (band, spacing) = (level.band_m(cell_m), level.spacing_m(cell_m));
+        let payloads = bake_with(&terrain, &roadbed, &NoSites, &tiles(2), level, Evaluation::Lanes);
+        let mut named = 0;
+        for payload in &payloads {
+            let origin = payload.tile.origin();
+            for j in 0..payload.samples[1] {
+                for i in 0..payload.samples[0] {
+                    let (x, z) = (
+                        origin[0] + (i as f64 - 1.0) * spacing,
+                        origin[1] + (j as f64 - 1.0) * spacing,
+                    );
+                    // The cut, short of the portal row's band, where the row is named instead.
+                    if !(-19.0..=-band - 0.5).contains(&x) {
+                        continue;
+                    }
+                    let nearest = retained
+                        .iter()
+                        .map(|seam| seam.at(x, z).distance)
+                        .fold(f64::INFINITY, f64::min);
+                    if nearest >= band {
+                        continue;
+                    }
+                    let texel = payload.texels[j * payload.samples[0] + i];
+                    assert!(texel[2] >= 0.0, "{level:?} ({x}, {z}) {nearest} m from the seam");
+                    assert_eq!(
+                        texel[1].abs(),
+                        nearest as f32,
+                        "{level:?} ({x}, {z}): the sdf is the seam's distance"
+                    );
+                    named += 1;
+                }
+            }
+        }
+        assert!(named > 50, "{level:?}: {named} trough texels");
+    }
 }
