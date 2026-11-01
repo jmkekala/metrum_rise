@@ -12763,6 +12763,21 @@ Weather, clouds and the night sky (`RENDER-16`, `RENDER-17`, `RENDER-20`, `RENDE
   sky's own horizon haze, as dense as the deck. The march fades into it over its last 9 km. The
   band once mixed in the deck's shade with a fixed lift, which drew a grey stripe at night and a
   lilac one at dusk under overcast and storm. Its hard cut-off also drew a stepped edge.
+- **Overview altitude** (`CAM-02`). The sky-only cumulus composite fades with world camera
+  height from 1200 to 1500 m; cirrus fades from 6500 to 8000 m. Both are absent above 8 km,
+  so overview navigation never evaluates a cloud intersection behind the camera. The low
+  march also rejects origins at or above its base. These visibility weights affect cloud colour
+  and transmittance, including the water-reflection panorama, but never change weather state,
+  the ground-shadow bake or receiver shadow sampling. Above the lowest fade threshold, a
+  change in camera height invalidates view and panorama history (including all interleaved
+  workgroups), preventing old clouds from persisting after ascent. Below that threshold the
+  existing history policy is retained. The changes are O(1) per pixel and per camera update,
+  with no new texture lookup, spatial structure or per-frame CPU allocation.
+  Fresh rendered validation on `camera/playtest` (2026-11-01) reads cloud transmittance at
+  1000, 1350, 1500, 6500, 7250, 8000 and 42000 m, then returns to 1000 m. The panorama is
+  fully transparent at/above 8000 m and clouds return on descent; the 64² sampled ground-shadow
+  image hashes identically at every altitude. Overview workload/timings are in
+  [ui.md](ui.md#whole-map-zoom--cam-02). Stars and moon remain sky directions, not finite shells.
 - **High cloud** (`RENDER-25`). Above the cumulus a sheet of cirrus at 8 km is drawn in the
   same march as one translucent surface (`high_clouds()` in `weather_cloud_march.glsl`): broad
   patches carrying fine fibres, both read from the weather map stretched along the world

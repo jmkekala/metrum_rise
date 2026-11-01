@@ -88,6 +88,7 @@ var _frame := 0
 var _view_history_valid := false
 var _panorama_history_valid := false
 var _previous_view_projection := Projection.IDENTITY
+var _previous_camera_height := INF
 
 func _init() -> void:
 	# Writes the clouds into the colour texture after the sky. The project renders without
@@ -246,6 +247,13 @@ func _render_callback(callback_type: int, render_data: RenderData) -> void:
 
 	var projection := scene.get_cam_projection()
 	var camera := scene.get_cam_transform()
+	# Rotation-only history cannot represent crossing/fading a cloud layer. Recompute
+	# both buffers at changed altitude, including all four panorama workgroup phases.
+	# Below the lowest fade band, retain the existing history policy and panorama cost.
+	if camera.origin.y != _previous_camera_height and maxf(camera.origin.y, _previous_camera_height) >= 1200.0:
+		_view_history_valid = false
+		_panorama_history_valid = false
+	_previous_camera_height = camera.origin.y
 	var rotation := Projection(Transform3D(camera.basis, Vector3.ZERO))
 	var write := _frame & 1
 	var inv_projection := projection.inverse()

@@ -46,6 +46,7 @@ var current_tool: Tool = Tool.NONE
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
 const WORLD_CAMERA_NEAR_CLIP_M := 0.5
+const WORLD_CAMERA_MAX_DISTANCE_M := 40000.0
 const WORLD_CAMERA_MIN_FAR_M := 9000.0
 const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 # A world load hands the game over once every patch within this distance of the camera draws what it
@@ -68,8 +69,11 @@ var _industry_previous_overlay_mode := 0
 var _alt_orbit := false
 # The last gesture seen this frame, to drop the repeated engine dispatch of it.
 var _last_gesture := ""
+var _camera_window_focused := true
 
 func _ready():
+	get_window().focus_exited.connect(_on_camera_focus_exited)
+	get_window().focus_entered.connect(func(): _camera_window_focused = true)
 	# Camera input and native clearance settling must precede RoadTool's cursor sample.
 	process_priority = CAMERA_INPUT_PROCESS_PRIORITY
 	var frame_camera := get_node_or_null("../CameraNode")
@@ -164,19 +168,33 @@ func _configure_world_camera_policy() -> void:
 	# The camera derives its far plane from the orbit distance plus the margin, floored at the
 	# minimum. Reduced view distance drops the margin and floors it lower instead, so the far
 	# plane still opens up when zoomed far out.
+	camera.set_distance_bounds(10.0, WORLD_CAMERA_MAX_DISTANCE_M)
 	if GameSettings.get_view_distance() == GameSettings.VIEW_DISTANCE_REDUCED:
 		camera.set_clip_policy(WORLD_CAMERA_NEAR_CLIP_M, GameSettings.REDUCED_VIEW_DISTANCE_M, 0.0)
 	else:
 		camera.set_clip_policy(WORLD_CAMERA_NEAR_CLIP_M, WORLD_CAMERA_MIN_FAR_M, WORLD_CAMERA_FAR_MARGIN_M)
 	camera.configure_world_camera()
+	camera.set_world_bounds_enabled(true)
 
-func _process(delta):
+func _process(_delta):
 	if not _world_ready:
+		_cancel_camera_motion()
 		_await_world_ready()
 		return
-	if _ui_captures_keyboard_input():
+	if not _camera_window_focused or _ui_captures_keyboard_input():
+		_cancel_camera_motion()
 		return
-	_handle_camera_controls(delta)
+	_handle_camera_controls()
+
+func _cancel_camera_motion() -> void:
+	_alt_orbit = false
+	var camera := get_viewport().get_camera_3d() as CameraNode
+	if camera:
+		camera.cancel_motion()
+
+func _on_camera_focus_exited() -> void:
+	_camera_window_focused = false
+	_cancel_camera_motion()
 
 ## Whether the loaded world was handed over: false from a load until the terrain renderer settles.
 func is_world_ready() -> bool:
@@ -195,7 +213,7 @@ func _await_world_ready() -> void:
 	world_ready.emit()
 
 func _input(event):
-	if not _world_ready:
+	if not _world_ready or not _camera_window_focused:
 		return
 	# Godot 4.7.1 dispatches every gesture twice from Input._parse_input_event_impl: once from
 	# its gesture branch and once from the generic dispatch after it. The copy arrives in the
@@ -208,6 +226,7 @@ func _input(event):
 			return
 		_last_gesture = key
 	if _ui_has_modal_popup():
+		_cancel_camera_motion()
 		return
 	var camera := get_viewport().get_camera_3d() as CameraNode
 	if not camera:
@@ -238,7 +257,7 @@ func _input(event):
 	elif event is InputEventMagnifyGesture:
 		camera.zoom(log(event.factor) / log(camera.zoom_speed))
 
-func _handle_camera_controls(delta):
+func _handle_camera_controls():
 	var camera := get_viewport().get_camera_3d() as CameraNode
 	if not camera: return
 	
@@ -250,7 +269,7 @@ func _handle_camera_controls(delta):
 	if Input.is_key_pressed(KEY_D): pan_dir.x += 1.0
 	
 	if pan_dir.length_squared() > 0.0:
-		camera.pan(pan_dir, 1.0, delta)
+		camera.pan(pan_dir, 1.0)
 
 func _unhandled_input(event):
 	if not _world_ready:

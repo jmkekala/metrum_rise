@@ -799,13 +799,215 @@ Camera ownership rules:
   wrappers only; they decide when UI owns input and which scene-local camera policy applies
 - both wrappers call `CameraNode.configure_world_camera()` for shared terrain setup and the
   existing native application debug flag; clearance defaults and debug parsing are not duplicated
-  in GDScript, and the native camera has no input/frame callbacks
+  in GDScript. Input stays in the wrappers; native frame processing advances presentation motion
 - projection and orthographic size updates have one native implementation; changing distance
   bounds updates both the orbit distance and orthographic view immediately
 - zoom bounds, far clip policy, and focus padding may differ between gameplay and WorldEditor as
   explicit scene policy
 - AssetEditor keeps its own separate sandbox camera controller because it is not terrain/world
   constrained and uses a different viewport layout
+
+### Smooth camera motion — CAM-01
+
+On branch `camera/playtest`, keyboard pan and zoom use the shared Rust camera's frame
+update. Mouse orbit and drag-pan remain immediate. Explicit `focus_on`, save/load and
+`set_view_state` remain immediate and discard outstanding keyboard/zoom intent; snapshots
+store the **displayed** view, not a destination that the player has not yet reached.
+
+`camera_node/motion.rs` owns a constant-size analytic response state, independent of Godot.
+Wheel/pinch increments accumulate on the requested distance, while the displayed distance
+approaches it exponentially without overshoot. Keyboard input requests a velocity for one
+frame; absent input applies braking. Displacement integrates the entire exponential velocity
+curve over the frame instead of multiplying its final velocity by delta. A sub-f32 remainder
+preserves small horizontal increments at large world coordinates. Idle updates query no
+terrain and change no transform (except one deferred water-clearance check after restoration).
+Motion integration is O(1), allocation-free, and uses one camera; no collection or spatial
+index is introduced. Active frames reuse the existing terrain/water clearance queries.
+
+The exported response times specify **95% response**, not a delay before movement starts:
+
+| Camera property | Initial value | Meaning |
+|---|---|---|
+| `zoom_response_s` | 0.15 s | Cover 95% of the requested distance change |
+| `pan_acceleration_s` | 0.10 s | Reach 95% of requested keyboard velocity |
+| `pan_braking_s` | 0.06 s | Remove 95% of velocity after key release |
+
+Zero selects immediate response. Zoom tails stop within a relative distance error of
+1e-6; released pan velocity stops below 0.001 m/s. UI capture, focus loss and world-load
+gating call `cancel_motion` to stop at the displayed view immediately. Taking over with
+follow or mouse drag discards keyboard velocity. Follow still permits zoom and orbit;
+a pan request ends following before the inspector's next update.
+
+All three input wrappers process at priority -300, native camera motion at -200, and
+ordinary picking/render bridges at 0. AssetEditor updates its pane-centering offset after
+camera motion and before its selection/LOD update. Deterministic offline drivers may call
+`advance_motion(delta)` only with the camera's automatic processing disabled.
+
+Fresh validation (2026-11-01): nine Rust camera-related tests pass, including response
+integration at 30/60/120/240 FPS. Godot `camera_motion_test` and `camera_save_load_test`
+pass with `METRUM_DEBUG=0` and `1`; `agent_inspector_test`, `asset_workspace_test` and
+`asset_selection_test` pass. These cover queued zoom, orthographic projection, cancellation,
+mid-motion save/restore, bounds, direct orbit/drag, following, water clearance and the three
+wrappers moving the camera before picking in the same frame. All Cargo commands use the
+original checkout's shared `build-slot.sh` wrapper, including `cargo test --offline --lib camera`
+and `cargo clippy --offline --all-targets`. Clippy completes with 59 warnings in untouched
+`asset_document.rs` and agent SoA code; no camera warnings.
+
+The fresh release control (base `dc979ad8`, library SHA-256 prefix `5314b34176f8446f`)
+reproduces the historical baseline's 60 FPS trace exactly. The candidate library is
+`944730da7e0736663464277f76d0ded3012b0cd254620fa73c97607c175dff28`;
+its camera and motion source hashes are recorded with the replay in `$ARTIFACTS/metadata.json`.
+Repeated candidate 60 FPS traces and the rendered/headless traces match exactly; maximum
+endpoint coordinate difference across 30/60/120 FPS is 0.069 mm. At 60 FPS, the first city-pan
+frame averages 51.1 m/s rather than 240 m/s, and the first wheel notch moves the eye 18.9 m
+rather than 66.7 m. Orbit, explicit framing and follow traces are unchanged. The hill's
+vertical response remains terrain-driven; this pass does not damp terrain height.
+
+`camera_motion_benchmark.gd` measures command/update cost separately from replay capture.
+Both libraries use the same release profile, lockfile and CPU flags. The fixture pauses a
+2048 m blank world, uses four Rayon workers, and excludes setup from timed batches.
+Each process warms up 10,000 updates, then records 21 batches of 10,000 updates per case.
+Pan reverses every 128 frames; zoom alternates a notch every eight frames; delta is 1/60 s.
+Three control/candidate pairs alternate execution order. The control's idle case uses a
+no-op native pan call as a dispatch baseline, not an automatically scheduled old update.
+These measurements cover one camera and existing clearance queries, not populated-city
+rendering or simulation throughput. Run each isolated project with its selected library:
+
+```bash
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 \
+METRUM_CAMERA_BENCH_OUTPUT="$ARTIFACTS/camera-cost.json" \
+godot --headless --path "$ARTIFACTS/project" --script res://camera_motion_benchmark.gd
+```
+
+Fresh unprofiled release results, after compilation completed (range of three process medians,
+microseconds per frame):
+
+| Workload | Immediate control | Smoothed candidate |
+|---|---:|---:|
+| Idle dispatch | 0.422–0.434 | 0.415–0.428 |
+| Keyboard pan | 3.769–3.869 | 4.240–4.279 |
+| Wheel zoom | 0.571–0.579 | 3.881–3.945 |
+| Pan and zoom | 4.246–4.305 | 4.297–4.328 |
+
+Zoom now updates clearance/transform every moving frame instead of only on wheel events;
+that expected cost remains below 4 µs per frame in this fixture. Pan adds about 0.4–0.5 µs.
+The implementation is ready for hands-on tuning on `camera/playtest`; these synthetic checks
+establish response and bounded camera cost, not a subjective judgment about gameplay feel.
+
+### Whole-map zoom — CAM-02
+
+Gameplay uses a fixed **10 m–40 km** orbit range, independent of map size. The input
+bridge sets this scene policy through the existing Rust `set_distance_bounds` API;
+the shared Rust response and its distance-dependent far plane remain unchanged.
+At the usual 45-degree pitch, the limit is about 28 km above the focus point.
+Gameplay enables Rust `set_world_bounds_enabled`: the horizontal focus stays inside the
+current map rectangle, while the camera eye may orbit outside it. Keyboard pan, drag,
+focus and follow share this constraint. At an edge only the blocked velocity component is
+cleared, preserving sliding along the edge and immediate reversal. Bounds use the live
+terrain-size snapshot in O(1), without allocations or entity scans; stationary frames do
+not query it. Saved off-map pivots are corrected on the first native update after load,
+when the simulation borrow has ended. Older zoom distances respect the gameplay limit.
+The policy is opt-in; asset and world editors retain their existing navigation.
+Asset-editor bounds remain local to the asset scene. Visible cloud layers fade before
+the camera crosses them; [terrain.md](terrain.md#14-terrain-site-ground-water-and-lighting-materials-are-runtime-presentation) owns
+the rendering details. Stars and moon remain directional sky elements.
+
+Original 60 km validation on `camera/playtest`, 2026-11-01: `camera_motion_test`, `camera_save_load_test`,
+`weather_menu_test` and `day_cycle_test` pass. The motion regression checks the full range
+on a small world, unchanged close-up reach, far-plane clearance, and projection of all four
+corners of a 32 km square at 60 km distance (45-degree pitch, cardinal/diagonal yaw, 16:9).
+Rendered sweeps use the actual 500 m test world and local Kuopio world. The latter's metadata
+is **18 × 18 km (324 km²)**; a separate 32 km terrain file was not available for this run.
+All terrain/water/vegetation settling checks pass at the sampled distances and after returning
+to close-up. No new LOD or terrain-residency system was necessary.
+
+The opt-in `camera_overview_playtest.gd` reuses the existing scene-capture settling check.
+Set `METRUM_OVERVIEW_WORLD` to a world SQLite and `METRUM_OVERVIEW_OUTPUT` to a fresh
+`$ARTIFACTS` directory, then run Godot with `--path godot --resolution 1280x720
+--script res://tests/camera_overview_playtest.gd`. `METRUM_OVERVIEW_CLOUDS=1` adds
+horizon-facing captures/readbacks across the cloud layers. `METRUM_OVERVIEW_VIDEO_ONLY=1`
+instead records a 30 FPS PNG sequence of proportional zoom-out/zoom-in input; video capture
+is separate from timing measurements.
+
+Historical 60 km rendering measurements: release library `944730da7e073666`, Godot 4.7.2,
+Forward+/Vulkan, RX 7900 XTX, 1280×720, four Rayon workers, paused empty worlds, fair weather
+and 10:00 lighting. Each distance settles before 120 timing samples; transition p95 uses the
+preceding 90 camera-update frames. GPU medians at 400 m / 30 km / 60 km were
+0.498 / 0.183 / 0.186 ms on the small world and 1.267 / 0.904 / 0.844 ms on Kuopio.
+The largest sampled transition GPU p95 was 2.077 ms on Kuopio. Gamescope enforced V-Sync,
+so the roughly 16.7 ms wall-frame measurements are capped, not maximum-throughput results.
+These are empty-world rendering measurements, not populated-city performance acceptance.
+The original 60 km extension reused the existing camera binary; the subsequent 40 km
+boundary policy changes native camera code. The older measurements above do not validate it.
+
+Current 40 km/boundary validation (`camera/playtest`, 2026-11-01): 10 targeted Rust camera
+tests and `camera_motion_test`, `camera_save_load_test`, `agent_inspector_test` pass.
+`cargo clippy --all-targets` passes with 59 existing warnings in untouched files and none
+in changed camera code. All Cargo commands used the shared build-slot wrapper. The motion
+regression covers four edges, braking, immediate reversal, diagonal sliding, drag, deferred
+off-map restoration, old 60 km saves, replacement-world dimensions, editor opt-out, close-up
+zoom and 18 km corner projection at 40 km. The rendered 18 km Kuopio sweep and sustained
+pan against all four edges pass, including return to close-up. The previous 32 km framing
+result above belongs to the old 60 km limit; it is not a 40 km framing guarantee.
+
+Matched unprofiled release camera benchmark: control `944730da7e073666`, candidate
+`5ae1359da565f066`, Godot 4.7.2 headless, four Rayon workers, isolated identical projects,
+paused 2048 m blank world, 21 measured batches × 10,000 frames after a warm-up batch.
+The candidate enables gameplay bounds; the control lacks that policy. Idle / pan / zoom /
+pan+zoom medians were **0.422 / 4.367 / 4.029 / 4.426 µs** for control and
+**0.415 / 4.531 / 4.216 / 4.597 µs** for candidate. The extra active-frame cost is about
+0.2 µs, with O(1) complexity independent of city population. Reproduce using the existing
+`camera_motion_benchmark.gd`, `METRUM_CAMERA_BENCH_OUTPUT="$ARTIFACTS/results.json"`,
+`RAYON_NUM_THREADS=4`, `METRUM_DEBUG=0`, and `godot --headless --path "$ARTIFACTS/project"
+--script res://benchmark.gd`; each isolated project contains the same fixture and its selected
+release library. Render captures were completed before these matched timing runs.
+
+### Scripted camera feel baseline
+
+`tools/camera_playtest.py` runs the shared native camera API in an isolated synthetic
+world, with a 10 m reference grid, building-sized landmarks and a 30 m hill. It covers
+close/city pan, wheel steps, constant mouse orbit, hill traversal, focus and follow.
+It does not exercise gameplay input routing, populated-city frame pacing, water contact,
+or editor UI. The recorded baseline below predates `CAM-01`; rerunning uses the selected
+library and the current fixture/API.
+
+Run from the repository root with an explicitly selected GDExtension binary and a fresh
+artifact directory (`--video` requires Godot, gamescope and ffmpeg on Linux):
+
+```bash
+python tools/camera_playtest.py --library godot/bin/libmetrum_rise.so --output "$ARTIFACTS" --video
+```
+
+The runner copies the binary and fixture into an isolated project and user profile. It
+records binary/source/fixture hashes and commands in `metadata.json`, per-frame traces
+at 30/60/120 fixed FPS, a repeated 60 FPS trace, `summary.json`, and a 22-second,
+960 × 540, 60 FPS `camera-replay.mp4`. The replay uses unlit diagnostic geometry and
+Godot's Compatibility renderer. Fixed-step traces and PNG capture are **not runtime
+performance measurements**. Physics jitter correction is disabled in this fixture so
+the requested fixed render delta is preserved. Normal gameplay settings are untouched.
+
+Baseline run (2026-11-01): deployed library SHA-256
+`1ddb9699688affb9fbbc4b2d4e92eafd52f0abfda489ac157340dcc9a5a9b922`,
+Godot `4.7.2.stable.arch_linux.ed1daf0bf`, four Rayon workers; no new Rust build.
+The deployed binary's build commit is unknown; the harness records the source checkout
+separately rather than claiming that it identifies the binary. All seven trials passed
+finite-pose and ground-clearance checks. Repeated 60 FPS traces matched exactly; the
+rendered trace matched the headless trace exactly, and endpoint coordinate differences
+between frame rates stayed below 0.3 mm.
+
+| Baseline observation | Measurement / implication |
+|---|---|
+| Pan starts and stops immediately | At orbit distances 40/400 m, the first active frame reaches 24/240 m/s; no movement after release. |
+| Wheel zoom is a single-frame step | First inward notch changes distance 400 → 333.333 m, moving the eye 66.667 m. |
+| Constant orbit input is even | 120 horizontal pixels/s produces approximately 20.626°/s yaw, with immediate start/stop. |
+| Terrain height directly drives the camera | Crossing the 30 m hill at 48 m/s horizontal speed reaches about 35.127 m/s vertical speed. Clearance remained valid in this fixture. |
+| Focus and follow acquisition snap | The chosen focus change moves the eye 345.254 m in one frame; acquiring the follow target shifts it 20 m before tracking its 12 m/s motion. |
+
+First tuning candidates are wheel easing and brief keyboard acceleration/braking. Keep
+mouse orbit responsive; assess terrain-height damping and focus/follow transitions
+separately. Future changes should retain explicit immediate view restoration and the
+camera-before-picking process order. This baseline is diagnostic evidence, not acceptance
+of a smoothing implementation.
 
 Camera validation (2026-09-11): targeted Rust tests and the headless
 `res://tests/camera_save_load_test.gd` pass, covering shared zoom endpoints, hillside movement,

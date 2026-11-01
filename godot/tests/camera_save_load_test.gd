@@ -18,6 +18,7 @@ func _camera(host: Node3D, orthogonal: bool, debug_under_terrain: bool = false) 
 	camera.name = "CameraNode"
 	camera.set("orthogonal", orthogonal)
 	host.add_child(camera)
+	camera.set_process(false)
 	camera.make_current()
 	camera.configure_world_camera()
 	camera.set_debug_under_terrain_enabled(debug_under_terrain)
@@ -27,12 +28,14 @@ func _continue_controls(camera: CameraNode) -> void:
 	camera.pan_screen(Vector2(13.0, -7.0))
 	camera.orbit(Vector2(-30.0, 8.0))
 	camera.zoom(-1.0)
+	camera.advance_motion(1.0)
 
 func _zoom_endpoints(camera: CameraNode) -> Array[Transform3D]:
 	var endpoints: Array[Transform3D] = []
 	for direction: float in [1.0, -1.0]:
 		for step in 80:
 			camera.zoom(direction)
+		camera.advance_motion(1.0)
 		endpoints.append(camera.global_transform)
 	return endpoints
 
@@ -59,7 +62,8 @@ func _check_camera_modes(host: Node3D, simulation: SimulationNode, path: String)
 	var hillside_height := simulation.get_height_at(Vector2(normal.global_position.x, normal.global_position.z))
 	_expect(normal.global_position.y >= hillside_height + 1.499, "shared downward view must clear the hillside")
 	for camera: CameraNode in [normal, debug]:
-		camera.pan(Vector3(1.0, 0.0, -1.0), 1.0, 0.1)
+		camera.pan(Vector3(1.0, 0.0, -1.0), 1.0)
+		camera.advance_motion(0.1)
 		_continue_controls(camera)
 	_expect(debug.global_transform.is_equal_approx(normal.global_transform), "pan, orbit and zoom must follow terrain identically across modes")
 	var above_ground := debug.global_transform
@@ -117,16 +121,23 @@ func _run() -> void:
 		camera.focus_on(Vector3(40.0, 50.0, -30.0), 70.0)
 		camera.orbit(Vector2(185.0, -45.0))
 		camera.zoom(1.0)
+		# Save the displayed view during a transition, not its outstanding target.
+		camera.advance_motion(0.03)
+		var saved_view := camera.get_view_state()
 		var saved_transform := camera.global_transform
 		var saved_projection := camera.projection
 		var saved_size := camera.size
 		_expect(simulation.save_game(path), "camera fixture must save")
+		# Compare subsequent input from that same displayed state, with no latent intent.
+		_expect(camera.set_view_state(saved_view), "reset transient intent after saving the mid-zoom view")
 		_continue_controls(camera)
 		var continued_transform := camera.global_transform
 		var continued_size := camera.size
 		_expect(not saved_transform.is_equal_approx(continued_transform), "test controls must move the camera")
 		_expect(simulation.load_game(path), "camera fixture must load")
 		_expect(camera.global_transform.is_equal_approx(saved_transform), "load must restore position and rotation in the existing scene")
+		camera.advance_motion(1.0)
+		_expect(camera.global_transform.is_equal_approx(saved_transform), "load must not resume the saved view's pending zoom")
 		camera.free()
 		# A fresh camera starts with the opposite projection and a different orbit pivot.
 		camera = _camera(host, not orthogonal)

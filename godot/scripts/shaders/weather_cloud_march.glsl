@@ -196,7 +196,7 @@ vec4 march(vec3 origin, vec3 eye, int steps, float jitter, bool detail) {
 	vec3 haze_colour = params.horizon.rgb;
 	float coverage = params.clouds.z;
 	float deck = smoothstep(0.8, 1.0, coverage);
-	if (eye.y <= 0.002 || coverage <= 0.0) {
+	if (eye.y <= 0.002 || coverage <= 0.0 || origin.y >= CLOUD_BASE_M) {
 		return vec4(0.0, 0.0, 0.0, 1.0);
 	}
 	float enter_m = max((CLOUD_BASE_M - origin.y) / eye.y, 0.0);
@@ -293,8 +293,9 @@ const vec2 HIGH_FIBRE_PERIOD_M = vec2(8192.0, 1024.0);
 // Light from the high sheet along `eye` in rgb and its opacity in a.
 vec4 high_clouds(vec3 origin, vec3 eye, bool panorama) {
 	float cover = params.high.z;
-	float fade = smoothstep(0.01, 0.08, eye.y);
-	if (cover <= 0.0 || fade <= 0.0) {
+	float fade = smoothstep(0.01, 0.08, eye.y)
+		* (1.0 - smoothstep(6500.0, HIGH_CLOUD_ALTITUDE_M, params.camera_position.y));
+	if (cover <= 0.0 || fade <= 0.0 || origin.y >= HIGH_CLOUD_ALTITUDE_M) {
 		return vec4(0.0);
 	}
 	float t = (HIGH_CLOUD_ALTITUDE_M - origin.y) / eye.y;
@@ -376,6 +377,10 @@ void main() {
 		origin += mat3(params.camera_basis) * near_view;
 	}
 	vec4 current = march(origin, eye, panorama ? 24 : 48, jitter, !panorama);
+	// Fade each sky-only layer before crossing it. Use camera altitude, not the
+	// per-pixel orthographic ray origin, to keep visibility uniform across the view.
+	float low_visibility = 1.0 - smoothstep(1200.0, CLOUD_BASE_M, params.camera_position.y);
+	current = mix(vec4(0.0, 0.0, 0.0, 1.0), current, low_visibility);
 	// The main layer lies in front of the high one.
 	vec4 high = high_clouds(origin, eye, panorama);
 	current.rgb += current.a * high.rgb * high.a;

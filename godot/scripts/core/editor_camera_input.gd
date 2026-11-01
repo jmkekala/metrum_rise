@@ -32,6 +32,7 @@ var _pan_active   := false
 var _alt_pressed := false
 var _alt_orbit := false
 var _alt_start := Vector2.ZERO
+var _window_focused := true
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -40,14 +41,20 @@ func _ready() -> void:
 	if not _cam:
 		push_error("EditorCameraInput: no CameraNode found in parent scene")
 		return
+	process_priority = -300
+	_cam.process_priority = -200
+	get_window().focus_exited.connect(_on_focus_exited)
+	get_window().focus_entered.connect(func(): _window_focused = true)
 	_cam.set_distance_bounds(MIN_DISTANCE, MAX_DISTANCE)
 	_cam.set_clip_policy(MIN_DISTANCE, MIN_FAR_M, FAR_MARGIN_M)
 	_cam.set_focus_padding(FOCUS_PADDING_MULT)
 	_cam.focus_on(Vector3.ZERO, INITIAL_FOCUS_RADIUS_M)
 
-func _process(delta: float) -> void:
-	_update_preview_offset()
-	if not _cam or _ui_captures_editor_keyboard_input():
+func _process(_delta: float) -> void:
+	if not _cam:
+		return
+	if not _window_focused or _ui_captures_editor_keyboard_input():
+		_cancel_navigation()
 		return
 
 	var pan_axis := Vector2.ZERO
@@ -63,7 +70,18 @@ func _process(delta: float) -> void:
 	if pan_axis.length_squared() == 0.0:
 		return
 
-	_cam.pan(Vector3(pan_axis.x, 0.0, -pan_axis.y), 1.0, delta)
+	_cam.pan(Vector3(pan_axis.x, 0.0, -pan_axis.y), 1.0)
+
+func _cancel_navigation() -> void:
+	_orbit_active = false
+	_pan_active = false
+	_alt_pressed = false
+	_alt_orbit = false
+	_cam.cancel_motion()
+
+func _on_focus_exited() -> void:
+	_window_focused = false
+	_cancel_navigation()
 
 ## Point the camera at `center` with enough distance to see a sphere of `radius`.
 func focus_on(center: Vector3, radius: float) -> void:
@@ -94,7 +112,10 @@ func _update_preview_offset() -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _input(event: InputEvent) -> void:
-	if not _cam:
+	if not _cam or not _window_focused:
+		return
+	if _ui_has_modal_popup():
+		_cancel_navigation()
 		return
 
 	# A mouse event carries its own position, which is also right for injected events; the

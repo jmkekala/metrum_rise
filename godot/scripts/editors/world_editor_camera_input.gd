@@ -21,23 +21,27 @@ const WORLD_KEYBOARD_PASSTHROUGH_META := "world_editor_keyboard_passthrough"
 
 var _orbit_active := false
 var _pan_active := false
+var _window_focused := true
 
 func _ready() -> void:
 	_cam = get_parent().find_child("CameraNode", true, false) as CameraNode
 	if not _cam:
 		push_error("WorldEditorCameraInput: no CameraNode found in parent scene")
 		return
+	process_priority = -300
+	_cam.process_priority = -200
+	get_window().focus_exited.connect(_on_focus_exited)
+	get_window().focus_entered.connect(func(): _window_focused = true)
 	_cam.set_distance_bounds(MIN_DISTANCE, MAX_DISTANCE)
 	_cam.set_clip_policy(MIN_DISTANCE, MIN_FAR_M, FAR_MARGIN_M)
 	_cam.set_focus_padding(FOCUS_PADDING_MULT)
 	_cam.configure_world_camera()
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
 	if not _cam:
 		return
-	if _ui_captures_world_keyboard_input():
-		_orbit_active = false
-		_pan_active = false
+	if not _window_focused or _ui_captures_world_keyboard_input():
+		_cancel_navigation()
 		return
 
 	var pan_axis := Vector2.ZERO
@@ -53,7 +57,16 @@ func _process(delta: float) -> void:
 	if pan_axis.length_squared() == 0.0:
 		return
 
-	_cam.pan(Vector3(pan_axis.x, 0.0, -pan_axis.y), 1.0, delta)
+	_cam.pan(Vector3(pan_axis.x, 0.0, -pan_axis.y), 1.0)
+
+func _cancel_navigation() -> void:
+	_orbit_active = false
+	_pan_active = false
+	_cam.cancel_motion()
+
+func _on_focus_exited() -> void:
+	_window_focused = false
+	_cancel_navigation()
 
 ## Point the camera at `center` with enough distance to see a sphere of `radius`.
 func focus_on(center: Vector3, radius: float) -> void:
@@ -62,7 +75,10 @@ func focus_on(center: Vector3, radius: float) -> void:
 	_cam.focus_on(center, radius)
 
 func _input(event: InputEvent) -> void:
-	if not _cam:
+	if not _cam or not _window_focused:
+		return
+	if _ui_has_modal_popup():
+		_cancel_navigation()
 		return
 
 	var over_ui := _ui_captures_world_pointer_input() or not _is_mouse_in_3d_area()

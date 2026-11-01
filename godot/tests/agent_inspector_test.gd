@@ -67,6 +67,8 @@ func _run() -> void:
 	input.building_inspector = buildings
 	input.agent_inspector = inspector
 	# What input_manager's _ready() does: Godot enables input callbacks only at ready.
+	input.process_priority = input.CAMERA_INPUT_PROCESS_PRIORITY
+	camera.process_priority = input.CAMERA_SETTLE_PROCESS_PRIORITY
 	inspector.building_requested.connect(input._on_agent_building_requested)
 	input.set_process(true)
 	input.set_process_input(true)
@@ -206,7 +208,9 @@ func _run() -> void:
 	var panned_to := camera.get_focus_position()
 	_expect(panned_to.distance_to(pan_from) > 1.0, "WASD must pan the camera")
 	await create_timer(SETTLE_S).timeout
-	_expect(camera.get_focus_position() == panned_to, "the camera must stay where it was panned while the car drives on")
+	panned_to = camera.get_focus_position()
+	await create_timer(SETTLE_S).timeout
+	_expect(camera.get_focus_position() == panned_to, "the camera must stay put after braking while the car drives on")
 	panel.find_child("FollowButton", true, false).pressed.emit()
 	_expect(await _eventually(func() -> bool: return camera.is_following() and not panel.follow_offered()), "Follow must resume after panning")
 	var following_now: Dictionary = await _inspection(simulation, render_id)
@@ -225,7 +229,9 @@ func _run() -> void:
 	var resting := camera.get_focus_position()
 	await create_timer(SETTLE_S).timeout
 	_expect(camera.get_focus_position() == resting, "the camera must stay put after the inspection")
-	camera.pan(Vector3(1.0, 0.0, 0.0), 1.0, 0.5)
+	camera.pan(Vector3(1.0, 0.0, 0.0), 1.0)
+	await process_frame
+	await process_frame
 	_expect(camera.get_focus_position() != resting, "pan must work again")
 
 	# A click on empty ground ends an inspection and still reaches the building inspector.

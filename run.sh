@@ -1086,7 +1086,7 @@ if [ $TEST -eq 1 ]; then
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
-        new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test \
+        new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
         zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
         junction_debug_overlay_test road_rejection_report_test road_tunnels_test \
         agent_inspector_test street_lamp_grid_test graded_tile_renderer_test; do

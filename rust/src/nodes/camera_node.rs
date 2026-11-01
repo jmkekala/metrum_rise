@@ -11,6 +11,11 @@ use godot::classes::camera_3d::ProjectionType;
 use godot::classes::{Camera3D, ICamera3D};
 use godot::prelude::*;
 
+mod motion;
+
+use glam::DVec2;
+use motion::Motion;
+
 const INITIAL_YAW: f32 = -0.785;
 const INITIAL_PITCH: f32 = -0.785;
 const INITIAL_DISTANCE_M: f32 = 400.0;
@@ -28,6 +33,15 @@ pub struct CameraNode {
     /// Multiplier for zoom distance changes.
     #[export]
     zoom_speed: f32,
+    /// Seconds for zoom to cover 95% of the requested distance change; zero is immediate.
+    #[export]
+    zoom_response_s: f32,
+    /// Seconds for keyboard pan velocity to reach 95% of its requested speed.
+    #[export]
+    pan_acceleration_s: f32,
+    /// Seconds for released keyboard pan velocity to fall to 5% of its previous speed.
+    #[export]
+    pan_braking_s: f32,
     /// Minimum allowed orbit distance.
     #[export]
     min_distance: f32,
@@ -73,14 +87,17 @@ pub struct CameraNode {
     yaw: f32,
     /// Vertical rotation in radians.
     pitch: f32,
-    /// Distance from the pivot point.
-    distance: f32,
+    /// Displayed/target distance and transient keyboard velocity, never saved as pending input.
+    motion: Motion,
+    // Keep sub-f32 pan increments at large world coordinates instead of losing them every frame.
+    pan_remainder: DVec2,
     /// While true the owner moves the pivot with `follow()`; pan input ends it.
     following: bool,
     /// Cached terrain/runtime source for height sampling.
     simulation_node: Option<Gd<SimulationNode>>,
 
     water_clearance_pending: bool,
+    world_bounds_enabled: bool,
 
     base: Base<Camera3D>,
 }
@@ -93,6 +110,9 @@ impl ICamera3D for CameraNode {
             speed: 240.0,
             sensitivity: 0.003,
             zoom_speed: 1.2,
+            zoom_response_s: 0.15,
+            pan_acceleration_s: 0.10,
+            pan_braking_s: 0.06,
             min_distance: 10.0,
             max_distance: 1000.0,
             near_clip_m: 0.5,
@@ -108,21 +128,18 @@ impl ICamera3D for CameraNode {
             pivot: Vector3::new(0.0, 0.0, 0.0),
             yaw: INITIAL_YAW,
             pitch: INITIAL_PITCH,
-            distance: INITIAL_DISTANCE_M,
+            motion: Motion::new(INITIAL_DISTANCE_M),
+            pan_remainder: DVec2::ZERO,
             following: false,
             simulation_node: None,
             orthogonal: false,
             water_clearance_pending: false,
+            world_bounds_enabled: false,
         }
     }
 
-    fn process(&mut self, _delta: f64) {
-        if self.water_clearance_pending {
-            self.water_clearance_pending = false;
-            let offset = self.camera_offset();
-            self.enforce_water_clearance(offset);
-            self.apply_camera_transform(offset);
-        }
+    fn process(&mut self, delta: f64) {
+        self.advance_motion(delta);
     }
 
     fn ready(&mut self) {
@@ -144,13 +161,13 @@ impl CameraNode {
         });
     }
 
-    /// Captures orbit controls rather than a transform that the next camera input would overwrite.
+    /// Captures the displayed orbit, excluding pending input and transient response velocity.
     pub(crate) fn saved_state(&self) -> SavedCameraState {
         SavedCameraState {
             pivot: [self.pivot.x, self.pivot.y, self.pivot.z],
             yaw: self.yaw,
             pitch: self.pitch,
-            distance: self.distance,
+            distance: self.motion.distance(),
             orthogonal: self.orthogonal,
         }
     }
@@ -161,7 +178,14 @@ impl CameraNode {
         self.yaw = state.yaw;
         // A saved debug view must still respect the active mode's pitch limits.
         self.pitch = Self::clamp_pitch(state.pitch, self.debug_under_terrain_enabled);
-        self.distance = state.distance;
+        let distance = if self.world_bounds_enabled {
+            state.distance.clamp(self.min_distance, self.max_distance)
+        } else {
+            state.distance
+        };
+        self.motion = Motion::new(distance);
+        self.pan_remainder = DVec2::ZERO;
+        self.following = false;
         self.orthogonal = state.orthogonal;
         self.update_projection();
         // The saved pivot already includes terrain clearance. Applying it directly preserves
@@ -214,19 +238,63 @@ impl CameraNode {
         self.pivot
     }
 
-    /// Pans the camera on the XZ plane relative to the current view.
+    /// Requests keyboard pan for the next rendered frame, relative to the current view.
+    /// Call every held frame; an omitted request releases the keys and applies braking.
     #[func]
-    pub fn pan(&mut self, direction: Vector3, speed_mult: f32, delta: f32) {
-        if direction.length() > 0.0 {
+    pub fn pan(&mut self, direction: Vector3, speed_mult: f32) {
+        if direction.is_finite() && speed_mult.is_finite() && direction.length_squared() > 0.0 {
             // The player takes the camera back from whatever it was following.
             self.following = false;
             let yaw_rot = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, self.yaw, 0.0));
             // Scale pan speed by zoom distance: faster when zoomed out, slower when close
-            let zoom_factor = (self.distance / INITIAL_DISTANCE_M).max(0.1);
-            let move_vec =
-                (yaw_rot * direction.normalized()) * self.speed * speed_mult * zoom_factor * delta;
-            self.pivot += move_vec;
+            let zoom_factor = (self.motion.distance() / INITIAL_DISTANCE_M).max(0.1);
+            let velocity =
+                (yaw_rot * direction.normalized()) * self.speed * speed_mult * zoom_factor;
+            self.motion
+                .request_pan(DVec2::new(velocity.x.into(), velocity.z.into()));
+        }
+    }
+
+    /// Stops pending zoom and keyboard motion at the displayed view, for UI capture/focus loss.
+    #[func]
+    pub fn cancel_motion(&mut self) {
+        self.motion.cancel();
+        self.pan_remainder = DVec2::ZERO;
+    }
+
+    /// Advances camera presentation once per rendered frame. Manual replay/benchmark owners
+    /// must disable automatic processing before calling this. Idle frames perform no queries.
+    #[func]
+    pub fn advance_motion(&mut self, delta: f64) {
+        if !delta.is_finite() || delta <= 0.0 {
+            return;
+        }
+        let step = self.motion.advance(
+            delta,
+            self.zoom_response_s.into(),
+            self.pan_acceleration_s.into(),
+            self.pan_braking_s.into(),
+        );
+        if step.pan_offset != DVec2::ZERO || step.zoom_changed {
+            let next = DVec2::new(self.pivot.x.into(), self.pivot.z.into())
+                + self.pan_remainder
+                + step.pan_offset;
+            self.pivot.x = next.x as f32;
+            self.pivot.z = next.y as f32;
+            self.pan_remainder = next - DVec2::new(self.pivot.x.into(), self.pivot.z.into());
+            if step.zoom_changed {
+                self.update_orthographic_size();
+            }
             self.update_camera_transform();
+        } else if self.water_clearance_pending {
+            self.water_clearance_pending = false;
+            if self.constrain_world_pivot() {
+                self.update_camera_transform();
+                return;
+            }
+            let offset = self.camera_offset();
+            self.enforce_water_clearance(offset);
+            self.apply_camera_transform(offset);
         }
     }
 
@@ -237,10 +305,12 @@ impl CameraNode {
             return;
         }
         self.following = false;
+        self.motion.stop_pan();
+        self.pan_remainder = DVec2::ZERO;
         let yaw_rot = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, self.yaw, 0.0));
         let right = yaw_rot * Vector3::RIGHT;
         let forward = yaw_rot * Vector3::new(0.0, 0.0, -1.0);
-        let pan_scale = (self.distance * self.drag_pan_scale).max(self.drag_pan_min_step);
+        let pan_scale = (self.motion.distance() * self.drag_pan_scale).max(self.drag_pan_min_step);
         self.pivot -= right * mouse_delta.x * pan_scale;
         self.pivot -= forward * mouse_delta.y * pan_scale;
         self.update_camera_transform();
@@ -259,20 +329,23 @@ impl CameraNode {
     }
 
     /// Zooms in by `amount` wheel notches, or out when negative. A fraction of a notch is a
-    /// fraction of the step, which is what a touchpad scroll or a pinch delivers.
+    /// fraction of the step, which is what a touchpad scroll or a pinch delivers. Notches
+    /// accumulate on the target; the displayed distance approaches it during frame processing.
     #[func]
     pub fn zoom(&mut self, amount: f32) {
-        if amount != 0.0 {
-            self.distance /= self.zoom_speed.powf(amount);
-            self.set_orbit_distance(self.distance);
-            self.update_camera_transform();
+        if amount.is_finite() && amount != 0.0 {
+            let distance = self.motion.target_distance() / self.zoom_speed.powf(amount);
+            self.motion
+                .zoom_to(distance.clamp(self.min_distance, self.max_distance));
         }
     }
 
-    /// Frames a spherical area around `center` using the configured focus padding.
+    /// Immediately frames a spherical area and discards previous keyboard/zoom motion.
     #[func]
     pub fn focus_on(&mut self, center: Vector3, radius: f32) {
         self.pivot = center;
+        self.cancel_motion();
+        self.following = false;
         self.set_orbit_distance(radius * self.focus_padding_mult);
         self.update_camera_transform();
     }
@@ -283,6 +356,8 @@ impl CameraNode {
     #[func]
     pub fn follow(&mut self, target: Vector3) {
         self.following = true;
+        self.motion.stop_pan();
+        self.pan_remainder = DVec2::ZERO;
         self.pivot = target;
         self.update_camera_transform();
     }
@@ -304,7 +379,12 @@ impl CameraNode {
     pub fn set_distance_bounds(&mut self, min_distance: f32, max_distance: f32) {
         self.min_distance = min_distance.max(0.01);
         self.max_distance = max_distance.max(self.min_distance);
-        self.set_orbit_distance(self.distance);
+        let target = self
+            .motion
+            .target_distance()
+            .clamp(self.min_distance, self.max_distance);
+        self.set_orbit_distance(self.motion.distance());
+        self.motion.zoom_to(target);
         self.update_camera_transform();
     }
 
@@ -330,6 +410,13 @@ impl CameraNode {
         self.set_debug_under_terrain_enabled(crate::debug::debug_session());
     }
 
+    /// Keeps the gameplay focus inside the current world's horizontal extent; editors opt out.
+    #[func]
+    pub fn set_world_bounds_enabled(&mut self, enabled: bool) {
+        self.world_bounds_enabled = enabled;
+        self.update_camera_transform();
+    }
+
     /// Extends orbit pitch for upward inspection beneath the shared terrain-following focus.
     #[func]
     pub fn set_debug_under_terrain_enabled(&mut self, enabled: bool) {
@@ -339,7 +426,8 @@ impl CameraNode {
     }
 
     fn set_orbit_distance(&mut self, distance: f32) {
-        self.distance = distance.clamp(self.min_distance, self.max_distance);
+        self.motion
+            .set_distance(distance.clamp(self.min_distance, self.max_distance));
         self.update_orthographic_size();
     }
 
@@ -355,7 +443,7 @@ impl CameraNode {
 
     fn update_orthographic_size(&mut self) {
         if self.orthogonal {
-            let size = self.distance * 0.5;
+            let size = self.motion.distance() * 0.5;
             self.base_mut().set_size(size);
         }
     }
@@ -410,10 +498,40 @@ impl CameraNode {
         let pitch_basis = Basis::from_euler(EulerOrder::YXZ, Vector3::new(self.pitch, 0.0, 0.0));
         let rotation = yaw_basis * pitch_basis;
 
-        rotation * Vector3::new(0.0, 0.0, self.distance)
+        rotation * Vector3::new(0.0, 0.0, self.motion.distance())
+    }
+
+    // Live snapshot dimensions avoid stale bounds after world replacement. O(1), no allocation.
+    fn constrain_world_pivot(&mut self) -> bool {
+        if !self.world_bounds_enabled {
+            return false;
+        }
+        self.resolve_simulation_node_if_needed();
+        let Some(simulation) = self.simulation_node.as_ref() else {
+            return false;
+        };
+        let size = simulation.bind().get_terrain_world_size();
+        if !size.is_finite() || size.x <= 0.0 || size.y <= 0.0 {
+            return false;
+        }
+        let x = self.pivot.x.clamp(-size.x * 0.5, size.x * 0.5);
+        let z = self.pivot.z.clamp(-size.y * 0.5, size.y * 0.5);
+        let blocked_x = x != self.pivot.x;
+        let blocked_z = z != self.pivot.z;
+        self.pivot.x = x;
+        self.pivot.z = z;
+        if blocked_x {
+            self.pan_remainder.x = 0.0;
+        }
+        if blocked_z {
+            self.pan_remainder.y = 0.0;
+        }
+        self.motion.stop_pan_axes(blocked_x, blocked_z);
+        blocked_x || blocked_z
     }
 
     fn update_camera_transform(&mut self) {
+        self.constrain_world_pivot();
         let offset = self.camera_offset();
         let pivot = self.pivot;
         if let Some(pivot_surface_y) = self.terrain_height_at(pivot.x, pivot.z) {
@@ -471,7 +589,7 @@ impl CameraNode {
         let pivot = self.pivot;
         let new_pos = pivot + offset;
         let near_clip = self.near_clip_m;
-        let far_clip = (self.distance * 4.0 + self.far_margin_m).max(self.min_far_m);
+        let far_clip = (self.motion.distance() * 4.0 + self.far_margin_m).max(self.min_far_m);
         self.base_mut().set_near(near_clip);
         self.base_mut().set_far(far_clip);
         self.base_mut().set_global_position(new_pos);

@@ -142,6 +142,8 @@ func _ready() -> void:
 	_lighting.pin_hour_of_day(10.5)
 
 func _process(_delta: float) -> void:
+	# Recenter the displayed view after native camera motion, before LOD and picking.
+	_cam_input._update_preview_offset()
 	_lod_preview.update($CameraNode)
 	if _menus.actions != null and not _menus.actions.mode.is_empty() and _cam_input._ui_has_modal_popup():
 		_menus.actions.cancel()
