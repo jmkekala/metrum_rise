@@ -199,35 +199,39 @@ fn a_road_over_a_tunnel_crosses_it_grade_separated() {
     assert_eq!(pieces(&core), before, "undo restores every piece");
 }
 
-// The clearance rule: a road whose deck would stand less than the bore's cover (5 m) above the
-// tunnel's deck is refused `tunnel_too_close`, with that height as the clearance, by the hover
-// check, the preview and the commit alike, and leaves the network as it was. A cut 3 m above the
-// deck is dug across the hill after the tunnel was built; the road follows it.
+// The clearance rule: a road whose deck would stand less than the bore's cover (5 m) and the
+// road's own depth below its deck (the skirt, 0.5 m) above the tunnel's deck, 5.5 m, is refused
+// `tunnel_too_close`, with that height as the clearance, by the hover check, the preview and the
+// commit alike, and leaves the network as it was; no road geometry reaches the shell. A cut is
+// dug across the hill after the tunnel was built, 3 m and 5.2 m above the deck (round R8h's first
+// rule took 5 m and passed the second); the road follows it.
 #[test]
 fn a_road_too_close_above_a_tunnel_is_refused() {
-    let mut core = tunnel_core();
-    dig(&mut core, -55.0, -45.0, 3.0);
-    let before = pieces(&core);
-    let (quick, preview) = preview(&mut core, &OVER_THE_BORE, false);
-    for validation in [&quick, &preview.validation] {
+    for height in [3.0, 5.2] {
+        let mut core = tunnel_core();
+        dig(&mut core, -55.0, -45.0, height);
+        let before = pieces(&core);
+        let (quick, preview) = preview(&mut core, &OVER_THE_BORE, false);
+        for validation in [&quick, &preview.validation] {
+            assert_eq!(
+                validation.invalid_reason, "tunnel_too_close",
+                "{height}: {validation:?}"
+            );
+            assert!(
+                (validation.clearance_m - height).abs() < 0.1,
+                "{height}: {}",
+                validation.clearance_m
+            );
+            assert_eq!(validation.required_clearance_m, 5.5);
+        }
+        let outcome = commit(&mut core, &OVER_THE_BORE, false);
         assert_eq!(
-            validation.invalid_reason, "tunnel_too_close",
-            "{validation:?}"
-        );
-        assert!(
-            (validation.clearance_m - 3.0).abs() < 0.5,
+            outcome.rejection_reason, "tunnel_too_close",
             "{}",
-            validation.clearance_m
+            outcome.rejection
         );
-        assert_eq!(validation.required_clearance_m, 5.0);
+        assert_eq!(pieces(&core), before);
     }
-    let outcome = commit(&mut core, &OVER_THE_BORE, false);
-    assert_eq!(
-        outcome.rejection_reason, "tunnel_too_close",
-        "{}",
-        outcome.rejection
-    );
-    assert_eq!(pieces(&core), before);
 }
 
 // The reverse order: a tunnel drawn under a road keeps its cover under the road's deck, not the

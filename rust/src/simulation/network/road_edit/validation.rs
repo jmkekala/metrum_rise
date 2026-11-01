@@ -9,7 +9,7 @@ use super::input::{
     PREVIEW_CLEARANCE_M, PreparedRoadInput, ROAD_PROFILE_MAX_GRADE, is_surface_edge,
 };
 use super::tunnel::{
-    BoreRefusal, JUNCTION_IN_TRENCH_REASON, Portals, RoadDeck, TUNNEL_COVER_M,
+    BoreRefusal, JUNCTION_IN_TRENCH_REASON, Portals, ROAD_OVER_TUNNEL_M, RoadDeck, TUNNEL_COVER_M,
     TUNNEL_CROSSING_REASON, TUNNEL_MIN_APPROACH_M, TUNNEL_TOO_CLOSE_REASON, bore_crosses_a_tunnel,
     classify_tunnel_stroke, deck_over_tunnels_m, grounded_decks_near, junction_in_trench,
     portal_splits, section_cover_m, tunnel_bore, tunnel_section_half_width_m,
@@ -329,8 +329,8 @@ fn profile_validation(
 }
 
 // A grounded stroke over a tunnel of `graph` (`ROAD-61` round R8h): a grade-separated crossing
-// while its prepared deck stands at least `TUNNEL_COVER_M` above the bore's deck over the bore's
-// whole section (`deck_over_tunnels_m`), else `tunnel_too_close` with the least height as the
+// while its prepared deck stands at least `ROAD_OVER_TUNNEL_M` (5.5 m) above the bore's deck over
+// the bore's whole section (`deck_over_tunnels_m`), else `tunnel_too_close` with the least height as the
 // clearance. Quick validation and the exact plan read the same prepared points and excerpt, so
 // they agree; the exact plan checks it after the junction rules, which the hover check does not
 // run. A bridge stands above the bore and a tunnel stroke's bore meets no tunnel
@@ -348,9 +348,9 @@ fn refuse_close_crossing(
     let half_width_m =
         preview_candidate_roadbed_half_width_m(points, EdgeClass::Standard, fwd_lanes, bkw_lanes);
     match deck_over_tunnels_m(points, half_width_m, graph) {
-        Some(above_m) if above_m < TUNNEL_COVER_M => {
+        Some(above_m) if above_m < ROAD_OVER_TUNNEL_M => {
             validation.clearance_m = above_m;
-            validation.required_clearance_m = TUNNEL_COVER_M;
+            validation.required_clearance_m = ROAD_OVER_TUNNEL_M;
             validation.with_invalid_reason(TUNNEL_TOO_CLOSE_REASON)
         }
         _ => validation,

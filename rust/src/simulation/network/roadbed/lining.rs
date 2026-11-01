@@ -29,9 +29,20 @@ pub const TUNNEL_LINING_HEIGHT_M: f64 = 4.5;
 /// The lining's thickness (`ROAD-61` round R8b): its shell's outer walls stand this far outside
 /// its walls, beyond any shadow bias the sun's shadow map applies near a wall's foot.
 pub const TUNNEL_LINING_THICKNESS_M: f64 = 0.5;
+/// The earth a tunnel keeps over its shell's roof (`ROAD-61`, the user's rule of 2026-11-01): none.
+/// A tunnel lies fully underground, its shell's roof at most at the ground.
+pub const TUNNEL_EARTH_COVER_M: f64 = 0.0;
+/// The tunnel cover rule (`ROAD-61`), its one definition: the height of ground a bore keeps over
+/// its deck across its whole section, from portal to portal, the lining's clear height, its
+/// shell's thickness and the earth over the roof (5 m). The road tool's cover check reads it, as
+/// does the clearance a road over a tunnel keeps (with the road's own depth, round R8h); the
+/// graded terrain's portal opening ends where the ground becomes the bore's crown.
+pub const TUNNEL_COVER_M: f64 =
+    TUNNEL_LINING_HEIGHT_M + TUNNEL_LINING_THICKNESS_M + TUNNEL_EARTH_COVER_M;
 /// A portal collar's height above its row's corners (`ROAD-61` round R8f): the shell's roof, the
-/// lining's height and its thickness, the bore clearance of cover a portal keeps. Its flat top is
-/// the edge the terrain's row wall stands on where the hill rises above it.
+/// lining's height and its thickness; geometry, not the cover rule (they are equal while
+/// [`TUNNEL_EARTH_COVER_M`] is zero). Its flat top is the edge the terrain's row wall stands on
+/// where the hill rises above it.
 pub const COLLAR_HEIGHT_M: f64 = TUNNEL_LINING_HEIGHT_M + TUNNEL_LINING_THICKNESS_M;
 
 /// The lining top above an outer-chain vertex: the one function every piece takes it from.

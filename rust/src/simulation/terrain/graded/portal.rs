@@ -25,10 +25,6 @@ use super::prune::box_distance;
 use super::seams::{Seam, segment_at};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 
-/// The bore clearance `H`, metres: the cover a bore keeps over its deck from portal to portal
-/// (`ROAD-61`), the roadbed's collar height above a portal row's corners (the lining's shell
-/// roof, `COLLAR_HEIGHT_M`).
-pub const PORTAL_CLEARANCE_M: f64 = 5.0;
 // Bounds padding, as coverage pads: the margin the dirty-tile selection's `PIECE_PAD_M` assumes.
 const PAD_M: f64 = 0.01;
 

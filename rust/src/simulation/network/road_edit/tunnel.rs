@@ -30,19 +30,23 @@ use crate::config;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction::find_intersection_2d;
 use crate::simulation::network::roadbed::{
-    TUNNEL_LINING_THICKNESS_M, preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m,
+    self, SKIRT_DEPTH_M, TUNNEL_LINING_THICKNESS_M, preview_candidate_roadbed_half_width_m,
+    visual_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::terrain::TerrainSystem;
-use crate::simulation::terrain::graded::PORTAL_CLEARANCE_M;
 use godot::prelude::Vector3;
 
 /// The longest step between two knots of a tunnel stroke, metres: the lattice quick validation
 /// and the exact plan both measure cover on.
 pub(super) const TUNNEL_LATTICE_M: f32 = 4.0;
-/// The cover a bore keeps over its deck from portal to portal: the bore clearance, which the
-/// lining's ceiling and the portal's collar stand within (`ROAD-61`).
-pub(super) const TUNNEL_COVER_M: f32 = PORTAL_CLEARANCE_M as f32;
+/// The cover a bore keeps over its deck from portal to portal: the tunnel cover rule
+/// ([`roadbed::TUNNEL_COVER_M`], `ROAD-61`).
+pub(super) const TUNNEL_COVER_M: f32 = roadbed::TUNNEL_COVER_M as f32;
+/// How far a grounded road's deck stands at least above the deck of a tunnel it crosses
+/// (`ROAD-61` round R8h, the user's rule): the cover rule and the road's own depth below its
+/// deck (its skirt), so no road geometry reaches the tunnel's shell.
+pub(super) const ROAD_OVER_TUNNEL_M: f32 = (roadbed::TUNNEL_COVER_M + SKIRT_DEPTH_M) as f32;
 /// The shortest open approach before a portal, metres: two lattice steps, so the portal node
 /// stands clear of the stroke's end.
 pub(super) const TUNNEL_MIN_APPROACH_M: f32 = 2.0 * TUNNEL_LATTICE_M;
@@ -50,8 +54,8 @@ pub(super) const TUNNEL_MIN_APPROACH_M: f32 = 2.0 * TUNNEL_LATTICE_M;
 pub(super) const TUNNEL_CROSSING_REASON: &str = "tunnel_crossing";
 /// A junction below the ground in a tunnel approach's trench ([`junction_in_trench`]).
 pub(super) const JUNCTION_IN_TRENCH_REASON: &str = "junction_in_trench";
-/// A grounded road over a tunnel bore whose deck stands less than [`TUNNEL_COVER_M`] above the
-/// bore's deck ([`deck_over_tunnels_m`], `ROAD-61` round R8h).
+/// A grounded road over a tunnel bore whose deck stands less than [`ROAD_OVER_TUNNEL_M`] above
+/// the bore's deck ([`deck_over_tunnels_m`], `ROAD-61` round R8h).
 pub(super) const TUNNEL_TOO_CLOSE_REASON: &str = "tunnel_too_close";
 
 /// Why a tunnel stroke's knots form no bore.
@@ -261,8 +265,8 @@ pub(super) fn section_cover_m(
 /// approach's open trench meets the bore there, and a road at the mouth stands in the trench,
 /// which the trench rules own ([`junction_in_trench`]); the bore's next knot, one lattice step
 /// in, is checked. `None` when it passes over no bore. The crossing is grade-separated, no node
-/// and no split, while this stays at least [`TUNNEL_COVER_M`], the cover the bore keeps under
-/// the ground. Reads the local excerpt only: `O(log E + T x ceil(W / TUNNEL_LATTICE_M) x stroke
+/// and no split, while this stays at least [`ROAD_OVER_TUNNEL_M`]: the cover the bore keeps
+/// under the ground and the road's own depth. Reads the local excerpt only: `O(log E + T x ceil(W / TUNNEL_LATTICE_M) x stroke
 /// points)` for the `T` knots of the tunnels met within reach of the road.
 pub(super) fn deck_over_tunnels_m(
     points: &[Vector3],
