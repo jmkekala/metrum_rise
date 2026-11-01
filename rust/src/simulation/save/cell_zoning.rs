@@ -279,7 +279,8 @@ pub(super) fn validate_reservations(
         f64::INFINITY,
         f64::INFINITY,
     ];
-    if roads.any_top_triangle_in_bounds(world, |triangle, _| {
+    // A tunnel bore lies under the cells over it (`ROAD-61` round R8h).
+    if roads.any_exposed_top_triangle_in_bounds(world, |triangle, _| {
         zoning.cells_overlap_road_points_world(&triangle)
     }) {
         return Err(SaveLoadError::custom(

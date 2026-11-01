@@ -517,6 +517,30 @@ impl RoadbedSystem {
         })
     }
 
+    /// [`Self::any_top_triangle_points_in_bounds`] over the pieces on or above the ground: a
+    /// buried piece ([`Self::exposed_height_at`]) lies under the terrain (`ROAD-61`).
+    pub fn any_exposed_top_triangle_points_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        mut visit: impl FnMut([RoadVec3; 3]) -> bool,
+    ) -> bool {
+        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, true, |mesh, triangle| {
+            visit(mesh.triangle_points(triangle))
+        })
+    }
+
+    /// [`Self::any_top_triangle_in_bounds`] over the pieces on or above the ground (`ROAD-61`).
+    pub fn any_exposed_top_triangle_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        mut visit: impl FnMut([RoadVec3; 3], BandKind) -> bool,
+    ) -> bool {
+        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, true, |mesh, triangle| {
+            mesh.triangle_band(triangle)
+                .is_some_and(|kind| visit(mesh.triangle_points(triangle), kind))
+        })
+    }
+
     // Visits the top triangles of the pieces' grid cells touching `bounds_xz`, as in
     // `any_top_triangle_in_bounds`.
     // `any_top_triangle_in_bounds`, leaving out the buried pieces with `exposed_only`.

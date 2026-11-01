@@ -132,9 +132,11 @@ impl SimCore {
             if let Some(delay) = delay {
                 std::thread::sleep(delay);
             }
-            let planned = deferred.plan(&graph, |corners| {
-                footprint_blocked(&fields, &sites, &roadbed, cell_m, corners)
-            });
+            let planned = deferred.plan(
+                &graph,
+                |corners| footprint_blocked(&fields, &sites, &roadbed, cell_m, corners, false),
+                |corners| footprint_blocked(&fields, &sites, &roadbed, cell_m, corners, true),
+            );
             routing.start();
             planned
         });

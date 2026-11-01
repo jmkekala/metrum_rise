@@ -412,6 +412,12 @@ impl PieceMesh {
         &self.lining.triangles[self.lining.shell..]
     }
 
+    /// Whether the piece is buried (`ROAD-61`): a tunnel span, or a node piece where only
+    /// tunnels meet, the pieces that carry a lining. Its top lies in the hill under the ground.
+    pub fn buried(&self) -> bool {
+        !self.lining.triangles.is_empty()
+    }
+
     /// The length of a lined span's bore between its end rows' stations, metres; `None` for an
     /// unlined piece or a lined node piece, whose lining runs along no rows.
     pub fn lining_bore_m(&self) -> Option<f64> {

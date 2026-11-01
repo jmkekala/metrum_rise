@@ -8,8 +8,12 @@ use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
 use crate::simulation::zoning::cells::{CellBounds, CellMaps, CellStore, road_contact_interior};
 use glam::DVec2;
 
-// Whether a piece's top triangles overlap a polygon with positive area.
+// Whether a piece's top triangles overlap a polygon with positive area. A buried piece's top lies
+// in the hill under the cells (`ROAD-61` round R8h) and covers none.
 fn piece_covers(mesh: &PieceMesh, polygon: &PolygonFootprint) -> bool {
+    if mesh.buried() {
+        return false;
+    }
     let bounds = [polygon.min.x, polygon.min.y, polygon.max.x, polygon.max.y].map(f64::from);
     mesh.any_top_triangle_in_bounds(bounds, |triangle| {
         let points = mesh

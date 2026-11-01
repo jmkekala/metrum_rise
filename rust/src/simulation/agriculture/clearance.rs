@@ -154,6 +154,14 @@ impl<'a> PolygonFootprint<'a> {
             self.overlaps_road_polygon(&triangle)
         })
     }
+
+    /// [`Self::overlaps_roads`] over the pieces on or above the ground: a buried piece, a tunnel
+    /// bore, lies in the hill under the footprint (`ROAD-61` round R8h).
+    pub(crate) fn overlaps_exposed_roads(&self, roads: &RoadbedSystem) -> bool {
+        roads.any_exposed_top_triangle_points_in_bounds(self.bounds_f64(), |triangle| {
+            self.overlaps_road_polygon(&triangle)
+        })
+    }
 }
 
 fn precise_bounds(points: impl Iterator<Item = [f64; 2]>) -> (Vector2, Vector2) {

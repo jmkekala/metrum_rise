@@ -269,11 +269,28 @@ impl SimCore {
         let allocator = &self.allocator;
         let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
-        let blocked = |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
+        let cell_blocked =
+            |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
+        let lot_blocked = |corners: &[DVec2; 4]| {
+            footprint_blocked(
+                &allocator.field_clearance,
+                allocator,
+                roads,
+                cell_m,
+                corners,
+                true,
+            )
+        };
         let mut planner = self.zoning.cell_lot_planner();
         let mut region = Some(first);
         while let Some(bounds) = region {
-            result.absorb(planner.plan_region(&self.region_graph, bounds, &sizes, &blocked));
+            result.absorb(planner.plan_region(
+                &self.region_graph,
+                bounds,
+                &sizes,
+                &cell_blocked,
+                &lot_blocked,
+            ));
             region = next(&mut planner);
         }
         let plan = planner.finish();
@@ -341,16 +358,27 @@ fn cell_site_blocked(
     cell_m: f32,
     corners: &[DVec2; 4],
 ) -> bool {
-    footprint_blocked(&allocator.field_clearance, allocator, roads, cell_m, corners)
+    footprint_blocked(
+        &allocator.field_clearance,
+        allocator,
+        roads,
+        cell_m,
+        corners,
+        false,
+    )
 }
 
-// Whether a cell footprint meets a field, an explicit cell site or a road.
+// Whether a cell or lot footprint meets a field, an explicit cell site or a road. A cell meets
+// only the roads on or above the ground: a tunnel bore lies in the hill and leaves the cells over
+// it as they are (`ROAD-61` round R8h). A lot (`buried_blocks`) meets the buried pieces too, so
+// no lot, and no building, stands over a bore.
 pub(super) fn footprint_blocked(
     fields: &FieldClearanceIndex,
     sites: &impl ExplicitCellSites,
     roads: &RoadbedSystem,
     cell_m: f32,
     corners: &[DVec2; 4],
+    buried_blocks: bool,
 ) -> bool {
     // Keep the same canonical corners used by reciprocal placement and save validation.
     // Narrowing to f32 here can hide small intersections at large world coordinates.
@@ -362,7 +390,12 @@ pub(super) fn footprint_blocked(
         }
     }
     let points = road_contact_interior(corners).map(|p| [p.x, p.y]);
-    PolygonFootprint::from_precise_slice(&points).overlaps_roads(roads)
+    let footprint = PolygonFootprint::from_precise_slice(&points);
+    if buried_blocks {
+        footprint.overlaps_roads(roads)
+    } else {
+        footprint.overlaps_exposed_roads(roads)
+    }
 }
 
 #[cfg(test)]

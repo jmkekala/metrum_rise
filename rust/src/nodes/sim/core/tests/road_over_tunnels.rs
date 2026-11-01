@@ -14,6 +14,8 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::RoadPreviewValidation;
 use crate::simulation::network::roadbed::{PieceId, PieceMesh};
 use crate::simulation::network::types::EdgeClass;
+use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
+use glam::DVec2;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -256,4 +258,171 @@ fn a_tunnel_under_a_road_keeps_its_cover_under_the_road() {
     );
     let mut bare = hill();
     assert!(commit(&mut bare, &THROUGH_HILL, true).committed);
+}
+
+// Every zoning cell whose footprint lies within `bounds`: its key, profile and frame's bits.
+fn cells(core: &mut SimCore, bounds: CellBounds) -> Vec<String> {
+    core.preview_cell_selection_internal(
+        CellSelectionShape::Brush { radius_m: 200.0 },
+        &[DVec2::ZERO],
+    );
+    let store = &core.zoning.cells;
+    let mut keys = Vec::new();
+    store.visit_in_bounds(bounds, |key| keys.push(key));
+    keys.sort_unstable();
+    keys.dedup();
+    keys.into_iter()
+        .filter_map(|key| {
+            let frame = store.frame(key.grid)?;
+            let corners = frame.corners(key.x, key.y);
+            corners
+                .iter()
+                .all(|c| c.cmpge(bounds.min).all() && c.cmple(bounds.max).all())
+                .then(|| format!("{key:?} {:?} {frame:?}", store.profile(key)))
+        })
+        .collect()
+}
+
+// Acceptance 2 (the user's second report): a tunnel drawn under a zoned road keeps the road's
+// zoning cells over its bore, bitwise, generated and painted alike. Before, the tunnel's buried
+// pieces blocked the generated cells over the bore, and a painted cell over it refused the
+// tunnel (`zoning_cell_overlap`). The approaches' open cuts (beyond x = +-76) are not compared.
+// Undo leaves the cells as they are.
+#[test]
+fn a_tunnel_under_a_road_keeps_the_roads_zoning_cells() {
+    let bore = CellBounds {
+        min: DVec2::new(-74.0, -20.0),
+        max: DVec2::new(20.0, 20.0),
+    };
+    for painted in [false, true] {
+        let mut core = hill();
+        let road = [
+            Vector3::new(-40.0, 0.0, -40.0),
+            Vector3::new(-40.0, 0.0, 40.0),
+        ];
+        assert!(commit(&mut core, &road, false).committed);
+        let generated = cells(&mut core, bore);
+        if painted {
+            let selection = core.zoning.cells.select(
+                CellSelectionShape::Brush { radius_m: 30.0 },
+                &[DVec2::new(-30.0, 0.0)],
+            );
+            assert!(!selection.cells.is_empty());
+            core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
+        }
+        let before = cells(&mut core, bore);
+        assert!(
+            generated.len() > 20,
+            "{} cells over the bore",
+            generated.len()
+        );
+        let outcome = commit(&mut core, &THROUGH_HILL, true);
+        assert!(
+            outcome.committed,
+            "painted {painted}: {}",
+            outcome.rejection
+        );
+        assert_eq!(cells(&mut core, bore), before, "painted {painted}");
+        assert!(core.undo_action_internal());
+        assert_eq!(cells(&mut core, bore), before, "painted {painted}: undo");
+    }
+}
+
+// The user's dump C (`METRUM_R8H_DUMP`, a copy): the road stroke the play-test refused over the
+// hill above a tunnel commits, crossing it grade-separated, and the zoned road the user's second
+// tunnel passes under keeps every cell over the bore: the cells along it equal an unblocked
+// generation's, bitwise. Ignored: the dump is not in the repository.
+#[test]
+#[ignore = "needs the user's dump: METRUM_R8H_DUMP"]
+fn the_users_dump_crosses_and_keeps_its_cells() {
+    use crate::simulation::zoning::cells::CellStore;
+    let path = std::env::var("METRUM_R8H_DUMP").expect("METRUM_R8H_DUMP");
+    let load = || {
+        let mut core = test_core();
+        core.benchmark_mode = false;
+        core.load_game_internal(&path).expect("load dump");
+        core.precompute_road_mesh_data();
+        core.refresh_road_terrain_inputs();
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        core
+    };
+    let strokes: Vec<[f32; 4]> = std::env::var("METRUM_R8H_STROKES")
+        .unwrap_or_default()
+        .split(';')
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let v: Vec<f32> = s.split(',').map(|n| n.trim().parse().unwrap()).collect();
+            [v[0], v[1], v[2], v[3]]
+        })
+        .collect();
+    for [x0, z0, x1, z1] in strokes {
+        let mut core = load();
+        let points = [Vector3::new(x0, 0.0, z0), Vector3::new(x1, 0.0, z1)];
+        let tunnels = (core.region_graph.edges().iter())
+            .filter(|edge| !edge.deleted && edge.class == EdgeClass::Tunnel)
+            .map(|edge| edge.geometry.clone())
+            .collect::<Vec<_>>();
+        let (quick, preview) = preview(&mut core, &points, false);
+        let outcome = commit_with(&mut core, &points, false, Some(Arc::clone(&preview)));
+        let case = format!(
+            "{points:?}: quick {} exact {} commit {}",
+            quick.invalid_reason, preview.validation.invalid_reason, outcome.rejection
+        );
+        assert!(
+            quick.is_valid && preview.validation.is_valid && outcome.committed,
+            "{case}"
+        );
+        let after = (core.region_graph.edges().iter())
+            .filter(|edge| !edge.deleted && edge.class == EdgeClass::Tunnel)
+            .map(|edge| edge.geometry.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(after, tunnels, "{case}: the tunnels are intact");
+    }
+    // The cells within 20 m of every tunnel's centre line, away from its ends.
+    let mut core = load();
+    core.preview_cell_selection_internal(
+        CellSelectionShape::Brush { radius_m: 900.0 },
+        &[DVec2::ZERO],
+    );
+    let mut raw = CellStore::default();
+    raw.generate_in_bounds(
+        &core.region_graph,
+        &core.config,
+        CellBounds {
+            min: DVec2::splat(-1000.0),
+            max: DVec2::splat(1000.0),
+        },
+        |_| false,
+    );
+    let mut over = 0;
+    for edge in core.region_graph.edges() {
+        if edge.deleted || edge.class != EdgeClass::Tunnel {
+            continue;
+        }
+        for pair in edge
+            .geometry
+            .windows(2)
+            .skip(2)
+            .take(edge.geometry.len().saturating_sub(5))
+        {
+            let a = DVec2::new(f64::from(pair[0].x), f64::from(pair[0].z));
+            let b = DVec2::new(f64::from(pair[1].x), f64::from(pair[1].z));
+            for side in [-20.0, -10.0, 0.0, 10.0, 20.0] {
+                let q = a + (b - a).normalize().perp() * side;
+                if let Some(key) = raw.pick(q) {
+                    over += 1;
+                    // Grid ids are the store's own; the frame and the cell's address in it are
+                    // the cell.
+                    let live = core.zoning.cells.pick(q).expect("cell over the bore");
+                    let cell =
+                        |store: &CellStore, key: crate::simulation::zoning::cells::CellKey| {
+                            format!("{} {} {:?}", key.x, key.y, store.frame(key.grid))
+                        };
+                    assert_eq!(cell(&core.zoning.cells, live), cell(&raw, key), "at {q:?}");
+                }
+            }
+        }
+    }
+    assert!(over > 0, "no cell candidate over a bore");
 }
