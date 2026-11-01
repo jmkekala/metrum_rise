@@ -25,3 +25,4 @@ mod trip_failures;
 mod trips;
 mod u_turns;
 mod vehicle_flow;
+mod walk_witness;

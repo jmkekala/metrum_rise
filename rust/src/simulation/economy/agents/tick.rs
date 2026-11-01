@@ -21,6 +21,7 @@ mod slices;
 mod speed;
 mod traffic;
 mod trip_failures;
+mod walk_lanes;
 
 use super::data::AgentSystem;
 use super::{

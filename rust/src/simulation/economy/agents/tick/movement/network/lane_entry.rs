@@ -14,12 +14,14 @@ use super::super::super::traffic::{
     claim_lane_entry, lane_attach_slot_clear, lane_entry_slot_clear,
 };
 use super::super::super::trip_failures::FailureCause;
+use super::super::super::walk_lanes::WalkFrom;
 use super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, has_recoverable_network_trip,
     reset_network_replan_watchdog,
 };
 use super::apply_network_replan;
+use super::junction::witness_lane;
 use crate::config::AGENT_DRIVEWAY_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::determinism::stable_index;
@@ -210,6 +212,7 @@ pub(super) unsafe fn prepare_lane_entry(
                 match plan_network_replan(
                     cur_n,
                     *s_cur_e.get(i),
+                    None,
                     *s_tgt_b.get(i),
                     *s_tmode.get(i),
                     *s_access_flags.get(i),
@@ -296,13 +299,33 @@ pub(super) unsafe fn prepare_lane_entry(
                                 let choice_seed =
                                     lane_entry_choice_seed(i, *s_cur_n.get(i), next_node, best_e);
                                 let start = stable_index(choice_seed, valid_lanes.len());
-                                let chosen = (0..valid_lanes.len())
-                                    .map(|offset| valid_lanes[(start + offset) % valid_lanes.len()])
-                                    .find(|&lane| {
-                                        *s_tmode.get(i) == MODE_WALK
-                                            || (lane_entry_slot_clear(lane, lane_buckets)
-                                                && claim_lane_entry(i, lane, lane_claims))
-                                    });
+                                // A walker enters the sidewalk its route's witness names
+                                // (`ROAD-74`); one its building's side rules out leaves the
+                                // witness to be rebuilt from the lane it does enter.
+                                let witness = if *s_tmode.get(i) == MODE_WALK {
+                                    walk_entry_lane(
+                                        i,
+                                        idx,
+                                        best_e,
+                                        &valid_lanes,
+                                        transit_network,
+                                        graph,
+                                        slices,
+                                    )
+                                } else {
+                                    None
+                                };
+                                let chosen = witness.or_else(|| {
+                                    (0..valid_lanes.len())
+                                        .map(|offset| {
+                                            valid_lanes[(start + offset) % valid_lanes.len()]
+                                        })
+                                        .find(|&lane| {
+                                            *s_tmode.get(i) == MODE_WALK
+                                                || (lane_entry_slot_clear(lane, lane_buckets)
+                                                    && claim_lane_entry(i, lane, lane_claims))
+                                        })
+                                });
                                 let Some(chosen) = chosen else {
                                     // A valid route waits at its node, preserving cargo, target,
                                     // schedule and retry state. Occupancy is never overfilled.
@@ -344,6 +367,39 @@ pub(super) unsafe fn prepare_lane_entry(
         }
 
         LaneEntryAction::Ready
+    }
+}
+
+// The witness lane walker `i` enters on road `edge` from its node, hop `idx - 1`, when it is one
+// of `valid_lanes`; otherwise the walker's witness is cleared, to be rebuilt at its next node
+// from the lane it enters. Safety: as `prepare_lane_entry`.
+unsafe fn walk_entry_lane(
+    i: usize,
+    idx: usize,
+    edge: usize,
+    valid_lanes: &[usize],
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    slices: &MovementSlices,
+) -> Option<usize> {
+    unsafe {
+        let lane = idx.checked_sub(1).and_then(|hop| {
+            witness_lane(
+                i,
+                WalkFrom::Node,
+                *slices.cur_n.get(i),
+                hop,
+                edge,
+                transit_network,
+                graph,
+                slices,
+            )
+        });
+        let lane = lane.filter(|lane| valid_lanes.contains(lane));
+        if lane.is_none() {
+            slices.walk_lanes.get_mut(i).clear();
+        }
+        lane
     }
 }
 

@@ -666,6 +666,7 @@ impl AgentSystem {
         self.agents.overtake_cooldown_s[agent_idx] = 0.0;
         self.agents.speed[agent_idx] = 0.0;
         self.agents.current_path[agent_idx] = plan.current_path;
+        self.agents.walk_lanes[agent_idx].clear();
         self.agents.current_path_index[agent_idx] =
             if self.agents.current_path[agent_idx].len() >= 2 {
                 1

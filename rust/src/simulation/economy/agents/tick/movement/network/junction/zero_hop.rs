@@ -6,8 +6,8 @@ use super::super::super::super::super::ACCESS_PLAN_VALID;
 use super::super::super::super::claims::LaneClaimContext;
 use super::super::super::super::lane_nav::lane_origin_node;
 use super::super::super::super::slices::MovementSlices;
-use super::LaneEndAction;
 use super::enter::enter_detach_lane_connector;
+use super::{LaneEndAction, WalkerStranded};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
@@ -25,7 +25,7 @@ pub(super) unsafe fn try_zero_hop_access_connector(
     lane_buckets: &[Vec<(f32, usize)>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
-) -> Option<LaneEndAction> {
+) -> Option<Result<LaneEndAction, WalkerStranded>> {
     unsafe {
         let access_plan_valid = (*slices.access_flags.get(i) & ACCESS_PLAN_VALID) != 0;
         if !access_plan_valid

@@ -382,6 +382,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         planned_activity: 0,
         current_path: rec.current_path,
         current_path_index: rec.current_path_index,
+        walk_lanes: Vec::new(),
         has_car: rec.has_car,
         vehicle_type: rec.vehicle_type,
         pedestrian_type: rec.pedestrian_type,

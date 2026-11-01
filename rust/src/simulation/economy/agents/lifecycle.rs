@@ -456,6 +456,7 @@ impl AgentSystem {
             planned_activity: 0,
             current_path: Vec::new(),
             current_path_index: 0,
+            walk_lanes: Vec::new(),
             has_car: true,
             vehicle_type: stable_index(visual_seed ^ 0xA11C_EC7A, 4) as u8,
             pedestrian_type: stable_index(visual_seed ^ 0x51DE_CAFE, 4) as u8,
@@ -526,6 +527,7 @@ impl AgentSystem {
             self.agents.planned_detach_lane_id[agent_idx] = u32::MAX;
         }
         self.agents.current_path[agent_idx] = plan.current_path;
+        self.agents.walk_lanes[agent_idx].clear();
         self.agents.current_path_index[agent_idx] =
             if self.agents.current_path[agent_idx].len() >= 2 {
                 1
@@ -572,6 +574,7 @@ impl AgentSystem {
         self.agents.next_replan_time[agent_idx] = 0.0;
         self.agents.network_replan_failures[agent_idx] = 0;
         self.agents.current_path[agent_idx] = plan.current_path;
+        self.agents.walk_lanes[agent_idx].clear();
         self.agents.current_path_index[agent_idx] =
             if self.agents.current_path[agent_idx].len() >= 2 {
                 1

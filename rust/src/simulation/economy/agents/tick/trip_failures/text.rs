@@ -253,7 +253,12 @@ impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             FailureOutcome::Replans => write!(f, "drops its route and replans"),
-            FailureOutcome::Waits => write!(f, "waits at the end of its lane"),
+            FailureOutcome::Waits { after_s } => {
+                write!(
+                    f,
+                    "waits at the end of its lane, plans again in {after_s:.0} s"
+                )
+            }
             FailureOutcome::Retry {
                 after_s,
                 failure,

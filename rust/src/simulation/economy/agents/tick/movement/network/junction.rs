@@ -4,13 +4,17 @@
 
 mod enter;
 mod exit;
+mod walk;
 mod zero_hop;
 
-use super::super::super::super::{ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID};
+pub(super) use walk::witness_lane;
+
+use super::super::super::super::{ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_WALK};
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
+use super::super::super::walk_lanes::WalkFrom;
 use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
 use super::apply_network_replan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -28,6 +32,10 @@ pub(super) enum LaneEndAction {
     /// Stop movement for this tick.
     Break,
 }
+
+/// A walker's planned connector that does not exist (`cause`): the lane end replans it from its
+/// own lane ([`walk::replan_from_lane`]).
+pub(super) struct WalkerStranded(FailureCause);
 
 /// Handles the transition after an agent reaches the end of a network or connector lane.
 ///
@@ -123,24 +131,63 @@ pub(super) unsafe fn handle_lane_end(
                 return LaneEndAction::Break;
             };
 
-            return enter::enter_next_edge_connector(
-                i,
-                lane_id,
-                lane.edge_id,
-                best_e,
-                *s_cur_n.get(i),
-                path_idx_before_lane_end,
-                path_len,
-                speed,
-                remaining_dist,
-                transit_network,
-                lane_buckets,
-                lane_claims,
-                slices,
-            );
+            let node = *s_cur_n.get(i);
+            // A walker takes the sidewalk its route's witness names (`ROAD-74`).
+            let walk_lane = (*s_tmode.get(i) == MODE_WALK).then(|| {
+                walk::witness_lane(
+                    i,
+                    WalkFrom::Lane(lane_id),
+                    node,
+                    path_idx.saturating_sub(1),
+                    best_e,
+                    transit_network,
+                    graph,
+                    slices,
+                )
+            });
+            let entry = match walk_lane {
+                Some(None) => Err(WalkerStranded(FailureCause::NoTurnToEdge {
+                    node,
+                    from_lane: lane_id,
+                    from_edge: lane.edge_id,
+                    to_edge: best_e,
+                })),
+                _ => enter::enter_next_edge_connector(
+                    i,
+                    lane_id,
+                    lane.edge_id,
+                    best_e,
+                    walk_lane.flatten(),
+                    node,
+                    path_idx_before_lane_end,
+                    path_len,
+                    speed,
+                    remaining_dist,
+                    transit_network,
+                    lane_buckets,
+                    lane_claims,
+                    slices,
+                ),
+            };
+            return entry.unwrap_or_else(|WalkerStranded(cause)| {
+                walk::replan_from_lane(
+                    i,
+                    lane_id,
+                    node,
+                    path_idx_before_lane_end,
+                    cause,
+                    sim_time,
+                    remaining_dist,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                )
+            });
         }
 
-        if let Some(action) = zero_hop::try_zero_hop_access_connector(
+        if let Some(entry) = zero_hop::try_zero_hop_access_connector(
             i,
             lane_id,
             lane.edge_id,
@@ -154,7 +201,22 @@ pub(super) unsafe fn handle_lane_end(
             lane_claims,
             slices,
         ) {
-            return action;
+            return entry.unwrap_or_else(|WalkerStranded(cause)| {
+                walk::replan_from_lane(
+                    i,
+                    lane_id,
+                    *s_cur_n.get(i),
+                    path_idx,
+                    cause,
+                    sim_time,
+                    remaining_dist,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                )
+            });
         }
 
         s_path.get_mut(i).clear();
@@ -205,6 +267,7 @@ pub(super) unsafe fn handle_lane_end(
                 match plan_network_replan(
                     *s_cur_n.get(i),
                     *s_cur_e.get(i),
+                    None,
                     *s_tgt_b.get(i),
                     *s_tmode.get(i),
                     *s_access_flags.get(i),

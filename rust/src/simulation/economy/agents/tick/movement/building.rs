@@ -159,6 +159,7 @@ pub(super) unsafe fn handle_in_building(
             *s_pos_y.get_mut(i) = origin_entrance.door_pos.y;
             *s_transit.get_mut(i) = TRANSIT_ACCESS_EGRESS;
             *s_path.get_mut(i) = plan.current_path;
+            slices.walk_lanes.get_mut(i).clear();
             *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
             *s_plan_b.get_mut(i) = usize::MAX;
             *s_plan_act.get_mut(i) = 0;

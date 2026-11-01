@@ -11,19 +11,23 @@ use super::super::access::{
     frontage_time_s, local_access_distance, local_access_time_s,
     projected_lane_distance_for_entrance,
 };
-use super::super::lane_nav::lane_origin_node;
+use super::super::lane_nav::{lane_origin_node, lane_terminal_node};
 use super::candidate::{NODE_RANKS, RouteStart, TripQueryScratch, candidate_lane_id};
 use super::types::BuiltNetworkReplan;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::lanes::LaneType;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Rebuilds a destination-side network plan for an agent already in transit.
+/// Rebuilds a destination-side network plan for an agent already in transit. A walker on a
+/// foot lane ending at `start_node` passes it as `start_lane`, so the route is walkable from
+/// that sidewalk and no other (`ROAD-74`); otherwise any lane of `incoming_edge` may start it.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
     start_node: u32,
     incoming_edge: usize,
+    start_lane: Option<usize>,
     target_building: usize,
     mode: u8,
     preserve_flags: u8,
@@ -110,10 +114,18 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
         ));
     }
     TripQueryScratch::with_routes(|scratch| {
-        let route_start = if incoming_edge_valid {
-            RouteStart::Edge(incoming_edge)
-        } else {
-            RouteStart::Node
+        let own_lane = start_lane.filter(|&lane| {
+            transit_network
+                .lane_system
+                .lanes
+                .get(lane)
+                .is_some_and(|value| value.lane_type == LaneType::Foot)
+                && lane_terminal_node(lane, transit_network, graph) == Some(start_node)
+        });
+        let route_start = match own_lane {
+            Some(lane) => RouteStart::Lane(lane),
+            None if incoming_edge_valid => RouteStart::Edge(incoming_edge),
+            None => RouteStart::Node,
         };
         let mut best: Option<(f32, u8, usize, f32, u32)> = None;
         for destination_rank in NODE_RANKS {

@@ -133,6 +133,11 @@ pub struct Agent {
     pub current_path: Vec<u32>,
     /// Index into the active route buffer: `current_path`.
     pub current_path_index: usize,
+    /// A walker's sidewalk on each road of `current_path` (`ROAD-74`): entry `k` is the
+    /// `Lane::lane_idx` of the foot lane from node `k` to node `k + 1`, its route's lane
+    /// witness. Built at the route's first junction, so empty until then and for cars; cleared
+    /// with every new route. Derived, not saved: a loaded walker rebuilds the same witness.
+    pub walk_lanes: Vec<i8>,
 
     /// `true` if the agent owns a car and drove to their current location.
     pub has_car: bool,

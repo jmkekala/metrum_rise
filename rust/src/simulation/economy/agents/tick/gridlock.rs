@@ -578,6 +578,7 @@ impl AgentSystem {
             plan_network_replan(
                 exit_end,
                 exit_edge,
+                None,
                 agents.target_building[i],
                 agents.transit_mode[i],
                 agents.access_flags[i],
@@ -625,6 +626,7 @@ impl AgentSystem {
         }
         let agents = &mut self.agents;
         agents.current_path[i] = path;
+        agents.walk_lanes[i].clear();
         agents.current_path_index[i] = 0;
         agents.planned_detach_node[i] = replan.planned_detach_node;
         agents.planned_detach_lane_id[i] = replan.planned_detach_lane_id as u32;

@@ -4,7 +4,7 @@
 
 use super::super::super::super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, MODE_CAR,
-    TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
+    MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
 use super::super::super::lane_nav::lane_terminal_node;
@@ -168,6 +168,7 @@ unsafe fn ensure_exact_access_plan(
         match plan_network_replan(
             start_node,
             incoming_edge,
+            (*s_tmode.get(i) == MODE_WALK).then_some(*slices.lane_id.get(i)),
             target_building,
             *s_tmode.get(i),
             0,
@@ -268,6 +269,7 @@ unsafe fn repair_stale_detach_plan(
         match plan_network_replan(
             start_node,
             incoming_edge,
+            (*s_tmode.get(i) == MODE_WALK).then_some(*slices.lane_id.get(i)),
             target_building,
             *s_tmode.get(i),
             *s_access_flags.get(i),
@@ -369,6 +371,7 @@ unsafe fn apply_immigration_trip(
         *s_lane_d.get_mut(i) = 0.0;
         *s_speed.get_mut(i) = 0.0;
         *s_path.get_mut(i) = plan.current_path;
+        slices.walk_lanes.get_mut(i).clear();
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
         *s_transit.get_mut(i) = TRANSIT_NETWORK;
     }
@@ -393,6 +396,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn apply_netwo
         let s_next_replan_time = &slices.next_replan_time;
 
         *s_path.get_mut(i) = replan.current_path;
+        slices.walk_lanes.get_mut(i).clear();
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
         *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
         *s_plan_detach_lane.get_mut(i) = replan.planned_detach_lane_id as u32;
