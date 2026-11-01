@@ -9933,12 +9933,14 @@ One authoritative crossing record drives both pedestrian routing and zebra-marki
 - an arm is crossable if and only if its lane rebuild emits a `CrosswalkMarking`. Lanes take
   the [D8](#product-decisions) rule from `roadbed::arms`, which the layout and the spans read
   too: every junction arm, one arm of every degree-two node and none at a road end, adjusted by
-  node overrides. At a degree-two node the crossing arm is the first by direction angle in
-  `(-pi, pi]`, then edge index; an override of `true` always crosses, `false` never does, and an
-  arm without one crosses only if no earlier arm did; road arms alone count, so a footpath at a
-  straight road gives the node a layout with one crossing. A bend whose crossing does not fit on
-  its first arm crosses on the other. Structure ends and failed layouts have none ([open
-  question 13](#road-68-open-questions))
+  node overrides ([`ROAD-74`](#crossing-toggle-and-save-road-74)). At a degree-two node the
+  default arm is the first eligible one by direction angle in `(-pi, pi]`, then edge index; an
+  override of `true` always crosses, `false` never does, and an arm without one crosses only if
+  it is the default arm, so `false` on the default arm removes the node's crossing (before
+  `ROAD-74` it moved to the other arm); road arms alone count, so a footpath at a straight road
+  gives the node a layout with one crossing. A bend whose default crossing does not fit on its
+  first arm crosses on the other when that arm has no override, and has none when it has one.
+  Structure ends and failed layouts have none ([open question 13](#road-68-open-questions))
 - the marking is the layout's zebra strip: its kerb points are the two carriageway-edge points on
   the strip's crossing line, at the node plane's height, bitwise the node piece's
   (`NodePiece::crosswalk_kerbs`). A pass-through node has no node piece: its strip lies on the
@@ -9983,6 +9985,67 @@ same functions, so the painted marking is the lanes' marking bitwise, ends in or
 directions of its connector walk exactly that segment
 (`zebra_markings_and_their_connectors_share_one_kerb_segment`: T, bend, pass-through and the
 footpath fixtures, flat and sloped). A preview, which builds no lanes, paints the same zebras.
+
+### Crossing toggle and save (`ROAD-74`)
+
+The user's decision R6-a (2026-10-30): pedestrians cross a road only where a zebra is painted.
+An arm without a zebra has no pedestrian crossing at all: no paint, no 3 m strip and no mouth
+setback (D8), no crossing lanes or connectors, and no crossing signs (they stand at the pieces'
+crossings, so they go with the zebra; no street light exists for a crossing alone). New arms
+get a zebra by default, as before; turning it off removes the crossing. Ported from Veeti's
+road-chain branch, `cd09557a` (its `ROAD-74` half), without its default-off, its unmarked
+crossings and its legacy migration.
+
+- **One decision.** `roadbed::arms` decides which arms cross ([D8](#product-decisions), the
+  rule above); layout, walkways, lanes, render and signs all read it through the node's
+  `NodeArms` or `pass_through_crossings`. `crossing_arm_eligible` is the set that rule ranges
+  over: a car road with sidewalks at a node of two or more road arms, which at a pass-through
+  node must hold the strip on its span. `O(degree)` per node, unchanged.
+- **Toggle.** The select tool shows a toggle on each eligible arm of the selected junction
+  (`can_toggle_crosswalk`), labelled with its state. Hovering asks for the commit's verdict
+  (`preview_crosswalk`, the commit's own `try_graph_edit` check run and put back), and a click
+  commits only an accepted toggle (`set_crosswalk_override`, which returns whether it applied).
+  A refused toggle (an arm that cannot cross, a node that no longer lays out, pieces over a
+  field or painted cells) changes nothing and the label names the reason. Each toggle has an
+  undo record. Crossing edits do not appear in the road-attempt replay, which records strokes.
+  Cost: one node closure compile per hovered toggle and per click, bounded by the node's
+  neighbourhood (its arms, their spans and far-end pieces).
+- **Remaps.** Overrides are keyed by edge per node. A split moves the far end's override onto
+  the second half (`topology::split_edge`); a node merge copies the removed node's overrides to
+  the survivor (`unite_nodes`); the road tool's validation excerpt copies the overrides of its
+  nodes, so its junction solve lays them out as the live graph does, and the plan installs the
+  excerpt's overrides on each surviving node (`RoadTopologyPlan::apply_to_graph`, shared by
+  preview and commit). A removed road's arm keeps its override only for undo; a road drawn
+  again is a new arm with the default zebra.
+- **Save.** `road_crosswalks(node_id, edge_id, marked)`, save format 110
+  ([`simulation.md`](simulation.md#save-bytes-road-68-k16)): one row per override whose edge is
+  still an arm of its node; a row naming an edge that is not an arm of its node fails the load.
+- **Split walk networks.** With crossings off the sidewalks can fall into separate walk
+  networks (a block whose corners all lack zebras). The walking proof is then withdrawn and the
+  planner materializes walks on the lanes: a walk between two networks has no route
+  (`pedestrian_connector_fallback_missing`), so it is never planned. A walker already on its way
+  when its crossing is removed waits at the mouth, logged as a `NoTurnToEdge` failure with
+  outcome `Waits`, and walks on when a zebra is painted there again; nothing teleports it, and
+  no hidden crossing is made (`a_walk_between_split_walk_networks_has_no_route`,
+  `test_walking_missing_crosswalk_route_waits_at_junction_mouth`).
+- **Measured (round R6, 2026-11-01).** With default crossings the economy envelope and
+  determinism are bit-identical to the control's metrics (`tools/sim02_gate.py envelope
+  determinism`, `RAYON_NUM_THREADS=6`, control `ef7c5f2b`). A variant with every third
+  four-way junction's crossings off (208 toggles at 10k, 648 at 30k; not committed) passes
+  determinism and moves the economy little (30k baseline deliveries 117.6 against 117.3 per
+  1,000 buildings a day, employment 0.600 against 0.601, net income 8.30 against 8.27), but
+  walkers do reach a junction without the crossing their route needs: 12,172 trip-failure
+  records per 1,000 residents a day at 10k and 14,570 at 30k (control 0), each a waiting
+  walker's record per tick. Movement follows a walk's node path and takes any connector onto
+  the next edge, so a route whose lane witness detours through the same node (round a corner to
+  cross elsewhere and back) can be left on the wrong side (inferred from the code, not traced on a
+  stuck walker). Open: the walker should follow its
+  route's lane witness at such nodes (handoff decision, `ROAD-74`).
+- **Tests.** `nodes::sim::core::tests::road_crosswalks` (off removes every product and on
+  restores it, preview = commit, undo, refusal, a split through an authored arm and its undo, a
+  road removed and drawn again, the save file), `crosswalk_overrides_round_trip_through_their_table`,
+  `node_merge_replaces_its_original_spatial_entry`, the degree-two cases in `lanes::tests::crossings`
+  and the walking tests above; `godot/tests/selection_gesture_test.gd` covers the tool.
 
 Footpaths (`TransitType::Foot`, `ROAD-55`) join the same junction graph as one-mouth arms. Until
 `ROAD-55` the builder skipped them, so their lanes had no junction connectors and walkers could

@@ -226,6 +226,12 @@ saved game. A whole city saved one frame after a check and loaded matches the un
 next three checks (`traffic14_saturated_ring_continues_across_a_save_file`). The Kuopio fixture is
 re-recorded in format 109; only the version and the new, empty row change (`sqldiff`).
 
+Save format 110 (`ROAD-74`, round R6, 2026-11-01) adds the `road_crosswalks` table: one row
+(`node_id`, `edge_id`, `marked`) per crossing override whose edge is still an arm of its node,
+in key order ([`roads.md`](roads.md#crossing-toggle-and-save-road-74)). Before it the select
+tool's crossing toggles were lost on save. The Kuopio fixture is re-recorded in format 110; only
+the version and the new, empty table change (`sqldiff`).
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per
