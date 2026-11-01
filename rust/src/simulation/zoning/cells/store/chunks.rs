@@ -7,7 +7,7 @@ use super::{
     CellBounds, CellKey, CellMaps, CellStore, DVec2, RegionGraph, chunk_at, chunks_for_bounds,
 };
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::network::types::{EdgeClass, TransitType};
+use crate::simulation::network::types::TransitType;
 use crate::simulation::zoning::cells::CELL_DEPTH;
 use std::collections::BTreeSet;
 
@@ -44,11 +44,10 @@ impl<M: CellMaps> CellStore<M> {
         let cell_m = f64::from(config.zone_cell_m);
         // A road's candidates lie within its half-width, the sidewalk and its rear rows.
         let mut chunks = BTreeSet::new();
-        for edge in graph.edges() {
-            if edge.deleted
-                || edge.no_building_spawn
+        for (id, edge) in graph.edges().iter().enumerate() {
+            if edge.no_building_spawn
                 || edge.primary_type != TransitType::Road
-                || edge.class != EdgeClass::Standard
+                || !graph.fronts_ground(id)
                 || edge.physical_geometry.len() < 2
             {
                 continue;

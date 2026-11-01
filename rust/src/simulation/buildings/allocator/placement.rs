@@ -154,7 +154,7 @@ impl BuildingAllocator {
                         availability.unusable_lots += 1;
                         return candidates;
                     };
-                    if !edge.takes_buildings()
+                    if !graph.takes_buildings(edge_idx)
                         || edge.physical_length < 0.1
                         || edge.physical_geometry.len() < 2
                     {
@@ -508,7 +508,7 @@ impl BuildingAllocator {
         let edge = graph.edge(edge_idx);
         let edge_width = edge.width;
         let zone_cell_m = zoning.config.zone_cell_m;
-        if parcel.occupied_building().is_some() || !edge.takes_buildings() {
+        if parcel.occupied_building().is_some() || !graph.takes_buildings(edge_idx) {
             return None;
         }
 
@@ -1018,7 +1018,7 @@ impl BuildingAllocator {
             let Some(edge) = graph.get_edge(edge_idx) else {
                 continue;
             };
-            if !edge.takes_buildings()
+            if !graph.takes_buildings(edge_idx)
                 || edge.physical_length < width_m.max(1.0)
                 || edge.physical_geometry.len() < 2
             {

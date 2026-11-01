@@ -572,6 +572,32 @@ pub(super) fn span_end(graph: &RegionGraph, node: u32, edge_idx: usize) -> SpanE
     }
 }
 
+/// Whether `edge_idx` is a tunnel's approach span (`ROAD-61` round R8e): a standard edge that
+/// passes through into a tunnel's mouth at one of its ends ([`span_end`]'s wall run that is no
+/// abutment), the span the roadbed retains ([`super::PieceMesh::retained`]) and the graded
+/// terrain walls wherever its road runs below the ground. From the node's arms alone, no terrain
+/// height. `O(degree)` at each end; it allocates only at an end where a tunnel meets the node, so
+/// per-parcel callers stay allocation-free away from tunnels.
+pub(crate) fn is_tunnel_approach(graph: &RegionGraph, edge_idx: usize) -> bool {
+    let edge = graph.edge(edge_idx);
+    let meets_tunnel = |node: u32| {
+        (node as usize) < graph.node_adjacency_count()
+            && graph.node_adjacency(node).iter().any(|&other| {
+                let other = graph.edge(other);
+                !other.deleted && other.class == EdgeClass::Tunnel
+            })
+    };
+    edge.class == EdgeClass::Standard
+        && [edge.start_node, edge.end_node].into_iter().any(|node| {
+            let node = graph.get_valid_node(node);
+            meets_tunnel(node)
+                && matches!(
+                    span_end(graph, node, edge_idx),
+                    SpanEnd::WallRun { abutment: false }
+                )
+        })
+}
+
 /// Whether only tunnels meet at `node`, two or more: a tunnel span's lining continues there into
 /// another tunnel's, or into the lining of the node piece where only tunnels meet (`ROAD-61`).
 /// `O(degree)`.

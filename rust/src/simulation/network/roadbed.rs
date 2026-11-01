@@ -26,6 +26,7 @@ mod walkways;
 
 pub(crate) use arms::{
     NodeArms, crossing_arm_eligible, directions_pass_through, edges_pass_through,
+    is_tunnel_approach,
 };
 pub(crate) use geometry::CoverageTriangle;
 #[cfg(test)]

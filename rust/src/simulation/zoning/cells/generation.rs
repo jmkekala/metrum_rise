@@ -421,10 +421,9 @@ fn edge_candidates(
     alignment: Option<[GridFrame; 2]>,
 ) -> Vec<Candidate> {
     let edge = graph.edge(edge_id);
-    if edge.deleted
-        || edge.no_building_spawn
+    if edge.no_building_spawn
         || edge.primary_type != TransitType::Road
-        || edge.class != EdgeClass::Standard
+        || !graph.fronts_ground(edge_id)
         || edge.physical_geometry.len() < 2
     {
         return Vec::new();

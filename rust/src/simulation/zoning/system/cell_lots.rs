@@ -9,7 +9,7 @@ pub(super) use dirty::CellLotQueue;
 
 use super::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::{EdgeClass, TransitType};
+use crate::simulation::network::types::TransitType;
 use crate::simulation::zoning::cells::{CellLot, overlaps_road_corridors};
 use crate::simulation::zoning::{ParcelId, ParcelPlacementError, ZoningParcel, parcels};
 
@@ -112,9 +112,8 @@ impl ZoningSystem {
         let edge = graph.edge(edge_idx);
         // Growth eligibility may change while occupied lots retain their saved claims.
         // The allocator and derivation recheck no-build policy before any new construction.
-        if edge.deleted
-            || edge.primary_type != TransitType::Road
-            || edge.class != EdgeClass::Standard
+        if edge.primary_type != TransitType::Road
+            || !graph.fronts_ground(edge_idx)
             || edge.physical_geometry.len() < 2
             || edge.physical_length <= 0.0
         {

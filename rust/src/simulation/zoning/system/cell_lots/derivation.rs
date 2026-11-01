@@ -6,7 +6,7 @@
 use super::{CellLotQueue, ZoningSystem};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::{EdgeClass, TransitType};
+use crate::simulation::network::types::TransitType;
 use crate::simulation::zoning::cells::{
     CELL_DEPTH, CELL_FRONTAGE_UNITS, CellBounds, CellGeneration, CellKey, CellLot, CellLotSize,
     CellMaps, CellRoadFrontage, CellStore, GridFrame, LiveMaps, SharedMaps,
@@ -606,10 +606,9 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
         let eligible = |link: &&CellRoadFrontage| {
             link.boundary == lot.frontage()
                 && graph.get_edge(link.edge).is_some_and(|edge| {
-                    !edge.deleted
-                        && (occupied || !edge.no_building_spawn)
+                    (occupied || !edge.no_building_spawn)
                         && edge.primary_type == TransitType::Road
-                        && edge.class == EdgeClass::Standard
+                        && graph.fronts_ground(link.edge)
                 })
         };
         let mut width = 0;

@@ -103,13 +103,6 @@ pub struct Edge {
 }
 
 impl Edge {
-    /// Whether a building may front this edge: a live standard road the player has not closed
-    /// to buildings. A bridge or tunnel span stands off the ground, so no lot, parcel, driveway
-    /// or entrance attaches to it (`ROAD-61`); zoning cells read standard edges only too.
-    pub fn takes_buildings(&self) -> bool {
-        !self.deleted && self.class == EdgeClass::Standard && !self.no_building_spawn
-    }
-
     /// Returns permitted traversal modes in one direction of a live edge.
     /// Walking is bidirectional; every other mode requires a lane in that direction.
     #[inline]
@@ -259,6 +252,26 @@ impl Default for RegionGraph {
 }
 
 impl RegionGraph {
+    /// Whether `edge_idx` gives frontage on the ground: a live standard road that is no tunnel's
+    /// approach. A bridge or tunnel span stands off the ground (`ROAD-61`), and an approach runs
+    /// in its walled trench (round R8h, the user's rule: no frontage along a tunnel's entry), so
+    /// no zoning cell, lot, parcel, driveway or entrance fronts them. The approach is the whole
+    /// span the roadbed retains (`roadbed::is_tunnel_approach`), from topology alone.
+    /// `O(degree)` at each end.
+    pub fn fronts_ground(&self, edge_idx: usize) -> bool {
+        let edge = self.edge(edge_idx);
+        !edge.deleted
+            && edge.class == EdgeClass::Standard
+            && !crate::simulation::network::roadbed::is_tunnel_approach(self, edge_idx)
+    }
+
+    /// Whether a building may front `edge_idx`: it fronts the ground ([`Self::fronts_ground`])
+    /// and the player has not closed it to buildings. The one rule lots, parcels, explicit
+    /// sites, attachment repair and road-side connections read.
+    pub fn takes_buildings(&self, edge_idx: usize) -> bool {
+        !self.edge(edge_idx).no_building_spawn && self.fronts_ground(edge_idx)
+    }
+
     /// Creates a new, empty road graph.
     pub fn new() -> Self {
         Self {

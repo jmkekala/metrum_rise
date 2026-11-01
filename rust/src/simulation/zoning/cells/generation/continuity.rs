@@ -34,10 +34,9 @@ pub(super) fn column_is_covered(
         Vector3::new(query.max.x as f32, 0.0, query.max.y as f32),
         |id| {
             let edge = graph.edge(id);
-            if edge.deleted
-                || edge.no_building_spawn
+            if edge.no_building_spawn
                 || edge.primary_type != TransitType::Road
-                || edge.class != EdgeClass::Standard
+                || !graph.fronts_ground(id)
                 || edge.width != width
                 || edge.physical_geometry.len() < 2
             {
@@ -124,9 +123,8 @@ fn frame_candidates<M: CellMaps>(
     let cell_m = frame.cell_m();
     for &edge_id in roads {
         let edge = graph.edge(edge_id);
-        if edge.deleted
-            || edge.primary_type != TransitType::Road
-            || edge.class != EdgeClass::Standard
+        if edge.primary_type != TransitType::Road
+            || !graph.fronts_ground(edge_id)
             || edge.physical_geometry.len() < 2
         {
             continue;

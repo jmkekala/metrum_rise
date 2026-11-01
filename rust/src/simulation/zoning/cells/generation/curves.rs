@@ -64,9 +64,8 @@ fn source_candidates<M: CellMaps>(
         let mut coverage = Vec::new();
         for &edge_id in roads {
             let edge = graph.edge(edge_id);
-            if edge.deleted
-                || edge.primary_type != TransitType::Road
-                || edge.class != EdgeClass::Standard
+            if edge.primary_type != TransitType::Road
+                || !graph.fronts_ground(edge_id)
                 || f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH)
                     != source.half_width
             {
