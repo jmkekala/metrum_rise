@@ -1701,18 +1701,102 @@ mod tests {
         let bends = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (200.0, 100.0)];
         assert!(walking_proof(&mut road_through(&bends)));
         for (points, node) in [(&straight, 1), (&bends, 2)] {
-            // `false` on one arm moves the crossing to the other arm.
-            for edge in [node as usize - 1, node as usize] {
+            // `false` on one arm removes the node's crossing when it is the default arm's and
+            // changes nothing on the other arm (`ROAD-74`: off removes, it never moves); without
+            // a crossing at one node its sidewalks cannot change sides there.
+            let proofs = [node as usize - 1, node as usize].map(|edge| {
                 let mut graph = road_through(points);
                 graph.set_crosswalk_override(node, edge, false);
-                assert!(walking_proof(&mut graph), "node {node}, edge {edge}");
-            }
-            // With no crossing at one node, its sidewalks cannot change sides there.
+                walking_proof(&mut graph)
+            });
+            assert!(
+                proofs == [true, false] || proofs == [false, true],
+                "node {node}: {proofs:?}"
+            );
             let mut graph = road_through(points);
             graph.set_crosswalk_override(node, node as usize - 1, false);
             graph.set_crosswalk_override(node, node as usize, false);
             assert!(!walking_proof(&mut graph), "node {node} without a crossing");
         }
+    }
+
+    // `ROAD-74` (the user's decision R6-a): pedestrians cross only on zebras. A square block's
+    // inner and outer sidewalks meet only at its corners' crossings; with every crossing off
+    // they are two walk networks. A walk from one to the other has no route: the search fails
+    // (`pedestrian_connector_fallback_missing`) without a panic or a crossing of its own, while
+    // walks along either side still route, so the planner never offers that walk.
+    #[test]
+    fn a_walk_between_split_walk_networks_has_no_route() {
+        use crate::simulation::economy::agents::MODE_WALK;
+        let corners = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)];
+        let ring = |off: bool| {
+            let mut graph = RegionGraph::new();
+            for &(x, z) in &corners {
+                graph.add_node(Vector3::new(x, 0.0, z), NodeType::Junction);
+            }
+            for from in 0..4u32 {
+                let to = (from + 1) % 4;
+                let (a, b) = (graph.node(from).pos, graph.node(to).pos);
+                let mut edge = super::super::tests::test_edge(from, to, a.x, b.x);
+                edge.geometry = vec![a, b];
+                edge.physical_geometry = edge.geometry.clone();
+                edge.physical_length = (b - a).length();
+                graph.add_edge(edge);
+            }
+            graph.rebuild_adjacency_list();
+            if off {
+                for node in 0..4u32 {
+                    for edge in graph.node_adjacency(node).to_vec() {
+                        graph.set_crosswalk_override(node, edge, false);
+                    }
+                }
+            }
+            let mut network = TransitNetwork::new();
+            network.lane_system.rebuild(&mut graph);
+            network.cch_graph = CchGraph::build(&graph);
+            (graph, network)
+        };
+        let walks = |graph: &RegionGraph, network: &TransitNetwork| {
+            let foot = |edge: usize| -> Vec<usize> {
+                let lanes = &network.lane_system.lanes;
+                (0..lanes.len())
+                    .filter(|&id| lanes[id].edge_id == edge && lanes[id].lane_type == LaneType::Foot)
+                    .collect()
+            };
+            let mut scratch = TripQueryScratch::default();
+            let mut routed = Vec::new();
+            for attach in foot(0) {
+                for detach in foot(2) {
+                    let from = lane_terminal_node(attach, network, graph).unwrap();
+                    let to = lane_origin_node(detach, network, graph).unwrap();
+                    let route = scratch.network_path(
+                        MODE_WALK,
+                        from,
+                        to,
+                        RouteStart::Lane(attach),
+                        detach,
+                        network,
+                        graph,
+                        |_| (),
+                    );
+                    if let Err(reason) = route {
+                        assert_eq!(reason, "pedestrian_connector_fallback_missing");
+                    }
+                    routed.push(route.is_ok());
+                }
+            }
+            (scratch.connectors.complete, routed)
+        };
+        let (graph, network) = ring(false);
+        let (complete, routed) = walks(&graph, &network);
+        assert!(complete && !routed.is_empty() && routed.iter().all(|&ok| ok));
+        let (graph, network) = ring(true);
+        let (complete, routed) = walks(&graph, &network);
+        assert!(!complete);
+        assert!(
+            routed.iter().any(|&ok| ok) && routed.iter().any(|&ok| !ok),
+            "same-side walks route, cross-side walks do not: {routed:?}"
+        );
     }
 
     // D5 (`ROAD-68` open question 14): footpath junctions keep the whole-network proof.
