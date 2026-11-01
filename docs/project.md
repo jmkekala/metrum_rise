@@ -52,15 +52,16 @@ saturated junctions (30k deliveries -13.5%), and the 100k ring it causes is deto
 locks.
 
 The road tool can build a tunnel through a hill: with its tunnel toggle (`T` or the road options
-checkbox) a stroke keeps its drawn height through the ground, the stretch under 5 m of ground
-becomes a tunnel between two approaches in a cut and cars drive through; tunnels under water,
-crossing tunnels and strokes without enough cover are refused with a reason. The tunnel is closed:
-a 0.5 m thick concrete lining (walls and ceiling) around the road, lit by lamp strips every 10 m,
-a headwall at each portal where the cut ends, its wing tops falling at 1:2 with the ground graded
-to them, no sky and no line of sun visible from inside, and the hill over the bore keeps its
-natural shape even when as steep as 1:2. A steep rock sliver up to a quarter metre wide can show
-in front of a wing's inner part (accepted, [TERRAIN-18](roadmap.md)); on a hill steeper than 1:2
-behind a portal the wings' grading still cuts stripes up the hill (open, for the user). Over a bore the cursor, zoning heights, vehicles and trees read the hill, and no
+checkbox) a stroke keeps its drawn height through the ground, the stretch where the hill stands
+5 m above the road across its whole width becomes a tunnel between two approaches and cars drive
+through; without the toggle a stroke is always a grounded road. Tunnels under water, crossing
+tunnels, strokes without enough cover across the bore and junctions below the ground in an
+approach are refused with a reason. The tunnel is closed: a 0.5 m thick concrete lining (walls
+and ceiling) around the road, lit by lamp strips every 10 m, and a flat concrete collar round
+each mouth; no sky and no line of sun visible from inside. The approach runs in a walled cut:
+vertical walls from the road's edge up to the natural ground, ending where the road reaches the
+ground, and a wall over the collar where the hill rises higher; the hill beside the cut and over
+the bore keeps its natural shape. Over a bore the cursor, zoning heights, vehicles and trees read the hill, and no
 parcel or building fronts a tunnel or a bridge ([ROAD-61](roads.md#road-tunnels-road-61)).
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
@@ -1413,6 +1414,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-61` tunnel collar and tool rules (branch `port-r8f-tunnel-collar`, 2026-11-01, port round R8f, option T): a flat concrete collar replaces the headwall and its wings; the tool checks cover across the bore's whole width, refuses a junction below the ground in a tunnel approach and never makes a tunnel without the toggle; a bend's lining closes; graded walls are lit from their own side (the quad's winding). No change without tunnels ([roads.md](roads.md#road-tunnels-road-61)).
 - `ROAD-61` tunnel mouths in the user's saves (branch `port-r8d-tunnel-mouths`, 2026-11-01, port round R8d): 32 mouths diagnosed; headwalls and the lining's shell take outdoor light (they were black); fins, wedges, stripes and the lining standing out on cross-sloping hills are open, with the terrain-owned portal (option T) recommended ([roads.md](roads.md#road-tunnels-road-61)).
 - `ROAD-61` walled tunnel approaches, terrain side (branch `port-r8e-tunnel-trench`, 2026-11-01, port round R8e, option T with walls): an approach's road seams are retained, so the hill beside it stays natural and walls stand from the road's edge up to the ground wherever the road runs below it; R8c's wing seams are gone; render patches grow their wall instances. The roadbed's collar (R8f) replaces the headwall wings next ([roads.md](roads.md#road-tunnels-road-61)).
 - `ROAD-61` closed tunnel (branch `port-r8-tunnel-lining`, 2026-11-01, port round R8): tunnel spans are lined (walls, ceiling, an end wall underground, lined bends) with a headwall at each portal row, built constructively in the roadbed and watertight with the deck; no graded tie-in cone reaches past a portal row, so the hill over a bore stays natural and the portal opening is gone; the lining takes no sun and casts its shadow into the bore. Products without a tunnel are bitwise unchanged. See [`roads.md`](roads.md#road-tunnels-road-61).

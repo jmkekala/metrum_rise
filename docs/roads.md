@@ -10253,7 +10253,9 @@ commit (`RoadCommitRequest::tunnel`, `SimCommand::AddRoad`; a fresh plan prepare
 it), undo (the edit's topology record, as for any stroke) and the refusal report's
 `road_attempt` record (`tunnel`), which `road_attempt_replay.gd` sets before it replays. The tool
 re-asserts its intent before each preview, so a replay cannot leave Rust's copy stale. Without the
-toggle nothing changes: the class still comes from the ends.
+toggle a stroke never becomes a tunnel (round R8f): an end below the ground no longer classes it,
+so the stroke is a grounded road, which the standard profile cuts in or refuses (`road_too_steep`
+where no grounded profile keeps the hard maximum). An end above the ground still makes a bridge.
 
 **The profile.** With the intent (`road_edit/tunnel.rs`) the stroke keeps its authored profile:
 the alignment is simplified as for any road, its ends snap to existing nodes, every height stays
@@ -10262,7 +10264,11 @@ the authored polyline. A straight stroke (two points) keeps the chord between it
 curve keeps the heights the tool drew along it. No terrain-following solve runs, and a grounded end
 never erases the buried interior.
 
-**The bore.** A knot's cover is the source terrain's height above it. The bore runs from the
+**The bore.** A knot's cover is the least height of the source terrain above it across the bore's
+whole section (round R8f, `section_cover_m`): on a lattice across the knot, perpendicular to the
+stroke there (the chord of its neighbours), from one outer face of the lining's shell to the other
+(the roadbed's half width plus the lining's 0.5 m thickness) in equal steps of at most 4 m, both
+corners and the centre among them, `O(knots x (2 ceil(W / 4 m) + 1))`. The bore runs from the
 first knot with the bore clearance of cover (5 m, the portal opening's `PORTAL_CLEARANCE_M`, so
 the opening ends where the ground becomes the bore's crown) to the last; the stretches before and
 after it are open approaches. `tunnel_bore` is the one rule: quick validation
@@ -10282,8 +10288,9 @@ built like any edge's; a car drives through (below).
 
 **Refusals** (no geometry repair, no fallback), each with its reason in the tool:
 
-- `tunnel_cover`: no knot has 5 m of cover, or a knot between the portals has less (the stroke
-  leaves the hill in the middle); the tool shows the cover and the 5 m it needs.
+- `tunnel_cover`: no knot has 5 m of cover across the section, or a knot between the portals has
+  less (the stroke leaves the hill in the middle, or the hill falls away beside the bore so the
+  shell's roof would stand out of it); the tool shows the cover and the 5 m it needs.
 - `tunnel_approach_too_short`: an open approach shorter than 8 m (two lattice steps), so a
   portal node would stand within a step of the stroke's end.
 - `tunnel_crossing`: the bore crosses another tunnel edge in plan at any height (tested on the
@@ -10293,6 +10300,13 @@ built like any edge's; a car drives through (below).
 - `tunnel_under_water`: the stroke's corridor, bore or approach, overlaps visible water: its
   cover or a portal would be a water body (`validate_road_candidate_against_water`, hover,
   preview and commit alike).
+- `junction_in_trench` (round R8f, the user's decision): any stroke that makes a junction (three
+  or more surface arms) at a node below the source ground (`cover_m` above zero, the cover the
+  bore check reads) where one arm is a tunnel or a tunnel's approach (a standard edge whose far
+  node has only it and a tunnel). The terrain walls only the approach span; the junction's node
+  piece would be graded down to in a cut and step against the walls. The tool shows the depth.
+  The preview's exact plan and the commit refuse it alike (one `validate_road_edit`); the hover
+  check, which builds no graph, sees no junction, as for every junction refusal.
 
 **Cost.** Preparation `O(stroke length / 4 m + points)` with one returned polyline and one
 alignment buffer; the bore `O(knots)`, allocation-free; the crossing test `O(bore segments ×
@@ -10320,7 +10334,8 @@ graph's `Result`), is within 0.01 ms; the graded stage, which the change does no
 suspected and not investigated.
 
 **Tests** (`nodes/sim/core/tests/road_tunnels.rs`, Rust, no Godot):
-`tunnel_probes_without_tunnel_intent` (the table above, still true),
+`tunnel_probes_without_tunnel_intent` (the table above until round R8f; since R8f every probe
+commits as a surface road at 0),
 `tunnel_probes_with_tunnel_intent` (quick = exact = commit on all three; the first commits
 standard / tunnel / standard, the second one tunnel, the third standard / tunnel; every edge
 publishes pavement and lanes; the authored -6 m knots survive), `a_straight_tunnel_keeps_the_chord_through_a_hill`
@@ -10437,29 +10452,24 @@ in `network/roadbed/lining.rs` and the graded bake.
   the earth). Walls face the road, the ceiling down. A junction inside a tunnel cannot be built
   today: a tunnel stroke that meets a road inside its bore is refused (`tunnel_crossing`, round R2),
   so only bends and pass-throughs between tunnels occur, and those are lined.
-- **Headwall** (`PieceMesh::headwall_triangles`). At each portal row (a tunnel's mouth a grounded
-  piece shares, and where a tunnel opens straight onto a bridge) the span stands a headwall in the
-  row's vertical plane: from the skirt depth below the row's corners up to `HEADWALL_HEIGHT_M`
-  (5.5 m: the bore's 5 m of cover and a parapet) above them, and its wings `HEADWALL_WING_M`
-  (11 m) beyond them along the row's line, with the lining's mouth open in it from below. A wing's
-  top (round R8c, the user's decision; `headwall_wing`) falls from the headwall's height above the
-  corner at `HEADWALL_WING_SLOPE` (the 1:2 tie-in slope) to its tip, level with the corner, so it
-  follows a hillside that falls away instead of standing flat above it; the terrain bake grades
-  the ground to it (below). Its opening runs up the walls' end edges and along
-  the ceiling's, and its edges below the corners are the approach's skirt end edges, so it meets
-  the lining, the deck and the grounded piece edge for edge; its outer edges meet the terrain. It
-  faces out of the tunnel. Retaining wings along the cut were not needed: the cut's side slopes run
-  into the headwall's wings.
+- **Collar** (round R8f, `PieceMesh::collar_triangles`; R8's headwall and R8c's wings are gone).
+  At each portal row (a tunnel's mouth a grounded piece shares, and where a tunnel opens straight
+  onto a bridge) the span stands a collar in the row's vertical plane: the ring between the
+  lining's mouth and the end of its shell, flat-topped at `COLLAR_HEIGHT_M` (5.0 m, the shell's
+  roof: the lining's 4.5 m and its 0.5 m thickness) above the row's corners and reaching the
+  thickness beyond each corner, with the skirt below the row. Its outer corners are the shell's
+  own functions of the row (`shell_foot`, `shell_top`), so its outer edges above the row are the
+  shell's end edges bitwise; its opening runs up the walls' end edges and along the ceiling's,
+  and its edges below the corners are the approach's skirt end edges. Only its bottom edges meet
+  the terrain. It faces out of the tunnel in outdoor concrete. The terrain stands the row wall on
+  its flat top where the hill rises higher (round R8e).
 - **Terrain** ([`terrain.md`](terrain.md) T22, "The portal row"). No tie-in cone reaches past a
   portal row, so the hill over the bore stays natural and the cut ends at the row; the portal
   opening and its side walls are gone; under the approach's deck at the row the ground continues
-  the hill, so the step down to the deck lies where the mask discards it, not in the mouth. Round
-  R8c: each portal row's two wings are cut-only seams of the bake (`SeamKind::Wing`, the upper
-  bound `h + k d` alone, from the roadbed's own `headwall_wing`), on both sides of the headwall's
-  plane beside the bore and hidden over the bore, so no ground stands above a wing's top, the hill
-  behind it is graded down at 1:2 from it, and where the top lies below the approach's cut (the
-  outer half on a slope like the test hills) the wing ends flush with the ground on both sides.
-- **Rendering** (round R8b). The lining, its end walls, the headwalls and the lining's shell are
+  the hill, so the step down to the deck lies where the mask discards it, not in the mouth. Since
+  round R8e the approach's own seams only bound the ground from below and the bake walls the cut
+  (below).
+- **Rendering** (round R8b). The lining, its end walls, the collars and the lining's shell are
   the payload's own lining layer (`MeshLayer::Lining`, `lining_*` arrays; every chunk carries the
   four arrays, empty without a tunnel), the road chunk's eighth surface, drawn on both sides in
   the concrete material, which takes the cloud shadow (`standard_light.gdshaderinc`). Their colour
@@ -10468,7 +10478,7 @@ in `network/roadbed/lining.rs` and the graded bake.
   holding that layer again (`network_tool.gd::_add_lining_shadow`, `tunnel_lining_shadow.gdshader`);
   a chunk without a tunnel gets none, and a bridge's concrete is never uploaded twice (R8 copied
   every chunk's whole concrete layer and discarded the bridges' faces in the shader). So the
-  ceiling shades the deck inside and the headwall the approach.
+  ceiling shades the deck inside and the collar the approach.
 - **Thickness** (round R8b). The lining is `TUNNEL_LINING_THICKNESS_M` (0.5 m) thick: a shell of
   outer walls that far outside the walls and a roof that far above the ceiling, buried in the
   hill (`PieceMesh::shell_triangles`). Its feet at a mouth corner are a function of the row's two
@@ -10484,18 +10494,19 @@ in `network/roadbed/lining.rs` and the graded bake.
   UVs carry the lamp station along the bore (`x`) and the height above the deck (`y`): the rows'
   stations scaled so that a whole number of `TUNNEL_LAMP_SPACING_M` (10 m) spacings fits the bore
   (at least one), so the lamps sit symmetric in every span and evenly spaced within 5% of 10 m.
-  End walls, headwalls, the shell and lined node pieces carry `y = -1`: no lamps. The concrete
+  End walls, collars, the shell and lined node pieces carry `y = -1`: no lamps. The concrete
   shader draws a 1.2 m emissive band across the ceiling at the middle of each spacing and lights
   the walls with emission from the same coordinate, strongest under the ceiling and fading over
   2.5 m along the bore. No `Light3D` per lamp: the cost is a few ALU operations per lining
   fragment (none for a bridge's), nothing on the CPU. The deck is not brightened (its layers
   carry no station); the interior keeps 60% of the ambient, so it stays readable.
-- **Bounds.** A lined piece's XZ bounds hold its lining (the headwalls' 11 m wings and the shell
-  reach past the deck), so a chunk a wing reaches into lists the piece when it alone is rebuilt.
+- **Bounds.** A lined piece's XZ bounds hold its lining (the shell and the collars reach the
+  lining's thickness past the deck; R8c's 11 m wings are gone), so a chunk the shell reaches into
+  lists the piece when it alone is rebuilt.
 - **Whole-map view.** The lining is a few hundred triangles per tunnel, all in the chunk's
   lining layer under the hill, so a whole-map view drops it with the road chunks it already
-  culls or simplifies by distance: from far away only the headwall shows, and a coarse view can
-  draw the headwall alone (its triangles come after the lining's) or nothing. Nothing of it is
+  culls or simplifies by distance: from far away only the collar shows, and a coarse view can
+  draw the collar alone (its triangles come after the lining's) or nothing. Nothing of it is
   built here.
 
 **Tests** (fresh, 2026-11-01, release lib subset and the debug suite in the gates):
@@ -10620,16 +10631,6 @@ C F F C against the control `9c633119` (R8's `8fcd4f07` plus the benchmark fixtu
   two wing seams per portal row in windows within the cap of a portal, `O(rows)` per wing hide
   test; elsewhere one kind test per candidate seam.
 
-**Wing grading on hills steeper than 1:2 (R8c, open, for the user).** On R8's Godot test hill,
-which rises steeper than 1:2 above the portals, the wings' 1:2 cut behind the headwall deepens up
-the hill until the wings' cap (53 m), while the hill over the bore stays natural: steep steps run
-up the hill along the lines through the portal's corners, and an arc at the cap (the overhead and
-portal shots). Grading the hill over the bore too would bring back R2's cut over the bore and its
-step at the cap; grading in front only leaves a large rock face where the hill stands above the
-lowered tops; no grading leaves rock above the lowered tops where the flat tops stood. The rule
-the user chose meets its acceptance on the 1:2 and 1:4 test hills; on steeper hills it needs a
-further decision (see the R8c handoff).
-
 **Tunnel mouths in the user's saves (round R8d, 2026-11-01).** The user played R8 + R8b + R8c
 and reported broken-looking mouths: dark triangles round the mouth, black headwalls and wings,
 black wedges standing out of the hill, missing polygons, a broken headwall top on a 4-lane tunnel
@@ -10669,7 +10670,8 @@ when it carries the lamp station). No change without tunnels: the R8 product pro
 whole payload with the lining arrays, GL0-GL2 tiles, vegetation, queries) on the hill + bridge,
 1:2 hill road and grown town gives equal hashes on `ff6a4723` and the fix, both built fresh.
 
-**Open question: a mouth that fits the hill (R8d, for the user).** The frame cannot fit varied
+**A mouth that fits the hill (R8d's open question, closed: the user chose option T with walls,
+2026-11-01; built in rounds R8e and R8f).** The frame cannot fit varied
 hills because the roadbed reads no terrain. Options (stills of the committed mouth beside option
 T on the same cameras over both dumps' worst cases, steep, gentle, slanted, curved, side by side,
 short, wide and the junction, in `$ARTIFACTS`):
@@ -10718,8 +10720,8 @@ flags an approach span's chain segments as retained (`PieceMesh::retained`, from
 retained seam bounds the ground from below only and a covered sample naming it takes the
 ground's value, so the seam stays named and the mask is exact on it; the bake stands the trough's
 walls along retained seams and the row wall above the headwall's top; R8c's wing seams are gone
-from the terrain. The roadbed's headwall and its wings are unchanged until round R8f's collar:
-they stand ungraded in the natural hill. Measurements (FRESH, 2026-11-01):
+from the terrain. The roadbed's headwall and its wings stood until round R8f's collar (below).
+Measurements (FRESH, 2026-11-01):
 
 - No change without tunnels: the R8 product probe (town, hill and steep fixtures) gives equal
   hashes on `bdabf8ed` and R8e, both release builds of the same session.
@@ -10739,29 +10741,100 @@ they stand ungraded in the natural hill. Measurements (FRESH, 2026-11-01):
   and 1.880/2.655 control, 1.881/2.678 and 1.826/2.386 R8e; `sloped_branch` 1.702/2.945 and
   1.645/2.639 control, 1.597/2.487 and 1.710/3.056 R8e (noise).
 
+**The collar and the tool's rules (option T, round R8f, 2026-11-01).** The roadbed and tool
+side of option T; the user's decisions taken as settled: walls, not slopes; `junction_in_trench`
+refused; exact wall tops kept (no faces cap).
+
+- *The collar* ("Collar" above). `headwall_wing`, `HEADWALL_WING_M` and `HEADWALL_WING_SLOPE`
+  are deleted, `HEADWALL_HEIGHT_M` (5.5 m) became `COLLAR_HEIGHT_M` (5.0 m), `LiningPart::Headwall`
+  `Collar`. The terrain's row wall stands on the collar's flat top (round R8e). The bounds shrink
+  from the wings' 11 m to the shell's 0.5 m past the deck: the roadbed strip probe's six tunnel
+  entries are re-recorded (spans and queries; every other entry unchanged).
+- *Cover across the bore* ("The bore" above). On the user's two dumps (16 tunnels, 32 mouths;
+  each stroke rebuilt from its committed approach, bore and approach edges, `$ARTIFACTS`
+  probe): no tunnel would be refused, because the least section cover always lies at a portal,
+  never between them; drawn again, 14 tunnels get their portals 4-16 m further in (2 keep them).
+  At their committed portals the shell's roof corner stands above the hill by up to 2.17 m (dump
+  B's 24 m tunnel on the 1:2 hill), 0.03-1.32 m at 13 others, under it at 2. The saves keep their
+  tunnels as built: nothing is checked or repaired on load. Where the hill falls across a
+  committed row below the collar's top, the top's corner shows as a concrete edge above the low
+  side and the shell's roof as concrete in the hill; nothing opens.
+- *No tunnel without the toggle* (the tool above). A stroke without the toggle is classed by the
+  standard profile alone: on the test hills a level stroke into a 15 % hill commits as a grounded
+  road that climbs it, and into a 1:2 hill it is refused as `road_too_steep` (quick = exact =
+  commit; `tunnel_probes_without_tunnel_intent`). R8d's level side road on dump A was not re-run. The editor's class change
+  (`set_edge_class_internal`) still sets any class. Found on the way: a grounded road made a
+  bridge by that class change splices a road chunk that differs from a full emission
+  (`ROAD-97`, open).
+- *`junction_in_trench`* (refusals above). On a copy of dump A, R8d's side roads 3, 6, 8, 12, 15,
+  20 and 30 m from mouths M1 and M5, both sides: all refused, the deck 1.04-4.55 m (M1) and
+  4.31-4.76 m (M5) below the source ground. The approaches are the strokes' straight chords under
+  convex hills, so they stay below the ground to the strokes' starts: M1's cut is 68 m long and
+  M5's 112 m (the long-cut case), and a junction on such an approach can only be made at its
+  far end, on the ground. R8d's 20 and 30 m junctions on M1 committed before; its junction copy
+  keeps its junction as saved (its node piece graded in a cut against the walls, as R8e left it).
+- *A bend's lining* (found by this round). With the toggle the only way to draw a tunnel, a bend
+  drawn on the 4 m lattice left a zero-area face in its node piece's ceiling over three ring tops
+  collinear to within rounding (the shared triangulator's centroid inside test keeps such a
+  sliver); `node_lining` drops a face over three consecutive ring vertices listed against the
+  ring's winding (exact, tunnel node pieces only).
+- *Wall faces' lighting* (item 5; [`terrain.md`](terrain.md#graded-terrain-surface-terrain-07),
+  "The collar and the tool's rules"). The trough walls' dark slate was lighting, not material: the
+  wall quad was wound so that Godot drew the road's side as a back face and negated its normal.
+  Fixed in `terrain_graded_tiles.gd`; every graded wall (conflict walls and abutments too) is lit
+  from its own side now.
+
+Measurements (FRESH, 2026-11-01, release test binaries and library of the round's tip against
+the control `86d3d87d` (R8e), both with R8's product probe and the gentle benchmark option):
+
+- *Tests.* `the_lining_closes_the_bore` (the collar: every edge shared but its own at or below
+  the row, flat top at 5.0 m, no point beyond the 0.5 m reach), `the_hill_meets_the_collar`,
+  `tunnel_probes_without_tunnel_intent`, `a_tunnel_keeps_its_cover_across_the_whole_bore`,
+  `a_junction_in_a_tunnel_approach_trench_is_refused`, the bend tests drawn with the toggle; R8's
+  sky test and every R2, R2b, R8 and R8e tunnel test pass (debug suite: 1,884 passed, 0 failed).
+- *No change without tunnels.* R8's product probe on the town, hill and steep fixtures: equal
+  hashes on the control and this round. The wall quad's winding changes how every graded wall is
+  lit (a Godot render change, not a Rust product).
+- *The user's dumps* (R8d's three cameras per mouth on all 32 mouths plus one plan view per mouth
+  with the sky keyed, and the junction copy's four views; gamescope headless, isolated profile,
+  hour 13; sheets and before/after sheets against R8d's in `$ARTIFACTS`): no wing, fin, wedge or
+  stripe; walled cuts on every approach; 2 key-coloured pixels over 34 keyed views (dump B
+  `P-M9` and `P-M22`, one each), at a trough wall's foot on the deck's outer edge, the same
+  pixels with the control library: a pinhole where the wall's bottom edge, split at lattice
+  crossings, meets the deck's edge, split at its section rows (R8e's code; open).
+- *Cost* (`RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks, load 1.68, C F F C in one
+  session). `benchmark_tunnel_preview_stages` p50/p95 ms: 1:2 hill graded C 2.899/3.190,
+  2.883/3.143, F 2.882/3.136, 2.880/3.133; total C 3.653/3.971, 3.634/3.973, F 3.663/3.950,
+  3.650/3.976; plan p50 C 0.168, 0.176, F 0.195, 0.194 (the full-width cover's five lattice
+  points per knot and the half width's one edge, +0.02 ms); 1:4 hill graded C 2.846/3.125,
+  2.852/3.100, F 2.862/3.112, 2.848/3.129. The graded p95 stays over the 3.0 ms stage as since R8c
+  (control and round alike). Lining vertices per pose 2,329 -> 2,326 (1:2), 2,592 -> 2,574 (1:4).
+  `benchmark_road_preview_stages` (tunnel-free): payload, hidden and graded tile counts equal;
+  total p50 `sloped_t` C 3.214, 3.011, F 2.912, 2.929; `sloped_branch` C 2.676, 2.752, F 2.746,
+  2.584 (noise; no claim). Bounds: section cover `O(knots x (2 ceil(W / 4 m) + 1))`,
+  `junction_in_trench` `O(affected nodes x degree^2)`, the collar 12 ring points per portal row
+  (`O(1)`), the bend's sliver rule `O(ring)`; none allocates per knot or reads the city.
+- *Locality* (`road_plan_scaling::populated_tunnel_road_plan_scaling`, same session, C then F,
+  the check R8e could not run): local products identical at 0, 1k, 10k and 100k remote buildings
+  in both; compile p50 C 0.069 0.103 0.043 0.043 ms, F 0.062 0.162 0.113 0.063 ms; preview p50 C
+  0.039 0.025 0.024 0.024 ms, F 0.036 0.067 0.036 0.036 ms; snapshot once per edit 0.005 ->
+  0.214 ms (C), 0.003 -> 0.212 ms (F). Planning follows the stroke's neighbourhood: flat from 0
+  to 100k (the 1k point is the noisy one in both).
+
 **Open (`ROAD-61`):**
 
-- Round R8f: the roadbed's collar (a flat-topped ring 0.5 m beyond the corners at the lining's
-  height plus 0.5 m) in place of the headwall and its wings, `headwall_wing` deleted, the row wall
-  then standing above the collar; `junction_in_trench`; the load leg of the tunnel stroke's
-  bitwise test (`graded_stage::tunnel_tiles_of_a_preview_commit_undo_and_load_equal_fresh_bakes`
-  covers the preview, commit, undo and recommit; the test hill has no world config to save).
-- Slivers (accepted by the user, 2026-11-01): beside the portal's corners, where a wing's top
-  stands above the cut in front of it, the cut and the ground graded to the wing meet across the
-  row in one lattice cell, so a steep rock sliver stands up to half a cell in front of the wing's
-  inner part (0.25 m at `GL0`); between the corners the mask cuts on the row, and along a wing's
-  outer part both sides meet the top. An exact crease along the wing lines is `TERRAIN-18`
-  ([`terrain.md`](terrain.md) T22). Since round R8e nothing grades the ground to a wing, so
-  there is no sliver to accept; the wings go with round R8f.
-- Where the hill behind a portal rises steeper than 1:2 from the headwall's top, the hill over the
-  bore, which no wing grades, and the ground graded to the wings beside it meet in steps along the
-  lines through the row's corners up to the wings' cap, and the cut ends there in a step (above).
-  Closed by round R8e: the approach no longer cuts the hill, and no wing seam grades it.
-- R8b's sun line at the walls' feet and the flat wing tops are closed (R8b, R8c); R8d's black
-  headwalls are closed.
-- Fins, wedges and stripes at mouths on varied hills and side-by-side portals: option T (R8e
-  terrain side above, R8f roadbed side). The lining standing out where the hill falls across the
-  bore: the full-width cover check, still open.
+- A grade limit for every road class (`ROAD-96`, planned): tunnels of +23.6 % and +26.1 % are
+  committed in the user's saves and a tunnel stroke keeps its authored grade.
+- Junctions inside a trench (a per-edge trench flag so a side road can be a trench too, node
+  pieces inheriting it) and the flat-ground ramp entry (a descending authored profile): later
+  work, not in `ROAD-61`.
+- The pinhole at a trough wall's foot (2 pixels on 34 keyed views, above): the wall's bottom
+  edge and the deck's outer edge are split at different points.
+- The load leg of the tunnel stroke's bitwise stage test (the test hill has no world config to
+  save).
+- The shared triangulator's centroid inside test (`triangulate_constrained_rings_xz`) can keep a
+  sliver over nearly collinear ring vertices for roads and building sites too; not observed
+  there, not changed.
 
 ## Road marking lighting — RENDER-12
 
