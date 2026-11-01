@@ -40,6 +40,7 @@ pub(super) enum MeshLayer {
     Road = 4,
     Marking = 5,
     Concrete = 6,
+    Lining = 7,
 }
 
 /// Top-surface road renderer built entirely from compiled roadbed ownership.
@@ -671,6 +672,12 @@ impl NetworkMeshData {
                 &mut self.concrete_uvs,
                 &mut self.concrete_colors,
             ),
+            MeshLayer::Lining => (
+                &mut self.lining_vertices,
+                &mut self.lining_normals,
+                &mut self.lining_uvs,
+                &mut self.lining_colors,
+            ),
         };
         for index in 0..3 {
             target.0.push(vertices[index]);
@@ -743,8 +750,7 @@ pub(super) fn concrete_color() -> Color {
 }
 
 // A tunnel lining's concrete (`ROAD-61`): the concrete's colour, with alpha 0 marking the faces
-// the lining's shadow-only caster keeps (`tunnel_lining_shadow.gdshader`); the concrete shader
-// reads only the colour.
+// the concrete shader keeps out of the sun and the sky and lights with the lamp strips.
 pub(super) fn lining_color() -> Color {
     Color::from_rgba(0.75, 0.75, 0.75, 0.0)
 }

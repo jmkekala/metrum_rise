@@ -44,7 +44,7 @@ const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
 const ZoningToolScript := preload("res://scripts/tools/zoning_tool.gd")
-const LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]
+const LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining"]
 var _failures := 0
 var simulation: SimulationNode
 var _capture_baseline_sky := {}

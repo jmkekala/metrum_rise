@@ -43,6 +43,7 @@ fn road_edges(core: &mut SimCore) -> (RoadEdges, FacePoints) {
             (&mesh.raised_step_vertices, &mesh.raised_step_uvs),
             (&mesh.concrete_vertices, &mesh.concrete_uvs),
             (&mesh.skirt_vertices, &mesh.skirt_uvs),
+            (&mesh.lining_vertices, &mesh.lining_uvs),
         ]
         .into_iter()
         .enumerate()

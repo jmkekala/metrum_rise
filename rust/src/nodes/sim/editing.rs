@@ -4000,6 +4000,7 @@ mod tests {
                 layer(|mesh| &mesh.road_vertices),
                 layer(|mesh| &mesh.marking_vertices),
                 layer(|mesh| &mesh.concrete_vertices),
+                layer(|mesh| &mesh.lining_vertices),
             ]
         };
         let occupied_chunks = |core: &SimCore| {

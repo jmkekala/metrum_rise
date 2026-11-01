@@ -447,6 +447,7 @@ fn mesh_vertex_count(mesh: &NetworkMeshData) -> usize {
         + mesh.road_vertices.len()
         + mesh.marking_vertices.len()
         + mesh.concrete_vertices.len()
+        + mesh.lining_vertices.len()
 }
 
 fn hash_mesh(digest: &mut u64, mesh: &NetworkMeshData) {
@@ -486,6 +487,11 @@ fn hash_mesh(digest: &mut u64, mesh: &NetworkMeshData) {
         concrete_uvs,
         concrete_colors
     );
+    // Only a tunnel's chunk has a lining (`ROAD-61`), so every other digest stays comparable
+    // with the layer's predecessors'.
+    if !mesh.lining_vertices.is_empty() {
+        hash_layer!(lining_vertices, lining_normals, lining_uvs, lining_colors);
+    }
 }
 
 fn hash_vector3_slice(digest: &mut u64, values: &[Vector3]) {

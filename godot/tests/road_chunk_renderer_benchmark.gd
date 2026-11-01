@@ -11,6 +11,7 @@ const LAYERS: Array[String] = [
 	"road",
 	"marking",
 	"concrete",
+	"lining",
 ]
 const LARGE_LAYER_VERTEX_COUNTS := {
 	"skirt": 1200,
@@ -20,6 +21,7 @@ const LARGE_LAYER_VERTEX_COUNTS := {
 	"road": 3000,
 	"marking": 990,
 	"concrete": 0,
+	"lining": 0,
 }
 const RESIDENT_CHUNK_COUNTS: Array[int] = [4, 64, 256, 1024, 4096]
 const AFFECTED_CHUNK_COUNTS: Array[int] = [0, 1, 4, 16]
@@ -71,8 +73,8 @@ func _run() -> void:
 	_large_layer_arrays = _build_layer_arrays(LARGE_LAYER_VERTEX_COUNTS)
 	_small_layer_arrays = _build_layer_arrays({"road": 3})
 	assert(_layer_vertex_count(_large_layer_arrays) == LARGE_VERTICES_PER_CHUNK)
-	_bridge_layer_arrays = _structure_layer_arrays(Color.WHITE)
-	_tunnel_layer_arrays = _structure_layer_arrays(Color(1.0, 1.0, 1.0, 0.0))
+	_bridge_layer_arrays = _structure_layer_arrays("concrete", Color.WHITE)
+	_tunnel_layer_arrays = _structure_layer_arrays("lining", Color(1.0, 1.0, 1.0, 0.0))
 
 	var host := Node3D.new()
 	root.add_child(host)
@@ -280,16 +282,16 @@ func _case_layer_arrays(kind: String) -> Dictionary:
 			return _tunnel_layer_arrays
 	return _large_layer_arrays
 
-# The large chunk plus STRUCTURE_VERTICES of concrete in `color`: a bridge's (alpha 1) or a
-# tunnel lining's (alpha 0, the faces the shadow caster keeps).
-func _structure_layer_arrays(color: Color) -> Dictionary:
+# The large chunk plus STRUCTURE_VERTICES in `layer` and `color`: a bridge's concrete (alpha 1)
+# or a tunnel's lining layer (alpha 0, ROAD-61).
+func _structure_layer_arrays(layer: String, color: Color) -> Dictionary:
 	var counts := LARGE_LAYER_VERTEX_COUNTS.duplicate()
-	counts["concrete"] = STRUCTURE_VERTICES
+	counts[layer] = STRUCTURE_VERTICES
 	var arrays := _build_layer_arrays(counts)
 	var colors := PackedColorArray()
 	colors.resize(STRUCTURE_VERTICES)
 	colors.fill(color)
-	arrays["concrete"]["colors"] = colors
+	arrays[layer]["colors"] = colors
 	return arrays
 
 # Shadow-only copies under the resident chunks and the vertices they upload again: (count,

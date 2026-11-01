@@ -294,6 +294,23 @@ impl SimCore {
             "concrete_colors",
             PackedColorArray::from_iter(mesh_data.concrete_colors.iter().copied()),
         );
+        // A tunnel's lining (`ROAD-61`), its own layer: empty arrays in a chunk without one.
+        dict.set(
+            "lining_vertices",
+            PackedVector3Array::from_iter(mesh_data.lining_vertices.iter().copied()),
+        );
+        dict.set(
+            "lining_normals",
+            PackedVector3Array::from_iter(mesh_data.lining_normals.iter().copied()),
+        );
+        dict.set(
+            "lining_uvs",
+            PackedVector2Array::from_iter(mesh_data.lining_uvs.iter().copied()),
+        );
+        dict.set(
+            "lining_colors",
+            PackedColorArray::from_iter(mesh_data.lining_colors.iter().copied()),
+        );
         // Five floats per light: chunk-local pole base x, y, z, yaw, model kind.
         dict.set(
             "street_lights",

@@ -111,7 +111,7 @@ pub(super) fn emit_abutment_faces(mesh: &mut NetworkMeshData, piece: &PieceMesh,
     });
 }
 
-// Emits a buried piece's lining and a tunnel span's headwalls (`ROAD-61`) into the concrete layer
+// Emits a buried piece's lining and a tunnel span's headwalls (`ROAD-61`) into the lining layer
 // as the piece wound them, facing into the bore and out of the portal; the concrete material is
 // drawn on both sides, so the lining also closes the bore seen from outside. UVs are unused: the
 // concrete shader is triplanar in world space.
@@ -120,7 +120,7 @@ pub(super) fn emit_lining(mesh: &mut NetworkMeshData, piece: &PieceMesh, color: 
         let [a, b, c] = world.map(render_point);
         push_triangle_preserving_winding_with_exact_normal(
             mesh,
-            MeshLayer::Concrete,
+            MeshLayer::Lining,
             world,
             [Vector2::ZERO; 3],
             color,

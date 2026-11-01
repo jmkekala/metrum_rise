@@ -140,8 +140,7 @@ static func road_concrete_material() -> ShaderMaterial:
 		_road_concrete_material.set_shader_parameter("uv_scale", 0.1)
 	return _road_concrete_material
 
-# The shadow-only material of a road chunk's concrete: casts the tunnel lining's faces, discards a
-# bridge's (`ROAD-61`).
+# The shadow-only material of a road chunk's tunnel lining layer (`ROAD-61`).
 static func tunnel_lining_shadow_material() -> ShaderMaterial:
 	if _tunnel_lining_shadow_material == null:
 		_tunnel_lining_shadow_material = ShaderMaterial.new()

@@ -638,18 +638,16 @@ func _build_road_chunk_instance(
 	return instance
 
 # A tunnel's lining casts the sun's shadow into its bore (ROAD-61): road chunks only receive
-# shadows, so a chunk with concrete gets a shadow-only child holding that layer again, whose
-# material keeps the lining's faces (colour alpha 0) and discards a bridge's.
+# shadows, so a chunk with a lining layer (only a chunk with a tunnel has one) gets a shadow-only
+# child holding that layer again. Bridges' concrete is never copied.
 func _add_lining_shadow(instance: MeshInstance3D, chunk_data: Dictionary) -> void:
-	var vertices: PackedVector3Array = chunk_data.get("concrete_vertices", PackedVector3Array())
+	var vertices: PackedVector3Array = chunk_data.get("lining_vertices", PackedVector3Array())
 	if vertices.is_empty():
 		return
-	# The layer's arrays as _fill_road_chunk_mesh uploaded them, already checked there.
+	# The layer's positions as _fill_road_chunk_mesh uploaded them, already checked there.
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
-	arrays[Mesh.ARRAY_NORMAL] = chunk_data["concrete_normals"]
-	arrays[Mesh.ARRAY_COLOR] = chunk_data["concrete_colors"]
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	mesh.surface_set_material(0, WorldMaterials.tunnel_lining_shadow_material())
@@ -695,7 +693,7 @@ func _road_chunk_frame_centre(
 
 # A road chunk's layers in payload order, as `NetworkMeshData` lists them (its owner runs index
 # these layers).
-const ROAD_CHUNK_LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]
+const ROAD_CHUNK_LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining"]
 
 # Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure. The
 # mesh's `road_layer_surfaces` meta maps each layer to its surface (-1 when the layer is empty),
@@ -716,6 +714,8 @@ func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 		WorldMaterials.road_sidewalk_material(),
 		WorldMaterials.road_asphalt_material(),
 		_marking_mat,
+		WorldMaterials.road_concrete_material(),
+		# A tunnel's lining (ROAD-61): concrete, kept from the sun and lit by its lamp strips.
 		WorldMaterials.road_concrete_material(),
 	]
 	var surfaces := PackedInt32Array()

@@ -900,7 +900,7 @@ fn benchmark_tunnel_preview_stages() {
                     .chunks
                     .iter()
                     .flat_map(|chunks| chunks.values())
-                    .map(|chunk| chunk.overlay.concrete_vertices.len())
+                    .map(|chunk| chunk.overlay.lining_vertices.len())
                     .sum::<usize>();
             }
             if repetition >= 10 {
@@ -939,4 +939,52 @@ fn benchmark_tunnel_preview_stages() {
         total.0,
         total.1,
     );
+}
+
+// `ROAD-61` round R8b: the lining is its own payload layer, so the shadow caster takes it alone.
+// Through the 1:2 hill every chunk holding a lined piece carries a lining and no other does, and
+// no chunk has concrete; a bridge's chunks carry concrete and no lining.
+#[test]
+fn the_lining_is_its_own_layer() {
+    let mut tunnel = hill_core(80.0);
+    let result = run_stroke(&mut tunnel, &THROUGH_HILL, true);
+    assert_eq!(result.committed, "committed", "{result:?}");
+    tunnel.precompute_road_mesh_data();
+    let roadbed = &tunnel.transit_network.roadbed;
+    let mut lined_chunks = 0;
+    for (&chunk, mesh) in &tunnel.cached_road_mesh_chunks {
+        let lined = roadbed
+            .pieces_in_bounds(roadbed.chunk_bounds(chunk))
+            .any(|(piece, _)| {
+                roadbed
+                    .piece_mesh(piece)
+                    .is_some_and(|mesh| !mesh.lining_triangles().is_empty())
+            });
+        assert_eq!(!mesh.lining_vertices.is_empty(), lined, "chunk {chunk:?}");
+        assert!(mesh.concrete_vertices.is_empty(), "chunk {chunk:?}");
+        lined_chunks += usize::from(lined);
+    }
+    assert!(lined_chunks >= 3, "{lined_chunks} lined chunks");
+
+    let mut bridge = flat_core();
+    let result = run_stroke(
+        &mut bridge,
+        &[
+            Vector3::new(-100.0, 0.0, 0.0),
+            Vector3::new(100.0, 0.0, 0.0),
+        ],
+        false,
+    );
+    assert_eq!(result.committed, "committed", "{result:?}");
+    let edge = bridge
+        .region_graph
+        .edges()
+        .iter()
+        .position(|edge| !edge.deleted)
+        .unwrap();
+    bridge.set_edge_class_internal(edge as i32, 1);
+    bridge.precompute_road_mesh_data();
+    let chunks = &bridge.cached_road_mesh_chunks;
+    assert!(chunks.values().any(|mesh| !mesh.concrete_vertices.is_empty()));
+    assert!(chunks.values().all(|mesh| mesh.lining_vertices.is_empty()));
 }

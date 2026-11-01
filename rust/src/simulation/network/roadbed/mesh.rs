@@ -871,7 +871,8 @@ impl PieceMesh {
             |triangle| triangle as u32,
         );
         Self {
-            bounds_xz: bounds_xz(positions.iter().copied()),
+            // The lining's headwall wings reach beyond the deck (`ROAD-61`).
+            bounds_xz: bounds_xz(positions.iter().chain(&lining.positions).copied()),
             seam_blocks: seam_blocks(&positions, &outer_chains),
             positions,
             road_space,

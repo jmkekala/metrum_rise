@@ -266,6 +266,10 @@ fn check_abutments(name: &str, graph: &RegionGraph, span: &SpanPiece, edge: usiz
 // `None`; no answer turns `Some`, and every other answer is bitwise equal. Attributed by
 // classifying every predicate call against the old predicate: 24 of 437,772 differ, all band
 // points. No piece, layout, walkway or lane hash changes.
+// Re-recorded by `ROAD-61` round R8b: a lined piece's bounds hold its lining (the headwalls'
+// wings reach past the deck), so the six tunnel entries' spans change, and with them the queries
+// of those whose top-triangle walk over the piece's bounds meets more triangles. No other entry
+// changes.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -1017,10 +1021,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xc7e956e72dd72ebf,
             0x316cd30bc4c6d451,
             0x6916fbee27fd7d64,
-            0xc9e276371e4d3c45,
+            0xa16d24f0d0ab4b8b,
             0x38af174d571d9151,
             0xdb984867d2251fb7,
-            0x8e7bf2e23f88088c,
+            0xfda52aa2164eb0a2,
         ],
     ),
     (
@@ -1029,10 +1033,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xe9ee337eaf5047cd,
             0xda08c0c406e26bbf,
             0xc3bd732dc7c3d626,
-            0x3c09f9cedfc53333,
+            0x8f17be91bd37f65b,
             0x47b9e4ef0180be6c,
             0x288c234263a4ebfb,
-            0xc02834496ead130e,
+            0x5ae2e488857bb391,
         ],
     ),
     (
@@ -1041,7 +1045,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x4f05dc7283f3782d,
             0x07579bad55785ce6,
             0xa56e334196ab5f26,
-            0x721012b90ddd8bd9,
+            0x3b17d8aa9c174177,
             0xb453e5bd6aa15521,
             0x1901784ed6e13208,
             0x808d87d84942f9b0,
@@ -1821,10 +1825,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x522ec5c67b80d40e,
             0x1ddcb9d3a4cff34d,
             0x6916fbee27fd7d64,
-            0xf1e17f13bf599ba0,
+            0x65e13f752aa14892,
             0x809c7d55d4aaeb50,
             0xb0ef00b6f40076ff,
-            0x0bfe5f41c78bc114,
+            0xaf1ad0935db2d882,
         ],
     ),
     (
@@ -1833,10 +1837,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x5bb9074887d9d00a,
             0x605b0e92a436dba2,
             0xc3bd732dc7c3d626,
-            0xc9e865bce96f1b22,
+            0xf2061268153e125e,
             0x783a19c1f4b3a36f,
             0x311032845969ae41,
-            0x0dc1804e1c3978cb,
+            0x0d77d9bad3c12683,
         ],
     ),
     (
@@ -1845,7 +1849,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x8315a3446fa6d340,
             0x01a2923d59ff37cc,
             0xa56e334196ab5f26,
-            0x5eb1a708b0a700f6,
+            0xb4f74b87f804a7c8,
             0x6cce29be6e4ef515,
             0xea1a4633928b02ff,
             0x742acff099dc78fa,
