@@ -562,6 +562,49 @@ Acceptance record (`TRAFFIC-11`, 2026-10-30; the artifact folders stay local):
 - `./run.sh --test` (headless, isolated profile): exit code 0; debug library suite 1,850 passed,
   0 failed, 178 ignored; no Godot script skipped and no script error.
 
+### Walkers follow their route's sidewalks (`ROAD-74`)
+
+A walking route is a node path; it is legal when some chain of sidewalk lanes and pedestrian
+connectors walks it into the exit lane (`path_has_connectors_from`). Movement used to take any
+connector onto the next road (the shortest, seeded among ties). With crossings off a junction
+joins only some sidewalks to some arms, so that choice could leave a walker on a sidewalk from
+which the rest of its route has no connector, and it waited at the mouth for ever (round R6b
+trace: agent 4990, route 85, 86, 87, at node 86 the shortest connector kept it on sidewalk idx
+100 of edge 84, and only idx -100 reaches its exit lane at node 87, a junction without
+crossings).
+
+- **The witness.** Each walk carries its route's lane witness, `AgentVec::walk_lanes`: one
+  `Lane::lane_idx` per road of `current_path`, the cheapest chain of sidewalks along the node
+  path into the planned exit lane by connector length (both sidewalks of a road cost the same to
+  walk), ties within 1 mm broken by the agent's schedule seed (`tick/walk_lanes.rs`). It is built
+  once per route, at its first junction from the lane the walker arrives on (or at node entry, for
+  a walker with no lane yet), and cleared with every new route. At a node the walker takes the
+  connector into the witness's sidewalk, never another one. The choice at a node depends only on
+  the lane the walker arrives on and the rest of its route, so a witness rebuilt from any later
+  lane of the chain repeats it: it is not saved, and a loaded walker continues the same walk.
+- **No step at the node.** Where the witness names no connector from the walker's lane (a
+  crossing removed under it without the editor; the editor clears every route through the
+  toggled node), the walker waits at the mouth and replans from its own lane through the normal
+  planner (`plan_network_replan` with the lane as `RouteStart::Lane`): a `NoTurnToEdge` or
+  `NoTurnToLane` record with outcome `Replans`, and it walks the new route from the next tick.
+  When no route exists it stays at the mouth and plans again every `NETWORK_REPLAN_DELAY_S`
+  (5 s), one `NoRoute` record with outcome `Waits` per failed plan, rebuilding its witness after
+  each, so a crossing painted again lets it walk on. It never leaves its lane to do so and no
+  crossing is made for it; the watchdog's move home does not apply. Walker replans from a road
+  lane elsewhere (a stale exit, a missing access plan) also start from that lane, not from any
+  sidewalk of its road.
+- **Cost.** The witness is O(roads × sidewalks per road × connectors per lane) once per route,
+  in thread-local scratch, with no allocation once the scratch and the walker's column have grown
+  to its longest route; a junction step is one scan of the lane's connectors. Memory: one 24-byte
+  `Vec` header per agent plus one byte per road of a walker's route, about 2.4 MB of headers and
+  roughly 1-2 MB of witnesses at 100k agents (39,000-46,000 walkers on routes of a few dozen
+  roads, `SIM-02-E`).
+- **Tests.** `simulation::economy::agents::tests::walk_witness`: the traced case (a walker whose
+  exit needs the far sidewalk takes the longer connector across the road end; it fails under the
+  old choice), a removed crossing replans round a road end without a teleport, walks identical
+  for 1 and 8 workers; `test_walking_missing_crosswalk_route_waits_at_junction_mouth`: with no
+  route the walker waits, plans again every 5 s and walks on once the zebra returns.
+
 ### Detach rule (`TRAFFIC-15`, `TRAFFIC-13`)
 
 A car leaves the network for its destination's ingress in `try_network_detach`

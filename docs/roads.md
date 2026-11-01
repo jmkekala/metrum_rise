@@ -10028,10 +10028,14 @@ crossings and its legacy migration.
 - **Split walk networks.** With crossings off the sidewalks can fall into separate walk
   networks (a block whose corners all lack zebras). The walking proof is then withdrawn and the
   planner materializes walks on the lanes: a walk between two networks has no route
-  (`pedestrian_connector_fallback_missing`), so it is never planned. A walker already on its way
-  when its crossing is removed waits at the mouth, logged as a `NoTurnToEdge` failure with
-  outcome `Waits`, and walks on when a zebra is painted there again; nothing teleports it, and
-  no hidden crossing is made (`a_walk_between_split_walk_networks_has_no_route`,
+  (`pedestrian_connector_fallback_missing`), so it is never planned. A walker follows its
+  route's lane witness, the sidewalk its route needs on each road
+  ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74), round R6b). A
+  walker whose crossing is removed under it (the editor clears routes through the toggled node,
+  so only a graph change outside it) replans from its own lane; with no route it waits at the
+  mouth and plans again every 5 s, logged as a `NoRoute` failure with outcome `Waits`, and walks
+  on when a zebra is painted there again; nothing teleports it, and no hidden crossing is made
+  (`a_walk_between_split_walk_networks_has_no_route`,
   `test_walking_missing_crosswalk_route_waits_at_junction_mouth`).
 - **Measured (round R6, 2026-11-01).** With default crossings the economy envelope and
   determinism are bit-identical to the control's metrics (`tools/sim02_gate.py envelope
@@ -10042,10 +10046,10 @@ crossings and its legacy migration.
   walkers do reach a junction without the crossing their route needs: 12,172 trip-failure
   records per 1,000 residents a day at 10k and 14,570 at 30k (control 0), each a waiting
   walker's record per tick. Movement follows a walk's node path and takes any connector onto
-  the next edge, so a route whose lane witness detours through the same node (round a corner to
-  cross elsewhere and back) can be left on the wrong side (inferred from the code, not traced on a
-  stuck walker). Open: the walker should follow its
-  route's lane witness at such nodes (handoff decision, `ROAD-74`).
+  the next edge, so a walker could be left on the wrong side. Round R6b traced it (the shortest
+  connector at the node before a crossing-less junction kept the walker on the sidewalk that has
+  no connector into its exit lane there) and fixed it: walkers follow their route's lane witness
+  ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74)).
 - **Cost (round R6, 2026-11-01, one C F F C session, P-cores, `RAYON_NUM_THREADS=4`, load
   1.8-2.2, release test binaries of `ef7c5f2b` and of the branch).** Preview stages
   (`benchmark_road_preview_stages`), total p50 ms C/F/F/C: `sloped_t` 2.75 / 2.92 / 3.47 /
