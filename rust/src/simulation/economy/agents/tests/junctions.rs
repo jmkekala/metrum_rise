@@ -404,6 +404,32 @@ fn test_walking_missing_crosswalk_route_waits_at_junction_mouth() {
         vec![west_node, center_node, east_node]
     );
     assert_eq!(agents.current_path_index[idx], 1);
+
+    // `ROAD-74`: the walker waits where it stands, with no crossing of its own and no teleport,
+    // and walks on once a zebra is painted again (the toggle's lane rebuild reattaches it to its
+    // rebuilt sidewalk, as `set_crosswalk_override_internal` does).
+    let waiting_at = (agents.pos_x[idx], agents.pos_y[idx]);
+    for _ in 0..5 {
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+    }
+    assert_eq!(agents.current_lane_id[idx], west_lane);
+    assert_eq!((agents.pos_x[idx], agents.pos_y[idx]), waiting_at);
+    for edge_id in 0..4 {
+        graph.set_crosswalk_override(center_node, edge_id, true);
+    }
+    graph.rebuild_intersection_clips();
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+    let rebuilt = fwd_foot_lanes(&network, west_edge)[0];
+    agents.current_lane_id[idx] = rebuilt;
+    agents.lane_distance[idx] = network.lane_system.lanes[rebuilt].length;
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+    assert_ne!(
+        agents.current_lane_id[idx], rebuilt,
+        "the walker crosses on the restored zebra"
+    );
+    let moved = (agents.pos_x[idx] - waiting_at.0).hypot(agents.pos_y[idx] - waiting_at.1);
+    assert!(moved < 2.0, "no teleport: moved {moved} m in one tick");
 }
 
 #[test]

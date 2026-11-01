@@ -809,7 +809,7 @@ Camera ownership rules:
 
 ### Smooth camera motion — CAM-01
 
-On branch `camera/playtest`, keyboard pan and zoom use the shared Rust camera's frame
+Keyboard pan and zoom use the shared Rust camera's frame
 update. Mouse orbit and drag-pan remain immediate. Explicit `focus_on`, save/load and
 `set_view_state` remain immediate and discard outstanding keyboard/zoom intent; snapshots
 store the **displayed** view, not a destination that the player has not yet reached.
@@ -891,8 +891,8 @@ microseconds per frame):
 
 Zoom now updates clearance/transform every moving frame instead of only on wheel events;
 that expected cost remains below 4 µs per frame in this fixture. Pan adds about 0.4–0.5 µs.
-The implementation is ready for hands-on tuning on `camera/playtest`; these synthetic checks
-establish response and bounded camera cost, not a subjective judgment about gameplay feel.
+The user accepted the hands-on camera feel before integration into `dev`; the synthetic
+checks above establish response and bounded camera cost.
 
 ### Whole-map zoom — CAM-02
 

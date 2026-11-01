@@ -466,11 +466,13 @@ fn crossing_overrides_at_degree_two_nodes_follow_the_legacy_rule() {
     // Node overrides by edge, and the edges that then cross; both fixtures cross on edge 0 by
     // default.
     type Case = (&'static [(usize, bool)], &'static [usize]);
-    let cases: [Case; 5] = [
+    let cases: [Case; 6] = [
         (&[], &[0]),
         (&[(0, true)], &[0]),
-        // `false` on the first arm moves the default crossing to the other arm.
-        (&[(0, false)], &[1]),
+        // `false` on the default arm removes the node's crossing (`ROAD-74`: off removes, the
+        // crossing never moves); before `ROAD-74` it moved to the other arm.
+        (&[(0, false)], &[]),
+        (&[(0, false), (1, true)], &[1]),
         (&[(0, false), (1, false)], &[]),
         (&[(1, true)], &[0, 1]),
     ];

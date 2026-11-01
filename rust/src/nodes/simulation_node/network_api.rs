@@ -413,14 +413,55 @@ impl SimulationNode {
         self.lock_core().clear_lane_connections_internal(node_id);
     }
 
-    /// Toggles a user override for a crosswalk at a specific road mouth.
+    /// Turns the crossing of road arm `edge_id` at `node_id` on or off (`ROAD-74`), with an undo
+    /// record; off removes its zebra, strip, crossing lanes and signs. Returns whether it was
+    /// applied: a refused toggle (see [`Self::preview_crosswalk`]) changes nothing.
     #[func]
-    pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
-        self.lock_core()
-            .set_crosswalk_override_internal(node_id, edge_id, enabled);
+    pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) -> bool {
+        let (snapshot, publication) = {
+            let mut core = self.lock_core();
+            if !core.set_crosswalk_override_internal(node_id, edge_id, enabled) {
+                return false;
+            }
+            // The toggle's pieces publish now, as a removal's do on the simulation thread, so
+            // the renderer's next poll sees the new generation with its chunks (`ROAD-74`).
+            let publication = core.finalize_network_render_products();
+            (core.build_snapshot(), publication)
+        };
+        *self.snapshot.write().unwrap() = snapshot;
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
+        true
     }
 
-    /// Returns true if a crosswalk exists natively or by user override.
+    /// The commit's verdict on turning arm `edge_id`'s crossing at `node_id` on or off, without
+    /// applying it: `is_valid`, and when refused `invalid_reason` (stable key) and `detail`.
+    /// The same check as [`Self::set_crosswalk_override`], so the preview is the commit.
+    #[func]
+    pub fn preview_crosswalk(&mut self, node_id: u32, edge_id: i32, enabled: bool) -> VarDictionary {
+        match self
+            .lock_core()
+            .preview_crosswalk_override_internal(node_id, edge_id, enabled)
+        {
+            None => vdict! { "is_valid": true },
+            Some(rejection) => vdict! {
+                "is_valid": false,
+                "invalid_reason": rejection.reason,
+                "detail": rejection.detail,
+            },
+        }
+    }
+
+    /// Whether road arm `edge_id` at `node_id` can cross, so the select tool offers its
+    /// crossing toggle (`ROAD-74`).
+    #[func]
+    pub fn can_toggle_crosswalk(&self, node_id: u32, edge_id: i32) -> bool {
+        self.lock_core().can_toggle_crosswalk_internal(node_id, edge_id)
+    }
+
+    /// Whether the lanes carry a crossing on road arm `edge_id` at `node_id`: the zebra the
+    /// roadbed paints there.
     #[func]
     pub fn has_crosswalk(&self, node_id: u32, edge_id: i32) -> bool {
         self.lock_core().has_crosswalk_internal(node_id, edge_id)

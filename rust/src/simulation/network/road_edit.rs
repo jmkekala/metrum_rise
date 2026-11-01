@@ -61,6 +61,9 @@ struct PlannedNode {
     kind: NodeType,
     canonical: u32,
     changed: bool,
+    // Crossing overrides on the excerpt's arms, local edge ids ascending, after its splits and
+    // merges carried them (`ROAD-74`).
+    crosswalk_overrides: Vec<(usize, bool)>,
 }
 
 struct PlannedEdge {
@@ -116,6 +119,15 @@ impl RoadTopologyPlan {
                 kind: node.node_type,
                 canonical: local.get_valid_node(id as u32),
                 changed: true,
+                crosswalk_overrides: {
+                    let mut overrides: Vec<_> = node
+                        .crosswalk_overrides
+                        .iter()
+                        .map(|(&edge, &marked)| (edge, marked))
+                        .collect();
+                    overrides.sort_unstable();
+                    overrides
+                },
             })
             .collect::<Vec<_>>();
         for (&source_id, &local_id) in source_nodes {
@@ -333,6 +345,36 @@ impl TransitNetwork {
     }
 }
 
+impl RoadTopologyPlan {
+    // Each surviving node's crossing overrides on the excerpt's arms become the excerpt's, in
+    // live ids, so splits and merges carry them (`ROAD-74`); overrides on arms outside the
+    // excerpt stay. O(plan nodes x degree).
+    fn install_crosswalk_overrides(
+        &self,
+        graph: &mut RegionGraph,
+        node_ids: &[u32],
+        edge_ids: &[usize],
+    ) {
+        let excerpt: HashSet<usize> = self
+            .edges
+            .iter()
+            .filter_map(|edge| edge.source)
+            .collect();
+        for (local, node) in self.nodes.iter().enumerate() {
+            if node.canonical != local as u32 {
+                continue;
+            }
+            let overrides = &mut graph.nodes[node_ids[local] as usize].crosswalk_overrides;
+            overrides.retain(|edge, _| !excerpt.contains(edge));
+            overrides.extend(
+                node.crosswalk_overrides
+                    .iter()
+                    .map(|&(edge, marked)| (edge_ids[edge], marked)),
+            );
+        }
+    }
+}
+
 /// Where a plan's records went in a graph, and what the edit dirtied there.
 pub(crate) struct AppliedRoadTopology {
     // Live id of each local edge.
@@ -459,6 +501,7 @@ impl RoadTopologyPlan {
             graph.adjacency[*id as usize].sort_unstable();
             graph.adjacency[*id as usize].dedup();
         }
+        self.install_crosswalk_overrides(graph, &node_ids, &edge_ids);
         let dirty_edges = self.dirty_edges.iter().map(|id| edge_ids[*id]).collect();
         let affected_nodes = self
             .affected_nodes

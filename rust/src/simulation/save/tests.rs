@@ -2143,3 +2143,34 @@ fn a_saved_road_steeper_than_one_in_three_fails_the_load() {
         }
     }
 }
+
+// `ROAD-74`, save format 110: crossing overrides round-trip through `road_crosswalks`, both
+// values, in key order; an override on an arm its node no longer has is not saved; a row naming
+// an edge that is not an arm of its node does not load.
+#[test]
+fn crosswalk_overrides_round_trip_through_their_table() {
+    let (mut graph, edge) = snapshot_test_graph();
+    let start = graph.edge(edge).start_node;
+    let end = graph.edge(edge).end_node;
+    graph.set_crosswalk_override(start, edge, true);
+    graph.set_crosswalk_override(end, edge, false);
+    // Stale: edge 7 is not an arm of `end` (nor an edge at all).
+    graph.set_crosswalk_override(end, 7, true);
+    let maps = build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    network::save_network(&tx, &graph, &maps).unwrap();
+    tx.commit().unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM road_crosswalks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+    let loaded = network::load_graph(&conn).unwrap();
+    assert_eq!(loaded.node(0).crosswalk_overrides.get(&0), Some(&true));
+    assert_eq!(loaded.node(1).crosswalk_overrides.get(&0), Some(&false));
+    assert_eq!(loaded.node(1).crosswalk_overrides.len(), 1);
+    conn.execute_batch("UPDATE road_crosswalks SET edge_id = 999")
+        .unwrap();
+    assert!(network::load_graph(&conn).is_err());
+}

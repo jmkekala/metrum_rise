@@ -605,6 +605,12 @@ fn build_validation_graph(
     if start_node == end_node {
         return Err(PREVIEW_SURFACE_GEOMETRY_REASON);
     }
+    copy_validation_crosswalk_overrides(
+        &mut validation_graph,
+        existing_graph,
+        &node_map,
+        &copied_edges,
+    );
 
     let mut points = prepared_points.to_vec();
     points[0] = validation_graph.node(start_node).pos;
@@ -862,6 +868,24 @@ fn validation_graph_endpoint_node(
             node_id,
         ),
         None => validation_graph.add_node(fallback_pos, NodeType::Junction),
+    }
+}
+
+// The copied nodes' crossing overrides on their copied arms (`ROAD-74`), in local ids, so the
+// excerpt's junction solve lays the nodes out as the live graph does and the splits and merges
+// it applies carry them. O(copied nodes x degree).
+fn copy_validation_crosswalk_overrides(
+    validation_graph: &mut RegionGraph,
+    existing_graph: &RegionGraph,
+    node_map: &HashMap<u32, u32>,
+    copied_edges: &HashMap<usize, usize>,
+) {
+    for (&source, &local) in node_map {
+        for (edge, &marked) in &existing_graph.node(source).crosswalk_overrides {
+            if let Some(&local_edge) = copied_edges.get(edge) {
+                validation_graph.set_crosswalk_override(local, local_edge, marked);
+            }
+        }
     }
 }
 

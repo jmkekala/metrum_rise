@@ -253,6 +253,14 @@ impl RegionGraph {
         self.node_aliases.insert(remove, keep);
         self.nodes[keep as usize].node_type = NodeType::Junction;
         self.nodes[keep as usize].lane_connections.clear();
+        // The removed node's arms become the survivor's and keep their crossings (`ROAD-74`).
+        let overrides = self.nodes[remove as usize].crosswalk_overrides.clone();
+        for (edge, marked) in overrides {
+            self.nodes[keep as usize]
+                .crosswalk_overrides
+                .entry(edge)
+                .or_insert(marked);
+        }
 
         let mut affected = std::mem::take(&mut self.adjacency[remove as usize]);
         affected.retain(|&edge_id| !self.edges[edge_id].deleted);
@@ -1037,6 +1045,19 @@ pub fn split_edge(
     new_edge.physical_length = length_new;
 
     let new_edge_id = graph.add_edge(new_edge);
+    // The far end's arm is now the second half (`ROAD-74`); a self-loop's start keeps its arm on
+    // the first half too.
+    let far = &mut graph.nodes[old_end_node as usize].crosswalk_overrides;
+    let marked = if graph.edges[edge_id].start_node == old_end_node {
+        far.get(&edge_id).copied()
+    } else {
+        far.remove(&edge_id)
+    };
+    if let Some(marked) = marked {
+        graph.nodes[old_end_node as usize]
+            .crosswalk_overrides
+            .insert(new_edge_id, marked);
+    }
 
     // --- MIGRATION LOGIC ---
     let new_len_first = graph.edge(edge_id).physical_length;
