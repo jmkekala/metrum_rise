@@ -19,7 +19,7 @@ use super::portal::PortalWindow;
 use super::prune::box_distance;
 use super::seams::Seam;
 use super::tile::{TILE_M, TileKey};
-use crate::simulation::network::roadbed::COLLAR_HEIGHT_M;
+use crate::simulation::network::roadbed::{COLLAR_HEIGHT_M, SKIRT_DEPTH_M};
 
 // Slack on the setter tests' bounds, metres: rounding only keeps more setters, each evaluated
 // exactly.
@@ -287,11 +287,17 @@ pub(super) fn build_walls(
 /// stands above that top, from it up to the surface.
 ///
 /// Along a tunnel approach's retained road seams (`roads`, [`Seam::retained`], round R8e) the
-/// trough's walls: faces wherever the surface stands above the road, from the road's edge up to
-/// it, ending exactly where the two meet and resuming where the road dips below the ground
-/// again. The approach's ground is natural beside it, so they run as far as the cut does; on a
-/// fill the skirt closes the sag, as along any road. They meet the row wall and the collar at
-/// the row's corner, the chain's own vertex.
+/// trough's walls: faces wherever the surface stands above the road, up to it, ending exactly
+/// where the two meet and resuming where the road dips below the ground again. The approach's
+/// ground is natural beside it, so they run as far as the cut does; on a fill the skirt closes
+/// the sag, as along any road. They meet the row wall and the collar at the row's corner, the
+/// chain's own vertex. A trough face stands from [`SKIRT_DEPTH_M`] below the road's edge, the
+/// skirt's bottom (round R8g): the deck's edge lies inside the face, not on its bottom edge. A
+/// face ending on that edge met the deck in a T-junction between two meshes (the face split at
+/// lattice crossings, the deck's edge at section rows, each in its own `f32` frame), and a ray
+/// from the road grazing the corner could pass between the two above the skirt and under the
+/// hill: a sky pixel. The part below the edge lies behind the deck seen from the road and under
+/// the ground seen from the hill, which stands at or above the edge along every trough face.
 ///
 /// `heights(i, j)` is the finished sample at lattice point `(i, j)`. `O(wall seams x their
 /// crossings x portal rows + retained seams x their crossings)`.
@@ -313,10 +319,10 @@ pub(super) fn build_structure_walls(
     let rises = |surface: f64, h: f64| surface as f32 > h as f32;
     for (seam, bottom) in walls.iter().zip(bottoms) {
         if let Some(bottom) = *bottom {
-            seam_walls(seam, tile, lattice, &heights, above, scratch, out);
+            seam_walls(seam, tile, lattice, &heights, above, 0.0, scratch, out);
             let below = |surface: f64, u: f64| surface < u;
             let edge = abutment_bottom(seam, bottom);
-            seam_walls(&edge, tile, lattice, &heights, below, scratch, out);
+            seam_walls(&edge, tile, lattice, &heights, below, 0.0, scratch, out);
             continue;
         }
         if portals.opens(seam) {
@@ -326,14 +332,23 @@ pub(super) fn build_structure_walls(
                 b: top(seam.b),
                 ..*seam
             };
-            seam_walls(&collar, tile, lattice, &heights, rises, scratch, out);
+            seam_walls(&collar, tile, lattice, &heights, rises, 0.0, scratch, out);
             continue;
         }
         let differs = |surface: f64, h: f64| surface != h;
-        seam_walls(seam, tile, lattice, &heights, differs, scratch, out);
+        seam_walls(seam, tile, lattice, &heights, differs, 0.0, scratch, out);
     }
     for seam in roads.iter().filter(|seam| seam.retained) {
-        seam_walls(seam, tile, lattice, &heights, rises, scratch, out);
+        seam_walls(
+            seam,
+            tile,
+            lattice,
+            &heights,
+            rises,
+            SKIRT_DEPTH_M,
+            scratch,
+            out,
+        );
     }
 }
 
@@ -349,13 +364,16 @@ pub(super) fn abutment_bottom(seam: &Seam, bottom: [f64; 2]) -> Seam {
 
 // The structure walls along one seam's part in the tile: a vertex is walled where `walled(surface,
 // h)` says, a face joins two consecutive vertices of which one is walled, from the seam's height
-// to the surface, its lower side on its left.
+// to the surface, its lower side on its left, its bottom lowered by `foot` (a trough wall's
+// overlap below the road's edge; 0 elsewhere, which leaves every bottom bitwise as it was).
+#[allow(clippy::too_many_arguments)]
 fn seam_walls(
     seam: &Seam,
     tile: TileKey,
     (xs, zs): (&[f64], &[f64]),
     heights: &impl Fn(usize, usize) -> f64,
     walled: impl Fn(f64, f64) -> bool,
+    foot: f64,
     scratch: &mut WallScratch,
     out: &mut Vec<WallFace>,
 ) {
@@ -366,7 +384,10 @@ fn seam_walls(
     let face = |v: WallVertex, w: WallVertex| WallFace {
         a: local(v),
         b: local(w),
-        bottom: [v.bottom.min(v.top) as f32, w.bottom.min(w.top) as f32],
+        bottom: [
+            (v.bottom.min(v.top) - foot) as f32,
+            (w.bottom.min(w.top) - foot) as f32,
+        ],
         top: [v.bottom.max(v.top) as f32, w.bottom.max(w.top) as f32],
     };
     let Some(range) = clip(seam, rect) else {

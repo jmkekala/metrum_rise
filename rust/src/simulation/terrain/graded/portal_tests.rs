@@ -266,11 +266,11 @@ fn trough_texels_name_their_seam() {
 
 // test (`ROAD-61` round R8e): the trough's walls along the approach of `structure_mouth`'s tunnel
 // with a 2 m bump on the base 70 m before the row. Every face on a retained seam stands from the
-// seam's height up to the ground, its top within 1 mm of the higher of the base and the road at
-// both ends (the ground is natural on both sides of a retained seam, so no sawtooth), and faces
-// stand exactly where the road runs below the ground: from where the hill's foot rises above the
-// road up to the row, and again over the bump, on both sides of the road, none between and none
-// on a fill.
+// skirt's depth below the seam (round R8g) up to the ground, its top within 1 mm of the higher of
+// the base and the road at both ends (the ground is natural on both sides of a retained seam, so
+// no sawtooth), and faces stand exactly where the road runs below the ground: from where the
+// hill's foot rises above the road up to the row, and again over the bump, on both sides of the
+// road, none between and none on a fill.
 #[test]
 fn the_trough_is_walled_where_the_road_runs_below_the_ground() {
     let (graph, mut terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
@@ -304,7 +304,8 @@ fn the_trough_is_walled_where_the_road_runs_below_the_ground() {
                 let h = seam.at(x, z).height;
                 let base = surface.base_height_at(x, z, &mut scratch);
                 let case = format!("({x}, {z}): seam {h}, base {base}, face {face:?}");
-                assert!((f64::from(face.bottom[k]) - h).abs() < 1e-3, "{case}");
+                let foot = h - crate::simulation::network::roadbed::SKIRT_DEPTH_M;
+                assert!((f64::from(face.bottom[k]) - foot).abs() < 1e-3, "{case}");
                 assert!((f64::from(face.top[k]) - base.max(h)).abs() < 1e-3, "{case}: top");
             }
             assert!(
@@ -330,6 +331,53 @@ fn the_trough_is_walled_where_the_road_runs_below_the_ground() {
         "the walls start at {hill_from}, the ground meets the road at {meets}"
     );
     assert!(sides[0] > 10 && sides[1] > 10 && bump > 4, "{sides:?} {bump}");
+}
+
+// test (`ROAD-61` round R8g): the road's edge lies inside every trough wall face, so a ray from
+// the road grazing the corner where the face meets the deck strikes the face's interior. The
+// faces stood on the edge before, meeting the deck in a T-junction between two meshes: on the
+// user's dump B two such rays (1 mm above and 0.5 mm below the edge) passed between the face and
+// the deck and its skirt into the void under the hill, two sky pixels. Each face stands from the
+// skirt's bottom, `SKIRT_DEPTH_M` below the edge, and the ground at or above the edge at both
+// ends, so the overlap stays behind the deck and under the hill.
+#[test]
+fn the_roads_edge_lies_inside_every_trough_wall() {
+    use crate::simulation::network::roadbed::SKIRT_DEPTH_M;
+    let (graph, terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
+    let roadbed = compiled(&graph);
+    let retained = retained_seams(&roadbed);
+    let payloads = bake_with(
+        &terrain,
+        &roadbed,
+        &NoSites,
+        &tiles(2),
+        Level::Gl0,
+        Evaluation::Lanes,
+    );
+    let mut faces = 0;
+    for payload in &payloads {
+        let origin = payload.tile.origin();
+        for face in &payload.walls {
+            let ends = [face.a, face.b]
+                .map(|p| (f64::from(p[0]) + origin[0], f64::from(p[1]) + origin[1]));
+            let Some(seam) = retained
+                .iter()
+                .find(|seam| ends.iter().all(|&(x, z)| seam.at(x, z).distance < 1e-3))
+            else {
+                continue;
+            };
+            for (k, &(x, z)) in ends.iter().enumerate() {
+                let h = seam.at(x, z).height;
+                let (bottom, top) = (f64::from(face.bottom[k]), f64::from(face.top[k]));
+                assert!(
+                    bottom <= h - SKIRT_DEPTH_M + 1e-4 && top >= h - 1e-4,
+                    "({x}, {z}): edge {h} outside the face {face:?}"
+                );
+            }
+            faces += 1;
+        }
+    }
+    assert!(faces > 20, "{faces} trough faces");
 }
 
 // test (`ROAD-61` rounds R8e, R8f): the row wall above the collar's flat top. On the 1:2 hill the
