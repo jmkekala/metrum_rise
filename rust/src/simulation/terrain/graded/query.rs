@@ -590,8 +590,11 @@ impl GradedSurface<'_> {
                 scratch
                     .portals
                     .gather(self.roadbed, rect, &scratch.indexed_road_pieces);
-                for &([a, b], _) in &scratch.road_segments {
-                    let seam = road_seam(a, b);
+                for &([a, b], retained) in &scratch.road_segments {
+                    let seam = Seam {
+                        retained,
+                        ..road_seam(a, b)
+                    };
                     if binds(&seam, band) {
                         scratch.window.push(seam);
                     } else {
@@ -658,15 +661,18 @@ impl GradedSurface<'_> {
             window,
             &mut scratch.grounded,
             |bounds, heights| binds(bounds, heights, band),
-            |[a, b], _| {
-                let seam = road_seam(a, b);
+            |[a, b], retained| {
+                let seam = Seam {
+                    retained,
+                    ..road_seam(a, b)
+                };
                 if binds(seam.box_xz(), seam.height_range(), band) {
                     listed.push(seam);
                 }
             },
         );
         // A segment two pieces share comes twice; key order is the nearest seam's tie order.
-        listed.sort_unstable_by_key(Seam::key);
+        listed.sort_unstable_by_key(Seam::order);
         listed.dedup_by_key(|seam| seam.key());
         let roads = listed.len();
         // The queries read the sites in any order (`SiteBuffer::gather_unordered`).
@@ -727,7 +733,15 @@ impl GradedSurface<'_> {
             window,
             &mut scratch.grounded,
             |_, _| true,
-            |[a, b], _| sort(road_seam(a, b), band),
+            |[a, b], retained| {
+                sort(
+                    Seam {
+                        retained,
+                        ..road_seam(a, b)
+                    },
+                    band,
+                )
+            },
         );
         sites.for_each_pad_seam(|seam| sort(seam, 0.0));
         scratch.rest_ready = true;

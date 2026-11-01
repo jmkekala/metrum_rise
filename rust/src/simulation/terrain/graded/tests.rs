@@ -335,11 +335,13 @@ fn a_seam_in_lanes_equals_the_seam_at_each_point() {
             a: [-3.25, 1.5, 2.0],
             b: [7.75, -0.375, -4.5],
             kind: SeamKind::Road,
+            retained: false,
         },
         super::seams::Seam {
             a: [0.1, 2.0, 0.3],
             b: [0.1, 2.0, 0.3],
             kind: SeamKind::Road,
+            retained: false,
         },
     ];
     for seam in &seams {

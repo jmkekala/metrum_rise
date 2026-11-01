@@ -36,14 +36,27 @@ pub struct Seam {
     pub b: [f64; 3],
     /// What the seam bounds.
     pub kind: SeamKind,
+    /// A road seam of a tunnel's approach (`ROAD-61` round R8e,
+    /// [`crate::simulation::network::roadbed::PieceMesh::retained`]): the graded ground beside it
+    /// is retained, its cone bounds a value from below only (`h - k d`), and a covered sample
+    /// naming it takes the ground's value, so the cut edge along it is the ground and the bake
+    /// walls the road from its height up to it. `false` for every other seam.
+    pub retained: bool,
 }
 
 impl Seam {
     /// Canonical key: the bits of `a` then `b`. Never a piece, edge or building id, so a split
-    /// that renumbers pieces leaves the keys of unchanged geometry equal.
+    /// that renumbers pieces leaves the keys of unchanged geometry equal. The tile inputs list
+    /// the retained road seams' keys apart ([`super::TileInputs::seams`]).
     pub fn key(&self) -> [u64; 6] {
         let ([ax, ay, az], [bx, by, bz]) = (self.a, self.b);
         [ax, ay, az, bx, by, bz].map(f64::to_bits)
+    }
+
+    /// The window order of road seams: by [`Self::key`], a retained seam after an ordinary one
+    /// with the same key, so a window is a function of the geometry and the flags alone.
+    pub(super) fn order(&self) -> ([u64; 6], bool) {
+        (self.key(), self.retained)
     }
 
     /// XZ bounds `[min_x, min_z, max_x, max_z]`.
@@ -172,26 +185,35 @@ impl SeamAt {
     }
 }
 
-/// The road seams whose XZ bounds touch `rect`, sorted by key: the grounded outer-chain
-/// segments of the roadbed ([`RoadbedSystem::grounded_seams_in_bounds`]). `O(P log P + S log S)`
-/// for the pieces and segments met; the scratch buffers are reused.
+/// The road seams whose XZ bounds touch `rect`, in window order ([`Seam::order`]), unique by
+/// key: the grounded outer-chain segments of the roadbed
+/// ([`RoadbedSystem::for_each_grounded_seam_in_bounds`]), each retained where its piece is a
+/// tunnel's approach. `O(P log P + S log S)` for the pieces and segments met; the scratch
+/// buffers are reused.
 pub(super) fn gather_road_seams(
     roadbed: &RoadbedSystem,
     rect: [f64; 4],
     scratch: &mut SeamScratch,
     out: &mut Vec<Seam>,
 ) {
-    roadbed.grounded_seams_in_bounds(rect, &mut scratch.pieces, &mut scratch.segments);
     out.clear();
-    out.extend(scratch.segments.iter().map(|[a, b]| road_seam(*a, *b)));
+    roadbed.for_each_grounded_seam_in_bounds(rect, &mut scratch.pieces, |[a, b], retained| {
+        out.push(Seam {
+            retained,
+            ..road_seam(a, b)
+        })
+    });
+    out.sort_unstable_by_key(Seam::order);
+    out.dedup_by_key(|seam| seam.key());
 }
 
-/// A road seam from two roadbed points.
+/// A road seam from two roadbed points, not retained.
 pub(super) fn road_seam(a: RoadVec3, b: RoadVec3) -> Seam {
     Seam {
         a: a.to_array(),
         b: b.to_array(),
         kind: SeamKind::Road,
+        retained: false,
     }
 }
 
@@ -223,6 +245,5 @@ pub(super) fn gather_wall_seams(
 #[derive(Default)]
 pub(super) struct SeamScratch {
     pub(super) pieces: Vec<PieceId>,
-    segments: Vec<[RoadVec3; 2]>,
     walls: Vec<WallSegment>,
 }

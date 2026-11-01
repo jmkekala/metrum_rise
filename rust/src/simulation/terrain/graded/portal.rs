@@ -115,6 +115,7 @@ impl PortalWindow {
                     a: top.to_array(),
                     b: tip.to_array(),
                     kind: SeamKind::Wing,
+                    retained: false,
                 }
             };
             rows.push(PortalRow {

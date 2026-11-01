@@ -268,6 +268,7 @@ impl SiteBuffer {
                     a: [ax, height, az],
                     b: [bx, height, bz],
                     kind: SeamKind::Pad,
+                    retained: false,
                 });
             }
         }
@@ -736,5 +737,6 @@ pub(super) fn box_seam(bounds: [f64; 4], height: f64) -> Seam {
         a: [bounds[0], height, bounds[1]],
         b: [bounds[2], height, bounds[3]],
         kind: SeamKind::Pad,
+        retained: false,
     }
 }

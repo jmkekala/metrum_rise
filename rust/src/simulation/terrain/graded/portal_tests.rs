@@ -199,3 +199,24 @@ fn portal_edits_select_every_tile_they_alter() {
         }
     }
 }
+
+// test (`ROAD-61` round R8e): a span turned into a tunnel's approach keeps its chains' bits,
+// but its seams are retained, so a tile beyond the cap of the portal row whose window holds
+// them gathers other inputs and is not adopted from a held bake of the bridge's.
+#[test]
+fn an_approach_changes_the_inputs_of_its_far_tiles() {
+    let inputs = |class: EdgeClass| {
+        let (graph, terrain) = structure_mouth(class, 0.5);
+        let roadbed = compiled(&graph);
+        let mut out = TileInputs::default();
+        tile_inputs(&terrain, &roadbed, &NoSites, TileKey { x: -3, z: 0 }, Level::Gl0, &mut out)
+            .expect("inputs");
+        out
+    };
+    let (bridge, tunnel) = (inputs(EdgeClass::Bridge), inputs(EdgeClass::Tunnel));
+    assert_eq!(bridge.triangles, tunnel.triangles);
+    assert!(!bridge.seams.is_empty());
+    assert_eq!(tunnel.seams[..bridge.seams.len()], bridge.seams[..]);
+    assert!(tunnel.seams.len() > bridge.seams.len(), "the retained seams are inputs");
+    assert_ne!(bridge, tunnel);
+}

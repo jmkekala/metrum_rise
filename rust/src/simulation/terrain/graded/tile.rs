@@ -142,7 +142,8 @@ pub struct TileInputs {
     /// The road seam keys, sorted, then the wall seam keys the structure walls read, sorted
     /// (`TERRAIN-07-C`), then those walls' abutment bottoms at bridge mouths as seam keys, in
     /// the walls' order, then the portal rows' corner segments, each with its tunnel side, in
-    /// key order (`ROAD-61`).
+    /// key order (`ROAD-61`), then the keys of the road seams a tunnel's approach retains, in
+    /// key order (round R8e).
     pub seams: Vec<[u64; 6]>,
     /// Top triangle vertex bits, sorted and unique.
     pub triangles: Vec<[u64; 9]>,
@@ -1342,6 +1343,9 @@ fn finish_inputs(
             .filter_map(|(seam, bottom)| bottom.map(|bottom| abutment_bottom(seam, bottom).key())),
     );
     portals.inputs(&mut out.seams);
+    // The retained road seams (`ROAD-61` round R8e): a span that becomes a tunnel's approach
+    // keeps its chains' bits, and its ground changes all the same.
+    out.seams.extend(road_seams.iter().filter(|seam| seam.retained).map(Seam::key));
     sites.inputs(&mut out.sites);
     base_revisions(terrain, window, &mut out.base_revisions);
 }

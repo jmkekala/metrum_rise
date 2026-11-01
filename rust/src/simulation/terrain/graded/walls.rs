@@ -316,7 +316,7 @@ pub(super) fn abutment_bottom(seam: &Seam, bottom: [f64; 2]) -> Seam {
     Seam {
         a: [seam.a[0], bottom[0], seam.a[2]],
         b: [seam.b[0], bottom[1], seam.b[2]],
-        kind: seam.kind,
+        ..*seam
     }
 }
 
