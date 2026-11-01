@@ -339,14 +339,40 @@ pub(super) fn node_lining(
         .collect();
     let points: Vec<RoadVec3> = ring.iter().map(|&(_, point)| point).collect();
     let triangles = triangulate_constrained_rings_xz(&[&points]).ok_or(LiningError)?;
+    // The ring's winding in XZ (shoelace), to read a face's order against it.
+    let n = ring.len();
+    let counter_clockwise = (0..n)
+        .map(|k| {
+            let (p, q) = (points[k], points[(k + 1) % n]);
+            p.x * q.z - q.x * p.z
+        })
+        .sum::<f64>()
+        > 0.0;
     let ceiling = lining.triangles.len();
     for triangle in triangles {
-        let [a, b, c] = triangle.map(|point| {
+        let at = triangle.map(|point| {
             ring.iter()
-                .find(|(_, p)| *p == point)
-                .map(|&(index, _)| index)
+                .position(|(_, p)| *p == point)
                 .expect("a ceiling vertex is a ring vertex")
         });
+        // Round R8f: a face over three consecutive ring vertices listed against the ring's
+        // winding (the triangulator lists every face counter-clockwise in XZ) has its middle
+        // vertex reflex and lies outside the ring. The triangulator's centroid test keeps such a
+        // face when the three are collinear to within rounding, as a straight arm's section
+        // vertices are: a sliver whose long edge no other face shares. The order is exact.
+        let next = |k: usize| (k + 1) % n;
+        let against = |[x, y, z]: [usize; 3]| {
+            if counter_clockwise {
+                next(z) == y && next(y) == x
+            } else {
+                next(x) == y && next(y) == z
+            }
+        };
+        let [i, j, k] = at;
+        if [[i, j, k], [j, k, i], [k, i, j]].into_iter().any(against) {
+            continue;
+        }
+        let [a, b, c] = at.map(|position| ring[position].0);
         let [pa, pb, pc] = triangle;
         // Counter-clockwise in XZ faces up: the ceiling takes the other winding.
         let up = (pb.x - pa.x) * (pc.z - pa.z) - (pb.z - pa.z) * (pc.x - pa.x) > 0.0;
