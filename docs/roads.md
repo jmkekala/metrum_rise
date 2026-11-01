@@ -10041,6 +10041,16 @@ crossings and its legacy migration.
   cross elsewhere and back) can be left on the wrong side (inferred from the code, not traced on a
   stuck walker). Open: the walker should follow its
   route's lane witness at such nodes (handoff decision, `ROAD-74`).
+- **Cost (round R6, 2026-11-01, one C F F C session, P-cores, `RAYON_NUM_THREADS=4`, load
+  1.8-2.2, release test binaries of `ef7c5f2b` and of the branch).** Preview stages
+  (`benchmark_road_preview_stages`), total p50 ms C/F/F/C: first fixture 2.75 / 2.92 / 3.47 /
+  2.87, `sloped_branch` 3.05 / 2.63 / 2.56 / 2.56; the spread lies within each binary, no
+  claim either way. Populated locality (`populated_road_plan_scaling`): products identical at
+  every tier; compile p50 0.157 / 0.156 ms (branch) against 0.159 / 0.149 ms (control) at
+  10,004 / 100,004 parcels, so planning follows the neighbourhood; the branch's 1,004-parcel
+  tier read 0.72 ms against 0.16 ms, its first measurement, not rerun. The plan's override
+  install is `O(plan nodes x degree)`; a toggle compiles its node's closure once on hover and
+  once on click.
 - **Tests.** `nodes::sim::core::tests::road_crosswalks` (off removes every product and on
   restores it, preview = commit, undo, refusal, a split through an authored arm and its undo, a
   road removed and drawn again, the save file), `crosswalk_overrides_round_trip_through_their_table`,
