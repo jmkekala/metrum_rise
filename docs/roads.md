@@ -10007,7 +10007,12 @@ crossings and its legacy migration.
   commits only an accepted toggle (`set_crosswalk_override`, which returns whether it applied).
   A refused toggle (an arm that cannot cross, a node that no longer lays out, pieces over a
   field or painted cells) changes nothing and the label names the reason. Each toggle has an
-  undo record. Crossing edits do not appear in the road-attempt replay, which records strokes.
+  undo record. An applied toggle marks a render generation and publishes its pieces at once
+  through the removal's path (`SimCore::finalize_network_render_products`: compile, terrain
+  changes, changed chunks, the road tool's view), so the junction redraws in the same frame;
+  until the user's play-test of round R6 it marked none and the old paint stayed drawn
+  (`a_toggle_and_its_undo_publish_the_chunks_a_full_emission_draws`,
+  `godot/tests/crosswalk_toggle_test.gd` on the real bridge). Crossing edits do not appear in the road-attempt replay, which records strokes.
   Cost: one node closure compile per hovered toggle and per click, bounded by the node's
   neighbourhood (its arms, their spans and far-end pieces).
 - **Remaps.** Overrides are keyed by edge per node. A split moves the far end's override onto
