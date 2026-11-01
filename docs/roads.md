@@ -10031,10 +10031,11 @@ crossings and its legacy migration.
   (`pedestrian_connector_fallback_missing`), so it is never planned. A walker follows its
   route's lane witness, the sidewalk its route needs on each road
   ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74), round R6b). A
-  walker whose crossing is removed under it (the editor clears routes through the toggled node,
-  so only a graph change outside it) replans from its own lane; with no route it waits at the
-  mouth and plans again every 5 s, logged as a `NoRoute` failure with outcome `Waits`, and walks
-  on when a zebra is painted there again; nothing teleports it, and no hidden crossing is made
+  walker whose crossing is removed under it replans from its own lane; with no route it gives the
+  trip up and walks home, and with no way home either it is stranded at the end of its lane and
+  plans home again after 5 s, 30 s, then every 2 min, shown to the player as "N pedestrians
+  stranded at M junctions" ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74));
+  nothing teleports it, and no hidden crossing is made
   (`a_walk_between_split_walk_networks_has_no_route`,
   `test_walking_missing_crosswalk_route_waits_at_junction_mouth`).
 - **Measured (round R6, 2026-11-01).** With default crossings the economy envelope and

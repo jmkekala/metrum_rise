@@ -583,27 +583,86 @@ crossings).
   the lane the walker arrives on and the rest of its route, so a witness rebuilt from any later
   lane of the chain repeats it: it is not saved, and a loaded walker continues the same walk.
 - **No step at the node.** Where the witness names no connector from the walker's lane (a
-  crossing removed under it without the editor; the editor clears every route through the
-  toggled node), the walker waits at the mouth and replans from its own lane through the normal
-  planner (`plan_network_replan` with the lane as `RouteStart::Lane`): a `NoTurnToEdge` or
-  `NoTurnToLane` record with outcome `Replans`, and it walks the new route from the next tick.
-  When no route exists it stays at the mouth and plans again every `NETWORK_REPLAN_DELAY_S`
-  (5 s), one `NoRoute` record with outcome `Waits` per failed plan, rebuilding its witness after
-  each, so a crossing painted again lets it walk on. It never leaves its lane to do so and no
-  crossing is made for it; the watchdog's move home does not apply. Walker replans from a road
-  lane elsewhere (a stale exit, a missing access plan) also start from that lane, not from any
-  sidewalk of its road.
+  crossing removed under it without the editor), the walker waits at the mouth and replans from
+  its own lane through the normal planner (`plan_network_replan` with the lane as
+  `RouteStart::Lane`): a `NoTurnToEdge` or `NoTurnToLane` record with outcome `Replans`, and it
+  walks the new route from the next tick. Walker replans from a road lane elsewhere (the editor
+  clears every route through a toggled node, then the access-plan gate replans it; a stale exit)
+  also start from that lane, not from any sidewalk of its road.
+- **No route: home, or stranded (the user's option (c), 2026-11-01).** A walker on a road lane
+  whose replan finds no route to its destination gives the trip up and plans a walk home from
+  that lane (one `NoRoute` record, outcome `WalksHome`), then walks home: activity home, as the
+  watchdog's move home sets it, but from where it stands. When home is out of reach too, or it
+  was already walking home, it is stranded (`ACCESS_WALK_STRANDED`, one `NoRoute` record with
+  outcome `Stranded`): path and exit lane cleared, it walks to the end of its lane and waits
+  there, and its replan gate plans home from its lane after 5 s, 30 s, then every 2 min
+  (`walk_home::STRANDED_RETRY_S`; the step in `network_replan_failures`, the time in
+  `next_replan_time`), with no record per retry. It walks home as soon as a plan succeeds. No
+  teleport, no crossing of its own, and the watchdog's move home does not apply. Cost: one route
+  query per stranded walker per retry (at most one every 2 min once settled), O(1) per stranded
+  walker and tick in between. A walker without a home keeps trying its destination on the same
+  backoff; a walker without a lane (at a node) keeps the watchdog's rule.
+- **Stranded report.** `AgentVec`'s stranded walkers are a set (`tick/stranded.rs`): a walker
+  enters with the record that strands it (O(new strandings) per tick) and leaves when the report
+  finds it no longer stranded. The report, the junctions where stranded walkers wait and how
+  many, is rebuilt from the set in the `gridlock check` slot (once a game minute, O(stranded ×
+  log)), published in the render snapshot and read by `get_stranded_walkers_report`; the game
+  shows "N pedestrians stranded at M junctions: no way home" under the gridlock notice and rings
+  those junctions (`stranded_display.gd`, the gridlock display's poll and rings). The stranded
+  bit, step and time are saved columns already (no new column, save format unchanged at 110;
+  the loader now keeps the bit, which it used to clear as unused); loading rebuilds the set and
+  the report from them (one O(agents) scan).
 - **Cost.** The witness is O(roads × sidewalks per road × connectors per lane) once per route,
   in thread-local scratch, with no allocation once the scratch and the walker's column have grown
   to its longest route; a junction step is one scan of the lane's connectors. Memory: one 24-byte
   `Vec` header per agent plus one byte per road of a walker's route, about 2.4 MB of headers and
   roughly 1-2 MB of witnesses at 100k agents (39,000-46,000 walkers on routes of a few dozen
   roads, `SIM-02-E`).
+- **Measured (round R6b, 2026-11-01; release test binaries of the control `987c0ab6` and the
+  branch, each with R6's uncommitted crossings-off variant behind `METRUM_R6_CROSSINGS_OFF`;
+  `tools/sim02_gate.py envelope determinism --bursts departures,settlements`,
+  `RAYON_NUM_THREADS=6`, one session).** Variant (every third four-way junction's crossings
+  off, 208 toggles at 10k): trip-failure records per 1,000 residents a day, control against
+  branch, 12,172 / 0 (10k baseline), 9,519 / 0 (10k fiscal stress), 14,570 / 0.014 (30k
+  baseline), 12,028 / 0.007 (30k fiscal stress), 14,043 / 0 (30k arrivals). No walker fails:
+  the branch's remaining 6 and 3 records over 14 days come three at a time on single days, as
+  the control's do with default crossings (6, 3 and 3 at 30k baseline, fiscal stress and
+  arrivals). An 11-day run of the 30k variant city logging every record (an uncommitted probe)
+  finds the 6: two cars, each two retries and the watchdog's recovery, one a freight carrier
+  with no road path to its border node, `u32::MAX`, sent to a border node, and one travelling
+  with no plan, sent home; a 3-day run at 10k logs none. The variant's trip-failure notes are
+  gone; its other notes are the default runs' 13.
+  Default crossings: both pass with the same 13 notes, deterministic (repeat, 1 and 3 threads,
+  reload); the branch has no trip failure (control 6, 3 and 3 at 30k) and walks shift: 30k
+  baseline deliveries 117.3 to 122.4 per 1,000 buildings a day, employment 0.601 to 0.611,
+  net income 8.27 to 8.82 per resident a day, bankruptcies 1.90 to 1.77; 10k fiscal-stress
+  deliveries 8.48 to 8.87. Cause (inferred, not traced walker by walker): the witness takes the
+  cheapest sidewalk chain to the exit (crossing where the route needs it) instead of the
+  shortest connector at each node, so a walk's connector total is never longer than the old
+  choice's, and the default network has incomplete junctions too (a degree-two node has one
+  crossing, D8), where the old choice could also strand a walker; no other per-agent rule
+  differs while a route exists.
+- **`PERF-06` (same session, `RAYON_NUM_THREADS=8`, P-cores, load 1.37, C F F C).** Work counts
+  identical between the binaries and exactly 3× from 10k to 30k (lane counts 16). Network tick
+  ms at 10k/30k: control 0.69/1.90 and 0.44/0.49, branch 0.29/0.58 and 0.25/0.75; access egress
+  0.54/1.41, 0.64/1.69 against 0.45/1.37, 0.59/1.24; ingress 0.24/0.45, 0.36/0.47 against
+  0.34/0.53, 0.25/0.42. Single samples, scatter within each binary: no claim either way. The
+  contract's fixture has no junction, so the witness itself is not timed there; its cost is the
+  bound above, once per route.
 - **Tests.** `simulation::economy::agents::tests::walk_witness`: the traced case (a walker whose
   exit needs the far sidewalk takes the longer connector across the road end; it fails under the
   old choice), a removed crossing replans round a road end without a teleport, walks identical
-  for 1 and 8 workers; `test_walking_missing_crosswalk_route_waits_at_junction_mouth`: with no
-  route the walker waits, plans again every 5 s and walks on once the zebra returns.
+  for 1 and 8 workers. `tests::walk_home` (a block whose crossings are all off splits its inner
+  and outer sidewalks): a walker whose shop becomes unreachable gives up and walks home; with no
+  way home it is stranded, waits at its lane's end on the 5 s / 30 s / 2 min backoff with one
+  record, the report names its junction, and it walks home once the crossings return; a walker
+  already walking home is stranded at once; the report counts walkers per junction, identical for
+  1 and 8 workers. `test_walking_missing_crosswalk_route_waits_at_junction_mouth`: a walker with
+  no destination and no home is stranded where it stands, one record, on its backoff.
+  `nodes::sim::core::tests::stranded_fixture`: the stranded block city saved mid-backoff and
+  loaded continues frame for frame as the unsaved one (walkers, timers, report); its ignored
+  recorder writes the fixture `godot/tests/stranded_notice_test.gd` loads into the real game
+  scene and `SimulationNode` (`./run.sh --test`).
 
 ### Detach rule (`TRAFFIC-15`, `TRAFFIC-13`)
 
