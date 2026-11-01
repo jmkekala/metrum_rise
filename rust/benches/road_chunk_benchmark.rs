@@ -22,6 +22,19 @@ const ROAD_LENGTH_M: f32 = 32.0;
 const ROAD_INSET_M: f32 = 128.0;
 const DISTANT_CHUNK_COUNTS: [usize; 4] = [0, 63, 255, 1023];
 const DISTANT_GRID_SIDE: i32 = 32;
+// The structure fixtures' city sizes: the smallest and the largest background.
+const STRUCTURE_DISTANT_CHUNK_COUNTS: [usize; 2] = [0, 1023];
+// A structure fixture's deck height above (a bridge) or below (a tunnel) its approaches' far ends.
+const STRUCTURE_RISE_M: f32 = 6.0;
+
+// The local road a fixture edits: one grounded edge, or a bridge or a tunnel edge between two
+// grounded approaches (`ROAD-61`: a tunnel's lining and headwalls, a bridge's deck and abutments).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalRoad {
+    Plain,
+    Bridge,
+    Tunnel,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MeshSignature {
@@ -52,7 +65,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
     let mut baseline_owners = None;
     let mut baseline_signature = None;
     for distant_chunks in DISTANT_CHUNK_COUNTS {
-        let mut fixture = build_road_chunk_fixture(distant_chunks);
+        let mut fixture = build_road_chunk_fixture(distant_chunks, LocalRoad::Plain);
         let owners = (fixture.target_edge_count, fixture.target_node_count);
         if let Some(expected) = baseline_owners {
             assert_eq!(
@@ -151,10 +164,55 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
         );
     }
 
+    // A bridge's and a tunnel's local chunk: emission only, the city size held as above.
+    for (local, name) in [
+        (LocalRoad::Bridge, "bridge_chunk_emit_only"),
+        (LocalRoad::Tunnel, "tunnel_chunk_emit_only"),
+    ] {
+        let mut signature = None;
+        for distant_chunks in STRUCTURE_DISTANT_CHUNK_COUNTS {
+            let mut fixture = build_road_chunk_fixture(distant_chunks, local);
+            if let Some(expected) = signature {
+                assert_eq!(
+                    fixture.expected_signature, expected,
+                    "local structure mesh output changed with city size"
+                );
+            } else {
+                signature = Some(fixture.expected_signature);
+                println!(
+                    "ROAD_CHUNK_STRUCTURE local={local:?} chunks={} vertices={} digest={:016x}",
+                    fixture.expected_signature.chunk_count,
+                    fixture.expected_signature.vertex_count,
+                    fixture.expected_signature.digest,
+                );
+            }
+            let occupied_chunks = fixture.occupied_chunks;
+            group.bench_with_input(
+                BenchmarkId::new(name, occupied_chunks),
+                &occupied_chunks,
+                |b, _| {
+                    b.iter(|| {
+                        let chunks = black_box(&mut fixture.network)
+                            .try_generate_mesh_chunks(
+                                black_box(&fixture.graph),
+                                black_box(&fixture.terrain),
+                                &NoSites,
+                                black_box(&fixture.target_chunks),
+                                None,
+                                &Default::default(),
+                            )
+                            .expect("the clean benchmark surface must stay published");
+                        black_box(mesh_map_shape(&chunks));
+                    });
+                },
+            );
+        }
+    }
+
     group.finish();
 }
 
-fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
+fn build_road_chunk_fixture(distant_chunks: usize, local: LocalRoad) -> RoadChunkBenchFixture {
     let config = WorldConfig::gameplay_default();
     let render_chunk_span_m = config.terrain_render_chunk_span_m();
     assert_eq!(
@@ -165,7 +223,13 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
     let (chunk_origin_x_m, chunk_origin_z_m) = config.terrain_world_origin_m();
     let terrain = TerrainSystem::from_world_config(&config);
     let mut graph = RegionGraph::new();
-    let local_edge = add_world_road(&mut graph, -ROAD_LENGTH_M * 0.5, 0.0, &config);
+    let local_edge = match local {
+        LocalRoad::Plain => add_world_road(&mut graph, -ROAD_LENGTH_M * 0.5, 0.0, &config),
+        LocalRoad::Bridge => add_structure_chain(&mut graph, EdgeClass::Bridge, STRUCTURE_RISE_M),
+        LocalRoad::Tunnel => {
+            add_structure_chain(&mut graph, EdgeClass::Tunnel, -STRUCTURE_RISE_M)
+        }
+    };
     let local_chunk = (
         ((0.0 - chunk_origin_x_m) / render_chunk_span_m).floor() as i32,
         ((0.0 - chunk_origin_z_m) / render_chunk_span_m).floor() as i32,
@@ -292,21 +356,30 @@ fn add_world_road(
     assert!(start_z >= -half_height_m && start_z <= half_height_m);
     let start = graph.add_node(Vector3::new(start_x, 0.0, start_z), NodeType::Junction);
     let end = graph.add_node(Vector3::new(end_x, 0.0, start_z), NodeType::Junction);
-    let midpoint = Vector3::new((start_x + end_x) * 0.5, 0.0, start_z);
-    let points = vec![graph.node(start).pos, midpoint, graph.node(end).pos];
+    let (start_pos, end_pos) = (graph.node(start).pos, graph.node(end).pos);
+    add_edge(graph, (start, end), (start_pos, end_pos), EdgeClass::Standard)
+}
 
+// A two-lane road edge from `start` to `end` through their midpoint.
+fn add_edge(
+    graph: &mut RegionGraph,
+    (start, end): (u32, u32),
+    (start_pos, end_pos): (Vector3, Vector3),
+    class: EdgeClass,
+) -> usize {
+    let points = vec![start_pos, (start_pos + end_pos) * 0.5, end_pos];
     graph.add_edge(Edge {
         start_node: start,
         end_node: end,
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-        class: EdgeClass::Standard,
+        class,
         width: 7.0,
         fwd_lanes: 1,
         bkw_lanes: 1,
         speed_limit: 50.0,
         base_cost: 0.0,
-        physical_length: ROAD_LENGTH_M,
+        physical_length: start_pos.distance_to(end_pos),
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: points.clone(),
@@ -315,6 +388,32 @@ fn add_world_road(
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
     })
+}
+
+// A grounded approach, a `class` edge with its deck `rise_m` above the approaches' far ends, and
+// a second approach, west to east along z = 0 from x = -16 m: the three edges inside the local
+// chunk. Returns the structure edge.
+fn add_structure_chain(graph: &mut RegionGraph, class: EdgeClass, rise_m: f32) -> usize {
+    let start_x = -ROAD_LENGTH_M * 0.5;
+    let heights = [0.0, rise_m, rise_m, 0.0];
+    let nodes: Vec<u32> = heights
+        .iter()
+        .enumerate()
+        .map(|(k, &y)| {
+            let x = start_x + k as f32 * ROAD_LENGTH_M;
+            graph.add_node(Vector3::new(x, y, 0.0), NodeType::Junction)
+        })
+        .collect();
+    let mut structure = 0;
+    for k in 0..3 {
+        let (start, end) = (graph.node(nodes[k]).pos, graph.node(nodes[k + 1]).pos);
+        let edge_class = if k == 1 { class } else { EdgeClass::Standard };
+        let edge = add_edge(graph, (nodes[k], nodes[k + 1]), (start, end), edge_class);
+        if k == 1 {
+            structure = edge;
+        }
+    }
+    structure
 }
 
 fn mesh_map_signature(
