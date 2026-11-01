@@ -870,12 +870,19 @@ fn the_lining_closes_buried_ends_and_bends() {
 // headwalls and the portal rows' terrain included), eight end poses along the far side, against
 // the stage budgets (`docs/roads.md` "Stage budgets"). Medians and p95 over 50 repetitions after
 // 10 warm-up ones.
+// `METRUM_TUNNEL_BENCH_HILL=gentle` takes the 1:4 hill of `gentle_tunnel_core` instead (round
+// R8e): its approaches run in long walled cuts, so the graded stage covers the trough's tiles.
 #[test]
 #[ignore = "controlled release timing: cargo test --release --lib benchmark_tunnel_preview_stages -- --ignored --nocapture"]
 fn benchmark_tunnel_preview_stages() {
     use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
     use std::time::Instant;
-    let mut core = hill_core(80.0);
+    let gentle = std::env::var("METRUM_TUNNEL_BENCH_HILL").is_ok_and(|hill| hill == "gentle");
+    let mut core = if gentle {
+        cone_hill_core(100.0, 0.25)
+    } else {
+        hill_core(80.0)
+    };
     core.precompute_road_mesh_data();
     core.refresh_road_terrain_inputs();
     let mut context =
@@ -926,9 +933,10 @@ fn benchmark_tunnel_preview_stages() {
         (at(0.5), at(0.95))
     });
     eprintln!(
-        "tunnel_preview_stages workers={} poses=8 samples=400 lining_vertices_per_pose={} \
+        "tunnel_preview_stages hill={} workers={} poses=8 samples=400 lining_vertices_per_pose={} \
          plan_ms={:.3}/{:.3} roadbed_ms={:.3}/{:.3} payload_ms={:.3}/{:.3} \
          graded_ms={:.3}/{:.3} total_ms={:.3}/{:.3}",
+        if gentle { "1:4" } else { "1:2" },
         crate::thread_pools::install(rayon::current_num_threads),
         lining_vertices / 8,
         plan.0,
