@@ -471,7 +471,10 @@ rows fall a few millimetres apart before a knot.
   tunnel end without a continuation has no node piece; its span ends on its mouth row, which the
   abutment or portal closes. Their terrain side (abutment and portal cutouts, wall seams) is
   `TERRAIN-07`'s ([T14](terrain.md#terrain-07-open-questions);
-  [`ROAD-68-F` part 2](#remaining-families-road-68-f-part-2-2026-10-25)).
+  [`ROAD-68-F` part 2](#remaining-families-road-68-f-part-2-2026-10-25)). A tunnel's pieces are
+  lined (`ROAD-61` round R8, [the closed tunnel](#road-tunnels-road-61)): walls on the outer
+  chains, a ceiling over them, an end wall where a bore ends underground and a headwall at each
+  portal row, every vertex a mesh vertex or the lining top above one.
 
 **`PieceMesh`.** A piece's mesh holds:
 
@@ -498,7 +501,8 @@ edges (which meet terrain) and mouth edges. Every mouth edge appears in exactly 
 node piece, with bit-identical endpoints. Tests check both conditions on every fixture. In the
 published chunks (`TERRAIN-07-B`) the strips close the outer-chain edges: each is a strip's top
 edge, the strips of two pieces share the vertical edge at their mouth corner, and only the skirts'
-bottoms, and a structure's ends and a tunnel's sides, stay open.
+bottoms, a structure's ends and a tunnel headwall's outer edges stay open; a tunnel's sides are
+its lining's walls (`ROAD-61` round R8).
 
 ### Footprint and terrain
 
@@ -10214,9 +10218,9 @@ uses the existing node grid and edge R-tree. No additional spatial index or whol
 
 ## Road tunnels (`ROAD-61`)
 
-**Status (2026-10-31, round R2 of the road-feature port, branch `port-r2-tunnels`):** the tunnel
-logic is built; the tunnel lining, roof, headwalls and portal headers are not (round R8, the
-user's decision after playing this one). Ported from Veeti's road-chain branch (`b07b3781`,
+**Status (2026-11-01, round R8 of the road-feature port, branch `port-r8-tunnel-lining`):** the
+tunnel logic (round R2), the ground over a bore (R2b) and the closed tunnel (R8: lining, ceiling,
+headwalls, no cone past a portal row) are built; see "The closed tunnel" below. Ported from Veeti's road-chain branch (`b07b3781`,
 `55cf6f85`, logic only); the fork's profile logic lived in the deleted `surface/` compiler and its
 tool intent rode on a Junction / Over / Under / Tunnel crossing selector, which is not ported (grade
 separation is out of the port), so the logic is re-implemented on `road_edit` and the roadbed.
@@ -10412,13 +10416,133 @@ scale (asserted). p50 / p95 ms over 100 samples:
 The stroke's planning cost follows its neighbourhood, not the city; the one-time snapshot grows
 with the city and is kept apart.
 
+**The closed tunnel (round R8, branch `port-r8-tunnel-lining`, 2026-11-01).** R2's screenshot
+showed sky through the mouth: the bore had a deck and nothing else, the terrain is one surface
+drawn from above, the portal opening cut the ground within 10 m past a portal row, and the
+approaches' tie-in cones graded the hill over the bore (a 6 m rock step on a 1:2 hill). Ported in
+intent from the fork's `55cf6f85` (section-sized concrete lining, portal faces, explicit terrain
+ownership of open cuts), whose code lived in the deleted `surface/` compiler; built constructively
+in `network/roadbed/lining.rs` and the graded bake.
+
+- **Lining** (`lining.rs`, `PieceMesh::lining_triangles`). A tunnel span is lined: walls stand on
+  its deck's two outer chains, straight up `TUNNEL_LINING_HEIGHT_M` (4.5 m) to the lining tops,
+  and a flat ceiling spans the two tops of each section row (a box section sized from the span's
+  own sections). A lining top is a function of its chain vertex (`lining_top`), so pieces that
+  share a mouth share their lining edges bitwise: a span and the next tunnel's span at a
+  pass-through, or the node piece where only tunnels meet, which is lined along its outer chains
+  with a ceiling triangulated over the ring of their tops (its mouth edges the same straight edges
+  between the corners' tops). A bore that ends underground is closed by an end wall in its end
+  row's plane from the deck to the ceiling, which replaces the free end's cap (below the deck lies
+  the earth). Walls face the road, the ceiling down. A junction inside a tunnel cannot be built
+  today: a tunnel stroke that meets a road inside its bore is refused (`tunnel_crossing`, round R2),
+  so only bends and pass-throughs between tunnels occur, and those are lined.
+- **Headwall** (`PieceMesh::headwall_triangles`). At each portal row (a tunnel's mouth a grounded
+  piece shares, and where a tunnel opens straight onto a bridge) the span stands a headwall in the
+  row's vertical plane: from the skirt depth below the row's corners up to `HEADWALL_HEIGHT_M`
+  (5.5 m: the bore's 5 m of cover and a parapet) above them, `HEADWALL_WING_M` (11 m, where the
+  approach's cut rising at 1:2 from the corner reaches its top) beyond them along the row's line,
+  with the lining's mouth open in it from below. Its opening runs up the walls' end edges and along
+  the ceiling's, and its edges below the corners are the approach's skirt end edges, so it meets
+  the lining, the deck and the grounded piece edge for edge; its outer edges meet the terrain. It
+  faces out of the tunnel. Retaining wings along the cut were not needed: the cut's side slopes run
+  into the headwall's wings.
+- **Terrain** ([`terrain.md`](terrain.md) T22, "The portal row"). No tie-in cone reaches past a
+  portal row, so the hill over the bore stays natural and the cut ends at the row; the portal
+  opening and its side walls are gone; under the approach's deck at the row the ground continues
+  the hill, so the step down to the deck lies where the mask discards it, not in the mouth.
+- **Rendering.** The lining and headwalls go in the road chunk's concrete layer (no payload field
+  is new), drawn on both sides by the concrete shader, which takes the cloud shadow
+  (`standard_light.gdshaderinc`). Their colour alpha is 0, which marks them: the lining takes no
+  sun, no sky reflection and 60% of the ambient light, and a shadow-only child of the chunk's
+  concrete layer (`tunnel_lining_shadow.gdshader`, keeping alpha-0 faces) casts their shadow, since
+  road chunks only receive shadows; so the ceiling shades the deck inside and the headwall the
+  approach. The interior is lit by the ambient alone, so it reads as enclosed and dark, as an
+  unlit bore does; lighting strips are an alternative for the user (below).
+- **Whole-map view.** The lining is a few hundred triangles per tunnel, all in the chunk's
+  concrete layer under the hill, so a whole-map view drops it with the road chunks it already
+  culls or simplifies by distance: from far away only the headwall shows, and a coarse view can
+  draw the headwall alone (its triangles come after the lining's) or nothing. Nothing of it is
+  built here.
+
+**Tests** (fresh, 2026-11-01, release lib subset and the debug suite in the gates):
+`road_tunnels::a_steep_hill_over_a_bore_keeps_its_height` un-ignored and passing (the 1:2 cone's
+graded ground over the bore equals the hill to 1 cm at x = -30, -8, 8 and 30);
+`the_lining_closes_the_bore` (the tunnel through the 1:2 hill: every lining and headwall edge is
+shared bitwise with another face, deck, curb face, skirt, lining or headwall, but the headwalls'
+outer edges; lining faces face the bore's axis, headwalls their approach);
+`the_lining_closes_buried_ends_and_bends` (R2's buried probe continued by a second tunnel round a
+bend: the bend's node piece is lined, the free ends closed, no open edge, no headwall underground);
+`graded::portal_tests::no_cone_reaches_past_a_portal_row` (the T22 fixture: past the row the
+ground is the hill at every `GL0` point out to 63 m and across the bore's sides, the cut before
+it, the hill under the deck at the row, the bake's packed values equal the queries', pruned equals
+unpruned at every level, batch, order and worker count); the road families' chunk check now closes
+a tunnel's sides with its lining (the exemption for them is gone) and exempts only the headwalls'
+outer edges. Changed for the new rule: `the_surface_over_a_bore_is_the_hill` (2 m into the bore
+the hill, unmasked; 2 m before each mouth the approach's deck), `the_hill_over_a_bore_keeps_its_plants`
+(the hill keeps its plants up to 6 m from the rows), `structure_mouths_wall_the_graded_ground` (no
+terrain face on a portal row). The roadbed strip probe hashes the lining; its six tunnel entries
+are re-recorded, every other entry unchanged.
+
+**No change without tunnels** (fresh). Hashes of the roadbed pieces (positions, road space,
+triangles, chains, wall runs, strips, caps, abutment faces, portal rows, bounds), the road payload's
+buffers, the graded tiles at `GL0`-`GL2`, the vegetation scatter and the surface queries on a
+3.7 m grid, recorded on `f97a85e0` before the change and on this round's code, release test
+binaries: a 1:4 hill with a surface road and a bridge `2ea91063b19c5506 b4754ee0b61a4ac3
+1c612c59b9d809a0 757c8f1202962b63 ffb245475d0d5ccb`; a 1:2 hill with a surface road
+`0e303ce5c6ff35d9 93d52d7d97680eb7 2d7a29cf73e8b32f 5e81711625c10d75 17caa53686614f34`; the grown
+starter town `4b50aba160f94f42 eba822c50552e5ad 254bb17558de5067 288abc8d84adaadd
+240fa2bd45b8484b`: equal. The probe is not committed.
+
+**Screenshots** (gamescope headless 1280x720, isolated profile, release library, kept in
+`$ARTIFACTS`): inside the bore with a car, R2's portal camera, a closer mouth camera, R2's overhead
+camera (no step or stripes over the bore) and the sculpted hill from the side (1:2 around the
+portals: 3.8 m at x = -80, 8.3 at -70, 13.8 at -60, 20.0 at -50). Rendered sky test
+(`road_tunnels_test.gd`, `METRUM_ROAD61_SKY_TEST=1`): the camera's own environment keys the sky to
+one colour; a control frame from the approach shows 150,937 key pixels, the view along the bore
+from its middle 0 outside the far mouth's opening (40 through it).
+
+**Cost.** Lining `O(sections + bands log bands)` per tunnel span (two walls and a ceiling per
+section row, a plane triangulation per end face) and `O(V log V + V^2)` per lined node piece for
+its `V` chain vertices (the ring's CDT and its vertex lookup, as the free end's cap); built once per
+piece in the compile, nothing for any other piece. Terrain: a point within the cap of a portal row
+tests it, `O(rows)`, and past a row each candidate seam's nearest point, `O(rows)` per candidate;
+the rows come from the grounded pieces each bake and query gathers anyway; without a row the
+evaluation runs as before (one false per lane). Selection: a changed tunnel span widens its
+candidates by the cap (was the 10 m reach) and compares rows only.
+
+**Timing (fresh, 2026-11-01).** Release test binaries, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`,
+both timing locks, C F F C. Ordinary strokes (02:11, load 1.98 at the start): `$TEST_BINARY
+nodes::sim::core::tests::road_preview::benchmark_road_preview_stages --exact --ignored
+--nocapture`, control `f97a85e0` (C), this round's `1176db0b` code (F). Products identical
+(payload 9,845 / 9,973 vertices per pose, hidden 4,188 / 6,475, graded tiles 7.38 / 4.62). p50 ms,
+C1 C2 / F1 F2: `sloped_t` total 2.801 2.817 / 2.832 2.787, roadbed 0.311 0.316 / 0.322 0.314;
+`sloped_branch` total 2.436 2.467 / 2.496 2.535, roadbed 0.315 0.321 / 0.316 0.323; plan, payload
+and graded within the controls' spread. No claim either way. A tunnel stroke (02:21, load 1.71):
+`road_tunnels::benchmark_tunnel_preview_stages` (eight poses of the stroke through the 1:2 hill,
+400 samples), the control `f97a85e0` with only that test added, p50 (p95) ms, C1 C2 / F1 F2:
+plan 0.177 0.174 / 0.183 0.177; roadbed 0.208 0.203 / 0.238 0.229 (0.269 0.260 p95); payload
+0.269 0.271 / 0.322 0.317 (1,188 lining vertices per pose); graded 2.946 2.942 / 2.846 2.850
+(3.227 3.259 / 3.128 3.091 p95); total 3.585 3.570 / 3.571 3.542. The lining costs about
+0.03 ms of roadbed and 0.05 ms of payload per pose, within their 0.5 and 1.0 ms budgets; the
+graded stage is 0.1 ms cheaper (no cut past the rows, no opening) and stays at its 3.0 ms budget
+at p50, over it at p95 as before (the steep hill's approach cut).
+
+**Locality (fresh, same session as the ordinary strokes).**
+`road_plan_scaling::populated_tunnel_road_plan_scaling` on the control and this round: the
+prepared points equal at 0 / 1k / 10k / 100k remote buildings (asserted); compile p50 0.048 0.043
+0.043 0.043 ms (control) and 0.042 0.063 0.042 0.042 ms; preview p50 0.026 0.023 0.023 0.024 and
+0.024 0.036 0.024 0.024 ms; the once-per-edit snapshot 0.004 -> 0.210 ms and 0.003 -> 0.202 ms.
+Planning follows the stroke's neighbourhood; the round touches no planning code.
+
 **Open (`ROAD-61`):**
 
-- On a hill as steep as the 1:2 tie-in slope the approaches' cones cut the hill over the bore to
-  the cap ([`terrain.md`](terrain.md) "Open (`ROAD-61`, T22 design, found by round R2b)"). A fix
-  stops the cones past a portal row and needs a headwall at the mouth: round R8 or a T22 revision,
-  the user's call.
-- Tunnel lining, roof, headwall faces and portal headers: round R8.
+- Slivers: beside the portal's corners the cut slopes and the hill meet across the row in one
+  lattice cell, so a steep rock sliver stands up to half a cell in front of the headwall's wings
+  (0.25 m at `GL0`); between the corners the mask cuts on the row.
+- The shadow map leaks a thin line of sun along the sidewalk at the walls' feet; the lining itself
+  takes no sun.
+- The headwall's wings stand above a hillside that falls away from the portal (flat top at
+  5.5 m).
 
 ## Road marking lighting — RENDER-12
 

@@ -53,12 +53,12 @@ locks.
 
 The road tool can build a tunnel through a hill: with its tunnel toggle (`T` or the road options
 checkbox) a stroke keeps its drawn height through the ground, the stretch under 5 m of ground
-becomes a tunnel between two approaches in a cut, the terrain opens at its portals and cars drive
-through; tunnels under water, crossing tunnels and strokes without enough cover are refused with
-a reason. Over a bore the ground is the hill: the cursor, zoning heights, vehicles and trees read
-the buried road only inside a portal opening, and no parcel or building fronts a tunnel or a bridge.
-Tunnels have no lining or portal headers yet, and on a hill as steep as 1:2 the approach cuts still
-lower the hill over the bore up to a 6 m step ([ROAD-61](roads.md#road-tunnels-road-61)).
+becomes a tunnel between two approaches in a cut and cars drive through; tunnels under water,
+crossing tunnels and strokes without enough cover are refused with a reason. The tunnel is closed:
+a concrete lining (walls and ceiling) around the road, a headwall at each portal where the cut
+ends, no sky visible from inside, and the hill over the bore keeps its natural shape even when as
+steep as 1:2. Over a bore the cursor, zoning heights, vehicles and trees read the hill, and no
+parcel or building fronts a tunnel or a bridge ([ROAD-61](roads.md#road-tunnels-road-61)).
 
 Roads can again be attached beside an existing sloped three-way junction after loading a save.
 Splitting an incident edge now retains its independently solved physical support knots, and the
@@ -1410,6 +1410,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-61` closed tunnel (branch `port-r8-tunnel-lining`, 2026-11-01, port round R8): tunnel spans are lined (walls, ceiling, an end wall underground, lined bends) with a headwall at each portal row, built constructively in the roadbed and watertight with the deck; no graded tie-in cone reaches past a portal row, so the hill over a bore stays natural and the portal opening is gone; the lining takes no sun and casts its shadow into the bore. Products without a tunnel are bitwise unchanged. See [`roads.md`](roads.md#road-tunnels-road-61).
 - `ROAD-61` ground over a bore (branch `port-r2b-tunnel-surface`, 2026-10-31, port round R2b): the visible-surface queries take a tunnel's buried deck only inside its portal opening (the graded terrain's own rule), so over a bore the cursor, zoning heights, off-lane vehicles and vegetation read the hill; buildings front only grounded roads (`Edge::takes_buildings`: no parcel or lot on a tunnel or bridge span). Products without a tunnel are bitwise unchanged. Open: the approaches' tie-in cones still cut a 1:2 hill over the bore to the 64 m cap (R8 or a T22 revision).
 - `ROAD-61` logic (branch `port-r2-tunnels`, 2026-10-31, port round R2): a tunnel toggle in the road tool; tunnel strokes keep their authored profile on a 4 m lattice, split at their portals (5 m of cover) into a tunnel edge between standard approaches, with one cover rule for quick and exact checks and refusals for cover, short approaches, crossings and water. Lining and portal headers are round R8. See [`roads.md`](roads.md#road-tunnels-road-61).
 - `TRAFFIC-14` and `TRAFFIC-16` done (branch `port-r14d`, 2026-10-31): the `gridlock check` fixed slot (`Period::Minute`, slot 4) finds wait-for cycles in the lane buckets, detours one head of a confirmed cycle through one route query and the normal claim, or reports the cycle's junctions to a HUD notice and a junction highlight; save format 109 keeps the checker's state (Kuopio reference re-recorded). No box rule (rejected: 30k deliveries -41%). 100k to day 12: 21 detours, no cycle at day 12; check mean 0.21-0.71 ms in frame. See [`traffic.md`](traffic.md#gridlock-check-traffic-14).
