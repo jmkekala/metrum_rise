@@ -396,54 +396,27 @@ fn test_walking_missing_crosswalk_route_waits_at_junction_mouth() {
 
     agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
+    // `ROAD-74`: its route has no step from its own sidewalk, and this walker has neither a
+    // destination to plan to nor a home: it is stranded, waits where it stands, with no crossing
+    // of its own and no teleport, and plans again on its backoff (one logged record).
     assert_eq!(agents.transit[idx], TRANSIT_NETWORK);
     assert_eq!(agents.current_lane_id[idx], west_lane);
     assert_eq!(agents.lane_distance[idx], west_lane_len);
-    assert_eq!(
-        agents.current_path[idx],
-        vec![west_node, center_node, east_node]
-    );
-    assert_eq!(agents.current_path_index[idx], 1);
-
-    // `ROAD-74`: with no route from its own lane (this walker has no destination to plan to),
-    // the walker waits where it stands, with no crossing of its own and no teleport, and plans
-    // again every `NETWORK_REPLAN_DELAY_S` (one logged record; the retries fold into it). Once
-    // a zebra is painted again (the toggle's lane rebuild reattaches it to its rebuilt sidewalk,
-    // as `set_crosswalk_override_internal` does), its next retry rebuilds its route's witness
-    // and it walks on.
+    assert!(agents.access_flags[idx] & ACCESS_WALK_STRANDED != 0);
+    assert!(agents.current_path[idx].is_empty());
     let waiting_at = (agents.pos_x[idx], agents.pos_y[idx]);
     for _ in 0..60 {
         agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
     }
     assert_eq!(agents.current_lane_id[idx], west_lane);
     assert_eq!((agents.pos_x[idx], agents.pos_y[idx]), waiting_at);
+    assert_eq!(
+        agents.network_replan_failures[idx], 1,
+        "one retry after 5 s"
+    );
     let lines = &agents.trip_failures.lines;
     assert_eq!(lines.len(), 1, "{lines:#?}");
-    assert!(
-        lines[0].contains("waits at the end of its lane, plans again in 5 s"),
-        "{lines:#?}"
-    );
-    for edge_id in 0..4 {
-        graph.set_crosswalk_override(center_node, edge_id, true);
-    }
-    graph.rebuild_intersection_clips();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
-    let rebuilt = fwd_foot_lanes(&network, west_edge)[0];
-    agents.current_lane_id[idx] = rebuilt;
-    agents.lane_distance[idx] = network.lane_system.lanes[rebuilt].length;
-    let mut last = waiting_at;
-    for _ in 0..60 {
-        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
-        let pos = (agents.pos_x[idx], agents.pos_y[idx]);
-        let moved = (pos.0 - last.0).hypot(pos.1 - last.1);
-        assert!(moved < 2.0, "no teleport: moved {moved} m in one tick");
-        last = pos;
-    }
-    assert_ne!(
-        agents.current_lane_id[idx], rebuilt,
-        "the walker crosses on the restored zebra"
-    );
+    assert!(lines[0].contains("stranded with no way home"), "{lines:#?}");
 }
 
 #[test]

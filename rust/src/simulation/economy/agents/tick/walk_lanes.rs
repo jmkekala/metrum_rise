@@ -151,7 +151,7 @@ impl Scratch {
                 WalkFrom::Node => Some(0.0),
                 WalkFrom::Lane(lane) => connector_length(lane, to, network),
             };
-            let Some(best) = cheapest(road, &step) else {
+            let Some(best) = cheapest(road, step) else {
                 return false;
             };
             let ties = |&&(to, cost): &&(usize, f32)| {

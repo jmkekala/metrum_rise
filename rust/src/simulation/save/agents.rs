@@ -8,9 +8,10 @@ pub(super) use lanes::restore_lane_references;
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID, AGE_ELDER,
-    Agent, AgentSystem, MODE_CAR, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING,
-    TRANSIT_INTERSECTION, TRANSIT_NETWORK, age_group_can_work,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID,
+    ACCESS_WALK_STRANDED, AGE_ELDER, Agent, AgentSystem, MODE_CAR, MODE_WALK,
+    TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION,
+    TRANSIT_NETWORK, age_group_can_work,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -496,15 +497,22 @@ pub(super) fn validate_loaded_agents(
             };
             let freight_border_destination =
                 agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION != 0;
-            let detach_ok = if freight_border_destination {
+            // A stranded walker on the road has no exit lane until its next home plan.
+            let stranded = agents.access_flags[i] & ACCESS_WALK_STRANDED != 0;
+            let stranded_ok = !stranded
+                || (agents.transit_mode[i] == MODE_WALK
+                    && matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION));
+            let detach_ok = if stranded {
+                agents.planned_detach_lane_id[i] == u32::MAX
+            } else if freight_border_destination {
                 agents.planned_detach_node[i] < graph.node_count() as u32
                     && agents.planned_detach_lane_id[i] == u32::MAX
             } else {
                 agents.planned_detach_node[i] < graph.node_count() as u32
                     && agents.planned_detach_lane_id[i] != u32::MAX
             };
-            // 0x20 is `ACCESS_LANE_ATTACH_PENDING`; the bits above it are unused.
-            if !attach_ok || !detach_ok || (agents.access_flags[i] & 0xC0) != 0 {
+            // 0x40 is `ACCESS_WALK_STRANDED`; the bit above it is unused.
+            if !attach_ok || !detach_ok || !stranded_ok || (agents.access_flags[i] & 0x80) != 0 {
                 clear_agent_access_plan(agents, i);
             }
         }
@@ -681,7 +689,11 @@ pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_co
             agents.planned_attach_lane_id[i] != u32::MAX
                 && (agents.planned_attach_lane_id[i] as usize) < lane_count
         };
-        let detach_ok = if agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION != 0 {
+        // A border destination and a stranded walker (`ROAD-74`) have no exit lane.
+        let detach_ok = if agents.access_flags[i]
+            & (ACCESS_FREIGHT_BORDER_DESTINATION | ACCESS_WALK_STRANDED)
+            != 0
+        {
             agents.planned_detach_lane_id[i] == u32::MAX
         } else {
             agents.planned_detach_lane_id[i] != u32::MAX

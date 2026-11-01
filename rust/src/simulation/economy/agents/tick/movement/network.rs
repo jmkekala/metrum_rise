@@ -8,6 +8,7 @@ mod lane_change;
 mod lane_entry;
 mod pose;
 mod replan;
+mod walk_home;
 
 use super::super::super::{MODE_CAR, TRANSIT_INTERSECTION};
 use super::super::access::ACCESS_LANE_D_TOLERANCE_M;

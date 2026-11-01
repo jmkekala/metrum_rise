@@ -145,6 +145,11 @@ func _ready():
 	gridlock_display.set_script(load("res://scripts/renderers/gridlock_display.gd"))
 	get_parent().call_deferred("add_child", gridlock_display)
 
+	var stranded_display := Node3D.new()
+	stranded_display.name = "StrandedDisplay"
+	stranded_display.set_script(load("res://scripts/renderers/stranded_display.gd"))
+	get_parent().call_deferred("add_child", stranded_display)
+
 	agent_inspector = Node3D.new()
 	agent_inspector.name = "AgentInspector"
 	agent_inspector.set_script(load("res://scripts/renderers/agent_inspector.gd"))

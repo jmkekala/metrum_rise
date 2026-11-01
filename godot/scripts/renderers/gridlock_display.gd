@@ -4,7 +4,8 @@
 ## (`get_gridlock_report`) twice a second and, only when its junctions differ from the ones
 ## shown, rebuilds a ring round every reported junction and updates the HUD notice. Every
 ## decision (which cycles are saturation, which junctions they hold) is made in Rust; this node
-## only shows the list.
+## only shows the list. `StrandedDisplay` reuses it for another report through `read_report`,
+## `notice_message`, `ring_color` and `notice_row`.
 extends Node3D
 
 const GridlockNotice = preload("res://scripts/ui/gridlock_notice.gd")
@@ -15,6 +16,11 @@ const RING_SEGMENTS := 32
 # Above the road surface so the ring is not hidden in it.
 const RING_LIFT_M := 1.0
 const RING_COLOR := Color(1.0, 0.25, 0.15, 0.95)
+
+## The rings' colour.
+var ring_color := RING_COLOR
+## The HUD row the notice takes (0 is the top line).
+var notice_row := 0
 
 var simulation_node: Node
 ## The junction node ids the highlight and the notice show, ascending.
@@ -41,6 +47,7 @@ func _ready() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 	_notice = GridlockNotice.new()
+	_notice.row = notice_row
 	layer.add_child(_notice)
 
 func _process(delta: float) -> void:
@@ -53,7 +60,7 @@ func _process(delta: float) -> void:
 ## Reads the report now and updates the notice and highlight if its junctions changed.
 func refresh() -> void:
 	# From the render snapshot: never waits for the simulation core.
-	var report: Dictionary = simulation_node.get_gridlock_report()
+	var report: Dictionary = read_report()
 	var junctions: PackedInt32Array = report["junctions"]
 	var positions: PackedVector3Array = report["positions"]
 	if junctions == shown_junctions and positions == _shown_positions:
@@ -61,7 +68,18 @@ func refresh() -> void:
 	shown_junctions = junctions
 	_shown_positions = positions
 	_rebuild_rings(positions)
-	_notice.show_junctions(junctions.size())
+	_notice.show_text(notice_message(report))
+
+## The report the display shows: `junctions` (node ids) and `positions` at least.
+func read_report() -> Dictionary:
+	return simulation_node.get_gridlock_report()
+
+## The notice for `report`, or empty to hide it.
+func notice_message(report: Dictionary) -> String:
+	var count: int = (report["junctions"] as PackedInt32Array).size()
+	if count == 0:
+		return ""
+	return "Gridlock: traffic is locked at %d %s with no way out" % [count, "junction" if count == 1 else "junctions"]
 
 ## The notice's text while it shows, else empty.
 func notice_text() -> String:
@@ -80,7 +98,7 @@ func _rebuild_rings(positions: PackedVector3Array) -> void:
 				points.push_back(center + Vector3(cos(angle) * RING_RADIUS_M, RING_LIFT_M, sin(angle) * RING_RADIUS_M))
 	var colors := PackedColorArray()
 	colors.resize(points.size())
-	colors.fill(RING_COLOR)
+	colors.fill(ring_color)
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = points

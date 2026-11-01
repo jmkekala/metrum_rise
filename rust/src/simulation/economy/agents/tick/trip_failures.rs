@@ -75,8 +75,11 @@ pub(super) enum FailureCause {
 pub(super) enum FailureOutcome {
     /// Drops its route and plans a new one at once.
     Replans,
-    /// A pedestrian waits at the end of its lane and plans again from it after `after_s`.
-    Waits { after_s: f32 },
+    /// A walker gives up its trip and walks home to `building` (`ROAD-74`).
+    WalksHome { building: usize },
+    /// A walker with no way home either waits at the end of its lane and plans home again
+    /// after `after_s`, then on its backoff (`ROAD-74`).
+    Stranded { after_s: f32 },
     /// Plans again after `after_s`; this was failure `failure` of `of`.
     Retry { after_s: f32, failure: u8, of: u8 },
     /// Plans its departure again after `after_s`.

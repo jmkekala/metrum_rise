@@ -101,6 +101,11 @@ pub const ACCESS_FREIGHT_BORDER_DESTINATION: u8 = 0x10;
 /// `planned_attach_lane_d` and steps onto that lane once the attach slot is clear and claimed,
 /// like an egress car at its handoff (`TRAFFIC-11`). Plan clears keep it with its attach point.
 pub const ACCESS_LANE_ATTACH_PENDING: u8 = 0x20;
+/// Stranded bit (`ROAD-74`): a walker with no route to its destination nor home waits at the end
+/// of its lane, its path cleared and its exit lane unset, and plans home again on the
+/// backoff in `network_replan_failures` and `next_replan_time` (5 s, 30 s, then every 2 min).
+/// Set with [`ACCESS_PLAN_VALID`]; a new route or any plan clear drops it.
+pub const ACCESS_WALK_STRANDED: u8 = 0x40;
 
 // Transit Modes
 /// Agent is walking on foot (sidewalks/crosswalks).

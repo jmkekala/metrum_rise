@@ -264,6 +264,9 @@ impl SimCore {
         // And the first agent tick's scrub and lane buckets.
         self.agents
             .prepare_loaded_tick(&self.allocator, &self.transit_network);
+        // And the stranded walkers' set and report, from their saved bits (`ROAD-74`).
+        self.agents
+            .rebuild_stranded_walkers(&self.transit_network, &self.region_graph);
     }
 
     fn refresh_loaded_demand_state_and_log(&mut self) {

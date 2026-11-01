@@ -23,6 +23,7 @@ mod road_terrain_plan;
 mod road_over_tunnels;
 mod surface_over_tunnels;
 mod road_tunnels;
+mod stranded_fixture;
 mod routing_adoption;
 mod zoning_buildability;
 

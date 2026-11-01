@@ -1110,6 +1110,14 @@ if [ $TEST -eq 1 ]; then
     if ! godot --headless --path "$asset_test_project" --script res://tests/gridlock_notice_test.gd; then
         exit 1
     fi
+    # The stranded block city the stranded-walker notice test loads (`ROAD-74`), written by Rust.
+    export METRUM_STRANDED_FIXTURE="$asset_test_profile/stranded-block.sqlite"
+    if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib record_stranded_walkers_fixture -- --ignored); then
+        exit 1
+    fi
+    if ! godot --headless --path "$asset_test_project" --script res://tests/stranded_notice_test.gd; then
+        exit 1
+    fi
     export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"
     if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib generate_building_lod_fixtures -- --ignored); then
         exit 1

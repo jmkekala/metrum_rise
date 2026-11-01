@@ -19,6 +19,7 @@ mod schedule;
 mod scrub;
 mod slices;
 mod speed;
+mod stranded;
 mod traffic;
 mod trip_failures;
 mod walk_lanes;
@@ -52,6 +53,7 @@ pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
 pub(crate) use lane_buckets::LaneBucketScratch;
 pub(crate) use gridlock::{GridlockChecker, GridlockReport, SavedGridlock};
+pub(crate) use stranded::StrandedWalkers;
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
 pub(crate) use trip_failures::TripFailureLog;
@@ -82,6 +84,7 @@ impl AgentSystem {
         self.update_idm_speeds(delta, transit_network, graph, n, live_lane_agent_count);
 
         self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n);
+        self.note_stranded_walkers();
         self.report_trip_failures(allocator);
         self.log_stationary_visible_pedestrians(delta, n);
 

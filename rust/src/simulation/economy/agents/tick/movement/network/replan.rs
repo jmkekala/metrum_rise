@@ -3,8 +3,8 @@
 //! Pre-movement network replan gates for immigration and exact access trips.
 
 use super::super::super::super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, MODE_CAR,
-    MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID,
+    ACCESS_WALK_STRANDED, MODE_CAR, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
 use super::super::super::lane_nav::lane_terminal_node;
@@ -16,6 +16,7 @@ use super::super::super::trip_failures::FailureCause;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
 };
+use super::walk_home::{give_up_trip, retry_home};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -182,6 +183,21 @@ unsafe fn ensure_exact_access_plan(
                 apply_network_replan(i, replan, slices);
                 true
             }
+            Err(failure) if walker_on_road_lane(i, start_node, transit_network, graph, slices) => {
+                give_up_trip(
+                    i,
+                    start_node,
+                    *slices.lane_id.get(i),
+                    failure,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+                true
+            }
             Err(failure) => {
                 delay_or_recover_after_network_replan_failure(
                     i,
@@ -221,6 +237,27 @@ unsafe fn repair_stale_detach_plan(
             return true;
         }
         if (*s_access_flags.get(i) & ACCESS_FREIGHT_BORDER_DESTINATION) != 0 {
+            return true;
+        }
+        // A stranded walker has no exit lane: it plans home on its backoff from its road lane,
+        // wherever it waits on it (`ROAD-74`).
+        if (*s_access_flags.get(i) & ACCESS_WALK_STRANDED) != 0 {
+            let lane = *slices.lane_id.get(i);
+            if let Some(node) = lane_terminal_node(lane, transit_network, graph)
+                && walker_on_road_lane(i, node, transit_network, graph, slices)
+            {
+                retry_home(
+                    i,
+                    node,
+                    lane,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+            }
             return true;
         }
 
@@ -283,6 +320,21 @@ unsafe fn repair_stale_detach_plan(
                 apply_network_replan(i, replan, slices);
                 true
             }
+            Err(failure) if walker_on_road_lane(i, start_node, transit_network, graph, slices) => {
+                give_up_trip(
+                    i,
+                    start_node,
+                    *slices.lane_id.get(i),
+                    failure,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+                true
+            }
             Err(failure) => {
                 delay_or_recover_after_network_replan_failure(
                     i,
@@ -296,6 +348,27 @@ unsafe fn repair_stale_detach_plan(
                 false
             }
         }
+    }
+}
+
+// Whether walker `i` stands on a road foot lane ending at `start_node`: a failed replan from
+// there gives its trip up for a walk home (`ROAD-74`) instead of the watchdog's recovery.
+unsafe fn walker_on_road_lane(
+    i: usize,
+    start_node: u32,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    slices: &MovementSlices,
+) -> bool {
+    unsafe {
+        let lane = *slices.lane_id.get(i);
+        *slices.tmode.get(i) == MODE_WALK
+            && transit_network
+                .lane_system
+                .lanes
+                .get(lane)
+                .is_some_and(|value| value.edge_id != usize::MAX)
+            && lane_terminal_node(lane, transit_network, graph) == Some(start_node)
     }
 }
 

@@ -433,7 +433,8 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
         // fifth): O(lanes / p) head scan of the lane buckets the last tick left, O(waiting lanes)
         // walk, O(cars in cycles) fingerprints, one route query per detour
         // (`docs/traffic.md#gridlock-check-traffic-14`). It reads every lane, so it grows with
-        // the city: `CityScan`.
+        // the city: `CityScan`. The stranded-walker report shares it, O(stranded × log)
+        // (`ROAD-74`).
         Declaration {
             system: SimSystem::GridlockCheck,
             name: "gridlock check",
@@ -865,7 +866,10 @@ impl SimCore {
                             &self.transit_network,
                             &self.region_graph,
                             slot,
-                        )
+                        );
+                        // The stranded-walker report shares the slot (`ROAD-74`).
+                        self.agents
+                            .refresh_stranded_report(&self.transit_network, &self.region_graph);
                     });
                     report.gridlock_ms += check_start.elapsed().as_secs_f64() * 1000.0;
                 }

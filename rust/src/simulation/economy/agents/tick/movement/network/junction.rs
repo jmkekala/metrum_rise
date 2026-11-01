@@ -87,6 +87,14 @@ pub(super) unsafe fn handle_lane_end(
             graph.edge(lane.edge_id).start_node
         };
 
+        // A stranded walker waits at the end of its lane; its replan gate plans home on its
+        // backoff (`ROAD-74`).
+        if *s_tmode.get(i) == MODE_WALK && super::walk_home::is_stranded(i, slices) {
+            *slices.lane_d.get_mut(i) = lane.length;
+            *remaining_dist = 0.0;
+            return LaneEndAction::Break;
+        }
+
         let path_len = s_path.get(i).len();
         let access_plan_valid = (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0;
         let path_idx_before_lane_end = (*s_path_idx.get(i)).min(path_len);

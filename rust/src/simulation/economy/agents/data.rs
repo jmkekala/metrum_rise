@@ -9,7 +9,9 @@
 
 use super::household_members::HouseholdMembers;
 use super::inspection::{EndedInspection, InspectedAgent};
-use super::tick::{GridlockChecker, LaneBucketScratch, TripFailureLog, TripQueryScratch};
+use super::tick::{
+    GridlockChecker, LaneBucketScratch, StrandedWalkers, TripFailureLog, TripQueryScratch,
+};
 use crate::simulation::core::handles::{Handle, HandleTable};
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
@@ -255,6 +257,8 @@ pub struct AgentSystem {
     pub(super) inspected_failure: Option<String>,
     /// Trip failure flood control and collection buffer (`DEBUG-06`); never saved.
     pub(crate) trip_failures: TripFailureLog,
+    /// The stranded walkers and where they wait (`ROAD-74`); derived, rebuilt on load.
+    pub(crate) stranded: StrandedWalkers,
     /// One route-query scratch value per deterministic parallel movement slice.
     ///
     /// The slices are retained between ticks so route storage is prepared once per topology
@@ -326,6 +330,7 @@ impl AgentSystem {
             inspection_ended: None,
             inspected_failure: None,
             trip_failures: TripFailureLog::default(),
+            stranded: StrandedWalkers::default(),
             movement_query_shards: Vec::new(),
             movement_serial_query: TripQueryScratch::default(),
             gridlock: GridlockChecker::default(),

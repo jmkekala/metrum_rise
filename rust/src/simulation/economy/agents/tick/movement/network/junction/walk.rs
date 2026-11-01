@@ -5,8 +5,8 @@
 //! A walker reaching a node takes the connector into the sidewalk its route's lane witness
 //! ([`fill_walk_lanes`]) names for the next road, never any connector onto it. Where that
 //! connector no longer exists (a crossing removed under it), the walker waits at the mouth and
-//! plans again from its own lane through the normal planner, at once and then every
-//! `NETWORK_REPLAN_DELAY_S` while no route exists. It never leaves its lane to do so and no
+//! plans again from its own lane through the normal planner; with no route it gives the trip up
+//! for a walk home or is stranded (`walk_home`). It never leaves its lane to do so and no
 //! crossing is made for it.
 
 use super::super::super::super::super::{ACCESS_PLAN_VALID, MODE_WALK};
@@ -14,8 +14,8 @@ use super::super::super::super::planning::plan_network_replan;
 use super::super::super::super::slices::MovementSlices;
 use super::super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::super::super::walk_lanes::{NO_WITNESS, PASSED_HOP, WalkFrom, fill_walk_lanes};
-use super::super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::apply_network_replan;
+use super::super::walk_home::give_up_trip;
 use super::LaneEndAction;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -110,10 +110,9 @@ pub(in super::super) unsafe fn witness_lane(
 }
 
 /// Walker `i` stands at the end of road lane `lane_id` at `node`, where its witness has no step
-/// (`cause`): it waits at the mouth and plans again from its own lane, at once and then every
-/// `NETWORK_REPLAN_DELAY_S` while no route exists (each failed plan is one trip-failure record,
-/// and the witness is rebuilt from this lane after it). A new route is walked from the next tick.
-/// No teleport and no crossing of its own.
+/// (`cause`): it waits at the mouth and plans again from its own lane. A new route is walked from
+/// the next tick (one `cause` record, outcome `Replans`); with none it gives the trip up
+/// ([`give_up_trip`]). No teleport and no crossing of its own.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
@@ -157,18 +156,18 @@ pub(super) unsafe fn replan_from_lane(
                 apply_network_replan(i, replan, slices);
             }
             Err(failure) => {
-                record_failure(
+                give_up_trip(
                     i,
-                    FailureCause::NoRoute(failure),
-                    FailureOutcome::Waits {
-                        after_s: NETWORK_REPLAN_DELAY_S,
-                    },
+                    node,
+                    lane_id,
+                    failure,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
                     slices,
                 );
-                *slices.next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
-                // The witness is rebuilt from this lane at the next tick, so a crossing painted
-                // again lets the walker walk on along its route.
-                slices.walk_lanes.get_mut(i).clear();
             }
         }
         LaneEndAction::Break
