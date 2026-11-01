@@ -10995,6 +10995,22 @@ play-test of `dev` `dc979ad8` (dump C) found two bugs.
   lots keep at least 12.1 m above the roof; farms on a 1:8 and a 1:4 hill over a bore with 7-15 m
   of cover level their pads 1.9 m and 5.1 m above the roof. No pad cut into a shell was seen; with
   no earth cover a pad that levels below the hill over a bore at its minimum cover would.
+- *No frontage at a tunnel's entry* (the user's rule, 2026-11-01, from a screenshot of cells
+  lining a trench): a tunnel's approach span (`roadbed::is_tunnel_approach`, the span the roadbed
+  retains: a standard edge passing through into a tunnel's mouth; topology only, no terrain
+  height; allocation-free away from tunnels) fronts nothing. `RegionGraph::fronts_ground` is the
+  one predicate (live, standard, no approach) and `RegionGraph::takes_buildings` adds the
+  player's no-build flag; it replaces `Edge::takes_buildings` at every reader (parcels, lots,
+  explicit sites, compatibility expiry, attachment repair, road-side connections) and the
+  standard-class tests of cell generation, its continuity and curve history, the chunk warm-up
+  and lot frontage. The whole approach is excluded: the walled stretch ends where the graded
+  ground meets the road, a terrain product the graph and roadbed do not hold (reading it would put
+  terrain into every cell, lot and site check, the deferred lot plan's snapshots included). Cells
+  inside the trench were already blocked: the trench is the approach's road footprint. Tests
+  (failing at `5e5b91d5`, FRESH): `surface_over_tunnels::no_zoning_cells_line_a_tunnel_approach`
+  (18 cell hits along the trench before, 0 after; the continued road keeps its cells; painting
+  beside the trench finds no cell) and `no_building_fronts_a_tunnel_approach` (a farm beside the
+  trench was placed before, refused after; beside the continued road it is placed).
 - *Tests* (FRESH, each failing at `d4fc4818`): `surface_over_tunnels::a_farm_and_its_field_stand_over_a_tunnel`
   (placed, the pad bitwise the farm's without a tunnel, its field committed),
   `a_tunnel_is_drawn_under_a_field`, `cell_zoning::painted_cells_over_a_tunnel_take_lots`, and
