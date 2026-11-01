@@ -815,9 +815,9 @@ Ground-level eligible road spans generate cells; bridge and tunnel spans do not.
 A tunnel's bore lies in the hill: its buried pieces neither block nor clear the cells over it,
 generated or painted, and a tunnel drawn under painted cells is not refused for them (`ROAD-61`
 round R8h; before, a tunnel built under a zoned road removed the road's cells over the bore). The
-approach troughs are open cuts and keep what a road does. Lots still treat a bore as a road, so
-no lot, and no building, stands over one until the user decides how a pad keeps the bore's cover
-(`ROAD-98`).
+approach troughs are open cuts and keep what a road does. Lots and fields treat the land over a
+bore as land with no tunnel under it (the user's rule, 2026-11-01): a lot over a bore takes a
+building, a field may lie over a bore and a tunnel may be drawn under a field (`ROAD-98`).
 
 Frames normalize quarter-turn-equivalent direction vectors on a one-part-per-trillion component
 grid, then normalize the basis. Origin phase and footprint vertices use the road overlay's

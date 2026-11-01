@@ -10349,8 +10349,10 @@ whole section (round R8f, `section_cover_m`): on a lattice across the knot, perp
 stroke there (the chord of its neighbours), from one outer face of the lining's shell to the other
 (the roadbed's half width plus the lining's 0.5 m thickness) in equal steps of at most 4 m, both
 corners and the centre among them, `O(knots x (2 ceil(W / 4 m) + 1))`. The bore runs from the
-first knot with the bore clearance of cover (5 m, the portal opening's `PORTAL_CLEARANCE_M`, so
-the opening ends where the ground becomes the bore's crown) to the last; the stretches before and
+first knot with the bore clearance of cover (5 m, the *tunnel cover rule* `roadbed::TUNNEL_COVER_M`
+= `TUNNEL_LINING_HEIGHT_M` 4.5 + `TUNNEL_LINING_THICKNESS_M` 0.5 + `TUNNEL_EARTH_COVER_M` 0.0, its
+one definition since round R8h: the tunnel lies fully underground, its shell's roof at most at the
+ground) to the last; the stretches before and
 after it are open approaches. `tunnel_bore` is the one rule: quick validation
 (`validate_road_candidate_fast`, through `profile_validation`) and the exact plan
 (`validate_road_edit`) read the same knots, so they accept and refuse the same strokes. The
@@ -10378,8 +10380,9 @@ built like any edge's; a car drives through (below).
   junction inside the bore, a portal that is not a plain pass-through, or a buried end shared by
   more than one other road. Tunnel junctions are out of scope.
 - `tunnel_too_close` (round R8h): a grounded road over a bore whose deck would stand less than the
-  bore's cover (5 m) above the tunnel's deck over the bore's section; the tool shows the height
-  and the 5 m it needs. A road over a tunnel is otherwise a grade-separated crossing (below).
+  cover rule (5 m) and the road's own depth below its deck (`SKIRT_DEPTH_M`, 0.5 m), 5.5 m, above
+  the tunnel's deck over the bore's section, so no road geometry reaches the shell; the tool shows
+  the height and the 5.5 m it needs. A road over a tunnel is otherwise a grade-separated crossing (below).
 - `tunnel_under_water`: the stroke's corridor, bore or approach, overlaps visible water: its
   cover or a portal would be a water body (`validate_road_candidate_against_water`, hover,
   preview and commit alike).
@@ -10962,7 +10965,8 @@ play-test of `dev` `dc979ad8` (dump C) found two bugs.
   The *clearance rule* (`tunnel::deck_over_tunnels_m`): over every lattice point of a crossed
   bore's section (R8f's full-width lattice, out to the shell's outer faces) that the road's
   footprint covers (its profile within its roadbed half width), the road's deck stands at least
-  the bore's cover, `TUNNEL_COVER_M` (5 m), above the tunnel's deck; otherwise `tunnel_too_close`.
+  `ROAD_OVER_TUNNEL_M` above the tunnel's deck, the cover rule (5 m) and the road's depth below its
+  deck (the skirt, 0.5 m), 5.5 m (the user's rule, 2026-11-01); otherwise `tunnel_too_close`.
   Beside the deck the road's graded cut rises from it at 1:2, steeper than any road grade, so the
   deck bounds the cut over the section. A portal row's knot is left to the trench rules
   (`junction_in_trench`); the next knot, 4 m in, is checked. The hover check and the exact plan
@@ -10976,8 +10980,27 @@ play-test of `dev` `dc979ad8` (dump C) found two bugs.
 - *Zoning above a bore* ([`zoning.md`](zoning.md)): the cell blocker and the painted-cell checks
   (road edit and load) read exposed pieces only, so a tunnel neither clears, blocks nor refuses
   the cells over its bore; on dump C all 469 cell candidates over tunnel 6 beside the long road
-  were missing before and are present after. The approach troughs keep what a road does. Lots
-  still treat a bore as a road (decision pending, see the round's report).
+  were missing before and are present after. The approach troughs keep what a road does.
+- *Surface use over a bore* (the user's rule, 2026-11-01; [`zoning.md`](zoning.md),
+  [`building_allocator.md`](building_allocator.md)): the land over a bore is used as land with no
+  tunnel under it. Lots (`footprint_blocked`), explicit sites (`validate_explicit_site_road_overlap`
+  skips tunnel edges), fields (placement and `FieldClearanceIndex::overlaps_road_piece`) and a
+  site's road probes (`SiteRoads`) read only roads on or above the ground; the building debug
+  probes and the road tool's cursor fallback read `exposed_height_at`. Nothing keeps a pad's cut
+  out of the bore's cover. Measured (FRESH, the graded ground on every bore knot's section lattice
+  against the shell's roof): the user's dumps hold no buildings; the ground stands below the roof
+  at 18 of 1,071 lattice points on dump A (at most 0.88 m) and 43 of 5,584 on dump B (at most
+  2.17 m), all on tunnels committed before R8f's full-width cover check, none under a lot; dump C
+  0 of 620. With a farm and a coal mine over tunnel 6 on dump C, 93 lattice points under their
+  lots keep at least 12.1 m above the roof; farms on a 1:8 and a 1:4 hill over a bore with 7-15 m
+  of cover level their pads 1.9 m and 5.1 m above the roof. No pad cut into a shell was seen; with
+  no earth cover a pad that levels below the hill over a bore at its minimum cover would.
+- *Tests* (FRESH, each failing at `d4fc4818`): `surface_over_tunnels::a_farm_and_its_field_stand_over_a_tunnel`
+  (placed, the pad bitwise the farm's without a tunnel, its field committed),
+  `a_tunnel_is_drawn_under_a_field`, `cell_zoning::painted_cells_over_a_tunnel_take_lots`, and
+  `road_over_tunnels::a_road_too_close_above_a_tunnel_is_refused` at 3 m and 5.2 m. The cover
+  rule's constant is bitwise: R8's probe hashes and R8's products on tunnels through the 1:2 and
+  1:4 hills equal `dc979ad8`'s.
 - *Tests* (`nodes::sim::core::tests::road_over_tunnels`, all failing at `dc979ad8`, FRESH):
   `a_road_over_a_tunnel_crosses_it_grade_separated` (hover = preview = commit, the preview's
   pieces equal a fresh commit's bitwise, the tunnel edge and its nodes intact, undo restores every

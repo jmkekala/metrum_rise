@@ -146,6 +146,14 @@ building footprint need not contain the logical lot center.
 In the live runtime, a build site is one frontage-attached roadside candidate footprint. It is not a
 free-floating parcel.
 
+**Over a tunnel** (`ROAD-61` round R8h, the user's rule of 2026-11-01): the land over a tunnel's
+bore is used exactly as land with no tunnel under it. Lots, explicit (service and industry) sites
+and fields stand over a bore; a site's road probes read only roads on or above the ground
+(`SiteRoads::sample_visible_height` reads `exposed_height_at`, and the nearest-road probe skips
+tunnel edges), so a pad never takes a buried tunnel deck as its road height; explicit placement's
+road-corridor overlap skips tunnel edges. Nothing keeps a pad's cut out of the bore's cover; the
+round measured how often it happens (`roads.md`, R8h).
+
 Baseline build-site identity:
 
 - `edge_idx`: attached road edge
