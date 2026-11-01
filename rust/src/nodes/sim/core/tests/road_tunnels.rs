@@ -823,7 +823,8 @@ fn the_inspector_reports_a_car_in_a_tunnel_on_its_lane() {
 // `ROAD-61` (checked by round R2b): a building fronts only a grounded road. Zoning cells already
 // read standard edges only; a parcel the player places beside a tunnel's hill or a bridge
 // attached to the structure's span, so its lot, driveway and entrance ran into the bore or off
-// the deck.
+// the deck. Since round R8h a tunnel's approach fronts nothing either (the user's decision of
+// 2026-11-01: no frontage along a tunnel's entry); R2b's control beside it attached there.
 #[test]
 fn no_parcel_fronts_a_tunnel_or_a_bridge() {
     use crate::simulation::zoning::parcels::ParcelPlacementError;
@@ -838,12 +839,14 @@ fn no_parcel_fronts_a_tunnel_or_a_bridge() {
             })
     };
     let mut tunnel = gentle_tunnel_core();
-    // Beside the bore on the hill, and beside the western approach for the control.
-    assert_eq!(
-        place(&mut tunnel, (0.0, 14.0)),
-        Err(ParcelPlacementError::NoRoadAttachment)
-    );
-    assert_eq!(place(&mut tunnel, (-90.0, 14.0)), Ok(EdgeClass::Standard));
+    // Beside the bore on the hill, and beside the western approach.
+    for at in [(0.0, 14.0), (-90.0, 14.0)] {
+        assert_eq!(
+            place(&mut tunnel, at),
+            Err(ParcelPlacementError::NoRoadAttachment),
+            "{at:?}"
+        );
+    }
     let mut bridge = flat_core();
     let result = run_stroke(
         &mut bridge,
