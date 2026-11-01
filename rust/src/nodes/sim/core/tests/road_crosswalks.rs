@@ -206,3 +206,84 @@ fn an_arm_that_cannot_cross_is_refused_by_preview_and_commit_alike() {
     assert!(core.region_graph.node(end).crosswalk_overrides.is_empty());
 }
 
+#[test]
+fn a_split_through_an_authored_arm_keeps_its_crossing_off() {
+    let (mut core, node, side, west) = t_junction();
+    assert!(core.set_crosswalk_override_internal(node, west as i32, false));
+    let before = products(&mut core);
+    let overrides = core.region_graph.node(node).crosswalk_overrides.clone();
+    // A game commit, with its undo record.
+    core.benchmark_mode = false;
+    let undo_depth = core.undo_stack.len();
+    // A road across the west arm splits it; the half at the T is a new edge whose start is the
+    // new junction, so the T's override moves onto it.
+    assert!(
+        core.add_road_internal(
+            vec![
+                Vector3::new(-50.0, 0.0, -60.0),
+                Vector3::new(-50.0, 0.0, 60.0)
+            ],
+            1,
+            1
+        )
+        .committed
+    );
+    core.precompute_road_mesh_data();
+    let arm = arm_towards(&core, node, Vector3::new(-100.0, 0.0, 0.0));
+    assert_ne!(arm, west, "the T's west arm is the split's new half");
+    assert_eq!(
+        core.region_graph.node(node).crosswalk_overrides.get(&arm),
+        Some(&false)
+    );
+    assert!(!core.has_crosswalk_internal(node, arm as i32));
+    assert!(core.has_crosswalk_internal(node, side as i32));
+    // Every override names an arm of its node; the new junction crosses by default.
+    let arms = live_arms(&core, node);
+    assert!(
+        core.region_graph
+            .node(node)
+            .crosswalk_overrides
+            .keys()
+            .all(|edge| arms.contains(edge))
+    );
+    let new = (0..core.region_graph.node_count() as u32)
+        .find(|&n| {
+            live_arms(&core, n).len() == 4
+                && core.region_graph.node(n).pos.distance_to(Vector3::new(-50.0, 0.0, 0.0)) < 1.0
+        })
+        .expect("the new junction");
+    assert!(core.region_graph.node(new).crosswalk_overrides.is_empty());
+    for arm in live_arms(&core, new) {
+        assert!(core.has_crosswalk_internal(new, arm as i32), "arm {arm}");
+    }
+    // Undoing the road puts the override back on the original arm.
+    assert_eq!(core.undo_stack.len(), undo_depth + 1);
+    assert!(core.undo_action_internal());
+    assert_eq!(core.region_graph.node(node).crosswalk_overrides, overrides);
+    assert_eq!(products(&mut core), before);
+}
+
+#[test]
+fn a_road_removed_and_drawn_again_gets_a_new_arm_with_a_zebra() {
+    let (mut core, node, side, _) = t_junction();
+    assert!(core.set_crosswalk_override_internal(node, side as i32, false));
+    let off = products(&mut core);
+    assert!(core.bulldoze_road_edge_for_test(side));
+    core.precompute_road_mesh_data();
+    // Undo brings the arm back with its crossing still off.
+    assert!(core.undo_action_internal());
+    assert_eq!(products(&mut core), off);
+    assert!(!core.has_crosswalk_internal(node, side as i32));
+    // Removed and drawn again, it is a new arm: it crosses by default (R6-a).
+    assert!(core.bulldoze_road_edge_for_test(side));
+    assert!(
+        core.add_road_internal(vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 100.0)], 1, 1)
+            .committed
+    );
+    core.precompute_road_mesh_data();
+    let node = core.region_graph.get_valid_node(node);
+    let again = arm_towards(&core, node, Vector3::new(0.0, 0.0, 100.0));
+    assert_ne!(again, side);
+    assert!(core.has_crosswalk_internal(node, again as i32));
+}
+

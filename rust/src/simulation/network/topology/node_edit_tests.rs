@@ -147,9 +147,12 @@ fn node_merge_replaces_its_original_spatial_entry() {
         1,
         EdgeClass::Standard,
     ));
+    // The removed node's arm keeps its crossing at the survivor (`ROAD-74`).
+    graph.set_crosswalk_override(remove, edge_id, false);
 
     graph.unite_nodes(keep, remove);
 
+    assert_eq!(graph.node(keep).crosswalk_overrides.get(&edge_id), Some(&false));
     assert_eq!(graph.node_adjacency(keep), &[edge_id]);
     assert!(graph.node_adjacency(remove).is_empty());
     assert_eq!(
