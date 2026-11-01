@@ -824,7 +824,7 @@ frontage. No cell, lot, parcel, driveway or entrance fronts it (`RegionGraph::fr
 read by cell generation, continuity and curve history, lot derivation and attachment, and
 `RegionGraph::takes_buildings` for parcels, sites and connections), so painting beside the
 trench finds no cell; the road the approach continues keeps its frontage. The whole approach
-span is excluded, not only its walled stretch: where the walls end is a graded-terrain product
+span is excluded, not only its walled stretch (the user's decision, 2026-11-01): where the walls end is a graded-terrain product
 (base terrain, other roads' cuts, pads) that the graph and roadbed do not hold.
 
 Frames normalize quarter-turn-equivalent direction vectors on a one-part-per-trillion component

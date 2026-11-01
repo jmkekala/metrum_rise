@@ -11003,7 +11003,7 @@ play-test of `dev` `dc979ad8` (dump C) found two bugs.
   player's no-build flag; it replaces `Edge::takes_buildings` at every reader (parcels, lots,
   explicit sites, compatibility expiry, attachment repair, road-side connections) and the
   standard-class tests of cell generation, its continuity and curve history, the chunk warm-up
-  and lot frontage. The whole approach is excluded: the walled stretch ends where the graded
+  and lot frontage. The whole approach is excluded (the user's decision, 2026-11-01): the walled stretch ends where the graded
   ground meets the road, a terrain product the graph and roadbed do not hold (reading it would put
   terrain into every cell, lot and site check, the deferred lot plan's snapshots included). Cells
   inside the trench were already blocked: the trench is the approach's road footprint. Tests
