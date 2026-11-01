@@ -17,14 +17,18 @@ use crate::simulation::terrain::rect_clip::{ClipVertex, clip_triangle_to_rect};
 use crate::simulation::terrain::{render_frame_centre, render_frame_local};
 use godot::prelude::{Vector2, Vector3, Vector4};
 
-/// One triangle in world metres with its per-vertex attributes.
-pub(super) struct WorldTriangle {
-    pub(super) points: [RoadVec3; 3],
-    pub(super) uvs: [Vector2; 3],
-    pub(super) paint: [Vector4; 3],
+/// One triangle in world metres with its per-vertex attributes, borrowed from the caller.
+// Borrowed, not copied (`ROAD-61` round R8c): a by-value copy put the points on the router's
+// stack in 16-byte stores, and the min/max below then read them back in 16-byte loads that
+// straddled two of those stores, so each triangle waited out a failed store-to-load forward
+// (+0.04 ms preview payload). Reading the caller's arrays leaves no fresh store to forward from.
+pub(super) struct WorldTriangle<'a> {
+    pub(super) points: &'a [RoadVec3; 3],
+    pub(super) uvs: &'a [Vector2; 3],
+    pub(super) paint: &'a [Vector4; 3],
 }
 
-impl WorldTriangle {
+impl WorldTriangle<'_> {
     // Attributes at a clipped vertex; a triangle vertex keeps its own exactly.
     fn uv(&self, vertex: &ClipVertex) -> Vector2 {
         let w = vertex.weights.map(|weight| weight as f32);
@@ -65,7 +69,7 @@ impl NetworkMeshChunkPartition {
     #[inline]
     pub(super) fn route(
         &mut self,
-        triangle: &WorldTriangle,
+        triangle: &WorldTriangle<'_>,
         mut emit: impl FnMut(&mut NetworkMeshData, [Vector3; 3], [Vector2; 3], [Vector4; 3]),
     ) {
         let (origin_x, origin_z) = (self.chunk_origin_x_m, self.chunk_origin_z_m);
@@ -92,13 +96,13 @@ impl NetworkMeshChunkPartition {
                     render_frame_local(point.z, centre_z),
                 )
             });
-            let [a, b, c] = triangle.points;
+            let [a, b, c] = *triangle.points;
             if (b - a).cross(c - a) != RoadVec3::ZERO {
                 emit(
                     self.chunks.entry(chunk).or_default(),
                     local,
-                    triangle.uvs,
-                    triangle.paint,
+                    *triangle.uvs,
+                    *triangle.paint,
                 );
             }
             return;
@@ -124,7 +128,7 @@ impl NetworkMeshChunkPartition {
                     self.axis_line(kz + 1, origin_z),
                 ];
                 let mesh = self.chunks.entry(chunk).or_default();
-                clip_triangle_to_rect(triangle.points, rect, |face| {
+                clip_triangle_to_rect(*triangle.points, rect, |face| {
                     emit(
                         mesh,
                         face.map(|vertex| local(&vertex)),

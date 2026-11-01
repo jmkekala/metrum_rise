@@ -595,9 +595,9 @@ fn push_triangle_to_layer_with_crossing(
     if let Some(partition) = mesh.chunk_partition.as_mut() {
         let owner = mesh.current_owner;
         let triangle = chunks::WorldTriangle {
-            points: vertices,
-            uvs,
-            paint: crossing,
+            points: &vertices,
+            uvs: &uvs,
+            paint: &crossing,
         };
         partition.route(&triangle, |chunk_mesh, local, uvs, paint| {
             chunk_mesh.current_owner = owner;
