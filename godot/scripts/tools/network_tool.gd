@@ -633,8 +633,31 @@ func _build_road_chunk_instance(
 		instance.free()
 		return null
 	instance.name = "RoadChunk_%d_%d" % [key.x, key.y]
+	_add_lining_shadow(instance, chunk_data)
 	_place_road_chunk_instance(instance, key, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m)
 	return instance
+
+# A tunnel's lining casts the sun's shadow into its bore (ROAD-61): road chunks only receive
+# shadows, so a chunk with concrete gets a shadow-only child holding that layer again, whose
+# material keeps the lining's faces (colour alpha 0) and discards a bridge's.
+func _add_lining_shadow(instance: MeshInstance3D, chunk_data: Dictionary) -> void:
+	var vertices: PackedVector3Array = chunk_data.get("concrete_vertices", PackedVector3Array())
+	if vertices.is_empty():
+		return
+	# The layer's arrays as _fill_road_chunk_mesh uploaded them, already checked there.
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = chunk_data["concrete_normals"]
+	arrays[Mesh.ARRAY_COLOR] = chunk_data["concrete_colors"]
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, WorldMaterials.tunnel_lining_shadow_material())
+	var caster := MeshInstance3D.new()
+	caster.name = "LiningShadow"
+	caster.mesh = mesh
+	caster.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+	instance.add_child(caster)
 
 # Detached chunk node with an empty ArrayMesh; callers own it until it enters the tree.
 func _new_road_chunk_node() -> MeshInstance3D:

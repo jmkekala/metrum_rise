@@ -39,6 +39,7 @@ const ROAD_AGGREGATE_DETAIL := "res://assets/textures/road/finnish/aggregate_pac
 const ROAD_PREVIEW_SHADER := "res://scripts/shaders/road_preview.gdshader"
 const ROAD_FACE_SHADER := "res://scripts/shaders/road_sidewalk_face.gdshader"
 const CONCRETE_SHADER := "res://assets/materials/concrete.gdshader"
+const TUNNEL_LINING_SHADOW_SHADER := "res://assets/materials/tunnel_lining_shadow.gdshader"
 const SITE_SURFACE_SHADER := "res://scripts/shaders/site_surface.gdshader"
 const SITE_GROUND_SHADER := "res://scripts/shaders/site_ground.gdshader"
 const TERRAIN_SHADER := "res://assets/materials/terrain.gdshader"
@@ -53,6 +54,7 @@ static var _road_sidewalk_material: ShaderMaterial
 static var _road_sidewalk_face_material: ShaderMaterial
 static var _road_skirt_material: ShaderMaterial
 static var _road_concrete_material: ShaderMaterial
+static var _tunnel_lining_shadow_material: ShaderMaterial
 static var _site_ground_material: ShaderMaterial
 static var _flat_terrain_material: ShaderMaterial
 static var _editor_ground_material: ShaderMaterial
@@ -137,6 +139,14 @@ static func road_concrete_material() -> ShaderMaterial:
 		)
 		_road_concrete_material.set_shader_parameter("uv_scale", 0.1)
 	return _road_concrete_material
+
+# The shadow-only material of a road chunk's concrete: casts the tunnel lining's faces, discards a
+# bridge's (`ROAD-61`).
+static func tunnel_lining_shadow_material() -> ShaderMaterial:
+	if _tunnel_lining_shadow_material == null:
+		_tunnel_lining_shadow_material = ShaderMaterial.new()
+		_tunnel_lining_shadow_material.shader = _load_shader(TUNNEL_LINING_SHADOW_SHADER)
+	return _tunnel_lining_shadow_material
 
 static func site_surface_material(material: String) -> ShaderMaterial:
 	match material:

@@ -9,6 +9,8 @@ uniform float uv_scale = 0.1;
 varying vec3 world_pos;
 varying vec3 world_normal;
 uniform float specular = 0.5;
+// The share of the ambient light inside a tunnel's lining.
+uniform float lining_ambient = 0.6;
 
 // Godot's lighting with the cloud shadow on the sun; reads `specular`.
 #include "res://scripts/shaders/standard_light.gdshaderinc"
@@ -45,10 +47,17 @@ void fragment() {
 	NORMAL = normalize(NORMAL);
 	ROUGHNESS = roughness;
 	METALLIC = 0.0;
+	// A tunnel lining (colour alpha 0, ROAD-61) sees no sky: no sun reaches it (below), and the
+	// sky's reflection and part of the ambient go with it. Bridges keep the defaults.
+	float lining = 1.0 - COLOR.a;
+	SPECULAR = mix(0.5, 0.0, lining);
+	AO = mix(1.0, lining_ambient, lining);
 	
 	// Fix B_BRIDGE4: Add a small depth bias to prevent Z-fighting with deck edges
 	DEPTH = FRAGCOORD.z - 0.0001;
-	standard_light_cloud_sun = standard_light_cloud(VERTEX, INV_VIEW_MATRIX);
+	// A lining's sun share is none: its own shadow, exact where the shadow map leaks at its
+	// corners (COLOR.a is 1 elsewhere).
+	standard_light_cloud_sun = standard_light_cloud(VERTEX, INV_VIEW_MATRIX) * COLOR.a;
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
 		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 }

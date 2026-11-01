@@ -4,8 +4,12 @@
 ## toggle previews and commits a straight stroke between two ends outside the hill as a tunnel
 ## between two approaches, the T key flips the toggle and its checkbox, a stroke that never gets
 ## the bore's cover is refused with its reason, the surface over the bore stays the hill, and a
-## debug car drives in at one portal and out at the other, reported inside the bore. METRUM_ROAD61_SCREENSHOT, when set on a rendered run, saves the west portal
-## (METRUM_ROAD61_VIEW picks another view).
+## debug car drives in at one portal and out at the other, reported inside the bore.
+## METRUM_ROAD61_SCREENSHOT, when set on a rendered run, saves the west portal
+## (METRUM_ROAD61_VIEW picks another view, METRUM_ROAD61_INSIDE=1 lets the camera into the bore,
+## METRUM_ROAD61_DRIVE_S how long the car drives first). METRUM_ROAD61_SKY_TEST=1 on a rendered
+## run keys the sky to one colour and counts it from the middle of the bore looking east: no sky
+## pixel may show outside the far mouth's opening (`ROAD-61` round R8, the closed lining).
 extends SceneTree
 
 const TIMEOUT_MS := 60000
@@ -18,6 +22,9 @@ var _main: Node
 var _simulation: Node
 # The hill's lowest height over the middle 100 m of the bore, read before the road exists.
 var _bore_cover_ground := 0.0
+# The east portal row's x (the last 4 m knot with the bore's 5 m of cover) and the deck height.
+var _east_portal_x := 0.0
+var _deck_y := 0.0
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -69,6 +76,13 @@ func _run() -> void:
 
 	_bore_cover_ground = minf(_ground(Vector2(-50.0, 0.0)).y, _ground(Vector2(50.0, 0.0)).y)
 	var points := PackedVector3Array([_ground(WEST), _ground(EAST)])
+	_deck_y = points[0].y
+	# The stroke's knots lie 4 m apart from its west end; the bore ends at the last covered one.
+	for knot in 76:
+		var x := WEST.x + 4.0 * knot
+		if _ground(Vector2(x, 0.0)).y >= _deck_y + 5.0:
+			_east_portal_x = x
+	print("hill profile at z = 0: %s" % [range(-100, 1, 10).map(func(x): return "%d:%.1f" % [x, _ground(Vector2(x, 0.0)).y])])
 	var preview := _preview(tool, points)
 	_expect(preview.get("is_valid", false), "the tunnel stroke must preview: %s" % preview.get("invalid_reason", "missing"))
 	_expect(preview.get("tunnel", false), "the preview must carry the tunnel intent")
@@ -95,7 +109,9 @@ func _run() -> void:
 	_expect(not tool.tunnel_enabled, "T must turn the tunnel toggle off")
 
 	var screenshot := OS.get_environment("METRUM_ROAD61_SCREENSHOT")
-	if screenshot != "":
+	if OS.get_environment("METRUM_ROAD61_SKY_TEST") == "1":
+		await _count_sky(screenshot)
+	elif screenshot != "":
 		await _capture(screenshot)
 	_finish()
 
@@ -164,14 +180,67 @@ func _capture(path: String) -> void:
 	var custom := OS.get_environment("METRUM_ROAD61_VIEW").split_floats(",")
 	if custom.size() == 6:
 		view = PackedFloat32Array(Array(custom) + [0.0])
+	if OS.get_environment("METRUM_ROAD61_INSIDE") == "1":
+		camera.terrain_clearance_enabled = false
 	camera.set_view_state(view)
 	var car: int = _simulation.spawn_debug_car(_ground(WEST), _ground(EAST))
 	_simulation.set_simulation_speed(1.0)
-	await create_timer(6.0).timeout
+	var drive := OS.get_environment("METRUM_ROAD61_DRIVE_S")
+	await create_timer(float(drive) if drive != "" else 6.0).timeout
 	_simulation.set_simulation_speed(0.0)
 	await create_timer(4.0).timeout
 	await RenderingServer.frame_post_draw
 	_expect(car >= 0 and root.get_texture().get_image().save_png(path) == OK, "the screenshot must save")
+
+# From the middle of the bore looking east along it, with the sky drawn in one key colour: no key
+# pixel outside the far mouth's opening (its lining's mouth, grown by half a metre and 2 px).
+func _count_sky(path: String) -> void:
+	var camera: Camera3D = root.get_viewport().get_camera_3d()
+	camera.terrain_clearance_enabled = false
+	# The camera's own environment replaces the world's: no sky shader, weather compositor,
+	# distance fog or per-frame palette paints over the key colour.
+	var environment := Environment.new()
+	environment.background_mode = Environment.BG_COLOR
+	environment.background_color = Color(1.0, 0.0, 1.0)
+	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	environment.ambient_light_color = Color(0.5, 0.5, 0.5)
+	environment.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
+	camera.environment = environment
+	# The control: from the west approach, looking up the hill, the key shows.
+	camera.set_view_state(PackedFloat32Array([-120.0, _deck_y + 2.0, 0.0, -PI / 2.0, 0.25, 4.0, 0.0]))
+	await create_timer(2.0).timeout
+	await RenderingServer.frame_post_draw
+	var control := root.get_texture().get_image()
+	if path != "":
+		control.save_png(path.get_basename() + "-control.png")
+	var outside := _key_pixels(control, Rect2())
+	_expect(outside.x > 1000, "the keyed sky must show outside the tunnel, got %d pixels" % outside.x)
+	camera.set_view_state(PackedFloat32Array([0.0, _deck_y + 2.0, 0.0, -PI / 2.0, -0.02, 4.0, 0.0]))
+	await create_timer(4.0).timeout
+	await RenderingServer.frame_post_draw
+	var image := root.get_texture().get_image()
+	if path != "":
+		image.save_png(path)
+	var corners := [Vector3(_east_portal_x, _deck_y - 0.5, -5.5), Vector3(_east_portal_x, _deck_y - 0.5, 5.5), Vector3(_east_portal_x, _deck_y + 5.0, -5.5), Vector3(_east_portal_x, _deck_y + 5.0, 5.5)]
+	var opening := Rect2(camera.unproject_position(corners[0]), Vector2.ZERO)
+	for corner in corners:
+		opening = opening.expand(camera.unproject_position(corner))
+	var counts := _key_pixels(image, opening.grow(2.0))
+	print("sky pixels: %d outside the tunnel (control), %d from inside the bore outside the far mouth %s, %d through it" % [outside.x, counts.x, opening, counts.y])
+	_expect(counts.x == 0, "no sky may show through the lining: %d key pixels outside the far mouth" % counts.x)
+
+# Key-coloured pixels of `image`: x outside `opening`, y inside it.
+func _key_pixels(image: Image, opening: Rect2) -> Vector2i:
+	var counts := Vector2i.ZERO
+	for y in image.get_height():
+		for x in image.get_width():
+			var pixel := image.get_pixel(x, y)
+			if pixel.r > 0.8 and pixel.g < 0.2 and pixel.b > 0.8:
+				if opening.has_point(Vector2(x, y)):
+					counts.y += 1
+				else:
+					counts.x += 1
+	return counts
 
 func _finish() -> void:
 	print("Road tunnel tests: %d failures" % _failures)

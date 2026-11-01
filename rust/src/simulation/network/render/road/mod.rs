@@ -742,6 +742,13 @@ pub(super) fn concrete_color() -> Color {
     Color::from_rgba(0.75, 0.75, 0.75, 1.0)
 }
 
+// A tunnel lining's concrete (`ROAD-61`): the concrete's colour, with alpha 0 marking the faces
+// the lining's shadow-only caster keeps (`tunnel_lining_shadow.gdshader`); the concrete shader
+// reads only the colour.
+pub(super) fn lining_color() -> Color {
+    Color::from_rgba(0.75, 0.75, 0.75, 0.0)
+}
+
 pub(super) fn marking_dash_color() -> Color {
     Color::from_rgba(1.0, 1.0, 1.0, 1.0)
 }
