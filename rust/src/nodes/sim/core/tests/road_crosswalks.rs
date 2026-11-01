@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+//! `ROAD-74`: the per-arm crossing toggle on a city. What turning a zebra off removes and turning
+//! it on restores, the preview being the commit, undo, overrides carried through a split and a
+//! road removed and drawn again, and the overrides surviving a save file.
+
+use super::*;
+
+// A T junction: a through road from (-100, 0) to (100, 0) and a side road from its middle to
+// (0, 100). Returns the core, the T node, the side road's edge and the west arm's edge.
+fn t_junction() -> (SimCore, u32, usize, usize) {
+    let mut core = test_core();
+    core.treasury.balance = 1.0e7;
+    for points in [
+        vec![
+            Vector3::new(-100.0, 0.0, 0.0),
+            Vector3::new(100.0, 0.0, 0.0),
+        ],
+        vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 100.0)],
+    ] {
+        assert!(core.add_road_internal(points, 1, 1).committed);
+    }
+    core.precompute_road_mesh_data();
+    let node = (0..core.region_graph.node_count() as u32)
+        .find(|&node| live_arms(&core, node).len() == 3)
+        .expect("T junction");
+    let side = arm_towards(&core, node, Vector3::new(0.0, 0.0, 100.0));
+    let west = arm_towards(&core, node, Vector3::new(-100.0, 0.0, 0.0));
+    (core, node, side, west)
+}
+
+fn live_arms(core: &SimCore, node: u32) -> Vec<usize> {
+    let graph = &core.region_graph;
+    if graph.get_valid_node(node) != node || node as usize >= graph.node_adjacency_count() {
+        return Vec::new();
+    }
+    graph
+        .node_adjacency(node)
+        .iter()
+        .copied()
+        .filter(|&edge| !graph.edge(edge).deleted)
+        .collect()
+}
+
+// The arm of `node` whose far end lies nearest `towards`.
+fn arm_towards(core: &SimCore, node: u32, towards: Vector3) -> usize {
+    let graph = &core.region_graph;
+    let far = |edge: usize| {
+        let edge = graph.edge(edge);
+        let points = &edge.geometry;
+        let point = if graph.get_valid_node(edge.start_node) == node {
+            points[points.len() - 1]
+        } else {
+            points[0]
+        };
+        point.distance_to(towards)
+    };
+    live_arms(core, node)
+        .into_iter()
+        .min_by(|&a, &b| far(a).total_cmp(&far(b)))
+        .unwrap()
+}
+
+// Everything a crossing decides, independent of lane ids (an incremental lane rebuild renumbers
+// them): the road payload (paint, signs, lights, pavement), every edge's clips and profile, and
+// each live lane with its crossing and its successors' first points.
+fn products(core: &mut SimCore) -> String {
+    core.precompute_road_mesh_data();
+    assert!(core.transit_network.roadbed.failed_nodes().is_empty());
+    let mesh = core
+        .transit_network
+        .try_generate_mesh_data(&core.region_graph, &core.heightmap)
+        .expect("current roadbed");
+    let mut out = format!(
+        "{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n",
+        mesh.road_crossings,
+        mesh.road_signs,
+        mesh.street_lights,
+        mesh.marking_vertices,
+        mesh.road_vertices,
+        mesh.sidewalk_vertices
+    );
+    for edge in core.region_graph.edges().iter().filter(|edge| !edge.deleted) {
+        out += &format!(
+            "{} {} {:?}\n",
+            edge.start_clip.to_bits(),
+            edge.end_clip.to_bits(),
+            edge.physical_geometry
+        );
+    }
+    let lanes = &core.transit_network.lane_system;
+    let mut live: Vec<String> = lanes
+        .edge_lanes
+        .values()
+        .chain(lanes.node_lanes.values())
+        .flatten()
+        .map(|&id| {
+            let lane = &lanes.lanes[id];
+            let mut next: Vec<String> = lane
+                .next_lanes
+                .iter()
+                .map(|&next| format!("{:?}", lanes.lanes[next].geometry.first()))
+                .collect();
+            next.sort();
+            format!(
+                "{} {:?} {:?} {:?} {:?}",
+                lane.edge_id,
+                lane.lane_type,
+                lane.geometry,
+                lanes.crosswalk(id),
+                next
+            )
+        })
+        .collect();
+    live.sort();
+    out + &live.join("\n")
+}
+
+fn crossing_lanes(core: &SimCore, node: u32, edge: usize) -> usize {
+    let lanes = &core.transit_network.lane_system;
+    lanes.node_lanes.get(&(node as usize)).map_or(0, |ids| {
+        ids.iter()
+            .filter(|&&id| lanes.crosswalk(id).is_some_and(|c| c.edge_id == edge))
+            .count()
+    })
+}
+
+fn crossing_signs(core: &mut SimCore) -> usize {
+    core.precompute_road_mesh_data();
+    let mesh = core
+        .transit_network
+        .try_generate_mesh_data(&core.region_graph, &core.heightmap)
+        .expect("current roadbed");
+    format!("{:?}", mesh.road_signs).matches("Crossing").count()
+}
+
+#[test]
+fn a_zebra_turned_off_removes_its_crossing_and_on_restores_it() {
+    let (mut core, node, side, _) = t_junction();
+    let before = products(&mut core);
+    let signs_before = crossing_signs(&mut core);
+    assert!(core.can_toggle_crosswalk_internal(node, side as i32));
+    assert!(core.has_crosswalk_internal(node, side as i32));
+    assert_eq!(crossing_lanes(&core, node, side), 2, "both walking directions");
+    let undo_depth = core.undo_stack.len();
+
+    // The preview is the commit's check and changes nothing.
+    assert!(
+        core.preview_crosswalk_override_internal(node, side as i32, false)
+            .is_none()
+    );
+    assert_eq!(products(&mut core), before, "a preview leaves the city as it was");
+    assert_eq!(core.undo_stack.len(), undo_depth);
+
+    assert!(core.set_crosswalk_override_internal(node, side as i32, false));
+    let off = products(&mut core);
+    assert!(!core.has_crosswalk_internal(node, side as i32));
+    assert_eq!(crossing_lanes(&core, node, side), 0, "no crossing lanes");
+    assert!(
+        crossing_signs(&mut core) < signs_before,
+        "the crossing's own signs go with it"
+    );
+    assert_ne!(off, before);
+    // The other arms keep theirs.
+    for arm in live_arms(&core, node).into_iter().filter(|&arm| arm != side) {
+        assert!(core.has_crosswalk_internal(node, arm as i32));
+    }
+
+    assert!(core.set_crosswalk_override_internal(node, side as i32, true));
+    assert_eq!(products(&mut core), before, "on restores every product");
+    assert_eq!(crossing_signs(&mut core), signs_before);
+
+    // Undo steps back through both toggles to the city without an override.
+    assert!(core.undo_action_internal());
+    assert_eq!(products(&mut core), off);
+    assert!(core.undo_action_internal());
+    assert_eq!(products(&mut core), before);
+    assert!(core.region_graph.node(node).crosswalk_overrides.is_empty());
+    assert_eq!(core.undo_stack.len(), undo_depth);
+}
+
+#[test]
+fn an_arm_that_cannot_cross_is_refused_by_preview_and_commit_alike() {
+    let (mut core, _, side, _) = t_junction();
+    // The side road's far end is a dead end: its sidewalk wraps the cap, nothing crosses.
+    let graph = &core.region_graph;
+    let end = graph.get_valid_node(graph.edge(side).end_node);
+    let end = if live_arms(&core, end).len() == 1 {
+        end
+    } else {
+        graph.get_valid_node(graph.edge(side).start_node)
+    };
+    let before = products(&mut core);
+    let undo_depth = core.undo_stack.len();
+    assert!(!core.can_toggle_crosswalk_internal(end, side as i32));
+    let refusal = core.preview_crosswalk_override_internal(end, side as i32, true);
+    assert_eq!(
+        refusal.map(|refusal| refusal.reason).as_deref(),
+        Some("crosswalk_arm_not_eligible")
+    );
+    assert!(!core.set_crosswalk_override_internal(end, side as i32, true));
+    assert!(!core.set_crosswalk_override_internal(end, -1, true));
+    assert!(!core.set_crosswalk_override_internal(u32::MAX, side as i32, true));
+    assert_eq!(products(&mut core), before);
+    assert_eq!(core.undo_stack.len(), undo_depth);
+    assert!(core.region_graph.node(end).crosswalk_overrides.is_empty());
+}
+

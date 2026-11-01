@@ -15,6 +15,7 @@ pub(super) mod graded_stage;
 mod road_edit_order;
 mod road_families;
 mod road_mesh_seams;
+mod road_crosswalks;
 mod road_reference_probe;
 mod road_plan_scaling;
 mod road_preview;

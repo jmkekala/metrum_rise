@@ -23,7 +23,7 @@ use crate::simulation::network::road_edit::{
     validate_road_candidate_fast, validate_road_edit,
 };
 use crate::simulation::network::roadbed::{
-    RoadbedDelta, RoadbedRestore, visual_roadbed_half_width_m,
+    RoadbedDelta, RoadbedRestore, crossing_arm_eligible, visual_roadbed_half_width_m,
 };
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
@@ -2261,18 +2261,38 @@ impl SimCore {
         self.transit_network.flow_fields.mark_all_dirty();
     }
 
-    /// Toggles a user override for a crosswalk at a specific road mouth.
+    /// Sets the crossing of arm `edge_id` at `node_id` on or off (`ROAD-74`): the node's override,
+    /// saved in `road_crosswalks`. Off removes the arm's zebra, its strip and mouth setback (D8),
+    /// its pedestrian crossing lanes and the signs that stand for it; on restores them.
     ///
     /// A crossing moves its arm's mouth in the junction layout (D8), so the toggle re-lays the
     /// node out as a road edit does: clips, the profile solve that pins the arms up to them, the
-    /// node's roadbed closure and its lanes. A toggle whose closure would not compile, or whose
-    /// pieces would overlap fields or painted cells, is refused.
-    pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
+    /// node's roadbed closure and its lanes. An arm that cannot cross
+    /// ([`crossing_arm_eligible`]), or a toggle whose closure would not compile or whose pieces
+    /// would overlap fields or painted cells, is refused and changes nothing; the refusal is
+    /// [`Self::preview_crosswalk_override_internal`]'s, so the preview is the commit's. Returns
+    /// whether the toggle was applied, with an undo record. O(node closure).
+    pub fn set_crosswalk_override_internal(
+        &mut self,
+        node_id: u32,
+        edge_id: i32,
+        enabled: bool,
+    ) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
-            return;
-        }
+        let checkpoint = match self.try_crosswalk_toggle(node_id, edge_id, enabled) {
+            Ok(checkpoint) => checkpoint,
+            Err(rejection) => {
+                debug_log!(
+                    "road",
+                    "crosswalk_override_rejected node={} edge={} reason={}",
+                    node_id,
+                    edge_id,
+                    rejection.reason
+                );
+                return false;
+            }
+        };
         let node = self.region_graph.get_valid_node(node_id);
         let edge_id = edge_id as usize;
         let affected: HashSet<usize> = self
@@ -2282,41 +2302,8 @@ impl SimCore {
             .copied()
             .filter(|&edge| !self.region_graph.edge(edge).deleted)
             .collect();
-        let edges = affected.iter().copied().chain([edge_id]).collect();
-        // The layout reads the overrides of the node's surviving id. A toggle whose node no
-        // longer compiles, or whose moved mouths overlap reserved land, is refused (`ROAD-68`
-        // open question 11 (c)).
-        let toggle = |core: &mut Self| {
-            core.region_graph
-                .set_crosswalk_override(node, edge_id, enabled);
-            let nodes = HashSet::from([node]);
-            core.region_graph
-                .rebuild_intersection_clips_for_nodes(&nodes);
-            // A crossing moves the mouths, so the node's arms re-derive their profiles.
-            let mut changed = HashSet::new();
-            core.region_graph.finalize_junction_endpoint_profiles(
-                &nodes,
-                Some(&core.heightmap),
-                &mut changed,
-            );
-            changed
-        };
-        let checkpoint =
-            match self.try_graph_edit(&edges, &HashSet::from([node_id, node]), toggle) {
-                Ok(checkpoint) => checkpoint,
-                Err(rejection) => {
-                    debug_log!(
-                        "road",
-                        "crosswalk_override_rejected node={} edge={} reason={}",
-                        node,
-                        edge_id,
-                        rejection.reason
-                    );
-                    return;
-                }
-            };
         self.push_network_undo_delta(checkpoint, None);
-        let changed = toggle(self);
+        let changed = self.apply_crosswalk_toggle(node, edge_id, enabled);
         let nodes = HashSet::from([node]);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
@@ -2340,6 +2327,75 @@ impl SimCore {
         // Deferred like a commit's (D7, `ROAD-68-G`), not left to the next frame's synchronous
         // rebuild of marked chunks.
         self.schedule_cch_rebuild_of_live_graph();
+        true
+    }
+
+    /// Why [`Self::set_crosswalk_override_internal`] would refuse the same toggle now, or `None`
+    /// when it would apply it: the commit's own check, run on the graph and put back, so the
+    /// select tool's preview of a toggle is its commit (`ROAD-74`). O(node closure).
+    pub(crate) fn preview_crosswalk_override_internal(
+        &mut self,
+        node_id: u32,
+        edge_id: i32,
+        enabled: bool,
+    ) -> Option<RoadRejection> {
+        self.adopt_pending_cell_lots();
+        self.try_crosswalk_toggle(node_id, edge_id, enabled).err()
+    }
+
+    // The toggle's check (`try_graph_edit`), with its undo record: an arm that cannot cross is
+    // refused first. The layout reads the overrides of the node's surviving id; a toggle whose
+    // node no longer compiles, or whose moved mouths overlap reserved land, is refused
+    // (`ROAD-68` open question 11 (c)).
+    fn try_crosswalk_toggle(
+        &mut self,
+        node_id: u32,
+        edge_id: i32,
+        enabled: bool,
+    ) -> Result<RegionGraphUndoDelta, RoadRejection> {
+        let edge = usize::try_from(edge_id).ok();
+        let node = (node_id as usize) < self.region_graph.node_count();
+        let Some(edge) = edge.filter(|&edge| {
+            node && crossing_arm_eligible(&self.region_graph, node_id, edge)
+        }) else {
+            return Err(RoadRejection::new(
+                "crosswalk_arm_not_eligible",
+                format!(
+                    "edge {edge_id} is not a road arm with sidewalks that can cross at node \
+                     {node_id}"
+                ),
+            ));
+        };
+        let node = self.region_graph.get_valid_node(node_id);
+        let edges: HashSet<usize> = self
+            .region_graph
+            .node_adjacency(node)
+            .iter()
+            .copied()
+            .filter(|&incident| !self.region_graph.edge(incident).deleted)
+            .chain([edge])
+            .collect();
+        self.try_graph_edit(&edges, &HashSet::from([node_id, node]), |core| {
+            core.apply_crosswalk_toggle(node, edge, enabled)
+        })
+    }
+
+    // Sets the override and re-lays the node out on the graph: its clips and the profile solve
+    // that pins its arms up to them, since a crossing moves the mouths. Returns the edges whose
+    // profiles changed.
+    fn apply_crosswalk_toggle(&mut self, node: u32, edge: usize, enabled: bool) -> HashSet<usize> {
+        self.region_graph
+            .set_crosswalk_override(node, edge, enabled);
+        let nodes = HashSet::from([node]);
+        self.region_graph
+            .rebuild_intersection_clips_for_nodes(&nodes);
+        let mut changed = HashSet::new();
+        self.region_graph.finalize_junction_endpoint_profiles(
+            &nodes,
+            Some(&self.heightmap),
+            &mut changed,
+        );
+        changed
     }
 
     /// Rebuilds road-surface-driven visual terrain after network edits.

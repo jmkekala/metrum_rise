@@ -3,9 +3,18 @@
 //! Lane-specific spatial queries (lane positions, junction connectivity, crosswalks).
 
 use crate::nodes::sim::core::SimCore;
+use crate::simulation::network::roadbed::crossing_arm_eligible;
 use godot::prelude::*;
 
 impl SimCore {
+    /// Whether road arm `edge_id` at `node_id` can cross (`ROAD-74`,
+    /// [`crossing_arm_eligible`]). `O(degree)`.
+    pub fn can_toggle_crosswalk_internal(&self, node_id: u32, edge_id: i32) -> bool {
+        (node_id as usize) < self.region_graph.node_count()
+            && usize::try_from(edge_id)
+                .is_ok_and(|edge| crossing_arm_eligible(&self.region_graph, node_id, edge))
+    }
+
     /// Reports whether the lane rebuild emitted a visible crossing for this road arm.
     pub fn has_crosswalk_internal(&self, node_id: u32, edge_id: i32) -> bool {
         let valid_id = self.region_graph.get_valid_node(node_id);

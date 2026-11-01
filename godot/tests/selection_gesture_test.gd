@@ -28,10 +28,17 @@ class SimulationStub extends Node3D:
 		return Vector3.ZERO
 	func get_lane_connections_array(_id: int) -> Array:
 		return []
+	var refuse_crosswalk := false
 	func has_crosswalk(_node: int, _edge: int) -> bool:
 		return false
-	func set_crosswalk_override(node: int, edge: int, enabled: bool) -> void:
+	func can_toggle_crosswalk(_node: int, edge: int) -> bool:
+		return edge == 10
+	func preview_crosswalk(node: int, edge: int, enabled: bool) -> Dictionary:
+		commands.append(["preview", node, edge, enabled])
+		return {"is_valid": false, "invalid_reason": "node_piece_failed"} if refuse_crosswalk else {"is_valid": true}
+	func set_crosswalk_override(node: int, edge: int, enabled: bool) -> bool:
 		commands.append(["crosswalk", node, edge, enabled])
+		return true
 	func set_lane_connection(node: int, source: int, lane: int, target: int, target_lane: int) -> void:
 		commands.append(["connect", node, source, lane, target, target_lane])
 	func clear_lane_source(node: int, edge: int, lane: int) -> void:
@@ -118,10 +125,21 @@ func _run() -> void:
 	_button(false)
 	_expect(sim.commands == [["source", 7, 10, 0]], "Release on the original incoming handle clears that source")
 	sim.commands.clear()
+	_expect(tool.crosswalk_toggles.size() == 1 and tool.crosswalk_toggles[0].edge_id == 10, "Only arms that can cross get a crossing toggle")
 	sim.hit = tool.crosswalk_toggles[0].pos
 	_button(true)
 	_button(false)
-	_expect(sim.commands == [["crosswalk", 7, 10, true]], "Crosswalk controls retain precedence and toggle once")
+	_expect(sim.commands == [["preview", 7, 10, true], ["crosswalk", 7, 10, true]], "Crosswalk controls retain precedence and commit once what the preview accepted")
+	sim.commands.clear()
+	# A toggle the commit's check refuses is not committed, and its label says why.
+	sim.refuse_crosswalk = true
+	tool._build_node_visuals(7)
+	sim.hit = tool.crosswalk_toggles[0].pos
+	_button(true)
+	_button(false)
+	_expect(sim.commands == [["preview", 7, 10, true]], "A refused crossing toggle commits nothing")
+	_expect(tool._crosswalk_label(false, tool._crosswalk_preview).ends_with("node_piece_failed"), "A refused toggle's label names the refusal")
+	sim.refuse_crosswalk = false
 	sim.commands.clear()
 	# A self-loop can expose the same signed lane at two different road mouths.
 	sim.self_loop = true
