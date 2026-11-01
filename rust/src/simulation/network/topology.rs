@@ -442,8 +442,14 @@ fn collect_crossing_splits(
     let edge1_geo_full = graph.edge(edge_id).geometry.clone();
     let edge1_geo_ds = downsample(&edge1_geo_full, ISECT_MIN_STEP);
 
+    // A road drawn over a tunnel crosses it grade-separated (`ROAD-61` round R8h): no node and no
+    // split of either edge, at any height; the road tool's clearance rule refuses the crossings
+    // that would not keep the bore's cover. A tunnel stroke's own crossings, its approaches' at
+    // grade among them, are split as any road's and classed afterwards.
+    let crosses_over_tunnels = graph.edge(edge_id).class != EdgeClass::Tunnel;
     for &other_id in candidates {
-        if graph.edge(other_id).deleted {
+        let other = graph.edge(other_id);
+        if other.deleted || (crosses_over_tunnels && other.class == EdgeClass::Tunnel) {
             continue;
         }
 

@@ -213,7 +213,7 @@ pub(super) fn hill_core(foot_m: f32) -> SimCore {
 }
 
 // `hill_core` with the hill rising at `slope`.
-fn cone_hill_core(foot_m: f32, slope: f32) -> SimCore {
+pub(super) fn cone_hill_core(foot_m: f32, slope: f32) -> SimCore {
     let mut core = flat_core();
     for z in 0..257 {
         for x in 0..257 {
@@ -566,7 +566,7 @@ fn a_junction_in_a_tunnel_approach_trench_is_refused() {
 }
 
 // The natural height of `cone_hill_core(foot_m, slope)` at an XZ point.
-fn cone_hill(foot_m: f32, slope: f32, x: f32, z: f32) -> f32 {
+pub(super) fn cone_hill(foot_m: f32, slope: f32, x: f32, z: f32) -> f32 {
     (slope * (foot_m - x.hypot(z))).max(0.0)
 }
 

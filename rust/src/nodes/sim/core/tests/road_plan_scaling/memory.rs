@@ -10,7 +10,13 @@ use std::hint::black_box;
 #[test]
 #[ignore = "heap trace acceptance; run through benchmarks/zoning_memory.py"]
 fn populated_cell_memory() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::Memory, false);
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::Memory,
+        Measured::Ground,
+    );
 }
 
 // glibc memusage records requested live heap after each successful heap event. A unique

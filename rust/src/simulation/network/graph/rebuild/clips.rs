@@ -184,6 +184,12 @@ impl RegionGraph {
     /// segment's lerp. The one height a road meets another road at mid-span (`ROAD-68` open
     /// questions 16 and 30). `O(profile points)`.
     pub(crate) fn profile_height_at(profile: &[Vector3], x: f32, z: f32) -> f32 {
+        Self::profile_nearest_at(profile, x, z).1
+    }
+
+    /// [`Self::profile_height_at`] with the squared XZ distance from the point to the profile's
+    /// nearest segment (infinite for a profile of fewer than two points). `O(profile points)`.
+    pub(crate) fn profile_nearest_at(profile: &[Vector3], x: f32, z: f32) -> (f32, f32) {
         let mut best = (f32::INFINITY, profile.first().map_or(0.0, |point| point.y));
         for pair in profile.windows(2) {
             let (a, b) = (pair[0], pair[1]);
@@ -200,6 +206,6 @@ impl RegionGraph {
                 best = (distance_sq, a.y + (b.y - a.y) * t);
             }
         }
-        best.1
+        best
     }
 }

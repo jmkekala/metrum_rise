@@ -30,7 +30,7 @@ use crate::config;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction::find_intersection_2d;
 use crate::simulation::network::roadbed::{
-    TUNNEL_LINING_THICKNESS_M, preview_candidate_roadbed_half_width_m,
+    TUNNEL_LINING_THICKNESS_M, preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::terrain::TerrainSystem;
@@ -50,6 +50,9 @@ pub(super) const TUNNEL_MIN_APPROACH_M: f32 = 2.0 * TUNNEL_LATTICE_M;
 pub(super) const TUNNEL_CROSSING_REASON: &str = "tunnel_crossing";
 /// A junction below the ground in a tunnel approach's trench ([`junction_in_trench`]).
 pub(super) const JUNCTION_IN_TRENCH_REASON: &str = "junction_in_trench";
+/// A grounded road over a tunnel bore whose deck stands less than [`TUNNEL_COVER_M`] above the
+/// bore's deck ([`deck_over_tunnels_m`], `ROAD-61` round R8h).
+pub(super) const TUNNEL_TOO_CLOSE_REASON: &str = "tunnel_too_close";
 
 /// Why a tunnel stroke's knots form no bore.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -106,51 +109,224 @@ pub(super) fn tunnel_section_half_width_m(points: &[Vector3], fwd_lanes: u8, bkw
         + TUNNEL_LINING_THICKNESS_M as f32
 }
 
-/// Knot `index`'s cover across the bore's section (`ROAD-61` round R8f): the least
-/// [`cover_m`] on a lattice across the knot, perpendicular in plan to the stroke there (the
-/// chord of its neighbours), from `-half_width_m` to `half_width_m` in equal steps of at most
-/// [`TUNNEL_LATTICE_M`], both shell corners and the centre among them. The section is level, so
-/// every lattice point stands at the knot's height. `O(half_width_m / TUNNEL_LATTICE_M)`,
-/// allocation-free.
+/// A grounded road's deck as the tunnel rules read it (`ROAD-61` round R8h): its graph profile
+/// and its roadbed's half width. Over a tunnel bore the deck is the surface the bore keeps its
+/// cover under, wherever its footprint lies over the bore's section; beside the deck the road's
+/// graded cut rises from it at the 1:2 tie-in slope, steeper than any road grade
+/// (`ROAD_GRADE_MAX`), so the deck bounds the cut over the section.
+pub(super) struct RoadDeck<'a> {
+    profile: &'a [Vector3],
+    half_width_m: f32,
+}
+
+impl<'a> RoadDeck<'a> {
+    /// The deck of a profile, `half_width_m` to either side of it.
+    pub(super) fn new(profile: &'a [Vector3], half_width_m: f32) -> Self {
+        Self {
+            profile,
+            half_width_m,
+        }
+    }
+
+    // The deck's height over the XZ point: its profile's at the nearest point of its centre
+    // line, where that lies within the half width. `O(profile points)`.
+    fn height_at(&self, x: f32, z: f32) -> Option<f32> {
+        let (distance_sq, height) = RegionGraph::profile_nearest_at(self.profile, x, z);
+        (distance_sq <= self.half_width_m * self.half_width_m).then_some(height)
+    }
+}
+
+/// The decks of the grounded roads of `graph` that can lie over the section of a tunnel stroke
+/// along `points` reaching `half_width_m` to either side (`ROAD-61` round R8h): standard road
+/// and footpath edges whose centre lines lie within that and [`ROAD_DECK_REACH_M`] of the
+/// stroke's XZ bounds, in ascending edge order. Bridges stand above the ground and tunnels in
+/// it. A local excerpt query: `O(log E + K)` for the `K` edges met, one profile table per edge.
+pub(super) fn grounded_decks_near<'g>(
+    graph: &'g RegionGraph,
+    points: &[Vector3],
+    half_width_m: f32,
+) -> Vec<RoadDeck<'g>> {
+    let mut edges = edges_near(graph, points, half_width_m);
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+        .into_iter()
+        .map(|id| graph.edge(id))
+        .filter(|edge| is_surface_edge(edge) && edge.class == EdgeClass::Standard)
+        .map(|edge| RoadDeck::new(edge_profile(edge), visual_roadbed_half_width_m(edge)))
+        .collect()
+}
+
+/// How far beyond a road's centre line its roadbed reaches at most, metres: wider than the
+/// widest roadbed half width a road profile builds, the shell of a tunnel's section included
+/// (`ROAD-61` round R8h). Bounds the excerpt queries of the tunnel rules; an edge's spatial
+/// index entry holds its centre line only.
+pub(super) const ROAD_DECK_REACH_M: f32 = 32.0;
+
+// The edges of `graph` whose centre-line bounds lie within `half_width_m` and
+// `ROAD_DECK_REACH_M` of the XZ bounds of `points`, unsorted.
+fn edges_near(graph: &RegionGraph, points: &[Vector3], half_width_m: f32) -> Vec<usize> {
+    let ((x0, z0), (x1, z1)) = xz_bounds(points);
+    let pad = half_width_m + ROAD_DECK_REACH_M;
+    graph.get_edges_near_aabb(
+        Vector3::new(x0 - pad, 0.0, z0 - pad),
+        Vector3::new(x1 + pad, 0.0, z1 + pad),
+    )
+}
+
+// The physical profile when present, otherwise the control polyline.
+fn edge_profile(edge: &crate::simulation::network::graph::Edge) -> &[Vector3] {
+    if edge.physical_geometry.len() >= 2 {
+        &edge.physical_geometry
+    } else {
+        &edge.geometry
+    }
+}
+
+// The XZ bounds `((min_x, min_z), (max_x, max_z))` of `points`.
+fn xz_bounds(points: &[Vector3]) -> ((f32, f32), (f32, f32)) {
+    points.iter().fold(
+        ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN)),
+        |((x0, z0), (x1, z1)), p| ((x0.min(p.x), z0.min(p.z)), (x1.max(p.x), z1.max(p.z))),
+    )
+}
+
+// The XZ points of knot `index`'s section lattice (round R8f): across the knot, perpendicular in
+// plan to the chord of its neighbours, from `-half_width_m` to `half_width_m` in equal steps of
+// at most [`TUNNEL_LATTICE_M`], both shell corners and the centre among them; the knot alone
+// for a zero chord or width. `O(half_width_m / TUNNEL_LATTICE_M)`, allocation-free.
+fn section_lattice(
+    points: &[Vector3],
+    index: usize,
+    half_width_m: f32,
+) -> impl Iterator<Item = (f32, f32)> {
+    let knot = points[index];
+    let (before, after) = (
+        points[index.saturating_sub(1)],
+        points[(index + 1).min(points.len() - 1)],
+    );
+    let (dx, dz) = (after.x - before.x, after.z - before.z);
+    let length = dx.hypot(dz);
+    let flat = length == 0.0 || half_width_m <= 0.0;
+    let (across_x, across_z) = if flat {
+        (0.0, 0.0)
+    } else {
+        (-dz / length, dx / length)
+    };
+    let steps = if flat {
+        0
+    } else {
+        (half_width_m / TUNNEL_LATTICE_M).ceil() as i32
+    };
+    (-steps..=steps).map(move |step| {
+        let offset = if steps == 0 {
+            0.0
+        } else {
+            half_width_m * step as f32 / steps as f32
+        };
+        (knot.x + offset * across_x, knot.z + offset * across_z)
+    })
+}
+
+/// Knot `index`'s cover across the bore's section (`ROAD-61` round R8f): the least height of
+/// the ground above the knot on its section lattice ([`section_lattice`]), the source terrain
+/// or, where a grounded road's deck of `decks` lies over a lattice point lower than it, that
+/// deck (round R8h: a tunnel drawn under a road keeps its cover under the road as built). The
+/// section is level, so every lattice point stands at the knot's height.
+/// `O(half_width_m / TUNNEL_LATTICE_M x deck profile points)`, allocation-free.
 pub(super) fn section_cover_m(
     terrain: &TerrainSystem,
+    decks: &[RoadDeck],
     points: &[Vector3],
     index: usize,
     half_width_m: f32,
 ) -> f32 {
     let knot = points[index];
-    let (before, after) = (points[index.saturating_sub(1)], points[(index + 1).min(points.len() - 1)]);
-    let (dx, dz) = (after.x - before.x, after.z - before.z);
-    let length = dx.hypot(dz);
-    if length == 0.0 || half_width_m <= 0.0 {
-        return cover_m(terrain, knot);
-    }
-    let (across_x, across_z) = (-dz / length, dx / length);
-    let steps = (half_width_m / TUNNEL_LATTICE_M).ceil() as i32;
-    (-steps..=steps)
-        .map(|step| {
-            let offset = half_width_m * step as f32 / steps as f32;
-            let point = Vector3::new(
-                knot.x + offset * across_x,
-                knot.y,
-                knot.z + offset * across_z,
-            );
-            cover_m(terrain, point)
+    section_lattice(points, index, half_width_m)
+        .map(|(x, z)| {
+            let ground = cover_m(terrain, Vector3::new(x, 0.0, z));
+            decks
+                .iter()
+                .filter_map(|deck| deck.height_at(x, z))
+                .fold(ground, f32::min)
+                - knot.y
         })
         .fold(f32::INFINITY, f32::min)
 }
 
+/// The least height the deck of a grounded road drawn along `points`, `half_width_m` to either
+/// side, keeps above the deck of a tunnel bore of `graph` it passes over (`ROAD-61` round R8h):
+/// over every lattice point of a tunnel knot's section ([`section_cover_m`]'s, across the
+/// lining's shell) that the road's footprint covers. A portal row's knot is left out: the
+/// approach's open trench meets the bore there, and a road at the mouth stands in the trench,
+/// which the trench rules own ([`junction_in_trench`]); the bore's next knot, one lattice step
+/// in, is checked. `None` when it passes over no bore. The crossing is grade-separated, no node
+/// and no split, while this stays at least [`TUNNEL_COVER_M`], the cover the bore keeps under
+/// the ground. Reads the local excerpt only: `O(log E + T x ceil(W / TUNNEL_LATTICE_M) x stroke
+/// points)` for the `T` knots of the tunnels met within reach of the road.
+pub(super) fn deck_over_tunnels_m(
+    points: &[Vector3],
+    half_width_m: f32,
+    graph: &RegionGraph,
+) -> Option<f32> {
+    let deck = RoadDeck::new(points, half_width_m);
+    let ((x0, z0), (x1, z1)) = xz_bounds(points);
+    let mut least: Option<f32> = None;
+    let mut tunnels = edges_near(graph, points, half_width_m);
+    tunnels.sort_unstable();
+    tunnels.dedup();
+    for id in tunnels {
+        let edge = graph.edge(id);
+        let knots = edge_profile(edge);
+        if !is_surface_edge(edge) || edge.class != EdgeClass::Tunnel || knots.len() < 2 {
+            continue;
+        }
+        let section_m = visual_roadbed_half_width_m(edge) + TUNNEL_LINING_THICKNESS_M as f32;
+        let reach = half_width_m + section_m;
+        let portal = |node: u32| {
+            let node = graph.get_valid_node(node);
+            (node as usize) < graph.node_adjacency_count()
+                && graph.node_adjacency(node).iter().any(|&other| {
+                    let other = graph.edge(other);
+                    is_surface_edge(other) && other.class == EdgeClass::Standard
+                })
+        };
+        let last = knots.len() - 1;
+        for (index, knot) in knots.iter().enumerate() {
+            if (index == 0 && portal(edge.start_node)) || (index == last && portal(edge.end_node)) {
+                continue;
+            }
+            if knot.x < x0 - reach
+                || knot.x > x1 + reach
+                || knot.z < z0 - reach
+                || knot.z > z1 + reach
+            {
+                continue;
+            }
+            for (x, z) in section_lattice(knots, index, section_m) {
+                if let Some(height) = deck.height_at(x, z) {
+                    let above = height - knot.y;
+                    least = Some(least.map_or(above, |least| least.min(above)));
+                }
+            }
+        }
+    }
+    least
+}
+
 /// The bore of a prepared tunnel stroke whose section reaches `half_width_m` to either side
 /// ([`tunnel_section_half_width_m`]): the indices of its first and last knot with the bore
-/// clearance of cover across the section ([`section_cover_m`]), every knot between them covered
-/// too and each open approach at least [`TUNNEL_MIN_APPROACH_M`] long.
-/// `O(knots x half_width_m / TUNNEL_LATTICE_M)`, allocation-free.
+/// clearance of cover across the section ([`section_cover_m`], under the ground or the
+/// `decks` of the grounded roads over it), every knot between them covered too and each open
+/// approach at least [`TUNNEL_MIN_APPROACH_M`] long.
+/// `O(knots x half_width_m / TUNNEL_LATTICE_M x deck profile points)`, allocation-free.
 pub(super) fn tunnel_bore(
     points: &[Vector3],
     half_width_m: f32,
     terrain: &TerrainSystem,
+    decks: &[RoadDeck],
 ) -> Result<[usize; 2], BoreRefusal> {
-    let cover_m = |index: usize| section_cover_m(terrain, points, index, half_width_m);
+    let cover_m = |index: usize| section_cover_m(terrain, decks, points, index, half_width_m);
     let covered = |index: usize| cover_m(index) >= TUNNEL_COVER_M;
     let Some(first) = (0..points.len()).find(|&index| covered(index)) else {
         let (knot, cover_m) = (0..points.len())

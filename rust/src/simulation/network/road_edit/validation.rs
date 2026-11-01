@@ -9,8 +9,9 @@ use super::input::{
     PREVIEW_CLEARANCE_M, PreparedRoadInput, ROAD_PROFILE_MAX_GRADE, is_surface_edge,
 };
 use super::tunnel::{
-    BoreRefusal, JUNCTION_IN_TRENCH_REASON, Portals, TUNNEL_COVER_M, TUNNEL_CROSSING_REASON,
-    TUNNEL_MIN_APPROACH_M, bore_crosses_a_tunnel, classify_tunnel_stroke, junction_in_trench,
+    BoreRefusal, JUNCTION_IN_TRENCH_REASON, Portals, RoadDeck, TUNNEL_COVER_M,
+    TUNNEL_CROSSING_REASON, TUNNEL_MIN_APPROACH_M, TUNNEL_TOO_CLOSE_REASON, bore_crosses_a_tunnel,
+    classify_tunnel_stroke, deck_over_tunnels_m, grounded_decks_near, junction_in_trench,
     portal_splits, section_cover_m, tunnel_bore, tunnel_section_half_width_m,
 };
 use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
@@ -181,8 +182,9 @@ impl RoadPreviewValidation {
 }
 
 /// Validates a road-tool candidate using only prepared-profile samples and local endpoint graph
-/// checks, for synchronous editor feedback; the lanes size a tunnel stroke's section.
-/// O(prepared points + endpoint snap lookups).
+/// checks, for synchronous editor feedback; the lanes size a tunnel stroke's section. Reads the
+/// local excerpt's tunnels and grounded roads for the crossings over a bore (`ROAD-61` round
+/// R8h). O(prepared points + endpoint snap lookups + the tunnel rules' excerpt work).
 pub(crate) fn validate_road_candidate_fast(
     prepared_input: &PreparedRoadInput,
     (fwd_lanes, bkw_lanes): (u8, u8),
@@ -190,7 +192,7 @@ pub(crate) fn validate_road_candidate_fast(
     existing_graph: &RegionGraph,
 ) -> RoadPreviewValidation {
     let lanes = (fwd_lanes, bkw_lanes);
-    let mut validation = profile_validation(prepared_input, lanes, terrain, true);
+    let mut validation = profile_validation(prepared_input, lanes, terrain, existing_graph, true);
     record_endpoint_height_debug(&mut validation, &prepared_input.points, terrain);
     let (start_existing, end_existing) = record_endpoint_snap_debug(
         &mut validation,
@@ -204,7 +206,7 @@ pub(crate) fn validate_road_candidate_fast(
     if start_existing.is_some() && start_existing == end_existing {
         return validation.with_invalid_reason(PREVIEW_SAME_NODE_REASON);
     }
-    validation
+    refuse_close_crossing(validation, prepared_input, lanes, existing_graph)
 }
 
 /// Validates a prepared stroke against the committed graph and solves its local post-edit
@@ -217,8 +219,13 @@ pub(crate) fn validate_road_edit(
     terrain: &TerrainSystem,
     existing_graph: &RegionGraph,
 ) -> (RoadPreviewValidation, Option<RoadTopologyPlan>) {
-    let new_edge_validation =
-        profile_validation(prepared_input, (fwd_lanes, bkw_lanes), terrain, false);
+    let new_edge_validation = profile_validation(
+        prepared_input,
+        (fwd_lanes, bkw_lanes),
+        terrain,
+        existing_graph,
+        false,
+    );
     if stroke_too_short(&prepared_input.points) {
         return (
             new_edge_validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON),
@@ -246,13 +253,16 @@ fn stroke_too_short(points: &[Vector3]) -> bool {
     points.len() < 2 || length_m < PREVIEW_MIN_ENDPOINT_SEGMENT_M
 }
 
-// Steepest prepared span, the grade the stroke's constraints force and bridge / tunnel clearance
-// of one profile. With `require_length` (the fast editor check) a stroke below the minimum length
-// is also refused; the full check applies that rule once, to the validation corridor.
+// Steepest prepared span, the grade the stroke's constraints force, bridge / tunnel clearance
+// of one profile and a grounded road's clearance over the tunnels of `graph` it crosses
+// (`ROAD-61` round R8h). With `require_length` (the fast editor check) a stroke below the
+// minimum length is also refused; the full check applies that rule once, to the validation
+// corridor.
 fn profile_validation(
     prepared_input: &PreparedRoadInput,
     (fwd_lanes, bkw_lanes): (u8, u8),
     terrain: &TerrainSystem,
+    graph: &RegionGraph,
     require_length: bool,
 ) -> RoadPreviewValidation {
     let (edge_class, prepared_points) = (prepared_input.class, &prepared_input.points[..]);
@@ -279,7 +289,14 @@ fn profile_validation(
     }
     if prepared_input.tunnel {
         let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes);
-        return tunnel_profile_validation(validation, prepared_points, half_width_m, terrain);
+        let decks = grounded_decks_near(graph, prepared_points, half_width_m);
+        return tunnel_profile_validation(
+            validation,
+            prepared_points,
+            half_width_m,
+            terrain,
+            &decks,
+        );
     }
     if edge_class == EdgeClass::Bridge
         && bridge_profile_is_ground_transition(prepared_points, terrain)
@@ -311,21 +328,52 @@ fn profile_validation(
     validation
 }
 
+// A grounded stroke over a tunnel of `graph` (`ROAD-61` round R8h): a grade-separated crossing
+// while its prepared deck stands at least `TUNNEL_COVER_M` above the bore's deck over the bore's
+// whole section (`deck_over_tunnels_m`), else `tunnel_too_close` with the least height as the
+// clearance. Quick validation and the exact plan read the same prepared points and excerpt, so
+// they agree; the exact plan checks it after the junction rules, which the hover check does not
+// run. A bridge stands above the bore and a tunnel stroke's bore meets no tunnel
+// (`bore_crosses_a_tunnel`).
+fn refuse_close_crossing(
+    mut validation: RoadPreviewValidation,
+    prepared_input: &PreparedRoadInput,
+    (fwd_lanes, bkw_lanes): (u8, u8),
+    graph: &RegionGraph,
+) -> RoadPreviewValidation {
+    let points = &prepared_input.points[..];
+    if !validation.is_valid || prepared_input.class != EdgeClass::Standard || points.len() < 2 {
+        return validation;
+    }
+    let half_width_m =
+        preview_candidate_roadbed_half_width_m(points, EdgeClass::Standard, fwd_lanes, bkw_lanes);
+    match deck_over_tunnels_m(points, half_width_m, graph) {
+        Some(above_m) if above_m < TUNNEL_COVER_M => {
+            validation.clearance_m = above_m;
+            validation.required_clearance_m = TUNNEL_COVER_M;
+            validation.with_invalid_reason(TUNNEL_TOO_CLOSE_REASON)
+        }
+        _ => validation,
+    }
+}
+
 // The cover check of a stroke drawn with the tunnel intent (`ROAD-61`), on its own knots as the
-// exact plan splits it, across the section `half_width_m` to either side (round R8f): the least
-// cover between the portals as the clearance, or the refusal.
-// O(knots x half_width_m / TUNNEL_LATTICE_M), allocation-free.
+// exact plan splits it, across the section `half_width_m` to either side (round R8f), under the
+// ground or the `decks` of the grounded roads over it (round R8h): the least cover between the
+// portals as the clearance, or the refusal.
+// O(knots x half_width_m / TUNNEL_LATTICE_M x deck profile points), allocation-free.
 fn tunnel_profile_validation(
     mut validation: RoadPreviewValidation,
     points: &[Vector3],
     half_width_m: f32,
     terrain: &TerrainSystem,
+    decks: &[RoadDeck],
 ) -> RoadPreviewValidation {
     validation.required_clearance_m = TUNNEL_COVER_M;
-    match tunnel_bore(points, half_width_m, terrain) {
+    match tunnel_bore(points, half_width_m, terrain, decks) {
         Ok([first, last]) => {
             validation.clearance_m = (first..=last)
-                .map(|index| section_cover_m(terrain, points, index, half_width_m))
+                .map(|index| section_cover_m(terrain, decks, points, index, half_width_m))
                 .fold(f32::INFINITY, f32::min);
             validation
         }
@@ -445,7 +493,8 @@ fn validate_against_graph(
         .tunnel
         .then(|| {
             let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes);
-            tunnel_bore(prepared_points, half_width_m, terrain).ok()
+            let decks = grounded_decks_near(existing_graph, prepared_points, half_width_m);
+            tunnel_bore(prepared_points, half_width_m, terrain, &decks).ok()
         })
         .flatten();
     if prepared_input.tunnel && bore.is_none() {
@@ -515,6 +564,15 @@ fn validate_against_graph(
     }
     if let Some(reason) = junction_rejection(&validation_graph, &finalized.affected_nodes) {
         return (validation.with_invalid_reason(reason), None);
+    }
+    let mut validation = refuse_close_crossing(
+        validation,
+        prepared_input,
+        (fwd_lanes, bkw_lanes),
+        existing_graph,
+    );
+    if !validation.is_valid {
+        return (validation, None);
     }
     record_edit_grade(
         &mut validation,

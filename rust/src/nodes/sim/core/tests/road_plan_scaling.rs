@@ -9,6 +9,15 @@ use std::time::Instant;
 
 mod memory;
 
+// The measured stroke: the T's side road on flat ground, a tunnel through the hill south of the
+// T, or a road over that tunnel (`ROAD-61` round R8h).
+#[derive(Clone, Copy, PartialEq)]
+enum Measured {
+    Ground,
+    Tunnel,
+    OverTunnel,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum CellScenario {
     None,
@@ -20,7 +29,7 @@ enum CellScenario {
 #[test]
 #[ignore = "unprofiled scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, false);
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Ground);
 }
 
 // `ROAD-61` locality: a tunnel stroke through a hill beside the measured T, planned as the
@@ -28,37 +37,63 @@ fn populated_road_plan_scaling() {
 #[test]
 #[ignore = "unprofiled tunnel planning locality; run alone with --release --ignored --nocapture"]
 fn populated_tunnel_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, true);
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None, Measured::Tunnel);
+}
+
+// `ROAD-61` round R8h locality: a road over that tunnel, crossing its bore on the hill, planned as
+// the remote city grows.
+#[test]
+#[ignore = "unprofiled road-over-tunnel planning locality; run alone with --release --ignored --nocapture"]
+fn populated_road_over_tunnel_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::OverTunnel,
+    );
 }
 
 #[test]
 #[ignore = "unprofiled field reservation scaling; run alone with --release --ignored --nocapture"]
 fn populated_field_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, true, CellScenario::None, false);
+    measure_populated_road_plan_scaling(false, false, true, CellScenario::None, Measured::Ground);
 }
 
 #[test]
 #[ignore = "unprofiled paved-site scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_paved_road_plan_scaling() {
-    measure_populated_road_plan_scaling(true, false, false, CellScenario::None, false);
+    measure_populated_road_plan_scaling(true, false, false, CellScenario::None, Measured::Ground);
 }
 
 #[test]
 #[ignore = "unprofiled cached zoning feasibility scaling; run alone with --release --ignored --nocapture"]
 fn populated_zoning_feasibility_scaling() {
-    measure_populated_road_plan_scaling(true, true, false, CellScenario::None, false);
+    measure_populated_road_plan_scaling(true, true, false, CellScenario::None, Measured::Ground);
 }
 
 #[test]
 #[ignore = "matched populated cell-reservation planning locality; run without competing work"]
 fn populated_cell_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::Placement, false);
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::Placement,
+        Measured::Ground,
+    );
 }
 
 #[test]
 #[ignore = "snapshot component diagnostic; run release alone without profiling"]
 fn populated_cell_snapshot_scaling() {
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::Snapshot, false);
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::Snapshot,
+        Measured::Ground,
+    );
 }
 
 fn measure_populated_road_plan_scaling(
@@ -66,8 +101,9 @@ fn measure_populated_road_plan_scaling(
     zoning_only: bool,
     fields: bool,
     scenario: CellScenario,
-    tunnel: bool,
+    measured: Measured,
 ) {
+    let tunnel = measured == Measured::Tunnel;
     let mut memory_phase = 0;
     let mut previous_memory_products = None;
     if scenario == CellScenario::Memory {
@@ -75,8 +111,9 @@ fn measure_populated_road_plan_scaling(
     }
     let cells = scenario != CellScenario::None;
     let mut core = test_core();
-    if tunnel {
-        // A 1:4 cone hill 25 m high south of the T: the measured stroke tunnels through it.
+    if measured != Measured::Ground {
+        // A 1:4 cone hill 25 m high south of the T: the measured stroke tunnels through it, or
+        // crosses over the tunnel through it.
         let terrain = &mut core.heightmap;
         for gz in 0..terrain.height {
             for gx in 0..terrain.width {
@@ -94,6 +131,25 @@ fn measure_populated_road_plan_scaling(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
     );
+    if measured == Measured::OverTunnel {
+        let outcome = core.commit_road(
+            crate::nodes::sim::core::road_commit::RoadCommitRequest {
+                points: vec![
+                    Vector3::new(0.0, 0.0, -320.0),
+                    Vector3::new(0.0, 0.0, -80.0),
+                ],
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                tunnel: true,
+                preview: None,
+            },
+            Instant::now(),
+            Default::default(),
+        );
+        assert!(outcome.committed, "{}", outcome.rejection);
+        core.precompute_road_mesh_data();
+    }
     let asset = register_test_asset(&mut core.allocator, "scaling_site", ZoneType::Residential);
     if paved {
         let mut manifest = core
@@ -316,13 +372,16 @@ fn measure_populated_road_plan_scaling(
         let mut status_samples = Vec::new();
         let mut preview_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
-        let points = if tunnel {
-            vec![
+        let points = match measured {
+            Measured::Ground => vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
+            Measured::Tunnel => vec![
                 Vector3::new(0.0, 0.0, -320.0),
                 Vector3::new(0.0, 0.0, -80.0),
-            ]
-        } else {
-            vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)]
+            ],
+            Measured::OverTunnel => vec![
+                Vector3::new(-30.0, 0.0, -250.0),
+                Vector3::new(30.0, 0.0, -250.0),
+            ],
         };
         let request = || RoadPreviewRequest {
             surface_generation: generation,
@@ -365,6 +424,7 @@ fn measure_populated_road_plan_scaling(
             serde_json::json!({
                 "remote_buildings": remote_buildings, "remote_roads": background_roads,
                 "field_reservations": fields, "tunnel": tunnel,
+                "over_tunnel": measured == Measured::OverTunnel,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),

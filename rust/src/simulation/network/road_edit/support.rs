@@ -79,13 +79,14 @@ impl<'a> StrokeSupport<'a> {
         }
     }
 
-    /// Highest carriageway at a world XZ point among the pieces the edit keeps, and the crossed
-    /// roads' graph profiles where their rebuilt spans lie. `O(pieces in the point's query cell
-    /// + crossed edges' profile points)`.
+    /// Highest exposed carriageway at a world XZ point among the pieces the edit keeps (a
+    /// tunnel's lies under the hill, `ROAD-61` round R8h), and the crossed roads' graph profiles
+    /// where their rebuilt spans lie. `O(pieces in the point's query cell + crossed edges'
+    /// profile points)`.
     pub(super) fn height_at(&mut self, x: f32, z: f32) -> Option<f32> {
         let (rebuilt, graph, read) = (self.rebuilt, self.graph, &mut self.read);
         let mut best: Option<f32> = None;
-        self.roadbed.for_each_carriageway_top_at(x, z, |piece, height_m| {
+        self.roadbed.for_each_exposed_carriageway_top_at(x, z, |piece, height_m| {
             let height_m = if !rebuilt.rebuilds(piece) {
                 read.push(piece);
                 height_m

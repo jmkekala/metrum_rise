@@ -202,6 +202,13 @@ fn validation_detail(
             ),
             None,
         ),
+        "tunnel_too_close" => (
+            format!(
+                "the road stands {:.2} m above a tunnel deck where the bore needs {:.2} m",
+                validation.clearance_m, validation.required_clearance_m
+            ),
+            None,
+        ),
         "tunnel_crossing" => (
             "the tunnel crosses another tunnel or meets a road inside its bore".to_owned(),
             None,
