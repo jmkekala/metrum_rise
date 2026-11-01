@@ -261,7 +261,8 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
                         fwd_lanes: 1,
                         bkw_lanes: 1,
                         snap_to_existing_roads: true,
-                        tunnel: false,
+                        // Only the tunnel intent makes a tunnel (`ROAD-61` round R8f).
+                        tunnel: class == EdgeClass::Tunnel,
                         preview: None,
                     },
                     std::time::Instant::now(),

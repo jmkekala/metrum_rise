@@ -594,11 +594,6 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 				float(preview.get("clearance_m", 0.0)),
 				float(preview.get("required_clearance_m", 0.0)),
 			]
-		"tunnel_clearance":
-			return "Tunnel clearance %.1f m / %.1f m" % [
-				float(preview.get("clearance_m", 0.0)),
-				float(preview.get("required_clearance_m", 0.0)),
-			]
 		"tunnel_cover":
 			return "Tunnel cover %.1f m / %.1f m: draw the ends outside the hill" % [
 				float(preview.get("clearance_m", 0.0)),

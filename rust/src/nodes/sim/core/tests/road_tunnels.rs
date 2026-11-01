@@ -125,29 +125,42 @@ fn run_stroke(core: &mut SimCore, points: &[Vector3], tunnel: bool) -> ProbeResu
     }
 }
 
-// Without the tunnel intent the class comes from the stroke's two ends, as before `ROAD-61`'s
-// fix (recorded on `dev` c2d49902, `docs/roads.md` "Road tunnels"): grounded ends send the
-// first probe to the terrain-following solve, which commits a surface road at height 0 and
-// erases the buried interior; the other two commit one tunnel edge with pavement and lanes.
-// Quick validation, the preview and the commit agree on all three.
+// Without the tunnel intent no stroke becomes a tunnel (`ROAD-61` round R8f; before it the class
+// came from the stroke's two ends, and the second and third probe committed one tunnel edge):
+// the terrain-following solve commits each probe as a surface road at height 0, erasing its
+// buried interior and ends. A level road drawn into a hillside (R8d's finding: it committed a
+// tunnel under 1.2 m of cover) is a grounded road too: on the 15 % hill it climbs the hill, on
+// the 1:2 hill no grounded profile keeps the hard maximum grade and it is refused as too steep.
+// Quick validation, the preview and the commit agree on every stroke.
 #[test]
 fn tunnel_probes_without_tunnel_intent() {
-    let expected = [
-        (EdgeClass::Standard, 0.0),
-        (EdgeClass::Tunnel, -6.0),
-        (EdgeClass::Tunnel, -6.0),
-    ];
-    for (probe, (class, low)) in PROBES.iter().zip(expected) {
+    for probe in PROBES {
         let result = run_stroke(&mut flat_core(), &probe_points(probe), false);
         let case = format!("{result:?}");
         assert_eq!((result.quick, result.exact), ("valid", "valid"), "{case}");
         assert_eq!(result.committed, "committed", "{case}");
         assert_eq!(result.edges.len(), 1, "{case}");
         let (edge_class, edge_low, vertices, lanes) = result.edges[0];
-        assert_eq!((edge_class, edge_low), (class, low), "{case}");
+        assert_eq!((edge_class, edge_low), (EdgeClass::Standard, 0.0), "{case}");
         assert!(vertices > 0 && lanes > 0, "{case}");
-        if class == EdgeClass::Standard {
-            assert!(result.quick_heights.iter().all(|&y| y == 0.0), "{case}");
+        assert!(result.quick_heights.iter().all(|&y| y == 0.0), "{case}");
+    }
+    let level = [Vector3::new(-100.0, 0.0, 0.0), Vector3::new(-40.0, 0.0, 0.0)];
+    for (slope, outcome) in [(0.15, "committed"), (0.5, "road_too_steep")] {
+        let mut core = cone_hill_core(80.0, slope);
+        let result = run_stroke(&mut core, &level, false);
+        let case = format!("{slope}: {result:?}");
+        let valid = outcome == "committed";
+        let expected = if valid { "valid" } else { outcome };
+        assert_eq!((result.quick, result.exact), (expected, expected), "{case}");
+        assert_eq!(result.committed, outcome, "{case}");
+        assert!(
+            result.edges.iter().all(|edge| edge.0 == EdgeClass::Standard),
+            "{case}"
+        );
+        if valid {
+            let top = 80.0 * slope - 40.0 * slope;
+            assert!(result.quick_heights.last() == Some(&top), "{case}: climbs the hill");
         }
     }
 }
@@ -862,7 +875,7 @@ fn the_lining_closes_the_bore() {
 fn the_lining_closes_buried_ends_and_bends() {
     let mut core = flat_core();
     let first = probe_points(PROBES[1]);
-    assert_eq!(run_stroke(&mut core, &first, false).committed, "committed");
+    assert_eq!(run_stroke(&mut core, &first, true).committed, "committed");
     // On from the east end, turning north.
     let outcome = core.commit_road(
         RoadCommitRequest {
@@ -870,7 +883,7 @@ fn the_lining_closes_buried_ends_and_bends() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            tunnel: true,
             preview: None,
         },
         std::time::Instant::now(),
@@ -1118,14 +1131,14 @@ fn the_lining_shell_stands_a_thickness_out() {
     // near the bend every shell edge but the feet is shared.
     let mut bend = flat_core();
     let first = probe_points(PROBES[1]);
-    assert_eq!(run_stroke(&mut bend, &first, false).committed, "committed");
+    assert_eq!(run_stroke(&mut bend, &first, true).committed, "committed");
     let outcome = bend.commit_road(
         RoadCommitRequest {
             points: vec![Vector3::new(50.0, -6.0, 0.0), Vector3::new(60.0, -6.0, 60.0)],
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            tunnel: false,
+            tunnel: true,
             preview: None,
         },
         std::time::Instant::now(),

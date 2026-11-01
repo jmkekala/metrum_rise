@@ -258,6 +258,9 @@ fn prepare_road_input_points_in(
         return (simplified_points.clone(), EdgeClass::Standard, None);
     }
 
+    // Only the tunnel intent makes a tunnel (`ROAD-61` round R8f): an end below the ground is a
+    // grounded road's, which the standard profile below cuts in or refuses. It still keeps a
+    // stroke with one end above the ground and the other below it off the bridge.
     let mut endpoint_above_clearance = false;
     let mut endpoint_below_clearance = false;
     let last_idx = simplified_points.len() - 1;
@@ -276,14 +279,8 @@ fn prepare_road_input_points_in(
         }
     }
 
-    let class = match (endpoint_above_clearance, endpoint_below_clearance) {
-        (true, false) => EdgeClass::Bridge,
-        (false, true) => EdgeClass::Tunnel,
-        _ => EdgeClass::Standard,
-    };
-
-    if class != EdgeClass::Standard {
-        return (simplified_points.clone(), class, None);
+    if endpoint_above_clearance && !endpoint_below_clearance {
+        return (simplified_points.clone(), EdgeClass::Bridge, None);
     }
 
     build_standard_road_profile_samples(

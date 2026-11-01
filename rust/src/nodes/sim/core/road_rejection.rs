@@ -155,15 +155,15 @@ fn validation_detail(
     prepared: &[Vector3],
 ) -> (String, Option<Vector3>) {
     match reason {
-        "bridge_clearance" | "tunnel_clearance" if validation.required_clearance_m <= 0.0 => (
+        "bridge_clearance" if validation.required_clearance_m <= 0.0 => (
             format!(
                 "the bridge profile dips {:.2} m below the terrain",
                 -validation.clearance_m
             ),
             None,
         ),
-        // Both validators measure clearance at the middle of the prepared profile.
-        "bridge_clearance" | "tunnel_clearance" => (
+        // The validator measures clearance at the middle of the prepared profile.
+        "bridge_clearance" => (
             format!(
                 "clearance {:.2} m at the middle of the road, needs {:.2} m",
                 validation.clearance_m, validation.required_clearance_m

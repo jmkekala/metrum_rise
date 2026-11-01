@@ -35,7 +35,6 @@ use std::collections::{HashMap, HashSet};
 
 const PREVIEW_VALID_REASON: &str = "";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
-const PREVIEW_TUNNEL_CLEARANCE_REASON: &str = "tunnel_clearance";
 const PREVIEW_TUNNEL_COVER_REASON: &str = "tunnel_cover";
 const PREVIEW_TUNNEL_APPROACH_REASON: &str = "tunnel_approach_too_short";
 const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
@@ -297,14 +296,8 @@ fn profile_validation(
                     return validation.with_invalid_reason(PREVIEW_BRIDGE_CLEARANCE_REASON);
                 }
             }
-            EdgeClass::Tunnel => {
-                validation.clearance_m = terrain_h - mid.y;
-                validation.required_clearance_m = PREVIEW_CLEARANCE_M;
-                if validation.clearance_m < PREVIEW_CLEARANCE_M {
-                    return validation.with_invalid_reason(PREVIEW_TUNNEL_CLEARANCE_REASON);
-                }
-            }
-            EdgeClass::Standard => {}
+            // A stroke without the tunnel intent is never a tunnel (`ROAD-61` round R8f).
+            EdgeClass::Tunnel | EdgeClass::Standard => {}
         }
     }
 
