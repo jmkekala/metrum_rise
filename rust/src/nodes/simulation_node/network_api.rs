@@ -418,8 +418,21 @@ impl SimulationNode {
     /// applied: a refused toggle (see [`Self::preview_crosswalk`]) changes nothing.
     #[func]
     pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) -> bool {
-        self.lock_core()
-            .set_crosswalk_override_internal(node_id, edge_id, enabled)
+        let (snapshot, publication) = {
+            let mut core = self.lock_core();
+            if !core.set_crosswalk_override_internal(node_id, edge_id, enabled) {
+                return false;
+            }
+            // The toggle's pieces publish now, as a removal's do on the simulation thread, so
+            // the renderer's next poll sees the new generation with its chunks (`ROAD-74`).
+            let publication = core.finalize_network_render_products();
+            (core.build_snapshot(), publication)
+        };
+        *self.snapshot.write().unwrap() = snapshot;
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
+        true
     }
 
     /// The commit's verdict on turning arm `edge_id`'s crossing at `node_id` on or off, without

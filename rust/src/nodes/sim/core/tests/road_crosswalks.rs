@@ -326,3 +326,53 @@ fn crosswalk_overrides_survive_a_save_file() {
     assert_eq!(crossings(&loaded), saved);
     assert_eq!(saved.iter().filter(|&&on| on).count(), 2);
 }
+
+// The renderer's path (the user's play-test of round R6): a toggle marks a new render generation,
+// and once its pieces publish (`finalize_network_render_products`, which the bridge runs after a
+// toggle and the simulation thread after an undo) the emitted road chunks equal a full emission
+// of every chunk, bitwise; so does the undo's. Before the fix the toggle marked no generation and
+// the drawn zebra stayed.
+#[test]
+fn a_toggle_and_its_undo_publish_the_chunks_a_full_emission_draws() {
+    let (mut core, node, side, _) = t_junction();
+    core.benchmark_mode = false;
+    core.finalize_network_render_products();
+    // Every emitted field, less `current_owner`, the emitter's cursor, which a chunk keeps from
+    // its last write.
+    let chunks = |core: &SimCore| {
+        let text = format!("{:?}", core.cached_road_mesh_chunks);
+        let mut kept = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("current_owner: ") {
+            kept.push_str(&rest[..at]);
+            rest = &rest[at..];
+            rest = &rest[rest.find(", crosswalks: ").expect("field order")..];
+        }
+        kept + rest
+    };
+    let full = |core: &mut SimCore| {
+        core.mark_network_render_dirty();
+        core.precompute_road_mesh_data();
+        chunks(core)
+    };
+    let drawn = chunks(&core);
+    assert_eq!(full(&mut core), drawn);
+
+    let generation = core.road_tool_surface_generation;
+    assert!(core.set_crosswalk_override_internal(node, side as i32, false));
+    assert!(core.network_dirty, "the toggle tells the renderer");
+    assert_ne!(core.road_tool_surface_generation, generation);
+    core.finalize_network_render_products();
+    assert!(core.transit_network.roadbed.is_current());
+    let off = chunks(&core);
+    assert_ne!(off, drawn, "the zebra's chunks are emitted again");
+    assert_eq!(full(&mut core), off);
+
+    let generation = core.road_tool_surface_generation;
+    assert!(core.undo_action_internal());
+    assert_ne!(core.road_tool_surface_generation, generation);
+    core.finalize_network_render_products();
+    let undone = chunks(&core);
+    assert_eq!(undone, drawn);
+    assert_eq!(full(&mut core), undone);
+}

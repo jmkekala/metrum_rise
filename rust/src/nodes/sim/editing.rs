@@ -2271,7 +2271,9 @@ impl SimCore {
     /// ([`crossing_arm_eligible`]), or a toggle whose closure would not compile or whose pieces
     /// would overlap fields or painted cells, is refused and changes nothing; the refusal is
     /// [`Self::preview_crosswalk_override_internal`]'s, so the preview is the commit's. Returns
-    /// whether the toggle was applied, with an undo record. O(node closure).
+    /// whether the toggle was applied, with an undo record and the render marked dirty; the
+    /// caller publishes the rebuilt pieces ([`Self::finalize_network_render_products`]), as the
+    /// simulation thread does after a removal. O(node closure).
     pub fn set_crosswalk_override_internal(
         &mut self,
         node_id: u32,
@@ -2327,6 +2329,9 @@ impl SimCore {
         // Deferred like a commit's (D7, `ROAD-68-G`), not left to the next frame's synchronous
         // rebuild of marked chunks.
         self.schedule_cch_rebuild_of_live_graph();
+        // A new render generation, so the renderer fetches the node's chunks once their pieces
+        // publish ([`Self::finalize_network_render_products`]).
+        self.mark_local_network_render_dirty();
         true
     }
 
