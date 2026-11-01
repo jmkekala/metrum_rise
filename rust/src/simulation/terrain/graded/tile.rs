@@ -761,6 +761,8 @@ fn bake_tile(
     // the sites' pad seams in key order.
     let road_count = seams.len();
     sites.push_pad_seams(seams);
+    // Then the portal rows' headwall wings (`ROAD-61` round R8c), which no texel names either.
+    portals.push_wings(seams);
     base.fill(terrain, window);
     let mut stats = BakeStats {
         window_seams: seams.len(),

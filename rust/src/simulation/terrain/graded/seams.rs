@@ -18,6 +18,13 @@ pub enum SeamKind {
     /// T22 4 (a)), the grounded road on its left: no cone, never a sample's nearest seam; the
     /// bake builds wall faces along it from its height to the graded ground.
     Wall,
+    /// The top edge of a portal headwall's wing (`ROAD-61` round R8c,
+    /// [`crate::simulation::network::roadbed::headwall_wing`]): a cut's cone only, the upper
+    /// bound `h + k d` and no lower bound, on both sides of the headwall's plane beside the
+    /// bore (hidden only over its own row's bore, where the hill stays natural), within
+    /// [`super::portal::WING_CAP_M`]; never a sample's nearest seam. So the bake grades the
+    /// ground to the wing as it grades a cut.
+    Wing,
 }
 
 /// One seam segment in world metres `[x, height, z]`, its height linear along it.

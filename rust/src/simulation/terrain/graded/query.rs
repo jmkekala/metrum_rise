@@ -65,7 +65,7 @@ pub struct QueryScratch {
     index_identity: u64,
     index_generation: u64,
     // The seams the first pass lists over `rect`: road seams in key order, unique, then the pad
-    // seams in key order.
+    // seams in key order, then the portal rows' headwall wings (`ROAD-61` round R8c).
     window: Vec<Seam>,
     // The other seams whose box comes within the cap of `rect`, with their box's distance from
     // it: only a point below its base after the first pass reads them, so they are gathered
@@ -616,6 +616,8 @@ impl GradedSurface<'_> {
                     },
                 );
                 scratch.window[roads..].sort_unstable_by_key(Seam::key);
+                // Then the portal rows' headwall wings (`ROAD-61` round R8c), always listed.
+                scratch.portals.push_wings(&mut scratch.window);
             } else {
                 scratch.coverage.clear();
                 scratch.sites.clear();
@@ -684,6 +686,7 @@ impl GradedSurface<'_> {
         self.roadbed
             .wall_seams_in_bounds(window, &scratch.pieces, &mut scratch.wall_segments);
         scratch.portals.gather(self.roadbed, rect, &scratch.pieces);
+        scratch.portals.push_wings(&mut scratch.window);
         scratch.walls.clear();
         scratch
             .walls

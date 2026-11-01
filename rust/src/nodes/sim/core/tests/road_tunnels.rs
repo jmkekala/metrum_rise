@@ -1171,3 +1171,75 @@ fn the_lining_carries_the_lamp_station() {
         "the bore's lamp station ends at {high}"
     );
 }
+
+// `ROAD-61` round R8c: the headwall's wing tops fall at 1:2 from the headwall's height at the
+// portal's corners to the corners' height at their tips (`headwall_wing`), and the bake grades
+// the ground to them as it grades a cut (`SeamKind::Wing`). Along both wings of the west portal
+// on the 1:2 and the 1:4 hill, every 0.5 m: no ground stands above the wing top at its plane on
+// either side, nor above the wing's 1:2 grading behind it; the hill behind the wing lies at most
+// the headwall's parapet below the top (where the hill over the bore meets the wing); and where
+// the top lies below the approach's cut, the cut in front is graded down to it, so the wing's
+// outer part ends flush with the ground. The cut's step up to the top in front of the wing's
+// inner part is the accepted sliver (`TERRAIN-18`), not checked here.
+#[test]
+fn the_ground_is_graded_to_the_headwall_wings() {
+    use crate::simulation::network::roadbed::{
+        HEADWALL_HEIGHT_M, HEADWALL_WING_M, HEADWALL_WING_SLOPE, headwall_wing,
+    };
+    use crate::simulation::terrain::graded::PORTAL_CLEARANCE_M;
+    let parapet = HEADWALL_HEIGHT_M - PORTAL_CLEARANCE_M;
+    for (name, mut core) in [("1:2", hill_core(80.0)), ("1:4", cone_hill_core(100.0, 0.25))] {
+        assert_eq!(run_stroke(&mut core, &THROUGH_HILL, true).committed, "committed");
+        core.precompute_road_mesh_data();
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let roadbed = &core.transit_network.roadbed;
+        let [a, b] = (0..core.region_graph.edge_count())
+            .filter_map(|edge| roadbed.piece_mesh(PieceId::Span(edge)))
+            .flat_map(|mesh| mesh.portal_rows().map(|row| [row[0], row[row.len() - 1]]))
+            .min_by(|p, q| p[0].x.total_cmp(&q[0].x))
+            .expect("a portal row");
+        // Out of the tunnel, towards the west approach.
+        let out = RoadVec3::new(-1.0, 0.0, 0.0);
+        let (mut flush, mut graded) = (0, 0);
+        for (corner, other) in [(a, b), (b, a)] {
+            let [top, tip] = headwall_wing(corner, other);
+            assert_eq!(tip.y, corner.y, "{name}: a wing's tip is level with its corner");
+            for step in 0..=22 {
+                let along = f64::from(step) * 0.5;
+                let wing = top + (tip - top) * (along / HEADWALL_WING_M);
+                let ground = |e: f64| {
+                    let q = wing + out * e;
+                    core.with_graded_surface(|surface, scratch| {
+                        surface.ground_height_at(q.x, q.z, scratch)
+                    })
+                };
+                let case = format!("{name}: {along} m along the wing at {corner:?}, top {}", wing.y);
+                for e in [0.01, -0.01] {
+                    assert!(ground(e) <= wing.y + 0.01, "{case}: ground above the top");
+                }
+                for e in [0.5, 1.0, 2.0] {
+                    let behind = ground(-e);
+                    assert!(
+                        behind <= wing.y + HEADWALL_WING_SLOPE * e + 1.0e-6,
+                        "{case}: {behind} {e} m behind stands above the wing's grading"
+                    );
+                    graded += usize::from(behind > wing.y + HEADWALL_WING_SLOPE * e - 1.0e-6);
+                }
+                assert!(
+                    ground(-0.5) >= wing.y - parapet - 0.05,
+                    "{case}: the hill gapes below the top"
+                );
+                // The approach's cut alone rises at 1:2 from the corner along the row.
+                if wing.y < corner.y + HEADWALL_WING_SLOPE * along {
+                    assert!(
+                        ground(0.25) <= wing.y + HEADWALL_WING_SLOPE * 0.25 + 1.0e-6,
+                        "{case}: the cut in front stands above the wing's grading"
+                    );
+                    flush += 1;
+                }
+            }
+        }
+        assert!(flush >= 20 && graded >= 40, "{name}: {flush} flush, {graded} graded");
+    }
+}

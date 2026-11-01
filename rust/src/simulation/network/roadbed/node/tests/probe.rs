@@ -1984,6 +1984,8 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
 // Re-recorded by `ROAD-61` round R8b: the same six tunnel entries change with the lining's shell
 // (outer walls the thickness outside the walls, a roof the thickness above the ceiling); every
 // other entry is unchanged.
+// Re-recorded by `ROAD-61` round R8c: the same six tunnel entries change with the headwall's
+// wing tops falling at 1:2 to their tips; every other entry is unchanged.
 const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("t/false", 0x3a3196117e3f00f3),
     ("four_way/false", 0x694f53237d5dd070),
@@ -2047,9 +2049,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bridge_bend/false", 0x4e1d11e189af360f),
     ("bridge_pass_through/false", 0xd8331298dd91b258),
     ("bridge_rural_t/false", 0xd4b525b794ec9395),
-    ("tunnel_t/false", 0xb2f72fa1348048d8),
-    ("tunnel_bend/false", 0xe6869ca65a8f2aaa),
-    ("tunnel_pass_through/false", 0x0f6e99040aec700b),
+    ("tunnel_t/false", 0xb16e378378bb98d2),
+    ("tunnel_bend/false", 0x9af928b70074d797),
+    ("tunnel_pass_through/false", 0x8b169835744e2d3e),
     ("band_step_curved/false", 0x37629ac5df89e879),
     ("band_width_step_curved/false", 0xd3bc48a4d792eb19),
     ("t/true", 0x8e5e0a77ca65c074),
@@ -2114,9 +2116,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("bridge_bend/true", 0x65fa10b8e747d953),
     ("bridge_pass_through/true", 0xf04c12c0e0dd199a),
     ("bridge_rural_t/true", 0x416fcacf8292544e),
-    ("tunnel_t/true", 0x9c89779ed2ecc0e0),
-    ("tunnel_bend/true", 0x7e90aae9da3368ce),
-    ("tunnel_pass_through/true", 0xbb44e177b83e6103),
+    ("tunnel_t/true", 0xe6d18ad62dcd03f6),
+    ("tunnel_bend/true", 0x10204debbd06a38d),
+    ("tunnel_pass_through/true", 0x30819937c2b09616),
     ("band_step_curved/true", 0x023fc8a5bc92c4b7),
     ("band_width_step_curved/true", 0x673bc994f267b9d6),
     ("short_link_10", 0x0288e54ed509e89b),

@@ -31,8 +31,12 @@ pub const TUNNEL_LINING_HEIGHT_M: f64 = 4.5;
 pub const HEADWALL_HEIGHT_M: f64 = 5.5;
 /// How far a portal headwall reaches beyond each corner of its row along the row's line
 /// (`ROAD-61`): where the approach's cut, rising at the 1:2 tie-in slope from the row's corner,
-/// reaches the headwall's top.
+/// reaches the headwall's height, and where a wing's top, falling at that slope from it, reaches
+/// the corner's.
 pub const HEADWALL_WING_M: f64 = 2.0 * HEADWALL_HEIGHT_M;
+/// The fall of a headwall wing's top along the wing, metres per metre (`ROAD-61` round R8c, the
+/// user's decision): the terrain's 1:2 tie-in slope, at which the bake grades the ground to it.
+pub const HEADWALL_WING_SLOPE: f64 = 0.5;
 /// The lining's thickness (`ROAD-61` round R8b): its shell's outer walls stand this far outside
 /// its walls, beyond any shadow bias the sun's shadow map applies near a wall's foot.
 pub const TUNNEL_LINING_THICKNESS_M: f64 = 0.5;
@@ -60,6 +64,23 @@ pub(super) fn shell_foot(vertex: RoadVec3, other: RoadVec3) -> RoadVec3 {
         vertex.y,
         vertex.z + TUNNEL_LINING_THICKNESS_M * away.y,
     )
+}
+
+/// A portal headwall's wing beside the row corner `corner`, away from the row's other corner
+/// `other` (`ROAD-61` round R8c): its top edge, from `HEADWALL_HEIGHT_M` above the corner down
+/// at `HEADWALL_WING_SLOPE` to its tip `HEADWALL_WING_M` beyond it, level with the corner. The
+/// one function the headwall and the terrain bake take a wing from, so the ground the bake
+/// grades to a wing meets its top bitwise. No terrain height is read.
+pub fn headwall_wing(corner: RoadVec3, other: RoadVec3) -> [RoadVec3; 2] {
+    let away = RoadVec2::new(corner.x - other.x, corner.z - other.z).normalize();
+    let at = |beyond: f64| {
+        RoadVec3::new(
+            corner.x + beyond * away.x,
+            corner.y + HEADWALL_HEIGHT_M - HEADWALL_WING_SLOPE * beyond,
+            corner.z + beyond * away.y,
+        )
+    };
+    [at(0.0), at(HEADWALL_WING_M)]
 }
 
 /// Which part of the closed tunnel a lining triangle belongs to.
@@ -399,12 +420,14 @@ fn node_foot(positions: &[RoadVec3], chains: &[OuterChain], c: usize, k: usize) 
 
 // The headwall at a portal row (its corners `edge` and the lining tops `tops` above them; the
 // piece has `count` positions): in the row's vertical plane, from the skirt depth below the
-// corners up to `HEADWALL_HEIGHT_M` above them and `HEADWALL_WING_M` beyond them along the row's
-// line, with the lining's mouth open in it from below: the polygon runs along its bottom to below
-// the left corner, up to it, up the left wall's end edge, across the ceiling's, down the right
-// wall's, down below the right corner and along the bottom again, so it meets the lining edge for
-// edge and leaves the deck's row to the deck and the piece beyond it. Facing `outward`, out of
-// the tunnel.
+// corners up to `HEADWALL_HEIGHT_M` above them, and its wings `HEADWALL_WING_M` beyond them along
+// the row's line, their tops falling at the 1:2 tie-in slope to the corners' height at the tips
+// (`headwall_wing`, round R8c), with the lining's mouth open in it from below: the polygon runs
+// from the left wing's tip along its bottom to below the left corner, up to it, up the left
+// wall's end edge, across the ceiling's, down the right wall's, down below the right corner,
+// along the bottom to the right wing's tip, up it and back along the wings' tops, so it meets the
+// lining edge for edge and leaves the deck's row to the deck and the piece beyond it. Facing
+// `outward`, out of the tunnel.
 fn headwall(
     lining: &mut Lining,
     count: usize,
@@ -421,8 +444,10 @@ fn headwall(
             corner.z + beyond * along.y,
         )
     };
+    let ([left_top, left_tip], [right_top, right_tip]) =
+        (headwall_wing(left, right), headwall_wing(right, left));
     let points = [
-        at(left, -HEADWALL_WING_M, HEADWALL_HEIGHT_M),
+        left_tip,
         at(left, -HEADWALL_WING_M, -SKIRT_DEPTH_M),
         at(left, 0.0, -SKIRT_DEPTH_M),
     ];
@@ -434,7 +459,9 @@ fn headwall(
     for point in [
         at(right, 0.0, -SKIRT_DEPTH_M),
         at(right, HEADWALL_WING_M, -SKIRT_DEPTH_M),
-        at(right, HEADWALL_WING_M, HEADWALL_HEIGHT_M),
+        right_tip,
+        right_top,
+        left_top,
     ] {
         ring.push((lining.push(count, point, NO_SOURCE), point));
     }

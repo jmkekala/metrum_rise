@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Portal rows in the graded terrain (`TERRAIN-07-C`, `ROAD-61` round R8): no cone reaches past
-//! a tunnel's portal row, pruned equals unpruned with it, the queries answer what the bake packs,
-//! and a tunnel edit selects every tile it alters.
+//! a tunnel's portal row (round R8c: but the headwall wings', beside the bore), pruned equals
+//! unpruned with it, the queries answer what the bake packs, and a tunnel edit selects every
+//! tile it alters.
 
 use super::site_tests::structure_mouth;
 use super::tests::{assert_exact_pruning, bake_with};
+use super::grade::TIE_IN_SLOPE;
+use super::portal::{PortalWindow, WING_CAP_M};
 use super::tile::Evaluation;
 use super::*;
 use crate::simulation::network::graph::RegionGraph;
@@ -26,10 +29,11 @@ fn tiles(half: i32) -> Vec<TileKey> {
 }
 
 // test: the tunnel continuing a road level into a 1:2 hill, its portal row at x = 0. Past the row
-// the graded ground is the hill itself, out to the cap and across the bore's sides, though the
-// approach's cones would cut it there; before the row the approach's cut is graded, and under
-// the deck at the row the ground continues the hill. Pruned equals unpruned at every level,
-// batch, order and worker count, and every `GL0` lattice point's packed value is the query's.
+// the graded ground is the hill itself over the bore out to the cap, though the approach's cones
+// would cut it there, and beside the bore the hill cut only by the headwall wings' cones (round
+// R8c); before the row the approach's cut is graded, and under the deck at the row the ground
+// continues the hill. Pruned equals unpruned at every level, batch, order and worker count, and
+// every `GL0` lattice point's packed value is the query's.
 #[test]
 fn no_cone_reaches_past_a_portal_row() {
     let (graph, terrain) = structure_mouth(EdgeClass::Tunnel, 0.5);
@@ -45,14 +49,36 @@ fn no_cone_reaches_past_a_portal_row() {
     };
     let mut scratch = QueryScratch::default();
     let hill = |x: f64| 0.5 * (x + 20.0).max(0.0);
+    // The headwall's wings, and the hill under their cones' upper bounds beside the bore.
+    let mut pieces = Vec::new();
+    roadbed.grounded_pieces_in_bounds([-80.0, -80.0, 80.0, 80.0], &mut pieces);
+    let mut window = PortalWindow::default();
+    window.gather(&roadbed, [-80.0, -80.0, 80.0, 80.0], &pieces);
+    let mut wings = Vec::new();
+    window.push_wings(&mut wings);
+    assert_eq!(wings.len(), 2, "one portal row, two wings");
+    let half = wings.iter().map(|wing| wing.a[2].abs()).fold(f64::INFINITY, f64::min);
+    let graded = |x: f64, z: f64| {
+        wings.iter().fold(hill(x), |ground, wing| {
+            let at = wing.at(x, z);
+            if at.distance <= WING_CAP_M {
+                ground.min(at.height + TIE_IN_SLOPE * at.distance)
+            } else {
+                ground
+            }
+        })
+    };
     // On `GL0` lattice points past the row: a point between the row's line and the next lattice
     // column reads the rendered triangle's blend of the cut and the hill.
     for x in [0.5, 1.0, 5.0, 20.0, 40.0, 63.0] {
         for z in [-30.0, -6.0, -2.0, 0.0, 2.0, 6.0, 30.0] {
             let ground = surface.ground_height_at(x, z, &mut scratch);
+            let expected = if z.abs() < half { hill(x) } else { graded(x, z) };
+            // A graded value is the base plus the packed `f32` delta.
+            let tolerance = if z.abs() < half { 1e-9 } else { 1e-5 };
             assert!(
-                (ground - hill(x)).abs() < 1e-9,
-                "({x}, {z}): ground {ground}, hill {}",
+                (ground - expected).abs() < tolerance,
+                "({x}, {z}): ground {ground}, expected {expected}, hill {}",
                 hill(x)
             );
             assert_eq!(surface.surface_height_at(x, z, &mut scratch), ground);
@@ -101,8 +127,8 @@ fn no_cone_reaches_past_a_portal_row() {
                     base + f64::from((ground - base) as f32),
                     "({x}, {z})"
                 );
-                if x > 0.0 {
-                    assert_eq!(texel[0], 0.0, "({x}, {z}) past the row");
+                if x > 0.0 && z.abs() < half {
+                    assert_eq!(texel[0], 0.0, "({x}, {z}) past the row over the bore");
                 }
             }
         }
