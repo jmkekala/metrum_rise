@@ -10630,6 +10630,81 @@ lowered tops; no grading leaves rock above the lowered tops where the flat tops 
 the user chose meets its acceptance on the 1:2 and 1:4 test hills; on steeper hills it needs a
 further decision (see the R8c handoff).
 
+**Tunnel mouths in the user's saves (round R8d, 2026-11-01).** The user played R8 + R8b + R8c
+and reported broken-looking mouths: dark triangles round the mouth, black headwalls and wings,
+black wedges standing out of the hill, missing polygons, a broken headwall top on a 4-lane tunnel
+and stripes up a steep hill. Their two debug dumps (format 109): dump A, 3 straight tunnels, 6
+mouths; dump B, 13 tunnels, 26 mouths (curved, 4-lane 460 m and 40 m, short 24-83 m, one
+1,123 m, three side by side 22 m apart, grades up to +26 %). Every mouth was measured by a probe
+over the loaded dumps (the hill's slope and its angle to the approach, the cover at the corners,
+curvature, the nearest portal, the frame's exposure above the graded ground, the lining's and the
+shell's exposure, open edges) and shot from three fixed cameras per mouth (gamescope headless,
+isolated profile, sheets in `$ARTIFACTS`). Defect classes and root causes (FRESH):
+
+| Defect (user's words) | Mouths | Root cause (evidence) | Status |
+| --- | --- | --- | --- |
+| Black headwalls and wings | all 32 | `emit_lining` gave every lining-layer triangle `lining_color()` (alpha 0), so the concrete shader kept the headwalls, wings and shell out of the sun and the sky | fixed (below) |
+| Dark sawtooth triangles in the rock | most | the black wing showing through the lattice cells that straddle its plane (the accepted sliver, `TERRAIN-18`); with outdoor light the teeth are concrete grey on rock | lighting fixed; sliver stays `TERRAIN-18` |
+| Wedges and fins out of the hill | all 32 | the fixed frame (top 5.5 m above the corners, 11 m wings) is shaped without the hill: where the cover at a corner is below 5.5 m or the hill falls sideways, the top stands 0.57-3.05 m above the ground behind it (5.9 m beside a neighbour's cut, dump B side by side) | design (options below) |
+| Lining standing out along the bore, "missing polygons", the black ellipses between side-by-side tunnels | 15 of 32 (over 0.5 m at 9, all in dump B) | cover is tested at the centre line's 4 m knots only (`tunnel_bore`), while the section is 10-17 m wide plus the shell and the hill slopes across it (corner cover down to 2.9 m); the shell's roof (4.5 + 0.5 m) sits exactly at the 5 m clearance; between side-by-side tunnels a neighbour's approach cut, not hidden past a staggered row, lowers the hill over the next bore onto the roof | decision (cover over the section) |
+| Broken headwall top on the 4-lane tunnel | dump B 40 m 4-lane (both mouths), dump A 4-lane | not the headwall (its 10 triangles per row close, area as built, 0 open edges at every mouth): on dump B's 40 m one the ceiling and shell rise behind the top on an uphill bore the hill does not cover (roof up to 3.3 m above the top line, ceiling 2.2-2.9 m above ground); on dump A's, whose hill falls 3.8 m across the 17 m row, the cut in front of the uphill wing stands up to 1.1 m above the wing's top | as the rows above |
+| Stripes up a steep hill | dump A slope 65 %, dump B 52 % | R8c's wing grading on hills steeper than 1:2 (below) | design (options below) |
+
+No mouth shows open headwall edges, wings standing on another road (0 of 44 samples per mouth)
+or a chunk-line gap. Curved mouths (turn up to 13° over 40 m) and slanted ones (approach up to
+87° off the fall line) show the same classes as straight ones, worse where the hill falls across
+the row. Grades: tunnel edges of +23.6 % and +26.1 % were committed; no grade rule limits a
+tunnel (reported only). The junction the user forgot, built on copies of dump A (a road from
+the approach's centre line `d` m out from a portal row, 40 m to one side, snapping): refused at
+3-6 m (`junction_arm_too_short`) and 8-15 m (`junction_corner_does_not_fit`), committed at 20
+and 30 m with both portals unchanged and closed; a side road drawn level into the hillside
+without the tunnel intent commits as a tunnel edge (classed from its buried end) whose one portal
+has 1.2 m of cover (the intent-less classification, `tunnel_probes_without_tunnel_intent`).
+
+*Fix (commit `fix(render): headwalls and the lining's shell take outdoor light`).* Only the bore's
+faces (walls, ceiling, end walls) take the lining's colour; headwalls and the shell take the
+outdoor concrete's (alpha 1: sun, sky, full ambient, no lamp UV). Test
+`road_tunnels::only_the_bore_keeps_the_lining_light` (a lining-layer face carries alpha 0 exactly
+when it carries the lamp station). No change without tunnels: the R8 product probe (pieces,
+whole payload with the lining arrays, GL0-GL2 tiles, vegetation, queries) on the hill + bridge,
+1:2 hill road and grown town gives equal hashes on `ff6a4723` and the fix, both built fresh.
+
+**Open question: a mouth that fits the hill (R8d, for the user).** The frame cannot fit varied
+hills because the roadbed reads no terrain. Options (stills of the committed mouth beside option
+T on the same cameras over both dumps' worst cases, steep, gentle, slanted, curved, side by side,
+short, wide and the junction, in `$ARTIFACTS`):
+
+1. *Flared wingwalls* (not prototyped): wings along the approach cut's side slopes in plan, tops
+   down the cut slope, the ground graded to them by cut and fill within a bounded window. Bound
+   `O(rows)` per hide test as now, two seams per row. Risk: fill cones are lower bounds (new for
+   portals; conflict-wall and pruning interplay); the wing's height profile still comes from graph
+   data, so on slanted hills the window becomes a visible mound or cut.
+2. *Headwall height from cover* (not prototyped): measured at road-edit commit (validation already
+   reads the cover), stored per portal row with the graph, `O(1)` per row. Save format 110 and the
+   Kuopio reference re-recorded. A later terrain edit leaves the stored height stale (fins or gaps
+   return) unless the terrain tool re-measures and rewrites it as a graph edit; it fixes the
+   headwall's top, not the wings on slanted hills.
+3. *Option T, the terrain-owned portal* (prototyped): the roadbed keeps the bore's lining and a
+   0.5 m collar round its mouth (no wings); the bake hides the approach's own cones in a trough
+   within 40 m in front of each portal row, so the hill stands natural up to the approach's edges,
+   and builds the retaining faces with `walls::build_structure_walls` (as for bridge abutments):
+   along the approach's seams in the trough and along the row above the collar. The wall tops
+   follow the graded ground; the roadbed reads no terrain. Stills: no fins, no wings, no stripes
+   up the steep hill, no wings to overlap side by side, and the ellipses between side-by-side
+   tunnels gone (each trough hides its approach's cut); the prototype's trough walls show sky gaps
+   and crenellated tops, not root-caused (its wall seams are the road seam list, not the mask's
+   discard boundary). Bound: the hide test stays `O(rows)` per (sample, seam) pair; walls
+   `O(trough seams x lattice crossings)` per tile, only in windows within the cap of a portal.
+   Graded-stage cost not measured (prototype); it drops two wing seams per row and adds trough
+   walls, against the 3.0 ms stage (the tunnel stroke's graded p95 is already 3.1 ms, R8c).
+   Production: the trough by piece (the approach span sharing the mouth, by station), not by the
+   row's straight strip, so curved approaches and a junction 20 m out keep their own cones; the
+   trough ends where the natural ground meets the deck (found by the bake, deterministic), so no
+   step at its end; on fill the same walls retain the road.
+
+Recommendation: option T, with the cover tested over the whole section (the shell's outer top
+corners at every knot, quick and exact validation alike, `O(knots)`), which no mouth design fixes.
+
 **Open (`ROAD-61`):**
 
 - Slivers (accepted by the user, 2026-11-01): beside the portal's corners, where a wing's top
@@ -10641,7 +10716,10 @@ further decision (see the R8c handoff).
 - Where the hill behind a portal rises steeper than 1:2 from the headwall's top, the hill over the
   bore, which no wing grades, and the ground graded to the wings beside it meet in steps along the
   lines through the row's corners up to the wings' cap, and the cut ends there in a step (above).
-- R8b's sun line at the walls' feet and the flat wing tops are closed (R8b, R8c).
+- R8b's sun line at the walls' feet and the flat wing tops are closed (R8b, R8c); R8d's black
+  headwalls are closed.
+- Fins, wedges and stripes at mouths on varied hills; the lining standing out where the hill falls
+  across the bore; side-by-side portals: R8d's open question above.
 
 ## Road marking lighting — RENDER-12
 

@@ -4696,6 +4696,17 @@ ramp lies behind the wall). Between the corners the mask cuts on the row; along 
 part both sides meet the top and nothing steps. The exact fix, a crease in the graded cells along
 the wing lines so the drawn surface holds the step, is renderer work: `TERRAIN-18`.
 
+**The user's saves (`ROAD-61` round R8d, 2026-11-01).** On 32 mouths in two of the user's dumps
+the wings' frame stands 0.57-3.05 m above the graded ground behind it (5.9 m beside a
+neighbour's cut), the dark teeth in the rock were the black wing through the sliver's cells (the
+wing now takes outdoor light, so they read as concrete on rock), and between side-by-side tunnels
+whose rows are staggered a neighbour's approach cut, not hidden past the other row, lowers the
+hill over the next bore onto its shell. A terrain-owned portal (option T) is the recommended
+design: the bake hides the approach's own cones in a trough in front of the row and retains the
+hill with `walls::build_structure_walls` along the approach and over the mouth, as it does at a
+bridge's mouth, with no wing seams; prototype stills and the open points in
+[`roads.md`](roads.md#road-tunnels-road-61) ("A mouth that fits the hill").
+
 Godot's `get_world_surface_height` and `intersect_world_surface` answer from `surface_height_at` and
 `raycast_surface` since `TERRAIN-07-D` round 2; since `TERRAIN-07-F` they go through
 `get_world_surface_height_internal` and `intersect_world_surface_internal`, which read the graded
