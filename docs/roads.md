@@ -10743,8 +10743,9 @@ they stand ungraded in the natural hill. Measurements (FRESH, 2026-11-01):
 
 - Round R8f: the roadbed's collar (a flat-topped ring 0.5 m beyond the corners at the lining's
   height plus 0.5 m) in place of the headwall and its wings, `headwall_wing` deleted, the row wall
-  then standing above the collar; `junction_in_trench`; the preview, commit, undo and load bitwise
-  test on a tunnel stroke (`graded_stage`).
+  then standing above the collar; `junction_in_trench`; the load leg of the tunnel stroke's
+  bitwise test (`graded_stage::tunnel_tiles_of_a_preview_commit_undo_and_load_equal_fresh_bakes`
+  covers the preview, commit, undo and recommit; the test hill has no world config to save).
 - Slivers (accepted by the user, 2026-11-01): beside the portal's corners, where a wing's top
   stands above the cut in front of it, the cut and the ground graded to the wing meet across the
   row in one lattice cell, so a steep rock sliver stands up to half a cell in front of the wing's
