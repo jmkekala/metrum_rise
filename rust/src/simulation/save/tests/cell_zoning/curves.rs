@@ -62,7 +62,7 @@ fn curved_fixture() -> (RegionGraph, ZoningSystem, CellBounds) {
                 .into_iter()
                 .map(|p| [p.x, p.y]),
         )
-        .overlaps_roads(&network.roadbed)
+        .overlaps_exposed_roads(&network.roadbed)
     };
     // Retain the unsplit grids only where the final compiled junction permits paint.
     // Runtime generation supplies this same exclusion predicate.

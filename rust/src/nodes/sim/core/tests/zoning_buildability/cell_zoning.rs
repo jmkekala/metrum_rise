@@ -859,3 +859,52 @@ fn queued_cell_growth_reloads_and_revalidates_erased_or_disabled_lots() {
         }
     }
 }
+
+// `ROAD-61` round R8h (the user's decision, 2026-11-01): the land over a tunnel's bore is used as
+// if no tunnel ran under it, so painted cells over a bore take lots like any others. A tunnel
+// runs 6 m under the flat fixture across its road at x = 40; before, every lot meeting the bore's
+// buried span was blocked as if it met a road.
+#[test]
+fn painted_cells_over_a_tunnel_take_lots() {
+    use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+    let mut core = flat_fixture();
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points: vec![
+                Vector3::new(40.0, -6.0, -80.0),
+                Vector3::new(40.0, -6.0, 80.0),
+            ],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            tunnel: true,
+            preview: None,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    core.preview_cell_selection_internal(
+        CellSelectionShape::Brush { radius_m: 300.0 },
+        &[DVec2::ZERO],
+    );
+    let selection = core.zoning.cells.select(
+        CellSelectionShape::Brush { radius_m: 30.0 },
+        &[DVec2::new(40.0, 20.0)],
+    );
+    assert!(!selection.cells.is_empty());
+    core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
+    let report = core.prepare_cell_lots_internal();
+    let over_the_bore = report.created.iter().any(|id| {
+        let corners = core.zoning.parcels.get(*id).unwrap().corners();
+        let (low, high) = corners.iter().fold((f32::MAX, f32::MIN), |(lo, hi), c| {
+            (lo.min(c.x), hi.max(c.x))
+        });
+        low < 45.0 && high > 35.0
+    });
+    assert!(
+        over_the_bore,
+        "{} lots, none over the bore",
+        report.created.len()
+    );
+}

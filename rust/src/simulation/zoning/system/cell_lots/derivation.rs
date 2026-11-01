@@ -188,15 +188,13 @@ impl ZoningSystem {
 }
 
 impl DeferredCellLots {
-    /// Plans the regions in order, as the commit would have, with `cell_blocked` and
-    /// `lot_blocked` answering the building-site and road tests from the commit's snapshots
-    /// ([`CellLotPlanner::plan_region`]). Releases the parcel store before it returns, so
-    /// adopting the plan writes the live store in place.
+    /// Plans the regions in order, as the commit would have, with `blocked` answering the
+    /// building-site and road tests from the commit's snapshots. Releases the parcel store
+    /// before it returns, so adopting the plan writes the live store in place.
     pub(crate) fn plan(
         mut self,
         graph: &RegionGraph,
-        cell_blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
-        lot_blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
     ) -> PlannedCellLots {
         let mut queue = CellLotQueue::default();
         let mut planner = CellLotPlanner {
@@ -209,13 +207,7 @@ impl DeferredCellLots {
         };
         let mut report = CellLotGeneration::default();
         for &bounds in &self.regions {
-            report.absorb(planner.plan_region(
-                graph,
-                bounds,
-                &self.sizes,
-                &cell_blocked,
-                &lot_blocked,
-            ));
+            report.absorb(planner.plan_region(graph, bounds, &self.sizes, &blocked));
         }
         let plan = planner.finish();
         drop(self.parcels);
@@ -239,17 +231,14 @@ impl CellLotGeneration {
 
 impl<M: CellMaps> CellLotPlanner<'_, M> {
     /// One region of a lot plan: generates the invalid cells of `bounds` and its lot reach,
-    /// then derives its lots, with `cell_blocked` testing cell footprints and `lot_blocked` lot
-    /// footprints against building sites, fields and roads. They differ over a tunnel bore,
-    /// which leaves cells as they are but takes no lot (`ROAD-61` round R8h). The live plan and
-    /// a deferred one plan each region through here.
+    /// then derives its lots, with `blocked` testing footprints against building sites and
+    /// fields. The live plan and a deferred one plan each region through here.
     pub(crate) fn plan_region(
         &mut self,
         graph: &RegionGraph,
         bounds: CellBounds,
         sizes: &[CellLotSize],
-        cell_blocked: &(impl Fn(&[DVec2; 4]) -> bool + Sync),
-        lot_blocked: &(impl Fn(&[DVec2; 4]) -> bool + Sync),
+        blocked: &(impl Fn(&[DVec2; 4]) -> bool + Sync),
     ) -> CellLotGeneration {
         let phase = crate::debug::Channel::EconomyPhases
             .enabled()
@@ -259,11 +248,11 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
         self.prepare_generated_cells(
             graph,
             bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
-            cell_blocked,
+            blocked,
         );
         let generation_ms = phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let phase = phase.map(|_| std::time::Instant::now());
-        let report = self.derive_cell_lots(graph, bounds, sizes, |corners, _| lot_blocked(corners));
+        let report = self.derive_cell_lots(graph, bounds, sizes, |corners, _| blocked(corners));
         crate::debug_log!(
             "economy_phases",
             "cell_lot_detail generation_ms={:.3} derivation_ms={:.3} candidates={} created={} retired={} reattached={}",

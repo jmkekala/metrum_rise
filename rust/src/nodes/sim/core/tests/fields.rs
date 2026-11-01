@@ -22,6 +22,13 @@ fn rectangle(x: f32, z: f32, width: f32, depth: f32) -> Vec<Vector2> {
 
 /// Shared occupied-world fixture for field lifecycle and city accounting regressions.
 pub(in crate::nodes::sim::core) fn farm_fixture() -> (SimCore, usize, Vec<Vector2>) {
+    farm_fixture_with(|_| {})
+}
+
+/// [`farm_fixture`] with `prepare` run on the world before the farm is placed.
+pub(in crate::nodes::sim::core) fn farm_fixture_with(
+    prepare: impl FnOnce(&mut SimCore),
+) -> (SimCore, usize, Vec<Vector2>) {
     let mut core = test_core();
     core.transit_network.add_road(
         &mut core.region_graph,
@@ -50,6 +57,7 @@ pub(in crate::nodes::sim::core) fn farm_fixture() -> (SimCore, usize, Vec<Vector
     core.allocator
         .registry
         .register("test", manifest, String::new());
+    prepare(&mut core);
     let farm = core
         .place_industry_building_internal(&id, 0.0, 8.0)
         .unwrap();

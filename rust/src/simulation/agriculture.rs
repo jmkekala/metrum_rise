@@ -251,7 +251,8 @@ impl AgricultureSystem {
                 return Err("field overlaps a building site".to_owned());
             }
         }
-        if footprint.overlaps_roads(roads) {
+        // A tunnel's bore lies in the hill under the field (`ROAD-61` round R8h).
+        if footprint.overlaps_exposed_roads(roads) {
             return Err("field overlaps a road".to_owned());
         }
         let catalog = load_runtime_economy_catalog()?;

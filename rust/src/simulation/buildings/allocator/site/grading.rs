@@ -7,7 +7,7 @@ use crate::config::SIDEWALK_WIDTH;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::RoadbedSystem;
-use crate::simulation::network::types::{TransitFlags, TransitType};
+use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 
@@ -34,8 +34,10 @@ impl<'a> SiteRoads<'a> {
         Self { graph, roadbed }
     }
 
+    // The visible road height at a point: a tunnel's buried deck lies in the hill under it
+    // (`ROAD-61` round R8h), so a pad over a bore reads the ground as if no tunnel ran there.
     fn sample_visible_height(self, x: f32, z: f32) -> Option<f32> {
-        self.roadbed.height_at(x, z)
+        self.roadbed.exposed_height_at(x, z)
     }
 
     // Visits R-tree candidates in ascending edge order for deterministic nearest-edge ties.
@@ -352,7 +354,12 @@ pub(super) fn nearest_building_site_road_surface_sample(
             let Some(edge) = graph.get_edge(edge_idx) else {
                 return;
             };
-            if edge.deleted || edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
+            // A tunnel is no road a site meets at the surface (`ROAD-61` round R8h).
+            if edge.deleted
+                || edge.class == EdgeClass::Tunnel
+                || edge.physical_geometry.len() < 2
+                || edge.physical_length <= 1e-6
+            {
                 return;
             }
             let Some(projection) =

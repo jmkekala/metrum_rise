@@ -146,17 +146,10 @@ impl<'a> PolygonFootprint<'a> {
         self.overlay_overlaps(&points)
     }
 
-    /// Tests visible carriageway, sidewalk and junction triangles through the roadbed query grid.
-    /// By the bounds test above, only triangles whose XZ bounds touch these bounds can overlap,
-    /// so the query needs no margin.
-    pub(crate) fn overlaps_roads(&self, roads: &RoadbedSystem) -> bool {
-        roads.any_top_triangle_points_in_bounds(self.bounds_f64(), |triangle| {
-            self.overlaps_road_polygon(&triangle)
-        })
-    }
-
-    /// [`Self::overlaps_roads`] over the pieces on or above the ground: a buried piece, a tunnel
-    /// bore, lies in the hill under the footprint (`ROAD-61` round R8h).
+    /// Tests visible carriageway, sidewalk and junction triangles through the roadbed query grid,
+    /// over the pieces on or above the ground: a buried piece, a tunnel bore, lies in the hill
+    /// under the footprint (`ROAD-61` round R8h). By the bounds test above, only triangles whose XZ
+    /// bounds touch these bounds can overlap, so the query needs no margin.
     pub(crate) fn overlaps_exposed_roads(&self, roads: &RoadbedSystem) -> bool {
         roads.any_exposed_top_triangle_points_in_bounds(self.bounds_f64(), |triangle| {
             self.overlaps_road_polygon(&triangle)
@@ -347,9 +340,11 @@ impl FieldClearanceIndex {
     /// question 1): the fields in the chunks the piece's bounds touch, then each field against
     /// the piece's top triangles in the field's bounds, through the piece's query grid
     /// ([`PieceMesh::any_top_triangle_in_bounds`]). O(fields in the touched chunks * triangles in
-    /// their grid cells); one chunk lookup per touched chunk when no field lies there.
+    /// their grid cells); one chunk lookup per touched chunk when no field lies there. A buried
+    /// piece, a tunnel's bore, lies in the hill under the fields and overlaps none (`ROAD-61`
+    /// round R8h).
     pub(crate) fn overlaps_road_piece(&self, mesh: &PieceMesh) -> bool {
-        if self.footprints.is_empty() {
+        if self.footprints.is_empty() || mesh.buried() {
             return false;
         }
         let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();

@@ -23,7 +23,7 @@ use crate::simulation::economy::demand::{
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::RoadbedSystem;
-use crate::simulation::network::types::{TransitFlags, TransitType};
+use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::work_area::{
     explicit_work_area_startup_budget, initial_work_area_scale, minimum_work_area_workers,
@@ -1109,7 +1109,8 @@ impl BuildingAllocator {
             let Some(edge) = graph.get_edge(edge_idx) else {
                 continue;
             };
-            if edge.deleted || edge.physical_geometry.len() < 2 {
+            // A tunnel's bore lies in the hill under the site (`ROAD-61` round R8h).
+            if edge.deleted || edge.class == EdgeClass::Tunnel || edge.physical_geometry.len() < 2 {
                 continue;
             }
             let road_half_width = road_collision_half_width_m(edge);

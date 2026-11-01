@@ -318,7 +318,7 @@ impl SimulationNode {
         z: f32,
         altitude_offset_m: f32,
     ) -> f32 {
-        query.roadbed.height_at(x, z).unwrap_or_else(|| {
+        query.roadbed.exposed_height_at(x, z).unwrap_or_else(|| {
             query.with_graded_surface(|surface, scratch| {
                 surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32
                     + altitude_offset_m
