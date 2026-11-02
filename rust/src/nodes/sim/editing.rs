@@ -2319,20 +2319,11 @@ impl SimCore {
         self.transit_network
             .mark_surface_dirty_from_sets(&changed, &HashSet::new());
         let affected: HashSet<usize> = affected.into_iter().chain(changed).collect();
-        self.agents.invalidate_lane_ids_for_edges(
-            &affected,
-            &self.transit_network.lane_system,
-            &self.region_graph,
-        );
-        self.transit_network
-            .lane_system
-            .rebuild_edges_incremental(&mut self.region_graph, &affected);
-        self.agents.reattach_invalidated_lanes_for_edges(
-            &affected,
-            &self.transit_network.lane_system,
-            &self.region_graph,
-        );
-        self.rebuild_building_entrances_internal();
+        // The node's arms' lanes, the cars on them and the entrances fronting them, as an undo
+        // restores them (`ROAD-80`'s lane edit): a toggle moves no frontage, so the entrance
+        // cache rebuild's city scan (about 10 ms at 100k buildings) is not needed. Godot's main
+        // thread runs this edit, and the passes are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| self.restore_lanes_locally(&affected, &nodes));
         // Deferred like a commit's (D7, `ROAD-68-G`), not left to the next frame's synchronous
         // rebuild of marked chunks.
         self.schedule_cch_rebuild_of_live_graph();

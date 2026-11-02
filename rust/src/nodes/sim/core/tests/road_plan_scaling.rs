@@ -525,7 +525,7 @@ fn measure_populated_road_plan_scaling(
 
 // `ROAD-80`: the T's side road (south of the T) widened from 1+1 to 2+2 in place. Times the
 // verdict (the check, run and put back) over 100 samples, then 20 commits each followed by its
-// undo; returns the local products after a commit: the T's span and node pieces and the side
+// undo, then 20 toggles of the side arm's crossing (`ROAD-74`) with their undos; returns the local products after a commit: the T's span and node pieces and the side
 // road's lanes, which must not depend on the remote city. The once-per-tier setup is not timed.
 fn measure_lane_edit(core: &mut SimCore, remote_buildings: usize, remote_roads: usize) -> String {
     // The fixture commits without lanes; the edit rebuilds the lanes it touches, so they exist
@@ -583,6 +583,16 @@ fn measure_lane_edit(core: &mut SimCore, remote_buildings: usize, remote_roads: 
         core.precompute_road_mesh_data();
         assert_eq!(local(core), before, "undo restores the T");
     }
+    // The side arm's crossing toggled off and undone: its lanes rebuild locally too.
+    let mut toggles = Vec::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        assert!(core.set_crosswalk_override_internal(node, side, false));
+        toggles.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert!(core.undo_action_internal());
+        core.precompute_road_mesh_data();
+        assert_eq!(local(core), before, "undo restores the crossing");
+    }
     println!(
         "LANE_EDIT_SCALING {}",
         serde_json::json!({
@@ -591,6 +601,7 @@ fn measure_lane_edit(core: &mut SimCore, remote_buildings: usize, remote_roads: 
             "rayon_threads": rayon::current_num_threads(),
             "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
             "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
+            "toggle_p50_ms": p50(&mut toggles),
             "commit_samples": commits.len(), "identical_local_products": true,
         })
     );
