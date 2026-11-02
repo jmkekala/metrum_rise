@@ -8,6 +8,10 @@
 //! the ground under a bridge, a bridge drawn over a road, a bridge over or under another bridge.
 //! Quick validation and the exact plan read the same prepared points and the same excerpt of the
 //! committed graph, so they refuse the same strokes.
+//!
+//! A stroke whose end is snapped onto a bridge's span joins it there (`ROAD-99` follow-up B1,
+//! [`snapped_structure_span`]): the span is split and a junction stands on its deck, as where the
+//! end meets one of the bridge's nodes. The end meets that deck and does not pass under it.
 
 use super::PreparedRoadInput;
 use super::input::{is_surface_edge, xz_distance};
@@ -27,6 +31,58 @@ pub(super) const ROAD_UNDER_BRIDGE_M: f32 =
 /// A road and a bridge, or two bridges, whose decks stand less than [`ROAD_UNDER_BRIDGE_M`] apart
 /// where one passes over the other ([`deck_to_deck_m`]).
 pub(super) const BRIDGE_TOO_LOW_REASON: &str = "bridge_too_low";
+
+/// A stroke end snapped onto a tunnel inside its bore (B1): roads meet a tunnel at its portals.
+pub(super) const TUNNEL_JOIN_REASON: &str = "tunnel_join";
+
+/// The structure span a stroke's end is snapped onto, with its graph height there (`ROAD-99`
+/// follow-up B1): of the bridge and tunnel spans whose centre line passes within the end-join
+/// tolerance (`config::INTERSECTION_TOLERANCE`) of `end` in plan, the one whose graph profile
+/// there stands nearest the end's height, when it stands nearer than `ground_m`, the ground
+/// level under the end (a grounded road's carriageway or the terrain). This is the road tool
+/// cursor's choice between the ground and the structures (`interaction::
+/// get_closest_network_snap_xz`), and a cursor snapped to a span reports the span's graph height,
+/// so the end stands on the span it snapped to: the snap decides the join, not a height window.
+/// Ties go to the ground, then to the nearer centre line, then to the lower edge id. `None` for
+/// an end within the node snap of a node, which joins the node. `O(log E + K x profile points)`
+/// for the `K` edges near the end.
+pub(super) fn snapped_structure_span(
+    graph: &RegionGraph,
+    end: Vector3,
+    ground_m: f32,
+) -> Option<(usize, f32)> {
+    if graph
+        .find_node_within(end, config::SNAP_TOLERANCE)
+        .is_some()
+    {
+        return None;
+    }
+    let reach = config::INTERSECTION_TOLERANCE;
+    let mut best: Option<(f32, f32, usize, f32)> = None;
+    let mut edges = edges_near(graph, &[end], reach);
+    edges.sort_unstable();
+    edges.dedup();
+    for id in edges {
+        let edge = graph.edge(id);
+        if !is_surface_edge(edge) || edge.class == EdgeClass::Standard {
+            continue;
+        }
+        let (distance_sq, _) = RegionGraph::profile_nearest_at(&edge.geometry, end.x, end.z);
+        if distance_sq >= reach * reach {
+            continue;
+        }
+        let deck_m = RegionGraph::profile_height_at(edge_profile(edge), end.x, end.z);
+        let off_m = (end.y - deck_m).abs();
+        if off_m >= (end.y - ground_m).abs() {
+            continue;
+        }
+        let key = (off_m, distance_sq, id, deck_m);
+        if best.is_none_or(|best| (key.0, key.1, key.2) < (best.0, best.1, best.2)) {
+            best = Some(key);
+        }
+    }
+    best.map(|(_, _, id, deck_m)| (id, deck_m))
+}
 
 /// The least height between the deck of a stroke and a deck it passes under or over
 /// (`ROAD-99`): over every point of the stroke's footprint lattice (stations along each segment
@@ -75,11 +131,13 @@ pub(super) fn deck_to_deck_m(
 }
 
 // The roads a stroke meets at its ends, sorted: every road at the existing node an end snaps to
-// (the endpoint snap's sphere, as the validation graph joins it), and the standard road whose
-// centre line passes within the join tolerance of a ground end (`topology::StrokeGrade`'s end
-// join; a bridge's end at its support, as the class inference found it). A stroke from a bridge's
+// (the endpoint snap's sphere, as the validation graph joins it), the bridge span an end is
+// snapped onto (`PreparedRoadInput::joined_spans`, B1) with the bridges at its nodes, and the
+// standard road whose centre line passes within the join tolerance of a ground end
+// (`topology::StrokeGrade`'s end join; a bridge's end at its support, as the class inference
+// found it). A stroke from a bridge's
 // terminal or abutment, or a bridge from a road mid-span, starts on the deck it joins.
-// `O(log E + K x profile points)`.
+// `O(log E + K x profile points + degree)`.
 fn joined_edges(prepared_input: &PreparedRoadInput, graph: &RegionGraph) -> Vec<usize> {
     let points = &prepared_input.points;
     let mut joined = Vec::new();
@@ -91,6 +149,19 @@ fn joined_edges(prepared_input: &PreparedRoadInput, graph: &RegionGraph) -> Vec<
             .flatten();
         if let Some(node) = node {
             joined.extend_from_slice(graph.node_adjacency(graph.get_valid_node(node)));
+            continue;
+        }
+        if let Some(span) = prepared_input.joined_spans[end] {
+            // The span and the bridge decks it continues at its nodes: the junction on the deck
+            // meets them at its level, and the junction rules decide how close it stands to them.
+            joined.push(span);
+            let span = graph.edge(span);
+            for node in [span.start_node, span.end_node] {
+                joined.extend(
+                    (graph.node_adjacency(graph.get_valid_node(node)).iter())
+                        .filter(|&&arm| graph.edge(arm).class == EdgeClass::Bridge),
+                );
+            }
             continue;
         }
         if prepared_input.elevated_ends[end] {

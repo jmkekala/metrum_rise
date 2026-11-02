@@ -216,6 +216,11 @@ fn validation_detail(
             ),
             None,
         ),
+        "tunnel_join" => (
+            "the end is snapped onto a tunnel inside its bore; roads meet a tunnel at its portals"
+                .to_owned(),
+            None,
+        ),
         "tunnel_crossing" => (
             "the tunnel crosses another tunnel or meets a road inside its bore".to_owned(),
             None,

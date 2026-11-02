@@ -20,8 +20,9 @@ const INTERSECTION_NODE_CAPTURE_EPSILON: f32 = 0.05;
 /// How a new edge meets the roads it reaches (`ROAD-99`, grade separation by structure): two
 /// roads meet, at a crossing, a mid-span end join or a node the edge passes through, only where
 /// both are on the ground. A structure (a bridge, or a tunnel's bore) meets other roads at its
-/// own nodes only and crosses everything else without a node, whatever the heights; the road
-/// tool's clearance rules refuse the crossings too close to keep (`road_edit`).
+/// own nodes, and at the end of a road snapped onto its span (follow-up B1), and crosses
+/// everything else without a node, whatever the heights; the road tool's clearance rules refuse
+/// the crossings too close to keep (`road_edit`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StrokeGrade {
     // The geometry factors (segment index + t) of the edge's structure, inclusive: the whole of
@@ -31,6 +32,9 @@ pub(crate) struct StrokeGrade {
     // mid-span: a ground road's ends, a tunnel stroke's approach ends, a bridge's ends the class
     // inference found at its support.
     ground_ends: [bool; 2],
+    // The structure span each end, start then end, joins mid-span whatever its class (follow-up
+    // B1): the bridge span the road tool snapped it onto. Such an end joins no other span.
+    joined_spans: [Option<usize>; 2],
 }
 
 impl StrokeGrade {
@@ -38,6 +42,7 @@ impl StrokeGrade {
     pub(crate) const GROUND: Self = Self {
         structure: None,
         ground_ends: [true, true],
+        joined_spans: [None; 2],
     };
 
     /// A bridge, all structure, with the ends at its support that `ground_ends` names.
@@ -45,6 +50,7 @@ impl StrokeGrade {
         Self {
             structure: Some([0.0, f32::INFINITY]),
             ground_ends,
+            joined_spans: [None; 2],
         }
     }
 
@@ -54,7 +60,23 @@ impl StrokeGrade {
         Self {
             structure: Some([first as f32, last as f32]),
             ground_ends: [first > 0, last + 1 < knots],
+            joined_spans: [None; 2],
         }
+    }
+
+    /// This grade with its ends joining the structure spans `spans` (start, end) mid-span
+    /// (`ROAD-99` follow-up B1): the spans the road tool snapped them onto, in the ids of the
+    /// graph the edge is added to.
+    pub(crate) fn joining_spans(self, joined_spans: [Option<usize>; 2]) -> Self {
+        Self {
+            joined_spans,
+            ..self
+        }
+    }
+
+    /// The joined spans renamed by `local` (a committed edge id to its copy in an excerpt).
+    pub(crate) fn map_joined_spans(self, local: impl Fn(usize) -> usize) -> Self {
+        self.joining_spans(self.joined_spans.map(|span| span.map(&local)))
     }
 
     /// The grade of an edge of `class` added without a road-tool plan: a standard edge is a
@@ -582,9 +604,10 @@ fn collect_crossing_splits(
 
 /// Checks endpoints of the new edge for snapping to existing edges or nodes.
 ///
-/// An end joins a span mid-span only when both stand on the ground (`ROAD-99`): a ground end of
-/// the new edge (`grade`) and a standard span. A structure's span takes no mid-span join; a road
-/// meets it at its nodes, through the node snap.
+/// An end joins a span mid-span when both stand on the ground (`ROAD-99`): a ground end of the
+/// new edge (`grade`) and a standard span; or when the road tool snapped the end onto the span,
+/// a bridge's among them (`grade`'s joined spans, follow-up B1), and then that span only. A
+/// structure's span takes no other mid-span join; a road meets it at its nodes.
 fn collect_endpoint_snap_splits(
     graph: &mut RegionGraph,
     edge_id: usize,
@@ -601,7 +624,15 @@ fn collect_endpoint_snap_splits(
 
     for &other_id in candidates {
         let other = graph.edge(other_id);
-        if edge_id == other_id || other.deleted || other.class != EdgeClass::Standard {
+        if edge_id == other_id || other.deleted {
+            continue;
+        }
+        let standard = other.class == EdgeClass::Standard;
+        let joins = |idx: usize| match grade.joined_spans[idx] {
+            Some(span) => span == other_id,
+            None => standard && grade.ground_ends[idx],
+        };
+        if !joins(0) && !joins(1) {
             continue;
         }
 
@@ -609,7 +640,7 @@ fn collect_endpoint_snap_splits(
         let edge2_geo_ds = downsample(&edge2_geo_full, ISECT_MIN_STEP);
 
         for (idx, &p) in endpoints.iter().enumerate() {
-            if !grade.ground_ends[idx] {
+            if !joins(idx) {
                 continue;
             }
             let factor_t = if idx == 0 {

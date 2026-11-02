@@ -5,7 +5,9 @@
 //! them, on the bounded post-edit graph excerpt that also yields the shared
 //! [`RoadTopologyPlan`].
 
-use super::bridge::{BRIDGE_TOO_LOW_REASON, ROAD_UNDER_BRIDGE_M, deck_to_deck_m};
+use super::bridge::{
+    BRIDGE_TOO_LOW_REASON, ROAD_UNDER_BRIDGE_M, TUNNEL_JOIN_REASON, deck_to_deck_m,
+};
 use super::input::{
     PREVIEW_CLEARANCE_M, PreparedRoadInput, ROAD_PROFILE_MAX_GRADE, is_surface_edge,
 };
@@ -282,6 +284,13 @@ fn profile_validation(
 
     if require_length && stroke_too_short(prepared_points) {
         return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
+    }
+    // An end snapped onto a tunnel inside its bore (`ROAD-99` follow-up B1): roads meet a tunnel
+    // at its portals.
+    if (prepared_input.joined_spans.into_iter().flatten())
+        .any(|span| graph.edge(span).class == EdgeClass::Tunnel)
+    {
+        return validation.with_invalid_reason(TUNNEL_JOIN_REASON);
     }
     if let Some(forced_grade) = prepared_input.forced_grade {
         let mut validation = validation.with_invalid_reason(PREVIEW_TOO_STEEP_REASON);
@@ -667,6 +676,9 @@ fn build_validation_graph(
         );
     }
 
+    // The spans the stroke's ends are snapped onto lie within the end-join tolerance of its
+    // points, inside the excerpt's pad.
+    let grade = grade.map_joined_spans(|span| copied_edges[&span]);
     let start_node = validation_graph_endpoint_node(
         &mut validation_graph,
         existing_graph,

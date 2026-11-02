@@ -12,6 +12,7 @@ use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
 use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction::find_intersection_2d;
+use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::road_edit::RoadPreviewValidation;
 use crate::simulation::network::types::EdgeClass;
 use std::collections::BTreeMap;
@@ -284,6 +285,221 @@ fn a_bridge_starts_from_a_road_mid_span() {
         2,
         "the road is split at the bridge"
     );
+}
+
+// B1, the `ROAD-99` follow-up: a stroke whose end is snapped onto a bridge's span joins the span
+// there. `deck(6.0)` runs from (-30, 6, 0) to (30, 6, 0); its middle lies 30 m from its nodes,
+// where the road tool's cursor, snapped to the span, reports the deck's graph height.
+const MID_SPAN: Vector3 = Vector3::new(0.0, 6.0, 0.0);
+
+// The live canonical node standing within 0.05 m of `at` in plan.
+fn node_at(core: &SimCore, at: Vector3) -> Option<u32> {
+    let graph = &core.region_graph;
+    (0..graph.node_count() as u32).find(|&node| {
+        let pos = graph.node(node).pos;
+        graph.get_valid_node(node) == node
+            && !graph.node_adjacency(node).is_empty()
+            && (pos.x - at.x).hypot(pos.z - at.z) < 0.05
+    })
+}
+
+fn live_arms(core: &SimCore, node: u32) -> Vec<usize> {
+    let graph = &core.region_graph;
+    (graph.node_adjacency(node).iter().copied())
+        .filter(|&edge| !graph.edge(edge).deleted)
+        .collect()
+}
+
+// Draws `stroke` onto the 6 m bridge's middle and checks the join: the hover check, the preview
+// and the commit accept it; the bridge is split there into two bridge edges meeting the stroke at
+// one junction on the deck, at the deck's height; every arm there is a structure, so the junction
+// is not grounded and none takes buildings; its node piece and its lanes are built, its
+// connectors join the stroke to both halves; undo restores the network and every piece bitwise.
+fn assert_joins_mid_span(stroke: &[Vector3], case: &str) -> SimCore {
+    let mut core = flat();
+    assert_eq!(draw(&mut core, &deck(6.0), false, true).reasons(), ["valid"; 3]);
+    let (before, before_pieces) = (network(&core), pieces(&core));
+    let drawn = draw(&mut core, stroke, false, true);
+    assert_eq!(drawn.reasons(), ["valid"; 3], "{case}: {:?}", drawn.exact);
+    let bridges = live(&core, EdgeClass::Bridge);
+    assert_eq!(bridges.len(), 3, "{case}: the bridge split and the stroke");
+    assert!(live(&core, EdgeClass::Standard).is_empty(), "{case}");
+    let node = node_at(&core, MID_SPAN).expect("a junction mid-span");
+    let graph = &core.region_graph;
+    assert_eq!(
+        graph.node(node).pos.y.to_bits(),
+        MID_SPAN.y.to_bits(),
+        "{case}: the junction stands on the deck"
+    );
+    let arms = live_arms(&core, node);
+    assert_eq!(arms.len(), 3, "{case}");
+    assert!(!graph.grounded_node(node), "{case}: a junction on a deck");
+    assert!(
+        bridges.iter().all(|&edge| !graph.takes_buildings(edge)),
+        "{case}: a bridge takes no frontage"
+    );
+    let roadbed = &core.transit_network.roadbed;
+    assert!(roadbed.node_piece(node).is_some(), "{case}: the node piece");
+    assert!(roadbed.failed_nodes().is_empty(), "{case}");
+    let lanes = &core.transit_network.lane_system;
+    let node_lanes = &lanes.node_lanes[&(node as usize)];
+    for &arm in &arms {
+        let joined = node_lanes.iter().any(|&id| {
+            let lane = &lanes.lanes[id];
+            lane.next_lanes.iter().any(|&next| {
+                let next = &lanes.lanes[next];
+                next.edge_id == arm && next.lane_type == LaneType::Vehicle
+            })
+        });
+        assert!(joined, "{case}: a connector leads into arm {arm}");
+    }
+    assert!(core.undo_action_internal(), "{case}");
+    core.precompute_road_mesh_data();
+    assert!(network(&core) == before, "{case}: undo");
+    assert!(pieces(&core) == before_pieces, "{case}: undo restores every piece");
+    core
+}
+
+// B1: a bridge stroke whose end is snapped onto a bridge mid-span joins it there. Before, a
+// structure's span took no mid-span join, so the stroke ended on its own node on the deck and
+// was refused as `bridge_too_low` 0.00 m (the user's play-test, 2026-11-02).
+#[test]
+fn a_bridge_stroke_joins_a_bridge_mid_span() {
+    assert_joins_mid_span(&[Vector3::new(0.0, 6.0, 40.0), MID_SPAN], "bridge stroke");
+}
+
+// B1: a road drawn from the ground and snapped onto a bridge mid-span climbs to it and joins it
+// there, from either end; the class inference makes it a bridge, as at the bridge's nodes.
+#[test]
+fn a_road_from_the_ground_joins_a_bridge_mid_span() {
+    let ground = Vector3::new(0.0, 0.0, 80.0);
+    assert_joins_mid_span(&[ground, MID_SPAN], "climbing to the deck");
+    assert_joins_mid_span(&[MID_SPAN, ground], "leaving the deck");
+}
+
+// B1: the junction a mid-span join builds on the deck is the one a join at the bridge's node
+// builds there: the same pieces (node piece, the bridge's two halves, the stroke's span), each
+// the same set of triangles bitwise, and the same crossings (the default zebra rule) and
+// connectors. The node join's bridge is drawn as two strokes meeting at
+// (0, 6, 0); its edges carry other ids, which order a node piece's vertices differently.
+#[test]
+fn a_mid_span_join_builds_what_a_node_join_builds() {
+    let stroke = [Vector3::new(0.0, 6.0, 40.0), MID_SPAN];
+    let built = |bridge: &[[Vector3; 2]]| {
+        let mut core = flat();
+        for part in bridge {
+            assert_eq!(draw(&mut core, part, false, true).reasons(), ["valid"; 3]);
+        }
+        assert_eq!(draw(&mut core, &stroke, false, true).reasons(), ["valid"; 3]);
+        let mut meshes: Vec<Vec<[[u64; 3]; 3]>> = (pieces(&core).into_values())
+            .map(|(positions, triangles)| {
+                let mut triangles: Vec<[[u64; 3]; 3]> = (triangles.iter())
+                    .map(|triangle| {
+                        let mut corners = triangle.map(|corner| positions[corner as usize]);
+                        corners.sort();
+                        corners
+                    })
+                    .collect();
+                triangles.sort();
+                triangles
+            })
+            .collect();
+        meshes.sort();
+        // The junction's crossings (the default zebra rule) and its lanes, by kind.
+        let lanes = &core.transit_network.lane_system;
+        let node = node_at(&core, MID_SPAN).expect("the junction");
+        let node_lanes = &lanes.node_lanes[&(node as usize)];
+        let count = |crossing: bool, kind: LaneType| {
+            (node_lanes.iter())
+                .filter(|&&id| {
+                    lanes.crosswalk(id).is_some() == crossing && lanes.lanes[id].lane_type == kind
+                })
+                .count()
+        };
+        let lanes = [
+            count(true, LaneType::Foot),
+            count(false, LaneType::Foot),
+            count(false, LaneType::Vehicle),
+        ];
+        (meshes, lanes)
+    };
+    let [west, east] = deck(6.0);
+    let at_node = built(&[[west, MID_SPAN], [MID_SPAN, east]]);
+    let mid_span = built(&[deck(6.0)]);
+    assert_eq!(at_node.0.len(), 4, "a node piece and three spans");
+    assert!(at_node.0 == mid_span.0, "the same junction on the deck");
+    assert!(at_node.1[0] > 0, "zebras on the deck: {:?}", at_node.1);
+    assert_eq!(at_node.1, mid_span.1, "the same crossings and connectors");
+}
+
+// B1: a road ending on the ground under a bridge does not join it: its end stands on the
+// ground's level, not the deck's. Under a 6 m deck it passes; under a 4 m deck it is refused as
+// too low, which it is.
+#[test]
+fn a_road_ending_under_a_bridge_does_not_join_it() {
+    for (deck_m, passes) in [(6.0, true), (4.0, false)] {
+        let case = format!("deck {deck_m} m");
+        let mut core = flat();
+        assert_eq!(draw(&mut core, &deck(deck_m), false, true).reasons(), ["valid"; 3]);
+        let (before, before_pieces) = (network(&core), pieces(&core));
+        let road = [Vector3::new(0.0, 0.0, 40.0), Vector3::ZERO];
+        let drawn = draw(&mut core, &road, false, true);
+        if !passes {
+            assert_too_low(&core, &drawn, deck_m, &before, &before_pieces, &case);
+            continue;
+        }
+        assert_eq!(drawn.reasons(), ["valid"; 3], "{case}");
+        assert_eq!(live(&core, EdgeClass::Bridge).len(), 1, "{case}: not split");
+        assert_eq!(live(&core, EdgeClass::Standard).len(), 1, "{case}");
+    }
+}
+
+// B1: a refused mid-span join names its real cause, never the clearance under the bridge it
+// joins or the deck that bridge continues: a ramp from 12 m away climbs 6 m (too steep), a stroke
+// meets the deck at 7.6 degrees (too sharp an angle between the junction's arms), and a join 5 m
+// from the bridge's bend node at (0, 6, 0) leaves the arm between them too short. The hover
+// check runs no junction rule and does not refuse these.
+#[test]
+fn a_refused_mid_span_join_names_its_cause() {
+    let [west, east] = deck(6.0);
+    let bent = [[west, MID_SPAN], [MID_SPAN, east]];
+    let near_bend = Vector3::new(5.0, 6.0, 0.0);
+    for (bridge, stroke, cause) in [
+        (&[deck(6.0)][..], [Vector3::new(0.0, 0.0, 12.0), MID_SPAN], "road_too_steep"),
+        (&[deck(6.0)], [Vector3::new(-60.0, 6.0, 8.0), MID_SPAN], "junction_arm_angle"),
+        (&bent, [Vector3::new(5.0, 6.0, 40.0), near_bend], "junction_arm_too_short"),
+    ] {
+        let mut core = flat();
+        for part in bridge {
+            assert_eq!(draw(&mut core, part, false, true).reasons(), ["valid"; 3]);
+        }
+        let before = network(&core);
+        let drawn = draw(&mut core, &stroke, false, true);
+        assert_eq!(
+            drawn.reasons(),
+            ["valid", cause, cause],
+            "{cause}: {:?}",
+            drawn.exact
+        );
+        assert!(network(&core) == before, "{cause}: nothing committed");
+    }
+}
+
+// B1: a road snapped onto a tunnel inside its bore is still refused, with its own reason. On the
+// 1:2 hill the bore runs 15 m under the flank at x = -50; the road comes along the flank and ends
+// at the bore's graph height there, as the cursor snapped to the bore reports it.
+#[test]
+fn a_road_does_not_join_a_tunnel_mid_bore() {
+    let mut core = cone_hill_core(80.0, 0.5);
+    assert_eq!(draw(&mut core, &THROUGH_HILL, true, true).reasons(), ["valid"; 3]);
+    let bore = live(&core, EdgeClass::Tunnel);
+    assert_eq!(bore.len(), 1);
+    let profile = core.region_graph.edge(bore[0]).physical_geometry.clone();
+    let end = Vector3::new(-50.0, RegionGraph::profile_height_at(&profile, -50.0, 0.0), 0.0);
+    let before = network(&core);
+    let drawn = draw(&mut core, &[Vector3::new(-30.0, 15.0, -40.0), end], false, true);
+    assert_eq!(drawn.reasons(), ["tunnel_join"; 3], "{:?}", drawn.exact);
+    assert!(network(&core) == before);
 }
 
 // The live standard edges cross in plan nowhere without a node.
@@ -582,3 +798,4 @@ fn scan_crossings_separated_by_height_alone() {
         println!("{}", scan_report(&name, &core.region_graph));
     }
 }
+

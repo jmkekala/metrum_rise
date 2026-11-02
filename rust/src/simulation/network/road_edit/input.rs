@@ -52,6 +52,11 @@ pub(crate) struct PreparedRoadInput {
     /// class inference found above their support, which join no road mid-span. A standard
     /// stroke has none; a tunnel stroke's approach ends follow from its bore.
     pub(crate) elevated_ends: [bool; 2],
+    /// The structure span each end, start then end, is snapped onto (`ROAD-99` follow-up B1,
+    /// [`super::bridge::snapped_structure_span`]), in the committed graph's edge ids: a bridge's
+    /// span is split there and the end joins it at a junction on the deck; a tunnel's is refused
+    /// (`tunnel_join`). `None` for an end at a node or on no structure's level.
+    pub(crate) joined_spans: [Option<usize>; 2],
 }
 
 // A stroke's prepared points, its inferred class, the grade a refused standard solve was forced
@@ -71,6 +76,7 @@ impl PreparedRoadInput {
             }
             (None, class) => StrokeGrade::of_class(class),
         }
+        .joining_spans(self.joined_spans)
     }
 }
 
@@ -145,6 +151,13 @@ fn prepare_snapped_road_input_to_visible_surface(
     let (mut points, mut class, forced_grade, mut elevated_ends) =
         prepare_road_input_points_to_visible_surface(raw_points, terrain, support);
     snap_road_endpoints_to_existing_nodes(&mut points, graph);
+    let joined_spans = snap_road_endpoints_to_structure_spans(
+        &mut points,
+        raw_points,
+        terrain,
+        graph,
+        support,
+    );
     if class == EdgeClass::Standard && is_terminal_bridge_transition(&points, terrain, graph)
     {
         // The ramp's elevated end is the bridge terminal it joins; its other end is grounded.
@@ -160,7 +173,49 @@ fn prepare_snapped_road_input_to_visible_surface(
         tunnel: false,
         forced_grade: forced_grade.filter(|_| class == EdgeClass::Standard),
         elevated_ends,
+        joined_spans,
     }
+}
+
+// The structure span each end of the raw stroke is snapped onto (`ROAD-99` follow-up B1): the
+// level nearest the end's authored height between the span's graph profile and the ground
+// under it (the support, else the terrain). A joined end takes the span's graph height, as an
+// end at a node takes the node's (`snap_road_endpoints_to_existing_nodes`). Two span queries.
+fn snap_road_endpoints_to_structure_spans(
+    prepared_points: &mut [Vector3],
+    raw_points: &[Vector3],
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    support: &mut StrokeSupport,
+) -> [Option<usize>; 2] {
+    let (Some(&first), Some(&last)) = (raw_points.first(), raw_points.last()) else {
+        return [None; 2];
+    };
+    if prepared_points.len() < 2 {
+        return [None; 2];
+    }
+    let last_idx = prepared_points.len() - 1;
+    let mut joined = [None; 2];
+    for (end, (raw, idx)) in [(first, 0), (last, last_idx)].into_iter().enumerate() {
+        if graph
+            .find_node_within(prepared_points[idx], config::SNAP_TOLERANCE)
+            .is_some()
+        {
+            continue;
+        }
+        let (ground_m, _) = road_profile_support_height(
+            terrain,
+            &mut |x, z| support.height_at(x, z),
+            raw.x,
+            raw.z,
+        );
+        if let Some((span, deck_m)) = super::bridge::snapped_structure_span(graph, raw, ground_m)
+        {
+            prepared_points[idx].y = deck_m;
+            joined[end] = Some(span);
+        }
+    }
+    joined
 }
 
 /// Prepares road-tool input with optional endpoint snapping to the existing road graph, pinned
@@ -224,6 +279,7 @@ pub(super) fn prepare_road_input_excluding(
         tunnel: false,
         forced_grade,
         elevated_ends,
+        joined_spans: [None; 2],
     };
     (prepared, Vec::new())
 }

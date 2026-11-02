@@ -11,13 +11,15 @@ mod memory;
 
 // The measured stroke: the T's side road on flat ground, a tunnel through the hill south of the
 // T, a road over that tunnel (`ROAD-61` round R8h), or a road under a bridge south of the T on
-// flat ground (`ROAD-99`).
+// flat ground (`ROAD-99`), or a road climbing from the ground to join that bridge mid-span
+// (`ROAD-99` follow-up B1).
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
     Tunnel,
     OverTunnel,
     UnderBridge,
+    JoinBridge,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -67,6 +69,20 @@ fn populated_road_under_bridge_plan_scaling() {
         false,
         CellScenario::None,
         Measured::UnderBridge,
+    );
+}
+
+// `ROAD-99` follow-up B1 locality: a road from the ground joining that bridge mid-span, which
+// splits the bridge, planned as the remote city grows.
+#[test]
+#[ignore = "unprofiled mid-span bridge join locality; run alone with --release --ignored --nocapture"]
+fn populated_bridge_join_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::JoinBridge,
     );
 }
 
@@ -147,8 +163,11 @@ fn measure_populated_road_plan_scaling(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
     );
-    if matches!(measured, Measured::OverTunnel | Measured::UnderBridge) {
-        // The tunnel the measured road crosses over, or the bridge it passes under.
+    if matches!(
+        measured,
+        Measured::OverTunnel | Measured::UnderBridge | Measured::JoinBridge
+    ) {
+        // The tunnel the measured road crosses over, or the bridge it passes under or joins.
         let (points, tunnel) = if measured == Measured::OverTunnel {
             let points = [(0.0, -320.0), (0.0, -80.0)].map(|(x, z)| Vector3::new(x, 0.0, z));
             (points, true)
@@ -407,6 +426,10 @@ fn measure_populated_road_plan_scaling(
                 Vector3::new(0.0, 0.0, -180.0),
                 Vector3::new(0.0, 0.0, -120.0),
             ],
+            Measured::JoinBridge => vec![
+                Vector3::new(0.0, 0.0, -210.0),
+                Vector3::new(0.0, 6.0, -150.0),
+            ],
         };
         let request = || RoadPreviewRequest {
             surface_generation: generation,
@@ -451,6 +474,7 @@ fn measure_populated_road_plan_scaling(
                 "field_reservations": fields, "tunnel": tunnel,
                 "over_tunnel": measured == Measured::OverTunnel,
                 "under_bridge": measured == Measured::UnderBridge,
+                "join_bridge": measured == Measured::JoinBridge,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
