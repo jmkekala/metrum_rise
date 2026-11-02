@@ -473,7 +473,11 @@ impl SimulationNode {
             "bkw_lanes": i64::from(edge.bkw_lanes),
             "width": edge.width,
             "class": edge.class as i64,
-            "editable": edge.validate_lanes(edge.fwd_lanes, edge.bkw_lanes).is_ok(),
+            "median_style": i64::from(crate::simulation::network::graph::RoadMedian::style_code(edge.median)),
+            "median_width": edge.median.map_or(0.0, |median| median.width_m),
+            "editable": edge
+                .validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, edge.median)
+                .is_ok(),
         }
     }
 
@@ -488,10 +492,10 @@ impl SimulationNode {
         bkw: i32,
     ) -> VarDictionary {
         let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
-        match self
-            .lock_core()
-            .preview_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw))
-        {
+        let mut core = self.lock_core();
+        // The road keeps its median until the window edits it (R3b2).
+        let median = core.edge_median(edge_id);
+        match core.preview_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw), median) {
             None => vdict! { "is_valid": true },
             Some(rejection) => vdict! {
                 "is_valid": false,
@@ -510,7 +514,8 @@ impl SimulationNode {
         let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
         let (snapshot, publication) = {
             let mut core = self.lock_core();
-            if !core.set_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw)) {
+            let median = core.edge_median(edge_id);
+            if !core.set_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw), median) {
                 return false;
             }
             let publication = core.finalize_network_render_products();

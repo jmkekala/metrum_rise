@@ -170,6 +170,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            median: None,
         });
 
         // 2. Tick once - source cells should be positive
@@ -247,6 +248,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            median: None,
         });
 
         let mut graph_high = graph_low.clone();

@@ -145,6 +145,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
     let mut zoning = ZoningSystem::new(&config);
     zoning
@@ -199,6 +200,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     (graph, edge_id)
@@ -1600,6 +1602,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
 
     let mut zoning = ZoningSystem::new(&config);

@@ -203,6 +203,7 @@ mod tests {
                 deleted: false,
                 no_building_spawn: false,
                 vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+                median: None,
             });
             graph.edge_mut(edge).deleted = deleted;
         }

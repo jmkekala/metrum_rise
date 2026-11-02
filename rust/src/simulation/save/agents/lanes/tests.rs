@@ -43,6 +43,7 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
     }
     // add_edge publishes a live edge regardless of the supplied deleted flag.

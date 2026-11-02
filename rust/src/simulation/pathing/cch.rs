@@ -390,6 +390,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            median: None,
         };
 
         let edges = vec![

@@ -83,6 +83,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access,
+        median: None,
     }
 }
 

@@ -92,6 +92,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
     }
     if spur {
@@ -116,6 +117,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
     }
     core.region_graph.rebuild_adjacency_list();

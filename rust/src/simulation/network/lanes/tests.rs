@@ -36,6 +36,7 @@ fn test_lane_geometry_and_length() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -96,6 +97,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -221,6 +223,7 @@ fn test_highway_no_sidewalks() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -264,6 +267,7 @@ fn test_dedicated_footpath_centering() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -331,6 +335,7 @@ fn build_pedestrian_junction(
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            median: None,
         }));
     }
     graph.rebuild_adjacency_list();
@@ -605,6 +610,7 @@ fn test_rht_lane_offsets() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -754,6 +760,7 @@ fn test_crosswalk_counts() {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            median: None,
         });
     }
     graph.rebuild_adjacency_list();
@@ -1099,6 +1106,7 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
                 no_building_spawn: false,
                 vehicle_frontage_access:
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+                median: None,
             })
         };
 
@@ -1289,6 +1297,7 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     })
 }
 

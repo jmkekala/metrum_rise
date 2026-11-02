@@ -121,6 +121,7 @@ pub(super) fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     }
 }
 
@@ -152,6 +153,7 @@ pub(super) fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     }
 }
 

@@ -914,6 +914,7 @@ fn add_test_border_road(core: &mut SimCore) {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
     core.transit_network
         .lane_system
@@ -1151,6 +1152,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     }
 }
 

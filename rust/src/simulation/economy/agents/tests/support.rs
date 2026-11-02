@@ -90,6 +90,7 @@ pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     }
 }
 
@@ -313,6 +314,7 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     };
     graph.add_edge(make(n0, n1, 0.0, 100.0));
     graph.add_edge(make(n1, n2, 100.0, 200.0));
@@ -357,6 +359,7 @@ pub(super) fn build_4way_junction(
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        median: None,
     };
     let ew = graph.add_edge(arm(nw, nc, -100.0, 0.0, 0.0, 0.0));
     // One-way crosses need outgoing arms as well as incoming arms.

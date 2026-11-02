@@ -49,6 +49,7 @@ fn grid(side: u32) -> RegionGraph {
                     no_building_spawn: false,
                     vehicle_frontage_access:
                         crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+                    median: None,
                 });
             }
         }

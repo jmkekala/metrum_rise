@@ -75,11 +75,11 @@ fn a_class_change_publishes_the_chunks_a_full_emission_draws_and_undoes() {
 fn edit_lanes(core: &mut SimCore, edge: usize, fwd: u8, bkw: u8) -> String {
     let before = (products(core), core.undo_stack.len());
     let preview = core
-        .preview_edge_cross_section_internal(edge as i32, fwd, bkw)
+        .preview_edge_cross_section_internal(edge as i32, fwd, bkw, None)
         .map(|refusal| refusal.reason)
         .unwrap_or_default();
     assert_eq!(products(core), before.0, "a preview changes nothing");
-    let applied = core.set_edge_cross_section_internal(edge as i32, fwd, bkw);
+    let applied = core.set_edge_cross_section_internal(edge as i32, fwd, bkw, None);
     assert_eq!(
         applied,
         preview.is_empty(),

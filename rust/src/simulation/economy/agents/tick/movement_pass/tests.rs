@@ -381,6 +381,7 @@ fn node_entry_fixture(groups: usize, cars: usize) -> (AgentSystem, TransitNetwor
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
         let lane = network.lane_system.lanes.len();
         network.lane_system.lanes.push(Lane {

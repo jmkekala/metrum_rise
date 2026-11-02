@@ -372,6 +372,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            median: None,
         };
         edges.push(graph.add_edge(e));
     }

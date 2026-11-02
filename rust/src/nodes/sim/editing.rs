@@ -2737,6 +2737,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         })
     }
 
@@ -2783,6 +2784,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
 
         core.set_vehicle_frontage_access_internal(0, 0);
@@ -2952,6 +2954,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
         core.region_graph.rebuild_adjacency_list();
         let residential = core
@@ -3695,6 +3698,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
         core.region_graph.rebuild_adjacency_list();
 
@@ -3748,6 +3752,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
         core.region_graph.rebuild_adjacency_list();
         core.zoning

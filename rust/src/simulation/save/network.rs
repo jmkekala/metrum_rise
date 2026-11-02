@@ -255,6 +255,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 deleted: false,
                 no_building_spawn,
                 vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(15)?)?,
+                median: None,
             });
         }
     }

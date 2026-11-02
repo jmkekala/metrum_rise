@@ -44,6 +44,7 @@ pub(super) fn make_straight_road_span(start_x: f32, end_x: f32) -> (RegionGraph,
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
     (graph, edge_idx)
 }
@@ -70,6 +71,7 @@ pub(super) fn add_vertical_road_at_x(graph: &mut RegionGraph, x: f32) -> usize {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     })
 }
 
@@ -110,6 +112,7 @@ pub(super) fn make_quarter_arc_road(radius_m: f32) -> (RegionGraph, usize) {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        median: None,
     });
     (graph, edge_idx)
 }

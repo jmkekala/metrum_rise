@@ -3,6 +3,7 @@
 //! Core graph data structures: Nodes, Edges, and the RegionGraph container.
 
 use super::super::types::*;
+use super::RoadMedian;
 use godot::prelude::*;
 use rayon::prelude::*;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
@@ -69,7 +70,8 @@ pub struct Edge {
     pub allowed_types: u8,
     /// Classification (Standard, Bridge, Tunnel). Multi-modal foundation (Item 26).
     pub class: EdgeClass,
-    /// Total road width in metres (asphalt + sidewalks).
+    /// Carriageway width in metres, the median included (`ROAD-80`), kerbs and sidewalks
+    /// excluded: the roadbed profile adds those (`roadbed::RoadProfile::for_edge`).
     pub width: f32,
     /// Number of forward (start->end) vehicle lanes.
     pub fwd_lanes: u8,
@@ -100,6 +102,8 @@ pub struct Edge {
     pub no_building_spawn: bool,
     /// Controls whether buildings along this edge may directly use only same-side lanes or both carriageways for car access.
     pub vehicle_frontage_access: VehicleFrontageAccess,
+    /// The median between the two lane groups, if any (`ROAD-80`).
+    pub median: Option<RoadMedian>,
 }
 
 impl Edge {

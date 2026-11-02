@@ -10,5 +10,6 @@ pub mod rebuild;
 /// Chunk-based spatial index for fast distance and AABB queries.
 pub mod spatial;
 
+pub use cross_section::{MedianStyle, RoadMedian};
 pub(crate) use data::RegionGraphUndoDelta;
 pub use data::{Edge, Node, RegionGraph};

@@ -1120,6 +1120,7 @@ pub fn split_edge(
     let class = old_edge.class;
     let no_building_spawn = old_edge.no_building_spawn;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
+    let median = old_edge.median;
 
     // Remove from spatial index BEFORE updating geometry so the AABB still matches
     // the current entry in the R-tree. Updating geometry first causes a AABB mismatch
@@ -1158,6 +1159,7 @@ pub fn split_edge(
         deleted: false,
         no_building_spawn,
         vehicle_frontage_access,
+        median,
     };
     let (cost_new, length_new) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);

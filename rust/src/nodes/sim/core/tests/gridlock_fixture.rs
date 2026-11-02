@@ -68,6 +68,7 @@ fn ring_core() -> SimCore {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            median: None,
         });
     }
     core.transit_network
