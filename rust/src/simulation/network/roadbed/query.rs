@@ -325,12 +325,13 @@ impl RoadbedSystem {
             .map(|(height_m, _)| height_m)
     }
 
-    /// Visits each exposed piece with a carriageway triangle at a world XZ point, in piece
-    /// order, with the height of its highest one there: what [`Self::carriageway_height_at`]
-    /// takes the maximum of, for callers that must leave some pieces out (`ROAD-68` open
-    /// question 16). A buried piece's carriageway lies in the hill under the ground
-    /// (`ROAD-61` round R8h): a stroke over a tunnel never meets it.
-    pub(crate) fn for_each_exposed_carriageway_top_at(
+    /// Visits each grounded piece with a carriageway triangle at a world XZ point, in piece
+    /// order, with the height of its highest one there, for callers that must leave some pieces
+    /// out (`ROAD-68` open question 16): the ground a stroke on the ground meets. A buried
+    /// piece's carriageway lies in the hill under the ground (`ROAD-61` round R8h) and a
+    /// bridge's stands above it (`ROAD-99`): a stroke over a tunnel or under a bridge meets
+    /// neither. A piece is grounded where a standard edge builds it.
+    pub(crate) fn for_each_grounded_carriageway_top_at(
         &self,
         x: f32,
         z: f32,
@@ -338,7 +339,7 @@ impl RoadbedSystem {
     ) {
         let point = RoadVec2::new(f64::from(x), f64::from(z));
         for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
-            if indexed.buried {
+            if !indexed.grounded {
                 continue;
             }
             if let Some((height_m, _)) =
