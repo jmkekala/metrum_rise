@@ -7,7 +7,7 @@
 //! Each connector is checked against the node's kerb corners once per lane rebuild; a
 //! violation is logged on the `traffic` debug channel, and nothing repairs the curve.
 
-use super::super::graph::RegionGraph;
+use super::super::graph::{Edge, RegionGraph};
 use super::super::roadbed::{ArmKey, Corner, EdgeEnd, MouthFrame, RoadVec2};
 use super::geometry::build_cum_dist;
 use super::rebuild::vehicle_lane_offset;
@@ -55,10 +55,15 @@ pub(crate) fn vehicle_mouth_frame(
     MouthFrame::at(graph, node, key, f64::from(clip))
 }
 
-/// Where vehicle lane `lane_idx` meets `frame`, the frame of its edge's `end`: its lateral offset
-/// (in the edge's forward frame, mirrored at the edge's end) on the frame's line.
-pub(crate) fn vehicle_lane_end(frame: &MouthFrame, end: EdgeEnd, lane_idx: i8) -> VehicleLaneEnd {
-    let forward_offset = f64::from(vehicle_lane_offset(lane_idx));
+/// Where vehicle lane `lane_idx` of `edge` meets `frame`, the frame of the edge's `end`: its
+/// lateral offset (in the edge's forward frame, mirrored at the edge's end) on the frame's line.
+pub(crate) fn vehicle_lane_end(
+    frame: &MouthFrame,
+    end: EdgeEnd,
+    edge: &Edge,
+    lane_idx: i8,
+) -> VehicleLaneEnd {
+    let forward_offset = f64::from(vehicle_lane_offset(edge, lane_idx));
     let lateral_m = match end {
         EdgeEnd::Start => forward_offset,
         EdgeEnd::End => -forward_offset,
@@ -113,7 +118,7 @@ pub(crate) fn build_vehicle_connections_at_node(
                     let Some(&lid) = lane_map.get(&(e_idx, is_fwd, lane_idx)) else {
                         continue;
                     };
-                    let lane_end = vehicle_lane_end(&frame, end, lane_idx);
+                    let lane_end = vehicle_lane_end(&frame, end, edge, lane_idx);
                     let leaves = is_fwd == (end == EdgeEnd::Start);
                     let list = if leaves { &mut outbound } else { &mut inbound };
                     list.push((e_idx, lane_idx, lid, lane_end));

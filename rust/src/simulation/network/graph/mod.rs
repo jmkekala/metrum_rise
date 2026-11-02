@@ -2,6 +2,7 @@
 
 //! Road network graph data structures and spatial indexing.
 
+mod cross_section;
 /// Core data structures for nodes and edges.
 pub mod data;
 /// Logic for rebuilding adjacency lists and connectivity.

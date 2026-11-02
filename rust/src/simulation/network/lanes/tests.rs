@@ -623,6 +623,91 @@ fn test_rht_lane_offsets() {
     assert!(l_bkw.geometry[0].z < 0.0);
 }
 
+// `ROAD-100`: one-way and uneven roads centre their lane groups in the carriageway, which the
+// profile centres on the centreline, so every lane runs mid-lane between the markings and none
+// sits on the kerb; symmetric roads keep their offsets. The lane ends on the mouths lie at the
+// same offsets.
+#[test]
+fn one_way_and_uneven_lanes_sit_on_the_carriageway() {
+    use super::super::roadbed::RoadProfile;
+    // (forward, backward, forward lanes' offsets outwards, backward lanes' offsets outwards), in
+    // the forward frame of an edge along +x (right-hand traffic: forward on +z).
+    let cases: [(u8, u8, &[f32], &[f32]); 6] = [
+        (1, 0, &[0.0], &[]),
+        (0, 1, &[], &[0.0]),
+        (0, 2, &[], &[1.75, -1.75]),
+        (2, 1, &[0.0, 3.5], &[-3.5]),
+        (3, 1, &[-1.75, 1.75, 5.25], &[-5.25]),
+        (2, 2, &[1.75, 5.25], &[-1.75, -5.25]),
+    ];
+    let side = if crate::config::DRIVE_ON_LEFT {
+        -1.0
+    } else {
+        1.0
+    };
+    let mut failures = Vec::new();
+    for (fwd, bkw, fwd_offsets, bkw_offsets) in cases {
+        let mut graph = RegionGraph::new();
+        let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let b = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let points = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)];
+        let edge = graph.add_edge(Edge {
+            start_node: a,
+            end_node: b,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            width: f32::from(fwd + bkw) * crate::config::LANE_WIDTH,
+            fwd_lanes: fwd,
+            bkw_lanes: bkw,
+            speed_limit: 50.0,
+            physical_length: 100.0,
+            geometry: points.clone(),
+            physical_geometry: points,
+            ..Default::default()
+        });
+        graph.rebuild_adjacency_list();
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        let half_m = RoadProfile::for_edge(graph.edge(edge)).carriageway_half_width_m();
+        for (is_fwd, expected) in [(true, fwd_offsets), (false, bkw_offsets)] {
+            let mut found: Vec<(i8, f32)> = Vec::new();
+            for lane in lanes.lanes.iter().filter(|lane| {
+                lane.edge_id == edge && lane.lane_type == LaneType::Vehicle && lane.is_fwd == is_fwd
+            }) {
+                let offset = lane.geometry[0].z;
+                for point in &lane.geometry {
+                    assert!(
+                        (point.z - offset).abs() < 1e-4,
+                        "{fwd}+{bkw}: lane {} bends off its offset {offset} at {point:?}",
+                        lane.lane_idx
+                    );
+                }
+                if offset.abs() + 0.5 * crate::config::LANE_WIDTH > half_m + 1e-4 {
+                    failures.push(format!(
+                        "{fwd}+{bkw}: lane {} at {offset} leaves the carriageway (half {half_m})",
+                        lane.lane_idx
+                    ));
+                }
+                found.push((lane.lane_idx, offset));
+            }
+            found.sort_by_key(|&(index, _)| index.unsigned_abs());
+            let offsets: Vec<f32> = found.iter().map(|&(_, offset)| offset * side).collect();
+            let at_expected = offsets.len() == expected.len()
+                && offsets
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, b)| (a - b).abs() < 1e-4);
+            if !at_expected {
+                failures.push(format!(
+                    "{fwd}+{bkw}: {} lanes at {offsets:?}, expected {expected:?}",
+                    if is_fwd { "forward" } else { "backward" }
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 #[test]
 fn test_crosswalk_counts() {
     let mut graph = RegionGraph::new();

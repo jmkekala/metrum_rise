@@ -426,11 +426,15 @@ pub(crate) fn measure_connectors(
             ) else {
                 continue;
             };
-            let end_in = vehicle_lane_end(&frame_in, source_end, source.lane_idx);
-            let end_out = vehicle_lane_end(&frame_out, target_end, target.lane_idx);
+            let (source_edge, target_edge) =
+                (graph.edge(source.edge_id), graph.edge(target.edge_id));
+            let end_in = vehicle_lane_end(&frame_in, source_end, source_edge, source.lane_idx);
+            let end_out = vehicle_lane_end(&frame_out, target_end, target_edge, target.lane_idx);
             let (out_in, out_out) = (flat64(end_in.outward), flat64(end_out.outward));
-            let reference_in = vehicle_lane_end(&mouth_in, source_end, source.lane_idx);
-            let reference_out = vehicle_lane_end(&mouth_out, target_end, target.lane_idx);
+            let reference_in =
+                vehicle_lane_end(&mouth_in, source_end, source_edge, source.lane_idx);
+            let reference_out =
+                vehicle_lane_end(&mouth_out, target_end, target_edge, target.lane_idx);
             let check_in = end_check(
                 source,
                 false,
@@ -595,9 +599,19 @@ pub(crate) fn measure_connectors(
 // road end, the reference screenshot fixtures' arm length. Even arms leave the hub from their
 // edge's start, odd ones from its end.
 fn star(arms: &[(f32, u8)]) -> RegionGraph {
+    let arms: Vec<_> = arms
+        .iter()
+        .map(|&(angle, lanes)| (angle, lanes, lanes))
+        .collect();
+    uneven_star(&arms)
+}
+
+// As [`star`], with `(angle in degrees, forward lanes, backward lanes)` per arm (`ROAD-100`):
+// forward runs away from the hub on even arms and towards it on odd ones.
+fn uneven_star(arms: &[(f32, u8, u8)]) -> RegionGraph {
     let mut graph = RegionGraph::new();
     let hub = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
-    for (index, &(angle_deg, lanes)) in arms.iter().enumerate() {
+    for (index, &(angle_deg, fwd_lanes, bkw_lanes)) in arms.iter().enumerate() {
         let (sin, cos) = angle_deg.to_radians().sin_cos();
         let far = graph.add_node(point(cos * 80.0, sin * 80.0, false), NodeType::Junction);
         let (a, b) = if index % 2 == 0 {
@@ -610,10 +624,10 @@ fn star(arms: &[(f32, u8)]) -> RegionGraph {
             a,
             b,
             vec![pa, pb],
-            f32::from(lanes) * 2.0 * config::LANE_WIDTH,
+            f32::from(fwd_lanes + bkw_lanes) * config::LANE_WIDTH,
         );
-        edge.fwd_lanes = lanes;
-        edge.bkw_lanes = lanes;
+        edge.fwd_lanes = fwd_lanes;
+        edge.bkw_lanes = bkw_lanes;
         graph.add_edge(edge);
     }
     finalize(&mut graph);
@@ -639,6 +653,16 @@ fn fixtures() -> Vec<(String, RegionGraph)> {
             star(&[(0.0, 1), (60.0, 1), (180.0, 1), (240.0, 1)]),
         ),
         ("bend_45".to_string(), star(&[(180.0, 1), (45.0, 1)])),
+        // `ROAD-100`: a one-way through road (west to east) with a two-way side road, and a
+        // 2+1 crossroads; their lanes end mid-lane on the mouths, not on the kerb.
+        (
+            "t_one_way".to_string(),
+            uneven_star(&[(0.0, 1, 0), (90.0, 1, 1), (180.0, 0, 1)]),
+        ),
+        (
+            "four_way_2x1".to_string(),
+            uneven_star(&[(0.0, 2, 1), (90.0, 2, 1), (180.0, 2, 1), (270.0, 2, 1)]),
+        ),
     ];
     fixtures.extend(footpath_fixtures(false).into_iter().filter(|(name, _)| {
         name.starts_with("t_beside_arm/") || name.starts_with("through_road/")

@@ -64,12 +64,13 @@ pub(super) fn sidewalk_offset(edge: &Edge, lane_idx: i8) -> f32 {
     side * centre_m * side_mul
 }
 
-/// Lateral offset of vehicle lane `lane_idx` in its edge's forward frame: forward lanes
-/// `0, 1, ..` and backward lanes `-1, -2, ..`, each half a lane further out than the last, on
-/// the driving side.
-pub(super) fn vehicle_lane_offset(lane_idx: i8) -> f32 {
+/// Lateral offset of vehicle lane `lane_idx` in `edge`'s forward frame: forward lanes
+/// `0, 1, ..` and backward lanes `-1, -2, ..`, each a lane further out than the last from the
+/// line between the two lane groups ([`Edge::lane_group_offset`], `ROAD-100`), on the driving
+/// side. `O(1)`.
+pub(super) fn vehicle_lane_offset(edge: &Edge, lane_idx: i8) -> f32 {
     let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-    (f32::from(lane_idx) + 0.5) * config::LANE_WIDTH * side_mul
+    edge.lane_group_offset() + (f32::from(lane_idx) + 0.5) * config::LANE_WIDTH * side_mul
 }
 
 impl LaneSystem {
@@ -163,7 +164,7 @@ impl LaneSystem {
                 let end = ends_at[index].1;
                 frames[index].map_or(LaneEnd::Inset(0.0), |frame| LaneEnd::Mouth {
                     station_m: frame.station_m,
-                    point: vehicle_lane_end(&frame, end, lane_idx).point,
+                    point: vehicle_lane_end(&frame, end, edge, lane_idx).point,
                 })
             })
         };
@@ -223,7 +224,7 @@ impl LaneSystem {
         // 1. Forward Lanes (lane 0 is closest to the centre)
         for l in 0..edge.fwd_lanes {
             let lane_idx = l as i8;
-            let offset = vehicle_lane_offset(lane_idx);
+            let offset = vehicle_lane_offset(edge, lane_idx);
             build_lane(
                 true,
                 lane_idx,
@@ -236,7 +237,7 @@ impl LaneSystem {
         // 2. Backward Lanes
         for l in 0..edge.bkw_lanes {
             let lane_idx = -(l as i8) - 1;
-            let offset = vehicle_lane_offset(lane_idx);
+            let offset = vehicle_lane_offset(edge, lane_idx);
             build_lane(
                 false,
                 lane_idx,
