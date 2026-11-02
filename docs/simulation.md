@@ -829,6 +829,21 @@ field diffusion and other read-only precomputation.
   (`thread_pools::on_pool_worker`). Regression test
   `the_adoption_wait_leaves_every_pool_worker_to_the_rebuild`: the rebuild needs every worker
   (a broadcast) after the adoption frame began; the old adoption deadlocks there.
+- **No nested jobs** (`CODE-18`, round T19b, 2026-11-02). A background worker never runs one
+  pure job's work inside another's. Waiting in a join (the rebuild's nested dissection joins),
+  a worker takes queued work, the starts of later jobs among it, and each started rebuild joined
+  and took the next: R6's crossings-off variant, which toggles 2,572 crossing arms at build at
+  100k (each toggle a routing rebuild), nested 156 rebuilds, 16,731 frames, on
+  `metrum-bg-0` until its 2 MB stack overflowed (gdb backtrace of the control: 156 frames each
+  of `PureJob` start, `CchGraph::build` and `build_in_pool`, 864 of `dissect`). A start taken
+  under a job's work is now deferred (`pure_job.rs`: a per-thread depth and list) and queued
+  again when that work returns, so a worker's stack holds at most one started job, plus one per
+  owner that runs its own job through `install`. The deferred start runs once at the top of a
+  worker's stack, or finds its job superseded or taken and runs nothing; results are pure, so
+  nothing else changes. Not a raised stack size. Test
+  `a_worker_never_runs_a_started_job_inside_another`: 10,000 jobs, each starting the next and
+  yielding to it on a one-worker pool with a 2 MB stack, run one at a time (the control
+  overflows the stack).
 - **Pool.** The shared pool, not a dedicated one: while the rebuild runs the frame holds (below),
   so it competes only with render-snapshot building, cell-chunk preparation and Godot's terrain
   jobs. The dedicated-pool reason above (a long job must not starve per-frame movement) does not
