@@ -984,3 +984,65 @@ fn only_a_kerbed_grass_median_draws_on_the_grass_layer() {
         }
     }
 }
+
+// A painted median is paint (`ROAD-80`, R3-c): on a 1 + 1 street, whose lanes are unmarked,
+// every marking is the median's: within half its width of the line between the lane groups,
+// meeting on that line at both noses, reaching the full width between them, with diagonals
+// across. On a 2 + 2 road the lane dividers stay outside the hatched gap. Undivided, the street
+// has no marking at all.
+#[test]
+fn a_painted_median_is_hatched_between_the_lane_groups() {
+    use crate::simulation::network::render::road::RoadRenderer;
+    let ends = [Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)];
+    let marking = |median: Option<RoadMedian>, lanes: i32| {
+        let mut core = committed(&[], &[], false);
+        let points = stroke(&core, ends);
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points,
+                fwd_lanes: lanes,
+                bkw_lanes: lanes,
+                snap_to_existing_roads: true,
+                tunnel: false,
+                median,
+                preview: None,
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert!(outcome.committed, "{}", outcome.rejection);
+        let mesh = RoadRenderer.generate_mesh_data_with_surface(
+            &core.region_graph,
+            &core.heightmap,
+            &core.transit_network.roadbed,
+        );
+        mesh.marking_vertices
+    };
+    assert!(marking(None, 1).is_empty(), "an undivided 1 + 1 street is unmarked");
+    let painted = RoadMedian::from_tool(1, 2.0).unwrap();
+    let half = 1.0;
+    // Paint half width plus a line's half width, and float slack.
+    let outer = half + 0.05 + 1.0e-3;
+    let hatch = marking(painted, 1);
+    assert!(!hatch.is_empty(), "the painted median is paint");
+    assert!(hatch.iter().all(|v| v.z.abs() <= outer), "every line lies in the gap");
+    let (west, east) = hatch.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v.x), hi.max(v.x)));
+    for nose_x in [west, east] {
+        assert!(
+            hatch.iter().filter(|v| (v.x - nose_x).abs() < 1.0e-3).all(|v| v.z.abs() <= 0.05 + 1.0e-3),
+            "the edge lines meet on the centre line at the nose at x {nose_x}"
+        );
+    }
+    assert!(hatch.iter().any(|v| v.z.abs() >= half - 0.05 - 1.0e-3), "the paint reaches the full width");
+    // Diagonals: segments whose ends lie on opposite edge lines, more than the two edge lines'
+    // two quads per section pair.
+    let quads = hatch.len() / 6;
+    assert!(quads >= 2 * 2 + (2.0 * ARM_M / 3.0 * 0.5) as usize, "{quads} paint quads hold the diagonals");
+    let wide = marking(painted, 2);
+    let dividers: Vec<_> = wide.iter().filter(|v| v.z.abs() > outer).collect();
+    assert!(!dividers.is_empty(), "a 2 + 2 road keeps its lane dividers");
+    assert!(
+        dividers.iter().all(|v| (v.z.abs() - (half + crate::config::LANE_WIDTH)).abs() <= 0.08),
+        "the dividers lie a lane out from the gap"
+    );
+}

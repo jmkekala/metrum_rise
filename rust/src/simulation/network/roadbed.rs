@@ -26,8 +26,9 @@ mod walkways;
 
 pub(crate) use arms::{
     NodeArms, crossing_arm_eligible, directions_pass_through, edges_pass_through,
-    is_tunnel_approach,
+    is_tunnel_approach, painted_median_continues,
 };
+pub(crate) use span::{NOSE_CLEARANCE_M, NOSE_LENGTH_M};
 pub(crate) use geometry::CoverageTriangle;
 #[cfg(test)]
 pub(crate) use geometry::{RoadSurfaceTriangleQueryIndex, triangulate_constrained_rings_xz};

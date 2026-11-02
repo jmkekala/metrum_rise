@@ -18,13 +18,14 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use godot::prelude::Vector3;
 
-// A raised median's nose (`ROAD-80`): its width grows from nothing at the nose's tip to the
-// authored width over this length, with a section row every metre.
-pub(in crate::simulation::network::roadbed) const NOSE_LENGTH_M: f32 = 4.0;
+/// A median's nose (`ROAD-80`): a raised median's width grows from nothing at the nose's tip to
+/// the authored width over this length, with a section row every metre; a painted median's
+/// hatching tapers the same way.
+pub(crate) const NOSE_LENGTH_M: f32 = 4.0;
 const NOSE_SECTION_STEP_M: f32 = 1.0;
-// From a span's mouth, or from the far edge of the crossing strip the span holds there, to the
-// nose's tip.
-pub(in crate::simulation::network::roadbed) const NOSE_CLEARANCE_M: f32 = 1.0;
+/// From a span's mouth, or from the far edge of the crossing strip the span holds there, to a
+/// median nose's tip (`ROAD-80`).
+pub(crate) const NOSE_CLEARANCE_M: f32 = 1.0;
 // Station and direction tolerance of the section model.
 const SAMPLE_EPSILON_M: f32 = 0.001;
 // Two incident directions at least this opposed form a pass-through node.

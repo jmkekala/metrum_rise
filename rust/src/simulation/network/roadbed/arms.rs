@@ -641,11 +641,11 @@ pub(super) fn pass_through_crossings(
 /// spans keeps room for its far end's clearance, crossing strip and nose.
 pub(super) const MEDIAN_THROUGH_MIN_EDGE_M: f64 = 20.0;
 
-// Whether a pass-through node's two arms carry one raised median that lines up across it
-// (`ROAD-80`): equal style and width, the line between the lane groups at one place (each
-// arm's offset taken looking away from the node, so the other's is its mirror), and both edges
-// at least `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
-fn median_body_continues(graph: &RegionGraph, arms: [ArmKey; 2]) -> bool {
+// Whether a pass-through node's two arms carry one median, raised when `raised` and painted
+// otherwise, that lines up across it (`ROAD-80`): equal style and width, the line between the
+// lane groups at one place (each arm's offset taken looking away from the node, so the other's
+// is its mirror), and both edges at least `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
+fn median_lines_up(graph: &RegionGraph, arms: [ArmKey; 2], raised: bool) -> bool {
     let [(a, a_end), (b, b_end)] = arms.map(|key| (graph.edge(key.edge), key.end));
     let outward = |edge: &Edge, end: EdgeEnd| match end {
         EdgeEnd::Start => edge.lane_group_offset(),
@@ -653,7 +653,7 @@ fn median_body_continues(graph: &RegionGraph, arms: [ArmKey; 2]) -> bool {
     };
     a.median
         .zip(b.median)
-        .is_some_and(|(median, other)| median.is_raised() && median == other)
+        .is_some_and(|(median, other)| median.is_raised() == raised && median == other)
         && outward(a, a_end) == -outward(b, b_end)
         && [a, b]
             .iter()
@@ -661,13 +661,24 @@ fn median_body_continues(graph: &RegionGraph, arms: [ArmKey; 2]) -> bool {
 }
 
 /// Whether a raised median runs on through `node` without a nose (`ROAD-80`): a pass-through
-/// node whose two arms carry one median that lines up ([`median_body_continues`]) and where
+/// node whose two arms carry one median that lines up ([`median_lines_up`]) and where
 /// neither arm crosses. Such a node has no default crossing (R3-f, Z3); an explicit one opens
 /// the median around it, both spans nosing out. The spans of both arms read it, so their shared
 /// row agrees. `O(degree)`.
 pub(super) fn median_continues(graph: &RegionGraph, node: u32) -> bool {
+    median_runs_through(graph, node, true)
+}
+
+/// As [`median_continues`] for a painted median (`ROAD-80`): its hatching runs on through
+/// `node` without a marking nose. A painted median keeps D8's default crossing, which stops
+/// the hatching on both sides. `O(degree)`.
+pub(crate) fn painted_median_continues(graph: &RegionGraph, node: u32) -> bool {
+    median_runs_through(graph, node, false)
+}
+
+fn median_runs_through(graph: &RegionGraph, node: u32, raised: bool) -> bool {
     pass_through_crossings(graph, node).is_some_and(|[(a, a_crosses), (b, b_crosses)]| {
-        !a_crosses && !b_crosses && median_body_continues(graph, [a, b])
+        !a_crosses && !b_crosses && median_lines_up(graph, [a, b], raised)
     })
 }
 
@@ -755,7 +766,7 @@ fn degree_two_crossings(
     let free = |index: usize| !overrides.contains_key(&arms[index].0.edge);
     // Where a raised median continues through, no crossing by default (R3-f, Z3): it would cross
     // the median. An override of `true` still crosses, and the median opens around it.
-    let median_through = span_owned && median_body_continues(graph, arms.map(|(key, _)| key));
+    let median_through = span_owned && median_lines_up(graph, arms.map(|(key, _)| key), true);
     let default_arm = [first, 1 - first]
         .into_iter()
         .find(|&index| eligible(index))
