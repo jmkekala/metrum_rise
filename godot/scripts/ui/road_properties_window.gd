@@ -4,9 +4,10 @@
 ##
 ## The window mirrors the previous side panel behavior but uses Godot's built-in
 ## draggable Window surface and preserves its placement within the session.
-## Lanes (`ROAD-80`): the shared cross-section controls show the selected road's lanes; a
-## change asks Rust's verdict for it through the select tool (the commit's check, no geometry
-## preview) and shows it beside Apply, which commits an accepted change (Ctrl+Z undoes it).
+## Cross-section (`ROAD-80`): the shared cross-section controls show the selected road's lanes
+## and median; a change asks Rust's verdict for it through the select tool (the commit's check,
+## no geometry preview) and shows it beside Apply, which commits an accepted change (Ctrl+Z
+## undoes it). The window opens tall enough for every row.
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -15,6 +16,10 @@ const CrossSectionControls = preload("res://scripts/ui/cross_section_controls.gd
 const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
 const VERDICT_READY := Color(0.55, 0.95, 0.55)
 const VERDICT_REFUSED := Color.YELLOW
+# Every row fits at the default size: the class buttons, lanes, median style and width, the
+# verdict with Apply, and No buildings (the median rows grew it from 400 px).
+const DEFAULT_SIZE := Vector2i(400, 500)
+const MIN_SIZE := Vector2i(360, 460)
 
 var _simulation_node: Node
 var _select_tool: Node
@@ -46,8 +51,8 @@ func _build_window() -> void:
 	UIStyle.set_persistent_window_layout(
 		_window,
 		"road_properties",
-		Vector2i(380, 400),
-		Vector2i(320, 360),
+		DEFAULT_SIZE,
+		MIN_SIZE,
 		get_viewport()
 	)
 
@@ -86,7 +91,7 @@ func _build_window() -> void:
 	root_vbox.add_child(HSeparator.new())
 
 	_lanes = CrossSectionControls.new(14)
-	_lanes.changed.connect(_on_lanes_changed)
+	_lanes.changed.connect(_on_cross_section_changed)
 	root_vbox.add_child(_lanes)
 	var apply_row := HBoxContainer.new()
 	_verdict_label = Label.new()
@@ -178,32 +183,42 @@ func _refresh() -> void:
 		for i in range(_class_buttons.size()):
 			_class_buttons[i].set_pressed_no_signal(shared_class and i == first_class)
 
-# The first selected road's lanes; editable when every selected road can change its lanes.
+# The first selected road's cross-section; editable when every selected road can change it.
 func _refresh_lanes() -> void:
 	var first: Dictionary = _simulation_node.get_edge_cross_section(_selected_edges[0])
 	_lanes.set_lanes(int(first.get("fwd_lanes", 0)), int(first.get("bkw_lanes", 0)))
+	_lanes.set_median(int(first.get("median_style", 0)), float(first.get("median_width", 0.0)))
 	_lanes.set_editable(_selected_edges.all(
 		func(idx): return bool(_simulation_node.get_edge_cross_section(idx).get("editable", false))
 	))
 	_verdict_label.text = ""
 	_apply_button.disabled = true
 
-func _on_lanes_changed(fwd: int, bkw: int) -> void:
+func _on_cross_section_changed(fwd: int, bkw: int, median_style: int, median_width: float) -> void:
 	if _select_tool == null or not _select_tool.has_method("preview_selected_edge_cross_section"):
 		return
-	show_verdict(_select_tool.preview_selected_edge_cross_section(fwd, bkw), fwd, bkw)
+	show_verdict(_select_tool.preview_selected_edge_cross_section(fwd, bkw, median_style, median_width))
 
-## Shows Rust's verdict on `fwd` + `bkw` lanes and enables Apply when it accepts them.
-func show_verdict(verdict: Dictionary, fwd: int, bkw: int) -> void:
+## Shows Rust's verdict on the controls' cross-section and enables Apply when it accepts it.
+func show_verdict(verdict: Dictionary) -> void:
 	var ready := bool(verdict.get("is_valid", false))
 	_apply_button.disabled = not ready
 	_verdict_label.add_theme_color_override("font_color", VERDICT_READY if ready else VERDICT_REFUSED)
-	_verdict_label.text = "%d + %d lanes" % [fwd, bkw] if ready \
-		else RoadReasonText.text(verdict, "This road cannot change its lanes")
+	_verdict_label.text = _cross_section_text() if ready \
+		else RoadReasonText.text(verdict, "This road cannot change its cross-section")
+
+# "2 + 2 lanes", with ", Grass 3.0 m" when the controls carry a median.
+func _cross_section_text() -> String:
+	var text := "%d + %d lanes" % [_lanes.fwd_lanes, _lanes.bkw_lanes]
+	if _lanes.median_style != 0:
+		text += ", %s %.1f m" % [CrossSectionControls.MEDIAN_STYLE_NAMES[_lanes.median_style], _lanes.median_width]
+	return text
 
 func _on_apply_pressed() -> void:
 	if _select_tool and _select_tool.has_method("set_selected_edge_cross_section"):
-		var refused: int = _select_tool.set_selected_edge_cross_section(_lanes.fwd_lanes, _lanes.bkw_lanes)
+		var refused: int = _select_tool.set_selected_edge_cross_section(
+			_lanes.fwd_lanes, _lanes.bkw_lanes, _lanes.median_style, _lanes.median_width
+		)
 		_refresh()
 		if refused > 0:
 			_verdict_label.add_theme_color_override("font_color", VERDICT_REFUSED)

@@ -273,6 +273,14 @@ func adjust_median_width(delta: float) -> void:
 	var limits: Vector2 = MEDIAN_WIDTH_RANGE[median_style]
 	set_median(median_style, clampf(median_width + delta, limits.x, limits.y))
 
+## The options panel's cross-section controls: the lanes, then the median through Rust. A
+## median Rust refuses leaves the tool's, which the controls show again.
+func set_cross_section(fwd: int, bkw: int, style: int, width: float) -> void:
+	set_lanes(fwd, bkw)
+	if style != median_style or width != median_width:
+		if not set_median(style, width).is_empty():
+			median_changed.emit(median_style, median_width)
+
 ## A lane preset (the Road and Walkway tools, `ROAD-92`): sets the lanes and clears a median
 ## the walkway cannot carry, so the tool never holds a state Rust would refuse on every stroke.
 func set_lane_preset(fwd: int, bkw: int) -> void:

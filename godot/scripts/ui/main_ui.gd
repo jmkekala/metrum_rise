@@ -254,13 +254,15 @@ func _build_ui():
 		road_tool.tunnel_toggled.connect(func(enabled: bool): tunnel_check.set_pressed_no_signal(enabled))
 	tunnel_row.add_child(tunnel_check)
 	road_options_menu.add_child(tunnel_row)
-	# The next stroke's lanes (`ROAD-80`), the same controls the Road Properties window shows;
-	# the lane keys and presets update them through `lanes_changed`.
+	# The next stroke's lanes and median (`ROAD-80`), the same controls the Road Properties
+	# window shows; the keys and presets update them through `lanes_changed`/`median_changed`.
 	var lane_controls := CrossSectionControls.new()
 	if road_tool:
-		lane_controls.changed.connect(func(fwd: int, bkw: int): road_tool.set_lanes(fwd, bkw))
+		lane_controls.changed.connect(road_tool.set_cross_section)
 		lane_controls.set_lanes(road_tool.fwd_lanes, road_tool.bkw_lanes)
+		lane_controls.set_median(road_tool.median_style, road_tool.median_width)
 		road_tool.lanes_changed.connect(lane_controls.set_lanes)
+		road_tool.median_changed.connect(lane_controls.set_median)
 	road_options_menu.add_child(lane_controls)
 	options_panel.visible = false 
 	# Store reference to toggle it
@@ -934,10 +936,7 @@ func _select_road_type(fwd: int, bkw: int):
 		
 	# InputManager resets lanes, we override here
 	if road_tool:
-		road_tool.fwd_lanes = fwd
-		road_tool.bkw_lanes = bkw
-		if road_tool.has_method("_update_lanes_label"):
-			road_tool._update_lanes_label()
+		road_tool.set_lane_preset(fwd, bkw)
 
 func _set_draw_mode(mode: int):
 	straight_btn.button_pressed = (mode == 0)

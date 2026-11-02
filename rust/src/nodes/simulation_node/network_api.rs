@@ -3,6 +3,8 @@
 //! Network, road-tool, and traffic-editing Godot API methods.
 
 use super::*;
+use crate::nodes::sim::core::RoadRejection;
+use crate::simulation::network::graph::RoadMedian;
 
 mod road_tool;
 
@@ -475,7 +477,7 @@ impl SimulationNode {
             "bkw_lanes": i64::from(edge.bkw_lanes),
             "width": edge.width,
             "class": edge.class as i64,
-            "median_style": i64::from(crate::simulation::network::graph::RoadMedian::style_code(edge.median)),
+            "median_style": i64::from(RoadMedian::style_code(edge.median)),
             "median_width": edge.median.map_or(0.0, |median| median.width_m),
             "editable": edge
                 .validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, edge.median)
@@ -483,21 +485,31 @@ impl SimulationNode {
         }
     }
 
-    /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes in
-    /// place, without applying it: `is_valid`, and when refused `invalid_reason` (stable key) and
-    /// `detail`. The same check as [`Self::set_edge_cross_section`] (`ROAD-80`).
+    /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes and
+    /// the median `median_style` (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving) of
+    /// `median_width` metres in place, without applying it: `is_valid`, and when refused
+    /// `invalid_reason` (stable key) and `detail`. The same check as
+    /// [`Self::set_edge_cross_section`] (`ROAD-80`).
     #[func]
     pub fn preview_edge_cross_section(
         &mut self,
         edge_id: i32,
         fwd: i32,
         bkw: i32,
+        median_style: i32,
+        median_width: f32,
     ) -> VarDictionary {
         let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
-        let mut core = self.lock_core();
-        // The road keeps its median until the window edits it (R3b2).
-        let median = core.edge_median(edge_id);
-        match core.preview_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw), median) {
+        let refusal = match RoadMedian::from_tool(median_style, median_width) {
+            Ok(median) => self.lock_core().preview_edge_cross_section_internal(
+                edge_id,
+                lanes(fwd),
+                lanes(bkw),
+                median,
+            ),
+            Err(reason) => Some(RoadRejection::new(reason, "the median's style or width")),
+        };
+        match refusal {
             None => vdict! { "is_valid": true },
             Some(rejection) => vdict! {
                 "is_valid": false,
@@ -507,16 +519,26 @@ impl SimulationNode {
         }
     }
 
-    /// Gives road `edge_id` `fwd` forward and `bkw` backward lanes in place (`ROAD-80`), with an
-    /// undo record that restores the whole road; its pieces publish now, as a crossing toggle's
-    /// do. Returns whether it was applied: a refused edit (see
-    /// [`Self::preview_edge_cross_section`]) changes nothing.
+    /// Gives road `edge_id` `fwd` forward and `bkw` backward lanes and the median
+    /// `median_style` of `median_width` metres in place (`ROAD-80`), with an undo record that
+    /// restores the whole road; its pieces publish now, as a crossing toggle's do. Returns
+    /// whether it was applied: a refused edit (see [`Self::preview_edge_cross_section`])
+    /// changes nothing.
     #[func]
-    pub fn set_edge_cross_section(&mut self, edge_id: i32, fwd: i32, bkw: i32) -> bool {
+    pub fn set_edge_cross_section(
+        &mut self,
+        edge_id: i32,
+        fwd: i32,
+        bkw: i32,
+        median_style: i32,
+        median_width: f32,
+    ) -> bool {
         let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
+        let Ok(median) = RoadMedian::from_tool(median_style, median_width) else {
+            return false;
+        };
         let (snapshot, publication) = {
             let mut core = self.lock_core();
-            let median = core.edge_median(edge_id);
             if !core.set_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw), median) {
                 return false;
             }

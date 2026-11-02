@@ -307,6 +307,19 @@ func _unhandled_input(event):
 				if current_tool == Tool.ROAD:
 					road_tool.set_tunnel(not road_tool.tunnel_enabled)
 					get_viewport().set_input_as_handled()
+			# The next stroke's median (`ROAD-80`): N cycles its style, ; and ' its width.
+			KEY_N:
+				if current_tool == Tool.ROAD:
+					road_tool.cycle_median()
+					get_viewport().set_input_as_handled()
+			KEY_SEMICOLON:
+				if current_tool == Tool.ROAD:
+					road_tool.adjust_median_width(-0.5)
+					get_viewport().set_input_as_handled()
+			KEY_APOSTROPHE:
+				if current_tool == Tool.ROAD:
+					road_tool.adjust_median_width(0.5)
+					get_viewport().set_input_as_handled()
 			KEY_SPACE:
 				_toggle_pause()
 				get_viewport().set_input_as_handled()
@@ -442,7 +455,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.set_lanes(1, 1)
+					road_tool.set_lane_preset(1, 1)
 					road_tool.mark_network_topology_dirty()
 		Tool.WALKWAY: 
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
@@ -451,7 +464,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.set_lanes(0, 0)
+					road_tool.set_lane_preset(0, 0)
 		Tool.CUL_DE_SAC:
 			if cul_de_sac_tool:
 				cul_de_sac_tool.active = enabled

@@ -467,22 +467,23 @@ func set_selected_edge_class(class_int: int) -> void:
 	if get_node_or_null("../RoadTool"):
 		get_node("../RoadTool").update_main_mesh()
 
-## Rust's verdict on giving every selected road `fwd` + `bkw` lanes in place (`ROAD-80`): the
-## first refusal (`invalid_reason`, `detail`), else `is_valid`. Each road is checked as it
-## stands, as Apply commits them one by one.
-func preview_selected_edge_cross_section(fwd: int, bkw: int) -> Dictionary:
+## Rust's verdict on giving every selected road `fwd` + `bkw` lanes and the median
+## `median_style` of `median_width` metres in place (`ROAD-80`): the first refusal
+## (`invalid_reason`, `detail`), else `is_valid`. Each road is checked as it stands, as Apply
+## commits them one by one.
+func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float) -> Dictionary:
 	for idx in selected_edges:
-		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw)
+		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width)
 		if not bool(verdict.get("is_valid", false)):
 			return verdict
 	return {"is_valid": true}
 
-## Gives every selected road Rust accepts `fwd` + `bkw` lanes, each with its undo record, and
-## returns how many were refused. The edits publish their chunks at once.
-func set_selected_edge_cross_section(fwd: int, bkw: int) -> int:
+## Gives every selected road Rust accepts `fwd` + `bkw` lanes and the median, each with its
+## undo record, and returns how many were refused. The edits publish their chunks at once.
+func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float) -> int:
 	var refused := 0
 	for idx in selected_edges:
-		if not simulation_node.set_edge_cross_section(idx, fwd, bkw):
+		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width):
 			refused += 1
 	_rebuild_highlight()
 	return refused

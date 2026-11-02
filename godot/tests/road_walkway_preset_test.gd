@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+## ROAD-92 through the player's tools: a median picked on the Road tool (N cycles the style, '
+## steps the width) is cleared by the Walkway preset, N and direct cycling do nothing on a
+## walkway, and a walkway stroke then previews valid. Rust stays the guard: a walkway stroke
+## carrying a median is refused (`median_requires_vehicle_road`). Back on the Road tool, N
+## cycles again. Ported from Veeti's `road_walkway_preset_test.gd` onto dev's preset path
+## (`InputManager._toggle_tool` -> `RoadTool.set_lane_preset`).
+extends SceneTree
+
+const TIMEOUT_MS := 60000
+
+var _failures := 0
+var _main: Node
+var _simulation: Node
+
+func _initialize() -> void:
+	call_deferred("_run")
+
+func _expect(condition: bool, message: String) -> void:
+	if not condition:
+		_failures += 1
+		push_error(message)
+
+func _ground(x: float, z: float) -> Vector3:
+	return Vector3(x, _simulation.get_world_surface_height(Vector2(x, z)), z)
+
+func _press(input_manager: Node, keycode: Key) -> void:
+	var event := InputEventKey.new()
+	event.keycode = keycode
+	event.pressed = true
+	input_manager._unhandled_input(event)
+
+func _run() -> void:
+	_main = load("res://scenes/Main.tscn").instantiate()
+	# Own scene startup without the menu launch flow.
+	_main.set_script(null)
+	root.add_child(_main)
+	current_scene = _main
+	await process_frame
+	await process_frame
+	_simulation = _main.get_node("SimulationNode")
+	var input_manager: Node = _main.get_node("InputManager")
+	_expect(_simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "the blank world must load")
+	input_manager._refresh_after_world_load()
+	input_manager.set_simulation_speed(0.0)
+	var ready_deadline := Time.get_ticks_msec() + TIMEOUT_MS
+	while not input_manager._world_ready and Time.get_ticks_msec() < ready_deadline:
+		await process_frame
+	_expect(input_manager._world_ready, "the world must become ready for input")
+	var tool: Node = _main.get_node("RoadTool")
+
+	input_manager._toggle_tool(input_manager.Tool.ROAD)
+	_expect(tool.fwd_lanes == 1 and tool.bkw_lanes == 1 and tool.median_style == 0, "the Road tool starts 1 + 1 without a median")
+	_press(input_manager, KEY_N)
+	_press(input_manager, KEY_N)
+	_expect(tool.median_style == 2 and is_equal_approx(tool.median_width, 3.0), "N twice picks grass at 3 m: %d %.1f" % [tool.median_style, tool.median_width])
+	_press(input_manager, KEY_APOSTROPHE)
+	_expect(is_equal_approx(tool.median_width, 3.5), "' widens the median by 0.5 m: %.1f" % tool.median_width)
+
+	# Rust guards the walkway: a 0 + 0 stroke carrying the tool's median is refused.
+	var points := PackedVector3Array([_ground(-80.0, 40.0), _ground(80.0, 40.0)])
+	var refused: Dictionary = _simulation.validate_road_candidate_with_snap(points, 0, 0, true)
+	_expect(refused.get("invalid_reason", "") == "median_requires_vehicle_road", "a walkway with a median is refused: %s" % refused.get("invalid_reason", ""))
+
+	input_manager._toggle_tool(input_manager.Tool.WALKWAY)
+	_expect(tool.fwd_lanes == 0 and tool.bkw_lanes == 0, "the Walkway preset is 0 + 0")
+	_expect(tool.median_style == 0, "the Walkway preset clears the median")
+	_press(input_manager, KEY_N)
+	tool.cycle_median()
+	_expect(tool.median_style == 0, "N and direct cycling do nothing on a walkway")
+	var walkway: Dictionary = _simulation.validate_road_candidate_with_snap(points, 0, 0, true)
+	_expect(bool(walkway.get("is_valid", false)), "the walkway stroke is valid without the median: %s" % walkway.get("invalid_reason", ""))
+
+	input_manager._toggle_tool(input_manager.Tool.ROAD)
+	_press(input_manager, KEY_N)
+	_expect(tool.median_style == 1 and is_equal_approx(tool.median_width, 1.0), "N cycles again on the Road tool: %d" % tool.median_style)
+	tool.active = false
+	_main.queue_free()
+	await process_frame
+	if _failures == 0:
+		print("road_walkway_preset_test: PASS")
+	quit(_failures)

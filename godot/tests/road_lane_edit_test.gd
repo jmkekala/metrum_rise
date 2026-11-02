@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## The Road Properties window's lane steppers against the native bridge (`ROAD-80`): stepping a
-## selected road's lanes shows Rust's verdict beside Apply (a refusal disables it, with its
-## text); Apply widens the road in place, publishes a new render generation and the road reports
-## its new lanes; undo restores them. The road options panel's lane steppers follow the tool.
+## The Road Properties window's cross-section controls against the native bridge (`ROAD-80`):
+## stepping a selected road's lanes shows Rust's verdict beside Apply (a refusal disables it,
+## with its text); Apply widens the road in place, publishes a new render generation and the road
+## reports its new lanes; undo restores them. A median style picked in the window is applied in
+## place the same way, refused on a one-way road, and undone. The window's default size holds
+## every row. The road options panel's controls follow the tool.
 extends SceneTree
 
 const SelectTool := preload("res://scripts/tools/select_tool.gd")
@@ -85,6 +87,9 @@ func _run() -> void:
 	window.show_for_edges(selection)
 	await process_frame
 	_expect(window._lanes.fwd_lanes == 1 and window._lanes.bkw_lanes == 1, "the window shows 1 + 1 lanes")
+	var content: Control = window._window.get_child(0)
+	# The window's own size is clamped to the headless viewport; its default is what a player gets.
+	_expect(window.DEFAULT_SIZE.y >= int(content.get_combined_minimum_size().y), "the default height holds every row: %d < %d" % [window.DEFAULT_SIZE.y, int(content.get_combined_minimum_size().y)])
 	_expect(window._apply_button.disabled, "nothing to apply before a change")
 
 	# Down to 0 + 0: a road keeps a lane; Rust refuses and Apply stays off.
@@ -110,15 +115,40 @@ func _run() -> void:
 	_expect(await _await_generation(generation), "undo publishes a new render generation")
 	_expect(_lanes(edge) == Vector2i(1, 1), "undo restores 1 + 1 lanes: %s" % _lanes(edge))
 
+	# A median in place: Grass at its 3 m default, applied, then undone.
+	window.show_for_edges(selection)
+	window._lanes._style_buttons[2].pressed.emit()
+	_expect(window._verdict_label.text == "1 + 1 lanes, Grass 3.0 m", "the median verdict: %s" % window._verdict_label.text)
+	generation = simulation.get_network_render_generation()
+	window._apply_button.pressed.emit()
+	var section: Dictionary = simulation.get_edge_cross_section(edge)
+	_expect(int(section.get("median_style", -1)) == 2 and is_equal_approx(float(section.get("median_width", 0.0)), 3.0), "Apply gives the road its median: %s" % section)
+	_expect(is_equal_approx(float(section.get("width", 0.0)), 10.0), "a 1 + 1 road with a 3 m median is 10 m wide")
+	_expect(simulation.get_network_render_generation() > generation, "the median edit publishes")
+	# One way with the median: Rust refuses it with its reason.
+	_step(window, 2)
+	_expect(window._apply_button.disabled, "a one-way median cannot be applied")
+	_expect(window._verdict_label.text == "A median needs lanes in both directions", "the one-way refusal: %s" % window._verdict_label.text)
+	generation = simulation.get_network_render_generation()
+	_expect(simulation.undo_action(), "the median's undo is queued")
+	_expect(await _await_generation(generation), "the median's undo publishes")
+	_expect(int(simulation.get_edge_cross_section(edge).get("median_style", -1)) == 0, "undo removes the median")
+
 	# The road options panel's steppers drive the tool's next stroke.
 	var controls := CrossSectionControls.new()
 	scene.add_child(controls)
 	var seen: Array = []
-	controls.changed.connect(func(fwd: int, bkw: int): seen.append(Vector2i(fwd, bkw)))
+	controls.changed.connect(func(fwd: int, bkw: int, style: int, width: float): seen.append([fwd, bkw, style, width]))
 	controls.set_lanes(1, 0)
-	_expect(seen.is_empty(), "set_lanes shows without emitting")
+	controls.set_median(0, 0.0)
+	_expect(seen.is_empty(), "set_lanes and set_median show without emitting")
+	_expect(controls._width_buttons[1].disabled, "no width to step without a median")
 	controls._buttons[3].pressed.emit()
-	_expect(seen == [Vector2i(1, 1)], "a step emits the counts: %s" % [seen])
+	_expect(seen == [[1, 1, 0, 0.0]], "a step emits the cross-section: %s" % [seen])
+	controls._style_buttons[1].pressed.emit()
+	controls._width_buttons[1].pressed.emit()
+	controls._width_buttons[1].pressed.emit()
+	_expect(seen.back() == [1, 1, 1, 2.0], "painted steps up to its 2 m limit: %s" % [seen.back()])
 
 	tool.active = false
 	_finish(scene)

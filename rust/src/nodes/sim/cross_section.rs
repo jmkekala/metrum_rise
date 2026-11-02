@@ -156,16 +156,6 @@ impl SimCore {
         }
     }
 
-    /// Road `edge_id`'s median, `None` for an id that is not a live edge or a road without one.
-    pub(crate) fn edge_median(&self, edge_id: i32) -> Option<RoadMedian> {
-        let graph = &self.region_graph;
-        usize::try_from(edge_id)
-            .ok()
-            .and_then(|edge| graph.get_edge(edge))
-            .filter(|edge| !edge.deleted)
-            .and_then(|edge| edge.median)
-    }
-
     // The live edges at `nodes`, and `edge`. O(local degree).
     fn live_edges_at(&self, nodes: &HashSet<u32>, edge: usize) -> HashSet<usize> {
         let graph = &self.region_graph;
