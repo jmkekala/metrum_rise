@@ -10290,6 +10290,7 @@ and it never becomes `Standard` earthwork that raises terrain to the bridge deck
 Player-facing placement rules include existing parcel conflicts and structural impossibilities:
 roads shorter than `2 m`, standard roadbeds crossing authored water without bridge mode,
 bridge/tunnel clearance failures (`bridge_too_low` among them, [`ROAD-99`](#grade-separation-road-99)),
+an end snapped onto a tunnel inside its bore (`tunnel_join`),
 and endpoints that resolve to an impossible same-node connection.
 There is no hard centerline-grade or curve-angle rejection. Same-node rejection uses the distinct
 `same_node_connection` reason; it is not reported as a compiler failure.
@@ -10325,14 +10326,16 @@ grounded when a live standard edge meets it (`RegionGraph::grounded_node`, the r
   Over every point of the stroke's footprint lattice (stations along each segment and points
   across its roadbed, at most 4 m apart) that another deck covers, the higher deck stands at least
   `ROAD_UNDER_BRIDGE_M` above the lower. The other decks are the bridges near the stroke and, for a
-  bridge stroke, the grounded roads too, less the roads it joins at its ends. Both orders: a road
+  bridge stroke, the grounded roads too, less the roads it joins at its ends (at a node, its arms;
+  on a span, B1 below, the span and the bridge decks it continues at its nodes). Both orders: a road
   drawn under a bridge, a bridge drawn over a road or over another bridge. The hover check and the
   exact plan read the same prepared points and excerpt, so they agree. The tool shows "Too low
   under a bridge: x.xx m / 4.85 m deck to deck".
-- *R5, end joins.* An end joins a span mid-span only when both stand on the ground: a ground end
-  and a standard span. A bridge's ground ends are those its class inference found within 1 m of
-  their support (`PreparedRoadInput::elevated_ends`); a tunnel stroke's are its approach ends. A
-  structure's span takes no mid-span join; roads meet it at its nodes (the 2 m node snap).
+- *R5, end joins.* An end joins a standard span mid-span when both stand on the ground: a ground
+  end and a standard span. A bridge's ground ends are those its class inference found within 1 m of
+  their support (`PreparedRoadInput::elevated_ends`); a tunnel stroke's are its approach ends. An
+  end snapped onto a structure's span joins that span instead (B1, below); a structure's span
+  takes no other mid-span join.
 - *R6, nodes passed through.* A stroke captures a node only on the ground and only a grounded one:
   a ground road passes under a bridge's bend node and joins its abutment.
 - *R7, support and cursor.* (a) A stroke's profile pins to grounded carriageways only
@@ -10347,9 +10350,79 @@ clear height is it, bitwise (`TUNNEL_COVER_M` stays 5 m, `ROAD_OVER_TUNNEL_M` 5.
 `ROAD_UNDER_BRIDGE_M` = `VEHICLE_CLEARANCE_M + BRIDGE_DECK_DEPTH_M` = 4.85 m deck to deck: 4.5 m
 clear under the slab's soffit, as under the lining's ceiling.
 
-**What players lose** (accepted by the user, 2026-11-02): a ground road branching onto a bridge
-mid-span (join at the bridge's node or end the bridge there); bridges 4.5-4.85 m over a road (now
-refused with the height); a bridge forking from another mid-span.
+**What players lose** (accepted by the user, 2026-11-02): bridges 4.5-4.85 m over a road (now
+refused with the height). A ground road branching onto a bridge mid-span and a bridge forking
+from another mid-span were lost too; both are restored at the user's request by the follow-up B1
+below.
+
+**Mid-span joins of a bridge (B1, the `ROAD-99` follow-up; branch `port-b1-bridge-join`,
+2026-11-02).** The user's play-test found that a road could join a bridge only at the bridge's
+nodes: an end anywhere else on the deck was refused as "Too low under a bridge: 0.00 m / 4.85 m"
+(R5 gave a structure's span no mid-span join, so the end stood on its own node on the deck, and R2
+measured the stroke against the very deck it ends on). Now a stroke whose end is snapped onto a
+bridge's span joins that span there: the span is split and a junction stands on the deck, as at a
+join at one of the bridge's nodes. This holds for any stroke the class inference makes: a bridge
+stroke (a fork), or a road from the ground climbing to the deck (the inference makes it a bridge,
+as at a node).
+
+- *The snap decides* (`road_edit::bridge::snapped_structure_span`, during preparation, so the
+  hover check, the preview and the commit read the same decision; `PreparedRoadInput::joined_spans`,
+  `topology::StrokeGrade::joining_spans`). An end not at a node joins the structure span whose
+  centre line passes within the end-join tolerance (2 m) of it in plan and whose graph profile
+  there stands nearer the end's authored height than the ground under it (the grounded support,
+  else the terrain): the cursor's own choice between levels (R7(c)), and a cursor snapped to a
+  span reports the span's graph height (R7(b)), so the end stands on the span it snapped to.
+  Ties go to the ground, then the nearer centre line, then the lower edge id. No height window
+  decides: an end on the ground under a deck stands nearer the ground and does not join it (R2
+  then checks it). The joined end takes the span's graph height, as an end at a node takes the
+  node's. The topology joins that span, whatever its class, and no other at that end; crossings
+  along the stroke stay as R1 has them.
+- *What the join builds.* The same pieces as a join at a node there: on the flat fixture, a node
+  piece and three spans with the same triangles bitwise as a bridge drawn in two strokes meeting
+  at the join, the same zebras (the default crossing rule) and connectors. Every arm is a bridge,
+  so the junction is not grounded and nothing fronts it; each half keeps its piers at its ends, as
+  at a node. The usual rules refuse what does not fit, with their own reasons (`road_too_steep`, the
+  junction rules), and the hover check, which runs no junction rule, does not show those.
+- *Tunnels.* An end snapped onto a tunnel inside its bore (by the same choice) is refused as
+  `tunnel_join`, "Roads cannot join a tunnel inside its bore: join it at a portal", in all three
+  checks; bores join roads only at their portals. Before B1 nothing refused it: the standard
+  solve moved the end up to the ground over the bore and left it unjoined. Over a bore the cursor
+  snaps to the bore (the only level there, R7(c)), so ending a road within 5 m of a bore's line on
+  the hill above it is now refused; an end on the ground further from the line is not.
+- *Bounds.* Preparation: two span queries per stroke, `O(log E + K x profile points)` for the `K`
+  edges near each end; R2's exclusion adds the joined span's two nodes' degree. Nothing per tick,
+  no index, no city scan.
+- *Acceptance* (fresh, 2026-11-02; release test binaries: C = `dev` `ea63df40`, F = this branch,
+  each with R8's uncommitted probe). Tests (`road_grade_separation`): a bridge stroke and a road
+  from the ground (either direction) join the 6 m bridge mid-span (hover = preview = commit, the
+  bridge split into two bridge edges, the junction at the deck's height, not grounded, no
+  frontage, its node piece built, connectors into every arm, undo restoring the network and every
+  piece bitwise); the junction equals a node join's (pieces, zebras, connectors); a road ending on
+  the ground under the bridge does not join it (6 m passes, 4 m `bridge_too_low`); refused joins
+  name `road_too_steep`, `junction_arm_angle` and, 5 m from a bend node, `junction_arm_too_short`
+  (the hover check passing them); an end on a tunnel's bore is `tunnel_join`. On C's code the
+  four join tests fail with `bridge_too_low` (the user's 0.00 m; the steep join's exact plan
+  already said `road_too_steep`, its hover check `bridge_too_low`), and the tunnel test commits:
+  C did not refuse an end on a bore, it moved the end up to the hill's surface and left it
+  unjoined. ROAD-99's five case tests and its guard pass on both. No change without a
+  join: R8's probe products (town, 1:4 hill, 1:2 hill) and the `ROAD-68-K22` `COMMIT_PRODUCTS` at
+  0, 10k, 30k and 100k residents are identical on C and F (and equal to `ROAD-99`'s). Stills
+  (headless gamescope, isolated profile, dump C at format 110, a bridge 6.5 m over open ground,
+  then a bridge stroke forking from it and a road from the ground climbing to it, both mid-span,
+  committed through the tool's path): before, both refused `bridge_too_low`; after, two
+  junctions on the deck with zebras, piers at the halves' ends. Cost (one session,
+  19:57-19:58; release, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks, load 1.3 at
+  the start, no compiler, Godot or backup running; C F F C, the binaries above): products
+  identical (payload 9,845 / 9,973 vertices per pose, lining 2,326 / 2,574); total p50 ms
+  `sloped_t` 3.117 3.233 2.910 2.886, `sloped_branch` 2.747 2.657 2.689 3.186, tunnel 1:2 3.691
+  3.705 3.722 3.707, tunnel 1:4 3.682 3.694 3.702 3.676: within spread. Locality
+  (`road_plan_scaling`, same session, local products identical at every tier), compile p50 ms
+  at 0 / 1k / 10k / 100k remote buildings: the T's side road C 0.148 0.155 0.166 0.163, F 0.216
+  0.161 0.167 0.166; the road under a bridge C 0.041 0.042 0.042 0.042, F 0.043 0.066 0.043 0.044;
+  the tunnel C 0.078 0.168 0.073 0.074, F 0.068 0.068 0.081 0.113 (single noisy tiers both ways);
+  the new mid-span join (`populated_bridge_join_plan_scaling`, F only: C refuses it) 0.024 0.025
+  0.026 0.025, its hover check 0.0014-0.0016. Flat: the join's cost follows the bridge's
+  neighbourhood, not the city.
 
 **Saves.** Nothing is repaired on load and no format changes: a crossing that only height
 separated loads as saved and changes only when one of its roads is redrawn. The scan
@@ -10487,6 +10560,8 @@ built like any edge's; a car drives through (below).
   validation graph's local excerpt before the stroke is inserted), or another road meets it: a
   junction inside the bore, a portal that is not a plain pass-through, or a buried end shared by
   more than one other road. Tunnel junctions are out of scope.
+- `tunnel_join` (`ROAD-99` follow-up B1): a road whose end is snapped onto a tunnel inside its
+  bore ([grade separation](#grade-separation-road-99)); roads meet a tunnel at its portals.
 - `tunnel_too_close` (round R8h): a grounded road over a bore whose deck would stand less than the
   cover rule (5 m) and the road's own depth below its deck (`SKIRT_DEPTH_M`, 0.5 m), 5.5 m, above
   the tunnel's deck over the bore's section, so no road geometry reaches the shell; the tool shows
