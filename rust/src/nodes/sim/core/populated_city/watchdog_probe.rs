@@ -42,7 +42,7 @@ fn watchdog_firings_by_kind_and_cause() {
             if toggles {
                 toggled += toggle_crossings(&mut city, now);
             }
-            if bulldoze && now % 4 == 0 && bulldoze_road(&mut city, now / 4) {
+            if bulldoze && now.is_multiple_of(4) && bulldoze_road(&mut city, now / 4) {
                 bulldozed += 1;
             }
         }
