@@ -38,7 +38,7 @@ pub use layout::{
 };
 pub use lining::{
     COLLAR_HEIGHT_M, LiningPart, TUNNEL_COVER_M, TUNNEL_EARTH_COVER_M, TUNNEL_LINING_HEIGHT_M,
-    TUNNEL_LINING_THICKNESS_M,
+    TUNNEL_LINING_THICKNESS_M, VEHICLE_CLEARANCE_M,
 };
 pub use mesh::{BRIDGE_DECK_DEPTH_M, OuterChain, PieceMesh, SKIRT_DEPTH_M, StripKind};
 pub(crate) use node::{check_node, terminal_plane};

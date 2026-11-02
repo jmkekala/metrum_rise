@@ -23,9 +23,13 @@ use super::geometry::triangulate_constrained_rings_xz;
 use super::mesh::{OuterChain, SKIRT_DEPTH_M};
 use super::{RoadVec2, RoadVec3};
 
+/// The vehicle envelope's height (`ROAD-99`): the clear height a road keeps over its deck under
+/// any structure, a tunnel's ceiling or a bridge's soffit. The one definition the lining's height
+/// and the clearance under a bridge are taken from.
+pub const VEHICLE_CLEARANCE_M: f64 = 4.5;
 /// The lining's clear height (`ROAD-61`): its walls stand this far above the deck's outer edges,
-/// where its ceiling spans.
-pub const TUNNEL_LINING_HEIGHT_M: f64 = 4.5;
+/// where its ceiling spans; the vehicle envelope ([`VEHICLE_CLEARANCE_M`], `ROAD-99`).
+pub const TUNNEL_LINING_HEIGHT_M: f64 = VEHICLE_CLEARANCE_M;
 /// The lining's thickness (`ROAD-61` round R8b): its shell's outer walls stand this far outside
 /// its walls, beyond any shadow bias the sun's shadow map applies near a wall's foot.
 pub const TUNNEL_LINING_THICKNESS_M: f64 = 0.5;

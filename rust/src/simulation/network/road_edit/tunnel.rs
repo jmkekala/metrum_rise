@@ -30,8 +30,8 @@ use crate::config;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction::find_intersection_2d;
 use crate::simulation::network::roadbed::{
-    self, SKIRT_DEPTH_M, TUNNEL_LINING_THICKNESS_M, preview_candidate_roadbed_half_width_m,
-    visual_roadbed_half_width_m,
+    self, BRIDGE_DECK_DEPTH_M, SKIRT_DEPTH_M, TUNNEL_LINING_THICKNESS_M,
+    preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::terrain::TerrainSystem;
@@ -47,6 +47,12 @@ pub(super) const TUNNEL_COVER_M: f32 = roadbed::TUNNEL_COVER_M as f32;
 /// (`ROAD-61` round R8h, the user's rule): the cover rule and the road's own depth below its
 /// deck (its skirt), so no road geometry reaches the tunnel's shell.
 pub(super) const ROAD_OVER_TUNNEL_M: f32 = (roadbed::TUNNEL_COVER_M + SKIRT_DEPTH_M) as f32;
+/// How far a bridge's deck stands at least above the deck of a road it passes over (`ROAD-99`):
+/// the vehicle envelope ([`roadbed::VEHICLE_CLEARANCE_M`]) clear under the bridge's slab, and the
+/// slab's depth ([`BRIDGE_DECK_DEPTH_M`]), deck to deck (4.85 m). The mirror of
+/// [`ROAD_OVER_TUNNEL_M`]: under a tunnel's ceiling the lining keeps the same envelope clear.
+pub(super) const ROAD_UNDER_BRIDGE_M: f32 =
+    (roadbed::VEHICLE_CLEARANCE_M + BRIDGE_DECK_DEPTH_M) as f32;
 /// The shortest open approach before a portal, metres: two lattice steps, so the portal node
 /// stands clear of the stroke's end.
 pub(super) const TUNNEL_MIN_APPROACH_M: f32 = 2.0 * TUNNEL_LATTICE_M;
