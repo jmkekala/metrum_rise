@@ -45,8 +45,9 @@ On the `road` branch:
 
 The product geometry is far simpler than the legacy compiler assumed:
 
-- only four band kinds are ever emitted: `Carriageway`, `CurbOrShoulder`, `Sidewalk` and
-  `Footpath`; `Median`, `Parking`, `CycleTrack` and `TramReservation` are reserved
+- only five band kinds are ever emitted: `Carriageway`, `CurbOrShoulder`, `Sidewalk`,
+  `Footpath` and, on a divided span's body, `Median` ([Medians](#medians-road-80)); `Parking`,
+  `CycleTrack` and `TramReservation` are reserved
 - a car road's cross-section is fixed: `sidewalk | curb | carriageway | carriageway | curb |
   sidewalk`, or shoulders in place of curb and sidewalk
 - there are exactly two height levels: ground (carriageway, footpath) and raised, `+0.12 m` (curb,
@@ -200,8 +201,9 @@ frame:
 | Car road with sidewalks | sidewalk 1.35 m, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, curb, sidewalk | raised, raised, ground, ground, raised, raised |
 | Car road without sidewalks | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, shoulder | raised, ground, ground, raised |
 | Footpath | footpath `max(edge.width, 2 m)` | ground |
+| Divided body (`body_for_edge`, [Medians](#medians-road-80)) | the car road's bands with the split opened into kerb, median, kerb | ..., ground, raised, raised, raised, ground, ... |
 
-`w` is `max(edge.width, LANE_WIDTH)`. The profile, not the `Edge::width` doc comment, defines what
+`w` is `max(edge.width, LANE_WIDTH)`; `Edge::width` includes a median (`ROAD-80`). The profile, not the `Edge::width` doc comment, defines what
 width means. The raised offset is `CURB_STEP_HEIGHT_M` (0.12 m). New band kinds, such as medians,
 parking or cycle tracks, are added as explicit ordered bands with a level; nothing else in the
 compiler may special-case them.
@@ -10141,8 +10143,9 @@ new agent spatial index or claim to remove that O(A) work.
 
 ### In-place cross-section edits (`ROAD-80`)
 
-An existing road's lane counts change in place (round R3a of the road-feature port; medians
-follow in R3b). Rust owns the rule: `get_edge_cross_section(edge)` reports the counts, width,
+An existing road's lane counts change in place (round R3a of the road-feature port), and its
+median with them (round R3b1, [Medians](#medians-road-80)). Rust owns the rule:
+`get_edge_cross_section(edge)` reports the counts, width,
 class and whether the road can change; `preview_edge_cross_section(edge, fwd, bkw)` returns the
 commit's verdict (`is_valid`, or `invalid_reason` and `detail`) without geometry (R3-d);
 `set_edge_cross_section(edge, fwd, bkw)` commits, pushes the undo record and publishes the chunks
@@ -10153,8 +10156,8 @@ The transaction is the toggle's (`try_graph_edit`). Cheap refusals first: `inval
 `cross_section_cannot_change_transit_mode` (0+0), `cross_section_unchanged`, and
 `edit_tunnel_width`: a tunnel is not widened in place (R3-j), since its cover was checked across
 the bore it was drawn with; narrowing applies. Then the edit is applied to the graph
-(`RegionGraph::set_edge_lanes`: counts and `width = max((fwd + bkw) * LANE_WIDTH, 2 m)`, the
-stroke's rule), both end nodes are laid out again (clips, the endpoint profile solve), and their
+(`RegionGraph::set_edge_cross_section`: counts, median and `width = max((fwd + bkw) *
+LANE_WIDTH + median, 2 m)`, the stroke's rule), both end nodes are laid out again (clips, the endpoint profile solve), and their
 closure is compiled into a scratch roadbed: a failed node piece (`node_piece_failed`), fields and
 newly covered painted cells (`field_overlap`, `zoning_cell_overlap`) and a steepened profile
 (`road_too_steep`) refuse. A widening is also checked on the applied graph against visible water
@@ -10168,7 +10171,8 @@ counts and width with nothing new in the undo path), marks the cell lots and sur
 nodes' arms, and rebuilds their lanes, cars and entrances with the undo's local pass
 (`restore_lanes_locally`): cars on a lane that no longer exists reattach to the nearest rebuilt
 lane within 30 m (narrowing 3+3 to 1+1 moves them at most 7 m). The full entrance cache rebuild
-the toggle and the class change run is not used: it scans every building. Routing is rebuilt
+the class change runs is not used: it scans every building (the crossing toggle uses the local
+pass too since round R3b1). Routing is rebuilt
 deferred (D7). The class change (`set_edge_class_internal`) now pushes its checkpoint too (R3-k).
 
 Bounds: the check is `O(closure pieces)` (two nodes' closures); the commit tail `O(local lanes +
@@ -10208,6 +10212,12 @@ shared with the road tool's options panel, where they set the next stroke's lane
 line and Apply (option C of PLAN-R3 section 6); the reason text is `ui/road_reason_text.gd`,
 shared with the road tool's stroke preview.
 
+**Crossing toggle (round R3b1).** The crossing toggle's commit now rebuilds its node's lanes,
+cars and entrances with the same local pass (`restore_lanes_locally`) instead of the entrance
+cache rebuild: a toggle moves no frontage. The class change still runs the full rebuild: its
+entrance refresh also prepares the cell lots and repairs road attachments, which the local pass
+does not do, so moving it is not a like-for-like change (recorded, not done).
+
 **Emission order (`ROAD-97`).** A bridge span's abutment faces (`TERRAIN-07-C`) were emitted into
 the skirt layer after every piece (`emit_bridge_structures`), so that layer's owner runs were
 `[edges.., nodes.., Edge(bridge)]`, out of owner order. The splice of a local publication merges
@@ -10217,6 +10227,105 @@ are now emitted with the span's own surfaces after its skirts; `emit_bridge_stru
 fascias, slab and piers (the concrete layer holds bridge edges only, in order). Every in-place
 edit next to an older bridge publishes through that splice; the class change, the lane edit and
 their undos are tested against a full emission (`road_in_place`).
+
+### Medians (`ROAD-80`)
+
+A road may carry a median between its two lane groups (round R3b1 of the road-feature port: the
+data, the save and the roadbed; the tool, the window, the grass material and the painted hatching
+are round R3b2's). Ported from the fork's `graph/cross_section.rs`, its geometry constructed here.
+
+**Data.** `Edge::median: Option<RoadMedian { style, width_m }>`; `MedianStyle` is `Painted`
+(0.5-2 m), `KerbedGrass` (2-12 m) or `KerbedPaving` (1-3 m), the width the whole separator's,
+kerbs included. No authored end setbacks (R3-i): noses and clearances are derived. A median needs
+a car road with both directions (`median_requires_vehicle_road`,
+`median_requires_both_directions`, `ROAD-92`'s rule in Rust); `Edge::validate_cross_section`
+holds every in-place and load rule. `Edge::width` includes the median, so frontage, zoning,
+parcels, water and tunnel-cover checks, the profile's outer bands and the graded terrain read the
+wider road with no change (R3-e). `split_edge` copies the median to both halves.
+`RegionGraph::set_edge_cross_section(edge, fwd, bkw, median)` replaces `set_edge_lanes`; the
+in-place edit takes the median (the Godot calls keep a road's own until R3b2's window edits it,
+and `get_edge_cross_section` reports `median_style` and `median_width`).
+
+**Save (format 111).** `network_edges.median_style` (0 none, 1-3 the styles) and
+`median_width` (0 without). A load accepts only a median a stroke or an edit could build, and
+fails the file otherwise; exact-version loads.
+
+**Lanes and access.** Each lane group sits `median_half_width` (half the width, painted or
+raised) off `lane_group_offset`, so lane `i`'s offset is `lane_group_offset + ((i + 0.5) *
+LANE_WIDTH ± median_half_width) * side`, the mouth ends with it; `road_half_width` adds the half
+width. Mouths are median-free, so every connector starts and ends as before. A raised median makes
+`effective_vehicle_frontage_access` `SameSideOnly` (entrances read it; the stored policy
+survives); a painted one keeps the stored policy (R3-c, R3-m). A divided road's dividers run
+within each lane group, with no centre line; the painted hatching between the groups is R3b2's.
+
+**Profiles.** `RoadProfile::for_edge` stays the mouth profile, median-free; node pieces, arms,
+zoning, sidewalks, signs and lights read it unchanged. `RoadProfile::body_for_edge(edge, m)`
+opens its split into kerb, median, kerb (`CurbOrShoulder`, `Median`, `CurbOrShoulder`, all
+raised) centred on `lane_group_offset`, `m` wide; the kerbs are `MEDIAN_KERB_WIDTH_M` (0.15 m) at
+the authored width and scale with `m`, so at `m = 0` all three collapse onto the line. Its
+offsets mirror bit for bit for the reversed edge. `MAX_PROFILE_BANDS` is 9. A painted median adds
+no band.
+
+**Where a median continues.** The pass-through rule is unchanged (one mouth profile), so a
+divided road and an undivided one of its width share a pass-through row and the median noses out
+there, and no node is laid out for a median. `arms::median_continues(node)` holds where a raised
+median runs on through a pass-through node: both arms carry one style and width, the lane groups
+line up looking along the road (each arm's `lane_group_offset` taken looking away from the node),
+both edges are at least `MEDIAN_THROUGH_MIN_EDGE_M` (20 m, so each span keeps room for its far
+nose) and neither arm crosses. Such a node has no default crossing (R3-f, Z3); an explicit one
+crosses and opens the median, both spans nosing out around it.
+
+**Noses.** A span's median width `w(s)` is 0 at a nose's tip and before it, rises linearly over
+`NOSE_LENGTH_M` (4 m) to the authored width, and keeps it between the noses and through a node
+where it continues. A free end's tip lies `NOSE_CLEARANCE_M` (1 m) past its mouth, or past the far
+edge of the crossing strip the span holds there. Tips and full-width stations are protected
+stations, each nose a 1 m cadence range: the one station rule. Two noses that would overlap
+(tips closer than 8 m) leave the span undivided.
+
+**Mesh.** A divided span lays its rows out by kind: mouth rows (the mouth profile; the end rows
+are the shared mouth sections) up to each tip, the tip row, and body rows between. The tip row
+keeps two vertices where the body's six median slots meet (the split's ground and raised one), so
+the median's three quads beside it are single triangles and its two kerb faces meet on the tip's
+0.12 m vertical edge; the pair between the last mouth row and the tip takes the mouth bands onto
+the body's outer bands and steps. Rows differ in length, so the mesh reports row starts, which
+the outer chains, end closures (caps, wall runs, abutments, portals), the lining and the footprint
+read. Watertight by construction; an undivided span takes the old code path. Bridges and tunnels
+may be divided (R3-h): fascias, slab, abutments, caps and the lining stand on the outer chains
+and the end rows, which a median does not touch.
+
+Bounds: `body_for_edge` and `median_continues` `O(B)` and `O(degree)`; at most 8 extra rows per
+nose; the mesh `O(rows * B)`, its tip pairs `O(B)`; lanes and access `O(1)` per lane; the save
+`O(E)`. No city scan, no cache, no per-tick code.
+
+Acceptance record (round R3b1, 2026-11-02, fresh; release binaries of `b43adb12` (control, with
+R8's uncommitted probe extended by Kuopio and lane hashes) and the round's code; P-cores
+`taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=4`, both locks, load 1.3-1.9 at the start;
+logs in `$ARTIFACTS`):
+
+- No change without medians: R8's probe (pieces, payload, graded tiles GL0-GL2, vegetation,
+  surface queries, and now every lane's geometry, successors and crossings) equal on town, hill,
+  steep and Kuopio, control (format 110 save) vs branch (the re-recorded 111 save); the roadbed
+  and reference product probes unchanged; `ROAD-68-K22`'s saved commit cities (0/10k/30k/100k)
+  give identical `COMMIT_PRODUCTS` (md5 `4852535b...`, as `ROAD-99`'s and R3a's).
+- `roadbed_span/build` (Criterion, C F F C, µs; second session after the profile-copy fix):
+  `span_100m` 10.93 11.20 10.93 10.88, `span_400m` 38.92 39.44 38.47 37.58, `span_100m_four_lane`
+  11.52 11.55 11.76 11.18, `span_100m_bridge` 12.48 12.45 12.35 12.28, `span_25m` 3.79 4.06 3.94
+  3.72, `span_100m_footpath` 3.59 3.79 3.84 3.53 (a fixed +0.2 µs a span: row starts, row kinds,
+  the nine-band arrays); the new `span_100m_divided` (2+2, 4 m grass, two noses) 23.56 / 24.12,
+  under the 50 µs target. The first session, before the fix, had `span_100m` at 12.14 / 11.62
+  against 10.65 / 10.61.
+- Preview stages (`benchmark_road_preview_stages`, C F F C, total p50 ms): `sloped_t` 2.907 3.073
+  3.109 3.122, `sloped_branch` 2.723 2.768 2.734 2.658; payload vertices equal. No divided stroke
+  yet (R3b2 threads the median through strokes).
+- Road chunk Criterion rows (C F F C, ms): `full_network_emit/64` 9.760 9.470 9.664 9.576,
+  `/1024` 163.64 164.88 163.82 163.13, `chunk_emit_only/1024` 0.205 0.188 0.176 0.182,
+  `bridge_chunk_emit_only/1024` 0.282 0.307 0.316 0.333, `tunnel_chunk_emit_only/1024` 0.279
+  0.273 0.260 0.334: within the controls' spread.
+- Locality (`populated_lane_edit_scaling`, branch, 0/1k/10k/100k remote buildings, p50 ms):
+  verdict 0.235 / 0.390 / 0.235 / 0.290, lane edit commit 1.159 / 1.823 / 1.123 / 1.862, undo
+  0.339 / 0.553 / 0.440 / 1.234, and the crossing toggle on the local pass 1.033 / 2.194 / 0.856 /
+  1.742 (R3a measured the full entrance rebuild path at about 12 ms at 100k); local products
+  identical per tier.
 
 ## Road Geometry Validation (`ROAD-54`)
 

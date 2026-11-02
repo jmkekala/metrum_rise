@@ -232,6 +232,12 @@ in key order ([`roads.md`](roads.md#crossing-toggle-and-save-road-74)). Before i
 tool's crossing toggles were lost on save. The Kuopio fixture is re-recorded in format 110; only
 the version and the new, empty table change (`sqldiff`).
 
+Save format 111 (`ROAD-80`, round R3b1, 2026-11-02) adds `network_edges.median_style` (0 none,
+1 painted, 2 kerbed grass, 3 kerbed paving) and `median_width` (metres, 0 without a median); a
+load fails on a median no stroke could build ([`roads.md`](roads.md#medians-road-80)). The Kuopio
+fixture is re-recorded in format 111; only the version and the two columns at their defaults
+change (`sqldiff`).
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per
