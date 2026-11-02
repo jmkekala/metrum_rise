@@ -37,9 +37,16 @@ var _last_screen_pos := Vector2.ZERO
 func setup(simulation_node: Node, select_tool: Node) -> void:
 	_simulation_node = simulation_node
 	_select_tool = select_tool
+	_load_median_styles()
 
 func _ready() -> void:
 	_build_window()
+
+# Rust's median widths are constant: the controls read them once, as soon as both the simulation
+# node and the controls exist (`setup` runs before or after `_ready`, and again on every show).
+func _load_median_styles() -> void:
+	if _lanes and _simulation_node and _lanes.median_styles.is_empty():
+		_lanes.median_styles = _simulation_node.get_median_styles()
 
 func _build_window() -> void:
 	_window = Window.new()
@@ -92,6 +99,7 @@ func _build_window() -> void:
 
 	_lanes = CrossSectionControls.new(14)
 	_lanes.changed.connect(_on_cross_section_changed)
+	_load_median_styles()
 	root_vbox.add_child(_lanes)
 	var apply_row := HBoxContainer.new()
 	_verdict_label = Label.new()

@@ -18,7 +18,8 @@
 ## style, ; and ' step the width) is Rust's: `set_road_tool_median` refuses a style or width
 ## outside its range, and the stroke's check refuses a median its lanes cannot carry (a one-way
 ## road or a walkway); the Walkway preset clears it (`ROAD-92`).
-## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(), preview_road(), advance_road_preview_terrain(),
+## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(), get_median_styles(),
+## preview_road(), advance_road_preview_terrain(),
 ## release_road_preview_terrain(), add_road_with_snap(), get_road_commit_result(),
 ## get_road_tool_cursor_pos(), get_road_tool_start_direction(), get_graded_edit_serial().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
@@ -55,6 +56,7 @@ signal tunnel_toggled(enabled: bool)
 # 1 painted, 2 kerbed grass, 3 kerbed paving, and its width with kerbs, in metres.
 var median_style: int = 0
 var median_width: float = 0.0
+var _median_style_table: Dictionary = {}
 ## The next stroke's median changed (keys, presets or the options panel's Median row).
 signal median_changed(style: int, width: float)
 ## The next stroke's lane counts changed (keys, presets or the options panel's steppers).
@@ -239,11 +241,6 @@ func set_tunnel(enabled: bool) -> void:
 	tunnel_toggled.emit(enabled)
 	_queue_preview_update()
 
-## Each style's default width and range in metres, as Rust's `RoadMedian::width_range_m` holds
-## them; index = style. Used to step the width and to pick a style's starting width only.
-const MEDIAN_DEFAULT_WIDTH: Array[float] = [0.0, 1.0, 3.0, 2.0]
-const MEDIAN_WIDTH_RANGE: Array[Vector2] = [Vector2.ZERO, Vector2(0.5, 2.0), Vector2(2.0, 12.0), Vector2(1.0, 3.0)]
-
 ## Sets the next stroke's median through Rust and returns its refusal key ("" when set). A
 ## refused median leaves the tool's median as it was.
 func set_median(style: int, width: float) -> String:
@@ -263,15 +260,23 @@ func set_median(style: int, width: float) -> String:
 func cycle_median() -> void:
 	if fwd_lanes == 0 and bkw_lanes == 0:
 		return
-	var style := (median_style + 1) % 4
-	set_median(style, MEDIAN_DEFAULT_WIDTH[style])
+	var styles := _median_styles()
+	var style := (median_style + 1) % (styles.size() + 1)
+	set_median(style, float(styles[style].default_m) if style != 0 else 0.0)
 
 ## ; and ': steps the median's width by `delta` within its style's range.
 func adjust_median_width(delta: float) -> void:
 	if median_style == 0:
 		return
-	var limits: Vector2 = MEDIAN_WIDTH_RANGE[median_style]
-	set_median(median_style, clampf(median_width + delta, limits.x, limits.y))
+	var widths: Dictionary = _median_styles()[median_style]
+	set_median(median_style, clampf(median_width + delta, widths.min_m, widths.max_m))
+
+# Rust's median widths per style code (`get_median_styles`: default_m, min_m, max_m), read on
+# the first key press that needs them; the table is constant.
+func _median_styles() -> Dictionary:
+	if _median_style_table.is_empty():
+		_median_style_table = simulation_node.get_median_styles()
+	return _median_style_table
 
 ## The options panel's cross-section controls: the lanes, then the median through Rust. A
 ## median Rust refuses leaves the tool's, which the controls show again.

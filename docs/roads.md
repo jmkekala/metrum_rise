@@ -10355,6 +10355,9 @@ in the hover check and the plan alike.
 The road tool (`road_tool.gd`) keeps the median beside the tunnel intent and re-asserts it before
 each preview; **N** cycles the style (none, painted 1 m, grass 3 m, paving 2 m), **;** and **'**
 step the width by 0.5 m within the style's range, and the options panel's Median row sets both.
+The defaults and ranges are Rust's (`RoadMedian::default_width_m`, `width_range_m`): the tool and
+the cross-section controls read them once from `get_median_styles` (per style code `default_m`,
+`min_m`, `max_m`) and hold no copy.
 `ROAD-92`: the Road and Walkway presets go through `set_lane_preset`, which clears a median a
 walkway cannot carry; N does nothing on a walkway; Rust refuses a walkway stroke with a median
 whatever the tool holds, so the preset is a convenience, not the rule.

@@ -24,6 +24,11 @@ pub enum MedianStyle {
     KerbedPaving = 3,
 }
 
+impl MedianStyle {
+    /// Every style in tool-code order (1, 2, 3).
+    pub const ALL: [Self; 3] = [Self::Painted, Self::KerbedGrass, Self::KerbedPaving];
+}
+
 /// A road's median: its style and its total width in metres, kerbs included. The lane groups sit
 /// that far apart and `Edge::width` includes it. Noses, clearances and the lanes' offsets are
 /// derived from it, never stored.
@@ -63,6 +68,17 @@ impl RoadMedian {
             MedianStyle::Painted => (0.5, 2.0),
             MedianStyle::KerbedGrass => (2.0, 12.0),
             MedianStyle::KerbedPaving => (1.0, 3.0),
+        }
+    }
+
+    /// The width the road tool and the cross-section controls give a style when the player picks
+    /// it, in metres: painted 1, kerbed grass 3, kerbed paving 2, each inside
+    /// [`Self::width_range_m`].
+    pub fn default_width_m(style: MedianStyle) -> f32 {
+        match style {
+            MedianStyle::Painted => 1.0,
+            MedianStyle::KerbedGrass => 3.0,
+            MedianStyle::KerbedPaving => 2.0,
         }
     }
 
@@ -224,6 +240,17 @@ mod tests {
         for style in 1..=3 {
             let median = RoadMedian::from_tool(style, 2.0).unwrap();
             assert_eq!(RoadMedian::style_code(median), style);
+        }
+    }
+
+    #[test]
+    fn each_style_defaults_to_a_width_it_accepts() {
+        for style in MedianStyle::ALL {
+            let width_m = RoadMedian::default_width_m(style);
+            let median = RoadMedian::from_tool(style as i32, width_m)
+                .unwrap()
+                .unwrap();
+            assert_eq!(median.style, style);
         }
     }
 

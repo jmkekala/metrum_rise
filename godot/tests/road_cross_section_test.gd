@@ -4,7 +4,8 @@
 ## refused on a one-way stroke with its reason, previews and commits on a 1 + 1 stroke, and the
 ## committed road reports it; widening the road in place keeps it, and a crossing road splits it
 ## into two halves that both keep it; only a grass median's chunks carry the grass layer. Out-of-range widths and unknown styles are refused by
-## `set_road_tool_median`, which keeps the previous median. Ported from Veeti's
+## `set_road_tool_median`, which keeps the previous median and accepts the default and range ends
+## `get_median_styles` publishes. Ported from Veeti's
 ## `road_cross_section_test.gd` (bridge half) onto dev's API.
 extends SceneTree
 
@@ -48,6 +49,12 @@ func _run() -> void:
 		simulation.set_simulation_speed(0.0)
 		_expect(simulation.set_road_tool_median(style, 40.0) == "median_width_out_of_range", "style %d: a width out of range is refused" % style)
 		_expect(simulation.set_road_tool_median(7, width) == "unknown_median_style", "an unknown style is refused")
+		var styles: Dictionary = simulation.get_median_styles()
+		_expect(styles.size() == 3, "get_median_styles has the three styles: %s" % styles)
+		var widths: Dictionary = styles[style]
+		for accepted in [widths.min_m, widths.default_m, widths.max_m]:
+			_expect(simulation.set_road_tool_median(style, accepted).is_empty(), "style %d: the published %.1f m is accepted" % [style, accepted])
+		_expect(simulation.set_road_tool_median(style, widths.max_m + 0.5) == "median_width_out_of_range", "style %d: past the published maximum is refused" % style)
 		_expect(simulation.set_road_tool_median(style, width).is_empty(), "style %d: the median is set" % style)
 		var points := PackedVector3Array([_ground(-100.0, 0.0), _ground(100.0, 0.0)])
 		var refused: Dictionary = simulation.validate_road_candidate_with_snap(points, 1, 0, true)

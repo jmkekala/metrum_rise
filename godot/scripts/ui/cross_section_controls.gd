@@ -16,16 +16,16 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const MAX_LANES := 4
 const LABEL_WIDTH := 92.0
 const MEDIAN_STYLE_NAMES: Array[String] = ["None", "Painted", "Grass", "Paving"]
-# Each style's starting width and range in metres, as Rust's `RoadMedian::width_range_m` holds
-# them (index = style): only for stepping the width and picking a style's first width.
-const MEDIAN_DEFAULT_WIDTH: Array[float] = [0.0, 1.0, 3.0, 2.0]
-const MEDIAN_WIDTH_RANGE: Array[Vector2] = [Vector2.ZERO, Vector2(0.5, 2.0), Vector2(2.0, 12.0), Vector2(1.0, 3.0)]
 const MEDIAN_WIDTH_STEP := 0.5
 
 var fwd_lanes := 1
 var bkw_lanes := 1
 var median_style := 0
 var median_width := 0.0
+## Rust's median widths per style code, as `get_median_styles` returns them (`default_m`,
+## `min_m`, `max_m`): the host sets it once from the simulation node, before the player picks a
+## style or steps the width. Only for picking a style's first width and stepping within range.
+var median_styles: Dictionary = {}
 
 var _counts: Array[Label] = []
 var _buttons: Array[Button] = []
@@ -119,12 +119,12 @@ func _on_style(style: int) -> void:
 	if style == median_style:
 		return
 	median_style = style
-	median_width = MEDIAN_DEFAULT_WIDTH[style]
+	median_width = float(median_styles[style].default_m) if style != 0 else 0.0
 	_emit()
 
 func _on_width_step(step: int) -> void:
-	var limits: Vector2 = MEDIAN_WIDTH_RANGE[median_style]
-	median_width = clampf(median_width + step * MEDIAN_WIDTH_STEP, limits.x, limits.y)
+	var widths: Dictionary = median_styles[median_style]
+	median_width = clampf(median_width + step * MEDIAN_WIDTH_STEP, widths.min_m, widths.max_m)
 	_emit()
 
 func _emit() -> void:

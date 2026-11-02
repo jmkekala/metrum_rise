@@ -33,6 +33,26 @@ impl SimulationNode {
         }
     }
 
+    /// Each median style's widths in metres (`ROAD-80`), keyed by the style code
+    /// [`Self::set_road_tool_median`] takes (1 painted, 2 kerbed grass, 3 kerbed paving): a
+    /// dictionary of `default_m` (the width a picked style starts at), `min_m` and `max_m` (the
+    /// range outside which a width is refused). The table is constant; the road tool's keys and
+    /// the cross-section controls read it once.
+    #[func]
+    pub fn get_median_styles(&self) -> VarDictionary {
+        use crate::simulation::network::graph::{MedianStyle, RoadMedian};
+        let mut styles = VarDictionary::new();
+        for style in MedianStyle::ALL {
+            let (min_m, max_m) = RoadMedian::width_range_m(style);
+            let mut widths = VarDictionary::new();
+            widths.set("default_m", RoadMedian::default_width_m(style));
+            widths.set("min_m", min_m);
+            widths.set("max_m", max_m);
+            styles.set(style as i64, widths.to_variant());
+        }
+        styles
+    }
+
     /// Returns cheap synchronous hover feedback for a road-tool candidate.
     ///
     /// Returns prepared points and validation; the road tool's display comes from

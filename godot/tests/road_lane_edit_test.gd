@@ -136,6 +136,7 @@ func _run() -> void:
 
 	# The road options panel's steppers drive the tool's next stroke.
 	var controls := CrossSectionControls.new()
+	controls.median_styles = simulation.get_median_styles()
 	scene.add_child(controls)
 	var seen: Array = []
 	controls.changed.connect(func(fwd: int, bkw: int, style: int, width: float): seen.append([fwd, bkw, style, width]))

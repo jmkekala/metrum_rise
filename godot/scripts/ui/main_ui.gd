@@ -6,7 +6,7 @@
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data(),
 ##   get_growth_overview(), get_treasury_balance(), get_agent_count(),
 ##   get_service_building_assets()
-##   get_industry_building_assets()
+##   get_industry_building_assets(), get_median_styles()
 ## No scene file for the UI; every control is created in _ready() and helper functions.
 extends CanvasLayer
 
@@ -257,6 +257,8 @@ func _build_ui():
 	# The next stroke's lanes and median (`ROAD-80`), the same controls the Road Properties
 	# window shows; the keys and presets update them through `lanes_changed`/`median_changed`.
 	var lane_controls := CrossSectionControls.new()
+	if simulation_node:
+		lane_controls.median_styles = simulation_node.get_median_styles()
 	if road_tool:
 		lane_controls.changed.connect(road_tool.set_cross_section)
 		lane_controls.set_lanes(road_tool.fwd_lanes, road_tool.bkw_lanes)
