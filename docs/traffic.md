@@ -759,7 +759,8 @@ crossings).
   move and no step over 2 m on the road, identical for 1 and 8 workers. `stranded_fixture`:
   walkers stranded at nodes without a lane (two that took their sidewalks, one at a node with
   none) saved mid-backoff and loaded continue frame for frame. The watchdog's own test now drives
-  a car.
+  a car, and `trips::test_walking_agent_recovers_from_stale_edge_after_road_split` expects its
+  walker at a dead end to turn back through the node's connector from the sidewalk it stands on.
 
 ### Detach rule (`TRAFFIC-15`, `TRAFFIC-13`)
 
