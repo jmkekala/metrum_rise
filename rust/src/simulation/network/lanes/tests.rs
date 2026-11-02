@@ -722,7 +722,8 @@ fn divided_lane_groups_sit_beside_the_median() {
     use super::super::graph::RoadMedian;
     use super::super::roadbed::RoadProfile;
     // (forward, backward, style, width, forward offsets, backward offsets), right-hand traffic.
-    let cases: [(u8, u8, i32, f32, &[f32], &[f32]); 4] = [
+    type Case = (u8, u8, i32, f32, &'static [f32], &'static [f32]);
+    let cases: [Case; 4] = [
         (1, 1, 2, 4.0, &[3.75], &[-3.75]),
         (2, 2, 3, 2.0, &[2.75, 6.25], &[-2.75, -6.25]),
         (2, 1, 2, 4.0, &[2.0, 5.5], &[-5.5]),
