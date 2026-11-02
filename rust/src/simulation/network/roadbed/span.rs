@@ -21,6 +21,7 @@ mod model;
 use model::SpanModel;
 pub(crate) use model::SpanScratch;
 pub(crate) use model::incident_direction;
+pub(super) use model::RowKind;
 pub(super) use model::{
     PASS_THROUGH_DOT_THRESHOLD, WIDTH_CHANGE_TAPER_MAX_M, WIDTH_CHANGE_TAPER_MIN_M,
     WIDTH_CHANGE_TAPER_WIDTH_FACTOR, edge_points, is_surface_edge,
@@ -30,7 +31,7 @@ use super::arms::{span_end, tunnels_continue};
 use super::lining::LiningEnd;
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
-use super::mesh::{PieceMesh, SpanEnd, StripKind, build_span_mesh};
+use super::mesh::{PieceMesh, SpanEnd, SpanRows, StripKind, build_span_mesh};
 use super::node::plan_node;
 use super::profile::RoadProfile;
 use super::{RoadSection, RoadVec3};
@@ -182,6 +183,8 @@ pub(crate) fn build_span_piece(
         stations,
         protected,
         footprint,
+        kinds,
+        row_starts,
     } = scratch;
     let model = SpanModel::new(
         graph,
@@ -221,15 +224,24 @@ pub(crate) fn build_span_piece(
             _ => LiningEnd::Portal,
         })
     });
+    // A divided span's rows by kind: mouth rows up to each nose's tip, body rows between
+    // (`ROAD-80`).
+    kinds.clear();
+    kinds.extend(sections.iter().map(|section| model.row_kind(section.s_m)));
+    let rows = SpanRows {
+        mouth: model.layout(),
+        body: model.body_layout().map(|body| (body, kinds.as_slice())),
+    };
     let mesh = build_span_mesh(
         &sections,
         (&start_mouth, &end_mouth),
-        model.layout(),
+        rows,
         strips,
         ends,
         lining,
+        row_starts,
     );
-    let footprint = PieceFootprint::of_span(&mesh, model.layout().stride(), grid, footprint);
+    let footprint = PieceFootprint::of_span(&mesh, row_starts, grid, footprint);
     // A crossing's kerbs are its section row's carriageway-edge vertices in the mesh, the
     // vertices `pass_through_crossing` evaluates for the lanes.
     let crossings = [EdgeEnd::Start, EdgeEnd::End].map(|end| {
@@ -237,7 +249,7 @@ pub(crate) fn build_span_piece(
         let row = sections.iter().position(|section| section.s_m == s_m);
         debug_assert!(row.is_some(), "a span keeps a row on its crossing line");
         let (first, last) = model.layout().carriageway_edge_slots()?;
-        let row = &mesh.positions()[row? * model.layout().stride()..];
+        let row = &mesh.positions()[row_starts[row?] as usize..];
         Some((
             s_m,
             crossing_kerbs_right_first([row[first], row[last]], end),

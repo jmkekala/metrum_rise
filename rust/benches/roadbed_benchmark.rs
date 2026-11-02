@@ -16,7 +16,7 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::Vector3;
-use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
+use metrum_rise::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
 use metrum_rise::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, RoadbedSystem};
 use metrum_rise::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
@@ -72,7 +72,15 @@ fn bridge(mut edge: Edge) -> Edge {
     edge
 }
 
-const CASES: [Case; 8] = [
+// A 2+2 road with a 4 m kerbed grass median (`ROAD-80`): a nose at each end.
+fn divided(edge: Edge) -> Edge {
+    let mut edge = four_lane(edge);
+    edge.median = RoadMedian::from_tool(2, 4.0).unwrap();
+    edge.width = 18.0;
+    edge
+}
+
+const CASES: [Case; 9] = [
     Case {
         name: "span_25m",
         length_m: 25.0,
@@ -120,6 +128,12 @@ const CASES: [Case; 8] = [
         length_m: 100.0,
         shape: Shape::Straight,
         edge: bridge,
+    },
+    Case {
+        name: "span_100m_divided",
+        length_m: 100.0,
+        shape: Shape::Straight,
+        edge: divided,
     },
 ];
 

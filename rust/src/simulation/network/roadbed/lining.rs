@@ -266,14 +266,17 @@ pub(super) enum LiningEnd {
 
 /// The lining of a tunnel span: walls along its two outer chains (the first forward along slot
 /// 0, the second back along the last slot, as `build_span_mesh` builds them), the ceiling between
-/// the two tops of each row, and each end row closed as `ends` says. `rows` section rows of
-/// `stride` vertices. `O(rows + stride log stride)`; allocates only the lining.
+/// the two tops of each row, and each end row closed as `ends` says. Section row `r`'s vertices
+/// start at `row_starts[r]`, the last entry the vertex count (a divided span's rows differ in
+/// length, `ROAD-80`). `O(rows + stride log stride)`; allocates only the lining.
 pub(super) fn span_lining(
     positions: &[RoadVec3],
-    (rows, stride): (usize, usize),
+    row_starts: &[u32],
     chains: &[OuterChain],
     ends: [LiningEnd; 2],
 ) -> Lining {
+    let rows = row_starts.len() - 1;
+    let row_range = |row: usize| row_starts[row] as usize..row_starts[row + 1] as usize;
     let mut lining = Lining::default();
     let firsts = lining.walls(positions, chains);
     // Row `r`'s left top is the first chain's `r`-th, its right top the second chain's
@@ -298,24 +301,24 @@ pub(super) fn span_lining(
         } else {
             (rows - 1, rows - 2)
         };
-        let first = row * stride;
+        let (first, last) = (row_range(row).start, row_range(row).end - 1);
         let tops = [left_top(row), right_top(row)]
             .map(|index| (index, lining.positions[index as usize - positions.len()]));
-        let edge = (positions[first], positions[first + stride - 1]);
-        let inward = positions[inner * stride] - positions[first];
+        let edge = (positions[first], positions[last]);
+        let inward = positions[row_range(inner).start] - positions[first];
         let outward = RoadVec2::new(-inward.x, -inward.z);
         match closure {
             LiningEnd::Open => {}
             // Facing into the bore.
             LiningEnd::Closed => {
-                let mut ring: Vec<(u32, RoadVec3)> = (first..first + stride)
+                let mut ring: Vec<(u32, RoadVec3)> = row_range(row)
                     .map(|vertex| (vertex as u32, positions[vertex]))
                     .collect();
                 ring.extend([tops[1], tops[0]]);
                 lining.plane_face(edge, &[&ring], -outward);
             }
             LiningEnd::Portal => {
-                let corners = [first as u32, (first + stride - 1) as u32];
+                let corners = [first as u32, last as u32];
                 portals.push((corners, tops, edge, outward));
             }
         }
@@ -324,12 +327,15 @@ pub(super) fn span_lining(
     for (corners, tops, edge, outward) in portals {
         collar(&mut lining, positions.len(), corners, tops, edge, outward);
     }
-    // A chain vertex's row is its index over the stride; its foot lies away from the row's
-    // other corner.
+    // Chain 0's `k`-th vertex starts row `k`, chain 1's ends row `rows - 1 - k`; its foot lies
+    // away from the row's other corner.
     lining.shell(positions, chains, (&firsts, ceiling), |c, k| {
         let vertex = chains[c].vertices()[k] as usize;
-        let row = vertex / stride * stride;
-        let other = if vertex == row { row + stride - 1 } else { row };
+        let other = if c == 0 {
+            row_range(k).end - 1
+        } else {
+            row_range(rows - 1 - k).start
+        };
         shell_foot(positions[vertex], positions[other])
     });
     lining
