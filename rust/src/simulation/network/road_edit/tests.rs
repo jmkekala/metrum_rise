@@ -446,7 +446,10 @@ fn the_structure_clearances_share_the_vehicle_envelope() {
     use crate::simulation::network::roadbed::{
         TUNNEL_COVER_M, TUNNEL_LINING_HEIGHT_M, VEHICLE_CLEARANCE_M,
     };
-    assert_eq!(TUNNEL_LINING_HEIGHT_M.to_bits(), VEHICLE_CLEARANCE_M.to_bits());
+    assert_eq!(
+        TUNNEL_LINING_HEIGHT_M.to_bits(),
+        VEHICLE_CLEARANCE_M.to_bits()
+    );
     assert_eq!(TUNNEL_COVER_M.to_bits(), 5.0_f64.to_bits());
     assert_eq!(tunnel::ROAD_OVER_TUNNEL_M.to_bits(), 5.5_f32.to_bits());
     assert_eq!(tunnel::ROAD_UNDER_BRIDGE_M.to_bits(), 4.85_f32.to_bits());

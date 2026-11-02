@@ -1451,12 +1451,14 @@ impl SimCore {
                     .expect("plan source identities checked under the same simulation lock"),
             )
         } else {
-            self.transit_network.add_road(
+            // Plan-less callers draw without the tunnel intent, so the stroke has no bore.
+            self.transit_network.add_road_graded(
                 &mut self.region_graph,
                 fixed_points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
                 prepared_input.class,
+                prepared_input.grade(None),
                 &mut self.zoning,
                 &mut self.allocator,
             );

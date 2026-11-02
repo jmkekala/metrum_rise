@@ -522,4 +522,199 @@ mod tests {
             );
         }
     }
+
+    // `ROAD-99`: grade separation by structure. A graph-only network and the roads added to it.
+    struct Graded {
+        net: TransitNetwork,
+        graph: RegionGraph,
+        zoning: ZoningSystem,
+        allocator: BuildingAllocator,
+    }
+
+    impl Graded {
+        fn new() -> Self {
+            Self {
+                net: TransitNetwork::new(),
+                graph: RegionGraph::new(),
+                zoning: ZoningSystem::new(&WorldConfig::default()),
+                allocator: BuildingAllocator::new(),
+            }
+        }
+
+        fn add(&mut self, points: [(f32, f32, f32); 2], class: EdgeClass) -> &mut Self {
+            let grade = crate::simulation::network::topology::StrokeGrade::of_class(class);
+            self.add_graded(points, class, grade)
+        }
+
+        fn add_graded(
+            &mut self,
+            points: [(f32, f32, f32); 2],
+            class: EdgeClass,
+            grade: crate::simulation::network::topology::StrokeGrade,
+        ) -> &mut Self {
+            self.net.add_road_graded(
+                &mut self.graph,
+                points.map(|(x, y, z)| Vector3::new(x, y, z)).to_vec(),
+                1,
+                1,
+                class,
+                grade,
+                &mut self.zoning,
+                &mut self.allocator,
+            );
+            self
+        }
+
+        fn live_edges(&self, class: EdgeClass) -> usize {
+            (self.graph.edges.iter())
+                .filter(|edge| !edge.deleted && edge.class == class)
+                .count()
+        }
+
+        // The canonical nodes where three or more live edges meet.
+        fn junctions(&self) -> Vec<u32> {
+            (0..self.graph.node_count() as u32)
+                .filter(|&node| self.graph.get_valid_node(node) == node)
+                .filter(|&node| {
+                    let arms = self.graph.node_adjacency(node);
+                    arms.iter()
+                        .filter(|&&edge| !self.graph.edge(edge).deleted)
+                        .count()
+                        >= 3
+                })
+                .collect()
+        }
+    }
+
+    const ALONG_X: [(f32, f32, f32); 2] = [(-40.0, 0.0, 0.0), (40.0, 0.0, 0.0)];
+
+    fn along_z(height: f32) -> [(f32, f32, f32); 2] {
+        [(0.0, height, -40.0), (0.0, height, 40.0)]
+    }
+
+    // Two ground roads always meet where they cross, at any height between them (before
+    // `ROAD-99`, 9 m apart they crossed without a node); the grade rules refuse what cannot meet.
+    #[test]
+    fn two_ground_roads_meet_at_any_height() {
+        let mut graded = Graded::new();
+        graded
+            .add(ALONG_X, EdgeClass::Standard)
+            .add(along_z(9.0), EdgeClass::Standard);
+        assert_eq!(graded.junctions().len(), 1);
+        assert_eq!(graded.live_edges(EdgeClass::Standard), 4);
+    }
+
+    // A ground road and a bridge, in either order and at any height between them, cross without
+    // a node: neither is split. So do two bridges.
+    #[test]
+    fn a_structure_crosses_every_road_without_a_node() {
+        for height in [1.0, 2.0, 6.0] {
+            for (first, second) in [
+                (EdgeClass::Standard, EdgeClass::Bridge),
+                (EdgeClass::Bridge, EdgeClass::Standard),
+                (EdgeClass::Bridge, EdgeClass::Bridge),
+            ] {
+                let case = format!("{first:?} then {second:?} {height} m above");
+                let mut graded = Graded::new();
+                graded.add(ALONG_X, first).add(along_z(height), second);
+                assert!(graded.junctions().is_empty(), "{case}");
+                assert_eq!(
+                    graded.graph.edges.iter().filter(|e| !e.deleted).count(),
+                    2,
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    // A ground road passing through a bridge's bend node (only bridges meet it) passes under it;
+    // through a bridge's abutment (a ground road meets it) it joins the node.
+    #[test]
+    fn a_ground_road_joins_a_bridge_at_its_abutment_only() {
+        let mut bend = Graded::new();
+        bend.add([(-40.0, 6.0, 0.0), (0.0, 6.0, 0.0)], EdgeClass::Bridge)
+            .add([(0.0, 6.0, 0.0), (40.0, 6.0, 10.0)], EdgeClass::Bridge)
+            .add(along_z(0.0), EdgeClass::Standard);
+        assert!(bend.junctions().is_empty());
+        assert_eq!(bend.live_edges(EdgeClass::Standard), 1);
+        assert!(!bend.graph.grounded_node(bend.graph.edge(0).end_node));
+
+        let mut abutment = Graded::new();
+        abutment
+            .add([(-40.0, 0.0, -20.0), (0.0, 0.0, 0.0)], EdgeClass::Standard)
+            .add([(0.0, 0.0, 0.0), (40.0, 6.0, 0.0)], EdgeClass::Bridge)
+            .add(along_z(0.0), EdgeClass::Standard);
+        let junctions = abutment.junctions();
+        assert_eq!(junctions.len(), 1);
+        assert!(abutment.graph.grounded_node(junctions[0]));
+        assert_eq!(abutment.graph.node(junctions[0]).pos, Vector3::ZERO);
+        assert_eq!(abutment.live_edges(EdgeClass::Standard), 3);
+        assert_eq!(abutment.live_edges(EdgeClass::Bridge), 1);
+    }
+
+    // A road's end 1.5 m from a span (within the join tolerance) joins it mid-span only when both
+    // stand on the ground: a ground road's end joins a ground road, not a bridge; a bridge's end
+    // at its support joins a ground road, its elevated end does not.
+    #[test]
+    fn an_end_joins_a_span_only_on_the_ground() {
+        use crate::simulation::network::topology::StrokeGrade;
+        let near_end = [(0.0, 0.0, -40.0), (0.0, 0.0, -1.5)];
+        let mut ground = Graded::new();
+        ground
+            .add(ALONG_X, EdgeClass::Standard)
+            .add(near_end, EdgeClass::Standard);
+        assert_eq!(ground.junctions().len(), 1);
+
+        let mut under = Graded::new();
+        under
+            .add([(-40.0, 6.0, 0.0), (40.0, 6.0, 0.0)], EdgeClass::Bridge)
+            .add(near_end, EdgeClass::Standard);
+        assert!(under.junctions().is_empty());
+
+        for (ground_ends, joins) in [([false, true], true), ([true, false], false)] {
+            let mut bridge = Graded::new();
+            bridge.add(ALONG_X, EdgeClass::Standard).add_graded(
+                [(0.0, 6.0, -40.0), (0.0, 0.0, -1.5)],
+                EdgeClass::Bridge,
+                StrokeGrade::bridge(ground_ends),
+            );
+            assert_eq!(
+                bridge.junctions().len(),
+                usize::from(joins),
+                "{ground_ends:?}"
+            );
+        }
+    }
+
+    // A tunnel stroke's bore crosses a ground road without a node; its approach meets it.
+    #[test]
+    fn a_tunnel_strokes_approaches_meet_ground_roads_and_its_bore_does_not() {
+        use crate::simulation::network::topology::StrokeGrade;
+        // Knots every 10 m from x = -40 to 40; the bore from knot 2 (x = -20) to knot 6 (x = 20).
+        let knots: Vec<Vector3> = (0..9)
+            .map(|knot| Vector3::new(-40.0 + 10.0 * knot as f32, 0.0, 0.0))
+            .collect();
+        for (cross_x, meets) in [(0.0, false), (-30.0, true), (30.0, true)] {
+            let mut graded = Graded::new();
+            graded.add(
+                [(cross_x, 0.0, -40.0), (cross_x, 0.0, 40.0)],
+                EdgeClass::Standard,
+            );
+            graded.net.add_road_graded(
+                &mut graded.graph,
+                knots.clone(),
+                1,
+                1,
+                EdgeClass::Tunnel,
+                StrokeGrade::tunnel(knots.len(), [2, 6]),
+                &mut graded.zoning,
+                &mut graded.allocator,
+            );
+            assert_eq!(
+                graded.junctions().len(),
+                usize::from(meets),
+                "crossing at x = {cross_x}"
+            );
+        }
+    }
 }

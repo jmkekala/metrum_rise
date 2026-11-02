@@ -29,6 +29,7 @@ use crate::simulation::network::validate::{
 };
 use crate::simulation::network::{
     TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, topology,
+    topology::StrokeGrade,
 };
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoningSystem;
@@ -515,6 +516,7 @@ fn validate_against_graph(
     } = match build_validation_graph(
         prepared_points,
         prepared_input.class,
+        prepared_input.grade(bore),
         fwd_lanes,
         bkw_lanes,
         existing_graph,
@@ -597,11 +599,13 @@ fn validate_against_graph(
 
 // The local post-edit graph of a prepared stroke, or the refusal: a stroke whose ends meet one
 // node or whose excerpt is incomplete is `surface_geometry_invalid`; a tunnel stroke's `bore`
-// (`ROAD-61`) is split at its portals and refused when it meets another road.
+// (`ROAD-61`) is split at its portals and refused when it meets another road. The stroke meets
+// the roads it reaches by `grade` (`ROAD-99`).
 #[allow(clippy::too_many_arguments)]
 fn build_validation_graph(
     prepared_points: &[Vector3],
     edge_class: EdgeClass,
+    grade: StrokeGrade,
     fwd_lanes: u8,
     bkw_lanes: u8,
     existing_graph: &RegionGraph,
@@ -696,6 +700,7 @@ fn build_validation_graph(
     let (finalized, splits) = process_validation_graph_intersections(
         &mut validation_graph,
         new_edge_idx,
+        grade,
         terrain,
         portals.as_ref(),
     )?;
@@ -835,6 +840,7 @@ fn push_incident_validation_edges(
 fn process_validation_graph_intersections(
     validation_graph: &mut RegionGraph,
     new_edge_idx: usize,
+    grade: StrokeGrade,
     terrain: &TerrainSystem,
     portals: Option<&Portals>,
 ) -> Result<(FinalizedRoadGeometry, Vec<PlannedRoadSplit>), &'static str> {
@@ -855,6 +861,7 @@ fn process_validation_graph_intersections(
         &mut network,
         validation_graph,
         new_edge_idx,
+        grade,
         portals.map_or(&[][..], |portals| &portals.splits),
         &mut zoning,
         &mut allocator,

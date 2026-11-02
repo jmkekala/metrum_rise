@@ -275,7 +275,8 @@ impl TransitNetwork {
             .wrapping_add(u64::from(changed));
     }
 
-    /// Adds a new road segment to the network from pre-prepared physical geometry.
+    /// Adds a new road segment to the network from pre-prepared physical geometry. It meets the
+    /// roads it reaches as an edge of `class` does (`topology::StrokeGrade::of_class`).
     #[allow(clippy::too_many_arguments)]
     pub fn add_road(
         &mut self,
@@ -284,6 +285,26 @@ impl TransitNetwork {
         fwd_lanes: u8,
         bkw_lanes: u8,
         class: EdgeClass,
+        zoning: &mut crate::simulation::zoning::ZoningSystem,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
+        let grade = topology::StrokeGrade::of_class(class);
+        self.add_road_graded(
+            graph, points, fwd_lanes, bkw_lanes, class, grade, zoning, allocator,
+        );
+    }
+
+    /// As [`Self::add_road`], the road meeting the roads it reaches by `grade` (`ROAD-99`): a
+    /// road-tool stroke's, whose bridge ends at its support join roads mid-span.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add_road_graded(
+        &mut self,
+        graph: &mut RegionGraph,
+        points: Vec<Vector3>,
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+        class: EdgeClass,
+        grade: topology::StrokeGrade,
         zoning: &mut crate::simulation::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
@@ -321,6 +342,7 @@ impl TransitNetwork {
                 fwd_lanes,
                 bkw_lanes,
                 class,
+                grade,
                 zoning,
                 allocator,
             );
@@ -338,6 +360,7 @@ impl TransitNetwork {
         fwd: u8,
         bkw: u8,
         class: EdgeClass,
+        grade: topology::StrokeGrade,
         zoning: &mut crate::simulation::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
@@ -372,7 +395,15 @@ impl TransitNetwork {
 
         let node_count_before = graph.node_count();
         let edges_before = graph.edge_count();
-        topology::process_intersections(self, graph, edge_id, zoning, allocator);
+        topology::process_intersections_splitting_at(
+            self,
+            graph,
+            edge_id,
+            grade,
+            &[],
+            zoning,
+            allocator,
+        );
         self.cleanup_duplicate_edges(graph); // Clean edge_id if it's dup
 
         let surface_dirty_nodes = road_insert_surface_dirty_nodes(

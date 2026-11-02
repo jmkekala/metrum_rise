@@ -265,6 +265,19 @@ impl RegionGraph {
             && !crate::simulation::network::roadbed::is_tunnel_approach(self, edge_idx)
     }
 
+    /// Whether `node_id` stands on the ground (`ROAD-99`): a live standard edge meets it, the
+    /// roadbed's notion of a grounded node piece. A road on the ground meets a structure only at
+    /// such a node (a bridge's abutment); a node where only bridges or tunnels meet (a bridge's
+    /// bend) stands off the ground. `O(degree)`.
+    pub fn grounded_node(&self, node_id: u32) -> bool {
+        let node_id = self.get_valid_node(node_id);
+        (node_id as usize) < self.adjacency.len()
+            && self.adjacency[node_id as usize].iter().any(|&edge_idx| {
+                let edge = self.edge(edge_idx);
+                !edge.deleted && edge.class == EdgeClass::Standard
+            })
+    }
+
     /// Whether a building may front `edge_idx`: it fronts the ground ([`Self::fronts_ground`])
     /// and the player has not closed it to buildings. The one rule lots, parcels, explicit
     /// sites, attachment repair and road-side connections read.

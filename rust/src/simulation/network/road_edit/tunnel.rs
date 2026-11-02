@@ -103,6 +103,7 @@ pub(super) fn prepare_tunnel_input(
         endpoint_snap_enabled: snap_to_existing_roads,
         tunnel: true,
         forced_grade: None,
+        elevated_ends: [false; 2],
     }
 }
 
