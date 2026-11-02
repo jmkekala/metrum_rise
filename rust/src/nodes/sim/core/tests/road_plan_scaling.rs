@@ -446,6 +446,11 @@ fn measure_populated_road_plan_scaling(
             let status_start = Instant::now();
             assert_eq!(plan.status(&core), "ready");
             let status_ms = status_start.elapsed().as_secs_f64() * 1000.0;
+            // The measured join splits the bridge: its end is snapped onto the span.
+            assert_eq!(
+                plan.prepared().joined_spans[1].is_some(),
+                measured == Measured::JoinBridge
+            );
             let preview_start = Instant::now();
             let (prepared_points, validation) = snapshot.validate(&request());
             let preview_ms = preview_start.elapsed().as_secs_f64() * 1000.0;
