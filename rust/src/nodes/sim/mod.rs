@@ -7,6 +7,7 @@ pub mod asset_export;
 pub mod benchmark;
 pub mod bridge;
 pub mod core;
+mod cross_section;
 pub mod editing;
 pub mod query;
 /// Rendering bridge sub-modules for Godot-Rust interaction.

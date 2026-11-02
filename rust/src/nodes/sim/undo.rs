@@ -524,11 +524,16 @@ impl SimCore {
         false
     }
 
-    // Lanes after a topology undo, as a commit rebuilds them (`ROAD-68-E`): the agents on the
-    // restored edges' lanes are detached, those edges' lane closure is rebuilt on the restored
-    // graph, the connection lanes of nodes the undo dropped are retired, and the agents
-    // reattach. `O(restored records + their lane closure)`, independent of the city.
-    fn restore_lanes_locally(&mut self, edge_ids: &HashSet<usize>, node_ids: &HashSet<u32>) {
+    // Lanes after a topology undo, as a commit rebuilds them (`ROAD-68-E`), or after an in-place
+    // cross-section edit (`ROAD-80`): the agents on the edges' lanes are detached, those edges'
+    // lane closure is rebuilt on the graph, the connection lanes of nodes the edit dropped are
+    // retired, and the agents reattach. `O(restored records + their lane closure)`, independent
+    // of the city.
+    pub(super) fn restore_lanes_locally(
+        &mut self,
+        edge_ids: &HashSet<usize>,
+        node_ids: &HashSet<u32>,
+    ) {
         let lanes = &mut self.transit_network.lane_system;
         self.agents
             .invalidate_lane_ids_for_edges(edge_ids, lanes, &self.region_graph);

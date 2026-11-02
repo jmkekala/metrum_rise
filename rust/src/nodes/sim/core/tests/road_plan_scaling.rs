@@ -12,7 +12,7 @@ mod memory;
 // The measured stroke: the T's side road on flat ground, a tunnel through the hill south of the
 // T, a road over that tunnel (`ROAD-61` round R8h), or a road under a bridge south of the T on
 // flat ground (`ROAD-99`), or a road climbing from the ground to join that bridge mid-span
-// (`ROAD-99` follow-up B1).
+// (`ROAD-99` follow-up B1); or no stroke: the T's side road, drawn, widened in place (`ROAD-80`).
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
@@ -20,6 +20,7 @@ enum Measured {
     OverTunnel,
     UnderBridge,
     JoinBridge,
+    LaneEdit,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -83,6 +84,18 @@ fn populated_bridge_join_plan_scaling() {
         false,
         CellScenario::None,
         Measured::JoinBridge,
+    );
+}
+
+#[test]
+#[ignore = "unprofiled in-place lane edit locality; run alone with --release --ignored --nocapture"]
+fn populated_lane_edit_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::LaneEdit,
     );
 }
 
@@ -163,6 +176,14 @@ fn measure_populated_road_plan_scaling(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
     );
+    if measured == Measured::LaneEdit {
+        road_terrain_plan::commit_ready(
+            &mut core,
+            vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
+        );
+        core.precompute_road_mesh_data();
+    }
+    let mut previous_lane_products = None;
     if matches!(
         measured,
         Measured::OverTunnel | Measured::UnderBridge | Measured::JoinBridge
@@ -361,6 +382,14 @@ fn measure_populated_road_plan_scaling(
             measure_snapshot_components(&core, remote_buildings);
             continue;
         }
+        if measured == Measured::LaneEdit {
+            let products = measure_lane_edit(&mut core, remote_buildings, background_roads);
+            if let Some(previous) = &previous_lane_products {
+                assert_eq!(&products, previous, "remote state changed local products");
+            }
+            previous_lane_products = Some(products);
+            continue;
+        }
         if zoning_only {
             let geometry = core
                 .zoning
@@ -430,6 +459,7 @@ fn measure_populated_road_plan_scaling(
                 Vector3::new(0.0, 0.0, -210.0),
                 Vector3::new(0.0, 6.0, -150.0),
             ],
+            Measured::LaneEdit => unreachable!("measured by measure_lane_edit"),
         };
         let request = || RoadPreviewRequest {
             surface_generation: generation,
@@ -491,6 +521,80 @@ fn measure_populated_road_plan_scaling(
             })
         );
     }
+}
+
+// `ROAD-80`: the T's side road (south of the T) widened from 1+1 to 2+2 in place. Times the
+// verdict (the check, run and put back) over 100 samples, then 20 commits each followed by its
+// undo; returns the local products after a commit: the T's span and node pieces and the side
+// road's lanes, which must not depend on the remote city. The once-per-tier setup is not timed.
+fn measure_lane_edit(core: &mut SimCore, remote_buildings: usize, remote_roads: usize) -> String {
+    // The fixture commits without lanes; the edit rebuilds the lanes it touches, so they exist
+    // before the first one, as in a game (setup, not timed). No agent is on a lane.
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    let node = core
+        .region_graph
+        .find_node_within(Vector3::ZERO, 1.0)
+        .expect("the T");
+    let side = core.get_hovered_edge_internal(0.0, -60.0);
+    assert!(side >= 0);
+    let local = |core: &SimCore| {
+        let roadbed = &core.transit_network.roadbed;
+        let mut out = String::new();
+        for &edge in core.region_graph.node_adjacency(node) {
+            let piece = roadbed.span_piece(edge).expect("a span");
+            out += &format!("{edge} {:?}\n", piece.mesh().positions());
+        }
+        let piece = roadbed.node_piece(node).expect("the T's piece");
+        out += &format!("{:?}\n", piece.mesh().positions());
+        let lanes = &core.transit_network.lane_system;
+        for &id in &lanes.edge_lanes[&(side as usize)] {
+            out += &format!("{:?}\n", lanes.lanes[id].geometry);
+        }
+        out
+    };
+    let p50 = |samples: &mut Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    };
+    let mut verdicts = Vec::new();
+    for iteration in 0..103 {
+        let start = Instant::now();
+        let verdict = core.preview_edge_cross_section_internal(side, 2, 2);
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(verdict.is_none(), "{verdict:?}");
+        if iteration >= 3 {
+            verdicts.push(ms);
+        }
+    }
+    let (mut commits, mut undos) = (Vec::new(), Vec::new());
+    let before = local(core);
+    let mut products = String::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        assert!(core.set_edge_cross_section_internal(side, 2, 2));
+        commits.push(start.elapsed().as_secs_f64() * 1000.0);
+        core.precompute_road_mesh_data();
+        products = local(core);
+        let start = Instant::now();
+        assert!(core.undo_action_internal());
+        undos.push(start.elapsed().as_secs_f64() * 1000.0);
+        core.precompute_road_mesh_data();
+        assert_eq!(local(core), before, "undo restores the T");
+    }
+    println!(
+        "LANE_EDIT_SCALING {}",
+        serde_json::json!({
+            "remote_buildings": remote_buildings, "remote_roads": remote_roads,
+            "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
+            "rayon_threads": rayon::current_num_threads(),
+            "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
+            "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
+            "commit_samples": commits.len(), "identical_local_products": true,
+        })
+    );
+    products
 }
 
 fn measure_snapshot_components(core: &SimCore, background: usize) {

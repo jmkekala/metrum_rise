@@ -453,6 +453,76 @@ impl SimulationNode {
         }
     }
 
+    /// Road `edge_id`'s cross-section for the Road Properties window (`ROAD-80`): `fwd_lanes`,
+    /// `bkw_lanes`, `width` (carriageway metres), `class` and `editable` (a live road with
+    /// vehicle lanes, which [`Self::set_edge_cross_section`] can change). Empty for an id that
+    /// is not a live edge.
+    #[func]
+    pub fn get_edge_cross_section(&self, edge_id: i32) -> VarDictionary {
+        let core = self.lock_core();
+        let graph = &core.region_graph;
+        let Some(edge) = usize::try_from(edge_id)
+            .ok()
+            .and_then(|edge| graph.get_edge(edge))
+            .filter(|edge| !edge.deleted)
+        else {
+            return VarDictionary::new();
+        };
+        vdict! {
+            "fwd_lanes": i64::from(edge.fwd_lanes),
+            "bkw_lanes": i64::from(edge.bkw_lanes),
+            "width": edge.width,
+            "class": edge.class as i64,
+            "editable": edge.validate_lanes(edge.fwd_lanes, edge.bkw_lanes).is_ok(),
+        }
+    }
+
+    /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes in
+    /// place, without applying it: `is_valid`, and when refused `invalid_reason` (stable key) and
+    /// `detail`. The same check as [`Self::set_edge_cross_section`] (`ROAD-80`).
+    #[func]
+    pub fn preview_edge_cross_section(
+        &mut self,
+        edge_id: i32,
+        fwd: i32,
+        bkw: i32,
+    ) -> VarDictionary {
+        let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
+        match self
+            .lock_core()
+            .preview_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw))
+        {
+            None => vdict! { "is_valid": true },
+            Some(rejection) => vdict! {
+                "is_valid": false,
+                "invalid_reason": rejection.reason,
+                "detail": rejection.detail,
+            },
+        }
+    }
+
+    /// Gives road `edge_id` `fwd` forward and `bkw` backward lanes in place (`ROAD-80`), with an
+    /// undo record that restores the whole road; its pieces publish now, as a crossing toggle's
+    /// do. Returns whether it was applied: a refused edit (see
+    /// [`Self::preview_edge_cross_section`]) changes nothing.
+    #[func]
+    pub fn set_edge_cross_section(&mut self, edge_id: i32, fwd: i32, bkw: i32) -> bool {
+        let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
+        let (snapshot, publication) = {
+            let mut core = self.lock_core();
+            if !core.set_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw)) {
+                return false;
+            }
+            let publication = core.finalize_network_render_products();
+            (core.build_snapshot(), publication)
+        };
+        *self.snapshot.write().unwrap() = snapshot;
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
+        true
+    }
+
     /// Whether road arm `edge_id` at `node_id` can cross, so the select tool offers its
     /// crossing toggle (`ROAD-74`).
     #[func]

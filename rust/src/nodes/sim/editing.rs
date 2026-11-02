@@ -1984,7 +1984,7 @@ impl SimCore {
     // the closure compiles, keeps clear of fields and painted cells and steepens no profile past
     // the 1:3 maximum grade; nothing outside the graph has changed either way. O(local records +
     // closure pieces).
-    fn try_graph_edit(
+    pub(super) fn try_graph_edit(
         &mut self,
         edges: &HashSet<usize>,
         nodes: &HashSet<u32>,

@@ -9,16 +9,30 @@ use super::*;
 // A T junction: a through road from (-100, 0) to (100, 0) and a side road from its middle to
 // (0, 100). Returns the core, the T node, the side road's edge and the west arm's edge.
 pub(super) fn t_junction() -> (SimCore, u32, usize, usize) {
-    let mut core = test_core();
+    t_junction_with_side(test_core(), 1, 1)
+}
+
+// [`t_junction`] on `core`, its side road drawn with `fwd` + `bkw` lanes.
+pub(super) fn t_junction_with_side(
+    mut core: SimCore,
+    fwd: u8,
+    bkw: u8,
+) -> (SimCore, u32, usize, usize) {
     core.treasury.balance = 1.0e7;
-    for points in [
-        vec![
-            Vector3::new(-100.0, 0.0, 0.0),
-            Vector3::new(100.0, 0.0, 0.0),
-        ],
-        vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 100.0)],
+    for (points, lanes) in [
+        (
+            vec![
+                Vector3::new(-100.0, 0.0, 0.0),
+                Vector3::new(100.0, 0.0, 0.0),
+            ],
+            (1, 1),
+        ),
+        (
+            vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 100.0)],
+            (i32::from(fwd), i32::from(bkw)),
+        ),
     ] {
-        assert!(core.add_road_internal(points, 1, 1).committed);
+        assert!(core.add_road_internal(points, lanes.0, lanes.1).committed);
     }
     core.precompute_road_mesh_data();
     let node = (0..core.region_graph.node_count() as u32)
