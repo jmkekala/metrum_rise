@@ -113,6 +113,14 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Widen a tunnel by drawing it again"
 		"cross_section_too_wide_for_curve":
 			return "Too wide for this curve"
+		"median_requires_both_directions":
+			return "A median needs lanes in both directions"
+		"median_requires_vehicle_road":
+			return "Only roads with lanes can have a median"
+		"median_width_out_of_range":
+			return "Median width out of range for its style"
+		"unknown_median_style":
+			return "Unknown median style"
 		"node_piece_failed":
 			return "A junction at the road's end cannot fit this width"
 		"road_commit_rejected":

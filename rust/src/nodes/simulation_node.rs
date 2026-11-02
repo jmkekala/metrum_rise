@@ -206,6 +206,8 @@ pub struct SimulationNode {
     pub(crate) road_tool: Arc<RoadToolShared>,
     /// The road tool's tunnel intent (`ROAD-61`), copied into every request the tool sends.
     pub(crate) road_tool_tunnel: bool,
+    /// The road tool's median (`ROAD-80`), copied into every request the tool sends.
+    pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
     /// Water mesh jobs currently being prepared outside the Godot frame.
     pub(crate) water_patch_mesh_jobs: Arc<Mutex<WaterPatchMeshAsyncState>>,
     /// Main-thread presentation cache; never serialized or used by simulation decisions.
@@ -432,6 +434,7 @@ impl INode3D for SimulationNode {
             road_commit_result: None,
             road_tool,
             road_tool_tunnel: false,
+            road_tool_median: None,
             water_patch_mesh_jobs,
             building_lods: Default::default(),
             car_visuals: Default::default(),

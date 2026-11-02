@@ -27,7 +27,7 @@ use super::input::{
     xz_distance,
 };
 use crate::config;
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{RegionGraph, RoadMedian};
 use crate::simulation::network::interaction::find_intersection_2d;
 use crate::simulation::network::roadbed::{
     self, SKIRT_DEPTH_M, TUNNEL_LINING_THICKNESS_M, preview_candidate_roadbed_half_width_m,
@@ -96,6 +96,7 @@ pub(super) fn prepare_tunnel_input(
         class: EdgeClass::Tunnel,
         endpoint_snap_enabled: snap_to_existing_roads,
         tunnel: true,
+        median: None,
         forced_grade: None,
         elevated_ends: [false; 2],
         joined_spans: [None; 2],
@@ -109,9 +110,15 @@ pub(super) fn cover_m(terrain: &TerrainSystem, point: Vector3) -> f32 {
 
 /// The half width of a tunnel stroke's section at the outer faces of the lining's shell: the
 /// roadbed's half width, on whose outer edges the lining's walls stand, and the lining's
-/// thickness (`ROAD-61` round R8f). Allocates one two-point edge; once per stroke.
-pub(super) fn tunnel_section_half_width_m(points: &[Vector3], fwd_lanes: u8, bkw_lanes: u8) -> f32 {
-    preview_candidate_roadbed_half_width_m(points, EdgeClass::Tunnel, fwd_lanes, bkw_lanes)
+/// thickness (`ROAD-61` round R8f), across the stroke's `median` too (`ROAD-80`). Allocates one
+/// two-point edge; once per stroke.
+pub(super) fn tunnel_section_half_width_m(
+    points: &[Vector3],
+    fwd_lanes: u8,
+    bkw_lanes: u8,
+    median: Option<RoadMedian>,
+) -> f32 {
+    preview_candidate_roadbed_half_width_m(points, EdgeClass::Tunnel, fwd_lanes, bkw_lanes, median)
         + TUNNEL_LINING_THICKNESS_M as f32
 }
 

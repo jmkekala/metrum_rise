@@ -58,6 +58,8 @@ pub(crate) enum SimCommand {
         snap_to_existing_roads: bool,
         /// The road tool's tunnel intent at submission (`ROAD-61`).
         tunnel: bool,
+        /// The road tool's median at submission (`ROAD-80`).
+        median: Option<crate::simulation::network::graph::RoadMedian>,
         /// Dispatch timestamp for queue latency, independent of core mutex contention.
         enqueued_at: Instant,
         /// Single nonblocking acknowledgment after acceptance/rollback and query publication.
@@ -228,6 +230,7 @@ pub(crate) fn run_sim_thread(
                     bkw_lanes,
                     snap_to_existing_roads,
                     tunnel,
+                    median,
                     enqueued_at,
                     completion,
                     preview,
@@ -264,6 +267,7 @@ pub(crate) fn run_sim_thread(
                                 bkw_lanes,
                                 snap_to_existing_roads,
                                 tunnel,
+                                median,
                                 preview,
                             },
                             road_total,

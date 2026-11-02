@@ -50,6 +50,7 @@ fn commit_with(
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel,
+            median: None,
             preview,
         },
         std::time::Instant::now(),
@@ -74,6 +75,7 @@ fn preview(
         bkw_lanes: 1,
         snap_to_existing_roads: true,
         tunnel,
+        median: None,
     };
     let view = road_tool_snapshot_from_core(core).expect("current roadbed");
     let quick = view.validate(&request()).1;

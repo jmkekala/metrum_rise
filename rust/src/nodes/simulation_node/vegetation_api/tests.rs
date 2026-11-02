@@ -56,6 +56,7 @@ fn commit_vegetation_test_road(core: &mut SimCore, points: [Vector3; 2]) {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: false,
+            median: None,
             preview: None,
         },
         Instant::now(),

@@ -22,6 +22,7 @@ fn node_move_accepts_independent_control_and_physical_supports() {
                 1,
                 1,
                 EdgeClass::Standard,
+                None,
             );
             edge.physical_geometry = physical.iter().copied().map(point).collect();
             let edge_id = graph.add_edge(edge);
@@ -51,6 +52,7 @@ fn node_move_translates_self_loop_once() {
         1,
         1,
         EdgeClass::Standard,
+        None,
     ));
     let delta = Vector3::new(10.0, 3.0, 5.0);
 
@@ -77,6 +79,7 @@ fn node_move_preserves_independent_profile_heights() {
         1,
         1,
         EdgeClass::Standard,
+        None,
     );
     edge.physical_geometry = vec![
         Vector3::ZERO,
@@ -117,6 +120,7 @@ fn node_edits_refresh_physical_length_and_routing_cost() {
             1,
             1,
             EdgeClass::Standard,
+            None,
         );
         edge.speed_limit = 10.0;
         edge.base_cost = 10.0;
@@ -146,6 +150,7 @@ fn node_merge_replaces_its_original_spatial_entry() {
         1,
         1,
         EdgeClass::Standard,
+        None,
     ));
     // The removed node's arm keeps its crossing at the survivor (`ROAD-74`).
     graph.set_crosswalk_override(remove, edge_id, false);
@@ -207,6 +212,7 @@ fn benchmark_node_edit_locality() {
                 1,
                 1,
                 EdgeClass::Standard,
+                None,
             );
             edge.base_cost = edge.physical_length / edge.speed_limit;
             graph.add_edge(edge);
@@ -287,6 +293,7 @@ fn benchmark_node_edit_locality() {
             1,
             1,
             EdgeClass::Standard,
+            None,
         );
         edge.physical_geometry.clear();
         edge.physical_geometry.push(Vector3::ZERO);

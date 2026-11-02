@@ -17,7 +17,7 @@ use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
 use crate::simulation::network::render::RoadChunkMap;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
@@ -38,6 +38,9 @@ pub(crate) struct RoadPreviewRequest {
     pub(crate) snap_to_existing_roads: bool,
     /// The road tool's tunnel intent (`ROAD-61`): part of the preview's and the plan's identity.
     pub(crate) tunnel: bool,
+    /// The road tool's median (`ROAD-80`): part of the preview's and the plan's identity; the
+    /// stroke's edge carries it and its corridor checks widen by it.
+    pub(crate) median: Option<RoadMedian>,
 }
 
 /// Corridor clearance of a stroke against live parcels and field reservations.
@@ -57,15 +60,18 @@ pub(crate) struct RoadCorridorClearance {
 
 impl RoadCorridorClearance {
     /// Queries the parcel chunk index and the field reservations along the corridor that the
-    /// lanes and sidewalks cover. O(corridor segments × parcels and fields in the touched chunks).
+    /// lanes, the `median` and the sidewalks cover. O(corridor segments × parcels and fields in
+    /// the touched chunks).
     pub(crate) fn evaluate(
         core: &SimCore,
         points: &[Vector3],
         fwd_lanes: i32,
         bkw_lanes: i32,
+        median: Option<RoadMedian>,
     ) -> Self {
-        let lanes = fwd_lanes.clamp(0, i32::from(u8::MAX)) + bkw_lanes.clamp(0, i32::from(u8::MAX));
-        let half_width = (lanes as f32 * crate::config::LANE_WIDTH).max(2.0) * 0.5
+        let lanes = |count: i32| count.clamp(0, i32::from(u8::MAX)) as u8;
+        let half_width = Edge::cross_section_width_m(lanes(fwd_lanes), lanes(bkw_lanes), median)
+            * 0.5
             + crate::config::SIDEWALK_WIDTH;
         let parcels = core
             .zoning
@@ -147,7 +153,7 @@ impl RoadToolQuerySnapshot {
     ) -> (Vec<Vector3>, RoadPreviewValidation) {
         let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-        let prepared = prepare_road_input_for_tool(
+        let mut prepared = prepare_road_input_for_tool(
             &request.points,
             &self.terrain,
             &self.region_graph,
@@ -155,6 +161,7 @@ impl RoadToolQuerySnapshot {
             request.snap_to_existing_roads,
             request.tunnel,
         );
+        prepared.median = request.median;
         let validation = validate_road_candidate_fast(
             &prepared,
             (fwd_lanes, bkw_lanes),
@@ -291,6 +298,7 @@ impl RoadPreview {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
         tunnel: bool,
+        median: Option<RoadMedian>,
     ) -> bool {
         let request = self.plan.request();
         request.points == points
@@ -298,6 +306,7 @@ impl RoadPreview {
             && request.bkw_lanes == bkw_lanes
             && request.snap_to_existing_roads == snap_to_existing_roads
             && request.tunnel == tunnel
+            && request.median == median
     }
 }
 

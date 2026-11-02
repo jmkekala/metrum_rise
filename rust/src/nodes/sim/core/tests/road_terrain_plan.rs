@@ -24,6 +24,7 @@ fn cold_road_commit_completes_terrain_plan_before_mutation() {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: false,
+            median: None,
             preview: None,
         },
         std::time::Instant::now(),
@@ -55,6 +56,7 @@ fn prepare_with_lanes(
             bkw_lanes,
             snap_to_existing_roads: true,
             tunnel: false,
+            median: None,
         },
     )
 }
@@ -199,6 +201,7 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: false,
+            median: None,
         },
     );
     assert_eq!(rebuilt.status(&core), "ready");
@@ -251,6 +254,7 @@ fn commit_stroke(core: &mut SimCore, points: &[Vector3]) -> String {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: false,
+            median: None,
             preview: None,
         },
         std::time::Instant::now(),
@@ -276,6 +280,7 @@ fn preview_validation(
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: false,
+            median: None,
         })
         .validation
 }
@@ -1813,6 +1818,7 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
                 tunnel: false,
+                median: None,
             });
             assert!(
                 validation.is_valid,
@@ -1868,6 +1874,7 @@ fn tiles_graded_by_trunk_branch(core: &mut SimCore) -> Vec<(i32, i32)> {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: false,
+            median: None,
             preview: None,
         },
         std::time::Instant::now(),

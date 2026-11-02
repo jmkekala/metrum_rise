@@ -74,6 +74,7 @@ fn draw(core: &mut SimCore, points: &[Vector3], tunnel: bool, snap: bool) -> Dra
         bkw_lanes: 1,
         snap_to_existing_roads: snap,
         tunnel,
+        median: None,
     };
     let view = road_tool_snapshot_from_core(core).expect("current roadbed");
     let quick = view.validate(&request(core)).1;
@@ -86,6 +87,7 @@ fn draw(core: &mut SimCore, points: &[Vector3], tunnel: bool, snap: bool) -> Dra
             bkw_lanes: 1,
             snap_to_existing_roads: snap,
             tunnel,
+            median: None,
             preview: Some(preview),
         },
         std::time::Instant::now(),

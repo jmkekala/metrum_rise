@@ -268,6 +268,7 @@ impl RoadToolShared {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
         tunnel: bool,
+        median: Option<crate::simulation::network::graph::RoadMedian>,
     ) -> Option<Arc<RoadPreview>> {
         let context = self
             .context
@@ -277,7 +278,14 @@ impl RoadToolShared {
             .last_preview
             .as_ref()
             .filter(|preview| {
-                preview.is_for(points, fwd_lanes, bkw_lanes, snap_to_existing_roads, tunnel)
+                preview.is_for(
+                    points,
+                    fwd_lanes,
+                    bkw_lanes,
+                    snap_to_existing_roads,
+                    tunnel,
+                    median,
+                )
             })
             .cloned()
     }

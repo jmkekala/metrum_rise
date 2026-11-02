@@ -21,11 +21,11 @@ use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
 use crate::config;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
 use crate::simulation::network::roadbed::{
     LayoutError, NodeError, check_node, preview_candidate_roadbed_half_width_m,
 };
-use crate::simulation::network::types::{EdgeClass, NodeType};
+use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags};
 use crate::simulation::network::grade::{ROAD_GRADE_MAX, SteepestGrade, steepest_grade};
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, grade_violation,
@@ -285,6 +285,18 @@ fn profile_validation(
     if require_length && stroke_too_short(prepared_points) {
         return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
     }
+    // The stroke's median takes the in-place edit's rule (`ROAD-80`, `ROAD-92`): a car road
+    // with both directions.
+    let allowed_types = if fwd_lanes > 0 || bkw_lanes > 0 {
+        TransitFlags::CAR
+    } else {
+        TransitFlags::FOOT
+    };
+    if let Err(reason) =
+        Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, prepared_input.median)
+    {
+        return validation.with_invalid_reason(reason);
+    }
     // An end snapped onto a tunnel inside its bore (`ROAD-99` follow-up B1): roads meet a tunnel
     // at its portals.
     if (prepared_input.joined_spans.into_iter().flatten())
@@ -299,7 +311,7 @@ fn profile_validation(
         return validation;
     }
     if prepared_input.tunnel {
-        let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes);
+        let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes, prepared_input.median);
         let decks = grounded_decks_near(graph, prepared_points, half_width_m);
         return tunnel_profile_validation(
             validation,
@@ -365,7 +377,13 @@ fn refuse_close_crossing(
     {
         return validation;
     }
-    let half_width_m = preview_candidate_roadbed_half_width_m(points, class, fwd_lanes, bkw_lanes);
+    let half_width_m = preview_candidate_roadbed_half_width_m(
+        points,
+        class,
+        fwd_lanes,
+        bkw_lanes,
+        prepared_input.median,
+    );
     let over_tunnel = (class == EdgeClass::Standard)
         .then(|| deck_over_tunnels_m(points, half_width_m, graph))
         .flatten()
@@ -519,7 +537,7 @@ fn validate_against_graph(
     let bore = prepared_input
         .tunnel
         .then(|| {
-            let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes);
+            let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes, prepared_input.median);
             let decks = grounded_decks_near(existing_graph, prepared_points, half_width_m);
             tunnel_bore(prepared_points, half_width_m, terrain, &decks).ok()
         })
@@ -543,8 +561,7 @@ fn validate_against_graph(
         prepared_points,
         prepared_input.class,
         prepared_input.grade(bore),
-        fwd_lanes,
-        bkw_lanes,
+        (fwd_lanes, bkw_lanes, prepared_input.median),
         existing_graph,
         prepared_input.endpoint_snap_enabled,
         terrain,
@@ -632,8 +649,7 @@ fn build_validation_graph(
     prepared_points: &[Vector3],
     edge_class: EdgeClass,
     grade: StrokeGrade,
-    fwd_lanes: u8,
-    bkw_lanes: u8,
+    (fwd_lanes, bkw_lanes, median): (u8, u8, Option<RoadMedian>),
     existing_graph: &RegionGraph,
     endpoint_snap_enabled: bool,
     terrain: &TerrainSystem,
@@ -659,8 +675,7 @@ fn build_validation_graph(
 
     let existing_edge_ids = candidate_existing_edge_ids(
         prepared_points,
-        fwd_lanes,
-        bkw_lanes,
+        (fwd_lanes, bkw_lanes, median),
         edge_class,
         existing_graph,
         start_existing,
@@ -718,7 +733,7 @@ fn build_validation_graph(
         None => None,
     };
     let new_edge_idx = validation_graph.add_edge(build_surface_edge(
-        start_node, end_node, points, fwd_lanes, bkw_lanes, edge_class,
+        start_node, end_node, points, fwd_lanes, bkw_lanes, edge_class, median,
     ));
     let (base_cost, physical_length) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(
@@ -791,8 +806,7 @@ fn build_validation_graph(
 #[allow(clippy::too_many_arguments)]
 fn candidate_existing_edge_ids(
     prepared_points: &[Vector3],
-    fwd_lanes: u8,
-    bkw_lanes: u8,
+    (fwd_lanes, bkw_lanes, median): (u8, u8, Option<RoadMedian>),
     edge_class: EdgeClass,
     existing_graph: &RegionGraph,
     start_existing: Option<u32>,
@@ -811,7 +825,13 @@ fn candidate_existing_edge_ids(
 
     let pad = config::SNAP_TOLERANCE
         + config::INTERSECTION_TOLERANCE
-        + preview_candidate_roadbed_half_width_m(prepared_points, edge_class, fwd_lanes, bkw_lanes);
+        + preview_candidate_roadbed_half_width_m(
+            prepared_points,
+            edge_class,
+            fwd_lanes,
+            bkw_lanes,
+            median,
+        );
     let mut edge_ids = existing_graph.get_edges_near_aabb(
         Vector3::new(min_x - pad, 0.0, min_z - pad),
         Vector3::new(max_x + pad, 0.0, max_z + pad),

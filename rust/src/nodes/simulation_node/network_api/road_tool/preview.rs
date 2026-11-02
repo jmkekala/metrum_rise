@@ -16,6 +16,23 @@ impl SimulationNode {
         self.road_tool_tunnel = tunnel;
     }
 
+    /// Sets the road tool's median (`ROAD-80`) for every later hover check, preview, commit and
+    /// refusal report of the tool: `style` 0 none, 1 painted, 2 kerbed grass, 3 kerbed paving,
+    /// `width_m` within the style's range. Returns the empty string when set, else the refusal
+    /// key (`unknown_median_style`, `median_width_out_of_range`), keeping the previous median.
+    /// Whether the stroke's lanes may carry it is the stroke's check
+    /// (`median_requires_both_directions`, `median_requires_vehicle_road`).
+    #[func]
+    pub fn set_road_tool_median(&mut self, style: i32, width_m: f32) -> GString {
+        match crate::simulation::network::graph::RoadMedian::from_tool(style, width_m) {
+            Ok(median) => {
+                self.road_tool_median = median;
+                GString::new()
+            }
+            Err(reason) => reason.into(),
+        }
+    }
+
     /// Returns cheap synchronous hover feedback for a road-tool candidate.
     ///
     /// Returns prepared points and validation; the road tool's display comes from
@@ -51,6 +68,7 @@ impl SimulationNode {
                 bkw_lanes,
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
             });
             (query.surface_generation, validated)
         };
@@ -111,6 +129,7 @@ impl SimulationNode {
                 &points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
+                self.road_tool_median,
                 &query.terrain,
                 &query.region_graph,
                 &query.roadbed,
@@ -207,6 +226,7 @@ impl SimulationNode {
                 bkw_lanes,
                 snap: snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
             },
             int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
         );
@@ -244,6 +264,7 @@ impl SimulationNode {
                 bkw_lanes,
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
             }));
             context.last_preview = Some(Arc::clone(&preview));
             context
@@ -522,6 +543,7 @@ impl SimulationNode {
                 prepared_points,
                 fwd_lanes,
                 bkw_lanes,
+                self.road_tool_median,
             );
             Self::apply_corridor_clearance(&mut dict, &clearance);
         }

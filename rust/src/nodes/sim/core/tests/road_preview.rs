@@ -9,6 +9,7 @@ use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::{RoadPreview, RoadPreviewRequest};
 use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+use crate::simulation::network::graph::RoadMedian;
 use crate::simulation::network::roadbed::{PieceId, PieceMesh};
 use godot::prelude::Vector2;
 use std::collections::BTreeMap;
@@ -70,6 +71,15 @@ fn context(core: &mut SimCore) -> RoadPreviewContext {
 }
 
 fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview {
+    preview_with(context, points, None)
+}
+
+// A 1 + 1 stroke's preview with `median` (`ROAD-80`).
+fn preview_with(
+    context: &mut RoadPreviewContext,
+    points: &[Vector3],
+    median: Option<RoadMedian>,
+) -> RoadPreview {
     let surface_generation = context.view.surface_generation;
     context.preview_road(RoadPreviewRequest {
         surface_generation,
@@ -78,12 +88,23 @@ fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview 
         bkw_lanes: 1,
         snap_to_existing_roads: true,
         tunnel: false,
+        median,
     })
 }
 
 fn commit(
     core: &mut SimCore,
     points: &[Vector3],
+    preview: Option<Arc<RoadPreview>>,
+) -> crate::nodes::sim::core::road_commit::RoadCommitOutcome {
+    commit_with(core, points, None, preview)
+}
+
+// A 1 + 1 stroke's commit with `median` (`ROAD-80`).
+fn commit_with(
+    core: &mut SimCore,
+    points: &[Vector3],
+    median: Option<RoadMedian>,
     preview: Option<Arc<RoadPreview>>,
 ) -> crate::nodes::sim::core::road_commit::RoadCommitOutcome {
     let outcome = core.commit_road(
@@ -93,6 +114,7 @@ fn commit(
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: false,
+            median,
             preview,
         },
         std::time::Instant::now(),
@@ -515,6 +537,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
             bkw_lanes: 2,
             snap_to_existing_roads: true,
             tunnel: false,
+            median: None,
         }));
         let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
         let view_chunks = context.view.road_mesh_chunks.clone();
@@ -525,6 +548,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
                 bkw_lanes: 2,
                 snap_to_existing_roads: true,
                 tunnel: false,
+                median: None,
                 preview: Some(Arc::clone(&preview)),
             },
             std::time::Instant::now(),
@@ -580,7 +604,8 @@ fn save_and_load_reproduce_the_pieces_bitwise() {
 
 // Native per-stage preview timings on the `ROAD-30` preview fixtures (`docs/roads.md` "Stage
 // budgets"): `sloped_t` sweeps a T onto a 220 m trunk, `sloped_branch` orbits a fourth leg of
-// the T at (-65, 0). Eight poses each, as `road_preview_replay.gd` moves them; stages are
+// the T at (-65, 0), `divided_t` is `sloped_t` with a 3 m kerbed grass median on the stroke
+// (`ROAD-80`). Eight poses each, as `road_preview_replay.gd` moves them; stages are
 // medians and p95 over the measured repetitions. The context refresh after a commit (the
 // publication and the replica's records) and the commit's graph copy are measured apart.
 #[test]
@@ -591,17 +616,25 @@ fn benchmark_road_preview_stages() {
     let leg = ([Vector2::new(-65.0, 0.0), Vector2::new(-65.0, 60.0)], 1);
     let sweep = |u: f32| Vector2::new(-40.0, 0.0).lerp(Vector2::new(90.0, 0.0), u);
     let orbit = |u: f32| Vector2::new(-60.0, -55.0) + Vector2::from_angle(std::f32::consts::TAU * u) * 15.0;
-    // Name, committed roads, stroke start and the end pose at u in [0, 1).
-    type Case<'a> = (&'a str, Vec<Stroke>, Vector2, &'a dyn Fn(f32) -> Vector2);
-    let cases: [Case; 2] = [
-        ("sloped_t", vec![main], Vector2::new(0.0, -80.0), &sweep),
-        ("sloped_branch", vec![main, leg], Vector2::new(-65.0, 0.0), &orbit),
+    let grass = RoadMedian::from_tool(2, 3.0).unwrap();
+    // Name, committed roads, stroke start, the end pose at u in [0, 1) and the stroke's median.
+    type Case<'a> = (
+        &'a str,
+        Vec<Stroke>,
+        Vector2,
+        &'a dyn Fn(f32) -> Vector2,
+        Option<RoadMedian>,
+    );
+    let cases: [Case; 3] = [
+        ("sloped_t", vec![main], Vector2::new(0.0, -80.0), &sweep, None),
+        ("sloped_branch", vec![main, leg], Vector2::new(-65.0, 0.0), &orbit, None),
+        ("divided_t", vec![main], Vector2::new(0.0, -80.0), &sweep, grass),
     ];
     let percentile = |values: &mut Vec<f64>, q: f64| {
         values.sort_by(f64::total_cmp);
         values[((values.len() - 1) as f64 * q).round() as usize]
     };
-    for (name, roads, start, pose) in cases {
+    for (name, roads, start, pose, median) in cases {
         let order: Vec<usize> = (0..roads.len()).collect();
         let mut core = committed(&roads, &order, true);
         let mut context = context(&mut core);
@@ -619,7 +652,7 @@ fn benchmark_road_preview_stages() {
         for repetition in 0..60 {
             for points in &strokes {
                 let start = Instant::now();
-                let preview = preview(&mut context, points);
+                let preview = preview_with(&mut context, points, median);
                 let total_ms = start.elapsed().as_secs_f64() * 1000.0;
                 assert!(
                     preview.pieces.as_ref().is_some_and(|pieces| pieces.chunks.is_some()),
@@ -668,8 +701,8 @@ fn benchmark_road_preview_stages() {
         let copy = std::hint::black_box(core.region_graph.clone());
         let graph_copy_ms = copy_start.elapsed().as_secs_f64() * 1000.0;
         drop(copy);
-        let previewed = Arc::new(preview(&mut context, &strokes[0]));
-        let outcome = commit(&mut core, &strokes[0], Some(previewed));
+        let previewed = Arc::new(preview_with(&mut context, &strokes[0], median));
+        let outcome = commit_with(&mut core, &strokes[0], median, Some(previewed));
         let publication = outcome.road_snapshot.expect("a commit publishes");
         let refresh_start = Instant::now();
         assert!(context.apply(&publication));
@@ -779,5 +812,138 @@ fn measure_undo_record_heap() {
     );
     if std::env::var("METRUM_UNDO_HEAP").as_deref() == Ok("forget") {
         std::mem::forget(record);
+    }
+}
+
+// Medians drawn with the road tool (`ROAD-80`): a divided stroke's current preview is what its
+// commit installs, piece for piece and chunk for chunk, flat and sloped, for every style: a T
+// whose side road noses out before its zebra. The committed road carries the median and the
+// width it adds; a fresh commit of the same stroke equals it bitwise.
+#[test]
+fn a_divided_stroke_preview_is_what_the_commit_installs() {
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    for (style, width_m) in [(1, 1.0), (2, 3.0), (3, 2.0)] {
+        let median = RoadMedian::from_tool(style, width_m).unwrap();
+        for sloped in [false, true] {
+            let label = format!("style {style}, sloped {sloped}");
+            let mut core = committed(&[THROUGH], &[0], sloped);
+            let mut control = committed(&[THROUGH], &[0], sloped);
+            let points = stroke(&core, side);
+            let mut context = context(&mut core);
+            let view_chunks = context.view.road_mesh_chunks.clone();
+            let preview = Arc::new(preview_with(&mut context, &points, median));
+            assert!(preview.validation.is_valid, "{label}: {}", preview.validation.invalid_reason);
+            let compiled = preview.pieces.as_ref().expect("a valid stroke compiles pieces");
+            commit_with(&mut core, &points, median, Some(Arc::clone(&preview)));
+            assert!(core.last_road_edit_metrics.preview_plan_reused, "{label}");
+            for (id, mesh) in compiled.delta.pieces() {
+                assert_eq!(
+                    piece_mesh(&core, id).map(std::ptr::from_ref),
+                    mesh.map(std::ptr::from_ref),
+                    "{label}: {id:?} is the preview's own piece"
+                );
+            }
+            assert_preview_composes_committed(&core, &view_chunks, compiled, &label);
+            let divided: Vec<_> = core
+                .region_graph
+                .edges()
+                .iter()
+                .filter(|edge| !edge.deleted && edge.median.is_some())
+                .collect();
+            assert_eq!(divided.len(), 1, "{label}: the side road alone is divided");
+            assert_eq!(divided[0].median, median);
+            assert_eq!(divided[0].width, 2.0 * crate::config::LANE_WIDTH + width_m);
+
+            commit_with(&mut control, &points, median, None);
+            assert_eq!(
+                bits_only(&pieces(&core)),
+                bits_only(&pieces(&control)),
+                "{label}: installed pieces equal a fresh commit's"
+            );
+        }
+    }
+}
+
+// The fork's `drawn_medians_survive_widening_and_cross_junction_splits` (`ROAD-80`): a drawn
+// divided road keeps its median when it is widened in place and when a crossing road splits
+// it, both halves carrying it. A preview made without the median is not the divided stroke's.
+#[test]
+fn drawn_medians_survive_widening_and_cross_junction_splits() {
+    let through = [Vector2::new(-ARM_M, 40.0), Vector2::new(ARM_M, 40.0)];
+    let crossing = [Vector2::new(0.0, -20.0), Vector2::new(0.0, 100.0)];
+    for (style, width_m) in [(1, 1.0), (2, 5.0), (3, 2.0)] {
+        let median = RoadMedian::from_tool(style, width_m).unwrap();
+        let mut core = committed(&[], &[], false);
+        let points = stroke(&core, through);
+        let mut context = context(&mut core);
+        let undivided = Arc::new(preview(&mut context, &points));
+        commit_with(&mut core, &points, median, Some(undivided));
+        assert!(
+            !core.last_road_edit_metrics.preview_plan_reused,
+            "style {style}: an undivided preview is not the divided stroke's plan"
+        );
+        let edge = core
+            .region_graph
+            .edges()
+            .iter()
+            .position(|edge| !edge.deleted)
+            .unwrap();
+        assert_eq!(core.region_graph.edge(edge).median, median);
+        assert!(
+            core.set_edge_cross_section_internal(edge as i32, 2, 2, median),
+            "style {style}: widened in place"
+        );
+        // The pieces publish as the Godot call publishes them, before the next stroke plans.
+        core.finalize_network_render_products();
+        let points = stroke(&core, crossing);
+        commit(&mut core, &points, None);
+        let live: Vec<_> = core.region_graph.edges().iter().filter(|e| !e.deleted).collect();
+        assert_eq!(live.len(), 4, "style {style}: the crossing splits both roads");
+        let divided: Vec<_> = live.iter().filter(|edge| edge.median.is_some()).collect();
+        assert_eq!(divided.len(), 2, "style {style}: both halves of the divided road");
+        for half in divided {
+            assert_eq!(half.median, median);
+            assert_eq!((half.fwd_lanes, half.bkw_lanes), (2, 2));
+            assert_eq!(half.width, 4.0 * crate::config::LANE_WIDTH + width_m);
+        }
+    }
+}
+
+// A stroke's median takes the in-place edit's rules (`ROAD-80`, `ROAD-92`): no median on a
+// one-way road or a footpath, in the hover check and the plan alike.
+#[test]
+fn a_stroke_median_needs_a_road_with_both_directions() {
+    let mut core = committed(&[], &[], false);
+    let points = stroke(&core, [Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)]);
+    let snapshot = road_tool_snapshot_from_core(&core).expect("current roadbed");
+    let median = RoadMedian::from_tool(2, 3.0).unwrap();
+    for ((fwd, bkw), reason) in [
+        ((1, 0), "median_requires_both_directions"),
+        ((0, 0), "median_requires_vehicle_road"),
+    ] {
+        let request = RoadPreviewRequest {
+            surface_generation: snapshot.surface_generation,
+            points: points.clone(),
+            fwd_lanes: fwd,
+            bkw_lanes: bkw,
+            snap_to_existing_roads: true,
+            tunnel: false,
+            median,
+        };
+        assert_eq!(snapshot.validate(&request).1.invalid_reason, reason);
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points: points.clone(),
+                fwd_lanes: fwd,
+                bkw_lanes: bkw,
+                snap_to_existing_roads: true,
+                tunnel: false,
+                median,
+                preview: None,
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert_eq!(outcome.rejection_reason, reason);
     }
 }

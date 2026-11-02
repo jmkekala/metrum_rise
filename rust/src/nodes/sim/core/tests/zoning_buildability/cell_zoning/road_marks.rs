@@ -103,6 +103,7 @@ fn commit(core: &mut SimCore, from: (f32, f32), to: (f32, f32)) -> bool {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: false,
+            median: None,
             preview: None,
         },
         Instant::now(),

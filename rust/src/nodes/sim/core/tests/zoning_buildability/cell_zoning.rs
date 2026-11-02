@@ -878,6 +878,7 @@ fn painted_cells_over_a_tunnel_take_lots() {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: true,
+            median: None,
             preview: None,
         },
         std::time::Instant::now(),

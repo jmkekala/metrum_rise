@@ -9,7 +9,7 @@
 
 use super::input::prepare_road_input_excluding;
 use super::{PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, validate_road_edit};
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{RegionGraph, RoadMedian};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
@@ -123,11 +123,13 @@ impl<'a> StrokeSupport<'a> {
 /// pieces excluded as well. The exclusion only grows and each further pass adds a piece the
 /// previous one read, so the passes end; a stroke that reads no carriageway takes one pass, a
 /// join or crossing usually two. The commit, the preview and the editor's checks all plan here.
+/// The prepared stroke carries `median` (`ROAD-80`), which preparation does not read.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_road_edit(
     raw_points: &[Vector3],
     fwd_lanes: u8,
     bkw_lanes: u8,
+    median: Option<RoadMedian>,
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
@@ -140,7 +142,7 @@ pub(crate) fn plan_road_edit(
 ) {
     let mut excluded = RebuiltPieces::default();
     loop {
-        let (prepared, read) = prepare_road_input_excluding(
+        let (mut prepared, read) = prepare_road_input_excluding(
             raw_points,
             terrain,
             graph,
@@ -149,6 +151,7 @@ pub(crate) fn plan_road_edit(
             tunnel,
             &excluded,
         );
+        prepared.median = median;
         let (validation, topology) =
             validate_road_edit(&prepared, fwd_lanes, bkw_lanes, terrain, graph);
         let rebuilt = topology

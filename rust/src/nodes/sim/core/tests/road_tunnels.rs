@@ -43,6 +43,7 @@ fn request(core: &SimCore, points: &[Vector3], tunnel: bool) -> RoadPreviewReque
         bkw_lanes: 1,
         snap_to_existing_roads: false,
         tunnel,
+        median: None,
     }
 }
 
@@ -76,6 +77,7 @@ fn run_stroke(core: &mut SimCore, points: &[Vector3], tunnel: bool) -> ProbeResu
             bkw_lanes: 1,
             snap_to_existing_roads: false,
             tunnel,
+            median: None,
             preview: None,
         },
         std::time::Instant::now(),
@@ -508,6 +510,7 @@ fn a_junction_in_a_tunnel_approach_trench_is_refused() {
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
                 tunnel: false,
+                median: None,
                 preview: None,
             },
             std::time::Instant::now(),
@@ -1027,6 +1030,7 @@ fn the_lining_closes_buried_ends_and_bends() {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: true,
+            median: None,
             preview: None,
         },
         std::time::Instant::now(),
@@ -1282,6 +1286,7 @@ fn the_lining_shell_stands_a_thickness_out() {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel: true,
+            median: None,
             preview: None,
         },
         std::time::Instant::now(),

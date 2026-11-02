@@ -14,8 +14,11 @@
 ## checkbox-controlled zoning-grid snapping, angle snapping (Shift draws free), the tunnel
 ## toggle (`ROAD-61`; T or the options checkbox: Rust keeps the drawn profile through the ground,
 ## the covered stretch becomes a tunnel and its open ends approaches) and the distance + angle HUD
-## label.
-## Rust methods called: set_road_tool_tunnel(), preview_road(), advance_road_preview_terrain(),
+## label. The next stroke's median (`ROAD-80`; the options panel's Median row, N cycles the
+## style, ; and ' step the width) is Rust's: `set_road_tool_median` refuses a style or width
+## outside its range, and the stroke's check refuses a median its lanes cannot carry (a one-way
+## road or a walkway); the Walkway preset clears it (`ROAD-92`).
+## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(), preview_road(), advance_road_preview_terrain(),
 ## release_road_preview_terrain(), add_road_with_snap(), get_road_commit_result(),
 ## get_road_tool_cursor_pos(), get_road_tool_start_direction(), get_graded_edit_serial().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
@@ -48,6 +51,12 @@ var zoning_grid_snap_enabled: bool = false
 # The tunnel intent, mirrored in Rust, which carries it in every preview, commit and refusal.
 var tunnel_enabled: bool = false
 signal tunnel_toggled(enabled: bool)
+# The next stroke's median (`ROAD-80`), mirrored in Rust like the tunnel intent: style 0 none,
+# 1 painted, 2 kerbed grass, 3 kerbed paving, and its width with kerbs, in metres.
+var median_style: int = 0
+var median_width: float = 0.0
+## The next stroke's median changed (keys, presets or the options panel's Median row).
+signal median_changed(style: int, width: float)
 ## The next stroke's lane counts changed (keys, presets or the options panel's steppers).
 signal lanes_changed(fwd: int, bkw: int)
 
@@ -78,6 +87,8 @@ var _preview_fwd_lanes: int = -1
 var _preview_bkw_lanes: int = -1
 var _preview_snap_to_roads: bool = true
 var _preview_tunnel: bool = false
+var _preview_median_style: int = 0
+var _preview_median_width: float = 0.0
 # Counts preview_road calls; it names displayed results for the metrics trace only.
 var _preview_sequence: int = 0
 var _preview_drawn_sequence: int = 0
@@ -228,6 +239,47 @@ func set_tunnel(enabled: bool) -> void:
 	tunnel_toggled.emit(enabled)
 	_queue_preview_update()
 
+## Each style's default width and range in metres, as Rust's `RoadMedian::width_range_m` holds
+## them; index = style. Used to step the width and to pick a style's starting width only.
+const MEDIAN_DEFAULT_WIDTH: Array[float] = [0.0, 1.0, 3.0, 2.0]
+const MEDIAN_WIDTH_RANGE: Array[Vector2] = [Vector2.ZERO, Vector2(0.5, 2.0), Vector2(2.0, 12.0), Vector2(1.0, 3.0)]
+
+## Sets the next stroke's median through Rust and returns its refusal key ("" when set). A
+## refused median leaves the tool's median as it was.
+func set_median(style: int, width: float) -> String:
+	if style == 0:
+		width = 0.0
+	var reason: String = simulation_node.set_road_tool_median(style, width)
+	if not reason.is_empty():
+		return reason
+	median_style = style
+	median_width = width
+	median_changed.emit(median_style, median_width)
+	_queue_preview_update()
+	return ""
+
+## N: the next median style (none, painted, grass, paving) at its default width. A walkway has
+## no median (`ROAD-92`), so N does nothing on one.
+func cycle_median() -> void:
+	if fwd_lanes == 0 and bkw_lanes == 0:
+		return
+	var style := (median_style + 1) % 4
+	set_median(style, MEDIAN_DEFAULT_WIDTH[style])
+
+## ; and ': steps the median's width by `delta` within its style's range.
+func adjust_median_width(delta: float) -> void:
+	if median_style == 0:
+		return
+	var limits: Vector2 = MEDIAN_WIDTH_RANGE[median_style]
+	set_median(median_style, clampf(median_width + delta, limits.x, limits.y))
+
+## A lane preset (the Road and Walkway tools, `ROAD-92`): sets the lanes and clears a median
+## the walkway cannot carry, so the tool never holds a state Rust would refuse on every stroke.
+func set_lane_preset(fwd: int, bkw: int) -> void:
+	if fwd == 0 and bkw == 0 and median_style != 0:
+		set_median(0, 0.0)
+	set_lanes(fwd, bkw)
+
 func adjust_altitude(delta: float):
 	altitude_offset += delta
 	_queue_preview_update()
@@ -326,6 +378,7 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	# Re-asserted per preview: a debug replay may have set Rust's intent since; the click's
 	# commit and refusal report use the intent of the preview it submits.
 	simulation_node.set_road_tool_tunnel(tunnel_enabled)
+	simulation_node.set_road_tool_median(median_style, median_width)
 	_preview = simulation_node.preview_road(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
 	if preview_metrics != null:
 		preview_metrics.dispatch(_preview_sequence, start_us, Time.get_ticks_usec(), true)
@@ -336,6 +389,8 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	_preview_bkw_lanes = bkw_lanes
 	_preview_snap_to_roads = _snap_to_roads_enabled()
 	_preview_tunnel = tunnel_enabled
+	_preview_median_style = median_style
+	_preview_median_width = median_width
 	return _preview
 
 func _preview_is_for(points: PackedVector3Array) -> bool:
@@ -346,6 +401,8 @@ func _preview_is_for(points: PackedVector3Array) -> bool:
 		and bkw_lanes == _preview_bkw_lanes
 		and _snap_to_roads_enabled() == _preview_snap_to_roads
 		and tunnel_enabled == _preview_tunnel
+		and median_style == _preview_median_style
+		and median_width == _preview_median_width
 		and int(_preview.get("surface_generation", -1)) == simulation_node.get_road_tool_surface_generation()
 	)
 

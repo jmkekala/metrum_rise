@@ -166,6 +166,7 @@ fn committed_with(
                 bkw_lanes: lanes,
                 snap_to_existing_roads: true,
                 tunnel: false,
+                median: None,
                 preview: None,
             },
             std::time::Instant::now(),

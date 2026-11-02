@@ -1203,8 +1203,9 @@ impl SimCore {
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    // Plan-less callers draw without the tool's tunnel intent.
+                    // Plan-less callers draw without the tool's tunnel intent or median.
                     tunnel: false,
+                    median: None,
                 },
             ))
         } else {
@@ -1250,6 +1251,7 @@ impl SimCore {
                 &points,
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                None,
                 &self.heightmap,
                 &self.region_graph,
                 &self.transit_network.roadbed,
@@ -1383,8 +1385,12 @@ impl SimCore {
 
         // Fields and painted cells are tested against the pieces the edit installs, in
         // `validate_staged_road_render_installing` (`ROAD-68` open question 1).
-        let road_width_m = (f32::from(fwd_lanes_u8) + f32::from(bkw_lanes_u8)) * config::LANE_WIDTH;
-        let corridor_half_width_m = road_width_m.max(2.0) * 0.5 + config::SIDEWALK_WIDTH;
+        let road_width_m = crate::simulation::network::graph::Edge::cross_section_width_m(
+            fwd_lanes_u8,
+            bkw_lanes_u8,
+            prepared_input.median,
+        );
+        let corridor_half_width_m = road_width_m * 0.5 + config::SIDEWALK_WIDTH;
         let overlapping_parcels = self
             .zoning
             .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m);
@@ -1462,6 +1468,7 @@ impl SimCore {
                 fixed_points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
+                prepared_input.median,
                 prepared_input.class,
                 prepared_input.grade(None),
                 &mut self.zoning,

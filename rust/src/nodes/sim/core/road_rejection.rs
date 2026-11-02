@@ -8,6 +8,7 @@
 //! console's `dump` writes. Reports are built only when a stroke is refused.
 
 use crate::debug_log;
+use crate::simulation::network::graph::RoadMedian;
 use crate::simulation::network::road_edit::RoadPreviewValidation;
 use godot::prelude::Vector3;
 use serde::Serialize;
@@ -42,6 +43,8 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) snap: bool,
     /// The road tool's tunnel intent (`ROAD-61`), which a replay sets before it draws.
     pub(crate) tunnel: bool,
+    /// The road tool's median (`ROAD-80`), which a replay sets before it draws.
+    pub(crate) median: Option<RoadMedian>,
 }
 
 /// Why one stroke was refused.
@@ -128,6 +131,8 @@ impl RoadRejection {
             bkw_lanes: attempt.bkw_lanes,
             snap: attempt.snap,
             tunnel: attempt.tunnel,
+            median_style: RoadMedian::style_code(attempt.median),
+            median_width: attempt.median.map_or(0.0, |median| median.width_m),
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
         };
         let json = serde_json::to_string(&replay).expect("attempt records serialize");
@@ -146,6 +151,9 @@ struct AttemptRecord<'a> {
     bkw_lanes: i32,
     snap: bool,
     tunnel: bool,
+    // The median as the road tool names it (`RoadMedian::from_tool`): style 0 is none.
+    median_style: i32,
+    median_width: f32,
     points: Vec<[f32; 3]>,
 }
 
@@ -390,6 +398,7 @@ mod tests {
             bkw_lanes: 1,
             snap: true,
             tunnel: true,
+            median: None,
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
@@ -466,6 +475,7 @@ mod tests {
             bkw_lanes: 1,
             snap: false,
             tunnel: false,
+            median: None,
         };
         let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, 0);
         assert_eq!(

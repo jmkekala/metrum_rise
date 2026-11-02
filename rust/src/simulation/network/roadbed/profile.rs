@@ -7,7 +7,7 @@
 
 use crate::config;
 use crate::simulation::network::build_surface_edge;
-use crate::simulation::network::graph::Edge;
+use crate::simulation::network::graph::{Edge, RoadMedian};
 use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 use godot::prelude::Vector3;
 
@@ -258,18 +258,20 @@ pub(crate) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
     RoadProfile::for_edge(edge).half_width_m()
 }
 
-/// Returns the visible roadbed half-width for one not-yet-committed road candidate.
+/// Returns the visible roadbed half-width for one not-yet-committed road candidate with
+/// `median` (`ROAD-80`: the median widens the corridor every stroke check reads).
 pub(crate) fn preview_candidate_roadbed_half_width_m(
     prepared_points: &[Vector3],
     edge_class: EdgeClass,
     fwd_lanes: u8,
     bkw_lanes: u8,
+    median: Option<RoadMedian>,
 ) -> f32 {
     let points = match (prepared_points.first(), prepared_points.last()) {
         (Some(first), Some(last)) => vec![*first, *last],
         _ => Vec::new(),
     };
-    let edge = build_surface_edge(0, 1, points, fwd_lanes, bkw_lanes, edge_class);
+    let edge = build_surface_edge(0, 1, points, fwd_lanes, bkw_lanes, edge_class, median);
     visual_roadbed_half_width_m(&edge)
 }
 

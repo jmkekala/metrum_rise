@@ -28,8 +28,13 @@ pub(crate) fn validate_road_candidate_against_water(
     if !validation.is_valid || !checked || prepared_points.len() < 2 {
         return validation;
     }
-    let half_width_m =
-        preview_candidate_roadbed_half_width_m(prepared_points, edge_class, fwd_lanes, bkw_lanes);
+    let half_width_m = preview_candidate_roadbed_half_width_m(
+        prepared_points,
+        edge_class,
+        fwd_lanes,
+        bkw_lanes,
+        prepared.median,
+    );
     if water.road_corridor_overlaps_visible_water(prepared_points, half_width_m) {
         let reason = if prepared.tunnel {
             TUNNEL_UNDER_WATER_REASON
