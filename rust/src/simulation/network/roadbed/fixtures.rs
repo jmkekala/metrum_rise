@@ -10,7 +10,7 @@ use super::{
     triangulate_constrained_rings_xz,
 };
 use crate::config;
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
 use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
@@ -137,6 +137,49 @@ pub(crate) fn mixed_profiles(sloped: bool) -> RegionGraph {
         edge.class = EdgeClass::Bridge;
         edge
     });
+    graph.rebuild_intersection_clips();
+    graph
+}
+
+/// `edge` as a two-way road of `fwd` + `bkw` lanes with sidewalks and `median` (`ROAD-80`), at
+/// the width a stroke gives it.
+pub(crate) fn divided(mut edge: Edge, fwd: u8, bkw: u8, median: Option<RoadMedian>) -> Edge {
+    edge.fwd_lanes = fwd;
+    edge.bkw_lanes = bkw;
+    edge.median = median;
+    edge.width = Edge::cross_section_width_m(fwd, bkw, median);
+    edge
+}
+
+/// A kerbed grass median `width_m` wide.
+pub(crate) fn grass(width_m: f32) -> Option<RoadMedian> {
+    RoadMedian::from_tool(2, width_m).unwrap()
+}
+
+/// A straight road through a degree-two node at the origin (`ROAD-80`): edge 0 from 80 m west
+/// to the node, edge 1 from the node to 80 m east (from the east end to the node when
+/// `reversed`), each as `west` and `east` make it from a road edge; each far end a road end.
+/// Then the graph clips.
+pub(crate) fn straight_pair(
+    west: impl Fn(Edge) -> Edge,
+    east: impl Fn(Edge) -> Edge,
+    reversed: bool,
+    sloped: bool,
+) -> RegionGraph {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(point(0.0, 0.0, sloped), NodeType::Junction);
+    let west_end = graph.add_node(point(-80.0, 0.0, sloped), NodeType::Junction);
+    let east_end = graph.add_node(point(80.0, 0.0, sloped), NodeType::Junction);
+    let points = polyline((-80.0, 0.0), (0.0, 0.0), 20.0, sloped);
+    graph.add_edge(west(road_edge(west_end, center, points, 7.0)));
+    let (a, b) = if reversed {
+        (east_end, center)
+    } else {
+        (center, east_end)
+    };
+    let (pa, pb) = (graph.node(a).pos, graph.node(b).pos);
+    let points = polyline((pa.x, pa.z), (pb.x, pb.z), 20.0, sloped);
+    graph.add_edge(east(road_edge(a, b, points, 7.0)));
     graph.rebuild_intersection_clips();
     graph
 }

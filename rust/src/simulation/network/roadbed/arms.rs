@@ -636,6 +636,41 @@ pub(super) fn pass_through_crossings(
     })
 }
 
+/// Shortest edge, in horizontal metres, whose raised median continues through a pass-through
+/// node (`ROAD-80`): a node layout leaves each end at most half its edge, so each of the pair's
+/// spans keeps room for its far end's clearance, crossing strip and nose.
+pub(super) const MEDIAN_THROUGH_MIN_EDGE_M: f64 = 20.0;
+
+// Whether a pass-through node's two arms carry one raised median that lines up across it
+// (`ROAD-80`): equal style and width, the line between the lane groups at one place (each
+// arm's offset taken looking away from the node, so the other's is its mirror), and both edges
+// at least `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
+fn median_body_continues(graph: &RegionGraph, arms: [ArmKey; 2]) -> bool {
+    let [(a, a_end), (b, b_end)] = arms.map(|key| (graph.edge(key.edge), key.end));
+    let outward = |edge: &Edge, end: EdgeEnd| match end {
+        EdgeEnd::Start => edge.lane_group_offset(),
+        EdgeEnd::End => -edge.lane_group_offset(),
+    };
+    a.median
+        .zip(b.median)
+        .is_some_and(|(median, other)| median.is_raised() && median == other)
+        && outward(a, a_end) == -outward(b, b_end)
+        && [a, b]
+            .iter()
+            .all(|edge| horizontal_length_m(&edge.geometry) >= MEDIAN_THROUGH_MIN_EDGE_M)
+}
+
+/// Whether a raised median runs on through `node` without a nose (`ROAD-80`): a pass-through
+/// node whose two arms carry one median that lines up ([`median_body_continues`]) and where
+/// neither arm crosses. Such a node has no default crossing (R3-f, Z3); an explicit one opens
+/// the median around it, both spans nosing out. The spans of both arms read it, so their shared
+/// row agrees. `O(degree)`.
+pub(super) fn median_continues(graph: &RegionGraph, node: u32) -> bool {
+    pass_through_crossings(graph, node).is_some_and(|[(a, a_crosses), (b, b_crosses)]| {
+        !a_crosses && !b_crosses && median_body_continues(graph, [a, b])
+    })
+}
+
 /// Whether arm `edge` of `node` can cross, so its crossing can be turned on or off (`ROAD-74`):
 /// a car road with sidewalks at a node where two or more road arms meet, which at a pass-through
 /// node must also hold the strip on its span. Whether it crosses is the D8 rule's
@@ -692,7 +727,8 @@ struct DegreeTwoCrossings {
 }
 
 // Arms are taken in order of their direction's angle in `(-pi, pi]`, then edge index. The first
-// eligible arm is the default arm: without an override it crosses, and the other arm does not.
+// eligible arm is the default arm: without an override it crosses, and the other arm does not;
+// a pass-through node where a raised median continues has no default arm (`ROAD-80`).
 // An override of `true` always crosses and `false` never does, so a node has exactly one crossing
 // by default, and an override of `false` on the default arm removes it rather than moving it
 // (`ROAD-74`, the user's decision R6-a: off removes the crossing). A pass-through crossing lies on
@@ -717,7 +753,13 @@ fn degree_two_crossings(
     let first = usize::from(order.then(arms[0].0.cmp(&arms[1].0)).is_gt());
     let eligible = |index: usize| has_sidewalks(graph, arms[index].0) && fits(arms[index].0);
     let free = |index: usize| !overrides.contains_key(&arms[index].0.edge);
-    let default_arm = [first, 1 - first].into_iter().find(|&index| eligible(index));
+    // Where a raised median continues through, no crossing by default (R3-f, Z3): it would cross
+    // the median. An override of `true` still crosses, and the median opens around it.
+    let median_through = span_owned && median_body_continues(graph, arms.map(|(key, _)| key));
+    let default_arm = [first, 1 - first]
+        .into_iter()
+        .find(|&index| eligible(index))
+        .filter(|_| !median_through);
     let mut crosses = [false; 2];
     for index in [first, 1 - first] {
         if eligible(index) {

@@ -19,13 +19,17 @@ const CURB_BAND_WIDTH_M: f32 = 0.15;
 const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
 // A footpath is at least this wide.
 const FOOTPATH_MIN_WIDTH_M: f32 = 2.0;
-// Sidewalk, curb, two carriageway halves, curb, sidewalk.
-pub(super) const MAX_PROFILE_BANDS: usize = 6;
+/// Width of each kerb of a raised median at its authored width (`ROAD-80`), inside the median's
+/// width; a nose scales the kerbs with the median.
+pub const MEDIAN_KERB_WIDTH_M: f32 = 0.15;
+// Sidewalk, curb, carriageway, kerb, median, kerb, carriageway, curb, sidewalk: a divided body
+// (`RoadProfile::body_for_edge`); every other profile has at most six bands.
+pub(super) const MAX_PROFILE_BANDS: usize = 9;
 
 /// Lateral surface-band kinds of a road cross-section.
 ///
-/// Only `Carriageway`, `CurbOrShoulder`, `Sidewalk` and `Footpath` are emitted; the others are
-/// reserved for explicit future bands.
+/// `Carriageway`, `CurbOrShoulder`, `Sidewalk` and `Footpath` are emitted, and `Median` on a
+/// divided span's body (`ROAD-80`); the others are reserved for explicit future bands.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum BandKind {
     /// Drivable carriageway at ground level.
@@ -36,7 +40,7 @@ pub enum BandKind {
     Sidewalk,
     /// Pedestrian path that is not a roadside sidewalk, at ground level.
     Footpath,
-    /// Reserved central median or separator.
+    /// The raised strip of a kerbed median between its two kerbs (`ROAD-80`).
     Median,
     /// Reserved parking band.
     Parking,
@@ -81,10 +85,22 @@ pub struct ProfileBand {
 /// Ordered lateral bands of an edge's cross-section, left to right in the edge's forward frame.
 ///
 /// Fixed capacity, so building a profile never allocates.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct RoadProfile {
     bands: [ProfileBand; MAX_PROFILE_BANDS],
     len: u8,
+}
+
+// Lists at least six band slots, as the fixed array of six did before divided bodies
+// (`ROAD-80`), so the text the product probes hash is unchanged for every other profile.
+impl std::fmt::Debug for RoadProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let listed = usize::from(self.len).max(6);
+        f.debug_struct("RoadProfile")
+            .field("bands", &&self.bands[..listed])
+            .field("len", &self.len)
+            .finish()
+    }
 }
 
 impl RoadProfile {
@@ -142,6 +158,73 @@ impl RoadProfile {
         push(BandKind::CurbOrShoulder, half_carriageway, curb_m, raised);
         if sidewalk_width > 0.0 {
             push(BandKind::Sidewalk, curb_m, sidewalk_m, raised);
+        }
+        profile
+    }
+
+    /// The body profile of a divided span (`ROAD-80`) whose raised median is `median_m` wide
+    /// (from zero at a nose's tip up to the authored width): [`Self::for_edge`]'s bands with the
+    /// split between the two carriageway bands opened into kerb, median and kerb, centred on the
+    /// line between the lane groups ([`Edge::lane_group_offset`]). The kerbs are
+    /// [`MEDIAN_KERB_WIDTH_M`] at the authored width and scale with the median, so every band
+    /// has width for any width above zero and all three collapse onto the line at zero. The
+    /// offsets mirror exactly: the edge reversed gives the mirrored profile bit for bit, so a
+    /// pass-through pair's spans share their row. Only for an edge with a raised median.
+    /// `O(B)`, no allocation.
+    pub fn body_for_edge(edge: &Edge, median_m: f32) -> Self {
+        let mouth = Self::for_edge(edge);
+        let authored_m = edge.median.map_or(0.0, |median| median.width_m);
+        debug_assert!(
+            edge.median.is_some_and(|median| median.is_raised()),
+            "a body profile needs a raised median"
+        );
+        let split = mouth
+            .bands()
+            .iter()
+            .position(|band| band.kind == BandKind::Carriageway)
+            .expect("a car road has a carriageway");
+        let centre_m = edge.lane_group_offset();
+        let half_m = median_m * 0.5;
+        let kerb_m = if authored_m > 0.0 {
+            MEDIAN_KERB_WIDTH_M * (median_m / authored_m)
+        } else {
+            0.0
+        };
+        // Left to right: the inner edges of the two carriageways, then the median's own edges.
+        let (left_m, right_m) = (centre_m - half_m, centre_m + half_m);
+        let (median_start_m, median_end_m) = (left_m + kerb_m, right_m - kerb_m);
+        let mut profile = mouth;
+        profile.len = 0;
+        let mut push = |band: ProfileBand| {
+            profile.bands[usize::from(profile.len)] = band;
+            profile.len += 1;
+        };
+        for (index, band) in mouth.bands().iter().enumerate() {
+            if index == split {
+                push(ProfileBand {
+                    end_m: left_m,
+                    ..*band
+                });
+                for (kind, start_m, end_m) in [
+                    (BandKind::CurbOrShoulder, left_m, median_start_m),
+                    (BandKind::Median, median_start_m, median_end_m),
+                    (BandKind::CurbOrShoulder, median_end_m, right_m),
+                ] {
+                    push(ProfileBand {
+                        kind,
+                        start_m,
+                        end_m,
+                        level: Level::Raised,
+                    });
+                }
+            } else if index == split + 1 {
+                push(ProfileBand {
+                    start_m: right_m,
+                    ..*band
+                });
+            } else {
+                push(*band);
+            }
         }
         profile
     }
@@ -249,6 +332,66 @@ mod tests {
         assert_eq!(path.bands()[0].kind, BandKind::Footpath);
         assert_eq!(path.half_width_m(), 1.0);
         assert_eq!(path.carriageway_half_width_m(), 0.0);
+    }
+
+    // `ROAD-80`: a kerbed median opens the split between the carriageways into kerb, median and
+    // kerb around the line between the lane groups; its outer bands are the mouth profile's.
+    #[test]
+    fn a_body_profile_opens_the_split_into_kerbs_and_a_median() {
+        let mut road = edge(
+            17.5,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            TransitType::Road,
+        );
+        road.fwd_lanes = 2;
+        road.bkw_lanes = 1;
+        road.median = crate::simulation::network::graph::RoadMedian::from_tool(2, 7.0).unwrap();
+        let mouth = RoadProfile::for_edge(&road);
+        let body = RoadProfile::body_for_edge(&road, 7.0);
+        let centre = road.lane_group_offset();
+        assert_eq!(centre, -1.75);
+        let expected = [
+            (BandKind::Sidewalk, -10.25, -8.9, Level::Raised),
+            (BandKind::CurbOrShoulder, -8.9, -8.75, Level::Raised),
+            (BandKind::Carriageway, -8.75, -5.25, Level::Ground),
+            (BandKind::CurbOrShoulder, -5.25, -5.1, Level::Raised),
+            (BandKind::Median, -5.1, 1.6, Level::Raised),
+            (BandKind::CurbOrShoulder, 1.6, 1.75, Level::Raised),
+            (BandKind::Carriageway, 1.75, 8.75, Level::Ground),
+            (BandKind::CurbOrShoulder, 8.75, 8.9, Level::Raised),
+            (BandKind::Sidewalk, 8.9, 10.25, Level::Raised),
+        ];
+        assert_eq!(body.bands().len(), expected.len());
+        for (band, (kind, start, end, level)) in body.bands().iter().zip(expected) {
+            assert_eq!((band.kind, band.level), (kind, level));
+            assert!(
+                (band.start_m - start).abs() < 1e-5 && (band.end_m - end).abs() < 1e-5,
+                "{band:?}"
+            );
+        }
+        assert_eq!(body.half_width_m().to_bits(), mouth.half_width_m().to_bits());
+        assert_eq!(
+            body.carriageway_half_width_m().to_bits(),
+            mouth.carriageway_half_width_m().to_bits()
+        );
+        // At a nose's tip the three median bands collapse onto the split, bit for bit.
+        let tip = RoadProfile::body_for_edge(&road, 0.0);
+        for band in &tip.bands()[3..6] {
+            assert_eq!((band.start_m, band.end_m), (centre, centre));
+        }
+        // The reversed edge gives the mirrored profile exactly (a pass-through pair's row).
+        let mut reversed = road.clone();
+        (reversed.fwd_lanes, reversed.bkw_lanes) = (1, 2);
+        for width in [0.0, 1.75, 3.3, 7.0] {
+            let forward = RoadProfile::body_for_edge(&road, width);
+            let backward = RoadProfile::body_for_edge(&reversed, width);
+            for (a, b) in forward.bands().iter().zip(backward.bands().iter().rev()) {
+                assert_eq!(
+                    (a.kind, a.level, a.start_m.to_bits(), a.end_m.to_bits()),
+                    (b.kind, b.level, (-b.end_m).to_bits(), (-b.start_m).to_bits())
+                );
+            }
+        }
     }
 
     #[test]

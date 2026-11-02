@@ -329,4 +329,6 @@ pub(super) fn pass_through_crossing(graph: &RegionGraph, arm: ArmKey) -> Option<
 }
 
 #[cfg(test)]
+mod median_tests;
+#[cfg(test)]
 mod tests;
