@@ -2177,3 +2177,46 @@ fn crosswalk_overrides_round_trip_through_their_table() {
         .unwrap();
     assert!(network::load_graph(&conn).is_err());
 }
+
+// `ROAD-80`, save format 111: a median round-trips through `network_edges`' two columns, a road
+// without one saves style 0 and width 0, and a median no stroke could build does not load.
+#[test]
+fn medians_round_trip_through_the_edge_table() {
+    let (mut graph, edge) = snapshot_test_graph();
+    let save = |graph: &RegionGraph| {
+        let maps =
+            build_snapshot_maps(graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, graph, &maps).unwrap();
+        tx.commit().unwrap();
+        conn
+    };
+    let conn = save(&graph);
+    let columns: (i64, f64) = conn
+        .query_row(
+            "SELECT median_style, median_width FROM network_edges",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(columns, (0, 0.0));
+    assert_eq!(network::load_graph(&conn).unwrap().edge(edge).median, None);
+    for (style, width) in [(1, 1.5), (2, 6.0), (3, 2.0)] {
+        let median = crate::simulation::network::graph::RoadMedian::from_tool(style, width)
+            .unwrap();
+        graph.edge_mut(edge).median = median;
+        let conn = save(&graph);
+        assert_eq!(network::load_graph(&conn).unwrap().edge(edge).median, median);
+        for bad in [
+            "UPDATE network_edges SET median_style = 9",
+            "UPDATE network_edges SET median_width = 40.0",
+            "UPDATE network_edges SET bkw_lanes = 0",
+        ] {
+            let conn = save(&graph);
+            conn.execute_batch(bad).unwrap();
+            assert!(network::load_graph(&conn).is_err(), "{bad} loaded");
+        }
+    }
+}

@@ -4,7 +4,7 @@
 
 use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, grade_violation,
 };
@@ -46,7 +46,7 @@ pub(super) fn save_network(
 
     // 2. Edges
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
                 continue;
@@ -77,7 +77,9 @@ pub(super) fn save_network(
                 edge.start_clip,
                 edge.end_clip,
                 i64::from(edge.no_building_spawn),
-                vehicle_frontage_access_to_i64(edge.vehicle_frontage_access)
+                vehicle_frontage_access_to_i64(edge.vehicle_frontage_access),
+                i64::from(RoadMedian::style_code(edge.median)),
+                edge.median.map_or(0.0, |median| median.width_m)
             ])?;
         }
     }
@@ -216,7 +218,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     }
 
     {
-        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access FROM network_edges ORDER BY edge_id")?;
+        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width FROM network_edges ORDER BY edge_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
@@ -232,6 +234,18 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 row.get::<_, i64>(14)? != 0 || speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS;
             let start_node = i64_to_u32(row.get(1)?)?;
             let end_node = i64_to_u32(row.get(2)?)?;
+            let allowed_types = i64_to_u8(row.get(4)?)?;
+            let fwd_lanes = i64_to_u8(row.get(7)?)?;
+            let bkw_lanes = i64_to_u8(row.get(8)?)?;
+            // A median loads only as a stroke or an edit could have built it (`ROAD-80`).
+            let median = RoadMedian::from_tool(row.get(16)?, row.get(17)?)
+                .and_then(|median| {
+                    Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, median)
+                        .map(|()| median)
+                })
+                .map_err(|reason| {
+                    SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
+                })?;
             if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
             {
                 return Err(SaveLoadError::custom("edge references out-of-range node"));
@@ -240,11 +254,11 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 start_node,
                 end_node,
                 primary_type: transit_type_from_i64(row.get(3)?)?,
-                allowed_types: i64_to_u8(row.get(4)?)?,
+                allowed_types,
                 class: edge_class_from_i64(row.get(5)?)?,
                 width: row.get(6)?,
-                fwd_lanes: i64_to_u8(row.get(7)?)?,
-                bkw_lanes: i64_to_u8(row.get(8)?)?,
+                fwd_lanes,
+                bkw_lanes,
                 speed_limit,
                 base_cost: row.get(10)?,
                 physical_length: row.get(11)?,
@@ -255,7 +269,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 deleted: false,
                 no_building_spawn,
                 vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(15)?)?,
-                median: None,
+                median,
             });
         }
     }
