@@ -67,10 +67,16 @@ pub(super) fn sidewalk_offset(edge: &Edge, lane_idx: i8) -> f32 {
 /// Lateral offset of vehicle lane `lane_idx` in `edge`'s forward frame: forward lanes
 /// `0, 1, ..` and backward lanes `-1, -2, ..`, each a lane further out than the last from the
 /// line between the two lane groups ([`Edge::lane_group_offset`], `ROAD-100`), on the driving
-/// side. `O(1)`.
+/// side, each group half the median's width off that line (`ROAD-80`). `O(1)`.
 pub(super) fn vehicle_lane_offset(edge: &Edge, lane_idx: i8) -> f32 {
     let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-    edge.lane_group_offset() + (f32::from(lane_idx) + 0.5) * config::LANE_WIDTH * side_mul
+    let median_m = if lane_idx >= 0 {
+        edge.median_half_width()
+    } else {
+        -edge.median_half_width()
+    };
+    edge.lane_group_offset()
+        + ((f32::from(lane_idx) + 0.5) * config::LANE_WIDTH + median_m) * side_mul
 }
 
 impl LaneSystem {

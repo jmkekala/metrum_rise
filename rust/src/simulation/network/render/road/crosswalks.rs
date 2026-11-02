@@ -205,6 +205,18 @@ mod tests {
             cases.push((format!("t {sloped}"), fixtures::t_junction(sloped)));
             cases.push((format!("bend {sloped}"), fixtures::bend(60.0, 60.0, sloped)));
             cases.push((format!("pass-through {sloped}"), pass_through(sloped)));
+            // A divided T noses out beyond its zebras, and an explicit crossing opens a
+            // continuing median (`ROAD-80`).
+            let grass = |edge| fixtures::divided(edge, 2, 2, fixtures::grass(4.0));
+            let mut divided_t = fixtures::t_junction(sloped);
+            for edge in [0, 1] {
+                *divided_t.edge_mut(edge) = grass(divided_t.edge(edge).clone());
+            }
+            divided_t.rebuild_intersection_clips();
+            cases.push((format!("divided t {sloped}"), divided_t));
+            let mut opened = fixtures::straight_pair(grass, grass, false, sloped);
+            opened.set_crosswalk_override(0, 1, true);
+            cases.push((format!("divided pass-through {sloped}"), opened));
             cases.extend(fixtures::footpath_fixtures(sloped));
         }
         let mut pass_through_crossings = 0;

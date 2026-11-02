@@ -11,6 +11,7 @@ use super::super::{
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
+use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::roadbed::{BandKind, EdgeEnd, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::TransitType;
@@ -93,25 +94,45 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         let Some(line) = FinnishLaneLine::for_edge(edge) else {
             continue;
         };
+        if edge.median.is_some() {
+            // A divided road's lane groups lie apart (`ROAD-80`): dividers within each group, at
+            // its lanes' edges, and no centre line between them.
+            let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+            let (centre, half) = (edge.lane_group_offset(), edge.median_half_width());
+            for (lanes, direction) in [(edge.fwd_lanes, 1.0), (edge.bkw_lanes, -1.0)] {
+                for divider in 1..lanes {
+                    let lateral =
+                        centre + (half + f32::from(divider) * config::LANE_WIDTH) * side * direction;
+                    emit_lane_marking_sections(mesh, sections, marking_s_range, line, |_| {
+                        Some(lateral)
+                    });
+                }
+            }
+            continue;
+        }
         for divider in 1..total_lanes {
-            emit_lane_marking_sections(mesh, sections, divider, total_lanes, marking_s_range, line);
+            let lane_fraction = divider as f32 / total_lanes as f32;
+            emit_lane_marking_sections(mesh, sections, marking_s_range, line, |section| {
+                let (left, right) = carriageway_bounds(section)?;
+                Some(left + (right - left) * lane_fraction)
+            });
         }
     }
 }
 
+// One longitudinal line over the span's sections, at the lateral offset `lateral_at` gives each
+// section.
 fn emit_lane_marking_sections(
     mesh: &mut NetworkMeshData,
     sections: &[RoadSection],
-    divider: usize,
-    total_lanes: usize,
     marking_s_range: (f32, f32),
     line: FinnishLaneLine,
+    lateral_at: impl Fn(&RoadSection) -> Option<f32>,
 ) {
     if sections.len() < 2 {
         return;
     }
 
-    let lane_fraction = divider as f32 / total_lanes as f32;
     for pair in sections.windows(2) {
         let segment_start_s = pair[0].s_m;
         let segment_end_s = pair[1].s_m;
@@ -124,14 +145,12 @@ fn emit_lane_marking_sections(
             continue;
         }
 
-        let Some((left_a, right_a)) = carriageway_bounds(&pair[0]) else {
+        let Some(lateral_a) = lateral_at(&pair[0]) else {
             continue;
         };
-        let Some((left_b, right_b)) = carriageway_bounds(&pair[1]) else {
+        let Some(lateral_b) = lateral_at(&pair[1]) else {
             continue;
         };
-        let lateral_a = left_a + (right_a - left_a) * lane_fraction;
-        let lateral_b = left_b + (right_b - left_b) * lane_fraction;
         let Some(start) = section_world_point_at_lateral_offset(&pair[0], lateral_a) else {
             continue;
         };

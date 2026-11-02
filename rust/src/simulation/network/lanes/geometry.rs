@@ -245,9 +245,9 @@ fn cut_at_layout_ends(geometry: &[Vector3], pts: &[Vector3], ends: [LaneEnd; 2])
     cut
 }
 
-/// Returns the half-width of the road asphalt based on the number of lanes.
+/// Returns the half-width of the road asphalt: its lanes and its median (`ROAD-80`).
 pub fn road_half_width(edge: &Edge) -> f32 {
-    ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5
+    ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5 + edge.median_half_width()
 }
 
 /// Samples the authoritative agent position, including the deterministic pedestrian offset.

@@ -714,6 +714,88 @@ fn one_way_and_uneven_lanes_sit_on_the_carriageway() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+// `ROAD-80`: each lane group sits half the median's width off the line between the groups, a
+// painted median's as a raised one's, so every lane lies on a carriageway band of the divided
+// body and none on the median.
+#[test]
+fn divided_lane_groups_sit_beside_the_median() {
+    use super::super::graph::RoadMedian;
+    use super::super::roadbed::RoadProfile;
+    // (forward, backward, style, width, forward offsets, backward offsets), right-hand traffic.
+    let cases: [(u8, u8, i32, f32, &[f32], &[f32]); 4] = [
+        (1, 1, 2, 4.0, &[3.75], &[-3.75]),
+        (2, 2, 3, 2.0, &[2.75, 6.25], &[-2.75, -6.25]),
+        (2, 1, 2, 4.0, &[2.0, 5.5], &[-5.5]),
+        (2, 2, 1, 1.0, &[2.25, 5.75], &[-2.25, -5.75]),
+    ];
+    let side = if crate::config::DRIVE_ON_LEFT {
+        -1.0
+    } else {
+        1.0
+    };
+    for (fwd, bkw, style, width, fwd_offsets, bkw_offsets) in cases {
+        let median = RoadMedian::from_tool(style, width).unwrap();
+        let mut graph = RegionGraph::new();
+        let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let b = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let points = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)];
+        let edge = graph.add_edge(Edge {
+            start_node: a,
+            end_node: b,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            width: Edge::cross_section_width_m(fwd, bkw, median),
+            fwd_lanes: fwd,
+            bkw_lanes: bkw,
+            median,
+            speed_limit: 50.0,
+            physical_length: 100.0,
+            geometry: points.clone(),
+            physical_geometry: points,
+            ..Default::default()
+        });
+        graph.rebuild_adjacency_list();
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        let edge_ref = graph.edge(edge);
+        let profile = if median.is_some_and(RoadMedian::is_raised) {
+            RoadProfile::body_for_edge(edge_ref, width)
+        } else {
+            RoadProfile::for_edge(edge_ref)
+        };
+        for (is_fwd, expected) in [(true, fwd_offsets), (false, bkw_offsets)] {
+            let mut found: Vec<(i8, f32)> = lanes
+                .lanes
+                .iter()
+                .filter(|lane| {
+                    lane.edge_id == edge
+                        && lane.lane_type == LaneType::Vehicle
+                        && lane.is_fwd == is_fwd
+                })
+                .map(|lane| (lane.lane_idx, lane.geometry[0].z))
+                .collect();
+            found.sort_by_key(|&(index, _)| index.unsigned_abs());
+            let offsets: Vec<f32> = found.iter().map(|&(_, offset)| offset * side).collect();
+            assert_eq!(offsets.len(), expected.len(), "{fwd}+{bkw} style {style}");
+            for (&offset, &want) in offsets.iter().zip(expected) {
+                assert!((offset - want).abs() < 1e-4, "{fwd}+{bkw}: {offsets:?}");
+            }
+            for &(_, offset) in &found {
+                let (low, high) = (
+                    offset - 0.5 * crate::config::LANE_WIDTH,
+                    offset + 0.5 * crate::config::LANE_WIDTH,
+                );
+                assert!(
+                    profile.bands().iter().any(|band| band.kind == BandKind::Carriageway
+                        && band.start_m <= low + 1e-4
+                        && high <= band.end_m + 1e-4),
+                    "{fwd}+{bkw} style {style}: lane at {offset} leaves its carriageway"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn test_crosswalk_counts() {
     let mut graph = RegionGraph::new();

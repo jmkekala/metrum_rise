@@ -496,7 +496,8 @@ impl BuildingAllocator {
         let Some(edge) = graph.get_edge(edge_idx) else {
             return entrance;
         };
-        entrance.vehicle_frontage_access = edge.vehicle_frontage_access;
+        // A raised median keeps cars on their own carriageway (`ROAD-80`).
+        entrance.vehicle_frontage_access = edge.effective_vehicle_frontage_access();
         if edge.deleted || edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
             return entrance;
         }
@@ -1427,4 +1428,69 @@ fn best_vehicle_lane(lanes: &LaneSystem, edge_idx: usize, is_fwd: bool) -> usize
     }
 
     best_lane
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::graph::{Edge, MedianStyle, RoadMedian};
+    use crate::simulation::network::types::NodeType;
+    use godot::prelude::Vector3;
+
+    // `ROAD-80`: a raised median leaves a building's cars only its own carriageway's lane; a
+    // painted one keeps both; the edge's stored policy is untouched.
+    #[test]
+    fn raised_medians_restrict_real_frontage_lanes_and_paint_preserves_both_sides() {
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let points = vec![Vector3::ZERO, graph.node(end).pos];
+        let id = graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            physical_length: 100.0,
+            physical_geometry: points.clone(),
+            geometry: points,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            ..Default::default()
+        });
+        for style in [
+            MedianStyle::Painted,
+            MedianStyle::KerbedGrass,
+            MedianStyle::KerbedPaving,
+        ] {
+            let median = Some(RoadMedian {
+                style,
+                width_m: 2.0,
+            });
+            graph.set_edge_cross_section(id, 1, 1, median);
+            let mut lanes = LaneSystem::new();
+            lanes.rebuild(&mut graph);
+            for side in [-1, 1] {
+                let entrance = BuildingAllocator::derive_door_entrance(
+                    Some(Vector2::new(50.0, f32::from(side) * 12.0)),
+                    id,
+                    side,
+                    &graph,
+                    &lanes,
+                );
+                if style == MedianStyle::Painted {
+                    assert_ne!(entrance.car_lane_fwd, INVALID_LANE_ID);
+                    assert_ne!(entrance.car_lane_bkw, INVALID_LANE_ID);
+                } else {
+                    assert_eq!(entrance.car_lane_fwd == INVALID_LANE_ID, side == 1);
+                    assert_eq!(entrance.car_lane_bkw == INVALID_LANE_ID, side == -1);
+                }
+            }
+        }
+        assert_eq!(
+            graph.edge(id).vehicle_frontage_access,
+            VehicleFrontageAccess::BothSides
+        );
+    }
 }
