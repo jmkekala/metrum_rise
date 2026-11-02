@@ -10144,12 +10144,15 @@ new agent spatial index or claim to remove that O(A) work.
 ### In-place cross-section edits (`ROAD-80`)
 
 An existing road's lane counts change in place (round R3a of the road-feature port), and its
-median with them (round R3b1, [Medians](#medians-road-80)). Rust owns the rule:
-`get_edge_cross_section(edge)` reports the counts, width,
-class and whether the road can change; `preview_edge_cross_section(edge, fwd, bkw)` returns the
-commit's verdict (`is_valid`, or `invalid_reason` and `detail`) without geometry (R3-d);
-`set_edge_cross_section(edge, fwd, bkw)` commits, pushes the undo record and publishes the chunks
-at once, as the crossing toggle does (`nodes/sim/cross_section.rs`, `network_api.rs`).
+median with them (rounds R3b1 and R3b2, [Medians](#medians-road-80)). Rust owns the rule:
+`get_edge_cross_section(edge)` reports the counts, width, median style and width, class and
+whether the road can change; `preview_edge_cross_section(edge, fwd, bkw, median_style,
+median_width)` returns the commit's verdict (`is_valid`, or `invalid_reason` and `detail`)
+without geometry (R3-d); `set_edge_cross_section(edge, fwd, bkw, median_style, median_width)`
+commits, pushes the undo record and publishes the chunks at once, as the crossing toggle does
+(`nodes/sim/cross_section.rs`, `network_api.rs`). Median style 0 is none, 1 painted, 2 kerbed
+grass, 3 kerbed paving (`RoadMedian::from_tool`: an unknown style or a width outside the
+style's range is refused with `unknown_median_style` or `median_width_out_of_range`).
 
 The transaction is the toggle's (`try_graph_edit`). Cheap refusals first: `invalid_road`,
 `cross_section_not_road` (footpaths stay footpaths), `too_many_lanes` (4 per direction),
@@ -10207,9 +10210,12 @@ R8's uncommitted probe) and the round's final code; P-cores `taskset -c 0,2,4,6,
   its 117 one-way fixtures and no other hash.
 - Movement code is unchanged (lanes move, the tick does not), so `PERF-06` was not rerun.
 
-The Road Properties window (select tool) carries the lane steppers (`ui/cross_section_controls.gd`,
-shared with the road tool's options panel, where they set the next stroke's lanes), the verdict
-line and Apply (option C of PLAN-R3 section 6); the reason text is `ui/road_reason_text.gd`,
+The Road Properties window (select tool) carries the cross-section controls
+(`ui/cross_section_controls.gd`, shared with the road tool's options panel, where they set the
+next stroke's lanes and median): lane steppers, the Median style row (None, Painted, Grass,
+Paving) and its width stepper (0.5 m steps within the style's range), the verdict line and Apply
+(option C of PLAN-R3 section 6). It opens at 400 x 500 px (minimum 360 x 460) so every row fits;
+a smaller persisted size grows to the minimum. The reason text is `ui/road_reason_text.gd`,
 shared with the road tool's stroke preview.
 
 **Crossing toggle (round R3b1).** The crossing toggle's commit now rebuilds its node's lanes,
@@ -10231,8 +10237,9 @@ their undos are tested against a full emission (`road_in_place`).
 ### Medians (`ROAD-80`)
 
 A road may carry a median between its two lane groups (round R3b1 of the road-feature port: the
-data, the save and the roadbed; the tool, the window, the grass material and the painted hatching
-are round R3b2's). Ported from the fork's `graph/cross_section.rs`, its geometry constructed here.
+data, the save and the roadbed; round R3b2: the road tool, the window, the grass layer and the
+painted hatching). Ported from the fork's `graph/cross_section.rs`, its geometry constructed
+here.
 
 **Data.** `Edge::median: Option<RoadMedian { style, width_m }>`; `MedianStyle` is `Painted`
 (0.5-2 m), `KerbedGrass` (2-12 m) or `KerbedPaving` (1-3 m), the width the whole separator's,
@@ -10243,8 +10250,8 @@ holds every in-place and load rule. `Edge::width` includes the median, so fronta
 parcels, water and tunnel-cover checks, the profile's outer bands and the graded terrain read the
 wider road with no change (R3-e). `split_edge` copies the median to both halves.
 `RegionGraph::set_edge_cross_section(edge, fwd, bkw, median)` replaces `set_edge_lanes`; the
-in-place edit takes the median (the Godot calls keep a road's own until R3b2's window edits it,
-and `get_edge_cross_section` reports `median_style` and `median_width`).
+in-place edit and its Godot calls take the median, and `get_edge_cross_section` reports
+`median_style` and `median_width`.
 
 **Save (format 111).** `network_edges.median_style` (0 none, 1-3 the styles) and
 `median_width` (0 without). A load accepts only a median a stroke or an edit could build, and
@@ -10256,7 +10263,8 @@ LANE_WIDTH ± median_half_width) * side`, the mouth ends with it; `road_half_wid
 width. Mouths are median-free, so every connector starts and ends as before. A raised median makes
 `effective_vehicle_frontage_access` `SameSideOnly` (entrances read it; the stored policy
 survives); a painted one keeps the stored policy (R3-c, R3-m). A divided road's dividers run
-within each lane group, with no centre line; the painted hatching between the groups is R3b2's.
+within each lane group, with no centre line; a painted median is hatched between the groups
+([Painted hatching](#painted-hatching-round-r3b2)).
 
 **Profiles.** `RoadProfile::for_edge` stays the mouth profile, median-free; node pieces, arms,
 zoning, sidewalks, signs and lights read it unchanged. `RoadProfile::body_for_edge(edge, m)`
@@ -10310,8 +10318,8 @@ logs in `$ARTIFACTS`):
 - `roadbed_span/build` (Criterion, C F F C, µs; second session after the profile-copy fix):
   `span_100m` 10.93 11.20 10.93 10.88, `span_400m` 38.92 39.44 38.47 37.58, `span_100m_four_lane`
   11.52 11.55 11.76 11.18, `span_100m_bridge` 12.48 12.45 12.35 12.28, `span_25m` 3.79 4.06 3.94
-  3.72, `span_100m_footpath` 3.59 3.79 3.84 3.53 (a fixed +0.2 µs a span: row starts, row kinds,
-  the nine-band arrays); the new `span_100m_divided` (2+2, 4 m grass, two noses) 23.56 / 24.12,
+  3.72, `span_100m_footpath` 3.59 3.79 3.84 3.53 (a fixed +0.2 µs a span: the divided rows'
+  bookkeeping on every span, removed in round R3b2); the new `span_100m_divided` (2+2, 4 m grass, two noses) 23.56 / 24.12,
   under the 50 µs target. The first session, before the fix, had `span_100m` at 12.14 / 11.62
   against 10.65 / 10.61.
 - Preview stages (`benchmark_road_preview_stages`, C F F C, total p50 ms): `sloped_t` 2.907 3.073
@@ -10326,6 +10334,106 @@ logs in `$ARTIFACTS`):
   0.339 / 0.553 / 0.440 / 1.234, and the crossing toggle on the local pass 1.033 / 2.194 / 0.856 /
   1.742 (R3a measured the full entrance rebuild path at about 12 ms at 100k); local products
   identical per tier.
+
+#### Drawing a median (round R3b2)
+
+A stroke carries the road tool's median as it carries the tunnel intent:
+`set_road_tool_median(style, width)` (the empty string when set, else `unknown_median_style` or
+`median_width_out_of_range`, keeping the previous median) sets it for every later hover check,
+preview, commit and refusal report; it is part of the preview's and the plan's identity
+(`RoadPreview::is_for`), the queued `AddRoad` command and the refusal's replay record
+(`median_style`, `median_width`). `PreparedRoadInput.median` is set after preparation, which
+never reads it (`plan_road_edit`, the tool's hover check); plan-less callers draw without one.
+`build_surface_edge(.., median)` builds the stroke's edge with it, its width
+`Edge::cross_section_width_m` (bitwise the old width without a median), in the validation graph
+and in the plan-less `add_road_graded`, so splits and adopted plans carry it. Every corridor check
+widens by it: the excerpt pad, the close-crossing and tunnel-section half widths, water, parcels
+and fields. A stroke takes the in-place edit's median rule (`Edge::validate_median`): a median on a
+one-way stroke is `median_requires_both_directions`, on a walkway `median_requires_vehicle_road`,
+in the hover check and the plan alike.
+
+The road tool (`road_tool.gd`) keeps the median beside the tunnel intent and re-asserts it before
+each preview; **N** cycles the style (none, painted 1 m, grass 3 m, paving 2 m), **;** and **'**
+step the width by 0.5 m within the style's range, and the options panel's Median row sets both.
+`ROAD-92`: the Road and Walkway presets go through `set_lane_preset`, which clears a median a
+walkway cannot carry; N does nothing on a walkway; Rust refuses a walkway stroke with a median
+whatever the tool holds, so the preset is a convenience, not the rule.
+
+#### Grass layer (round R3b2)
+
+R3-g option 1: a kerbed grass median's top draws on its own layer (`MeshLayer::MedianGrass`, the
+ninth, `median_grass_*` arrays and owner runs), chosen at emission from the owning edge's
+`median.style` (`top_surface.rs`); kerbed paving stays on the sidewalk layer and a painted median
+has no band. Node pieces have no median band. A chunk without grass sends no grass arrays in the
+Godot payload, and Godot reads a missing grass layer as empty (no surface, `road_layer_surfaces`
+-1), so no other chunk's payload or upload changes. The material is the building sites' lawn
+(`WorldMaterials.site_ground_material()`, `site_ground.gdshader`: the terrain's grass palette and
+detail, the clouds' shade on the sun, wetness, the ambient floor and street lamps) rather than a
+second grass shader.
+
+#### Painted hatching (round R3b2)
+
+A painted median is paint alone (R3-c, `markings.rs`): two solid edge lines at
+`lane_group_offset` ± half the median's width and 45° diagonals between them every 3 m, in the
+urban lane-line width (0.10 m), drawn whatever the lane-line rule says (a 1+1 residential street
+shows its painted median). The noses are the raised medians': at an end that is not a
+continuation the edge lines meet on the centre line `NOSE_CLEARANCE_M` inside the marked range
+(which starts past a crossing strip the span holds) and open to the full width over
+`NOSE_LENGTH_M`; noses that would overlap leave the span unpainted. The section pairs are cut at
+the nose stations so the taper is exact. Where a painted median runs on through a pass-through
+node (`roadbed::painted_median_continues`: the raised rule's alignment and length test for a
+painted pair with no crossing) the hatching runs on; a painted median keeps D8's default crossing
+(Z3 is the raised medians' rule), which stops the hatching on both sides. `O(sections + length /
+3 m)` per painted span, allocation-free.
+
+Acceptance record (round R3b2, 2026-11-03, fresh; release binaries of `dev` `71a90e20`
+(control, with R8's uncommitted probe) and the round's code (`ea64cc99`, with the probe);
+P-cores `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=4`, both locks, load 1.85 and 1.90
+at the starts, no build or Godot run beside them; logs in `$ARTIFACTS`). The control is `dev`
+before the whole R3 stack, so these rows compare R3a + R3b1 + R3b2 together:
+
+- No change without medians: R8's probe (pieces, payload, graded tiles, vegetation, surface
+  queries, every lane's geometry, successors and crossings) equal on town, hill, steep and Kuopio,
+  control (format 110 save) vs branch (111), and equal to R3b1's hashes; `ROAD-68-K22`'s saved
+  commit cities (0/10k/30k/100k, `RAYON_NUM_THREADS=8`) give identical `COMMIT_PRODUCTS` (md5
+  `4852535b...`, as `ROAD-99`'s, R3a's and R3b1's).
+- Preview stages (`benchmark_road_preview_stages`, C F F C, total p50 ms): `sloped_t` 2.870 2.855
+  2.897 2.862, `sloped_branch` 2.480 2.411 2.573 2.499 (payload vertices equal); the new
+  `divided_t` (`sloped_t` with a 3 m grass median) 3.109 / 3.034, payload p50 0.457 / 0.442 ms
+  for 11,875 payload vertices a pose against 9,845.
+- `roadbed_span/build` (Criterion, C F F C, µs): `span_25m` 3.885 3.819 3.831 3.863,
+  `span_100m_footpath` 3.658 3.598 3.595 3.617, `span_100m` 10.80 10.73 10.97 10.76, `span_400m`
+  38.29 38.87 37.83 39.06, `span_100m_four_lane` 11.41 11.27 11.35 11.21, `span_100m_bridge`
+  12.30 12.27 12.39 12.26, `span_100m_rural` 8.90 8.33 8.32 8.27: undivided spans cost what
+  they did on `dev` (R3b1's +0.2 µs is gone); `span_100m_divided` 24.42 / 24.43.
+- Road chunk Criterion rows (C F F C): `full_network_emit/64` 9.614 9.681 9.386 9.886 ms,
+  `/1024` 164.59 162.39 164.90 164.55 ms, `chunk_emit_only/1024` 176.4 187.3 167.6 170.7 µs,
+  `bridge_chunk_emit_only/1024` 269.6 274.9 262.1 260.4 µs, `tunnel_chunk_emit_only/1024`
+  248.4 257.3 269.2 257.8 µs: within the controls' spread; the new `divided_chunk_emit_only`
+  281.6 / 265.8 µs alone and 270.0 / 274.9 µs beside 1023 distant chunks.
+- Godot chunk upload (`road_chunk_renderer_benchmark.gd`, each tree's script and cdylib, a second
+  session at 00:28 after the first's control rows failed to load, stage p50 µs, C F F C):
+  `resident/1024` 2917 2901 2948 2945, `affected/1024/1` 3002 2947 3048 2978, `/4` 9630 9756
+  9892 10187, `/16` 38685 38990 39365 40797, `bridge/4` 11605 11806 11931 12232, `tunnel/4` 11684
+  11888 11922 12283: the absent grass layer costs nothing measurable; the new `divided/4` (1,800
+  grass vertices a chunk) 11758 / 11916, as `bridge` and `tunnel` with the same vertex count.
+- Locality (branch, 0/1k/10k/100k remote buildings, p50 ms; local products identical per tier):
+  a divided stroke (`populated_divided_road_plan_scaling`, the T's side road with a 3 m grass
+  median) compile 0.511 / 0.165 / 0.171 / 0.213, hover check 0.057 / 0.031 / 0.031 / 0.031,
+  readiness 0.017 / 0.009 / 0.009 / 0.009; the median given in place
+  (`populated_median_edit_scaling`, 1+1 with a 3 m grass median) verdict 0.222 / 0.324 / 0.229 /
+  0.227, commit 1.206 / 1.182 / 0.961 / 1.868, undo 0.378 / 0.419 / 0.410 / 1.269, the crossing
+  toggle 1.952 / 1.545 / 0.950 / 1.697. Flat in the remote city (the 0-tier compile's first
+  samples are cold).
+- The leftover cost (round R3b1): a profile of R3b1's binaries (perf, `span_25m`, one P-core)
+  put it in `build_span_mesh`, `PieceFootprint::of_span` and `SpanModel::new`: the divided rows'
+  bookkeeping (row kinds, row lengths, row starts in the footprint, the continuation query at
+  pass-through ends) ran on every span. An undivided span now skips it.
+
+Stills (`$ARTIFACTS`, gamescope headless 1280x720, isolated profile, two sessions under 5
+minutes): a divided T with noses and zebras, a pass-through continuation, a bend's nose pair,
+painted (hatched) vs grass vs paving, a divided bridge and a divided tunnel's portal, a road given
+a median in place and its undo, and the Road Properties and road options rows.
 
 ## Road Geometry Validation (`ROAD-54`)
 
