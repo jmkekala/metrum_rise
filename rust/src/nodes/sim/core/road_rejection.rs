@@ -209,6 +209,13 @@ fn validation_detail(
             ),
             None,
         ),
+        "bridge_too_low" => (
+            format!(
+                "a bridge's deck and the road it passes over stand {:.2} m apart, needs {:.2} m",
+                validation.clearance_m, validation.required_clearance_m
+            ),
+            None,
+        ),
         "tunnel_crossing" => (
             "the tunnel crosses another tunnel or meets a road inside its bore".to_owned(),
             None,

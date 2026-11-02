@@ -30,8 +30,8 @@ use crate::config;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction::find_intersection_2d;
 use crate::simulation::network::roadbed::{
-    self, BRIDGE_DECK_DEPTH_M, SKIRT_DEPTH_M, TUNNEL_LINING_THICKNESS_M,
-    preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m,
+    self, SKIRT_DEPTH_M, TUNNEL_LINING_THICKNESS_M, preview_candidate_roadbed_half_width_m,
+    visual_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::terrain::TerrainSystem;
@@ -47,12 +47,6 @@ pub(super) const TUNNEL_COVER_M: f32 = roadbed::TUNNEL_COVER_M as f32;
 /// (`ROAD-61` round R8h, the user's rule): the cover rule and the road's own depth below its
 /// deck (its skirt), so no road geometry reaches the tunnel's shell.
 pub(super) const ROAD_OVER_TUNNEL_M: f32 = (roadbed::TUNNEL_COVER_M + SKIRT_DEPTH_M) as f32;
-/// How far a bridge's deck stands at least above the deck of a road it passes over (`ROAD-99`):
-/// the vehicle envelope ([`roadbed::VEHICLE_CLEARANCE_M`]) clear under the bridge's slab, and the
-/// slab's depth ([`BRIDGE_DECK_DEPTH_M`]), deck to deck (4.85 m). The mirror of
-/// [`ROAD_OVER_TUNNEL_M`]: under a tunnel's ceiling the lining keeps the same envelope clear.
-pub(super) const ROAD_UNDER_BRIDGE_M: f32 =
-    (roadbed::VEHICLE_CLEARANCE_M + BRIDGE_DECK_DEPTH_M) as f32;
 /// The shortest open approach before a portal, metres: two lattice steps, so the portal node
 /// stands clear of the stroke's end.
 pub(super) const TUNNEL_MIN_APPROACH_M: f32 = 2.0 * TUNNEL_LATTICE_M;
@@ -141,7 +135,7 @@ impl<'a> RoadDeck<'a> {
 
     // The deck's height over the XZ point: its profile's at the nearest point of its centre
     // line, where that lies within the half width. `O(profile points)`.
-    fn height_at(&self, x: f32, z: f32) -> Option<f32> {
+    pub(super) fn height_at(&self, x: f32, z: f32) -> Option<f32> {
         let (distance_sq, height) = RegionGraph::profile_nearest_at(self.profile, x, z);
         (distance_sq <= self.half_width_m * self.half_width_m).then_some(height)
     }
@@ -176,7 +170,11 @@ pub(super) const ROAD_DECK_REACH_M: f32 = 32.0;
 
 // The edges of `graph` whose centre-line bounds lie within `half_width_m` and
 // `ROAD_DECK_REACH_M` of the XZ bounds of `points`, unsorted.
-fn edges_near(graph: &RegionGraph, points: &[Vector3], half_width_m: f32) -> Vec<usize> {
+pub(super) fn edges_near(
+    graph: &RegionGraph,
+    points: &[Vector3],
+    half_width_m: f32,
+) -> Vec<usize> {
     let ((x0, z0), (x1, z1)) = xz_bounds(points);
     let pad = half_width_m + ROAD_DECK_REACH_M;
     graph.get_edges_near_aabb(
@@ -186,7 +184,7 @@ fn edges_near(graph: &RegionGraph, points: &[Vector3], half_width_m: f32) -> Vec
 }
 
 // The physical profile when present, otherwise the control polyline.
-fn edge_profile(edge: &crate::simulation::network::graph::Edge) -> &[Vector3] {
+pub(super) fn edge_profile(edge: &crate::simulation::network::graph::Edge) -> &[Vector3] {
     if edge.physical_geometry.len() >= 2 {
         &edge.physical_geometry
     } else {

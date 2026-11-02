@@ -5,6 +5,7 @@
 //! them, on the bounded post-edit graph excerpt that also yields the shared
 //! [`RoadTopologyPlan`].
 
+use super::bridge::{BRIDGE_TOO_LOW_REASON, ROAD_UNDER_BRIDGE_M, deck_to_deck_m};
 use super::input::{
     PREVIEW_CLEARANCE_M, PreparedRoadInput, ROAD_PROFILE_MAX_GRADE, is_surface_edge,
 };
@@ -329,12 +330,16 @@ fn profile_validation(
     validation
 }
 
-// A grounded stroke over a tunnel of `graph` (`ROAD-61` round R8h): a grade-separated crossing
-// while its prepared deck stands at least `ROAD_OVER_TUNNEL_M` (5.5 m) above the bore's deck over
-// the bore's whole section (`deck_over_tunnels_m`), else `tunnel_too_close` with the least height as the
+// The clearance rules of the crossings a stroke makes without a node, against the structures of
+// `graph`. A grounded stroke over a tunnel (`ROAD-61` round R8h): a grade-separated crossing while
+// its prepared deck stands at least `ROAD_OVER_TUNNEL_M` (5.5 m) above the bore's deck over the
+// bore's whole section (`deck_over_tunnels_m`), else `tunnel_too_close`. A grounded or bridge
+// stroke and a bridge, or a bridge stroke over a grounded road (`ROAD-99`): the higher deck at
+// least `ROAD_UNDER_BRIDGE_M` (4.85 m) above the lower wherever their footprints overlap
+// (`deck_to_deck_m`), else `bridge_too_low`. Each refusal takes the least height as the
 // clearance. Quick validation and the exact plan read the same prepared points and excerpt, so
-// they agree; the exact plan checks it after the junction rules, which the hover check does not
-// run. A bridge stands above the bore and a tunnel stroke's bore meets no tunnel
+// they agree; the exact plan checks them after the junction rules, which the hover check does not
+// run. A bridge stands above a bore, and a tunnel stroke's bore meets no tunnel
 // (`bore_crosses_a_tunnel`).
 fn refuse_close_crossing(
     mut validation: RoadPreviewValidation,
@@ -343,19 +348,31 @@ fn refuse_close_crossing(
     graph: &RegionGraph,
 ) -> RoadPreviewValidation {
     let points = &prepared_input.points[..];
-    if !validation.is_valid || prepared_input.class != EdgeClass::Standard || points.len() < 2 {
+    let class = prepared_input.class;
+    if !validation.is_valid
+        || prepared_input.tunnel
+        || class == EdgeClass::Tunnel
+        || points.len() < 2
+    {
         return validation;
     }
-    let half_width_m =
-        preview_candidate_roadbed_half_width_m(points, EdgeClass::Standard, fwd_lanes, bkw_lanes);
-    match deck_over_tunnels_m(points, half_width_m, graph) {
-        Some(above_m) if above_m < ROAD_OVER_TUNNEL_M => {
-            validation.clearance_m = above_m;
-            validation.required_clearance_m = ROAD_OVER_TUNNEL_M;
-            validation.with_invalid_reason(TUNNEL_TOO_CLOSE_REASON)
-        }
-        _ => validation,
-    }
+    let half_width_m = preview_candidate_roadbed_half_width_m(points, class, fwd_lanes, bkw_lanes);
+    let over_tunnel = (class == EdgeClass::Standard)
+        .then(|| deck_over_tunnels_m(points, half_width_m, graph))
+        .flatten()
+        .filter(|&above_m| above_m < ROAD_OVER_TUNNEL_M)
+        .map(|above_m| (above_m, ROAD_OVER_TUNNEL_M, TUNNEL_TOO_CLOSE_REASON));
+    let refusal = over_tunnel.or_else(|| {
+        deck_to_deck_m(prepared_input, half_width_m, graph)
+            .filter(|&apart_m| apart_m < ROAD_UNDER_BRIDGE_M)
+            .map(|apart_m| (apart_m, ROAD_UNDER_BRIDGE_M, BRIDGE_TOO_LOW_REASON))
+    });
+    let Some((clearance_m, required_clearance_m, reason)) = refusal else {
+        return validation;
+    };
+    validation.clearance_m = clearance_m;
+    validation.required_clearance_m = required_clearance_m;
+    validation.with_invalid_reason(reason)
 }
 
 // The cover check of a stroke drawn with the tunnel intent (`ROAD-61`), on its own knots as the

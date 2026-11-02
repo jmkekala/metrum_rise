@@ -609,6 +609,11 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 				float(preview.get("clearance_m", 0.0)),
 				float(preview.get("required_clearance_m", 0.0)),
 			]
+		"bridge_too_low":
+			return "Too low under a bridge: %.2f m / %.2f m deck to deck" % [
+				float(preview.get("clearance_m", 0.0)),
+				float(preview.get("required_clearance_m", 0.0)),
+			]
 		"tunnel_crossing":
 			return "Tunnels cannot cross other tunnels or meet roads underground"
 		"junction_in_trench":

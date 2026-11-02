@@ -13,6 +13,7 @@ use godot::prelude::Vector3;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
+mod bridge;
 mod input;
 mod support;
 #[cfg(test)]
