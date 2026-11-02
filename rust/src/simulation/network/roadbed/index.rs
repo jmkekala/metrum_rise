@@ -52,18 +52,19 @@ pub(crate) struct PieceFootprint {
 }
 
 impl PieceFootprint {
-    /// Footprint of a span mesh from the bounds of each pair of consecutive section rows, row
-    /// `r` starting at vertex `row_starts[r]` (the last entry the vertex count).
+    /// Footprint of a span mesh of `rows` section rows from the bounds of each pair of
+    /// consecutive rows, `pair(r)` the vertices of rows `r - 1` and `r` (an undivided span's are
+    /// `stride` apart, a divided span's at its row starts, `ROAD-80`).
     /// `O(rows * stride + covered cells)`.
     pub(super) fn of_span(
         mesh: &PieceMesh,
-        row_starts: &[u32],
+        rows: usize,
+        pair: impl Fn(usize) -> std::ops::Range<usize> + Copy,
         grid: RenderGrid,
         scratch: &mut Vec<(i32, i32)>,
     ) -> Self {
-        let rows = row_starts.len() - 1;
         let pair_bounds = (1..rows).map(|row| {
-            mesh.positions()[row_starts[row - 1] as usize..row_starts[row + 1] as usize]
+            mesh.positions()[pair(row)]
                 .iter()
                 .fold(
                     [

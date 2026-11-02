@@ -229,12 +229,16 @@ impl<'a> SpanModel<'a> {
             crossing_m(EdgeEnd::Start, start_kind, start_mouth_m),
             crossing_m(EdgeEnd::End, end_kind, end_mouth_m),
         ];
+        // Only a raised median asks whether it runs on through a node (`ROAD-80`).
+        let raised = edge.median.is_some_and(|median| median.is_raised());
         let through = [
             (start_kind, EdgeEnd::Start),
             (end_kind, EdgeEnd::End),
         ]
         .map(|(kind, end)| {
-            kind == Some(NodeKind::PassThrough) && median_continues(graph, node_at(graph, edge, end))
+            raised
+                && kind == Some(NodeKind::PassThrough)
+                && median_continues(graph, node_at(graph, edge, end))
         });
         let body = median_body(edge, (start_mouth_m, end_mouth_m), crossings_m, through);
         // A node piece's mouth fixes the frame at that end.

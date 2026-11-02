@@ -756,30 +756,58 @@ pub(super) fn build_span_mesh(
     let layout = rows.mouth;
     let row_count = sections.len();
     row_starts.clear();
-    row_starts.push(0);
-    for row in 0..row_count {
-        row_starts.push(row_starts[row] + rows.row_len(row) as u32);
+    // An undivided span's rows are all `stride` long, as before medians (`ROAD-80`): the per-row
+    // kind lookups are the divided span's alone.
+    match rows.body {
+        None => {
+            let stride = layout.stride() as u32;
+            row_starts.extend((0..=row_count as u32).map(|row| row * stride));
+        }
+        Some(_) => {
+            row_starts.push(0);
+            for row in 0..row_count {
+                row_starts.push(row_starts[row] + rows.row_len(row) as u32);
+            }
+        }
     }
     let vertex_count = row_starts[row_count] as usize;
     let mut positions = Vec::with_capacity(vertex_count);
     let mut road_space = Vec::with_capacity(vertex_count);
-    for (row, section) in sections.iter().enumerate() {
-        let (row_layout, kind) = rows.row(row);
+    // Row `row`'s positions (the mouths' own at both ends) and road-space coordinates.
+    let push_row = |positions: &mut Vec<RoadVec3>,
+                    road_space: &mut Vec<[f32; 2]>,
+                    row: usize,
+                    section: &RoadSection,
+                    row_layout: &RowLayout| {
         if row == 0 {
             positions.extend_from_slice(&start_mouth.vertices);
         } else if row + 1 == row_count {
             positions.extend_from_slice(&end_mouth.vertices);
         } else {
-            push_section_row(section, row_layout, &mut positions);
+            push_section_row(section, row_layout, positions);
         }
         for_each_boundary(section, row_layout, |lateral_m, _| {
             road_space.push([section.s_m, lateral_m]);
         });
-        if kind == RowKind::Tip {
-            // Keep the median's first ground and raised vertex (`tip_vertex`).
-            let shared = row_starts[row] as usize + usize::from(row_layout.median_ground_slot()) + 2;
-            positions.drain(shared..shared + TIP_SHARED_SLOTS);
-            road_space.drain(shared..shared + TIP_SHARED_SLOTS);
+    };
+    match rows.body {
+        None => {
+            for (row, section) in sections.iter().enumerate() {
+                push_row(&mut positions, &mut road_space, row, section, layout);
+            }
+        }
+        Some(_) => {
+            for (row, section) in sections.iter().enumerate() {
+                let (row_layout, kind) = rows.row(row);
+                push_row(&mut positions, &mut road_space, row, section, row_layout);
+                if kind == RowKind::Tip {
+                    // Keep the median's first ground and raised vertex (`tip_vertex`).
+                    let shared =
+                        row_starts[row] as usize + usize::from(row_layout.median_ground_slot()) + 2;
+                    positions.drain(shared..shared + TIP_SHARED_SLOTS);
+                    road_space.drain(shared..shared + TIP_SHARED_SLOTS);
+                }
+            }
         }
     }
     debug_assert_eq!(positions.len(), vertex_count);

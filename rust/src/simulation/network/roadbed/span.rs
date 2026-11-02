@@ -228,7 +228,9 @@ pub(crate) fn build_span_piece(
     // A divided span's rows by kind: mouth rows up to each nose's tip, body rows between
     // (`ROAD-80`).
     kinds.clear();
-    kinds.extend(sections.iter().map(|section| model.row_kind(section.s_m)));
+    if model.body_layout().is_some() {
+        kinds.extend(sections.iter().map(|section| model.row_kind(section.s_m)));
+    }
     let rows = SpanRows {
         mouth: model.layout(),
         body: model.body_layout().map(|body| (body, kinds.as_slice())),
@@ -242,7 +244,29 @@ pub(crate) fn build_span_piece(
         lining,
         row_starts,
     );
-    let footprint = PieceFootprint::of_span(&mesh, row_starts, grid, footprint);
+    let rows = sections.len();
+    let footprint = match model.body_layout() {
+        None => {
+            let stride = model.layout().stride();
+            PieceFootprint::of_span(
+                &mesh,
+                rows,
+                |row| (row - 1) * stride..(row + 1) * stride,
+                grid,
+                footprint,
+            )
+        }
+        Some(_) => {
+            let starts = row_starts.as_slice();
+            PieceFootprint::of_span(
+                &mesh,
+                rows,
+                |row| starts[row - 1] as usize..starts[row + 1] as usize,
+                grid,
+                footprint,
+            )
+        }
+    };
     // A crossing's kerbs are its section row's carriageway-edge vertices in the mesh, the
     // vertices `pass_through_crossing` evaluates for the lanes.
     let crossings = [EdgeEnd::Start, EdgeEnd::End].map(|end| {
