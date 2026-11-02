@@ -615,7 +615,7 @@ crossings).
     before any replan gate (`walk_home::stand_on_sidewalk`): of the foot lanes into its node, the
     one whose end is nearest its position, ties by lane id, entered at its end, when that end is
     within a road edit's own reattach reach (`LANE_REATTACH_MAX_DIST_M`, 30 m). Its position is
-    not changed; it is drawn at the lane's end from the next pose (0.1 to 4.2 m away for the 27
+    not changed; it is drawn at the lane's end from the next pose (0.1 to 4.2 m away for the 26
     walkers at a node among the bulldoze probe's 40 sampled events, below). Its route is dropped
     (its exit kept) and planned again from that sidewalk by the rules above. With no sidewalk end
     in reach it plans from its node when it stands within 30 m of it, and with no route is
@@ -623,11 +623,12 @@ crossings).
     node). Farther away, off every sidewalk, it is stranded where it stands, one `NoPosition`
     record, and its backoff only looks for a sidewalk end in reach: it is never planned from a
     node it is not at. Before, all of these planned from the node: a walker whose road was
-    bulldozed stood 128 to 351 m from its node (7 walkers among the same samples) and was drawn
-    there by its first lane, or after three failures moved home; a walker at a node could enter
-    either sidewalk of its first road, or an exit lane across the road from it, with no crossing.
-    A walker with no trip keeps standing. Cost: O(arms × lanes per arm) once, then the replan; a
-    stranded walker off the network repeats the lookup once per backoff step.
+    bulldozed stood 128 to 351 m from the nearest sidewalk end at its node (7 walkers in an
+    earlier build of the same probe) and was drawn there by its first lane, or after three
+    failures moved home; a walker at a node could enter either sidewalk of its first road, or an
+    exit lane across the road from it, with no crossing. A walker with no trip keeps standing.
+    Cost: O(arms × lanes per arm) once, then the replan; a stranded walker off the network repeats
+    the lookup once per backoff step.
   - *End of path.* A walker whose route ends at a node that is not its exit keeps its lane and
     plans again from its end (`junction/walk.rs::replan_from_lane`; no record when a route is
     found) instead of dropping the lane and planning from the node. One with no plan waits at the
@@ -656,15 +657,15 @@ crossings).
   - Crossings turned off and on through the editor, a sixth of the four-way junctions every 30
     game minutes (13,500 toggles over 3 days at 10k): no watchdog verdict and no walker record in
     either binary.
-  - road bulldozed every 2 game hours (33 over 3 days at 10k): the control's walker verdicts were
-    2 retries and 1 move home (walker 9880, left 123 m out on a bulldozed road with its node 87
-    behind it, planning from the node with no route). The branch has none: walkers left on
-    bulldozed roads, 123 to 347 m from their nodes, are stranded where they stand and reported (14
-    `NoPosition` records from 7 walkers; a walker is recorded again when a later edit clears its
-    plan), and the 27 walkers left at a node took their sidewalks 0.1 to 4.2 m away. Vehicles, the
-    `TRAFFIC-20` evidence: control 65 cars sent home and 1,083 freight carriers sent to a border
-    node (1,062 of them from the immigration bootstrap), branch 64 and 1,035; the runs diverge
-    after the first walker's different outcome.
+  - A road bulldozed every 2 game hours (33 over 3 days at 10k): the control's walker verdicts
+    were 2 retries and 1 move home (walker 9880, left 123 m out on a bulldozed road with its node
+    87 behind it, planning from the node with no route). The branch has none: walkers left on
+    bulldozed roads, 123 to 347 m along them from their nodes, are stranded where they stand and
+    reported (14 `NoPosition` records from 7 walkers; a walker is recorded again when a later edit
+    clears its plan), and the 26 walkers left at a node took their sidewalks 0.1 to 4.2 m away.
+    Vehicles, the `TRAFFIC-20` evidence: control 65 cars sent home and 1,083 freight carriers sent
+    to a border node (1,062 of them from the immigration bootstrap), branch 64 and 1,035; the runs
+    diverge after the first walker's different outcome.
   - Envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
     departures,settlements`, `RAYON_NUM_THREADS=6`): all four runs PASS with the same 13 notes,
     deterministic (repeat, 1 and 3 threads, reload), no trip failure with default crossings and
