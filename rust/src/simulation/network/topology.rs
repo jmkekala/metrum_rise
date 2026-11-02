@@ -660,7 +660,10 @@ fn collect_endpoint_snap_splits(
                 }
             }
 
-            if best_dist < snap_guard {
+            // An end snapped onto this span joins it: the road tool decided that on the full
+            // centre line within the join tolerance, which the tests below repeat on samples.
+            let snapped = grade.joined_spans[idx].is_some();
+            if best_dist < snap_guard || snapped {
                 let mut factor_u = find_geo_factor(&edge2_geo_full, best_closest);
                 let seg = (factor_u.floor() as usize).min(edge2_geo_full.len() - 2);
                 // The float segment index is an address, not an exact geometric parameter.
@@ -686,8 +689,9 @@ fn collect_endpoint_snap_splits(
                     }
                 }
 
-                if Vector2::new(p.x - refined.x, p.z - refined.z).length()
-                    < config::INTERSECTION_TOLERANCE
+                if snapped
+                    || Vector2::new(p.x - refined.x, p.z - refined.z).length()
+                        < config::INTERSECTION_TOLERANCE
                 {
                     // Endpoint snaps are topological centerline connections. Use the refined
                     // existing-road XZ so dense baked roads split at the true centerline, at
