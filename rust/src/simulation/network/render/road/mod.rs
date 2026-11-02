@@ -30,7 +30,7 @@ pub(crate) mod street_lights;
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.01;
 pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_DECAL_RENDER_Z_BIAS_M;
 
-// Discriminants index `NetworkMeshData`'s seven layers.
+// Discriminants index `NetworkMeshData`'s nine layers.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MeshLayer {
     Skirt = 0,
@@ -41,6 +41,7 @@ pub(super) enum MeshLayer {
     Marking = 5,
     Concrete = 6,
     Lining = 7,
+    MedianGrass = 8,
 }
 
 /// Top-surface road renderer built entirely from compiled roadbed ownership.
@@ -677,6 +678,12 @@ impl NetworkMeshData {
                 &mut self.lining_normals,
                 &mut self.lining_uvs,
                 &mut self.lining_colors,
+            ),
+            MeshLayer::MedianGrass => (
+                &mut self.median_grass_vertices,
+                &mut self.median_grass_normals,
+                &mut self.median_grass_uvs,
+                &mut self.median_grass_colors,
             ),
         };
         for index in 0..3 {

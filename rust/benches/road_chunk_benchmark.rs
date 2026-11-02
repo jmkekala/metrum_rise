@@ -6,7 +6,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use godot::prelude::{Color, Vector2, Vector3};
 use metrum_rise::simulation::core::config::WorldConfig;
 use metrum_rise::simulation::network::TransitNetwork;
-use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
+use metrum_rise::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
 use metrum_rise::simulation::network::render::NetworkMeshData;
 use metrum_rise::simulation::network::roadbed::{PieceId, SurfaceChunkKey};
 use metrum_rise::simulation::network::types::{
@@ -28,12 +28,14 @@ const STRUCTURE_DISTANT_CHUNK_COUNTS: [usize; 2] = [0, 1023];
 const STRUCTURE_RISE_M: f32 = 6.0;
 
 // The local road a fixture edits: one grounded edge, or a bridge or a tunnel edge between two
-// grounded approaches (`ROAD-61`: a tunnel's lining and headwalls, a bridge's deck and abutments).
+// grounded approaches (`ROAD-61`: a tunnel's lining and headwalls, a bridge's deck and abutments),
+// or the grounded edge with a 3 m kerbed grass median (`ROAD-80`: noses, kerbs, the grass layer).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocalRoad {
     Plain,
     Bridge,
     Tunnel,
+    Divided,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,6 +170,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
     for (local, name) in [
         (LocalRoad::Bridge, "bridge_chunk_emit_only"),
         (LocalRoad::Tunnel, "tunnel_chunk_emit_only"),
+        (LocalRoad::Divided, "divided_chunk_emit_only"),
     ] {
         let mut signature = None;
         for distant_chunks in STRUCTURE_DISTANT_CHUNK_COUNTS {
@@ -228,6 +231,14 @@ fn build_road_chunk_fixture(distant_chunks: usize, local: LocalRoad) -> RoadChun
         LocalRoad::Bridge => add_structure_chain(&mut graph, EdgeClass::Bridge, STRUCTURE_RISE_M),
         LocalRoad::Tunnel => {
             add_structure_chain(&mut graph, EdgeClass::Tunnel, -STRUCTURE_RISE_M)
+        }
+        LocalRoad::Divided => {
+            let edge = add_world_road(&mut graph, -ROAD_LENGTH_M * 0.5, 0.0, &config);
+            let grass = RoadMedian::from_tool(2, 3.0).expect("a valid grass median");
+            let road = graph.edge_mut(edge);
+            road.median = grass;
+            road.width += 3.0;
+            edge
         }
     };
     let local_chunk = (
@@ -307,6 +318,13 @@ fn build_road_chunk_fixture(distant_chunks: usize, local: LocalRoad) -> RoadChun
         )
         .expect("the initial benchmark surface must publish");
     let expected_signature = mesh_map_signature(&expected_chunks);
+    assert_eq!(
+        expected_chunks
+            .values()
+            .any(|mesh| !mesh.median_grass_vertices.is_empty()),
+        local == LocalRoad::Divided,
+        "only the divided road's chunk has a grass layer"
+    );
     assert!(
         expected_signature.chunk_count > 0,
         "the local road must emit a chunk"
@@ -449,6 +467,7 @@ fn mesh_vertex_count(mesh: &NetworkMeshData) -> usize {
         + mesh.marking_vertices.len()
         + mesh.concrete_vertices.len()
         + mesh.lining_vertices.len()
+        + mesh.median_grass_vertices.len()
 }
 
 fn hash_mesh(digest: &mut u64, mesh: &NetworkMeshData) {
@@ -492,6 +511,15 @@ fn hash_mesh(digest: &mut u64, mesh: &NetworkMeshData) {
     // with the layer's predecessors'.
     if !mesh.lining_vertices.is_empty() {
         hash_layer!(lining_vertices, lining_normals, lining_uvs, lining_colors);
+    }
+    // Likewise only a kerbed grass median's chunk has grass (`ROAD-80`).
+    if !mesh.median_grass_vertices.is_empty() {
+        hash_layer!(
+            median_grass_vertices,
+            median_grass_normals,
+            median_grass_uvs,
+            median_grass_colors
+        );
     }
 }
 

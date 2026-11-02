@@ -4077,6 +4077,7 @@ mod tests {
                 layer(|mesh| &mesh.marking_vertices),
                 layer(|mesh| &mesh.concrete_vertices),
                 layer(|mesh| &mesh.lining_vertices),
+                layer(|mesh| &mesh.median_grass_vertices),
             ]
         };
         let occupied_chunks = |core: &SimCore| {

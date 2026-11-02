@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Deterministic headless benchmark for committed-road chunk validation and ArrayMesh upload.
+## A chunk without a kerbed grass median sends no `median_grass` arrays, as Rust's payload does
+## (ROAD-80), so every row but `divided` measures the layer's absence.
 extends SceneTree
 
 const LAYERS: Array[String] = [
@@ -12,6 +14,7 @@ const LAYERS: Array[String] = [
 	"marking",
 	"concrete",
 	"lining",
+	"median_grass",
 ]
 const LARGE_LAYER_VERTEX_COUNTS := {
 	"skirt": 1200,
@@ -22,6 +25,7 @@ const LARGE_LAYER_VERTEX_COUNTS := {
 	"marking": 990,
 	"concrete": 0,
 	"lining": 0,
+	"median_grass": 0,
 }
 const RESIDENT_CHUNK_COUNTS: Array[int] = [4, 64, 256, 1024, 4096]
 const AFFECTED_CHUNK_COUNTS: Array[int] = [0, 1, 4, 16]
@@ -65,6 +69,8 @@ var _small_layer_arrays: Dictionary
 # The large chunk with a bridge's concrete (alpha 1), or with a tunnel's lining and collars.
 var _bridge_layer_arrays: Dictionary
 var _tunnel_layer_arrays: Dictionary
+# The large chunk with a kerbed grass median's top (ROAD-80).
+var _divided_layer_arrays: Dictionary
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -75,6 +81,7 @@ func _run() -> void:
 	assert(_layer_vertex_count(_large_layer_arrays) == LARGE_VERTICES_PER_CHUNK)
 	_bridge_layer_arrays = _structure_layer_arrays("concrete", Color.WHITE)
 	_tunnel_layer_arrays = _structure_layer_arrays("lining", Color(1.0, 1.0, 1.0, 0.0))
+	_divided_layer_arrays = _structure_layer_arrays("median_grass", Color.WHITE)
 
 	var host := Node3D.new()
 	root.add_child(host)
@@ -109,6 +116,7 @@ func _run() -> void:
 		await _run_case("affected", road_tool, simulation, 1024, changed_chunks)
 	await _run_case("bridge", road_tool, simulation, 1024, STRUCTURE_CHANGED_CHUNKS)
 	await _run_case("tunnel", road_tool, simulation, 1024, STRUCTURE_CHANGED_CHUNKS)
+	await _run_case("divided", road_tool, simulation, 1024, STRUCTURE_CHANGED_CHUNKS)
 	print("ROAD_CHUNK_GODOT_END failures=%d" % _failures)
 
 	host.queue_free()
@@ -280,6 +288,8 @@ func _case_layer_arrays(kind: String) -> Dictionary:
 			return _bridge_layer_arrays
 		"tunnel":
 			return _tunnel_layer_arrays
+		"divided":
+			return _divided_layer_arrays
 	return _large_layer_arrays
 
 # The large chunk plus STRUCTURE_VERTICES in `layer` and `color`: a bridge's concrete (alpha 1)
@@ -324,6 +334,8 @@ func _chunk_payload(chunk_x: int, chunk_z: int, layer_arrays: Dictionary) -> Dic
 	}
 	for layer in LAYERS:
 		var arrays: Dictionary = layer_arrays[layer]
+		if layer == "median_grass" and arrays["vertices"].is_empty():
+			continue
 		chunk[layer + "_vertices"] = arrays["vertices"]
 		chunk[layer + "_normals"] = arrays["normals"]
 		chunk[layer + "_uvs"] = arrays["uvs"]

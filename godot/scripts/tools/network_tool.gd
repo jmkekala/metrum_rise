@@ -692,8 +692,10 @@ func _road_chunk_frame_centre(
 	)
 
 # A road chunk's layers in payload order, as `NetworkMeshData` lists them (its owner runs index
-# these layers).
-const ROAD_CHUNK_LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining"]
+# these layers). A chunk without a kerbed grass median sends no `median_grass` arrays (ROAD-80),
+# which reads as an empty layer.
+const ROAD_CHUNK_LAYERS: Array[String] = ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining", "median_grass"]
+const OPTIONAL_ROAD_CHUNK_LAYER := "median_grass"
 
 # Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure. The
 # mesh's `road_layer_surfaces` meta maps each layer to its surface (-1 when the layer is empty),
@@ -717,6 +719,8 @@ func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 		WorldMaterials.road_concrete_material(),
 		# A tunnel's lining (ROAD-61): concrete, kept from the sun and lit by its lamp strips.
 		WorldMaterials.road_concrete_material(),
+		# A kerbed grass median's top (ROAD-80): the building sites' lawn, clouds' shade included.
+		WorldMaterials.site_ground_material(),
 	]
 	var surfaces := PackedInt32Array()
 	for index in ROAD_CHUNK_LAYERS.size():
@@ -739,6 +743,8 @@ func _append_road_surface(
 	var normals_key := layer + "_normals"
 	var colors_key := layer + "_colors"
 	var uvs_key := layer + "_uvs"
+	if layer == OPTIONAL_ROAD_CHUNK_LAYER and not chunk_data.has(vertices_key):
+		return true
 	if (
 		not chunk_data.has(vertices_key)
 		or typeof(chunk_data[vertices_key]) != TYPE_PACKED_VECTOR3_ARRAY

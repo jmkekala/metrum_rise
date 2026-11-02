@@ -233,8 +233,9 @@ impl NetworkMeshData {
 }
 
 // Layers in `owner_ranges` order: skirt, curb, raised step, sidewalk, road, marking,
-// concrete, lining (the `MeshLayer` discriminants); only the road layer carries crossing frames.
-const LAYERS: usize = 8;
+// concrete, lining, median grass (the `MeshLayer` discriminants); only the road layer carries
+// crossing frames.
+const LAYERS: usize = 9;
 const ROAD_LAYER: usize = 4;
 
 // Emission order within a layer: every span by edge id, then every node piece by node id.
@@ -256,7 +257,8 @@ macro_rules! layer_buffers {
             4 => ($($ref)+ $mesh.road_vertices, $($ref)+ $mesh.road_normals, $($ref)+ $mesh.road_uvs, $($ref)+ $mesh.road_colors),
             5 => ($($ref)+ $mesh.marking_vertices, $($ref)+ $mesh.marking_normals, $($ref)+ $mesh.marking_uvs, $($ref)+ $mesh.marking_colors),
             6 => ($($ref)+ $mesh.concrete_vertices, $($ref)+ $mesh.concrete_normals, $($ref)+ $mesh.concrete_uvs, $($ref)+ $mesh.concrete_colors),
-            _ => ($($ref)+ $mesh.lining_vertices, $($ref)+ $mesh.lining_normals, $($ref)+ $mesh.lining_uvs, $($ref)+ $mesh.lining_colors),
+            7 => ($($ref)+ $mesh.lining_vertices, $($ref)+ $mesh.lining_normals, $($ref)+ $mesh.lining_uvs, $($ref)+ $mesh.lining_colors),
+            _ => ($($ref)+ $mesh.median_grass_vertices, $($ref)+ $mesh.median_grass_normals, $($ref)+ $mesh.median_grass_uvs, $($ref)+ $mesh.median_grass_colors),
         }
     };
 }

@@ -104,6 +104,15 @@ pub struct NetworkMeshData {
     pub lining_uvs: Vec<Vector2>,
     /// Vertex colors for the lining layer.
     pub lining_colors: Vec<Color>,
+    /// Vertices for a kerbed grass median's top (`ROAD-80`), drawn in the grass material; empty
+    /// in every chunk without one, and then left out of the Godot payload.
+    pub median_grass_vertices: Vec<Vector3>,
+    /// Normals for the median grass layer.
+    pub median_grass_normals: Vec<Vector3>,
+    /// World XZ UV coordinates for the median grass layer, metres.
+    pub median_grass_uvs: Vec<Vector2>,
+    /// Vertex colors for the median grass layer.
+    pub median_grass_colors: Vec<Color>,
     /// Street lights standing on this mesh's roads (`ROAD-59`), in the mesh's coordinates.
     pub(crate) street_lights: Vec<road::street_lights::StreetLight>,
     /// Cosmetic roadside sign poses in the mesh coordinate system.
@@ -112,7 +121,7 @@ pub struct NetworkMeshData {
     // clipping triangles heuristically or rebuilding unrelated roads in the same chunk.
     current_owner: Option<NetworkMeshOwner>,
     crosswalks: HashMap<NetworkMeshOwner, Vec<road::crosswalks::Crossing>>,
-    owner_ranges: [Vec<OwnedVertexRange>; 8],
+    owner_ranges: [Vec<OwnedVertexRange>; 9],
     chunk_partition: Option<NetworkMeshChunkPartition>,
     // Set only by `seal`: the type is not `Clone`, so the certified buffers cannot change
     // once shared behind the returned `Arc`.
@@ -162,6 +171,10 @@ impl NetworkMeshData {
             lining_normals: Vec::new(),
             lining_uvs: Vec::new(),
             lining_colors: Vec::new(),
+            median_grass_vertices: Vec::new(),
+            median_grass_normals: Vec::new(),
+            median_grass_uvs: Vec::new(),
+            median_grass_colors: Vec::new(),
             street_lights: Vec::new(),
             road_signs: Vec::new(),
             current_owner: None,
@@ -208,6 +221,7 @@ impl NetworkMeshData {
             && self.marking_vertices.is_empty()
             && self.concrete_vertices.is_empty()
             && self.lining_vertices.is_empty()
+            && self.median_grass_vertices.is_empty()
             && self.street_lights.is_empty()
             && self.road_signs.is_empty()
     }
@@ -295,6 +309,12 @@ impl NetworkMeshData {
                 &self.lining_uvs,
                 &self.lining_colors,
             ),
+            (
+                &self.median_grass_vertices,
+                &self.median_grass_normals,
+                &self.median_grass_uvs,
+                &self.median_grass_colors,
+            ),
         ]
         .into_iter()
         .all(|(vertices, normals, uvs, colors)| layer_valid(vertices, normals, uvs, colors))
@@ -327,6 +347,7 @@ impl NetworkMeshData {
             + self.marking_vertices.len()
             + self.concrete_vertices.len()
             + self.lining_vertices.len()
+            + self.median_grass_vertices.len()
     }
 }
 

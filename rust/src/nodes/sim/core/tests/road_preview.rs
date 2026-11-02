@@ -947,3 +947,40 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
         assert_eq!(outcome.rejection_reason, reason);
     }
 }
+
+// The grass layer is chosen by the median's style at emission (`ROAD-80`): a kerbed grass
+// median's top draws on it and nowhere else, a paved one's on the sidewalk layer, a painted one
+// has no band; every chunk without a grass median leaves the layer empty.
+#[test]
+fn only_a_kerbed_grass_median_draws_on_the_grass_layer() {
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    for (style, width_m) in [(0, 0.0), (1, 1.0), (2, 3.0), (3, 2.0)] {
+        let median = RoadMedian::from_tool(style, width_m).unwrap();
+        let mut core = committed(&[THROUGH], &[0], false);
+        let sidewalk_before: usize = core
+            .cached_road_mesh_chunks
+            .values()
+            .map(|mesh| mesh.sidewalk_vertices.len())
+            .sum();
+        let points = stroke(&core, side);
+        commit_with(&mut core, &points, median, None);
+        let grass: usize = core
+            .cached_road_mesh_chunks
+            .values()
+            .map(|mesh| mesh.median_grass_vertices.len())
+            .sum();
+        assert_eq!(grass > 0, style == 2, "style {style}: {grass} grass vertices");
+        if style == 2 {
+            let mut control = committed(&[THROUGH], &[0], false);
+            commit_with(&mut control, &points, RoadMedian::from_tool(3, 2.0).unwrap(), None);
+            let sidewalk = |core: &SimCore| -> usize {
+                core.cached_road_mesh_chunks
+                    .values()
+                    .map(|mesh| mesh.sidewalk_vertices.len())
+                    .sum()
+            };
+            assert!(sidewalk(&control) > sidewalk(&core), "paving's top is sidewalk, grass's is not");
+            assert!(sidewalk(&core) > sidewalk_before);
+        }
+    }
+}

@@ -212,7 +212,7 @@ func _write_positions(mesh: ArrayMesh, run: Vector3i, bytes: PackedByteArray) ->
 
 # True when a chunk payload carries any overlay triangle.
 static func _has_overlay(chunk: Dictionary) -> bool:
-	for layer in ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining"]:
+	for layer in ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete", "lining", "median_grass"]:
 		var vertices: Variant = chunk.get(layer + "_vertices")
 		if vertices is PackedVector3Array and not vertices.is_empty():
 			return true

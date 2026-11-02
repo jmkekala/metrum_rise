@@ -189,6 +189,9 @@ class MockRoadCandidateSimulation:
 	func set_road_tool_tunnel(_tunnel: bool) -> void:
 		pass
 
+	func set_road_tool_median(_style: int, _width: float) -> String:
+		return ""
+
 	func preview_road(points, _fwd, _bkw, _snap) -> Dictionary:
 		preview_calls += 1
 		last_preview_points = points

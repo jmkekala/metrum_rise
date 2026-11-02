@@ -7,7 +7,8 @@
 //! sidewalk layer (road-space footpath colour on footpath edges), and curb faces to the
 //! raised-step layer. Node pieces use world UVs throughout, and their carriageway keeps
 //! `road_color`'s zero alpha: junction asphalt has no road space. The triangles are the pieces'
-//! own, so queries answer from what renders. Grounded pieces' skirts (`TERRAIN-07-B`) go to the
+//! own, so queries answer from what renders. A kerbed grass median's top goes to the median
+//! grass layer (`ROAD-80`), a paved one's to the sidewalk layer. Grounded pieces' skirts (`TERRAIN-07-B`) go to the
 //! skirt layer in the curb's colour, and so do a bridge span's abutment faces, emitted with the
 //! span's own surfaces so that every layer's owner runs follow piece order (`ROAD-97`: emitted
 //! after every piece, they broke the order a spliced publication merges in); a bridge's fascias
@@ -20,7 +21,7 @@ use super::super::{
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_abutment_faces, emit_chain_strips, emit_lining, triangle_is_too_small};
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{MedianStyle, RegionGraph, RoadMedian};
 use crate::simulation::network::roadbed::{BandKind, PieceMesh, RoadbedSystem, StripKind};
 use crate::simulation::network::types::TransitType;
 use godot::prelude::{Color, Vector2};
@@ -34,6 +35,10 @@ const NON_ROAD_KINDS: [BandKind; 6] = [
     BandKind::CycleTrack,
     BandKind::TramReservation,
 ];
+
+fn is_grass(median: RoadMedian) -> bool {
+    median.style == MedianStyle::KerbedGrass
+}
 
 #[derive(Clone, Copy)]
 enum Uvs {
@@ -72,7 +77,14 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
             (Uvs::World, sidewalk_color())
         };
         for kind in NON_ROAD_KINDS {
-            emit_band(mesh, piece, kind, MeshLayer::Sidewalk, uvs, color);
+            // A kerbed grass median's top draws on the grass layer (`ROAD-80`); paving stays
+            // with the sidewalk. Only spans have median bands: every mouth is median-free.
+            let layer = if kind == BandKind::Median && edge.median.is_some_and(is_grass) {
+                MeshLayer::MedianGrass
+            } else {
+                MeshLayer::Sidewalk
+            };
+            emit_band(mesh, piece, kind, layer, uvs, color);
         }
         emit_band(
             mesh,
