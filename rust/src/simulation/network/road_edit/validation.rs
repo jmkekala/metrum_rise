@@ -311,7 +311,12 @@ fn profile_validation(
         return validation;
     }
     if prepared_input.tunnel {
-        let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes, prepared_input.median);
+        let half_width_m = tunnel_section_half_width_m(
+            prepared_points,
+            fwd_lanes,
+            bkw_lanes,
+            prepared_input.median,
+        );
         let decks = grounded_decks_near(graph, prepared_points, half_width_m);
         return tunnel_profile_validation(
             validation,
@@ -537,7 +542,12 @@ fn validate_against_graph(
     let bore = prepared_input
         .tunnel
         .then(|| {
-            let half_width_m = tunnel_section_half_width_m(prepared_points, fwd_lanes, bkw_lanes, prepared_input.median);
+            let half_width_m = tunnel_section_half_width_m(
+                prepared_points,
+                fwd_lanes,
+                bkw_lanes,
+                prepared_input.median,
+            );
             let decks = grounded_decks_near(existing_graph, prepared_points, half_width_m);
             tunnel_bore(prepared_points, half_width_m, terrain, &decks).ok()
         })

@@ -429,7 +429,8 @@ fn measure_populated_road_plan_scaling(
             } else {
                 (1, 1, Some(GRASS))
             };
-            let products = measure_lane_edit(&mut core, remote_buildings, background_roads, section);
+            let products =
+                measure_lane_edit(&mut core, remote_buildings, background_roads, section);
             if let Some(previous) = &previous_lane_products {
                 assert_eq!(&products, previous, "remote state changed local products");
             }

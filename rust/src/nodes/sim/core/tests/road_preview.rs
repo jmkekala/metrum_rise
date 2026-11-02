@@ -979,7 +979,10 @@ fn only_a_kerbed_grass_median_draws_on_the_grass_layer() {
                     .map(|mesh| mesh.sidewalk_vertices.len())
                     .sum()
             };
-            assert!(sidewalk(&control) > sidewalk(&core), "paving's top is sidewalk, grass's is not");
+            assert!(
+                sidewalk(&control) > sidewalk(&core),
+                "paving's top is sidewalk, grass's is not"
+            );
             assert!(sidewalk(&core) > sidewalk_before);
         }
     }
@@ -1025,19 +1028,33 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
     let outer = half + 0.05 + 1.0e-3;
     let hatch = marking(painted, 1);
     assert!(!hatch.is_empty(), "the painted median is paint");
-    assert!(hatch.iter().all(|v| v.z.abs() <= outer), "every line lies in the gap");
-    let (west, east) = hatch.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v.x), hi.max(v.x)));
+    assert!(
+        hatch.iter().all(|v| v.z.abs() <= outer),
+        "every line lies in the gap"
+    );
+    let (west, east) = hatch.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+        (lo.min(v.x), hi.max(v.x))
+    });
     for nose_x in [west, east] {
         assert!(
-            hatch.iter().filter(|v| (v.x - nose_x).abs() < 1.0e-3).all(|v| v.z.abs() <= 0.05 + 1.0e-3),
+            hatch
+                .iter()
+                .filter(|v| (v.x - nose_x).abs() < 1.0e-3)
+                .all(|v| v.z.abs() <= 0.05 + 1.0e-3),
             "the edge lines meet on the centre line at the nose at x {nose_x}"
         );
     }
-    assert!(hatch.iter().any(|v| v.z.abs() >= half - 0.05 - 1.0e-3), "the paint reaches the full width");
+    assert!(
+        hatch.iter().any(|v| v.z.abs() >= half - 0.05 - 1.0e-3),
+        "the paint reaches the full width"
+    );
     // Diagonals: segments whose ends lie on opposite edge lines, more than the two edge lines'
     // two quads per section pair.
     let quads = hatch.len() / 6;
-    assert!(quads >= 2 * 2 + (2.0 * ARM_M / 3.0 * 0.5) as usize, "{quads} paint quads hold the diagonals");
+    assert!(
+        quads >= 2 * 2 + (2.0 * ARM_M / 3.0 * 0.5) as usize,
+        "{quads} paint quads hold the diagonals"
+    );
     let wide = marking(painted, 2);
     let dividers: Vec<_> = wide.iter().filter(|v| v.z.abs() > outer).collect();
     assert!(!dividers.is_empty(), "a 2 + 2 road keeps its lane dividers");

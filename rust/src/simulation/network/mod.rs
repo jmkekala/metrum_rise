@@ -379,7 +379,9 @@ impl TransitNetwork {
             return;
         }
 
-        let edge_id = graph.add_edge(build_surface_edge(start, end, points, fwd, bkw, class, median));
+        let edge_id = graph.add_edge(build_surface_edge(
+            start, end, points, fwd, bkw, class, median,
+        ));
 
         let (cost, length) =
             crate::simulation::pathing::cost::CostCalculator::calculate_costs(graph.edge(edge_id));

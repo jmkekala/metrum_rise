@@ -8,11 +8,11 @@
 //! raised-step layer. Node pieces use world UVs throughout, and their carriageway keeps
 //! `road_color`'s zero alpha: junction asphalt has no road space. The triangles are the pieces'
 //! own, so queries answer from what renders. A kerbed grass median's top goes to the median
-//! grass layer (`ROAD-80`), a paved one's to the sidewalk layer. Grounded pieces' skirts (`TERRAIN-07-B`) go to the
-//! skirt layer in the curb's colour, and so do a bridge span's abutment faces, emitted with the
-//! span's own surfaces so that every layer's owner runs follow piece order (`ROAD-97`: emitted
-//! after every piece, they broke the order a spliced publication merges in); a bridge's fascias
-//! go with its concrete (`bridge.rs`).
+//! grass layer (`ROAD-80`), a paved one's to the sidewalk layer. Grounded pieces' skirts
+//! (`TERRAIN-07-B`) go to the skirt layer in the curb's colour, and so do a bridge span's
+//! abutment faces, emitted with the span's own surfaces so that every layer's owner runs follow
+//! piece order (`ROAD-97`: emitted after every piece, they broke the order a spliced publication
+//! merges in); a bridge's fascias go with its concrete (`bridge.rs`).
 
 use super::super::{
     MeshLayer, NetworkMeshData, NetworkMeshOwner, curb_color, footpath_color, push_triangle,
