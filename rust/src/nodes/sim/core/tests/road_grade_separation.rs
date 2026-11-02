@@ -4,11 +4,414 @@
 //! grounded; a bridge or a tunnel's bore crosses other roads without a node, and a road passes
 //! under a bridge only with the vehicle clearance under its deck.
 
+use super::road_over_tunnels::{PieceBits, dig, pieces, refill};
+use super::road_tunnels::{THROUGH_HILL, cone_hill_core};
 use super::*;
+use crate::nodes::sim::core::road_commit::{RoadCommitOutcome, RoadCommitRequest};
+use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
+use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction::find_intersection_2d;
+use crate::simulation::network::road_edit::RoadPreviewValidation;
 use crate::simulation::network::types::EdgeClass;
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+// The vehicle clearance under a bridge, deck to deck (`road_edit::bridge::ROAD_UNDER_BRIDGE_M`).
+const UNDER_BRIDGE_M: f32 = 4.85;
+// A road drawn north to south across the origin of the flat world.
+const UNDER: [Vector3; 2] = [Vector3::new(0.0, 0.0, -40.0), Vector3::new(0.0, 0.0, 40.0)];
+
+// The flat 256 m world with no roads (a cone hill of no height).
+fn flat() -> SimCore {
+    cone_hill_core(0.0, 0.25)
+}
+
+// A bridge drawn west to east across the origin, `deck_m` over the flat ground: both ends stand
+// above it, so the class inference makes it a bridge keeping its authored heights.
+fn deck(deck_m: f32) -> [Vector3; 2] {
+    [
+        Vector3::new(-30.0, deck_m, 0.0),
+        Vector3::new(30.0, deck_m, 0.0),
+    ]
+}
+
+// What the hover check, the preview's exact plan and the commit (adopting the preview's plan)
+// do with one stroke.
+struct Drawn {
+    quick: RoadPreviewValidation,
+    exact: RoadPreviewValidation,
+    outcome: RoadCommitOutcome,
+}
+
+impl Drawn {
+    // The three answers, `valid` for an accepted stroke.
+    fn reasons(&self) -> [&str; 3] {
+        let reason = |v: &RoadPreviewValidation| {
+            if v.is_valid {
+                "valid"
+            } else {
+                v.invalid_reason
+            }
+        };
+        let committed = if self.outcome.committed {
+            "valid"
+        } else {
+            self.outcome.rejection_reason.as_str()
+        };
+        [reason(&self.quick), reason(&self.exact), committed]
+    }
+}
+
+fn draw(core: &mut SimCore, points: &[Vector3], tunnel: bool, snap: bool) -> Drawn {
+    core.precompute_road_mesh_data();
+    core.refresh_road_terrain_inputs();
+    let request = |core: &SimCore| RoadPreviewRequest {
+        surface_generation: core.road_tool_surface_generation,
+        points: points.to_vec(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: snap,
+        tunnel,
+    };
+    let view = road_tool_snapshot_from_core(core).expect("current roadbed");
+    let quick = view.validate(&request(core)).1;
+    let preview = Arc::new(RoadPreviewContext::capture(view).preview_road(request(core)));
+    let exact = preview.validation.clone();
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points: points.to_vec(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: snap,
+            tunnel,
+            preview: Some(preview),
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    core.precompute_road_mesh_data();
+    Drawn {
+        quick,
+        exact,
+        outcome,
+    }
+}
+
+// Every live edge's class, nodes and both polylines, and every live node's position, bitwise.
+type EdgeBits = (EdgeClass, [u32; 2], Vec<[u32; 3]>, Vec<[u32; 3]>);
+
+fn network(core: &SimCore) -> (BTreeMap<usize, EdgeBits>, Vec<[u32; 3]>) {
+    let graph = &core.region_graph;
+    let bits = |points: &[Vector3]| {
+        (points.iter())
+            .map(|p| [p.x, p.y, p.z].map(f32::to_bits))
+            .collect::<Vec<_>>()
+    };
+    let edges = (graph.edges().iter().enumerate())
+        .filter(|(_, edge)| !edge.deleted)
+        .map(|(id, edge)| {
+            let ends = [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node));
+            let record = (
+                edge.class,
+                ends,
+                bits(&edge.geometry),
+                bits(&edge.physical_geometry),
+            );
+            (id, record)
+        })
+        .collect();
+    let nodes = (0..graph.node_count() as u32)
+        .filter(|&node| graph.get_valid_node(node) == node)
+        .map(|node| graph.node(node).pos)
+        .collect::<Vec<_>>();
+    (edges, bits(&nodes))
+}
+
+fn live(core: &SimCore, class: EdgeClass) -> Vec<usize> {
+    (core.region_graph.edges().iter().enumerate())
+        .filter(|(_, edge)| !edge.deleted && edge.class == class)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+// The structure is refused the same way by all three paths, with its least height as the
+// clearance, and leaves the network and every piece as they were.
+fn assert_too_low(
+    core: &SimCore,
+    drawn: &Drawn,
+    apart_m: f32,
+    before: &(BTreeMap<usize, EdgeBits>, Vec<[u32; 3]>),
+    before_pieces: &PieceBits,
+    case: &str,
+) {
+    assert_eq!(drawn.reasons(), ["bridge_too_low"; 3], "{case}");
+    for validation in [&drawn.quick, &drawn.exact] {
+        assert!(
+            (validation.clearance_m - apart_m).abs() < 0.05,
+            "{case}: {validation:?}"
+        );
+        assert_eq!(
+            validation.required_clearance_m.to_bits(),
+            UNDER_BRIDGE_M.to_bits(),
+            "{case}"
+        );
+    }
+    assert!(&network(core) == before, "{case}: the network is unchanged");
+    assert!(
+        &pieces(core) == before_pieces,
+        "{case}: every piece is unchanged"
+    );
+}
+
+// Case 1 of `ROAD-99`: a road drawn on the ground across a bridge 6 m over it passes under it.
+// Before, every 6 m sample under the deck was pinned to the deck and the crossing became a
+// junction on the bridge (or the stroke too steep): no road passed under a bridge. Now it keeps
+// the ground, the bridge's edge, nodes and profiles stay as they were, and the hover check, the
+// preview and the commit agree; undo restores every piece. Under a deck 4 m over the ground the
+// road is refused as `bridge_too_low`.
+#[test]
+fn a_ground_road_passes_under_a_bridge() {
+    for (deck_m, passes) in [(6.0, true), (4.0, false)] {
+        let case = format!("deck {deck_m} m");
+        let mut core = flat();
+        let bridge = draw(&mut core, &deck(deck_m), false, true);
+        assert_eq!(bridge.reasons(), ["valid"; 3], "{case}");
+        assert_eq!(live(&core, EdgeClass::Bridge).len(), 1, "{case}");
+        let (before, before_pieces) = (network(&core), pieces(&core));
+        let road = draw(&mut core, &UNDER, false, true);
+        if !passes {
+            assert_too_low(&core, &road, deck_m, &before, &before_pieces, &case);
+            continue;
+        }
+        assert_eq!(road.reasons(), ["valid"; 3], "{case}");
+        let after = network(&core);
+        let bridge_edge = live(&core, EdgeClass::Bridge);
+        assert_eq!(bridge_edge.len(), 1, "{case}: the bridge is not split");
+        assert_eq!(
+            after.0[&bridge_edge[0]], before.0[&bridge_edge[0]],
+            "{case}"
+        );
+        assert_eq!(
+            after.1.len(),
+            before.1.len() + 2,
+            "{case}: the road's two ends"
+        );
+        let roads = live(&core, EdgeClass::Standard);
+        assert_eq!(roads.len(), 1, "{case}: the road is not split");
+        let profile = &core.region_graph.edge(roads[0]).physical_geometry;
+        assert!(
+            profile.iter().all(|p| p.y.abs() <= 0.05),
+            "{case}: the road keeps the ground under the deck: {profile:?}"
+        );
+        assert!(core.undo_action_internal(), "{case}");
+        core.precompute_road_mesh_data();
+        assert!(network(&core) == before, "{case}: undo");
+        assert!(
+            pieces(&core) == before_pieces,
+            "{case}: undo restores every piece"
+        );
+    }
+}
+
+// The mirror of case 1: a bridge drawn over a road on the ground, and over a lower bridge. Before,
+// a bridge within 4.5 m of the road split it and itself at the road's height (the deck dipped to
+// the ground), and above 4.5 m nothing checked the clearance. Now it crosses without a node while
+// the decks stand 4.85 m apart, and is refused as `bridge_too_low` closer.
+#[test]
+fn a_bridge_passes_over_a_road_or_a_bridge() {
+    let lower_bridge = [Vector3::new(0.0, 2.0, -40.0), Vector3::new(0.0, 2.0, 40.0)];
+    for (under, under_m, deck_m, passes) in [
+        (UNDER, 0.0, 6.0, true),
+        (UNDER, 0.0, 4.0, false),
+        (lower_bridge, 2.0, 7.5, true),
+        (lower_bridge, 2.0, 6.0, false),
+    ] {
+        let case = format!("deck {deck_m} m over {under_m} m");
+        let mut core = flat();
+        assert_eq!(
+            draw(&mut core, &under, false, true).reasons(),
+            ["valid"; 3],
+            "{case}"
+        );
+        let (before, before_pieces) = (network(&core), pieces(&core));
+        let bridge = draw(&mut core, &deck(deck_m), false, true);
+        if !passes {
+            assert_too_low(
+                &core,
+                &bridge,
+                deck_m - under_m,
+                &before,
+                &before_pieces,
+                &case,
+            );
+            continue;
+        }
+        assert_eq!(bridge.reasons(), ["valid"; 3], "{case}");
+        let after = network(&core);
+        assert_eq!(
+            after.1.len(),
+            before.1.len() + 2,
+            "{case}: the bridge's two ends"
+        );
+        for (id, record) in &before.0 {
+            assert_eq!(&after.0[id], record, "{case}: the road under it is intact");
+        }
+        assert_eq!(after.0.len(), before.0.len() + 1, "{case}: one new edge");
+        assert!(core.undo_action_internal(), "{case}");
+        core.precompute_road_mesh_data();
+        assert!(network(&core) == before, "{case}: undo");
+        assert!(
+            pieces(&core) == before_pieces,
+            "{case}: undo restores every piece"
+        );
+    }
+}
+
+// A bridge drawn from a road mid-span keeps working (`ROAD-99`, R5 and R2): its end at the road
+// is a ground end (within 1 m of its support), so it joins the road there, and the road it joins
+// is no deck it must clear. Its other end stands 6 m over the ground.
+#[test]
+fn a_bridge_starts_from_a_road_mid_span() {
+    let mut core = flat();
+    assert_eq!(draw(&mut core, &UNDER, false, true).reasons(), ["valid"; 3]);
+    let ramp = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(60.0, 6.0, 0.0)];
+    let drawn = draw(&mut core, &ramp, false, true);
+    assert_eq!(drawn.reasons(), ["valid"; 3]);
+    assert_eq!(live(&core, EdgeClass::Bridge).len(), 1);
+    assert_eq!(
+        live(&core, EdgeClass::Standard).len(),
+        2,
+        "the road is split at the bridge"
+    );
+}
+
+// The live standard edges cross in plan nowhere without a node.
+fn ground_roads_meet_where_they_cross(core: &SimCore) -> bool {
+    !scan_height_only(&core.region_graph)
+        .crossings
+        .contains_key(&(EdgeClass::Standard as u8, EdgeClass::Standard as u8))
+}
+
+// Case 2 of `ROAD-99`: a road in a cut across the flank of a hill, and a road climbing the hill
+// over it: on the 1:4 hill 8.5 m above the cut road, on the 1:8 hill 5.25 m above it. Before, a
+// crossing with no sample pinned to the cut road (the support off, or a sampling phase that
+// straddled it) was more than 4.5 m apart and committed with the two roads crossing without a
+// node: the upper road on an embankment damming the cut. Now two ground roads always meet:
+// every variant commits with a junction (the 1:8 hill with the support off) or is refused as too
+// steep to reach the cut.
+#[test]
+fn a_road_over_a_cut_road_meets_it_or_is_refused() {
+    let cut_road = |slope: f32, cut_m: f32| {
+        let mut core = cone_hill_core(100.0, slope);
+        dig(&mut core, -56.0, -44.0, cut_m);
+        let cut = [
+            Vector3::new(-50.0, 0.0, -60.0),
+            Vector3::new(-50.0, 0.0, 60.0),
+        ];
+        assert_eq!(draw(&mut core, &cut, false, true).reasons(), ["valid"; 3]);
+        refill(&mut core, -56.0, -44.0);
+        core
+    };
+    let mut junctions = 0;
+    for (slope, cut_m) in [(0.25, 4.0), (0.125, 1.0)] {
+        for snap in [true, false] {
+            for shift in [0.0, 2.0, 4.0] {
+                let case = format!("1:{} snap {snap} start shifted {shift} m", 1.0 / slope);
+                let mut core = cut_road(slope, cut_m);
+                let along = [
+                    Vector3::new(-100.0 + shift, 0.0, 0.0),
+                    Vector3::new(-10.0, 0.0, 0.0),
+                ];
+                let drawn = draw(&mut core, &along, false, snap);
+                let [_, exact, committed] = drawn.reasons();
+                assert_eq!(exact, committed, "{case}");
+                if drawn.outcome.committed {
+                    assert!(ground_roads_meet_where_they_cross(&core), "{case}");
+                    assert_eq!(
+                        live(&core, EdgeClass::Standard).len(),
+                        4,
+                        "{case}: one junction"
+                    );
+                    junctions += 1;
+                } else {
+                    assert_eq!(committed, "road_too_steep", "{case}");
+                }
+            }
+        }
+    }
+    assert!(junctions >= 3, "{junctions} crossings made a junction");
+}
+
+// Case 3 of `ROAD-99`, roads across a tunnel's approach in its trench. (a) A ground road across
+// the 1:2 hill's approach meets it in the trench and is refused (`junction_in_trench`, as
+// before). (b) A bridge across it 6 m over its deck crosses it without a node, the approach and
+// the tunnel intact; 4 m over it is `bridge_too_low` (before, it split the approach and was
+// refused for the junction in the trench).
+#[test]
+fn a_road_over_a_tunnel_approach_meets_it_or_bridges_it() {
+    let tunnel = || {
+        let mut core = cone_hill_core(80.0, 0.5);
+        assert_eq!(
+            draw(&mut core, &THROUGH_HILL, true, true).reasons(),
+            ["valid"; 3]
+        );
+        core
+    };
+    let across = |height_m: f32| {
+        [
+            Vector3::new(-75.0, height_m, -30.0),
+            Vector3::new(-75.0, height_m, 30.0),
+        ]
+    };
+    let mut core = tunnel();
+    let ground = draw(&mut core, &across(0.0), false, true);
+    assert_eq!(ground.reasons()[1..], ["junction_in_trench"; 2], "(a)");
+    for (deck_m, passes) in [(6.0, true), (4.0, false)] {
+        let case = format!("(b) deck {deck_m} m");
+        let mut core = tunnel();
+        let (before, before_pieces) = (network(&core), pieces(&core));
+        let bridge = draw(&mut core, &across(deck_m), false, true);
+        if !passes {
+            assert_too_low(&core, &bridge, deck_m, &before, &before_pieces, &case);
+            continue;
+        }
+        assert_eq!(bridge.reasons(), ["valid"; 3], "{case}");
+        let after = network(&core);
+        for (id, record) in &before.0 {
+            assert_eq!(
+                &after.0[id], record,
+                "{case}: the approach and the tunnel are intact"
+            );
+        }
+    }
+}
+
+// The mirror of case 3: a tunnel drawn under a road on the 1:4 hill, its approach crossing 5 m
+// under the road. Before, more than 4.5 m apart, they crossed without a node and the road hung
+// over the new trench; now the approach meets the road, and the tunnel is refused (as too steep
+// to climb to the junction).
+#[test]
+fn a_tunnel_approach_drawn_under_a_road_meets_it() {
+    let mut core = cone_hill_core(100.0, 0.25);
+    let hill_road = [
+        Vector3::new(-80.0, 0.0, -40.0),
+        Vector3::new(-80.0, 0.0, 40.0),
+    ];
+    assert_eq!(
+        draw(&mut core, &hill_road, false, true).reasons(),
+        ["valid"; 3]
+    );
+    let before = network(&core);
+    let under = draw(&mut core, &THROUGH_HILL, true, true);
+    let [_, exact, committed] = under.reasons();
+    assert_eq!(exact, committed, "(c)");
+    assert_ne!(
+        committed, "valid",
+        "(c): the approach meets the road and is refused"
+    );
+    assert!(network(&core) == before, "(c): the hill road is intact");
+}
 
 // The profile a crossing's heights are read on: the physical profile when present.
 fn profile(edge: &Edge) -> &[Vector3] {
@@ -54,9 +457,8 @@ fn scan_height_only(graph: &RegionGraph) -> HeightOnlyScan {
         );
         let mut others = graph.get_edges_near_aabb(lo, hi);
         others.sort_unstable();
-        let ends = |edge: &Edge| {
-            [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node))
-        };
+        let ends =
+            |edge: &Edge| [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node));
         for other_id in others.into_iter().filter(|&other| other > id) {
             let other = graph.edge(other_id);
             if !live_surface(other) {
@@ -83,7 +485,10 @@ fn scan_height_only(graph: &RegionGraph) -> HeightOnlyScan {
                     seen.push(pa);
                     let pair = (class_id(edge.class), class_id(other.class));
                     let key = (pair.0.min(pair.1), pair.0.max(pair.1));
-                    scan.crossings.entry(key).or_default().push((pa.y - pb.y).abs());
+                    scan.crossings
+                        .entry(key)
+                        .or_default()
+                        .push((pa.y - pb.y).abs());
                 }
             }
         }
@@ -97,8 +502,13 @@ fn scan_height_only(graph: &RegionGraph) -> HeightOnlyScan {
             .iter()
             .map(|&edge| graph.edge(edge))
             .filter(|edge| live_surface(edge));
-        let bridges = arms.clone().filter(|edge| edge.class == EdgeClass::Bridge).count();
-        let ground = arms.filter(|edge| edge.class == EdgeClass::Standard).count();
+        let bridges = arms
+            .clone()
+            .filter(|edge| edge.class == EdgeClass::Bridge)
+            .count();
+        let ground = arms
+            .filter(|edge| edge.class == EdgeClass::Standard)
+            .count();
         if bridges >= 2 && ground >= 1 {
             scan.junctions_on_decks += 1;
         }
@@ -122,7 +532,9 @@ fn scan_report(name: &str, graph: &RegionGraph) -> String {
         let within = |lo: f32, hi: f32| heights.iter().filter(|&&h| h >= lo && h < hi).count();
         let (least, most) = heights
             .iter()
-            .fold((f32::INFINITY, 0.0_f32), |(lo, hi), &h| (lo.min(h), hi.max(h)));
+            .fold((f32::INFINITY, 0.0_f32), |(lo, hi), &h| {
+                (lo.min(h), hi.max(h))
+            });
         line += &format!(
             "; {} x {} crossings without a node {} (under 4.5 m {}, 4.5-4.85 m {}, 4.85 m or more \
              {}; least {least:.2} m, most {most:.2} m)",

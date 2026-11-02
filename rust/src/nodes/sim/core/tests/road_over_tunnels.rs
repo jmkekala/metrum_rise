@@ -100,9 +100,9 @@ fn tunnel_edge(core: &SimCore) -> usize {
 }
 
 // Every published piece's vertex bits and triangles.
-type PieceBits = BTreeMap<PieceId, (Vec<[u64; 3]>, Vec<[u32; 3]>)>;
+pub(super) type PieceBits = BTreeMap<PieceId, (Vec<[u64; 3]>, Vec<[u32; 3]>)>;
 
-fn pieces(core: &SimCore) -> PieceBits {
+pub(super) fn pieces(core: &SimCore) -> PieceBits {
     let roadbed = &core.transit_network.roadbed;
     roadbed
         .pieces_in_bounds([f64::MIN, f64::MIN, f64::MAX, f64::MAX])
@@ -118,7 +118,7 @@ fn pieces(core: &SimCore) -> PieceBits {
 
 // Lowers the source terrain to `height_m` along the strip `x0 <= x <= x1` of the 256 m world,
 // where the hill stands higher: a cut dug across the hill.
-fn dig(core: &mut SimCore, x0: f32, x1: f32, height_m: f32) {
+pub(super) fn dig(core: &mut SimCore, x0: f32, x1: f32, height_m: f32) {
     for z in 0..257 {
         for x in 0..257 {
             let wx = x as f32 - 128.0;
@@ -135,7 +135,7 @@ fn dig(core: &mut SimCore, x0: f32, x1: f32, height_m: f32) {
 }
 
 // The hill restored along the strip `dig` lowered.
-fn refill(core: &mut SimCore, x0: f32, x1: f32) {
+pub(super) fn refill(core: &mut SimCore, x0: f32, x1: f32) {
     dig(core, x0, x1, f32::INFINITY);
 }
 

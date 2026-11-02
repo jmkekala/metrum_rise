@@ -10,12 +10,14 @@ use std::time::Instant;
 mod memory;
 
 // The measured stroke: the T's side road on flat ground, a tunnel through the hill south of the
-// T, or a road over that tunnel (`ROAD-61` round R8h).
+// T, a road over that tunnel (`ROAD-61` round R8h), or a road under a bridge south of the T on
+// flat ground (`ROAD-99`).
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
     Tunnel,
     OverTunnel,
+    UnderBridge,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -51,6 +53,20 @@ fn populated_road_over_tunnel_plan_scaling() {
         false,
         CellScenario::None,
         Measured::OverTunnel,
+    );
+}
+
+// `ROAD-99` locality: a road on the ground passing under a bridge 6 m over it, planned as the
+// remote city grows.
+#[test]
+#[ignore = "unprofiled road-under-bridge planning locality; run alone with --release --ignored --nocapture"]
+fn populated_road_under_bridge_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::UnderBridge,
     );
 }
 
@@ -111,7 +127,7 @@ fn measure_populated_road_plan_scaling(
     }
     let cells = scenario != CellScenario::None;
     let mut core = test_core();
-    if measured != Measured::Ground {
+    if matches!(measured, Measured::Tunnel | Measured::OverTunnel) {
         // A 1:4 cone hill 25 m high south of the T: the measured stroke tunnels through it, or
         // crosses over the tunnel through it.
         let terrain = &mut core.heightmap;
@@ -131,17 +147,22 @@ fn measure_populated_road_plan_scaling(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
     );
-    if measured == Measured::OverTunnel {
+    if matches!(measured, Measured::OverTunnel | Measured::UnderBridge) {
+        // The tunnel the measured road crosses over, or the bridge it passes under.
+        let (points, tunnel) = if measured == Measured::OverTunnel {
+            let points = [(0.0, -320.0), (0.0, -80.0)].map(|(x, z)| Vector3::new(x, 0.0, z));
+            (points, true)
+        } else {
+            let points = [(-30.0, -150.0), (30.0, -150.0)].map(|(x, z)| Vector3::new(x, 6.0, z));
+            (points, false)
+        };
         let outcome = core.commit_road(
             crate::nodes::sim::core::road_commit::RoadCommitRequest {
-                points: vec![
-                    Vector3::new(0.0, 0.0, -320.0),
-                    Vector3::new(0.0, 0.0, -80.0),
-                ],
+                points: points.to_vec(),
                 fwd_lanes: 1,
                 bkw_lanes: 1,
                 snap_to_existing_roads: true,
-                tunnel: true,
+                tunnel,
                 preview: None,
             },
             Instant::now(),
@@ -382,6 +403,10 @@ fn measure_populated_road_plan_scaling(
                 Vector3::new(-30.0, 0.0, -250.0),
                 Vector3::new(30.0, 0.0, -250.0),
             ],
+            Measured::UnderBridge => vec![
+                Vector3::new(0.0, 0.0, -180.0),
+                Vector3::new(0.0, 0.0, -120.0),
+            ],
         };
         let request = || RoadPreviewRequest {
             surface_generation: generation,
@@ -425,6 +450,7 @@ fn measure_populated_road_plan_scaling(
                 "remote_buildings": remote_buildings, "remote_roads": background_roads,
                 "field_reservations": fields, "tunnel": tunnel,
                 "over_tunnel": measured == Measured::OverTunnel,
+                "under_bridge": measured == Measured::UnderBridge,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
