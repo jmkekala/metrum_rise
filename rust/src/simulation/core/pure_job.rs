@@ -15,7 +15,15 @@
 //! or on another waiting worker's: a blocking wait there deadlocks the pool (`ROAD-68-G` part
 //! 4). The owner therefore finishes the job before it enters the pool ([`PureJob::completion`]),
 //! and a wait on a pool worker panics instead of blocking.
+//!
+//! A worker never runs one job's work inside another's (`CODE-18`). Waiting in a join, it
+//! takes queued starts, and each started job could join and take the next: a burst of road edits
+//! that each start a routing rebuild nested 156 of them on one worker until its 2 MB stack
+//! overflowed. A start taken there is deferred instead and queued again once the job in progress
+//! returns, so a worker's stack holds at most one started job (plus one job per owner waiting for
+//! its own). Superseded deferred jobs run nothing; results do not change.
 
+use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 type Work<T> = Box<dyn FnOnce() -> T + Send>;
@@ -51,7 +59,10 @@ impl<T: Send> Shared<T> {
                 }
             }
         };
-        let result = crate::thread_pools::install_background(work);
+        let result = crate::thread_pools::install_background(move || {
+            let _running = Running::enter();
+            work()
+        });
         *self.lock() = State::Done(result);
         self.done.notify_all();
     }
@@ -92,6 +103,45 @@ impl<T: Send> Complete for Shared<T> {
     }
 }
 
+thread_local! {
+    // Pure-job work on this thread's stack, and the starts taken under it.
+    static RUNNING: Cell<u32> = const { Cell::new(0) };
+    static DEFERRED: RefCell<Vec<Arc<dyn Complete>>> = const { RefCell::new(Vec::new()) };
+}
+
+// Marks pure-job work on this thread's stack while it lives. Leaving the outermost queues the
+// starts taken meanwhile again, so they run at the top of a worker's stack: this one's once it
+// returns, or an idle worker's.
+struct Running;
+
+impl Running {
+    fn enter() -> Self {
+        RUNNING.set(RUNNING.get() + 1);
+        Self
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        RUNNING.set(RUNNING.get() - 1);
+        if RUNNING.get() == 0 && !std::thread::panicking() {
+            for job in DEFERRED.take() {
+                crate::thread_pools::spawn(move || start_or_defer(job));
+            }
+        }
+    }
+}
+
+// A queued start: runs the job here, or, taken under another job's work, defers it to the end of
+// that work.
+fn start_or_defer(job: Arc<dyn Complete>) {
+    if RUNNING.get() > 0 {
+        DEFERRED.with_borrow_mut(|deferred| deferred.push(job));
+    } else {
+        job.start();
+    }
+}
+
 /// Finishes a [`PureJob`] without taking its result: see [`PureJob::completion`].
 pub(crate) struct JobCompletion(Arc<dyn Complete>);
 
@@ -116,7 +166,7 @@ impl JobStart {
     #[track_caller]
     pub(crate) fn start(self) {
         let job = self.0;
-        crate::thread_pools::spawn(move || job.start());
+        crate::thread_pools::spawn(move || start_or_defer(job));
     }
 }
 
@@ -287,5 +337,61 @@ mod tests {
         wake.notify_all();
         assert!(refused);
         assert_eq!(job.take(), 7);
+    }
+
+    // `CODE-18`: a worker that takes queued starts while its job waits runs them after that job,
+    // never inside it. Each job of a 10,000-long chain starts the next and yields, so a worker
+    // that nested them would overflow its stack; here they run one at a time.
+    #[test]
+    fn a_worker_never_runs_a_started_job_inside_another() {
+        const JOBS: usize = 10_000;
+        struct Chain {
+            depth: AtomicUsize,
+            deepest: AtomicUsize,
+            jobs: Mutex<Vec<PureJob<()>>>,
+            runs: Mutex<usize>,
+            done: Condvar,
+        }
+        fn link(k: usize, chain: Arc<Chain>) -> Box<dyn FnOnce() + Send> {
+            Box::new(move || {
+                let depth = chain.depth.fetch_add(1, Ordering::SeqCst) + 1;
+                chain.deepest.fetch_max(depth, Ordering::SeqCst);
+                if k + 1 < JOBS {
+                    let next = PureJob::spawn(link(k + 1, Arc::clone(&chain)));
+                    chain.jobs.lock().unwrap().push(next);
+                    // Runs the queued start on this worker, as a join's wait would.
+                    rayon::yield_now();
+                }
+                chain.depth.fetch_sub(1, Ordering::SeqCst);
+                *chain.runs.lock().unwrap() += 1;
+                chain.done.notify_all();
+            })
+        }
+        let chain = Arc::new(Chain {
+            depth: AtomicUsize::new(0),
+            deepest: AtomicUsize::new(0),
+            jobs: Mutex::new(Vec::new()),
+            runs: Mutex::new(0),
+            done: Condvar::new(),
+        });
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .stack_size(2 << 20)
+            .build()
+            .unwrap();
+        let first = pool.install(|| PureJob::spawn(link(0, Arc::clone(&chain))));
+        let (runs, timeout) = chain
+            .done
+            .wait_timeout_while(
+                chain.runs.lock().unwrap(),
+                std::time::Duration::from_secs(60),
+                |runs| *runs < JOBS,
+            )
+            .unwrap();
+        assert!(!timeout.timed_out(), "{} of {JOBS} jobs ran", *runs);
+        drop(runs);
+        assert_eq!(chain.deepest.load(Ordering::SeqCst), 1);
+        drop(first);
+        drop(pool);
     }
 }

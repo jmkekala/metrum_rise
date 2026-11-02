@@ -49,19 +49,35 @@ pub(super) unsafe fn handle_network_movement(
         let s_lane_id = &slices.lane_id;
         let s_lane_d = &slices.lane_d;
 
-        if try_pending_lane_attach(i, transit_network, graph, lane_buckets, lane_claims, slices) {
+        if try_pending_lane_attach(i, transit_network, graph, lane_buckets, lane_claims, slices)
+            || walk_home::walk_to_sidewalk(
+                i,
+                delta,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            )
+        {
             return;
         }
         walk_home::stand_on_sidewalk(i, sim_time, allocator, transit_network, graph, slices);
-        if !prepare_network_replan(
-            i,
-            sim_time,
-            allocator,
-            transit_network,
-            graph,
-            pathfind_count,
-            slices,
-        ) {
+        // A walker that sets off for a sidewalk here, or in a stranded walker's retry, takes its
+        // first step next tick.
+        if walk_home::walking_to_sidewalk(i, slices)
+            || !prepare_network_replan(
+                i,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            )
+            || walk_home::walking_to_sidewalk(i, slices)
+        {
             return;
         }
 

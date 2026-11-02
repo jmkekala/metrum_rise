@@ -13,7 +13,7 @@ use super::*;
 use crate::config::AGENT_WALK_SPEED_MS;
 use crate::nodes::sim::core::frame::FRAME_DT_S;
 use crate::simulation::economy::agents::{
-    ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, MODE_WALK, TRANSIT_NETWORK,
+    ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, ACCESS_WALK_TO_SIDEWALK, MODE_WALK, TRANSIT_NETWORK,
 };
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::pathing::cch::CchGraph;
@@ -350,6 +350,74 @@ fn walkers_at_nodes_without_a_lane_strand_in_place_and_continue_across_a_save_fi
             .any(|line| line.contains("sent home") || line.contains("sent to border")),
         "{:#?}",
         continuous.agents.trip_failures.lines
+    );
+}
+
+// `TRAFFIC-19` (round T19b): a walker in the middle of the block, its road gone from under it, is
+// off every sidewalk by more than a road edit's reattach reach. It walks across the ground to the
+// nearest one. Saved mid-walk and loaded, the city continues as the unsaved one, frame for frame,
+// until it is on that sidewalk.
+#[test]
+fn a_walker_off_every_sidewalk_walks_to_one_and_continues_across_a_save_file() {
+    let mut continuous = stranded_core();
+    let exit = foot_lane(&continuous, 3, true, true) as u32;
+    let centre = (corner(0) + corner(2)) * 0.5;
+    let agents = &mut continuous.agents;
+    let walker = agents.spawn_housed_agent(usize::MAX, centre.x, centre.z);
+    agents.transit_mode[walker] = MODE_WALK;
+    agents.transit[walker] = TRANSIT_NETWORK;
+    agents.speed[walker] = AGENT_WALK_SPEED_MS;
+    agents.current_building[walker] = usize::MAX;
+    agents.current_edge[walker] = usize::MAX;
+    agents.current_node[walker] = 3;
+    agents.current_lane_id[walker] = usize::MAX;
+    agents.access_flags[walker] = ACCESS_PLAN_VALID;
+    agents.planned_detach_node[walker] = 3;
+    agents.planned_detach_lane_id[walker] = exit;
+    agents.planned_detach_lane_d[walker] = 10.0;
+    let walking = |core: &SimCore| core.agents.access_flags[walker] & ACCESS_WALK_TO_SIDEWALK != 0;
+    let mut frames = 0;
+    while !walking(&continuous) || frames < 600 {
+        continuous.step_frame(FRAME_DT_S);
+        frames += 1;
+        assert!(frames < MAX_FRAMES, "{:?}", walkers_state(&continuous));
+    }
+    let moved = godot::prelude::Vector2::new(
+        continuous.agents.pos_x[walker],
+        continuous.agents.pos_y[walker],
+    )
+    .distance_to(godot::prelude::Vector2::new(centre.x, centre.z));
+    assert!(moved > 5.0, "it is on its way: {moved} m");
+    let path = temp_save_path("walker_off_every_sidewalk");
+    continuous
+        .save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let mut loaded = test_core();
+    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    loaded.time.speed_multiplier = continuous.time.speed_multiplier;
+    assert_eq!(walkers_state(&loaded), walkers_state(&continuous));
+    assert!(walking(&loaded), "the walk survives the save");
+    let mut frames = 0;
+    while continuous.agents.current_lane_id[walker] == usize::MAX {
+        continuous.step_frame(FRAME_DT_S);
+        loaded.step_frame(FRAME_DT_S);
+        assert_eq!(walkers_state(&loaded), walkers_state(&continuous));
+        frames += 1;
+        assert!(frames < 20 * MAX_FRAMES, "{:?}", walkers_state(&continuous));
+    }
+    let lane = continuous.agents.current_lane_id[walker];
+    assert_eq!(
+        continuous.transit_network.lane_system.lanes[lane].lane_type,
+        LaneType::Foot
+    );
+    let lines = &continuous.agents.trip_failures.lines;
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(&format!("agent {walker} "))
+                && line.contains("m to the nearest one and plans from there")),
+        "{lines:#?}"
     );
 }
 

@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Stranded walkers (`ROAD-74`): the walkers waiting at the end of a lane with no route home
-//! ([`ACCESS_WALK_STRANDED`]), and the report of where they wait for the player's notice.
+//! ([`ACCESS_WALK_STRANDED`]), and the report of where they wait for the player's notice. With
+//! them, the walkers waiting for a home (`TRAFFIC-19`): residents whose household was evicted
+//! while they walked, so their trip home was cancelled. The economy rehouses the household (they
+//! then walk to the new home) or, after its days without a home, it leaves the city; until then
+//! they wait on the road and are counted here, never silently.
 //!
 //! The set is incremental: a walker enters it with the trip-failure record that strands it,
-//! read from the movement pass's records (O(new strandings) per tick), and leaves it when the
-//! report finds it no longer stranded (walking home again, a plan clear by a road edit, gone).
+//! read from the movement pass's records (O(new strandings) per tick), or with its household's
+//! eviction, and leaves it when the report finds it neither stranded nor waiting for a home
+//! (walking home again, rehoused, a plan clear by a road edit, gone).
 //! The report is rebuilt from the set in the `gridlock check` slot, once a game minute:
 //! O(stranded × log stranded). The set is derived: loading rebuilds it and the report from the
 //! saved stranded bits (one O(agents) scan at load).
 
 use super::super::data::AgentSystem;
-use super::super::{ACCESS_WALK_STRANDED, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+use super::super::{
+    ACCESS_WALK_STRANDED, AgentVec, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+};
 use super::lane_nav::lane_terminal_node;
 use super::trip_failures::FailureOutcome;
 use crate::simulation::core::handles::Handle;
@@ -26,6 +33,8 @@ pub(crate) struct StrandedReport {
     pub(crate) junctions: Vec<(u32, u32)>,
     /// Stranded walkers in all.
     pub(crate) walkers: u32,
+    /// Walkers waiting on the road for their household's next home (`TRAFFIC-19`).
+    pub(crate) waiting_for_home: u32,
 }
 
 /// The stranded walkers by agent handle, and their last report.
@@ -61,8 +70,18 @@ impl AgentSystem {
         }
     }
 
+    /// Adds walker `i` to the set when it waits on the road for a home: its household lost the
+    /// home while it walked (`evict_household_member_home`). O(log stranded).
+    pub(crate) fn note_waiting_for_home(&mut self, i: usize) {
+        if waiting_for_home(&self.agents, i) {
+            self.handles.register_appended(self.agents.len());
+            let handle = self.handles.handle(i).to_bits();
+            self.stranded.members.insert(handle);
+        }
+    }
+
     /// Rebuilds the report from the set (the `gridlock check` slot), dropping the walkers that are
-    /// no longer stranded. O(stranded × log stranded).
+    /// neither stranded nor waiting for a home. O(stranded × log stranded).
     pub(crate) fn refresh_stranded_report(
         &mut self,
         network: &TransitNetwork,
@@ -72,10 +91,15 @@ impl AgentSystem {
         let handles = &self.handles;
         let stranded = &mut self.stranded;
         stranded.nodes.clear();
+        let mut waiting_for_home_count = 0;
         stranded.members.retain(|&bits| {
             let Some(i) = handles.resolve(Handle::from_bits(bits)) else {
                 return false;
             };
+            if waiting_for_home(agents, i) {
+                waiting_for_home_count += 1;
+                return true;
+            }
             let waiting = agents.transit_mode[i] == MODE_WALK
                 && agents.access_flags[i] & ACCESS_WALK_STRANDED != 0
                 && matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION);
@@ -99,9 +123,11 @@ impl AgentSystem {
             }
         }
         report.walkers = stranded.nodes.len() as u32;
+        report.waiting_for_home = waiting_for_home_count;
     }
 
-    /// Rebuilds the set and the report from the agents' stranded bits, after a load. O(agents).
+    /// Rebuilds the set and the report from the agents' stranded bits and homeless walkers, after a
+    /// load. O(agents).
     pub(crate) fn rebuild_stranded_walkers(
         &mut self,
         network: &TransitNetwork,
@@ -110,7 +136,9 @@ impl AgentSystem {
         self.handles.register_appended(self.agents.len());
         self.stranded.members.clear();
         for i in 0..self.agents.len() {
-            if self.agents.access_flags[i] & ACCESS_WALK_STRANDED != 0 {
+            if self.agents.access_flags[i] & ACCESS_WALK_STRANDED != 0
+                || waiting_for_home(&self.agents, i)
+            {
                 self.stranded
                     .members
                     .insert(self.handles.handle(i).to_bits());
@@ -118,6 +146,17 @@ impl AgentSystem {
         }
         self.refresh_stranded_report(network, graph);
     }
+}
+
+// Whether walker `i` waits on the road for a home: no home, no trip and no next one, not
+// stranded (a stranded walker has a trip home or to its destination).
+fn waiting_for_home(agents: &AgentVec, i: usize) -> bool {
+    agents.transit_mode[i] == MODE_WALK
+        && matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+        && agents.home_building[i] == usize::MAX
+        && agents.target_building[i] == usize::MAX
+        && agents.planned_target_building[i] == usize::MAX
+        && agents.access_flags[i] & ACCESS_WALK_STRANDED == 0
 }
 
 // The node a stranded walker waits at: the end of its road lane, its connector's junction, or

@@ -523,15 +523,94 @@ fn a_walker_at_a_node_with_no_sidewalk_is_stranded_there_reported_and_walks_home
     assert_eq!(agents.trip_failures.lines.len(), 1, "no record per retry");
 }
 
+impl Block {
+    // Removes road `edge`, as a bulldoze leaves it: out of the R-tree, deleted, the lanes rebuilt.
+    fn remove_road(&mut self, edge: usize) {
+        self.graph.remove_from_spatial_index(edge);
+        self.graph.edge_mut(edge).deleted = true;
+        self.graph.rebuild_adjacency_list();
+        self.relane();
+    }
+}
+
+// The bulldoze case (`TRAFFIC-19` probe, 10k city: walkers 123-347 m along a deleted road, more
+// than a road edit's 30 m reattach reach from every sidewalk): road 1 is removed under a walker
+// halfway along it, 50 m from both its nodes. It walks across the ground to the nearest sidewalk
+// at walking pace, steps onto it and walks to its shop from there.
 #[test]
-fn a_walker_off_every_sidewalk_is_stranded_where_it_stands() {
-    // Its road went under it: it stands 50 m from its node, beyond a road edit's reattach reach
-    // of every sidewalk end there, with its trip still planned.
+fn a_walker_off_every_sidewalk_walks_to_the_nearest_one_and_on_to_its_trip() {
+    let mut block = Block::new(false, false);
+    block.remove_road(1);
+    let mut agents = AgentSystem::new();
+    let pos = Vector2::new(100.0, 50.0);
+    let idx = block.walker_at_node(&mut agents, 2, pos, 1);
+    agents.access_flags[idx] = ACCESS_PLAN_VALID;
+    block.tick(&mut agents);
+    let lines = &agents.trip_failures.lines;
+    assert!(
+        lines.len() == 1 && lines[0].contains("m to the nearest one and plans from there"),
+        "one record as it sets off: {lines:#?}"
+    );
+    assert!(!stranded(&agents, idx));
+    // Off the road it moves at the access walk's pace, never further in a tick.
+    let mut last = pos;
+    let mut walked = 0.0;
+    while agents.current_lane_id[idx] == usize::MAX {
+        let now = Vector2::new(agents.pos_x[idx], agents.pos_y[idx]);
+        let step = now.distance_to(last);
+        assert!(
+            step <= AGENT_WALK_SPEED_MS * 0.1 + 1e-3,
+            "no teleport: {step} m in one tick"
+        );
+        walked += step;
+        last = now;
+        assert!(walked < 60.0, "it walks straight to the sidewalk");
+        block.tick(&mut agents);
+    }
+    let lane = &block.network.lane_system.lanes[agents.current_lane_id[idx]];
+    assert_eq!(lane.lane_type, LaneType::Foot);
+    assert!(
+        walked > 30.0,
+        "it walked the distance to the sidewalk: {walked} m"
+    );
+    // It walks on from the middle of that sidewalk, where its pose keeps its sideways offset
+    // until a lane's end drops it, as the evicted walker's does below: no step on the road longer.
+    let mut arrived = false;
+    for _ in 0..6000 {
+        let on_road = matches!(agents.transit[idx], TRANSIT_NETWORK | TRANSIT_INTERSECTION);
+        block.tick(&mut agents);
+        let now = Vector2::new(agents.pos_x[idx], agents.pos_y[idx]);
+        if on_road && matches!(agents.transit[idx], TRANSIT_NETWORK | TRANSIT_INTERSECTION) {
+            let step = now.distance_to(last);
+            assert!(step < 2.0, "no teleport: {step} m in one tick");
+        }
+        last = now;
+        if agents.transit[idx] == TRANSIT_IN_BUILDING && agents.current_building[idx] == 1 {
+            arrived = true;
+            break;
+        }
+    }
+    assert!(
+        arrived,
+        "it walks on to its shop: {:#?}",
+        agents.trip_failures.lines
+    );
+    assert!(!teleported(&agents), "{:#?}", agents.trip_failures.lines);
+    assert_eq!(
+        agents.trip_failures.lines.len(),
+        1,
+        "{:#?}",
+        agents.trip_failures.lines
+    );
+}
+
+#[test]
+fn a_walker_beyond_the_walk_bound_of_every_sidewalk_is_stranded_where_it_stands() {
+    // It stands 300 m east of road 1, beyond the 200 m it would walk to a sidewalk, with its trip
+    // still planned.
     let mut block = Block::new(false, false);
     let mut agents = AgentSystem::new();
-    let lane = block.side_lane(1, false, true);
-    let end = block.lane_end(lane);
-    let pos = Vector2::new(end.x, end.y - 50.0);
+    let pos = Vector2::new(400.0, 50.0);
     let idx = block.walker_at_node(&mut agents, 2, pos, 1);
     agents.access_flags[idx] = ACCESS_PLAN_VALID;
     for _ in 0..1000 {
@@ -679,7 +758,8 @@ fn no_walker_teleports_in_a_crossing_free_block_and_the_run_is_the_same_for_1_an
 // The traced end-of-path case (`TRAFFIC-19`, 100k city, agent 140399): a resident walking home
 // loses that home to an eviction mid-lane, so its trip and route are cleared there. It walks to
 // the end of its lane and keeps the lane, where the control dropped it and left the walker at
-// the node. Rehoused, it plans from that sidewalk and walks to its new home.
+// the node. It waits there reported as waiting for a home (round T19b). Rehoused, it plans from
+// that sidewalk and walks to its new home.
 #[test]
 fn an_evicted_walker_keeps_its_lane_at_its_path_end_and_walks_from_it_when_rehoused() {
     let mut block = Block::new(false, true);
@@ -704,9 +784,15 @@ fn an_evicted_walker_keeps_its_lane_at_its_path_end_and_walks_from_it_when_rehou
         "it waits at the end of its lane, on it"
     );
     assert_eq!(agents.transit[idx], TRANSIT_NETWORK);
+    // It waits reported, as a resident waiting for a home, not a stranded walker.
+    agents.refresh_stranded_report(&block.network, &block.graph);
+    assert_eq!(agents.stranded_report().waiting_for_home, 1);
+    assert!(agents.stranded_report().junctions.is_empty());
     // Rehoused in the shop's building across the block, which the crossings reach.
     agents.relocate_household_member_home(idx, 0, 1, false);
     assert_eq!(agents.target_building[idx], 1);
+    agents.refresh_stranded_report(&block.network, &block.graph);
+    assert_eq!(agents.stranded_report().waiting_for_home, 0);
     // It sets off from the end of its lane, where its pose regains its sideways offset: no step
     // on the road longer than that.
     let mut last = (agents.pos_x[idx], agents.pos_y[idx]);

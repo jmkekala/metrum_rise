@@ -793,13 +793,15 @@ fn remap_usize(value: &mut usize, mapping: &HashMap<usize, usize>) {
     }
 }
 
-struct LaneReattachCandidate {
-    lane_id: usize,
-    edge_id: usize,
-    origin_node: u32,
-    lane_d: f32,
+/// A lane point an agent with no lane takes: the nearest of its kind within a reach, ties by lane
+/// id.
+pub(in crate::simulation::economy::agents) struct LaneReattachCandidate {
+    pub(in crate::simulation::economy::agents) lane_id: usize,
+    pub(in crate::simulation::economy::agents) edge_id: usize,
+    pub(in crate::simulation::economy::agents) origin_node: u32,
+    pub(in crate::simulation::economy::agents) lane_d: f32,
     pos: Vector2,
-    dist_sq: f32,
+    pub(in crate::simulation::economy::agents) dist_sq: f32,
 }
 
 fn best_reattach_lane<S>(
@@ -810,52 +812,113 @@ fn best_reattach_lane<S>(
     graph: &RegionGraph,
     max_dist_sq: f32,
 ) -> Option<LaneReattachCandidate> {
-    let mut best: Option<LaneReattachCandidate> = None;
+    let mut best = None;
     for &edge_id in affected_edges {
-        if graph
-            .get_edge(edge_id)
-            .is_none_or(|edge| edge.deleted || edge.physical_geometry.len() < 2)
-        {
-            continue;
-        }
-        let Some(lane_ids) = lane_system.edge_lanes.get(&edge_id) else {
-            continue;
-        };
-        for &lane_id in lane_ids {
-            let Some(lane) = lane_system.lanes.get(lane_id) else {
-                continue;
-            };
-            if lane.edge_id != edge_id || lane.lane_type != desired_lane_type {
-                continue;
-            }
-            let Some(origin_node) = lane_origin_node_for(lane, graph) else {
-                continue;
-            };
-            let Some((lane_d, pos, dist_sq)) = project_point_to_lane(agent_pos, lane) else {
-                continue;
-            };
-            if dist_sq > max_dist_sq {
-                continue;
-            }
-            let replace = best.as_ref().is_none_or(|best| {
-                dist_sq
-                    .total_cmp(&best.dist_sq)
-                    .then_with(|| lane_id.cmp(&best.lane_id))
-                    .is_lt()
-            });
-            if replace {
-                best = Some(LaneReattachCandidate {
-                    lane_id,
-                    edge_id,
-                    origin_node,
-                    lane_d,
-                    pos,
-                    dist_sq,
-                });
-            }
-        }
+        take_nearer_lane(
+            &mut best,
+            agent_pos,
+            desired_lane_type,
+            edge_id,
+            lane_system,
+            graph,
+            max_dist_sq,
+        );
     }
     best
+}
+
+/// How far a walker off every sidewalk walks to the nearest one (`TRAFFIC-19`, its road removed
+/// under it): 200 m, under 2.5 minutes at walking pace. Beyond it the walker is stranded where it
+/// stands.
+pub(in crate::simulation::economy::agents) const OFF_NETWORK_WALK_MAX_M: f32 = 200.0;
+
+// The road-edge R-tree holds centreline bounds, so the sidewalk query box is widened by more than
+// any road's half width plus its sidewalk.
+const SIDEWALK_QUERY_MARGIN_M: f32 = 50.0;
+
+/// The sidewalk point nearest `pos` within [`OFF_NETWORK_WALK_MAX_M`], by the road edit's own
+/// reattach rule (nearest foot lane point, ties by lane id), over the edges the road-edge R-tree
+/// finds in the reach's box. Independent of the tree's visiting order. O(log edges + edges in the
+/// box × their lanes' vertices), no allocation; run once per walker that leaves the network.
+pub(in crate::simulation::economy::agents) fn nearest_sidewalk(
+    pos: Vector2,
+    lane_system: &LaneSystem,
+    graph: &RegionGraph,
+) -> Option<LaneReattachCandidate> {
+    use godot::prelude::Vector3;
+    let reach = OFF_NETWORK_WALK_MAX_M + SIDEWALK_QUERY_MARGIN_M;
+    let mut best = None;
+    graph.visit_edges_near_aabb(
+        Vector3::new(pos.x - reach, 0.0, pos.y - reach),
+        Vector3::new(pos.x + reach, 0.0, pos.y + reach),
+        |edge_id| {
+            take_nearer_lane(
+                &mut best,
+                pos,
+                LaneType::Foot,
+                edge_id,
+                lane_system,
+                graph,
+                OFF_NETWORK_WALK_MAX_M * OFF_NETWORK_WALK_MAX_M,
+            )
+        },
+    );
+    best
+}
+
+// Keeps in `best` the lane of `edge_id` of the desired type nearest `agent_pos` within the reach,
+// ties by lane id.
+fn take_nearer_lane(
+    best: &mut Option<LaneReattachCandidate>,
+    agent_pos: Vector2,
+    desired_lane_type: LaneType,
+    edge_id: usize,
+    lane_system: &LaneSystem,
+    graph: &RegionGraph,
+    max_dist_sq: f32,
+) {
+    if graph
+        .get_edge(edge_id)
+        .is_none_or(|edge| edge.deleted || edge.physical_geometry.len() < 2)
+    {
+        return;
+    }
+    let Some(lane_ids) = lane_system.edge_lanes.get(&edge_id) else {
+        return;
+    };
+    for &lane_id in lane_ids {
+        let Some(lane) = lane_system.lanes.get(lane_id) else {
+            continue;
+        };
+        if lane.edge_id != edge_id || lane.lane_type != desired_lane_type {
+            continue;
+        }
+        let Some(origin_node) = lane_origin_node_for(lane, graph) else {
+            continue;
+        };
+        let Some((lane_d, pos, dist_sq)) = project_point_to_lane(agent_pos, lane) else {
+            continue;
+        };
+        if dist_sq > max_dist_sq {
+            continue;
+        }
+        let replace = best.as_ref().is_none_or(|best| {
+            dist_sq
+                .total_cmp(&best.dist_sq)
+                .then_with(|| lane_id.cmp(&best.lane_id))
+                .is_lt()
+        });
+        if replace {
+            *best = Some(LaneReattachCandidate {
+                lane_id,
+                edge_id,
+                origin_node,
+                lane_d,
+                pos,
+                dist_sq,
+            });
+        }
+    }
 }
 
 fn lane_origin_node_for(lane: &Lane, graph: &RegionGraph) -> Option<u32> {

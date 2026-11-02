@@ -56,6 +56,7 @@ fn watchdog_firings_by_kind_and_cause() {
             "default"
         }
     );
+    end_state(&mut city);
     let (tally, samples) = probe_tally::take();
     for ((section, kind, lane, site, outcome), count) in tally {
         println!("TALLY {count:>8} {section} | {kind} | {lane} | {site} | {outcome}");
@@ -75,6 +76,56 @@ fn watchdog_firings_by_kind_and_cause() {
     {
         println!("WALKLINE {line}");
     }
+}
+
+// The walkers' state at the end (round T19b): walkers with no lane stranded by their node (within
+// a road edit's 30 m reattach reach of it) or off the network (beyond it, so beyond the 200 m walk
+// bound of every sidewalk), with each off-network one's distance from its node; walkers still
+// walking to a sidewalk; walkers waiting for a home.
+fn end_state(city: &mut PopulatedCity) {
+    use crate::simulation::economy::agents::{
+        ACCESS_WALK_STRANDED, ACCESS_WALK_TO_SIDEWALK, MODE_WALK, TRANSIT_NETWORK,
+    };
+    let core = &mut city.core;
+    core.agents
+        .refresh_stranded_report(&core.transit_network, &core.region_graph);
+    let agents = &core.agents;
+    let (mut at_node, mut off, mut walking) = (0, Vec::new(), 0);
+    for i in 0..agents.len() {
+        if agents.transit_mode[i] != MODE_WALK
+            || agents.transit[i] != TRANSIT_NETWORK
+            || agents.current_lane_id[i] != usize::MAX
+        {
+            continue;
+        }
+        if agents.access_flags[i] & ACCESS_WALK_TO_SIDEWALK != 0 {
+            walking += 1;
+        }
+        if agents.access_flags[i] & ACCESS_WALK_STRANDED == 0 {
+            continue;
+        }
+        let node = agents.current_node[i];
+        let metres = if (node as usize) < core.region_graph.node_count() {
+            let at = core
+                .region_graph
+                .node(core.region_graph.get_valid_node(node))
+                .pos;
+            (at.x - agents.pos_x[i]).hypot(at.z - agents.pos_y[i])
+        } else {
+            f32::INFINITY
+        };
+        if metres <= 30.0 {
+            at_node += 1;
+        } else {
+            off.push(format!("{i}@{metres:.0}m"));
+        }
+    }
+    println!(
+        "END walkers lane-less stranded at a node {at_node} off the network {} {off:?} walking to \
+         a sidewalk {walking} waiting for a home {}",
+        off.len(),
+        agents.stranded_report().waiting_for_home
+    );
 }
 
 // Half hour `k`: the four-way junctions `n` with `n % 6 == (k / 2) % 6` lose every crossing on

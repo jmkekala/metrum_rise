@@ -3,7 +3,8 @@
 ## The stranded-walker notice and junction highlight (`ROAD-74`): the game scene shows nothing on
 ## an empty world, and on the stranded block fixture (`METRUM_STRANDED_FIXTURE`, written by the
 ## Rust recorder `record_stranded_walkers_fixture`) the real SimulationNode's report names the
-## two corners where five walkers wait, the display rings both and the notice counts them.
+## two corners where five walkers wait, the display rings both and the notice counts them, with
+## residents waiting for a home after an eviction as a category of their own (`TRAFFIC-19`).
 ## METRUM_STRANDED_SCREENSHOT, when set on a rendered run, saves the view.
 extends SceneTree
 
@@ -49,6 +50,14 @@ func _run() -> void:
 	_expect(display.notice_text() == "5 pedestrians stranded at 2 junctions: no way home", "the notice must count the walkers, got '%s'" % display.notice_text())
 	var report: Dictionary = main.get_node("SimulationNode").get_stranded_walkers_report()
 	_expect(report.get("walkers", PackedInt32Array()) == PackedInt32Array([3, 2]), "Rust must report 3 and 2 walkers, got %s" % report)
+	# Residents waiting for a home after an eviction are a category of their own (`TRAFFIC-19`).
+	var waiting := {"junctions": PackedInt32Array(), "stranded": 0, "waiting_for_home": 3}
+	_expect(display.notice_message(waiting) == "3 residents waiting for a home", "the notice must count residents waiting for a home, got '%s'" % display.notice_message(waiting))
+	waiting["junctions"] = PackedInt32Array([1])
+	waiting["stranded"] = 1
+	waiting["waiting_for_home"] = 1
+	_expect(display.notice_message(waiting) == "1 pedestrian stranded at 1 junction: no way home; 1 resident waiting for a home", "both categories share the notice, got '%s'" % display.notice_message(waiting))
+	_expect(int(report.get("waiting_for_home", -1)) == 0, "Rust must report no resident waiting for a home on the block, got %s" % report)
 	var gridlock: Node = main.get_node_or_null("GridlockDisplay")
 	_expect(gridlock != null and gridlock.notice_text() == "", "no gridlock is reported alongside")
 

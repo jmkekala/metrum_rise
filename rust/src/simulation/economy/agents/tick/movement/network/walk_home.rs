@@ -17,23 +17,30 @@
 //! No walker takes the watchdog's teleport (`TRAFFIC-19`). A walker standing with no lane first
 //! takes the sidewalk it stands on ([`stand_on_sidewalk`]) and goes on from there by the same
 //! rules; one at a node with no sidewalk plans from the node and, with no route, is stranded
-//! there; one off every sidewalk (its road removed under it) is stranded where it stands. Every
-//! failure the watchdog would recover goes through [`walker_lost`] instead.
+//! there. One off every sidewalk (its road removed under it) walks across the ground to the
+//! nearest sidewalk point within `OFF_NETWORK_WALK_MAX_M` (200 m, [`walk_to_sidewalk`]) and plans
+//! from there by the same rules; with none in reach it is stranded where it stands. Every failure
+//! the watchdog would recover goes through [`walker_lost`] instead.
 
 use super::super::super::super::{
-    ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, ACTIVITY_HOME, MODE_WALK, TRANSIT_NETWORK,
+    ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, ACCESS_WALK_TO_SIDEWALK, ACTIVITY_HOME, MODE_WALK,
+    TRANSIT_NETWORK,
 };
-use super::super::super::lane_nav::lane_terminal_node;
+use super::super::super::access::{LocalAccessPath, advance_along_local_access_path};
+use super::super::super::lane_nav::{held_attach_origin, lane_terminal_node};
 use super::super::super::planning::{BuiltNetworkReplan, ReplanFailure, plan_network_replan};
 use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::replan_watchdog::has_recoverable_network_trip;
 use super::apply_network_replan;
+use crate::config::AGENT_WALK_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::remap::LANE_REATTACH_MAX_DIST_M;
+use crate::simulation::economy::agents::remap::{LANE_REATTACH_MAX_DIST_M, nearest_sidewalk};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
+use crate::simulation::network::lanes::geometry::agent_lane_position;
+use godot::prelude::Vector2;
 use std::sync::atomic::AtomicU32;
 
 /// Waits before a stranded walker's home plans, by backoff step; the last one repeats.
@@ -153,8 +160,8 @@ pub(super) unsafe fn retry_home(
 
 /// Stranded walker `i` with no lane plans home again when its backoff has run out, from where
 /// it stands ([`place_walker`]): the sidewalk it stands on, or its node when it stands there with
-/// no sidewalk. Off every sidewalk (its road removed under it) it only waits for its next step.
-/// Returns whether it has a route again. No record.
+/// no sidewalk. Off every sidewalk (its road removed under it) it sets off for the nearest one in
+/// reach, or with none waits for its next step. Returns whether it has a route again. No record.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
@@ -174,6 +181,7 @@ pub(super) unsafe fn retry_home_without_lane(
         let (node, lane) = match place_walker(i, transit_network, graph, slices) {
             Place::Sidewalk(node, lane) => (node, lane),
             Place::Node(node) => (node, usize::MAX),
+            Place::Walking(_) => return false,
             Place::Off => {
                 next_backoff_step(i, sim_time, slices);
                 return false;
@@ -196,10 +204,11 @@ pub(super) unsafe fn retry_home_without_lane(
 /// Walker `i` stands with no lane (`TRAFFIC-19`): before any replan gate it takes the sidewalk
 /// it stands on ([`place_walker`]), so it plans, walks home or is stranded from that sidewalk's
 /// end by the rules of any walker on a road lane. At a node with no sidewalk it keeps standing,
-/// to plan from the node. Off every sidewalk, its road removed under it, it is stranded where it
-/// stands (one record) and never planned from a node it is not at. A stranded walker and one with
-/// no trip are left alone. O(1) for every other agent; O(arms × lanes per arm) for a walker
-/// without a lane.
+/// to plan from the node. Off every sidewalk, its road removed under it, it walks to the nearest
+/// sidewalk in reach (one record), else is stranded where it stands (one record), and is never
+/// planned from a node it is not at. A stranded walker and one with no trip are left alone. O(1)
+/// for every other agent; O(arms × lanes per arm) for a walker without a lane, plus one bounded
+/// R-tree search when it is off every sidewalk.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 pub(super) unsafe fn stand_on_sidewalk(
@@ -220,8 +229,15 @@ pub(super) unsafe fn stand_on_sidewalk(
         {
             return;
         }
-        if let Place::Off = place_walker(i, transit_network, graph, slices) {
-            strand_in_place(i, FailureCause::NoPosition, sim_time, allocator, slices);
+        match place_walker(i, transit_network, graph, slices) {
+            Place::Walking(metres) => record_failure(
+                i,
+                FailureCause::NoPosition,
+                FailureOutcome::WalksToSidewalk { metres },
+                slices,
+            ),
+            Place::Off => strand_in_place(i, FailureCause::NoPosition, sim_time, allocator, slices),
+            Place::Sidewalk(..) | Place::Node(_) => {}
         }
     }
 }
@@ -229,10 +245,11 @@ pub(super) unsafe fn stand_on_sidewalk(
 /// Walker `i`'s trip failed for `cause` at a site where the watchdog recovers a vehicle
 /// (`TRAFFIC-19`). It plans its destination again from where it stands: the end of its road lane,
 /// or, with no lane, the sidewalk it stands on or its node ([`place_walker`]). A route: one
-/// `cause` record, outcome `Replans`. None: it gives the trip up ([`give_up_trip`]). A walker on a
-/// crossing, or off every sidewalk, is stranded at once (one record): the first plans home from
-/// the end of the sidewalk it reaches, the second where it stands. No teleport. One route query,
-/// or two with a give-up.
+/// `cause` record, outcome `Replans`. None: it gives the trip up ([`give_up_trip`]). A walker off
+/// every sidewalk walks to the nearest one in reach (one record) and plans there. A walker on a
+/// crossing, or off every sidewalk with none in reach, is stranded at once (one record): the
+/// first plans home from the end of the sidewalk it reaches, the second where it stands. No
+/// teleport. One route query, or two with a give-up.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
@@ -254,6 +271,10 @@ pub(in super::super) unsafe fn walker_lost(
             None => match place_walker(i, transit_network, graph, slices) {
                 Place::Sidewalk(node, lane) => Some((node, lane)),
                 Place::Node(node) => Some((node, usize::MAX)),
+                Place::Walking(metres) => {
+                    record_failure(i, cause, FailureOutcome::WalksToSidewalk { metres }, slices);
+                    return;
+                }
                 Place::Off => None,
             },
         };
@@ -299,7 +320,9 @@ enum Place {
     Sidewalk(u32, usize),
     /// At this node, with no sidewalk into it.
     Node(u32),
-    /// Off every sidewalk and away from its node, or with no node.
+    /// Off every sidewalk, now walking this many metres to the nearest one ([`walk_to_sidewalk`]).
+    Walking(f32),
+    /// Off every sidewalk, with none within `OFF_NETWORK_WALK_MAX_M` (200 m).
     Off,
 }
 
@@ -308,7 +331,8 @@ enum Place {
 /// within [`LANE_REATTACH_MAX_DIST_M`] (a road edit's own reattach reach); its route is dropped
 /// (its exit kept), to be planned again from that lane. Its position is not changed: it is drawn
 /// at the lane's end from the next pose. With no such sidewalk it is at the node when it stands
-/// within that reach of it, and off otherwise. O(arms × lanes per arm).
+/// within that reach of it. Otherwise it is off every sidewalk and sets off for the nearest one
+/// ([`start_sidewalk_walk`]). O(arms × lanes per arm), plus the bounded search when off.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 unsafe fn place_walker(
@@ -319,13 +343,30 @@ unsafe fn place_walker(
 ) -> Place {
     unsafe {
         let node = *slices.cur_n.get(i);
-        if node as usize >= graph.node_count() {
-            return Place::Off;
+        let node = if (node as usize) < graph.node_count() {
+            graph.get_valid_node(node)
+        } else {
+            u32::MAX
+        };
+        if (node as usize) < graph.node_adjacency_count()
+            && let Some(place) = place_at_node(i, node, transit_network, graph, slices)
+        {
+            return place;
         }
-        let node = graph.get_valid_node(node);
-        if node as usize >= graph.node_adjacency_count() {
-            return Place::Off;
-        }
+        start_sidewalk_walk(i, transit_network, graph, slices)
+    }
+}
+
+// `place_walker` at its node `node`: the sidewalk into it, or the node itself, or `None` when the
+// walker stands beyond the reattach reach of both.
+unsafe fn place_at_node(
+    i: usize,
+    node: u32,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    slices: &MovementSlices,
+) -> Option<Place> {
+    unsafe {
         let (x, z) = (*slices.pos_x.get(i), *slices.pos_y.get(i));
         let reach2 = LANE_REATTACH_MAX_DIST_M * LANE_REATTACH_MAX_DIST_M;
         let lanes = &transit_network.lane_system.lanes;
@@ -359,11 +400,8 @@ unsafe fn place_walker(
         }
         let Some((_d2, lane)) = best else {
             let at = graph.node(node).pos;
-            return if (at.x - x).powi(2) + (at.z - z).powi(2) <= reach2 {
-                Place::Node(node)
-            } else {
-                Place::Off
-            };
+            return ((at.x - x).powi(2) + (at.z - z).powi(2) <= reach2)
+                .then_some(Place::Node(node));
         };
         // The squared distance is read only by the `TRAFFIC-19` probe.
         #[cfg(test)]
@@ -378,7 +416,167 @@ unsafe fn place_walker(
         slices.path.get_mut(i).clear();
         slices.walk_lanes.get_mut(i).clear();
         *slices.path_idx.get_mut(i) = 0;
-        Place::Sidewalk(node, lane)
+        Some(Place::Sidewalk(node, lane))
+    }
+}
+
+// Walker `i`, off every sidewalk, sets off for the sidewalk point nearest it within
+// `OFF_NETWORK_WALK_MAX_M` (`remap::nearest_sidewalk`, the road-edge R-tree): its walk is
+// `ACCESS_WALK_TO_SIDEWALK` to that lane and distance on the lane's edge, with its route, exit,
+// backoff and stranding cleared; its position is not changed. `Place::Off` with none in reach.
+unsafe fn start_sidewalk_walk(
+    i: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    slices: &MovementSlices,
+) -> Place {
+    unsafe {
+        let pos = Vector2::new(*slices.pos_x.get(i), *slices.pos_y.get(i));
+        let Some(sidewalk) = nearest_sidewalk(pos, &transit_network.lane_system, graph) else {
+            return Place::Off;
+        };
+        let metres = sidewalk.dist_sq.sqrt();
+        #[cfg(test)]
+        super::super::super::trip_failures::probe_tally::add_event(
+            "sidewalk walk",
+            "walker",
+            "starts",
+        );
+        *slices.planned_attach_lane.get_mut(i) = sidewalk.lane_id as u32;
+        *slices.planned_attach_lane_d.get_mut(i) = sidewalk.lane_d;
+        *slices.cur_e.get_mut(i) = sidewalk.edge_id;
+        slices.path.get_mut(i).clear();
+        slices.walk_lanes.get_mut(i).clear();
+        *slices.path_idx.get_mut(i) = 0;
+        *slices.planned_detach_n.get_mut(i) = u32::MAX;
+        *slices.planned_detach_lane.get_mut(i) = u32::MAX;
+        *slices.planned_detach_lane_d.get_mut(i) = 0.0;
+        *slices.access_flags.get_mut(i) = ACCESS_WALK_TO_SIDEWALK;
+        *slices.network_replan_failures.get_mut(i) = 0;
+        *slices.next_replan_time.get_mut(i) = 0.0;
+        *slices.speed.get_mut(i) = AGENT_WALK_SPEED_MS;
+        Place::Walking(metres)
+    }
+}
+
+/// Whether agent `i` is a walker off the road walking to a sidewalk ([`walk_to_sidewalk`]). O(1).
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[inline(always)]
+pub(super) unsafe fn walking_to_sidewalk(i: usize, slices: &MovementSlices) -> bool {
+    unsafe {
+        *slices.lane_id.get(i) == usize::MAX
+            && *slices.access_flags.get(i) & ACCESS_WALK_TO_SIDEWALK != 0
+    }
+}
+
+/// Walker `i` walking to a sidewalk ([`ACCESS_WALK_TO_SIDEWALK`], `TRAFFIC-19`) takes this tick's
+/// step: straight across the ground towards its sidewalk point at the access walk's pace
+/// (`AGENT_WALK_SPEED_MS`, the building access walk's path stepping), never further. Reaching
+/// it, it steps onto the lane there and plans its trip from it: walks on, gives the trip up for
+/// home, or is stranded there ([`give_up_trip`]); with no trip it waits on the lane. A walk whose
+/// lane is gone (a road edit) is dropped and the walker looks again from where it stands. Returns
+/// whether the walk handled this tick. O(1) for every other agent; one route query on arrival.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[allow(clippy::too_many_arguments)]
+pub(super) unsafe fn walk_to_sidewalk(
+    i: usize,
+    delta: f32,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) -> bool {
+    unsafe {
+        if !walking_to_sidewalk(i, slices) {
+            return false;
+        }
+        let lane_id = *slices.planned_attach_lane.get(i) as usize;
+        let lane_d = *slices.planned_attach_lane_d.get(i);
+        let lane = transit_network
+            .lane_system
+            .lanes
+            .get(lane_id)
+            .filter(|lane| lane.lane_type == LaneType::Foot);
+        let origin = lane.and_then(|_| {
+            held_attach_origin(
+                lane_id,
+                lane_d,
+                *slices.cur_e.get(i),
+                transit_network,
+                graph,
+            )
+        });
+        let target = lane.and_then(|lane| agent_lane_position(lane, lane_d, Some(i)));
+        let (Some(origin), Some(target)) = (origin, target) else {
+            *slices.access_flags.get_mut(i) &= !ACCESS_WALK_TO_SIDEWALK;
+            *slices.planned_attach_lane.get_mut(i) = u32::MAX;
+            *slices.planned_attach_lane_d.get_mut(i) = 0.0;
+            return false;
+        };
+        let pos = Vector2::new(*slices.pos_x.get(i), *slices.pos_y.get(i));
+        let mut path = LocalAccessPath {
+            points: [Vector2::ZERO; 4],
+            count: 2,
+        };
+        path.points[0] = pos;
+        path.points[1] = Vector2::new(target.x, target.z);
+        let (next, reached) =
+            advance_along_local_access_path(pos, &path, AGENT_WALK_SPEED_MS * delta);
+        *slices.pos_x.get_mut(i) = next.x;
+        *slices.pos_y.get_mut(i) = next.y;
+        *slices.speed.get_mut(i) = AGENT_WALK_SPEED_MS;
+        if !reached {
+            return true;
+        }
+        #[cfg(test)]
+        super::super::super::trip_failures::probe_tally::add_event(
+            "sidewalk walk",
+            "walker",
+            "arrives",
+        );
+        enter_lane!(slices, i, transit_network, lane_id, lane_d, origin);
+        *slices.access_flags.get_mut(i) &= !ACCESS_WALK_TO_SIDEWALK;
+        *slices.planned_attach_lane.get_mut(i) = u32::MAX;
+        *slices.planned_attach_lane_d.get_mut(i) = 0.0;
+        *slices.speed.get_mut(i) = 0.0;
+        let target = *slices.tgt_b.get(i);
+        let Some(node) = lane_terminal_node(lane_id, transit_network, graph) else {
+            return true;
+        };
+        if target == usize::MAX {
+            return true;
+        }
+        match plan_from_lane(
+            i,
+            node,
+            lane_id,
+            target,
+            allocator,
+            transit_network,
+            graph,
+            pathfind_count,
+        ) {
+            Ok(replan) => apply_network_replan(i, replan, slices),
+            Err(failure) => {
+                give_up_trip(
+                    i,
+                    node,
+                    lane_id,
+                    FailureCause::NoRoute(failure),
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+            }
+        }
+        true
     }
 }
 

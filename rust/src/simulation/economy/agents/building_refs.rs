@@ -239,6 +239,9 @@ impl AgentSystem {
                 self.agents.network_replan_failures[agent_idx] = 0;
                 self.clear_schedule_building_cache(agent_idx);
             }
+            // A walker whose trip home this cancelled waits on the road for the household's next
+            // home and is reported (`TRAFFIC-19`).
+            self.note_waiting_for_home(agent_idx);
         }
     }
 
@@ -789,6 +792,7 @@ impl AgentSystem {
 
     fn clear_access_plan_and_path(&mut self, agent_idx: usize) {
         let pending_attach = self.agents.pending_lane_attach(agent_idx);
+        let sidewalk_walk = self.agents.sidewalk_walk(agent_idx);
         self.agents.planned_attach_node[agent_idx] = u32::MAX;
         self.agents.planned_detach_node[agent_idx] = u32::MAX;
         self.agents.planned_attach_lane_id[agent_idx] = u32::MAX;
@@ -801,6 +805,7 @@ impl AgentSystem {
         self.agents.network_replan_failures[agent_idx] = 0;
         self.agents
             .keep_pending_lane_attach(agent_idx, pending_attach);
+        self.agents.keep_sidewalk_walk(agent_idx, sidewalk_walk);
     }
 }
 

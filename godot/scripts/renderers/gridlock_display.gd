@@ -2,7 +2,7 @@
 
 ## Gridlock notice and junction highlight (`TRAFFIC-14`). Reads Rust's last gridlock report
 ## (`get_gridlock_report`) twice a second and, only when its junctions differ from the ones
-## shown, rebuilds a ring round every reported junction and updates the HUD notice. Every
+## shown, rebuilds a ring round every reported junction; the HUD notice follows its text. Every
 ## decision (which cycles are saturation, which junctions they hold) is made in Rust; this node
 ## only shows the list. `StrandedDisplay` reuses it for another report through `read_report`,
 ## `notice_message`, `ring_color` and `notice_row`.
@@ -26,6 +26,7 @@ var simulation_node: Node
 ## The junction node ids the highlight and the notice show, ascending.
 var shown_junctions := PackedInt32Array()
 var _shown_positions := PackedVector3Array()
+var _shown_message := ""
 
 var _notice: Control
 var _mesh := ArrayMesh.new()
@@ -57,18 +58,21 @@ func _process(delta: float) -> void:
 	_elapsed_s = 0.0
 	refresh()
 
-## Reads the report now and updates the notice and highlight if its junctions changed.
+## Reads the report now and updates the highlight if its junctions changed, and the notice if its
+## text did.
 func refresh() -> void:
 	# From the render snapshot: never waits for the simulation core.
 	var report: Dictionary = read_report()
 	var junctions: PackedInt32Array = report["junctions"]
 	var positions: PackedVector3Array = report["positions"]
-	if junctions == shown_junctions and positions == _shown_positions:
-		return
-	shown_junctions = junctions
-	_shown_positions = positions
-	_rebuild_rings(positions)
-	_notice.show_text(notice_message(report))
+	if junctions != shown_junctions or positions != _shown_positions:
+		shown_junctions = junctions
+		_shown_positions = positions
+		_rebuild_rings(positions)
+	var message := notice_message(report)
+	if message != _shown_message:
+		_shown_message = message
+		_notice.show_text(message)
 
 ## The report the display shows: `junctions` (node ids) and `positions` at least.
 func read_report() -> Dictionary:

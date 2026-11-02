@@ -9,9 +9,9 @@ use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID,
-    ACCESS_WALK_STRANDED, AGE_ELDER, Agent, AgentSystem, MODE_CAR, MODE_WALK,
-    TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION,
-    TRANSIT_NETWORK, age_group_can_work,
+    ACCESS_WALK_STRANDED, ACCESS_WALK_TO_SIDEWALK, AGE_ELDER, Agent, AgentSystem, MODE_CAR,
+    MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING,
+    TRANSIT_INTERSECTION, TRANSIT_NETWORK, age_group_can_work,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -511,8 +511,12 @@ pub(super) fn validate_loaded_agents(
                 agents.planned_detach_node[i] < graph.node_count() as u32
                     && agents.planned_detach_lane_id[i] != u32::MAX
             };
-            // 0x40 is `ACCESS_WALK_STRANDED`; the bit above it is unused.
-            if !attach_ok || !detach_ok || !stranded_ok || (agents.access_flags[i] & 0x80) != 0 {
+            // 0x80, `ACCESS_WALK_TO_SIDEWALK`, never comes with a valid plan.
+            if !attach_ok
+                || !detach_ok
+                || !stranded_ok
+                || (agents.access_flags[i] & ACCESS_WALK_TO_SIDEWALK) != 0
+            {
                 clear_agent_access_plan(agents, i);
             }
         }
@@ -568,6 +572,7 @@ fn repair_orphaned_loaded_network_agent(
         || !agents.current_path[i].is_empty()
         || agents.access_flags[i] & ACCESS_PLAN_VALID != 0
         || agents.agents.pending_lane_attach(i).is_some()
+        || agents.agents.sidewalk_walk(i).is_some()
     {
         return;
     }
@@ -653,10 +658,11 @@ fn clear_agent_access_plan(agents: &mut AgentSystem, i: usize) {
     agents.network_replan_failures[i] = 0;
 }
 
-// A car held at its attach point keeps standing there (`TRAFFIC-11`), as plan clears in a
-// running game keep it.
+// A car held at its attach point keeps standing there (`TRAFFIC-11`), and a walker walking to a
+// sidewalk keeps walking there (`TRAFFIC-19`), as plan clears in a running game keep them.
 fn clear_loaded_access_plan_fields(agents: &mut AgentSystem, i: usize) {
     let pending_attach = agents.agents.pending_lane_attach(i);
+    let sidewalk_walk = agents.agents.sidewalk_walk(i);
     agents.planned_attach_node[i] = u32::MAX;
     agents.planned_detach_node[i] = u32::MAX;
     agents.planned_attach_lane_id[i] = u32::MAX;
@@ -665,10 +671,22 @@ fn clear_loaded_access_plan_fields(agents: &mut AgentSystem, i: usize) {
     agents.planned_detach_lane_d[i] = 0.0;
     agents.access_flags[i] = 0;
     agents.agents.keep_pending_lane_attach(i, pending_attach);
+    agents.agents.keep_sidewalk_walk(i, sidewalk_walk);
 }
 
 pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_count: usize) {
     for i in 0..agents.len() {
+        // A walk to a lane that does not exist is dropped; the walker looks for its sidewalk
+        // again where it stands.
+        if agents
+            .agents
+            .sidewalk_walk(i)
+            .is_some_and(|(lane, _)| lane as usize >= lane_count)
+        {
+            agents.access_flags[i] &= !ACCESS_WALK_TO_SIDEWALK;
+            agents.planned_attach_lane_id[i] = u32::MAX;
+            agents.planned_attach_lane_d[i] = 0.0;
+        }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
             if preserve_loaded_network_retry_state_without_graph(agents, i) {
                 clear_loaded_access_plan_fields(agents, i);

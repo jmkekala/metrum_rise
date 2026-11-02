@@ -3,7 +3,8 @@
 //! Shared lane occupancy contract for movement, road edits, and snapshot restoration.
 
 use super::{
-    ACCESS_LANE_ATTACH_PENDING, AgentVec, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+    ACCESS_LANE_ATTACH_PENDING, ACCESS_WALK_TO_SIDEWALK, AgentVec, MODE_WALK, TRANSIT_INTERSECTION,
+    TRANSIT_NETWORK,
 };
 use crate::simulation::network::lanes::{Lane, LaneSystem, LaneType};
 
@@ -194,8 +195,36 @@ impl AgentVec {
         }
     }
 
+    /// Returns the sidewalk point walker `i` walks to across the ground
+    /// ([`ACCESS_WALK_TO_SIDEWALK`]): its lane and distance. O(1).
+    pub(crate) fn sidewalk_walk(&self, i: usize) -> Option<(u32, f32)> {
+        ((self.access_flags[i] & ACCESS_WALK_TO_SIDEWALK) != 0
+            && self.transit[i] == TRANSIT_NETWORK
+            && self.current_lane_id[i] == usize::MAX
+            && self.planned_attach_lane_id[i] != u32::MAX
+            && self.planned_attach_lane_d[i] >= 0.0
+            && self.planned_attach_lane_d[i].is_finite())
+            .then(|| {
+                (
+                    self.planned_attach_lane_id[i],
+                    self.planned_attach_lane_d[i],
+                )
+            })
+    }
+
+    /// Restores a walk to a sidewalk after a trip-plan clear, as [`Self::keep_pending_lane_attach`]
+    /// restores a car's hold: the walker keeps walking there. O(1).
+    pub(crate) fn keep_sidewalk_walk(&mut self, i: usize, walk: Option<(u32, f32)>) {
+        if let Some((lane, distance)) = walk {
+            self.planned_attach_lane_id[i] = lane;
+            self.planned_attach_lane_d[i] = distance;
+            self.access_flags[i] |= ACCESS_WALK_TO_SIDEWALK;
+        }
+    }
+
     /// Commits a serial lane transition through the same contract as parallel movement. A car on
-    /// a lane no longer waits to attach, so any lane-attach hold ends here.
+    /// a lane no longer waits to attach, nor a walker to reach a sidewalk, so a lane-attach hold
+    /// or a walk to a sidewalk ends here.
     #[track_caller]
     pub(crate) fn enter_lane(
         &mut self,
@@ -205,7 +234,7 @@ impl AgentVec {
         distance: f32,
         node: u32,
     ) {
-        self.access_flags[i] &= !ACCESS_LANE_ATTACH_PENDING;
+        self.access_flags[i] &= !(ACCESS_LANE_ATTACH_PENDING | ACCESS_WALK_TO_SIDEWALK);
         LaneStateMut {
             agent: i,
             lane: &mut self.current_lane_id[i],

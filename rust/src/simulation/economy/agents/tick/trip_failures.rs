@@ -80,6 +80,9 @@ pub(super) enum FailureOutcome {
     /// A walker with no way home either waits at the end of its lane and plans home again
     /// after `after_s`, then on its backoff (`ROAD-74`).
     Stranded { after_s: f32 },
+    /// A walker off every sidewalk walks `metres` across the ground to the nearest one, then plans
+    /// from there (`TRAFFIC-19`).
+    WalksToSidewalk { metres: f32 },
     /// Plans again after `after_s`; this was failure `failure` of `of`.
     Retry { after_s: f32, failure: u8, of: u8 },
     /// Plans its departure again after `after_s`.
@@ -288,6 +291,7 @@ pub(crate) mod probe_tally {
             FailureOutcome::Replans => "replans",
             FailureOutcome::WalksHome { .. } => "walks home",
             FailureOutcome::Stranded { .. } => "stranded",
+            FailureOutcome::WalksToSidewalk { .. } => "walks to a sidewalk",
             FailureOutcome::Retry { .. } => "retry",
             FailureOutcome::RetryDeparture { .. } => "retry departure",
             FailureOutcome::Home { .. } => "TELEPORT home",

@@ -261,6 +261,10 @@ impl fmt::Display for Outcome {
                 "stranded with no way home: waits at the end of its lane, plans again in \
                  {after_s:.0} s"
             ),
+            FailureOutcome::WalksToSidewalk { metres } => write!(
+                f,
+                "off every sidewalk: walks {metres:.0} m to the nearest one and plans from there"
+            ),
             FailureOutcome::Retry {
                 after_s,
                 failure,

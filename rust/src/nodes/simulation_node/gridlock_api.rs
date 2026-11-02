@@ -34,8 +34,9 @@ impl SimulationNode {
 
     /// The last stranded-walker report (`ROAD-74`), as of the latest render snapshot:
     /// `junctions` (node ids where walkers wait with no route home, ascending), `walkers` (how
-    /// many wait at each, same order), `positions` (their world positions, same order) and
-    /// `stranded` (walkers in all).
+    /// many wait at each, same order), `positions` (their world positions, same order),
+    /// `stranded` (walkers in all) and `waiting_for_home` (walkers whose household was evicted
+    /// while they walked, waiting on the road for its next home or its departure, `TRAFFIC-19`).
     #[func]
     pub fn get_stranded_walkers_report(&self) -> VarDictionary {
         let snapshot = self.snapshot.read().unwrap();
@@ -45,6 +46,7 @@ impl SimulationNode {
             "walkers": junctions.iter().map(|&(_, walkers, _)| walkers as i32).collect::<PackedInt32Array>(),
             "positions": junctions.iter().map(|&(_, _, pos)| pos).collect::<PackedVector3Array>(),
             "stranded": junctions.iter().map(|&(_, walkers, _)| i64::from(walkers)).sum::<i64>(),
+            "waiting_for_home": i64::from(snapshot.waiting_for_home),
         }
     }
 }
