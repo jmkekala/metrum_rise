@@ -97,11 +97,18 @@ fn joined_edges(prepared_input: &PreparedRoadInput, graph: &RegionGraph) -> Vec<
             continue;
         }
         let reach = config::INTERSECTION_TOLERANCE;
-        joined.extend(edges_near(graph, &[point], reach).into_iter().filter(|&id| {
-            let edge = graph.edge(id);
-            let (distance_sq, _) = RegionGraph::profile_nearest_at(&edge.geometry, point.x, point.z);
-            is_surface_edge(edge) && edge.class == EdgeClass::Standard && distance_sq < reach * reach
-        }));
+        joined.extend(
+            edges_near(graph, &[point], reach)
+                .into_iter()
+                .filter(|&id| {
+                    let edge = graph.edge(id);
+                    let (distance_sq, _) =
+                        RegionGraph::profile_nearest_at(&edge.geometry, point.x, point.z);
+                    is_surface_edge(edge)
+                        && edge.class == EdgeClass::Standard
+                        && distance_sq < reach * reach
+                }),
+        );
     }
     joined.sort_unstable();
     joined.dedup();

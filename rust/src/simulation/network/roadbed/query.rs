@@ -303,6 +303,41 @@ impl RoadbedSystem {
             .map(|(height_m, triangle)| (height_m, upward_normal(triangle)))
     }
 
+    /// The highest top triangle's height at a world XZ point over the grounded pieces (those a
+    /// standard edge builds, `ROAD-99`): the road surface on the ground, under any bridge deck
+    /// over it. One walk of the point's query cell; allocation-free.
+    pub fn grounded_height_at(&self, x: f32, z: f32) -> Option<f32> {
+        let point = RoadVec2::new(f64::from(x), f64::from(z));
+        let mut best: Option<f32> = None;
+        for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
+            if indexed.grounded
+                && let Some((height_m, _, _)) = surface_at(&indexed.mesh, point, |_| true)
+                && best.is_none_or(|best_m| height_m > best_m)
+            {
+                best = Some(height_m);
+            }
+        }
+        best
+    }
+
+    /// The height at a world XZ point of the exposed piece whose top there stands nearest
+    /// `near_m` (`ROAD-99`): the level a ray hit, where a bridge passes over a road, rather than
+    /// the highest. Ties keep the first in piece order. One walk of the point's query cell;
+    /// allocation-free.
+    pub fn exposed_height_nearest_at(&self, x: f32, z: f32, near_m: f32) -> Option<f32> {
+        let point = RoadVec2::new(f64::from(x), f64::from(z));
+        let mut best: Option<f32> = None;
+        for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
+            if !indexed.buried
+                && let Some((height_m, _, _)) = surface_at(&indexed.mesh, point, |_| true)
+                && best.is_none_or(|best_m| (height_m - near_m).abs() < (best_m - near_m).abs())
+            {
+                best = Some(height_m);
+            }
+        }
+        best
+    }
+
     // The highest top triangle at the point over the exposed pieces; ties keep the first in
     // piece order, as `top_at`.
     fn exposed_top_at(&self, x: f32, z: f32) -> Option<(f32, [RoadVec3; 3])> {
