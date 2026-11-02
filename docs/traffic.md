@@ -601,7 +601,8 @@ crossings).
   teleport, no crossing of its own, and the watchdog's move home does not apply. Cost: one route
   query per stranded walker per retry (at most one every 2 min once settled), O(1) per stranded
   walker and tick in between. A walker without a home keeps trying its destination on the same
-  backoff; a walker without a lane (at a node) keeps the watchdog's rule.
+  backoff; a walker without a lane (at a node) keeps the watchdog's rule, as does a walker at the
+  end of its path whose lane is dropped (`TRAFFIC-19`, planned: the same recovery, no teleport).
 - **Stranded report.** `AgentVec`'s stranded walkers are a set (`tick/stranded.rs`): a walker
   enters with the record that strands it (O(new strandings) per tick) and leaves when the report
   finds it no longer stranded. The report, the junctions where stranded walkers wait and how

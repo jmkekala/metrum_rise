@@ -10271,7 +10271,8 @@ commit may differ in cache lifetime or display detail, but not in geometry owner
 
 Standard-road input keeps the player's authored XZ alignment, then prepares its physical geometry
 before graph commit or preview compilation: long spans are densified every few metres, samples are
-grounded against source terrain or existing visible road support, true endpoints and road
+grounded against source terrain or the carriageways of existing grounded roads (not a bridge's or
+a tunnel's deck, [`ROAD-99`](#grade-separation-road-99)), true endpoints and road
 connections are hard pins, and a bounded vertical-profile solve keeps the road near terrain while
 targeting smooth grade and curvature changes. These profile targets shape generated geometry and
 remain available as diagnostics; they are not player-facing placement limits. The dense solved
@@ -10288,7 +10289,8 @@ and it never becomes `Standard` earthwork that raises terrain to the bridge deck
 
 Player-facing placement rules include existing parcel conflicts and structural impossibilities:
 roads shorter than `2 m`, standard roadbeds crossing authored water without bridge mode,
-bridge/tunnel clearance failures, and endpoints that resolve to an impossible same-node connection.
+bridge/tunnel clearance failures (`bridge_too_low` among them, [`ROAD-99`](#grade-separation-road-99)),
+and endpoints that resolve to an impossible same-node connection.
 There is no hard centerline-grade or curve-angle rejection. Same-node rejection uses the distinct
 `same_node_connection` reason; it is not reported as a compiler failure.
 
@@ -10298,6 +10300,107 @@ endpoints within the node capture radius. Retention releases by distance to that
 to the previous projected point. Interior polyline knots have no endpoint margin, avoiding artificial
 half-metre jumps. Retained projection is allocation-free `O(edge polyline segments)`; acquisition
 uses the existing node grid and edge R-tree. No additional spatial index or whole-network scan is used.
+
+### Grade separation (`ROAD-99`)
+
+**Status: done (2026-11-02, branch `port-road99-gradesep`; the user's decisions of 2026-11-02).**
+Two roads are separated by structure, not by height. Until `ROAD-99` the topology pass read one
+4.5 m window between the two profiles (`topology.rs`: crossings, mid-span end joins, nodes a
+stroke passes through), and a stroke's profile was pinned to the highest exposed carriageway at
+each 6 m sample, a bridge's deck among them. In play no road could pass under a bridge: the deck
+pinned it and the crossing became a junction on the bridge, or the stroke was too steep. A
+bridge drawn over a road within 4.5 m split the road and dipped to it; above 4.5 m nothing checked
+the clearance. `config::CLEARANCE_THRESHOLD` (5 m) had no reader and is deleted.
+
+**The rules** (`topology::StrokeGrade`: where a new edge is a structure, which of its ends stand on
+the ground). A structure is a bridge, or a tunnel stroke's bore between its portals; a node is
+grounded when a live standard edge meets it (`RegionGraph::grounded_node`, the roadbed's notion).
+
+- *R1, crossings.* A crossing is a junction only where both roads are on the ground there. A
+  bridge or a bore crosses every road, and every road crosses them, with no node at any height.
+  Two ground roads always meet, at the crossed road's profile height, and the grade and junction
+  rules (`road_too_steep`, `junction_in_trench`, the junction checks) refuse what does not fit. A
+  tunnel stroke's approaches are ground roads (R8h unchanged for its bore).
+- *R2, clearance under a bridge* (`road_edit::bridge::deck_to_deck_m`, reason `bridge_too_low`).
+  Over every point of the stroke's footprint lattice (stations along each segment and points
+  across its roadbed, at most 4 m apart) that another deck covers, the higher deck stands at least
+  `ROAD_UNDER_BRIDGE_M` above the lower. The other decks are the bridges near the stroke and, for a
+  bridge stroke, the grounded roads too, less the roads it joins at its ends. Both orders: a road
+  drawn under a bridge, a bridge drawn over a road or over another bridge. The hover check and the
+  exact plan read the same prepared points and excerpt, so they agree. The tool shows "Too low
+  under a bridge: x.xx m / 4.85 m deck to deck".
+- *R5, end joins.* An end joins a span mid-span only when both stand on the ground: a ground end
+  and a standard span. A bridge's ground ends are those its class inference found within 1 m of
+  their support (`PreparedRoadInput::elevated_ends`); a tunnel stroke's are its approach ends. A
+  structure's span takes no mid-span join; roads meet it at its nodes (the 2 m node snap).
+- *R6, nodes passed through.* A stroke captures a node only on the ground and only a grounded one:
+  a ground road passes under a bridge's bend node and joins its abutment.
+- *R7, support and cursor.* (a) A stroke's profile pins to grounded carriageways only
+  (`RoadbedSystem::for_each_grounded_carriageway_top_at`). (b) A snapped node or edge reports its
+  graph height (an edge's profile at the projection); a free cursor stays on the level its ray hit
+  (`exposed_height_nearest_at` on a road, `grounded_height_at` or the ground on the terrain).
+  (c) The network snap takes a snap on each level, the ground and the structures, as it took one
+  before, and where both have one keeps the one nearer the cursor's height, the ground on a tie.
+
+**Constants.** One vehicle envelope, `roadbed::VEHICLE_CLEARANCE_M` = 4.5 m: the tunnel lining's
+clear height is it, bitwise (`TUNNEL_COVER_M` stays 5 m, `ROAD_OVER_TUNNEL_M` 5.5 m), and
+`ROAD_UNDER_BRIDGE_M` = `VEHICLE_CLEARANCE_M + BRIDGE_DECK_DEPTH_M` = 4.85 m deck to deck: 4.5 m
+clear under the slab's soffit, as under the lining's ceiling.
+
+**What players lose** (accepted by the user, 2026-11-02): a ground road branching onto a bridge
+mid-span (join at the bridge's node or end the bridge there); bridges 4.5-4.85 m over a road (now
+refused with the height); a bridge forking from another mid-span.
+
+**Saves.** Nothing is repaired on load and no format changes: a crossing that only height
+separated loads as saved and changes only when one of its roads is redrawn. The scan
+(`road_grade_separation::scan_crossings_separated_by_height_alone`, ignored; fresh on the
+Kuopio reference save and copies of the user's dumps A, B and C at format 110, an empty
+`road_crosswalks` table added) finds none: no bridge in any of them, no junction on a deck, and
+no two roads crossing without a node but dump C's road over a tunnel 17.5 m above it (`ROAD-98`).
+
+**Acceptance** (fresh, 2026-11-02, release test binaries: C = `dev` `f680729b`, F = this branch).
+
+- *Tests* (`nodes::sim::core::tests::road_grade_separation`): a road under a bridge 6 m up passes
+  (hover = preview = commit, the bridge's edge and nodes bitwise intact, the road's profile on the
+  ground, undo restores every piece) and 4 m up is `bridge_too_low` (clearance 4, 4.85 required,
+  nothing changed); the mirror over a road (6 / 4 m) and over a bridge 2 m up (7.5 / 6 m); a road
+  over a road in a cut on the 1:4 and 1:8 hills, support on and off, three sampling phases, always
+  a junction or `road_too_steep`; a bridge over a tunnel's approach (6 m passes, 4 m refused) and a
+  ground road across it (`junction_in_trench`); a tunnel drawn under a hill road, its approach
+  meeting the road (refused). All five fail on C's code with the same tests; a bridge drawn from a
+  road mid-span still joins it. Unit tests in `test_topology.rs` (R1, R5, R6) and
+  `interaction.rs` (R7(c)).
+- *No change without structures.* R8's probe products (pieces, payload, graded tiles at GL0-GL2,
+  vegetation, queries) on the town, the 1:4 hill (its bridge beside the road) and the 1:2 hill:
+  C and F equal, and equal to `ROAD-98`'s. The `ROAD-68-K22` commit breakdown on each binary's own
+  saved cities at 0, 10k, 30k and 100k residents: `COMMIT_PRODUCTS` identical, C and F.
+- *Cost* (one session, 10:51-10:52; release, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both
+  timing locks, load 1.5 at the start, no compiler, Godot or backup running; C F F C;
+  `benchmark_road_preview_stages` and `benchmark_tunnel_preview_stages` as in `ROAD-98`). Products
+  identical (payload 9,845 / 9,973 vertices per pose, hidden 4,188 / 6,475, lining 2,326 / 2,574).
+  Total p50 ms, C1 F1 F2 C2: `sloped_t` 2.802 2.809 2.870 2.901, `sloped_branch` 2.496 2.510 2.596
+  2.688, tunnel 1:2 3.683 3.679 3.693 3.708, tunnel 1:4 3.641 3.669 3.652 3.669; plan p50
+  `sloped_t` 0.409 0.416 0.427 0.424, `sloped_branch` 0.367 0.371 0.382 0.381. Within spread.
+- *Locality* (`road_plan_scaling`, the same session, local products identical at every tier):
+  compile p50 ms at 0 / 1k / 10k / 100k remote buildings, the T's side road C 0.145 0.161 0.153
+  0.155, F 0.144 0.259 0.159 0.147 (one noisy tier: no cost grows with the city); the tunnel C
+  0.068 0.069 0.077 0.071, F 0.067 0.114 0.075 0.075; the new road under a bridge
+  (`populated_road_under_bridge_plan_scaling`, F only: C pins it to the deck) 0.040 0.041 0.041
+  0.041, its hover check 0.0197 0.0198 0.0199 0.0200. Flat.
+- *Stills* (headless gamescope, isolated profile, dump C at format 110, a bridge 6.5 m over open
+  ground and a road drawn across it, both committed through the tool's path): before, the road
+  climbs an earth bank to a four-way junction on the deck; after, it passes under the bridge on
+  the ground.
+- *Bounds.* R1/R5/R6: one class or flag read per candidate, a node's `O(degree)`; R2
+  `O(log E + K + P x D)` per stroke, one excerpt and one deck `Vec`; R7(a) one flag per piece;
+  R7(c) the same candidates, one profile read per level. Nothing per tick, no city scan, no index.
+
+**Known limits.** The decks of roads at a stroke's end nodes are left out of R2, so a bridge that
+leaves a junction on road A and curves back over A mid-span is not checked against A. A tunnel
+stroke's approach is not checked against a bridge over it (R2 reads standard and bridge strokes),
+nor against another bore (R8h). A footpath narrower than the 4 m lattice can cross between two
+lattice points. The hover check sees no junction (R1, R5, R6 are topology), as for every junction
+rule.
 
 ## Road tunnels (`ROAD-61`)
 
@@ -10964,7 +11067,8 @@ play-test of `dev` `dc979ad8` (dump C) found two bugs.
   preview and the commit; without snapping the same strokes follow the hill. The user's stroke
   reported `surface_geometry_invalid` from the same pin (its tunnel was gone by the time of the
   dump). Fix: the support reads exposed pieces only
-  (`RoadbedSystem::for_each_exposed_carriageway_top_at`).
+  (`RoadbedSystem::for_each_exposed_carriageway_top_at`; since
+  [`ROAD-99`](#grade-separation-road-99) grounded pieces only, so no bridge deck pins it either).
 - *Grade separation.* A stroke that is not a tunnel never splits an existing tunnel where it
   crosses it, at any height (`topology::collect_crossing_splits`): no node, both edges intact.
   The *clearance rule* (`tunnel::deck_over_tunnels_m`): over every lattice point of a crossed
