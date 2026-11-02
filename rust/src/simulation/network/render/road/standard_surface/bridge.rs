@@ -4,15 +4,16 @@
 //!
 //! The fascias are the span piece's strips (`TERRAIN-07-B`), from the deck's outer edges down to
 //! the slab's edges, and the slab spans between their bottom vertices row by row, so deck,
-//! fascias and slab share their vertices bitwise. At a mouth shared with a grounded piece the
-//! abutment face hangs from the slab's end edge to the skirts' depth (`TERRAIN-07-C`).
+//! fascias and slab share their vertices bitwise. The abutment faces below the slab's end edge
+//! at a mouth shared with a grounded piece (`TERRAIN-07-C`) go with the piece's own surfaces
+//! (`top_surface.rs`), so the skirt layer's owner runs stay in piece order (`ROAD-97`).
 
 use super::super::{
-    MeshLayer, NetworkMeshData, NetworkMeshOwner, concrete_color, curb_color, push_triangle,
+    MeshLayer, NetworkMeshData, NetworkMeshOwner, concrete_color, push_triangle,
     push_triangle_preserving_winding_with_exact_normal, render_point, world_point,
 };
 use super::coverage::CompiledSurfaceCoverage;
-use super::geometry::{emit_abutment_faces, emit_chain_strips, triangle_is_too_small};
+use super::geometry::{emit_chain_strips, triangle_is_too_small};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{
     BRIDGE_DECK_DEPTH_M, RoadSection, RoadVec3, RoadbedSystem, SpanPiece, StripKind,
@@ -71,8 +72,6 @@ fn emit_compiled_bridge_concrete(
     };
     debug_assert_eq!(span.mesh().strip_kind(), Some(StripKind::Fascia));
     emit_chain_strips(mesh, span.mesh(), MeshLayer::Concrete, concrete_color());
-    // Below the slab's end edge at a mouth shared with a grounded piece, in the skirt layer.
-    emit_abutment_faces(mesh, span.mesh(), curb_color());
 
     // The slab: one quad per row pair between the fascias' bottom edges.
     let mut previous: Option<(f32, [RoadVec3; 2])> = None;

@@ -17,6 +17,7 @@ mod road_families;
 mod road_grade_separation;
 mod road_mesh_seams;
 mod road_crosswalks;
+mod road_in_place;
 mod road_reference_probe;
 mod road_plan_scaling;
 mod road_preview;

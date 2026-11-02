@@ -1126,15 +1126,20 @@ impl SimCore {
             core.region_graph.edge_mut(edge_idx).class = class;
             HashSet::new()
         });
-        if let Err(rejection) = tried {
-            debug_log!(
-                "road",
-                "edge_class_change_rejected edge={} reason={}",
-                edge_idx,
-                rejection.reason
-            );
-            return;
-        }
+        let checkpoint = match tried {
+            Ok(checkpoint) => checkpoint,
+            Err(rejection) => {
+                debug_log!(
+                    "road",
+                    "edge_class_change_rejected edge={} reason={}",
+                    edge_idx,
+                    rejection.reason
+                );
+                return;
+            }
+        };
+        // The checkpoint holds the whole records the change touches: its undo record (R3-k).
+        self.push_network_undo_delta(checkpoint, None);
         self.region_graph.edge_mut(edge_idx).class = class;
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);

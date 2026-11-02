@@ -8,7 +8,7 @@ use super::*;
 
 // A T junction: a through road from (-100, 0) to (100, 0) and a side road from its middle to
 // (0, 100). Returns the core, the T node, the side road's edge and the west arm's edge.
-fn t_junction() -> (SimCore, u32, usize, usize) {
+pub(super) fn t_junction() -> (SimCore, u32, usize, usize) {
     let mut core = test_core();
     core.treasury.balance = 1.0e7;
     for points in [
@@ -29,7 +29,7 @@ fn t_junction() -> (SimCore, u32, usize, usize) {
     (core, node, side, west)
 }
 
-fn live_arms(core: &SimCore, node: u32) -> Vec<usize> {
+pub(super) fn live_arms(core: &SimCore, node: u32) -> Vec<usize> {
     let graph = &core.region_graph;
     if graph.get_valid_node(node) != node || node as usize >= graph.node_adjacency_count() {
         return Vec::new();
@@ -43,7 +43,7 @@ fn live_arms(core: &SimCore, node: u32) -> Vec<usize> {
 }
 
 // The arm of `node` whose far end lies nearest `towards`.
-fn arm_towards(core: &SimCore, node: u32, towards: Vector3) -> usize {
+pub(super) fn arm_towards(core: &SimCore, node: u32, towards: Vector3) -> usize {
     let graph = &core.region_graph;
     let far = |edge: usize| {
         let edge = graph.edge(edge);
@@ -64,7 +64,7 @@ fn arm_towards(core: &SimCore, node: u32, towards: Vector3) -> usize {
 // Everything a crossing decides, independent of lane ids (an incremental lane rebuild renumbers
 // them): the road payload (paint, signs, lights, pavement), every edge's clips and profile, and
 // each live lane with its crossing and its successors' first points.
-fn products(core: &mut SimCore) -> String {
+pub(super) fn products(core: &mut SimCore) -> String {
     core.precompute_road_mesh_data();
     assert!(core.transit_network.roadbed.failed_nodes().is_empty());
     let mesh = core
@@ -337,24 +337,8 @@ fn a_toggle_and_its_undo_publish_the_chunks_a_full_emission_draws() {
     let (mut core, node, side, _) = t_junction();
     core.benchmark_mode = false;
     core.finalize_network_render_products();
-    // Every emitted field, less `current_owner`, the emitter's cursor, which a chunk keeps from
-    // its last write.
-    let chunks = |core: &SimCore| {
-        let text = format!("{:?}", core.cached_road_mesh_chunks);
-        let mut kept = String::with_capacity(text.len());
-        let mut rest = text.as_str();
-        while let Some(at) = rest.find("current_owner: ") {
-            kept.push_str(&rest[..at]);
-            rest = &rest[at..];
-            rest = &rest[rest.find(", crosswalks: ").expect("field order")..];
-        }
-        kept + rest
-    };
-    let full = |core: &mut SimCore| {
-        core.mark_network_render_dirty();
-        core.precompute_road_mesh_data();
-        chunks(core)
-    };
+    let chunks = published_chunks;
+    let full = fully_emitted_chunks;
     let drawn = chunks(&core);
     assert_eq!(full(&mut core), drawn);
 
@@ -375,4 +359,25 @@ fn a_toggle_and_its_undo_publish_the_chunks_a_full_emission_draws() {
     let undone = chunks(&core);
     assert_eq!(undone, drawn);
     assert_eq!(full(&mut core), undone);
+}
+
+// The published road chunks: every emitted field, less `current_owner`, the emitter's cursor,
+// which a chunk keeps from its last write.
+pub(super) fn published_chunks(core: &SimCore) -> String {
+    let text = format!("{:?}", core.cached_road_mesh_chunks);
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("current_owner: ") {
+        kept.push_str(&rest[..at]);
+        rest = &rest[at..];
+        rest = &rest[rest.find(", crosswalks: ").expect("field order")..];
+    }
+    kept + rest
+}
+
+// The chunks a full emission of every piece draws, as [`published_chunks`] prints them.
+pub(super) fn fully_emitted_chunks(core: &mut SimCore) -> String {
+    core.mark_network_render_dirty();
+    core.precompute_road_mesh_data();
+    published_chunks(core)
 }
