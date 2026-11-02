@@ -4,7 +4,8 @@
 
 use super::super::super::*;
 use crate::simulation::network::interaction::{
-    NetworkSnap, NetworkSnapTarget, StartDirection, road_start_direction, snap_stroke_angle,
+    NetworkSnap, NetworkSnapTarget, StartDirection, StructureHit, road_start_direction,
+    snap_stroke_angle,
 };
 
 // A stroke within this many degrees of a snap angle is pulled onto it.
@@ -65,7 +66,7 @@ impl SimulationNode {
         let half_h = world_h * 0.5;
         let border_snap_dist = border_snap_dist_m.min(half_w.min(half_h));
 
-        let road_hit = query.roadbed.raycast(ray_origin, ray_dir);
+        let road_hit = query.roadbed.raycast_piece(ray_origin, ray_dir);
         let terrain_hit = query.with_graded_surface(|surface, scratch| {
             surface
                 .raycast_surface(
@@ -77,6 +78,9 @@ impl SimulationNode {
         });
         // The level the ray hit (`ROAD-99`): a road's surface, or the ground. Under a bridge the
         // cursor stays on the road or the ground it hit, not on the deck over it.
+        let structure_hit =
+            Self::road_tool_structure_hit(&query.region_graph, ray_origin, road_hit, terrain_hit);
+        let road_hit = road_hit.map(|(hit, _)| hit);
         let (mut pos, hit_road) =
             match Self::road_tool_closest_cursor_hit(ray_origin, road_hit, terrain_hit) {
                 Some((hit, true)) => (hit, true),
@@ -117,6 +121,7 @@ impl SimulationNode {
             let raw_snap = Self::road_tool_cursor_network_snap(
                 &query.region_graph,
                 pos,
+                structure_hit,
                 previous_id("snap_edge"),
                 previous_id("snap_node"),
                 previous_id("surface_generation"),
@@ -148,6 +153,7 @@ impl SimulationNode {
         if let Some(snap) = Self::road_tool_cursor_network_snap(
             &query.region_graph,
             pos,
+            structure_hit,
             previous_id("snap_edge"),
             previous_id("snap_node"),
             previous_id("surface_generation"),
@@ -262,9 +268,14 @@ impl SimulationNode {
         result.to_variant()
     }
 
+    // The network snap of a cursor at `cursor_pos` whose ray hit `structure_hit`: the previous
+    // target while the cursor stays within its release radius and the ray still admits it, else
+    // a fresh acquisition among the targets the ray admits (`ROAD-99` follow-up B1).
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::nodes::simulation_node) fn road_tool_cursor_network_snap(
         graph: &crate::simulation::network::graph::RegionGraph,
         cursor_pos: Vector3,
+        structure_hit: StructureHit,
         edge_id: i64,
         node_id: i64,
         target_generation: i64,
@@ -272,7 +283,7 @@ impl SimulationNode {
         release_dist_m: f32,
     ) -> Option<NetworkSnap> {
         use crate::simulation::network::interaction::{
-            get_closest_network_snap_xz, retained_network_snap_xz,
+            get_closest_network_snap_at_hit, retained_network_snap_xz,
         };
         // IDs are snapshot-local: never reuse a target after topology/generation replacement.
         let target = (u64::try_from(target_generation).ok() == Some(surface_generation))
@@ -283,12 +294,16 @@ impl SimulationNode {
                     .or_else(|| usize::try_from(edge_id).ok().map(NetworkSnapTarget::Edge))
             })
             .flatten();
-        if let Some(snap) = target.and_then(|target| {
-            retained_network_snap_xz(graph, cursor_pos, target, 5.0, release_dist_m)
-        }) {
+        if let Some(snap) = target
+            .filter(|&target| structure_hit.admits(graph, target))
+            .and_then(|target| {
+                retained_network_snap_xz(graph, cursor_pos, target, 5.0, release_dist_m)
+            })
+            .filter(|snap| structure_hit.admits(graph, snap.target))
+        {
             return Some(snap);
         }
-        get_closest_network_snap_xz(graph, cursor_pos, 5.0)
+        get_closest_network_snap_at_hit(graph, cursor_pos, 5.0, structure_hit)
     }
 
     pub(in crate::nodes::simulation_node) fn road_tool_closest_cursor_hit(
@@ -310,6 +325,24 @@ impl SimulationNode {
             (None, Some(terrain)) => Some((terrain, false)),
             (None, None) => None,
         }
+    }
+
+    // The structure the cursor's ray hit, the only one it may snap to (`ROAD-99` follow-up B1):
+    // the bridge deck or deck node piece the road hit belongs to when that hit is the nearer
+    // one; the ground when the ray hit the ground first, or a grounded piece, or a buried bore.
+    pub(in crate::nodes::simulation_node) fn road_tool_structure_hit(
+        graph: &crate::simulation::network::graph::RegionGraph,
+        ray_origin: Vector3,
+        road_hit: Option<(Vector3, crate::simulation::network::roadbed::PieceId)>,
+        terrain_hit: Option<Vector3>,
+    ) -> StructureHit {
+        let piece = road_hit
+            .filter(|&(hit, _)| {
+                Self::road_tool_closest_cursor_hit(ray_origin, Some(hit), terrain_hit)
+                    .is_some_and(|(_, road)| road)
+            })
+            .map(|(_, piece)| piece);
+        StructureHit::of_piece(graph, piece)
     }
 
     // The cursor's height at an XZ point near its hit, on the level the ray hit (`ROAD-99`): on a

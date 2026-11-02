@@ -485,9 +485,65 @@ fn a_refused_mid_span_join_names_its_cause() {
     }
 }
 
-// B1: a road snapped onto a tunnel inside its bore is still refused, with its own reason. On the
-// 1:2 hill the bore runs 15 m under the flank at x = -50; the road comes along the flank and ends
-// at the bore's graph height there, as the cursor snapped to the bore reports it.
+// B1: a road ending on the ground beside or under a bridge, 1 to 10 m from its centre line in
+// plan, stays on the ground and joins nothing: the bridge is not split. The cursor gives such
+// an end the ground's height (its ray hit the ground, `StructureHit`).
+#[test]
+fn a_road_ending_beside_a_bridge_stays_on_the_ground() {
+    for off in [1.0, 3.0, 5.0, 8.0, 10.0] {
+        let case = format!("{off} m from the centre line");
+        let mut core = flat();
+        assert_eq!(draw(&mut core, &deck(6.0), false, true).reasons(), ["valid"; 3]);
+        let bridge = network(&core).0[&live(&core, EdgeClass::Bridge)[0]].clone();
+        let road = [Vector3::new(10.0, 0.0, 40.0), Vector3::new(0.0, 0.0, off)];
+        let drawn = draw(&mut core, &road, false, true);
+        assert_eq!(drawn.reasons(), ["valid"; 3], "{case}: {:?}", drawn.exact);
+        let bridges = live(&core, EdgeClass::Bridge);
+        assert_eq!(bridges.len(), 1, "{case}: not split");
+        assert!(network(&core).0[&bridges[0]] == bridge, "{case}: the bridge intact");
+        let roads = live(&core, EdgeClass::Standard);
+        assert_eq!(roads.len(), 1, "{case}");
+        let profile = &core.region_graph.edge(roads[0]).physical_geometry;
+        assert!(
+            profile.iter().all(|p| p.y.abs() <= 0.05),
+            "{case}: on the ground: {profile:?}"
+        );
+    }
+}
+
+// B1: a road ending on the hill right over a tunnel's bore commits, unjoined, at the hill's
+// height: the cursor never snaps to a buried bore (`StructureHit`), and an end on the hill stands
+// nearer the ground than the bore. On the 1:2 hill the bore runs 25 m under (-30, 0).
+#[test]
+fn a_road_ending_on_the_hill_over_a_bore_stays_on_the_hill() {
+    let mut core = cone_hill_core(80.0, 0.5);
+    assert_eq!(draw(&mut core, &THROUGH_HILL, true, true).reasons(), ["valid"; 3]);
+    let before = network(&core);
+    let hill = |x: f32, z: f32| 0.5 * (80.0 - x.hypot(z)).max(0.0);
+    let end = Vector3::new(-30.0, hill(-30.0, 0.0), 0.0);
+    let start = Vector3::new(-30.0, hill(-30.0, -30.0), -30.0);
+    let drawn = draw(&mut core, &[start, end], false, true);
+    assert_eq!(drawn.reasons(), ["valid"; 3], "{:?}", drawn.exact);
+    let after = network(&core);
+    for (id, record) in &before.0 {
+        assert!(&after.0[id] == record, "the tunnel and its approaches intact");
+    }
+    assert_eq!(after.0.len(), before.0.len() + 1, "one new road, unjoined");
+    let road = live(&core, EdgeClass::Standard)
+        .into_iter()
+        .find(|id| !before.0.contains_key(id))
+        .unwrap();
+    let profile = &core.region_graph.edge(road).physical_geometry;
+    let last = profile[profile.len() - 1];
+    assert!(
+        (last.y - core.get_height_at_internal(godot::prelude::Vector2::new(last.x, last.z))).abs() <= 0.05,
+        "the end at the hill's height: {last:?}"
+    );
+}
+
+// B1: a stroke whose end lies on a tunnel's bore, at the bore's graph height on its centre line
+// (a scripted or replayed point: the cursor never snaps to a bore), is refused with its own
+// reason. On the 1:2 hill the bore runs 15 m under the flank at x = -50.
 #[test]
 fn a_road_does_not_join_a_tunnel_mid_bore() {
     let mut core = cone_hill_core(80.0, 0.5);

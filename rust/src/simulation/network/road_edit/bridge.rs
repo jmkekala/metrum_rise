@@ -35,17 +35,22 @@ pub(super) const BRIDGE_TOO_LOW_REASON: &str = "bridge_too_low";
 /// A stroke end snapped onto a tunnel inside its bore (B1): roads meet a tunnel at its portals.
 pub(super) const TUNNEL_JOIN_REASON: &str = "tunnel_join";
 
+// How far in plan an end may lie from a span's centre line and still be the point the road
+// tool's cursor snapped onto it: the snap projects the cursor onto the centre line, so only the
+// rounding of that projection separates them. A free cursor almost never lands on the line.
+const ON_CENTRE_LINE_M: f32 = 0.01;
+
 /// The structure span a stroke's end is snapped onto, with its graph height there (`ROAD-99`
-/// follow-up B1): of the bridge and tunnel spans whose centre line passes within the end-join
-/// tolerance (`config::INTERSECTION_TOLERANCE`) of `end` in plan, the one whose graph profile
-/// there stands nearest the end's height, when it stands nearer than `ground_m`, the ground
-/// level under the end (a grounded road's carriageway or the terrain). This is the road tool
-/// cursor's choice between the ground and the structures (`interaction::
-/// get_closest_network_snap_xz`), and a cursor snapped to a span reports the span's graph height,
-/// so the end stands on the span it snapped to: the snap decides the join, not a height window.
-/// Ties go to the ground, then to the nearer centre line, then to the lower edge id. `None` for
-/// an end within the node snap of a node, which joins the node. `O(log E + K x profile points)`
-/// for the `K` edges near the end.
+/// follow-up B1). The road tool's cursor snaps to a structure only where its ray hit that
+/// structure's deck (`interaction::StructureHit`), and then reports the point on the span's
+/// centre line at the span's graph height. So an end joins the bridge or tunnel span whose centre
+/// line it lies on in plan (within rounding, [`ON_CENTRE_LINE_M`]) and whose graph profile there
+/// stands nearer the end's height than `ground_m` does, the ground level under the end (a
+/// grounded road's carriageway or the terrain): the cursor's own choice between the levels. An
+/// end on the ground beside or under a bridge, or on a hill over a bore, stands nearer the
+/// ground and joins nothing. Ties go to the ground, then to the nearer centre line, then to the
+/// lower edge id. `None` for an end within the node snap of a node, which joins the node.
+/// `O(log E + K x profile points)` for the `K` edges near the end.
 pub(super) fn snapped_structure_span(
     graph: &RegionGraph,
     end: Vector3,
@@ -57,7 +62,7 @@ pub(super) fn snapped_structure_span(
     {
         return None;
     }
-    let reach = config::INTERSECTION_TOLERANCE;
+    let reach = ON_CENTRE_LINE_M;
     let mut best: Option<(f32, f32, usize, f32)> = None;
     let mut edges = edges_near(graph, &[end], reach);
     edges.sort_unstable();

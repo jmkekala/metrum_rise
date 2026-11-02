@@ -451,6 +451,12 @@ impl RoadbedSystem {
 
     /// First hit of a world-space ray against the visible road surface.
     pub fn raycast(&self, origin: Vector3, direction: Vector3) -> Option<Vector3> {
+        self.raycast_piece(origin, direction).map(|(hit, _)| hit)
+    }
+
+    /// [`Self::raycast`] with the piece the ray hit (`ROAD-99` follow-up B1: the road tool's
+    /// cursor snaps to a structure only where its ray hit it).
+    pub fn raycast_piece(&self, origin: Vector3, direction: Vector3) -> Option<(Vector3, PieceId)> {
         if direction.length_squared() <= f32::EPSILON {
             return None;
         }
@@ -465,7 +471,7 @@ impl RoadbedSystem {
             extent[2] + BOUNDS_EPSILON_M,
             extent[3] + BOUNDS_EPSILON_M,
         )?;
-        let mut best: Option<(f64, RoadVec3)> = None;
+        let mut best: Option<(f64, RoadVec3, PieceId)> = None;
         // A vertical ray visits its one cell over an unbounded parameter.
         walk_ray_cells(
             RoadVec2::new(origin.x, origin.z),
@@ -476,10 +482,15 @@ impl RoadbedSystem {
             |x, z, t0, t1| {
                 self.raycast_cell((x as i32, z as i32), origin, direction, (t0, t1), &mut best);
                 // A hit before the next cell cannot be beaten by any later cell.
-                best.is_none_or(|(best_t, _)| best_t > t1)
+                best.is_none_or(|(best_t, _, _)| best_t > t1)
             },
         );
-        best.map(|(_, hit)| Vector3::new(hit.x as f32, hit.y as f32, hit.z as f32))
+        best.map(|(_, hit, piece)| {
+            (
+                Vector3::new(hit.x as f32, hit.y as f32, hit.z as f32),
+                piece,
+            )
+        })
     }
 
     // Tests the triangles of the cell's pieces along the ray's `t` interval inside the cell.
@@ -489,7 +500,7 @@ impl RoadbedSystem {
         origin: RoadVec3,
         direction: RoadVec3,
         (t0, t1): (f64, f64),
-        best: &mut Option<(f64, RoadVec3)>,
+        best: &mut Option<(f64, RoadVec3, PieceId)>,
     ) {
         for indexed in self.index.cell(cell) {
             indexed
@@ -498,9 +509,9 @@ impl RoadbedSystem {
                 .items_along_ray(origin, direction, t0, t1, |item| {
                     let triangle = indexed.mesh.triangle_points(item as usize);
                     if let Some(t) = road_ray_triangle_intersection_t(triangle, origin, direction)
-                        && best.is_none_or(|(best_t, _)| t < best_t)
+                        && best.is_none_or(|(best_t, _, _)| t < best_t)
                     {
-                        *best = Some((t, origin + direction * t));
+                        *best = Some((t, origin + direction * t, indexed.id));
                     }
                 });
         }

@@ -660,8 +660,8 @@ fn collect_endpoint_snap_splits(
                 }
             }
 
-            // An end snapped onto this span joins it: the road tool decided that on the full
-            // centre line within the join tolerance, which the tests below repeat on samples.
+            // An end snapped onto this span joins it: the road tool found it on the full centre
+            // line, which the tolerance tests below would repeat on samples.
             let snapped = grade.joined_spans[idx].is_some();
             if best_dist < snap_guard || snapped {
                 let mut factor_u = find_geo_factor(&edge2_geo_full, best_closest);
