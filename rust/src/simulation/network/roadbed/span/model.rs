@@ -437,7 +437,14 @@ impl<'a> SpanModel<'a> {
             center_height_m,
             tangent_xz,
             lateral_xz,
-            bands: self.lateral_bands(&self.row_profile(s_m).0, center, lateral_xz, profile_blend),
+            // An undivided span evaluates its one profile in place.
+            bands: match self.body {
+                None => self.lateral_bands(&self.profile, center, lateral_xz, profile_blend),
+                Some(_) => {
+                    let (profile, _) = self.row_profile(s_m);
+                    self.lateral_bands(&profile, center, lateral_xz, profile_blend)
+                }
+            },
         }
     }
 
