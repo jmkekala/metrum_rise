@@ -12,7 +12,9 @@ mod memory;
 // The measured stroke: the T's side road on flat ground, a tunnel through the hill south of the
 // T, a road over that tunnel (`ROAD-61` round R8h), or a road under a bridge south of the T on
 // flat ground (`ROAD-99`), or a road climbing from the ground to join that bridge mid-span
-// (`ROAD-99` follow-up B1); or no stroke: the T's side road, drawn, widened in place (`ROAD-80`).
+// (`ROAD-99` follow-up B1), or the T's side road with a 3 m kerbed grass median (`ROAD-80`); or
+// no stroke: the T's side road, drawn, widened in place or given that median in place
+// (`ROAD-80`).
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
@@ -20,8 +22,17 @@ enum Measured {
     OverTunnel,
     UnderBridge,
     JoinBridge,
+    Divided,
     LaneEdit,
+    MedianEdit,
 }
+
+// The median of the divided measurements (`ROAD-80`).
+const GRASS: crate::simulation::network::graph::RoadMedian =
+    crate::simulation::network::graph::RoadMedian {
+        style: crate::simulation::network::graph::MedianStyle::KerbedGrass,
+        width_m: 3.0,
+    };
 
 #[derive(Clone, Copy, PartialEq)]
 enum CellScenario {
@@ -84,6 +95,33 @@ fn populated_bridge_join_plan_scaling() {
         false,
         CellScenario::None,
         Measured::JoinBridge,
+    );
+}
+
+// `ROAD-80` locality: the T's side road drawn with a 3 m kerbed grass median, planned as the
+// remote city grows.
+#[test]
+#[ignore = "unprofiled divided-stroke planning locality; run alone with --release --ignored --nocapture"]
+fn populated_divided_road_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::Divided,
+    );
+}
+
+// `ROAD-80` locality: the T's side road given a 3 m kerbed grass median in place.
+#[test]
+#[ignore = "unprofiled in-place median edit locality; run alone with --release --ignored --nocapture"]
+fn populated_median_edit_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::MedianEdit,
     );
 }
 
@@ -176,7 +214,8 @@ fn measure_populated_road_plan_scaling(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
     );
-    if measured == Measured::LaneEdit {
+    let in_place = matches!(measured, Measured::LaneEdit | Measured::MedianEdit);
+    if in_place {
         road_terrain_plan::commit_ready(
             &mut core,
             vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
@@ -383,8 +422,14 @@ fn measure_populated_road_plan_scaling(
             measure_snapshot_components(&core, remote_buildings);
             continue;
         }
-        if measured == Measured::LaneEdit {
-            let products = measure_lane_edit(&mut core, remote_buildings, background_roads);
+        if in_place {
+            // Widened to 2 + 2, or given the grass median at 1 + 1.
+            let section = if measured == Measured::LaneEdit {
+                (2, 2, None)
+            } else {
+                (1, 1, Some(GRASS))
+            };
+            let products = measure_lane_edit(&mut core, remote_buildings, background_roads, section);
             if let Some(previous) = &previous_lane_products {
                 assert_eq!(&products, previous, "remote state changed local products");
             }
@@ -443,7 +488,9 @@ fn measure_populated_road_plan_scaling(
         let mut preview_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let points = match measured {
-            Measured::Ground => vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
+            Measured::Ground | Measured::Divided => {
+                vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)]
+            }
             Measured::Tunnel => vec![
                 Vector3::new(0.0, 0.0, -320.0),
                 Vector3::new(0.0, 0.0, -80.0),
@@ -460,7 +507,9 @@ fn measure_populated_road_plan_scaling(
                 Vector3::new(0.0, 0.0, -210.0),
                 Vector3::new(0.0, 6.0, -150.0),
             ],
-            Measured::LaneEdit => unreachable!("measured by measure_lane_edit"),
+            Measured::LaneEdit | Measured::MedianEdit => {
+                unreachable!("measured by measure_lane_edit")
+            }
         };
         let request = || RoadPreviewRequest {
             surface_generation: generation,
@@ -469,7 +518,7 @@ fn measure_populated_road_plan_scaling(
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             tunnel,
-            median: None,
+            median: (measured == Measured::Divided).then_some(GRASS),
         };
         for iteration in 0..103 {
             let start = Instant::now();
@@ -512,6 +561,7 @@ fn measure_populated_road_plan_scaling(
                 "over_tunnel": measured == Measured::OverTunnel,
                 "under_bridge": measured == Measured::UnderBridge,
                 "join_bridge": measured == Measured::JoinBridge,
+                "divided": measured == Measured::Divided,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
@@ -525,11 +575,18 @@ fn measure_populated_road_plan_scaling(
     }
 }
 
-// `ROAD-80`: the T's side road (south of the T) widened from 1+1 to 2+2 in place. Times the
-// verdict (the check, run and put back) over 100 samples, then 20 commits each followed by its
-// undo, then 20 toggles of the side arm's crossing (`ROAD-74`) with their undos; returns the local products after a commit: the T's span and node pieces and the side
-// road's lanes, which must not depend on the remote city. The once-per-tier setup is not timed.
-fn measure_lane_edit(core: &mut SimCore, remote_buildings: usize, remote_roads: usize) -> String {
+// `ROAD-80`: the T's side road (south of the T) given `(fwd, bkw, median)` in place: widened
+// from 1+1 to 2+2, or given a median. Times the verdict (the check, run and put back) over 100
+// samples, then 20 commits each followed by its undo, then 20 toggles of the side arm's
+// crossing (`ROAD-74`) with their undos; returns the local products after a commit: the T's span
+// and node pieces and the side road's lanes, which must not depend on the remote city. The
+// once-per-tier setup is not timed.
+fn measure_lane_edit(
+    core: &mut SimCore,
+    remote_buildings: usize,
+    remote_roads: usize,
+    (fwd, bkw, median): (u8, u8, Option<crate::simulation::network::graph::RoadMedian>),
+) -> String {
     // The fixture commits without lanes; the edit rebuilds the lanes it touches, so they exist
     // before the first one, as in a game (setup, not timed). No agent is on a lane.
     core.transit_network
@@ -563,7 +620,7 @@ fn measure_lane_edit(core: &mut SimCore, remote_buildings: usize, remote_roads: 
     let mut verdicts = Vec::new();
     for iteration in 0..103 {
         let start = Instant::now();
-        let verdict = core.preview_edge_cross_section_internal(side, 2, 2, None);
+        let verdict = core.preview_edge_cross_section_internal(side, fwd, bkw, median);
         let ms = start.elapsed().as_secs_f64() * 1000.0;
         assert!(verdict.is_none(), "{verdict:?}");
         if iteration >= 3 {
@@ -575,7 +632,7 @@ fn measure_lane_edit(core: &mut SimCore, remote_buildings: usize, remote_roads: 
     let mut products = String::new();
     for _ in 0..20 {
         let start = Instant::now();
-        assert!(core.set_edge_cross_section_internal(side, 2, 2, None));
+        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median));
         commits.push(start.elapsed().as_secs_f64() * 1000.0);
         core.precompute_road_mesh_data();
         products = local(core);
@@ -600,7 +657,7 @@ fn measure_lane_edit(core: &mut SimCore, remote_buildings: usize, remote_roads: 
         serde_json::json!({
             "remote_buildings": remote_buildings, "remote_roads": remote_roads,
             "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
-            "rayon_threads": rayon::current_num_threads(),
+            "rayon_threads": rayon::current_num_threads(), "median": median.is_some(),
             "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
             "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
             "toggle_p50_ms": p50(&mut toggles),
