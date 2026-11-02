@@ -601,8 +601,92 @@ crossings).
   teleport, no crossing of its own, and the watchdog's move home does not apply. Cost: one route
   query per stranded walker per retry (at most one every 2 min once settled), O(1) per stranded
   walker and tick in between. A walker without a home keeps trying its destination on the same
-  backoff; a walker without a lane (at a node) keeps the watchdog's rule, as does a walker at the
-  end of its path whose lane is dropped (`TRAFFIC-19`, planned: the same recovery, no teleport).
+  backoff.
+- **No teleport for walkers (`TRAFFIC-19`, 2026-11-02).** The stuck-agent watchdog
+  (`movement/replan_watchdog.rs`, a move home or to a border node after three failed replans)
+  never moves a walker. Every site that hands it a failed replan sends a walker to
+  `walk_home::walker_lost` instead: the walker plans its destination again from where it stands
+  (one record with the site's cause, outcome `Replans`), and with no route gives the trip up for a
+  walk home or is stranded, as above, with no retries of the watchdog's. A walker on a crossing is
+  stranded at once (one record) and plans home from the end of the sidewalk it reaches. Vehicles
+  keep the watchdog unchanged (`TRAFFIC-20`).
+  - *A walker with no lane* (left at a node by a dropped lane, or off the network when a road edit
+    removes its road and finds no sidewalk to reattach it to) takes the sidewalk it stands on
+    before any replan gate (`walk_home::stand_on_sidewalk`): of the foot lanes into its node, the
+    one whose end is nearest its position, ties by lane id, entered at its end, when that end is
+    within a road edit's own reattach reach (`LANE_REATTACH_MAX_DIST_M`, 30 m). Its position is
+    not changed; it is drawn at the lane's end from the next pose (0.1 to 4.2 m away for the 27
+    walkers at a node among the bulldoze probe's 40 sampled events, below). Its route is dropped
+    (its exit kept) and planned again from that sidewalk by the rules above. With no sidewalk end
+    in reach it plans from its node when it stands within 30 m of it, and with no route is
+    stranded there (no lane, reported at that node, the same backoff, its plans home from the
+    node). Farther away, off every sidewalk, it is stranded where it stands, one `NoPosition`
+    record, and its backoff only looks for a sidewalk end in reach: it is never planned from a
+    node it is not at. Before, all of these planned from the node: a walker whose road was
+    bulldozed stood 128 to 351 m from its node (7 walkers among the same samples) and was drawn
+    there by its first lane, or after three failures moved home; a walker at a node could enter
+    either sidewalk of its first road, or an exit lane across the road from it, with no crossing.
+    A walker with no trip keeps standing. Cost: O(arms × lanes per arm) once, then the replan; a
+    stranded walker off the network repeats the lookup once per backoff step.
+  - *End of path.* A walker whose route ends at a node that is not its exit keeps its lane and
+    plans again from its end (`junction/walk.rs::replan_from_lane`; no record when a route is
+    found) instead of dropping the lane and planning from the node. One with no plan waits at the
+    end of its lane; its replan gate plans from there once it has a destination. Traced case
+    (`TRAFFIC-19` probe, 100k baseline, default crossings): resident 140399 walks home from a shop
+    when its household loses that home (`evict_household_member_home`), which clears its
+    destination, exit and route on road 2365. It walks to the lane's end at node 790, where the
+    path ends, and the old rule dropped the lane: it stood lane-less at the node with no trip, and
+    once rehoused would have planned from the node (with the watchdog's three retries and move
+    home behind a failed plan).
+- **Measured (`TRAFFIC-19`, 2026-11-02; release test binaries of the control `3de19c2b` and the
+  branch, each with R6's uncommitted crossings-off variant and the probe, one session; FRESH).**
+  The probe is `populated_city::watchdog_probe` (ignored; `TRAFFIC19_RESIDENTS`, `TRAFFIC19_DAYS`,
+  `TRAFFIC19_TOGGLES`, `TRAFFIC19_BULLDOZE`): a test-only tally of every trip-failure record and
+  watchdog verdict by agent kind, lane state, site and outcome, off unless the probe turns it on,
+  so no other run pays for it.
+  - Fixtures, 3 game days after the build, `RAYON_NUM_THREADS=6`, 10k, 30k and 100k, default
+    crossings and the variant: no watchdog verdict of any kind (walker, car or freight) and no
+    trip-failure record, in both binaries. Vehicles reaching a path end that is not their exit:
+    2,022, 4,105 and 9,733 (default), 2,034, 4,032 and 9,946 (variant), identical in the branch
+    where it ran (all but the 100k variant). Walkers reaching one: only the traced case (100k
+    default), which the branch keeps on its lane. The 100k variant run overflowed a background
+    worker's 2 MB stack in the control (`metrum-bg-0`, while the variant toggled its 1,900
+    crossing arms at build) and passed with `RUST_MIN_STACK=268435456`: a separate finding, not
+    this round's.
+  - Crossings turned off and on through the editor, a sixth of the four-way junctions every 30
+    game minutes (13,500 toggles over 3 days at 10k): no watchdog verdict and no walker record in
+    either binary.
+  - road bulldozed every 2 game hours (33 over 3 days at 10k): the control's walker verdicts were
+    2 retries and 1 move home (walker 9880, left 123 m out on a bulldozed road with its node 87
+    behind it, planning from the node with no route). The branch has none: walkers left on
+    bulldozed roads, 123 to 347 m from their nodes, are stranded where they stand and reported (14
+    `NoPosition` records from 7 walkers; a walker is recorded again when a later edit clears its
+    plan), and the 27 walkers left at a node took their sidewalks 0.1 to 4.2 m away. Vehicles, the
+    `TRAFFIC-20` evidence: control 65 cars sent home and 1,083 freight carriers sent to a border
+    node (1,062 of them from the immigration bootstrap), branch 64 and 1,035; the runs diverge
+    after the first walker's different outcome.
+  - Envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
+    departures,settlements`, `RAYON_NUM_THREADS=6`): all four runs PASS with the same 13 notes,
+    deterministic (repeat, 1 and 3 threads, reload), no trip failure with default crossings and
+    the variant's 0.014 and 0.007 per 1,000 residents a day at 30k in both binaries. The walks
+    shift slightly after the first walker whose trip an eviction clears on the road: the branch
+    keeps it on its lane at the path end and plans from that sidewalk once it has a destination,
+    the control dropped the lane and planned from the node (14-day 10k probe: one such walker,
+    agent 2750 on day 10, where the envelope's 10k baseline first differs; vehicle path ends then
+    15,485 against 15,502). Control against branch, default: 10k baseline deliveries 172.26 to
+    172.47 per 1,000 buildings a day, other metrics equal; 10k fiscal stress identical; 30k
+    baseline deliveries 122.38 to 121.87, employment 0.6112 to 0.6101, net income 8.82 to 8.79,
+    bankruptcies 1.77 to 1.80; 30k arrivals deliveries 127.44 to 126.40, net income 9.27 to 9.22;
+    30k fiscal stress within 0.1%. Variant: 10k identical; 30k baseline deliveries 119.05 to
+    120.10, net income 8.06 to 8.17, bankruptcies 1.91 to 1.92; 30k arrivals deliveries 119.2 to
+    118.8.
+  - `PERF-06` (`benchmark_agent_tick_contract`, C F F C, 5 samples a slot, `RAYON_NUM_THREADS=8`,
+    P-cores, both locks, load 1.28): work counts identical in all 20 runs. Median ms per slot at
+    10k/30k: network 0.49/0.90, 0.39/0.73, 0.59/0.78, 0.36/0.88; egress 0.49/1.60, 0.69/1.69,
+    0.71/1.80, 0.79/2.26; ingress 0.42/0.45, 0.23/0.47, 0.31/0.64, 0.28/0.38. The slots scatter
+    within each binary: no claim either way. Added per tick: one walker test per network agent
+    without a lane before the gates; the rest runs only for a walker that has lost its lane or its
+    route. No memory added: no column, no save change.
 - **Stranded report.** `AgentVec`'s stranded walkers are a set (`tick/stranded.rs`): a walker
   enters with the record that strands it (O(new strandings) per tick) and leaves when the report
   finds it no longer stranded. The report, the junctions where stranded walkers wait and how
@@ -664,6 +748,17 @@ crossings).
   loaded continues frame for frame as the unsaved one (walkers, timers, report); its ignored
   recorder writes the fixture `godot/tests/stranded_notice_test.gd` loads into the real game
   scene and `SimulationNode` (`./run.sh --test`).
+- **Tests (`TRAFFIC-19`; each fails at `3de19c2b`).** `tests::walk_home`: a walker at a node with
+  no lane takes the sidewalk it stands on (not moved), gives up the unreachable shop and walks
+  home, one record; a walker at a node with no sidewalk is stranded there, reported at that node,
+  plans home after 5 s, 30 s and 2 min, and walks home once the road gets sidewalks; a walker off
+  every sidewalk is stranded where it stands, never moved, one `NoPosition` record; the traced
+  case, an evicted walker that keeps its lane at its path end and, rehoused, walks from it to its
+  new home; a crossing-free block with walkers left at every node and on sidewalks, no watchdog
+  move and no step over 2 m on the road, identical for 1 and 8 workers. `stranded_fixture`:
+  walkers stranded at nodes without a lane (two that took their sidewalks, one at a node with
+  none) saved mid-backoff and loaded continue frame for frame. The watchdog's own test now drives
+  a car.
 
 ### Detach rule (`TRAFFIC-15`, `TRAFFIC-13`)
 
