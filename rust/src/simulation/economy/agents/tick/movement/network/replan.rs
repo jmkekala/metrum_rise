@@ -16,7 +16,7 @@ use super::super::super::trip_failures::FailureCause;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
 };
-use super::walk_home::{give_up_trip, retry_home};
+use super::walk_home::{give_up_trip, retry_home, retry_home_without_lane};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -109,7 +109,9 @@ unsafe fn bootstrap_immigration_trip(
                 i,
                 sim_time,
                 allocator,
+                transit_network,
                 graph,
+                pathfind_count,
                 "immigration-bootstrap",
                 FailureCause::NoImmigrationRoute {
                     border: border_node,
@@ -158,7 +160,9 @@ unsafe fn ensure_exact_access_plan(
                 i,
                 sim_time,
                 allocator,
+                transit_network,
                 graph,
+                pathfind_count,
                 "missing-replan-start",
                 FailureCause::NoPosition,
                 slices,
@@ -188,7 +192,7 @@ unsafe fn ensure_exact_access_plan(
                     i,
                     start_node,
                     *slices.lane_id.get(i),
-                    failure,
+                    FailureCause::NoRoute(failure),
                     sim_time,
                     allocator,
                     transit_network,
@@ -203,7 +207,9 @@ unsafe fn ensure_exact_access_plan(
                     i,
                     sim_time,
                     allocator,
+                    transit_network,
                     graph,
+                    pathfind_count,
                     "exact-access-replan",
                     FailureCause::NoRoute(failure),
                     slices,
@@ -240,10 +246,21 @@ unsafe fn repair_stale_detach_plan(
             return true;
         }
         // A stranded walker has no exit lane: it plans home on its backoff from its road lane,
-        // wherever it waits on it (`ROAD-74`).
+        // wherever it waits on it (`ROAD-74`), or, with no lane, from where it stands
+        // (`TRAFFIC-19`).
         if (*s_access_flags.get(i) & ACCESS_WALK_STRANDED) != 0 {
             let lane = *slices.lane_id.get(i);
-            if let Some(node) = lane_terminal_node(lane, transit_network, graph)
+            if lane == usize::MAX && *s_tmode.get(i) == MODE_WALK {
+                retry_home_without_lane(
+                    i,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+            } else if let Some(node) = lane_terminal_node(lane, transit_network, graph)
                 && walker_on_road_lane(i, node, transit_network, graph, slices)
             {
                 retry_home(
@@ -295,7 +312,9 @@ unsafe fn repair_stale_detach_plan(
                 i,
                 sim_time,
                 allocator,
+                transit_network,
                 graph,
+                pathfind_count,
                 "missing-stale-detach-replan-start",
                 stale_exit(None),
                 slices,
@@ -325,7 +344,7 @@ unsafe fn repair_stale_detach_plan(
                     i,
                     start_node,
                     *slices.lane_id.get(i),
-                    failure,
+                    FailureCause::NoRoute(failure),
                     sim_time,
                     allocator,
                     transit_network,
@@ -340,7 +359,9 @@ unsafe fn repair_stale_detach_plan(
                     i,
                     sim_time,
                     allocator,
+                    transit_network,
                     graph,
+                    pathfind_count,
                     "stale-detach-replan",
                     stale_exit(Some(failure)),
                     slices,

@@ -110,9 +110,10 @@ pub(in super::super) unsafe fn witness_lane(
 }
 
 /// Walker `i` stands at the end of road lane `lane_id` at `node`, where its witness has no step
-/// (`cause`): it waits at the mouth and plans again from its own lane. A new route is walked from
-/// the next tick (one `cause` record, outcome `Replans`); with none it gives the trip up
-/// ([`give_up_trip`]). No teleport and no crossing of its own.
+/// (`cause`) or its path ends short of its exit (`None`, `TRAFFIC-19`): it waits at the mouth and
+/// plans again from its own lane. A new route is walked from the next tick (one `cause` record,
+/// outcome `Replans`; none at a path's end); with none it gives the trip up ([`give_up_trip`]).
+/// No teleport and no crossing of its own.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
@@ -121,7 +122,7 @@ pub(super) unsafe fn replan_from_lane(
     lane_id: usize,
     node: u32,
     path_idx_before_lane_end: usize,
-    cause: FailureCause,
+    cause: Option<FailureCause>,
     sim_time: f32,
     remaining_dist: &mut f32,
     allocator: &BuildingAllocator,
@@ -152,7 +153,9 @@ pub(super) unsafe fn replan_from_lane(
             Some((i, "walk-witness")),
         ) {
             Ok(replan) => {
-                record_failure(i, cause, FailureOutcome::Replans, slices);
+                if let Some(cause) = cause {
+                    record_failure(i, cause, FailureOutcome::Replans, slices);
+                }
                 apply_network_replan(i, replan, slices);
             }
             Err(failure) => {
@@ -160,7 +163,7 @@ pub(super) unsafe fn replan_from_lane(
                     i,
                     node,
                     lane_id,
-                    failure,
+                    FailureCause::NoRoute(failure),
                     sim_time,
                     allocator,
                     transit_network,

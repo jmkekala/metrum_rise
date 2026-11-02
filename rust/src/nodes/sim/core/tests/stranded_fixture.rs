@@ -54,6 +54,12 @@ fn foot_lane(core: &SimCore, edge: usize, inner_side: bool, fwd: bool) -> usize 
 
 // The block before its first frame: nodes 0..4 at the corners, edge k from corner k to k + 1.
 fn stranded_core() -> SimCore {
+    stranded_core_with(false)
+}
+
+// The block, with a car-only road from node 4, 60 m west of node 0, into node 0 when `spur`
+// (edge 4; node 4 has no sidewalk).
+fn stranded_core_with(spur: bool) -> SimCore {
     let mut core = SimCore {
         treasury: CityTreasury::new(0.0),
         terrain_dirty: false,
@@ -88,8 +94,32 @@ fn stranded_core() -> SimCore {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         });
     }
+    if spur {
+        let (a, b) = (corner(0) - Vector3::new(60.0, 0.0, 0.0), corner(0));
+        let node = core.region_graph.add_node(a, NodeType::Junction);
+        core.region_graph.add_edge(Edge {
+            start_node: node,
+            end_node: 0,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 13.89,
+            base_cost: 60.0 / 13.89,
+            physical_length: 60.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![a, b],
+            physical_geometry: vec![a, b],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+    }
     core.region_graph.rebuild_adjacency_list();
-    for node in 0..4u32 {
+    for node in 0..core.region_graph.node_count() as u32 {
         for edge in core.region_graph.node_adjacency(node).to_vec() {
             core.region_graph.set_crosswalk_override(node, edge, false);
         }
@@ -203,6 +233,145 @@ fn stranded_walkers_wait_and_continue_across_a_save_file() {
         loaded.agents.stranded_report(),
         continuous.agents.stranded_report()
     );
+}
+
+// `TRAFFIC-19`: two walkers stand at node 3 with no lane, at the ends of its two outer
+// sidewalks, and one at node 4, which has no sidewalk, all with exits no crossing reaches. The
+// first two take the sidewalk each stands on and strand at its end, the third strands at node 4;
+// none is moved.
+// Saved mid-backoff and loaded, the city continues as the unsaved one.
+#[test]
+fn walkers_at_nodes_without_a_lane_strand_in_place_and_continue_across_a_save_file() {
+    let mut continuous = stranded_core_with(true);
+    // The ends of the two outer sidewalks into node 3: road 2's forward, road 3's backward.
+    let lanes = [
+        foot_lane(&continuous, 2, false, true),
+        foot_lane(&continuous, 3, false, false),
+    ];
+    let exit = foot_lane(&continuous, 3, true, true) as u32;
+    let end = |lane: usize| {
+        *continuous.transit_network.lane_system.lanes[lane]
+            .geometry
+            .last()
+            .unwrap()
+    };
+    let spur_node = corner(0) - Vector3::new(60.0, 0.0, 0.0);
+    let mut at_nodes = Vec::new();
+    for (node, pos) in [(3u32, end(lanes[0])), (3, end(lanes[1])), (4, spur_node)] {
+        let agents = &mut continuous.agents;
+        let i = agents.spawn_housed_agent(usize::MAX, pos.x, pos.z);
+        agents.transit_mode[i] = MODE_WALK;
+        agents.transit[i] = TRANSIT_NETWORK;
+        agents.speed[i] = AGENT_WALK_SPEED_MS;
+        agents.current_building[i] = usize::MAX;
+        agents.current_edge[i] = usize::MAX;
+        agents.current_node[i] = node;
+        agents.current_lane_id[i] = usize::MAX;
+        agents.access_flags[i] = ACCESS_PLAN_VALID;
+        agents.planned_detach_node[i] = 3;
+        agents.planned_detach_lane_id[i] = exit;
+        agents.planned_detach_lane_d[i] = 10.0;
+        at_nodes.push((i, pos));
+    }
+    let walkers = continuous.agents.len() as u32;
+    let mut frames = 0;
+    while continuous.agents.stranded_report().walkers < walkers {
+        continuous.step_frame(FRAME_DT_S);
+        frames += 1;
+        assert!(
+            frames < MAX_FRAMES,
+            "{:?}",
+            continuous.agents.stranded_report()
+        );
+    }
+    assert_eq!(
+        continuous.agents.stranded_report().junctions,
+        [(1, 3), (2, 2), (3, 2), (4, 1)]
+    );
+    for &(i, pos) in &at_nodes {
+        let agents = &continuous.agents;
+        assert_eq!(
+            (agents.pos_x[i], agents.pos_y[i]),
+            (pos.x, pos.z),
+            "not moved"
+        );
+    }
+    for (k, &lane) in lanes.iter().enumerate() {
+        assert_eq!(continuous.agents.current_lane_id[at_nodes[k].0], lane);
+    }
+    let spur = at_nodes[2].0;
+    assert_eq!(continuous.agents.current_lane_id[spur], usize::MAX);
+    assert_eq!(continuous.agents.current_node[spur], 4);
+    // Mid-backoff, then save and load.
+    let retried = |core: &SimCore, step: u8| {
+        (0..core.agents.len()).all(|i| core.agents.network_replan_failures[i] >= step)
+    };
+    let mut frames = 0;
+    while !retried(&continuous, 1) {
+        continuous.step_frame(FRAME_DT_S);
+        frames += 1;
+        assert!(frames < 20 * MAX_FRAMES, "{:?}", walkers_state(&continuous));
+    }
+    let path = temp_save_path("stranded_walkers_at_nodes");
+    continuous
+        .save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let mut loaded = test_core();
+    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    loaded.time.speed_multiplier = continuous.time.speed_multiplier;
+    assert_eq!(walkers_state(&loaded), walkers_state(&continuous));
+    assert_eq!(
+        loaded.agents.stranded_report(),
+        continuous.agents.stranded_report()
+    );
+    let mut frames = 0;
+    while !retried(&continuous, 3) {
+        continuous.step_frame(FRAME_DT_S);
+        loaded.step_frame(FRAME_DT_S);
+        assert_eq!(walkers_state(&loaded), walkers_state(&continuous));
+        frames += 1;
+        assert!(
+            frames < 100 * MAX_FRAMES,
+            "{:?}",
+            walkers_state(&continuous)
+        );
+    }
+    assert_eq!(
+        loaded.agents.stranded_report(),
+        continuous.agents.stranded_report()
+    );
+    assert!(
+        !continuous
+            .agents
+            .trip_failures
+            .lines
+            .iter()
+            .any(|line| line.contains("sent home") || line.contains("sent to border")),
+        "{:#?}",
+        continuous.agents.trip_failures.lines
+    );
+}
+
+// A walker's lane, node, distance, position, flags, backoff step and next plan time, bitwise.
+type WalkerState = (usize, u32, u32, u32, u32, u8, u8, u32);
+
+fn walkers_state(core: &SimCore) -> Vec<WalkerState> {
+    let agents = &core.agents;
+    (0..agents.len())
+        .map(|i| {
+            (
+                agents.current_lane_id[i],
+                agents.current_node[i],
+                agents.lane_distance[i].to_bits(),
+                agents.pos_x[i].to_bits(),
+                agents.pos_y[i].to_bits(),
+                agents.access_flags[i],
+                agents.network_replan_failures[i],
+                agents.next_replan_time[i].to_bits(),
+            )
+        })
+        .collect()
 }
 
 // Writes the stranded block as the Godot stranded-walker notice test's fixture, saved once the

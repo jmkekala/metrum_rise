@@ -15,8 +15,11 @@ use super::super::super::planning::{plan_border_network_replan, plan_network_rep
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::super::walk_lanes::WalkFrom;
-use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
+use super::super::replan_watchdog::{
+    delay_or_recover_after_network_replan_failure, has_recoverable_network_trip,
+};
 use super::apply_network_replan;
+use super::walk_home::walker_lost;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -183,7 +186,7 @@ pub(super) unsafe fn handle_lane_end(
                     lane_id,
                     node,
                     path_idx_before_lane_end,
-                    cause,
+                    Some(cause),
                     sim_time,
                     remaining_dist,
                     allocator,
@@ -215,7 +218,7 @@ pub(super) unsafe fn handle_lane_end(
                     lane_id,
                     *s_cur_n.get(i),
                     path_idx,
-                    cause,
+                    Some(cause),
                     sim_time,
                     remaining_dist,
                     allocator,
@@ -227,6 +230,52 @@ pub(super) unsafe fn handle_lane_end(
             });
         }
 
+        #[cfg(test)]
+        probe_end_of_path(
+            i,
+            lane_id,
+            access_plan_valid,
+            sim_time,
+            transit_network,
+            graph,
+            slices,
+        );
+        // A walker whose path ends short of its exit keeps its lane (`TRAFFIC-19`) and plans
+        // again from its end: walks on, walks home or is stranded there. One with no plan waits
+        // there for its replan gate; one with a trip but no destination is lost (`walker_lost`).
+        if *s_tmode.get(i) == MODE_WALK {
+            if access_plan_valid {
+                return walk::replan_from_lane(
+                    i,
+                    lane_id,
+                    *s_cur_n.get(i),
+                    path_idx,
+                    None,
+                    sim_time,
+                    remaining_dist,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+            }
+            *slices.lane_d.get_mut(i) = lane.length;
+            *remaining_dist = 0.0;
+            if has_recoverable_network_trip(i, slices) && *s_tgt_b.get(i) == usize::MAX {
+                walker_lost(
+                    i,
+                    FailureCause::NoPlan,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+            }
+            return LaneEndAction::Break;
+        }
         s_path.get_mut(i).clear();
         *s_lane_id.get_mut(i) = usize::MAX;
         if access_plan_valid {
@@ -258,7 +307,9 @@ pub(super) unsafe fn handle_lane_end(
                         i,
                         sim_time,
                         allocator,
+                        transit_network,
                         graph,
+                        pathfind_count,
                         "freight-border-junction",
                         FailureCause::NoBorderRoute {
                             from: *s_cur_n.get(i),
@@ -290,7 +341,9 @@ pub(super) unsafe fn handle_lane_end(
                         i,
                         sim_time,
                         allocator,
+                        transit_network,
                         graph,
+                        pathfind_count,
                         "network-junction",
                         FailureCause::NoRoute(failure),
                         slices,
@@ -302,5 +355,58 @@ pub(super) unsafe fn handle_lane_end(
             }
         }
         LaneEndAction::Break
+    }
+}
+
+// The `TRAFFIC-19` probe's count of route ends short of the exit, by agent kind, and a sample of
+// each walker's state there.
+#[cfg(test)]
+unsafe fn probe_end_of_path(
+    i: usize,
+    lane_id: usize,
+    access_plan_valid: bool,
+    sim_time: f32,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    slices: &MovementSlices,
+) {
+    use super::super::super::lane_nav::{lane_origin_node, lane_terminal_node};
+    use super::super::super::trip_failures::probe_tally;
+    unsafe {
+        let walker = *slices.tmode.get(i) == MODE_WALK;
+        let kind = if walker { "walker" } else { "vehicle" };
+        let plan = if access_plan_valid {
+            "plan valid"
+        } else {
+            "no plan"
+        };
+        probe_tally::add_event("end of path", kind, plan);
+        if !walker {
+            return;
+        }
+        probe_tally::sample(|| {
+            let lane = &transit_network.lane_system.lanes[lane_id];
+            let detach = *slices.planned_detach_lane.get(i) as usize;
+            format!(
+                "END-OF-PATH agent {i} t {sim_time:.1} node {} lane {lane_id} edge {} fwd {} \
+                 idx {} path {:?} path_idx {} detach_n {} detach_lane {detach} detach_origin {:?} \
+                 detach_terminal {:?} flags {:#x} target {} activity {} next_replan {:.1} \
+                 failures {}",
+                *slices.cur_n.get(i),
+                lane.edge_id,
+                lane.is_fwd,
+                lane.lane_idx,
+                slices.path.get(i),
+                *slices.path_idx.get(i),
+                *slices.planned_detach_n.get(i),
+                lane_origin_node(detach, transit_network, graph),
+                lane_terminal_node(detach, transit_network, graph),
+                *slices.access_flags.get(i),
+                *slices.tgt_b.get(i),
+                *slices.activity.get(i),
+                *slices.next_replan_time.get(i),
+                *slices.network_replan_failures.get(i),
+            )
+        });
     }
 }

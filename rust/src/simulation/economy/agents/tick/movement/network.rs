@@ -27,6 +27,7 @@ use pose::update_network_pose;
 pub(super) use replan::apply_network_replan;
 use replan::prepare_network_replan;
 use std::sync::atomic::AtomicU32;
+pub(super) use walk_home::walker_lost;
 
 /// Handles network, immigration, and active junction connector movement.
 ///
@@ -51,6 +52,7 @@ pub(super) unsafe fn handle_network_movement(
         if try_pending_lane_attach(i, transit_network, graph, lane_buckets, lane_claims, slices) {
             return;
         }
+        walk_home::stand_on_sidewalk(i, sim_time, allocator, transit_network, graph, slices);
         if !prepare_network_replan(
             i,
             sim_time,

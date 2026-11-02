@@ -22,6 +22,7 @@ use super::super::replan_watchdog::{
 };
 use super::apply_network_replan;
 use super::junction::witness_lane;
+use super::walk_home::is_stranded;
 use crate::config::AGENT_DRIVEWAY_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::determinism::stable_index;
@@ -155,7 +156,17 @@ pub(super) unsafe fn prepare_lane_entry(
                 reset_network_replan_watchdog(i, slices);
                 return LaneEntryAction::Continue;
             }
+        }
 
+        // A walker stranded at a node with no sidewalk waits there for its replan gate
+        // (`TRAFFIC-19`).
+        if *s_tmode.get(i) == MODE_WALK && is_stranded(i, slices) {
+            *s_speed.get_mut(i) = 0.0;
+            return LaneEntryAction::Break;
+        }
+
+        if s_path.get(i).is_empty() && *s_lane_id.get(i) == usize::MAX {
+            let access_plan_valid = (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0;
             if access_plan_valid {
                 if (*s_access_flags.get(i) & ACCESS_FREIGHT_BORDER_DESTINATION) != 0 {
                     let border_node = *s_freight_target_border_node.get(i);
@@ -182,7 +193,9 @@ pub(super) unsafe fn prepare_lane_entry(
                         i,
                         sim_time,
                         allocator,
+                        transit_network,
                         graph,
+                        pathfind_count,
                         "freight-border-lane-entry",
                         FailureCause::NoBorderRoute {
                             from: *s_cur_n.get(i),
@@ -202,7 +215,9 @@ pub(super) unsafe fn prepare_lane_entry(
                         i,
                         sim_time,
                         allocator,
+                        transit_network,
                         graph,
+                        pathfind_count,
                         "missing-current-node-lane-entry",
                         FailureCause::NoPosition,
                         slices,
@@ -228,7 +243,9 @@ pub(super) unsafe fn prepare_lane_entry(
                             i,
                             sim_time,
                             allocator,
+                            transit_network,
                             graph,
+                            pathfind_count,
                             "network-lane-entry",
                             FailureCause::NoRoute(failure),
                             slices,
@@ -245,7 +262,9 @@ pub(super) unsafe fn prepare_lane_entry(
                         i,
                         sim_time,
                         allocator,
+                        transit_network,
                         graph,
+                        pathfind_count,
                         "missing-access-plan-lane-entry",
                         FailureCause::NoPlan,
                         slices,

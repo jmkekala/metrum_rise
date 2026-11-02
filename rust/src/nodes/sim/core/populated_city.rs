@@ -28,6 +28,8 @@ mod routing_benchmark;
 mod snapshot;
 #[cfg(test)]
 mod walking_proof;
+#[cfg(test)]
+mod watchdog_probe;
 
 use std::time::{Duration, Instant};
 

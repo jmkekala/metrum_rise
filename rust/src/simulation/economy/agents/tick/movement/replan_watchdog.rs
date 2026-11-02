@@ -1,20 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Network replan failure watchdog and deterministic recovery fallbacks.
+//!
+//! Vehicles only: a walker's failure here goes through the walker's own rules instead
+//! (`network::walk_home::walker_lost`, `TRAFFIC-19`), which never move it. Vehicles keep the
+//! move home or to a border node until they have somewhere off the lane to go (`TRAFFIC-20`).
 
 use super::super::slices::MovementSlices;
 use super::super::trip_failures::{FailureCause, FailureOutcome, TripFailure};
 use super::NETWORK_REPLAN_DELAY_S;
 use super::access_state::{clear_access_plan, clear_network_state};
+use super::network::walker_lost;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
     ACCESS_IMMIGRATION_ORIGIN, ACTIVITY_HOME, MODE_CAR, MODE_WALK, TRANSIT_IMMIGRATING,
     TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
 };
+use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::NodeType;
 use crate::traffic_log;
 use godot::prelude::Vector2;
+use std::sync::atomic::AtomicU32;
 
 const NETWORK_REPLAN_WATCHDOG_FAILURES: u8 = 3;
 
@@ -44,19 +51,44 @@ pub(super) unsafe fn has_recoverable_network_trip(i: usize, slices: &MovementSli
 }
 
 /// Records one failed live network replan and recovers the agent once the watchdog threshold is hit.
-/// `reason` names the call site on `traffic`; `cause` is what the `events` log reports.
+/// `reason` names the call site on `traffic`; `cause` is what the `events` log reports. A walker
+/// is never recovered here: it plans again from where it stands, walks home or is stranded
+/// (`walker_lost`).
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
     i: usize,
     sim_time: f32,
     allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
     graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
     reason: &'static str,
     cause: FailureCause,
     slices: &MovementSlices,
 ) {
     unsafe {
+        if *slices.tmode.get(i) == MODE_WALK {
+            traffic_log!(
+                "[NETWORK_REPLAN_FAILED] agent={} walker reason={} current_node={} lane={}",
+                i,
+                reason,
+                *slices.cur_n.get(i),
+                *slices.lane_id.get(i),
+            );
+            walker_lost(
+                i,
+                cause,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            );
+            return;
+        }
         // Captured before the attempt is cleared, so the log shows where the agent failed.
         let mut failure = TripFailure::capture(i, cause, FailureOutcome::Replans, slices);
         clear_failed_replan_attempt(i, slices);
@@ -88,6 +120,12 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
                 failure: failures,
                 of: NETWORK_REPLAN_WATCHDOG_FAILURES,
             };
+            #[cfg(test)]
+            super::super::trip_failures::probe_tally::add(
+                super::super::trip_failures::probe_tally::WATCHDOG,
+                &failure,
+                reason,
+            );
             slices.failures.push(failure);
             return;
         }
@@ -101,6 +139,12 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
             Some(outcome) => outcome,
             None => recover_to_border(i, sim_time, allocator, graph, reason, slices),
         };
+        #[cfg(test)]
+        super::super::trip_failures::probe_tally::add(
+            super::super::trip_failures::probe_tally::WATCHDOG,
+            &failure,
+            reason,
+        );
         slices.failures.push(failure);
     }
 }
@@ -327,6 +371,8 @@ mod tests {
         let mut agents = AgentSystem::new();
         let agent_idx = agents.spawn_housed_agent(0, -1.0, -2.0);
         agents.transit[agent_idx] = TRANSIT_NETWORK;
+        // A driver: a walker never takes the watchdog's recovery (`TRAFFIC-19`).
+        agents.transit_mode[agent_idx] = MODE_CAR;
         agents.current_building[agent_idx] = usize::MAX;
         agents.target_building[agent_idx] = 99;
         agents.current_node[agent_idx] = 2;
@@ -342,7 +388,9 @@ mod tests {
                 agent_idx,
                 10.0,
                 &allocator,
+                &TransitNetwork::new(),
                 &graph,
+                &AtomicU32::new(0),
                 "test",
                 FailureCause::NoPlan,
                 &slices,
@@ -355,7 +403,9 @@ mod tests {
                 agent_idx,
                 15.0,
                 &allocator,
+                &TransitNetwork::new(),
                 &graph,
+                &AtomicU32::new(0),
                 "test",
                 FailureCause::NoPlan,
                 &slices,
@@ -367,7 +417,9 @@ mod tests {
                 agent_idx,
                 20.0,
                 &allocator,
+                &TransitNetwork::new(),
                 &graph,
+                &AtomicU32::new(0),
                 "test",
                 FailureCause::NoPlan,
                 &slices,
@@ -411,7 +463,9 @@ mod tests {
                 agent_idx,
                 10.0,
                 &allocator,
+                &TransitNetwork::new(),
                 &graph,
+                &AtomicU32::new(0),
                 "test",
                 FailureCause::NoPlan,
                 &slices,
@@ -420,7 +474,9 @@ mod tests {
                 agent_idx,
                 15.0,
                 &allocator,
+                &TransitNetwork::new(),
                 &graph,
+                &AtomicU32::new(0),
                 "test",
                 FailureCause::NoPlan,
                 &slices,
@@ -429,7 +485,9 @@ mod tests {
                 agent_idx,
                 20.0,
                 &allocator,
+                &TransitNetwork::new(),
                 &graph,
+                &AtomicU32::new(0),
                 "test",
                 FailureCause::NoPlan,
                 &slices,

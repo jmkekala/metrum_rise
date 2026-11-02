@@ -16,7 +16,9 @@ use godot::prelude::Vector2;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-const LANE_REATTACH_MAX_DIST_M: f32 = 30.0;
+/// How far a road edit moves an agent onto a rebuilt lane, and how far a walker with no lane may
+/// stand from the sidewalk end it takes (`TRAFFIC-19`).
+pub(in crate::simulation::economy::agents) const LANE_REATTACH_MAX_DIST_M: f32 = 30.0;
 
 // The edit-sized sets the per-agent tests below probe, up to once per path node of every agent
 // on the network. Only membership is read (iteration orders are sorted or tie-broken), so the

@@ -184,6 +184,12 @@ impl FailureSink {
     /// Records one failure. Locks only on a failure, never on the common path.
     #[cold]
     pub(super) fn push(&self, failure: TripFailure) {
+        #[cfg(test)]
+        probe_tally::add(
+            probe_tally::RECORD,
+            &failure,
+            text::CAUSE_LABELS[usize::from(text::cause_index(&failure.cause))],
+        );
         self.lock().push(failure);
     }
 
@@ -217,6 +223,140 @@ pub(super) unsafe fn record_failure(
         slices
             .failures
             .push(TripFailure::capture(i, cause, outcome, slices));
+    }
+}
+
+/// Test-only tally of every trip-failure record and every watchdog verdict, by agent kind, lane
+/// state, site and outcome (the `TRAFFIC-19` probe). Touched only when something fails.
+#[cfg(test)]
+pub(crate) mod probe_tally {
+    use super::super::super::MODE_WALK;
+    use super::{AgentKind, FailureOutcome, TripFailure};
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// (section, kind, lane state, site, outcome) -> count.
+    pub(crate) type Tally = BTreeMap<
+        (
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+        ),
+        u64,
+    >;
+    /// A trip-failure record; its site is the cause label.
+    pub(crate) const RECORD: &str = "record";
+    /// A watchdog verdict; its site is the call site's reason.
+    pub(crate) const WATCHDOG: &str = "watchdog";
+
+    static TALLY: Mutex<Tally> = Mutex::new(BTreeMap::new());
+    // Off unless the probe turns it on, so other tests and timing runs never take its locks.
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+
+    /// Turns the tally on for the rest of the process.
+    pub(crate) fn enable() {
+        ENABLED.store(true, Ordering::Relaxed);
+    }
+
+    /// Counts `failure` under `section` and `site`.
+    pub(in crate::simulation::economy::agents::tick) fn add(
+        section: &'static str,
+        failure: &TripFailure,
+        site: &'static str,
+    ) {
+        if !ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
+        let kind = if failure.kind == AgentKind::FreightCarrier {
+            "freight"
+        } else if failure.mode == MODE_WALK {
+            "walker"
+        } else {
+            "car"
+        };
+        let lane = if failure.lane == usize::MAX {
+            "no lane"
+        } else if failure.edge == usize::MAX {
+            "connector"
+        } else {
+            "road lane"
+        };
+        let outcome = match failure.outcome {
+            FailureOutcome::Replans => "replans",
+            FailureOutcome::WalksHome { .. } => "walks home",
+            FailureOutcome::Stranded { .. } => "stranded",
+            FailureOutcome::Retry { .. } => "retry",
+            FailureOutcome::RetryDeparture { .. } => "retry departure",
+            FailureOutcome::Home { .. } => "TELEPORT home",
+            FailureOutcome::Border { .. } => "TELEPORT border",
+            FailureOutcome::NoBorder { .. } => "no border",
+        };
+        *TALLY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry((section, kind, lane, site, outcome))
+            .or_insert(0) += 1;
+        if kind == "walker" {
+            sample(|| {
+                format!(
+                    "{section} walker agent {} node {} edge {} lane {} at {:.1} destination {} \
+                     site {site} outcome {outcome}",
+                    failure.agent,
+                    failure.node,
+                    failure.edge,
+                    failure.lane,
+                    failure.lane_d,
+                    failure.destination
+                )
+            });
+        }
+    }
+
+    static SAMPLES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    const MAX_SAMPLES: usize = 40;
+
+    /// Counts one event of `kind` that is not a failure record.
+    pub(crate) fn add_event(section: &'static str, kind: &'static str, site: &'static str) {
+        if !ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
+        *TALLY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry((section, kind, "-", site, "-"))
+            .or_insert(0) += 1;
+    }
+
+    /// Keeps `line()` while fewer than 40 samples are kept.
+    pub(crate) fn sample(line: impl FnOnce() -> String) {
+        if !ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut samples = SAMPLES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if samples.len() < MAX_SAMPLES {
+            samples.push(line());
+        }
+    }
+
+    /// The tally and the samples so far, emptied.
+    pub(crate) fn take() -> (Tally, Vec<String>) {
+        (
+            std::mem::take(
+                &mut *TALLY
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            ),
+            std::mem::take(
+                &mut *SAMPLES
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            ),
+        )
     }
 }
 

@@ -57,6 +57,8 @@ pub(crate) use stranded::StrandedWalkers;
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
 pub(crate) use trip_failures::TripFailureLog;
+#[cfg(test)]
+pub(crate) use trip_failures::probe_tally;
 
 impl AgentSystem {
     /// Advances the agent simulation by `delta` seconds.
