@@ -799,8 +799,23 @@ fn test_walking_agent_recovers_from_stale_edge_after_road_split() {
         usize::MAX,
         "walking agent stayed off-lane after replanning from a stale edge"
     );
-    assert_eq!(agents.current_edge[agent_idx], 1);
-    assert!(agents.speed[agent_idx] > 0.0);
+    // It takes the sidewalk of edge 1 it stands at and turns back onto edge 1 through node 2's
+    // connector (`TRAFFIC-19`), so it is on edge 1 or on that connector.
+    let lane = &network.lane_system.lanes[agents.current_lane_id[agent_idx]];
+    assert!(
+        lane.edge_id == 1 || (lane.edge_id == usize::MAX && lane.node_id == start_node as usize),
+        "on edge {} at node {}",
+        lane.edge_id,
+        lane.node_id
+    );
+    // It walks on at walking pace (a walker's step does not read its speed field).
+    let before = (agents.pos_x[agent_idx], agents.pos_y[agent_idx]);
+    agents.tick(&allocator, &mut network, &mut graph, 1.0, &test_clock(0, 0));
+    assert_ne!(
+        (agents.pos_x[agent_idx], agents.pos_y[agent_idx]),
+        before,
+        "it walks on"
+    );
 }
 
 #[test]
