@@ -10344,6 +10344,7 @@ grounded when a live standard edge meets it (`RegionGraph::grounded_node`, the r
   (`exposed_height_nearest_at` on a road, `grounded_height_at` or the ground on the terrain).
   (c) The network snap takes a snap on each level, the ground and the structures, as it took one
   before, and where both have one keeps the one nearer the cursor's height, the ground on a tie.
+  Since B1 (below) the structures' level offers only the structure the ray hit.
 
 **Constants.** One vehicle envelope, `roadbed::VEHICLE_CLEARANCE_M` = 4.5 m: the tunnel lining's
 clear height is it, bitwise (`TUNNEL_COVER_M` stays 5 m, `ROAD_OVER_TUNNEL_M` 5.5 m), and
@@ -10365,30 +10366,39 @@ join at one of the bridge's nodes. This holds for any stroke the class inference
 stroke (a fork), or a road from the ground climbing to the deck (the inference makes it a bridge,
 as at a node).
 
-- *The snap decides* (`road_edit::bridge::snapped_structure_span`, during preparation, so the
-  hover check, the preview and the commit read the same decision; `PreparedRoadInput::joined_spans`,
-  `topology::StrokeGrade::joining_spans`). An end not at a node joins the structure span whose
-  centre line passes within the end-join tolerance (2 m) of it in plan and whose graph profile
-  there stands nearer the end's authored height than the ground under it (the grounded support,
-  else the terrain): the cursor's own choice between levels (R7(c)), and a cursor snapped to a
-  span reports the span's graph height (R7(b)), so the end stands on the span it snapped to.
-  Ties go to the ground, then the nearer centre line, then the lower edge id. No height window
-  decides: an end on the ground under a deck stands nearer the ground and does not join it (R2
-  then checks it). The joined end takes the span's graph height, as an end at a node takes the
-  node's. The topology joins that span, whatever its class, and no other at that end; crossings
-  along the stroke stay as R1 has them.
+- *The cursor snaps only to what its ray hit* (the user's decision on B1, 2026-11-02;
+  `interaction::StructureHit`, `RoadbedSystem::raycast_piece`). The structures' level of the
+  network snap offers only the structure whose piece the ray hit first, nearer than the ground:
+  a bridge's span (with its nodes), or a node piece no standard road meets (with its bridge
+  arms). It never offers a tunnel's bore, which no ray sees, nor a bridge the ray did not hit:
+  a ray that hit the ground beside or under a bridge, or the hill over a tunnel, stays on the
+  ground's level, even within 5 m of the structure in plan. A retained snap the ray no longer
+  admits is dropped. The ground's level (standard edges, grounded nodes) snaps as before,
+  bitwise. Cost: the hit piece from the same ray walk, an `O(degree)` test per structure
+  candidate.
+- *The join follows the snap* (`road_edit::bridge::snapped_structure_span`, during
+  preparation, so the hover check, the preview and the commit read the same decision;
+  `PreparedRoadInput::joined_spans`, `topology::StrokeGrade::joining_spans`). A snapped cursor
+  reports the point on the span's centre line at the span's graph height, so an end not at a node
+  joins the structure span whose centre line it lies on in plan (within rounding, 1 cm) and whose
+  graph profile there stands nearer the end's height than the ground under it (the grounded
+  support, else the terrain): the cursor's own choice between levels. Ties go to the ground, then
+  the nearer centre line, then the lower edge id. No height window decides, and the inference
+  agrees with the cursor: an end on the ground beside or under a deck, or on the hill over a bore,
+  stands nearer the ground and joins nothing (R2 then checks it). The joined end takes the span's
+  graph height, as an end at a node takes the node's. The topology joins that span, whatever its
+  class, and no other at that end; crossings along the stroke stay as R1 has them.
 - *What the join builds.* The same pieces as a join at a node there: on the flat fixture, a node
   piece and three spans with the same triangles bitwise as a bridge drawn in two strokes meeting
   at the join, the same zebras (the default crossing rule) and connectors. Every arm is a bridge,
   so the junction is not grounded and nothing fronts it; each half keeps its piers at its ends, as
   at a node. The usual rules refuse what does not fit, with their own reasons (`road_too_steep`, the
   junction rules), and the hover check, which runs no junction rule, does not show those.
-- *Tunnels.* An end snapped onto a tunnel inside its bore (by the same choice) is refused as
+- *Tunnels.* The cursor never snaps to a bore, so a road ending on the hill over a tunnel stays on
+  the hill, unjoined, as before B1 (roads and junctions above tunnels, R8h and `ROAD-98`). Only a
+  scripted or replayed end lying on a bore's centre line at the bore's height is refused, as
   `tunnel_join`, "Roads cannot join a tunnel inside its bore: join it at a portal", in all three
-  checks; bores join roads only at their portals. Before B1 nothing refused it: the standard
-  solve moved the end up to the ground over the bore and left it unjoined. Over a bore the cursor
-  snaps to the bore (the only level there, R7(c)), so ending a road within 5 m of a bore's line on
-  the hill above it is now refused; an end on the ground further from the line is not.
+  checks; bores join roads only at their portals.
 - *Bounds.* Preparation: two span queries per stroke, `O(log E + K x profile points)` for the `K`
   edges near each end; R2's exclusion adds the joined span's two nodes' degree. Nothing per tick,
   no index, no city scan.
@@ -10398,19 +10408,35 @@ as at a node).
   bridge split into two bridge edges, the junction at the deck's height, not grounded, no
   frontage, its node piece built, connectors into every arm, undo restoring the network and every
   piece bitwise); the junction equals a node join's (pieces, zebras, connectors); a road ending on
-  the ground under the bridge does not join it (6 m passes, 4 m `bridge_too_low`); refused joins
+  the ground under the bridge does not join it (6 m passes, 4 m `bridge_too_low`), nor one ending
+  1-10 m from its centre line, the bridge intact and the road on the ground; a road ending on the
+  hill over a bore commits unjoined at the hill's height; refused joins
   name `road_too_steep`, `junction_arm_angle` and, 5 m from a bend node, `junction_arm_too_short`
-  (the hover check passing them); an end on a tunnel's bore is `tunnel_join`. On C's code the
+  (the hover check passing them); a scripted end on a bore's line at its height is
+  `tunnel_join`. Cursor tests: `road_tool_cursor_snaps_only_to_the_structure_its_ray_hit` (the
+  real roadbed ray: onto the deck snaps to the bridge at 6 m; onto the ground 1, 3 and 5 m beyond
+  the deck's edge and under it, no snap, where the snap without the hit took the bridge under it)
+  and `interaction`'s `the_snap_takes_only_the_structure_the_ray_hit` (a bore never, a bridge
+  only when hit, the ground road bitwise). On C's code the
   four join tests fail with `bridge_too_low` (the user's 0.00 m; the steep join's exact plan
   already said `road_too_steep`, its hover check `bridge_too_low`), and the tunnel test commits:
   C did not refuse an end on a bore, it moved the end up to the hill's surface and left it
-  unjoined. ROAD-99's five case tests and its guard pass on both. No change without a
+  unjoined. ROAD-99's five case tests and its guard pass on both. The tests of ends beside a
+  bridge and on the hill over a bore pass on the first B1 commit too (`d2c5c2c1`): its join
+  inference already chose the ground there; what put such ends on the deck or the bore was that
+  commit's cursor (ROAD-99's R7(c)), which the cursor tests pin. No change without a
   join: R8's probe products (town, 1:4 hill, 1:2 hill) and the `ROAD-68-K22` `COMMIT_PRODUCTS` at
   0, 10k, 30k and 100k residents are identical on C and F (and equal to `ROAD-99`'s). Stills
   (headless gamescope, isolated profile, dump C at format 110, a bridge 6.5 m over open ground,
   then a bridge stroke forking from it and a road from the ground climbing to it, both mid-span,
   committed through the tool's path): before, both refused `bridge_too_low`; after, two
-  junctions on the deck with zebras, piers at the halves' ends. Cost (one session,
+  junctions on the deck with zebras, piers at the halves' ends. Cursor stills (the same dump, the
+  tool's own `get_road_tool_cursor_pos` with a vertical ray, the end committed where it reports):
+  over tunnel 6's bore, the cursor before the rule snaps to the bore 19 m under the hill and the
+  road is refused `tunnel_join`; after, it stays on the hill (no snap) and the road commits there,
+  unjoined. Beside the bridge, 2 m beyond its deck's edge (5 m from the centre line): no snap
+  either way, the road ends on the ground. The cursor change is not in the cost session below
+  (one ray walk names its piece; nothing else is timed). Cost (one session,
   19:57-19:58; release, `RAYON_NUM_THREADS=4`, cores `0,2,..,14`, both timing locks, load 1.3 at
   the start, no compiler, Godot or backup running; C F F C, the binaries above): products
   identical (payload 9,845 / 9,973 vertices per pose, lining 2,326 / 2,574); total p50 ms
