@@ -206,6 +206,30 @@ width means. The raised offset is `CURB_STEP_HEIGHT_M` (0.12 m). New band kinds,
 parking or cycle tracks, are added as explicit ordered bands with a level; nothing else in the
 compiler may special-case them.
 
+### Lane centring (`ROAD-100`)
+
+The carriageway is centred on the centreline and the markings divide it evenly into
+`fwd + bkw` lanes, so the vehicle lanes sit there too: the line between the backward and the
+forward lane group lies at `Edge::lane_group_offset` = `(bkw - fwd) * LANE_WIDTH / 2` towards the
+driving side, and lane `i` (forward `0, 1, ..`, backward `-1, -2, ..`) at that offset plus
+`(i + 0.5) * LANE_WIDTH` (`lanes/rebuild.rs` `vehicle_lane_offset`). The mouth ends
+(`vehicle_lane_end`) read the same offset, so connectors start and end mid-lane. Lateral offsets
+in the forward frame (right-hand traffic, forward on the right), before and after round R3a:
+
+| Lanes | Before | After |
+| --- | --- | --- |
+| 1+0 | +1.75 (on the kerb of a +-1.75 m carriageway) | 0 |
+| 0+2 | -1.75, -5.25 (outer lane on the kerb) | +1.75, -1.75 |
+| 2+1 | +1.75, +5.25 / -1.75 (forward lane 1 on the kerb) | 0, +3.5 / -3.5 |
+| 3+1 | +1.75, +5.25, +8.75 / -1.75 | -1.75, +1.75, +5.25 / -5.25 |
+| 1+1, 2+2 | unchanged (offset 0: bitwise) | |
+
+`O(1)` per lane. Lanes are derived, so a saved car on a one-way or uneven road moves sideways
+once on load (at most 1.75 m per lane of imbalance, reattached as after any rebuild). Before the
+fix such a lane ran on the kerb and connectors left the carriageway at the kerb corners (the
+connector sweep's `four_way_2x1` fixture: 2 connectors 1.24 m outside). The fork's
+`median_center_offset` is the source; its pocket term waits for the pockets round.
+
 ### Junction layout
 
 A layout is built for every node except degree-two pass-through nodes: two arms whose directions
@@ -10115,6 +10139,85 @@ the affected closure; its cost is O(P), where P is their total polyline point co
 outer invalidation/reattachment passes still visit the agent store; this change does not add a
 new agent spatial index or claim to remove that O(A) work.
 
+### In-place cross-section edits (`ROAD-80`)
+
+An existing road's lane counts change in place (round R3a of the road-feature port; medians
+follow in R3b). Rust owns the rule: `get_edge_cross_section(edge)` reports the counts, width,
+class and whether the road can change; `preview_edge_cross_section(edge, fwd, bkw)` returns the
+commit's verdict (`is_valid`, or `invalid_reason` and `detail`) without geometry (R3-d);
+`set_edge_cross_section(edge, fwd, bkw)` commits, pushes the undo record and publishes the chunks
+at once, as the crossing toggle does (`nodes/sim/cross_section.rs`, `network_api.rs`).
+
+The transaction is the toggle's (`try_graph_edit`). Cheap refusals first: `invalid_road`,
+`cross_section_not_road` (footpaths stay footpaths), `too_many_lanes` (4 per direction),
+`cross_section_cannot_change_transit_mode` (0+0), `cross_section_unchanged`, and
+`edit_tunnel_width`: a tunnel is not widened in place (R3-j), since its cover was checked across
+the bore it was drawn with; narrowing applies. Then the edit is applied to the graph
+(`RegionGraph::set_edge_lanes`: counts and `width = max((fwd + bkw) * LANE_WIDTH, 2 m)`, the
+stroke's rule), both end nodes are laid out again (clips, the endpoint profile solve), and their
+closure is compiled into a scratch roadbed: a failed node piece (`node_piece_failed`), fields and
+newly covered painted cells (`field_overlap`, `zoning_cell_overlap`) and a steepened profile
+(`road_too_steep`) refuse. A widening is also checked on the applied graph against visible water
+(standard roads, `water_requires_bridge`, as the class change), parcels inside the new frontage
+corridor (`width / 2 + SIDEWALK_WIDTH`, the stroke's half-width, `parcel_overlap`) and the
+illegal curve radius at the new width (`cross_section_too_wide_for_curve`). The graph is put back
+either way; the preview is this check.
+
+The commit pushes the check's checkpoint (whole `Node` and `Edge` records, so undo restores lane
+counts and width with nothing new in the undo path), marks the cell lots and surfaces of the two
+nodes' arms, and rebuilds their lanes, cars and entrances with the undo's local pass
+(`restore_lanes_locally`): cars on a lane that no longer exists reattach to the nearest rebuilt
+lane within 30 m (narrowing 3+3 to 1+1 moves them at most 7 m). The full entrance cache rebuild
+the toggle and the class change run is not used: it scans every building. Routing is rebuilt
+deferred (D7). The class change (`set_edge_class_internal`) now pushes its checkpoint too (R3-k).
+
+Bounds: the check is `O(closure pieces)` (two nodes' closures); the commit tail `O(local lanes +
+invalidated)` plus the undo's parallel `O(A / P + B / P)` membership passes over agents and
+buildings. No schema change: the edit writes `fwd_lanes`, `bkw_lanes` and `width`.
+
+Acceptance record (round R3a, 2026-11-02, fresh; release binaries of `ea63df40` (control, with
+R8's uncommitted probe) and the round's final code; P-cores `taskset -c 0,2,4,6,8,10,12,14`,
+`RAYON_NUM_THREADS=4`, exclusive timing lock, load 1.75 at the start; logs in `$ARTIFACTS`):
+
+- Locality (`$TEST_BINARY nodes::sim::core::tests::road_plan_scaling::populated_lane_edit_scaling
+  --exact --ignored --nocapture --test-threads=1`: the T's side road widened 1+1 to 2+2 with
+  0/1k/10k/100k remote buildings, parcels, 6 agents each and remote roads; local pieces and lanes
+  identical at every tier; per-tier setup untimed), p50 ms: verdict 0.433 / 0.365 / 0.291 /
+  0.311 (100 samples), commit 1.486 / 1.549 / 1.106 / 1.608 and its undo 0.446 / 0.480 / 0.385 /
+  0.980 (20 each). With the full entrance cache rebuild the commit had grown to 12.1 ms at 100k
+  (an unpinned check run): hence the local pass.
+- Preview stages (`road_preview::benchmark_road_preview_stages`, C F F C, total p50 ms):
+  `sloped_t` 2.956 3.102 3.003 2.945, `sloped_branch` 2.873 2.925 2.986 2.701; products equal.
+  The stroke path differs only by an empty abutment iteration per span (`ROAD-97`): no claim.
+- Road chunk Criterion rows (`road_chunk_benchmark`, C F F C, ms): `full_network_emit/64` 9.825
+  9.881 9.674 9.908, `/1024` 166.75 166.01 163.06 167.42, `chunk_emit_only/1024` 0.212 0.221
+  0.191 0.198, `bridge_chunk_emit_only/1024` 0.338 0.305 0.287 0.316, `tunnel_chunk_emit_only/1024`
+  0.297 0.325 0.272 0.287: within the controls' spread.
+- No change without an edit on symmetric roads: R8's probe (town, hill, steep) hashes equal the
+  control's and R8h's; `ROAD-68-K22`'s saved commit cities (0/10k/30k/100k) give identical
+  `COMMIT_PRODUCTS` (md5 `4852535b...`, as `ROAD-99`'s); the `SIM-02` envelope and determinism
+  gate (`RAYON_NUM_THREADS=6`, bursts departures and settlements) passes with the same 13 notes and
+  identical daily fingerprints control vs branch in all five workload runs (its cities have no
+  one-way road), determinism without a difference. Asymmetric roads change by design (the table
+  in [Lane centring](#lane-centring-road-100)); the roadbed product probe's lanes hash changed for
+  its 117 one-way fixtures and no other hash.
+- Movement code is unchanged (lanes move, the tick does not), so `PERF-06` was not rerun.
+
+The Road Properties window (select tool) carries the lane steppers (`ui/cross_section_controls.gd`,
+shared with the road tool's options panel, where they set the next stroke's lanes), the verdict
+line and Apply (option C of PLAN-R3 section 6); the reason text is `ui/road_reason_text.gd`,
+shared with the road tool's stroke preview.
+
+**Emission order (`ROAD-97`).** A bridge span's abutment faces (`TERRAIN-07-C`) were emitted into
+the skirt layer after every piece (`emit_bridge_structures`), so that layer's owner runs were
+`[edges.., nodes.., Edge(bridge)]`, out of owner order. The splice of a local publication merges
+kept and fresh runs as two sorted sequences, so a kept node of higher id than the rebuilt ones
+sorted ahead of the abutment run and the chunk differed from a full emission. The abutment faces
+are now emitted with the span's own surfaces after its skirts; `emit_bridge_structures` keeps the
+fascias, slab and piers (the concrete layer holds bridge edges only, in order). Every in-place
+edit next to an older bridge publishes through that splice; the class change, the lane edit and
+their undos are tested against a full emission (`road_in_place`).
+
 ## Road Geometry Validation (`ROAD-54`)
 
 Placement accepted geometry no road could have. The profile solver treated its 16% grade as a
@@ -11060,7 +11163,7 @@ refused; exact wall tops kept (no faces cap).
   commit; `tunnel_probes_without_tunnel_intent`). R8d's level side road on dump A was not re-run. The editor's class change
   (`set_edge_class_internal`) still sets any class. Found on the way: a grounded road made a
   bridge by that class change splices a road chunk that differs from a full emission
-  (`ROAD-97`, open).
+  (`ROAD-97`, fixed in round R3a: the cause was emission order, below).
 - *`junction_in_trench`* (refusals above). On a copy of dump A, R8d's side roads 3, 6, 8, 12, 15,
   20 and 30 m from mouths M1 and M5, both sides: all refused, the deck 1.04-4.55 m (M1) and
   4.31-4.76 m (M5) below the source ground. The approaches are the strokes' straight chords under

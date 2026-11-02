@@ -251,8 +251,9 @@ reads), built from the arm's own knots exactly as the junction layout collects t
 (`NodeArms::single`, `ArmInput::section_line`). The graph sets the clip to the layout's mouth
 station at a bend or junction, where the node piece ends and the span begins (rounded to `f32`, so
 a lane end lies within a micrometre of the mouth row), and to zero at a terminal, a pass-through
-node and a node whose layout fails. A lane's end point is its lateral offset on that line, at the
-centreline height there; the lane polyline ends exactly on it (`LaneEnd::Mouth`), keeping only
+node and a node whose layout fails. A lane's end point is its lateral offset on that line (the
+lane's offset, centred on one-way and uneven roads by `Edge::lane_group_offset`, `ROAD-100` in
+`roads.md`), at the centreline height there; the lane polyline ends exactly on it (`LaneEnd::Mouth`), keeping only
 the points more than `1 mm` beyond the station, since the roadbed profile puts a knot at every
 mouth station that would otherwise stay as a zero-length end piece. The connector leaves and joins
 along the frame's direction, square to the line, and never reads a lane polyline's end piece:
