@@ -64,7 +64,8 @@ impl SimCore {
             .mark_surface_dirty_from_sets(&changed, &HashSet::new());
         // The lanes of both nodes' arms, the cars on them and the entrances fronting them, as
         // an undo restores them: local, where the entrance cache rebuild would scan the city.
-        self.restore_lanes_locally(&affected, &nodes);
+        // Godot's main thread runs this edit, and the passes are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| self.restore_lanes_locally(&affected, &nodes));
         // Deferred like a commit's (D7, `ROAD-68-G`).
         self.schedule_cch_rebuild_of_live_graph();
         self.mark_local_network_render_dirty();

@@ -11,6 +11,7 @@
 extends CanvasLayer
 
 const CityStatusPanel = preload("res://scripts/ui/city_status_panel.gd")
+const CrossSectionControls = preload("res://scripts/ui/cross_section_controls.gd")
 const DemandMeter = preload("res://scripts/ui/demand_meter.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -253,6 +254,14 @@ func _build_ui():
 		road_tool.tunnel_toggled.connect(func(enabled: bool): tunnel_check.set_pressed_no_signal(enabled))
 	tunnel_row.add_child(tunnel_check)
 	road_options_menu.add_child(tunnel_row)
+	# The next stroke's lanes (`ROAD-80`), the same controls the Road Properties window shows;
+	# the lane keys and presets update them through `lanes_changed`.
+	var lane_controls := CrossSectionControls.new()
+	if road_tool:
+		lane_controls.changed.connect(func(fwd: int, bkw: int): road_tool.set_lanes(fwd, bkw))
+		lane_controls.set_lanes(road_tool.fwd_lanes, road_tool.bkw_lanes)
+		road_tool.lanes_changed.connect(lane_controls.set_lanes)
+	road_options_menu.add_child(lane_controls)
 	options_panel.visible = false 
 	# Store reference to toggle it
 	self.set_meta("options_panel", options_panel)

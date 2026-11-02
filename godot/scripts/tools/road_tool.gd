@@ -27,6 +27,7 @@
 extends "res://scripts/tools/network_tool.gd"
 
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
+const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 # Early, so the preview of this frame's pointer is staged before the frame renders.
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
 
@@ -47,6 +48,8 @@ var zoning_grid_snap_enabled: bool = false
 # The tunnel intent, mirrored in Rust, which carries it in every preview, commit and refusal.
 var tunnel_enabled: bool = false
 signal tunnel_toggled(enabled: bool)
+## The next stroke's lane counts changed (keys, presets or the options panel's steppers).
+signal lanes_changed(fwd: int, bkw: int)
 
 # Border-check positions queued while roads are in-flight on the sim thread.
 # Drained by NetworkRenderer._process once the road is confirmed in the graph.
@@ -207,9 +210,14 @@ func _update_lanes_label():
 		_queue_preview_update()
 
 func adjust_lanes(fwd_delta: int, bkw_delta: int):
-	if fwd_delta != 0: fwd_lanes = clamp(fwd_lanes + fwd_delta, 0, 4)
-	if bkw_delta != 0: bkw_lanes = clamp(bkw_lanes + bkw_delta, 0, 4)
 	# Allow 0,0 for walkways
+	set_lanes(fwd_lanes + fwd_delta, bkw_lanes + bkw_delta)
+
+## Sets the next stroke's lanes (0..4 each; 0 + 0 is a walkway) and tells the options panel.
+func set_lanes(fwd: int, bkw: int) -> void:
+	fwd_lanes = clamp(fwd, 0, 4)
+	bkw_lanes = clamp(bkw, 0, 4)
+	lanes_changed.emit(fwd_lanes, bkw_lanes)
 	_update_lanes_label()
 
 func set_tunnel(enabled: bool) -> void:
@@ -587,99 +595,7 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 	_info_label.visible = true
 
 func _preview_invalid_text(preview: Dictionary) -> String:
-	var reason := String(preview.get("invalid_reason", ""))
-	match reason:
-		"bridge_clearance":
-			return "Bridge clearance %.1f m / %.1f m" % [
-				float(preview.get("clearance_m", 0.0)),
-				float(preview.get("required_clearance_m", 0.0)),
-			]
-		"tunnel_cover":
-			return "Tunnel cover %.1f m / %.1f m: draw the ends outside the hill" % [
-				float(preview.get("clearance_m", 0.0)),
-				float(preview.get("required_clearance_m", 0.0)),
-			]
-		"tunnel_approach_too_short":
-			return "Tunnel approach %.1f m, needs %.1f m: start further from the hill" % [
-				float(preview.get("geometry_measured", 0.0)),
-				float(preview.get("geometry_limit", 0.0)),
-			]
-		"tunnel_too_close":
-			return "Too close above a tunnel: %.1f m / %.1f m over its deck" % [
-				float(preview.get("clearance_m", 0.0)),
-				float(preview.get("required_clearance_m", 0.0)),
-			]
-		"bridge_too_low":
-			return "Too low under a bridge: %.2f m / %.2f m deck to deck" % [
-				float(preview.get("clearance_m", 0.0)),
-				float(preview.get("required_clearance_m", 0.0)),
-			]
-		"tunnel_join":
-			return "Roads cannot join a tunnel inside its bore: join it at a portal"
-		"tunnel_crossing":
-			return "Tunnels cannot cross other tunnels or meet roads underground"
-		"junction_in_trench":
-			return "Junction %.1f m below the ground in a tunnel approach: join where the road meets the ground" % [
-				float(preview.get("geometry_measured", 0.0)),
-			]
-		"tunnel_under_water":
-			return "Tunnels cannot pass under water"
-		"water_requires_bridge":
-			return "Water crossing requires a bridge"
-		"field_overlap":
-			return "Road overlaps a farm field"
-		"zoning_cell_overlap":
-			return "Road overlaps painted zoning cells"
-		"surface_geometry_invalid":
-			return "Road surface compilation failed"
-		"terrain_clip_missing_outer_boundary_owner":
-			return "Road terrain boundary could not be built"
-		"parcel_overlap":
-			return "Road overlaps existing zoning parcels"
-		"road_grade_change":
-			return "Road bends too sharply up or down"
-		"road_too_steep":
-			return "Road too steep: %.0f%%, at most %.0f%%" % [
-				float(preview.get("geometry_measured", 0.0)) * 100.0,
-				float(preview.get("geometry_limit", 0.0)) * 100.0,
-			]
-		"road_tight_curve":
-			return "Curve too tight: radius %.1f m, needs %.1f m" % [
-				float(preview.get("geometry_measured", 0.0)),
-				float(preview.get("geometry_limit", 0.0)),
-			]
-		"junction_arm_angle":
-			return "Roads meet at %.0f°; junction arms need %.0f°" % [
-				float(preview.get("geometry_measured", 0.0)),
-				float(preview.get("geometry_limit", 0.0)),
-			]
-		"junction_corner_does_not_fit":
-			return "Junction corner does not fit; lengthen the roads between junctions"
-		"junction_core_not_simple":
-			return "Junction roads overlap; widen the angle between them"
-		"junction_band_mismatch":
-			return "These road types cannot meet at a junction yet"
-		"junction_arm_too_short":
-			return "Road too short for its junction"
-		"junction_profile_mismatch":
-			return "Junction heights do not fit; adjust the road grade"
-		"junction_layout_invalid":
-			return "Junction could not be laid out"
-		"junction_degree":
-			return "Too many roads at one junction (%d, at most %d)" % [
-				int(preview.get("geometry_measured", 0.0)),
-				int(preview.get("geometry_limit", 0.0)),
-			]
-		"same_node_connection":
-			return "Road endpoints connect to the same junction"
-		"too_short":
-			return "Road too short"
-		"validation_unavailable":
-			return "Road check unavailable"
-		"road_commit_rejected":
-			return "Road could not be built; adjust the road and try again"
-		_:
-			return "Road cannot be placed"
+	return RoadReasonText.text(preview)
 
 func _commit_segment(end_pos: Vector3) -> bool:
 	if _commit_request_id > 0:

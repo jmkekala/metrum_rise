@@ -4,10 +4,17 @@
 ##
 ## The window mirrors the previous side panel behavior but uses Godot's built-in
 ## draggable Window surface and preserves its placement within the session.
+## Lanes (`ROAD-80`): the shared cross-section controls show the selected road's lanes; a
+## change asks Rust's verdict for it through the select tool (the commit's check, no geometry
+## preview) and shows it beside Apply, which commits an accepted change (Ctrl+Z undoes it).
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
+const CrossSectionControls = preload("res://scripts/ui/cross_section_controls.gd")
+const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
+const VERDICT_READY := Color(0.55, 0.95, 0.55)
+const VERDICT_REFUSED := Color.YELLOW
 
 var _simulation_node: Node
 var _select_tool: Node
@@ -16,6 +23,9 @@ var _window: Window
 var _warning_label: Label
 var _no_build_check: CheckBox
 var _class_buttons: Array[Button] = []
+var _lanes: CrossSectionControls
+var _verdict_label: Label
+var _apply_button: Button
 var _selected_edges: Array[int] = []
 var _last_screen_pos := Vector2.ZERO
 
@@ -36,8 +46,8 @@ func _build_window() -> void:
 	UIStyle.set_persistent_window_layout(
 		_window,
 		"road_properties",
-		Vector2i(380, 300),
-		Vector2i(320, 260),
+		Vector2i(380, 400),
+		Vector2i(320, 360),
 		get_viewport()
 	)
 
@@ -72,6 +82,25 @@ func _build_window() -> void:
 		button.pressed.connect(_on_class_button_pressed.bind(i))
 		root_vbox.add_child(button)
 		_class_buttons.append(button)
+
+	root_vbox.add_child(HSeparator.new())
+
+	_lanes = CrossSectionControls.new(14)
+	_lanes.changed.connect(_on_lanes_changed)
+	root_vbox.add_child(_lanes)
+	var apply_row := HBoxContainer.new()
+	_verdict_label = Label.new()
+	_verdict_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_verdict_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UIStyle.set_font_size(_verdict_label, 13)
+	apply_row.add_child(_verdict_label)
+	_apply_button = Button.new()
+	_apply_button.text = "Apply"
+	_apply_button.disabled = true
+	UIStyle.set_font_size(_apply_button, 14)
+	_apply_button.pressed.connect(_on_apply_pressed)
+	apply_row.add_child(_apply_button)
+	root_vbox.add_child(apply_row)
 
 	root_vbox.add_child(HSeparator.new())
 
@@ -113,6 +142,7 @@ func _refresh() -> void:
 	if _selected_edges.is_empty() or _simulation_node == null:
 		return
 
+	_refresh_lanes()
 	if _selected_edges.size() == 1:
 		var edge_idx := _selected_edges[0]
 		_warning_label.text = ""
@@ -147,6 +177,37 @@ func _refresh() -> void:
 		)
 		for i in range(_class_buttons.size()):
 			_class_buttons[i].set_pressed_no_signal(shared_class and i == first_class)
+
+# The first selected road's lanes; editable when every selected road can change its lanes.
+func _refresh_lanes() -> void:
+	var first: Dictionary = _simulation_node.get_edge_cross_section(_selected_edges[0])
+	_lanes.set_lanes(int(first.get("fwd_lanes", 0)), int(first.get("bkw_lanes", 0)))
+	_lanes.set_editable(_selected_edges.all(
+		func(idx): return bool(_simulation_node.get_edge_cross_section(idx).get("editable", false))
+	))
+	_verdict_label.text = ""
+	_apply_button.disabled = true
+
+func _on_lanes_changed(fwd: int, bkw: int) -> void:
+	if _select_tool == null or not _select_tool.has_method("preview_selected_edge_cross_section"):
+		return
+	show_verdict(_select_tool.preview_selected_edge_cross_section(fwd, bkw), fwd, bkw)
+
+## Shows Rust's verdict on `fwd` + `bkw` lanes and enables Apply when it accepts them.
+func show_verdict(verdict: Dictionary, fwd: int, bkw: int) -> void:
+	var ready := bool(verdict.get("is_valid", false))
+	_apply_button.disabled = not ready
+	_verdict_label.add_theme_color_override("font_color", VERDICT_READY if ready else VERDICT_REFUSED)
+	_verdict_label.text = "%d + %d lanes" % [fwd, bkw] if ready \
+		else RoadReasonText.text(verdict, "This road cannot change its lanes")
+
+func _on_apply_pressed() -> void:
+	if _select_tool and _select_tool.has_method("set_selected_edge_cross_section"):
+		var refused: int = _select_tool.set_selected_edge_cross_section(_lanes.fwd_lanes, _lanes.bkw_lanes)
+		_refresh()
+		if refused > 0:
+			_verdict_label.add_theme_color_override("font_color", VERDICT_REFUSED)
+			_verdict_label.text = "%d road(s) refused the change" % refused
 
 func _on_class_button_pressed(class_index: int) -> void:
 	if _select_tool and _select_tool.has_method("set_selected_edge_class"):
