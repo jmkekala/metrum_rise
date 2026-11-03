@@ -11,6 +11,7 @@
 //! type changes only the roads drawn after it. Engine-free: the Godot API resolves the file path
 //! and converts the parts (`nodes::simulation_node::network_api::road_types`).
 
+pub(crate) mod library;
 #[cfg(test)]
 mod tests;
 
