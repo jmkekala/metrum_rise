@@ -61,6 +61,16 @@ var _median_style_table: Dictionary = {}
 signal median_changed(style: int, width: float)
 ## The next stroke's lane counts changed (keys, presets or the options panel's steppers).
 signal lanes_changed(fwd: int, bkw: int)
+## The built-in type R starts with and falls back to when the picked type is gone.
+const DEFAULT_ROAD_TYPE := "builtin:road_2l"
+## The built-in Walkway type, X's pick.
+const WALKWAY_ROAD_TYPE := "builtin:walkway"
+## The road type the next stroke draws (`ROAD-101`), "" before the first pick.
+var road_type_id: String = ""
+## The last car road type picked: R draws it again.
+var last_road_type_id: String = DEFAULT_ROAD_TYPE
+## The next stroke's road type changed (the Roads menu marks it).
+signal road_type_changed(id: String)
 
 # Border-check positions queued while roads are in-flight on the sim thread.
 # Drained by NetworkRenderer._process once the road is confirmed in the graph.
@@ -292,6 +302,41 @@ func set_lane_preset(fwd: int, bkw: int) -> void:
 	if fwd == 0 and bkw == 0 and median_style != 0:
 		set_median(0, 0.0)
 	set_lanes(fwd, bkw)
+
+## Draws the next strokes with road type `id` (`ROAD-101`): its lanes and median as Rust's
+## `get_road_types` lists them. Returns "" when picked, else the refusal key: the type's
+## `invalid_reason` when it is unusable, `road_type_unknown` when no type has `id`; a refused
+## pick leaves the tool as it was. `O(types x parts)` on a UI action.
+func set_road_type(id: String) -> String:
+	var type := _road_type(id)
+	if type.is_empty():
+		return "road_type_unknown"
+	if not bool(type.get("usable", false)):
+		return String(type.get("invalid_reason", "road_type_unknown"))
+	var reason := set_median(int(type.get("median_style", 0)), float(type.get("median_width", 0.0)))
+	if not reason.is_empty():
+		return reason
+	set_lanes(int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)))
+	road_type_id = id
+	if id != WALKWAY_ROAD_TYPE:
+		last_road_type_id = id
+	road_type_changed.emit(id)
+	return ""
+
+## Picks the current type again after the library changed (`ROAD-101`): an edited type's new
+## layout draws from the next stroke on; built roads keep theirs. A type that is gone or no longer
+## usable falls back to the 2-Lane Road (the Walkway stays the Walkway).
+func reload_road_type() -> void:
+	if not bool(_road_type(last_road_type_id).get("usable", false)):
+		last_road_type_id = DEFAULT_ROAD_TYPE
+	if not road_type_id.is_empty() and not set_road_type(road_type_id).is_empty():
+		set_road_type(last_road_type_id)
+
+func _road_type(id: String) -> Dictionary:
+	for type in simulation_node.get_road_types().get("types", []):
+		if String(type.get("id", "")) == id:
+			return type
+	return {}
 
 func adjust_altitude(delta: float):
 	altitude_offset += delta

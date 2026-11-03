@@ -455,7 +455,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.set_lane_preset(1, 1)
+					# R draws the last road type picked (`ROAD-101`).
+					road_tool.set_road_type(road_tool.last_road_type_id)
 					road_tool.mark_network_topology_dirty()
 		Tool.WALKWAY: 
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
@@ -464,7 +465,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.cancel_road()
 				road_tool.active = enabled
 				if enabled:
-					road_tool.set_lane_preset(0, 0)
+					road_tool.set_road_type(road_tool.WALKWAY_ROAD_TYPE)
 		Tool.CUL_DE_SAC:
 			if cul_de_sac_tool:
 				cul_de_sac_tool.active = enabled
