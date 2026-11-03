@@ -10218,7 +10218,7 @@ R8's uncommitted probe) and the round's final code; P-cores `taskset -c 0,2,4,6,
 spec: lanes, median and the road type's `RoadAttributes` (speed, sidewalks, zoning).
 `preview_edge_cross_section` and `set_edge_cross_section` gained `speed_kmh` (20-120 in steps of
 10, else `speed_out_of_range`), `sidewalks` and `zoning`; a valid verdict also carries
-`buildings_removed` and `cost_delta`. `RegionGraph::set_edge_cross_section` writes `FOOT` (a car
+`buildings_removed`, `demolition_permanent` and `cost_delta`. `RegionGraph::set_edge_cross_section` writes `FOOT` (a car
 road's sidewalks), the speed limit (with `base_cost` recomputed, only when the speed changes) and
 `no_building_spawn`; `cross_section_unchanged` compares the full spec. A widening is judged on the
 roadbed half-width (`visual_roadbed_half_width_m`: sidewalks, or without them the 0.75 m
@@ -10232,7 +10232,10 @@ Zoning turned off does what the "No buildings" checkbox does: the allocator main
 demolishes the road's buildings at once and its parcels are removed, other roads' buildings keep
 their rezone grace; `buildings_removed` counts them first (every building whose road it is, a
 parallel `O(B / P)` count only when zoning goes off). The undo record restores the edge records
-and the emptied parcels; demolished buildings stay demolished. `cost_delta` is the new cost
+and the emptied parcels; demolished buildings stay demolished: no undo path restores a road's
+buildings (the bulldoze journal restores one building per entry), so the verdict's
+`demolition_permanent` is true whenever `buildings_removed` is not 0, for the confirmation to say
+Apply cannot be undone (round RB3b2). `cost_delta` is the new cost
 weight less the current one times 15 times the road's length, floored at 0 (a cheaper type
 refunds nothing); the commit charges it outside `benchmark_mode`. Until round RB3c's Road
 Properties passes a type's attributes, `select_tool.gd` sends each road's own (read back with
@@ -10255,11 +10258,45 @@ tier, p50 ms:
 
 The road-type change costs what the median edit costs and stays flat in the remote city, as
 round R3b2's record (100k commit 1.868, undo 1.269, toggle 1.697); its 100k step is the undo's
-`O(A / P + B / P)` membership passes over 600k agents. Finding, not this round's code: at 100k
-the branch's commit, undo and crossing toggle sit 0.3-0.45 ms above the control's in every
-interleaved run, and the binary of round RB3a's last commit shows the same, so round RB3b adds
-nothing to it. Neither round changes the crossing toggle's path (`restore_lanes_locally`, the
-deferred routing rebuild); not profiled further.
+`O(A / P + B / P)` membership passes over 600k agents. At 100k the branch's commit, undo and
+crossing toggle sat 0.3-0.45 ms above the control's in every interleaved run, from round RB3a's
+last commit on; round RB3b2 found why and removed it.
+
+**The 100k edit rise (round RB3b2, 2026-11-04).** Cause: code generation, not a new pass. Every
+in-place edit, undo and crossing toggle runs `restore_lanes_locally`, whose agent passes
+(`invalidate_lane_ids_for_edges`, then in `reattach_invalidated_lanes_for_edges` the detached
+agents and the touched routes) each test all 600k agents in parallel. They were written as
+`filter(..).collect()` on a rayon range, and whether LLVM inlined rayon's folder into the range
+split decided their speed: in the branch's build it did not for the two reattach scans, and the
+outlined `FilterFolder::consume_iter` kept the range iterator in memory, storing and reloading it
+for every agent (perf annotate: about three quarters of the function's cycles on the per-agent
+16-byte store of its state and the loads of it). perf (`cpu_core/cycles/u`, LBR call stacks, the harness with 300 extra 100k edits, a local
+knob never committed): samples in the two reattach scans 1.8k + 1.0k on the control, 7.6k + 7.0k
+on the branch, about 0.4 ms per edit at 8 threads, the whole rise; the walking proof
+(`prove_complete`) has no samples (no edit, undo or toggle reaches it: only a worker's trip
+scratch prepares it). Nothing RB3a changed is on these paths. Fix: the three scans go through
+`scan_agents` (`economy/agents/remap.rs`): a parallel pass over fixed 4096-agent chunks, each a
+plain loop, collected in agent order, so the selected agents and their order are the same as
+before and the loop does not depend on that inlining. Profile of the fix: 1.7k / 1.7k / 1.0k
+samples (the invalidation scan, 6.5k on both older builds, drops too).
+
+Acceptance record (round RB3b2, fresh, 00:13-00:15; release library test binaries of `dev`
+`7843de33` (control), the branch `e4293062` and the branch with the fix, each with R8's
+uncommitted probe on the branch builds; P-cores, `RAYON_NUM_THREADS=8`, `.run.lock` and the
+exclusive timing lock, 1-minute load 1.37 at the start, no Godot running; runs C B F F B C C B F;
+logs in `$ARTIFACTS`). `populated_median_edit_scaling`, local products identical at every tier,
+p50 ms ranges over 3 runs, 0/1k/10k/100k:
+
+| binary | verdict | commit | undo | crossing toggle |
+|---|---|---|---|---|
+| control `7843de33` | 0.29-1.91 / 0.29-0.39 / 0.37-0.42 / 0.36-0.43 | 0.92-1.36 / 0.75-0.88 / 0.95-0.98 / 1.57-1.58 | 0.25-0.46 / 0.27 / 0.39-0.42 / 1.04-1.06 | 0.60-0.71 / 0.56-0.66 / 0.75-0.82 / 1.33-1.43 |
+| branch `e4293062` | 0.29-0.48 / 0.36-0.42 / 0.28-0.36 / 0.36-0.39 | 1.42-2.60 / 0.77-0.97 / 0.96-1.07 / 1.90-2.01 | 0.40-0.74 / 0.27-0.33 / 0.49 / 1.39-1.46 | 0.66-1.12 / 0.51-1.27 / 0.86-0.91 / 1.68-1.72 |
+| branch + `scan_agents` | 0.27-0.49 / 0.42-1.11 / 0.33-0.36 / 0.29-0.41 | 0.74-2.05 / 0.79-0.93 / 0.87-0.94 / 1.37-1.40 | 0.22-0.54 / 0.23-0.28 / 0.32-0.37 / 0.86-0.88 | 0.67-2.47 / 0.56-0.63 / 0.74-0.79 / 1.11-1.26 |
+
+At 100k the fix is 0.2 ms below the control on all three; 0/1k/10k are unchanged within the
+spread (the empty tier's first samples are noisy on every binary). The passes are still
+`O(A / P)`; making them local needs an index of the agents on each edge's lanes, which this round
+did not build.
 
 The Road Properties window (select tool) carries a road-type picker (`ROAD-101`, replacing the
 R3 lane steppers and Median rows): the usable types, the selected road's marked from
