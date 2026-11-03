@@ -31,11 +31,16 @@ fn every_layout_refusal_has_its_key_and_part() {
             "layout_footpath_alone",
             Some(2),
         ),
-        (&[], "layout_sidewalks", None),
+        (&[], "layout_no_car_lane", None),
         (&[S], "layout_sidewalks", None),
+        // One side only: none or both.
         (&[B, F, S], "layout_sidewalks", None),
         (&[S, B, F], "layout_sidewalks", None),
         (&[S, B, S, F, S], "layout_sidewalks", Some(2)),
+        (&[B, S, F], "layout_sidewalks", Some(1)),
+        (&[B, B, m, m, F], "layout_two_medians", Some(3)),
+        (&[F, B], "layout_lane_order", Some(1)),
+        (&[m, B, F], "layout_median_at_edge", Some(0)),
         (&[S, B, m, m, F, S], "layout_two_medians", Some(3)),
         (&[S, F, B, S], "layout_lane_order", Some(2)),
         (&[S, B, F, B, S], "layout_lane_order", Some(3)),
@@ -76,9 +81,17 @@ fn valid_layouts_build_their_cross_section() {
         fwd_lanes,
         bkw_lanes,
         median,
+        sidewalks: true,
+    };
+    let bare = |fwd_lanes, bkw_lanes, median| RoadCrossSection {
+        sidewalks: false,
+        ..section(fwd_lanes, bkw_lanes, median)
     };
     let cases: &[(&[RoadPart], RoadCrossSection)] = &[
-        (&[RoadPart::Footpath], section(0, 0, None)),
+        (&[RoadPart::Footpath], RoadCrossSection::WALKWAY),
+        (&[B, F], bare(1, 1, None)),
+        (&[F], bare(1, 0, None)),
+        (&[B, B, paving, F, F], bare(2, 2, Some(paving_median))),
         (&[S, B, F, S], section(1, 1, None)),
         (&[S, F, S], section(1, 0, None)),
         (&[S, B, S], section(0, 1, None)),
@@ -114,6 +127,14 @@ fn widths_sum_to_the_edge_width_plus_sidewalks() {
     assert_eq!(carriageway, Edge::cross_section_width_m(0, 0, None));
     // Refused layouts still have widths for the builder to draw.
     assert_eq!(layout_widths(&[S, F, B, S]).2, 10.0);
+    // Without sidewalks the roadbed builds a 0.75 m shoulder each side.
+    let (widths, carriageway, total) = layout_widths(&[B, grass(3.0), F]);
+    assert_eq!((widths, carriageway, total), (vec![3.5, 3.0, 3.5], 10.0, 11.5));
+    let section = check_layout(&[B, grass(3.0), F]).unwrap();
+    assert_eq!(
+        carriageway,
+        Edge::cross_section_width_m(section.fwd_lanes, section.bkw_lanes, section.median)
+    );
 }
 
 #[test]
@@ -137,20 +158,58 @@ fn the_builtins_build_todays_roads_menu() {
                 fwd_lanes,
                 bkw_lanes,
                 median: None,
+                sidewalks: fwd_lanes > 0,
             }
         );
         assert_eq!(ty.usable(), Some(section));
+        // Every built-in draws today's edge: 50 km/h (none for the walkway), sidewalks, zoning.
+        assert_eq!(ty.speed_kmh, if fwd_lanes > 0 { 50 } else { 0 });
+        assert!(ty.zoning);
+        if fwd_lanes > 0 {
+            let attributes = RoadAttributes::new(ty.speed_kmh, section.sidewalks, ty.zoning);
+            assert_eq!(attributes, RoadAttributes::DEFAULT);
+        }
     }
+    assert_eq!(
+        RoadAttributes::DEFAULT.speed_ms.to_bits(),
+        RoadAttributes::new(50, true, true).speed_ms.to_bits()
+    );
+    assert_eq!(RoadAttributes::speed_kmh_of(config::DEFAULT_URBAN_ROAD_SPEED_MS), 50);
     let types: Vec<RoadType> = BUILTIN_ROAD_TYPES
         .iter()
         .map(RoadType::from_builtin)
         .collect();
-    assert_eq!(
-        type_of(&types, RoadCrossSection::WALKWAY).map(|ty| ty.id.as_str()),
-        Some("builtin:walkway")
-    );
+    let id_of = |section, speed| type_of(&types, section, speed).map(|ty| ty.id.as_str());
+    assert_eq!(id_of(RoadCrossSection::WALKWAY, 50), Some("builtin:walkway"));
+    let two_lane = check_layout(&[S, B, F, S]).unwrap();
+    assert_eq!(id_of(two_lane, 50), Some("builtin:road_2l"));
+    // Sidewalks and speed are part of the match.
+    assert_eq!(id_of(two_lane, 60), None);
+    assert_eq!(id_of(check_layout(&[B, F]).unwrap(), 50), None);
     let divided = check_layout(&[S, B, grass(3.0), F, S]).unwrap();
-    assert!(type_of(&types, divided).is_none());
+    assert!(type_of(&types, divided, 50).is_none());
+}
+
+#[test]
+fn speeds_are_checked_on_the_10_kmh_grid() {
+    let road = check_layout(&[S, B, F, S]).unwrap();
+    for speed in [20, 50, 80, 120] {
+        assert_eq!(check_speed_kmh(road, speed), Ok(speed as u16));
+    }
+    for speed in [0, 10, 15, 125, 130, -20, 65_556] {
+        assert_eq!(check_speed_kmh(road, speed), Err("speed_out_of_range"));
+    }
+    assert_eq!(check_speed_kmh(RoadCrossSection::WALKWAY, 999), Ok(0));
+    let tool = RoadAttributes::from_tool(100, false, false).unwrap();
+    assert_eq!(
+        tool.speed_ms.to_bits(),
+        (100.0_f32 * config::KMH_TO_MPS).to_bits()
+    );
+    assert_eq!(RoadAttributes::speed_kmh_of(tool.speed_ms), 100);
+    assert_eq!(
+        RoadAttributes::from_tool(5, true, true),
+        Err("speed_out_of_range")
+    );
 }
 
 #[test]

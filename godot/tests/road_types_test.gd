@@ -147,7 +147,7 @@ func _run() -> void:
 	for builtin in BUILTINS:
 		var button: Button = menu.button_for(builtin[0])
 		_expect(button != null and button.text == builtin[1], "the %s button: %s" % [builtin[1], button.text if button else "missing"])
-	var created: Dictionary = _simulation.create_road_type("Menu Test Avenue", AVENUE)
+	var created: Dictionary = _simulation.create_road_type("Menu Test Avenue", AVENUE, 50, true)
 	var avenue := String(created.get("id", ""))
 	_expect(not avenue.is_empty(), "the custom type is created: %s" % created)
 	_expect(not menu.listed_ids().has(avenue), "the row lists the library as it was read")
@@ -193,7 +193,7 @@ func _run() -> void:
 	var first := await _draw(z)
 	_expect(_layout(first) == [2, 2, 2, 3.0, 17.0], "the custom type draws 2 + 2 with a 3 m grass median: %s" % [_layout(first)])
 	_expect(String(_simulation.get_edge_cross_section(first).get("road_type", "")) == avenue, "the road reads back as the custom type")
-	_expect(_simulation.update_road_type(avenue, "Menu Test Avenue", AVENUE_EDITED).is_empty(), "the custom type is edited")
+	_expect(_simulation.update_road_type(avenue, "Menu Test Avenue", AVENUE_EDITED, 50, true).is_empty(), "the custom type is edited")
 	_ui.refresh_road_types()
 	_expect(_tool.road_type_id == avenue and _tool.fwd_lanes == 1 and _tool.median_style == 1, "the tool draws the edited type: %d + %d, median %d" % [_tool.fwd_lanes, _tool.bkw_lanes, _tool.median_style])
 	var second := await _draw(z + 50.0)
@@ -247,7 +247,7 @@ func _run() -> void:
 	var many: Array[String] = []
 	for n in 12:
 		var name := "Overflow Test Road %02d" % n if n < 11 else "Overflow Test Road With 40 Chars In Name"
-		var made: Dictionary = _simulation.create_road_type(name, AVENUE_EDITED)
+		var made: Dictionary = _simulation.create_road_type(name, AVENUE_EDITED, 50, true)
 		_expect(made.has("id"), "overflow type %d is created: %s" % [n, made])
 		many.append(String(made.get("id", "")))
 	_ui.refresh_road_types()

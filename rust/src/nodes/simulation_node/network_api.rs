@@ -71,7 +71,7 @@ impl SimulationNode {
             bkw_lanes,
             snap_to_existing_roads,
             self.road_tool_tunnel,
-            self.road_tool_median,
+            (self.road_tool_median, self.road_tool_attributes),
         );
         let send_start = road_debug.then(Instant::now);
         let (completion, result) = std::sync::mpsc::sync_channel(1);
@@ -86,6 +86,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                attributes: self.road_tool_attributes,
                 enqueued_at: Instant::now(),
                 completion,
                 preview,
@@ -461,9 +462,11 @@ impl SimulationNode {
     /// Road `edge_id`'s cross-section for the Road Properties window (`ROAD-80`): `fwd_lanes`,
     /// `bkw_lanes`, `width` (carriageway metres), `class`, `median_style`, `median_width`,
     /// `editable` (a live road with vehicle lanes, which [`Self::set_edge_cross_section`] can
-    /// change) and `road_type` (`ROAD-101`: the id of the first usable road type, built-ins
-    /// first, whose layout builds exactly this cross-section, else empty). Empty for an id that
-    /// is not a live edge.
+    /// change), `ROAD-101`'s `sidewalks` (a car road's two sidewalks; false for a walkway),
+    /// `speed_kmh` (the speed limit in whole km/h) and `zoning` (lots and buildings along it),
+    /// and `road_type` (the id of the first usable road type, built-ins first, whose layout
+    /// builds exactly this cross-section, sidewalks included, at this speed, else empty; zoning
+    /// is not matched). Empty for an id that is not a live edge.
     #[func]
     pub fn get_edge_cross_section(&self, edge_id: i32) -> VarDictionary {
         let (mut result, section) = {
@@ -476,7 +479,7 @@ impl SimulationNode {
             else {
                 return VarDictionary::new();
             };
-            let result = vdict! {
+            let mut result = vdict! {
                 "fwd_lanes": i64::from(edge.fwd_lanes),
                 "bkw_lanes": i64::from(edge.bkw_lanes),
                 "width": edge.width,
@@ -487,15 +490,24 @@ impl SimulationNode {
                     .validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, edge.median)
                     .is_ok(),
             };
+            let walkway = edge.fwd_lanes == 0 && edge.bkw_lanes == 0;
             let section = crate::simulation::network::road_types::RoadCrossSection {
                 fwd_lanes: edge.fwd_lanes,
                 bkw_lanes: edge.bkw_lanes,
                 median: edge.median,
+                sidewalks: !walkway
+                    && edge.allowed_types & crate::simulation::network::types::TransitFlags::FOOT != 0,
             };
-            (result, section)
+            let speed_kmh = crate::simulation::network::road_types::RoadAttributes::speed_kmh_of(
+                edge.speed_limit,
+            );
+            result.set("sidewalks", section.sidewalks);
+            result.set("speed_kmh", i64::from(speed_kmh));
+            result.set("zoning", !edge.no_building_spawn);
+            (result, (section, speed_kmh))
         };
         // The library is matched without the core lock.
-        result.set("road_type", self.road_type_of(section));
+        result.set("road_type", self.road_type_of(section.0, section.1));
         result
     }
 

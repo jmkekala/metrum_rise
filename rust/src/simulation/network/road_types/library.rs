@@ -11,15 +11,18 @@
 //! listed unusable with its reason. Ids come from a counter stored in the file: deterministic,
 //! no clock, no randomness. Library edits are tool configuration, outside the undo stack.
 //!
-//! Format (version 1), pretty-printed:
-//! `{"format": "metrum-road-types", "version": 1, "next_id": 3, "types": [{"id": "custom:1",
+//! Format (version 2), pretty-printed:
+//! `{"format": "metrum-road-types", "version": 2, "next_id": 3, "types": [{"id": "custom:1",
 //! "name": "Boulevard", "parts": [{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
-//! {"kind": "median", "style": "grass", "width_m": 3.0}, ...]}]}`. Part kinds `sidewalk`,
-//! `car_lane`, `median`, `footpath`; median styles `painted`, `grass`, `paving`.
+//! {"kind": "median", "style": "grass", "width_m": 3.0}, ...], "speed_kmh": 50, "zoning":
+//! true}]}`. Part kinds `sidewalk`, `car_lane`, `median`, `footpath`; median styles `painted`,
+//! `grass`, `paving`. A car road without sidewalk parts has none. `speed_kmh` (a walkway's is 0
+//! and ignored) and `zoning` came with version 2: a version 1 entry reads as 50 km/h with
+//! zoning, and the next write stores the file as version 2, its entries as they were.
 
 use super::{
-    BUILTIN_ROAD_TYPES, RoadCrossSection, RoadPart, RoadType, RoadTypeRefusal, check_layout,
-    clean_name, same_name, suggested_name,
+    BUILTIN_ROAD_TYPES, DEFAULT_SPEED_KMH, LayoutRefusal, RoadCrossSection, RoadPart, RoadType,
+    RoadTypeRefusal, check_layout, check_speed_kmh, clean_name, same_name, suggested_name,
 };
 use crate::assets::authoring::files::write_atomic;
 use crate::simulation::network::graph::{MedianStyle, RoadMedian};
@@ -32,7 +35,7 @@ mod tests;
 
 const FORMAT: &str = "metrum-road-types";
 /// The library format this game reads and writes.
-pub const LIBRARY_VERSION: u32 = 1;
+pub const LIBRARY_VERSION: u32 = 2;
 const CUSTOM_ID_PREFIX: &str = "custom:";
 
 // The file's envelope as read: entries stay raw JSON so an unusable one is written back as it was.
@@ -60,6 +63,19 @@ struct StoredType {
     id: String,
     name: String,
     parts: Vec<StoredPart>,
+    // Version 2; a version 1 entry has neither.
+    #[serde(default = "default_speed_kmh")]
+    speed_kmh: u16,
+    #[serde(default = "default_zoning")]
+    zoning: bool,
+}
+
+fn default_speed_kmh() -> u16 {
+    DEFAULT_SPEED_KMH
+}
+
+fn default_zoning() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize)]
@@ -192,35 +208,46 @@ impl RoadTypeLibrary {
         self.free_name(name, except).map(|_| ())
     }
 
-    /// Adds a type named `name` (trimmed) with `parts`, and returns its new id. Refused when
-    /// the file cannot be written, the layout fails [`check_layout`], the name breaks a rule
+    /// Adds a type named `name` (trimmed) with `parts`, `speed_kmh` and `zoning`, and returns
+    /// its new id. Refused when the file cannot be written, the layout fails [`check_layout`],
+    /// the speed [`check_speed_kmh`] (`speed_out_of_range`), the name breaks a rule
     /// ([`clean_name`]) or another type has it (`name_taken`), or the write fails
     /// (`library_write_failed`).
-    pub fn create(&mut self, name: &str, parts: &[RoadPart]) -> Result<String, RoadTypeRefusal> {
+    pub fn create(
+        &mut self,
+        name: &str,
+        parts: &[RoadPart],
+        speed_kmh: i64,
+        zoning: bool,
+    ) -> Result<String, RoadTypeRefusal> {
         self.reload_for_write()?;
-        check_layout(parts)?;
+        let (_, speed_kmh) = check_type(parts, speed_kmh)?;
         let name = self.free_name(name, None)?;
         let id = format!("{CUSTOM_ID_PREFIX}{}", self.next_id);
         self.next_id += 1;
-        self.entries.push(stored(&id, &name, parts));
+        self.entries
+            .push(stored(&id, &name, parts, speed_kmh, zoning));
         self.write()?;
         Ok(id)
     }
 
-    /// Gives custom type `id` the name `name` and the layout `parts`; built roads keep their
-    /// own. Refused as [`Self::create`], and for a built-in (`road_type_builtin`) or an id the
-    /// file does not hold (`road_type_unknown`). An unusable entry may be fixed this way.
+    /// Gives custom type `id` the name `name`, the layout `parts`, `speed_kmh` and `zoning`;
+    /// built roads keep their own. Refused as [`Self::create`], and for a built-in
+    /// (`road_type_builtin`) or an id the file does not hold (`road_type_unknown`). An unusable
+    /// entry may be fixed this way.
     pub fn update(
         &mut self,
         id: &str,
         name: &str,
         parts: &[RoadPart],
+        speed_kmh: i64,
+        zoning: bool,
     ) -> Result<(), RoadTypeRefusal> {
         self.reload_for_write()?;
         let entry = self.entry_index(id)?;
-        check_layout(parts)?;
+        let (_, speed_kmh) = check_type(parts, speed_kmh)?;
         let name = self.free_name(name, Some(entry))?;
-        self.entries[entry] = stored(id, &name, parts);
+        self.entries[entry] = stored(id, &name, parts, speed_kmh, zoning);
         self.write()
     }
 
@@ -363,17 +390,32 @@ impl RoadTypeLibrary {
     }
 }
 
-fn stored(id: &str, name: &str, parts: &[RoadPart]) -> Value {
+/// The layout check, then the speed check of the cross-section it builds: the cross-section and
+/// the type's speed in km/h (0 for a walkway), or the first refusal. `O(parts)`.
+pub(crate) fn check_type(
+    parts: &[RoadPart],
+    speed_kmh: i64,
+) -> Result<(RoadCrossSection, u16), LayoutRefusal> {
+    let section = check_layout(parts)?;
+    let speed_kmh =
+        check_speed_kmh(section, speed_kmh).map_err(|reason| LayoutRefusal { reason, part: None })?;
+    Ok((section, speed_kmh))
+}
+
+fn stored(id: &str, name: &str, parts: &[RoadPart], speed_kmh: u16, zoning: bool) -> Value {
     let stored = StoredType {
         id: id.to_string(),
         name: name.to_string(),
         parts: parts.iter().copied().map(StoredPart::from_part).collect(),
+        speed_kmh,
+        zoning,
     };
     serde_json::to_value(stored).expect("a road type serialises")
 }
 
 // One file entry as a listed type: unusable when it does not read, repeats an earlier id,
-// breaks a name rule, repeats an earlier name or fails the layout check (in that order).
+// breaks a name rule, repeats an earlier name or fails the layout or speed check (in that
+// order).
 fn custom_type(entry: &Value, listed: &[RoadType]) -> RoadType {
     let text = |key: &str| {
         entry
@@ -387,6 +429,8 @@ fn custom_type(entry: &Value, listed: &[RoadType]) -> RoadType {
         name: text("name"),
         builtin: false,
         parts,
+        speed_kmh: 0,
+        zoning: true,
         verdict: Err(refusal),
     };
     let stored = match StoredType::deserialize(entry) {
@@ -421,13 +465,18 @@ fn custom_type(entry: &Value, listed: &[RoadType]) -> RoadType {
     } else if listed.iter().any(|ty| same_name(&ty.name, &stored.name)) {
         Err(RoadTypeRefusal::new("name_taken", stored.name.as_str()))
     } else {
-        check_layout(&parts).map_err(RoadTypeRefusal::from)
+        check_type(&parts, stored.speed_kmh.into()).map_err(RoadTypeRefusal::from)
     };
+    // As listed: a walkway's speed is 0, whatever the entry holds.
+    let speed_kmh = verdict.as_ref().map_or(stored.speed_kmh, |(_, speed)| *speed);
+    let verdict = verdict.map(|(section, _)| section);
     RoadType {
         id: stored.id,
         name: clean_name(&stored.name).unwrap_or(&stored.name).to_string(),
         builtin: false,
         parts,
+        speed_kmh,
+        zoning: stored.zoning,
         verdict,
     }
 }

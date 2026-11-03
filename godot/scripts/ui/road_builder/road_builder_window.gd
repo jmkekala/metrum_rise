@@ -326,7 +326,7 @@ func set_median(index: int, style: int, width_m: float) -> void:
 
 # Asks Rust's verdict on the layout and shows it.
 func _layout_changed() -> void:
-	check = _simulation_node.check_road_layout(parts)
+	check = _simulation_node.check_road_layout(parts, 50, true)
 	var valid := bool(check.get("is_valid", false))
 	strip.set_layout(parts, check.get("part_widths_m", PackedFloat32Array()), valid)
 	strip.selected_part = _popup_index
@@ -377,11 +377,11 @@ func create() -> void:
 	var created_id := ""
 	var refusal := ""
 	if editing_id.is_empty():
-		var created: Dictionary = _simulation_node.create_road_type(name_edit.text, parts)
+		var created: Dictionary = _simulation_node.create_road_type(name_edit.text, parts, 50, true)
 		created_id = String(created.get("id", ""))
 		refusal = String(created.get("invalid_reason", ""))
 	else:
-		refusal = _simulation_node.update_road_type(editing_id, name_edit.text, parts)
+		refusal = _simulation_node.update_road_type(editing_id, name_edit.text, parts, 50, true)
 	if not refusal.is_empty():
 		# Another game may have changed the file since it was listed.
 		_refresh_library()

@@ -14,9 +14,10 @@ use godot::prelude::Vector3;
 /// Height of raised bands (curb, shoulder, sidewalk) above the carriageway, in metres.
 pub const CURB_STEP_HEIGHT_M: f32 = 0.12;
 
-// Lateral widths of the raised bands beside the carriageway.
+// Lateral widths of the raised bands beside the carriageway; a car road without sidewalks has
+// only the shoulder (`ROAD-101`'s road types say so in their widths).
 const CURB_BAND_WIDTH_M: f32 = 0.15;
-const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
+pub(crate) const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
 // A footpath is at least this wide: a walkway's whole width (`Edge::cross_section_width_m`).
 pub(crate) const FOOTPATH_MIN_WIDTH_M: f32 = 2.0;
 /// Width of each kerb of a raised median at its authored width (`ROAD-80`), inside the median's

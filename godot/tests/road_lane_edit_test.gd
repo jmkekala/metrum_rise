@@ -94,7 +94,7 @@ func _run() -> void:
 	var created: Dictionary = simulation.create_road_type("Lane Edit Boulevard", [
 		{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
 		{"kind": "median", "style": 2, "width_m": 3.0},
-		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}])
+		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true)
 	var boulevard := String(created.get("id", ""))
 	_expect(not boulevard.is_empty(), "the divided type is created: %s" % created)
 	var ui := UiStub.new()
@@ -156,7 +156,7 @@ func _run() -> void:
 	# One way with the median: no type can ask for it (the layout check refuses it), and the
 	# in-place check still refuses it with its reason.
 	_expect(simulation.check_road_layout([{"kind": "sidewalk"}, {"kind": "median", "style": 2, "width_m": 3.0},
-		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}]).get("invalid_reason", "") != "", "a one-way median layout is refused")
+		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true).get("invalid_reason", "") != "", "a one-way median layout is refused")
 	window.show_verdict(tool.preview_selected_edge_cross_section(1, 0, 2, 3.0))
 	_expect(window._apply_button.disabled, "a one-way median cannot be applied")
 	_expect(window._verdict_label.text == "A median needs lanes in both directions", "the one-way refusal: %s" % window._verdict_label.text)
