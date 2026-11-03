@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! In-place edits of an existing road: the class change (`ROAD-97`: a spliced publication equals
-//! a full emission; R3-k: its undo record) and the lane-count edit (`ROAD-80`): what it builds,
-//! the cars it moves, what it refuses, its undo and its publication.
+//! a full emission; R3-k: its undo record), the lane-count edit (`ROAD-80`): what it builds,
+//! the cars it moves, what it refuses, its undo and its publication, and a road type's
+//! attributes given in place (`ROAD-101`): sidewalks with their walkers and entrances, speed and
+//! routing, zoning off with its demolitions, the corridor check and the charge.
 
 use super::road_crosswalks::{
     arm_towards, fully_emitted_chunks, products, published_chunks, t_junction_with_side,
 };
 use super::*;
+use crate::simulation::network::graph::RoadMedian;
 use crate::simulation::network::lanes::LaneType;
+use crate::simulation::network::road_types::RoadAttributes;
 
 // Four roads (round R8f's vegetation repro, on flat ground): a through road, a side road from
 // it, a later road ending 10 m short of the side road, and a fourth from the through road. The
@@ -70,16 +74,22 @@ fn a_class_change_publishes_the_chunks_a_full_emission_draws_and_undoes() {
     assert_eq!(products(&mut core), before);
 }
 
-// The lane edit's verdict and its commit: `""` when applied, else the refusal's reason. The
-// preview must give the same verdict, and a refusal must change nothing.
-fn edit_lanes(core: &mut SimCore, edge: usize, fwd: u8, bkw: u8) -> String {
+// The in-place edit's verdict and its commit on the full spec: `""` when applied, else the
+// refusal's reason. The preview must give the same verdict, and a refusal must change nothing.
+fn edit(
+    core: &mut SimCore,
+    edge: usize,
+    (fwd, bkw, median): (u8, u8, Option<RoadMedian>),
+    attributes: RoadAttributes,
+) -> String {
     let before = (products(core), core.undo_stack.len());
     let preview = core
-        .preview_edge_cross_section_internal(edge as i32, fwd, bkw, None)
+        .preview_edge_cross_section_internal(edge as i32, fwd, bkw, median, attributes)
+        .err()
         .map(|refusal| refusal.reason)
         .unwrap_or_default();
     assert_eq!(products(core), before.0, "a preview changes nothing");
-    let applied = core.set_edge_cross_section_internal(edge as i32, fwd, bkw, None);
+    let applied = core.set_edge_cross_section_internal(edge as i32, fwd, bkw, median, attributes);
     assert_eq!(
         applied,
         preview.is_empty(),
@@ -89,6 +99,15 @@ fn edit_lanes(core: &mut SimCore, edge: usize, fwd: u8, bkw: u8) -> String {
         assert_eq!((products(core), core.undo_stack.len()), before, "{preview}");
     }
     preview
+}
+
+// The lane edit: `edit` keeping the road's median-less layout's attributes.
+fn edit_lanes(core: &mut SimCore, edge: usize, fwd: u8, bkw: u8) -> String {
+    let attributes = core
+        .region_graph
+        .get_edge(edge)
+        .map_or(RoadAttributes::DEFAULT, RoadAttributes::of_edge);
+    edit(core, edge, (fwd, bkw, None), attributes)
 }
 
 // `ROAD-80` (1), (4): widening the T's side road from 1+1 to 2+2 in place draws, bitwise, what
@@ -325,4 +344,321 @@ fn a_lane_edit_survives_a_save_file() {
     let edge = loaded.region_graph.edge(side);
     assert_eq!((edge.fwd_lanes, edge.bkw_lanes, edge.width), (2, 1, 10.5));
     assert_eq!(products(&mut loaded), products(&mut core));
+}
+
+// A one-cell house on a default residential parcel fronting `edge` near `(x, z)`, with the zone
+// index, sites and entrance cache current, as the `editing` tests build one. Returns the
+// building's index and its parcel's id.
+fn house_fronting(core: &mut SimCore, edge: usize, (x, z): (f32, f32)) -> (usize, u64) {
+    use crate::assets::AssetManifest;
+    if core.allocator.registry.get("test:house").is_none() {
+        let manifest: AssetManifest = serde_json::from_value(serde_json::json!({
+            "asset_id": "house", "display_name": "House",
+            "building": {
+                "placement_mode": "zoned_private", "zone_type": "residential", "density": "low",
+                "lot_width_cells": 1, "lot_depth_cells": 1,
+                "flat_size_m2": 80.0, "household_capacity": 1
+            },
+            "mesh_parts": [{"name": "main", "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]}],
+            "anchors": [{"type": "entrance", "name": "main", "position": [0.0, 0.0, 0.5], "forward": [0.0, 0.0, 1.0]}]
+        }))
+        .unwrap();
+        manifest.validate().unwrap();
+        core.allocator
+            .registry
+            .register("test", manifest, String::new());
+    }
+    let profile = core
+        .zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    let id = core
+        .zoning
+        .place_or_rezone_default_parcel_at(x, z, profile, &core.region_graph)
+        .unwrap();
+    let parcel = core.zoning.parcel_by_raw_id(id.raw()).unwrap();
+    assert_eq!(parcel.edge_idx(), edge, "the parcel fronts the intended road");
+    let center = parcel.front_center() + parcel.normal() * (core.config.zone_cell_m * 0.5);
+    let mut building = crate::simulation::buildings::allocator::indexed_test_building(
+        "test:house".to_owned(),
+        ZoneType::Residential,
+        0,
+    );
+    building.center_x = center.x;
+    building.center_y = center.y;
+    building.width_cells = 1;
+    building.depth_cells = 1;
+    building.edge_idx = edge;
+    building.parcel_id = id.raw();
+    building.zone_profile_runtime_id = profile;
+    building.frontage_t = parcel.frontage_center_t();
+    building.facing_dir = -parcel.normal();
+    building.side = parcel.side();
+    building.side_offset = core.region_graph.edge(edge).width * 0.5 + crate::config::SIDEWALK_WIDTH;
+    let index = core.allocator.buildings.len();
+    core.allocator.buildings.push(building);
+    assert!(core.zoning.occupy_parcel(id.raw(), index));
+    core.allocator
+        .rebuild_building_site_clients(core.config.zone_cell_m);
+    core.allocator.rebuild_zone_index();
+    core.allocator
+        .rebuild_entrance_cache(&core.region_graph, &core.transit_network.lane_system);
+    (index, id.raw())
+}
+
+// The side road's lanes of `kind`.
+fn lanes_of(core: &SimCore, edge: usize, kind: LaneType) -> Vec<usize> {
+    let lanes = &core.transit_network.lane_system;
+    lanes.edge_lanes[&edge]
+        .iter()
+        .copied()
+        .filter(|&id| lanes.lanes[id].lane_type == kind)
+        .collect()
+}
+
+// `ROAD-101` (D3): a road type without sidewalks at 80 km/h given in place. The sidewalk lanes go
+// with `FOOT`; the walkers on them stay where they stand (laneless on their road, `TRAFFIC-19`'s
+// case, or on a sidewalk of their own kind nearby), none moved or lost; the house fronting the
+// road gets a car-only entrance; the speed and its routing cost are written; undo restores the
+// lanes, `FOOT`, the speed, the cost and the walking entrance.
+#[test]
+fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
+    use crate::nodes::sim::render::lane_pose::sample_lane_pose;
+    use crate::simulation::economy::agents::MODE_WALK;
+    use crate::simulation::network::types::TransitFlags;
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let (house, _) = house_fronting(&mut core, side, (12.0, 60.0));
+    let entrance = &core.allocator.entrances[house];
+    assert_ne!(entrance.foot_lane_fwd.min(entrance.foot_lane_bkw), usize::MAX);
+    let sidewalks = lanes_of(&core, side, LaneType::Foot);
+    let sidewalk_lanes = sidewalks.len();
+    assert!(sidewalk_lanes >= 2, "a lane each way on each sidewalk");
+    let road = core.region_graph.edge(side);
+    let (start, end) = (road.start_node, road.end_node);
+    let mut walkers = Vec::new();
+    for lane_id in sidewalks {
+        let lane = &core.transit_network.lane_system.lanes[lane_id];
+        let (at, _) = sample_lane_pose(lane, 40.0).unwrap();
+        let from = if lane.is_fwd { start } else { end };
+        let walker = core.agents.spawn_housed_agent(usize::MAX, at.x, at.z);
+        core.agents.agents.transit_mode[walker] = MODE_WALK;
+        core.agents
+            .agents
+            .enter_lane(walker, &core.transit_network.lane_system, lane_id, 40.0, from);
+        walkers.push(walker);
+    }
+    let agents = core.agents.agents.current_lane_id.len();
+    let positions: Vec<_> = walkers
+        .iter()
+        .map(|&w| (core.agents.agents.pos_x[w].to_bits(), core.agents.agents.pos_y[w].to_bits()))
+        .collect();
+    let before = core.region_graph.edge(side).clone();
+
+    let rural = RoadAttributes::new(80, false, true);
+    assert_eq!(edit(&mut core, side, (1, 1, None), rural), "");
+    let road = core.region_graph.edge(side);
+    assert_eq!(road.allowed_types & TransitFlags::FOOT, 0);
+    assert_eq!(road.speed_limit.to_bits(), rural.speed_ms.to_bits());
+    assert_eq!(
+        road.base_cost.to_bits(),
+        crate::simulation::pathing::cost::CostCalculator::calculate_costs(road)
+            .0
+            .to_bits()
+    );
+    assert!(road.base_cost < before.base_cost, "faster is cheaper to route");
+    assert!(lanes_of(&core, side, LaneType::Foot).is_empty());
+    assert_eq!(lanes_of(&core, side, LaneType::Vehicle).len(), 2);
+    assert_eq!(core.agents.agents.current_lane_id.len(), agents, "no walker is lost");
+    let lanes = &core.transit_network.lane_system;
+    for (&walker, &position) in walkers.iter().zip(&positions) {
+        let a = &core.agents.agents;
+        assert_eq!((a.pos_x[walker].to_bits(), a.pos_y[walker].to_bits()), position);
+        let lane = a.current_lane_id[walker];
+        assert!(
+            (lane == usize::MAX && a.current_edge[walker] == side)
+                || lanes.lanes[lane].lane_type == LaneType::Foot,
+            "walker {walker} on lane {lane}"
+        );
+    }
+    let entrance = &core.allocator.entrances[house];
+    assert_eq!((entrance.foot_lane_fwd, entrance.foot_lane_bkw), (usize::MAX, usize::MAX));
+    assert_eq!(entrance.curb_pos, entrance.door_pos, "a car-only entrance");
+    assert_ne!(entrance.car_lane_fwd.min(entrance.car_lane_bkw), usize::MAX);
+
+    assert!(core.undo_action_internal());
+    let road = core.region_graph.edge(side);
+    assert_eq!(road.allowed_types, before.allowed_types);
+    assert_eq!(road.speed_limit.to_bits(), before.speed_limit.to_bits());
+    assert_eq!(road.base_cost.to_bits(), before.base_cost.to_bits());
+    assert_eq!(lanes_of(&core, side, LaneType::Foot).len(), sidewalk_lanes);
+    let entrance = &core.allocator.entrances[house];
+    assert_ne!(entrance.foot_lane_fwd.min(entrance.foot_lane_bkw), usize::MAX);
+}
+
+// `ROAD-101` (C): a speed change in place recomputes the road's routing cost, and the routing
+// hierarchy the edit schedules routes by it: from the T to the side road's far end costs half as
+// much at 100 km/h as at 50.
+#[test]
+fn a_speed_change_in_place_reroutes_by_the_new_cost() {
+    use crate::simulation::network::types::TransitFlags;
+    let (mut core, node, side, _) = t_junction_with_side(test_core(), 1, 1);
+    core.transit_network
+        .rebuild_pathing(&mut core.region_graph);
+    let far = core
+        .region_graph
+        .get_valid_node(core.region_graph.edge(side).end_node);
+    let cost = |core: &SimCore| {
+        core.transit_network
+            .cch_graph
+            .find_path(
+                node,
+                far,
+                usize::MAX,
+                usize::MAX,
+                &core.region_graph,
+                TransitFlags::CAR,
+            )
+            .expect("a car route to the far end")
+            .0
+    };
+    let slow = cost(&core);
+    assert_eq!(
+        edit(&mut core, side, (1, 1, None), RoadAttributes::new(100, true, true)),
+        ""
+    );
+    // The rebuild is deferred (D7): the routing in use keeps the old cost until it is adopted.
+    assert_eq!(cost(&core).to_bits(), slow.to_bits());
+    core.transit_network.install_pending_cch();
+    let fast = cost(&core);
+    assert!((fast / slow - 0.5).abs() < 0.02, "{slow} -> {fast}");
+    assert_eq!(edit_lanes(&mut core, side, 1, 1), "cross_section_unchanged");
+}
+
+// `ROAD-101` (D4, B.2): a road type with zoning off given in place does what the "No buildings"
+// checkbox does (`editing`'s `set_no_building_spawn_preserves_unrelated_rezone_grace`): the
+// road's parcels go and their buildings are demolished, the verdict counted them first, and a
+// house on another road keeps its building. Undo restores the flag and the (empty) parcel; zoning
+// back on demolishes nothing.
+#[test]
+fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
+    let (mut core, _, side, west) = t_junction_with_side(test_core(), 1, 1);
+    let (_, side_parcel) = house_fronting(&mut core, side, (12.0, 60.0));
+    let (_, west_parcel) = house_fronting(&mut core, west, (-50.0, 12.0));
+    let off = RoadAttributes::new(50, true, false);
+    let verdict = core
+        .preview_edge_cross_section_internal(side as i32, 1, 1, None, off)
+        .unwrap();
+    assert_eq!(verdict.buildings_removed, 1);
+    assert_eq!(verdict.cost_delta, 0.0, "zoning costs nothing");
+    assert_eq!(edit(&mut core, side, (1, 1, None), off), "");
+    assert!(core.region_graph.edge(side).no_building_spawn);
+    assert!(core.zoning.parcel_by_raw_id(side_parcel).is_none());
+    assert_eq!(core.allocator.buildings.len(), 1);
+    assert_eq!(core.allocator.buildings[0].parcel_id, west_parcel);
+    assert_eq!(
+        core.zoning
+            .parcel_by_raw_id(west_parcel)
+            .unwrap()
+            .occupied_building(),
+        Some(0)
+    );
+    assert_eq!(
+        core.preview_edge_cross_section_internal(west as i32, 1, 1, None, off)
+            .unwrap()
+            .buildings_removed,
+        1
+    );
+
+    assert!(core.undo_action_internal());
+    assert!(!core.region_graph.edge(side).no_building_spawn);
+    let restored = core.zoning.parcel_by_raw_id(side_parcel).expect("the parcel is back");
+    assert_eq!(restored.occupied_building(), None, "its building stays demolished");
+    assert_eq!(core.allocator.buildings.len(), 1);
+
+    // Zoning back on (from the checkbox's state) demolishes nothing.
+    core.set_no_building_spawn_internal(west as i32, true);
+    let on = RoadAttributes::DEFAULT;
+    let verdict = core
+        .preview_edge_cross_section_internal(west as i32, 1, 1, None, on)
+        .unwrap();
+    assert_eq!(verdict.buildings_removed, 0);
+    assert_eq!(edit(&mut core, west, (1, 1, None), on), "");
+    assert!(!core.region_graph.edge(west).no_building_spawn);
+}
+
+// `ROAD-101` (A.4): adding sidewalks widens the roadbed though not the carriageway, so the
+// widening checks run on the roadbed half-width: a parcel inside the 1.5 m sidewalk band, clear
+// of the 0.75 m shoulder, refuses it; removing them is a narrowing and never checked.
+#[test]
+fn sidewalks_added_next_to_a_parcel_are_refused() {
+    use crate::simulation::zoning::ParcelGeometry;
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let shoulders = RoadAttributes::new(50, false, true);
+    assert_eq!(edit(&mut core, side, (1, 1, None), shoulders), "");
+    // A 4 m parcel from 4.6 m east of the side road's centreline: past its 4.25 m shoulder edge,
+    // inside its 5.0 m sidewalk edge. Attached to the side road, as a frontage lot.
+    let (x0, z0, size) = (4.6, 58.0, 4.0);
+    let at = |dx: f32, dz: f32| godot::prelude::Vector2::new(x0 + dx, z0 + dz);
+    let profile = core
+        .zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    core.zoning.parcels.insert_new(
+        ParcelGeometry {
+            edge_idx: side,
+            side: 1,
+            frontage_center_t: 0.6,
+            frontage_m: size,
+            depth_m: size,
+            front_center: at(0.0, size * 0.5),
+            center: at(size * 0.5, size * 0.5),
+            tangent: godot::prelude::Vector2::new(0.0, 1.0),
+            normal: godot::prelude::Vector2::new(1.0, 0.0),
+            corners: [at(0.0, 0.0), at(0.0, size), at(size, size), at(size, 0.0)],
+            aabb_min: at(0.0, 0.0),
+            aabb_max: at(size, size),
+        },
+        profile,
+    );
+    assert_eq!(
+        edit(&mut core, side, (1, 1, None), RoadAttributes::DEFAULT),
+        "parcel_overlap"
+    );
+    assert_eq!(
+        edit(&mut core, side, (1, 1, None), RoadAttributes::new(70, false, true)),
+        ""
+    );
+}
+
+// `ROAD-101` (D10): Apply charges the build-cost difference over the road's length outside
+// `benchmark_mode`, exactly the verdict's; a cheaper type is free and refunds nothing.
+#[test]
+fn an_in_place_type_change_charges_the_cost_difference_only() {
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    core.benchmark_mode = false;
+    let length = f64::from(core.region_graph.edge(side).physical_length);
+    let built = core.treasury.lifetime_build_cost;
+    // 1+1 (weight 1.0) to 2+2 (1.8): 0.8 x 15 a metre.
+    let verdict = core
+        .preview_edge_cross_section_internal(side as i32, 2, 2, None, RoadAttributes::DEFAULT)
+        .unwrap();
+    assert!((verdict.cost_delta - 12.0 * length).abs() < 1e-6 * length, "{verdict:?}");
+    assert_eq!(edit_lanes(&mut core, side, 2, 2), "");
+    assert_eq!(
+        (core.treasury.lifetime_build_cost - built).to_bits(),
+        verdict.cost_delta.to_bits()
+    );
+    let built = core.treasury.lifetime_build_cost;
+    let verdict = core
+        .preview_edge_cross_section_internal(side as i32, 1, 1, None, RoadAttributes::DEFAULT)
+        .unwrap();
+    assert_eq!(verdict.cost_delta, 0.0);
+    assert_eq!(edit_lanes(&mut core, side, 1, 1), "");
+    assert_eq!(core.treasury.lifetime_build_cost, built, "no refund");
+    // A benchmark city builds for free.
+    core.benchmark_mode = true;
+    assert_eq!(edit_lanes(&mut core, side, 2, 2), "");
+    assert_eq!(core.treasury.lifetime_build_cost, built);
 }

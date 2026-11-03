@@ -894,7 +894,13 @@ fn drawn_medians_survive_widening_and_cross_junction_splits() {
             .unwrap();
         assert_eq!(core.region_graph.edge(edge).median, median);
         assert!(
-            core.set_edge_cross_section_internal(edge as i32, 2, 2, median),
+            core.set_edge_cross_section_internal(
+                edge as i32,
+                2,
+                2,
+                median,
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT
+            ),
             "style {style}: widened in place"
         );
         // The pieces publish as the Godot call publishes them, before the next stroke plans.

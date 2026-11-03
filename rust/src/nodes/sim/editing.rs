@@ -385,7 +385,7 @@ impl SimCore {
         });
     }
 
-    fn run_building_allocator_maintenance_internal(&mut self) {
+    pub(super) fn run_building_allocator_maintenance_internal(&mut self) {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
         // Main-thread edits run maintenance, whose removals reach parallel rebuilds (CODE-17).

@@ -1468,7 +1468,9 @@ mod tests {
                 style,
                 width_m: 2.0,
             });
-            graph.set_edge_cross_section(id, 1, 1, median);
+            let attributes =
+                crate::simulation::network::road_types::RoadAttributes::of_edge(graph.edge(id));
+            graph.set_edge_cross_section(id, 1, 1, median, attributes);
             let mut lanes = LaneSystem::new();
             lanes.rebuild(&mut graph);
             for side in [-1, 1] {

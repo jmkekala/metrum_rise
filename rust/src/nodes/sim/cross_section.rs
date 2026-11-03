@@ -1,62 +1,89 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! In-place cross-section edits of an existing road (`ROAD-80`): its lane counts and median,
-//! changed on the crosswalk toggle's transaction shape (`ROAD-74`). The check is the commit's: the edit is
+//! and its road type's attributes (`ROAD-101`: sidewalks, speed, zoning), changed on the
+//! crosswalk toggle's transaction shape (`ROAD-74`). The check is the commit's: the edit is
 //! applied to the graph, its two nodes are laid out again, their closure is compiled into a
 //! scratch roadbed (fields, painted cells, steepened profiles) and the graph is put back; a
-//! widening is also checked against water, parcels and the curve radius. The preview runs the
-//! same check, so the select tool's verdict is the commit's; the commit pushes the check's local
-//! checkpoint (whole `Node`/`Edge` records) as its undo record and rebuilds lanes, cars and
-//! entrances locally, as an undo does. `O(closure pieces)` for the check; the commit tail is
-//! `O(local lanes + invalidated)` plus the undo's parallel `O(A / P + B / P)` membership passes
-//! over agents and buildings.
+//! widening of the roadbed (lanes, a median, sidewalks added) is also checked against water,
+//! parcels and the curve radius. The preview runs the same check, so the select tool's verdict
+//! is the commit's, with the buildings a zoning-off change demolishes and the difference in
+//! build cost Apply charges; the commit pushes the check's local checkpoint (whole
+//! `Node`/`Edge` records) as its undo record and rebuilds lanes, cars and entrances locally, as
+//! an undo does. `O(closure pieces)` for the check, plus a parallel `O(B / P)` count when zoning
+//! goes off; the commit tail is `O(local lanes + invalidated)` plus the undo's parallel
+//! `O(A / P + B / P)` membership passes over agents and buildings, and when zoning goes off the
+//! "No buildings" checkbox's own maintenance pass.
 
 use super::core::{RoadRejection, SimCore};
 use crate::debug_log;
 use crate::simulation::network::graph::{Edge, RegionGraphUndoDelta, RoadMedian};
+use crate::simulation::network::road_types::cost::{BUILD_COST_PER_M, road_weight};
+use crate::simulation::network::road_types::{RoadAttributes, RoadCrossSection};
 use crate::simulation::network::roadbed::{side_band_width_m, visual_roadbed_half_width_m};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, validate_edge,
 };
+use rayon::prelude::*;
 use std::collections::HashSet;
 
+/// What an accepted in-place edit does beyond the road itself (`ROAD-101`), for the Road
+/// Properties window's confirmation and its Apply label.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct CrossSectionVerdict {
+    /// Buildings fronting the road that a change to zoning off demolishes (as the "No buildings"
+    /// checkbox does); 0 otherwise.
+    pub(crate) buildings_removed: usize,
+    /// What Apply charges: the new road type's build cost over the road's length less the
+    /// current one's, floored at 0 (a cheaper type refunds nothing; `DESIGN-RB3` D10).
+    pub(crate) cost_delta: f64,
+}
+
 impl SimCore {
-    /// Changes road `edge_id` to `fwd` forward and `bkw` backward lanes and `median` in place,
-    /// keeping its centreline, id and class (`ROAD-80`). Both end nodes are laid out again at the new width
-    /// and the lanes of their arms rebuilt; cars on a lane that no longer exists reattach to the
-    /// nearest rebuilt lane. Returns whether the edit was applied, with an undo record and the
-    /// render marked dirty; a refused edit
-    /// ([`Self::preview_edge_cross_section_internal`]) changes nothing. The caller publishes the
-    /// rebuilt pieces ([`Self::finalize_network_render_products`]), as after a crossing toggle.
+    /// Changes road `edge_id` to `fwd` forward and `bkw` backward lanes, `median` and the road
+    /// type's `attributes` in place (`ROAD-80`, `ROAD-101`), keeping its centreline, id and class.
+    /// Both end nodes are laid out again at the new width and the lanes of their arms rebuilt;
+    /// cars and walkers on a lane that no longer exists reattach to the nearest rebuilt lane of
+    /// their kind, or stay laneless on their edge (`TRAFFIC-19`), never moved. Zoning turned off
+    /// removes the road's parcels and demolishes their buildings as the "No buildings" checkbox
+    /// does (its undo restores the parcels, empty). The [`CrossSectionVerdict::cost_delta`] is
+    /// charged outside `benchmark_mode`.
+    /// Returns whether the edit was applied, with an undo record and the render marked dirty; a
+    /// refused edit ([`Self::preview_edge_cross_section_internal`]) changes nothing. The caller
+    /// publishes the rebuilt pieces ([`Self::finalize_network_render_products`]), as after a
+    /// crossing toggle.
     pub fn set_edge_cross_section_internal(
         &mut self,
         edge_id: i32,
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        attributes: RoadAttributes,
     ) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        let (checkpoint, nodes) = match self.try_cross_section_edit(edge_id, fwd, bkw, median) {
-            Ok(tried) => tried,
-            Err(rejection) => {
-                debug_log!(
-                    "road",
-                    "cross_section_edit_rejected edge={} lanes={}+{} median={:?} reason={}",
-                    edge_id,
-                    fwd,
-                    bkw,
-                    median,
-                    rejection.reason
-                );
-                return false;
-            }
-        };
+        let (checkpoint, nodes, verdict) =
+            match self.try_cross_section_edit(edge_id, fwd, bkw, median, attributes) {
+                Ok(tried) => tried,
+                Err(rejection) => {
+                    debug_log!(
+                        "road",
+                        "cross_section_edit_rejected edge={} lanes={}+{} median={:?} attributes={:?} reason={}",
+                        edge_id,
+                        fwd,
+                        bkw,
+                        median,
+                        attributes,
+                        rejection.reason
+                    );
+                    return false;
+                }
+            };
         let edge = edge_id as usize;
+        let zoning_off = !self.region_graph.edge(edge).no_building_spawn && !attributes.zoning;
         let incident = self.live_edges_at(&nodes, edge);
-        self.push_network_undo_delta(checkpoint, None);
-        let changed = self.apply_edge_cross_section(edge, fwd, bkw, median, &nodes);
+        let changed = self.apply_edge_cross_section(edge, (fwd, bkw, median, attributes), &nodes);
         let affected: HashSet<usize> = incident
             .into_iter()
             .chain(changed.iter().copied())
@@ -72,38 +99,58 @@ impl SimCore {
         // an undo restores them: local, where the entrance cache rebuild would scan the city.
         // Godot's main thread runs this edit, and the passes are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| self.restore_lanes_locally(&affected, &nodes));
+        // The checkbox's side effects (`DESIGN-RB3` B.2): the road's buildings go now and its
+        // parcels with them; other roads' buildings keep their rezone grace. The undo record
+        // also restores the parcels, emptied (buildings stay demolished, as the checkbox's).
+        let mut parcels = None;
+        if zoning_off {
+            self.run_building_allocator_maintenance_internal();
+            parcels = Some(self.zoning.capture_parcel_removal_undo(edge))
+                .filter(|parcels| !parcels.is_empty());
+            self.zoning.remove_parcels_attached_to_edge(edge);
+            self.allocator.dirty = true;
+        }
+        self.push_network_undo_delta(checkpoint, parcels);
+        if !self.benchmark_mode && verdict.cost_delta > 0.0 {
+            self.treasury.deduct_build_cost(verdict.cost_delta);
+        }
         // Deferred like a commit's (D7, `ROAD-68-G`).
         self.schedule_cch_rebuild_of_live_graph();
         self.mark_local_network_render_dirty();
         true
     }
 
-    /// Why [`Self::set_edge_cross_section_internal`] would refuse the same edit now, or `None`
-    /// when it would apply it: the commit's own check, run on the graph and put back, so the
-    /// Road Properties window's verdict is the commit's (`ROAD-80`). O(closure pieces).
+    /// The commit's verdict on the same edit as [`Self::set_edge_cross_section_internal`], now:
+    /// its [`CrossSectionVerdict`] when it would apply it, else why it would refuse it. The
+    /// commit's own check, run on the graph and put back, so the Road Properties window's
+    /// verdict is the commit's (`ROAD-80`). O(closure pieces), plus `O(B / P)` when zoning goes
+    /// off.
     pub(crate) fn preview_edge_cross_section_internal(
         &mut self,
         edge_id: i32,
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
-    ) -> Option<RoadRejection> {
+        attributes: RoadAttributes,
+    ) -> Result<CrossSectionVerdict, RoadRejection> {
         self.adopt_pending_cell_lots();
-        self.try_cross_section_edit(edge_id, fwd, bkw, median).err()
+        self.try_cross_section_edit(edge_id, fwd, bkw, median, attributes)
+            .map(|(_, _, verdict)| verdict)
     }
 
-    // The edit's check with its undo record and the edge's two (surviving) end nodes. Cheap
-    // refusals first: a live road, a legal cross-section, a change, and no tunnel widened in place
-    // (R3-j: its cover was checked across the bore it was drawn with). Then the graph edit,
-    // whose closure must compile; a widening must also keep clear of water and parcels and fit
-    // its curves, checked on the applied graph.
+    // The edit's check with its undo record, the edge's two (surviving) end nodes and its
+    // verdict. Cheap refusals first: a live road, a legal cross-section, a change, and no tunnel
+    // widened in place (R3-j: its cover was checked across the bore it was drawn with). Then the
+    // graph edit, whose closure must compile; a widening must also keep clear of water and
+    // parcels and fit its curves, checked on the applied graph.
     fn try_cross_section_edit(
         &mut self,
         edge_id: i32,
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
-    ) -> Result<(RegionGraphUndoDelta, HashSet<u32>), RoadRejection> {
+        attributes: RoadAttributes,
+    ) -> Result<(RegionGraphUndoDelta, HashSet<u32>, CrossSectionVerdict), RoadRejection> {
         let graph = &self.region_graph;
         let Some(edge) = usize::try_from(edge_id)
             .ok()
@@ -123,19 +170,25 @@ impl SimCore {
                     format!("{fwd}+{bkw} lanes, median {median:?} on edge {edge}"),
                 )
             })?;
-        if (current.fwd_lanes, current.bkw_lanes, current.median) == (fwd, bkw, median) {
+        if (current.fwd_lanes, current.bkw_lanes, current.median) == (fwd, bkw, median)
+            && attributes.same_as(RoadAttributes::of_edge(current))
+        {
             return Err(RoadRejection::new(
                 "cross_section_unchanged",
-                format!("edge {edge} already has {fwd}+{bkw} lanes, median {median:?}"),
+                format!(
+                    "edge {edge} already has {fwd}+{bkw} lanes, median {median:?}, {attributes:?}"
+                ),
             ));
         }
-        let widens = Edge::cross_section_width_m(fwd, bkw, median) > current.width;
+        let widens = Self::roadbed_half_width_m(current, fwd, bkw, median, attributes)
+            > visual_roadbed_half_width_m(current);
         if widens && current.class == EdgeClass::Tunnel {
             return Err(RoadRejection::new(
                 "edit_tunnel_width",
                 "a tunnel is widened by drawing it again, which checks the cover across its bore",
             ));
         }
+        let verdict = self.cross_section_verdict(edge, fwd, bkw, median, attributes);
         let nodes: HashSet<u32> = [current.start_node, current.end_node]
             .into_iter()
             .map(|node| graph.get_valid_node(node))
@@ -143,7 +196,8 @@ impl SimCore {
         let edges = self.live_edges_at(&nodes, edge);
         let mut corridor = None;
         let tried = self.try_graph_edit(&edges, &nodes, |core| {
-            let changed = core.apply_edge_cross_section(edge, fwd, bkw, median, &nodes);
+            let changed =
+                core.apply_edge_cross_section(edge, (fwd, bkw, median, attributes), &nodes);
             if widens {
                 corridor = core.widened_corridor_refusal(edge);
             }
@@ -151,7 +205,68 @@ impl SimCore {
         });
         match corridor {
             Some(rejection) => Err(rejection),
-            None => tried.map(|checkpoint| (checkpoint, nodes)),
+            None => tried.map(|checkpoint| (checkpoint, nodes, verdict)),
+        }
+    }
+
+    // The roadbed half-width `current` would have with the new spec, sidewalks or shoulders
+    // included: the widening the corridor checks compare (`DESIGN-RB3` A.4). `O(1)`; the probe
+    // edge has no geometry, so nothing is allocated.
+    fn roadbed_half_width_m(
+        current: &Edge,
+        fwd: u8,
+        bkw: u8,
+        median: Option<RoadMedian>,
+        attributes: RoadAttributes,
+    ) -> f32 {
+        visual_roadbed_half_width_m(&Edge {
+            primary_type: current.primary_type,
+            allowed_types: Edge::sidewalk_flags(current.allowed_types, attributes.sidewalks),
+            width: Edge::cross_section_width_m(fwd, bkw, median),
+            ..Edge::default()
+        })
+    }
+
+    // What the edit does beyond the road (`ROAD-101`): the buildings fronting it that zoning
+    // off demolishes (every building whose road it is: none survives the checkbox's
+    // maintenance), and the build-cost difference over its length at its class, floored at 0.
+    // `O(1)`, plus a parallel `O(B / P)` count only when zoning goes off.
+    fn cross_section_verdict(
+        &self,
+        edge: usize,
+        fwd: u8,
+        bkw: u8,
+        median: Option<RoadMedian>,
+        attributes: RoadAttributes,
+    ) -> CrossSectionVerdict {
+        let current = self.region_graph.edge(edge);
+        let buildings_removed = if !current.no_building_spawn && !attributes.zoning {
+            self.allocator
+                .buildings
+                .par_iter()
+                .filter(|building| building.edge_idx == edge)
+                .count()
+        } else {
+            0
+        };
+        let section = RoadCrossSection {
+            fwd_lanes: fwd,
+            bkw_lanes: bkw,
+            median,
+            sidewalks: attributes.sidewalks,
+        };
+        let weight = road_weight(
+            section,
+            RoadAttributes::speed_kmh_of(attributes.speed_ms),
+            current.class,
+        );
+        let cost_delta = ((weight - current.cost_weight())
+            * BUILD_COST_PER_M
+            * f64::from(current.physical_length))
+        .max(0.0);
+        CrossSectionVerdict {
+            buildings_removed,
+            cost_delta,
         }
     }
 
@@ -166,19 +281,17 @@ impl SimCore {
             .collect()
     }
 
-    // Sets the cross-section and re-lays out both end nodes on the graph, since the width moves
-    // every mouth there: their clips and the profile solve that pins their arms up to them.
-    // Returns the edges whose profiles changed.
+    // Sets the cross-section and attributes and re-lays out both end nodes on the graph, since
+    // the width moves every mouth there: their clips and the profile solve that pins their arms
+    // up to them. Returns the edges whose profiles changed.
     fn apply_edge_cross_section(
         &mut self,
         edge: usize,
-        fwd: u8,
-        bkw: u8,
-        median: Option<RoadMedian>,
+        (fwd, bkw, median, attributes): (u8, u8, Option<RoadMedian>, RoadAttributes),
         nodes: &HashSet<u32>,
     ) -> HashSet<usize> {
         self.region_graph
-            .set_edge_cross_section(edge, fwd, bkw, median);
+            .set_edge_cross_section(edge, fwd, bkw, median, attributes);
         self.region_graph
             .rebuild_intersection_clips_for_nodes(nodes);
         let mut changed = HashSet::new();

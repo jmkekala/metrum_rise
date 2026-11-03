@@ -379,6 +379,23 @@ impl RoadAttributes {
         }
     }
 
+    /// The attributes `edge` carries: its speed limit, `FOOT` (sidewalks on a car road) and
+    /// `no_building_spawn` cleared (zoning). `O(1)`.
+    pub fn of_edge(edge: &Edge) -> Self {
+        Self {
+            speed_ms: edge.speed_limit,
+            sidewalks: edge.allowed_types & TransitFlags::FOOT != 0,
+            zoning: !edge.no_building_spawn,
+        }
+    }
+
+    /// Whether `self` and `other` set the same edge, the speed compared bitwise. `O(1)`.
+    pub fn same_as(self, other: Self) -> bool {
+        self.speed_ms.to_bits() == other.speed_ms.to_bits()
+            && self.sidewalks == other.sidewalks
+            && self.zoning == other.zoning
+    }
+
     /// The speed limit in whole km/h (an edge's `speed_limit` read back). `O(1)`.
     pub fn speed_kmh_of(speed_ms: f32) -> u16 {
         (speed_ms / config::KMH_TO_MPS).round().clamp(0.0, f32::from(u16::MAX)) as u16

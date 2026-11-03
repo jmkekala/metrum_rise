@@ -5,6 +5,7 @@
 use super::*;
 use crate::nodes::sim::core::RoadRejection;
 use crate::simulation::network::graph::RoadMedian;
+use crate::simulation::network::road_types::RoadAttributes;
 
 mod road_tool;
 mod road_types;
@@ -492,9 +493,7 @@ impl SimulationNode {
             };
             let section =
                 crate::simulation::network::road_types::RoadCrossSection::of_edge(edge);
-            let speed_kmh = crate::simulation::network::road_types::RoadAttributes::speed_kmh_of(
-                edge.speed_limit,
-            );
+            let speed_kmh = RoadAttributes::speed_kmh_of(edge.speed_limit);
             result.set("sidewalks", section.sidewalks);
             result.set("speed_kmh", i64::from(speed_kmh));
             result.set("zoning", !edge.no_building_spawn);
@@ -505,12 +504,17 @@ impl SimulationNode {
         result
     }
 
-    /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes and
-    /// the median `median_style` (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving) of
-    /// `median_width` metres in place, without applying it: `is_valid`, and when refused
-    /// `invalid_reason` (stable key) and `detail`. The same check as
-    /// [`Self::set_edge_cross_section`] (`ROAD-80`).
+    /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes, the
+    /// median `median_style` (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving) of
+    /// `median_width` metres, and a road type's `speed_kmh` (20 to 120 in steps of 10),
+    /// `sidewalks` and `zoning` in place (`ROAD-80`, `ROAD-101`; pass the road's own values from
+    /// [`Self::get_edge_cross_section`] for what stays), without applying it: `is_valid`; when
+    /// valid `buildings_removed` (the buildings on the road that zoning off demolishes, for a
+    /// confirmation) and `cost_delta` (what Apply charges: the build-cost difference over the
+    /// road's length, never negative); when refused `invalid_reason` (stable key) and `detail`.
+    /// The same check as [`Self::set_edge_cross_section`].
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn preview_edge_cross_section(
         &mut self,
         edge_id: i32,
@@ -518,20 +522,27 @@ impl SimulationNode {
         bkw: i32,
         median_style: i32,
         median_width: f32,
+        speed_kmh: i32,
+        sidewalks: bool,
+        zoning: bool,
     ) -> VarDictionary {
-        let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
-        let refusal = match RoadMedian::from_tool(median_style, median_width) {
-            Ok(median) => self.lock_core().preview_edge_cross_section_internal(
-                edge_id,
-                lanes(fwd),
-                lanes(bkw),
-                median,
-            ),
-            Err(reason) => Some(RoadRejection::new(reason, "the median's style or width")),
-        };
-        match refusal {
-            None => vdict! { "is_valid": true },
-            Some(rejection) => vdict! {
+        let verdict = cross_section_spec(median_style, median_width, speed_kmh, sidewalks, zoning)
+            .and_then(|(median, attributes)| {
+                self.lock_core().preview_edge_cross_section_internal(
+                    edge_id,
+                    lanes_u8(fwd),
+                    lanes_u8(bkw),
+                    median,
+                    attributes,
+                )
+            });
+        match verdict {
+            Ok(verdict) => vdict! {
+                "is_valid": true,
+                "buildings_removed": verdict.buildings_removed as i64,
+                "cost_delta": verdict.cost_delta,
+            },
+            Err(rejection) => vdict! {
                 "is_valid": false,
                 "invalid_reason": rejection.reason,
                 "detail": rejection.detail,
@@ -539,12 +550,15 @@ impl SimulationNode {
         }
     }
 
-    /// Gives road `edge_id` `fwd` forward and `bkw` backward lanes and the median
-    /// `median_style` of `median_width` metres in place (`ROAD-80`), with an undo record that
-    /// restores the whole road; its pieces publish now, as a crossing toggle's do. Returns
-    /// whether it was applied: a refused edit (see [`Self::preview_edge_cross_section`])
+    /// Gives road `edge_id` `fwd` forward and `bkw` backward lanes, the median `median_style` of
+    /// `median_width` metres and a road type's `speed_kmh`, `sidewalks` and `zoning` in place
+    /// (`ROAD-80`, `ROAD-101`), with an undo record that restores the whole road (buildings that
+    /// zoning off demolished stay demolished, as with the "No buildings" checkbox); its pieces
+    /// publish now, as a crossing toggle's do, and the verdict's `cost_delta` is charged.
+    /// Returns whether it was applied: a refused edit (see [`Self::preview_edge_cross_section`])
     /// changes nothing.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn set_edge_cross_section(
         &mut self,
         edge_id: i32,
@@ -552,14 +566,24 @@ impl SimulationNode {
         bkw: i32,
         median_style: i32,
         median_width: f32,
+        speed_kmh: i32,
+        sidewalks: bool,
+        zoning: bool,
     ) -> bool {
-        let lanes = |count: i32| u8::try_from(count).unwrap_or(u8::MAX);
-        let Ok(median) = RoadMedian::from_tool(median_style, median_width) else {
+        let Ok((median, attributes)) =
+            cross_section_spec(median_style, median_width, speed_kmh, sidewalks, zoning)
+        else {
             return false;
         };
         let (snapshot, publication) = {
             let mut core = self.lock_core();
-            if !core.set_edge_cross_section_internal(edge_id, lanes(fwd), lanes(bkw), median) {
+            if !core.set_edge_cross_section_internal(
+                edge_id,
+                lanes_u8(fwd),
+                lanes_u8(bkw),
+                median,
+                attributes,
+            ) {
                 return false;
             }
             let publication = core.finalize_network_render_products();
@@ -611,4 +635,25 @@ impl SimulationNode {
         self.lock_core()
             .clear_lane_source_internal(node_id, from_edge, from_lane);
     }
+}
+
+// A lane count from Godot; out of range saturates, so the edit's check refuses it.
+fn lanes_u8(count: i32) -> u8 {
+    u8::try_from(count).unwrap_or(u8::MAX)
+}
+
+// An in-place edit's median and road-type attributes from Godot's arguments, or the refusal
+// (`unknown_median_style`, `median_width_out_of_range`, `speed_out_of_range`).
+fn cross_section_spec(
+    median_style: i32,
+    median_width: f32,
+    speed_kmh: i32,
+    sidewalks: bool,
+    zoning: bool,
+) -> Result<(Option<RoadMedian>, RoadAttributes), RoadRejection> {
+    let median = RoadMedian::from_tool(median_style, median_width)
+        .map_err(|reason| RoadRejection::new(reason, "the median's style or width"))?;
+    let attributes = RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning)
+        .map_err(|reason| RoadRejection::new(reason, format!("{speed_kmh} km/h")))?;
+    Ok((median, attributes))
 }

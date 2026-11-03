@@ -164,7 +164,7 @@ func _run() -> void:
 	_expect(int(simulation.get_edge_cross_section(edge).get("median_style", -1)) == 0, "undo removes the median")
 
 	# A layout no type has shows as "Custom layout", which cannot be picked.
-	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0), "a 3 + 1 layout is set in place")
+	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0, 50, true, true), "a 3 + 1 layout is set in place")
 	window.show_for_edges(selection)
 	_expect(_picked_text(window) == window.CUSTOM_LAYOUT and window._type_picker.is_item_disabled(window._type_picker.selected), "a 3 + 1 road shows Custom layout: %s" % _picked_text(window))
 	_expect(window._layout_label.text == "3 + 1 lanes", "the custom layout's lanes: %s" % window._layout_label.text)
