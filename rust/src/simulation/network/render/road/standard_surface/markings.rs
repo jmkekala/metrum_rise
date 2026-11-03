@@ -5,7 +5,8 @@
 //! Zebra crossings sit on node pieces, inside the mouths (`ROAD-68-C`), so span markings run the
 //! whole span, except past a pass-through node's crossing strip, which lies on the span (D8).
 //! A painted median (`ROAD-80`, R3-c) is paint alone: edge lines and 45 degree hatching across
-//! the gap between the lane groups, nosing out at the raised medians' nose stations.
+//! the gap between the lane groups, nosing out in a pointed chevron from the raised medians'
+//! nose tips.
 
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
@@ -17,7 +18,7 @@ use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::graph::MedianStyle;
 use crate::simulation::network::roadbed::{
-    BandKind, EdgeEnd, NOSE_CLEARANCE_M, NOSE_LENGTH_M, RoadSection, RoadbedSystem,
+    BandKind, EdgeEnd, NOSE_CLEARANCE_M, RoadSection, RoadbedSystem,
     painted_median_continues,
 };
 use crate::simulation::network::types::TransitType;
@@ -36,6 +37,10 @@ const MARKING_PATTERN_LONG_DASH: f32 = 4.0;
 // diagonals at 45 degrees every `HATCH_SPACING_M` along the road between its two edge lines.
 const MARKING_PATTERN_SOLID: f32 = 2.0;
 const HATCH_SPACING_M: f32 = 3.0;
+// A painted median's chevron: its edge lines open from the tip to the full width over this
+// length. A raised median's nose is a semicircle instead (`roadbed::span`), as a painted nose
+// stays pointed in road-marking practice.
+const PAINTED_NOSE_LENGTH_M: f32 = 4.0;
 // One lane each way at urban speed stays unmarked, as Finnish residential streets are. The road
 // tool has no street hierarchy, so a 1+1 road at 50 km/h (its default) counts as residential.
 const UNMARKED_STREET_MAX_KMH: f32 = 50.0;
@@ -139,9 +144,9 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
 // `lane_group_offset` +- half the median's width and 45 degree diagonals between them. An end
 // where the median runs on through its node (`through`) has no nose; at every other end the
 // lines meet on the centre line `NOSE_CLEARANCE_M` inside the range, a raised median's nose tip
-// (the range already starts past a crossing strip the span holds), and open to the full width
-// `NOSE_LENGTH_M` further on. Noses that would overlap leave the span unpainted, as they leave a
-// raised median's span undivided. O(sections + length / HATCH_SPACING_M), allocation-free.
+// (the range already starts past a crossing strip the span holds), and open in a straight
+// chevron to the full width `PAINTED_NOSE_LENGTH_M` further on. Chevrons that would overlap
+// leave the span unpainted. O(sections + length / HATCH_SPACING_M), allocation-free.
 fn emit_painted_median(
     mesh: &mut NetworkMeshData,
     edge: &Edge,
@@ -156,19 +161,21 @@ fn emit_painted_median(
     ];
     let (low, high) = (tips[0].unwrap_or(range_start), tips[1].unwrap_or(range_end));
     if let [Some(start), Some(end)] = tips
-        && end - start < 2.0 * NOSE_LENGTH_M
+        && end - start < 2.0 * PAINTED_NOSE_LENGTH_M
     {
         return;
     }
     let (full_low, full_high) = (
-        tips[0].map_or(low, |tip| tip + NOSE_LENGTH_M),
-        tips[1].map_or(high, |tip| tip - NOSE_LENGTH_M),
+        tips[0].map_or(low, |tip| tip + PAINTED_NOSE_LENGTH_M),
+        tips[1].map_or(high, |tip| tip - PAINTED_NOSE_LENGTH_M),
     );
     // The half width the paint spans at station `s`: zero at a tip, the full half width beyond
     // the nose.
     let half_at = |s: f32| {
         let rise = |tip: Option<f32>, sign: f32| {
-            tip.map_or(1.0, |tip| ((s - tip) * sign / NOSE_LENGTH_M).clamp(0.0, 1.0))
+            tip.map_or(1.0, |tip| {
+                ((s - tip) * sign / PAINTED_NOSE_LENGTH_M).clamp(0.0, 1.0)
+            })
         };
         half * rise(tips[0], 1.0).min(rise(tips[1], -1.0))
     };

@@ -638,7 +638,8 @@ pub(super) fn pass_through_crossings(
 
 /// Shortest edge, in horizontal metres, whose raised median continues through a pass-through
 /// node (`ROAD-80`): a node layout leaves each end at most half its edge, so each of the pair's
-/// spans keeps room for its far end's clearance, crossing strip and nose.
+/// spans keeps room for its far end's clearance, crossing strip and nose (at most 6 m, the
+/// radius of the widest median's semicircle).
 pub(super) const MEDIAN_THROUGH_MIN_EDGE_M: f64 = 20.0;
 
 // Whether a pass-through node's two arms carry one median, raised when `raised` and painted

@@ -79,8 +79,8 @@ fn a_raised_median_continues_only_where_both_arms_carry_it_in_line() {
 use crate::simulation::network::roadbed::fixtures::{bend, point, polyline, road_edge, t_junction};
 use crate::simulation::network::roadbed::mesh::{PieceMesh, StripKind};
 use crate::simulation::network::roadbed::span::SpanPiece;
-use crate::simulation::network::roadbed::span::model::{NOSE_CLEARANCE_M, NOSE_LENGTH_M};
-use crate::simulation::network::roadbed::{BandKind, RoadbedSystem};
+use crate::simulation::network::roadbed::span::model::NOSE_CLEARANCE_M;
+use crate::simulation::network::roadbed::{BandKind, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::{EdgeClass, NodeType};
 use std::collections::BTreeMap;
 
@@ -95,16 +95,34 @@ fn grass_road(edge: Edge) -> Edge {
     divided(edge, 2, 2, grass(4.0))
 }
 
-// The fixtures with a raised median: a continuation through a pass-through node, a nose pair at
-// a pass-through node into an undivided road of the same width, a T whose through road is
-// divided (noses at a junction), a bend, a divided road onto a bridge and into a tunnel, and a
-// lone divided bridge and tunnel (free ends).
-fn divided_fixtures(sloped: bool) -> Vec<(&'static str, RegionGraph)> {
-    let wide = |edge: Edge| {
+// An undivided 2+2 road as wide as a 2+2 road with `median`.
+fn as_wide_as(median: Option<RoadMedian>) -> impl Fn(Edge) -> Edge {
+    move |edge: Edge| {
         let mut edge = divided(edge, 2, 2, None);
-        edge.width = Edge::cross_section_width_m(2, 2, grass(4.0));
+        edge.width = Edge::cross_section_width_m(2, 2, median);
         edge
-    };
+    }
+}
+
+// A 2+2 road with `median` from its free west end into an undivided road of its width: noses at
+// both ends of edge 0, the east one past the crossing strip of the pass-through node.
+fn noses_into_undivided(median: Option<RoadMedian>, sloped: bool) -> RegionGraph {
+    straight_pair(
+        move |edge: Edge| divided(edge, 2, 2, median),
+        as_wide_as(median),
+        false,
+        sloped,
+    )
+}
+
+// The fixtures with a raised median: a continuation through a pass-through node, a nose pair at
+// a pass-through node into an undivided road of the same width (also with the widest grass and
+// a narrow paving median), a T whose through road is divided (noses at a junction), a bend, a
+// divided road onto a bridge and into a tunnel, and a lone divided bridge and tunnel (free
+// ends).
+fn divided_fixtures(sloped: bool) -> Vec<(&'static str, RegionGraph)> {
+    let wide = as_wide_as(grass(4.0));
+    let paving = RoadMedian::from_tool(3, 2.0).unwrap();
     let class = |class: EdgeClass| {
         move |edge: Edge| Edge {
             class,
@@ -138,6 +156,8 @@ fn divided_fixtures(sloped: bool) -> Vec<(&'static str, RegionGraph)> {
     vec![
         ("continuous", straight_pair(grass_road, grass_road, true, sloped)),
         ("noses at a pass-through", straight_pair(grass_road, wide, false, sloped)),
+        ("12 m grass noses", noses_into_undivided(grass(12.0), sloped)),
+        ("2 m paving noses", noses_into_undivided(paving, sloped)),
         ("divided t", t),
         ("bend", bent),
         ("onto a bridge", straight_pair(grass_road, class(EdgeClass::Bridge), false, sloped)),
@@ -256,7 +276,7 @@ fn divided_spans_are_watertight_and_close_their_structures() {
             }
         }
         // A lone bridge's free ends are capped; a lone tunnel's lining closes them.
-        let bridge = compiled(&divided_fixtures(sloped)[6].1);
+        let bridge = compiled(&divided_fixtures(sloped)[8].1);
         assert_eq!(bridge.span_piece(0).unwrap().mesh().cap_kind(), Some(StripKind::Fascia));
     }
 }
@@ -273,7 +293,7 @@ fn a_continuing_median_shares_its_row_and_noses_take_their_stations() {
     assert_eq!(west.end_mouth().profile.bands().len(), 9, "a body row through the node");
 
     // Each free end noses out: the tip row at the clearance past its mouth, the median at its
-    // width the nose length further on, the rows between at 1 m.
+    // width the nose's radius (2 m) further on, the rows between at the angles of 7 equal arcs.
     let median_width = |section: &crate::simulation::network::roadbed::RoadSection| {
         section
             .bands
@@ -295,8 +315,8 @@ fn a_continuing_median_shares_its_row_and_noses_take_their_stations() {
             .iter()
             .position(|section| median_width(section) == Some(4.0 - 0.3))
             .unwrap();
-        assert_eq!(sections[full].s_m, sections[tip].s_m + NOSE_LENGTH_M);
-        assert_eq!(full - tip, NOSE_LENGTH_M as usize, "a row every metre");
+        assert_eq!(sections[full].s_m, sections[tip].s_m + 2.0);
+        assert_eq!(full - tip, 7, "a row per arc");
         let at = |row: usize, lateral_m: f64| {
             let section = &sections[row];
             let p = section.center_xz + section.lateral_xz * lateral_m;
@@ -311,3 +331,257 @@ fn a_continuing_median_shares_its_row_and_noses_take_their_stations() {
         assert_eq!(roadbed.band_at(x, z), Some(BandKind::Carriageway));
     }
 }
+
+// The median's outline at `section`, a body row: the outer edges of its two kerbs, laterally.
+fn median_outline(section: &RoadSection) -> Option<(f32, f32)> {
+    let median = section.bands.iter().position(|band| band.kind == BandKind::Median)?;
+    Some((
+        section.bands[median - 1].lateral_start_m,
+        section.bands[median + 1].lateral_end_m,
+    ))
+}
+
+// Checks each nose of `span`, whose raised median is `width_m` wide, and returns how many it
+// has (`ROAD-80`, R3d): the tip row closes the outline onto the line between the lane groups
+// `NOSE_CLEARANCE_M` past the mouth or past the crossing strip the span holds there; every
+// outline vertex up to the first full-width row lies on the semicircle of radius `r = width_m /
+// 2` centred `r` past the tip on that line (in station and lateral metres, within 0.1 mm), each
+// of the `segments` arcs at most 0.5 m long; the first full-width row stands `r` past the tip.
+fn assert_round_noses(name: &str, span: &SpanPiece, width_m: f32, segments: usize) -> usize {
+    let sections = span.sections();
+    let radius_m = 0.5 * width_m;
+    let Some(first) = sections.iter().position(|section| median_outline(section).is_some())
+    else {
+        return 0;
+    };
+    let last = sections
+        .iter()
+        .rposition(|section| median_outline(section).is_some())
+        .unwrap();
+    let ends = [
+        (first, 1.0, EdgeEnd::Start, sections[0].s_m),
+        (last, -1.0, EdgeEnd::End, sections[sections.len() - 1].s_m),
+    ];
+    let mut noses = 0;
+    for (tip, sign, end, mouth_m) in ends {
+        let (low, high) = median_outline(&sections[tip]).unwrap();
+        if (high - low - width_m).abs() < 1.0e-5 {
+            // The median continues through this end: its row is a full-width body row.
+            continue;
+        }
+        noses += 1;
+        assert_eq!(low, high, "{name}: the tip row closes the outline");
+        let from_m = span.crossing_strip_m(end).map_or(mouth_m, |(near, far)| {
+            if sign > 0.0 { far } else { near }
+        });
+        let tip_m = sections[tip].s_m;
+        assert!(
+            ((tip_m - from_m) * sign - NOSE_CLEARANCE_M).abs() < 1.0e-4,
+            "{name}: the tip {tip_m} lies the clearance past {from_m}"
+        );
+        let centre = (radius_m, low);
+        let mut previous = [(0.0, low); 2];
+        let mut row = tip;
+        for arc in 1.. {
+            row = if sign > 0.0 { row + 1 } else { row - 1 };
+            let section = &sections[row];
+            let d_m = (section.s_m - tip_m) * sign;
+            let (low, high) = median_outline(section).expect("body rows run from tip to tip");
+            for (side, lateral_m) in [low, high].into_iter().enumerate() {
+                let point = (d_m, lateral_m);
+                let radial = (point.0 - centre.0).hypot(point.1 - centre.1);
+                assert!(
+                    (radial - radius_m).abs() < 1.0e-4,
+                    "{name}: outline {point:?} lies {radial} from the centre, not {radius_m}"
+                );
+                let chord = (point.0 - previous[side].0).hypot(point.1 - previous[side].1);
+                assert!(chord <= 0.5 + 1.0e-4, "{name}: chord {chord} m");
+                previous[side] = point;
+            }
+            if (high - low - width_m).abs() < 1.0e-5 {
+                assert_eq!(arc, segments, "{name}: a row per arc");
+                break;
+            }
+            assert!(high - low < width_m - 1.0e-5, "{name}: inside the nose");
+        }
+        assert!(
+            ((sections[row].s_m - tip_m) * sign - radius_m).abs() < 1.0e-4,
+            "{name}: the full width the radius past the tip"
+        );
+    }
+    noses
+}
+
+#[test]
+fn raised_median_noses_are_semicircles() {
+    // (fixture, median width, arcs per quarter circle, noses on the divided edges): 2+2 roads
+    // nosing at their free end and at a pass-through node into an undivided road of their width
+    // (whose crossing strip the span holds), a T, a bend and the structures.
+    let paving = RoadMedian::from_tool(3, 2.0).unwrap();
+    for sloped in [false, true] {
+        let mut cases = vec![
+            ("3 m grass", noses_into_undivided(grass(3.0), sloped), 3.0, 5, 2),
+            ("12 m grass", noses_into_undivided(grass(12.0), sloped), 12.0, 19, 2),
+            ("2 m paving", noses_into_undivided(paving, sloped), 2.0, 4, 2),
+        ];
+        cases.extend(divided_fixtures(sloped).into_iter().filter_map(|(name, graph)| {
+            let median = graph.edge(0).median?;
+            let noses = match name {
+                "continuous" => 2,
+                "divided t" => 4,
+                "bend" => 4,
+                _ => 2,
+            };
+            let segments = match median.width_m {
+                2.0 => 4,
+                3.0 => 5,
+                4.0 => 7,
+                _ => 19,
+            };
+            Some((name, graph, median.width_m, segments, noses))
+        }));
+        for (name, graph, width_m, segments, noses) in cases {
+            let roadbed = compiled(&graph);
+            let found: usize = (0..graph.edge_count())
+                .filter(|&edge| graph.edge(edge).median.is_some())
+                .map(|edge| {
+                    let span = roadbed.span_piece(edge).unwrap();
+                    assert_round_noses(name, span, width_m, segments)
+                })
+                .sum();
+            assert_eq!(found, noses, "{name} (sloped {sloped}): noses");
+        }
+    }
+}
+
+// Two noses that do not fit leave the span undivided (`ROAD-80`): a lone road between two road
+// ends is divided exactly when its tips lie at least the median's width (twice the radius)
+// apart, for a narrow and the widest median.
+#[test]
+fn a_span_too_short_for_its_two_noses_stays_undivided() {
+    let mut outcomes = [false; 2];
+    for (width_m, lengths) in [(3.0, [6.0, 8.0, 10.0]), (12.0, [16.0, 20.0, 26.0])] {
+        for length_m in lengths {
+            let mut graph = RegionGraph::new();
+            let a = graph.add_node(point(0.0, 0.0, true), NodeType::Junction);
+            let b = graph.add_node(point(length_m, 0.0, true), NodeType::Junction);
+            let points = polyline((0.0, 0.0), (length_m, 0.0), length_m, true);
+            graph.add_edge(divided(road_edge(a, b, points, 7.0), 2, 2, grass(width_m)));
+            graph.rebuild_intersection_clips();
+            let roadbed = compiled(&graph);
+            let span = roadbed.span_piece(0).unwrap();
+            let sections = span.sections();
+            let tips_m = (
+                sections[0].s_m + NOSE_CLEARANCE_M,
+                sections[sections.len() - 1].s_m - NOSE_CLEARANCE_M,
+            );
+            let fits = tips_m.1 - tips_m.0 >= 2.0 * (0.5 * width_m);
+            let name = format!("{width_m} m on {length_m} m");
+            assert_eq!(sections.iter().any(|s| median_outline(s).is_some()), fits, "{name}");
+            assert_eq!(span.mesh().band_triangles(BandKind::Median).is_empty(), !fits, "{name}");
+            assert_watertight(&name, span);
+            if fits {
+                let segments = if width_m == 3.0 { 5 } else { 19 };
+                assert_eq!(assert_round_noses(&name, span, width_m, segments), 2, "{name}");
+            }
+            outcomes[usize::from(fits)] = true;
+        }
+    }
+    assert_eq!(outcomes, [true, true], "both outcomes occur");
+}
+
+// Spans without a raised median are as before the round nose (`ROAD-80`, R3d): an undivided
+// pair and a painted one hash as recorded on a40e6f6b, flat and sloped.
+#[test]
+fn spans_without_a_raised_median_keep_their_products() {
+    use crate::simulation::network::roadbed::fixtures::{ProductProbe, assert_probes};
+    let painted = |edge: Edge| divided(edge, 2, 2, RoadMedian::from_tool(1, 1.0).unwrap());
+    let undivided = |edge: Edge| divided(edge, 2, 2, None);
+    let mut actual = Vec::new();
+    for sloped in [false, true] {
+        for (name, graph) in [
+            ("undivided", straight_pair(undivided, undivided, true, sloped)),
+            ("painted", straight_pair(painted, painted, false, sloped)),
+            ("painted noses", straight_pair(painted, undivided, false, sloped)),
+        ] {
+            actual.push((format!("{name}/{sloped}"), ProductProbe::of_graph(&graph)));
+        }
+    }
+    assert_probes(&actual, WITHOUT_RAISED_MEDIAN);
+}
+
+// Recorded on a40e6f6b, before the round nose.
+const WITHOUT_RAISED_MEDIAN: &[(&str, [u64; 7])] = &[
+    (
+        "undivided/false",
+        [
+            0x61b3d4f0d4ff91db,
+            0x048f321e01a44fc7,
+            0x1df747977cee582f,
+            0xb20f8d217aacc3ed,
+            0x4f34b93cafbcd86f,
+            0x526023e987c4a88a,
+            0x5a21f467a126f0fb,
+        ],
+    ),
+    (
+        "painted/false",
+        [
+            0x2db64f429ef54d7b,
+            0x465f0d00904e4c89,
+            0x269195d876d35aae,
+            0x34fe874c8b286229,
+            0x3cacf181a32e379d,
+            0x693eaac6ff5e818a,
+            0xd6bcc8bb8e89b9e0,
+        ],
+    ),
+    (
+        "painted noses/false",
+        [
+            0xf6c43650403a61a8,
+            0xc3f0d0cfc97ead3d,
+            0xbc694f0548b165c1,
+            0xdeadb3c3e00cc2e2,
+            0xd2ed3c1674a9d386,
+            0x3153724c5443e990,
+            0x98429a1e56766213,
+        ],
+    ),
+    (
+        "undivided/true",
+        [
+            0xea51d6fc9e784d97,
+            0xc2675bf5257a4b40,
+            0x1df747977cee582f,
+            0x216c5eaa3658c1c0,
+            0x3fece4cee385943e,
+            0xd8b8c34a07637e04,
+            0x9c9a4599ede68974,
+        ],
+    ),
+    (
+        "painted/true",
+        [
+            0xc1eb93265ac3ec77,
+            0xbf8353d7781f14e1,
+            0x269195d876d35aae,
+            0x0bb7f0e00b63bf37,
+            0x5d4d723eb4aeb8bd,
+            0xd66934eedf1408c0,
+            0xbe038eddc7637f62,
+        ],
+    ),
+    (
+        "painted noses/true",
+        [
+            0xf52386d0f265c4e4,
+            0xba39b6a427ec2330,
+            0xbc694f0548b165c1,
+            0xbc2422ecfdb352c4,
+            0xb10cb0f4379cb9da,
+            0x252f122114c38381,
+            0xedd4619dcf5d5ab2,
+        ],
+    ),
+];

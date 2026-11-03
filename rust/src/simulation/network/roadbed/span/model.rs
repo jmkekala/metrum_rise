@@ -18,11 +18,11 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use godot::prelude::Vector3;
 
-/// A median's nose (`ROAD-80`): a raised median's width grows from nothing at the nose's tip to
-/// the authored width over this length, with a section row every metre; a painted median's
-/// hatching tapers the same way.
-pub(crate) const NOSE_LENGTH_M: f32 = 4.0;
-const NOSE_SECTION_STEP_M: f32 = 1.0;
+// A raised median's nose (`ROAD-80`) is a semicircle of radius `r`, half the median's width:
+// its rows stand at equal angles around the quarter circle from the tip, at most
+// `NOSE_CHORD_MAX_M` of arc apart and at least `NOSE_MIN_SEGMENTS` per quarter circle.
+const NOSE_CHORD_MAX_M: f32 = 0.5;
+const NOSE_MIN_SEGMENTS: u32 = 4;
 /// From a span's mouth, or from the far edge of the crossing strip the span holds there, to a
 /// median nose's tip (`ROAD-80`).
 pub(crate) const NOSE_CLEARANCE_M: f32 = 1.0;
@@ -353,18 +353,27 @@ impl<'a> SpanModel<'a> {
     }
 
     /// The raised median's width at station `s_m` (`ROAD-80`): zero at a nose's tip and before
-    /// it, rising linearly over the nose to the authored width, which it keeps between the noses
-    /// and through a node where the median continues. Zero on a span without a body. `O(1)`.
+    /// it, then the chord of the nose's semicircle, `2 sqrt(r^2 - (r - d)^2)` at `d` metres past
+    /// the tip for `r` half the authored width, up to the authored width `r` past the tip, which
+    /// it keeps between the noses and through a node where the median continues. Zero on a span
+    /// without a body. `O(1)`.
     pub(in crate::simulation::network::roadbed) fn median_width_at(&self, s_m: f32) -> f32 {
         let Some(body) = &self.body else {
             return 0.0;
         };
-        let rise = |nose: Option<(f32, f32)>| {
-            nose.map_or(1.0, |(tip_m, full_m)| {
-                ((s_m - tip_m) / (full_m - tip_m)).clamp(0.0, 1.0)
+        let radius_m = 0.5 * body.width_m;
+        let width_m = |nose: Option<(f32, f32)>| {
+            nose.map_or(body.width_m, |(tip_m, full_m)| {
+                let sign = (full_m - tip_m).signum();
+                if (s_m - full_m) * sign >= 0.0 {
+                    return body.width_m;
+                }
+                // `r^2 - (r - d)^2 = d (2r - d)`, without the cancellation near the tip.
+                let d_m = ((s_m - tip_m) * sign).max(0.0);
+                2.0 * (d_m * (2.0 * radius_m - d_m)).sqrt()
             })
         };
-        body.width_m * rise(body.noses[0]).min(rise(body.noses[1]))
+        width_m(body.noses[0]).min(width_m(body.noses[1]))
     }
 
     // The profile and row layout of the row at `s_m`.
@@ -512,9 +521,8 @@ impl<'a> SpanModel<'a> {
         for distance_m in self.crossings_m.into_iter().flatten() {
             push_protected_section_sample(samples, protected, distance_m, total_length);
         }
-        // Cadence ranges `(start, end)`: the profile fades at each planed end, then a divided
-        // span's noses (`ROAD-80`), each from its tip to its full width.
-        let mut cadence = [None; 4];
+        // Cadence ranges `(start, end)`: the profile fades at each planed end.
+        let mut cadence = [None; 2];
         if let Some((start_profile_s_m, end_profile_s_m)) = self.profile_range {
             let profile_fade_m = JUNCTION_PROFILE_BLEND_ZONE_M
                 .min((end_profile_s_m - start_profile_s_m).max(0.0) * 0.5);
@@ -530,12 +538,6 @@ impl<'a> SpanModel<'a> {
                 push_protected_section_sample(samples, protected, distance_m, total_length);
             }
         }
-        if let Some(body) = &self.body {
-            for (index, nose) in body.noses.iter().enumerate() {
-                cadence[2 + index] =
-                    nose.map(|(tip_m, full_m)| (tip_m.min(full_m), tip_m.max(full_m)));
-            }
-        }
         let cadence = cadence.map(|range| {
             range.map(|(start_m, end_m)| {
                 (
@@ -547,6 +549,25 @@ impl<'a> SpanModel<'a> {
         for (start_m, end_m) in cadence.into_iter().flatten() {
             push_protected_section_sample(samples, protected, start_m, total_length);
             push_protected_section_sample(samples, protected, end_m, total_length);
+        }
+        // A divided span's noses (`ROAD-80`): the tip and the full-width station fixed, the rows
+        // between at the nose's equal angles. Every interval between them is shorter than any
+        // step below, so none is divided further.
+        if let Some(body) = &self.body {
+            for (tip_m, full_m) in body.noses.into_iter().flatten() {
+                push_protected_section_sample(samples, protected, tip_m, total_length);
+                push_protected_section_sample(samples, protected, full_m, total_length);
+                let radius_m = 0.5 * body.width_m;
+                let sign = (full_m - tip_m).signum();
+                let segments = nose_segments(radius_m);
+                for row in 1..segments {
+                    let angle = std::f32::consts::FRAC_PI_2 * row as f32 / segments as f32;
+                    let s_m = tip_m + sign * radius_m * (1.0 - angle.cos());
+                    if (0.0..=total_length).contains(&s_m) {
+                        samples.push(s_m);
+                    }
+                }
+            }
         }
         for &distance in self.cumulative {
             if !is_near_protected_section_sample(distance, protected) {
@@ -565,8 +586,6 @@ impl<'a> SpanModel<'a> {
         let cadence_steps = [
             PROFILE_TRANSITION_SECTION_STEP_M,
             PROFILE_TRANSITION_SECTION_STEP_M,
-            NOSE_SECTION_STEP_M,
-            NOSE_SECTION_STEP_M,
         ];
         let fixed = samples.len();
         for index in 1..fixed {
@@ -589,13 +608,24 @@ impl<'a> SpanModel<'a> {
     }
 }
 
+// Segments of a nose's quarter circle of radius `radius_m` (`ROAD-80`): arcs of at most
+// `NOSE_CHORD_MAX_M`, so every chord is shorter, and at least `NOSE_MIN_SEGMENTS`. A nose holds
+// this plus one rows, its tip and full-width rows included: 5 up to a 2.54 m median (a 2 m
+// paving nose), 6 for the 3 m grass default, 20 at the widest (12 m kerbed grass, `ceil(3 pi)`
+// = 19 segments). `O(1)`.
+fn nose_segments(radius_m: f32) -> u32 {
+    let arc_m = std::f32::consts::FRAC_PI_2 * radius_m;
+    ((arc_m / NOSE_CHORD_MAX_M).ceil() as u32).max(NOSE_MIN_SEGMENTS)
+}
+
 // A divided span's raised median (`ROAD-80`), or `None` when the edge has no raised median or
 // the span leaves its noses no room. An end where the median continues through (`through`) has
-// no nose: the shared row there is a full-width body row. Every other end noses out: its tip
-// lies `NOSE_CLEARANCE_M` beyond the mouth, or beyond the far edge of the crossing strip the
-// span holds there (`crossings_m`), and the median reaches its width `NOSE_LENGTH_M` further
-// on. Two noses that would overlap leave the span undivided; a single nose runs to the through
-// end at most, which `arms::MEDIAN_THROUGH_MIN_EDGE_M` keeps metres away. `O(B)`.
+// no nose: the shared row there is a full-width body row. Every other end noses out in a
+// semicircle of radius `r`, half the median's width: its tip lies `NOSE_CLEARANCE_M` beyond the
+// mouth, or beyond the far edge of the crossing strip the span holds there (`crossings_m`), and
+// the median reaches its width `r` further on. Two noses that would overlap leave the span
+// undivided; a single nose ends before the through end, which `arms::MEDIAN_THROUGH_MIN_EDGE_M`
+// keeps at least `r` away. `O(B)`.
 fn median_body(
     edge: &Edge,
     (start_mouth_m, end_mouth_m): (f32, f32),
@@ -603,6 +633,7 @@ fn median_body(
     through: [bool; 2],
 ) -> Option<MedianBody> {
     let median = edge.median.filter(|median| median.is_raised())?;
+    let radius_m = 0.5 * median.width_m;
     let clearance_m =
         |crossing: Option<f32>| NOSE_CLEARANCE_M + crossing.map_or(0.0, |_| CROSSWALK_DEPTH_M as f32);
     let tips_m = [
@@ -611,23 +642,21 @@ fn median_body(
     ];
     let noses = match tips_m {
         [Some(start_m), Some(end_m)] => {
-            if end_m - start_m < 2.0 * NOSE_LENGTH_M {
+            if end_m - start_m < 2.0 * radius_m {
                 return None;
             }
             [
-                Some((start_m, start_m + NOSE_LENGTH_M)),
-                Some((end_m, end_m - NOSE_LENGTH_M)),
+                Some((start_m, start_m + radius_m)),
+                Some((end_m, end_m - radius_m)),
             ]
         }
         [Some(start_m), None] => {
-            let room_m = end_mouth_m - start_m;
-            debug_assert!(room_m > NOSE_CLEARANCE_M, "a through end leaves the nose room");
-            [Some((start_m, start_m + NOSE_LENGTH_M.min(room_m))), None]
+            debug_assert!(end_mouth_m - start_m > radius_m, "a through end leaves the nose room");
+            [Some((start_m, start_m + radius_m)), None]
         }
         [None, Some(end_m)] => {
-            let room_m = end_m - start_mouth_m;
-            debug_assert!(room_m > NOSE_CLEARANCE_M, "a through end leaves the nose room");
-            [None, Some((end_m, end_m - NOSE_LENGTH_M.min(room_m)))]
+            debug_assert!(end_m - start_mouth_m > radius_m, "a through end leaves the nose room");
+            [None, Some((end_m, end_m - radius_m))]
         }
         [None, None] => [None, None],
     };

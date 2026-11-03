@@ -21,7 +21,7 @@ mod model;
 use model::SpanModel;
 pub(crate) use model::SpanScratch;
 pub(crate) use model::incident_direction;
-pub(crate) use model::{NOSE_CLEARANCE_M, NOSE_LENGTH_M};
+pub(crate) use model::NOSE_CLEARANCE_M;
 pub(super) use model::RowKind;
 pub(super) use model::{
     PASS_THROUGH_DOT_THRESHOLD, WIDTH_CHANGE_TAPER_MAX_M, WIDTH_CHANGE_TAPER_MIN_M,
