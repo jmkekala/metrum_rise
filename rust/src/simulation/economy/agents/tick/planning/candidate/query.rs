@@ -108,18 +108,32 @@ impl ConnectorTargets {
                 self.outgoing_counts[node as usize] += 1;
             }
         }
-        // Every possible node-pair representative, including parallel edges, must have
-        // foot lanes in both directions. This deliberately also checks car-only edges:
-        // get_edge_between_nodes can select them while checking a different parallel edge.
+        // A walking path crosses only edges that allow FOOT (the CCH's walking arcs), priced on
+        // any of them and followed on the edge get_edge_between_nodes selects for each node
+        // pair, which may be a parallel car-only edge. So every walkable edge, and the edge
+        // selected for its pair from either end, must have foot lanes in both directions. A
+        // car-only edge with no walkable twin is on no walking path (`ROAD-101`: a road without
+        // sidewalks keeps the proof). O(edges x node degree).
         for (edge, value) in graph
             .edges()
             .iter()
             .enumerate()
-            .filter(|(_, edge)| !edge.deleted)
+            .filter(|(_, edge)| !edge.deleted && edge.allowed_types & TransitFlags::FOOT != 0)
         {
-            for node in [value.start_node, value.end_node] {
-                if outgoing_lanes(node, edge, network, graph).next().is_none() {
+            let selected = [
+                (value.start_node, value.end_node),
+                (value.end_node, value.start_node),
+            ]
+            .map(|(from, to)| graph.get_edge_between_nodes(from, to));
+            for checked in std::iter::once(Some(edge)).chain(selected) {
+                let Some(checked) = checked else {
                     return false;
+                };
+                let ends = graph.edge(checked);
+                for node in [ends.start_node, ends.end_node] {
+                    if outgoing_lanes(node, checked, network, graph).next().is_none() {
+                        return false;
+                    }
                 }
             }
         }
@@ -1690,6 +1704,16 @@ mod tests {
         }
         graph.rebuild_adjacency_list();
         graph
+    }
+
+    // `ROAD-101`: a road without sidewalks is on no walking path, so a straight road whose
+    // last edge has none keeps the proof (its walkable edges and junction stay complete).
+    #[test]
+    fn walking_proof_skips_a_road_without_sidewalks() {
+        let points = [(0.0, 0.0), (80.0, 0.0), (160.0, 0.0)];
+        let mut graph = road_through(&points);
+        graph.edge_mut(1).allowed_types = TransitFlags::CAR;
+        assert!(walking_proof(&mut graph));
     }
 
     #[test]
