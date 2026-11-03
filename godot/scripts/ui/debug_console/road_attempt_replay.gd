@@ -48,6 +48,10 @@ static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionar
 	simulation.set_road_tool_tunnel(bool(attempt.get("tunnel", false)))
 	# Its median (`ROAD-80`), re-asserted by the road tool per preview the same way.
 	simulation.set_road_tool_median(int(attempt.get("median_style", 0)), float(attempt.get("median_width", 0.0)))
+	# Its road-type attributes (`ROAD-101`); a dump from before them replays the built-ins' 50 km/h
+	# road with sidewalks and zoning.
+	simulation.set_road_tool_attributes(int(attempt.get("speed_kmh", 50)), bool(attempt.get("sidewalks", true)),
+		bool(attempt.get("zoning", true)))
 	if points.size() < 2:
 		return {"by": "tool", "reason": "too_short"}
 	var validation: Dictionary = {}

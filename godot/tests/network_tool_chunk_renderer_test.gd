@@ -192,6 +192,9 @@ class MockRoadCandidateSimulation:
 	func set_road_tool_median(_style: int, _width: float) -> String:
 		return ""
 
+	func set_road_tool_attributes(_speed_kmh: int, _sidewalks: bool, _zoning: bool) -> String:
+		return ""
+
 	func preview_road(points, _fwd, _bkw, _snap) -> Dictionary:
 		preview_calls += 1
 		last_preview_points = points
