@@ -10283,12 +10283,25 @@ both edges are at least `MEDIAN_THROUGH_MIN_EDGE_M` (20 m, so each span keeps ro
 nose) and neither arm crosses. Such a node has no default crossing (R3-f, Z3); an explicit one
 crosses and opens the median, both spans nosing out around it.
 
-**Noses.** A span's median width `w(s)` is 0 at a nose's tip and before it, rises linearly over
-`NOSE_LENGTH_M` (4 m) to the authored width, and keeps it between the noses and through a node
-where it continues. A free end's tip lies `NOSE_CLEARANCE_M` (1 m) past its mouth, or past the far
-edge of the crossing strip the span holds there. Tips and full-width stations are protected
-stations, each nose a 1 m cadence range: the one station rule. Two noses that would overlap
-(tips closer than 8 m) leave the span undivided.
+**Noses.** A raised median ends in a semicircle whose radius `r` is half the median's width
+(round R3d, the user's decision of 2026-11-03; R3b1 tapered linearly over 4 m to a point). A
+span's median width `w(s)` is 0 at a nose's tip and before it, `2 sqrt(r^2 - (r - d)^2)` at `d`
+metres past the tip for `d` in `[0, r]` (evaluated as `2 sqrt(d (2r - d))`), and the authored
+width from `r` past the tip on, between the noses and through a node where it continues. A free
+end's tip lies `NOSE_CLEARANCE_M` (1 m) past its mouth, or past the far edge of the crossing
+strip the span holds there. The tip and full-width stations are protected stations; the rows
+between stand at equal angles around the quarter circle (the arc is vertical at the tip, so a
+uniform step would leave it pointed): `n = max(4, ceil((pi r / 2) / 0.5 m))` arcs, each at most
+0.5 m, so every chord is shorter. A nose holds `n + 1` rows, tip and full-width row included: 5
+for a 2 m paving median, 6 for the 3 m grass default, 8 for 4 m, 20 for the widest (12 m grass,
+`n = 19`). Every interval between them is shorter than any cadence step, so the one station rule
+divides none of them further; a polyline knot inside a nose adds a row on the circle. Two noses
+whose tips lie closer than `2r` (the median's width) leave the span undivided; a single nose's
+`r` (at most 6 m) always fits before a continuing end (`MEDIAN_THROUGH_MIN_EDGE_M`). The kerbs
+scale with the median's width (`body_for_edge`), so the outer kerb edges run on the circle and
+the median's top on the circle scaled across the road by `1 - 0.3 m / width`; the kerb narrows
+to nothing at the tip. A painted median keeps its pointed 4 m chevron (road-marking practice,
+`PAINTED_NOSE_LENGTH_M` in `markings.rs`); no other marking follows a raised median's kerb.
 
 **Mesh.** A divided span lays its rows out by kind: mouth rows (the mouth profile; the end rows
 are the shared mouth sections) up to each tip, the tip row, and body rows between. The tip row
@@ -10301,8 +10314,8 @@ read. Watertight by construction; an undivided span takes the old code path. Bri
 may be divided (R3-h): fascias, slab, abutments, caps and the lining stand on the outer chains
 and the end rows, which a median does not touch.
 
-Bounds: `body_for_edge` and `median_continues` `O(B)` and `O(degree)`; at most 8 extra rows per
-nose; the mesh `O(rows * B)`, its tip pairs `O(B)`; lanes and access `O(1)` per lane; the save
+Bounds: `body_for_edge` and `median_continues` `O(B)` and `O(degree)`; at most 20 rows per
+nose (19 arcs, the 12 m median; R3b1's taper had 5); the mesh `O(rows * B)`, its tip pairs `O(B)`; lanes and access `O(1)` per lane; the save
 `O(E)`. No city scan, no cache, no per-tick code.
 
 Acceptance record (round R3b1, 2026-11-02, fresh; release binaries of `b43adb12` (control, with
@@ -10379,10 +10392,11 @@ second grass shader.
 A painted median is paint alone (R3-c, `markings.rs`): two solid edge lines at
 `lane_group_offset` ± half the median's width and 45° diagonals between them every 3 m, in the
 urban lane-line width (0.10 m), drawn whatever the lane-line rule says (a 1+1 residential street
-shows its painted median). The noses are the raised medians': at an end that is not a
-continuation the edge lines meet on the centre line `NOSE_CLEARANCE_M` inside the marked range
-(which starts past a crossing strip the span holds) and open to the full width over
-`NOSE_LENGTH_M`; noses that would overlap leave the span unpainted. The section pairs are cut at
+shows its painted median). The noses start at the raised medians' tips: at an end that is not
+a continuation the edge lines meet on the centre line `NOSE_CLEARANCE_M` inside the marked range
+(which starts past a crossing strip the span holds) and open in a straight chevron to the full
+width over `PAINTED_NOSE_LENGTH_M` (4 m; a raised median's nose is round since round R3d, a
+painted one stays pointed); chevrons that would overlap leave the span unpainted. The section pairs are cut at
 the nose stations so the taper is exact. Where a painted median runs on through a pass-through
 node (`roadbed::painted_median_continues`: the raised rule's alignment and length test for a
 painted pair with no crossing) the hatching runs on; a painted median keeps D8's default crossing
@@ -10437,6 +10451,52 @@ Stills (`$ARTIFACTS`, gamescope headless 1280x720, isolated profile, two session
 minutes): a divided T with noses and zebras, a pass-through continuation, a bend's nose pair,
 painted (hatched) vs grass vs paving, a divided bridge and a divided tunnel's portal, a road given
 a median in place and its undo, and the Road Properties and road options rows.
+
+#### Round noses (round R3d)
+
+The user's decision of 2026-11-03, while testing R3: a raised median (kerbed grass, kerbed
+paving) ends in a semicircle of radius half its width; a painted median keeps its pointed
+chevron. The rule, the row cadence and the bound are in **Noses** above; the code is
+`span/model.rs` (`median_width_at`, `nose_segments`, `median_body`, the nose stations in
+`section_sample_distances`). Tests (`span/median_tests.rs`): every outline vertex of a nose lies
+on its circle in station and lateral metres within 0.1 mm, the tip `NOSE_CLEARANCE_M` past the
+mouth or the crossing strip and the first full-width row `r` past the tip, each arc at most
+0.5 m, the rows per width (2 m paving 4 arcs, 3 m grass 5, 4 m 7, 12 m 19) on the T, bend,
+pass-through, bridge and tunnel fixtures, flat and sloped; the divided fixtures (now with a 12 m
+grass and a 2 m paving pair) stay watertight with mouth rows bitwise the node pieces' and their
+structures closed; a lone road too short for its two noses stays undivided; undivided and
+painted pairs hash as recorded on `a40e6f6b`.
+
+Acceptance record (round R3d, 2026-11-03, fresh; release binaries of `a40e6f6b` (control, the
+R3 stack before this round) and `01843087`, both with R8's uncommitted probe; P-cores `taskset -c
+0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=4`, both locks, load 1.63 at the start, no build, Godot
+run or game beside it; logs in `$ARTIFACTS`):
+
+- No change without a raised median: R8's probe (pieces, payload, graded tiles, vegetation,
+  surface queries, lanes) equal on town, hill, steep and Kuopio, control vs branch. `ROAD-68-K22`
+  was not rerun: its saved cities carry no medians, and the probe covers the undivided path.
+- `roadbed_span/build` (Criterion, C F F C, µs): `span_25m` 3.790 3.778 3.778 3.816, `span_100m`
+  10.67 10.77 11.51 10.73, `span_400m` 38.16 38.45 37.74 38.22, `span_100m_curved` 10.68 10.83
+  10.80 10.75, `span_100m_four_lane` 11.98 11.27 11.25 11.27, `span_100m_rural` 8.249 8.255
+  8.251 8.259, `span_100m_footpath` 3.518 3.694 3.553 4.063, `span_100m_bridge` 12.32 12.55
+  12.21 12.28: undivided spans equal to the control within its spread (one `span_100m` sample at
+  11.51; its path is unchanged and its products bitwise equal). `span_100m_divided` (2+2, 4 m
+  grass, two noses, knots every 11.1 m) 24.34 / 23.69 -> 30.78 / 30.64: 27 rows -> 35 (35
+  counted on the branch's span, 27 by the old station rule), 8 per nose instead of 5 (+6) and one more body row beside each nose, whose
+  full-width station moved from 4 m to 2 m past the tip and left an interval over 8 m before the
+  first knot (+2); the cost follows the rows (+30 % rows, +28 % time), under the 50 µs target.
+- Preview stages (`benchmark_road_preview_stages`, C F F C, total p50 ms): `divided_t` 3.161
+  3.180 3.338 3.330, payload vertices 11,875 -> 12,226 a pose; `sloped_t` 3.094 3.094 2.941
+  3.287 and `sloped_branch` 2.845 2.860 2.768 2.653 with payload vertices equal.
+- Road chunk Criterion rows (C F F C, µs): `divided_chunk_emit_only/1` 296.2 287.3 286.7 271.9,
+  `/1024` 293.4 306.3 293.8 280.9; `chunk_emit_only/1024` 180.2 189.7 204.1 177.8,
+  `bridge_chunk_emit_only/1024` 284.9 290.9 278.4 288.1, `tunnel_chunk_emit_only/1024` 263.8
+  298.8 276.7 266.8: within the controls' spread.
+
+Stills (`$ARTIFACTS`, gamescope headless 1280x720, isolated profile, one session per cdylib
+under 5 minutes, before and after side by side): a divided T with zebras (3 m grass) near and
+far, a 2 m paving nose, a 12 m grass nose, a nose at a dead end's cap, and a painted median's
+chevron (unchanged).
 
 ## Road Geometry Validation (`ROAD-54`)
 
