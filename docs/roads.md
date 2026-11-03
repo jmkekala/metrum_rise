@@ -10230,8 +10230,10 @@ moved or lost. The closure's entrances are rebuilt, so the road's buildings beco
 destinations, and the deferred routing rebuild takes the new speed and the walking topology.
 Zoning turned off does what the "No buildings" checkbox does: the allocator maintenance
 demolishes the road's buildings at once and its parcels are removed, other roads' buildings keep
-their rezone grace; `buildings_removed` counts them first (every building whose road it is, a
-parallel `O(B / P)` count only when zoning goes off). The undo record restores the edge records
+their rezone grace; `buildings_removed` counts them first (every building whose road it is,
+only when zoning goes off: among the buildings of the 512 m chunks within the road's reach,
+`attachment_repair_candidates`, checked against the whole city in test builds; a parallel
+`O(B / P)` count only while the chunk index is stale). The undo record restores the edge records
 and the emptied parcels; demolished buildings stay demolished: no undo path restores a road's
 buildings (the bulldoze journal restores one building per entry), so the verdict's
 `demolition_permanent` is true whenever `buildings_removed` is not 0, for the confirmation to say
@@ -10579,7 +10581,8 @@ independent of zoning; speed per type; costs by type; Road Properties changes al
   (round RB3b) with the 100k edit-rise record (round RB3b2). Round RB3c's fix: the verdict's
   `buildings_removed` count ran a parallel pass outside every Rayon pool, which panicked from
   Godot ("The global thread pool has not been initialized") and poisoned the core lock; it now
-  runs in `thread_pools::install`.
+  runs in `thread_pools::install`. The coordinator's review then made the count local (the
+  road's 512 m chunks; the whole city only while the chunk index is stale).
 - **Saves**: format 112 (the weighted upkeep roll); no older save loads.
 
 #### The road builder (ROAD-101, round RB2)

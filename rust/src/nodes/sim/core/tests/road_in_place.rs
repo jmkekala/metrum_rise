@@ -546,6 +546,17 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
     let (_, side_parcel) = house_fronting(&mut core, side, (12.0, 60.0));
     let (_, west_parcel) = house_fronting(&mut core, west, (-50.0, 12.0));
     let off = RoadAttributes::new(50, true, false);
+    // The count comes from the road's 512 m chunks, or from the whole city while the chunk
+    // index is stale.
+    for stale in [false, true] {
+        core.allocator.rebuild_zone_index();
+        core.allocator.dirty_index = stale;
+        let verdict = core
+            .preview_edge_cross_section_internal(side as i32, 1, 1, None, off)
+            .unwrap();
+        assert_eq!(verdict.buildings_removed, 1, "stale index: {stale}");
+    }
+    core.allocator.rebuild_zone_index();
     let verdict = core
         .preview_edge_cross_section_internal(side as i32, 1, 1, None, off)
         .unwrap();

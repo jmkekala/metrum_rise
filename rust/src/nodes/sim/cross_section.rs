@@ -234,7 +234,8 @@ impl SimCore {
     // What the edit does beyond the road (`ROAD-101`): the buildings fronting it that zoning
     // off demolishes (every building whose road it is: none survives the checkbox's
     // maintenance), and the build-cost difference over its length at its class, floored at 0.
-    // `O(1)`, plus a parallel `O(B / P)` count only when zoning goes off.
+    // `O(1)`, plus the road's local building count (`buildings_fronting`) only when zoning goes
+    // off.
     fn cross_section_verdict(
         &self,
         edge: usize,
@@ -245,14 +246,7 @@ impl SimCore {
     ) -> CrossSectionVerdict {
         let current = self.region_graph.edge(edge);
         let buildings_removed = if !current.no_building_spawn && !attributes.zoning {
-            // In the shared pool: a Godot call runs outside every Rayon pool.
-            let buildings = &self.allocator.buildings;
-            crate::thread_pools::install(|| {
-                buildings
-                    .par_iter()
-                    .filter(|building| building.edge_idx == edge)
-                    .count()
-            })
+            self.buildings_fronting(edge)
         } else {
             0
         };
@@ -276,6 +270,39 @@ impl SimCore {
             demolition_permanent: buildings_removed > 0,
             cost_delta,
         }
+    }
+
+    // The buildings whose road is `edge`: those among the buildings of the 512 m chunks within
+    // its reach (`attachment_repair_candidates`, which hold every building fronting it, as the
+    // split's frontage move relies on), or a parallel count over the city while the chunk index
+    // is stale. Test builds check the count against the whole city's.
+    // `O(segments + chunks + candidates log candidates)`; stale, `O(B / P)`.
+    fn buildings_fronting(&self, edge: usize) -> usize {
+        let buildings = &self.allocator.buildings;
+        let Some(candidates) = self.allocator.attachment_repair_candidates(
+            &self.region_graph,
+            &HashSet::from([edge]),
+            [],
+            self.config.zone_cell_m,
+        ) else {
+            // In the shared pool: a Godot call runs outside every Rayon pool.
+            return crate::thread_pools::install(|| {
+                buildings
+                    .par_iter()
+                    .filter(|building| building.edge_idx == edge)
+                    .count()
+            });
+        };
+        let count = candidates
+            .into_iter()
+            .filter(|&idx| buildings[idx].edge_idx == edge)
+            .count();
+        debug_assert_eq!(
+            count,
+            buildings.iter().filter(|b| b.edge_idx == edge).count(),
+            "the chunk candidates hold every building fronting edge {edge}"
+        );
+        count
     }
 
     // The live edges at `nodes`, and `edge`. O(local degree).
