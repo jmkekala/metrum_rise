@@ -467,32 +467,44 @@ func set_selected_edge_class(class_int: int) -> void:
 	if get_node_or_null("../RoadTool"):
 		get_node("../RoadTool").update_main_mesh()
 
-## Rust's verdict on giving every selected road `fwd` + `bkw` lanes and the median
-## `median_style` of `median_width` metres in place (`ROAD-80`), each keeping its own speed,
-## sidewalks and zoning (`ROAD-101`): the first refusal (`invalid_reason`, `detail`), else
-## `is_valid`. Each road is checked as it stands, as Apply commits them one by one.
-func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float) -> Dictionary:
+## Rust's verdict on giving every selected road `fwd` + `bkw` lanes, the median `median_style`
+## of `median_width` metres (`ROAD-80`) and a road type's `speed_kmh`, `sidewalks` and `zoning`
+## (`ROAD-101`) in place: the first refusal (`invalid_reason`, `detail`), else `is_valid` with the
+## selection's totals of Rust's `buildings_removed` and `cost_delta`, and `demolition_permanent`
+## when any road's is. Each road is checked as it stands, as Apply commits them one by one.
+func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float,
+		speed_kmh: int, sidewalks: bool, zoning: bool) -> Dictionary:
+	var total := {"is_valid": true, "buildings_removed": 0, "cost_delta": 0.0, "demolition_permanent": false}
 	for idx in selected_edges:
-		var own: Dictionary = simulation_node.get_edge_cross_section(idx)
-		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width, int(own.get("speed_kmh", 50)), bool(own.get("sidewalks", true)), bool(own.get("zoning", true)))
+		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width,
+			speed_kmh, sidewalks, zoning)
 		if not bool(verdict.get("is_valid", false)):
 			return verdict
-	return {"is_valid": true}
+		total.buildings_removed += int(verdict.get("buildings_removed", 0))
+		total.cost_delta += float(verdict.get("cost_delta", 0.0))
+		total.demolition_permanent = total.demolition_permanent or bool(verdict.get("demolition_permanent", false))
+	return total
 
-## Gives every selected road Rust accepts `fwd` + `bkw` lanes and the median, each with its
-## undo record, and returns how many were refused. The edits publish their chunks at once.
-func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float) -> int:
+## Gives every selected road Rust accepts `fwd` + `bkw` lanes, the median and the type's
+## attributes, each with its undo record, and returns how many were refused. The edits publish
+## their chunks at once; zoning off refreshes the no-build overlay, as the checkbox does.
+func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float,
+		speed_kmh: int, sidewalks: bool, zoning: bool) -> int:
 	var refused := 0
 	for idx in selected_edges:
-		var own: Dictionary = simulation_node.get_edge_cross_section(idx)
-		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, int(own.get("speed_kmh", 50)), bool(own.get("sidewalks", true)), bool(own.get("zoning", true))):
+		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, speed_kmh, sidewalks, zoning):
 			refused += 1
 	_rebuild_highlight()
+	if not zoning:
+		_refresh_no_build_overlay()
 	return refused
 
 func set_selected_edge_no_building_spawn(enabled: bool) -> void:
 	for idx in selected_edges:
 		simulation_node.set_no_building_spawn(idx, enabled)
+	_refresh_no_build_overlay()
+
+func _refresh_no_build_overlay() -> void:
 	if zoning_overlay:
 		zoning_overlay.mark_no_build_dirty()
 		zoning_overlay._rebuild_no_build_overlay()

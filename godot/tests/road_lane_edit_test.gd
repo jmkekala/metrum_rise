@@ -6,8 +6,12 @@
 ## road, a one-way median); Apply changes the road in place to the 4-Lane Road (14 m) or a
 ## divided custom type created through the API (10 m with a 3 m grass median), publishes a new
 ## render generation, and undo restores it. The window's default size holds every row. The
-## median controls kept for the road builder step within the style's range. Writes the
-## road-type library, so it runs only in the isolated profile.
+## median controls kept for the road builder step within the style's range. Attributes
+## (`ROAD-101`): the picker gives each type's speed and Rust's cost; Apply shows the cost
+## difference; a 100 km/h type without sidewalks and zoning applies to the 1 + 1 road (speed,
+## sidewalks and zoning read back, the no-build overlay refreshed) and Ctrl+Z restores it; a
+## verdict that demolishes buildings asks first ("This cannot be undone"): Cancel leaves the road,
+## Apply changes it. Writes the road-type library, so it runs only in the isolated profile.
 extends SceneTree
 
 const SelectTool := preload("res://scripts/tools/select_tool.gd")
@@ -15,6 +19,14 @@ const RoadPropertiesWindow := preload("res://scripts/ui/road_properties_window.g
 const MedianControls := preload("res://scripts/ui/median_controls.gd")
 var _failures := 0
 var simulation: SimulationNode
+
+# The select tool's zoning overlay: counts the no-build refreshes.
+class OverlayStub extends Node3D:
+	var refreshed := 0
+	func mark_no_build_dirty() -> void:
+		refreshed += 1
+	func _rebuild_no_build_overlay() -> void:
+		pass
 
 class UiStub extends Node:
 	func hide_road_properties() -> void:
@@ -100,7 +112,7 @@ func _run() -> void:
 	var ui := UiStub.new()
 	ui.name = "MainUI"
 	scene.add_child(ui)
-	var overlay := Node3D.new()
+	var overlay := OverlayStub.new()
 	overlay.name = "ZoningOverlay"
 	scene.add_child(overlay)
 	var tool = SelectTool.new()
@@ -116,8 +128,8 @@ func _run() -> void:
 	scene.add_child(window)
 	window.show_for_edges(selection)
 	await process_frame
-	_expect(_picked_text(window) == "2-Lane Road", "the picker shows the 1 + 1 road's type: %s" % _picked_text(window))
-	_expect(window._layout_label.text == "1 + 1 lanes", "the window shows 1 + 1 lanes: %s" % window._layout_label.text)
+	_expect(_picked_text(window) == "2-Lane Road (50 km/h, 15 / m)", "the picker shows the 1 + 1 road's type: %s" % _picked_text(window))
+	_expect(window._layout_label.text == "1 + 1 lanes, 50 km/h", "the window shows 1 + 1 lanes: %s" % window._layout_label.text)
 	var content: Control = window._window.get_child(0)
 	# The window's own size is clamped to the headless viewport; its default is what a player gets.
 	_expect(window.DEFAULT_SIZE.y >= int(content.get_combined_minimum_size().y), "the default height holds every row: %d < %d" % [window.DEFAULT_SIZE.y, int(content.get_combined_minimum_size().y)])
@@ -131,20 +143,24 @@ func _run() -> void:
 	# The 4-Lane Road: accepted, applied, published.
 	_pick(window, "builtin:road_4l")
 	_expect(not window._apply_button.disabled, "an accepted change can be applied")
-	_expect(window._verdict_label.text == "2 + 2 lanes", "the verdict: %s" % window._verdict_label.text)
+	_expect(window._verdict_label.text == "2 + 2 lanes, 50 km/h", "the verdict: %s" % window._verdict_label.text)
+	var widening := roundi(float(window._verdict.get("cost_delta", 0.0)))
+	_expect(widening > 0 and window._apply_button.text == "Apply (+%s)" % window._thousands(widening),
+		"Apply shows the cost difference: %s" % window._apply_button.text)
 	var generation := simulation.get_network_render_generation()
 	window._apply_button.pressed.emit()
 	_expect(_lanes(edge) == Vector2i(2, 2), "Apply widens the road: %s" % _lanes(edge))
 	_expect(is_equal_approx(float(simulation.get_edge_cross_section(edge).get("width", 0.0)), 14.0), "a 2 + 2 road is 14 m wide")
 	_expect(simulation.get_network_render_generation() > generation, "the edit publishes a new render generation")
-	_expect(_picked_text(window) == "4-Lane Road" and window._apply_button.disabled, "the window shows the applied road: %s" % _picked_text(window))
+	_expect(_picked_text(window) == "4-Lane Road (50 km/h, 27 / m)" and window._apply_button.disabled and window._apply_button.text == "Apply",
+		"the window shows the applied road: %s" % _picked_text(window))
 	await _undo("the 4-Lane Road")
 	_expect(_lanes(edge) == Vector2i(1, 1), "undo restores 1 + 1 lanes: %s" % _lanes(edge))
 
 	# The divided custom type in place: a 3 m grass median, applied, then undone.
 	window.show_for_edges(selection)
 	_pick(window, boulevard)
-	_expect(window._verdict_label.text == "1 + 1 lanes, Grass 3.0 m", "the median verdict: %s" % window._verdict_label.text)
+	_expect(window._verdict_label.text == "1 + 1 lanes, Grass 3.0 m, 50 km/h", "the median verdict: %s" % window._verdict_label.text)
 	generation = simulation.get_network_render_generation()
 	window._apply_button.pressed.emit()
 	var section: Dictionary = simulation.get_edge_cross_section(edge)
@@ -152,12 +168,12 @@ func _run() -> void:
 	_expect(is_equal_approx(float(section.get("width", 0.0)), 10.0), "a 1 + 1 road with a 3 m median is 10 m wide")
 	_expect(String(section.get("road_type", "")) == boulevard, "the road reads back as the custom type: %s" % section.get("road_type", ""))
 	_expect(simulation.get_network_render_generation() > generation, "the median edit publishes")
-	_expect(_picked_text(window) == "Lane Edit Boulevard", "the picker shows the custom type: %s" % _picked_text(window))
+	_expect(_picked_text(window) == "Lane Edit Boulevard (50 km/h, 21 / m)", "the picker shows the custom type: %s" % _picked_text(window))
 	# One way with the median: no type can ask for it (the layout check refuses it), and the
 	# in-place check still refuses it with its reason.
 	_expect(simulation.check_road_layout([{"kind": "sidewalk"}, {"kind": "median", "style": 2, "width_m": 3.0},
 		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true).get("invalid_reason", "") != "", "a one-way median layout is refused")
-	window.show_verdict(tool.preview_selected_edge_cross_section(1, 0, 2, 3.0))
+	window.show_verdict(tool.preview_selected_edge_cross_section(1, 0, 2, 3.0, 50, true, true))
 	_expect(window._apply_button.disabled, "a one-way median cannot be applied")
 	_expect(window._verdict_label.text == "A median needs lanes in both directions", "the one-way refusal: %s" % window._verdict_label.text)
 	await _undo("the median")
@@ -167,8 +183,52 @@ func _run() -> void:
 	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0, 50, true, true), "a 3 + 1 layout is set in place")
 	window.show_for_edges(selection)
 	_expect(_picked_text(window) == window.CUSTOM_LAYOUT and window._type_picker.is_item_disabled(window._type_picker.selected), "a 3 + 1 road shows Custom layout: %s" % _picked_text(window))
-	_expect(window._layout_label.text == "3 + 1 lanes", "the custom layout's lanes: %s" % window._layout_label.text)
+	_expect(window._layout_label.text == "3 + 1 lanes, 50 km/h", "the custom layout's lanes: %s" % window._layout_label.text)
 	await _undo("the custom layout")
+
+	# A 100 km/h type without sidewalks or zoning in place: nothing to demolish, applied at once.
+	var rural := String(simulation.create_road_type("Lane Edit Rural", [
+		{"kind": "car_lane", "forward": false}, {"kind": "car_lane", "forward": true}], 100, false).get("id", ""))
+	_expect(not rural.is_empty(), "the rural type is created")
+	window.show_for_edges(selection)
+	_pick(window, rural)
+	var dialog: ConfirmationDialog = window._demolish_dialog
+	_expect(not window._apply_button.disabled and window.demolition_text().is_empty(), "no buildings: no question")
+	_expect(window._verdict_label.text == "1 + 1 lanes, 100 km/h, no sidewalks", "the rural verdict: %s" % window._verdict_label.text)
+	var refreshed: int = overlay.refreshed
+	window._apply_button.pressed.emit()
+	section = simulation.get_edge_cross_section(edge)
+	_expect(not dialog.visible and int(section.get("speed_kmh", 0)) == 100 and not bool(section.get("sidewalks", true))
+		and not bool(section.get("zoning", true)) and String(section.get("road_type", "")) == rural, "Apply makes it rural: %s" % section)
+	_expect(overlay.refreshed > refreshed and window._no_build_check.button_pressed, "zoning off refreshes the overlay and the checkbox")
+	_expect(_picked_text(window) == "Lane Edit Rural (100 km/h, 24 / m)", "the picker shows the rural type: %s" % _picked_text(window))
+	await _undo("the rural type")
+	section = simulation.get_edge_cross_section(edge)
+	_expect(int(section.get("speed_kmh", 0)) == 50 and bool(section.get("sidewalks", false)) and bool(section.get("zoning", false)),
+		"undo restores 50 km/h, sidewalks and zoning: %s" % section)
+
+	# A verdict that demolishes buildings asks first. Rust's count is its own test
+	# (`zoning_off_in_place_removes_the_roads_parcels_and_buildings`); here the window's answer to it.
+	window.show_for_edges(selection)
+	_pick(window, rural)
+	var demolishing: Dictionary = window._verdict.duplicate()
+	demolishing.buildings_removed = 3
+	demolishing.demolition_permanent = true
+	window.show_verdict(demolishing)
+	window._apply_button.pressed.emit()
+	await process_frame
+	_expect(dialog.visible and dialog.dialog_text == "Apply removes 3 buildings. This cannot be undone.", "Apply asks: %s" % dialog.dialog_text)
+	dialog.canceled.emit()
+	dialog.hide()
+	_expect(int(simulation.get_edge_cross_section(edge).get("speed_kmh", 0)) == 50, "Cancel leaves the road as it was")
+	window._apply_button.pressed.emit()
+	await process_frame
+	_expect(dialog.visible, "Apply asks again")
+	dialog.confirmed.emit()
+	dialog.hide()
+	_expect(int(simulation.get_edge_cross_section(edge).get("speed_kmh", 0)) == 100, "the confirmed Apply changes the road")
+	await _undo("the confirmed rural type")
+	_expect(simulation.delete_road_type(rural).is_empty(), "the rural type is deleted")
 
 	# A walkway keeps the picker enabled so the refusal shows.
 	var walkway: int = simulation.get_hovered_edge(0.0, -80.0)
@@ -176,7 +236,7 @@ func _run() -> void:
 	var walkway_selection: Array[int] = [walkway]
 	tool.selected_edges = walkway_selection
 	window.show_for_edges(walkway_selection)
-	_expect(_picked_text(window) == "Walkway" and not window._type_picker.disabled, "a walkway shows its type with the picker enabled: %s" % _picked_text(window))
+	_expect(_picked_text(window) == "Walkway (3.75 / m)" and not window._type_picker.disabled, "a walkway shows its type with the picker enabled: %s" % _picked_text(window))
 	_pick(window, "builtin:road_2l")
 	_expect(window._apply_button.disabled, "a walkway cannot become a road")
 	_expect(window._verdict_label.text == "A walkway cannot become a road: draw a road in its place", "the walkway refusal: %s" % window._verdict_label.text)

@@ -4,12 +4,17 @@
 ##
 ## The window mirrors the previous side panel behavior but uses Godot's built-in
 ## draggable Window surface and preserves its placement within the session.
-## Road type (`ROAD-101`, `ROAD-80`): a picker lists the usable road types and shows the selected
-## road's (Rust's `road_type` for its cross-section, or "Custom layout" when no type matches).
-## A pick asks Rust's verdict for the type's lanes and median through the select tool (the
-## in-place edit's check, no geometry preview) and shows it beside Apply, which commits an
-## accepted change (Ctrl+Z undoes it). The picker stays enabled on a walkway so the refusal
-## (walkway <-> road) shows with its text. The window opens tall enough for every row.
+## Road type (`ROAD-101`, `ROAD-80`): a picker lists the usable road types, each with its speed
+## and Rust's build cost per metre, and shows the selected road's (Rust's `road_type` for its
+## cross-section, sidewalks and speed, or "Custom layout" when no type matches; zoning is not
+## matched). A pick asks Rust's verdict for the type's lanes, median, speed, sidewalks and zoning
+## on every selected road through the select tool (the in-place edit's check, no geometry
+## preview) and shows it beside Apply, which reads "Apply (+1,230)" with the selection's cost
+## difference from Rust (charged, never refunded) and commits an accepted change (Ctrl+Z undoes
+## the roads). When zoning off would demolish buildings, Apply first asks in a confirmation
+## ("Apply removes N buildings. This cannot be undone.": undo brings back the road, never the
+## buildings); Cancel leaves the roads as they are. The picker stays enabled on a walkway so the
+## refusal (walkway <-> road) shows with its text. The window opens tall enough for every row.
 ## Rust methods called: get_road_types(), get_edge_cross_section(), get_edge_class(),
 ## get_no_building_spawn(), get_edge_geometry_3d(), get_height_at().
 extends Node
@@ -38,6 +43,11 @@ var _type_picker: OptionButton
 var _layout_label: Label
 var _verdict_label: Label
 var _apply_button: Button
+var _demolish_dialog: ConfirmationDialog
+# The select tool's verdict on the picked type (`preview_selected_edge_cross_section`).
+var _verdict: Dictionary = {}
+# Rust's speed grid (`get_road_types().speeds`), for a walkway's attributes.
+var _speeds: Dictionary = {}
 var _selected_edges: Array[int] = []
 var _last_screen_pos := Vector2.ZERO
 
@@ -136,6 +146,12 @@ func _build_window() -> void:
 	_no_build_check.toggled.connect(_on_no_build_toggled)
 	root_vbox.add_child(_no_build_check)
 
+	_demolish_dialog = ConfirmationDialog.new()
+	_demolish_dialog.title = "Remove buildings"
+	_demolish_dialog.ok_button_text = "Apply"
+	_demolish_dialog.confirmed.connect(_apply)
+	_window.add_child(_demolish_dialog)
+
 	add_child(_window)
 	WindowResizeHandles.install(_window)
 	_window.hide()
@@ -215,14 +231,16 @@ func _refresh_type() -> void:
 	var first: Dictionary = _simulation_node.get_edge_cross_section(_selected_edges[0])
 	var current := String(first.get("road_type", ""))
 	_type_picker.clear()
+	var library: Dictionary = _simulation_node.get_road_types()
+	_speeds = library.get("speeds", {})
 	if current.is_empty():
 		_type_picker.add_item(CUSTOM_LAYOUT)
 		_type_picker.set_item_disabled(0, true)
 		_type_picker.set_item_metadata(0, {})
-	for type: Dictionary in _simulation_node.get_road_types().get("types", []):
+	for type: Dictionary in library.get("types", []):
 		if not bool(type.get("usable", false)):
 			continue
-		_type_picker.add_item(String(type.get("name", "")))
+		_type_picker.add_item(RoadTypeMenu.picker_text(type))
 		_type_picker.set_item_metadata(_type_picker.item_count - 1, type)
 		if String(type.get("id", "")) == current:
 			_type_picker.select(_type_picker.item_count - 1)
@@ -230,6 +248,8 @@ func _refresh_type() -> void:
 		_type_picker.select(0)
 	_layout_label.text = RoadTypeMenu.describe(first, false)
 	_verdict_label.text = ""
+	_verdict = {}
+	_apply_button.text = "Apply"
 	_apply_button.disabled = true
 
 # The type picked in the picker, or {} for "Custom layout".
@@ -237,30 +257,59 @@ func _picked_type() -> Dictionary:
 	var index := _type_picker.selected
 	return _type_picker.get_item_metadata(index) if index >= 0 else {}
 
+# The in-place arguments for `type`: lanes, median, then speed, sidewalks and zoning
+# (`RoadTypeMenu.tool_attributes`: a walkway sends the built-ins').
+func _type_arguments(type: Dictionary) -> Array:
+	return [int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)), int(type.get("median_style", 0)),
+		float(type.get("median_width", 0.0))] + RoadTypeMenu.tool_attributes(type, _speeds)
+
 func _on_type_selected(_index: int) -> void:
 	var type := _picked_type()
 	if type.is_empty() or _select_tool == null or not _select_tool.has_method("preview_selected_edge_cross_section"):
 		return
-	show_verdict(_select_tool.preview_selected_edge_cross_section(
-		int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)),
-		int(type.get("median_style", 0)), float(type.get("median_width", 0.0))
-	))
+	show_verdict(_select_tool.callv("preview_selected_edge_cross_section", _type_arguments(type)))
 
-## Shows Rust's verdict on the picked type and enables Apply when it accepts it.
+## Shows Rust's verdict on the picked type and enables Apply when it accepts it; Apply shows the
+## cost difference Rust charges ("Apply (+1,230)").
 func show_verdict(verdict: Dictionary) -> void:
+	_verdict = verdict
 	var ready := bool(verdict.get("is_valid", false))
 	_apply_button.disabled = not ready
+	var cost := roundi(float(verdict.get("cost_delta", 0.0))) if ready else 0
+	_apply_button.text = "Apply (+%s)" % _thousands(cost) if cost > 0 else "Apply"
 	_verdict_label.add_theme_color_override("font_color", VERDICT_READY if ready else VERDICT_REFUSED)
 	_verdict_label.text = RoadTypeMenu.describe(_picked_type(), false) if ready \
 		else RoadReasonText.text(verdict, "This road cannot change its type")
 
+# 1230 -> "1,230".
+static func _thousands(value: int) -> String:
+	var digits := str(absi(value))
+	var text := ""
+	while digits.length() > 3:
+		text = "," + digits.substr(digits.length() - 3) + text
+		digits = digits.substr(0, digits.length() - 3)
+	return ("-" if value < 0 else "") + digits + text
+
+## The confirmation Apply asks for, or "" when the change demolishes nothing.
+func demolition_text() -> String:
+	var count := int(_verdict.get("buildings_removed", 0))
+	if count <= 0:
+		return ""
+	return "Apply removes %d building%s. This cannot be undone." % [count, "" if count == 1 else "s"]
+
 func _on_apply_pressed() -> void:
+	var question := demolition_text()
+	if question.is_empty():
+		_apply()
+		return
+	_demolish_dialog.dialog_text = question
+	_demolish_dialog.popup_centered()
+
+# Commits the picked type on the selection (after the confirmation when it demolishes).
+func _apply() -> void:
 	var type := _picked_type()
 	if not type.is_empty() and _select_tool and _select_tool.has_method("set_selected_edge_cross_section"):
-		var refused: int = _select_tool.set_selected_edge_cross_section(
-			int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)),
-			int(type.get("median_style", 0)), float(type.get("median_width", 0.0))
-		)
+		var refused: int = _select_tool.callv("set_selected_edge_cross_section", _type_arguments(type))
 		_refresh()
 		if refused > 0:
 			_verdict_label.add_theme_color_override("font_color", VERDICT_REFUSED)
