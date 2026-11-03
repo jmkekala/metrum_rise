@@ -204,6 +204,11 @@ func _refresh() -> void:
 		for i in range(_class_buttons.size()):
 			_class_buttons[i].set_pressed_no_signal(shared_class and i == first_class)
 
+## Lists the road types again (after a library edit) while the window shows a road.
+func refresh_types() -> void:
+	if _window and _window.visible and not _selected_edges.is_empty():
+		_refresh_type()
+
 # The picker lists the usable types with the first selected road's marked, or "Custom layout"
 # (not pickable) when no type has its cross-section. Every item's metadata is its type.
 func _refresh_type() -> void:

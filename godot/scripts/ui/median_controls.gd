@@ -78,6 +78,10 @@ func set_median(style: int, width: float) -> void:
 	median_width = width if median_style != 0 else 0.0
 	_show()
 
+## Shows or hides the "None" style (the road builder's median part is always a median).
+func offer_none(offered: bool) -> void:
+	_style_buttons[0].visible = offered
+
 ## Enables or disables every control.
 func set_editable(editable: bool) -> void:
 	_editable = editable

@@ -14,6 +14,7 @@ const CityStatusPanel = preload("res://scripts/ui/city_status_panel.gd")
 const DemandMeter = preload("res://scripts/ui/demand_meter.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
+const RoadBuilderWindow = preload("res://scripts/ui/road_builder/road_builder_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
 const InputManager = preload("res://scripts/core/input_manager.gd")
@@ -43,9 +44,10 @@ var terrain_main_btn: Button
 var terrain_sub_menu: HBoxContainer
 
 # Road items
-## The Roads menu's road-type row (`ROAD-101`); the road builder window connects to its
-## `road_builder_requested`.
+## The Roads menu's road-type row (`ROAD-101`); its "Road builder..." opens `road_builder`.
 var road_type_menu: RoadTypeMenu
+## The road builder window (`ROAD-101`).
+var road_builder: RoadBuilderWindow
 
 # Road options
 var straight_btn: Button
@@ -646,6 +648,11 @@ func _build_auxiliary_windows() -> void:
 	add_child(road_properties_panel)
 	if road_properties_panel.has_method("setup"):
 		road_properties_panel.setup(simulation_node, input_manager.select_tool)
+	road_builder = RoadBuilderWindow.new()
+	road_builder.setup(simulation_node)
+	add_child(road_builder)
+	road_type_menu.road_builder_requested.connect(road_builder.open)
+	road_builder.road_types_changed.connect(_on_road_types_changed)
 
 func _build_clock_content() -> VBoxContainer:
 	var clock_vbox := VBoxContainer.new()
@@ -907,6 +914,16 @@ func refresh_road_types() -> void:
 	road_type_menu.refresh()
 	if road_tool:
 		road_tool.reload_road_type()
+	if road_properties_panel:
+		road_properties_panel.refresh_types()
+
+# The road builder wrote the library: everything listing types refreshes, and a type it just
+# created becomes the road tool's, ready to draw.
+func _on_road_types_changed(created_id: String) -> void:
+	refresh_road_types()
+	if not created_id.is_empty():
+		road_combined_hbox.visible = true
+		_select_road_type(created_id, false)
 
 func _set_draw_mode(mode: int):
 	straight_btn.button_pressed = (mode == 0)
