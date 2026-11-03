@@ -198,6 +198,8 @@ func _gui_input(event: InputEvent) -> void:
 		_press_part = -1
 
 func _get_tooltip(at_position: Vector2) -> String:
+	if get_viewport().gui_is_dragging():
+		return ""
 	var index := part_at(at_position)
 	if index < 0:
 		return "Click a + to choose where a clicked part goes" if _slot_under(at_position) >= 1 else ""

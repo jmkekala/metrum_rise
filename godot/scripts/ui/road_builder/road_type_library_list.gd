@@ -90,7 +90,7 @@ func show_library(library: Dictionary, selected_id: String) -> void:
 		_add_type(type)
 	if section != "Your road types":
 		_add_header("Your road types")
-		var hint := list.add_item("  None yet: build one and Create it", null, false)
+		var hint := list.add_item("  None yet", null, false)
 		list.set_item_custom_fg_color(hint, UNUSABLE)
 		_items.append({})
 	select_id(selected_id)
