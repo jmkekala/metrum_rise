@@ -35,6 +35,12 @@ use render::road::RoadRenderer;
 use roadbed::{RoadbedSystem, SurfaceChunkKey};
 use types::*;
 
+/// A stroke's edge: its lanes, median and class, and the road type's `attributes`
+/// (`ROAD-101`): a car road carries `FOOT` (its sidewalks) only with `attributes.sidewalks`
+/// and its speed limit; a walkway is always walked and keeps the default limit, which walking
+/// ignores; zoning off sets `no_building_spawn`. `base_cost` is left 0 for the caller's
+/// `CostCalculator` pass.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network) fn build_surface_edge(
     start_node: u32,
     end_node: u32,
@@ -43,15 +49,21 @@ pub(in crate::simulation::network) fn build_surface_edge(
     bkw_lanes: u8,
     class: EdgeClass,
     median: Option<RoadMedian>,
+    attributes: road_types::RoadAttributes,
 ) -> graph::Edge {
     let is_walkway = fwd_lanes == 0 && bkw_lanes == 0;
     let mut allowed_types = TransitFlags::NONE;
-    if fwd_lanes > 0 || bkw_lanes > 0 {
+    if !is_walkway {
         allowed_types |= TransitFlags::CAR;
     }
-    if is_walkway || fwd_lanes > 0 || bkw_lanes > 0 {
+    if is_walkway || attributes.sidewalks {
         allowed_types |= TransitFlags::FOOT;
     }
+    let speed_limit = if is_walkway {
+        config::DEFAULT_URBAN_ROAD_SPEED_MS
+    } else {
+        attributes.speed_ms
+    };
     let vehicle_frontage_access = if is_walkway {
         VehicleFrontageAccess::SameSideOnly
     } else {
@@ -75,7 +87,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         width: graph::Edge::cross_section_width_m(fwd_lanes, bkw_lanes, median),
         fwd_lanes,
         bkw_lanes,
-        speed_limit: config::DEFAULT_URBAN_ROAD_SPEED_MS,
+        speed_limit,
         base_cost: 0.0,
         physical_length,
         start_clip: 0.0,
@@ -83,7 +95,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         geometry: points.clone(),
         physical_geometry: points,
         deleted: false,
-        no_building_spawn: false,
+        no_building_spawn: !attributes.zoning,
         vehicle_frontage_access,
         median,
     }
@@ -293,13 +305,21 @@ impl TransitNetwork {
     ) {
         let grade = topology::StrokeGrade::of_class(class);
         self.add_road_graded(
-            graph, points, fwd_lanes, bkw_lanes, None, class, grade, zoning, allocator,
+            graph,
+            points,
+            fwd_lanes,
+            bkw_lanes,
+            (None, road_types::RoadAttributes::DEFAULT),
+            class,
+            grade,
+            zoning,
+            allocator,
         );
     }
 
     /// As [`Self::add_road`], the road meeting the roads it reaches by `grade` (`ROAD-99`): a
     /// road-tool stroke's, whose bridge ends at its support join roads mid-span, with the
-    /// stroke's `median` (`ROAD-80`).
+    /// stroke's `median` (`ROAD-80`) and road-type attributes (`ROAD-101`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_road_graded(
         &mut self,
@@ -307,7 +327,7 @@ impl TransitNetwork {
         points: Vec<Vector3>,
         fwd_lanes: u8,
         bkw_lanes: u8,
-        median: Option<RoadMedian>,
+        (median, attributes): (Option<RoadMedian>, road_types::RoadAttributes),
         class: EdgeClass,
         grade: topology::StrokeGrade,
         zoning: &mut crate::simulation::zoning::ZoningSystem,
@@ -346,7 +366,7 @@ impl TransitNetwork {
                 physical_points,
                 fwd_lanes,
                 bkw_lanes,
-                median,
+                (median, attributes),
                 class,
                 grade,
                 zoning,
@@ -365,7 +385,7 @@ impl TransitNetwork {
         points: Vec<Vector3>,
         fwd: u8,
         bkw: u8,
-        median: Option<RoadMedian>,
+        (median, attributes): (Option<RoadMedian>, road_types::RoadAttributes),
         class: EdgeClass,
         grade: topology::StrokeGrade,
         zoning: &mut crate::simulation::zoning::ZoningSystem,
@@ -381,7 +401,7 @@ impl TransitNetwork {
         }
 
         let edge_id = graph.add_edge(build_surface_edge(
-            start, end, points, fwd, bkw, class, median,
+            start, end, points, fwd, bkw, class, median, attributes,
         ));
 
         let (cost, length) =

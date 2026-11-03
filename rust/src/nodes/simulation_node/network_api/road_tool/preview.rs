@@ -33,6 +33,30 @@ impl SimulationNode {
         }
     }
 
+    /// Sets the road tool's road-type attributes (`ROAD-101`) for every later hover check,
+    /// preview, commit and refusal report of the tool: `speed_kmh` the speed limit (20 to 120 in
+    /// steps of 10; a walkway's stroke keeps the default limit whatever is set), `sidewalks`
+    /// (a car road's two sidewalks, else a shoulder each side; a walkway is walked either way)
+    /// and `zoning` (lots and buildings along the road). Returns the empty string when set,
+    /// else `speed_out_of_range`, keeping the previous attributes. The built-in types send
+    /// (50, true, true): the edge every stroke built before road types.
+    #[func]
+    pub fn set_road_tool_attributes(
+        &mut self,
+        speed_kmh: i32,
+        sidewalks: bool,
+        zoning: bool,
+    ) -> GString {
+        use crate::simulation::network::road_types::RoadAttributes;
+        match RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning) {
+            Ok(attributes) => {
+                self.road_tool_attributes = attributes;
+                GString::new()
+            }
+            Err(reason) => reason.into(),
+        }
+    }
+
     /// Each median style's widths in metres (`ROAD-80`), keyed by the style code
     /// [`Self::set_road_tool_median`] takes (1 painted, 2 kerbed grass, 3 kerbed paving): a
     /// dictionary of `default_m` (the width a picked style starts at), `min_m` and `max_m` (the
@@ -89,6 +113,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                attributes: self.road_tool_attributes,
             });
             (query.surface_generation, validated)
         };
@@ -149,7 +174,7 @@ impl SimulationNode {
                 &points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
-                self.road_tool_median,
+                (self.road_tool_median, self.road_tool_attributes),
                 &query.terrain,
                 &query.region_graph,
                 &query.roadbed,
@@ -247,6 +272,7 @@ impl SimulationNode {
                 snap: snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                attributes: self.road_tool_attributes,
             },
             int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
         );
@@ -285,6 +311,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                attributes: self.road_tool_attributes,
             }));
             context.last_preview = Some(Arc::clone(&preview));
             context
@@ -561,9 +588,9 @@ impl SimulationNode {
             let clearance = RoadCorridorClearance::evaluate(
                 &*self.try_lock_core()?,
                 prepared_points,
-                fwd_lanes,
-                bkw_lanes,
+                (fwd_lanes, bkw_lanes),
                 self.road_tool_median,
+                self.road_tool_attributes,
             );
             Self::apply_corridor_clearance(&mut dict, &clearance);
         }

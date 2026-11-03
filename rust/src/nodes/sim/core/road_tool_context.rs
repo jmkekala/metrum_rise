@@ -268,7 +268,10 @@ impl RoadToolShared {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
         tunnel: bool,
-        median: Option<crate::simulation::network::graph::RoadMedian>,
+        stroke: (
+            Option<crate::simulation::network::graph::RoadMedian>,
+            crate::simulation::network::road_types::RoadAttributes,
+        ),
     ) -> Option<Arc<RoadPreview>> {
         let context = self
             .context
@@ -284,7 +287,7 @@ impl RoadToolShared {
                     bkw_lanes,
                     snap_to_existing_roads,
                     tunnel,
-                    median,
+                    stroke,
                 )
             })
             .cloned()

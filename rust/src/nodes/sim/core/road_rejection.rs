@@ -9,6 +9,7 @@
 
 use crate::debug_log;
 use crate::simulation::network::graph::RoadMedian;
+use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::road_edit::RoadPreviewValidation;
 use godot::prelude::Vector3;
 use serde::Serialize;
@@ -45,6 +46,8 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) tunnel: bool,
     /// The road tool's median (`ROAD-80`), which a replay sets before it draws.
     pub(crate) median: Option<RoadMedian>,
+    /// The road tool's road-type attributes (`ROAD-101`), which a replay sets before it draws.
+    pub(crate) attributes: RoadAttributes,
 }
 
 /// Why one stroke was refused.
@@ -133,6 +136,9 @@ impl RoadRejection {
             tunnel: attempt.tunnel,
             median_style: RoadMedian::style_code(attempt.median),
             median_width: attempt.median.map_or(0.0, |median| median.width_m),
+            speed_kmh: RoadAttributes::speed_kmh_of(attempt.attributes.speed_ms),
+            sidewalks: attempt.attributes.sidewalks,
+            zoning: attempt.attributes.zoning,
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
         };
         let json = serde_json::to_string(&replay).expect("attempt records serialize");
@@ -154,6 +160,10 @@ struct AttemptRecord<'a> {
     // The median as the road tool names it (`RoadMedian::from_tool`): style 0 is none.
     median_style: i32,
     median_width: f32,
+    // The road type's attributes as the road tool sets them (`set_road_tool_attributes`).
+    speed_kmh: u16,
+    sidewalks: bool,
+    zoning: bool,
     points: Vec<[f32; 3]>,
 }
 
@@ -399,6 +409,7 @@ mod tests {
             snap: true,
             tunnel: true,
             median: None,
+            attributes: RoadAttributes::from_tool(100, false, false).unwrap(),
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
@@ -420,6 +431,9 @@ mod tests {
         );
         assert_eq!(record["snap"], true);
         assert_eq!(record["tunnel"], true);
+        assert_eq!(record["speed_kmh"], 100);
+        assert_eq!(record["sidewalks"], false);
+        assert_eq!(record["zoning"], false);
         // Every coordinate parses back to the submitted f32.
         let parsed: Vec<Vec<f64>> = serde_json::from_value(record["points"].clone()).unwrap();
         for (point, row) in points.iter().zip(&parsed) {
@@ -476,6 +490,7 @@ mod tests {
             snap: false,
             tunnel: false,
             median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         };
         let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, 0);
         assert_eq!(

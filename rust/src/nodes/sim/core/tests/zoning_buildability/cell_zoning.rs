@@ -879,6 +879,7 @@ fn painted_cells_over_a_tunnel_take_lots() {
             snap_to_existing_roads: true,
             tunnel: true,
             median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),

@@ -7,7 +7,7 @@ use crate::config::HEIGHT_SCALE;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::road_edit::PreparedRoadInput;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
-use crate::simulation::network::{build_surface_edge, types::EdgeClass};
+use crate::simulation::network::{build_surface_edge, road_types, types::EdgeClass};
 use crate::simulation::terrain::TerrainSystem;
 
 struct Fixture {
@@ -269,6 +269,7 @@ fn a_stroke_from_a_road_end_adopts_like_a_cold_add() {
             1,
             EdgeClass::Standard,
             None,
+            road_types::RoadAttributes::DEFAULT,
         ));
         fixture.network.roadbed.mark_edge_dirty(0);
         fixture.network.roadbed.compile_dirty(&fixture.graph);
@@ -300,6 +301,7 @@ fn adoption_preserves_remote_geometry_and_live_metadata_and_rejects_missing_sour
         1,
         EdgeClass::Standard,
         None,
+        road_types::RoadAttributes::DEFAULT,
     ));
     fixture.network.roadbed.compile_dirty(&fixture.graph);
     let (_, plan) = fixture.plan(&[Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)]);
@@ -361,6 +363,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
             1,
             EdgeClass::Standard,
             None,
+            road_types::RoadAttributes::DEFAULT,
         ));
     }
     graph.add_lane_connection(1, 0, 0, 0, 0);

@@ -104,6 +104,7 @@ fn commit(core: &mut SimCore, from: (f32, f32), to: (f32, f32)) -> bool {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         Instant::now(),

@@ -590,6 +590,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
         snap_to_existing_roads: true,
         tunnel: false,
         median: None,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     });
 
     assert!(!validation.is_valid);
@@ -824,6 +825,7 @@ fn planned_topology_rejection_restores_split_dependents() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     );
     assert!(plan.topology_for(&core.region_graph).is_some());
@@ -879,6 +881,7 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     );
     assert!(plan.topology_for(&core.region_graph).is_some());

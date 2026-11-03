@@ -1206,6 +1206,7 @@ impl SimCore {
                     // Plan-less callers draw without the tool's tunnel intent or median.
                     tunnel: false,
                     median: None,
+                    attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 },
             ))
         } else {
@@ -1251,7 +1252,7 @@ impl SimCore {
                 &points,
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                None,
+                (None, crate::simulation::network::road_types::RoadAttributes::DEFAULT),
                 &self.heightmap,
                 &self.region_graph,
                 &self.transit_network.roadbed,
@@ -1390,7 +1391,10 @@ impl SimCore {
             bkw_lanes_u8,
             prepared_input.median,
         );
-        let corridor_half_width_m = road_width_m * 0.5 + config::SIDEWALK_WIDTH;
+        let corridor_half_width_m = road_width_m * 0.5
+            + prepared_input
+                .attributes
+                .corridor_side_m(fwd_lanes_u8 == 0 && bkw_lanes_u8 == 0);
         let overlapping_parcels = self
             .zoning
             .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m);
@@ -1468,7 +1472,7 @@ impl SimCore {
                 fixed_points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
-                prepared_input.median,
+                (prepared_input.median, prepared_input.attributes),
                 prepared_input.class,
                 prepared_input.grade(None),
                 &mut self.zoning,

@@ -1377,6 +1377,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             );
             // Physical stations differ from the materialized control support stations.
             edge.physical_geometry = vec![
@@ -1443,6 +1444,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             ));
         }
         graph.remove_from_spatial_index(0);
@@ -1485,6 +1487,7 @@ mod tests {
                     1,
                     EdgeClass::Standard,
                     None,
+                    crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 ));
             }
             graph.rebuild_adjacency_list();
@@ -1534,6 +1537,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             ));
             graph.rebuild_adjacency_list();
             let junction = graph.add_node(Vector3::new(-4200.0, 0.0, 600.0), NodeType::Junction);
@@ -1586,6 +1590,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             ));
         }
         let row: Vec<_> = (0..=40)
@@ -1601,6 +1606,7 @@ mod tests {
             1,
             EdgeClass::Standard,
             None,
+            crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         ));
         graph.rebuild_adjacency_list();
         process_intersections(

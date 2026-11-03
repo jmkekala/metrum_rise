@@ -60,6 +60,8 @@ pub(crate) enum SimCommand {
         tunnel: bool,
         /// The road tool's median at submission (`ROAD-80`).
         median: Option<crate::simulation::network::graph::RoadMedian>,
+        /// The road tool's road-type attributes at submission (`ROAD-101`).
+        attributes: crate::simulation::network::road_types::RoadAttributes,
         /// Dispatch timestamp for queue latency, independent of core mutex contention.
         enqueued_at: Instant,
         /// Single nonblocking acknowledgment after acceptance/rollback and query publication.
@@ -231,6 +233,7 @@ pub(crate) fn run_sim_thread(
                     snap_to_existing_roads,
                     tunnel,
                     median,
+                    attributes,
                     enqueued_at,
                     completion,
                     preview,
@@ -268,6 +271,7 @@ pub(crate) fn run_sim_thread(
                                 snap_to_existing_roads,
                                 tunnel,
                                 median,
+                                attributes,
                                 preview,
                             },
                             road_total,

@@ -243,6 +243,7 @@ fn measure_populated_road_plan_scaling(
                 snap_to_existing_roads: true,
                 tunnel,
                 median: None,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             Instant::now(),
@@ -520,6 +521,7 @@ fn measure_populated_road_plan_scaling(
             snap_to_existing_roads: true,
             tunnel,
             median: (measured == Measured::Divided).then_some(GRASS),
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         };
         for iteration in 0..103 {
             let start = Instant::now();

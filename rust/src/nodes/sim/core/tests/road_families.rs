@@ -264,6 +264,7 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
                         // Only the tunnel intent makes a tunnel (`ROAD-61` round R8f).
                         tunnel: class == EdgeClass::Tunnel,
                         median: None,
+                        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                         preview: None,
                     },
                     std::time::Instant::now(),

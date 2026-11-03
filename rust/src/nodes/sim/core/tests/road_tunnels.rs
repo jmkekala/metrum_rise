@@ -44,6 +44,7 @@ fn request(core: &SimCore, points: &[Vector3], tunnel: bool) -> RoadPreviewReque
         snap_to_existing_roads: false,
         tunnel,
         median: None,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     }
 }
 
@@ -78,6 +79,7 @@ fn run_stroke(core: &mut SimCore, points: &[Vector3], tunnel: bool) -> ProbeResu
             snap_to_existing_roads: false,
             tunnel,
             median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),
@@ -511,6 +513,7 @@ fn a_junction_in_a_tunnel_approach_trench_is_refused() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             std::time::Instant::now(),
@@ -1031,6 +1034,7 @@ fn the_lining_closes_buried_ends_and_bends() {
             snap_to_existing_roads: true,
             tunnel: true,
             median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),
@@ -1287,6 +1291,7 @@ fn the_lining_shell_stands_a_thickness_out() {
             snap_to_existing_roads: true,
             tunnel: true,
             median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
         std::time::Instant::now(),

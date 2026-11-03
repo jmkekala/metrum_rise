@@ -36,6 +36,9 @@ pub(crate) struct RoadCommitRequest {
     /// The road tool's median (`ROAD-80`): a preview made without it is not this stroke's, and
     /// the stroke's edge carries it.
     pub(crate) median: Option<crate::simulation::network::graph::RoadMedian>,
+    /// The road tool's road-type attributes (`ROAD-101`): a preview made with others is not this
+    /// stroke's, and the stroke's edge and pieces carry them.
+    pub(crate) attributes: crate::simulation::network::road_types::RoadAttributes,
     /// The road tool's preview of this stroke (`ROAD-68-E`): its plan and pieces are installed
     /// when its fingerprint is still current, else the commit recompiles locally.
     pub(crate) preview: Option<std::sync::Arc<RoadPreview>>,
@@ -110,6 +113,7 @@ impl SimCore {
             snap_to_existing_roads,
             tunnel,
             median,
+            attributes,
             preview,
         } = request;
         self.last_road_rejection = None;
@@ -129,7 +133,7 @@ impl SimCore {
                     bkw_lanes,
                     snap_to_existing_roads,
                     tunnel,
-                    median,
+                    (median, attributes),
                 )
         });
         edit_metrics.preview_plan_reused = preview.is_some();
@@ -148,6 +152,7 @@ impl SimCore {
                         snap_to_existing_roads,
                         tunnel,
                         median,
+                        attributes,
                     },
                 );
                 &fresh_plan
@@ -340,6 +345,7 @@ impl SimCore {
                     snap: snap_to_existing_roads,
                     tunnel,
                     median,
+                    attributes,
                 },
                 self.road_tool_surface_generation,
             );
@@ -400,6 +406,7 @@ mod tests {
                 snap_to_existing_roads: false,
                 tunnel: false,
                 median: None,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             Instant::now(),

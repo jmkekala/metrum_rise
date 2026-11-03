@@ -89,6 +89,7 @@ fn preview_with(
         snap_to_existing_roads: true,
         tunnel: false,
         median,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     })
 }
 
@@ -115,6 +116,7 @@ fn commit_with(
             snap_to_existing_roads: true,
             tunnel: false,
             median,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview,
         },
         std::time::Instant::now(),
@@ -538,6 +540,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         }));
         let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
         let view_chunks = context.view.road_mesh_chunks.clone();
@@ -549,6 +552,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: Some(Arc::clone(&preview)),
             },
             std::time::Instant::now(),
@@ -929,6 +933,7 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
             snap_to_existing_roads: true,
             tunnel: false,
             median,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         };
         assert_eq!(snapshot.validate(&request).1.invalid_reason, reason);
         let outcome = core.commit_road(
@@ -939,6 +944,7 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             std::time::Instant::now(),
@@ -1008,6 +1014,7 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
             std::time::Instant::now(),
