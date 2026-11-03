@@ -133,7 +133,7 @@ func _draw() -> void:
 		RoadPartGlyph.draw_surface(self, rect, parts[index])
 		var glyph_x := rect.get_center().x - GLYPH_SIZE * 0.5
 		RoadPartGlyph.draw_glyph(self, Rect2(glyph_x, GLYPH_TOP, GLYPH_SIZE, GLYPH_SIZE), parts[index])
-		var label := "%.1f" % _metres(index)
+		var label := _width_text(_metres(index))
 		var label_width := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
 		draw_string(font, Vector2(rect.get_center().x - label_width * 0.5, LABEL_TOP + 14.0), label,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.85, 0.85, 0.85))
@@ -156,6 +156,10 @@ func _draw() -> void:
 	if _drop_slot >= 1:
 		var x := _xs[_drop_slot]
 		draw_line(Vector2(x, SLOT_Y - SLOT_RADIUS), Vector2(x, SURFACE_TOP + SURFACE_HEIGHT + 4.0), ACCENT, 3.0)
+
+# A width with one decimal, or two where one would round it (a 0.75 m shoulder).
+static func _width_text(metres: float) -> String:
+	return "%.1f" % metres if is_equal_approx(metres * 10.0, roundf(metres * 10.0)) else "%.2f" % metres
 
 ## The interior slot nearest strip x `x`.
 func slot_at(x: float) -> int:
@@ -207,7 +211,7 @@ func _get_tooltip(at_position: Vector2) -> String:
 		return "Click a + to choose where a clicked part goes" if _slot_under(at_position) >= 1 else ""
 	var hint := "Click to change, move or remove it; drag it along the road or off it" if is_interior(index) \
 		else RoadPartGlyph.part_hint(parts[index])
-	return "%s, %.1f m\n%s" % [RoadPartGlyph.part_name(parts[index]), _metres(index), hint]
+	return "%s, %s m\n%s" % [RoadPartGlyph.part_name(parts[index]), _width_text(_metres(index)), hint]
 
 func _get_drag_data(at_position: Vector2) -> Variant:
 	var index := part_at(at_position)

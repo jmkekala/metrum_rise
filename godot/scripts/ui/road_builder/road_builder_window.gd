@@ -244,6 +244,8 @@ func _build_attributes() -> Control:
 	speed_box = SpinBox.new()
 	speed_box.suffix = "km/h"
 	speed_box.rounded = true
+	# Wide enough for "120 km/h": a narrower line edit scrolls to the text's end ("0 km/h").
+	speed_box.custom_minimum_size.x = 118.0
 	speed_box.tooltip_text = "The speed limit cars drive at; faster roads cost more and are louder"
 	UIStyle.set_font_size(speed_box.get_line_edit(), 14)
 	speed_box.value_changed.connect(func(value: float): set_speed(int(value)))
