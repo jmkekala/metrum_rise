@@ -385,6 +385,31 @@ fn a_split_stroke_keeps_its_road_type_attributes_on_every_piece() {
     }
 }
 
+// `ROAD-101` cost rule: a stroke is charged its road type's weight per metre on its prepared
+// class, the 2-Lane Road exactly the old 15 / m; the rural type (1 + 1 at 100 km/h, no sidewalks)
+// weighs 0.8 x 2.0 = 1.6, so 24 / m.
+#[test]
+fn a_stroke_is_charged_its_road_types_cost() {
+    use crate::simulation::network::road_types::cost::{BUILD_COST_PER_M, stroke_weight};
+    for (attributes, per_m) in [(RoadAttributes::DEFAULT, 15.0), (rural(), 24.0)] {
+        let mut core = committed(&[THROUGH], &[0], false);
+        core.benchmark_mode = false;
+        let before = core.treasury.lifetime_build_cost;
+        commit_with(&mut core, SIDE.0, attributes);
+        let side = core.region_graph.edge(edge_ending_at(&core, SIDE.0[1]));
+        let weight = stroke_weight((1, 1), None, attributes, EdgeClass::Standard);
+        assert!((BUILD_COST_PER_M * weight - per_m).abs() < 1e-9);
+        assert_eq!(side.cost_weight().to_bits(), weight.to_bits());
+        // The charge is the stroke's polyline length at that rate (the edge is clipped at the
+        // through road's mouth, so it is no longer than the stroke).
+        let charged = core.treasury.lifetime_build_cost - before;
+        assert!(
+            (charged - ARM_M as f64 * per_m).abs() < 1e-3 * per_m,
+            "{attributes:?}: charged {charged}"
+        );
+    }
+}
+
 // `ROAD-68` open question 17, roads without sidewalks (`ROAD-101`): the walking planner's
 // whole-network proof checks the edges walkers can cross, so a T whose side road has no
 // sidewalks keeps it, as the T with sidewalks does.

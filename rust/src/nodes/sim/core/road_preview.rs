@@ -22,7 +22,8 @@ use crate::simulation::network::render::RoadChunkMap;
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
 use crate::simulation::network::road_edit::{
-    RoadPreviewValidation, prepare_road_input_for_tool, validate_road_candidate_fast,
+    PreparedRoadInput, RoadPreviewValidation, prepare_road_input_for_tool,
+    validate_road_candidate_fast,
 };
 use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem, SurfaceChunkKey};
 use crate::simulation::terrain::TerrainSystem;
@@ -149,12 +150,12 @@ impl RoadToolQuerySnapshot {
     }
 
     /// Prepares and validates one stroke against this snapshot: the profile, endpoint and water
-    /// checks of the hover path. Returns the prepared points and the validation.
-    /// O(stroke points + endpoint snap lookups).
+    /// checks of the hover path. Returns the prepared input (its points and class: the stroke's
+    /// cost) and the validation. O(stroke points + endpoint snap lookups).
     pub(crate) fn validate(
         &self,
         request: &RoadPreviewRequest,
-    ) -> (Vec<Vector3>, RoadPreviewValidation) {
+    ) -> (PreparedRoadInput, RoadPreviewValidation) {
         let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let mut prepared = prepare_road_input_for_tool(
@@ -183,7 +184,7 @@ impl RoadToolQuerySnapshot {
         if request.surface_generation != self.surface_generation {
             validation = validation.with_invalid_reason("stale_surface_generation");
         }
-        (prepared.points, validation)
+        (prepared, validation)
     }
 }
 

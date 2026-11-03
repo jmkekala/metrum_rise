@@ -22,12 +22,8 @@ use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
-/// Currency cost per meter of new road laid, deducted from the city treasury at placement.
-pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 15.0;
 /// Starter build cost per service-building lot cell, deducted from the city treasury at placement.
 pub(crate) const SERVICE_BUILD_COST_PER_LOT_CELL: f64 = 2_500.0;
-/// Currency upkeep per meter of road per day, settled from the city treasury each day.
-pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
 /// Stable service policy id for the city electricity service.
 pub(crate) const SERVICE_POLICY_ELECTRICITY: &str = "electricity";
 /// Number of completed daily budget entries kept for UI trend graphs.

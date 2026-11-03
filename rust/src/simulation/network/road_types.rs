@@ -14,6 +14,7 @@
 //! editing a type changes only the roads drawn after it. Engine-free: the Godot API resolves the
 //! file path and converts the parts (`nodes::simulation_node::network_api::road_types`).
 
+pub(crate) mod cost;
 pub(crate) mod library;
 #[cfg(test)]
 mod tests;
@@ -85,6 +86,18 @@ impl RoadCrossSection {
             bkw_lanes,
             median: None,
             sidewalks: true,
+        }
+    }
+
+    /// The cross-section `edge` carries: its lanes and median, and on a car road its `FOOT`
+    /// flag as the sidewalks. `O(1)`.
+    pub fn of_edge(edge: &Edge) -> Self {
+        let walkway = edge.fwd_lanes == 0 && edge.bkw_lanes == 0;
+        Self {
+            fwd_lanes: edge.fwd_lanes,
+            bkw_lanes: edge.bkw_lanes,
+            median: edge.median,
+            sidewalks: !walkway && edge.allowed_types & TransitFlags::FOOT != 0,
         }
     }
 

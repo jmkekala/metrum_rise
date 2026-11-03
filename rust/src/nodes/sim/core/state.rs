@@ -6,10 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::budget::{
-    CityServicePolicy, CityTreasury, DailyBudgetLedgerEntry, ROAD_UPKEEP_PER_METER_PER_DAY,
-    RoadLengthRoll,
-};
+use super::budget::{CityServicePolicy, CityTreasury, DailyBudgetLedgerEntry, RoadLengthRoll};
 use super::frame::EconomyObserver;
 use super::schedule::{SimEvent, SimSystem, event_slot, simulation_schedule};
 use super::snapshot::SimulationSnapshot;
@@ -1558,8 +1555,9 @@ impl SimCore {
         self.households.close_calendar_day();
         self.allocator.close_city_input_day();
         let road_length_m = self.road_length.length_m(&self.region_graph);
-        self.treasury
-            .settle_daily_upkeep(road_length_m * ROAD_UPKEEP_PER_METER_PER_DAY);
+        self.treasury.settle_daily_upkeep(
+            road_length_m * crate::simulation::network::road_types::cost::UPKEEP_PER_M_DAY,
+        );
         let removed_households = self.demand.households_to_remove_today;
         self.demand
             .log_daily_household_action_diagnostics(day_index);

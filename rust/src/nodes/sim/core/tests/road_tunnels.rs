@@ -118,7 +118,7 @@ fn run_stroke(core: &mut SimCore, points: &[Vector3], tunnel: bool) -> ProbeResu
     let edges = edges.into_iter().map(|(_, edge)| edge).collect();
     ProbeResult {
         quick: reason(quick.is_valid, quick.invalid_reason),
-        quick_heights: quick_points.iter().map(|point| point.y).collect(),
+        quick_heights: quick_points.points.iter().map(|point| point.y).collect(),
         exact: reason(exact.is_valid, exact.invalid_reason),
         committed: if outcome.committed {
             "committed".to_owned()

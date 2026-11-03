@@ -536,7 +536,8 @@ fn measure_populated_road_plan_scaling(
                 measured == Measured::JoinBridge
             );
             let preview_start = Instant::now();
-            let (prepared_points, validation) = snapshot.validate(&request());
+            let (prepared, validation) = snapshot.validate(&request());
+            let prepared_points = prepared.points;
             let preview_ms = preview_start.elapsed().as_secs_f64() * 1000.0;
             assert!(validation.is_valid);
             if let Some(previous) = &previous_preview {

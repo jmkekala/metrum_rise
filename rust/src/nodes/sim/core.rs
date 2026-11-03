@@ -49,8 +49,8 @@ pub use state::SimCore;
 pub(crate) use thread::SimCommand;
 
 pub(crate) use budget::{
-    DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, RoadLengthRoll,
-    SERVICE_BUILD_COST_PER_LOT_CELL, SERVICE_POLICY_ELECTRICITY,
+    DailyBudgetLedgerEntry, RoadLengthRoll, SERVICE_BUILD_COST_PER_LOT_CELL,
+    SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
     RoadCorridorClearance, RoadPreviewRequest, RoadToolQuerySnapshot,

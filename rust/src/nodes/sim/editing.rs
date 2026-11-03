@@ -5,7 +5,7 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadRejection, ReservedOverlap,
+    RoadEditPlan, RoadRejection, ReservedOverlap,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
@@ -18,6 +18,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::network::graph::RegionGraphUndoDelta;
+use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::road_edit::{
     FinalizedRoadGeometry, plan_road_edit,
     validate_road_candidate_fast, validate_road_edit,
@@ -1444,6 +1445,14 @@ impl SimCore {
                 (dx * dx + dy * dy + dz * dz).sqrt()
             })
             .sum();
+        // The road type's cost weight on the stroke's prepared class (`ROAD-101`): exactly 1.0,
+        // so 15 / m, for the 2-Lane Road at 50 km/h on the ground.
+        let build_weight = road_cost::stroke_weight(
+            (fwd_lanes_u8, bkw_lanes_u8),
+            prepared_input.median,
+            prepared_input.attributes,
+            prepared_input.class,
+        );
 
         let t_topo = Instant::now();
         // A bulk load keeps every edge it has dirtied until `finalize_bulk_load`; hold those
@@ -1523,7 +1532,7 @@ impl SimCore {
         self.last_road_timing = format!("undo={}µs topo={}µs", dt_undo_ms, dt_topo_us);
         RoadAddOutcome {
             committed: true,
-            build_cost: build_length_m * ROAD_BUILD_COST_PER_METER,
+            build_cost: build_length_m * road_cost::build_per_m(build_weight),
             finalized_geometry,
             stage_ms: RoadAddStageTimes {
                 undo_ms: dt_undo_ms as f64 / 1000.0,

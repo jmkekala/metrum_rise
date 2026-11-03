@@ -490,14 +490,8 @@ impl SimulationNode {
                     .validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, edge.median)
                     .is_ok(),
             };
-            let walkway = edge.fwd_lanes == 0 && edge.bkw_lanes == 0;
-            let section = crate::simulation::network::road_types::RoadCrossSection {
-                fwd_lanes: edge.fwd_lanes,
-                bkw_lanes: edge.bkw_lanes,
-                median: edge.median,
-                sidewalks: !walkway
-                    && edge.allowed_types & crate::simulation::network::types::TransitFlags::FOOT != 0,
-            };
+            let section =
+                crate::simulation::network::road_types::RoadCrossSection::of_edge(edge);
             let speed_kmh = crate::simulation::network::road_types::RoadAttributes::speed_kmh_of(
                 edge.speed_limit,
             );

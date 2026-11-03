@@ -114,9 +114,8 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, RenderSnapshot, RoadPreviewRequest,
-    RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
-    run_sim_thread,
+    DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, RoadToolQuerySnapshot,
+    RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, run_sim_thread,
 };
 #[cfg(test)]
 use crate::nodes::sim::core::road_tool_snapshot_from_core;

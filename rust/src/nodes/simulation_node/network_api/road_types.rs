@@ -15,10 +15,12 @@
 
 use super::super::*;
 use crate::simulation::network::graph::{MedianStyle, RoadMedian};
+use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::road_types::library::{RoadTypeLibrary, check_type};
 use crate::simulation::network::road_types::{
     RoadCrossSection, RoadPart, RoadType, RoadTypeRefusal, layout_widths, type_of,
 };
+use crate::simulation::network::types::EdgeClass;
 use godot::classes::ProjectSettings;
 
 const LIBRARY_PATH: &str = "user://road_types.json";
@@ -55,7 +57,8 @@ impl SimulationNode {
     /// (the file does not parse; it is left untouched and edits are refused until it is fixed)
     /// or `library_newer_version` (read-only). Each type is a dictionary of `id`, `name`,
     /// `builtin`, `usable`, `parts` (see the module docs), `speed_kmh` (0 for a walkway),
-    /// `zoning` and the fields of [`Self::check_road_layout`] but `suggested_name`: an unusable
+    /// `zoning` and the fields of [`Self::check_road_layout`] but `suggested_name` (so also
+    /// `build_per_m` and `upkeep_per_m_day`, 0 for an unusable type): an unusable
     /// type (kept in the file, never drawn) carries its `invalid_reason`. `O(types x parts)`;
     /// the file is read once.
     #[func]
@@ -83,9 +86,11 @@ impl SimulationNode {
     /// `median_width` and `sidewalks`; `speed_kmh` (as checked; 0 for a walkway) and `zoning`;
     /// `part_widths_m` (one per part, refused layouts included), `carriageway_m` (the road's
     /// width between its sidewalks) and `total_m` (sidewalks, or without them the two 0.75 m
-    /// shoulders, included); and `suggested_name`, a free name for a new type of a valid layout
-    /// ("2+2 Grass 3 m", with " (2)" when taken), else empty. `O(parts)` plus the name lookup's
-    /// `O(types)`.
+    /// shoulders, included); `build_per_m` and `upkeep_per_m_day`, the valid type's cost per
+    /// metre on the ground (`ROAD-101`: 15 and 0.1 for the 2-Lane Road; a bridge costs three
+    /// times, a tunnel five; 0 when refused); and `suggested_name`, a free name for a new type
+    /// of a valid layout ("2+2 Grass 3 m", with " (2)" when taken), else empty. `O(parts)` plus
+    /// the name lookup's `O(types)`.
     #[func]
     pub fn check_road_layout(&self, parts: VarArray, speed_kmh: i32, zoning: bool) -> VarDictionary {
         let parts = match parts_from_variant(&parts) {
@@ -95,6 +100,7 @@ impl SimulationNode {
                 result.set("is_valid", false);
                 result.set("speed_kmh", speed_kmh);
                 result.set("zoning", zoning);
+                set_cost(&mut result, None);
                 result.set("suggested_name", "");
                 return result;
             }
@@ -107,6 +113,7 @@ impl SimulationNode {
             .map_or(i64::from(speed_kmh), |(_, speed)| i64::from(*speed));
         result.set("speed_kmh", checked_speed);
         result.set("zoning", zoning);
+        set_cost(&mut result, checked.as_ref().ok().copied());
         result.set("is_valid", verdict.is_ok());
         let name = verdict.map_or_else(
             |_| String::new(),
@@ -216,12 +223,23 @@ fn type_to_variant(ty: &RoadType) -> VarDictionary {
     result.set("usable", ty.verdict.is_ok());
     result.set("speed_kmh", i64::from(ty.speed_kmh));
     result.set("zoning", ty.zoning);
+    set_cost(&mut result, ty.usable().map(|section| (section, ty.speed_kmh)));
     let mut parts = VarArray::new();
     for part in &ty.parts {
         parts.push(&part_to_variant(*part).to_variant());
     }
     result.set("parts", parts);
     result
+}
+
+// A usable type's cost on the ground (`ROAD-101`): `build_per_m` and `upkeep_per_m_day` (a bridge
+// costs three times, a tunnel five), 0 for an unusable one.
+fn set_cost(result: &mut VarDictionary, usable: Option<(RoadCrossSection, u16)>) {
+    let weight = usable.map_or(0.0, |(section, speed_kmh)| {
+        road_cost::road_weight(section, speed_kmh, EdgeClass::Standard)
+    });
+    result.set("build_per_m", road_cost::build_per_m(weight));
+    result.set("upkeep_per_m_day", road_cost::upkeep_per_m_day(weight));
 }
 
 // The verdict and widths of a layout, shared by the list and the check.
