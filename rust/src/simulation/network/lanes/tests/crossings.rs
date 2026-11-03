@@ -559,3 +559,86 @@ fn a_bend_that_holds_its_crossing_on_neither_arm_is_rejected() {
         assert!(crossing_edges(&lanes).is_empty(), "{sloped}");
     }
 }
+
+// The hub connectors a walker takes from a stem-side (z below the hub's `hub_z`) sidewalk of
+// `from` to the stem-side sidewalk of `to`, through the hub's connectors alone, or `None`. A
+// search over at most the hub's connectors.
+fn walk_across_the_hub(
+    lanes: &LaneSystem,
+    hub_z: f32,
+    (from, to): (usize, usize),
+) -> Option<Vec<usize>> {
+    let near = |edge: usize| {
+        lanes
+            .lanes
+            .iter()
+            .enumerate()
+            .filter_map(move |(id, lane)| {
+                let mean_z = lane.geometry.iter().map(|point| point.z).sum::<f32>()
+                    / lane.geometry.len() as f32;
+                (lane.edge_id == edge && lane.lane_type == LaneType::Foot && mean_z < hub_z)
+                    .then_some(id)
+            })
+    };
+    let hub: HashSet<usize> = lanes.node_lanes[&(HUB as usize)].iter().copied().collect();
+    let targets: HashSet<usize> = near(to).collect();
+    let mut queue: Vec<usize> = near(from).collect();
+    // Each reached connector's predecessor.
+    let mut came_from = std::collections::HashMap::new();
+    while let Some(lane) = queue.pop() {
+        for &next in lanes.lanes[lane].next_lanes.iter() {
+            if targets.contains(&next) {
+                let mut route = vec![lane];
+                while let Some(&previous) = came_from.get(route.last().unwrap()) {
+                    route.push(previous);
+                }
+                route.retain(|id| hub.contains(id));
+                route.reverse();
+                return Some(route);
+            }
+            if hub.contains(&next) && !came_from.contains_key(&next) {
+                came_from.insert(next, lane);
+                queue.push(next);
+            }
+        }
+    }
+    None
+}
+
+// D2 (a) (`ROAD-101`): a T whose stem has no sidewalks. The stem has no zebra and no sidewalk,
+// both through arms keep theirs, and a walker passing the stem on the through road's stem side
+// crosses the T by the far side: over both zebras and along the far kerb, never across the
+// stem's mouth.
+#[test]
+fn a_t_whose_stem_has_no_sidewalks_is_crossed_by_the_far_side() {
+    use super::super::super::types::TransitFlags;
+    for sloped in [false, true] {
+        let mut graph = star(&[0.0, 180.0, 270.0], sloped);
+        graph.edge_mut(2).allowed_types = TransitFlags::CAR;
+        let (lanes, _) = built(&mut graph);
+        let (hub_x, hub_z) = (graph.node(HUB).pos.x, graph.node(HUB).pos.z);
+        assert_eq!(crossing_edges(&lanes), BTreeSet::from([0, 1]), "{sloped}");
+        assert!(
+            !lanes
+                .lanes
+                .iter()
+                .any(|lane| lane.edge_id == 2 && lane.lane_type == LaneType::Foot),
+            "{sloped}: no sidewalk on the stem to walk onto"
+        );
+        // The through road is 7 m between its kerbs: the far kerb lies 3.5 m beyond the hub.
+        for arms in [(0, 1), (1, 0)] {
+            let route = walk_across_the_hub(&lanes, hub_z, arms)
+                .unwrap_or_else(|| panic!("{sloped}: {arms:?} walks across"));
+            let points = || route.iter().flat_map(|&id| lanes.lanes[id].geometry.iter());
+            assert!(
+                points().any(|point| point.z > hub_z + 3.5),
+                "{sloped}: {arms:?} reaches the far kerb"
+            );
+            // The stem's 7 m carriageway meets the through road's near kerb at |x - hub x| < 3.5.
+            assert!(
+                !points().any(|point| point.z < hub_z - 3.5 && (point.x - hub_x).abs() < 3.5),
+                "{sloped}: {arms:?} never walks across the stem's mouth"
+            );
+        }
+    }
+}

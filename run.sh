@@ -1082,7 +1082,7 @@ if [ $TEST -eq 1 ]; then
     for bridge_test_script in \
         economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
-        vehicle_ground_support_test selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_walkway_preset_test road_types_test road_builder_test ui_settings_test \
+        vehicle_ground_support_test selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_walkway_preset_test road_types_test road_builder_test road_mixed_junction_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
