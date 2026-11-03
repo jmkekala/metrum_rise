@@ -6,7 +6,6 @@ mod feasibility;
 pub(crate) use feasibility::{BuildingSiteEnvironment, SiteFeasibilityCache};
 
 use crate::assets::AnchorType;
-use crate::config::SIDEWALK_WIDTH;
 use crate::debug_log;
 use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::buildings::allocator::{
@@ -22,8 +21,8 @@ use crate::simulation::economy::demand::{
     private_zone_index,
 };
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::RoadbedSystem;
-use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
+use crate::simulation::network::roadbed::{RoadbedSystem, side_band_width_m};
+use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::work_area::{
     explicit_work_area_startup_budget, initial_work_area_scale, minimum_work_area_workers,
@@ -2112,26 +2111,13 @@ fn sort_driveway_connection_candidates(candidates: &mut [DrivewayConnectionCandi
     });
 }
 
+// The road's outer edge (sidewalk, or shoulder on a road without sidewalks), just inside it.
 fn road_connection_lateral_offset_m(edge: &crate::simulation::network::graph::Edge) -> f32 {
-    let sidewalk_m = if edge.primary_type == TransitType::Foot
-        || (edge.allowed_types & TransitFlags::FOOT) == 0
-    {
-        0.0
-    } else {
-        SIDEWALK_WIDTH
-    };
-    (edge.width * 0.5 + sidewalk_m - BUILDING_SITE_ROAD_SAMPLE_INSET_M).max(0.0)
+    (edge.width * 0.5 + side_band_width_m(edge) - BUILDING_SITE_ROAD_SAMPLE_INSET_M).max(0.0)
 }
 
 fn road_collision_half_width_m(edge: &crate::simulation::network::graph::Edge) -> f32 {
-    let sidewalk_m = if edge.primary_type == TransitType::Foot
-        || (edge.allowed_types & TransitFlags::FOOT) == 0
-    {
-        0.0
-    } else {
-        SIDEWALK_WIDTH
-    };
-    (edge.width * 0.5 + sidewalk_m).max(0.0)
+    (edge.width * 0.5 + side_band_width_m(edge)).max(0.0)
 }
 
 /// Hashes a parcel's profile, stable ID, redevelopment generation and family/variant key

@@ -7,6 +7,13 @@ use super::*;
 
 #[test]
 fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
+    // With sidewalks, then a road without them (`ROAD-101`): a car-only entrance.
+    for sidewalks in [true, false] {
+        entrance_on_a_road(sidewalks);
+    }
+}
+
+fn entrance_on_a_road(sidewalks: bool) {
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::zoning::ZoningSystem;
     use godot::prelude::Vector3;
@@ -34,6 +41,9 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         &mut allocator,
     );
     graph.edge_mut(0).vehicle_frontage_access = VehicleFrontageAccess::BothSides;
+    if !sidewalks {
+        graph.edge_mut(0).allowed_types = crate::simulation::network::types::TransitFlags::CAR;
+    }
     network.lane_system.rebuild(&mut graph);
 
     allocator.buildings.push(Building {
@@ -106,14 +116,34 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         entrance.vehicle_frontage_access,
         VehicleFrontageAccess::BothSides
     );
-    assert!(entrance.flags & 0x01 != 0, "foot access should be valid");
     assert!(entrance.flags & 0x02 != 0, "car access should be valid");
-    assert_ne!(entrance.foot_lane_fwd, usize::MAX);
-    assert_ne!(entrance.foot_lane_bkw, usize::MAX);
     assert_ne!(entrance.car_lane_fwd, usize::MAX);
     assert_ne!(entrance.car_lane_bkw, usize::MAX);
     assert_eq!(entrance.door_pos, Vector2::new(10.0, -10.5));
-    assert_ne!(entrance.curb_pos, entrance.door_pos);
+    // A building on a road without sidewalks is a car-only destination: no foot lanes, its
+    // curb at its door, no walking component.
+    use crate::simulation::economy::accessibility::ModeComponentIndex;
+    use crate::simulation::network::types::TransitFlags;
+    let components = |flag| {
+        ModeComponentIndex::build(&graph, flag)
+            .entrance_components(entrance, &graph, flag)
+            .as_slice()
+            .len()
+    };
+    assert!(components(TransitFlags::CAR) > 0);
+    if sidewalks {
+        assert!(entrance.flags & 0x01 != 0, "foot access should be valid");
+        assert_ne!(entrance.foot_lane_fwd, usize::MAX);
+        assert_ne!(entrance.foot_lane_bkw, usize::MAX);
+        assert_ne!(entrance.curb_pos, entrance.door_pos);
+        assert!(components(TransitFlags::FOOT) > 0);
+    } else {
+        assert_eq!(entrance.flags & 0x01, 0, "no foot access without sidewalks");
+        assert_eq!(entrance.foot_lane_fwd, usize::MAX);
+        assert_eq!(entrance.foot_lane_bkw, usize::MAX);
+        assert_eq!(entrance.curb_pos, entrance.door_pos);
+        assert_eq!(components(TransitFlags::FOOT), 0);
+    }
     assert!(entrance.entrance_s_m >= 0.0);
     assert!(entrance.entrance_s_m <= graph.edge(0).physical_length);
 }

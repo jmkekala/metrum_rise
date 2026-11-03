@@ -3,11 +3,10 @@
 //! Building-site apron grading and road/terrain tie-in validation.
 
 use super::geometry::{SITE_POINT_EPS_M, point_in_polygon_slice, signed_polygon_area};
-use crate::config::SIDEWALK_WIDTH;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::RoadbedSystem;
-use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
+use crate::simulation::network::roadbed::{RoadbedSystem, side_band_width_m};
+use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 
@@ -397,17 +396,12 @@ pub(super) fn nearest_building_site_road_surface_sample(
     best.map(|(_, _, probe, height_m)| (probe, height_m))
 }
 
+// The road's outer edge (sidewalk, or shoulder on a road without sidewalks), just inside it.
 pub(super) fn building_site_road_connection_lateral_offset_m(
     edge: &crate::simulation::network::graph::Edge,
 ) -> f32 {
-    let sidewalk_m = if edge.primary_type == TransitType::Foot
-        || (edge.allowed_types & TransitFlags::FOOT) == 0
-    {
-        0.0
-    } else {
-        SIDEWALK_WIDTH
-    };
-    (edge.width * 0.5 + sidewalk_m - BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M).max(0.0)
+    (edge.width * 0.5 + side_band_width_m(edge) - BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M)
+        .max(0.0)
 }
 
 fn corrected_footprint_outward(

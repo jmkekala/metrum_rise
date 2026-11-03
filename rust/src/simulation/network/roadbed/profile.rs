@@ -260,8 +260,24 @@ pub(crate) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
     RoadProfile::for_edge(edge).half_width_m()
 }
 
+/// The raised band outside each side of `edge`'s carriageway, as [`RoadProfile::for_edge`]
+/// builds it: `config::SIDEWALK_WIDTH` for a car road with sidewalks, the 0.75 m shoulder for
+/// one without, 0 for a walkway (its footpath is its whole width). The building door probes and
+/// the parcel collision read it so a building on a road without sidewalks fronts the shoulder's
+/// outer edge, not the carriageway's. `O(1)`.
+pub(crate) fn side_band_width_m(edge: &Edge) -> f32 {
+    if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
+        0.0
+    } else if edge.allowed_types & TransitFlags::FOOT != 0 {
+        config::SIDEWALK_WIDTH
+    } else {
+        SHOULDER_BAND_WIDTH_M
+    }
+}
+
 /// Returns the visible roadbed half-width for one not-yet-committed road candidate with
-/// `median` (`ROAD-80`: the median widens the corridor every stroke check reads).
+/// `median` (`ROAD-80`: the median widens the corridor every stroke check reads) and its road
+/// type's `attributes` (`ROAD-101`: a road without sidewalks has only its shoulders).
 pub(crate) fn preview_candidate_roadbed_half_width_m(
     prepared_points: &[Vector3],
     edge_class: EdgeClass,

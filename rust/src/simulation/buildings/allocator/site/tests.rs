@@ -620,6 +620,14 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
 
 #[test]
 fn site_grading_nearest_road_sample_uses_visible_surface_edge() {
+    // With sidewalks, then without (`ROAD-101`): the probe sits on the 0.75 m shoulder's outer
+    // edge, never inside the carriageway.
+    for sidewalks in [true, false] {
+        nearest_road_sample_on_a_road(sidewalks);
+    }
+}
+
+fn nearest_road_sample_on_a_road(sidewalks: bool) {
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::types::EdgeClass;
@@ -638,10 +646,21 @@ fn site_grading_nearest_road_sample_uses_visible_surface_edge() {
         &mut zoning,
         &mut allocator,
     );
+    let edge_idx = graph.edge_count() - 1;
+    if !sidewalks {
+        graph.edge_mut(edge_idx).allowed_types = crate::simulation::network::types::TransitFlags::CAR;
+        network.roadbed.mark_edge_dirty(edge_idx);
+    }
     network.roadbed.compile_dirty(&graph);
 
-    let edge_idx = graph.edge_count() - 1;
     let edge = graph.edge(edge_idx);
+    let offset_m = building_site_road_connection_lateral_offset_m(edge);
+    let band_m = if sidewalks { crate::config::SIDEWALK_WIDTH } else { 0.75 };
+    assert!(
+        (offset_m - (edge.width * 0.5 + band_m - 0.05)).abs() < 1e-5,
+        "sidewalks {sidewalks}: offset {offset_m}"
+    );
+    assert!(offset_m > edge.width * 0.5, "the probe is outside the carriageway");
     let center = BuildingAllocator::sample_pos_on_edge(&graph, edge_idx, 0.5);
     let tangent = BuildingAllocator::sample_tangent_on_edge(&graph, edge_idx, 0.5);
     let normal = Vector2::new(tangent.y, -tangent.x).normalized();

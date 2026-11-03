@@ -331,7 +331,7 @@ impl BuildingAllocator {
 mod tests {
     use super::*;
     use crate::simulation::network::graph::Edge;
-    use crate::simulation::network::types::NodeType;
+    use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 
     #[test]
     fn road_dependencies_use_query_grid_and_invalidate_local_pieces() {

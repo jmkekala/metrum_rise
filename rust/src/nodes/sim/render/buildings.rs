@@ -5,14 +5,13 @@
 //! Handles building instance transform generation and plot/construction-site visuals.
 
 use crate::assets::{AssetEntry, MeshPart, SiteSurfaceMaterial};
-use crate::config::{HEIGHT_SCALE, SIDEWALK_WIDTH};
+use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, building_local_xz_basis,
 };
 use crate::simulation::core::scheduler::{SLOTS_PER_DAY, SLOTS_PER_MINUTE};
 use crate::simulation::network::graph::Edge;
-use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::*;
 
@@ -801,15 +800,12 @@ fn building_site_debug_visible_road_sample(
     best.map(|(_, _, probe, height_m)| (probe, height_m))
 }
 
+// The road's outer edge (sidewalk, or shoulder on a road without sidewalks), just inside it.
 fn road_connection_lateral_offset_m(edge: &Edge) -> f32 {
-    let sidewalk_m = if edge.primary_type == TransitType::Foot
-        || (edge.allowed_types & TransitFlags::FOOT) == 0
-    {
-        0.0
-    } else {
-        SIDEWALK_WIDTH
-    };
-    (edge.width * 0.5 + sidewalk_m - BUILDING_SITE_DEBUG_ROAD_SAMPLE_INSET_M).max(0.0)
+    (edge.width * 0.5
+        + crate::simulation::network::roadbed::side_band_width_m(edge)
+        - BUILDING_SITE_DEBUG_ROAD_SAMPLE_INSET_M)
+        .max(0.0)
 }
 
 fn normalized_or_zero(value: Vector2) -> Vector2 {
