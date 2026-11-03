@@ -245,11 +245,14 @@ impl SimCore {
     ) -> CrossSectionVerdict {
         let current = self.region_graph.edge(edge);
         let buildings_removed = if !current.no_building_spawn && !attributes.zoning {
-            self.allocator
-                .buildings
-                .par_iter()
-                .filter(|building| building.edge_idx == edge)
-                .count()
+            // In the shared pool: a Godot call runs outside every Rayon pool.
+            let buildings = &self.allocator.buildings;
+            crate::thread_pools::install(|| {
+                buildings
+                    .par_iter()
+                    .filter(|building| building.edge_idx == edge)
+                    .count()
+            })
         } else {
             0
         };
