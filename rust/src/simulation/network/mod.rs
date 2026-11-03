@@ -22,6 +22,7 @@ pub mod interaction;
 pub mod lanes;
 pub(crate) mod cch_adoption;
 pub(crate) mod road_edit;
+pub(crate) mod road_types;
 pub mod topology;
 use crate::config;
 use std::collections::{BTreeMap, BTreeSet, HashSet};

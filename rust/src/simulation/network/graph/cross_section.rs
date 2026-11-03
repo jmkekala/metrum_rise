@@ -27,6 +27,12 @@ pub enum MedianStyle {
 impl MedianStyle {
     /// Every style in tool-code order (1, 2, 3).
     pub const ALL: [Self; 3] = [Self::Painted, Self::KerbedGrass, Self::KerbedPaving];
+
+    /// The style a tool or save code names (1 painted, 2 kerbed grass, 3 kerbed paving); `None`
+    /// for any other code, 0 (no median) included.
+    pub fn from_code(code: i32) -> Option<Self> {
+        Self::ALL.into_iter().find(|style| *style as i32 == code)
+    }
 }
 
 /// A road's median: its style and its total width in metres, kerbs included. The lane groups sit
@@ -44,13 +50,10 @@ impl RoadMedian {
     /// The median a tool or save code names: style 0 is none, 1 painted, 2 kerbed grass, 3
     /// kerbed paving, at `width_m`, which must lie in the style's range (no clamping).
     pub fn from_tool(style: i32, width_m: f32) -> Result<Option<Self>, &'static str> {
-        let style = match style {
-            0 => return Ok(None),
-            1 => MedianStyle::Painted,
-            2 => MedianStyle::KerbedGrass,
-            3 => MedianStyle::KerbedPaving,
-            _ => return Err("unknown_median_style"),
-        };
+        if style == 0 {
+            return Ok(None);
+        }
+        let style = MedianStyle::from_code(style).ok_or("unknown_median_style")?;
         let median = Self { style, width_m };
         median.validate()?;
         Ok(Some(median))

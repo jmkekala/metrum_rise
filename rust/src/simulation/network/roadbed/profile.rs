@@ -17,8 +17,8 @@ pub const CURB_STEP_HEIGHT_M: f32 = 0.12;
 // Lateral widths of the raised bands beside the carriageway.
 const CURB_BAND_WIDTH_M: f32 = 0.15;
 const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
-// A footpath is at least this wide.
-const FOOTPATH_MIN_WIDTH_M: f32 = 2.0;
+// A footpath is at least this wide: a walkway's whole width (`Edge::cross_section_width_m`).
+pub(crate) const FOOTPATH_MIN_WIDTH_M: f32 = 2.0;
 /// Width of each kerb of a raised median at its authored width (`ROAD-80`), inside the median's
 /// width; a nose scales the kerbs with the median.
 pub const MEDIAN_KERB_WIDTH_M: f32 = 0.15;

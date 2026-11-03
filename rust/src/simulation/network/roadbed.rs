@@ -45,7 +45,9 @@ pub use mesh::{BRIDGE_DECK_DEPTH_M, OuterChain, PieceMesh, SKIRT_DEPTH_M, StripK
 pub(crate) use node::{check_node, terminal_plane};
 pub use node::{NodeError, NodePiece};
 pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, ProfileBand, RoadProfile};
-pub(crate) use profile::{preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m};
+pub(crate) use profile::{
+    FOOTPATH_MIN_WIDTH_M, preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m,
+};
 pub(crate) use query::{GroundedPieceScratch, LocalSurfaceQuery};
 pub use query::{LaneSurfaceQuery, PieceId, WallSegment};
 pub use section::{RoadBand, RoadSection};

@@ -1,0 +1,183 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+//! The layout check, widths, built-ins and name rules (`ROAD-101`).
+
+use super::*;
+
+const S: RoadPart = RoadPart::Sidewalk;
+const F: RoadPart = RoadPart::CarLane { forward: true };
+const B: RoadPart = RoadPart::CarLane { forward: false };
+
+fn median(style: MedianStyle, width_m: f32) -> RoadPart {
+    RoadPart::Median(RoadMedian { style, width_m })
+}
+
+fn grass(width_m: f32) -> RoadPart {
+    median(MedianStyle::KerbedGrass, width_m)
+}
+
+fn refused(parts: &[RoadPart]) -> (&'static str, Option<usize>) {
+    let refusal = check_layout(parts).expect_err("the layout is refused");
+    (refusal.reason, refusal.part)
+}
+
+#[test]
+fn every_layout_refusal_has_its_key_and_part() {
+    let m = grass(3.0);
+    let cases: &[(&[RoadPart], &str, Option<usize>)] = &[
+        (&[RoadPart::Footpath, S], "layout_footpath_alone", Some(0)),
+        (
+            &[S, B, RoadPart::Footpath, F, S],
+            "layout_footpath_alone",
+            Some(2),
+        ),
+        (&[], "layout_sidewalks", None),
+        (&[S], "layout_sidewalks", None),
+        (&[B, F, S], "layout_sidewalks", None),
+        (&[S, B, F], "layout_sidewalks", None),
+        (&[S, B, S, F, S], "layout_sidewalks", Some(2)),
+        (&[S, B, m, m, F, S], "layout_two_medians", Some(3)),
+        (&[S, F, B, S], "layout_lane_order", Some(2)),
+        (&[S, B, F, B, S], "layout_lane_order", Some(3)),
+        (&[S, S], "layout_no_car_lane", None),
+        (&[S, m, S], "layout_no_car_lane", None),
+        (&[S, F, F, F, F, F, S], "too_many_lanes", None),
+        (&[S, B, B, B, B, B, F, S], "too_many_lanes", None),
+        (
+            &[S, B, grass(1.0), F, S],
+            "median_width_out_of_range",
+            Some(2),
+        ),
+        (
+            &[S, B, grass(f32::NAN), F, S],
+            "median_width_out_of_range",
+            Some(2),
+        ),
+        (&[S, F, m, F, S], "median_requires_both_directions", Some(2)),
+        (&[S, m, F, S], "median_requires_both_directions", Some(1)),
+        (&[S, B, B, m, S], "median_requires_both_directions", Some(3)),
+        (&[S, B, m, B, F, S], "layout_lanes_split", Some(2)),
+        (&[S, B, F, m, F, S], "layout_lanes_split", Some(3)),
+        (&[S, m, B, F, S], "layout_median_at_edge", Some(1)),
+        (&[S, B, F, m, S], "layout_median_at_edge", Some(3)),
+    ];
+    for (parts, reason, part) in cases {
+        assert_eq!(refused(parts), (*reason, *part), "{parts:?}");
+    }
+}
+
+#[test]
+fn valid_layouts_build_their_cross_section() {
+    let paving = median(MedianStyle::KerbedPaving, 2.0);
+    let RoadPart::Median(paving_median) = paving else {
+        unreachable!()
+    };
+    let cases: &[(&[RoadPart], (u8, u8, Option<RoadMedian>))] = &[
+        (&[RoadPart::Footpath], (0, 0, None)),
+        (&[S, B, F, S], (1, 1, None)),
+        (&[S, F, S], (1, 0, None)),
+        (&[S, B, S], (0, 1, None)),
+        (&[S, B, F, F, S], (2, 1, None)),
+        (&[S, B, B, paving, F, F, S], (2, 2, Some(paving_median))),
+        (&[S, B, B, B, B, F, F, F, F, S], (4, 4, None)),
+    ];
+    for (parts, (fwd_lanes, bkw_lanes, median)) in cases {
+        let section = check_layout(parts).unwrap();
+        assert_eq!(
+            section,
+            RoadCrossSection {
+                fwd_lanes: *fwd_lanes,
+                bkw_lanes: *bkw_lanes,
+                median: *median,
+            }
+        );
+        // The canonical layout is the drawn one and checks back to the same cross-section.
+        assert_eq!(section.parts(), *parts);
+        assert_eq!(check_layout(&section.parts()), Ok(section));
+    }
+}
+
+#[test]
+fn widths_sum_to_the_edge_width_plus_sidewalks() {
+    let (widths, carriageway, total) = layout_widths(&[S, B, B, grass(3.0), F, F, S]);
+    assert_eq!(widths, [1.5, 3.5, 3.5, 3.0, 3.5, 3.5, 1.5]);
+    assert_eq!((carriageway, total), (17.0, 20.0));
+    let section = check_layout(&[S, B, B, grass(3.0), F, F, S]).unwrap();
+    assert_eq!(
+        carriageway,
+        Edge::cross_section_width_m(section.fwd_lanes, section.bkw_lanes, section.median)
+    );
+    // A walkway is its footpath, as wide as a 0 + 0 edge.
+    let (widths, carriageway, total) = layout_widths(&[RoadPart::Footpath]);
+    assert_eq!((widths, carriageway, total), (vec![2.0], 2.0, 2.0));
+    assert_eq!(carriageway, Edge::cross_section_width_m(0, 0, None));
+    // Refused layouts still have widths for the builder to draw.
+    assert_eq!(layout_widths(&[S, F, B, S]).2, 10.0);
+}
+
+#[test]
+fn the_builtins_build_todays_roads_menu() {
+    let expected = [
+        ("Walkway", 0, 0),
+        ("2-Lane Road", 1, 1),
+        ("4-Lane Road", 2, 2),
+        ("One-Way 1L", 1, 0),
+        ("One-Way 2L", 2, 0),
+    ];
+    assert_eq!(BUILTIN_ROAD_TYPES.len(), expected.len());
+    for (builtin, (name, fwd_lanes, bkw_lanes)) in BUILTIN_ROAD_TYPES.iter().zip(expected) {
+        let ty = RoadType::from_builtin(builtin);
+        assert_eq!(ty.name, name);
+        assert!(ty.builtin && ty.id.starts_with("builtin:"));
+        let section = check_layout(&ty.parts).unwrap();
+        assert_eq!(
+            section,
+            RoadCrossSection {
+                fwd_lanes,
+                bkw_lanes,
+                median: None,
+            }
+        );
+        assert_eq!(ty.usable(), Some(section));
+    }
+    let types: Vec<RoadType> = BUILTIN_ROAD_TYPES
+        .iter()
+        .map(RoadType::from_builtin)
+        .collect();
+    assert_eq!(
+        type_of(&types, RoadCrossSection::WALKWAY).map(|ty| ty.id.as_str()),
+        Some("builtin:walkway")
+    );
+    let divided = check_layout(&[S, B, grass(3.0), F, S]).unwrap();
+    assert!(type_of(&types, divided).is_none());
+}
+
+#[test]
+fn names_are_trimmed_bounded_and_compared_ignoring_case() {
+    assert_eq!(clean_name("  Boulevard \t"), Ok("Boulevard"));
+    assert_eq!(clean_name("   "), Err("name_empty"));
+    assert_eq!(clean_name(&"é".repeat(40)), Ok("é".repeat(40).as_str()));
+    assert_eq!(clean_name(&"é".repeat(41)), Err("name_too_long"));
+    assert_eq!(clean_name("Main\nStreet"), Err("name_invalid_characters"));
+    assert_eq!(clean_name("Main\u{7}"), Err("name_invalid_characters"));
+    assert!(same_name("Kävelykatu", " KÄVELYKATU "));
+    assert!(same_name("2-lane road", "2-Lane Road"));
+    assert!(!same_name("Road", "Roads"));
+}
+
+#[test]
+fn suggested_names_describe_the_layout_and_skip_taken_ones() {
+    let section = |parts: &[RoadPart]| check_layout(parts).unwrap();
+    let divided = section(&[S, B, B, grass(3.0), F, F, S]);
+    assert_eq!(suggested_name(divided, |_| false), "2+2 Grass 3 m");
+    let painted = section(&[S, B, median(MedianStyle::Painted, 1.5), F, S]);
+    assert_eq!(suggested_name(painted, |_| false), "1+1 Painted 1.5 m");
+    assert_eq!(suggested_name(section(&[S, F, F, S]), |_| false), "2+0");
+    let taken = ["2+2 grass 3 m", "2+2 Grass 3 m (2)"];
+    let is_taken = |name: &str| taken.iter().any(|taken| same_name(taken, name));
+    assert_eq!(suggested_name(divided, is_taken), "2+2 Grass 3 m (3)");
+    assert_eq!(
+        suggested_name(RoadCrossSection::WALKWAY, |name| same_name(name, "Walkway")),
+        "Walkway (2)"
+    );
+}
