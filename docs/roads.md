@@ -10210,13 +10210,19 @@ R8's uncommitted probe) and the round's final code; P-cores `taskset -c 0,2,4,6,
   its 117 one-way fixtures and no other hash.
 - Movement code is unchanged (lanes move, the tick does not), so `PERF-06` was not rerun.
 
-The Road Properties window (select tool) carries the cross-section controls
-(`ui/cross_section_controls.gd`, shared with the road tool's options panel, where they set the
-next stroke's lanes and median): lane steppers, the Median style row (None, Painted, Grass,
-Paving) and its width stepper (0.5 m steps within the style's range), the verdict line and Apply
-(option C of PLAN-R3 section 6). It opens at 400 x 500 px (minimum 360 x 460) so every row fits;
-a smaller persisted size grows to the minimum. The reason text is `ui/road_reason_text.gd`,
-shared with the road tool's stroke preview.
+The Road Properties window (select tool) carries a road-type picker (`ROAD-101`, replacing the
+R3 lane steppers and Median rows): the usable types, the selected road's marked from
+`get_edge_cross_section`'s `road_type`, or a disabled "Custom layout" when no type has its
+cross-section (duplicate layouts resolve to the first type in list order). A pick asks the
+in-place check (`preview_edge_cross_section` through the select tool) and shows the verdict
+beside Apply, which commits through `set_edge_cross_section` (Ctrl+Z undoes it once the window
+no longer has focus: a focused tool window keeps the HUD keys). Every in-place refusal shows with
+its text, walkway <-> road among them ("A walkway cannot become a road: draw a road in its
+place", "A road cannot become a walkway"); the picker stays enabled on a walkway so that refusal
+shows. It opens at 400 x 500 px (minimum 360 x 460). The reason text is `ui/road_reason_text.gd`,
+shared with the road tool's stroke preview, and words the road types' layout, name and library
+keys too. The median style row and width stepper live on as `ui/median_controls.gd` for the
+road builder's median part.
 
 **Crossing toggle (round R3b1).** The crossing toggle's commit now rebuilds its node's lanes,
 cars and entrances with the same local pass (`restore_lanes_locally`) instead of the entrance
@@ -10366,14 +10372,61 @@ one-way stroke is `median_requires_both_directions`, on a walkway `median_requir
 in the hover check and the plan alike.
 
 The road tool (`road_tool.gd`) keeps the median beside the tunnel intent and re-asserts it before
-each preview; **N** cycles the style (none, painted 1 m, grass 3 m, paving 2 m), **;** and **'**
-step the width by 0.5 m within the style's range, and the options panel's Median row sets both.
-The defaults and ranges are Rust's (`RoadMedian::default_width_m`, `width_range_m`): the tool and
-the cross-section controls read them once from `get_median_styles` (per style code `default_m`,
-`min_m`, `max_m`) and hold no copy.
-`ROAD-92`: the Road and Walkway presets go through `set_lane_preset`, which clears a median a
-walkway cannot carry; N does nothing on a walkway; Rust refuses a walkway stroke with a median
-whatever the tool holds, so the preset is a convenience, not the rule.
+each preview. Since `ROAD-101` the player never sets it directly: a road type carries it (below).
+The defaults and ranges are Rust's (`RoadMedian::default_width_m`, `width_range_m`), published by
+`get_median_styles` (per style code `default_m`, `min_m`, `max_m`). `ROAD-92` is now a property
+of the types: the Walkway type has no median, so picking it clears the tool's; Rust still refuses
+a walkway stroke with a median whatever the tool holds (`median_requires_vehicle_road`).
+
+#### Road types and the road library (ROAD-101)
+
+Rounds RB1a (Rust) and RB1b (Godot), 2026-11-03; the road builder window follows in RB2.
+
+The player draws roads by picking a **road type**; the drawing panel has no lane or median
+controls (Tool mode, Snapping and Structure stay), and the lane and median keys (`]` / Up,
+`[` / Down, `.`, `,`, N, `;`, `'`) are gone; T still toggles the tunnel.
+
+- **Model** (`simulation/network/road_types.rs`, engine-free). A layout is an ordered list of
+  parts, left to right looking along the road's forward direction: `Sidewalk` (1.5 m,
+  `SIDEWALK_WIDTH`), `CarLane { forward }` (3.5 m), at most one `Median` (style and width in the
+  style's range) and `Footpath` (2 m, the Walkway's only part, valid only alone). One check
+  (`check_layout`, `O(parts)`, allocation-free) turns a layout into the edge's cross-section
+  (fwd, bkw, median) or a refusal with its key: a sidewalk at each end and none inside, backward
+  lanes left of forward ones (right-hand traffic), the median between the two directions, at
+  least one car lane, at most 4 per direction, a median only on a two-way layout. A layout is
+  never auto-sorted. The built-ins are one table (`BUILTIN_ROAD_TYPES`): Walkway, 2-Lane Road
+  (1 + 1), 4-Lane Road (2 + 2), One-Way 1L, One-Way 2L, as the Roads menu's buttons were.
+- **Library**: one file per user, shared by every city, `user://road_types.json`
+  (`{"format": "metrum-road-types", "version": 1, "next_id", "types": [...]}`, pretty JSON,
+  median styles stored by name). Read on first use, re-read before every write, written
+  atomically. A file that does not parse is left byte-identical, the list shows the built-ins and
+  `library_unreadable`, and every write is refused until it is fixed or removed; a newer
+  `version` is read-only; an entry that fails a rule is listed unusable with its reason and
+  written back as it was. Names: trimmed, 1-40 characters, no control characters, unique
+  ignoring case among all types. **Library edits have no undo**: they are tool configuration
+  owned by `SimulationNode`, never `SimCore`, and outside the sim undo stack.
+- **No save change**: a built road keeps its own layout in its edge (fwd, bkw, median, width) as
+  before; no type id reaches the graph or a save, so a save loads without the library, and
+  editing or deleting a type changes new strokes only.
+- **Godot API** (`network_api/road_types.rs`): `get_road_types()` (every type with its parts,
+  per-part and total widths, `usable` / `invalid_reason`; built-ins first, then the file's
+  entries; the library `error`), `check_road_layout(parts)` (verdict, widths, suggested name),
+  `create_road_type(name, parts)`, `update_road_type(id, name, parts)`,
+  `delete_road_type(id)`, and `get_edge_cross_section`'s `road_type` (the first usable type,
+  built-ins first, whose cross-section equals the edge's exactly, else "").
+- **Road tool**: `RoadTool.set_road_type(id)` (GDScript) reads the type's lanes and median from
+  `get_road_types()` and sets them through the existing inputs (lanes per call,
+  `set_road_tool_median`), so a built-in type sends exactly the arguments the old buttons did and
+  the `road_attempt` record and its replay are unchanged. There is no Rust "pick type" call. R
+  draws the last road type picked (2-Lane Road at first), X the Walkway. `set_lanes` and
+  `set_median` stay the low-level setters benchmarks, probes and the debug replay write.
+  `MainUI.refresh_road_types()` lists the library again and re-picks the tool's type, so an
+  edited type draws its new layout from the next stroke on.
+- **Roads menu** (`ui/road_type_menu.gd`): the usable types, built-ins then custom ones, the
+  tool's current type marked, at most ten buttons, ended by "Road builder..." (it emits
+  `road_builder_requested` for the builder window, `ROAD-101` RB2). Cul-De-Sac stays a tool
+  button.
+- **Road Properties**: a road-type picker (below).
 
 #### Grass layer (round R3b2)
 
