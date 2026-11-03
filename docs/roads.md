@@ -10238,8 +10238,9 @@ buildings (the bulldoze journal restores one building per entry), so the verdict
 Apply cannot be undone (round RB3b2). `cost_delta` is the new cost
 weight less the current one times 15 times the road's length, floored at 0 (a cheaper type
 refunds nothing); the commit charges it outside `benchmark_mode`. Until round RB3c's Road
-Properties passes a type's attributes, `select_tool.gd` sends each road's own (read back with
-`get_edge_cross_section`). The cost rule is `simulation/network/road_types/cost.rs`.
+Properties passed a type's attributes, `select_tool.gd` sent each road's own (read back with
+`get_edge_cross_section`); since round RB3c Road Properties sends the picked type's (below).
+The cost rule is `simulation/network/road_types/cost.rs`.
 
 Acceptance record (round RB3b, fresh; release library test binaries of `dev` `7843de33`
 (control) and the round's code (`1c57f055`, with R8's uncommitted probe), plus round RB3a's last
@@ -10299,12 +10300,20 @@ spread (the empty tier's first samples are noisy on every binary). The passes ar
 did not build.
 
 The Road Properties window (select tool) carries a road-type picker (`ROAD-101`, replacing the
-R3 lane steppers and Median rows): the usable types, the selected road's marked from
-`get_edge_cross_section`'s `road_type`, or a disabled "Custom layout" when no type has its
-cross-section (duplicate layouts resolve to the first type in list order). A pick asks the
-in-place check (`preview_edge_cross_section` through the select tool) and shows the verdict
-beside Apply, which commits through `set_edge_cross_section` (Ctrl+Z undoes it once the window
-no longer has focus: a focused tool window keeps the HUD keys). Every in-place refusal shows with
+R3 lane steppers and Median rows): the usable types, each line with its speed and Rust's build
+cost per metre ("4-Lane Road (50 km/h, 27 / m)"), the selected road's marked from
+`get_edge_cross_section`'s `road_type` (section, sidewalks and speed; zoning is not matched), or
+a disabled "Custom layout" when no type has its cross-section (duplicate layouts resolve to the
+first type in list order). A pick asks the in-place check (`preview_edge_cross_section` through
+the select tool) with the type's lanes, median, speed, sidewalks and zoning for every selected
+road (round RB3c; a walkway sends the built-ins' 50 km/h with sidewalks), sums the verdicts'
+`buildings_removed` and `cost_delta`, and shows the verdict beside Apply, which reads
+"Apply (+1,230)" with the cost difference and commits through `set_edge_cross_section` (Ctrl+Z
+undoes it once the window no longer has focus: a focused tool window keeps the HUD keys). When
+the type's zoning off would demolish buildings, Apply first asks in a `ConfirmationDialog`:
+"Apply removes N buildings. This cannot be undone." (round RB3b2: undo restores the road and its
+emptied parcels, never the buildings); Cancel leaves the roads as they are. A zoning-off Apply
+refreshes the no-build overlay, as the "No buildings" checkbox does. Every in-place refusal shows with
 its text, walkway <-> road among them ("A walkway cannot become a road: draw a road in its
 place", "A road cannot become a walkway"); the picker stays enabled on a walkway so that refusal
 shows. It opens at 400 x 500 px (minimum 360 x 460). The reason text is `ui/road_reason_text.gd`,
@@ -10479,14 +10488,17 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   `SIDEWALK_WIDTH`), `CarLane { forward }` (3.5 m), at most one `Median` (style and width in the
   style's range) and `Footpath` (2 m, the Walkway's only part, valid only alone). One check
   (`check_layout`, `O(parts)`, allocation-free) turns a layout into the edge's cross-section
-  (fwd, bkw, median) or a refusal with its key: a sidewalk at each end and none inside, backward
+  (fwd, bkw, median, sidewalks) or a refusal with its key: a sidewalk at each end or none at
+  all, none inside (`layout_sidewalks`, round RB3a), backward
   lanes left of forward ones (right-hand traffic), the median between the two directions, at
   least one car lane, at most 4 per direction, a median only on a two-way layout. A layout is
   never auto-sorted. The built-ins are one table (`BUILTIN_ROAD_TYPES`): Walkway, 2-Lane Road
   (1 + 1), 4-Lane Road (2 + 2), One-Way 1L, One-Way 2L, as the Roads menu's buttons were.
 - **Library**: one file per user, shared by every city, `user://road_types.json`
-  (`{"format": "metrum-road-types", "version": 1, "next_id", "types": [...]}`, pretty JSON,
-  median styles stored by name). Read on first use, re-read before every write, written
+  (`{"format": "metrum-road-types", "version": 2, "next_id", "types": [...]}`, pretty JSON,
+  median styles stored by name; version 2 (round RB3a) adds each entry's `speed_kmh` and
+  `zoning`: a version 1 file loads with 50 km/h and zoning and is written as version 2 on its
+  next write, an older game lists a version 2 file read-only). Read on first use, re-read before every write, written
   atomically. A file that does not parse is left byte-identical, the list shows the built-ins and
   `library_unreadable`, and every write is refused until it is fixed or removed; a newer
   `version` is read-only; an entry that fails a rule is listed unusable with its reason and
@@ -10497,19 +10509,22 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   before; no type id reaches the graph or a save, so a save loads without the library, and
   editing or deleting a type changes new strokes only.
 - **Godot API** (`network_api/road_types.rs`): `get_road_types()` (every type with its parts,
-  per-part and total widths, `usable` / `invalid_reason`; built-ins first, then the file's
-  entries; the library `error`), `check_road_layout(parts)` (verdict, widths, suggested name),
-  `create_road_type(name, parts)`, `update_road_type(id, name, parts)`,
+  per-part and total widths, `usable` / `invalid_reason`, `speed_kmh`, `sidewalks`, `zoning`,
+  `build_per_m`, `upkeep_per_m_day`; built-ins first, then the file's entries; the library
+  `error`; `speeds`, the speed grid), `check_road_layout(parts, speed_kmh, zoning)` (verdict,
+  widths, cost, suggested name), `create_road_type(name, parts, speed_kmh, zoning)`,
+  `update_road_type(id, name, parts, speed_kmh, zoning)`,
   `delete_road_type(id)`, and `get_edge_cross_section`'s `road_type` (the first usable type,
   built-ins first, whose cross-section equals the edge's exactly, else ""). For the road
   builder (RB2): `check_road_type_name(name, id)` (the write's name verdict, `name_*` keys, for
   a new type with `id` empty or as custom type `id`'s name) and `reload_road_types()` (re-reads
   the file, so a library fixed or edited by hand lists without a restart; writes always re-read
   first).
-- **Road tool**: `RoadTool.set_road_type(id)` (GDScript) reads the type's lanes and median from
-  `get_road_types()` and sets them through the existing inputs (lanes per call,
-  `set_road_tool_median`), so a built-in type sends exactly the arguments the old buttons did and
-  the `road_attempt` record and its replay are unchanged. There is no Rust "pick type" call. R
+- **Road tool**: `RoadTool.set_road_type(id)` (GDScript) reads the type's lanes, median and
+  attributes from `get_road_types()` and sets them through the existing inputs (lanes per call,
+  `set_road_tool_median`, `set_road_tool_attributes`, each re-asserted per preview), so a
+  built-in type sends exactly the arguments the old buttons did (50 km/h, sidewalks, zoning; the
+  Walkway too) and the `road_attempt` record carries the attributes, which its replay sets. There is no Rust "pick type" call. R
   draws the last road type picked (2-Lane Road at first), X the Walkway. `set_lanes` and
   `set_median` stay the low-level setters benchmarks, probes and the debug replay write.
   `MainUI.refresh_road_types()` lists the library again and re-picks the tool's type, so an
@@ -10523,12 +10538,56 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   types).
 - **Road Properties**: a road-type picker (below); it relists the types after a library edit.
 
+#### Road-type attributes and costs (ROAD-101, rounds RB3a-RB3c)
+
+Rounds RB3a (Rust model, library and stroke), RB3b and RB3b2 (in place, costs), RB3c (the game),
+2026-11-03/04. The user's decisions of 2026-11-03 are binding: sidewalks none or both,
+independent of zoning; speed per type; costs by type; Road Properties changes all three in place.
+
+- **Attributes.** A type has `speed_kmh` (20-120 in steps of 10, `speed_out_of_range` off the
+  grid; every built-in 50; a walkway has none and lists 0), `sidewalks` (both sides or none) and
+  `zoning`. A stroke carries them as `RoadAttributes` from `set_road_tool_attributes` through the
+  preview, commit, attempt record and plan (`is_for`: preview = commit); the edge gets `FOOT`
+  only with sidewalks, `speed_limit = speed_kmh / 3.6` (50 bitwise the old default) and
+  `no_building_spawn = !zoning`. A split stroke keeps them on every piece. Type matching
+  (`road_type`) compares the section, sidewalks and speed, never zoning, so "No buildings" stays
+  a per-road override.
+- **The sidewalk rule.** A car road's layout has a sidewalk at both ends or none; without them
+  the roadbed draws its 0.75 m shoulder each side (`layout_widths` counts it in the total), the
+  corridor and parcel checks reach the shoulder, and a building fronting the road probes the
+  shoulder for its door, so it is a car-only destination. Sidewalks and zoning are independent:
+  a road without sidewalks may zone (a rural road with driveways; every agent owns a car), and
+  the road builder warns "No sidewalks: buildings here are reached by car only". The walking
+  proof checks only the edges walkers cross, so such a road keeps it (round RB3a; open question
+  17's evidence above).
+- **Walkers at a junction with a sidewalk-less arm (design D2 (a)).** That arm gets no zebra, no
+  crossing toggle and no corner walk; walkers use the other arms' zebras. A T whose stem has no
+  sidewalks cuts the through road's near-side sidewalk: a walker passing the stem crosses both
+  through-arm zebras and walks the far kerb (`a_t_whose_stem_has_no_sidewalks_is_crossed_by_the_far_side`,
+  `road_mixed_junction_test`). Through-crossings over such an arm are the follow-up RB3d
+  (`ROAD-101` row).
+- **The 80 km/h rules are gone** (D5): neither creation nor load sets `no_building_spawn` from
+  the speed; 80 km/h is only the builder's once-only zoning suggestion
+  ([`zoning.md`](zoning.md#8-road-no-build-flag)).
+- **Costs.** One rule weights build and upkeep per metre by lanes, speed, median, sidewalks and
+  structure, anchored at the 2-Lane Road's 15 / m and 0.1 / m / day; the table and the
+  difference-charged, never-refunded type change are in
+  [`economy.md`](economy.md#road-costs-road-101). The stroke preview's `build_cost`, the builder's
+  cost line, every type's tooltip and the Road Properties picker read it from Rust.
+- **In place** (Road Properties): the full spec, its walkers and entrances, zoning-off
+  demolition and the charge are in [in-place edits](#in-place-cross-section-edits-road-80)
+  (round RB3b) with the 100k edit-rise record (round RB3b2). Round RB3c's fix: the verdict's
+  `buildings_removed` count ran a parallel pass outside every Rayon pool, which panicked from
+  Godot ("The global thread pool has not been initialized") and poisoned the core lock; it now
+  runs in `thread_pools::install`.
+- **Saves**: format 112 (the weighted upkeep roll); no older save loads.
+
 #### The road builder (ROAD-101, round RB2)
 
 "Road builder..." (the Roads row's drop-down) opens the **Road Builder** window
 (`ui/road_builder/`: `road_builder_window.gd` the controller; the strip, part tiles, part popup,
 library column and glyphs are views). It is a persistent, movable, resizable, non-exclusive
-`Window` (960 x 360 at the 1920 x 1080 reference, minimum 760 x 300,
+`Window` (960 x 440 at the 1920 x 1080 reference, minimum 760 x 400,
 `UIStyle.set_persistent_window_layout`, `WindowResizeHandles`): the camera and the road tool keep
 working, as under Road Properties (a focused window holds the HUD keys until the map is clicked).
 Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
@@ -10540,7 +10599,8 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   arrow up for a forward lane, down for a backward one; the median's surface; a pedestrian for a
   sidewalk), under it Rust's width, and beside the strip the lane split ("2 + 2"), the road
   width (between the sidewalks) and the total width. Sidewalks are fixed at both ends; they
-  cannot be moved, removed or opened. Every change asks `check_road_layout`; an invalid layout is
+  cannot be moved, removed or opened. Without sidewalks (round RB3c) each end is the roadbed's
+  0.75 m shoulder band, drawn as gravel between edge lines, never a part sent to Rust. Every change asks `check_road_layout`; an invalid layout is
   tinted red with Rust's reason (`road_reason_text.gd`) under the strip, never auto-sorted.
 - **Parts in.** Five tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
   median (each median at its style's default width; no footpath tile: the Walkway stays a
@@ -10551,6 +10611,15 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
 - **Part popup.** Clicking a part opens a `PopupPanel`: for a median its style (Painted, Grass,
   Paving) and width in 0.5 m steps within the style's range (`median_controls.gd`, without
   None), and for any part Move left / Move right (swaps with an interior neighbour) and Remove.
+- **Attributes** (round RB3c). Under the strip: **Sidewalks** (both ends together; the type
+  without them sends lanes and medians only), **Speed** (a stepper on Rust's grid,
+  `get_road_types().speeds`: 20-120 km/h in steps of 10; hidden for a footpath, which has no
+  speed) and **Zoning**. A new type whose speed first reaches `no_zoning_from_kmh` (80) gets
+  zoning off once, unless the player set the Zoning checkbox; an edited type keeps its own. Under
+  them Rust's description ("1 + 1 lanes, 100 km/h, no sidewalks, 8.5 m wide"), Rust's cost line
+  from `check_road_layout` ("24 / m, upkeep 0.16 / m / day") and, for a type without sidewalks
+  that zones, "No sidewalks: buildings here are reached by car only". Create and Save send the
+  controls' speed and zoning: an edited type keeps its own.
 - **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m")
   until the player types one. Create road (Save when editing) is enabled only when the layout
   passes and `check_road_type_name` accepts the name (empty, over 40 characters, control
@@ -10569,9 +10638,13 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   `MainUI.refresh_road_types()` relists the Roads row and Road Properties and re-picks the road
   tool's type, so an edited type draws its new layout from the next stroke on. Library edits
   have no undo, and roads already built keep their own layout (decision 4).
-- **Tests**: `road_builder_test` (in `./run.sh --test`) drives the window through Main.tscn;
-  `road_types_test` checks the row at 1280 x 720 with thirteen custom types.
-- Not in v1: speed limits per type, parking, bike, bus or tram lanes, one-sided sidewalks, lane
+- **Tests**: `road_builder_test` (in `./run.sh --test`) drives the window through Main.tscn,
+  the attributes and cost line included; `road_types_test` checks the row at 1280 x 720 with
+  thirteen custom types and a type without sidewalks at 80 km/h drawn and read back;
+  `road_lane_edit_test` applies a 100 km/h type without sidewalks or zoning in place, its cost
+  on Apply and the demolition confirmation's two buttons; `road_mixed_junction_test` the T with
+  a sidewalk-less stem.
+- Not in v1: parking, bike, bus or tram lanes, one-sided sidewalks, lane
   widths, an off-centre median, reordering sidewalks, unsaved-change prompts (selecting another
   type discards the layout being built).
 

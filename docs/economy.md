@@ -91,7 +91,8 @@ crossed:
    are created over the hour by the `admissions` queue, and level changes and clearances are applied
    by their queues from slot 64 for clearances and slot 65 for level changes (`SIM-02-J`). 00:00 is an ordinary hour (`SIM-02-G`).
 3. At 00:00, after the hour, the **calendar close**: the day's running totals become the
-   budget report, the tax window rolls, road upkeep is charged from the rolling road length and
+   budget report, the tax window rolls, road upkeep is charged from the rolling weighted road
+   length ([road costs](#road-costs-road-101)) and
    the day's exit budget resets. It costs O(zones); the 00:00 hour still belongs to the closing
    day.
 4. Each slot, after everything above: the **hourly phases** of the buildings, households and
@@ -309,10 +310,62 @@ One ledger, separate from households and buildings. It starts at `startup_treasu
 500,000`; saved balances stay authoritative.
 
 - **In:** income tax, household VAT, business profit tax, property tax and city-owned utility fees.
-- **Out:** road construction (15/m) and upkeep (0.1/m/day), city facility construction and
-  operation, and household transfers.
+- **Out:** road construction and upkeep by road type ([road costs](#road-costs-road-101): the
+  2-Lane Road 15/m and 0.1/m/day), city facility construction and operation, and household
+  transfers.
 - The treasury may go negative for obligations other than transfers. A negative balance is a
   valid state.
+
+### Road costs (`ROAD-101`)
+
+A road's build and upkeep cost per metre follow its type (`simulation/network/road_types/cost.rs`,
+one rule for the stroke preview, the commit, the in-place edit, the road builder's cost line and
+the upkeep roll). The **weight** is in 2-lane-road units, so the 2-Lane Road at 50 km/h is
+exactly 1.0 and the old flat constants stay the anchors:
+
+```
+weight = structure x (lanes x 0.4 x f(v) + median x f(v) + sidewalks)
+  f(v)       = 1 + (v_kmh - 50) / 50        (30 -> 0.6, 80 -> 1.6, 100 -> 2.0, 120 -> 2.4)
+  median     = painted 0.05; kerbed grass or paving 0.1 + 0.1 x width_m
+  sidewalks  = 0.2 (both sides) or 0
+  structure  = ground 1, bridge 3, tunnel 5 (the stroke's prepared class, its whole length)
+  walkway    = structure x 0.25 (a footpath: no lanes, no speed)
+build / m = 15 x weight      upkeep / m / day = 0.1 x weight
+```
+
+Lanes and speed multiply, sidewalks add, zoning costs nothing. `O(1)`, allocation-free.
+
+| Type | weight | build / m | upkeep / m / day |
+|---|---:|---:|---:|
+| Walkway (2 m footpath) | 0.25 | 3.75 | 0.025 |
+| 2-Lane Road, 50 km/h (bitwise the old 15 and 0.1) | 1.00 | 15 | 0.10 |
+| 4-Lane Road, 50 | 1.80 | 27 | 0.18 |
+| One-Way 1L / 2L, 50 | 0.60 / 1.00 | 9 / 15 | 0.06 / 0.10 |
+| 1 + 1 residential, 30 | 0.68 | 10.2 | 0.068 |
+| 1 + 1 painted 1 m, 50 | 1.05 | 15.75 | 0.105 |
+| 2 + 2 grass 3 m, 50 | 2.20 | 33 | 0.22 |
+| 1 + 1, 80, no sidewalks | 1.28 | 19.2 | 0.128 |
+| 2 + 2 grass 3 m, 100, no sidewalks | 4.00 | 60 | 0.40 |
+| 2 + 2 paving 2 m, 120, no sidewalks | 4.56 | 68.4 | 0.456 |
+| 2-Lane Road on a bridge / in a tunnel | 3.0 / 5.0 | 45 / 75 | 0.30 / 0.50 |
+
+- **Build:** a stroke is charged its length times `build_per_m` of its weight (skipped in
+  `benchmark_mode`); the preview's `build_cost` is the same number.
+- **Changing a built road's type** (the user's decision, 2026-11-03): Road Properties charges
+  the difference, `max(0, new weight - current weight) x 15 x` the road's length, and shows it
+  on Apply ("Apply (+1,230)"); a cheaper type refunds nothing and undo keeps the charge, as
+  undoing a road refunds nothing. A class change in place charges nothing
+  (its upkeep follows the roll at once).
+- **Upkeep:** the rolling sum folds `round(length_mm x weight)` per edge
+  (`RoadUpkeepRoll`, "2-lane-equivalent millimetres", order-independent, `O(edges / slots per
+  day)` per slot); the calendar close charges 0.1 per equivalent metre. A city of 2-lane 50 km/h
+  ground roads folds exactly the old integers. Save format 112 renamed the five scheduler
+  columns to `road_upkeep_*`.
+- The `SIM-02` envelope cities hold only 2-lane 50 km/h ground roads: their daily records and
+  treasury were byte-identical across the change (round RB3b), so no fixture was re-baselined.
+- The walking proof's fix for roads without sidewalks (round RB3a) was timed on the isolated
+  hourly phases at 10k only as a diagnosis on an unpublished snapshot (`PERF-13` blocks the
+  published contract snapshot); it established no contract number.
 
 ### Fiscal policy
 

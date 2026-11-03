@@ -343,8 +343,10 @@ the text dump names its save and the road network it holds. To check a refusal a
 
 This builds, then runs `godot/tests/replay_road_attempts.gd` headless in a throwaway profile. It
 loads every installed asset pack read-only, loads the save, and sends each `road_attempt` along
-the player's path: the click check, then, if that passes, the commit. Each attempt prints one
-line:
+the player's path: the click check, then, if that passes, the commit, with the attempt's tunnel,
+median and road-type attributes set first (an attempt without `speed_kmh`, `sidewalks` or
+`zoning`, from before `ROAD-101`, replays the built-ins' 50 km/h with sidewalks and zoning).
+Each attempt prints one line:
 
 ```text
 attempt 4 (commit, parcel_overlap): reproduced, refused by commit

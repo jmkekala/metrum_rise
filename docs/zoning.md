@@ -378,8 +378,17 @@ path is for invalid saved data only; it must never leave illegal parcel geometry
 `Edge::no_building_spawn` blocks parcel attachment on that edge.
 
 - Default: `false`
-- Automatic: high-speed roads are marked no-build when created
+- Road types (`ROAD-101`): a type's `zoning` flag is `!no_building_spawn`; a stroke takes its
+  type's flag, and Road Properties' type change applies it (zoning off removes the road's
+  buildings and parcels as the checkbox does, after a confirmation, see below). The speed never
+  sets it: both 80 km/h rules (at creation and at load) are gone, and the saved flag is the
+  truth. 80 km/h (`HIGH_SPEED_ROAD_THRESHOLD_MS`) is only the road builder's suggestion: a new
+  type whose speed reaches it gets zoning off once, unless the player set the checkbox. Type
+  matching ignores the flag, so the checkbox below stays a per-road override.
 - Player toggle: road properties panel checkbox
+- Roads without sidewalks may zone (the rural road, design D1): their lots derive as on any
+  road and their buildings are car-only destinations, 0.75 m shoulder instead of the sidewalk
+  (the road builder warns "No sidewalks: buildings here are reached by car only")
 - Persistence: saved on `network_edges`
 - Topology: split edges copy the flag to both children
 - Overlay: zoning tool draws no-build edge guide lines
@@ -387,7 +396,10 @@ path is for invalid saved data only; it must never leave illegal parcel geometry
 Enabling the flag runs allocator maintenance immediately, removes buildings facing the newly
 blocked edge, and removes zoning parcels attached to that edge so saves cannot retain invalid
 parcel attachments. Changing the flag also marks the allocator dirty and rebuilds building
-entrances.
+entrances. A road type with zoning off applied in Road Properties does the same; its verdict
+counts the buildings first (`buildings_removed`) and Apply asks "Apply removes N buildings. This
+cannot be undone.": the undo restores the road and its emptied parcels, never the buildings
+(neither does the checkbox, which has no undo).
 
 ---
 
