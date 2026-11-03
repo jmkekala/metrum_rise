@@ -10380,7 +10380,7 @@ a walkway stroke with a median whatever the tool holds (`median_requires_vehicle
 
 #### Road types and the road library (ROAD-101)
 
-Rounds RB1a (Rust) and RB1b (Godot), 2026-11-03; the road builder window follows in RB2.
+Rounds RB1a (Rust), RB1b (Godot) and RB2 (the road builder window), 2026-11-03.
 
 The player draws roads by picking a **road type**; the drawing panel has no lane or median
 controls (Tool mode, Snapping and Structure stay), and the lane and median keys (`]` / Up,
@@ -10413,7 +10413,11 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   entries; the library `error`), `check_road_layout(parts)` (verdict, widths, suggested name),
   `create_road_type(name, parts)`, `update_road_type(id, name, parts)`,
   `delete_road_type(id)`, and `get_edge_cross_section`'s `road_type` (the first usable type,
-  built-ins first, whose cross-section equals the edge's exactly, else "").
+  built-ins first, whose cross-section equals the edge's exactly, else ""). For the road
+  builder (RB2): `check_road_type_name(name, id)` (the write's name verdict, `name_*` keys, for
+  a new type with `id` empty or as custom type `id`'s name) and `reload_road_types()` (re-reads
+  the file, so a library fixed or edited by hand lists without a restart; writes always re-read
+  first).
 - **Road tool**: `RoadTool.set_road_type(id)` (GDScript) reads the type's lanes and median from
   `get_road_types()` and sets them through the existing inputs (lanes per call,
   `set_road_tool_median`), so a built-in type sends exactly the arguments the old buttons did and
@@ -10422,11 +10426,66 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   `set_median` stay the low-level setters benchmarks, probes and the debug replay write.
   `MainUI.refresh_road_types()` lists the library again and re-picks the tool's type, so an
   edited type draws its new layout from the next stroke on.
-- **Roads menu** (`ui/road_type_menu.gd`): the usable types, built-ins then custom ones, the
-  tool's current type marked, at most ten buttons, ended by "Road builder..." (it emits
-  `road_builder_requested` for the builder window, `ROAD-101` RB2). Cul-De-Sac stays a tool
-  button.
-- **Road Properties**: a road-type picker (below).
+- **Roads menu** (`ui/road_type_menu.gd`): the five built-ins as buttons, then one fixed-width
+  "Custom roads" drop-down listing every usable custom type, a separator and "Road builder...",
+  then Cul-De-Sac (a tool button). The tool's current type is marked: its built-in button
+  pressed, or the drop-down showing the custom type's name (trimmed with an ellipsis) in the
+  pressed style with the item checked. However many types the library holds, the row fits a
+  1280 x 720 screen (RB2; RB1b's row of up to ten type buttons ran off it with two custom
+  types).
+- **Road Properties**: a road-type picker (below); it relists the types after a library edit.
+
+#### The road builder (ROAD-101, round RB2)
+
+"Road builder..." (the Roads row's drop-down) opens the **Road Builder** window
+(`ui/road_builder/`: `road_builder_window.gd` the controller; the strip, part tiles, part popup,
+library column and glyphs are views). It is a persistent, movable, resizable, non-exclusive
+`Window` (960 x 360 at the 1920 x 1080 reference, minimum 760 x 300,
+`UIStyle.set_persistent_window_layout`, `WindowResizeHandles`): the camera and the road tool keep
+working, as under Road Properties (a focused window holds the HUD keys until the map is clicked).
+Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
+
+- **Strip.** The layout across the road, left to right looking the way it is drawn, to scale
+  (at most 24 px/m, each part at least 24 px so a 0.5 m painted median stays clickable), in the
+  roadbed's surface colours: asphalt lanes, light paving sidewalks with a kerb edge, painted
+  hatching, a kerbed grass or paving median. Above each part a procedural `_draw()` glyph (an
+  arrow up for a forward lane, down for a backward one; the median's surface; a pedestrian for a
+  sidewalk), under it Rust's width, and beside the strip the lane split ("2 + 2"), the road
+  width (between the sidewalks) and the total width. Sidewalks are fixed at both ends; they
+  cannot be moved, removed or opened. Every change asks `check_road_layout`; an invalid layout is
+  tinted red with Rust's reason (`road_reason_text.gd`) under the strip, never auto-sorted.
+- **Parts in.** Five tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
+  median (each median at its style's default width; no footpath tile: the Walkway stays a
+  built-in). Both gestures: click a "+" slot between two parts and then a tile (the tile goes
+  there and the next slot is selected; the slot before the right sidewalk is selected at
+  first), or drag a tile into the strip (a marker shows the boundary it lands on). A part
+  dragged along the strip moves; dragged off it, it is removed.
+- **Part popup.** Clicking a part opens a `PopupPanel`: for a median its style (Painted, Grass,
+  Paving) and width in 0.5 m steps within the style's range (`median_controls.gd`, without
+  None), and for any part Move left / Move right (swaps with an interior neighbour) and Remove.
+- **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m")
+  until the player types one. Create road (Save when editing) is enabled only when the layout
+  passes and `check_road_type_name` accepts the name (empty, over 40 characters, control
+  characters, or another type's name ignoring case, built-ins included) and the library can be
+  written; the line under the strip gives the first reason it is not. Enter creates, Esc and
+  Cancel close without writing. Create and Save write the library and close the builder; a
+  created type becomes the road tool's, ready to draw.
+- **Library column.** The built-ins (selecting one starts a new type from its layout; Duplicate
+  does the same; the Walkway cannot be duplicated), then the player's types (select to edit,
+  Duplicate, Delete after a `ConfirmationDialog` naming the type and that built roads keep their
+  layout). An unusable entry is greyed with its reason ("Broken Road: Lanes against traffic go on
+  the left"); selecting it opens it for editing so it can be fixed and saved. When the file does
+  not parse or a newer game wrote it, the library error stands on top and every write is
+  refused (Create, Save and Delete disabled), the file left as it was.
+- **After a write.** Create, Save and Delete emit `road_types_changed`;
+  `MainUI.refresh_road_types()` relists the Roads row and Road Properties and re-picks the road
+  tool's type, so an edited type draws its new layout from the next stroke on. Library edits
+  have no undo, and roads already built keep their own layout (decision 4).
+- **Tests**: `road_builder_test` (in `./run.sh --test`) drives the window through Main.tscn;
+  `road_types_test` checks the row at 1280 x 720 with thirteen custom types.
+- Not in v1: speed limits per type, parking, bike, bus or tram lanes, one-sided sidewalks, lane
+  widths, an off-centre median, reordering sidewalks, unsaved-change prompts (selecting another
+  type discards the layout being built).
 
 #### Grass layer (round R3b2)
 
