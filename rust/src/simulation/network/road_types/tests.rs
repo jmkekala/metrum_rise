@@ -72,25 +72,26 @@ fn valid_layouts_build_their_cross_section() {
     let RoadPart::Median(paving_median) = paving else {
         unreachable!()
     };
-    let cases: &[(&[RoadPart], (u8, u8, Option<RoadMedian>))] = &[
-        (&[RoadPart::Footpath], (0, 0, None)),
-        (&[S, B, F, S], (1, 1, None)),
-        (&[S, F, S], (1, 0, None)),
-        (&[S, B, S], (0, 1, None)),
-        (&[S, B, F, F, S], (2, 1, None)),
-        (&[S, B, B, paving, F, F, S], (2, 2, Some(paving_median))),
-        (&[S, B, B, B, B, F, F, F, F, S], (4, 4, None)),
+    let section = |fwd_lanes, bkw_lanes, median| RoadCrossSection {
+        fwd_lanes,
+        bkw_lanes,
+        median,
+    };
+    let cases: &[(&[RoadPart], RoadCrossSection)] = &[
+        (&[RoadPart::Footpath], section(0, 0, None)),
+        (&[S, B, F, S], section(1, 1, None)),
+        (&[S, F, S], section(1, 0, None)),
+        (&[S, B, S], section(0, 1, None)),
+        (&[S, B, F, F, S], section(2, 1, None)),
+        (
+            &[S, B, B, paving, F, F, S],
+            section(2, 2, Some(paving_median)),
+        ),
+        (&[S, B, B, B, B, F, F, F, F, S], section(4, 4, None)),
     ];
-    for (parts, (fwd_lanes, bkw_lanes, median)) in cases {
+    for (parts, expected) in cases {
         let section = check_layout(parts).unwrap();
-        assert_eq!(
-            section,
-            RoadCrossSection {
-                fwd_lanes: *fwd_lanes,
-                bkw_lanes: *bkw_lanes,
-                median: *median,
-            }
-        );
+        assert_eq!(section, *expected);
         // The canonical layout is the drawn one and checks back to the same cross-section.
         assert_eq!(section.parts(), *parts);
         assert_eq!(check_layout(&section.parts()), Ok(section));

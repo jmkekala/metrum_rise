@@ -208,6 +208,10 @@ pub struct SimulationNode {
     pub(crate) road_tool_tunnel: bool,
     /// The road tool's median (`ROAD-80`), copied into every request the tool sends.
     pub(crate) road_tool_median: Option<crate::simulation::network::graph::RoadMedian>,
+    /// The player's road types (`ROAD-101`), read from `user://road_types.json` on first use:
+    /// tool configuration, never in `SimCore`, a save or the undo stack.
+    pub(crate) road_types:
+        Mutex<Option<crate::simulation::network::road_types::library::RoadTypeLibrary>>,
     /// Water mesh jobs currently being prepared outside the Godot frame.
     pub(crate) water_patch_mesh_jobs: Arc<Mutex<WaterPatchMeshAsyncState>>,
     /// Main-thread presentation cache; never serialized or used by simulation decisions.
@@ -435,6 +439,7 @@ impl INode3D for SimulationNode {
             road_tool,
             road_tool_tunnel: false,
             road_tool_median: None,
+            road_types: Mutex::new(None),
             water_patch_mesh_jobs,
             building_lods: Default::default(),
             car_visuals: Default::default(),

@@ -7,6 +7,7 @@ use crate::nodes::sim::core::RoadRejection;
 use crate::simulation::network::graph::RoadMedian;
 
 mod road_tool;
+mod road_types;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -458,31 +459,44 @@ impl SimulationNode {
     }
 
     /// Road `edge_id`'s cross-section for the Road Properties window (`ROAD-80`): `fwd_lanes`,
-    /// `bkw_lanes`, `width` (carriageway metres), `class` and `editable` (a live road with
-    /// vehicle lanes, which [`Self::set_edge_cross_section`] can change). Empty for an id that
+    /// `bkw_lanes`, `width` (carriageway metres), `class`, `median_style`, `median_width`,
+    /// `editable` (a live road with vehicle lanes, which [`Self::set_edge_cross_section`] can
+    /// change) and `road_type` (`ROAD-101`: the id of the first usable road type, built-ins
+    /// first, whose layout builds exactly this cross-section, else empty). Empty for an id that
     /// is not a live edge.
     #[func]
     pub fn get_edge_cross_section(&self, edge_id: i32) -> VarDictionary {
-        let core = self.lock_core();
-        let graph = &core.region_graph;
-        let Some(edge) = usize::try_from(edge_id)
-            .ok()
-            .and_then(|edge| graph.get_edge(edge))
-            .filter(|edge| !edge.deleted)
-        else {
-            return VarDictionary::new();
+        let (mut result, section) = {
+            let core = self.lock_core();
+            let graph = &core.region_graph;
+            let Some(edge) = usize::try_from(edge_id)
+                .ok()
+                .and_then(|edge| graph.get_edge(edge))
+                .filter(|edge| !edge.deleted)
+            else {
+                return VarDictionary::new();
+            };
+            let result = vdict! {
+                "fwd_lanes": i64::from(edge.fwd_lanes),
+                "bkw_lanes": i64::from(edge.bkw_lanes),
+                "width": edge.width,
+                "class": edge.class as i64,
+                "median_style": i64::from(RoadMedian::style_code(edge.median)),
+                "median_width": edge.median.map_or(0.0, |median| median.width_m),
+                "editable": edge
+                    .validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, edge.median)
+                    .is_ok(),
+            };
+            let section = crate::simulation::network::road_types::RoadCrossSection {
+                fwd_lanes: edge.fwd_lanes,
+                bkw_lanes: edge.bkw_lanes,
+                median: edge.median,
+            };
+            (result, section)
         };
-        vdict! {
-            "fwd_lanes": i64::from(edge.fwd_lanes),
-            "bkw_lanes": i64::from(edge.bkw_lanes),
-            "width": edge.width,
-            "class": edge.class as i64,
-            "median_style": i64::from(RoadMedian::style_code(edge.median)),
-            "median_width": edge.median.map_or(0.0, |median| median.width_m),
-            "editable": edge
-                .validate_cross_section(edge.fwd_lanes, edge.bkw_lanes, edge.median)
-                .is_ok(),
-        }
+        // The library is matched without the core lock.
+        result.set("road_type", self.road_type_of(section));
+        result
     }
 
     /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes and
