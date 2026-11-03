@@ -10166,7 +10166,8 @@ closure is compiled into a scratch roadbed: a failed node piece (`node_piece_fai
 newly covered painted cells (`field_overlap`, `zoning_cell_overlap`) and a steepened profile
 (`road_too_steep`) refuse. A widening is also checked on the applied graph against visible water
 (standard roads, `water_requires_bridge`, as the class change), parcels inside the new frontage
-corridor (`width / 2 + SIDEWALK_WIDTH`, the stroke's half-width, `parcel_overlap`) and the
+corridor (`width / 2` plus the road's side band, `parcel_overlap`; a widening is judged on the
+roadbed half-width since round RB3b) and the
 illegal curve radius at the new width (`cross_section_too_wide_for_curve`). The graph is put back
 either way; the preview is this check.
 
@@ -10181,7 +10182,9 @@ deferred (D7). The class change (`set_edge_class_internal`) now pushes its check
 
 Bounds: the check is `O(closure pieces)` (two nodes' closures); the commit tail `O(local lanes +
 invalidated)` plus the undo's parallel `O(A / P + B / P)` membership passes over agents and
-buildings. No schema change: the edit writes `fwd_lanes`, `bkw_lanes` and `width`.
+buildings. No schema change: the edit writes `fwd_lanes`, `bkw_lanes` and `width` (and since
+`ROAD-101`'s round RB3b the type's `FOOT`, speed limit, `base_cost` and `no_building_spawn`,
+below).
 
 Acceptance record (round R3a, 2026-11-02, fresh; release binaries of `ea63df40` (control, with
 R8's uncommitted probe) and the round's final code; P-cores `taskset -c 0,2,4,6,8,10,12,14`,
@@ -10210,6 +10213,53 @@ R8's uncommitted probe) and the round's final code; P-cores `taskset -c 0,2,4,6,
   in [Lane centring](#lane-centring-road-100)); the roadbed product probe's lanes hash changed for
   its 117 one-way fixtures and no other hash.
 - Movement code is unchanged (lanes move, the tick does not), so `PERF-06` was not rerun.
+
+**Road-type attributes in place (`ROAD-101`, round RB3b, 2026-11-03).** The edit takes the full
+spec: lanes, median and the road type's `RoadAttributes` (speed, sidewalks, zoning).
+`preview_edge_cross_section` and `set_edge_cross_section` gained `speed_kmh` (20-120 in steps of
+10, else `speed_out_of_range`), `sidewalks` and `zoning`; a valid verdict also carries
+`buildings_removed` and `cost_delta`. `RegionGraph::set_edge_cross_section` writes `FOOT` (a car
+road's sidewalks), the speed limit (with `base_cost` recomputed, only when the speed changes) and
+`no_building_spawn`; `cross_section_unchanged` compares the full spec. A widening is judged on the
+roadbed half-width (`visual_roadbed_half_width_m`: sidewalks, or without them the 0.75 m
+shoulders), so sidewalks added beside a parcel are refused (`parcel_overlap`) though the
+carriageway keeps its width, and the parcel corridor is `width / 2` plus the road's side band
+(`side_band_width_m`). Walkers on a removed sidewalk go through the same reattach as cars: the
+nearest sidewalk lane within 30 m, else laneless on their road (`TRAFFIC-19`'s case); none is
+moved or lost. The closure's entrances are rebuilt, so the road's buildings become car-only
+destinations, and the deferred routing rebuild takes the new speed and the walking topology.
+Zoning turned off does what the "No buildings" checkbox does: the allocator maintenance
+demolishes the road's buildings at once and its parcels are removed, other roads' buildings keep
+their rezone grace; `buildings_removed` counts them first (every building whose road it is, a
+parallel `O(B / P)` count only when zoning goes off). The undo record restores the edge records
+and the emptied parcels; demolished buildings stay demolished. `cost_delta` is the new cost
+weight less the current one times 15 times the road's length, floored at 0 (a cheaper type
+refunds nothing); the commit charges it outside `benchmark_mode`. Until round RB3c's Road
+Properties passes a type's attributes, `select_tool.gd` sends each road's own (read back with
+`get_edge_cross_section`). The cost rule is `simulation/network/road_types/cost.rs`.
+
+Acceptance record (round RB3b, fresh; release library test binaries of `dev` `7843de33`
+(control) and the round's code (`1c57f055`, with R8's uncommitted probe), plus round RB3a's last
+commit `f32712bc` for a bisect; P-cores `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`,
+`.run.lock` and the exclusive timing lock, 1-minute load 0.92-1.47 at each session's start, no
+Godot running; logs in `$ARTIFACTS`). `$TEST_BINARY nodes::sim::core::tests::road_plan_scaling::<test> --exact --ignored
+--nocapture --test-threads=1`, 0/1k/10k/100k remote buildings, local products identical at every
+tier, p50 ms:
+
+| run (C B T C, B C T, C A B A: 11 runs in three short sessions) | verdict | commit | undo | crossing toggle |
+|---|---|---|---|---|
+| control, `populated_median_edit_scaling` (4 runs) | 0.27-1.06 / 0.34-0.80 / 0.31-0.39 / 0.28-0.41 | 1.25-2.43 / 1.00-1.43 / 0.97-1.02 / 1.54-1.62 | 0.36-0.68 / 0.31-0.50 / 0.40-0.42 / 1.04-1.07 | 0.79-1.23 / 0.66-0.97 / 0.75-0.81 / 1.33-1.42 |
+| RB3a `f32712bc`, the same (2 runs) | 0.26-0.39 / 0.48-0.63 / 0.41-0.46 / 0.33 | 0.81-1.79 / 0.85-0.98 / 1.01-1.04 / 1.94-2.03 | 0.23-0.54 / 0.28-0.34 / 0.45-0.49 / 1.41-1.45 | 0.66-1.22 / 0.56-0.86 / 0.83-0.87 / 1.73-1.76 |
+| branch, the same (3 runs) | 0.27-1.37 / 0.30-0.59 / 0.34-0.36 / 0.35-0.39 | 0.61-1.96 / 0.70-1.09 / 0.99-1.07 / 1.92-1.99 | 0.20-0.60 / 0.24-0.35 / 0.48-0.53 / 1.41-1.44 | 0.44-0.58 / 0.58-0.77 / 0.76-0.84 / 1.69-1.75 |
+| branch, `populated_road_type_edit_scaling` (sidewalks off, 80 km/h; 2 runs) | 0.26 / 0.32-0.36 / 0.30-0.33 / 0.31-0.32 | 0.85-1.62 / 0.67-1.12 / 0.93-1.03 / 1.87-1.91 | 0.30-0.50 / 0.22-0.45 / 0.48-0.50 / 1.39-1.43 | 0.91-1.00 / 0.63-1.20 / 0.84-0.91 / 1.69-1.78 |
+
+The road-type change costs what the median edit costs and stays flat in the remote city, as
+round R3b2's record (100k commit 1.868, undo 1.269, toggle 1.697); its 100k step is the undo's
+`O(A / P + B / P)` membership passes over 600k agents. Finding, not this round's code: at 100k
+the branch's commit, undo and crossing toggle sit 0.3-0.45 ms above the control's in every
+interleaved run, and the binary of round RB3a's last commit shows the same, so round RB3b adds
+nothing to it. Neither round changes the crossing toggle's path (`restore_lanes_locally`, the
+deferred routing rebuild); not profiled further.
 
 The Road Properties window (select tool) carries a road-type picker (`ROAD-101`, replacing the
 R3 lane steppers and Median rows): the usable types, the selected road's marked from
