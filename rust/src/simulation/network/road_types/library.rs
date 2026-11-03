@@ -176,6 +176,16 @@ impl RoadTypeLibrary {
         })
     }
 
+    /// Whether `name` would be accepted for a new type (`except_id` empty) or as custom type
+    /// `except_id`'s new name, against the list as last read: the [`clean_name`] keys or
+    /// `name_taken`. The road builder asks it on every keystroke; [`Self::create`] and
+    /// [`Self::update`] check again on the file re-read for the write. `O(types x name)`.
+    pub fn check_name(&mut self, name: &str, except_id: &str) -> Result<(), RoadTypeRefusal> {
+        self.ensure_loaded();
+        let except = self.entry_index(except_id).ok();
+        self.free_name(name, except).map(|_| ())
+    }
+
     /// Adds a type named `name` (trimmed) with `parts`, and returns its new id. Refused when
     /// the file cannot be written, the layout fails [`check_layout`], the name breaks a rule
     /// ([`clean_name`]) or another type has it (`name_taken`), or the write fails

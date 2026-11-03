@@ -156,6 +156,12 @@ fn edits_follow_the_name_and_layout_rules() {
         "road_type_unknown"
     );
     assert_eq!(reason(library.delete("custom:9")), "road_type_unknown");
+    // The builder's name check gives the write's verdict without writing.
+    assert_eq!(reason(library.check_name(" ", "")), "name_empty");
+    assert_eq!(reason(library.check_name("boulevard", "")), "name_taken");
+    assert_eq!(reason(library.check_name("2-Lane road", &id)), "name_taken");
+    assert_eq!(library.check_name("boulevard", &id), Ok(()));
+    assert_eq!(library.check_name("Avenue", ""), Ok(()));
     // A type may keep its own name in another case; its id stays.
     assert_eq!(
         library.update(&id, "boulevard", &[S, B, B, grass(4.0), F, F, S]),

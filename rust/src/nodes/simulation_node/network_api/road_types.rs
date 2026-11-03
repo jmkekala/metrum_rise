@@ -116,6 +116,18 @@ impl SimulationNode {
         }
     }
 
+    /// Checks a type name before a create or an update (`ROAD-101`, the road builder's name
+    /// field): the empty string when [`Self::create_road_type`] (`id` empty) or
+    /// [`Self::update_road_type`] of custom type `id` would accept it, else `name_empty`,
+    /// `name_too_long`, `name_invalid_characters` or `name_taken`. Uses the list as last read;
+    /// the write checks again. `O(types x name)`.
+    #[func]
+    pub fn check_road_type_name(&self, name: GString, id: GString) -> GString {
+        self.with_road_types(|library| library.check_name(&name.to_string(), &id.to_string()))
+            .err()
+            .map_or_else(GString::new, |refusal| refusal.reason.into())
+    }
+
     /// Renames custom road type `id` to `name` and gives it `parts` (pass the current values
     /// for what stays) (`ROAD-101`). Returns the empty string when written, else the refusal
     /// key: those of [`Self::create_road_type`], `road_type_builtin` or `road_type_unknown`.
