@@ -281,6 +281,7 @@ fn perf_contract_phase() {
             &core.fiscal_policy,
         );
     }
+    let road_rebuild = road_rebuild(core);
     let setup_s = setup.elapsed().as_secs_f64();
     phases::begin();
     let before = work_snapshot();
@@ -407,6 +408,44 @@ fn perf_contract_phase() {
         serde_json::json!({
             "phase":name,"residents":residents(),"load_s":load_s,"setup_s":setup_s,"ms":elapsed_ms,
             "counts":counts,"phases":phases::finish(),"record":format!("{:?}",city.record()),
+            "road_rebuild":road_rebuild,
         })
     );
+}
+
+// `ROAD-101` acceptance (RB3a): `METRUM_PERF_ROAD_REBUILD=car_only` takes the sidewalks off the
+// frozen city's lowest-id road, as a player's road type without sidewalks would, and
+// `METRUM_PERF_ROAD_REBUILD=same` rebuilds the same derived state with every road unchanged
+// (the matched control). Either rebuilds lanes, the routing hierarchy and the entrances outside
+// the timed interval and reports the edge and the walking proof; unset, nothing changes.
+fn road_rebuild(core: &mut crate::nodes::sim::core::SimCore) -> serde_json::Value {
+    use crate::simulation::economy::agents::tick::TripQueryScratch;
+    use crate::simulation::network::types::{TransitFlags, TransitType};
+    let Ok(mode) = std::env::var("METRUM_PERF_ROAD_REBUILD") else {
+        return serde_json::Value::Null;
+    };
+    let graph = &mut core.region_graph;
+    let edge = (0..graph.edge_count())
+        .find(|&id| {
+            let edge = graph.edge(id);
+            !edge.deleted
+                && edge.primary_type == TransitType::Road
+                && edge.allowed_types & TransitFlags::FOOT != 0
+        })
+        .expect("a road with sidewalks");
+    match mode.as_str() {
+        "car_only" => graph.edge_mut(edge).allowed_types &= !TransitFlags::FOOT,
+        "same" => {}
+        _ => panic!("METRUM_PERF_ROAD_REBUILD is car_only or same, not {mode}"),
+    }
+    core.transit_network.lane_system.rebuild(&mut core.region_graph);
+    core.transit_network
+        .rebuild_cch_and_check(&core.region_graph);
+    core.rebuild_building_entrances_internal();
+    let mut scratch = TripQueryScratch::default();
+    scratch.prepare(&core.transit_network, &core.region_graph);
+    serde_json::json!({
+        "mode": mode, "edge": edge,
+        "walking_proof": scratch.walking_proof_complete_for_test(),
+    })
 }
