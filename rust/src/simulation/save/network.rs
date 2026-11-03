@@ -2,7 +2,6 @@
 
 //! Road graph and lane connection serialization.
 
-use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
 use crate::simulation::network::validate::{
@@ -230,8 +229,8 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 )));
             }
             let speed_limit = row.get(9)?;
-            let no_building_spawn =
-                row.get::<_, i64>(14)? != 0 || speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS;
+            // The saved flag is the road's own (`ROAD-101`: a fast road may zone).
+            let no_building_spawn = row.get::<_, i64>(14)? != 0;
             let start_node = i64_to_u32(row.get(1)?)?;
             let end_node = i64_to_u32(row.get(2)?)?;
             let allowed_types = i64_to_u8(row.get(4)?)?;

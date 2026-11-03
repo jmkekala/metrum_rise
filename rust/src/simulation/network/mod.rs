@@ -408,10 +408,6 @@ impl TransitNetwork {
             crate::simulation::pathing::cost::CostCalculator::calculate_costs(graph.edge(edge_id));
         graph.edges[edge_id].base_cost = cost;
         graph.edges[edge_id].physical_length = length;
-        // Auto-flag high-speed roads; speed_limit is stored in m/s.
-        if graph.edges[edge_id].speed_limit >= config::HIGH_SPEED_ROAD_THRESHOLD_MS {
-            graph.edges[edge_id].no_building_spawn = true;
-        }
 
         // Distance-to-road update is deferred to after lane rebuild in non-bulk mode
         // (called below after `process_intersections` and clip rebuild).

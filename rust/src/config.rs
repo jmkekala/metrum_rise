@@ -86,6 +86,8 @@ pub const KMH_TO_MPS: f32 = 1.0 / 3.6;
 pub const DEFAULT_URBAN_ROAD_SPEED_MS: f32 = 50.0 * KMH_TO_MPS;
 
 /// Speed threshold where a road is treated as high-speed frontage-hostile infrastructure: 80 km/h.
+/// Advisory only (`ROAD-101`): the road builder suggests zoning off at it; an edge's own
+/// `no_building_spawn` decides, never its speed.
 pub const HIGH_SPEED_ROAD_THRESHOLD_MS: f32 = 80.0 * KMH_TO_MPS;
 
 /// Speed threshold where road traffic emits higher environmental noise: 60 km/h.
