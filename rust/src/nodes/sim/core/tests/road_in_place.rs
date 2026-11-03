@@ -550,6 +550,7 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
         .preview_edge_cross_section_internal(side as i32, 1, 1, None, off)
         .unwrap();
     assert_eq!(verdict.buildings_removed, 1);
+    assert!(verdict.demolition_permanent, "no undo restores a road's buildings");
     assert_eq!(verdict.cost_delta, 0.0, "zoning costs nothing");
     assert_eq!(edit(&mut core, side, (1, 1, None), off), "");
     assert!(core.region_graph.edge(side).no_building_spawn);
@@ -583,6 +584,7 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
         .preview_edge_cross_section_internal(west as i32, 1, 1, None, on)
         .unwrap();
     assert_eq!(verdict.buildings_removed, 0);
+    assert!(!verdict.demolition_permanent);
     assert_eq!(edit(&mut core, west, (1, 1, None), on), "");
     assert!(!core.region_graph.edge(west).no_building_spawn);
 }

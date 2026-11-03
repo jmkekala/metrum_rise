@@ -35,6 +35,10 @@ pub(crate) struct CrossSectionVerdict {
     /// Buildings fronting the road that a change to zoning off demolishes (as the "No buildings"
     /// checkbox does); 0 otherwise.
     pub(crate) buildings_removed: usize,
+    /// Whether that demolition is permanent (any `buildings_removed`): an undo restores the
+    /// road and its parcels, empty, but no undo path restores a road's demolished buildings
+    /// (the bulldoze journal restores one building per entry), so the confirmation says so.
+    pub(crate) demolition_permanent: bool,
     /// What Apply charges: the new road type's build cost over the road's length less the
     /// current one's, floored at 0 (a cheaper type refunds nothing; `DESIGN-RB3` D10).
     pub(crate) cost_delta: f64,
@@ -266,6 +270,7 @@ impl SimCore {
         .max(0.0);
         CrossSectionVerdict {
             buildings_removed,
+            demolition_permanent: buildings_removed > 0,
             cost_delta,
         }
     }

@@ -510,7 +510,8 @@ impl SimulationNode {
     /// `sidewalks` and `zoning` in place (`ROAD-80`, `ROAD-101`; pass the road's own values from
     /// [`Self::get_edge_cross_section`] for what stays), without applying it: `is_valid`; when
     /// valid `buildings_removed` (the buildings on the road that zoning off demolishes, for a
-    /// confirmation) and `cost_delta` (what Apply charges: the build-cost difference over the
+    /// confirmation), `demolition_permanent` (true with any `buildings_removed`: undo restores
+    /// the road and its empty parcels, never the buildings) and `cost_delta` (what Apply charges: the build-cost difference over the
     /// road's length, never negative); when refused `invalid_reason` (stable key) and `detail`.
     /// The same check as [`Self::set_edge_cross_section`].
     #[func]
@@ -540,6 +541,7 @@ impl SimulationNode {
             Ok(verdict) => vdict! {
                 "is_valid": true,
                 "buildings_removed": verdict.buildings_removed as i64,
+                "demolition_permanent": verdict.demolition_permanent,
                 "cost_delta": verdict.cost_delta,
             },
             Err(rejection) => vdict! {
