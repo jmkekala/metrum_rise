@@ -164,22 +164,20 @@ impl AgentSystem {
 
         // The test reads only agent `i`'s lane and the edit's sets, and the writes below touch
         // only agent `i`, so the shared pool tests every agent first and the writes follow in
-        // agent order, as the serial loop made them. O(A / P + invalidated agents).
+        // agent order, as the serial loop made them (`scan_agents`). O(A / P + invalidated
+        // agents).
         let agents = &self.agents;
         let invalidated: Vec<(usize, usize)> = crate::thread_pools::install(|| {
-            (0..agents.len())
-                .into_par_iter()
-                .filter_map(|i| {
-                    let lane = lane_system.lanes.get(agents.current_lane_id[i])?;
-                    invalidated_lane_reattach_edge(
-                        lane,
-                        &affected_edges,
-                        &affected_lane_ids,
-                        lane_system,
-                    )
-                    .map(|edge| (i, edge))
-                })
-                .collect()
+            scan_agents(agents.len(), |i| {
+                let lane = lane_system.lanes.get(agents.current_lane_id[i])?;
+                invalidated_lane_reattach_edge(
+                    lane,
+                    &affected_edges,
+                    &affected_lane_ids,
+                    lane_system,
+                )
+                .map(|edge| (i, edge))
+            })
         });
         for (i, reattach_edge_id) in invalidated {
             let lid = self.agents.current_lane_id[i];
@@ -259,14 +257,12 @@ impl AgentSystem {
         let agents = &self.agents;
         let detached: Vec<(usize, Option<LaneReattachCandidate>)> =
             crate::thread_pools::install(|| {
-                let detached: Vec<usize> = (0..agents.len())
-                    .into_par_iter()
-                    .filter(|&i| {
-                        agents.current_lane_id[i] == usize::MAX
-                            && matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
-                            && affected_edges.contains(&agents.current_edge[i])
-                    })
-                    .collect();
+                let detached: Vec<usize> = scan_agents(agents.len(), |i| {
+                    (agents.current_lane_id[i] == usize::MAX
+                        && matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+                        && affected_edges.contains(&agents.current_edge[i]))
+                    .then_some(i)
+                });
                 detached
                     .into_par_iter()
                     .map(|i| {
@@ -377,23 +373,21 @@ impl AgentSystem {
 
         // The test reads only agent `i` and clearing writes only agent `i`, so the shared pool
         // tests every agent first (editor paths arrive outside it, CODE-17) and the routes clear
-        // in agent order. O(A + path nodes / P).
+        // in agent order (`scan_agents`). O(A + path nodes / P).
         let agents = &*self;
         let touched: Vec<usize> = crate::thread_pools::install(|| {
-            (0..agents.agents.len())
-                .into_par_iter()
-                .filter(|&i| {
-                    agents.agents.transit[i] != TRANSIT_IN_BUILDING
-                        && agent_route_state_touches_road_edit(
-                            agents,
-                            i,
-                            &affected_edges,
-                            &affected_nodes,
-                            &affected_lane_ids,
-                            lane_system,
-                        )
-                })
-                .collect()
+            scan_agents(agents.agents.len(), |i| {
+                (agents.agents.transit[i] != TRANSIT_IN_BUILDING
+                    && agent_route_state_touches_road_edit(
+                        agents,
+                        i,
+                        &affected_edges,
+                        &affected_nodes,
+                        &affected_lane_ids,
+                        lane_system,
+                    ))
+                .then_some(i)
+            })
         });
         for i in touched {
             if traffic_debug {
@@ -599,6 +593,30 @@ impl AgentSystem {
         self.agents.overtake_cooldown_s[i] = 0.0;
         self.agents.keep_pending_lane_attach(i, pending_attach);
     }
+}
+
+// What `pick` returns for the agents it selects, in agent order: a parallel scan of fixed
+// chunks of agents, each a plain loop over its own index range. A road edit's membership scans
+// (the invalidation, the detached agents, the touched routes) visit every agent. Written as
+// `filter(..).collect()` on a rayon range, their per-agent loop depended on whether LLVM inlined
+// rayon's folder into its range split: where it did not, the range iterator stayed in memory and
+// the loop ran 5-8x slower, which put 0.4 ms on every edit at 600k agents in one build and not
+// another (`ROAD-101` round RB3b2). The chunk's own loop does not depend on that inlining.
+// Allocates one vector per chunk that selects an agent. O(A / P + selected).
+fn scan_agents<T: Send>(count: usize, pick: impl Fn(usize) -> Option<T> + Sync) -> Vec<T> {
+    const CHUNK: usize = 4096;
+    (0..count.div_ceil(CHUNK))
+        .into_par_iter()
+        .flat_map_iter(|chunk| {
+            let mut picked = Vec::new();
+            for i in chunk * CHUNK..((chunk + 1) * CHUNK).min(count) {
+                if let Some(value) = pick(i) {
+                    picked.push(value);
+                }
+            }
+            picked
+        })
+        .collect()
 }
 
 // The lane rebuild closure of `affected_edges` (`LaneSystem::incremental_rebuild_edge_closure`).
