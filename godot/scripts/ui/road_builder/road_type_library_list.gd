@@ -105,7 +105,7 @@ func _add_type(type: Dictionary) -> void:
 	var index: int
 	if bool(type.get("usable", false)):
 		index = list.add_item("  " + type_name)
-		list.set_item_tooltip(index, RoadTypeMenu.describe(type))
+		list.set_item_tooltip(index, RoadTypeMenu.tooltip(type))
 	else:
 		var reason := RoadReasonText.text(type, "This road type cannot be used")
 		index = list.add_item("  %s: %s" % [type_name if not type_name.is_empty() else "(no name)", reason])

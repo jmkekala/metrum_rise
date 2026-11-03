@@ -3,8 +3,9 @@
 ## The road builder's strip (`ROAD-101`): the layout seen across the road, left to right looking
 ## the way it is drawn, drawn to scale with a floor of MIN_PART_PX per part so a 0.5 m painted
 ## median stays clickable. Rows, top to bottom: a "+" slot marker on every boundary a part may be
-## inserted at (between the sidewalks), each part's glyph, its surface, and its width. An invalid
-## layout is tinted red. Clicking a slot selects it and clicking a part (not a sidewalk) asks for
+## inserted at (between the two ends: the sidewalks, or for a road without sidewalks its shoulder
+## bands), each part's glyph, its surface, and its width. An invalid
+## layout is tinted red. Clicking a slot selects it and clicking a part (not an end) asks for
 ## its popup; parts drag along the strip to move, off it to be removed, and the palette's tiles
 ## drop into it. A view: it shows the parts and Rust's widths it is given and reports gestures
 ## through its signals; the builder edits the layout and asks Rust's check.
@@ -71,7 +72,7 @@ func set_layout(layout: Array, part_widths_m: PackedFloat32Array, is_valid: bool
 	selected_slot = clampi(selected_slot, 1, maxi(1, parts.size() - 1))
 	_relayout()
 
-## Selects insert slot `slot` (clamped to the slots between the sidewalks).
+## Selects insert slot `slot` (clamped to the slots between the two ends).
 func set_slot(slot: int) -> void:
 	selected_slot = clampi(slot, 1, maxi(1, parts.size() - 1))
 	queue_redraw()
@@ -84,7 +85,8 @@ func part_rect(index: int) -> Rect2:
 func slot_position(slot: int) -> Vector2:
 	return Vector2(_xs[slot], SLOT_Y)
 
-## Whether part `index` may be moved, removed or opened (everything but the sidewalks).
+## Whether part `index` may be moved, removed or opened (everything but the two ends and any
+## sidewalk).
 func is_interior(index: int) -> bool:
 	return index > 0 and index < parts.size() - 1 and String(parts[index].get("kind", "")) != "sidewalk"
 

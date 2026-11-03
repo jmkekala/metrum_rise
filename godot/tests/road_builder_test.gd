@@ -8,7 +8,11 @@
 ## suggested name and with a typed one (Enter), a taken name refused; the new type in the Roads
 ## row draws a road with its layout; edit (the tool re-picks it), duplicate (a custom type and a
 ## built-in), delete after a confirmation; an unusable entry listed with its reason and fixed;
-## an unparsable library shows its error and writes nothing; Esc and Cancel write nothing.
+## an unparsable library shows its error and writes nothing; Esc and Cancel write nothing. The
+## type's attributes (`ROAD-101`): Sidewalks off draws shoulders and sends no sidewalk parts, the
+## car-only warning, the Speed stepper (zoning off once at 80 km/h, unless the player set it, and
+## never for an edited type), Rust's speed refusal and cost line; the created type's fields, the
+## road tool's attributes and the drawn edge; Save keeps an edited type's own speed and zoning.
 ## Writes the road-type library, so it runs only in the isolated profile.
 extends SceneTree
 
@@ -17,6 +21,7 @@ const LIBRARY := "user://road_types.json"
 const SW := {"kind": "sidewalk"}
 const BACK := {"kind": "car_lane", "forward": false}
 const AHEAD := {"kind": "car_lane", "forward": true}
+const SH := {"kind": "shoulder"}
 # The palette's tile order.
 const TILE_BACK := 0
 const TILE_AHEAD := 1
@@ -186,13 +191,19 @@ func _run() -> void:
 	await _open()
 	var window: Window = _builder.window
 	_expect(_builder.is_open() and not window.exclusive and not window.unresizable, "Road builder... opens a non-exclusive resizable window")
-	_expect(window.title == "Road Builder" and window.get_meta("metrum_base_window_min_size") == Vector2i(760, 300)
-		and window.get_meta("metrum_base_window_size") == Vector2i(960, 360), "the window: %s" % window.title)
+	_expect(window.title == "Road Builder" and window.get_meta("metrum_base_window_min_size") == Vector2i(760, 400)
+		and window.get_meta("metrum_base_window_size") == Vector2i(960, 440), "the window: %s" % window.title)
+	var content_y := int((window.get_child(0) as Control).get_combined_minimum_size().y)
+	_expect(content_y <= _builder.MIN_SIZE.y, "the smallest window holds every row: %d" % content_y)
 	_expect(_builder.parts == [SW, BACK, AHEAD, SW] and _builder.lanes_label.text == "1 + 1", "a new layout is 1 + 1: %s" % [_builder.parts])
 	_expect(not _builder.create_button.disabled and _builder.create_button.text == "Create road", "a new 1 + 1 can be created")
 	_expect(_builder.name_edit.text == String(_builder.check.suggested_name) and not _builder.name_edit.text.is_empty(),
 		"the name is Rust's suggestion: %s" % _builder.name_edit.text)
 	_expect(_builder.tiles.size() == 5, "five part tiles")
+	_expect(_builder.sidewalks_check.button_pressed and _builder.zoning_check.button_pressed and int(_builder.speed_box.value) == 50
+		and _builder.speed_row.visible, "a new type has sidewalks, 50 km/h and zoning")
+	_expect(_builder.cost_label.text == "15 / m, upkeep 0.10 / m / day" and _builder.warning_label.text.is_empty(),
+		"Rust's cost of the 2-Lane Road: %s" % _builder.cost_label.text)
 
 	# Click-insert: the popup removes both lanes, then a slot and three tiles build the road.
 	await _click_part(1)
@@ -359,6 +370,73 @@ func _run() -> void:
 	_expect(_type(copy).is_empty() and list.index_of(copy) < 0 and _changes == [""], "a confirmed delete removes it")
 	_expect(_builder.editing_id.is_empty() and _builder.parts == [SW, BACK, AHEAD, SW], "deleting the edited type starts a new one")
 	_expect(not _ui.road_type_menu.custom_ids.has(copy), "the Roads row drops it")
+	_builder.close()
+
+	# Attributes: Sidewalks off (both ends together, shoulders drawn), the car-only warning, the
+	# Speed stepper with zoning off once at 80 km/h, Rust's speed refusal and cost line.
+	await _open()
+	_builder.sidewalks_check.button_pressed = false
+	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and _builder.rust_parts() == [BACK, AHEAD], "no sidewalks: shoulder ends, not parts: %s" % [_builder.parts])
+	_expect(_builder.strip.valid and not bool(_builder.check.sidewalks) and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 0.75],
+		"the strip draws 0.75 m shoulders: %s" % _builder.strip.widths_m)
+	_expect(_builder.widths_label.text == "Road 7.0 m\nTotal 8.5 m", "the widths without sidewalks: %s" % _builder.widths_label.text)
+	_expect(_builder.status_label.text == "1 + 1 lanes, 50 km/h, no sidewalks, 8.5 m wide", "the description: %s" % _builder.status_label.text)
+	_expect(_builder.warning_label.text == _builder.CAR_ONLY_WARNING, "no sidewalks with zoning warns: %s" % _builder.warning_label.text)
+	_expect(not _builder.strip.is_interior(0) and _builder.strip.is_interior(1), "the shoulders are fixed ends")
+	_builder.speed_box.value = 70
+	_expect(_builder.speed_kmh == 70 and _builder.zoning, "70 km/h keeps zoning")
+	_builder.speed_box.value = 80
+	_expect(not _builder.zoning and not _builder.zoning_check.button_pressed and _builder.warning_label.text.is_empty(),
+		"a new type reaching 80 km/h turns zoning off")
+	_builder.speed_box.value = 50
+	_builder.speed_box.value = 90
+	_expect(not _builder.zoning, "only once: zoning stays off")
+	_builder.zoning_check.button_pressed = true
+	_expect(_builder.zoning and _builder.warning_label.text == _builder.CAR_ONLY_WARNING, "zoning on again warns")
+	_builder.zoning_check.button_pressed = false
+	_builder.set_speed(105)
+	_expect(_builder.create_button.disabled and _builder.status_label.text == "Speed between 20 and 120 km/h, in steps of 10",
+		"Rust refuses a speed off the grid: %s" % _builder.status_label.text)
+	_builder.speed_box.value = 100
+	_expect(_builder.cost_label.text == "24 / m, upkeep 0.16 / m / day" and is_equal_approx(float(_builder.check.build_per_m), 24.0),
+		"Rust's cost at 100 km/h without sidewalks: %s" % _builder.cost_label.text)
+	_builder.sidewalks_check.button_pressed = true
+	_expect(_builder.parts == [SW, BACK, AHEAD, SW], "sidewalks back on: %s" % [_builder.parts])
+	_builder.sidewalks_check.button_pressed = false
+	_type_name("Builder Test Highway")
+	_builder.create_button.pressed.emit()
+	await process_frame
+	var highway := _type_named("Builder Test Highway")
+	_expect(int(highway.get("speed_kmh", 0)) == 100 and not bool(highway.get("zoning", true)) and not bool(highway.get("sidewalks", true))
+		and highway.get("parts", []) == [BACK, AHEAD], "the created type: %s" % highway)
+	var highway_id := String(highway.get("id", ""))
+	_expect(_tool.road_type_id == highway_id and _tool.speed_kmh == 100 and not _tool.sidewalks and not _tool.zoning,
+		"the road tool draws its attributes: %d %s %s" % [_tool.speed_kmh, _tool.sidewalks, _tool.zoning])
+	var rural := await _draw(-100.0)
+	var rural_section: Dictionary = _simulation.get_edge_cross_section(rural)
+	_expect(int(rural_section.get("speed_kmh", 0)) == 100 and not bool(rural_section.get("sidewalks", true))
+		and not bool(rural_section.get("zoning", true)) and String(rural_section.get("road_type", "")) == highway_id,
+		"the drawn road has the type's attributes: %s" % rural_section)
+	# Edit: the type's own attributes load and Save keeps them; an edit suggests nothing.
+	await _open()
+	list.pick(highway_id)
+	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and not _builder.sidewalks_check.button_pressed and int(_builder.speed_box.value) == 100
+		and not _builder.zoning_check.button_pressed, "an edited type loads its attributes")
+	_builder.speed_box.value = 110
+	_builder.create_button.pressed.emit()
+	await process_frame
+	var saved := _type(highway_id)
+	_expect(int(saved.get("speed_kmh", 0)) == 110 and not bool(saved.get("zoning", true)) and not bool(saved.get("sidewalks", true)),
+		"Save keeps the edited type's own attributes: %s" % saved)
+	await _open()
+	list.pick(avenue)
+	_builder.speed_box.value = 90
+	_expect(_builder.zoning and _builder.zoning_check.button_pressed, "an edited type keeps its zoning at 90 km/h")
+	_builder.library_list.new_button.pressed.emit()
+	_builder.zoning_check.button_pressed = false
+	_builder.zoning_check.button_pressed = true
+	_builder.speed_box.value = 80
+	_expect(_builder.zoning, "zoning the player set stays on at 80 km/h")
 	_builder.close()
 
 	# An unusable entry, added by hand: listed with its reason, not in the Roads row, fixed.

@@ -126,7 +126,7 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 		"layout_footpath_alone":
 			return "A footpath is a walkway on its own"
 		"layout_sidewalks":
-			return "Sidewalks at both ends"
+			return "Sidewalks at both ends or none"
 		"layout_two_medians":
 			return "One median at most"
 		"layout_lane_order":
@@ -139,6 +139,8 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "A median sits between the two directions"
 		"layout_unknown_part":
 			return "Unknown road part"
+		"speed_out_of_range":
+			return "Speed between 20 and 120 km/h, in steps of 10"
 		"name_empty":
 			return "Enter a name"
 		"name_too_long":
