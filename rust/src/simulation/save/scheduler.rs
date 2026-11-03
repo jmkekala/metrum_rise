@@ -31,10 +31,11 @@ pub(crate) struct SavedScheduler {
     pub(crate) freight_departures: MinuteLeveler,
     /// Clock of job locks (`AgentSystem::settlement_days`).
     pub(crate) agent_settlement_days: u32,
-    /// Rolling road length for daily upkeep (`SIM-02-G`): last finished sweep in metres,
-    /// current sweep in millimetres, edges frozen for it (saved as -1 before the first sweep)
-    /// and the next edge, both in saved edge numbering, and whether a sweep has finished.
-    pub(crate) road_length: (f64, i64, Option<u64>, u64, bool),
+    /// Rolling cost-weighted road length for daily upkeep (`SIM-02-G`, `ROAD-101`): last
+    /// finished sweep in 2-lane-equivalent metres, current sweep in equivalent millimetres,
+    /// edges frozen for it (saved as -1 before the first sweep) and the next edge, both in saved
+    /// edge numbering, and whether a sweep has finished.
+    pub(crate) road_upkeep: (f64, i64, Option<u64>, u64, bool),
     /// Rolling environment sweep (`SIM-02-H`) with live edge indices; `save` stores them as
     /// indices into the saved edges, which leave out deleted ones.
     pub(crate) environment: EnvironmentSweep,
@@ -66,21 +67,21 @@ pub(super) fn save(
         None => (-1, None),
     };
     tx.execute(
-        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured, environment_building_handles, environment_edges, environment_next_edge, environment_next_chunk, demand_snapshot_front, demand_snapshot_next_chunk, demand_snapshot_back, logistics_next_shipment_id, freight_departure_first_minute, freight_departure_counts) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_upkeep_front_m, road_upkeep_back_mm, road_upkeep_edges, road_upkeep_next_edge, road_upkeep_measured, environment_building_handles, environment_edges, environment_next_edge, environment_next_chunk, demand_snapshot_front, demand_snapshot_next_chunk, demand_snapshot_back, logistics_next_shipment_id, freight_departure_first_minute, freight_departure_counts) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             u64_to_i64(scheduler.next_slot)?,
             u64_to_i64(scheduler.next_event_seq)?,
             u64_to_i64(scheduler.next_spawn_id)?,
             i64::from(scheduler.logistics_hour_ticks),
             i64::from(scheduler.agent_settlement_days),
-            scheduler.road_length.0,
-            scheduler.road_length.1,
-            match scheduler.road_length.2 {
+            scheduler.road_upkeep.0,
+            scheduler.road_upkeep.1,
+            match scheduler.road_upkeep.2 {
                 Some(edges) => u64_to_i64(edges)?,
                 None => -1,
             },
-            u64_to_i64(scheduler.road_length.3)?,
-            i64::from(scheduler.road_length.4),
+            u64_to_i64(scheduler.road_upkeep.3)?,
+            i64::from(scheduler.road_upkeep.4),
             environment_handles,
             environment_edges,
             u64_to_i64(saved_edge(environment.next_edge))?,
@@ -107,12 +108,12 @@ pub(super) fn save(
 }
 
 // front_m, back_mm, frozen edges (-1 before a sweep), next edge, measured.
-type SavedRoadLengthRow = (f64, i64, i64, i64, i64);
+type SavedRoadUpkeepRow = (f64, i64, i64, i64, i64);
 
 pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
-    // Clock and event counters, then the road-length sweep columns.
-    let row: (i64, i64, i64, i64, i64, SavedRoadLengthRow, i64) = conn.query_row(
-        "SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured, logistics_next_shipment_id FROM scheduler_state WHERE singleton = 1",
+    // Clock and event counters, then the road-upkeep sweep columns.
+    let row: (i64, i64, i64, i64, i64, SavedRoadUpkeepRow, i64) = conn.query_row(
+        "SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_upkeep_front_m, road_upkeep_back_mm, road_upkeep_edges, road_upkeep_next_edge, road_upkeep_measured, logistics_next_shipment_id FROM scheduler_state WHERE singleton = 1",
         [],
         |row| {
             Ok((
@@ -139,7 +140,7 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
         logistics_hour_ticks: i64_to_u32(row.3)?,
         logistics_next_shipment_id: i64_to_u64(row.6)?,
         agent_settlement_days: i64_to_u32(row.4)?,
-        road_length: (
+        road_upkeep: (
             row.5.0,
             row.5.1,
             if row.5.2 == -1 {

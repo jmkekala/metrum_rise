@@ -11,7 +11,7 @@
 //! restock, visit and job request queues, the level-change, building-removal, departure and
 //! admission queues (`SIM-02-J`; removals and departures only in the hour's removal window, and
 //! no queue but the building removals in the hour's queue-free slots, [`QUEUE_FREE_SLOTS`]), one
-//! chunk each of the rolling road length, environment sweep, freight supplier index, demand
+//! chunk each of the rolling road upkeep, environment sweep, freight supplier index, demand
 //! snapshot, household destinations and job board, at an hour's last slot the hour's city totals,
 //! one chunk of the funding census's input copy over the hour's first half and the census's share
 //! of its steps over the second half.
@@ -171,8 +171,8 @@ pub(crate) enum SimSystem {
     Departures,
     /// Creates the hour's admitted households as the admission credit allows (`SIM-02-J`).
     Admissions,
-    /// One chunk of the rolling road length that daily upkeep reads.
-    RoadLength,
+    /// One chunk of the rolling cost-weighted road length that daily upkeep reads.
+    RoadUpkeep,
     /// One chunk of the day-long sweep of pollution, noise and desirability (`SIM-02-H`).
     EnvironmentGrids,
     /// One chunk of the hour-long sweep of the freight supplier index (`SIM-02-I`).
@@ -410,7 +410,7 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             tier: Tier::Full,
         },
         // The city's day totals become the day's budget report, O(1), and daily road upkeep
-        // reads the rolling road length, which measures the network once, O(edges), only before
+        // reads the rolling upkeep sum, which measures the network once, O(edges), only before
         // its first finished sweep (a world's first day). Debug reports scan the city only with
         // the economy channel on.
         Declaration {
@@ -629,8 +629,8 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             tier: Tier::Full,
         },
         Declaration {
-            system: SimSystem::RoadLength,
-            name: "road length",
+            system: SimSystem::RoadUpkeep,
+            name: "road upkeep",
             kind: SystemKind::Rolling {
                 period: Period::Day,
             },
@@ -905,7 +905,7 @@ impl SimCore {
                         self.publish_deferred_site_terrain_box();
                     }
                 }
-                SimSystem::RoadLength => self.road_length.advance(slot, &self.region_graph),
+                SimSystem::RoadUpkeep => self.road_upkeep.advance(slot, &self.region_graph),
                 SimSystem::EnvironmentGrids => self.advance_environment_sweep(slot),
                 SimSystem::FreightSuppliers => self.advance_freight_supplier_sweep(slot),
                 SimSystem::DemandSnapshot => self.advance_demand_snapshot(slot),

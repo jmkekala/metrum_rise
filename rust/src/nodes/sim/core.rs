@@ -49,7 +49,7 @@ pub use state::SimCore;
 pub(crate) use thread::SimCommand;
 
 pub(crate) use budget::{
-    DailyBudgetLedgerEntry, RoadLengthRoll, SERVICE_BUILD_COST_PER_LOT_CELL,
+    DailyBudgetLedgerEntry, RoadUpkeepRoll, SERVICE_BUILD_COST_PER_LOT_CELL,
     SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{

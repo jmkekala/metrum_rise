@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 111;
+pub const SAVE_VERSION: i64 = 112;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -184,11 +184,11 @@ CREATE TABLE scheduler_state(
     next_spawn_id INTEGER NOT NULL,
     logistics_hour_ticks INTEGER NOT NULL,
     agent_settlement_days INTEGER NOT NULL,
-    road_length_front_m REAL NOT NULL,
-    road_length_back_mm INTEGER NOT NULL,
-    road_length_edges INTEGER NOT NULL,
-    road_length_next_edge INTEGER NOT NULL,
-    road_length_measured INTEGER NOT NULL,
+    road_upkeep_front_m REAL NOT NULL,
+    road_upkeep_back_mm INTEGER NOT NULL,
+    road_upkeep_edges INTEGER NOT NULL,
+    road_upkeep_next_edge INTEGER NOT NULL,
+    road_upkeep_measured INTEGER NOT NULL,
     environment_building_handles INTEGER NOT NULL,
     environment_edges INTEGER NOT NULL,
     environment_next_edge INTEGER NOT NULL,

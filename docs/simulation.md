@@ -238,6 +238,14 @@ load fails on a median no stroke could build ([`roads.md`](roads.md#medians-road
 fixture is re-recorded in format 111; only the version and the two columns at their defaults
 change (`sqldiff`).
 
+Save format 112 (`ROAD-101`, round RB3b, 2026-11-03) renames the five `scheduler_state` columns of
+the rolling road sum to `road_upkeep_front_m`, `road_upkeep_back_mm`, `road_upkeep_edges`,
+`road_upkeep_next_edge` and `road_upkeep_measured`: the sweep now folds each edge's length times
+its cost weight (2-lane-equivalent millimetres; exactly its length for the 2-Lane Road at 50 km/h
+on the ground), so daily upkeep follows each road's type. The Kuopio fixture is re-recorded in
+format 112 with `record_kuopio_reference_save`; only the version and the renamed table change
+(`sqldiff`: the scheduler row's values and every table's row count are unchanged).
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per

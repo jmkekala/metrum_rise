@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::budget::{CityServicePolicy, CityTreasury, DailyBudgetLedgerEntry, RoadLengthRoll};
+use super::budget::{CityServicePolicy, CityTreasury, DailyBudgetLedgerEntry, RoadUpkeepRoll};
 use super::frame::EconomyObserver;
 use super::schedule::{SimEvent, SimSystem, event_slot, simulation_schedule};
 use super::snapshot::SimulationSnapshot;
@@ -223,8 +223,9 @@ pub struct SimCore {
     pub(crate) household_phase_scratch:
         Vec<Handle<crate::simulation::economy::households::Household>>,
     pub(crate) agent_phase_scratch: Vec<crate::simulation::economy::agents::AgentHandle>,
-    /// Rolling sum of the road network's length for daily upkeep (`SIM-02-G`); saved.
-    pub(crate) road_length: RoadLengthRoll,
+    /// Rolling sum of the road network's cost-weighted length for daily upkeep (`SIM-02-G`,
+    /// `ROAD-101`); saved.
+    pub(crate) road_upkeep: RoadUpkeepRoll,
     /// Rolling day-long sweep of pollution, noise and desirability (`SIM-02-H`); saved.
     pub(crate) environment_sweep: EnvironmentSweep,
     /// Building placement and vacancy index.
@@ -418,7 +419,7 @@ impl SimCore {
             building_phase_scratch: Vec::new(),
             household_phase_scratch: Vec::new(),
             agent_phase_scratch: Vec::new(),
-            road_length: RoadLengthRoll::default(),
+            road_upkeep: RoadUpkeepRoll::default(),
             environment_sweep: EnvironmentSweep::default(),
             allocator: BuildingAllocator::new_at_slot(next_slot - 1),
             agents: AgentSystem::new(),
@@ -1542,7 +1543,7 @@ impl SimCore {
 
     /// The calendar close at the start of a day, before any daily phase of the new day
     /// (`SIM-02-G`): every entity has settled once since the last close, and the city's day
-    /// totals become the day's budget report. Road upkeep reads the rolling road length. O(1)
+    /// totals become the day's budget report. Road upkeep reads the rolling upkeep sum. O(1)
     /// apart from debug reports.
     pub(super) fn close_calendar_day(
         &mut self,
@@ -1554,9 +1555,9 @@ impl SimCore {
         self.agents.settlement_days += 1;
         self.households.close_calendar_day();
         self.allocator.close_city_input_day();
-        let road_length_m = self.road_length.length_m(&self.region_graph);
+        let equivalent_m = self.road_upkeep.equivalent_m(&self.region_graph);
         self.treasury.settle_daily_upkeep(
-            road_length_m * crate::simulation::network::road_types::cost::UPKEEP_PER_M_DAY,
+            equivalent_m * crate::simulation::network::road_types::cost::UPKEEP_PER_M_DAY,
         );
         let removed_households = self.demand.households_to_remove_today;
         self.demand

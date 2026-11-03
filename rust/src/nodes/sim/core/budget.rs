@@ -29,16 +29,22 @@ pub(crate) const SERVICE_POLICY_ELECTRICITY: &str = "electricity";
 /// Number of completed daily budget entries kept for UI trend graphs.
 pub(crate) const ECONOMY_HISTORY_DAYS: usize = 180;
 
-/// Total road length as a rolling sum over each day (`SIM-02-G`, `docs/simulation.md#snapshots`):
-/// each slot folds the next 1/23,040 of the edges counted at the day's start, and the finished
-/// sum replaces the last at the day's final slot. Daily road upkeep reads the last finished
-/// sum, so no midnight pass scans the network. O(edges / slots per day) per slot.
+/// The network's daily upkeep as a rolling sum over each day (`SIM-02-G`,
+/// `docs/simulation.md#snapshots`), in 2-lane-equivalent metres (`ROAD-101`): each edge's length
+/// times its cost weight ([`Edge::cost_weight`], 1.0 for the 2-Lane Road at 50 km/h on the
+/// ground). Each slot folds the next 1/23,040 of the edges counted at the day's start, and the
+/// finished sum replaces the last at the day's final slot. Daily road upkeep reads the last
+/// finished sum, so no midnight pass scans the network. An edge whose weight changes mid-sweep
+/// is folded at the weight the sweep sees, as a road added mid-sweep is. O(edges / slots per
+/// day) per slot.
+///
+/// [`Edge::cost_weight`]: crate::simulation::network::graph::Edge::cost_weight
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct RoadLengthRoll {
-    /// Length of the last finished sweep, in metres.
+pub(crate) struct RoadUpkeepRoll {
+    /// Equivalent length of the last finished sweep, in metres.
     pub(crate) front_m: f64,
-    /// Length folded so far by the current sweep, in whole millimetres: an integer sum does not
-    /// depend on how a save regroups the remaining edges into slots.
+    /// Equivalent length folded so far by the current sweep, in whole millimetres: an integer
+    /// sum does not depend on how a save regroups the remaining edges into slots.
     pub(crate) back_mm: i64,
     /// Edge count frozen at the current sweep's start; `None` until a sweep starts at a day's
     /// first slot.
@@ -49,7 +55,7 @@ pub(crate) struct RoadLengthRoll {
     pub(crate) measured: bool,
 }
 
-impl RoadLengthRoll {
+impl RoadUpkeepRoll {
     /// Folds slot `slot`'s share of the edges. O(edges / slots per day).
     pub(crate) fn advance(
         &mut self,
@@ -72,7 +78,7 @@ impl RoadLengthRoll {
             self.back_mm += edges[self.next_edge as usize..end as usize]
                 .iter()
                 .filter(|edge| !edge.deleted)
-                .map(|edge| length_mm(edge.physical_length))
+                .map(equivalent_mm)
                 .sum::<i64>();
             self.next_edge = end;
         }
@@ -97,9 +103,9 @@ impl RoadLengthRoll {
         (self.sweep_edges.map(compact), compact(self.next_edge))
     }
 
-    /// The last finished length; a world without one measures its network once. O(1), or
-    /// O(edges) at a world's first close.
-    pub(crate) fn length_m(
+    /// The last finished equivalent length; a world without one measures its network once.
+    /// O(1), or O(edges) at a world's first close.
+    pub(crate) fn equivalent_m(
         &mut self,
         graph: &crate::simulation::network::graph::RegionGraph,
     ) -> f64 {
@@ -108,7 +114,7 @@ impl RoadLengthRoll {
                 .edges()
                 .iter()
                 .filter(|edge| !edge.deleted)
-                .map(|edge| length_mm(edge.physical_length))
+                .map(equivalent_mm)
                 .sum();
             self.front_m = mm as f64 / 1000.0;
             self.measured = true;
@@ -117,9 +123,11 @@ impl RoadLengthRoll {
     }
 }
 
-// An edge's length in whole millimetres, for order-independent sums.
-fn length_mm(metres: f32) -> i64 {
-    (f64::from(metres) * 1000.0).round() as i64
+// An edge's length in whole millimetres times its cost weight, rounded, for order-independent
+// sums: exactly its length in millimetres at weight 1.0.
+fn equivalent_mm(edge: &crate::simulation::network::graph::Edge) -> i64 {
+    let length_mm = (f64::from(edge.physical_length) * 1000.0).round();
+    (length_mm * edge.cost_weight()).round() as i64
 }
 
 fn is_electricity_service(service_id: &str) -> bool {
@@ -1552,7 +1560,7 @@ mod tests {
     use crate::nodes::sim::core::tests::fields::{add_farm_household, farm_fixture};
 
     #[test]
-    fn rolling_road_length_sums_the_network_over_one_day() {
+    fn rolling_road_upkeep_sums_the_network_over_one_day() {
         use crate::simulation::core::scheduler::SLOTS_PER_DAY;
         let (core, _, _) = farm_fixture();
         let graph = &core.region_graph;
@@ -1560,12 +1568,12 @@ mod tests {
             .edges()
             .iter()
             .filter(|edge| !edge.deleted)
-            .map(|edge| f64::from(edge.physical_length))
+            .map(|edge| f64::from(edge.physical_length) * edge.cost_weight())
             .sum();
         assert!(total > 0.0);
-        let mut unmeasured = super::RoadLengthRoll::default();
-        assert!((unmeasured.length_m(graph) - total).abs() < 1e-6 * total);
-        let mut roll = super::RoadLengthRoll::default();
+        let mut unmeasured = super::RoadUpkeepRoll::default();
+        assert!((unmeasured.equivalent_m(graph) - total).abs() < 1e-6 * total);
+        let mut roll = super::RoadUpkeepRoll::default();
         // A sweep started mid-day finishes nothing; the next full day does.
         for slot in SLOTS_PER_DAY / 2..2 * SLOTS_PER_DAY {
             roll.advance(slot, graph);
@@ -1574,46 +1582,65 @@ mod tests {
         assert!((roll.front_m - total).abs() < 1e-6 * total);
     }
 
+    // `ROAD-101`: the sweep folds each edge at its own cost weight (2-lane roads, 4-lane
+    // bridges, walkways), and a sweep resumed on the edges a save keeps finishes bitwise as the
+    // uninterrupted one.
     #[test]
-    fn a_road_length_sweep_resumes_identically_on_the_edges_a_save_keeps() {
+    fn a_weighted_road_upkeep_sweep_resumes_identically_on_the_edges_a_save_keeps() {
         use crate::simulation::core::scheduler::SLOTS_PER_DAY;
         use crate::simulation::network::graph::{Edge, RegionGraph};
-        use crate::simulation::network::types::NodeType;
+        use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags};
         use godot::prelude::Vector3;
+        // Edge `i`: a 2-lane road, a 4-lane bridge or a walkway.
+        let edge = |i: usize, length: f32| {
+            let (lanes, class) = match i % 3 {
+                0 => (1, EdgeClass::Standard),
+                1 => (2, EdgeClass::Bridge),
+                _ => (0, EdgeClass::Standard),
+            };
+            Edge {
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                fwd_lanes: lanes,
+                bkw_lanes: lanes,
+                class,
+                speed_limit: crate::config::DEFAULT_URBAN_ROAD_SPEED_MS,
+                physical_length: length,
+                ..Edge::default()
+            }
+        };
         // Saving drops deleted edges and renumbers the rest in order.
-        let graph = |lengths: &[(f32, bool)]| {
+        let graph = |lengths: &[(usize, f32, bool)]| {
             let mut graph = RegionGraph::new();
             let a = graph.add_node(Vector3::ZERO, NodeType::Junction);
             let b = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
-            for &(length, deleted) in lengths {
+            for &(i, length, deleted) in lengths {
                 let id = graph.add_edge(Edge {
                     start_node: a,
                     end_node: b,
-                    physical_length: length,
-                    ..Edge::default()
+                    ..edge(i, length)
                 });
                 graph.edge_mut(id).deleted = deleted;
             }
             graph
         };
-        let lengths: Vec<(f32, bool)> = (0..9)
-            .map(|i| (10.0 + i as f32 * 1.375, i == 1 || i == 7))
+        let lengths: Vec<(usize, f32, bool)> = (0..9)
+            .map(|i| (i, 10.0 + i as f32 * 1.375, i == 1 || i == 7))
             .collect();
         let live = graph(&lengths);
         let saved = graph(
             &lengths
                 .iter()
-                .filter(|(_, deleted)| !deleted)
+                .filter(|(_, _, deleted)| !deleted)
                 .copied()
                 .collect::<Vec<_>>(),
         );
-        let mut straight = super::RoadLengthRoll::default();
+        let mut straight = super::RoadUpkeepRoll::default();
         let half = SLOTS_PER_DAY / 2;
         for slot in 0..half {
             straight.advance(slot, &live);
         }
         let (sweep_edges, next_edge) = straight.saved_positions(&live);
-        let mut resumed = super::RoadLengthRoll {
+        let mut resumed = super::RoadUpkeepRoll {
             sweep_edges,
             next_edge,
             ..straight
@@ -1624,6 +1651,13 @@ mod tests {
         }
         assert!(straight.measured && resumed.measured);
         assert_eq!(straight.front_m.to_bits(), resumed.front_m.to_bits());
+        // Weights 1.0, 5.4 (3 x 1.8) and 0.25 per metre, not the plain length.
+        let weighted: f64 = lengths
+            .iter()
+            .filter(|(_, _, deleted)| !deleted)
+            .map(|&(i, length, _)| f64::from(length) * [1.0, 5.4, 0.25][i % 3])
+            .sum();
+        assert!((straight.front_m - weighted).abs() < 1e-2, "{}", straight.front_m);
     }
 
     #[test]
