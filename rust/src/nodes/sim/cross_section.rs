@@ -12,10 +12,9 @@
 //! over agents and buildings.
 
 use super::core::{RoadRejection, SimCore};
-use crate::config;
 use crate::debug_log;
 use crate::simulation::network::graph::{Edge, RegionGraphUndoDelta, RoadMedian};
-use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
+use crate::simulation::network::roadbed::{side_band_width_m, visual_roadbed_half_width_m};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, validate_edge,
@@ -208,9 +207,10 @@ impl SimCore {
                 format!("widened edge {edge_idx} would reach visible water"),
             ));
         }
+        // The roadbed's own side band: a sidewalk, or a road without them its shoulder.
         let parcels = self.zoning.parcel_ids_overlapping_road_corridor(
             points,
-            edge.width * 0.5 + config::SIDEWALK_WIDTH,
+            edge.width * 0.5 + side_band_width_m(edge),
         );
         if let Some(first) = parcels.first() {
             return Some(RoadRejection::new(
