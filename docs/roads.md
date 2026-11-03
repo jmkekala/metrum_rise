@@ -1541,12 +1541,13 @@ These need a user decision; work that does not depend on them continues.
       it reaches only the other footpaths there, and the walking proof is withdrawn on such a
       network. The legacy rule joined it to the corner between the nearest sidewalk arms, across
       the car-only road. No fixture or perf city has one.
-      - **Evidence (2026-10-25).** The proof (`ConnectorTargets::prove_complete`) requires foot
+      - **Evidence (2026-10-25).** The proof (`ConnectorTargets::prove_complete`) required foot
         lanes both ways on every live edge, car-only ones included, so a single road without
-        sidewalks withdraws it on its whole network whatever its junctions do
-        (`a_road_without_sidewalks_withdraws_the_walking_proof`: the reference T keeps it, the same
-        T with a side road without sidewalks loses it). No road tool authors such a road today
-        (strokes always carry sidewalks); saves may hold them.
+        sidewalks withdrew it on its whole network whatever its junctions did. Since `ROAD-101`
+        (RB3a, 2026-11-03) it checks only the edges walkers cross (every `FOOT` edge and the edge
+        the path lookup selects for its node pair), so such a road keeps it
+        (`a_road_without_sidewalks_keeps_the_walking_proof`: the reference T and the same T with
+        a side road drawn without sidewalks both keep it).
       - **Options.** (a) keep: the footpath joins only the footpaths there; (b) the legacy join
         across the car-only road to the nearest sidewalk corner, an unmarked crossing walkers take
         without a zebra, against question 12's rule that walkers switch sides only on crossings;

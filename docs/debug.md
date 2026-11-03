@@ -319,7 +319,9 @@ road_attempt {"attempt":4,"by":"commit","reason":"parcel_overlap","generation":3
   middle of the prepared road. The stroke's ends give the snapped node or open terrain, with
   the road and terrain heights there.
 - `road_attempt` carries the stroke exactly as submitted: every point at full `f32` precision,
-  the lane counts, snapping and the road-tool generation (`get_road_tool_surface_generation`),
+  the lane counts, snapping, the tool's `tunnel`, its median (`median_style`, `median_width`)
+  and road-type attributes (`speed_kmh`, `sidewalks`, `zoning`; `ROAD-101`), and the road-tool
+  generation (`get_road_tool_surface_generation`),
   which changes whenever the road network is rebuilt: a built or bulldozed road, an undo, a
   loaded world. A refused stroke leaves it unchanged. Both lines end with the same attempt
   number.
