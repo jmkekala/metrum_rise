@@ -14,6 +14,7 @@ const CityStatusPanel = preload("res://scripts/ui/city_status_panel.gd")
 const CrossSectionControls = preload("res://scripts/ui/cross_section_controls.gd")
 const DemandMeter = preload("res://scripts/ui/demand_meter.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
+const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
 const InputManager = preload("res://scripts/core/input_manager.gd")
@@ -43,9 +44,9 @@ var terrain_main_btn: Button
 var terrain_sub_menu: HBoxContainer
 
 # Road items
-var road_2l_btn: Button
-var road_4l_btn: Button
-var walkway_btn: Button
+## The Roads menu's road-type row (`ROAD-101`); the road builder window connects to its
+## `road_builder_requested`.
+var road_type_menu: RoadTypeMenu
 
 # Road options
 var straight_btn: Button
@@ -290,32 +291,14 @@ func _build_ui():
 	sub_panel.add_child(sub_padding)
 	sub_padding.add_child(road_sub_menu)
 	
-	walkway_btn = Button.new()
-	walkway_btn.text = "Walkway"
-	walkway_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(walkway_btn)
-	
-	road_2l_btn = Button.new()
-	road_2l_btn.text = "2-Lane Road"
-	road_2l_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(road_2l_btn)
-
-	road_4l_btn = Button.new()
-	road_4l_btn.text = "4-Lane Road"
-	road_4l_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(road_4l_btn)
-
-	var ow1_btn = Button.new()
-	ow1_btn.text = "One-Way 1L"
-	ow1_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(ow1_btn)
-	ow1_btn.pressed.connect(func(): _select_road_type(1, 0))
-
-	var ow2_btn = Button.new()
-	ow2_btn.text = "One-Way 2L"
-	ow2_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(ow2_btn)
-	ow2_btn.pressed.connect(func(): _select_road_type(2, 0))
+	# The road types from Rust (`ROAD-101`), the tool's current one marked.
+	road_type_menu = RoadTypeMenu.new()
+	road_type_menu.type_picked.connect(_select_road_type)
+	if road_tool:
+		road_tool.road_type_changed.connect(road_type_menu.mark)
+	road_type_menu.setup(simulation_node)
+	road_sub_menu.add_child(road_type_menu)
+	road_sub_menu.add_child(VSeparator.new())
 
 	var cul_de_sac_btn = Button.new()
 	cul_de_sac_btn.text = "Cul-De-Sac"
@@ -840,10 +823,6 @@ func _connect_signals():
 	select_main_btn.pressed.connect(_on_select_main_pressed)
 	bulldoze_btn.pressed.connect(_on_bulldoze_pressed)
 	
-	road_2l_btn.pressed.connect(func(): _select_road_type(1, 1))
-	road_4l_btn.pressed.connect(func(): _select_road_type(2, 2))
-	walkway_btn.pressed.connect(func(): _select_road_type(0, 0))
-	
 	straight_btn.pressed.connect(func(): _set_draw_mode(0))
 	spline_btn.pressed.connect(func(): _set_draw_mode(1))
 	speed_down_btn.pressed.connect(func(): input_manager.step_simulation_speed(-1))
@@ -924,21 +903,23 @@ func _on_industry_main_pressed():
 	else:
 		input_manager._cancel_active_tool()
 
-func _select_road_type(fwd: int, bkw: int):
-	# Show options panel and separator
+# A road type picked in the Roads menu: the Walkway tool for a walkway, else the Road tool
+# (whose activation picks the last type), then the picked type.
+func _select_road_type(id: String, walkway: bool) -> void:
 	get_meta("options_panel").visible = true
 	get_meta("road_sep").visible = true
-	
-	# Activate tool via input manager
-	# Walkway vs Road tool distinction from InputManager:
-	var required_tool = InputManager.Tool.WALKWAY if fwd == 0 and bkw == 0 else InputManager.Tool.ROAD
-	
+	var required_tool = InputManager.Tool.WALKWAY if walkway else InputManager.Tool.ROAD
 	if input_manager.current_tool != required_tool:
 		input_manager._toggle_tool(required_tool)
-		
-	# InputManager resets lanes, we override here
 	if road_tool:
-		road_tool.set_lane_preset(fwd, bkw)
+		road_tool.set_road_type(id)
+
+## Lists the road types again after a library edit (`ROAD-101`, the road builder calls it) and
+## re-picks the tool's type, so an edited type draws its new layout from the next stroke on.
+func refresh_road_types() -> void:
+	road_type_menu.refresh()
+	if road_tool:
+		road_tool.reload_road_type()
 
 func _set_draw_mode(mode: int):
 	straight_btn.button_pressed = (mode == 0)
