@@ -18,7 +18,8 @@ use crate::simulation::network::graph::{MedianStyle, RoadMedian};
 use crate::simulation::network::road_types::cost as road_cost;
 use crate::simulation::network::road_types::library::{RoadTypeLibrary, check_type};
 use crate::simulation::network::road_types::{
-    RoadCrossSection, RoadPart, RoadType, RoadTypeRefusal, layout_widths, type_of,
+    DEFAULT_SPEED_KMH, MAX_SPEED_KMH, MIN_SPEED_KMH, RoadAttributes, RoadCrossSection, RoadPart,
+    RoadType, RoadTypeRefusal, SPEED_STEP_KMH, layout_widths, type_of,
 };
 use crate::simulation::network::types::EdgeClass;
 use godot::classes::ProjectSettings;
@@ -59,8 +60,11 @@ impl SimulationNode {
     /// `builtin`, `usable`, `parts` (see the module docs), `speed_kmh` (0 for a walkway),
     /// `zoning` and the fields of [`Self::check_road_layout`] but `suggested_name` (so also
     /// `build_per_m` and `upkeep_per_m_day`, 0 for an unusable type): an unusable
-    /// type (kept in the file, never drawn) carries its `invalid_reason`. `O(types x parts)`;
-    /// the file is read once.
+    /// type (kept in the file, never drawn) carries its `invalid_reason`. `speeds` is the speed
+    /// grid every car road type takes, for the road builder's stepper: `min_kmh`, `max_kmh`,
+    /// `step_kmh`, `default_kmh` (the built-ins') and `no_zoning_from_kmh` (80: the builder
+    /// suggests zoning off once a new type reaches it; the type's flag decides). `O(types x
+    /// parts)`; the file is read once.
     #[func]
     pub fn get_road_types(&self) -> VarDictionary {
         self.with_road_types(|library| {
@@ -69,8 +73,18 @@ impl SimulationNode {
                 types.push(&type_to_variant(ty).to_variant());
             }
             let error = library.error();
+            let speeds = vdict! {
+                "min_kmh": i64::from(MIN_SPEED_KMH),
+                "max_kmh": i64::from(MAX_SPEED_KMH),
+                "step_kmh": i64::from(SPEED_STEP_KMH),
+                "default_kmh": i64::from(DEFAULT_SPEED_KMH),
+                "no_zoning_from_kmh": i64::from(RoadAttributes::speed_kmh_of(
+                    crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS,
+                )),
+            };
             vdict! {
                 "types": types,
+                "speeds": speeds,
                 "error": error.as_ref().map_or("", |error| error.reason),
                 "error_detail": error.as_ref().map_or("", |error| error.detail.as_str()),
             }
