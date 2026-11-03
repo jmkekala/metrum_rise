@@ -1,42 +1,54 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## The Roads menu's road-type row (`ROAD-101`): one toggle button per usable road type, the
-## built-ins then the player's custom types in Rust's `get_road_types` order, with the road
-## tool's current type marked (one ButtonGroup). At most MAX_TYPES buttons fit the bottom
-## toolbar; the row ends with "Road builder...", which only emits `road_builder_requested` (the
-## builder window connects to it) and names how many usable types the cap left out. A view: a
-## pick emits `type_picked`, and the host activates the tool and calls `RoadTool.set_road_type`.
-## `refresh` rebuilds the row from Rust after a library edit; unusable entries are never listed.
+## The Roads menu's road-type row (`ROAD-101`): one toggle button per usable built-in type in
+## Rust's `get_road_types` order, then one "Custom roads" drop-down listing the player's usable
+## custom types, a separator and "Road builder..." (it only emits `road_builder_requested`; the
+## builder window connects to it). The drop-down keeps one fixed width however many types the
+## library holds, so the row fits the bottom toolbar at 1280 x 720. The road tool's current type
+## is marked: its built-in button pressed, or, for a custom type, the drop-down showing its name
+## in the pressed style with the item checked. A view: a pick emits `type_picked`, and the host
+## activates the tool and calls `RoadTool.set_road_type`. `refresh` rebuilds the row from Rust
+## after a library edit; unusable entries are never listed (the builder lists them).
 ## Rust methods called: get_road_types().
 extends HBoxContainer
 
 ## The player picked road type `id`; `walkway` when it draws a walkway (no car lane).
 signal type_picked(id: String, walkway: bool)
-## The player asked for the road builder ("Road builder..." button).
+## The player asked for the road builder ("Road builder..." in the drop-down).
 signal road_builder_requested
 
-## The most type buttons the row holds; the builder lists the rest.
-const MAX_TYPES := 10
-
 const MedianControls = preload("res://scripts/ui/median_controls.gd")
+## The drop-down's text while the tool draws a built-in type.
+const CUSTOM_ROADS := "Custom roads"
+## The drop-down item id of "Road builder..."; custom type `i` is item id `i + 1`.
+const BUILDER_ITEM := 0
+# Wide enough for "Custom roads" and a short name; a longer name is trimmed with an ellipsis.
+const CUSTOM_BUTTON_WIDTH := 150.0
 
-## Usable types the cap left out of the row at the last `refresh`.
-var hidden_count := 0
+## The drop-down of custom types and "Road builder...".
+var custom_menu: MenuButton
+## The usable custom type ids, in the drop-down's order.
+var custom_ids: Array[String] = []
 
 var _simulation_node: Node
 var _group := ButtonGroup.new()
-# Type id -> its Button, in row order.
+# Built-in type id -> its Button, in row order.
 var _buttons: Dictionary = {}
-var _builder_button: Button
+# Type id -> its get_road_types entry, for every listed type.
+var _types: Dictionary = {}
 var _marked_id := ""
 
 func _init() -> void:
 	add_theme_constant_override("separation", 10)
-	_builder_button = Button.new()
-	_builder_button.text = "Road builder..."
-	_builder_button.focus_mode = Control.FOCUS_NONE
-	_builder_button.pressed.connect(func(): road_builder_requested.emit())
-	add_child(_builder_button)
+	custom_menu = MenuButton.new()
+	custom_menu.text = CUSTOM_ROADS
+	custom_menu.flat = false
+	custom_menu.clip_text = true
+	custom_menu.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	custom_menu.custom_minimum_size.x = CUSTOM_BUTTON_WIDTH
+	custom_menu.focus_mode = Control.FOCUS_NONE
+	custom_menu.get_popup().id_pressed.connect(_on_custom_item)
+	add_child(custom_menu)
 
 ## Lists the types of `simulation_node` (the host's SimulationNode).
 func setup(simulation_node: Node) -> void:
@@ -49,47 +61,92 @@ func refresh() -> void:
 		remove_child(button)
 		button.queue_free()
 	_buttons.clear()
-	hidden_count = 0
+	_types.clear()
+	custom_ids.clear()
+	var popup := custom_menu.get_popup()
+	popup.clear()
 	if _simulation_node == null:
 		return
 	for type: Dictionary in _simulation_node.get_road_types().get("types", []):
 		if not bool(type.get("usable", false)):
 			continue
-		if _buttons.size() >= MAX_TYPES:
-			hidden_count += 1
-			continue
 		var id := String(type.get("id", ""))
+		_types[id] = type
+		if not bool(type.get("builtin", false)):
+			custom_ids.append(id)
+			popup.add_radio_check_item(String(type.get("name", id)), custom_ids.size())
+			popup.set_item_tooltip(popup.item_count - 1, describe(type))
+			continue
 		var button := Button.new()
 		button.text = String(type.get("name", id))
 		button.toggle_mode = true
 		button.button_group = _group
 		button.focus_mode = Control.FOCUS_NONE
 		button.tooltip_text = describe(type)
-		var walkway: bool = int(type.get("fwd_lanes", 0)) + int(type.get("bkw_lanes", 0)) == 0
-		button.pressed.connect(func(): type_picked.emit(id, walkway))
+		button.pressed.connect(func(): type_picked.emit(id, _is_walkway(type)))
 		add_child(button)
 		move_child(button, _buttons.size())
 		_buttons[id] = button
-	_builder_button.tooltip_text = "Build custom road types"
-	if hidden_count > 0:
-		_builder_button.tooltip_text += "\n%d more road types are in the builder" % hidden_count
+	if not custom_ids.is_empty():
+		popup.add_separator()
+	popup.add_item("Road builder...", BUILDER_ITEM)
+	popup.set_item_tooltip(popup.item_count - 1, "Build, edit and delete custom road types")
 	mark(_marked_id)
 
-## Marks type `id` as the road tool's (no button pressed when the row does not list it).
+## Marks type `id` as the road tool's: its built-in button pressed, or the drop-down showing the
+## custom type's name in the pressed style (nothing marked when the row does not list `id`).
 func mark(id: String) -> void:
 	_marked_id = id
 	for type_id: String in _buttons:
 		_buttons[type_id].set_pressed_no_signal(type_id == id)
+	var custom := custom_ids.find(id)
+	var popup := custom_menu.get_popup()
+	for index in custom_ids.size():
+		popup.set_item_checked(popup.get_item_index(index + 1), index == custom)
+	if custom >= 0:
+		custom_menu.text = String(_types[id].get("name", id))
+		custom_menu.tooltip_text = describe(_types[id])
+		for state in ["normal", "hover"]:
+			custom_menu.add_theme_stylebox_override(state, custom_menu.get_theme_stylebox("pressed"))
+		custom_menu.add_theme_color_override("font_color", custom_menu.get_theme_color("font_pressed_color"))
+	else:
+		custom_menu.text = CUSTOM_ROADS
+		custom_menu.tooltip_text = "Your road types and the road builder"
+		for state in ["normal", "hover"]:
+			custom_menu.remove_theme_stylebox_override(state)
+		custom_menu.remove_theme_color_override("font_color")
 
-## The type ids the row lists, in order.
+## Whether the drop-down reads as selected (the tool's type is a custom one).
+func custom_marked() -> bool:
+	return custom_ids.has(_marked_id)
+
+## The type ids the row lists, built-ins then customs, in order.
 func listed_ids() -> Array[String]:
 	var ids: Array[String] = []
 	ids.assign(_buttons.keys())
+	ids.append_array(custom_ids)
 	return ids
 
-## The row's button for type `id`, or null.
+## The row's button for built-in type `id`, or null (custom types are drop-down items).
 func button_for(id: String) -> Button:
 	return _buttons.get(id)
+
+## Picks listed type `id` as the player's click would (a built-in button or a drop-down item).
+func pick(id: String) -> void:
+	if _buttons.has(id):
+		_buttons[id].pressed.emit()
+	elif custom_ids.has(id):
+		custom_menu.get_popup().id_pressed.emit(custom_ids.find(id) + 1)
+
+func _on_custom_item(item_id: int) -> void:
+	if item_id == BUILDER_ITEM:
+		road_builder_requested.emit()
+		return
+	var id: String = custom_ids[item_id - 1]
+	type_picked.emit(id, _is_walkway(_types[id]))
+
+static func _is_walkway(type: Dictionary) -> bool:
+	return int(type.get("fwd_lanes", 0)) + int(type.get("bkw_lanes", 0)) == 0
 
 ## "2 + 2 lanes, Grass 3.0 m, 17.0 m wide" (or "Footpath, 2.0 m wide") from Rust's figures for a
 ## `get_road_types` entry; `with_width` false leaves the width out.

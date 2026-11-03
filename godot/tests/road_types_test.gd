@@ -7,7 +7,8 @@
 ## and median, read back from the graph; editing the type changes the next stroke only (the
 ## first edge keeps its layout); Road Properties changes a 1 + 1 road to the divided type and
 ## Ctrl+Z restores it, and refuses walkway -> road with its text; the drawing panel has no lane
-## or median rows. Writes the road-type library, so it runs only in the isolated profile.
+## or median rows; the row fits 1280 x 720 with thirteen custom types in its "Custom roads"
+## drop-down. Writes the road-type library, so it runs only in the isolated profile.
 extends SceneTree
 
 const TIMEOUT_MS := 60000
@@ -151,11 +152,15 @@ func _run() -> void:
 	_expect(not avenue.is_empty(), "the custom type is created: %s" % created)
 	_expect(not menu.listed_ids().has(avenue), "the row lists the library as it was read")
 	_ui.refresh_road_types()
-	_expect(menu.listed_ids().back() == avenue and menu.button_for(avenue).text == "Menu Test Avenue", "the row lists the custom type last: %s" % [menu.listed_ids()])
-	_expect(menu._builder_button.get_index() == menu.get_child_count() - 1, "the row ends with Road builder...")
+	var popup: PopupMenu = menu.custom_menu.get_popup()
+	_expect(menu.listed_ids().back() == avenue and menu.custom_ids == [avenue] and popup.get_item_text(0) == "Menu Test Avenue",
+		"the Custom roads drop-down lists the custom type: %s" % [menu.listed_ids()])
+	_expect(menu.custom_menu.get_index() == menu.get_child_count() - 1 and menu.button_for(avenue) == null, "the row ends with the drop-down")
+	_expect(popup.get_item_text(popup.item_count - 1) == "Road builder..." and popup.is_item_separator(popup.item_count - 2),
+		"the drop-down ends with a separator and Road builder...")
 	var builder_requests := [0]
 	menu.road_builder_requested.connect(func(): builder_requests[0] += 1)
-	menu._builder_button.pressed.emit()
+	popup.id_pressed.emit(menu.BUILDER_ITEM)
 	_expect(builder_requests[0] == 1, "Road builder... emits road_builder_requested")
 
 	# Each built-in picks its tool, marks its button and draws dev's edge.
@@ -169,6 +174,7 @@ func _run() -> void:
 			"%s gives dev's button arguments: %d + %d, median %d" % [builtin[1], _tool.fwd_lanes, _tool.bkw_lanes, _tool.median_style])
 		for other in builtin_ids:
 			_expect(menu.button_for(other).button_pressed == (other == builtin[0]), "%s is marked alone (%s)" % [builtin[1], other])
+		_expect(not menu.custom_marked() and menu.custom_menu.text == "Custom roads", "%s leaves the drop-down unmarked" % builtin[1])
 		var drawn := await _draw(z)
 		var reference := await _draw_reference(z + 25.0, builtin[3], builtin[4])
 		_expect(drawn >= 0 and reference >= 0 and drawn != reference, "%s: both strokes commit" % builtin[1])
@@ -179,8 +185,11 @@ func _run() -> void:
 		z += 50.0
 
 	# The custom type draws its lanes and median; an edit changes the next stroke only.
-	menu.button_for(avenue).pressed.emit()
-	_expect(_input.current_tool == _input.Tool.ROAD and menu.button_for(avenue).button_pressed, "the custom type picks the Road tool and is marked")
+	menu.pick(avenue)
+	_expect(_input.current_tool == _input.Tool.ROAD and menu.custom_marked() and menu.custom_menu.text == "Menu Test Avenue" and popup.is_item_checked(0),
+		"the custom type picks the Road tool and the drop-down shows it")
+	for other in builtin_ids:
+		_expect(not menu.button_for(other).button_pressed, "a custom type unmarks %s" % other)
 	var first := await _draw(z)
 	_expect(_layout(first) == [2, 2, 2, 3.0, 17.0], "the custom type draws 2 + 2 with a 3 m grass median: %s" % [_layout(first)])
 	_expect(String(_simulation.get_edge_cross_section(first).get("road_type", "")) == avenue, "the road reads back as the custom type")
@@ -232,6 +241,34 @@ func _run() -> void:
 			picker.item_selected.emit(index)
 	_expect(window._apply_button.disabled and window._verdict_label.text == "A walkway cannot become a road: draw a road in its place", "walkway -> road is refused: %s" % window._verdict_label.text)
 	_ui.hide_road_properties()
+
+	# The row fits a 1280 x 720 screen with twelve custom types, one with a 40-character name
+	# marked: the drop-down keeps its width.
+	var many: Array[String] = []
+	for n in 12:
+		var name := "Overflow Test Road %02d" % n if n < 11 else "Overflow Test Road With 40 Chars In Name"
+		var made: Dictionary = _simulation.create_road_type(name, AVENUE_EDITED)
+		_expect(made.has("id"), "overflow type %d is created: %s" % [n, made])
+		many.append(String(made.get("id", "")))
+	_ui.refresh_road_types()
+	menu.pick(many.back())
+	var screen_size := root.size
+	root.size = Vector2i(1280, 720)
+	_ui.road_combined_hbox.visible = true
+	_ui.get_meta("options_panel").visible = true
+	_ui.get_meta("road_sep").visible = true
+	for frame in 4:
+		await process_frame
+	var viewport_rect := root.get_visible_rect()
+	var row_rect: Rect2 = _ui.road_combined_hbox.get_global_rect()
+	_expect(viewport_rect.size == Vector2(1280, 720), "the screen is 1280 x 720: %s" % viewport_rect)
+	_expect(menu.custom_ids.size() == 13 and menu.custom_marked(), "the drop-down lists every custom type: %d" % menu.custom_ids.size())
+	_expect(row_rect.position.x >= 0.0 and row_rect.end.x <= viewport_rect.size.x,
+		"the Roads row fits 1280 px with 13 custom types: %s" % row_rect)
+	_expect(menu.custom_menu.size.x <= menu.CUSTOM_BUTTON_WIDTH + 1.0, "a long name does not widen the drop-down: %.0f" % menu.custom_menu.size.x)
+	root.size = screen_size
+	for id in many:
+		_expect(_simulation.delete_road_type(id).is_empty(), "overflow type %s is deleted" % id)
 
 	_expect(_simulation.delete_road_type(avenue).is_empty(), "the fixture type is deleted")
 	_ui.refresh_road_types()
