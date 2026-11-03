@@ -6,12 +6,11 @@
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data(),
 ##   get_growth_overview(), get_treasury_balance(), get_agent_count(),
 ##   get_service_building_assets()
-##   get_industry_building_assets(), get_median_styles()
+##   get_industry_building_assets(), get_road_types()
 ## No scene file for the UI; every control is created in _ready() and helper functions.
 extends CanvasLayer
 
 const CityStatusPanel = preload("res://scripts/ui/city_status_panel.gd")
-const CrossSectionControls = preload("res://scripts/ui/cross_section_controls.gd")
 const DemandMeter = preload("res://scripts/ui/demand_meter.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
@@ -255,18 +254,6 @@ func _build_ui():
 		road_tool.tunnel_toggled.connect(func(enabled: bool): tunnel_check.set_pressed_no_signal(enabled))
 	tunnel_row.add_child(tunnel_check)
 	road_options_menu.add_child(tunnel_row)
-	# The next stroke's lanes and median (`ROAD-80`), the same controls the Road Properties
-	# window shows; the keys and presets update them through `lanes_changed`/`median_changed`.
-	var lane_controls := CrossSectionControls.new()
-	if simulation_node:
-		lane_controls.median_styles = simulation_node.get_median_styles()
-	if road_tool:
-		lane_controls.changed.connect(road_tool.set_cross_section)
-		lane_controls.set_lanes(road_tool.fwd_lanes, road_tool.bkw_lanes)
-		lane_controls.set_median(road_tool.median_style, road_tool.median_width)
-		road_tool.lanes_changed.connect(lane_controls.set_lanes)
-		road_tool.median_changed.connect(lane_controls.set_median)
-	road_options_menu.add_child(lane_controls)
 	options_panel.visible = false 
 	# Store reference to toggle it
 	self.set_meta("options_panel", options_panel)

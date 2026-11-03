@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## ROAD-92 through the player's tools: a median picked on the Road tool (N cycles the style, '
-## steps the width) is cleared by the Walkway preset, N and direct cycling do nothing on a
-## walkway, and a walkway stroke then previews valid. Rust stays the guard: a walkway stroke
-## carrying a median is refused (`median_requires_vehicle_road`). Back on the Road tool, N
-## cycles again. Ported from Veeti's `road_walkway_preset_test.gd` onto dev's preset path
-## (`InputManager._toggle_tool` -> `RoadTool.set_lane_preset`).
+## ROAD-92 on the road-type path (`ROAD-101`): a divided custom type (created through the API)
+## picked on the Road tool carries its median; X picks the Walkway type, which clears it, and a
+## walkway stroke then previews valid. Rust stays the guard: a walkway stroke carrying a median
+## is refused (`median_requires_vehicle_road`). R draws the divided type again. The removed lane
+## and median keys (] [ Up Down . , N ; ') change nothing. Writes the road-type library, so it
+## runs only in the isolated profile. Ported from Veeti's `road_walkway_preset_test.gd`.
 extends SceneTree
 
 const TIMEOUT_MS := 60000
@@ -32,6 +32,11 @@ func _press(input_manager: Node, keycode: Key) -> void:
 	input_manager._unhandled_input(event)
 
 func _run() -> void:
+	# The test writes user://road_types.json: never in a real profile.
+	if not OS.get_user_data_dir().to_lower().contains("godot-tests"):
+		push_error("road_walkway_preset_test must run in the isolated profile from ./run.sh --test")
+		quit(1)
+		return
 	_main = load("res://scenes/Main.tscn").instantiate()
 	# Own scene startup without the menu launch flow.
 	_main.set_script(null)
@@ -49,32 +54,38 @@ func _run() -> void:
 		await process_frame
 	_expect(input_manager._world_ready, "the world must become ready for input")
 	var tool: Node = _main.get_node("RoadTool")
+	var created: Dictionary = _simulation.create_road_type("Grass Avenue", [
+		{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
+		{"kind": "median", "style": 2, "width_m": 3.5},
+		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}])
+	var avenue := String(created.get("id", ""))
+	_expect(not avenue.is_empty(), "the divided type is created: %s" % created)
 
 	input_manager._toggle_tool(input_manager.Tool.ROAD)
-	_expect(tool.fwd_lanes == 1 and tool.bkw_lanes == 1 and tool.median_style == 0, "the Road tool starts 1 + 1 without a median")
-	_press(input_manager, KEY_N)
-	_press(input_manager, KEY_N)
-	_expect(tool.median_style == 2 and is_equal_approx(tool.median_width, 3.0), "N twice picks grass at 3 m: %d %.1f" % [tool.median_style, tool.median_width])
-	_press(input_manager, KEY_APOSTROPHE)
-	_expect(is_equal_approx(tool.median_width, 3.5), "' widens the median by 0.5 m: %.1f" % tool.median_width)
+	_expect(tool.fwd_lanes == 1 and tool.bkw_lanes == 1 and tool.median_style == 0, "the Road tool starts as the 2-Lane Road")
+	_expect(tool.set_road_type(avenue).is_empty(), "the divided type is picked")
+	_expect(tool.median_style == 2 and is_equal_approx(tool.median_width, 3.5), "the type carries grass at 3.5 m: %d %.1f" % [tool.median_style, tool.median_width])
+	for key in [KEY_BRACKETRIGHT, KEY_BRACKETLEFT, KEY_UP, KEY_DOWN, KEY_PERIOD, KEY_COMMA, KEY_N, KEY_SEMICOLON, KEY_APOSTROPHE]:
+		_press(input_manager, key)
+	_expect(tool.fwd_lanes == 1 and tool.bkw_lanes == 1 and tool.median_style == 2 and is_equal_approx(tool.median_width, 3.5), "the removed lane and median keys change nothing")
 
 	# Rust guards the walkway: a 0 + 0 stroke carrying the tool's median is refused.
 	var points := PackedVector3Array([_ground(-80.0, 40.0), _ground(80.0, 40.0)])
 	var refused: Dictionary = _simulation.validate_road_candidate_with_snap(points, 0, 0, true)
 	_expect(refused.get("invalid_reason", "") == "median_requires_vehicle_road", "a walkway with a median is refused: %s" % refused.get("invalid_reason", ""))
 
-	input_manager._toggle_tool(input_manager.Tool.WALKWAY)
-	_expect(tool.fwd_lanes == 0 and tool.bkw_lanes == 0, "the Walkway preset is 0 + 0")
-	_expect(tool.median_style == 0, "the Walkway preset clears the median")
-	_press(input_manager, KEY_N)
-	tool.cycle_median()
-	_expect(tool.median_style == 0, "N and direct cycling do nothing on a walkway")
+	_press(input_manager, KEY_X)
+	_expect(input_manager.current_tool == input_manager.Tool.WALKWAY, "X picks the Walkway tool")
+	_expect(tool.road_type_id == tool.WALKWAY_ROAD_TYPE, "X picks the Walkway type")
+	_expect(tool.fwd_lanes == 0 and tool.bkw_lanes == 0, "the Walkway type is 0 + 0")
+	_expect(tool.median_style == 0, "the Walkway type clears the median")
 	var walkway: Dictionary = _simulation.validate_road_candidate_with_snap(points, 0, 0, true)
 	_expect(bool(walkway.get("is_valid", false)), "the walkway stroke is valid without the median: %s" % walkway.get("invalid_reason", ""))
 
-	input_manager._toggle_tool(input_manager.Tool.ROAD)
-	_press(input_manager, KEY_N)
-	_expect(tool.median_style == 1 and is_equal_approx(tool.median_width, 1.0), "N cycles again on the Road tool: %d" % tool.median_style)
+	_press(input_manager, KEY_R)
+	_expect(input_manager.current_tool == input_manager.Tool.ROAD, "R picks the Road tool")
+	_expect(tool.road_type_id == avenue and tool.median_style == 2, "R draws the last road type again: %s %d" % [tool.road_type_id, tool.median_style])
+	_expect(_simulation.delete_road_type(avenue).is_empty(), "the fixture type is deleted")
 	tool.active = false
 	_main.queue_free()
 	await process_frame

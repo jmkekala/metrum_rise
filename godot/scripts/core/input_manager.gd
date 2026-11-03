@@ -307,19 +307,6 @@ func _unhandled_input(event):
 				if current_tool == Tool.ROAD:
 					road_tool.set_tunnel(not road_tool.tunnel_enabled)
 					get_viewport().set_input_as_handled()
-			# The next stroke's median (`ROAD-80`): N cycles its style, ; and ' its width.
-			KEY_N:
-				if current_tool == Tool.ROAD:
-					road_tool.cycle_median()
-					get_viewport().set_input_as_handled()
-			KEY_SEMICOLON:
-				if current_tool == Tool.ROAD:
-					road_tool.adjust_median_width(-0.5)
-					get_viewport().set_input_as_handled()
-			KEY_APOSTROPHE:
-				if current_tool == Tool.ROAD:
-					road_tool.adjust_median_width(0.5)
-					get_viewport().set_input_as_handled()
 			KEY_SPACE:
 				_toggle_pause()
 				get_viewport().set_input_as_handled()
@@ -328,14 +315,7 @@ func _unhandled_input(event):
 					_handle_load_game()
 			KEY_F12:
 				_handle_money_and_demand_cheat()
-			
-			# Lane Adjustments (Forward)
-			KEY_BRACKETRIGHT, KEY_UP: _handle_lane_adjust(1, 0)
-			KEY_BRACKETLEFT, KEY_DOWN: _handle_lane_adjust(-1, 0)
-			# Lane Adjustments (Backward)
-			KEY_PERIOD: _handle_lane_adjust(0, 1)
-			KEY_COMMA: _handle_lane_adjust(0, -1)
-			
+
 			# Overlay Modes
 			KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS:
 				_handle_overlay_mode(event.keycode)
@@ -399,10 +379,6 @@ func _handle_escape():
 		get_viewport().set_input_as_handled()
 	elif junction_debug_overlay and junction_debug_overlay.unfocus():
 		get_viewport().set_input_as_handled()
-
-func _handle_lane_adjust(fwd, bkw):
-	if current_tool == Tool.ROAD and road_tool:
-		road_tool.adjust_lanes(fwd, bkw)
 
 func _toggle_agent_paths():
 	if agents_node:

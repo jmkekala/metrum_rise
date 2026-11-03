@@ -953,7 +953,7 @@ func _test_road_pointer_frame_updates() -> void:
 	tool.pointer.x += 0.01
 	_road_frame(tool)
 	_expect(simulation.preview_calls == 11, "a sub-5 cm move must preview the exact new stroke")
-	tool.adjust_lanes(1, 0)
+	tool.set_lanes(tool.fwd_lanes + 1, tool.bkw_lanes)
 	_road_frame(tool)
 	_expect(simulation.preview_calls == 12, "a lane change must preview the new width")
 	# Click between frames: the click previews the freshly resolved cursor and submits it.

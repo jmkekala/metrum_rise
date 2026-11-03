@@ -14,11 +14,14 @@
 ## checkbox-controlled zoning-grid snapping, angle snapping (Shift draws free), the tunnel
 ## toggle (`ROAD-61`; T or the options checkbox: Rust keeps the drawn profile through the ground,
 ## the covered stretch becomes a tunnel and its open ends approaches) and the distance + angle HUD
-## label. The next stroke's median (`ROAD-80`; the options panel's Median row, N cycles the
-## style, ; and ' step the width) is Rust's: `set_road_tool_median` refuses a style or width
-## outside its range, and the stroke's check refuses a median its lanes cannot carry (a one-way
-## road or a walkway); the Walkway preset clears it (`ROAD-92`).
-## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(), get_median_styles(),
+## label. The next stroke's lanes and median come from a road type (`ROAD-101`):
+## `set_road_type` reads the type's cross-section from Rust's `get_road_types` and sets the
+## lanes (per-call arguments of every preview and commit) and the median through
+## `set_road_tool_median`, as before. R keeps the last road type picked (2-Lane Road at first),
+## X picks the Walkway. `set_lanes` and `set_median` stay the two low-level setters
+## (benchmarks, probes and the debug replay write them). Rust stays the guard: the stroke's
+## check refuses a median its lanes cannot carry (a one-way road or a walkway).
+## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(), get_road_types(),
 ## preview_road(), advance_road_preview_terrain(),
 ## release_road_preview_terrain(), add_road_with_snap(), get_road_commit_result(),
 ## get_road_tool_cursor_pos(), get_road_tool_start_direction(), get_graded_edit_serial().
@@ -56,11 +59,6 @@ signal tunnel_toggled(enabled: bool)
 # 1 painted, 2 kerbed grass, 3 kerbed paving, and its width with kerbs, in metres.
 var median_style: int = 0
 var median_width: float = 0.0
-var _median_style_table: Dictionary = {}
-## The next stroke's median changed (keys, presets or the options panel's Median row).
-signal median_changed(style: int, width: float)
-## The next stroke's lane counts changed (keys, presets or the options panel's steppers).
-signal lanes_changed(fwd: int, bkw: int)
 ## The built-in type R starts with and falls back to when the picked type is gone.
 const DEFAULT_ROAD_TYPE := "builtin:road_2l"
 ## The built-in Walkway type, X's pick.
@@ -232,15 +230,10 @@ func _update_lanes_label():
 	if active and current_path != null:
 		_queue_preview_update()
 
-func adjust_lanes(fwd_delta: int, bkw_delta: int):
-	# Allow 0,0 for walkways
-	set_lanes(fwd_lanes + fwd_delta, bkw_lanes + bkw_delta)
-
-## Sets the next stroke's lanes (0..4 each; 0 + 0 is a walkway) and tells the options panel.
+## Sets the next stroke's lanes (0..4 each; 0 + 0 is a walkway).
 func set_lanes(fwd: int, bkw: int) -> void:
 	fwd_lanes = clamp(fwd, 0, 4)
 	bkw_lanes = clamp(bkw, 0, 4)
-	lanes_changed.emit(fwd_lanes, bkw_lanes)
 	_update_lanes_label()
 
 func set_tunnel(enabled: bool) -> void:
@@ -261,47 +254,8 @@ func set_median(style: int, width: float) -> String:
 		return reason
 	median_style = style
 	median_width = width
-	median_changed.emit(median_style, median_width)
 	_queue_preview_update()
 	return ""
-
-## N: the next median style (none, painted, grass, paving) at its default width. A walkway has
-## no median (`ROAD-92`), so N does nothing on one.
-func cycle_median() -> void:
-	if fwd_lanes == 0 and bkw_lanes == 0:
-		return
-	var styles := _median_styles()
-	var style := (median_style + 1) % (styles.size() + 1)
-	set_median(style, float(styles[style].default_m) if style != 0 else 0.0)
-
-## ; and ': steps the median's width by `delta` within its style's range.
-func adjust_median_width(delta: float) -> void:
-	if median_style == 0:
-		return
-	var widths: Dictionary = _median_styles()[median_style]
-	set_median(median_style, clampf(median_width + delta, widths.min_m, widths.max_m))
-
-# Rust's median widths per style code (`get_median_styles`: default_m, min_m, max_m), read on
-# the first key press that needs them; the table is constant.
-func _median_styles() -> Dictionary:
-	if _median_style_table.is_empty():
-		_median_style_table = simulation_node.get_median_styles()
-	return _median_style_table
-
-## The options panel's cross-section controls: the lanes, then the median through Rust. A
-## median Rust refuses leaves the tool's, which the controls show again.
-func set_cross_section(fwd: int, bkw: int, style: int, width: float) -> void:
-	set_lanes(fwd, bkw)
-	if style != median_style or width != median_width:
-		if not set_median(style, width).is_empty():
-			median_changed.emit(median_style, median_width)
-
-## A lane preset (the Road and Walkway tools, `ROAD-92`): sets the lanes and clears a median
-## the walkway cannot carry, so the tool never holds a state Rust would refuse on every stroke.
-func set_lane_preset(fwd: int, bkw: int) -> void:
-	if fwd == 0 and bkw == 0 and median_style != 0:
-		set_median(0, 0.0)
-	set_lanes(fwd, bkw)
 
 ## Draws the next strokes with road type `id` (`ROAD-101`): its lanes and median as Rust's
 ## `get_road_types` lists them. Returns "" when picked, else the refusal key: the type's
