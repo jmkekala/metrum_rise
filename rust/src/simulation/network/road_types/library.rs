@@ -176,6 +176,12 @@ impl RoadTypeLibrary {
         })
     }
 
+    /// Reads the file again (the road builder does on opening, so a file fixed or changed by
+    /// hand shows without a restart). Writes always re-read first; this is only for listing.
+    pub fn reload(&mut self) {
+        self.load();
+    }
+
     /// Whether `name` would be accepted for a new type (`except_id` empty) or as custom type
     /// `except_id`'s new name, against the list as last read: the [`clean_name`] keys or
     /// `name_taken`. The road builder asks it on every keystroke; [`Self::create`] and

@@ -162,6 +162,12 @@ fn edits_follow_the_name_and_layout_rules() {
     assert_eq!(reason(library.check_name("2-Lane road", &id)), "name_taken");
     assert_eq!(library.check_name("boulevard", &id), Ok(()));
     assert_eq!(library.check_name("Avenue", ""), Ok(()));
+    // Another handle's write lists after a reload.
+    let avenue = fixture.library().create("Avenue", &[S, B, F, S]).unwrap();
+    assert_eq!(library.check_name("Avenue", ""), Ok(()));
+    library.reload();
+    assert_eq!(reason(library.check_name("avenue", "")), "name_taken");
+    assert_eq!(library.delete(&avenue), Ok(()));
     // A type may keep its own name in another case; its id stays.
     assert_eq!(
         library.update(&id, "boulevard", &[S, B, B, grass(4.0), F, F, S]),

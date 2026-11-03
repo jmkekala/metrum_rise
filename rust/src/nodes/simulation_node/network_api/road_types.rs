@@ -116,6 +116,14 @@ impl SimulationNode {
         }
     }
 
+    /// Reads the road-type library file again (`ROAD-101`, the road builder on opening), so a
+    /// file fixed or edited by hand lists without a restart; [`Self::get_road_types`] then gives
+    /// the fresh list. Writes always re-read the file first. `O(types x parts)`.
+    #[func]
+    pub fn reload_road_types(&self) {
+        self.with_road_types(RoadTypeLibrary::reload);
+    }
+
     /// Checks a type name before a create or an update (`ROAD-101`, the road builder's name
     /// field): the empty string when [`Self::create_road_type`] (`id` empty) or
     /// [`Self::update_road_type`] of custom type `id` would accept it, else `name_empty`,
