@@ -18,8 +18,7 @@ signal road_builder_requested
 ## The most type buttons the row holds; the builder lists the rest.
 const MAX_TYPES := 10
 
-## Median style names by Rust's style code (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving).
-const MEDIAN_STYLE_NAMES: Array[String] = ["None", "Painted", "Grass", "Paving"]
+const MedianControls = preload("res://scripts/ui/median_controls.gd")
 
 ## Usable types the cap left out of the row at the last `refresh`.
 var hidden_count := 0
@@ -99,8 +98,8 @@ static func describe(type: Dictionary, with_width: bool = true) -> String:
 	var bkw := int(type.get("bkw_lanes", 0))
 	var text := "Footpath" if fwd + bkw == 0 else "%d + %d lanes" % [fwd, bkw]
 	var style := int(type.get("median_style", 0))
-	if style > 0 and style < MEDIAN_STYLE_NAMES.size():
-		text += ", %s %.1f m" % [MEDIAN_STYLE_NAMES[style], float(type.get("median_width", 0.0))]
+	if style > 0 and style < MedianControls.MEDIAN_STYLE_NAMES.size():
+		text += ", %s %.1f m" % [MedianControls.MEDIAN_STYLE_NAMES[style], float(type.get("median_width", 0.0))]
 	if with_width:
 		text += ", %.1f m wide" % float(type.get("total_m", 0.0))
 	return text

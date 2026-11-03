@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## The player's text for Rust's road refusal keys, shared by every host that shows a road
-## verdict: the road tool's stroke preview and the Road Properties window's in-place edits
-## (`ROAD-80`). Rust decides and names the refusal (`invalid_reason`, with the numbers the
-## stroke preview carries); this only words it.
+## verdict: the road tool's stroke preview, the Road Properties window's in-place edits
+## (`ROAD-80`) and the road types' layout, name and library refusals (`ROAD-101`). Rust decides
+## and names the refusal (`invalid_reason`, with the numbers the stroke preview carries); this
+## only words it.
 extends RefCounted
 
 ## The text for `preview`'s `invalid_reason`, or `fallback` for a key without one.
@@ -102,11 +103,11 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 		"invalid_road":
 			return "The road no longer exists"
 		"cross_section_not_road":
-			return "Only roads with lanes can change their lanes"
+			return "A walkway cannot become a road: draw a road in its place"
 		"too_many_lanes":
 			return "At most 4 lanes in each direction"
 		"cross_section_cannot_change_transit_mode":
-			return "A road keeps at least one lane"
+			return "A road cannot become a walkway"
 		"cross_section_unchanged":
 			return "No change"
 		"edit_tunnel_width":
@@ -121,6 +122,45 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Median width out of range for its style"
 		"unknown_median_style":
 			return "Unknown median style"
+		# Road types and their library (`ROAD-101`): the layout check, names, library edits.
+		"layout_footpath_alone":
+			return "A footpath is a walkway on its own"
+		"layout_sidewalks":
+			return "Sidewalks at both ends"
+		"layout_two_medians":
+			return "One median at most"
+		"layout_lane_order":
+			return "Lanes against traffic go on the left"
+		"layout_no_car_lane":
+			return "A road needs at least one car lane"
+		"layout_lanes_split":
+			return "A median sits between the two directions, not inside one"
+		"layout_median_at_edge":
+			return "A median sits between the two directions"
+		"layout_unknown_part":
+			return "Unknown road part"
+		"name_empty":
+			return "Enter a name"
+		"name_too_long":
+			return "At most 40 characters"
+		"name_invalid_characters":
+			return "No line breaks or control characters"
+		"name_taken":
+			return "Another road type has this name"
+		"road_type_builtin":
+			return "Built-in road types cannot be changed"
+		"road_type_unknown":
+			return "This road type no longer exists"
+		"road_type_duplicate_id":
+			return "Another road type in the library has the same id"
+		"entry_unreadable":
+			return "This road type could not be read from the library"
+		"library_unreadable":
+			return "The road library file could not be read: fix or remove it to save changes"
+		"library_newer_version":
+			return "The road library is from a newer version of the game: read-only"
+		"library_write_failed":
+			return "The road library could not be saved"
 		"node_piece_failed":
 			return "A junction at the road's end cannot fit this width"
 		"road_commit_rejected":

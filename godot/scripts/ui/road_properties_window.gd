@@ -4,20 +4,26 @@
 ##
 ## The window mirrors the previous side panel behavior but uses Godot's built-in
 ## draggable Window surface and preserves its placement within the session.
-## Cross-section (`ROAD-80`): the shared cross-section controls show the selected road's lanes
-## and median; a change asks Rust's verdict for it through the select tool (the commit's check,
-## no geometry preview) and shows it beside Apply, which commits an accepted change (Ctrl+Z
-## undoes it). The window opens tall enough for every row.
+## Road type (`ROAD-101`, `ROAD-80`): a picker lists the usable road types and shows the selected
+## road's (Rust's `road_type` for its cross-section, or "Custom layout" when no type matches).
+## A pick asks Rust's verdict for the type's lanes and median through the select tool (the
+## in-place edit's check, no geometry preview) and shows it beside Apply, which commits an
+## accepted change (Ctrl+Z undoes it). The picker stays enabled on a walkway so the refusal
+## (walkway <-> road) shows with its text. The window opens tall enough for every row.
+## Rust methods called: get_road_types(), get_edge_cross_section(), get_edge_class(),
+## get_no_building_spawn(), get_edge_geometry_3d(), get_height_at().
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
-const CrossSectionControls = preload("res://scripts/ui/cross_section_controls.gd")
+const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
+## The picker's text for a road whose cross-section no type has.
+const CUSTOM_LAYOUT := "Custom layout"
 const VERDICT_READY := Color(0.55, 0.95, 0.55)
 const VERDICT_REFUSED := Color.YELLOW
-# Every row fits at the default size: the class buttons, lanes, median style and width, the
-# verdict with Apply, and No buildings (the median rows grew it from 400 px).
+# Every row fits at the default size: the class buttons, the road type and its layout, the
+# verdict with Apply, and No buildings.
 const DEFAULT_SIZE := Vector2i(400, 500)
 const MIN_SIZE := Vector2i(360, 460)
 
@@ -28,7 +34,8 @@ var _window: Window
 var _warning_label: Label
 var _no_build_check: CheckBox
 var _class_buttons: Array[Button] = []
-var _lanes: CrossSectionControls
+var _type_picker: OptionButton
+var _layout_label: Label
 var _verdict_label: Label
 var _apply_button: Button
 var _selected_edges: Array[int] = []
@@ -37,16 +44,9 @@ var _last_screen_pos := Vector2.ZERO
 func setup(simulation_node: Node, select_tool: Node) -> void:
 	_simulation_node = simulation_node
 	_select_tool = select_tool
-	_load_median_styles()
 
 func _ready() -> void:
 	_build_window()
-
-# Rust's median widths are constant: the controls read them once, as soon as both the simulation
-# node and the controls exist (`setup` runs before or after `_ready`, and again on every show).
-func _load_median_styles() -> void:
-	if _lanes and _simulation_node and _lanes.median_styles.is_empty():
-		_lanes.median_styles = _simulation_node.get_median_styles()
 
 func _build_window() -> void:
 	_window = Window.new()
@@ -97,10 +97,23 @@ func _build_window() -> void:
 
 	root_vbox.add_child(HSeparator.new())
 
-	_lanes = CrossSectionControls.new(14)
-	_lanes.changed.connect(_on_cross_section_changed)
-	_load_median_styles()
-	root_vbox.add_child(_lanes)
+	var type_row := HBoxContainer.new()
+	var type_label := Label.new()
+	type_label.text = "Road type"
+	type_label.custom_minimum_size.x = 92.0
+	UIStyle.set_font_size(type_label, 14)
+	type_row.add_child(type_label)
+	_type_picker = OptionButton.new()
+	_type_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_type_picker.fit_to_longest_item = false
+	UIStyle.set_font_size(_type_picker, 14)
+	_type_picker.item_selected.connect(_on_type_selected)
+	type_row.add_child(_type_picker)
+	root_vbox.add_child(type_row)
+	_layout_label = Label.new()
+	_layout_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UIStyle.set_font_size(_layout_label, 13)
+	root_vbox.add_child(_layout_label)
 	var apply_row := HBoxContainer.new()
 	_verdict_label = Label.new()
 	_verdict_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -155,7 +168,7 @@ func _refresh() -> void:
 	if _selected_edges.is_empty() or _simulation_node == null:
 		return
 
-	_refresh_lanes()
+	_refresh_type()
 	if _selected_edges.size() == 1:
 		var edge_idx := _selected_edges[0]
 		_warning_label.text = ""
@@ -191,41 +204,57 @@ func _refresh() -> void:
 		for i in range(_class_buttons.size()):
 			_class_buttons[i].set_pressed_no_signal(shared_class and i == first_class)
 
-# The first selected road's cross-section; editable when every selected road can change it.
-func _refresh_lanes() -> void:
+# The picker lists the usable types with the first selected road's marked, or "Custom layout"
+# (not pickable) when no type has its cross-section. Every item's metadata is its type.
+func _refresh_type() -> void:
 	var first: Dictionary = _simulation_node.get_edge_cross_section(_selected_edges[0])
-	_lanes.set_lanes(int(first.get("fwd_lanes", 0)), int(first.get("bkw_lanes", 0)))
-	_lanes.set_median(int(first.get("median_style", 0)), float(first.get("median_width", 0.0)))
-	_lanes.set_editable(_selected_edges.all(
-		func(idx): return bool(_simulation_node.get_edge_cross_section(idx).get("editable", false))
-	))
+	var current := String(first.get("road_type", ""))
+	_type_picker.clear()
+	if current.is_empty():
+		_type_picker.add_item(CUSTOM_LAYOUT)
+		_type_picker.set_item_disabled(0, true)
+		_type_picker.set_item_metadata(0, {})
+	for type: Dictionary in _simulation_node.get_road_types().get("types", []):
+		if not bool(type.get("usable", false)):
+			continue
+		_type_picker.add_item(String(type.get("name", "")))
+		_type_picker.set_item_metadata(_type_picker.item_count - 1, type)
+		if String(type.get("id", "")) == current:
+			_type_picker.select(_type_picker.item_count - 1)
+	if current.is_empty():
+		_type_picker.select(0)
+	_layout_label.text = RoadTypeMenu.describe(first, false)
 	_verdict_label.text = ""
 	_apply_button.disabled = true
 
-func _on_cross_section_changed(fwd: int, bkw: int, median_style: int, median_width: float) -> void:
-	if _select_tool == null or not _select_tool.has_method("preview_selected_edge_cross_section"):
-		return
-	show_verdict(_select_tool.preview_selected_edge_cross_section(fwd, bkw, median_style, median_width))
+# The type picked in the picker, or {} for "Custom layout".
+func _picked_type() -> Dictionary:
+	var index := _type_picker.selected
+	return _type_picker.get_item_metadata(index) if index >= 0 else {}
 
-## Shows Rust's verdict on the controls' cross-section and enables Apply when it accepts it.
+func _on_type_selected(_index: int) -> void:
+	var type := _picked_type()
+	if type.is_empty() or _select_tool == null or not _select_tool.has_method("preview_selected_edge_cross_section"):
+		return
+	show_verdict(_select_tool.preview_selected_edge_cross_section(
+		int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)),
+		int(type.get("median_style", 0)), float(type.get("median_width", 0.0))
+	))
+
+## Shows Rust's verdict on the picked type and enables Apply when it accepts it.
 func show_verdict(verdict: Dictionary) -> void:
 	var ready := bool(verdict.get("is_valid", false))
 	_apply_button.disabled = not ready
 	_verdict_label.add_theme_color_override("font_color", VERDICT_READY if ready else VERDICT_REFUSED)
-	_verdict_label.text = _cross_section_text() if ready \
-		else RoadReasonText.text(verdict, "This road cannot change its cross-section")
-
-# "2 + 2 lanes", with ", Grass 3.0 m" when the controls carry a median.
-func _cross_section_text() -> String:
-	var text := "%d + %d lanes" % [_lanes.fwd_lanes, _lanes.bkw_lanes]
-	if _lanes.median_style != 0:
-		text += ", %s %.1f m" % [CrossSectionControls.MEDIAN_STYLE_NAMES[_lanes.median_style], _lanes.median_width]
-	return text
+	_verdict_label.text = RoadTypeMenu.describe(_picked_type(), false) if ready \
+		else RoadReasonText.text(verdict, "This road cannot change its type")
 
 func _on_apply_pressed() -> void:
-	if _select_tool and _select_tool.has_method("set_selected_edge_cross_section"):
+	var type := _picked_type()
+	if not type.is_empty() and _select_tool and _select_tool.has_method("set_selected_edge_cross_section"):
 		var refused: int = _select_tool.set_selected_edge_cross_section(
-			_lanes.fwd_lanes, _lanes.bkw_lanes, _lanes.median_style, _lanes.median_width
+			int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)),
+			int(type.get("median_style", 0)), float(type.get("median_width", 0.0))
 		)
 		_refresh()
 		if refused > 0:
