@@ -30,6 +30,7 @@ fn test_slope_cost_calculation() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     };
 
     let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
@@ -89,6 +90,7 @@ fn test_pathing_avoids_steep_slope() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     };
     let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);
     edge_ab.base_cost = cost_ab;
@@ -119,6 +121,7 @@ fn test_pathing_avoids_steep_slope() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     };
     let (cost_ac, dist_ac) = cost::CostCalculator::calculate_costs(&edge_ac);
     edge_ac.base_cost = cost_ac;
@@ -154,6 +157,7 @@ fn test_pathing_avoids_steep_slope() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     };
     let (cost_cb, dist_cb) = cost::CostCalculator::calculate_costs(&edge_cb);
     edge_cb.base_cost = cost_cb;
@@ -205,6 +209,7 @@ fn test_bidirectional_walkway_pathing() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     });
 
     let cch = CchGraph::build(&graph);
@@ -257,6 +262,7 @@ fn test_car_uturn_allowed() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     });
 
     let cch = CchGraph::build(&graph);
@@ -314,6 +320,7 @@ fn test_border_spur_routes_to_connected_residential_branch() {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         }
     };
     graph.add_edge(edge(n0, center, 241.03, 0.0, 9.35));
@@ -380,6 +387,7 @@ fn test_car_avoids_walkway_shortcut() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     });
     graph.add_edge(Edge {
         start_node: n1,
@@ -403,6 +411,7 @@ fn test_car_avoids_walkway_shortcut() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     });
 
     // Walkway shortcut n0 -> n2 directly
@@ -428,6 +437,7 @@ fn test_car_avoids_walkway_shortcut() {
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     });
 
     let cch = cch::CchGraph::build(&graph);
@@ -505,6 +515,7 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         })
     };
 
@@ -628,6 +639,7 @@ fn walkers_are_priced_at_walking_pace_and_take_the_shorter_footpath() {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         };
         (edge.base_cost, edge.physical_length) = cost::CostCalculator::calculate_costs(&edge);
         graph.add_edge(edge);

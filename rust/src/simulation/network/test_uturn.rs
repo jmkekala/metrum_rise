@@ -39,6 +39,7 @@ mod tests {
                 vehicle_frontage_access:
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
                 median: None,
+                pocket: None,
             });
         }
         graph.rebuild_adjacency_list();
@@ -119,6 +120,7 @@ mod tests {
                 vehicle_frontage_access:
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
                 median: None,
+                pocket: None,
             });
         }
         graph.rebuild_adjacency_list();
@@ -181,6 +183,7 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
         graph.rebuild_adjacency_list();
         let mut lanes = LaneSystem::new();

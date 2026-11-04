@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! An edge's cross-section: where its two directional lane groups sit inside the centred
-//! carriageway (`ROAD-100`), the median between them (`ROAD-80`), and the lane counts, median and
-//! road-type attributes edited in place (`ROAD-80`, `ROAD-101`). The median's geometry is the
-//! roadbed's (`roadbed::profile`).
+//! carriageway (`ROAD-100`), the median between them (`ROAD-80`), a turn pocket's extra lane and
+//! the kerb it moves (`ROAD-95`), and the lane counts, median and road-type attributes edited in
+//! place (`ROAD-80`, `ROAD-101`). The median's geometry is the roadbed's (`roadbed::profile`).
 
 use super::{Edge, RegionGraph};
 use crate::config;
 use crate::simulation::network::road_types::RoadAttributes;
-use crate::simulation::network::types::{TransitFlags, TransitType, VehicleFrontageAccess};
+use crate::simulation::network::roadbed::EdgeEnd;
+use crate::simulation::network::types::{
+    EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+};
 use crate::simulation::pathing::cost::CostCalculator;
 
 /// Most vehicle lanes one direction of a road carries, as the road tool offers them.
@@ -103,16 +106,165 @@ impl RoadMedian {
     }
 }
 
+/// A turn pocket at one end of an edge (`ROAD-95`): extra lanes of the direction that approaches
+/// `end` (the forward lanes when `end` is [`EdgeEnd::End`]), each serving one turn at the node
+/// there. The lane counts and `Edge::width` include the pocket lanes. `left` is the lane left of
+/// the through lanes as its drivers see it (rank 0, `lanes::lane_rank`), `right` the lane on
+/// their right. Under right-hand traffic a right pocket moves the kerb out by one lane and only
+/// that kerb ([`Edge::kerb_shift_m`]); a left pocket does the same on the other kerb of a one-way
+/// road. The edge is the short pocket edge, split off its base road at a degree-two
+/// [`NodeType::LaneTransition`] node; the taper between them is the roadbed's (D4). Lengths are
+/// never stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoadPocket {
+    /// The edge end whose node the pocket lanes turn at.
+    pub end: EdgeEnd,
+    /// A pocket lane on the drivers' left.
+    pub left: bool,
+    /// A pocket lane on the drivers' right.
+    pub right: bool,
+}
+
+impl RoadPocket {
+    /// The pocket a save names: `end` 0 none, 1 start, 2 end; `roles` bit 1 left, bit 2 right.
+    /// `None` for no pocket; an error for an unknown code or a pocket with neither lane.
+    pub fn from_codes(end: i64, roles: i64) -> Result<Option<Self>, &'static str> {
+        let end = match end {
+            0 if roles == 0 => return Ok(None),
+            1 => EdgeEnd::Start,
+            2 => EdgeEnd::End,
+            _ => return Err("invalid_pocket_dimensions"),
+        };
+        if !(1..=3).contains(&roles) {
+            return Err("invalid_pocket_dimensions");
+        }
+        Ok(Some(Self {
+            end,
+            left: roles & 1 != 0,
+            right: roles & 2 != 0,
+        }))
+    }
+
+    /// [`Self::from_codes`]'s inverse: `(end, roles)`, `(0, 0)` for no pocket.
+    pub fn codes(pocket: Option<Self>) -> (i64, i64) {
+        pocket.map_or((0, 0), |pocket| {
+            let end = match pocket.end {
+                EdgeEnd::Start => 1,
+                EdgeEnd::End => 2,
+            };
+            (end, i64::from(pocket.left) | i64::from(pocket.right) << 1)
+        })
+    }
+
+    /// Whether the lanes of one direction (`is_fwd`) approach this pocket's end: forward lanes
+    /// reach an edge's end, backward lanes its start.
+    pub fn serves(self, is_fwd: bool) -> bool {
+        is_fwd == (self.end == EdgeEnd::End)
+    }
+
+    // The pocket lanes `(inner, outer)` in lane-index order: the lane next to the line between
+    // the lane groups (index 0 or -1) and the one at the kerb. Under right-hand traffic the
+    // drivers' left is the inner side.
+    fn inner_outer(self) -> (bool, bool) {
+        if config::DRIVE_ON_LEFT {
+            (self.right, self.left)
+        } else {
+            (self.left, self.right)
+        }
+    }
+}
+
 impl Edge {
     /// Lateral offset, in the edge's forward frame, of the line between its backward and forward
     /// lane groups: zero when both directions carry equally many lanes, else half a lane per
     /// extra lane towards the direction with fewer, so the lanes fill the carriageway the
     /// profile centres on the centreline (`ROAD-100`), where the markings already divide it.
     /// A 2+1 road's lanes sit at -3.5, 0 and 3.5 m, a one-way lane on the centreline. A median
-    /// is centred on this line. `O(1)`, allocation-free.
+    /// is centred on this line. On a pocket edge (`ROAD-95`) the carriageway is centred on
+    /// [`Self::kerb_shift_m`] instead, so a kerb pocket's lane lies outside the base road's
+    /// lanes, which keep their offsets: a 1+1 road with a forward right pocket has its lanes at
+    /// -1.75, 1.75 and 5.25 m. `O(1)`, allocation-free.
     pub fn lane_group_offset(&self) -> f32 {
         let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-        (f32::from(self.bkw_lanes) - f32::from(self.fwd_lanes)) * config::LANE_WIDTH * 0.5 * side
+        let centred = (f32::from(self.bkw_lanes) - f32::from(self.fwd_lanes))
+            * config::LANE_WIDTH
+            * 0.5
+            * side;
+        if self.pocket.is_none() {
+            return centred;
+        }
+        self.kerb_shift_m() + centred
+    }
+
+    /// Lateral offset, in the edge's forward frame, of the carriageway's centre from the
+    /// centreline (`ROAD-95`): half a lane towards the kerb a pocket lane moves out, so the
+    /// roadbed profile moves that kerb by a lane and keeps the other. Zero without a pocket.
+    /// `O(1)`.
+    pub fn kerb_shift_m(&self) -> f32 {
+        let Some(pocket) = self.pocket else {
+            return 0.0;
+        };
+        // Lanes run outwards from the line between the groups on the driving side: forward
+        // lanes towards +x under right-hand traffic, backward lanes towards -x.
+        let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+        let direction = if pocket.end == EdgeEnd::End {
+            1.0
+        } else {
+            -1.0
+        };
+        let (inner, outer) = pocket.inner_outer();
+        // An inner kerb pocket exists on a one-way road only (`validate_pocket`).
+        let lanes = f32::from(u8::from(outer)) - f32::from(u8::from(inner));
+        lanes * config::LANE_WIDTH * 0.5 * side * direction
+    }
+
+    /// The pocket lanes among the lanes of one direction (`is_fwd`): one per pocket role when
+    /// those lanes approach the pocket's end, else zero. `O(1)`.
+    pub fn pocket_lanes(&self, is_fwd: bool) -> u8 {
+        self.pocket
+            .filter(|pocket| pocket.serves(is_fwd))
+            .map_or(0, |pocket| u8::from(pocket.left) + u8::from(pocket.right))
+    }
+
+    /// Whether this edge's pocket is one a pocket edit could have built (`ROAD-95`): a car road
+    /// at ground level (a bridge's or tunnel's taper would lie on a structure piece), at least one
+    /// through lane besides the pocket lanes in the approaching direction, at most
+    /// [`MAX_LANES_PER_DIRECTION`] lanes there, and an inner kerb pocket (the drivers' left
+    /// under right-hand traffic) only on a one-way road. A left pocket inside a raised median is
+    /// not yet supported (`ROAD-95` round R5b1). Edits and loads share it; the error is the
+    /// stable refusal key. `O(1)`.
+    pub(crate) fn validate_pocket(&self) -> Result<(), &'static str> {
+        let Some(pocket) = self.pocket else {
+            return Ok(());
+        };
+        if self.deleted
+            || self.primary_type != TransitType::Road
+            || self.allowed_types & TransitFlags::CAR == 0
+        {
+            return Err("invalid_road");
+        }
+        if self.class != EdgeClass::Standard {
+            return Err("pocket_requires_surface_road");
+        }
+        if !pocket.left && !pocket.right {
+            return Err("invalid_pocket_dimensions");
+        }
+        let is_fwd = pocket.end == EdgeEnd::End;
+        let (lanes, opposite) = if is_fwd {
+            (self.fwd_lanes, self.bkw_lanes)
+        } else {
+            (self.bkw_lanes, self.fwd_lanes)
+        };
+        if lanes > MAX_LANES_PER_DIRECTION {
+            return Err("pocket_lane_limit");
+        }
+        if lanes <= self.pocket_lanes(is_fwd) {
+            return Err("invalid_pocket_dimensions");
+        }
+        if pocket.inner_outer().0 && opposite > 0 {
+            return Err("pocket_requires_one_way");
+        }
+        Ok(())
     }
 
     /// How far each lane group sits out from [`Self::lane_group_offset`]: half the median's
@@ -193,6 +345,49 @@ impl Edge {
 }
 
 impl RegionGraph {
+    /// Whether `node` is a lane transition (`ROAD-95`): typed [`NodeType::LaneTransition`] and
+    /// joining exactly two live edges. Every rule that treats the node specially reads this, so
+    /// the type is inert once a third arm or a removal changes the degree. `O(degree)`.
+    pub(crate) fn is_lane_transition(&self, node: u32) -> bool {
+        let node = self.get_valid_node(node);
+        self.node(node).node_type == NodeType::LaneTransition
+            && self.live_node_connection_count(node) == 2
+    }
+
+    /// Resets each of `nodes` that is typed [`NodeType::LaneTransition`] but no longer joins two
+    /// live edges to [`NodeType::Junction`] (`ROAD-95`): a bulldozed pocket pair leaves a road
+    /// end, not a hidden node. Not a border role, so the role revision is kept. `O(sum of
+    /// degrees)`.
+    pub(crate) fn reset_stale_lane_transitions(&mut self, nodes: impl IntoIterator<Item = u32>) {
+        for node in nodes {
+            let node = self.get_valid_node(node);
+            if self.node(node).node_type == NodeType::LaneTransition
+                && !self.is_lane_transition(node)
+            {
+                self.nodes[node as usize].node_type = NodeType::Junction;
+            }
+        }
+    }
+
+    /// Gives edge `id` the turn pocket `pocket` (`ROAD-95`), or removes its pocket: the lanes of
+    /// the direction a pocket serves change by the difference in pocket lanes and the width with
+    /// them; the centreline, id and everything else are kept. The result must pass
+    /// [`Edge::validate_pocket`]. The pocket's transition node and the split are the pocket edit's;
+    /// callers re-lay out both end nodes and rebuild their lanes. `O(1)`.
+    // The pocket edit (`ROAD-95` round R5a2) is its first caller outside the fixtures.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_edge_pocket(&mut self, id: usize, pocket: Option<RoadPocket>) {
+        let edge = self.edge_mut(id);
+        let (fwd, bkw) = (edge.pocket_lanes(true), edge.pocket_lanes(false));
+        edge.fwd_lanes -= fwd;
+        edge.bkw_lanes -= bkw;
+        edge.pocket = pocket;
+        edge.fwd_lanes += edge.pocket_lanes(true);
+        edge.bkw_lanes += edge.pocket_lanes(false);
+        edge.width = Edge::cross_section_width_m(edge.fwd_lanes, edge.bkw_lanes, edge.median);
+        debug_assert_eq!(edge.validate_pocket(), Ok(()));
+    }
+
     /// Gives edge `id` `fwd` forward and `bkw` backward lanes, `median`, and the width they take,
     /// and its road type's `attributes` (`ROAD-101`): the `FOOT` flag from `sidewalks`, the speed
     /// limit (the routing `base_cost` recomputed from it when it changes),

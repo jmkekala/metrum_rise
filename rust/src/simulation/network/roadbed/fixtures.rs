@@ -10,7 +10,7 @@ use super::{
     triangulate_constrained_rings_xz,
 };
 use crate::config;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadPocket};
 use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
@@ -48,6 +48,7 @@ pub(crate) fn road_edge(start_node: u32, end_node: u32, points: Vec<Vector3>, wi
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     }
 }
 
@@ -183,6 +184,61 @@ pub(crate) fn straight_pair(
     graph.add_edge(east(road_edge(a, b, points, 7.0)));
     graph.rebuild_intersection_clips();
     graph
+}
+
+/// A junction at the origin whose west arm ends in a turn pocket (`ROAD-95`): edge 0 the base
+/// road from 150 m west to the lane transition 60 m west of the junction, edge 1 the pocket edge
+/// from there to the junction, both of `fwd` + `bkw` base lanes, edge 1 with `left` and `right`
+/// pocket lanes for its forward lanes (they approach the junction heading east); edge 2 the east
+/// arm and edge 3 the south arm (the right turn under right-hand traffic), 1+1 and 80 m; with
+/// `north`, edge 4 the north arm (the left turn). Every road has sidewalks. Nodes: 0 the
+/// junction, 1 the transition, then the far ends. Laid out as an edit does ([`finalize`]).
+pub(crate) fn pocket_junction(
+    fwd: u8,
+    bkw: u8,
+    left: bool,
+    right: bool,
+    north: bool,
+) -> RegionGraph {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
+    let transition = graph.add_node(point(-60.0, 0.0, false), NodeType::LaneTransition);
+    let mut far = |x: f32, z: f32| graph.add_node(point(x, z, false), NodeType::Junction);
+    let (west, east, south) = (far(-150.0, 0.0), far(80.0, 0.0), far(0.0, 80.0));
+    let north = north.then(|| far(0.0, -80.0));
+    let lanes = |mut edge: Edge, fwd: u8, bkw: u8| {
+        edge.fwd_lanes = fwd;
+        edge.bkw_lanes = bkw;
+        edge.width = Edge::cross_section_width_m(fwd, bkw, None);
+        edge
+    };
+    let add = |graph: &mut RegionGraph, a: u32, b: u32, fwd: u8, bkw: u8| {
+        let (pa, pb) = (graph.node(a).pos, graph.node(b).pos);
+        let points = polyline((pa.x, pa.z), (pb.x, pb.z), 20.0, false);
+        graph.add_edge(lanes(road_edge(a, b, points, 7.0), fwd, bkw))
+    };
+    add(&mut graph, west, transition, fwd, bkw);
+    let pocket = add(&mut graph, transition, center, fwd, bkw);
+    add(&mut graph, center, east, 1, 1);
+    add(&mut graph, south, center, 1, 1);
+    if let Some(north) = north {
+        add(&mut graph, center, north, 1, 1);
+    }
+    graph.set_edge_pocket(
+        pocket,
+        Some(RoadPocket {
+            end: EdgeEnd::End,
+            left,
+            right,
+        }),
+    );
+    finalize(&mut graph);
+    graph
+}
+
+/// [`pocket_junction`]: a T whose 1+1 west arm has a right pocket.
+pub(crate) fn t_right_pocket() -> RegionGraph {
+    pocket_junction(1, 1, false, true, false)
 }
 
 /// Footpath width in the footpath fixtures.

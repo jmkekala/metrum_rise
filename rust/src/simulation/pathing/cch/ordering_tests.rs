@@ -51,6 +51,7 @@ fn grid(side: u32) -> RegionGraph {
                     vehicle_frontage_access:
                         crate::simulation::network::types::VehicleFrontageAccess::BothSides,
                     median: None,
+                    pocket: None,
                 });
             }
         }

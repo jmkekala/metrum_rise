@@ -66,6 +66,7 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     });
     graph
 }

@@ -6,7 +6,8 @@
 //! intersections, and migrating associated data (zoning, buildings).
 
 use super::TransitNetwork;
-use super::graph::{Edge, Node, RegionGraph};
+use super::graph::{Edge, Node, RegionGraph, RoadPocket};
+use super::roadbed::EdgeEnd;
 use super::interaction;
 use super::types::*;
 use crate::config;
@@ -1122,6 +1123,15 @@ pub fn split_edge(
     let no_street_lights = old_edge.no_street_lights;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
     let median = old_edge.median;
+    // A turn pocket stays with the half that keeps its end (`ROAD-95`); the other half keeps the
+    // lanes as a plain road.
+    let pocket = old_edge.pocket;
+    let (first_pocket, second_pocket) = match pocket {
+        Some(RoadPocket {
+            end: EdgeEnd::End, ..
+        }) => (None, pocket),
+        _ => (pocket, None),
+    };
 
     // Remove from spatial index BEFORE updating geometry so the AABB still matches
     // the current entry in the R-tree. Updating geometry first causes a AABB mismatch
@@ -1131,6 +1141,7 @@ pub fn split_edge(
     graph.edges[edge_id].end_node = junction_node_id;
     graph.edges[edge_id].geometry = part1_geo;
     graph.edges[edge_id].physical_geometry = part1_physical;
+    graph.edges[edge_id].pocket = first_pocket;
     let (cost, length) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&graph.edges[edge_id]);
     graph.edges[edge_id].base_cost = cost;
@@ -1162,6 +1173,7 @@ pub fn split_edge(
         no_street_lights,
         vehicle_frontage_access,
         median,
+        pocket: second_pocket,
     };
     let (cost_new, length_new) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);

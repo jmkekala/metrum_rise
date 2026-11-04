@@ -55,6 +55,11 @@ pub enum NodeType {
     /// functions as a spawn point if it has at least one non-deleted incident edge (i.e. the
     /// road is actually connected to the city network).
     Border,
+    /// The hidden degree-two node where a road gains a turn pocket (`ROAD-95`): one arm is the
+    /// base road, the other the short pocket edge (`Edge::pocket`). Authored only by the pocket
+    /// edit; every rule that reads it also checks that the node has exactly two live arms
+    /// (`RegionGraph::is_lane_transition`), so a stale type is inert.
+    LaneTransition,
 }
 
 /// Architectural classification of a road edge.

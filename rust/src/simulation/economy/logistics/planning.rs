@@ -263,6 +263,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
         graph.rebuild_adjacency_list();
         topology.refresh(&network, &graph);

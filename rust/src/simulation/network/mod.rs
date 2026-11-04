@@ -99,6 +99,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         no_street_lights: !attributes.street_lights,
         vehicle_frontage_access,
         median,
+        pocket: None,
     }
 }
 

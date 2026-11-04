@@ -377,6 +377,7 @@ fn road_test_edge(
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     }
 }
 

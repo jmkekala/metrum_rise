@@ -777,6 +777,9 @@ impl SimCore {
         self.region_graph.edge_mut(edge_idx).deleted = true;
         self.zoning.remove_parcels_attached_to_edge(edge_idx);
         self.region_graph.rebuild_adjacency_list();
+        // A pocket pair's transition left with one arm is a road end (`ROAD-95`).
+        self.region_graph
+            .reset_stale_lane_transitions([start_node, end_node]);
         self.region_graph
             .rebuild_intersection_clips_for_nodes(&affected_nodes);
         // The arms left at both ends re-derive their profiles (`ROAD-68` invariant 6); every
@@ -2765,6 +2768,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         })
     }
 
@@ -2813,6 +2817,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
 
         core.set_vehicle_frontage_access_internal(0, 0);
@@ -2984,6 +2989,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
         core.region_graph.rebuild_adjacency_list();
         let residential = core
@@ -3729,6 +3735,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
         core.region_graph.rebuild_adjacency_list();
 
@@ -3784,6 +3791,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
         core.region_graph.rebuild_adjacency_list();
         core.zoning

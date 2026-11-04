@@ -172,6 +172,7 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
 
         // 2. Tick once - source cells should be positive
@@ -251,6 +252,7 @@ mod tests {
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
+            pocket: None,
         });
 
         let mut graph_high = graph_low.clone();

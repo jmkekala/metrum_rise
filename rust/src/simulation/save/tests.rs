@@ -147,6 +147,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     });
     let mut zoning = ZoningSystem::new(&config);
     zoning
@@ -203,6 +204,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     (graph, edge_id)
@@ -1606,6 +1608,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        pocket: None,
     });
 
     let mut zoning = ZoningSystem::new(&config);
@@ -2221,6 +2224,83 @@ fn medians_round_trip_through_the_edge_table() {
             conn.execute_batch(bad).unwrap();
             assert!(network::load_graph(&conn).is_err(), "{bad} loaded");
         }
+    }
+}
+
+// `ROAD-95`, save format 115: a turn pocket round-trips through `network_edges`' two columns and
+// its transition through node type 6, and the loaded pair builds the same lanes and connectors
+// bit for bit; a pocket no pocket edit could build does not load.
+#[test]
+fn pockets_round_trip_through_the_edge_table() {
+    use crate::simulation::network::graph::RoadPocket;
+    use crate::simulation::network::lanes::LaneSystem;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    use crate::simulation::network::roadbed::fixtures::t_right_pocket;
+    let mut graph = t_right_pocket();
+    let save = |graph: &RegionGraph| {
+        let maps =
+            build_snapshot_maps(graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, graph, &maps).unwrap();
+        tx.commit().unwrap();
+        conn
+    };
+    let conn = save(&graph);
+    let columns: Vec<(i64, i64)> = conn
+        .prepare("SELECT pocket_end, pocket_roles FROM network_edges ORDER BY edge_id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(columns, [(0, 0), (2, 2), (0, 0), (0, 0)]);
+    let node_type: i64 = conn
+        .query_row("SELECT node_type FROM network_nodes WHERE node_id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(node_type, 6);
+    let mut loaded = network::load_graph(&conn).unwrap();
+    assert_eq!(
+        loaded.edge(1).pocket,
+        Some(RoadPocket {
+            end: EdgeEnd::End,
+            left: false,
+            right: true
+        })
+    );
+    assert!(loaded.is_lane_transition(1));
+    let (mut lanes, mut loaded_lanes) = (LaneSystem::new(), LaneSystem::new());
+    lanes.rebuild(&mut graph);
+    loaded_lanes.rebuild(&mut loaded);
+    assert_eq!(lanes.lanes.len(), loaded_lanes.lanes.len());
+    for (lane, loaded) in lanes.lanes.iter().zip(&loaded_lanes.lanes) {
+        let bits = |points: &[Vector3]| {
+            points
+                .iter()
+                .map(|p| [p.x, p.y, p.z].map(f32::to_bits))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(&lane.geometry), bits(&loaded.geometry));
+        assert_eq!(
+            lane.next_lanes.iter().collect::<Vec<_>>(),
+            loaded.next_lanes.iter().collect::<Vec<_>>()
+        );
+    }
+    for bad in [
+        "UPDATE network_edges SET pocket_roles = 0 WHERE edge_id = 1",
+        "UPDATE network_edges SET pocket_roles = 4 WHERE edge_id = 1",
+        "UPDATE network_edges SET pocket_end = 3 WHERE edge_id = 1",
+        "UPDATE network_edges SET pocket_roles = 1 WHERE edge_id = 1",
+        "UPDATE network_edges SET fwd_lanes = 1 WHERE edge_id = 1",
+        "UPDATE network_edges SET class = 1 WHERE edge_id = 1",
+        "UPDATE network_nodes SET node_type = 7 WHERE node_id = 1",
+    ] {
+        let conn = save(&graph);
+        conn.execute_batch(bad).unwrap();
+        assert!(network::load_graph(&conn).is_err(), "{bad} loaded");
     }
 }
 
