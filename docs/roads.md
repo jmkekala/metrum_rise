@@ -394,6 +394,104 @@ geometric taper records, its compiler previews or its road-tool mode.
   type, the ported `pocket_keeps_opposite_kerb_and_two_through_lanes_aligned` (its right half),
   and the save round trip with its refusals.
 
+#### The pocket edit (round R5a2)
+
+Round R5a2 (2026-11-04, same branch) added the edit that builds, resizes, re-roles and removes a
+pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
+
+- **Request (D7).** `PocketRequest { edge, end, left, right, body_m }`: the selected road's end, or
+  the end of a base road at a transition, which edits that transition's pocket. The body is
+  measured from the junction node along the control polyline, 20-300 m in 10 m steps (default
+  60 m, `network::pockets::POCKET_BODY_*`); the transition stands `body + 10.5` m from the
+  junction (the taper half, `POCKET_TAPER_HALF_M`). Both roles off removes the pocket.
+- **Plan** (`PocketPlan::prepare`, pure, `O(edge points + degree)`). Finds the pair (the pocket edge
+  and the base road at its `LaneTransition` node, `first` running into the transition), joins it
+  into the base road with `first`'s id, and cuts the base road at the station for the requested
+  pocket; the transition's height is the physical profile's there. `apply_to_graph` installs it
+  on the graph alone: the join (the far node's turn rules and crossing overrides move back to
+  `first`), then the split through `topology::split_edge_graph` (the graph half of `split_edge`,
+  the dependents' migration a separate call), the second half in the pair's old slot and the
+  transition moved, so a resize adds no node or edge (D8). A removal leaves the transition
+  without arms, typed `Junction`.
+- **Refusals**, each the preview's and the commit's, each changing nothing: `invalid_road`, the
+  model's (`pocket_requires_surface_road`, `pocket_lane_limit`, `pocket_requires_one_way`,
+  `invalid_pocket_dimensions`), `pocket_median_gap` (any median, raised or painted, until round
+  R5b1 decides how a transition carries it), `pocket_junction_whitelisted` (D9, also for a
+  removal), `pocket_movement_missing` (the junction offers no such turn to the approach),
+  `pocket_road_too_short` (the base road keeps less than two taper halves and a metre beyond the
+  transition; also the closure compile's `node_piece_failed`, PLAN-R5 risk 3: "Road too short
+  for a pocket here"), `pocket_unchanged`, `pocket_transition_changed`. The cross-section edit and
+  the class change refuse a pocket edge (`pocket_edit_first`): its lanes are its base road's plus
+  the pocket's, and a pocket stays on the ground.
+- **Transaction** (`nodes/sim/road_pockets.rs`), the crossing toggle's and the cross-section
+  edit's shape: `try_graph_edit` over the pair, the junction's, the transition's and the far
+  node's arms applies the plan, lays the three nodes out again (clips, profile solve) and compiles
+  their closure (node pieces, fields, painted cells, steepened profiles), then puts the graph
+  back; a planned pocket's corridor is also checked against water, parcels and the curve radius
+  on the carriageway's own axis (`Edge::carriageway_axis`, the centreline shifted by
+  `kerb_shift_m`, half-width `width / 2` plus the side band: exact on both sides, D17). The
+  verdict carries `cost_delta`: the pair's build cost after less before, floored at 0, never
+  refunded (D14). The preview is this check (D11). The commit applies the plan again, moves the
+  dependents (`migrate_pocket_dependents`: a join moves the second edge's buildings onto the first
+  behind its cells and concatenates the occupancy, `join_split_dependents`; a split partitions them
+  as a stroke's split does), marks lots and surfaces, rebuilds lanes, cars and entrances locally,
+  pushes the undo record and schedules the routing rebuild. The junction profile solve lays a
+  plane at a lane transition as at a junction (`NodeType::solves_junction_profile`).
+- **Undo.** The record is the check's checkpoint (whole `Node` and `Edge` records; the transition
+  and edge an add appended drop past the original counts) plus the dependents journal
+  (`SimulationRuntimeSnapshot::RoadDependents`), restored after the graph; lanes rebuild locally.
+- **Strokes and bulldoze (D10).** A stroke whose excerpt splits, merges or reroutes a pocket edge,
+  or gives a transition a third arm (a crossing, an end snapped onto it, a node captured on its
+  line), is refused (`stroke_splits_pocket`, `road_edit::validation`, `O(excerpt records)`). A
+  bulldozed pair resets its transition to a road end.
+- **Split turn rules (`ROAD-103`, PLAN-R5 risk 1).** Before this round a stroke that split an arm
+  of a junction with turn rules left the rules keyed by the old edge id, the half that no longer
+  reaches the junction, so the whitelisted junction gave the new half no connector. `split_edge`
+  (`split_edge_graph`) now moves the far node's rules, keys and targets, to the second half, as
+  it moves its crossing overrides (`ROAD-74`), and an adopted stroke plan, whose excerpt carries
+  no rules, moves them on the live graph per recorded split, in split order
+  (`RegionGraph::move_node_rules_to_edge`, `O(rules at the node)`). Regression
+  `road_edit::tests::a_split_arm_keeps_the_far_junctions_turn_rules` (planned and cold).
+- **Zoning cells (D17).** Cell generation's support planes, the corridor overlap test and the
+  cell reach read a pocket edge's carriageway axis (the overlap test per segment, no
+  allocation); every other road reads its centreline bit for bit as before. Still symmetric:
+  the junction anchor of a neighbouring road's cells (`junction_anchor`), the curve continuity
+  test, the cursor's snap width, signs and pedestrian insets (conservative, D17).
+- **Godot calls** (`network_api.rs`): `get_road_pocket(edge, end)` (`has_pocket`, `left`, `right`,
+  `length_m`, `pocket_edge`, `junction`, `one_way` and the length range),
+  `preview_road_pocket(edge, end, left, right, length_m)` (`is_valid`, `cost_delta` or
+  `invalid_reason` and `detail`) and `set_road_pocket(...)` (publishes its pieces as the crossing
+  toggle does); texts in `road_reason_text.gd`.
+- **Bounds.** Nothing changes per tick. `prepare` `O(edge points + degree)`; the check
+  `O(closure pieces)` of three nodes; the commit adds the split `O(points)`, the dependents
+  `O(the pair's buildings + occupancy)` and the local lane rebuild, plus the undo's
+  `O(A / P + B / P)` membership passes. Allocation: the plan's records and the axis, per edit.
+- **Locality (FRESH 2026-11-05).** `$TEST_BINARY
+  nodes::sim::core::tests::road_plan_scaling::populated_pocket_edit_scaling --exact --ignored
+  --nocapture --test-threads=1` (release lib tests at the round's final code, P-cores, 4 workers,
+  exclusive timing lock, load 1.27; a 40 m right pocket on the T's side road with 0 / 1k / 10k /
+  100k remote buildings, parcels, 6 agents each and remote roads; local pieces and lanes identical
+  at every tier, per-tier setup untimed), p50 ms: verdict 0.289 / 0.268 / 0.267 / 0.226 (100
+  samples), commit 1.144 / 1.901 / 1.313 / 1.144, its undo 0.274 / 0.738 / 0.458 / 0.678, the
+  chunk publication 1.294 / 3.610 / 1.864 / 1.239 (20 each): flat, as the lane edit's.
+- **No change without a pocket (FRESH).** The R8 probe (town, hill, steep, Kuopio, the R3D rows)
+  equals round R5a1's entry for entry; the roadbed product probe's 141 existing entries are
+  unchanged (four pocket fixtures recorded); the `SIM-02` envelope and determinism gate passes
+  on both binaries with the same 13 notes and every `SIM02_DAY` and `SIM02_LANES` line
+  byte-identical; the connector sweeps fail nothing (Kuopio 352 connectors, the 100k city
+  24,834); the 100k one-day audit at 32x equals the control (4,531 freight deliveries, 1 trip
+  failure, 2,443 held cars, 0 gridlock cycles, 0 missed turns).
+- **Tests** (`nodes/sim/core/tests/road_pockets.rs`, `SimCore` cities): a right pocket's split,
+  lanes and car kept in place with undo restoring the city; the refusals; add, resize (the
+  transition moves 30 m, no record added), role change and removal at both stored ends, each
+  preview equal to its commit, and the removal's undo; the one-way through lane on the
+  centreline; opposing pockets on one road removed independently; buildings re-partitioned on
+  resize and returned by each undo; strokes refused onto a pocket; the bulldozed transition
+  reset; the asymmetric corridor (a parcel on the pocket side refused, one on the far side
+  accepted); the publication splice equal to a full emission after an add, a resize and each
+  undo; a car on the pocket edge kept in place by a resize and its undo. `t_right_pocket` (junction
+  and transition) is in the connector fixture sweep.
+
 ### Junction layout
 
 A layout is built for every node except degree-two pass-through nodes: two arms whose directions
