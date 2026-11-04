@@ -815,3 +815,88 @@ fn an_evicted_walker_keeps_its_lane_at_its_path_end_and_walks_from_it_when_rehou
     assert!(arrived, "it walks to its new home");
     assert!(!teleported(&agents), "{:#?}", agents.trip_failures.lines);
 }
+
+// `TRAFFIC-24` (10k contract city, resident 2750): a walker whose job ends on its way to work
+// (`assign_work_building` clears its destination, exit and route mid-lane) walks to the end of its
+// lane and, with a home, plans home from there and walks home: no record, since no trip failed,
+// and no teleport. A shopper walking behind it on the same sidewalk passes; before, the first
+// waited at its lane's end for good and the shopper queued behind it.
+#[test]
+fn a_walker_whose_job_ends_on_the_way_walks_home_from_its_lane_end_and_frees_the_sidewalk() {
+    let mut block = Block::new(false, false);
+    let mut agents = AgentSystem::new();
+    let worker = block.walker(&mut agents, 1, 30.0);
+    agents.work_building[worker] = 1;
+    agents.activity[worker] = ACTIVITY_WORK;
+    let shopper = block.walker(&mut agents, 1, 34.0);
+    agents.activity[shopper] = ACTIVITY_SHOPPING;
+    let lane = agents.current_lane_id[worker];
+    let length = block.network.lane_system.lanes[lane].length;
+    block.tick(&mut agents);
+    assert!(
+        [worker, shopper]
+            .iter()
+            .all(|&idx| agents.access_flags[idx] & ACCESS_PLAN_VALID != 0),
+        "both plan the walk to building 1"
+    );
+    agents.assign_work_building(worker, usize::MAX, 0);
+    assert_eq!(agents.target_building[worker], usize::MAX);
+    assert_eq!(agents.access_flags[worker] & ACCESS_PLAN_VALID, 0);
+    // It walks on to the end of its lane and plans home from there.
+    assert!(
+        walk_until(&mut block, &mut agents, worker, 60.0, |a| {
+            a.target_building[worker] == 0
+        }),
+        "it sets off home"
+    );
+    assert_eq!(
+        (agents.current_lane_id[worker], agents.lane_distance[worker]),
+        (lane, length),
+        "from the end of its lane"
+    );
+    assert_eq!(agents.activity[worker], ACTIVITY_HOME);
+    assert!(agents.access_flags[worker] & ACCESS_PLAN_VALID != 0);
+    let in_building = |a: &AgentSystem, idx: usize, b: usize| {
+        a.transit[idx] == TRANSIT_IN_BUILDING && a.current_building[idx] == b
+    };
+    let (mut home, mut shop) = (false, false);
+    assert!(
+        walk_until(&mut block, &mut agents, worker, 400.0, |a| {
+            home |= at_home(a, worker);
+            shop |= in_building(a, shopper, 1);
+            home && shop
+        }),
+        "it walks home and the shopper behind it reaches the shop"
+    );
+    assert!(
+        agents.trip_failures.lines.is_empty(),
+        "{:#?}",
+        agents.trip_failures.lines
+    );
+}
+
+// `TRAFFIC-24`: a walker with no home whose job ends on the way keeps waiting at the end of its
+// lane for its household's next home (round T19b), with no plan and no record.
+#[test]
+fn a_walker_with_no_home_whose_job_ends_on_the_way_waits_at_its_lane_end() {
+    let mut block = Block::new(false, false);
+    let mut agents = AgentSystem::new();
+    let idx = block.walker(&mut agents, 1, 20.0);
+    agents.home_building[idx] = usize::MAX;
+    agents.work_building[idx] = 1;
+    agents.activity[idx] = ACTIVITY_WORK;
+    let lane = agents.current_lane_id[idx];
+    block.tick(&mut agents);
+    agents.assign_work_building(idx, usize::MAX, 0);
+    for _ in 0..400 {
+        block.tick(&mut agents);
+    }
+    assert_eq!(
+        (agents.current_lane_id[idx], agents.lane_distance[idx]),
+        (lane, block.network.lane_system.lanes[lane].length),
+        "it waits at the end of its lane, on it"
+    );
+    assert_eq!(agents.target_building[idx], usize::MAX);
+    assert_eq!(agents.access_flags[idx], 0, "no plan, not stranded");
+    assert!(agents.trip_failures.lines.is_empty());
+}

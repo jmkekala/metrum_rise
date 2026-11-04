@@ -21,6 +21,11 @@
 //! nearest sidewalk point within `OFF_NETWORK_WALK_MAX_M` (200 m, [`walk_to_sidewalk`]) and plans
 //! from there by the same rules; with none in reach it is stranded where it stands. Every failure
 //! the watchdog would recover goes through [`walker_lost`] instead.
+//!
+//! A walker whose trip is taken from it on the way (its job ends, its destination is removed)
+//! reaches the end of its lane with no plan and no destination. With a home it walks home from
+//! there ([`head_home_without_trip`], `TRAFFIC-24`); with none it waits there for its household's
+//! next home.
 
 use super::super::super::super::{
     ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, ACCESS_WALK_TO_SIDEWALK, ACTIVITY_HOME, MODE_WALK,
@@ -110,6 +115,63 @@ pub(super) unsafe fn give_up_trip(
         }
         strand(i, sim_time, slices);
         false
+    }
+}
+
+/// Walker `i` stands at the end of road lane `lane` at `node` with no plan, no destination and no
+/// trip to recover (`TRAFFIC-24`): its trip was taken from it on the way (its job ended mid-walk,
+/// its destination was removed), and nothing else gives a walker on the road a new one. With a
+/// home it plans home from that lane, the walk home of a give-up ([`give_up_trip`]) with no
+/// record, since no trip failed: it walks home, or with no route home is stranded there (one
+/// `NoRoute` record, outcome `Stranded`) on the stranded backoff. With no home it keeps waiting
+/// for its household's next one (`relocate_household_member_home` gives it that destination).
+/// O(1) for a walker with no home; one route query for one with a home, once, since it leaves
+/// with a plan or stranded.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[allow(clippy::too_many_arguments)]
+pub(super) unsafe fn head_home_without_trip(
+    i: usize,
+    node: u32,
+    lane: usize,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) {
+    unsafe {
+        let home = *slices.home.get(i);
+        if home >= allocator.buildings.len() {
+            return;
+        }
+        crate::debug::work::add(crate::debug::work::Work::WalkersHomeAfterCancel, 1);
+        let plan = plan_from_lane(
+            i,
+            node,
+            lane,
+            home,
+            allocator,
+            transit_network,
+            graph,
+            pathfind_count,
+        );
+        head_home(i, home, sim_time, slices);
+        match plan {
+            Ok(replan) => apply_network_replan(i, replan, slices),
+            Err(failure) => {
+                record_failure(
+                    i,
+                    FailureCause::NoRoute(failure),
+                    FailureOutcome::Stranded {
+                        after_s: retry_after_s(0),
+                    },
+                    slices,
+                );
+                strand(i, sim_time, slices);
+            }
+        }
     }
 }
 

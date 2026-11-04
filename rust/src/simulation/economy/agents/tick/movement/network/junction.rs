@@ -287,7 +287,8 @@ pub(super) unsafe fn handle_lane_end(
         );
         // A walker whose path ends short of its exit keeps its lane (`TRAFFIC-19`) and plans
         // again from its end: walks on, walks home or is stranded there. One with no plan waits
-        // there for its replan gate; one with a trip but no destination is lost (`walker_lost`).
+        // there for its replan gate; one with a trip but no destination is lost (`walker_lost`),
+        // and one with no trip at all walks home, or with no home waits (`TRAFFIC-24`).
         if *s_tmode.get(i) == MODE_WALK {
             if access_plan_valid {
                 return walk::replan_from_lane(
@@ -307,10 +308,24 @@ pub(super) unsafe fn handle_lane_end(
             }
             *slices.lane_d.get_mut(i) = lane.length;
             *remaining_dist = 0.0;
-            if has_recoverable_network_trip(i, slices) && *s_tgt_b.get(i) == usize::MAX {
+            if *s_tgt_b.get(i) != usize::MAX {
+                // Its replan gate plans from here.
+            } else if has_recoverable_network_trip(i, slices) {
                 walker_lost(
                     i,
                     FailureCause::NoPlan,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+            } else {
+                super::walk_home::head_home_without_trip(
+                    i,
+                    *s_cur_n.get(i),
+                    lane_id,
                     sim_time,
                     allocator,
                     transit_network,
