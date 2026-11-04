@@ -284,6 +284,9 @@ impl AgentSystem {
                     self.clear_access_plan_and_path(agent_idx);
                     self.agents.next_replan_time[agent_idx] = 0.0;
                     self.agents.network_replan_failures[agent_idx] = 0;
+                    // A homeless walker whose trip to work this cancelled waits at its lane end
+                    // for a home (`TRAFFIC-24`): report it as eviction does. Report-only.
+                    self.note_waiting_for_home(agent_idx);
                 }
                 if work_is_home
                     && self.agents.current_building[agent_idx] == old_work

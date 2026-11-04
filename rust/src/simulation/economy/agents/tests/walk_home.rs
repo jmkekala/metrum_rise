@@ -899,4 +899,7 @@ fn a_walker_with_no_home_whose_job_ends_on_the_way_waits_at_its_lane_end() {
     assert_eq!(agents.target_building[idx], usize::MAX);
     assert_eq!(agents.access_flags[idx], 0, "no plan, not stranded");
     assert!(agents.trip_failures.lines.is_empty());
+    // The stranded report counts it as waiting for a home.
+    agents.refresh_stranded_report(&block.network, &block.graph);
+    assert_eq!(agents.stranded_report().waiting_for_home, 1);
 }
