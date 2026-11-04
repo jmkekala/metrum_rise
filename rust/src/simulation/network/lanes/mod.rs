@@ -32,10 +32,6 @@ pub use successors::LaneSuccessors;
 /// Length of the solid zone before a junction on an approach whose lanes serve different
 /// movements (`ROAD-94`): no lane change starts in its last this many metres, and its dividers
 /// are painted solid there.
-#[allow(
-    dead_code,
-    reason = "read by the lane change and the markings from R4a2/R4a3 on"
-)]
 pub(crate) const APPROACH_SOLID_LENGTH_M: f32 = 20.0;
 
 /// Types of travel lanes supported by the network.

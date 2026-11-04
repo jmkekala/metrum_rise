@@ -5,7 +5,7 @@
 use crate::simulation::economy::agents::ACCESS_PLAN_VALID;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::lanes::LaneType;
+use crate::simulation::network::lanes::{APPROACH_SOLID_LENGTH_M, LaneType};
 
 /// Returns the road node where a road lane begins for its travel direction.
 pub(super) fn lane_origin_node(
@@ -382,8 +382,10 @@ pub(super) fn sibling_lane_reaches_edge(
 
 /// Returns the node road lane `lane_id` approaches when a car at `lane_d` on it is inside the
 /// node's turn-preparation window: the lane is flagged by the lane use
-/// (`LaneSystem::needs_turn_preparation`) and at most `turn_preparation_window_m` of it remain.
-/// The flag is read first, so a car on any other lane pays one byte read. O(1), no allocation.
+/// (`LaneSystem::needs_turn_preparation`), at most `turn_preparation_window_m` of it remain and
+/// the car has not reached the solid approach zone (`APPROACH_SOLID_LENGTH_M`), where no change
+/// starts and the selector would be wasted work for the queue at the stop line. The flag is read
+/// first, so a car on any other lane pays one byte read. O(1), no allocation.
 #[inline]
 pub(super) fn junction_approach_node(
     lane_id: usize,
@@ -404,7 +406,11 @@ pub(super) fn junction_approach_node(
     } else {
         edge.bkw_lanes
     };
-    if count <= 1 || lane.length - lane_d > turn_preparation_window_m(count) {
+    let remaining = lane.length - lane_d;
+    if count <= 1
+        || remaining > turn_preparation_window_m(count)
+        || remaining <= APPROACH_SOLID_LENGTH_M
+    {
         return None;
     }
     Some(if lane.is_fwd {

@@ -89,6 +89,7 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
         let detach_lane_id = *slices.planned_detach_lane.get(i) as usize;
         let detach_lane_d = *slices.planned_detach_lane_d.get(i);
         let has_access_plan = (*slices.access_flags.get(i) & ACCESS_PLAN_VALID) != 0;
+        let turn_preparation = transit_network.lane_system.needs_turn_preparation(lane_id);
         let choice = choose_lane_change(
             LaneChangeParams {
                 lane_id,
@@ -99,10 +100,11 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
                 has_access_plan,
                 blocked_time: *slices.overtake_blocked_time.get(i),
                 cooldown: *slices.overtake_cooldown.get(i),
+                turn_preparation,
             },
             transit_network,
             lane_buckets,
-            if transit_network.lane_system.needs_turn_preparation(lane_id) {
+            if turn_preparation {
                 turn_lane_target(i, lane_id, lane_d, transit_network, graph, slices)
             } else {
                 usize::MAX

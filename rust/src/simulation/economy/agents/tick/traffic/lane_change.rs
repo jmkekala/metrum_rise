@@ -5,7 +5,7 @@
 use super::occupancy::{idm_gap_bucket, lane_change_gap_clear};
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::lanes::LaneType;
+use crate::simulation::network::lanes::{APPROACH_SOLID_LENGTH_M, LaneType};
 
 const LANE_CHANGE_DURATION_S: f32 = 3.5;
 /// Minimum longitudinal distance for a lane-change S-curve.
@@ -48,6 +48,9 @@ pub(in crate::simulation::economy::agents::tick) struct LaneChangeParams {
     pub blocked_time: f32,
     /// Remaining discretionary maneuver cooldown in seconds.
     pub cooldown: f32,
+    /// Whether the lane approaches a junction whose lanes serve different movements
+    /// (`LaneSystem::needs_turn_preparation`), so its solid approach zone forbids changes.
+    pub turn_preparation: bool,
 }
 
 /// Reason for a selected lateral maneuver.
@@ -84,7 +87,8 @@ pub(in crate::simulation::economy::agents::tick) fn lane_change_finished(
 /// Selects a legal, gap-checked lane change using only the immutable lane snapshot.
 /// `turn_lane_id` is the lane the car must reach before the junction ahead
 /// (`junction_approach_lane`), or `usize::MAX` outside a preparation window; a car inside one
-/// changes only toward that lane, one adjacent step at a time, and never overtakes there.
+/// changes only toward that lane, one adjacent step at a time, and never overtakes there. No
+/// change starts in the last `APPROACH_SOLID_LENGTH_M` of a flagged lane (`lane_change_end`).
 /// Work is bounded by the current edge's lane count and O(log K) occupancy queries.
 pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     params: LaneChangeParams,
@@ -93,6 +97,11 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     turn_lane_id: usize,
 ) -> Option<LaneChange> {
     let source = transit_network.lane_system.lanes.get(params.lane_id)?;
+    // No change of any kind starts in the solid zone before a movement-selective junction.
+    let change_end = lane_change_end(source.length, params.turn_preparation);
+    if params.lane_d >= change_end {
+        return None;
+    }
     if params.has_access_plan
         && let Some(target_lane_id) = planned_lane_change_target(
             params.lane_id,
@@ -104,7 +113,7 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     {
         let target = &transit_network.lane_system.lanes[target_lane_id];
         let lane_d = params.lane_d.min(target.length);
-        let available = (source.length - params.lane_d).min(params.detach_lane_d - params.lane_d);
+        let available = (change_end - params.lane_d).min(params.detach_lane_d - params.lane_d);
         let length = lane_change_length_for_speed(params.speed)
             .min((available - LANE_CHANGE_FINISH_EPS_M).max(LANE_CHANGE_MIN_LENGTH_M));
         let gap_clear = lane_buckets
@@ -122,7 +131,11 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
         let target_lane_id =
             lane_change_target_toward(params.lane_id, final_lane, transit_network)?;
         let target = &transit_network.lane_system.lanes[target_lane_id];
-        let available = source.length.min(target.length) - params.lane_d;
+        // The turn budget already reserves the 12 m end buffer; the solid zone extends that
+        // reservation rather than charging both buffers against each lane step.
+        let available = source.length.min(target.length)
+            - params.lane_d
+            - (source.length - change_end - OVERTAKE_EDGE_BUFFER_M).max(0.0);
         let steps = (i16::from(transit_network.lane_system.lanes[final_lane].lane_idx)
             - i16::from(source.lane_idx))
         .unsigned_abs();
@@ -149,7 +162,7 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
         params.detach_lane_d,
         transit_network,
     );
-    if !(source.length - params.lane_d > length + OVERTAKE_EDGE_BUFFER_M
+    if !(change_end - params.lane_d > length + OVERTAKE_EDGE_BUFFER_M
         && detach_distance > length + OVERTAKE_DETACH_BUFFER_M)
     {
         return None;
@@ -192,6 +205,21 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
         length,
         kind,
     })
+}
+
+/// Distance along a lane of `length` metres after which no lane change starts: the lane end,
+/// or the start of the solid approach zone (`APPROACH_SOLID_LENGTH_M`) on a lane flagged for turn
+/// preparation. Shared by the tick and the route preview.
+#[inline(always)]
+pub(in crate::simulation::economy::agents::tick) fn lane_change_end(
+    length: f32,
+    turn_preparation: bool,
+) -> f32 {
+    if turn_preparation {
+        length - APPROACH_SOLID_LENGTH_M
+    } else {
+        length
+    }
 }
 
 /// Bounds one turn preparation step so the remaining adjacent steps still fit before the

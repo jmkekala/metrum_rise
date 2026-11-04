@@ -22,8 +22,8 @@ use super::lane_nav::{
     junction_approach_node, lane_origin_node, lane_terminal_node, turn_preparation_window_m,
 };
 use super::traffic::{
-    OVERTAKE_EDGE_BUFFER_M, lane_change_length_for_speed, lane_change_target_toward,
-    turn_lane_change_length,
+    OVERTAKE_EDGE_BUFFER_M, lane_change_end, lane_change_length_for_speed,
+    lane_change_target_toward, turn_lane_change_length,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -283,9 +283,14 @@ fn preparation_change(
     let frontage = (plan_valid && detach_lane != usize::MAX && lane_d < detach_d)
         .then(|| lane_change_target_toward(lane_id, detach_lane, network))
         .flatten();
+    // The tick's solid approach zone: no change starts in it (`lane_change_end`).
+    let change_end = lane_change_end(
+        lane.length,
+        network.lane_system.needs_turn_preparation(lane_id),
+    );
     if let Some(target) = frontage {
         let length = lane_change_length_for_speed(agents.speed[i]);
-        return (lane.length - lane_d > length + OVERTAKE_EDGE_BUFFER_M)
+        return (change_end - lane_d > length + OVERTAKE_EDGE_BUFFER_M)
             .then_some((target, lane_d + length));
     }
     let start = lane_d.max(lane.length - turn_preparation_window_m(count));
@@ -305,7 +310,9 @@ fn preparation_change(
     let target = lane_change_target_toward(lane_id, goal, network)?;
     let steps = (i16::from(network.lane_system.lanes[goal].lane_idx) - i16::from(lane.lane_idx))
         .unsigned_abs();
-    let available = lane.length - start;
+    // As the tick: the zone extends the turn budget's 12 m end buffer.
+    let available =
+        lane.length - start - (lane.length - change_end - OVERTAKE_EDGE_BUFFER_M).max(0.0);
     let length = turn_lane_change_length(agents.speed[i], available, steps)?;
     (available > length + OVERTAKE_EDGE_BUFFER_M).then_some((target, start + length))
 }

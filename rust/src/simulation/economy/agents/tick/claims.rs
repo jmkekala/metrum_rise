@@ -319,6 +319,10 @@ fn agent_lane_change_target(
     {
         return None;
     }
+    let turn_preparation = preparation
+        .network
+        .lane_system
+        .needs_turn_preparation(agents.current_lane_id[i]);
     choose_lane_change(
         LaneChangeParams {
             lane_id: agents.current_lane_id[i],
@@ -329,14 +333,11 @@ fn agent_lane_change_target(
             has_access_plan: (agents.access_flags[i] & ACCESS_PLAN_VALID) != 0,
             blocked_time: agents.overtake_blocked_time_s[i],
             cooldown: agents.overtake_cooldown_s[i],
+            turn_preparation,
         },
         preparation.network,
         preparation.lane_buckets,
-        if preparation
-            .network
-            .lane_system
-            .needs_turn_preparation(agents.current_lane_id[i])
-        {
+        if turn_preparation {
             agent_turn_lane_target(agents, i, preparation)
         } else {
             usize::MAX

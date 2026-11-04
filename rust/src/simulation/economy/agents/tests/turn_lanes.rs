@@ -188,7 +188,9 @@ fn freight_missed_turn_arrival_tick() -> usize {
 
 // Determinism: the three runs' ticks and positions (lane distance bits), as recorded. Passing under
 // `RAYON_NUM_THREADS=1` and `=8` alike shows the advance lane choice and the missed-turn recovery
-// do not depend on the worker count.
+// do not depend on the worker count. The 4-lane left and right cases were re-pinned for the solid
+// approach zone (tick 37 -> 34): their three-step preparation starts inside the window, and the
+// zone reserves 8 m more of the turn budget, so each step is shorter and the last ends earlier.
 #[test]
 fn turn_lane_runs_match_their_recorded_ticks() {
     let runs = (
@@ -203,9 +205,9 @@ fn turn_lane_runs_match_their_recorded_ticks() {
         (3, 3, 20, 1_102_347_023),
         (3, 2, 0, 1_070_042_648),
         (3, 4, 20, 1_102_347_023),
-        (4, 3, 37, 1_110_970_842),
+        (4, 3, 34, 1_109_872_857),
         (4, 2, 0, 1_070_042_648),
-        (4, 4, 37, 1_110_970_842),
+        (4, 4, 34, 1_109_872_857),
     ];
     assert_eq!(runs, (choice, 279, 330));
 }
