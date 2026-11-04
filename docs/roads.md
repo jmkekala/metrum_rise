@@ -12131,6 +12131,14 @@ Every standard road and footpath gets street lights, placed in Rust with the roa
   post-top path light (footpaths). Spacing belongs to the family: 30 m residential (minimum 12 m),
   36 m main (14 m), 20 m path (8 m). A twin-arm median pole exists for divided roads. Spacings and
   offsets are look-dev defaults, not a lighting calculation.
+- A local publication (after an edit) emits again its changed chunks and also every chunk the
+  lights and signs of the edit may move (`furniture_dependents`, `ROAD-101` RB3e): the whole
+  degree-two street through each rebuilt edge or node, and the streets meeting it at its two
+  ends, one ring (an end pole depends on the arms ranked above it at its node and on their far
+  ends' degree, never on another node's resolution). Before, a road widened in place from 1 + 1
+  to 2 + 2 split its residential street, and the street's chunks away from the edit kept the old
+  spacing until a full emission. `O(pieces in the changed chunks)` plus the streets walked; no
+  city scan. Test `a_family_change_in_place_republishes_its_whole_street`.
 - Each light is routed to its render chunk like a triangle and travels in the chunk payload as
   five floats (chunk-local x, y, z, yaw, kind). Godot keeps them outside the chunk meshes, which
   junction previews hide, and batches them per 64 m cell, model and level of detail into

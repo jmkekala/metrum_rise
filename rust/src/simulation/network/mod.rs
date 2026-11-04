@@ -555,6 +555,18 @@ impl TransitNetwork {
         ))
     }
 
+    /// The render chunks beyond `target_chunks` whose street lights or signs the pieces built
+    /// after roadbed generation `built_after` may move
+    /// ([`RoadRenderer::street_furniture_chunks`]). The roadbed must be current.
+    pub(crate) fn street_furniture_chunks(
+        &self,
+        graph: &RegionGraph,
+        target_chunks: &BTreeSet<SurfaceChunkKey>,
+        built_after: Option<u64>,
+    ) -> BTreeSet<SurfaceChunkKey> {
+        RoadRenderer.street_furniture_chunks(graph, &self.roadbed, target_chunks, built_after)
+    }
+
     /// Rebuilds every roadbed piece from the graph, as after a load.
     pub fn rebuild_roadbed(&mut self, graph: &RegionGraph) {
         self.mark_all_surface_dirty(graph);

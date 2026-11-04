@@ -818,6 +818,13 @@ impl RoadbedSystem {
         self.index.occupied_chunks()
     }
 
+    /// The render chunks the published piece `id` touches; empty when it has none. `O(1)`.
+    pub fn piece_render_chunks(&self, id: PieceId) -> &[SurfaceChunkKey] {
+        self.pieces
+            .get(&id)
+            .map_or(&[], |piece| piece.parts().1.render_chunks())
+    }
+
     /// True when published pieces match the graph: compiled once, with no dirty marks pending.
     pub fn is_current(&self) -> bool {
         self.compiled && self.dirty_edges.is_empty() && self.dirty_nodes.is_empty()

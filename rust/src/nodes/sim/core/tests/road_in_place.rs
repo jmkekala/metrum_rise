@@ -675,3 +675,68 @@ fn an_in_place_type_change_charges_the_cost_difference_only() {
     assert_eq!(edit_lanes(&mut core, side, 2, 2), "");
     assert_eq!(core.treasury.lifetime_build_cost, built);
 }
+
+// A residential street of six 150 m edges through degree-two nodes, across three render chunks:
+// its lights are spaced along the whole street. Published and acknowledged, so the next
+// publication is local. Returns the core and the edge holding x = 75 (the fourth).
+fn long_street() -> (SimCore, usize) {
+    let mut core = test_core();
+    core.treasury.balance = 1.0e7;
+    core.benchmark_mode = false;
+    for i in 0..6 {
+        let x = -450.0 + 150.0 * i as f32;
+        let points = vec![Vector3::new(x, 0.0, 0.0), Vector3::new(x + 150.0, 0.0, 0.0)];
+        assert!(core.add_road_internal(points, 1, 1).committed);
+    }
+    core.finalize_network_render_products();
+    assert_eq!(core.cached_road_mesh_chunks.len(), 3);
+    acknowledge(&mut core);
+    let edge = core.get_hovered_edge_internal(75.0, 0.0);
+    assert!(edge >= 0);
+    (core, edge as usize)
+}
+
+// Godot's acknowledgement of the last publication: the next one is local (only its changed
+// chunks), as in the game.
+fn acknowledge(core: &mut SimCore) {
+    let generation = core.road_tool_surface_generation;
+    assert!(core.acknowledge_network_render_generation(generation));
+    assert!(!core.road_mesh_full_replace);
+}
+
+// Each chunk's light positions, to tell a re-spaced street from a kept one.
+fn chunk_lights(
+    core: &SimCore,
+) -> Vec<(crate::simulation::network::roadbed::SurfaceChunkKey, Vec<[u32; 3]>)> {
+    core.cached_road_mesh_chunks
+        .iter()
+        .map(|(&chunk, mesh)| {
+            let poles = mesh
+                .street_lights
+                .iter()
+                .map(|light| light.position.to_array().map(f32::to_bits))
+                .collect();
+            (chunk, poles)
+        })
+        .collect()
+}
+
+// `ROAD-59`: widening one edge of a street from 1 + 1 to 2 + 2 in place makes it a main road and
+// splits the residential street in two, so both halves are lit anew along their whole length,
+// two chunks away from the edit. The local publication re-emits every chunk those streets cross:
+// it equals a full emission. Before, only the chunks of the rebuilt pieces were published, and
+// the far chunk kept the old spacing.
+#[test]
+fn a_family_change_in_place_republishes_its_whole_street() {
+    let (mut core, edge) = long_street();
+    let before = chunk_lights(&core);
+    assert_eq!(edit_lanes(&mut core, edge, 2, 2), "");
+    core.finalize_network_render_products();
+    let after = chunk_lights(&core);
+    assert!(
+        before.iter().zip(&after).all(|(old, new)| old != new),
+        "every chunk's lights move: {before:?} / {after:?}"
+    );
+    let published = published_chunks(&core);
+    assert_eq!(fully_emitted_chunks(&mut core), published);
+}

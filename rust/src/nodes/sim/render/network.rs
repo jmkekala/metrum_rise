@@ -45,20 +45,27 @@ impl SimCore {
         }
         self.transit_network
             .sync_new_lane_heights(&self.region_graph);
-        let mut target_chunks = BTreeSet::new();
-        if self.road_mesh_full_replace {
-            target_chunks.extend(self.transit_network.roadbed.occupied_chunks());
-            target_chunks.extend(self.cached_road_mesh_chunks.keys().copied());
-        } else {
-            target_chunks.extend(self.transit_network.roadbed.changed_chunks());
-        }
-
         // Pieces unchanged since the last publication keep their lanes' heights; a generation
         // ahead of the roadbed's belongs to a replaced roadbed, whose lanes all follow it anew.
         let roadbed_generation = self.transit_network.roadbed.generation();
         let lanes_built_after = self
             .road_mesh_lane_generation
             .filter(|&generation| generation <= roadbed_generation);
+        let mut target_chunks = BTreeSet::new();
+        if self.road_mesh_full_replace {
+            target_chunks.extend(self.transit_network.roadbed.occupied_chunks());
+            target_chunks.extend(self.cached_road_mesh_chunks.keys().copied());
+        } else {
+            target_chunks.extend(self.transit_network.roadbed.changed_chunks());
+            // Lights and signs are spaced along whole streets: also the chunks of the streets
+            // the rebuilt pieces re-space, wherever they run (`ROAD-59`).
+            let streets = self.transit_network.street_furniture_chunks(
+                &self.region_graph,
+                &target_chunks,
+                lanes_built_after,
+            );
+            target_chunks.extend(streets);
+        }
         let mut rebuilt_vertex_count = 0;
         if let Some(generated_chunks) = self.transit_network.try_generate_mesh_chunks(
             &self.region_graph,

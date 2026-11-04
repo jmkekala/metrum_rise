@@ -70,6 +70,38 @@ impl RoadRenderer {
         mesh
     }
 
+    /// The render chunks, beyond `target_chunks`, whose street lights or signs may change with the
+    /// pieces in `target_chunks` built after roadbed generation `built_after` (every covered
+    /// piece when `None`): the chunks of the edges [`street_lights::furniture_dependents`] names.
+    /// A publication adds them to its targets, so a road whose lanes, family or lights change
+    /// re-spaces the lights of its whole street and of the streets meeting it, in every chunk
+    /// they cross, as a full emission draws them. `O(pieces in the targets)` for the coverage,
+    /// plus that walk and `O(1)` per named edge.
+    pub(crate) fn street_furniture_chunks(
+        &self,
+        graph: &RegionGraph,
+        roadbed: &RoadbedSystem,
+        target_chunks: &BTreeSet<SurfaceChunkKey>,
+        built_after: Option<u64>,
+    ) -> BTreeSet<SurfaceChunkKey> {
+        let coverage = standard_surface::build_compiled_surface_coverage_for_chunks(
+            graph,
+            roadbed,
+            target_chunks,
+            built_after,
+        );
+        street_lights::furniture_dependents(
+            graph,
+            &coverage.rebuilt_edges,
+            &coverage.rebuilt_nodes,
+        )
+        .into_iter()
+        .flat_map(|edge| roadbed.piece_render_chunks(PieceId::Span(edge)))
+        .copied()
+        .filter(|chunk| !target_chunks.contains(chunk))
+        .collect()
+    }
+
     /// Generates complete replacement meshes for a bounded set of render chunks.
     ///
     /// First lifts the lanes of the covered pieces a compile built after roadbed generation

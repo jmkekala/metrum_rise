@@ -140,6 +140,82 @@ pub(super) fn place_street_lights(
     lights
 }
 
+/// The edges whose street lights or signs may change when the pieces of `edges` and `nodes` were
+/// rebuilt (any edit, or a road's lights turned on or off), in ascending order: what a chunk
+/// publication must emit again beyond its changed chunks. Lights are spaced along streets (chains
+/// of one family through degree-two nodes) and an end pole keeps clear of the other arms' end
+/// poles at its node, and signs follow degree-two streets of any family, so a change re-spaces
+/// up to the whole degree-two street through each rebuilt edge or node, and moves end poles on
+/// the streets meeting at that street's two ends. A street ends at a node of another degree, so
+/// one ring of such neighbours suffices: an end pole depends on the arms ranked above it at its
+/// node and on their far ends' degree and node piece, never on another node's resolution.
+/// `O(seeds * street + ends * degree * street)` edges walked, no city scan.
+pub(super) fn furniture_dependents(
+    graph: &RegionGraph,
+    edges: &[usize],
+    nodes: &[u32],
+) -> std::collections::BTreeSet<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut ends = Vec::new();
+    let mut street = Vec::new();
+    let seeds = edges.iter().copied().chain(
+        nodes
+            .iter()
+            .flat_map(|&node| graph.node_adjacency(node).iter().copied()),
+    );
+    for edge in seeds {
+        if graph.edge(edge).deleted || out.contains(&edge) {
+            continue;
+        }
+        ends.extend(degree_two_street(graph, edge, &mut street));
+        out.extend(street.iter().copied());
+    }
+    ends.sort_unstable();
+    ends.dedup();
+    for node in ends {
+        for &edge in graph.node_adjacency(node) {
+            if !graph.edge(edge).deleted && !out.contains(&edge) {
+                degree_two_street(graph, edge, &mut street);
+                out.extend(street.iter().copied());
+            }
+        }
+    }
+    out
+}
+
+// Every live edge of the street through `edge` across degree-two nodes, whatever their family,
+// into `street` (cleared first), and the street's two end nodes (the same node twice for a
+// closed loop). `O(street)`.
+fn degree_two_street(graph: &RegionGraph, edge: usize, street: &mut Vec<usize>) -> [u32; 2] {
+    street.clear();
+    street.push(edge);
+    let start = graph.edge(edge);
+    [start.start_node, start.end_node].map(|mut node| {
+        let mut previous = edge;
+        while live_degree(graph, node) == 2 {
+            let Some(&next) = graph
+                .node_adjacency(node)
+                .iter()
+                .find(|&&e| e != previous && !graph.edge(e).deleted)
+            else {
+                break;
+            };
+            if next == edge {
+                break;
+            }
+            street.push(next);
+            let next_edge = graph.edge(next);
+            node = if next_edge.start_node == node {
+                next_edge.end_node
+            } else {
+                next_edge.start_node
+            };
+            previous = next;
+        }
+        node
+    })
+}
+
 // The visible stretch of one chain edge, in chain order.
 struct Run<'a> {
     sections: &'a [RoadSection],
