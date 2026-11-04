@@ -9,7 +9,9 @@ mod zero_hop;
 
 pub(super) use walk::witness_lane;
 
-use super::super::super::super::{ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_WALK};
+use super::super::super::super::{
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK,
+};
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
@@ -19,6 +21,7 @@ use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, has_recoverable_network_trip,
 };
 use super::apply_network_replan;
+use super::replan::replan_after_missed_turn;
 use super::walk_home::walker_lost;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -183,6 +186,16 @@ pub(super) unsafe fn handle_lane_end(
                     slices,
                 ),
             };
+            replan_if_missed_turn(
+                i,
+                lane_id,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            );
             return entry.unwrap_or_else(|WalkerStranded(cause)| {
                 walk::replan_from_lane(
                     i,
@@ -215,6 +228,16 @@ pub(super) unsafe fn handle_lane_end(
             lane_claims,
             slices,
         ) {
+            replan_if_missed_turn(
+                i,
+                lane_id,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            );
             return entry.unwrap_or_else(|WalkerStranded(cause)| {
                 walk::replan_from_lane(
                     i,
@@ -358,6 +381,40 @@ pub(super) unsafe fn handle_lane_end(
             }
         }
         LaneEndAction::Break
+    }
+}
+
+// After a lane-end entry from road lane `lane_id`: a car that took a missed turn
+// (`enter::follow_missed_turn`) is on a new lane with its node path dropped, and replans now from
+// the road it entered. A zero-hop entry also has an empty path; `replan_after_missed_turn` leaves
+// it alone. O(1) for every other entry.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+unsafe fn replan_if_missed_turn(
+    i: usize,
+    lane_id: usize,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) {
+    unsafe {
+        if *slices.tmode.get(i) == MODE_CAR
+            && slices.path.get(i).is_empty()
+            && *slices.lane_id.get(i) != lane_id
+        {
+            replan_after_missed_turn(
+                i,
+                sim_time,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                slices,
+            );
+        }
     }
 }
 

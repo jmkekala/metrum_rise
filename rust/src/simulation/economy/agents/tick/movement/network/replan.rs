@@ -148,22 +148,10 @@ unsafe fn ensure_exact_access_plan(
         let s_next_replan_time = &slices.next_replan_time;
 
         let target_building = *s_tgt_b.get(i);
-        if *s_transit.get(i) == TRANSIT_IMMIGRATING {
-            return true;
-        }
-        if (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0 || target_building == usize::MAX {
-            // One length test for every other car; the replan itself runs once per missed turn.
-            if *s_tmode.get(i) == MODE_CAR && slices.path.get(i).is_empty() {
-                replan_after_missed_turn(
-                    i,
-                    sim_time,
-                    allocator,
-                    transit_network,
-                    graph,
-                    pathfind_count,
-                    slices,
-                );
-            }
+        if *s_transit.get(i) == TRANSIT_IMMIGRATING
+            || (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0
+            || target_building == usize::MAX
+        {
             return true;
         }
 
@@ -238,17 +226,20 @@ unsafe fn ensure_exact_access_plan(
     }
 }
 
-// A car that followed a missed turn (`follow_missed_turn`) has a valid plan, no node path and a
-// road lane under it. It plans again from that lane's end, early enough to choose the road's next
-// lane, and keeps driving: a destination car through `plan_network_replan` with its access flags
-// kept, a freight car through `plan_border_network_replan`. A zero-hop trip (an empty path at its
-// detach node, or its detach lane on this road) is left alone. A failed replan sets the replan
-// backoff and changes nothing else: the car drives to its lane end, where the junction's
-// existing empty-path replan runs. Cost on a match: one route query; never on the next tick of
-// the same lane unless the backoff has passed. Kept out of line: the gates above run for every
-// agent each tick.
+/// Replans car `i` once after it followed a missed turn (`follow_missed_turn`), which leaves it
+/// with a valid plan and no node path on the connector or road lane that turn entered. It plans
+/// from that road's end, so it chooses the road's next lane early, and keeps driving: a
+/// destination car through `plan_network_replan` with its access flags kept, a freight car
+/// through `plan_border_network_replan`. Called by the lane-end handler after an entry, so only a
+/// car that entered with an empty path pays the checks: a zero-hop trip (its detach node at that
+/// road's end, or its detach lane on that road) is left alone. A failed replan sets the replan
+/// backoff and changes nothing else; the car drives on, and the empty-path replan at the next lane
+/// end stays the last resort. Cost: O(1) checks, one route query on a missed turn. Out of line:
+/// it runs only at lane ends.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[inline(never)]
-unsafe fn replan_after_missed_turn(
+pub(super) unsafe fn replan_after_missed_turn(
     i: usize,
     sim_time: f32,
     allocator: &BuildingAllocator,
@@ -259,13 +250,25 @@ unsafe fn replan_after_missed_turn(
 ) {
     unsafe {
         let flags = *slices.access_flags.get(i);
-        let lane_id = *slices.lane_id.get(i);
-        if flags & ACCESS_PLAN_VALID == 0 || sim_time < *slices.next_replan_time.get(i) {
+        if *slices.tmode.get(i) != MODE_CAR
+            || flags & ACCESS_PLAN_VALID == 0
+            || !slices.path.get(i).is_empty()
+            || sim_time < *slices.next_replan_time.get(i)
+        {
             return;
         }
-        let Some(lane) = transit_network.lane_system.lanes.get(lane_id) else {
+        // The road lane the car is on, or the one its connector leads onto.
+        let lanes = &transit_network.lane_system.lanes;
+        let mut lane_id = *slices.lane_id.get(i);
+        let Some(mut lane) = lanes.get(lane_id) else {
             return;
         };
+        if lane.edge_id == usize::MAX {
+            let Some(&road) = lane.next_lanes.first() else {
+                return;
+            };
+            (lane_id, lane) = (road, &lanes[road]);
+        }
         let Some(node) = lane_terminal_node(lane_id, transit_network, graph) else {
             return;
         };

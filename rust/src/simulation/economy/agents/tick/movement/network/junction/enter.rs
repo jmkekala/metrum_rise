@@ -434,8 +434,8 @@ pub(super) unsafe fn enter_detach_lane_connector(
 // carriageway has one missed a lane-use turn: it could not reach a lane that makes the turn
 // before the junction. It takes this lane's first successor in stable order whose road is not
 // `to_edge` (a real connector or pass-through lane, so it never leaves the lane graph) and drops
-// its node path; the replan gate then plans on that road from its end (`ensure_exact_access_plan`,
-// `replan_after_missed_turn`). A wait for that connector keeps the car and its path at the lane
+// its node path; the lane-end handler then plans on that road from its end
+// (`replan_after_missed_turn`). A wait for that connector keeps the car and its path at the lane
 // end. `None` when no sibling makes the turn (a missing road turn, not a lane-use miss) or the lane
 // has no other way on: the caller's failure path runs. O(L x C + C) lookups, no allocation, no
 // route query.
