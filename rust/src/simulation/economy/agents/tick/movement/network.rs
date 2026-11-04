@@ -31,6 +31,12 @@ pub(super) use walk_home::walker_lost;
 
 /// Handles network, immigration, and active junction connector movement.
 ///
+/// Its per-agent steps (replan gates, lane entry, lane change, lane end and the junction entries
+/// under it) live in sibling modules and carry `#[inline]`, which compiles them in this
+/// function's codegen unit: without it, whether they inline here follows rustc's partition of
+/// the whole crate into 16 units, and unrelated added code can move them out of line (roads.md
+/// question 36; `ROAD-94` measured 6-17% on the movement pass from that alone).
+///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn handle_network_movement(

@@ -53,6 +53,9 @@ pub(super) enum LaneEntryAction {
 /// O(log bucket), no allocation.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn try_pending_lane_attach(
     i: usize,
     transit_network: &TransitNetwork,
@@ -94,6 +97,9 @@ pub(super) unsafe fn try_pending_lane_attach(
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn prepare_lane_entry(
     i: usize,
     sim_time: f32,

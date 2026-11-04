@@ -211,6 +211,9 @@ pub(super) unsafe fn retry_home_without_lane(
 /// R-tree search when it is off every sidewalk.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn stand_on_sidewalk(
     i: usize,
     sim_time: f32,
@@ -480,6 +483,9 @@ pub(super) unsafe fn walking_to_sidewalk(i: usize, slices: &MovementSlices) -> b
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn walk_to_sidewalk(
     i: usize,
     delta: f32,

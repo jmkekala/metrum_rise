@@ -29,6 +29,9 @@ const CONNECTOR_ENTRY_RETAIN_EPS_M: f32 = 0.05;
 /// the sidewalk a walker's route witness names, or any connector for a car. A walker with no
 /// such connector is handed back to the lane end (`WalkerStranded`).
 #[allow(clippy::too_many_arguments)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn enter_next_edge_connector(
     i: usize,
     lane_id: usize,
@@ -46,13 +49,93 @@ pub(super) unsafe fn enter_next_edge_connector(
     slices: &MovementSlices,
 ) -> Result<LaneEndAction, WalkerStranded> {
     unsafe {
-        let s_path = &slices.path;
+        if let Some(action) = try_enter_edge(
+            i,
+            lane_id,
+            from_edge,
+            to_edge,
+            walk_lane,
+            node_id,
+            path_idx_before_lane_end,
+            path_len,
+            speed,
+            remaining_dist,
+            transit_network,
+            lane_buckets,
+            lane_claims,
+            slices,
+        ) {
+            return Ok(action);
+        }
+        if let Some(action) = follow_missed_turn(
+            i,
+            lane_id,
+            from_edge,
+            to_edge,
+            node_id,
+            path_idx_before_lane_end,
+            path_len,
+            speed,
+            remaining_dist,
+            transit_network,
+            lane_buckets,
+            lane_claims,
+            slices,
+        ) {
+            return Ok(action);
+        }
+        traffic_log!(
+            "[JUNCTION_MISSING_CONN] agent={} node={} from_lane={} from_edge={} to_edge={} path_idx={}/{} reason=no-connection-lane",
+            i,
+            node_id,
+            lane_id,
+            from_edge,
+            to_edge,
+            *slices.path_idx.get(i),
+            path_len,
+        );
+        let cause = FailureCause::NoTurnToEdge {
+            node: node_id,
+            from_lane: lane_id,
+            from_edge,
+            to_edge,
+        };
+        if *slices.tmode.get(i) != MODE_CAR {
+            return Err(WalkerStranded(cause));
+        }
+        record_failure(i, cause, FailureOutcome::Replans, slices);
+        slices.path.get_mut(i).clear();
+        *slices.lane_id.get_mut(i) = usize::MAX;
+        Ok(LaneEndAction::Break)
+    }
+}
+
+// Enters `to_edge` from road lane `lane_id` straight on or through a connector (into `walk_lane`
+// for a walker), or waits for the entry at the lane end. `None` when this lane has no way onto
+// `to_edge` at all. Not recursive, so the lane-end handler stays one inlinable call tree.
+#[allow(clippy::too_many_arguments)]
+unsafe fn try_enter_edge(
+    i: usize,
+    lane_id: usize,
+    from_edge: usize,
+    to_edge: usize,
+    walk_lane: Option<usize>,
+    node_id: u32,
+    path_idx_before_lane_end: usize,
+    path_len: usize,
+    speed: f32,
+    remaining_dist: &mut f32,
+    transit_network: &TransitNetwork,
+    lane_buckets: &[Vec<(f32, usize)>],
+    lane_claims: &LaneClaimContext<'_>,
+    slices: &MovementSlices,
+) -> Option<LaneEndAction> {
+    unsafe {
         let s_path_idx = &slices.path_idx;
-        let s_lane_id = &slices.lane_id;
         let s_lane_d = &slices.lane_d;
         if let Some(direct_lane_id) = direct_vehicle_lane_to_edge(lane_id, to_edge, transit_network)
         {
-            return Ok(enter_direct_vehicle_lane(
+            return Some(enter_direct_vehicle_lane(
                 i,
                 lane_id,
                 direct_lane_id,
@@ -125,7 +208,7 @@ pub(super) unsafe fn enter_next_edge_connector(
                         path_len,
                     );
                 }
-                Ok(LaneEndAction::KeepMoving)
+                Some(LaneEndAction::KeepMoving)
             }
             ConnectorEntry::ClaimedThisTick => {
                 *s_path_idx.get_mut(i) = path_idx_before_lane_end;
@@ -140,7 +223,7 @@ pub(super) unsafe fn enter_next_edge_connector(
                     *s_path_idx.get(i),
                     path_len,
                 );
-                Ok(LaneEndAction::Break)
+                Some(LaneEndAction::Break)
             }
             ConnectorEntry::Occupied => {
                 *s_path_idx.get_mut(i) = path_idx_before_lane_end;
@@ -155,55 +238,17 @@ pub(super) unsafe fn enter_next_edge_connector(
                     *s_path_idx.get(i),
                     path_len,
                 );
-                Ok(LaneEndAction::Break)
+                Some(LaneEndAction::Break)
             }
-            ConnectorEntry::MissingConnection => {
-                if let Some(action) = follow_missed_turn(
-                    i,
-                    lane_id,
-                    from_edge,
-                    to_edge,
-                    node_id,
-                    path_idx_before_lane_end,
-                    path_len,
-                    speed,
-                    remaining_dist,
-                    transit_network,
-                    lane_buckets,
-                    lane_claims,
-                    slices,
-                ) {
-                    return Ok(action);
-                }
-                traffic_log!(
-                    "[JUNCTION_MISSING_CONN] agent={} node={} from_lane={} from_edge={} to_edge={} path_idx={}/{} reason=no-connection-lane",
-                    i,
-                    node_id,
-                    lane_id,
-                    from_edge,
-                    to_edge,
-                    *s_path_idx.get(i),
-                    path_len,
-                );
-                let cause = FailureCause::NoTurnToEdge {
-                    node: node_id,
-                    from_lane: lane_id,
-                    from_edge,
-                    to_edge,
-                };
-                if *slices.tmode.get(i) != MODE_CAR {
-                    return Err(WalkerStranded(cause));
-                }
-                record_failure(i, cause, FailureOutcome::Replans, slices);
-                s_path.get_mut(i).clear();
-                *s_lane_id.get_mut(i) = usize::MAX;
-                Ok(LaneEndAction::Break)
-            }
+            ConnectorEntry::MissingConnection => None,
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn enter_detach_lane_connector(
     i: usize,
     lane_id: usize,
@@ -428,8 +473,8 @@ unsafe fn follow_missed_turn(
             (edge != to_edge && edge != usize::MAX).then_some(edge)
         })?;
         // The onward road is one this lane reaches, so the entry finds its connector or
-        // pass-through lane and never comes back here; a car is never handed back as a walker.
-        let action = enter_next_edge_connector(
+        // pass-through lane (or waits for it).
+        let action = try_enter_edge(
             i,
             lane_id,
             from_edge,
@@ -444,8 +489,7 @@ unsafe fn follow_missed_turn(
             lane_buckets,
             lane_claims,
             slices,
-        )
-        .ok()?;
+        )?;
         if *slices.lane_id.get(i) != lane_id {
             slices.path.get_mut(i).clear();
             *slices.path_idx.get_mut(i) = 0;

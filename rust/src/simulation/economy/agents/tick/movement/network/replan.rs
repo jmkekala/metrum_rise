@@ -29,8 +29,9 @@ use std::sync::atomic::AtomicU32;
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
-// Keep rare route planning out of the small, frequently executed movement loop.
-#[inline(never)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn prepare_network_replan(
     i: usize,
     sim_time: f32,
@@ -244,7 +245,9 @@ unsafe fn ensure_exact_access_plan(
 // detach node, or its detach lane on this road) is left alone. A failed replan sets the replan
 // backoff and changes nothing else: the car drives to its lane end, where the junction's
 // existing empty-path replan runs. Cost on a match: one route query; never on the next tick of
-// the same lane unless the backoff has passed.
+// the same lane unless the backoff has passed. Kept out of line: the gates above run for every
+// agent each tick.
+#[inline(never)]
 unsafe fn replan_after_missed_turn(
     i: usize,
     sim_time: f32,

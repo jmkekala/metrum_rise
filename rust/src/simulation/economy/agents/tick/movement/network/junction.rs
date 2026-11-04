@@ -44,6 +44,9 @@ pub(super) struct WalkerStranded(FailureCause);
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn handle_lane_end(
     i: usize,
     lane_id: usize,

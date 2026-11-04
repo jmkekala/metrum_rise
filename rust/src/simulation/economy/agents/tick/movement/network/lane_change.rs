@@ -14,9 +14,46 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
 
+// The lane car `i` must reach before the junction ahead, or `usize::MAX` outside its turn
+// preparation window: the same selector as claim classification (`agent_turn_lane_target`).
+// Kept out of line so the route column reads stay off the per-agent movement path. O(1) outside
+// the window, O(D + L x C) inside it; no allocation, no route query.
+//
+// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[inline(never)]
+unsafe fn turn_lane_target(
+    i: usize,
+    lane_id: usize,
+    lane_d: f32,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    slices: &MovementSlices,
+) -> usize {
+    unsafe {
+        junction_approach_node(lane_id, lane_d, transit_network, graph)
+            .and_then(|_| {
+                junction_approach_lane(
+                    lane_id,
+                    *slices.cur_n.get(i),
+                    slices.path.get(i),
+                    *slices.path_idx.get(i),
+                    *slices.access_flags.get(i),
+                    *slices.planned_detach_n.get(i),
+                    *slices.planned_detach_lane.get(i) as usize,
+                    transit_network,
+                    graph,
+                )
+            })
+            .unwrap_or(usize::MAX)
+    }
+}
+
 /// Applies active lane-change lifecycle, planned lane changes, and conservative overtaking.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+// Compiled in its caller's codegen unit: its inlining does not follow the crate's partition
+// (see `handle_network_movement`).
+#[inline]
 pub(super) unsafe fn prepare_lane_change_and_overtake(
     i: usize,
     lane_id: usize,
@@ -65,22 +102,11 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
             },
             transit_network,
             lane_buckets,
-            // The same selector as claim classification (`agent_turn_lane_target`).
-            junction_approach_node(lane_id, lane_d, transit_network, graph)
-                .and_then(|_| {
-                    junction_approach_lane(
-                        lane_id,
-                        *slices.cur_n.get(i),
-                        slices.path.get(i),
-                        *slices.path_idx.get(i),
-                        *slices.access_flags.get(i),
-                        *slices.planned_detach_n.get(i),
-                        detach_lane_id,
-                        transit_network,
-                        graph,
-                    )
-                })
-                .unwrap_or(usize::MAX),
+            if transit_network.lane_system.needs_turn_preparation(lane_id) {
+                turn_lane_target(i, lane_id, lane_d, transit_network, graph, slices)
+            } else {
+                usize::MAX
+            },
         );
         let Some(choice) = choice else {
             if crate::debug::Channel::Traffic.enabled()
