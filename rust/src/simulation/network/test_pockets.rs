@@ -395,9 +395,14 @@ fn the_transition_forks_into_the_pocket_and_keeps_the_through_lanes() {
                 assert!(lane.geometry.iter().all(|p| (p.z - first.z).abs() < 1e-4));
             }
         }
-        // No lane choice before the transition: one movement.
+        // The transition offers one movement, but the pocket edge is too short to change lanes
+        // on: a base road with more than one lane towards it prepares the junction's turn
+        // before the fork (`transition_needs_lane_choice`, round R5a3); its leaving lanes never.
+        let several = graph.edge(0).fwd_lanes > 1;
         for &id in &lanes.edge_lanes[&0] {
-            assert!(!lanes.needs_turn_preparation(id));
+            let lane = &lanes.lanes[id];
+            let approaches = lane.lane_type == LaneType::Vehicle && lane.is_fwd;
+            assert_eq!(lanes.needs_turn_preparation(id), approaches && several);
         }
     }
 }

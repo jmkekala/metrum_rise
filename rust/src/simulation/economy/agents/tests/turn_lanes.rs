@@ -380,12 +380,13 @@ fn missed_turn_on_a_short_street_turns_off_and_replans() {
 }
 
 // `ROAD-95`: the right-pocket junction of `roadbed::fixtures::pocket_junction_at` (a T, or with
-// `north` a four-way), its 1+1 west arm's pocket `pocket_m` long, with lanes and routing built.
+// `north` a four-way), its west arm of `lanes` + `lanes` lanes with a pocket `pocket_m` long,
+// with lanes and routing built.
 // Nodes: 0 the junction, 1 the transition, 2 west, 3 east, 4 south (the right turn), 5 north;
 // edges: 0 west to the transition, 1 the pocket edge, 2 east, 3 south to the junction, 4 north.
-fn pocket_junction_network(north: bool, pocket_m: f32) -> (TransitNetwork, RegionGraph) {
+fn pocket_junction_network(lanes: u8, north: bool, pocket_m: f32) -> (TransitNetwork, RegionGraph) {
     let mut graph = crate::simulation::network::roadbed::fixtures::pocket_junction_at(
-        1, 1, false, true, north, pocket_m,
+        lanes, lanes, false, true, north, pocket_m,
     );
     let mut network = TransitNetwork::new();
     network.lane_system.rebuild(&mut graph);
@@ -393,8 +394,8 @@ fn pocket_junction_network(north: bool, pocket_m: f32) -> (TransitNetwork, Regio
     (network, graph)
 }
 
-// Drives a freight car from 5 m along the base road's lane to border node `border` (east 3 or
-// south 4) and returns the pocket edge's lanes it drove on, in order, and whether it changed
+// Drives a freight car from 5 m along the base road's inner lane to border node `border` (east 3
+// or south 4) and returns the pocket edge's lanes it drove on, in order, and whether it changed
 // lanes on the pocket edge. Every handoff between edges must follow a connector.
 fn drive_through_the_pocket(
     network: &mut TransitNetwork,
@@ -458,7 +459,7 @@ fn connector_exits(network: &TransitNetwork, lane: usize) -> Vec<usize> {
 // connector from the base lane), and turns from it without a lane change.
 #[test]
 fn a_right_turning_car_takes_the_pocket_at_the_fork() {
-    let (mut network, mut graph) = pocket_junction_network(false, 60.0);
+    let (mut network, mut graph) = pocket_junction_network(1, false, 60.0);
     let (lanes, changed) = drive_through_the_pocket(&mut network, &mut graph, 4);
     assert_eq!(
         lanes,
@@ -472,7 +473,7 @@ fn a_right_turning_car_takes_the_pocket_at_the_fork() {
 // keeps the through lane from the fork to the junction.
 #[test]
 fn a_straight_car_keeps_the_through_lane_past_a_pocket() {
-    let (mut network, mut graph) = pocket_junction_network(true, 60.0);
+    let (mut network, mut graph) = pocket_junction_network(1, true, 60.0);
     let pocket = vehicle_lane(&network, 1, 1);
     let through = vehicle_lane(&network, 1, 0);
     assert_eq!(
@@ -491,7 +492,7 @@ fn a_straight_car_keeps_the_through_lane_past_a_pocket() {
 // it goes straight on along a real connector, replans, and reaches its door on the side road.
 #[test]
 fn a_car_replanned_after_the_fork_misses_the_pocket_and_reaches_its_door() {
-    let (mut network, mut graph) = pocket_junction_network(false, 30.0);
+    let (mut network, mut graph) = pocket_junction_network(1, false, 30.0);
     let mut allocator = BuildingAllocator::new();
     allocator.buildings.push(create_test_building(3, -1));
     let destination = bkw_vehicle_lanes(&network, 3)[0];
@@ -535,4 +536,60 @@ fn a_car_replanned_after_the_fork_misses_the_pocket_and_reaches_its_door() {
         "car deadlocked at lane {} distance {} with path {:?}",
         agents.current_lane_id[i], agents.lane_distance[i], agents.current_path[i]
     );
+}
+
+// `ROAD-95`: a pocket edge is too short to change lanes on, so the entry-lane walk reads through
+// the transition: on a 2+2 road whose junction approach has a right pocket (3+2 at a four-way:
+// L+S / S / R), a car entering the base road for the right turn takes its outer lane (the one
+// that forks into the pocket), for the left turn its inner lane; straight on, either lane.
+#[test]
+fn the_entry_lane_walk_reads_through_a_pocket_transition() {
+    let mut graph = crate::simulation::network::roadbed::fixtures::pocket_junction_at(
+        2, 2, false, true, true, 60.0,
+    );
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    let prefer = |destination: u32| {
+        preferred_entry_lanes(
+            0,
+            2,
+            &[2, 1, 0, destination],
+            2,
+            0,
+            u32::MAX,
+            usize::MAX,
+            &network,
+            &graph,
+        )
+    };
+    let only = |lanes: Option<EntryLanes>, lane_idx: i8| {
+        let lanes = lanes.expect("a preference");
+        assert!(lanes.contains(lane_idx) && !lanes.contains(1 - lane_idx));
+    };
+    only(prefer(4), 1);
+    only(prefer(5), 0);
+    assert_eq!(prefer(3), None);
+}
+
+// `ROAD-95`: on a 2+2 road whose four-way approach has a right pocket, the base road's lanes are
+// flagged for the turn at the junction beyond the transition (`transition_needs_lane_choice`), so
+// a right-turning car on the inner lane moves to the outer lane before the fork (the lane that
+// forks into the pocket), enters the pocket lane there and turns without a lane change.
+#[test]
+fn a_right_turning_car_moves_to_the_fork_lane_before_the_transition() {
+    let (mut network, mut graph) = pocket_junction_network(2, true, 60.0);
+    for lane_idx in [0, 1] {
+        assert!(
+            network
+                .lane_system
+                .needs_turn_preparation(vehicle_lane(&network, 0, lane_idx))
+        );
+    }
+    let (lanes, changed) = drive_through_the_pocket(&mut network, &mut graph, 4);
+    assert_eq!(
+        lanes,
+        vec![2],
+        "entered the pocket lane at the fork and kept it"
+    );
+    assert!(!changed);
 }

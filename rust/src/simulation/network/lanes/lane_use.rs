@@ -310,9 +310,45 @@ pub(crate) fn approach_group(
     Some((first, len, len == targets))
 }
 
+/// At a lane transition (`ROAD-95`), the ranks of `edge`'s lanes approaching `node` whose
+/// straight connectors into pocket edge `pocket_edge` (D5: each lane keeps its rank, plus one per
+/// left pocket lane, and the lane beside a pocket lane also forks into it) reach the pocket edge's
+/// ranks `first..first + len`, as `(first, len)`. `None` when `node` is not the transition into
+/// `pocket_edge` or no lane reaches them. The entry-lane walk reads through a transition with it:
+/// a pocket edge is too short to change lanes on, so a car takes the lane that forks into its turn
+/// before the transition. O(degree + lanes), no allocation.
+pub(crate) fn pocket_fork_sources(
+    graph: &RegionGraph,
+    edge: usize,
+    node: u32,
+    pocket_edge: usize,
+    (first, len): (usize, usize),
+) -> Option<(usize, usize)> {
+    let policy = DefaultLaneUse::new(graph, edge, node);
+    let target = graph.edge(pocket_edge);
+    let leaves_fwd = target.start_node == node;
+    let target_count = usize::from(if leaves_fwd {
+        target.fwd_lanes
+    } else {
+        target.bkw_lanes
+    });
+    let (left, right) = policy.pocket_gain(graph, target, leaves_fwd, target_count)?;
+    let reaches = |rank: usize| {
+        (first..first + len).contains(&(rank + usize::from(left)))
+            || (left && rank == 0 && first == 0)
+            || (right && rank + 1 == policy.count && first + len == target_count)
+    };
+    let lo = (0..policy.count).find(|&rank| reaches(rank))?;
+    Some((
+        lo,
+        (lo..policy.count).take_while(|&rank| reaches(rank)).count(),
+    ))
+}
+
 /// Whether the lanes of `edge` that approach `node` must pick their lane before it: more than one
 /// such lane, and the node whitelists its vehicle turns or its default lane use gives the lanes
-/// different movements. The connector builder writes the same rule into
+/// different movements, or the node is a lane transition into a pocket edge whose own approach
+/// must ([`transition_needs_lane_choice`]). The connector builder writes the same rule into
 /// `LaneSystem::needs_turn_preparation` per lane; the markings read it here, from the graph alone,
 /// to paint the solid approach zone (`APPROACH_SOLID_LENGTH_M`), so a preview paints what its
 /// commit paints. O(degree + the node's lane connections), no allocation.
@@ -325,7 +361,50 @@ pub(crate) fn approach_needs_lane_choice(graph: &RegionGraph, edge: usize, node:
     };
     count > 1
         && (super::vehicle_junctions::node_whitelists_vehicle_turns(graph, node as usize)
-            || DefaultLaneUse::new(graph, edge, node).needs_lane_choice())
+            || DefaultLaneUse::new(graph, edge, node).needs_lane_choice()
+            || transition_needs_lane_choice(graph, edge, node))
+}
+
+/// Whether the lanes of `edge` approaching lane transition `node` must pick their lane before it
+/// (`ROAD-95`): more than one such lane, the node's other arm is a pocket edge whose pocket lanes
+/// serve the direction leaving `node`, and that edge's approach to its junction needs a lane
+/// choice. A pocket edge is
+/// one taper and a body long (D7), too short to change lanes on, so the base road prepares the
+/// junction's turn: its lanes keep the solid approach zone before the fork and the car's advance
+/// lane choice targets the lanes that fork into its turn (`pocket_fork_sources`). False at every
+/// other node, after one node-type read. O(degree + the junction's lane connections).
+pub(crate) fn transition_needs_lane_choice(graph: &RegionGraph, edge: usize, node: u32) -> bool {
+    if !graph.is_lane_transition(node) {
+        return false;
+    }
+    let approach = graph.edge(edge);
+    let count = if approach.end_node == node {
+        approach.fwd_lanes
+    } else {
+        approach.bkw_lanes
+    };
+    if count <= 1 {
+        return false;
+    }
+    let node = graph.get_valid_node(node);
+    graph
+        .node_adjacency(node)
+        .iter()
+        .copied()
+        .filter(|&other| other != edge && !graph.edge(other).deleted)
+        .any(|pocket_edge| {
+            let target = graph.edge(pocket_edge);
+            let leaves_fwd = target.start_node == node;
+            let junction = if leaves_fwd {
+                target.end_node
+            } else {
+                target.start_node
+            };
+            target
+                .pocket
+                .is_some_and(|pocket| pocket.serves(leaves_fwd))
+                && approach_needs_lane_choice(graph, pocket_edge, junction)
+        })
 }
 
 /// Whether `node` offers the lanes of `edge` that approach it a left and a right turn, as

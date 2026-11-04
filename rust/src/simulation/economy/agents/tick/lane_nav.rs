@@ -6,7 +6,7 @@ use crate::simulation::economy::agents::ACCESS_PLAN_VALID;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::{
-    APPROACH_SOLID_LENGTH_M, LaneType, approach_group, lane_rank,
+    APPROACH_SOLID_LENGTH_M, LaneType, approach_group, lane_rank, pocket_fork_sources,
 };
 
 /// Returns the road node where a road lane begins for its travel direction.
@@ -231,6 +231,14 @@ pub(in crate::simulation::economy::agents) fn preferred_entry_lanes(
             return usable(lo, hi, offset, None);
         };
         let (group_lo, group_hi) = (lo.max(first), hi.min(first + len));
+        if !identity
+            && let Some(fork) = pocket_turn_sources(graph, cur_edge, cur_node, out, next, path, idx)
+        {
+            // A lane transition's fan into a pocket edge (`ROAD-95`): the pocket edge is too
+            // short to change lanes on, so the lanes that fork into the turn made at its
+            // junction are the ones to take.
+            return usable(lo, hi, offset, Some(fork));
+        }
         if !identity || group_lo >= group_hi {
             return usable(lo, hi, offset, Some((first, len)));
         }
@@ -239,6 +247,25 @@ pub(in crate::simulation::economy::agents) fn preferred_entry_lanes(
         cur_node = next;
         idx += 1;
     }
+}
+
+// Through lane transition `node` into pocket edge `pocket_edge`, whose far end is the junction
+// `junction` (`path[idx]`): the ranks of `edge` whose straight connectors reach the pocket
+// edge's lanes making the route's movement there, onto the road to `path[idx + 1]`. `None`
+// anywhere else, or when the route ends on the pocket edge. O(degree + lanes).
+fn pocket_turn_sources(
+    graph: &RegionGraph,
+    edge: usize,
+    node: u32,
+    pocket_edge: usize,
+    junction: u32,
+    path: &[u32],
+    idx: usize,
+) -> Option<(usize, usize)> {
+    graph.edge(pocket_edge).pocket?;
+    let after = graph.get_edge_between_nodes(junction, *path.get(idx + 1)?)?;
+    let (first, len, _) = approach_group(graph, pocket_edge, junction, after)?;
+    pocket_fork_sources(graph, edge, node, pocket_edge, (first, len))
 }
 
 /// The lanes of the road under road lane `lane_id` from which the car's route makes its next
@@ -681,6 +708,34 @@ pub(super) fn junction_approach_lane(
         NextTarget::Edge(edge) => edge,
         NextTarget::Lane(detach_lane_id) => lanes.lanes.get(detach_lane_id)?.edge_id,
     };
+    // Before a lane transition every lane continues into the pocket edge, so the movement to
+    // prepare is the one at the pocket's junction: the lanes that fork into it (`ROAD-95`).
+    // Read only when the next road has a pocket: one edge read on every other approach.
+    let fork = graph
+        .get_edge(target_edge)
+        .is_some_and(|target| target.pocket.is_some())
+        .then(|| {
+            let terminal = lane_terminal_node(lane_id, network, graph)?;
+            let next_idx = path_idx + usize::from(path.get(path_idx) == Some(&terminal));
+            let junction = *path.get(next_idx)?;
+            let (first, len) = pocket_turn_sources(
+                graph,
+                lane.edge_id,
+                terminal,
+                target_edge,
+                junction,
+                path,
+                next_idx,
+            )?;
+            let edge = graph.edge(lane.edge_id);
+            let count = if lane.is_fwd {
+                edge.fwd_lanes
+            } else {
+                edge.bkw_lanes
+            };
+            Some((first, len, usize::from(count)))
+        })
+        .flatten();
     lanes
         .edge_lanes
         .get(&lane.edge_id)?
@@ -690,7 +745,12 @@ pub(super) fn junction_approach_lane(
             let sibling = &lanes.lanes[candidate];
             sibling.is_fwd == lane.is_fwd
                 && sibling.lane_type == LaneType::Vehicle
-                && vehicle_lane_reaches_edge(candidate, target_edge, network)
+                && fork.map_or_else(
+                    || vehicle_lane_reaches_edge(candidate, target_edge, network),
+                    |(first, len, count)| {
+                        (first..first + len).contains(&lane_rank(sibling.lane_idx, count))
+                    },
+                )
         })
         .min_by_key(|&candidate| {
             let index = lanes.lanes[candidate].lane_idx;

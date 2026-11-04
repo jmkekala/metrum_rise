@@ -29,7 +29,7 @@ pub(crate) use bounds::LanePlanarBox;
 pub(crate) use identity::LaneIdentity;
 pub(crate) use lane_use::{
     approach_arrow_masks, approach_group, approach_needs_lane_choice, approach_offers_turns,
-    lane_rank,
+    lane_rank, pocket_fork_sources,
 };
 pub use successors::LaneSuccessors;
 

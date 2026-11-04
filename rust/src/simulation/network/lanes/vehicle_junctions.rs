@@ -158,7 +158,8 @@ pub(crate) fn build_vehicle_connections_at_node(
                 count > 1
             },
             DefaultLaneUse::needs_lane_choice,
-        );
+        ) || (defaults.is_some()
+            && super::lane_use::transition_needs_lane_choice(graph, in_edge_id, node_id as u32));
         lanes[in_lane_id].solid_zone_m = if needs_lane_choice {
             APPROACH_SOLID_LENGTH_M
         } else {
