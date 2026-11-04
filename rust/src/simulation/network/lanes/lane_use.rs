@@ -207,6 +207,24 @@ impl DefaultLaneUse {
     }
 }
 
+/// Whether the lanes of `edge` that approach `node` must pick their lane before it: more than one
+/// such lane, and the node whitelists its vehicle turns or its default lane use gives the lanes
+/// different movements. The connector builder writes the same rule into
+/// `LaneSystem::needs_turn_preparation` per lane; the markings read it here, from the graph alone,
+/// to paint the solid approach zone (`APPROACH_SOLID_LENGTH_M`), so a preview paints what its
+/// commit paints. O(degree + the node's lane connections), no allocation.
+pub(crate) fn approach_needs_lane_choice(graph: &RegionGraph, edge: usize, node: u32) -> bool {
+    let approach = graph.edge(edge);
+    let count = if approach.end_node == node {
+        approach.fwd_lanes
+    } else {
+        approach.bkw_lanes
+    };
+    count > 1
+        && (super::vehicle_junctions::node_whitelists_vehicle_turns(graph, node as usize)
+            || DefaultLaneUse::new(graph, edge, node).needs_lane_choice())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +357,11 @@ mod junction_tests {
                     lanes.rebuild(&mut graph);
                     for from in 0..arms {
                         let policy = DefaultLaneUse::new(&graph, from, center);
+                        // The paint's graph-only rule is the builder's flag.
+                        assert_eq!(
+                            approach_needs_lane_choice(&graph, from, center),
+                            policy.needs_lane_choice()
+                        );
                         let mut reachable = vec![false; arms];
                         for &id in &lanes.edge_lanes[&from] {
                             let source = &lanes.lanes[id];
@@ -388,6 +411,7 @@ mod junction_tests {
                     lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([0]));
                     assert!(retired.iter().all(|&id| !lanes.needs_turn_preparation(id)));
                     for from in 0..arms {
+                        assert_eq!(approach_needs_lane_choice(&graph, from, center), count > 1);
                         for &id in &lanes.edge_lanes[&from] {
                             let lane = &lanes.lanes[id];
                             if lane.lane_type == LaneType::Vehicle {

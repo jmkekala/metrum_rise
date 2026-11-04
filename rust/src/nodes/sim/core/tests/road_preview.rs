@@ -1076,3 +1076,122 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
         "the dividers lie a lane out from the gap"
     );
 }
+
+// The solid approach zone (`ROAD-94`): on a 2 + 2 T every approach's two lanes serve different
+// movements, so the divider between them is solid over the last `APPROACH_SOLID_LENGTH_M` before
+// the junction and dashed before it; the centre line and the dividers of the lanes leaving the
+// junction stay dashed. A straight 2 + 2 road has no junction to choose a lane for and no solid
+// line. The paint reads the graph alone, so the T's 2 + 2 preview composes its committed chunks.
+#[test]
+fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction() {
+    use crate::config::{DRIVE_ON_LEFT, LANE_WIDTH};
+    use crate::simulation::network::lanes::APPROACH_SOLID_LENGTH_M;
+    use crate::simulation::network::render::road::RoadRenderer;
+    const SOLID: f32 = 2.0;
+    let wide = ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 2);
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    // Every marking quad (six vertices) as (centroid, its station range, its pattern).
+    let quads = |core: &SimCore| {
+        let mesh = RoadRenderer.generate_mesh_data_with_surface(
+            &core.region_graph,
+            &core.heightmap,
+            &core.transit_network.roadbed,
+        );
+        mesh.marking_vertices
+            .chunks(6)
+            .zip(mesh.marking_uvs.chunks(6))
+            .map(|(vertices, uvs)| {
+                let centroid = vertices.iter().fold(Vector3::ZERO, |sum, &v| sum + v) / 6.0;
+                let (low, high) = uvs.iter().fold((f32::MAX, f32::MIN), |(lo, hi), uv| {
+                    (lo.min(uv.x), hi.max(uv.x))
+                });
+                (centroid, high - low, uvs[0].y)
+            })
+            .collect::<Vec<_>>()
+    };
+    let straight = quads(&committed(&[wide], &[0], false));
+    assert!(!straight.is_empty(), "a 2 + 2 road is marked");
+    assert!(
+        straight.iter().all(|&(_, _, pattern)| pattern != SOLID),
+        "a road without a junction has no solid approach zone"
+    );
+
+    let mut core = committed(&[wide], &[0], false);
+    let points = stroke(&core, side);
+    let mut context = context(&mut core);
+    let view_chunks = context.view.road_mesh_chunks.clone();
+    let surface_generation = context.view.surface_generation;
+    let preview = Arc::new(context.preview_road(RoadPreviewRequest {
+        surface_generation,
+        points: points.clone(),
+        fwd_lanes: 2,
+        bkw_lanes: 2,
+        snap_to_existing_roads: true,
+        tunnel: false,
+        median: None,
+        attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+    }));
+    let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points,
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            snap_to_existing_roads: true,
+            tunnel: false,
+            median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            preview: Some(Arc::clone(&preview)),
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    assert_preview_composes_committed(&core, &view_chunks, pieces, "2 + 2 T");
+
+    let tee = quads(&core);
+    // Each arm as (unit direction away from the junction, the lateral axis): a car approaching
+    // on it drives towards `-direction`, and under right-hand traffic its lanes lie on the right
+    // of that heading.
+    let hand = if DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+    for (name, along, right_of_approach) in [
+        ("west", Vector3::LEFT, Vector3::BACK * hand),
+        ("east", Vector3::RIGHT, Vector3::FORWARD * hand),
+        ("south", Vector3::BACK, Vector3::RIGHT * hand),
+    ] {
+        let arm: Vec<_> = tee
+            .iter()
+            .map(|&(centroid, length, pattern)| {
+                let flat = Vector3::new(centroid.x, 0.0, centroid.z);
+                let lateral = flat.dot(right_of_approach);
+                (flat.dot(along), lateral, length, pattern)
+            })
+            .filter(|&(distance, lateral, _, _)| distance > 8.0 && lateral.abs() < 8.0)
+            .collect();
+        let line = |lateral: f32| {
+            arm.iter()
+                .filter(move |&&(_, at, _, _)| (at - lateral).abs() < 0.3)
+                .copied()
+        };
+        let solid: Vec<_> = line(LANE_WIDTH).filter(|q| q.3 == SOLID).collect();
+        let length: f32 = solid.iter().map(|q| q.2).sum();
+        assert!(
+            (length - APPROACH_SOLID_LENGTH_M).abs() < 0.5,
+            "{name}: the approach divider is solid over {length} m"
+        );
+        let solid_far = solid.iter().map(|q| q.0).fold(f32::MIN, f32::max);
+        let dashed_near = line(LANE_WIDTH)
+            .filter(|q| q.3 != SOLID)
+            .map(|q| q.0)
+            .fold(f32::MAX, f32::min);
+        assert!(
+            solid_far < dashed_near,
+            "{name}: the solid zone ends at the junction, the dashes lie before it"
+        );
+        assert!(
+            arm.iter().filter(|q| q.3 == SOLID).count() == solid.len(),
+            "{name}: only the approach divider is solid"
+        );
+        assert!(line(0.0).count() > 0 && line(-LANE_WIDTH).count() > 0);
+    }
+}

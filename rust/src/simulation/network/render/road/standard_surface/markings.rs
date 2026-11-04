@@ -6,7 +6,9 @@
 //! whole span, except past a pass-through node's crossing strip, which lies on the span (D8).
 //! A painted median (`ROAD-80`, R3-c) is paint alone: edge lines and 45 degree hatching across
 //! the gap between the lane groups, nosing out in a pointed chevron from the raised medians'
-//! nose tips.
+//! nose tips. Before a junction whose approach lanes serve different movements (`ROAD-94`), the
+//! dividers between those lanes are solid over the last `APPROACH_SOLID_LENGTH_M`, where no car
+//! changes lanes.
 
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
@@ -17,6 +19,7 @@ use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::graph::MedianStyle;
+use crate::simulation::network::lanes::{APPROACH_SOLID_LENGTH_M, approach_needs_lane_choice};
 use crate::simulation::network::roadbed::{
     BandKind, EdgeEnd, NOSE_CLEARANCE_M, RoadSection, RoadbedSystem,
     painted_median_continues,
@@ -114,25 +117,65 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         let Some(line) = FinnishLaneLine::for_edge(edge) else {
             continue;
         };
+        // Each lane group's dashed stations: solid over the last `APPROACH_SOLID_LENGTH_M` before
+        // the node it approaches when its lanes must pick their movement there. Forward lanes
+        // approach the end node, backward lanes the start node. O(degree) per edge end.
+        let forward = (
+            marking_s_range.0,
+            if approach_needs_lane_choice(graph, edge_idx, edge.end_node) {
+                marking_s_range.1 - APPROACH_SOLID_LENGTH_M
+            } else {
+                marking_s_range.1
+            },
+        );
+        let backward = (
+            if approach_needs_lane_choice(graph, edge_idx, edge.start_node) {
+                marking_s_range.0 + APPROACH_SOLID_LENGTH_M
+            } else {
+                marking_s_range.0
+            },
+            marking_s_range.1,
+        );
         if edge.median.is_some() {
             // A divided road's lane groups lie apart (`ROAD-80`): dividers within each group, at
             // its lanes' edges, and no centre line between them.
             let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
             let (centre, half) = (edge.lane_group_offset(), edge.median_half_width());
-            for (lanes, direction) in [(edge.fwd_lanes, 1.0), (edge.bkw_lanes, -1.0)] {
+            for (lanes, direction, dashed) in [
+                (edge.fwd_lanes, 1.0, forward),
+                (edge.bkw_lanes, -1.0, backward),
+            ] {
                 for divider in 1..lanes {
                     let lateral =
                         centre + (half + f32::from(divider) * config::LANE_WIDTH) * side * direction;
-                    emit_lane_marking_sections(mesh, sections, marking_s_range, line, |_| {
-                        Some(lateral)
-                    });
+                    emit_lane_marking_sections(
+                        mesh,
+                        sections,
+                        marking_s_range,
+                        dashed,
+                        line,
+                        |_| Some(lateral),
+                    );
                 }
             }
             continue;
         }
+        // Undivided, the carriageway holds the left group's lanes, then the right group's (the
+        // backward lanes on the left under right-hand traffic); the divider between the groups
+        // is the centre line, dashed over the whole range.
+        let (left_lanes, left, right) = if config::DRIVE_ON_LEFT {
+            (edge.fwd_lanes, forward, backward)
+        } else {
+            (edge.bkw_lanes, backward, forward)
+        };
         for divider in 1..total_lanes {
             let lane_fraction = divider as f32 / total_lanes as f32;
-            emit_lane_marking_sections(mesh, sections, marking_s_range, line, |section| {
+            let dashed = match divider.cmp(&usize::from(left_lanes)) {
+                std::cmp::Ordering::Less => left,
+                std::cmp::Ordering::Equal => marking_s_range,
+                std::cmp::Ordering::Greater => right,
+            };
+            emit_lane_marking_sections(mesh, sections, marking_s_range, dashed, line, |section| {
                 let (left, right) = carriageway_bounds(section)?;
                 Some(left + (right - left) * lane_fraction)
             });
@@ -256,11 +299,14 @@ fn point_at(sections: &[RoadSection], s_m: f32, lateral: f32) -> Option<Vector3>
 }
 
 // One longitudinal line over the span's sections, at the lateral offset `lateral_at` gives each
-// section.
+// section: in `line`'s pattern between the `dashed` stations and solid outside them (the solid
+// approach zone). A section pair is cut at those stations; a pair inside them is emitted as one
+// segment, exactly as without a zone.
 fn emit_lane_marking_sections(
     mesh: &mut NetworkMeshData,
     sections: &[RoadSection],
     marking_s_range: (f32, f32),
+    dashed: (f32, f32),
     line: FinnishLaneLine,
     lateral_at: impl Fn(&RoadSection) -> Option<f32>,
 ) {
@@ -292,22 +338,43 @@ fn emit_lane_marking_sections(
         let Some(end) = section_world_point_at_lateral_offset(&pair[1], lateral_b) else {
             continue;
         };
-        let t_start = ((clipped_start_s - segment_start_s) / (segment_end_s - segment_start_s))
-            .clamp(0.0, 1.0);
-        let t_end =
-            ((clipped_end_s - segment_start_s) / (segment_end_s - segment_start_s)).clamp(0.0, 1.0);
-        let clipped_start = start.lerp(end, t_start);
-        let clipped_end = start.lerp(end, t_end);
-        emit_marking_segment(
-            mesh,
-            clipped_start,
-            clipped_end,
+        let point = |s: f32| {
+            start.lerp(
+                end,
+                ((s - segment_start_s) / (segment_end_s - segment_start_s)).clamp(0.0, 1.0),
+            )
+        };
+        // Solid before `dashed.0`, the line's pattern up to `dashed.1`, solid after. Stations in
+        // the wrong order (a range shorter than both zones) leave the whole line solid.
+        let mut cuts = [
             clipped_start_s,
+            dashed.0.clamp(clipped_start_s, clipped_end_s),
+            dashed.1.clamp(clipped_start_s, clipped_end_s),
             clipped_end_s,
-            line.width_m * 0.5,
-            line.pattern,
-            marking_dash_color(),
-        );
+        ];
+        cuts.sort_by(f32::total_cmp);
+        for piece in cuts.windows(2) {
+            let (a, b) = (piece[0], piece[1]);
+            if b <= a + MIN_SEGMENT_LEN {
+                continue;
+            }
+            let middle = (a + b) * 0.5;
+            let pattern = if middle < dashed.0 || middle > dashed.1 {
+                MARKING_PATTERN_SOLID
+            } else {
+                line.pattern
+            };
+            emit_marking_segment(
+                mesh,
+                point(a),
+                point(b),
+                a,
+                b,
+                line.width_m * 0.5,
+                pattern,
+                marking_dash_color(),
+            );
+        }
     }
 }
 
