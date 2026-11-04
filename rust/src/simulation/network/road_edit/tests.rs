@@ -444,6 +444,82 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
     assert_eq!(graph.adjacency(), local.adjacency());
 }
 
+// `ROAD-103`: a stroke that splits an arm of a junction with turn rules leaves the rules on the
+// half that still reaches the junction, so whitelist mode keeps its listed turn. Both the adopted
+// plan (the road tool) and the cold add (`split_edge`) carry them.
+#[test]
+fn a_split_arm_keeps_the_far_junctions_turn_rules() {
+    let mut planned = Fixture::new(false);
+    let mut cold = Fixture::new(false);
+    for ((sx, sz), (ex, ez)) in [((-60.0, 0.0), (60.0, 0.0)), ((0.0, 0.0), (0.0, 48.0))] {
+        let (prepared, plan) = planned.plan(&[planned.point(sx, sz), planned.point(ex, ez)]);
+        cold.cold_add(&prepared);
+        planned.adopt(&plan);
+    }
+    // The arm of the junction at the origin whose far node lies to the west or east.
+    let arm = |graph: &RegionGraph, west: bool| {
+        let junction = graph.find_node_within(Vector3::ZERO, 0.1).unwrap();
+        let arm = graph
+            .node_adjacency(junction)
+            .iter()
+            .copied()
+            .find(|&id| {
+                let edge = graph.edge(id);
+                let far = if edge.start_node == junction {
+                    edge.end_node
+                } else {
+                    edge.start_node
+                };
+                !edge.deleted
+                    && (graph.node(far).pos.x < -1.0) == west
+                    && graph.node(far).pos.x.abs() > 1.0
+            })
+            .unwrap();
+        (junction, arm, graph.edge(arm).end_node == junction)
+    };
+    for fixture in [&mut planned, &mut cold] {
+        let (junction, west, west_arrives_fwd) = arm(&fixture.graph, true);
+        let (_, east, east_arrives_fwd) = arm(&fixture.graph, false);
+        let (from, to) = (
+            if west_arrives_fwd { 0 } else { -1 },
+            if east_arrives_fwd { -1 } else { 0 },
+        );
+        fixture
+            .graph
+            .add_lane_connection(junction, west, from, east, to);
+    }
+    let raw = [planned.point(-30.0, -40.0), planned.point(-30.0, 40.0)];
+    let (prepared, plan) = planned.plan(&raw);
+    cold.cold_add(&prepared);
+    planned.adopt(&plan);
+    for fixture in [&mut planned, &mut cold] {
+        let graph = &mut fixture.graph;
+        let (junction, west, _) = arm(graph, true);
+        let rules: Vec<_> = graph
+            .node(junction)
+            .lane_connections
+            .keys()
+            .copied()
+            .collect();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(
+            rules[0].0, west,
+            "the rule keys the half that reaches the junction"
+        );
+        let mut lanes = crate::simulation::network::lanes::LaneSystem::new();
+        lanes.rebuild(graph);
+        let arriving = lanes.edge_lanes[&west]
+            .iter()
+            .copied()
+            .find(|&id| lanes.lanes[id].lane_idx == rules[0].1)
+            .unwrap();
+        assert!(
+            !lanes.lanes[arriving].next_lanes.is_empty(),
+            "the listed turn keeps its connector"
+        );
+    }
+}
+
 // `ROAD-99`: the clearances by structure come from one vehicle envelope. The lining is the
 // envelope bitwise, so the tunnel cover (5 m) and a road over a tunnel (5.5 m) are as before; a
 // bridge's deck stands the envelope and its slab above a road's deck.

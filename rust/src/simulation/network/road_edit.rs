@@ -50,6 +50,9 @@ pub(super) struct PlannedRoadSplit {
     pub(super) edge_id: usize,
     /// Local edge slot appended for the second split half.
     pub(super) new_edge_id: usize,
+    /// Local node the second half reaches, whose turn rules move to it (`ROAD-103`); `None` for a
+    /// self-loop, whose rules stay.
+    pub(super) far_node: Option<u32>,
     /// First-half length at the split, before junction finalization.
     pub(super) first_length_m: f32,
     /// Second-half length at the split, before junction finalization.
@@ -504,6 +507,19 @@ impl RoadTopologyPlan {
             graph.adjacency[*id as usize].dedup();
         }
         self.install_crosswalk_overrides(graph, &node_ids, &edge_ids);
+        // The excerpt carries no turn rules, so a split's far node keeps them in the live graph:
+        // move them to the second half there, in split order so a chain ends on the last half
+        // (`ROAD-103`). A changed node's rules were cleared above. O(splits x rules at a node).
+        for split in &self.splits {
+            if let Some(far) = split.far_node {
+                let far = node_ids[self.nodes[far as usize].canonical as usize];
+                graph.move_node_rules_to_edge(
+                    far,
+                    edge_ids[split.edge_id],
+                    edge_ids[split.new_edge_id],
+                );
+            }
+        }
         let dirty_edges = self.dirty_edges.iter().map(|id| edge_ids[*id]).collect();
         let affected_nodes = self
             .affected_nodes

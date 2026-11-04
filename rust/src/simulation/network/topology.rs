@@ -1182,9 +1182,13 @@ pub fn split_edge(
 
     let new_edge_id = graph.add_edge(new_edge);
     // The far end's arm is now the second half (`ROAD-74`); a self-loop's start keeps its arm on
-    // the first half too.
+    // the first half too. Its turn rules move with the arm (`ROAD-103`).
+    let self_loop = graph.edges[edge_id].start_node == old_end_node;
+    if !self_loop {
+        graph.move_node_rules_to_edge(old_end_node, edge_id, new_edge_id);
+    }
     let far = &mut graph.nodes[old_end_node as usize].crosswalk_overrides;
-    let marked = if graph.edges[edge_id].start_node == old_end_node {
+    let marked = if self_loop {
         far.get(&edge_id).copied()
     } else {
         far.remove(&edge_id)
@@ -1217,6 +1221,7 @@ pub fn split_edge(
         splits.push(super::road_edit::PlannedRoadSplit {
             edge_id,
             new_edge_id,
+            far_node: (!self_loop).then_some(old_end_node),
             first_length_m: new_len_first,
             second_length_m: new_len_second,
         });

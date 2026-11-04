@@ -643,6 +643,37 @@ impl RegionGraph {
         }
     }
 
+    /// Moves node `node_id`'s turn rules from arm `old_edge` to `new_edge`, in their keys and
+    /// targets, lane indices kept: a split whose second half `new_edge` now reaches the node in
+    /// the old edge's direction (`ROAD-103`). `new_edge` must not be an arm of the node yet.
+    /// O(rules at the node); allocates only when a rule names `old_edge`.
+    pub(crate) fn move_node_rules_to_edge(
+        &mut self,
+        node_id: u32,
+        old_edge: usize,
+        new_edge: usize,
+    ) {
+        let rules = &mut self.nodes[node_id as usize].lane_connections;
+        let names_old = |rules: &HashMap<(usize, i8), Vec<(usize, i8)>>| {
+            rules
+                .iter()
+                .any(|(key, targets)| key.0 == old_edge || targets.iter().any(|t| t.0 == old_edge))
+        };
+        if !names_old(rules) {
+            return;
+        }
+        let moved: Vec<_> = rules.drain().collect();
+        for ((from, lane), mut targets) in moved {
+            for target in &mut targets {
+                if target.0 == old_edge {
+                    target.0 = new_edge;
+                }
+            }
+            let from = if from == old_edge { new_edge } else { from };
+            rules.insert((from, lane), targets);
+        }
+    }
+
     /// Appends `(to_edge, to_lane)` to the routing table entry `(from_edge, from_lane)` at node `node_id`.
     pub fn add_lane_connection(&mut self, node_id: u32, fe: usize, fl: i8, te: usize, tl: i8) {
         self.nodes[node_id as usize]
