@@ -401,6 +401,9 @@ fn street_grid_in_world(
         assert!(border >= 0, "trunk {k} must end at the world edge");
         core.set_border_connection_internal(border as i32);
     }
+    // The grid's lanes, routing and roadbed settle below, with the pockets' pieces.
+    #[cfg(test)]
+    add_perf_pockets(&mut core);
     // The fixture admits households outside frames, so it installs the border connections'
     // routing rebuild (D7) now instead of holding its first frames.
     core.transit_network.settle_cch();
@@ -423,6 +426,75 @@ fn arterial_lanes() -> i32 {
         return 2;
     }
     1
+}
+
+// `METRUM_PERF_POCKETS=right` (test builds, `ROAD-95` round R5a3): once the street grid is built
+// and before it is zoned, as a player would add them before zoning, a 40 m right turn pocket on
+// every arterial road's end at a junction: the border trunks' approaches, and the cross streets'
+// 50 m blocks, which are too short for one (`pocket_road_too_short`). Zoned parcels refuse the
+// widening (`parcel_overlap`), so a built city takes none; and the 1+1 row streets get none: their
+// pockets would cost the back-to-back lots behind them (with them the wider grid housed 9,302
+// residents for 10,000). The requests are listed before the first edit, by edge id and then its
+// end node first, its start second: a pocket at the end keeps the road's id on the part that
+// still reaches its start junction. Prints the placed pockets and the refusals by reason on a
+// `PERF_POCKETS` line. Not a contract tier.
+#[cfg(test)]
+fn add_perf_pockets(core: &mut SimCore) {
+    use crate::simulation::network::pockets::PocketRequest;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    use std::collections::BTreeMap;
+
+    let Ok(value) = std::env::var("METRUM_PERF_POCKETS") else {
+        return;
+    };
+    assert_eq!(value, "right", "METRUM_PERF_POCKETS is right");
+    let graph = &core.region_graph;
+    let junction = |node: u32| graph.node_adjacency(graph.get_valid_node(node)).len() >= 3;
+    let requests: Vec<PocketRequest> = (0..graph.edge_count())
+        .filter(|&edge| {
+            let road = graph.edge(edge);
+            !road.deleted && road.fwd_lanes >= 2 && road.bkw_lanes >= 2
+        })
+        .flat_map(|edge| {
+            let road = graph.edge(edge);
+            [
+                (EdgeEnd::End, road.end_node),
+                (EdgeEnd::Start, road.start_node),
+            ]
+            .into_iter()
+            .filter(|&(_, node)| junction(node))
+            .map(move |(end, _)| PocketRequest {
+                edge,
+                end,
+                left: false,
+                right: true,
+                body_m: 40.0,
+            })
+        })
+        .collect();
+    let mut placed = 0;
+    let mut refused: BTreeMap<String, u32> = BTreeMap::new();
+    for request in requests {
+        if core.set_road_pocket_internal(request) {
+            placed += 1;
+        } else {
+            let reason = core
+                .last_road_rejection
+                .take()
+                .map_or_else(|| "unknown".to_owned(), |rejection| rejection.reason);
+            *refused.entry(reason).or_default() += 1;
+        }
+    }
+    // Each edit rebuilt its lanes locally, appending lane ids; the grid's lanes are rebuilt whole,
+    // numbered as the bulk build and a load number them, so the prepared snapshot's continuation
+    // check compares like with like (it compares raw lane ids).
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    eprintln!(
+        "PERF_POCKETS {}",
+        serde_json::json!({"placed": placed, "refused": refused})
+    );
 }
 
 fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32), lanes: i32) {

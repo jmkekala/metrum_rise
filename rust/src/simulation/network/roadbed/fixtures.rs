@@ -200,9 +200,21 @@ pub(crate) fn pocket_junction(
     right: bool,
     north: bool,
 ) -> RegionGraph {
+    pocket_junction_at(fwd, bkw, left, right, north, 60.0)
+}
+
+/// [`pocket_junction`] with its lane transition `pocket_m` metres west of the junction.
+pub(crate) fn pocket_junction_at(
+    fwd: u8,
+    bkw: u8,
+    left: bool,
+    right: bool,
+    north: bool,
+    pocket_m: f32,
+) -> RegionGraph {
     let mut graph = RegionGraph::new();
     let center = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
-    let transition = graph.add_node(point(-60.0, 0.0, false), NodeType::LaneTransition);
+    let transition = graph.add_node(point(-pocket_m, 0.0, false), NodeType::LaneTransition);
     let mut far = |x: f32, z: f32| graph.add_node(point(x, z, false), NodeType::Junction);
     let (west, east, south) = (far(-150.0, 0.0), far(80.0, 0.0), far(0.0, 80.0));
     let north = north.then(|| far(0.0, -80.0));

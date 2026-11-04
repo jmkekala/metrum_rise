@@ -378,3 +378,161 @@ fn missed_turn_on_a_short_street_turns_off_and_replans() {
         "never reached its border node"
     );
 }
+
+// `ROAD-95`: the right-pocket junction of `roadbed::fixtures::pocket_junction_at` (a T, or with
+// `north` a four-way), its 1+1 west arm's pocket `pocket_m` long, with lanes and routing built.
+// Nodes: 0 the junction, 1 the transition, 2 west, 3 east, 4 south (the right turn), 5 north;
+// edges: 0 west to the transition, 1 the pocket edge, 2 east, 3 south to the junction, 4 north.
+fn pocket_junction_network(north: bool, pocket_m: f32) -> (TransitNetwork, RegionGraph) {
+    let mut graph = crate::simulation::network::roadbed::fixtures::pocket_junction_at(
+        1, 1, false, true, north, pocket_m,
+    );
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+    (network, graph)
+}
+
+// Drives a freight car from 5 m along the base road's lane to border node `border` (east 3 or
+// south 4) and returns the pocket edge's lanes it drove on, in order, and whether it changed
+// lanes on the pocket edge. Every handoff between edges must follow a connector.
+fn drive_through_the_pocket(
+    network: &mut TransitNetwork,
+    graph: &mut RegionGraph,
+    border: u32,
+) -> (Vec<i8>, bool) {
+    let source = vehicle_lane(network, 0, 0);
+    let mut agents = AgentSystem::new();
+    let i = place_on_lane(&mut agents, 0, source, 5.0, 5.0);
+    agents.current_node[i] = 2;
+    agents.current_path[i] = vec![2, 1, 0, border];
+    agents.access_flags[i] = ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION;
+    agents.freight_target_border_node[i] = border;
+    agents.overtake_cooldown_s[i] = f32::MAX;
+    let (mut pocket_lanes, mut changed) = (Vec::new(), false);
+    let mut previous = source;
+    for tick in 0..3000 {
+        agents.tick(
+            &BuildingAllocator::new(),
+            network,
+            graph,
+            0.1,
+            &test_clock(0, 0),
+        );
+        let now = agents.current_lane_id[i];
+        if now == usize::MAX {
+            assert_eq!(agents.current_node[i], border, "reached its border node");
+            return (pocket_lanes, changed);
+        }
+        let lane = &network.lane_system.lanes[now];
+        if lane.edge_id == 1 {
+            changed |= agents.lane_change_from_lane_id[i] != u32::MAX;
+            if pocket_lanes.last() != Some(&lane.lane_idx) {
+                pocket_lanes.push(lane.lane_idx);
+            }
+        }
+        if now != previous && network.lane_system.lanes[previous].edge_id != lane.edge_id {
+            assert!(
+                network.lane_system.lanes[previous]
+                    .next_lanes
+                    .contains(&now),
+                "tick {tick}: nonphysical handoff {previous}->{now}"
+            );
+        }
+        previous = now;
+    }
+    panic!("never reached border node {border}");
+}
+
+// The edges a vehicle lane's junction connectors lead onto.
+fn connector_exits(network: &TransitNetwork, lane: usize) -> Vec<usize> {
+    let lanes = &network.lane_system.lanes;
+    lanes[lane]
+        .next_lanes
+        .iter()
+        .map(|&connector| lanes[lanes[connector].next_lanes[0]].edge_id)
+        .collect()
+}
+
+// `ROAD-95` (D4, D5): a car turning right enters the pocket lane at the fork (the transition's
+// connector from the base lane), and turns from it without a lane change.
+#[test]
+fn a_right_turning_car_takes_the_pocket_at_the_fork() {
+    let (mut network, mut graph) = pocket_junction_network(false, 60.0);
+    let (lanes, changed) = drive_through_the_pocket(&mut network, &mut graph, 4);
+    assert_eq!(
+        lanes,
+        vec![1],
+        "entered the pocket lane at the fork and kept it"
+    );
+    assert!(!changed, "no lane change on the pocket edge");
+}
+
+// `ROAD-95` (D4): at a four-way the pocket lane serves its right turn alone, so a straight car
+// keeps the through lane from the fork to the junction.
+#[test]
+fn a_straight_car_keeps_the_through_lane_past_a_pocket() {
+    let (mut network, mut graph) = pocket_junction_network(true, 60.0);
+    let pocket = vehicle_lane(&network, 1, 1);
+    let through = vehicle_lane(&network, 1, 0);
+    assert_eq!(
+        connector_exits(&network, pocket),
+        vec![3],
+        "the pocket lane turns right only"
+    );
+    assert!(!connector_exits(&network, through).contains(&3));
+    let (lanes, changed) = drive_through_the_pocket(&mut network, &mut graph, 3);
+    assert_eq!(lanes, vec![0], "kept the through lane");
+    assert!(!changed);
+}
+
+// `ROAD-95`: a car replanned onto the right turn after the fork, on the through lane of a pocket
+// edge too short to host a lane change (and the pocket lane beside it occupied), misses the turn:
+// it goes straight on along a real connector, replans, and reaches its door on the side road.
+#[test]
+fn a_car_replanned_after_the_fork_misses_the_pocket_and_reaches_its_door() {
+    let (mut network, mut graph) = pocket_junction_network(false, 30.0);
+    let mut allocator = BuildingAllocator::new();
+    allocator.buildings.push(create_test_building(3, -1));
+    let destination = bkw_vehicle_lanes(&network, 3)[0];
+    allocator.entrances.push(BuildingEntrance {
+        edge_idx: 3,
+        side: -1,
+        entrance_s_m: 40.0,
+        door_pos: Vector2::new(-5.0, 40.0),
+        curb_pos: Vector2::new(-4.0, 40.0),
+        car_lane_bkw: destination,
+        ..BuildingEntrance::default()
+    });
+    let source = vehicle_lane(&network, 1, 0);
+    assert!(!lane_hosts_turn_preparation(source, &network));
+    let end = network.lane_system.lanes[source].length;
+    let mut agents = AgentSystem::new();
+    let i = place_on_lane(&mut agents, 1, source, end - 2.0, 5.0);
+    agents.current_node[i] = 1;
+    agents.current_path[i] = vec![1, 0, 4];
+    agents.target_building[i] = 0;
+    agents.access_flags[i] = ACCESS_PLAN_VALID;
+    agents.planned_detach_node[i] = 0;
+    agents.planned_detach_lane_id[i] = destination as u32;
+    agents.planned_detach_lane_d[i] = 40.0;
+    agents.overtake_cooldown_s[i] = f32::MAX;
+    let blocker = place_on_lane(&mut agents, 1, vehicle_lane(&network, 1, 1), end - 2.0, 0.0);
+    agents.current_node[blocker] = 1;
+    agents.current_path[blocker] = vec![1, 0, 4];
+    let mut missed = false;
+    for _ in 0..4000 {
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+        if agents.transit[i] == TRANSIT_ACCESS_INGRESS || agents.transit[i] == TRANSIT_IN_BUILDING {
+            assert!(missed, "the through lane cannot turn right");
+            return;
+        }
+        let lane = agents.current_lane_id[i];
+        assert_ne!(lane, usize::MAX, "the car lost its physical lane");
+        missed |= network.lane_system.lanes[lane].edge_id == 2;
+    }
+    panic!(
+        "car deadlocked at lane {} distance {} with path {:?}",
+        agents.current_lane_id[i], agents.lane_distance[i], agents.current_path[i]
+    );
+}
