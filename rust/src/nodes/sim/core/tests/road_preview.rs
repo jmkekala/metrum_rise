@@ -1077,11 +1077,13 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
     );
 }
 
-// The solid approach zone (`ROAD-94`): on a 2 + 2 T every approach's two lanes serve different
-// movements, so the divider between them is solid over the last `APPROACH_SOLID_LENGTH_M` before
-// the junction and dashed before it; the centre line and the dividers of the lanes leaving the
-// junction stay dashed. A straight 2 + 2 road has no junction to choose a lane for and no solid
-// line. The paint reads the graph alone, so the T's 2 + 2 preview composes its committed chunks.
+// The solid approach zone (`ROAD-94`) and the turn arrows (`ROAD-75`): on a 2 + 2 T every
+// approach's two lanes serve different movements, so the divider between them is solid over the
+// last `APPROACH_SOLID_LENGTH_M` before the junction and dashed before it; the centre line and the
+// dividers of the lanes leaving the junction stay dashed. Each approach lane carries arrows for
+// its movements, at 12 m and 42 m back from the mouth. A straight 2 + 2 road has no junction to
+// choose a lane for: no solid line, no arrow. The paint reads the graph alone, so the T's 2 + 2
+// preview composes its committed chunks, arrows included.
 #[test]
 fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction() {
     use crate::config::{DRIVE_ON_LEFT, LANE_WIDTH};
@@ -1090,7 +1092,7 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
     const SOLID: f32 = 2.0;
     let wide = ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 2);
     let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
-    // Every marking quad (six vertices) as (centroid, its station range, its pattern).
+    // Every marking quad (six vertices) as (centroid, its station range, its pattern, vertices).
     let quads = |core: &SimCore| {
         let mesh = RoadRenderer.generate_mesh_data_with_surface(
             &core.region_graph,
@@ -1105,14 +1107,14 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
                 let (low, high) = uvs.iter().fold((f32::MAX, f32::MIN), |(lo, hi), uv| {
                     (lo.min(uv.x), hi.max(uv.x))
                 });
-                (centroid, high - low, uvs[0].y)
+                (centroid, high - low, uvs[0].y, vertices.to_vec())
             })
             .collect::<Vec<_>>()
     };
     let straight = quads(&committed(&[wide], &[0], false));
     assert!(!straight.is_empty(), "a 2 + 2 road is marked");
     assert!(
-        straight.iter().all(|&(_, _, pattern)| pattern != SOLID),
+        straight.iter().all(|&(_, _, pattern, _)| pattern != SOLID),
         "a road without a junction has no solid approach zone"
     );
 
@@ -1154,23 +1156,47 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
     // on it drives towards `-direction`, and under right-hand traffic its lanes lie on the right
     // of that heading.
     let hand = if DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-    for (name, along, right_of_approach) in [
-        ("west", Vector3::LEFT, Vector3::BACK * hand),
-        ("east", Vector3::RIGHT, Vector3::FORWARD * hand),
-        ("south", Vector3::BACK, Vector3::RIGHT * hand),
+    // Each approach's [left, straight, right] arrows on its inner and outer lane: from the west
+    // the side road is a right turn, from the east a left one, the stem turns either way.
+    const S: bool = true;
+    const N: bool = false;
+    for (name, along, right_of_approach, expected) in [
+        (
+            "west",
+            Vector3::LEFT,
+            Vector3::BACK * hand,
+            [[N, S, N], [N, S, S]],
+        ),
+        (
+            "east",
+            Vector3::RIGHT,
+            Vector3::FORWARD * hand,
+            [[S, S, N], [N, S, N]],
+        ),
+        (
+            "south",
+            Vector3::BACK,
+            Vector3::RIGHT * hand,
+            [[S, N, N], [N, N, S]],
+        ),
     ] {
         let arm: Vec<_> = tee
             .iter()
-            .map(|&(centroid, length, pattern)| {
+            .map(|(centroid, length, pattern, vertices)| {
                 let flat = Vector3::new(centroid.x, 0.0, centroid.z);
                 let lateral = flat.dot(right_of_approach);
-                (flat.dot(along), lateral, length, pattern)
+                // The quad's end nearest the junction.
+                let near = vertices
+                    .iter()
+                    .map(|v| v.dot(along))
+                    .fold(f32::MAX, f32::min);
+                (flat.dot(along), lateral, *length, *pattern, near)
             })
-            .filter(|&(distance, lateral, _, _)| distance > 8.0 && lateral.abs() < 8.0)
+            .filter(|&(distance, lateral, ..)| distance > 8.0 && lateral.abs() < 8.0)
             .collect();
         let line = |lateral: f32| {
             arm.iter()
-                .filter(move |&&(_, at, _, _)| (at - lateral).abs() < 0.3)
+                .filter(move |&&(_, at, ..)| (at - lateral).abs() < 0.3)
                 .copied()
         };
         let solid: Vec<_> = line(LANE_WIDTH).filter(|q| q.3 == SOLID).collect();
@@ -1188,10 +1214,62 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
             solid_far < dashed_near,
             "{name}: the solid zone ends at the junction, the dashes lie before it"
         );
+        // Lines lie on lane edges; any other paint is an arrow, solid, inside an approach lane.
+        let on_line = |lateral: f32| {
+            [-LANE_WIDTH, 0.0, LANE_WIDTH]
+                .iter()
+                .any(|&at| (lateral - at).abs() < 0.3)
+        };
         assert!(
-            arm.iter().filter(|q| q.3 == SOLID).count() == solid.len(),
+            arm.iter().filter(|q| q.3 == SOLID && on_line(q.1)).count() == solid.len(),
             "{name}: only the approach divider is solid"
         );
         assert!(line(0.0).count() > 0 && line(-LANE_WIDTH).count() > 0);
+        // The marking range ends where the solid zone does, at the mouth.
+        let mouth = solid.iter().map(|q| q.4).fold(f32::MAX, f32::min);
+        // Under left-hand traffic the inner lane is the rightmost.
+        let expected = if DRIVE_ON_LEFT {
+            [expected[1], expected[0]]
+        } else {
+            expected
+        };
+        for (lane, movements) in [(0.5, expected[0]), (1.5, expected[1])] {
+            let centre = lane * LANE_WIDTH;
+            // Stroke centroids in the driver's frame: `x` to the right of the lane's centre and
+            // the distance back from the junction.
+            let strokes: Vec<_> = arm
+                .iter()
+                .filter(|q| !on_line(q.1) && (q.1 - centre).abs() < 1.5)
+                .map(|q| ((q.1 - centre) * hand, q.0))
+                .collect();
+            assert!(
+                strokes.iter().all(|q| q.0.abs() < 1.2),
+                "{name}: arrows stay in their lane"
+            );
+            let has = |x: f32| strokes.iter().any(|q| (q.0 - x).abs() < 0.05);
+            let shown = [has(-1.05), has(0.325) && has(-0.325), has(1.05)];
+            assert_eq!(shown, movements, "{name}: lane {lane} shows its movements");
+            // Two glyphs centred 12 m and 42 m back from the mouth: each stem's middle lies
+            // 1.25 m further back, and nothing else is painted in the lane.
+            let stems: Vec<_> = strokes
+                .iter()
+                .filter(|q| q.0.abs() < 0.05)
+                .map(|q| q.1)
+                .collect();
+            for back in [12.0, 42.0] {
+                assert!(
+                    stems
+                        .iter()
+                        .any(|&at| (at - (mouth + back + 1.25)).abs() < 0.3),
+                    "{name}: lane {lane} has an arrow {back} m back from {mouth} ({stems:?})"
+                );
+            }
+            assert!(
+                strokes.iter().all(|q| [12.0, 42.0]
+                    .iter()
+                    .any(|back| (q.1 - mouth - back).abs() <= 2.5 + 0.1)),
+                "{name}: lane {lane} holds only its two glyphs"
+            );
+        }
     }
 }

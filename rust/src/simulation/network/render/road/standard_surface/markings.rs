@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Lane-divider marking placement along span sections.
+//! Lane-divider and turn-arrow marking placement along span sections.
 //!
 //! Zebra crossings sit on node pieces, inside the mouths (`ROAD-68-C`), so span markings run the
 //! whole span, except past a pass-through node's crossing strip, which lies on the span (D8).
@@ -8,7 +8,8 @@
 //! the gap between the lane groups, nosing out in a pointed chevron from the raised medians'
 //! nose tips. Before a junction whose approach lanes serve different movements (`ROAD-94`), the
 //! dividers between those lanes are solid over the last `APPROACH_SOLID_LENGTH_M`, where no car
-//! changes lanes.
+//! changes lanes, and each of those lanes carries turn arrows for its movements (`ROAD-75`), as
+//! does every lane a junction's turn whitelist lists.
 
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
@@ -19,7 +20,10 @@ use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::graph::MedianStyle;
-use crate::simulation::network::lanes::{APPROACH_SOLID_LENGTH_M, approach_needs_lane_choice};
+use crate::simulation::network::lanes::rebuild::vehicle_lane_offset;
+use crate::simulation::network::lanes::{
+    APPROACH_SOLID_LENGTH_M, approach_arrow_masks, approach_needs_lane_choice,
+};
 use crate::simulation::network::roadbed::{
     BandKind, EdgeEnd, NOSE_CLEARANCE_M, RoadSection, RoadbedSystem,
     painted_median_continues,
@@ -87,10 +91,6 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             continue;
         }
         let total_lanes = edge.fwd_lanes as usize + edge.bkw_lanes as usize;
-        if total_lanes <= 1 {
-            continue;
-        }
-
         let Some(sections) = roadbed.sections(edge_idx).filter(|s| s.len() >= 2) else {
             continue;
         };
@@ -106,6 +106,11 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             ),
         );
         if marking_s_range.1 <= marking_s_range.0 + MIN_SEGMENT_LEN {
+            continue;
+        }
+        // Arrows first: a whitelisted single lane carries them too (`ROAD-75`).
+        emit_approach_arrows(mesh, graph, edge_idx, sections, marking_s_range);
+        if total_lanes <= 1 {
             continue;
         }
         if edge.median.is_some_and(|median| median.style == MedianStyle::Painted) {
@@ -280,6 +285,88 @@ fn emit_painted_median(
     }
 }
 
+// The turn arrows (`ROAD-75`) of `edge_idx`'s approach lanes, from `lanes::approach_arrow_masks`
+// (graph-only): forward lanes before the end node, backward lanes before the start node. Each
+// glyph is centred on its lane at the `approach_arrow_stations` back from the marking range's end
+// on its side, which already stops at a mouth or a span-owned crossing strip, and drapes on the
+// sections point by point. Left and right are the driver's, so the glyphs need no mirroring under
+// `DRIVE_ON_LEFT`: the lane offsets and the lane ranks behind the masks are mirrored. O(degree +
+// lanes x glyph strokes x (log sections + bands)) per edge, allocation-free.
+fn emit_approach_arrows(
+    mesh: &mut NetworkMeshData,
+    graph: &RegionGraph,
+    edge_idx: usize,
+    sections: &[RoadSection],
+    (range_start, range_end): (f32, f32),
+) {
+    let edge = graph.edge(edge_idx);
+    let stations = approach_arrow_stations(range_end - range_start);
+    for node in [edge.end_node, edge.start_node] {
+        // Travel runs with the stations for forward lanes, against them for backward lanes.
+        let (direction, range_end) = if node == edge.end_node {
+            (1.0, range_end)
+        } else {
+            (-1.0, range_start)
+        };
+        approach_arrow_masks(graph, edge_idx, node, |lane_idx, mask| {
+            let lateral = vehicle_lane_offset(edge, lane_idx);
+            for back in stations.into_iter().flatten() {
+                let centre = range_end - direction * back;
+                // Glyph coordinates: `x` metres to the driver's right, `y` ahead.
+                let point = |(x, y): (f32, f32)| {
+                    point_at(sections, centre + direction * y, lateral + direction * x)
+                };
+                arrow_glyph(mask, |a, b, width| {
+                    if let (Some(start), Some(end)) = (point(a), point(b)) {
+                        emit_marking_segment(
+                            mesh,
+                            start,
+                            end,
+                            0.0,
+                            1.0,
+                            width * 0.5,
+                            MARKING_PATTERN_SOLID,
+                            marking_dash_color(),
+                        );
+                    }
+                });
+            }
+        });
+    }
+}
+
+// Stations of an approach's arrows, metres back from the end of a marking range `length` long:
+// 12 m, and 42 m on a range of 50 m or more; a range under 20 m holds one arrow halfway, at least
+// 4 m back and only where the glyph (5 m long) keeps 1.5 m clear of both range ends.
+fn approach_arrow_stations(length: f32) -> [Option<f32>; 2] {
+    if length >= 20.0 {
+        return [Some(12.0), (length >= 50.0).then_some(42.0)];
+    }
+    let back = (length * 0.5).max(4.0);
+    [(back <= length - 4.0).then_some(back), None]
+}
+
+// The turn-arrow glyph (fork `ROAD-75`) as strokes `(from, to, width)` in glyph coordinates
+// (`x` to the right, `y` ahead, metres): a 2.5 m stem ending at the origin, a straight shaft and
+// head when `mask` has straight (2), and a bent arrow to the left (1) or right (4). Five metres
+// long, 2.1 m wide.
+fn arrow_glyph(mask: u8, mut stroke: impl FnMut((f32, f32), (f32, f32), f32)) {
+    stroke((0.0, -2.5), (0.0, 0.0), 0.20);
+    if mask & 2 != 0 {
+        stroke((0.0, 0.0), (0.0, 2.5), 0.20);
+        stroke((-0.65, 1.55), (0.0, 2.5), 0.23);
+        stroke((0.65, 1.55), (0.0, 2.5), 0.23);
+    }
+    for (bit, side) in [(1, -1.0), (4, 1.0)] {
+        if mask & bit == 0 {
+            continue;
+        }
+        stroke((0.0, 0.0), (side * 1.05, 0.9), 0.20);
+        stroke((side * 1.05, 0.9), (side * 1.05, 0.0), 0.23);
+        stroke((side * 1.05, 0.9), (side * 0.15, 1.1), 0.23);
+    }
+}
+
 // The point at station `s_m` and `lateral` between the two sections of `pair`, as the surface
 // between their rows lies. O(bands).
 fn point_between(pair: &[RoadSection], s_m: f32, lateral: f32) -> Option<Vector3> {
@@ -426,4 +513,35 @@ fn emit_marking_segment(
         ],
         color,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `ROAD-75`: every arrow glyph (2.5 m either side of its station) stays 1.5 m clear of both
+    // ends of its marking range; 12 m and 42 m back on a long range, one arrow on a short one.
+    #[test]
+    fn arrow_stations_stay_clear_of_the_range_ends() {
+        for step in 0..=800 {
+            let length = step as f32 * 0.25;
+            let stations: Vec<f32> = approach_arrow_stations(length)
+                .into_iter()
+                .flatten()
+                .collect();
+            for &back in &stations {
+                assert!(
+                    back - 2.5 >= 1.5 && back + 2.5 <= length - 1.5,
+                    "range {length}: arrow at {back}"
+                );
+            }
+            let expected = match length {
+                l if l >= 50.0 => vec![12.0, 42.0],
+                l if l >= 20.0 => vec![12.0],
+                l if l >= 8.0 => vec![(l * 0.5).max(4.0)],
+                _ => Vec::new(),
+            };
+            assert_eq!(stations, expected, "range {length}");
+        }
+    }
 }

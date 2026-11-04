@@ -247,6 +247,86 @@ pub(crate) fn approach_needs_lane_choice(graph: &RegionGraph, edge: usize, node:
             || DefaultLaneUse::new(graph, edge, node).needs_lane_choice())
 }
 
+/// The turn arrows (`ROAD-75`) of the lanes of `edge` that approach `node`: `paint(lane_idx,
+/// movements)` for every lane that carries one, with the movement bits 1 left, 2 straight, 4
+/// right. At a node that whitelists its vehicle turns, a lane listed in the whitelist shows the
+/// movements of its listed connections (U-turns and connections to lanes that do not leave the
+/// node aside), whatever its lane count. At an open node, only an approach whose lanes serve
+/// different movements (`DefaultLaneUse::needs_lane_choice`) is painted, each lane with its
+/// default lane use; uniform approaches and single-lane approaches have none. Graph-only, so a
+/// preview paints what its commit paints. O(degree + the node's lane connections + lanes), no
+/// allocation.
+pub(crate) fn approach_arrow_masks(
+    graph: &RegionGraph,
+    edge: usize,
+    node: u32,
+    mut paint: impl FnMut(i8, u8),
+) {
+    let approach = graph.edge(edge);
+    let forward = approach.end_node == node;
+    let count = usize::from(if forward {
+        approach.fwd_lanes
+    } else {
+        approach.bkw_lanes
+    });
+    // Approach lane `rank` among the lanes towards `node`, as the lane index.
+    let lane_idx = |rank: usize| {
+        if forward {
+            rank as i8
+        } else {
+            -(rank as i8) - 1
+        }
+    };
+    if super::vehicle_junctions::node_whitelists_vehicle_turns(graph, node as usize) {
+        let incoming = -outward(graph, edge, node);
+        let rules = &graph.node(node).lane_connections;
+        for rank in 0..count {
+            let Some(targets) = rules.get(&(edge, lane_idx(rank))) else {
+                continue;
+            };
+            let mask = targets
+                .iter()
+                .filter(|&&(out_edge, out_lane)| {
+                    out_edge != edge && lane_leaves(graph, out_edge, out_lane, node)
+                })
+                .fold(0, |mask, &(out_edge, _)| {
+                    mask | movement(incoming, outward(graph, out_edge, node))
+                });
+            if mask != 0 {
+                paint(lane_idx(rank), mask);
+            }
+        }
+        return;
+    }
+    if count <= 1 {
+        return;
+    }
+    let policy = DefaultLaneUse::new(graph, edge, node);
+    if !policy.needs_lane_choice() {
+        return;
+    }
+    for rank in 0..count {
+        let index = lane_idx(rank);
+        paint(
+            index,
+            lane_mask(lane_rank(index, count), count, policy.available),
+        );
+    }
+}
+
+// Whether lane `lane_idx` of `edge` exists and leaves `node`, as the connector builder's outbound
+// lanes do: forward lanes leave an edge's start, backward lanes its end.
+fn lane_leaves(graph: &RegionGraph, edge: usize, lane_idx: i8, node: u32) -> bool {
+    let Some(arm) = graph.edges().get(edge).filter(|arm| !arm.deleted) else {
+        return false;
+    };
+    if lane_idx >= 0 {
+        arm.start_node == node && (lane_idx as u8) < arm.fwd_lanes
+    } else {
+        arm.end_node == node && ((-i16::from(lane_idx) - 1) as u8) < arm.bkw_lanes
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,5 +566,126 @@ mod junction_tests {
                 }
             }
         }
+    }
+
+    // A junction of `count` + `count` arms towards `arms` (edge `i` runs from `arms[i]` to the
+    // centre, or from the centre when `outbound`), so its approach lanes are forward (backward).
+    fn junction(count: u8, arms: &[Vector3], outbound: bool) -> (RegionGraph, u32) {
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        for &point in arms {
+            let end = graph.add_node(point, NodeType::Junction);
+            let (from, to, points) = if outbound {
+                (center, end, vec![Vector3::ZERO, point])
+            } else {
+                (end, center, vec![point, Vector3::ZERO])
+            };
+            let mut edge = road_edge(
+                from,
+                to,
+                points,
+                f32::from(count) * config::LANE_WIDTH * 2.0,
+            );
+            edge.allowed_types = TransitFlags::CAR;
+            edge.fwd_lanes = count;
+            edge.bkw_lanes = count;
+            graph.add_edge(edge);
+        }
+        finalize(&mut graph);
+        (graph, center)
+    }
+
+    fn arrows(graph: &RegionGraph, edge: usize, node: u32) -> Vec<(i8, u8)> {
+        let mut painted = Vec::new();
+        approach_arrow_masks(graph, edge, node, |lane, mask| painted.push((lane, mask)));
+        painted
+    }
+
+    // The default lane use's arrows as right-hand traffic paints them, inner lane first; under
+    // left-hand traffic the lane ranks, so the masks, run the other way across the same lanes.
+    fn default_arrows(right_hand: &[(i8, u8)]) -> Vec<(i8, u8)> {
+        let masks = right_hand.iter().map(|&(_, mask)| mask);
+        let masks: Vec<u8> = if config::DRIVE_ON_LEFT {
+            masks.rev().collect()
+        } else {
+            masks.collect()
+        };
+        right_hand
+            .iter()
+            .zip(masks)
+            .map(|(&(lane, _), mask)| (lane, mask))
+            .collect()
+    }
+
+    // `ROAD-75` (fork `arrows_require_authored_or_differing_lane_use`, on graph fixtures): arrows
+    // only where an approach's lanes serve different movements or a whitelist lists the lane.
+    #[test]
+    fn arrows_require_authored_or_differing_lane_use() {
+        let four = [
+            Vector3::LEFT * 100.0,
+            Vector3::RIGHT * 100.0,
+            Vector3::FORWARD * 100.0,
+            Vector3::BACK * 100.0,
+        ];
+        // Arm 1 is straight ahead of arm 0, arm 2 its left and arm 3 its right.
+        let (graph, center) = junction(1, &four, false);
+        for arm in 0..4 {
+            assert!(
+                arrows(&graph, arm, center).is_empty(),
+                "a plain 1 + 1 four-way"
+            );
+        }
+        for outbound in [false, true] {
+            let (inner, outer) = if outbound { (-1, -2) } else { (0, 1) };
+            let (graph, center) = junction(2, &four, outbound);
+            assert_eq!(
+                arrows(&graph, 0, center),
+                default_arrows(&[(inner, LEFT | STRAIGHT), (outer, STRAIGHT | RIGHT)]),
+                "2 + 2 four-way, outbound {outbound}"
+            );
+        }
+        let (graph, center) = junction(3, &four, false);
+        assert_eq!(
+            arrows(&graph, 0, center),
+            default_arrows(&[(0, LEFT | STRAIGHT), (1, STRAIGHT), (2, STRAIGHT | RIGHT)]),
+            "3 + 3 four-way"
+        );
+        // A T without a right turn from arm 0; its stem (arm 2) has no straight ahead.
+        let (graph, center) = junction(2, &four[..3], false);
+        assert_eq!(
+            arrows(&graph, 0, center),
+            default_arrows(&[(0, LEFT | STRAIGHT), (1, STRAIGHT)])
+        );
+        assert_eq!(
+            arrows(&graph, 2, center),
+            default_arrows(&[(0, LEFT), (1, RIGHT)])
+        );
+        // Uniform approaches: a straight continuation and a bend offer one movement each.
+        let (graph, center) = junction(2, &four[..2], false);
+        assert!(arrows(&graph, 0, center).is_empty(), "a 2 + 2 continuation");
+        let (graph, center) = junction(2, &[four[0], four[2]], false);
+        assert!(arrows(&graph, 0, center).is_empty(), "a 2 + 2 bend");
+
+        // Whitelists: a listed lane shows its listed movements, whatever its lane count; an
+        // unlisted lane, a U-turn and a rule to a lane that does not leave the node show none.
+        let (mut graph, center) = junction(1, &four, false);
+        graph.add_lane_connection(center, 0, 0, 1, -1);
+        graph.add_lane_connection(center, 0, 0, 2, -1);
+        graph.add_lane_connection(center, 0, 0, 0, -1);
+        graph.add_lane_connection(center, 0, 0, 3, 0);
+        graph.add_lane_connection(center, 1, 0, 0, 0);
+        assert_eq!(arrows(&graph, 0, center), [(0, LEFT | STRAIGHT)]);
+        assert!(
+            arrows(&graph, 1, center).is_empty(),
+            "a rule to an approach lane"
+        );
+        assert!(arrows(&graph, 3, center).is_empty(), "an unlisted lane");
+        let (mut graph, center) = junction(2, &four[..2], false);
+        graph.add_lane_connection(center, 0, 1, 1, -2);
+        assert_eq!(
+            arrows(&graph, 0, center),
+            [(1, STRAIGHT)],
+            "a whitelisted degree-two approach"
+        );
     }
 }
