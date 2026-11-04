@@ -29,13 +29,16 @@ const STRUCTURE_RISE_M: f32 = 6.0;
 
 // The local road a fixture edits: one grounded edge, or a bridge or a tunnel edge between two
 // grounded approaches (`ROAD-61`: a tunnel's lining and headwalls, a bridge's deck and abutments),
-// or the grounded edge with a 3 m kerbed grass median (`ROAD-80`: noses, kerbs, the grass layer).
+// or the grounded edge with a 3 m kerbed grass median (`ROAD-80`: noses, kerbs, the grass layer),
+// or the grounded edge without sidewalks (`ROAD-101`: shoulders, and street lights on the verge,
+// each standing on the drawn ground from one graded query).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocalRoad {
     Plain,
     Bridge,
     Tunnel,
     Divided,
+    Shoulders,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -171,6 +174,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
         (LocalRoad::Bridge, "bridge_chunk_emit_only"),
         (LocalRoad::Tunnel, "tunnel_chunk_emit_only"),
         (LocalRoad::Divided, "divided_chunk_emit_only"),
+        (LocalRoad::Shoulders, "shoulder_chunk_emit_only"),
     ] {
         let mut signature = None;
         for distant_chunks in STRUCTURE_DISTANT_CHUNK_COUNTS {
@@ -238,6 +242,11 @@ fn build_road_chunk_fixture(distant_chunks: usize, local: LocalRoad) -> RoadChun
             let road = graph.edge_mut(edge);
             road.median = grass;
             road.width += 3.0;
+            edge
+        }
+        LocalRoad::Shoulders => {
+            let edge = add_world_road(&mut graph, -ROAD_LENGTH_M * 0.5, 0.0, &config);
+            graph.edge_mut(edge).allowed_types = TransitFlags::CAR;
             edge
         }
     };

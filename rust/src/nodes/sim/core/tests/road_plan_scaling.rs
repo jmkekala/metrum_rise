@@ -658,18 +658,31 @@ fn measure_lane_edit(
         }
     }
     let (mut commits, mut undos) = (Vec::new(), Vec::new());
+    // The commit's chunk publication, as in the game: Godot acknowledged the city's chunks, so
+    // it republishes the edit's chunks and those of the streets whose lights it re-spaces.
+    let (mut publishes, mut published_chunks) = (Vec::new(), 0);
+    let acknowledge = |core: &mut SimCore| {
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+    };
+    core.precompute_road_mesh_data();
+    acknowledge(core);
     let before = local(core);
     let mut products = String::new();
     for _ in 0..20 {
         let start = Instant::now();
         assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median, attributes));
         commits.push(start.elapsed().as_secs_f64() * 1000.0);
+        let start = Instant::now();
         core.precompute_road_mesh_data();
+        publishes.push(start.elapsed().as_secs_f64() * 1000.0);
+        published_chunks = core.pending_road_mesh_chunks.len();
+        acknowledge(core);
         products = local(core);
         let start = Instant::now();
         assert!(core.undo_action_internal());
         undos.push(start.elapsed().as_secs_f64() * 1000.0);
         core.precompute_road_mesh_data();
+        acknowledge(core);
         assert_eq!(local(core), before, "undo restores the T");
     }
     // The side arm's crossing toggled off and undone: its lanes rebuild locally too.
@@ -692,6 +705,7 @@ fn measure_lane_edit(
             "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
             "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
             "toggle_p50_ms": p50(&mut toggles),
+            "publish_p50_ms": p50(&mut publishes), "published_chunks": published_chunks,
             "commit_samples": commits.len(), "identical_local_products": true,
         })
     );
