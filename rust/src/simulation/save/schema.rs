@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 113;
+pub const SAVE_VERSION: i64 = 114;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
