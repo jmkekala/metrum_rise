@@ -1072,6 +1072,103 @@ fn load_game_rebuilds_entrances_after_registry_restore() {
     assert_eq!(loaded.camera_aabb, (0.0, 0.0, 0.0, 0.0));
 }
 
+// The loader's retry timer: a resident at home whose departure fails (its workplace stands on a
+// road with no connection to its home's) waits out `BUILDING_REPLAN_DELAY_S` (30 s) before it
+// tries again. Saved mid-backoff and loaded, it retries at the same tick as in the unsaved city.
+#[test]
+fn a_failed_departure_retries_on_its_saved_backoff_after_a_load() {
+    use crate::simulation::economy::agents::ACTIVITY_WORK;
+    let mut core = test_core();
+    add_test_border_road(&mut core);
+    // A second road, 300 m north of the first and joined to nothing.
+    let (a, b) = (
+        Vector3::new(0.0, 0.0, 300.0),
+        Vector3::new(180.0, 0.0, 300.0),
+    );
+    let start = core.region_graph.add_node(a, NodeType::Junction);
+    let end = core.region_graph.add_node(b, NodeType::Junction);
+    let mut edge = core.region_graph.edge(0).clone();
+    edge.start_node = start;
+    edge.end_node = end;
+    edge.geometry = vec![a, b];
+    edge.physical_geometry = vec![a, b];
+    core.region_graph.add_edge(edge);
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    let assets = [
+        ("retry_home", ZoneType::Residential),
+        ("retry_work", ZoneType::Commercial),
+    ];
+    for (asset, zone) in assets {
+        let id = register_test_asset(&mut core.allocator, asset, zone);
+        add_test_complete_building(&mut core, id, zone);
+    }
+    core.allocator.buildings[1].edge_idx = 1;
+    core.allocator
+        .recompute_derived_transforms(&core.region_graph, &core.zoning)
+        .unwrap();
+    core.allocator
+        .rebuild_entrance_cache(&core.region_graph, &core.transit_network.lane_system);
+    let home = &core.allocator.buildings[0];
+    let agent = core
+        .agents
+        .spawn_housed_agent(0, home.center_x, home.center_y);
+    core.agents.has_car[agent] = false;
+    core.agents.assign_work_building(agent, 1, 0);
+    core.agents.planned_target_building[agent] = 1;
+    core.agents.planned_activity[agent] = ACTIVITY_WORK;
+    let tick = |core: &mut SimCore| {
+        core.agents.tick(
+            &core.allocator,
+            &mut core.transit_network,
+            &mut core.region_graph,
+            0.1,
+            &core.time,
+        )
+    };
+    tick(&mut core);
+    let retry_at = core.agents.next_replan_time[agent];
+    assert!(
+        retry_at > core.agents.sim_time,
+        "the departure fails and waits: {retry_at}"
+    );
+    // Mid-backoff, 10 s in.
+    for _ in 0..100 {
+        tick(&mut core);
+    }
+    let path = temp_save_path("departure_backoff");
+    core.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let mut loaded = test_core();
+    for (asset, zone) in assets {
+        register_test_asset(&mut loaded.allocator, asset, zone);
+    }
+    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let state = |core: &SimCore| {
+        let agents = &core.agents;
+        (
+            agents.sim_time.to_bits(),
+            agents.next_replan_time[agent].to_bits(),
+            agents.transit[agent],
+            agents.planned_target_building[agent],
+        )
+    };
+    assert_eq!(
+        state(&loaded),
+        state(&core),
+        "the backoff survives the load"
+    );
+    // Past the retry at 30 s, which fails again and waits another 30 s.
+    while core.agents.next_replan_time[agent] == retry_at {
+        tick(&mut core);
+        tick(&mut loaded);
+        assert_eq!(state(&loaded), state(&core));
+    }
+    assert!(core.agents.next_replan_time[agent] > retry_at);
+}
+
 #[test]
 #[ignore = "isolated release measurement of blank-world replacement with retained assets"]
 fn benchmark_blank_world_reset_with_assets() {

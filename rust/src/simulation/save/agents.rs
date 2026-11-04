@@ -478,7 +478,9 @@ pub(super) fn validate_loaded_agents(
             clear_agent_access_plan(agents, i);
         }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
-            if preserve_loaded_network_retry_state(agents, i, graph) {
+            if preserve_loaded_network_retry_state(agents, i, graph)
+                || loaded_departure_backoff(agents, i)
+            {
                 clear_loaded_access_plan_fields(agents, i);
             } else {
                 clear_agent_access_plan(agents, i);
@@ -562,6 +564,15 @@ fn loaded_walker_kept_at_path_end(agents: &AgentSystem, i: usize) -> bool {
         && agents.current_lane_id[i] != usize::MAX
         && agents.access_flags[i] & ACCESS_PLAN_VALID == 0
         && agents.current_path_index[i] == agents.current_path[i].len() + 1
+}
+
+// An agent indoors with no plan whose last departure failed waits out `BUILDING_REPLAN_DELAY_S`
+// (`next_replan_time`) before it plans again, a retry timer the running game keeps. Not plan
+// state: zeroing it made a game loaded mid-backoff retry at once.
+fn loaded_departure_backoff(agents: &AgentSystem, i: usize) -> bool {
+    agents.transit[i] == TRANSIT_IN_BUILDING
+        && agents.access_flags[i] & ACCESS_PLAN_VALID == 0
+        && agents.next_replan_time[i] > 0.0
 }
 
 fn preserve_loaded_network_retry_state(
@@ -702,7 +713,9 @@ pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_co
             agents.planned_attach_lane_d[i] = 0.0;
         }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
-            if preserve_loaded_network_retry_state_without_graph(agents, i) {
+            if preserve_loaded_network_retry_state_without_graph(agents, i)
+                || loaded_departure_backoff(agents, i)
+            {
                 clear_loaded_access_plan_fields(agents, i);
             } else {
                 clear_agent_access_plan(agents, i);
