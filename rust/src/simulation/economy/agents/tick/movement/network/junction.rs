@@ -13,6 +13,7 @@ use super::super::super::super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK,
 };
 use super::super::super::claims::LaneClaimContext;
+use super::super::super::lane_nav::preferred_entry_lanes;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
@@ -162,6 +163,23 @@ pub(super) unsafe fn handle_lane_end(
                     slices,
                 )
             });
+            // A car entering a multi-lane road takes the lane its route's next lane-selective
+            // movement needs (`preferred_entry_lanes`); O(1) when the road has one lane.
+            let prefer = (*s_tmode.get(i) == MODE_CAR)
+                .then(|| {
+                    preferred_entry_lanes(
+                        best_e,
+                        node,
+                        s_path.get(i),
+                        path_idx + 1,
+                        *s_access_flags.get(i),
+                        *slices.planned_detach_n.get(i),
+                        *slices.planned_detach_lane.get(i) as usize,
+                        transit_network,
+                        graph,
+                    )
+                })
+                .flatten();
             let entry = match walk_lane {
                 Some(None) => Err(WalkerStranded(FailureCause::NoTurnToEdge {
                     node,
@@ -184,6 +202,7 @@ pub(super) unsafe fn handle_lane_end(
                     lane_buckets,
                     lane_claims,
                     slices,
+                    prefer,
                 ),
             };
             replan_if_missed_turn(
@@ -315,6 +334,7 @@ pub(super) unsafe fn handle_lane_end(
                         graph,
                         transit_network,
                         pathfind_count,
+                        None,
                     ) {
                         apply_network_replan(i, replan, slices);
                         traffic_log!(
@@ -361,6 +381,7 @@ pub(super) unsafe fn handle_lane_end(
                     graph,
                     pathfind_count,
                     Some((i, "network-junction")),
+                    None,
                 ) {
                     Ok(replan) => apply_network_replan(i, replan, slices),
                     Err(failure) => delay_or_recover_after_network_replan_failure(

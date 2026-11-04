@@ -96,7 +96,7 @@ impl RestrictedTargets {
                     continue;
                 }
                 scratch.up.clear();
-                cch.seed_source(start, incoming, mask, &mut scratch.up);
+                cch.seed_source(start, incoming, mask, &mut scratch.up, None);
                 cch.sweep_up(metric, &mut scratch.up, false);
                 for &state in &scratch.up.order {
                     scratch.down[state as usize][lane] = scratch.up.records[state as usize].cost;
@@ -205,7 +205,7 @@ impl RestrictedTargets {
         let data = &mut scratch.data;
         data.clear();
         if !cch.parent.is_empty() {
-            cch.seed_source(start, incoming, mask, data);
+            cch.seed_source(start, incoming, mask, data, None);
             let metric = &cch.profiles[cch.profile_for_mask[mask as usize] as usize];
             cch.sweep_up(metric, data, false);
             for &state in self.closure.iter().rev() {

@@ -180,6 +180,10 @@ fn crossing_kerb_ends_stand_on_the_carriageway_in_every_orientation() {
 // pair the lane use allows instead of every pair, and the 1 + 1 side road's turns fan onto the
 // through road's inner or outer lane. Its graph, pieces, layouts, walkways and queries are
 // unchanged, as is every entry whose roads have one lane per direction.
+// Re-recorded by `TRAFFIC-23` (user decision: permissive default lane use; a one-lane turn group
+// fans onto every lane of its target): `t_mixed_4lane_through`'s lanes alone change again, flat
+// and sloped (the side road's turns now reach both through lanes, and the through road's
+// approaches serve straight from every lane). Every other product and entry is unchanged.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -285,7 +289,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x8e9b1f1be0bee144,
             0x48243482aceceb3e,
             0x725ba4ed67ab8533,
-            0x379aaf02af6b04b0,
+            0xe4781658294fb30e,
             0x3d058890d0738383,
         ],
     ),
@@ -405,7 +409,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x8e9b1f1be0bee144,
             0x1688825a6d3c5eca,
             0xcb77516b91670e6f,
-            0xe6eb620cd3a7cf6b,
+            0x68b7f78f890f65a8,
             0x047e584947353eb2,
         ],
     ),

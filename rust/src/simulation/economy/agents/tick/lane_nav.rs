@@ -5,7 +5,9 @@
 use crate::simulation::economy::agents::ACCESS_PLAN_VALID;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::lanes::{APPROACH_SOLID_LENGTH_M, LaneType};
+use crate::simulation::network::lanes::{
+    APPROACH_SOLID_LENGTH_M, LaneType, approach_group, lane_rank,
+};
 
 /// Returns the road node where a road lane begins for its travel direction.
 pub(super) fn lane_origin_node(
@@ -94,12 +96,189 @@ pub(super) fn connector_targets_lane(
         })
 }
 
-/// Fills `out` with connector lanes that lead from `from_lane_id` to `target_edge_id`.
+/// The lanes of a road a car may enter for its route: ranks `first..first + len` (inner first)
+/// among `count` lanes in its direction (`preferred_entry_lanes`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::simulation::economy::agents) struct EntryLanes {
+    first: usize,
+    len: usize,
+    count: usize,
+}
+
+impl EntryLanes {
+    /// Whether the lane with index `lane_idx` is one of the preferred lanes.
+    #[inline]
+    pub(in crate::simulation::economy::agents) fn contains(&self, lane_idx: i8) -> bool {
+        let rank = lane_rank(lane_idx, self.count);
+        rank >= self.first && rank < self.first + self.len
+    }
+}
+
+/// The entry preference for a zero-hop turn onto the planned detach road: the detach lane
+/// itself. O(L).
+pub(super) fn detach_lane_entry(
+    detach_lane_id: usize,
+    network: &TransitNetwork,
+) -> Option<EntryLanes> {
+    let detach = network.lane_system.lanes.get(detach_lane_id)?;
+    if detach.edge_id == usize::MAX {
+        return None;
+    }
+    let count = direction_lane_count(detach.edge_id, detach.is_fwd, network);
+    Some(EntryLanes {
+        first: lane_rank(detach.lane_idx, count),
+        len: 1,
+        count,
+    })
+}
+
+/// Vehicle lanes of `edge` running in `is_fwd`'s direction. O(L), no allocation.
+fn direction_lane_count(edge: usize, is_fwd: bool, network: &TransitNetwork) -> usize {
+    let lanes = &network.lane_system;
+    lanes.edge_lanes.get(&edge).map_or(0, |ids| {
+        ids.iter()
+            .filter(|&&id| {
+                let lane = &lanes.lanes[id];
+                lane.is_fwd == is_fwd && lane.lane_type == LaneType::Vehicle
+            })
+            .count()
+    })
+}
+
+/// The lanes of road `edge`, entered at `node`, from which the car can follow its route without a
+/// lane change until its next lane-selective movement; `path[next_idx]` is the route's node after
+/// the road's far end. The walk follows the path and narrows the usable ranks at every node by the
+/// default lane use's group for the movement made there (`approach_group`); through a group that
+/// maps 1:1 onto the next road (straight on between equal counts, a pass-through, a one-lane turn
+/// onto a one-lane road) it carries the ranks onto that road and walks on, and it stops at the
+/// first group that does not (a turn onto a wider road, a fan), at the planned detach lane on the
+/// road (frontage) or its zero-hop turn at the path's end, at a whitelisted node or a U-turn (no
+/// rule to read), or where the next group shares no lane with the ranks kept so far (the car must
+/// change lanes on a later road, so this road's entry keeps what holds up to there). `None` when
+/// every lane is usable, including a road with one lane in that direction (a 1+1 city never pays
+/// more than this edge read). Called at entry events only (a connector choice at a lane end, a
+/// node entry): O(hops x degree) over the remaining path, no allocation, no route query
+/// (`ROAD-94` D7, `TRAFFIC-23`).
+#[allow(clippy::too_many_arguments)]
+pub(in crate::simulation::economy::agents) fn preferred_entry_lanes(
+    edge: usize,
+    node: u32,
+    path: &[u32],
+    next_idx: usize,
+    access_flags: u8,
+    planned_detach_node: u32,
+    planned_detach_lane_id: usize,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<EntryLanes> {
+    let first_edge = graph.get_edge(edge)?;
+    let is_fwd = first_edge.start_node == node;
+    let count = usize::from(if is_fwd {
+        first_edge.fwd_lanes
+    } else {
+        first_edge.bkw_lanes
+    });
+    if count <= 1 {
+        return None;
+    }
+    let mut cur_edge = edge;
+    let mut cur_node = if is_fwd {
+        first_edge.end_node
+    } else {
+        first_edge.start_node
+    };
+    // `path[idx]` is the node after `cur_node`, the node `cur_edge` leads to. The usable lanes are
+    // `cur_edge`'s ranks `lo..hi`; its rank `r` is the entered road's rank `offset + r`.
+    let mut idx = next_idx;
+    let (mut lo, mut hi, mut offset) = (0, count, 0);
+    // The usable ranks as entered-road lanes, narrowed by a last group when it shares a lane.
+    let usable = |lo: usize, hi: usize, offset: usize, last: Option<(usize, usize)>| {
+        let (lo, hi) = last
+            .map(|(first, len)| (lo.max(first), hi.min(first + len)))
+            .filter(|&(a, b)| a < b)
+            .unwrap_or((lo, hi));
+        (hi - lo < count).then_some(EntryLanes {
+            first: offset + lo,
+            len: hi - lo,
+            count,
+        })
+    };
+    loop {
+        let Some(&next) = path.get(idx) else {
+            let detach = (access_flags & ACCESS_PLAN_VALID != 0)
+                .then(|| network.lane_system.lanes.get(planned_detach_lane_id))
+                .flatten();
+            let last = detach.and_then(|detach| {
+                if detach.edge_id == cur_edge {
+                    // The car leaves the network from its frontage lane on this road.
+                    let detach_count = direction_lane_count(cur_edge, detach.is_fwd, network);
+                    Some((lane_rank(detach.lane_idx, detach_count), 1))
+                } else if cur_node == planned_detach_node
+                    && lane_origin_node(planned_detach_lane_id, network, graph) == Some(cur_node)
+                {
+                    approach_group(graph, cur_edge, cur_node, detach.edge_id)
+                        .map(|(first, len, _)| (first, len))
+                } else {
+                    None
+                }
+            });
+            return usable(lo, hi, offset, last);
+        };
+        let Some((out, (first, len, identity))) = graph
+            .get_edge_between_nodes(cur_node, next)
+            .and_then(|out| Some((out, approach_group(graph, cur_edge, cur_node, out)?)))
+        else {
+            return usable(lo, hi, offset, None);
+        };
+        let (group_lo, group_hi) = (lo.max(first), hi.min(first + len));
+        if !identity || group_lo >= group_hi {
+            return usable(lo, hi, offset, Some((first, len)));
+        }
+        (lo, hi, offset) = (group_lo - first, group_hi - first, offset + first);
+        cur_edge = out;
+        cur_node = next;
+        idx += 1;
+    }
+}
+
+/// Whether a car entering road lane `lane_id` at its start can still reach any sibling lane
+/// before the node: the turn-preparation budget (`turn_lane_change_length`) fits the farthest
+/// step count on the lane's length at the slowest speed. A lane that cannot host it leaves a
+/// car's lane fixed for its whole length, so a replan from its end must start on a road the
+/// lane reaches (`plan_network_replan`'s `first_lane`). O(L).
+pub(in crate::simulation::economy::agents) fn lane_hosts_turn_preparation(
+    lane_id: usize,
+    network: &TransitNetwork,
+) -> bool {
+    use super::traffic::{OVERTAKE_EDGE_BUFFER_M, lane_change_end, turn_lane_change_length};
+    let Some(lane) = network.lane_system.lanes.get(lane_id) else {
+        return false;
+    };
+    if lane.edge_id == usize::MAX {
+        return false;
+    }
+    let count = direction_lane_count(lane.edge_id, lane.is_fwd, network) as u8;
+    // One lane: nothing to prepare, every turn of the road is the lane's.
+    if count <= 1 {
+        return true;
+    }
+    let change_end = lane_change_end(
+        lane.length,
+        network.lane_system.needs_turn_preparation(lane_id),
+    );
+    let available = lane.length - (lane.length - change_end - OVERTAKE_EDGE_BUFFER_M).max(0.0);
+    turn_lane_change_length(0.0, available, u16::from(count.saturating_sub(1)))
+        .is_some_and(|length| available > length + OVERTAKE_EDGE_BUFFER_M)
+}
+
+/// Fills `out` with connector lanes that lead from `from_lane_id` to `target_edge_id`: those onto
+/// a lane in `prefer` when any connector reaches one (`TRAFFIC-23`), then the shortest.
 pub(super) fn collect_connector_lanes_to_edge(
     from_lane_id: usize,
     target_edge_id: usize,
     transit_network: &TransitNetwork,
     out: &mut Vec<usize>,
+    prefer: Option<EntryLanes>,
 ) -> bool {
     out.clear();
     let Some(from_lane) = transit_network.lane_system.lanes.get(from_lane_id) else {
@@ -109,6 +288,20 @@ pub(super) fn collect_connector_lanes_to_edge(
     for &conn_lane_id in &from_lane.next_lanes {
         if connector_targets_edge(conn_lane_id, target_edge_id, transit_network) {
             out.push(conn_lane_id);
+        }
+    }
+    if out.len() > 1
+        && let Some(prefer) = prefer
+    {
+        let lanes = &transit_network.lane_system.lanes;
+        let preferred = |conn: usize| {
+            lanes[conn]
+                .next_lanes
+                .first()
+                .is_some_and(|&target| prefer.contains(lanes[target].lane_idx))
+        };
+        if out.iter().any(|&conn| preferred(conn)) {
+            out.retain(|&conn| preferred(conn));
         }
     }
     if out.len() > 1 {

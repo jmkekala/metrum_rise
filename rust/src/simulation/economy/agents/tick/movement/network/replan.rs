@@ -7,7 +7,7 @@ use super::super::super::super::{
     ACCESS_WALK_STRANDED, MODE_CAR, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
-use super::super::super::lane_nav::lane_terminal_node;
+use super::super::super::lane_nav::{lane_hosts_turn_preparation, lane_terminal_node};
 use super::super::super::planning::{
     BuiltNetworkReplan, BuiltTripPlan, plan_border_network_replan, plan_immigration_trip,
     plan_network_replan,
@@ -70,6 +70,9 @@ pub(super) unsafe fn prepare_network_replan(
     }
 }
 
+// Compiled in its caller's codegen unit, as the movement pass's steps (see
+// `handle_network_movement`).
+#[inline]
 unsafe fn bootstrap_immigration_trip(
     i: usize,
     sim_time: f32,
@@ -130,6 +133,9 @@ unsafe fn bootstrap_immigration_trip(
     }
 }
 
+// Compiled in its caller's codegen unit, as the movement pass's steps (see
+// `handle_network_movement`).
+#[inline]
 unsafe fn ensure_exact_access_plan(
     i: usize,
     sim_time: f32,
@@ -188,6 +194,7 @@ unsafe fn ensure_exact_access_plan(
             graph,
             pathfind_count,
             Some((i, "exact-access-replan")),
+            None,
         ) {
             Ok(replan) => {
                 apply_network_replan(i, replan, slices);
@@ -272,6 +279,10 @@ pub(super) unsafe fn replan_after_missed_turn(
         let Some(node) = lane_terminal_node(lane_id, transit_network, graph) else {
             return;
         };
+        // On a road too short to change lanes the route must leave the node on a road this
+        // lane reaches; a longer road lets the preparation choose the lane (`TRAFFIC-23`, S3).
+        let first_lane =
+            (!lane_hosts_turn_preparation(lane_id, transit_network)).then_some(lane_id);
         let target_building = *slices.tgt_b.get(i);
         let replanned = if target_building == usize::MAX {
             let border = *slices.freight_target_border_node.get(i);
@@ -285,6 +296,7 @@ pub(super) unsafe fn replan_after_missed_turn(
                 graph,
                 transit_network,
                 pathfind_count,
+                first_lane,
             )
             .map(|plan| apply_network_replan(i, plan, slices))
             .is_some()
@@ -310,6 +322,7 @@ pub(super) unsafe fn replan_after_missed_turn(
                 graph,
                 pathfind_count,
                 Some((i, "missed-turn-replan")),
+                first_lane,
             )
             .map(|plan| apply_network_replan(i, plan, slices))
             .is_ok()
@@ -328,6 +341,9 @@ pub(super) unsafe fn replan_after_missed_turn(
     }
 }
 
+// Compiled in its caller's codegen unit, as the movement pass's steps (see
+// `handle_network_movement`).
+#[inline]
 unsafe fn repair_stale_detach_plan(
     i: usize,
     sim_time: f32,
@@ -442,6 +458,7 @@ unsafe fn repair_stale_detach_plan(
             graph,
             pathfind_count,
             Some((i, "stale-detach-replan")),
+            None,
         ) {
             Ok(replan) => {
                 apply_network_replan(i, replan, slices);

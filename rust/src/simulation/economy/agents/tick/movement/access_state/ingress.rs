@@ -217,6 +217,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     graph,
                     pathfind_count,
                     Some((i, "invalid-ingress-replan")),
+                    None,
                 ) {
                     Ok(replan) => apply_network_replan(i, replan, slices),
                     Err(failure) => delay_or_recover_after_network_replan_failure(

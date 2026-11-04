@@ -650,6 +650,7 @@ fn plan_from_lane(
         graph,
         pathfind_count,
         Some((i, "walk-home")),
+        None,
     )
 }
 

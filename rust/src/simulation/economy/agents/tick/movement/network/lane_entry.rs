@@ -7,7 +7,7 @@ use super::super::super::super::{
     ACCESS_ZERO_HOP_NODE_PATH, MODE_WALK, TRANSIT_NETWORK,
 };
 use super::super::super::claims::LaneClaimContext;
-use super::super::super::lane_nav::{held_attach_origin, lane_origin_node};
+use super::super::super::lane_nav::{held_attach_origin, lane_origin_node, preferred_entry_lanes};
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::traffic::{
@@ -191,6 +191,7 @@ pub(super) unsafe fn prepare_lane_entry(
                         graph,
                         transit_network,
                         pathfind_count,
+                        None,
                     ) {
                         apply_network_replan(i, replan, slices);
                         return LaneEntryAction::Continue;
@@ -242,6 +243,7 @@ pub(super) unsafe fn prepare_lane_entry(
                     graph,
                     pathfind_count,
                     Some((i, "network-lane-entry")),
+                    None,
                 ) {
                     Ok(replan) => apply_network_replan(i, replan, slices),
                     Err(failure) => {
@@ -318,6 +320,32 @@ pub(super) unsafe fn prepare_lane_entry(
                                     } else if lane.lane_type == LaneType::Vehicle {
                                         valid_lanes.push(l_id);
                                     }
+                                }
+                            }
+                            // A car entering a multi-lane road takes only a lane its route's
+                            // next lane-selective movement can use (`preferred_entry_lanes`),
+                            // waiting while those are busy, as at a connector (`TRAFFIC-23`,
+                            // S1); O(1) when the road has one lane.
+                            let preferred = (*s_tmode.get(i) != MODE_WALK && valid_lanes.len() > 1)
+                                .then(|| {
+                                    preferred_entry_lanes(
+                                        best_e,
+                                        *s_cur_n.get(i),
+                                        path,
+                                        idx + 1,
+                                        *s_access_flags.get(i),
+                                        *s_plan_detach_n.get(i),
+                                        *s_plan_detach_lane.get(i) as usize,
+                                        transit_network,
+                                        graph,
+                                    )
+                                })
+                                .flatten();
+                            if let Some(preferred) = preferred {
+                                let lanes = &transit_network.lane_system.lanes;
+                                let usable = |lane: usize| preferred.contains(lanes[lane].lane_idx);
+                                if valid_lanes.iter().any(|&lane| usable(lane)) {
+                                    valid_lanes.retain(|&lane| usable(lane));
                                 }
                             }
                             if !valid_lanes.is_empty() {
@@ -398,6 +426,7 @@ pub(super) unsafe fn prepare_lane_entry(
 // The witness lane walker `i` enters on road `edge` from its node, hop `idx - 1`, when it is one
 // of `valid_lanes`; otherwise the walker's witness is cleared, to be rebuilt at its next node
 // from the lane it enters. Safety: as `prepare_lane_entry`.
+#[inline]
 unsafe fn walk_entry_lane(
     i: usize,
     idx: usize,

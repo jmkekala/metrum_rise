@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// Rebuilds a destination-side network plan for an agent already in transit. A walker on a
 /// foot lane ending at `start_node` passes it as `start_lane`, so the route is walkable from
 /// that sidewalk and no other (`ROAD-74`); otherwise any lane of `incoming_edge` may start it.
+/// A car on road lane `first_lane` ending at `start_node` (a missed turn on a road too short to
+/// change lanes, `TRAFFIC-23`) leaves the node only on a road that lane reaches; `None` elsewhere.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
     start_node: u32,
@@ -36,6 +38,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
     debug_context: Option<(usize, &'static str)>,
+    first_lane: Option<usize>,
 ) -> Result<BuiltNetworkReplan, ReplanFailure> {
     let debug_context = debug_context.filter(|_| crate::debug::Channel::Traffic.enabled());
     let incoming_edge_valid = incoming_edge_is_incident_to_node(incoming_edge, start_node, graph);
@@ -263,6 +266,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
                     transit_network,
                     graph,
                     |_| (),
+                    first_lane,
                 ) {
                     Ok((seconds, ())) => seconds,
                     Err(reason) => {
@@ -504,7 +508,8 @@ fn incoming_edge_is_incident_to_node(
     })
 }
 
-/// Rebuilds a network-only plan for a freight carrier already travelling to an OWA border.
+/// Rebuilds a network-only plan for a freight carrier already travelling to an OWA border;
+/// `first_lane` as in `plan_network_replan`.
 pub(in crate::simulation::economy::agents::tick) fn plan_border_network_replan(
     start_node: u32,
     incoming_edge: usize,
@@ -512,6 +517,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_border_network_replan(
     graph: &RegionGraph,
     transit_network: &TransitNetwork,
     pathfind_count: &AtomicU32,
+    first_lane: Option<usize>,
 ) -> Option<BuiltNetworkReplan> {
     if start_node as usize >= graph.node_count() || border_node as usize >= graph.node_count() {
         return None;
@@ -538,6 +544,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_border_network_replan(
                     transit_network,
                     graph,
                     <[u32]>::to_vec,
+                    first_lane,
                 )
                 .ok()
                 .map(|(_, path)| path)

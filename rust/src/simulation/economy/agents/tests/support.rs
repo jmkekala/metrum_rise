@@ -399,6 +399,103 @@ pub(super) fn build_4way_junction(
     (network, graph, arm_lanes)
 }
 
+/// A 2+2 street running south (+z) through three junctions `junctions[k]` spaced `link_m`
+/// apart, with 1+1 cross-street arms: `arms[k] = (west length, east length)` in metres, an arm
+/// left out at 0. Heading south, east is the left turn and west the right turn. Street edges run
+/// south (their forward lanes head south, lane index 0 the inner one), each arm edge from its
+/// junction outwards. `TRAFFIC-23`'s short-block city in miniature: with `link_m = 50` the
+/// street's lanes between junctions are about 30 m, too short for any lane change.
+pub(super) struct ShortBlockStreet {
+    pub network: TransitNetwork,
+    pub graph: RegionGraph,
+    /// The street's junction nodes, north to south.
+    pub junctions: [u32; 3],
+    /// Street edges: north end -> junction 0, then junction k -> k + 1, then junction 2 -> south end.
+    pub street: [usize; 4],
+    /// `(west, east)` arm edges at each junction, `usize::MAX` where left out.
+    pub arms: [(usize, usize); 3],
+}
+
+pub(super) fn build_short_block_street(link_m: f32, arms: [(f32, f32); 3]) -> ShortBlockStreet {
+    let mut graph = RegionGraph::new();
+    let node = |graph: &mut RegionGraph, x: f32, z: f32| {
+        graph.add_node(Vector3::new(x, 0.0, z), NodeType::Junction)
+    };
+    let edge = |graph: &mut RegionGraph, s: u32, e: u32, lanes: u8| {
+        let (a, b) = (graph.node(s).pos, graph.node(e).pos);
+        graph.add_edge(Edge {
+            start_node: s,
+            end_node: e,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: f32::from(lanes) * 2.0 * 3.5,
+            fwd_lanes: lanes,
+            bkw_lanes: lanes,
+            speed_limit: 14.0,
+            base_cost: a.distance_to(b) / 14.0,
+            physical_length: a.distance_to(b),
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![a, b],
+            physical_geometry: vec![a, b],
+            deleted: false,
+            no_building_spawn: false,
+            no_street_lights: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            median: None,
+        })
+    };
+    let north = node(&mut graph, 0.0, -100.0);
+    let junctions = [0.0, link_m, 2.0 * link_m].map(|z| node(&mut graph, 0.0, z));
+    let south = node(&mut graph, 0.0, 2.0 * link_m + 100.0);
+    let street = [
+        edge(&mut graph, north, junctions[0], 2),
+        edge(&mut graph, junctions[0], junctions[1], 2),
+        edge(&mut graph, junctions[1], junctions[2], 2),
+        edge(&mut graph, junctions[2], south, 2),
+    ];
+    let mut arm_edges = [(usize::MAX, usize::MAX); 3];
+    for (k, &(west, east)) in arms.iter().enumerate() {
+        let z = graph.node(junctions[k]).pos.z;
+        if west > 0.0 {
+            let end = node(&mut graph, -west, z);
+            arm_edges[k].0 = edge(&mut graph, junctions[k], end, 1);
+        }
+        if east > 0.0 {
+            let end = node(&mut graph, east, z);
+            arm_edges[k].1 = edge(&mut graph, junctions[k], end, 1);
+        }
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+    ShortBlockStreet {
+        network,
+        graph,
+        junctions,
+        street,
+        arms: arm_edges,
+    }
+}
+
+/// The vehicle lane of `edge` with lane index `lane_idx` (forward lanes `0, 1, ..`, backward
+/// lanes `-1, -2, ..`).
+pub(super) fn vehicle_lane(network: &TransitNetwork, edge: usize, lane_idx: i8) -> usize {
+    network.lane_system.edge_lanes[&edge]
+        .iter()
+        .copied()
+        .find(|&id| {
+            let lane = &network.lane_system.lanes[id];
+            lane.lane_type == crate::simulation::network::lanes::LaneType::Vehicle
+                && lane.lane_idx == lane_idx
+        })
+        .expect("vehicle lane")
+}
+
 // ── Scenario helpers ──────────────────────────────────────────────────────────
 
 /// Checks actual road/connector queues and returns the number of connector pairs compared.

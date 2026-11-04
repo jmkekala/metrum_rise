@@ -167,6 +167,7 @@ fn exit_constrained_routes_match_dijkstra_in_point_and_bucket_queries() {
                                 &graph,
                                 mask,
                                 &mut scratch,
+                                None,
                             )
                             .map(|(cost, _, nodes)| (cost, nodes.to_vec()));
                         let context = format!(
@@ -345,6 +346,7 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                     &graph,
                                     mask,
                                     &mut scratch,
+                                    None,
                                 )
                                 .map(|(c, d, _)| (c, d));
                             let mut fresh = CchPathScratch::default();
@@ -357,6 +359,7 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                     &graph,
                                     mask,
                                     &mut fresh,
+                                    None,
                                 )
                                 .map(|(cost, distance, nodes)| {
                                     (cost.to_bits(), distance.to_bits(), nodes)
@@ -401,6 +404,7 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                     &graph,
                                     mask,
                                     &mut batch_path,
+                                    None,
                                 )
                                 .map(|(cost, distance, path)| {
                                     (cost.to_bits(), distance.to_bits(), path)
@@ -480,4 +484,59 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
             }
         }
     }
+}
+
+// TRAFFIC-23 (b): a first-hop predicate restricts only the departures from the origin, is exact
+// when it accepts every edge, and never leaves its forward sweep behind for the next query.
+#[test]
+fn first_hop_restriction_reroutes_exactly_and_is_never_retained() {
+    let mut graph = RegionGraph::new();
+    for (x, z) in [(0.0, 0.0), (-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+        graph.add_node(Vector3::new(x, 0.0, z), NodeType::Junction);
+    }
+    // Four arms from the centre (0) and a detour from the north arm's end to the east one's.
+    for (start_node, end_node) in [(0, 1), (0, 2), (0, 3), (0, 4), (3, 2)] {
+        graph.add_edge(Edge {
+            start_node,
+            end_node,
+            base_cost: 1.0,
+            physical_length: 1.0,
+            allowed_types: TransitFlags::CAR,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            ..Default::default()
+        });
+    }
+    graph.rebuild_adjacency_list();
+    let cch = CchGraph::build(&graph);
+    let route = |scratch: &mut CchPathScratch, first_hop: Option<&dyn Fn(usize) -> bool>| {
+        cch.find_path_in(
+            0,
+            2,
+            usize::MAX,
+            usize::MAX,
+            &graph,
+            TransitFlags::CAR,
+            scratch,
+            first_hop,
+        )
+        .map(|(cost, distance, nodes)| (cost.to_bits(), distance.to_bits(), nodes.to_vec()))
+    };
+    let mut fresh = CchPathScratch::default();
+    let unrestricted = route(&mut fresh, None).unwrap();
+    assert_eq!(unrestricted.2, [0, 2]);
+    let mut scratch = CchPathScratch::default();
+    assert_eq!(
+        route(&mut scratch, Some(&|_| true)),
+        Some(unrestricted.clone())
+    );
+    let detour = route(&mut scratch, Some(&|edge| edge != 1)).unwrap();
+    assert_eq!(detour.2, [0, 3, 2]);
+    assert_eq!(
+        f32::from_bits(detour.0),
+        2.0 * f32::from_bits(unrestricted.0)
+    );
+    assert_eq!(route(&mut scratch, Some(&|_| false)), None);
+    // The restricted sweeps were not retained: the next unrestricted query is the fresh one.
+    assert_eq!(route(&mut scratch, None), Some(unrestricted));
 }

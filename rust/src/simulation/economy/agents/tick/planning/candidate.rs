@@ -621,6 +621,7 @@ pub(super) fn build_exact_path_for_candidate(
                 transit_network,
                 graph,
                 <[u32]>::to_vec,
+                None,
             )
             .ok()
             .map(|(_, path)| (path, ACCESS_PLAN_VALID))

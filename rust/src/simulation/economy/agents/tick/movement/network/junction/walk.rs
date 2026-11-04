@@ -151,6 +151,7 @@ pub(super) unsafe fn replan_from_lane(
             graph,
             pathfind_count,
             Some((i, "walk-witness")),
+            None,
         ) {
             Ok(replan) => {
                 if let Some(cause) = cause {

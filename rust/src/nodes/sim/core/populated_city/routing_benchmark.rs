@@ -83,7 +83,7 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
     writeln!(report, "{header}").unwrap();
     for &(start, end, edge, mode) in &queries {
         let cost = cch.find_cost(start, end, edge, usize::MAX, graph, mode, &mut costs);
-        let path = cch.find_path_in(start, end, edge, usize::MAX, graph, mode, &mut paths);
+        let path = cch.find_path_in(start, end, edge, usize::MAX, graph, mode, &mut paths, None);
         assert_eq!(cost.map(f32::to_bits), path.as_ref().map(|p| p.0.to_bits()));
         writeln!(
             report,
@@ -109,6 +109,7 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
                         graph,
                         mode,
                         &mut paths,
+                        None,
                     ));
                 } else {
                     black_box(cch.find_cost(start, end, edge, usize::MAX, graph, mode, &mut costs));

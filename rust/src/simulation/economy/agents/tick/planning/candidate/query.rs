@@ -2,6 +2,7 @@
 
 //! Reusable exact commute quotations, including directed pedestrian connector fallback.
 
+use super::super::super::lane_nav::vehicle_lane_reaches_edge;
 use super::*;
 use crate::simulation::pathing::cch::{CchBucketSource, CchBuckets, CchPathScratch};
 use std::hash::BuildHasher;
@@ -727,12 +728,17 @@ impl TripQueryScratch {
                 graph,
                 transit_flags_for_mode(mode),
                 &mut self.cch,
+                None,
             )
             .map(|(seconds, _, _)| seconds)
     }
 
     /// Visits the exact selected CCH/connector path while temporary storage stays borrowed.
     /// Candidate pricing discards the slice; only a stored agent plan copies its final route.
+    /// With `first_lane` (a car's road lane ending at `from`), the route leaves `from` only on a
+    /// road that lane reaches (`vehicle_lane_reaches_edge`): the lane-aware replan after a missed
+    /// turn on a road too short to change lanes (`TRAFFIC-23`). One O(successors) test per
+    /// departure of `from`.
     #[allow(clippy::too_many_arguments)]
     pub(in super::super) fn network_path<T>(
         &mut self,
@@ -744,8 +750,14 @@ impl TripQueryScratch {
         network: &TransitNetwork,
         graph: &RegionGraph,
         consume: impl FnOnce(&[u32]) -> T,
+        first_lane: Option<usize>,
     ) -> Result<(f32, T), &'static str> {
         self.prepare_routes(network, graph);
+        let first_hop_rule =
+            first_lane.map(|lane| move |edge| vehicle_lane_reaches_edge(lane, edge, network));
+        let first_hop = first_hop_rule
+            .as_ref()
+            .map(|rule| rule as &dyn Fn(usize) -> bool);
         self.last_path_is_walking = false;
         let edge = match start {
             RouteStart::Lane(lane) => lane_edge(lane, network),
@@ -762,6 +774,7 @@ impl TripQueryScratch {
                 graph,
                 transit_flags_for_mode(mode),
                 &mut self.cch,
+                first_hop,
             )
             .ok_or("cch_no_path")?;
         if path.len() < 2 {
@@ -1141,6 +1154,7 @@ impl TripQueryScratch {
             graph,
             flags,
             &mut self.cch,
+            None,
         )?;
         debug_assert!(
             path.len() >= 2,
@@ -1802,6 +1816,7 @@ mod tests {
                         network,
                         graph,
                         |_| (),
+                        None,
                     );
                     if let Err(reason) = route {
                         assert_eq!(reason, "pedestrian_connector_fallback_missing");
@@ -2177,6 +2192,7 @@ mod tests {
                             &network,
                             &graph,
                             <[u32]>::to_vec,
+                            None,
                         )
                         .ok()
                         .map(|(_, path)| path);

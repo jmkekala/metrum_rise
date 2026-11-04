@@ -56,6 +56,10 @@ pub(crate) use gridlock::{GridlockChecker, GridlockReport, SavedGridlock};
 pub(crate) use stranded::StrandedWalkers;
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
+#[cfg(test)]
+pub(in crate::simulation::economy::agents) use lane_nav::{
+    EntryLanes, lane_hosts_turn_preparation, preferred_entry_lanes,
+};
 pub(crate) use trip_failures::TripFailureLog;
 #[cfg(test)]
 pub(crate) use trip_failures::probe_tally;

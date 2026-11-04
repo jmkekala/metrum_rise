@@ -52,9 +52,9 @@ fn movement(incoming: Vector2, outgoing: Vector2) -> u8 {
     }
 }
 
-// Rank of lane `index` among `count` lanes of one direction: 0 is the leftmost, the innermost
-// lane when driving on the right (forward lanes `0, 1, ..`, backward lanes `-1, -2, ..`).
-fn lane_rank(index: i8, count: usize) -> usize {
+/// Rank of lane `index` among `count` lanes of one direction: 0 is the leftmost, the innermost
+/// lane when driving on the right (forward lanes `0, 1, ..`, backward lanes `-1, -2, ..`).
+pub(crate) fn lane_rank(index: i8, count: usize) -> usize {
     let center_rank = if index >= 0 {
         index as usize
     } else {
@@ -67,57 +67,39 @@ fn lane_rank(index: i8, count: usize) -> usize {
     }
 }
 
+// The movements approach lane `rank` of `count` serves (user decision 2026-11-04, permissive
+// default lane use: turns are restricted with the junction inspection tool's whitelist, not by
+// default). With straight ahead available every lane goes straight, the innermost lane also turns
+// left and the outermost also right, so no lane's movement crosses another's; without it (a T's
+// stem) the inner half turns left and the outer half right.
 fn lane_mask(rank: usize, count: usize, available: u8) -> u8 {
     if count == 1 || available.count_ones() <= 1 {
         return available;
     }
-    match available {
-        // Two shared lanes preserve all three movements without a dedicated middle lane.
-        7 if count == 2 => {
-            if rank == 0 {
-                LEFT | STRAIGHT
-            } else {
-                STRAIGHT | RIGHT
-            }
-        }
-        7 => {
-            if rank == 0 {
-                LEFT
-            } else if rank == count - 1 {
-                RIGHT
-            } else {
-                STRAIGHT
-            }
-        }
-        3 => {
-            if rank == 0 {
-                LEFT
-            } else {
-                STRAIGHT
-            }
-        }
-        6 => {
-            if rank == count - 1 {
-                RIGHT
-            } else {
-                STRAIGHT
-            }
-        }
-        5 => {
-            if rank < count.div_ceil(2) {
-                LEFT
-            } else {
-                RIGHT
-            }
-        }
-        _ => available,
+    if available & STRAIGHT == 0 {
+        return if rank < count.div_ceil(2) {
+            LEFT
+        } else {
+            RIGHT
+        };
     }
+    let mut mask = STRAIGHT;
+    if rank == 0 {
+        mask |= available & LEFT;
+    }
+    if rank == count - 1 {
+        mask |= available & RIGHT;
+    }
+    mask
 }
 
 // Overlapping integer rank intervals produce monotone fans/merges for unequal lane counts.
 // Left/right turns use the corresponding outer target group; straight uses the whole group.
 fn target_matches(rank: usize, count: usize, target: usize, targets: usize, turn: u8) -> bool {
-    let span = if turn == STRAIGHT {
+    // A single-lane turn group may enter any lane of its target group (D10 relaxed for one
+    // lane, `TRAFFIC-23`): the car's entry then picks the lane its route needs next, since a
+    // short multi-lane link may leave no room to change lanes after the turn.
+    let span = if turn == STRAIGHT || count == 1 {
         targets
     } else {
         count.min(targets)
@@ -207,6 +189,46 @@ impl DefaultLaneUse {
     }
 }
 
+/// The lanes of `edge` approaching `node` whose default lane use makes the movement onto
+/// `out_edge`: their ranks as `(first, len)` (one contiguous run, inner first) and whether that
+/// run maps 1:1 onto `out_edge`'s lanes (as wide as the exit: a car keeps its rank, plus `first`,
+/// across the node). `None` at a whitelisted node, for a U-turn, or when no lane makes the
+/// movement. O(degree + the node's lane connections), no allocation.
+pub(crate) fn approach_group(
+    graph: &RegionGraph,
+    edge: usize,
+    node: u32,
+    out_edge: usize,
+) -> Option<(usize, usize, bool)> {
+    if out_edge == edge
+        || super::vehicle_junctions::node_whitelists_vehicle_turns(graph, node as usize)
+    {
+        return None;
+    }
+    let policy = DefaultLaneUse::new(graph, edge, node);
+    let turn = movement(policy.incoming, outward(graph, out_edge, node));
+    let mut first = usize::MAX;
+    let mut len = 0;
+    for rank in 0..policy.count {
+        if lane_mask(rank, policy.count, policy.available) & turn != 0 {
+            if first == usize::MAX {
+                first = rank;
+            }
+            len += 1;
+        }
+    }
+    if len == 0 {
+        return None;
+    }
+    let target = graph.edge(out_edge);
+    let targets = usize::from(if target.start_node == node {
+        target.fwd_lanes
+    } else {
+        target.bkw_lanes
+    });
+    Some((first, len, len == targets))
+}
+
 /// Whether the lanes of `edge` that approach `node` must pick their lane before it: more than one
 /// such lane, and the node whitelists its vehicle turns or its default lane use gives the lanes
 /// different movements. The connector builder writes the same rule into
@@ -234,8 +256,9 @@ mod tests {
         for (count, expected) in [
             (1, vec![7]),
             (2, vec![3, 6]),
-            (3, vec![1, 2, 4]),
-            (4, vec![1, 2, 2, 4]),
+            // User decision: permissive default lane use (every lane goes straight).
+            (3, vec![3, 2, 6]),
+            (4, vec![3, 2, 2, 6]),
         ] {
             assert_eq!(
                 (0..count)
@@ -252,12 +275,28 @@ mod tests {
                         .iter()
                         .all(|&mask| mask != 0 && mask & !available == 0)
                 );
-                assert_eq!(masks.into_iter().fold(0, |a, b| a | b), available);
+                assert_eq!(masks.iter().fold(0, |a, b| a | b), available);
+                // No lane's movement crosses another's: left turns only inside of right turns.
+                for (a, &inner) in masks.iter().enumerate() {
+                    for &outer in &masks[a + 1..] {
+                        assert!(!(inner & RIGHT != 0 && outer & (LEFT | STRAIGHT) != 0));
+                        assert!(!(outer & LEFT != 0 && inner & (STRAIGHT | RIGHT) != 0));
+                    }
+                }
+                if available & STRAIGHT != 0 {
+                    assert!(masks.iter().all(|&mask| mask & STRAIGHT != 0));
+                }
             }
         }
         assert_eq!([lane_mask(0, 2, 5), lane_mask(1, 2, 5)], [LEFT, RIGHT]);
-        assert_eq!([lane_mask(0, 2, 3), lane_mask(1, 2, 3)], [LEFT, STRAIGHT]);
-        assert_eq!([lane_mask(0, 2, 6), lane_mask(1, 2, 6)], [STRAIGHT, RIGHT]);
+        assert_eq!(
+            [lane_mask(0, 2, 3), lane_mask(1, 2, 3)],
+            [LEFT | STRAIGHT, STRAIGHT]
+        );
+        assert_eq!(
+            [lane_mask(0, 2, 6), lane_mask(1, 2, 6)],
+            [STRAIGHT, STRAIGHT | RIGHT]
+        );
     }
 
     #[test]
@@ -296,6 +335,10 @@ mod tests {
                         .collect();
                     for rank in 0..count {
                         assert!(pairs.iter().any(|&(r, _)| r == rank));
+                    }
+                    // A single-lane group reaches every target lane (`TRAFFIC-23`).
+                    if count == 1 {
+                        assert_eq!(pairs.len(), targets);
                     }
                     for &(a, b) in &pairs {
                         for &(c, d) in &pairs {
@@ -396,6 +439,22 @@ mod junction_tests {
                             );
                         }
                     }
+                    if arms == 4 && !skew {
+                        // Arm 1 is straight ahead of arm 0, arm 2 its left and arm 3 its right.
+                        assert_eq!(
+                            approach_group(&graph, 0, center, 1),
+                            Some((0, usize::from(count), true))
+                        );
+                        assert_eq!(approach_group(&graph, 0, center, 0), None);
+                        if count > 1 {
+                            let outer = usize::from(count) - 1;
+                            assert_eq!(approach_group(&graph, 0, center, 2), Some((0, 1, false)));
+                            assert_eq!(
+                                approach_group(&graph, 0, center, 3),
+                                Some((outer, 1, false))
+                            );
+                        }
+                    }
                     // An explicit connection from the normally right-turning lane to the far
                     // left target still overrides defaults; all unspecified turns are blocked.
                     graph.add_lane_connection(center, 0, count as i8 - 1, 2, -1);
@@ -405,6 +464,7 @@ mod junction_tests {
                         .filter(|&&id| lanes.lanes[id].lane_type == LaneType::Vehicle)
                         .collect();
                     assert_eq!(connections.len(), 1);
+                    assert_eq!(approach_group(&graph, 0, center, 1), None);
                     // The incremental rebuild re-flags every lane it rebuilds and unflags the
                     // lanes it retires.
                     let retired = lanes.edge_lanes[&0].clone();

@@ -18,8 +18,9 @@ use super::super::{
 use super::access::{LocalAccessPath, local_access_path, local_access_target_segment};
 use super::lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, connector_choice_seed,
-    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane, junction_approach_lane,
-    junction_approach_node, lane_origin_node, lane_terminal_node, turn_preparation_window_m,
+    detach_lane_entry, direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane,
+    junction_approach_lane, junction_approach_node, lane_origin_node, lane_terminal_node,
+    preferred_entry_lanes, turn_preparation_window_m,
 };
 use super::traffic::{
     OVERTAKE_EDGE_BUFFER_M, lane_change_end, lane_change_length_for_speed,
@@ -216,7 +217,23 @@ fn walk_lanes(
                 (lane_id, lane_d) = (direct, 0.0);
                 continue;
             }
-            if !collect_connector_lanes_to_edge(lane_id, edge, network, &mut connectors) {
+            // The tick's entry preference, so the preview shows the lane the tick takes.
+            let prefer = (mode == MODE_CAR)
+                .then(|| {
+                    preferred_entry_lanes(
+                        edge,
+                        node,
+                        path,
+                        path_idx + 1,
+                        agents.access_flags[i],
+                        detach_node,
+                        detach_lane,
+                        network,
+                        graph,
+                    )
+                })
+                .flatten();
+            if !collect_connector_lanes_to_edge(lane_id, edge, network, &mut connectors, prefer) {
                 route.end = RouteEnd::NoConnection { node: next_node };
                 return;
             }
@@ -243,7 +260,13 @@ fn walk_lanes(
         if !collect_connector_lanes_to_lane(lane_id, detach_lane, network, &mut connectors) {
             let edge = network.lane_system.lanes[detach_lane].edge_id;
             if mode != MODE_CAR
-                || !collect_connector_lanes_to_edge(lane_id, edge, network, &mut connectors)
+                || !collect_connector_lanes_to_edge(
+                    lane_id,
+                    edge,
+                    network,
+                    &mut connectors,
+                    detach_lane_entry(detach_lane, network),
+                )
             {
                 route.end = RouteEnd::NoConnection { node };
                 return;

@@ -573,6 +573,7 @@ impl AgentSystem {
                 graph,
                 network,
                 &self.pathfind_count,
+                None,
             )
         } else if agents.target_building[i] != usize::MAX {
             plan_network_replan(
@@ -586,6 +587,7 @@ impl AgentSystem {
                 network,
                 graph,
                 &self.pathfind_count,
+                None,
                 None,
             )
             .ok()

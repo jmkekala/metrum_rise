@@ -148,8 +148,17 @@ impl CchPathScratch {
 }
 
 impl CchGraph {
-    fn seed_source(&self, start: u32, incoming: usize, mask: u8, data: &mut SearchData) {
-        if !self.turns.restricted[start as usize] {
+    // `first_hop` restricts the edges a route may leave `start` on (a car's lane reaches only
+    // some of them): the origin is then seeded per accepted departure, as a restricted origin.
+    fn seed_source(
+        &self,
+        start: u32,
+        incoming: usize,
+        mask: u8,
+        data: &mut SearchData,
+        first_hop: Option<&dyn Fn(usize) -> bool>,
+    ) {
+        if first_hop.is_none() && !self.turns.restricted[start as usize] {
             data.seed(
                 self.states[start as usize][0],
                 0.0,
@@ -160,6 +169,7 @@ impl CchGraph {
         } else {
             for departure in &self.departures[start as usize] {
                 if departure.flags & mask != 0
+                    && first_hop.is_none_or(|first_hop| first_hop(departure.edge))
                     && self.is_turn_allowed(start, incoming, departure.edge, mask)
                 {
                     let (mut cost, distance) = self.base_metric[departure.edge];
@@ -230,13 +240,15 @@ impl CchGraph {
         graph: &RegionGraph,
         mask: u8,
         scratch: &mut CchQueryScratch,
+        first_hop: Option<&dyn Fn(usize) -> bool>,
     ) -> Option<(f32, u32)> {
         crate::debug::work::add(crate::debug::work::Work::CchPointSearches, 1);
         if self.parent.is_empty() {
             return None;
         }
         scratch.prepare(self, graph);
-        let fwd_key = Some((
+        // A first-hop restriction is never retained: its forward sweep is not the origin's.
+        let fwd_key = first_hop.is_none().then_some((
             self.metric_revision,
             mask,
             start,
@@ -247,9 +259,9 @@ impl CchGraph {
         let forward = &mut scratch.fwd_data;
         let backward = &mut scratch.bwd_data;
         let metric = &self.profiles[self.profile_for_mask[mask as usize] as usize];
-        if scratch.fwd_key != fwd_key {
+        if fwd_key.is_none() || scratch.fwd_key != fwd_key {
             forward.clear();
-            self.seed_source(start, incoming, mask, forward);
+            self.seed_source(start, incoming, mask, forward, first_hop);
             self.sweep_up(metric, forward, false);
             scratch.fwd_key = fwd_key;
         }
@@ -286,7 +298,7 @@ impl CchGraph {
         mask: u8,
     ) -> Option<(f32, f32, Vec<u32>)> {
         OWNED_PATH_SCRATCH.with_borrow_mut(|scratch| {
-            self.find_path_in(start, end, incoming, outgoing, graph, mask, scratch)
+            self.find_path_in(start, end, incoming, outgoing, graph, mask, scratch, None)
                 .map(|(cost, distance, nodes)| (cost, distance, nodes.to_vec()))
         })
     }
@@ -375,11 +387,15 @@ impl CchGraph {
         if start == end && self.turns_in_place(start, incoming, outgoing, mask) {
             return Some(0.0);
         }
-        self.search(start, end, incoming, outgoing, graph, mask, scratch)
+        self.search(start, end, incoming, outgoing, graph, mask, scratch, None)
             .map(|(cost, _)| cost)
     }
 
-    /// Materializes the same selected route into prepared caller-owned storage.
+    /// Materializes the same selected route into prepared caller-owned storage. With
+    /// `first_hop`, the route may leave `start` only on an edge it accepts (a car's lane reaches
+    /// only some of the node's exits: the lane-aware replan after a missed turn); the origin is
+    /// then seeded per accepted departure and that forward sweep is never retained, so a later
+    /// unrestricted query from the same origin is unchanged. One predicate call per departure.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn find_path_in<'s>(
         &self,
@@ -390,6 +406,7 @@ impl CchGraph {
         graph: &RegionGraph,
         mask: u8,
         scratch: &'s mut CchPathScratch,
+        first_hop: Option<&dyn Fn(usize) -> bool>,
     ) -> Option<(f32, f32, &'s [u32])> {
         if start as usize >= self.states.len() || end as usize >= self.states.len() {
             return None;
@@ -410,6 +427,7 @@ impl CchGraph {
             graph,
             mask,
             &mut scratch.query,
+            first_hop,
         )?;
         let metric = &self.profiles[self.profile_for_mask[mask as usize] as usize];
         let forward = &scratch.query.fwd_data.records;
@@ -459,7 +477,7 @@ impl CchGraph {
         let mut data = SearchData::default();
         data.prepare(self.parent.len());
         data.clear();
-        self.seed_source(start, usize::MAX, mask, &mut data);
+        self.seed_source(start, usize::MAX, mask, &mut data, None);
         let metric = &self.profiles[self.profile_for_mask[mask as usize] as usize];
         self.sweep_up(metric, &mut data, false);
         let mut costs = vec![f32::INFINITY; self.parent.len()];
@@ -604,13 +622,23 @@ mod endpoint_tests {
                         &graph,
                         mode,
                         &mut scratch,
+                        None,
                     )
                     .map(|(cost, distance, nodes)| {
                         (cost.to_bits(), distance.to_bits(), nodes.to_vec())
                     });
                 let mut fresh = CchPathScratch::default();
                 let expected = cch
-                    .find_path_in(start, end, usize::MAX, usize::MAX, &graph, mode, &mut fresh)
+                    .find_path_in(
+                        start,
+                        end,
+                        usize::MAX,
+                        usize::MAX,
+                        &graph,
+                        mode,
+                        &mut fresh,
+                        None,
+                    )
                     .map(|(cost, distance, nodes)| {
                         (cost.to_bits(), distance.to_bits(), nodes.to_vec())
                     });

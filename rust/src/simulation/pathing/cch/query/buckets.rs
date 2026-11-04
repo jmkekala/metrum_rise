@@ -174,7 +174,7 @@ impl CchBuckets {
             return;
         }
         if !cch.parent.is_empty() {
-            cch.seed_source(start, incoming, self.mask, &mut source.forward);
+            cch.seed_source(start, incoming, self.mask, &mut source.forward, None);
             cch.sweep_up(
                 &cch.profiles[cch.profile_for_mask[self.mask as usize] as usize],
                 &mut source.forward,
