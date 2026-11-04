@@ -12115,6 +12115,65 @@ builder writes into the lanes' turn-preparation flag, so a preview paints what i
 `O(degree)` per edge end at emission; a section pair outside a zone is emitted as one segment,
 bitwise as before.
 
+**Turn arrows (`ROAD-75`).** The lanes of such an approach also carry turn arrows: each lane its
+[default lane use](#default-junction-lane-use-road-94)'s movements (a 2 + 2 four-way left +
+straight / straight + right, a 3 + 3 four-way left + straight / straight / straight + right, a
+2 + 2 T without a right turn left + straight / straight, its stem left / right). At a node that
+whitelists its vehicle turns every lane the whitelist lists shows the movements of its listed
+connections, classified by the same 45 degree sectors (U-turns and rules to lanes that do not
+leave the node are not painted), whatever its lane count, so a whitelisted 1 + 1 approach carries
+arrows too; an unlisted lane, which has no connector, carries none. Uniform approaches (one
+movement, a continuation or a bend), single-lane approaches at open nodes and 1 + 1 streets paint
+nothing new: their paint is bitwise unchanged. The rule is `lanes::approach_arrow_masks`, graph-only
+like the solid zone, so a preview paints what its commit paints.
+
+| Approach | Lanes, inner first (right-hand traffic) |
+|---|---|
+| 2 + 2 four-way | L+S, S+R |
+| 3 + 3 four-way | L+S, S, S+R |
+| 4 + 4 four-way | L+S, S, S, S+R |
+| 2 + 2 T, no right turn | L+S, S |
+| 2 + 2 T, no left turn | S, S+R |
+| 2 + 2 T stem (no straight) | L, R |
+| one movement (continuation, bend), any lanes | none |
+| 1 + 1, open node | none |
+| whitelisted lane, any count | its listed movements |
+
+The glyph is the European road-marking arrow (style A, the user's choice 2026-11-04 over the
+fork's thin strokes and a sign-style variant): filled triangles on the marking layer, solid
+pattern, from one outline table (`markings.rs` `ARROW_STYLE`) and one emitter (`arrow_glyph`).
+A 0.4 m shaft, 1.2 m wide heads 1.2 m long (the shaft a third of the head, heads as long as
+wide), 5 m from the tail to the straight tip; each turn is a branch as thick as the shaft that
+leaves it a little below the middle (0.6 m behind the glyph's centre) in a smooth quarter circle
+of 0.5 m centre-line radius (6 segments) and ends in its own head pointing to the side; a
+turn-only arrow (a T's stem) bends at 0.8 m ahead. The glyph is shifted sideways so its extent is
+centred on the lane and stays within 1.25 m of the lane's centre (a 3.5 m lane keeps at least
+0.5 m clear either side); only left + right glyphs (with or without straight) are narrowed to
+fit. Triangles per glyph: S 3, L+S and S+R 16, L and R 15, L+R 28, L+S+R 29 (the fork's strokes:
+8 to 14). Every vertex is draped on the span's sections. It is centred 12 m and, on a marking
+range of 50 m or more, 42 m back from the end of the range on its side; a range under 20 m holds
+one arrow halfway back, at least 4 m, only where the glyph stays 1.5 m clear of both range ends
+(`approach_arrow_stations`). The range already stops at a junction's mouth and at a pass-through
+node's crossing strip, so no arrow reaches a zebra. Each glyph point is draped on the span's
+sections. Left and right are the driver's; under `DRIVE_ON_LEFT` the lane offsets and the lane
+ranks behind the masks are mirrored, the glyphs are not. Cost at emission only: `O(degree + the
+node's lane rules + lanes)` per edge end, plus at most 29 triangles (87 draped vertices) per
+arrow at `O(log sections + bands)` each, no allocation. A lane rule edit (`set_lane_connection`,
+`clear_lane_source`, `clear_lane_connections`) marks its node and arms dirty and starts a render
+generation, as the crossing toggle does, so the arrows and the solid zone follow the whitelist;
+before, the edit rebuilt the lanes only and the chunks kept their old paint.
+Acceptance timing (`ROAD-75`, round R4b, 2026-11-04 19:30, fresh): `$TEST_BINARY
+nodes::sim::core::tests::road_preview::benchmark_road_preview_stages --exact --ignored
+--nocapture`, release, `METRUM_DEBUG=0`, `RAYON_NUM_THREADS=4`, pinned to the P-cores, both timing
+locks, `dev` `d0b29ce6` against the style A branch, C B B C C B B C in one session (load 4.8 at the
+start, no cargo, rustc or godot). Payload stage p50 ms, median of four (range): `sloped_t` `dev`
+0.395 (0.381-0.458), branch 0.374 (0.370-0.383); `sloped_branch` 0.391 (0.369-0.408) and 0.371
+(0.365-0.390); `divided_t` 0.448 (0.438-0.460) and 0.446 (0.435-0.482): unchanged within noise.
+Payload vertices per pose are equal (9,845 / 9,973 / 12,226): these fixtures are 1 + 1 roads, so
+the session measures the arrow rule's guard and the moved lane-count check, not glyph emission. A
+2 + 2 four-way adds 64 triangles per approach (two glyphs of 16 per lane), 768 vertices for the
+junction; no multi-lane benchmark fixture exists to time that emission.
+
 Zebra crossings use the Finnish L3_2 dimensions (Traficom, Liite 15, 2020, at 50 km/h or less): 0.5 m stripes with 0.5 m gaps, 2.5 m long along the road (formerly 0.4 m gaps and 2.0 m).
 
 Stripes keep these sizes measured in plan (XZ), so crossfall no longer narrows them, and the

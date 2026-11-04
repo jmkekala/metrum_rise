@@ -66,6 +66,14 @@ and level over two days, a measurement under free-flow routing (`TRAFFIC-17`), n
 [traffic.md](traffic.md#advance-lane-choice-road-94); branch `port-r4a-lane-use`, not landed:
 waiting for the user's test).
 
+Approaches whose lanes serve different movements also carry turn arrows: a 2+2 four-way paints
+left + straight on the inner lane and straight + right on the outer one, a 3+3 four-way left +
+straight / straight / straight + right, a 2+2 T without a right turn left + straight / straight,
+12 m and 42 m before the junction. A lane the junction inspection tool's whitelist lists shows its
+listed turns, even on a 1+1 street, and the paint now follows a whitelist edit at once. Uniform
+approaches and 1+1 streets have no arrows ([ROAD-75](roads.md#finnish-road-surface-and-markings-road-56); branch
+`port-r4b-arrows`, not landed).
+
 The road tool can build a tunnel through a hill: with its tunnel toggle (`T` or the road options
 checkbox) a stroke keeps its drawn height through the ground, the stretch where the hill stands
 5 m above the road across its whole width becomes a tunnel between two approaches and cars drive
@@ -1430,6 +1438,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-75` round R4b (branch `port-r4b-arrows`, 2026-11-04, not landed): selective turn arrows from the graph-only lane use (`lanes::approach_arrow_masks`: an approach with a lane choice paints each lane's default movements, a whitelisted lane its listed ones), a filled European road-marking arrow (style A, the user's choice) draped on the span sections 12 m and 42 m back from the marking range's end; a lane rule edit now repaints its node's arms (the solid zone had the same gap). Godot `road_turn_arrows_test`. 1+1 and uniform paint bitwise unchanged ([roads.md](roads.md#finnish-road-surface-and-markings-road-56)).
 - `PERF-13` done (round P13, branch `perf13-save-continuation`, 2026-11-04): the contract snapshots publish again and `./run.sh --perf-contract` runs. Since `TRAFFIC-19` (`173578b3`, found by bisect) a walker that waits at the end of its lane with no plan has its route cursor one past its path; the loader took it off the sidewalk as a stale route and sent it home, so a loaded city diverged at the next hour (10k: the walkers queued behind it walked on; 100k: one more employed resident). The loader now keeps it ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74)); no save format change, live runs byte-identical. New `TRAFFIC-24`: such a walker never gets a destination again and blocks the walkers behind it.
 - `TRAFFIC-23` round R4a4 (branch `port-r4a-lane-use`, 2026-11-04, not landed): entry-lane choice by the route's next turn with one-lane turn groups fanning to every target lane, a lane-aware missed-turn recovery and replan (the CCH origin seeded per departure the car's lane reaches), discretionary overtakes kept in the route's lanes, the permissive default lane use (user decision) and the solid zone as a lane field. The 10k 4-Lane variant: 10 missed turns a day (68,635 before), 1,863 deliveries against `dev`'s 2,073 on day one and 3,156 against 3,113 over two days, a measurement until `TRAFFIC-17` (user decision); 1+1 cities unchanged ([`traffic.md`](traffic.md#advance-lane-choice-road-94)).
 - `ROAD-94` rounds R4a1-R4a3 (branch `port-r4a-lane-use`, 2026-11-04, not landed: waiting for the user's test): the default junction lane use builds one connector per allowed lane pair (`lanes/lane_use.rs`) and flags approaches whose lanes serve different movements; cars choose their turn lane in a `70 m x (lanes - 1) + 30 m` window, no lane change starts in the last 20 m (painted solid), and a missed turn follows a legal connector and replans at the lane end. Save format 114 (connectors are saved); Kuopio re-recorded. R4a3's 10k 4-Lane audit variant missed 68,635 turns a day with 19 deliveries against `dev`'s 2,073 (`TRAFFIC-23`, fixed in R4a4) ([`roads.md`](roads.md#default-junction-lane-use-road-94), [`traffic.md`](traffic.md#advance-lane-choice-road-94)).
