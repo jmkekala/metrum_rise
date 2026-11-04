@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Vehicle junction connectors (`TRAFFIC-12`): one connector lane per allowed turn, from the
-//! incoming lane's end to the outgoing lane's start. Both ends are the lanes' points on their
-//! arms' mouth frames ([`MouthFrame`]), and the connector leaves and joins along the arms'
-//! directions there, never along a lane polyline's end piece. Its curve is [`VehicleTurn`].
+//! Vehicle junction connectors (`TRAFFIC-12`): one connector lane per allowed turn (the node's
+//! whitelist, or else the default lane use of `ROAD-94`), from the incoming lane's end to the
+//! outgoing lane's start. Both ends are the lanes' points on their arms' mouth frames
+//! ([`MouthFrame`]), and the connector leaves and joins along the arms' directions there, never
+//! along a lane polyline's end piece. Its curve is [`VehicleTurn`].
 //! Each connector is checked against the node's kerb corners once per lane rebuild; a
 //! violation is logged on the `traffic` debug channel, and nothing repairs the curve.
 
 use super::super::graph::{Edge, RegionGraph};
 use super::super::roadbed::{ArmKey, Corner, EdgeEnd, MouthFrame, RoadVec2};
 use super::geometry::build_cum_dist;
+use super::lane_use::DefaultLaneUse;
 use super::rebuild::vehicle_lane_offset;
 use super::{Lane, LaneSuccessors, LaneType};
 use godot::prelude::*;
@@ -75,14 +77,18 @@ pub(crate) fn vehicle_lane_end(
     }
 }
 
-/// Builds vehicle intersection connection lanes at a single node. `kerb_corners` are its
-/// layout's fitted kerb corners (`NodeWalkways::collect_with_kerbs`), empty without a layout.
+/// Builds vehicle intersection connection lanes at a single node: one connector per allowed
+/// pair of an inbound and an outbound lane, under the node's whitelist or else the default lane
+/// use (`ROAD-94`). Writes `turn_preparation` (by lane id, grown to the lane count) for every
+/// inbound lane. `kerb_corners` are its layout's fitted kerb corners
+/// (`NodeWalkways::collect_with_kerbs`), empty without a layout.
 pub(crate) fn build_vehicle_connections_at_node(
     lanes: &mut Vec<Lane>,
     lane_map: &HashMap<(usize, bool, i8), usize>,
     graph: &RegionGraph,
     node_id: usize,
     node_lanes: &mut std::collections::HashMap<usize, Vec<usize>>,
+    turn_preparation: &mut Vec<bool>,
     kerb_corners: &[Corner],
 ) {
     // (edge, lane index, lane id, its end at the node).
@@ -130,36 +136,40 @@ pub(crate) fn build_vehicle_connections_at_node(
     let lane_conns = &graph.node(node_id as u32).lane_connections;
     let node_has_any_vehicle_conn = node_whitelists_vehicle_turns(graph, node_id);
     let node_allows_direct_pass_through = vehicle_deg == 2 && !node_has_any_vehicle_conn;
+    // Dead ends allow the U-turn at an open node; the router reads the same edge-level rule.
+    let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
 
+    turn_preparation.resize(lanes.len(), false);
     for &(in_edge_id, in_lane_idx, in_lane_id, in_end) in &inbound {
-        let mut allowed: Option<Vec<(usize, i8)>> =
-            lane_conns.get(&(in_edge_id, in_lane_idx)).cloned();
-
         // Global whitelist mode: if the node has ANY user vehicle connection (lane_idx ≠ ±100),
-        // ALL unspecified turns are blocked. Only explicitly listed turns are permitted.
-        // Nodes with no user connections remain fully open (allow all non-U-turns).
-        if allowed.is_none() && !node_has_any_vehicle_conn {
-            // Open node: allow all non-U-turn outbound lanes; dead ends allow the U-turn.
-            // The router reads the same rule.
-            let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
-            let mut defaults = Vec::new();
-            for &(out_edge_id, out_lane_idx, _, _) in &outbound {
-                if out_edge_id != in_edge_id || allows_u_turn {
-                    defaults.push((out_edge_id, out_lane_idx));
-                }
-            }
-            if !defaults.is_empty() {
-                allowed = Some(defaults);
-            }
-        }
-        // If node_has_any_vehicle_conn but this arm has no explicit connection, allowed stays
-        // None → no junction connection lanes created → turn is blocked.
+        // ALL unspecified turns are blocked. Only explicitly listed turns are permitted; an arm
+        // without an explicit connection gets no connector. Nodes with no user connections are
+        // open: every turn into another arm that the default lane use (`ROAD-94`) gives this
+        // lane.
+        let explicit = lane_conns.get(&(in_edge_id, in_lane_idx));
+        let defaults = (explicit.is_none() && !node_has_any_vehicle_conn)
+            .then(|| DefaultLaneUse::new(graph, in_edge_id, node_id as u32));
+        // A multi-lane approach to a whitelisted node needs its lane chosen too.
+        turn_preparation[in_lane_id] = defaults.as_ref().map_or_else(
+            || {
+                let edge = graph.edge(in_edge_id);
+                let count = if lanes[in_lane_id].is_fwd {
+                    edge.fwd_lanes
+                } else {
+                    edge.bkw_lanes
+                };
+                count > 1
+            },
+            DefaultLaneUse::needs_lane_choice,
+        );
 
         for &(out_edge_id, out_lane_idx, out_lid, out_end) in &outbound {
-            if !allowed
-                .as_ref()
-                .is_some_and(|rules| rules.contains(&(out_edge_id, out_lane_idx)))
-            {
+            let allowed = match &defaults {
+                Some(_) if out_edge_id == in_edge_id => allows_u_turn,
+                Some(defaults) => defaults.allows(graph, in_lane_idx, out_edge_id, out_lane_idx),
+                None => explicit.is_some_and(|rules| rules.contains(&(out_edge_id, out_lane_idx))),
+            };
+            if !allowed {
                 continue;
             }
             let (p0, p3) = (in_end.point, out_end.point);

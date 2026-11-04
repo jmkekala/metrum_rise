@@ -491,7 +491,9 @@ fn a_span_too_short_for_its_two_noses_stays_undivided() {
 }
 
 // Spans without a raised median are as before the round nose (`ROAD-80`, R3d): an undivided
-// pair and a painted one hash as recorded on a40e6f6b, flat and sloped.
+// pair and a painted one hash as recorded on a40e6f6b, flat and sloped. Re-recorded by `ROAD-94`
+// (default junction lane use): the lanes of all six change, nothing else; the 2 + 2 straight
+// pair's node now continues each lane on the lane of its own rank instead of on every lane.
 #[test]
 fn spans_without_a_raised_median_keep_their_products() {
     use crate::simulation::network::roadbed::fixtures::{ProductProbe, assert_probes};
@@ -520,7 +522,7 @@ const WITHOUT_RAISED_MEDIAN: &[(&str, [u64; 7])] = &[
             0x1df747977cee582f,
             0xb20f8d217aacc3ed,
             0x4f34b93cafbcd86f,
-            0x526023e987c4a88a,
+            0x39f6662732d2b2aa,
             0x5a21f467a126f0fb,
         ],
     ),
@@ -532,7 +534,7 @@ const WITHOUT_RAISED_MEDIAN: &[(&str, [u64; 7])] = &[
             0x269195d876d35aae,
             0x34fe874c8b286229,
             0x3cacf181a32e379d,
-            0x693eaac6ff5e818a,
+            0x57f4bed4c7a2b44a,
             0xd6bcc8bb8e89b9e0,
         ],
     ),
@@ -544,7 +546,7 @@ const WITHOUT_RAISED_MEDIAN: &[(&str, [u64; 7])] = &[
             0xbc694f0548b165c1,
             0xdeadb3c3e00cc2e2,
             0xd2ed3c1674a9d386,
-            0x3153724c5443e990,
+            0x361de04d9e399dcd,
             0x98429a1e56766213,
         ],
     ),
@@ -556,7 +558,7 @@ const WITHOUT_RAISED_MEDIAN: &[(&str, [u64; 7])] = &[
             0x1df747977cee582f,
             0x216c5eaa3658c1c0,
             0x3fece4cee385943e,
-            0xd8b8c34a07637e04,
+            0xf36c284401562c04,
             0x9c9a4599ede68974,
         ],
     ),
@@ -568,7 +570,7 @@ const WITHOUT_RAISED_MEDIAN: &[(&str, [u64; 7])] = &[
             0x269195d876d35aae,
             0x0bb7f0e00b63bf37,
             0x5d4d723eb4aeb8bd,
-            0xd66934eedf1408c0,
+            0x107acfce25675428,
             0xbe038eddc7637f62,
         ],
     ),
@@ -580,7 +582,7 @@ const WITHOUT_RAISED_MEDIAN: &[(&str, [u64; 7])] = &[
             0xbc694f0548b165c1,
             0xbc2422ecfdb352c4,
             0xb10cb0f4379cb9da,
-            0x252f122114c38381,
+            0x2c5d937149b68db7,
             0xedd4619dcf5d5ab2,
         ],
     ),

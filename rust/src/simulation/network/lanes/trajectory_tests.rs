@@ -689,3 +689,163 @@ fn junction_connectors_stay_on_the_carriageway_without_backward_steps_or_kinks()
     }
     assert!(clean, "junction connector violations:\n{report}");
 }
+
+// Every vehicle turn of `lanes`: (road lane, target road lane, through a connector).
+fn vehicle_turn_pairs(lanes: &LaneSystem) -> Vec<(usize, usize, bool)> {
+    let mut pairs = Vec::new();
+    for (id, lane) in lanes.lanes.iter().enumerate() {
+        if lane.edge_id == usize::MAX || lane.lane_type != LaneType::Vehicle {
+            continue;
+        }
+        for &next in &lane.next_lanes {
+            let successor = &lanes.lanes[next];
+            if successor.edge_id == usize::MAX {
+                pairs.push((id, successor.next_lanes[0], true));
+            } else {
+                pairs.push((id, next, false));
+            }
+        }
+    }
+    pairs.sort_unstable();
+    pairs
+}
+
+// The vehicle turns the connector builder made at `dev` `9f2808bc`, before the default lane use
+// (`ROAD-94`), at every fixture whose approaches have one lane: one lane makes every movement, and
+// the fans of a one-lane approach onto one-lane exits are 1:1, so the lane use keeps each of
+// them (and every U-turn at the arms' dead ends).
+type FixtureTurns = (&'static str, &'static [(usize, usize, bool)]);
+
+const PRE_LANE_USE_TURNS: [FixtureTurns; 7] = [
+    (
+        "four_way_1x1",
+        &[
+            (0, 1, true),
+            (1, 7, true),
+            (1, 12, true),
+            (1, 19, true),
+            (6, 0, true),
+            (6, 12, true),
+            (6, 19, true),
+            (7, 6, true),
+            (12, 13, true),
+            (13, 0, true),
+            (13, 7, true),
+            (13, 19, true),
+            (18, 0, true),
+            (18, 7, true),
+            (18, 12, true),
+            (19, 18, true),
+        ],
+    ),
+    (
+        "t_1x1",
+        &[
+            (0, 1, true),
+            (1, 7, true),
+            (1, 12, true),
+            (6, 0, true),
+            (6, 12, true),
+            (7, 6, true),
+            (12, 13, true),
+            (13, 0, true),
+            (13, 7, true),
+        ],
+    ),
+    (
+        "skew_60",
+        &[
+            (0, 1, true),
+            (1, 7, true),
+            (1, 12, true),
+            (1, 19, true),
+            (6, 0, true),
+            (6, 12, true),
+            (6, 19, true),
+            (7, 6, true),
+            (12, 13, true),
+            (13, 0, true),
+            (13, 7, true),
+            (13, 19, true),
+            (18, 0, true),
+            (18, 7, true),
+            (18, 12, true),
+            (19, 18, true),
+        ],
+    ),
+    (
+        "bend_45",
+        &[(0, 1, true), (1, 7, true), (6, 0, true), (7, 6, true)],
+    ),
+    (
+        "t_one_way",
+        &[(5, 0, true), (6, 5, true), (11, 0, true), (11, 6, true)],
+    ),
+    (
+        "t_beside_arm/false",
+        &[
+            (0, 1, true),
+            (1, 7, true),
+            (1, 12, true),
+            (6, 0, true),
+            (6, 12, true),
+            (7, 6, true),
+            (12, 13, true),
+            (13, 0, true),
+            (13, 7, true),
+        ],
+    ),
+    (
+        "through_road/false",
+        &[(0, 1, true), (1, 7, true), (6, 0, true), (7, 6, true)],
+    ),
+];
+
+#[test]
+fn single_lane_approaches_keep_every_turn_they_had_before_the_default_lane_use() {
+    let mut pinned = 0;
+    for (name, mut graph) in fixtures() {
+        let Some((_, expected)) = PRE_LANE_USE_TURNS.iter().find(|(pin, _)| *pin == name) else {
+            continue;
+        };
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        assert_eq!(vehicle_turn_pairs(&lanes), *expected, "{name}");
+        pinned += 1;
+    }
+    assert_eq!(pinned, PRE_LANE_USE_TURNS.len());
+}
+
+// Rank of a vehicle lane among its direction's lanes: 0 is the innermost.
+fn lane_rank(lane: &Lane) -> i16 {
+    if lane.lane_idx >= 0 {
+        i16::from(lane.lane_idx)
+    } else {
+        -i16::from(lane.lane_idx) - 1
+    }
+}
+
+#[test]
+fn two_lane_degree_two_continuations_map_lanes_one_to_one() {
+    // A shallow bend (straight sector), a right angle and a sharp bend: each arm offers its
+    // approach one movement, so every lane continues on the exit lane of its own rank.
+    for exit_deg in [30.0, 90.0, 300.0] {
+        let mut graph = star(&[(180.0, 2), (exit_deg, 2)]);
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        let pairs = vehicle_turn_pairs(&lanes);
+        let at_hub: Vec<_> = pairs
+            .iter()
+            .filter(|&&(from, to, _)| lanes.lanes[from].edge_id != lanes.lanes[to].edge_id)
+            .collect();
+        assert_eq!(at_hub.len(), 4, "exit {exit_deg}: {pairs:?}");
+        for &&(from, to, _) in &at_hub {
+            assert_eq!(
+                lane_rank(&lanes.lanes[from]),
+                lane_rank(&lanes.lanes[to]),
+                "exit {exit_deg}: {from} -> {to}"
+            );
+            assert!(!lanes.needs_turn_preparation(from));
+        }
+    }
+}

@@ -16,6 +16,7 @@ mod bounds;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
 mod identity;
+mod lane_use;
 /// Pedestrian sidewalk and crosswalk connection logic.
 pub mod pedestrian_junctions;
 /// Full and incremental lane system rebuild orchestration.
@@ -27,6 +28,15 @@ pub mod vehicle_junctions;
 pub(crate) use bounds::LanePlanarBox;
 pub(crate) use identity::LaneIdentity;
 pub use successors::LaneSuccessors;
+
+/// Length of the solid zone before a junction on an approach whose lanes serve different
+/// movements (`ROAD-94`): no lane change starts in its last this many metres, and its dividers
+/// are painted solid there.
+#[allow(
+    dead_code,
+    reason = "read by the lane change and the markings from R4a2/R4a3 on"
+)]
+pub(crate) const APPROACH_SOLID_LENGTH_M: f32 = 20.0;
 
 /// Types of travel lanes supported by the network.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -145,6 +155,9 @@ pub struct LaneSystem {
     pub node_lanes: HashMap<usize, Vec<usize>>,
     // Crossings by connector lane id. Few lanes cross a street, so they are kept out of `Lane`.
     crosswalks: HashMap<usize, LaneCrosswalk>,
+    // By lane id, rebuild-derived and never saved (`ROAD-94`): road lanes approaching a node
+    // whose lanes serve different movements, where a car picks its lane before the node.
+    turn_preparation: Vec<bool>,
     revision: u64,
     // Render-cull boxes derived from `lanes`, keyed by `revision` (`SIM-02-K`).
     planar_bounds: bounds::LanePlanarBounds,
@@ -171,6 +184,7 @@ impl LaneSystem {
             edge_lanes: HashMap::new(),
             node_lanes: HashMap::new(),
             crosswalks: HashMap::new(),
+            turn_preparation: Vec::new(),
             revision: 0,
             planar_bounds: Default::default(),
             surface_synced_len: 0,
@@ -185,8 +199,18 @@ impl LaneSystem {
         self.edge_lanes.clear();
         self.node_lanes.clear();
         self.crosswalks.clear();
+        self.turn_preparation.clear();
         self.surface_synced_len = 0;
         self.lifted_since = None;
+    }
+
+    /// Whether road lane `lane_id` approaches a node where its lanes serve different movements
+    /// (default lane use with a lane choice, or a multi-lane approach to a whitelisted node), so
+    /// a car must be on a lane that makes its turn before the node. `O(1)`.
+    #[inline]
+    #[allow(dead_code, reason = "read by the advance lane choice from R4a2 on")]
+    pub(crate) fn needs_turn_preparation(&self, lane_id: usize) -> bool {
+        self.turn_preparation.get(lane_id).copied().unwrap_or(false)
     }
 
     /// Changes whenever physical lane IDs or connector topology are rebuilt, even when

@@ -117,6 +117,7 @@ impl LaneSystem {
             graph,
             node_id,
             &mut self.node_lanes,
+            &mut self.turn_preparation,
             layout
                 .and_then(|layout| layout.kerb_corners.as_deref())
                 .unwrap_or_default(),
@@ -350,9 +351,14 @@ impl LaneSystem {
         layout_nodes.dedup();
         let walkways = collect_walkways(graph, &layout_nodes, false);
 
-        // Retire old physical-lane ownership before appending replacements.
+        // Retire old physical-lane ownership before appending replacements. A retired lane
+        // approaches no node any more.
         for &e_id in &rebuild_edges {
-            self.edge_lanes.remove(&e_id);
+            for lane_id in self.edge_lanes.remove(&e_id).into_iter().flatten() {
+                if let Some(flag) = self.turn_preparation.get_mut(lane_id) {
+                    *flag = false;
+                }
+            }
         }
 
         // Only incident surviving lanes are needed by the local connection builders. Clear

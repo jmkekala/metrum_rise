@@ -491,7 +491,26 @@ pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
         for &lane_id in lanes {
             let lane_len = network.lane_system.lanes[lane_id].length;
             for queue_idx in 0..5 {
-                let destination = arm_nodes[k ^ 1];
+                // The opposite arm when this lane goes straight on there (`ROAD-94`), else the
+                // lane's first turn.
+                let lane_system = &network.lane_system;
+                let preferred = arm_edges[k ^ 1];
+                let outgoing = lane_system.lanes[lane_id]
+                    .next_lanes
+                    .iter()
+                    .copied()
+                    .map(|conn| lane_system.lanes[conn].next_lanes[0])
+                    .find(|&id| lane_system.lanes[id].edge_id == preferred)
+                    .unwrap_or_else(|| {
+                        lane_system.lanes[lane_system.lanes[lane_id].next_lanes[0]].next_lanes[0]
+                    });
+                let exit = &lane_system.lanes[outgoing];
+                let exit_edge = graph.edge(exit.edge_id);
+                let destination = if exit.is_fwd {
+                    exit_edge.end_node
+                } else {
+                    exit_edge.start_node
+                };
                 let idx = agents.spawn_border_arrival_agent(usize::MAX, arm_nodes[k], 0.0, 0.0);
                 agents.transit[idx] = TRANSIT_NETWORK;
                 agents.transit_mode[idx] = MODE_CAR;
@@ -502,7 +521,7 @@ pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
                 agents.speed[idx] = 14.0;
                 agents.current_path[idx] = vec![arm_nodes[k], nc, destination];
                 agents.current_path_index[idx] = 1;
-                expected_exits.push((idx, arm_edges[k ^ 1]));
+                expected_exits.push((idx, exit.edge_id));
             }
         }
     }
