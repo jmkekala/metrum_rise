@@ -1092,18 +1092,19 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
     const SOLID: f32 = 2.0;
     let wide = ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 2);
     let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
-    // Every marking quad (six vertices) as (centroid, its station range, its pattern, vertices).
-    let quads = |core: &SimCore| {
+    // Every marking triangle as (centroid, its station range, its pattern, vertices). A line's
+    // quad is two triangles, each spanning the quad's stations.
+    let triangles = |core: &SimCore| {
         let mesh = RoadRenderer.generate_mesh_data_with_surface(
             &core.region_graph,
             &core.heightmap,
             &core.transit_network.roadbed,
         );
         mesh.marking_vertices
-            .chunks(6)
-            .zip(mesh.marking_uvs.chunks(6))
+            .chunks(3)
+            .zip(mesh.marking_uvs.chunks(3))
             .map(|(vertices, uvs)| {
-                let centroid = vertices.iter().fold(Vector3::ZERO, |sum, &v| sum + v) / 6.0;
+                let centroid = vertices.iter().fold(Vector3::ZERO, |sum, &v| sum + v) / 3.0;
                 let (low, high) = uvs.iter().fold((f32::MAX, f32::MIN), |(lo, hi), uv| {
                     (lo.min(uv.x), hi.max(uv.x))
                 });
@@ -1111,7 +1112,7 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
             })
             .collect::<Vec<_>>()
     };
-    let straight = quads(&committed(&[wide], &[0], false));
+    let straight = triangles(&committed(&[wide], &[0], false));
     assert!(!straight.is_empty(), "a 2 + 2 road is marked");
     assert!(
         straight.iter().all(|&(_, _, pattern, _)| pattern != SOLID),
@@ -1151,7 +1152,7 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
     assert!(outcome.committed, "{}", outcome.rejection);
     assert_preview_composes_committed(&core, &view_chunks, pieces, "2 + 2 T");
 
-    let tee = quads(&core);
+    let tee = triangles(&core);
     // Each arm as (unit direction away from the junction, the lateral axis): a car approaching
     // on it drives towards `-direction`, and under right-hand traffic its lanes lie on the right
     // of that heading.
@@ -1185,22 +1186,21 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
             .map(|(centroid, length, pattern, vertices)| {
                 let flat = Vector3::new(centroid.x, 0.0, centroid.z);
                 let lateral = flat.dot(right_of_approach);
-                // The quad's end nearest the junction.
-                let near = vertices
+                // The triangle's vertices as (distance from the junction, lateral).
+                let points: Vec<_> = vertices
                     .iter()
-                    .map(|v| v.dot(along))
-                    .fold(f32::MAX, f32::min);
-                (flat.dot(along), lateral, *length, *pattern, near)
+                    .map(|v| (v.dot(along), v.dot(right_of_approach)))
+                    .collect();
+                (flat.dot(along), lateral, *length, *pattern, points)
             })
-            .filter(|&(distance, lateral, ..)| distance > 8.0 && lateral.abs() < 8.0)
+            .filter(|(distance, lateral, ..)| *distance > 8.0 && lateral.abs() < 8.0)
             .collect();
         let line = |lateral: f32| {
             arm.iter()
-                .filter(move |&&(_, at, ..)| (at - lateral).abs() < 0.3)
-                .copied()
+                .filter(move |(_, at, ..)| (at - lateral).abs() < 0.3)
         };
         let solid: Vec<_> = line(LANE_WIDTH).filter(|q| q.3 == SOLID).collect();
-        let length: f32 = solid.iter().map(|q| q.2).sum();
+        let length = solid.iter().map(|q| q.2).sum::<f32>() * 0.5;
         assert!(
             (length - APPROACH_SOLID_LENGTH_M).abs() < 0.5,
             "{name}: the approach divider is solid over {length} m"
@@ -1226,48 +1226,74 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
         );
         assert!(line(0.0).count() > 0 && line(-LANE_WIDTH).count() > 0);
         // The marking range ends where the solid zone does, at the mouth.
-        let mouth = solid.iter().map(|q| q.4).fold(f32::MAX, f32::min);
+        let mouth = solid
+            .iter()
+            .flat_map(|q| q.4.iter().map(|p| p.0))
+            .fold(f32::MAX, f32::min);
         // Under left-hand traffic the inner lane is the rightmost.
         let expected = if DRIVE_ON_LEFT {
             [expected[1], expected[0]]
         } else {
             expected
         };
-        for (lane, movements) in [(0.5, expected[0]), (1.5, expected[1])] {
+        for (lane, [left, straight, right]) in [(0.5, expected[0]), (1.5, expected[1])] {
             let centre = lane * LANE_WIDTH;
-            // Stroke centroids in the driver's frame: `x` to the right of the lane's centre and
-            // the distance back from the junction.
-            let strokes: Vec<_> = arm
+            // The style's triangle count and where its tail sits: right of the lane's centre
+            // beside a lone left branch, left of it beside a lone right one (`arrow_glyph`).
+            let triangles = match (left, straight, right) {
+                (false, true, false) => 3,
+                (_, true, _) => 16,
+                _ => 15,
+            };
+            let tail_side =
+                f32::from(u8::from(left && !right)) - f32::from(u8::from(right && !left));
+            let paint: Vec<_> = arm
                 .iter()
                 .filter(|q| !on_line(q.1) && (q.1 - centre).abs() < 1.5)
-                .map(|q| ((q.1 - centre) * hand, q.0))
                 .collect();
-            assert!(
-                strokes.iter().all(|q| q.0.abs() < 1.2),
-                "{name}: arrows stay in their lane"
-            );
-            let has = |x: f32| strokes.iter().any(|q| (q.0 - x).abs() < 0.05);
-            let shown = [has(-1.05), has(0.325) && has(-0.325), has(1.05)];
-            assert_eq!(shown, movements, "{name}: lane {lane} shows its movements");
-            // Two glyphs centred 12 m and 42 m back from the mouth: each stem's middle lies
-            // 1.25 m further back, and nothing else is painted in the lane.
-            let stems: Vec<_> = strokes
-                .iter()
-                .filter(|q| q.0.abs() < 0.05)
-                .map(|q| q.1)
-                .collect();
+            // Two glyphs centred 12 m and 42 m back from the mouth, 5 m long, and nothing else
+            // painted in the lane.
+            let mut glyphs = 0;
             for back in [12.0, 42.0] {
+                let glyph: Vec<_> = paint
+                    .iter()
+                    .filter(|q| (q.0 - mouth - back).abs() <= 2.5)
+                    .collect();
+                glyphs += glyph.len();
+                assert_eq!(
+                    glyph.len(),
+                    triangles,
+                    "{name}: lane {lane} shows its movements {back} m back"
+                );
+                // Vertices in the driver's frame: `x` right of the lane's centre, `y` ahead.
+                let points: Vec<_> = glyph
+                    .iter()
+                    .flat_map(|q| q.4.iter())
+                    .map(|&(distance, lateral)| {
+                        ((lateral - centre) * hand, mouth + back - distance)
+                    })
+                    .collect();
                 assert!(
-                    stems
-                        .iter()
-                        .any(|&at| (at - (mouth + back + 1.25)).abs() < 0.3),
-                    "{name}: lane {lane} has an arrow {back} m back from {mouth} ({stems:?})"
+                    points.iter().all(|p| p.0.abs() <= 1.3 && p.1.abs() <= 2.55),
+                    "{name}: lane {lane}'s arrow stays in its lane and its 5 m"
+                );
+                // The tail's middle, between its two corners.
+                let (low, high) = points
+                    .iter()
+                    .filter(|p| p.1 < -2.45)
+                    .fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                        (lo.min(p.0), hi.max(p.0))
+                    });
+                let tail = (low + high) * 0.5;
+                assert!(
+                    (tail - tail_side * tail.abs()).abs() < 1.0e-3
+                        && (tail_side == 0.0) == (tail.abs() < 0.05),
+                    "{name}: lane {lane}'s tail sits at {tail}"
                 );
             }
-            assert!(
-                strokes.iter().all(|q| [12.0, 42.0]
-                    .iter()
-                    .any(|back| (q.1 - mouth - back).abs() <= 2.5 + 0.1)),
+            assert_eq!(
+                glyphs,
+                paint.len(),
                 "{name}: lane {lane} holds only its two glyphs"
             );
         }

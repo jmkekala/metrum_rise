@@ -16,7 +16,9 @@ use super::super::{
     marking_dash_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
-use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
+use super::geometry::{
+    emit_surface_quad, emit_surface_triangle, section_world_point_at_lateral_offset,
+};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::graph::MedianStyle;
@@ -289,9 +291,9 @@ fn emit_painted_median(
 // (graph-only): forward lanes before the end node, backward lanes before the start node. Each
 // glyph is centred on its lane at the `approach_arrow_stations` back from the marking range's end
 // on its side, which already stops at a mouth or a span-owned crossing strip, and drapes on the
-// sections point by point. Left and right are the driver's, so the glyphs need no mirroring under
-// `DRIVE_ON_LEFT`: the lane offsets and the lane ranks behind the masks are mirrored. O(degree +
-// lanes x glyph strokes x (log sections + bands)) per edge, allocation-free.
+// sections vertex by vertex. Left and right are the driver's, so the glyphs need no mirroring
+// under `DRIVE_ON_LEFT`: the lane offsets and the lane ranks behind the masks are mirrored.
+// O(degree + lanes x 29 triangles x (log sections + bands)) per edge, allocation-free.
 fn emit_approach_arrows(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
@@ -316,18 +318,9 @@ fn emit_approach_arrows(
                 let point = |(x, y): (f32, f32)| {
                     point_at(sections, centre + direction * y, lateral + direction * x)
                 };
-                arrow_glyph(mask, |a, b, width| {
-                    if let (Some(start), Some(end)) = (point(a), point(b)) {
-                        emit_marking_segment(
-                            mesh,
-                            start,
-                            end,
-                            0.0,
-                            1.0,
-                            width * 0.5,
-                            MARKING_PATTERN_SOLID,
-                            marking_dash_color(),
-                        );
+                arrow_glyph(&ARROW_STYLE, mask, |triangle| {
+                    if let [Some(a), Some(b), Some(c)] = triangle.map(point) {
+                        emit_marking_triangle(mesh, [a, b, c]);
                     }
                 });
             }
@@ -346,25 +339,143 @@ fn approach_arrow_stations(length: f32) -> [Option<f32>; 2] {
     [(back <= length - 4.0).then_some(back), None]
 }
 
-// The turn-arrow glyph (fork `ROAD-75`) as strokes `(from, to, width)` in glyph coordinates
-// (`x` to the right, `y` ahead, metres): a 2.5 m stem ending at the origin, a straight shaft and
-// head when `mask` has straight (2), and a bent arrow to the left (1) or right (4). Five metres
-// long, 2.1 m wide.
-fn arrow_glyph(mask: u8, mut stroke: impl FnMut((f32, f32), (f32, f32), f32)) {
-    stroke((0.0, -2.5), (0.0, 0.0), 0.20);
-    if mask & 2 != 0 {
-        stroke((0.0, 0.0), (0.0, 2.5), 0.20);
-        stroke((-0.65, 1.55), (0.0, 2.5), 0.23);
-        stroke((0.65, 1.55), (0.0, 2.5), 0.23);
+// The turn-arrow glyph's outline table (`ROAD-75`), in glyph metres: `x` to the driver's right,
+// `y` ahead. One table is one style; the emitter below draws every movement mask from it.
+struct ArrowStyle {
+    tail_y: f32,
+    tip_y: f32,
+    shaft_half: f32,
+    head_half: f32,
+    head_length: f32,
+    // A branch's centreline radius, the station where it leaves the shaft beside a straight
+    // arrow, where a turn-only arrow's shaft bends, and the quarter circle's segments.
+    branch_radius: f32,
+    branch_y: f32,
+    turn_y: f32,
+    branch_segments: usize,
+    // The widest a glyph may reach either side of its lane's centre (lanes are 3.5 m wide).
+    max_half_width: f32,
+}
+
+// Style A, the European road-marking arrow (user decision 2026-11-04): a filled shaft a third as
+// wide as its heads, heads as long as they are wide, and each turn a branch as thick as the shaft
+// leaving it a little below the middle in a smooth quarter circle to its own head pointing to the
+// side; 5 m from the tail to the straight tip.
+const ARROW_STYLE: ArrowStyle = ArrowStyle {
+    tail_y: -2.5,
+    tip_y: 2.5,
+    shaft_half: 0.2,
+    head_half: 0.6,
+    head_length: 1.2,
+    branch_radius: 0.5,
+    branch_y: -0.6,
+    turn_y: 0.8,
+    branch_segments: 6,
+    max_half_width: 1.25,
+};
+
+// Triangles of the largest glyph (left, straight and right): shaft 2, straight head 1, and per
+// branch its arc's quads and its head.
+#[cfg(test)]
+const ARROW_MAX_TRIANGLES: usize = 3 + 2 * (2 * ARROW_STYLE.branch_segments + 1);
+
+// Emits the glyph of movement bits `mask` (1 left, 2 straight, 4 right) in `style` as filled
+// triangles in glyph coordinates, through `fill`: the shaft (up to the straight head, or to the
+// bend of a turn-only arrow), the straight head, and a branch per turn. Shifted sideways so its
+// extent is centred on the lane, and narrowed only when both turns would reach past
+// `max_half_width`. S: 3 triangles; L+S, S+R: 16; L, R: 15; L+R: 28; L+S+R: 29
+// (`ARROW_MAX_TRIANGLES`).
+fn arrow_glyph(style: &ArrowStyle, mask: u8, mut fill: impl FnMut([(f32, f32); 3])) {
+    let straight = mask & 2 != 0;
+    let (w, r) = (style.shaft_half, style.branch_radius);
+    let branch_tip = r + style.head_length;
+    let side_extent = |bit: u8| {
+        if mask & bit != 0 {
+            branch_tip
+        } else if straight {
+            style.head_half
+        } else {
+            w
+        }
+    };
+    let (left, right) = (side_extent(1), side_extent(4));
+    let shift = (left - right) * 0.5;
+    let scale = (style.max_half_width / ((left + right) * 0.5)).min(1.0);
+    let mut emit =
+        |triangle: [(f32, f32); 3]| fill(triangle.map(|(x, y)| ((x + shift) * scale, y)));
+    let fork_y = if straight {
+        style.branch_y
+    } else {
+        style.turn_y
+    };
+    let shaft_top = if straight {
+        style.tip_y - style.head_length
+    } else {
+        fork_y
+    };
+    fill_quad(
+        &mut emit,
+        [
+            (-w, style.tail_y),
+            (w, style.tail_y),
+            (w, shaft_top),
+            (-w, shaft_top),
+        ],
+    );
+    if straight {
+        let h = style.head_half;
+        emit([(-h, shaft_top), (h, shaft_top), (0.0, style.tip_y)]);
     }
     for (bit, side) in [(1, -1.0), (4, 1.0)] {
         if mask & bit == 0 {
             continue;
         }
-        stroke((0.0, 0.0), (side * 1.05, 0.9), 0.20);
-        stroke((side * 1.05, 0.9), (side * 1.05, 0.0), 0.23);
-        stroke((side * 1.05, 0.9), (side * 0.15, 1.1), 0.23);
+        // A quarter circle about (side * r, fork_y) from the shaft (heading ahead) to heading
+        // `side`, as a band the shaft's width; its first row spans the shaft exactly.
+        let ring = |step: usize, radius: f32| {
+            let angle = std::f32::consts::FRAC_PI_2 * step as f32 / style.branch_segments as f32;
+            (
+                side * (r - radius * angle.cos()),
+                fork_y + radius * angle.sin(),
+            )
+        };
+        for step in 0..style.branch_segments {
+            fill_quad(
+                &mut emit,
+                [
+                    ring(step, r - w),
+                    ring(step, r + w),
+                    ring(step + 1, r + w),
+                    ring(step + 1, r - w),
+                ],
+            );
+        }
+        let (x, y) = (side * r, fork_y + r);
+        emit([
+            (x, y - style.head_half),
+            (x, y + style.head_half),
+            (side * branch_tip, y),
+        ]);
     }
+}
+
+// A quad `[a, b, c, d]` (in order round its edge) as two triangles.
+fn fill_quad(emit: &mut impl FnMut([(f32, f32); 3]), [a, b, c, d]: [(f32, f32); 4]) {
+    emit([a, b, c]);
+    emit([a, c, d]);
+}
+
+// One filled marking triangle (solid pattern) lifted by the marking bias, as
+// `emit_marking_segment` lifts its quads.
+fn emit_marking_triangle(mesh: &mut NetworkMeshData, vertices: [Vector3; 3]) {
+    let lift = Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0);
+    emit_surface_triangle(
+        mesh,
+        MeshLayer::Marking,
+        vertices.map(|vertex| vertex + lift),
+        [Vector2::new(0.0, MARKING_PATTERN_SOLID); 3],
+        marking_dash_color(),
+    );
 }
 
 // The point at station `s_m` and `lateral` between the two sections of `pair`, as the surface
@@ -518,6 +629,55 @@ fn emit_marking_segment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `ROAD-75` style A: every movement mask's glyph has its fixed triangle count, no degenerate
+    // triangle, stays within its 5 m and `max_half_width` of the lane's centre, and is shifted
+    // away from a lone branch's side (its tail sits right of centre for a left branch).
+    #[test]
+    fn arrow_glyphs_are_filled_bounded_and_fixed_size() {
+        let style = &ARROW_STYLE;
+        for (mask, triangles, tail_side) in [
+            (2, 3, 0.0),
+            (1 | 2, 16, 1.0),
+            (2 | 4, 16, -1.0),
+            (1, 15, 1.0),
+            (4, 15, -1.0),
+            (1 | 4, 28, 0.0),
+            (1 | 2 | 4, ARROW_MAX_TRIANGLES, 0.0),
+        ] {
+            let mut count = 0;
+            let mut tail_x = Vec::new();
+            arrow_glyph(style, mask, |triangle| {
+                count += 1;
+                let [a, b, c] = triangle;
+                let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+                assert!(area.abs() > 1.0e-4, "mask {mask}: a filled triangle");
+                for (x, y) in triangle {
+                    assert!(
+                        x.abs() <= style.max_half_width + 1.0e-4,
+                        "mask {mask}: x {x}"
+                    );
+                    assert!(
+                        (style.tail_y..=style.tip_y).contains(&y),
+                        "mask {mask}: y {y}"
+                    );
+                    if y == style.tail_y {
+                        tail_x.push(x);
+                    }
+                }
+            });
+            assert_eq!(count, triangles, "mask {mask}");
+            // The tail's middle, between its two corners.
+            let (low, high) = tail_x
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+            let tail = (low + high) * 0.5;
+            assert!(
+                (tail.signum() * f32::from(tail.abs() > 1.0e-4) - tail_side).abs() < 1.0e-6,
+                "mask {mask}: tail at {tail}"
+            );
+        }
+    }
 
     // `ROAD-75`: every arrow glyph (2.5 m either side of its station) stays 1.5 m clear of both
     // ends of its marking range; 12 m and 42 m back on a long range, one arrow on a short one.

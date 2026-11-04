@@ -87,6 +87,19 @@ pub(super) fn emit_surface_quad(
     }
 }
 
+// One surface triangle into `layer`, dropped when degenerate; `push_triangle` winds it up.
+pub(super) fn emit_surface_triangle(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    vertices: [Vector3; 3],
+    uvs: [Vector2; 3],
+    color: Color,
+) {
+    if !triangle_is_too_small(vertices[0], vertices[1], vertices[2]) {
+        push_triangle(mesh, layer, vertices.map(world_point), uvs, color);
+    }
+}
+
 // Emits the piece's strips (`TERRAIN-07-B`: skirts, or a bridge's fascias) into `layer` as the
 // piece wound them, facing away from the road, with UV `y` 1 on bottom vertices and 0 on the
 // chain's: the skirt shader's bottom-vertex attribute. Only exactly degenerate triangles are
