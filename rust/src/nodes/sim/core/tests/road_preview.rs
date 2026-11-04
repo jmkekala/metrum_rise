@@ -1273,3 +1273,47 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
         }
     }
 }
+
+// `ROAD-75`: a lane rule edit repaints its node's arms. On a 1 + 1 T, unmarked, whitelisting the
+// side road's approach lane into the west arm paints a left-turn arrow on it; the published
+// chunks then hold what a full paint of the city holds, and undo takes the arrow off again.
+#[test]
+fn a_lane_rule_edit_repaints_the_arrows_of_its_arms() {
+    let (mut core, node, side, west) = super::road_crosswalks::t_junction();
+    core.benchmark_mode = false;
+    let painted = |core: &mut SimCore| {
+        core.precompute_road_mesh_data();
+        let chunks: usize = core
+            .cached_road_mesh_chunks
+            .values()
+            .map(|mesh| mesh.marking_vertices.len())
+            .sum();
+        let full = core
+            .transit_network
+            .try_generate_mesh_data(&core.region_graph, &core.heightmap)
+            .expect("current roadbed")
+            .marking_vertices
+            .len();
+        assert_eq!(chunks, full, "the chunks hold the city's paint");
+        chunks
+    };
+    assert_eq!(painted(&mut core), 0, "a 1 + 1 T is unmarked");
+    let graph = &core.region_graph;
+    let approach = if graph.edge(side).end_node == node {
+        0
+    } else {
+        -1
+    };
+    let leave = if graph.edge(west).start_node == node {
+        0
+    } else {
+        -1
+    };
+    core.set_lane_connection_internal(node, side as i32, approach, west as i32, leave);
+    assert!(
+        painted(&mut core) > 0,
+        "the whitelisted lane carries its arrow"
+    );
+    assert!(core.undo_action_internal());
+    assert_eq!(painted(&mut core), 0, "undo takes the arrow off");
+}
