@@ -66,7 +66,7 @@ func _run() -> void:
 		var edge: int = simulation.get_hovered_edge(0.0, 0.0)
 		var section: Dictionary = simulation.get_edge_cross_section(edge)
 		_expect(int(section.get("median_style", -1)) == style and is_equal_approx(float(section.get("median_width", 0.0)), width), "style %d: the road carries its median: %s" % [style, section])
-		_expect(simulation.set_edge_cross_section(edge, 2, 2, style, width, 50, true, true), "style %d: widened in place" % style)
+		_expect(simulation.set_edge_cross_section(edge, 2, 2, style, width, 50, true, true, true), "style %d: widened in place" % style)
 		_expect(int(simulation.get_edge_cross_section(edge).get("fwd_lanes", 0)) == 2, "style %d: the edit keeps the edge id" % style)
 		# Only a kerbed grass median sends the grass layer (ROAD-80).
 		var payload := str(simulation.get_road_mesh_data(true))

@@ -195,8 +195,8 @@ impl Edge {
 impl RegionGraph {
     /// Gives edge `id` `fwd` forward and `bkw` backward lanes, `median`, and the width they take,
     /// and its road type's `attributes` (`ROAD-101`): the `FOOT` flag from `sidewalks`, the speed
-    /// limit (the routing `base_cost` recomputed from it when it changes) and
-    /// `no_building_spawn` from `zoning`. Keeps its centreline, id, class and everything else
+    /// limit (the routing `base_cost` recomputed from it when it changes),
+    /// `no_building_spawn` from `zoning` and `no_street_lights` from `street_lights`. Keeps its centreline, id, class and everything else
     /// (`ROAD-80`). The cross-section must pass [`Edge::validate_cross_section`], so the edge is
     /// a car road. The spatial index reads the centreline only, so it is kept. Callers re-lay out
     /// both end nodes and rebuild their lanes, as `SimCore`'s in-place edit does. `O(1)`, or
@@ -217,6 +217,7 @@ impl RegionGraph {
         edge.width = Edge::cross_section_width_m(fwd, bkw, median);
         edge.allowed_types = Edge::sidewalk_flags(edge.allowed_types, attributes.sidewalks);
         edge.no_building_spawn = !attributes.zoning;
+        edge.no_street_lights = !attributes.street_lights;
         if edge.speed_limit.to_bits() != attributes.speed_ms.to_bits() {
             edge.speed_limit = attributes.speed_ms;
             edge.base_cost = CostCalculator::calculate_costs(edge).0;

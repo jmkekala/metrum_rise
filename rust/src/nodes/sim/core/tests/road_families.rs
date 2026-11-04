@@ -306,7 +306,7 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
 
 // A rural road type's attributes (`ROAD-101`): 100 km/h, no sidewalks, zoning off.
 fn rural() -> RoadAttributes {
-    RoadAttributes::from_tool(100, false, false).unwrap()
+    RoadAttributes::from_tool(100, false, false, true).unwrap()
 }
 
 // Commits one 1 + 1 stroke between `ends` through the road tool's path with `attributes`.
@@ -352,7 +352,7 @@ fn cross_pieces(core: &SimCore) -> Vec<usize> {
 fn a_split_stroke_keeps_its_road_type_attributes_on_every_piece() {
     let mut core = committed(&[THROUGH], &[0], false);
     let cross = [Vector2::new(0.0, -ARM_M), Vector2::new(0.0, ARM_M)];
-    commit_with(&mut core, cross, rural());
+    commit_with(&mut core, cross, rural().lit(false));
     let pieces = cross_pieces(&core);
     assert_eq!(pieces.len(), 2, "the through road splits the stroke");
     let speed = (100.0_f32 * crate::config::KMH_TO_MPS).to_bits();
@@ -362,6 +362,7 @@ fn a_split_stroke_keeps_its_road_type_attributes_on_every_piece() {
         assert_eq!(edge.allowed_types, TransitFlags::CAR, "piece {piece}");
         assert_eq!(edge.speed_limit.to_bits(), speed, "piece {piece}");
         assert!(edge.no_building_spawn, "piece {piece}");
+        assert!(edge.no_street_lights, "piece {piece}");
         let foot = lanes.edge_lanes[&piece]
             .iter()
             .filter(|&&lane| lanes.lanes[lane].lane_type == LaneType::Foot)
@@ -382,16 +383,21 @@ fn a_split_stroke_keeps_its_road_type_attributes_on_every_piece() {
             crate::config::DEFAULT_URBAN_ROAD_SPEED_MS.to_bits()
         );
         assert!(!edge.no_building_spawn);
+        assert!(!edge.no_street_lights);
     }
 }
 
 // `ROAD-101` cost rule: a stroke is charged its road type's weight per metre on its prepared
 // class, the 2-Lane Road exactly the old 15 / m; the rural type (1 + 1 at 100 km/h, no sidewalks)
-// weighs 0.8 x 2.0 = 1.6, so 24 / m.
+// weighs 0.8 x 2.0 = 1.6, so 24 / m, with or without street lights (they cost nothing).
 #[test]
 fn a_stroke_is_charged_its_road_types_cost() {
     use crate::simulation::network::road_types::cost::{BUILD_COST_PER_M, stroke_weight};
-    for (attributes, per_m) in [(RoadAttributes::DEFAULT, 15.0), (rural(), 24.0)] {
+    for (attributes, per_m) in [
+        (RoadAttributes::DEFAULT, 15.0),
+        (rural(), 24.0),
+        (rural().lit(false), 24.0),
+    ] {
         let mut core = committed(&[THROUGH], &[0], false);
         core.benchmark_mode = false;
         let before = core.treasury.lifetime_build_cost;

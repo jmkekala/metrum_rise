@@ -42,6 +42,7 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
             physical_geometry: geometry,
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
         });

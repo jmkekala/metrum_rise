@@ -119,6 +119,7 @@ pub(super) fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -151,6 +152,7 @@ pub(super) fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x
         ],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,

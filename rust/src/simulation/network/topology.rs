@@ -1119,6 +1119,7 @@ pub fn split_edge(
     let speed_limit = old_edge.speed_limit;
     let class = old_edge.class;
     let no_building_spawn = old_edge.no_building_spawn;
+    let no_street_lights = old_edge.no_street_lights;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
     let median = old_edge.median;
 
@@ -1158,6 +1159,7 @@ pub fn split_edge(
         class,
         deleted: false,
         no_building_spawn,
+        no_street_lights,
         vehicle_frontage_access,
         median,
     };

@@ -7,7 +7,8 @@
 //! own types live in the per-user library file ([`library`]).
 //!
 //! A type also sets a road's attributes beyond its parts ([`RoadAttributes`]): its speed, whether
-//! it has sidewalks (none or both: the layout says) and whether buildings zone along it.
+//! it has sidewalks (none or both: the layout says), whether buildings zone along it and whether
+//! it has street lights.
 //!
 //! A type is tool configuration, not simulation state: a built road keeps its own lanes, median
 //! and attributes in its edge, so no save, undo record or simulation system names a type, and
@@ -323,9 +324,10 @@ pub fn check_speed_kmh(section: RoadCrossSection, speed_kmh: i64) -> Result<u16,
 }
 
 /// What a road type sets on a stroke's edge beyond its lanes and median (`ROAD-101`): the speed
-/// limit, whether it has sidewalks (the edge's `FOOT` flag on a car road) and whether buildings
-/// zone along it (the edge's `no_building_spawn` cleared). The road tool carries one beside its
-/// median through every hover check, preview, commit and refusal report.
+/// limit, whether it has sidewalks (the edge's `FOOT` flag on a car road), whether buildings
+/// zone along it (the edge's `no_building_spawn` cleared) and whether it has street lights (the
+/// edge's `no_street_lights` cleared). The road tool carries one beside its median through every
+/// hover check, preview, commit and refusal report.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoadAttributes {
     /// The edge's speed limit in m/s.
@@ -334,20 +336,23 @@ pub struct RoadAttributes {
     pub sidewalks: bool,
     /// Whether lots and buildings zone along the road.
     pub zoning: bool,
+    /// Whether the road has street lights (visual only).
+    pub street_lights: bool,
 }
 
 impl RoadAttributes {
-    /// Every built-in type's: 50 km/h, sidewalks, zoning on (bitwise the edge every stroke
-    /// built before `ROAD-101`).
+    /// Every built-in type's: 50 km/h, sidewalks, zoning on, street lights (bitwise the edge
+    /// every stroke built before `ROAD-101`).
     pub const DEFAULT: Self = Self {
         speed_ms: config::DEFAULT_URBAN_ROAD_SPEED_MS,
         sidewalks: true,
         zoning: true,
+        street_lights: true,
     };
 
-    /// The attributes of a type at `speed_kmh` (a walkway's 0 keeps the default limit, which
-    /// walking ignores), with or without sidewalks and zoning. `f32::from(50) * KMH_TO_MPS` is
-    /// bitwise [`config::DEFAULT_URBAN_ROAD_SPEED_MS`].
+    /// The attributes of a lit type at `speed_kmh` (a walkway's 0 keeps the default limit, which
+    /// walking ignores), with or without sidewalks and zoning ([`Self::lit`] sets the lights).
+    /// `f32::from(50) * KMH_TO_MPS` is bitwise [`config::DEFAULT_URBAN_ROAD_SPEED_MS`].
     pub fn new(speed_kmh: u16, sidewalks: bool, zoning: bool) -> Self {
         let speed_ms = if speed_kmh == 0 {
             config::DEFAULT_URBAN_ROAD_SPEED_MS
@@ -358,14 +363,29 @@ impl RoadAttributes {
             speed_ms,
             sidewalks,
             zoning,
+            street_lights: true,
         }
     }
 
-    /// The road tool's attributes from Godot's integers, or `speed_out_of_range` (see
+    /// These attributes with street lights on or off. `O(1)`.
+    pub fn lit(self, street_lights: bool) -> Self {
+        Self {
+            street_lights,
+            ..self
+        }
+    }
+
+    /// The road tool's attributes from Godot's values, or `speed_out_of_range` (see
     /// [`check_speed_kmh`]; the car-road range applies, as the tool cannot know a walkway).
-    pub fn from_tool(speed_kmh: i64, sidewalks: bool, zoning: bool) -> Result<Self, &'static str> {
+    pub fn from_tool(
+        speed_kmh: i64,
+        sidewalks: bool,
+        zoning: bool,
+        street_lights: bool,
+    ) -> Result<Self, &'static str> {
         let car_road = RoadCrossSection::undivided(1, 0);
-        check_speed_kmh(car_road, speed_kmh).map(|speed| Self::new(speed, sidewalks, zoning))
+        check_speed_kmh(car_road, speed_kmh)
+            .map(|speed| Self::new(speed, sidewalks, zoning).lit(street_lights))
     }
 
     /// How far a stroke's parcel corridor reaches beyond each side of its carriageway: a
@@ -379,13 +399,14 @@ impl RoadAttributes {
         }
     }
 
-    /// The attributes `edge` carries: its speed limit, `FOOT` (sidewalks on a car road) and
-    /// `no_building_spawn` cleared (zoning). `O(1)`.
+    /// The attributes `edge` carries: its speed limit, `FOOT` (sidewalks on a car road),
+    /// `no_building_spawn` cleared (zoning) and `no_street_lights` cleared. `O(1)`.
     pub fn of_edge(edge: &Edge) -> Self {
         Self {
             speed_ms: edge.speed_limit,
             sidewalks: edge.allowed_types & TransitFlags::FOOT != 0,
             zoning: !edge.no_building_spawn,
+            street_lights: !edge.no_street_lights,
         }
     }
 
@@ -394,6 +415,7 @@ impl RoadAttributes {
         self.speed_ms.to_bits() == other.speed_ms.to_bits()
             && self.sidewalks == other.sidewalks
             && self.zoning == other.zoning
+            && self.street_lights == other.street_lights
     }
 
     /// The speed limit in whole km/h (an edge's `speed_limit` read back). `O(1)`.
@@ -524,6 +546,8 @@ pub struct RoadType {
     pub speed_kmh: u16,
     /// Whether lots and buildings zone along its roads.
     pub zoning: bool,
+    /// Whether its roads have street lights.
+    pub street_lights: bool,
     /// What it builds, or why it is unusable (kept in the library file, listed, never drawn).
     pub verdict: Result<RoadCrossSection, RoadTypeRefusal>,
 }
@@ -538,6 +562,7 @@ impl RoadType {
             speed_kmh: check_speed_kmh(builtin.cross_section, DEFAULT_SPEED_KMH.into())
                 .expect("the default speed is in range"),
             zoning: true,
+            street_lights: true,
             verdict: Ok(builtin.cross_section),
         }
     }
@@ -549,11 +574,19 @@ impl RoadType {
 }
 
 /// The first usable type in `types`' order whose cross-section (sidewalks included) is
-/// `section` and whose speed is `speed_kmh` (a walkway's is not compared): what Road Properties
-/// shows as a road's type (duplicate layouts resolve to the first). Zoning is not compared, so
-/// a road's "No buildings" override keeps its type. `O(types)`.
-pub fn type_of(types: &[RoadType], section: RoadCrossSection, speed_kmh: u16) -> Option<&RoadType> {
+/// `section`, whose speed is `speed_kmh` (a walkway's is not compared) and whose street lights
+/// are `street_lights`: what Road Properties shows as a road's type (duplicate layouts resolve to
+/// the first). Zoning is not compared, so a road's "No buildings" override keeps its type.
+/// `O(types)`.
+pub fn type_of(
+    types: &[RoadType],
+    section: RoadCrossSection,
+    speed_kmh: u16,
+    street_lights: bool,
+) -> Option<&RoadType> {
     types.iter().find(|ty| {
-        ty.usable() == Some(section) && (section.is_walkway() || ty.speed_kmh == speed_kmh)
+        ty.usable() == Some(section)
+            && (section.is_walkway() || ty.speed_kmh == speed_kmh)
+            && ty.street_lights == street_lights
     })
 }

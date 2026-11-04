@@ -419,6 +419,7 @@ fn graph_with_connected_border() -> RegionGraph {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
     });

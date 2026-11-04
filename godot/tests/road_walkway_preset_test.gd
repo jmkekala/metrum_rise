@@ -57,7 +57,7 @@ func _run() -> void:
 	var created: Dictionary = _simulation.create_road_type("Grass Avenue", [
 		{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
 		{"kind": "median", "style": 2, "width_m": 3.5},
-		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true)
+		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true, true)
 	var avenue := String(created.get("id", ""))
 	_expect(not avenue.is_empty(), "the divided type is created: %s" % created)
 

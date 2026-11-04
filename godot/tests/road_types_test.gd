@@ -8,10 +8,10 @@
 ## first edge keeps its layout); Road Properties changes a 1 + 1 road to the divided type and
 ## Ctrl+Z restores it, and refuses walkway -> road with its text; the drawing panel has no lane
 ## or median rows; the row fits 1280 x 720 with thirteen custom types in its "Custom roads"
-## drop-down. Attributes (`ROAD-101`): every built-in sends dev's (50 km/h, sidewalks, zoning); a
-## type without sidewalks at 80 km/h draws an edge with no sidewalks and its speed, read back
-## through `get_edge_cross_section`, and its tooltip and the picker give its speed and Rust's
-## cost. Writes the road-type library, so it runs only in the isolated profile.
+## drop-down. Attributes (`ROAD-101`): every built-in sends dev's (50 km/h, sidewalks, zoning,
+## street lights); a type without sidewalks or street lights at 80 km/h draws an edge with
+## neither and its speed, read back through `get_edge_cross_section`, and its tooltip and the
+## picker give its speed and Rust's cost. Writes the road-type library, so it runs only in the isolated profile.
 extends SceneTree
 
 const TIMEOUT_MS := 60000
@@ -151,7 +151,7 @@ func _run() -> void:
 	for builtin in BUILTINS:
 		var button: Button = menu.button_for(builtin[0])
 		_expect(button != null and button.text == builtin[1], "the %s button: %s" % [builtin[1], button.text if button else "missing"])
-	var created: Dictionary = _simulation.create_road_type("Menu Test Avenue", AVENUE, 50, true)
+	var created: Dictionary = _simulation.create_road_type("Menu Test Avenue", AVENUE, 50, true, true)
 	var avenue := String(created.get("id", ""))
 	_expect(not avenue.is_empty(), "the custom type is created: %s" % created)
 	_expect(not menu.listed_ids().has(avenue), "the row lists the library as it was read")
@@ -176,8 +176,8 @@ func _run() -> void:
 		_expect(_input.current_tool == tool_kind, "%s picks its tool" % builtin[1])
 		_expect(_tool.road_type_id == builtin[0] and _tool.fwd_lanes == builtin[3] and _tool.bkw_lanes == builtin[4] and _tool.median_style == 0,
 			"%s gives dev's button arguments: %d + %d, median %d" % [builtin[1], _tool.fwd_lanes, _tool.bkw_lanes, _tool.median_style])
-		_expect(_tool.speed_kmh == 50 and _tool.sidewalks and _tool.zoning,
-			"%s sends dev's attributes: %d %s %s" % [builtin[1], _tool.speed_kmh, _tool.sidewalks, _tool.zoning])
+		_expect(_tool.speed_kmh == 50 and _tool.sidewalks and _tool.zoning and _tool.street_lights,
+			"%s sends dev's attributes: %d %s %s %s" % [builtin[1], _tool.speed_kmh, _tool.sidewalks, _tool.zoning, _tool.street_lights])
 		for other in builtin_ids:
 			_expect(menu.button_for(other).button_pressed == (other == builtin[0]), "%s is marked alone (%s)" % [builtin[1], other])
 		_expect(not menu.custom_marked() and menu.custom_menu.text == "Custom roads", "%s leaves the drop-down unmarked" % builtin[1])
@@ -199,7 +199,7 @@ func _run() -> void:
 	var first := await _draw(z)
 	_expect(_layout(first) == [2, 2, 2, 3.0, 17.0], "the custom type draws 2 + 2 with a 3 m grass median: %s" % [_layout(first)])
 	_expect(String(_simulation.get_edge_cross_section(first).get("road_type", "")) == avenue, "the road reads back as the custom type")
-	_expect(_simulation.update_road_type(avenue, "Menu Test Avenue", AVENUE_EDITED, 50, true).is_empty(), "the custom type is edited")
+	_expect(_simulation.update_road_type(avenue, "Menu Test Avenue", AVENUE_EDITED, 50, true, true).is_empty(), "the custom type is edited")
 	_ui.refresh_road_types()
 	_expect(_tool.road_type_id == avenue and _tool.fwd_lanes == 1 and _tool.median_style == 1, "the tool draws the edited type: %d + %d, median %d" % [_tool.fwd_lanes, _tool.bkw_lanes, _tool.median_style])
 	var second := await _draw(z + 50.0)
@@ -207,20 +207,22 @@ func _run() -> void:
 	_expect(_layout(first) == [2, 2, 2, 3.0, 17.0], "the first edge keeps its layout: %s" % [_layout(first)])
 	_expect(String(_simulation.get_edge_cross_section(first).get("road_type", "")) == "", "the first edge is a layout no type has now")
 
-	# A type without sidewalks at 80 km/h: the tool sends its attributes, the edge reads them back.
-	var rural := String(_simulation.create_road_type("Menu Test Rural", RURAL, 80, true).get("id", ""))
+	# A type without sidewalks or street lights at 80 km/h: the tool sends its attributes, the
+	# edge reads them back (street lights cost nothing: the rural cost as before).
+	var rural := String(_simulation.create_road_type("Menu Test Rural", RURAL, 80, true, false).get("id", ""))
 	_expect(not rural.is_empty(), "the rural type is created")
 	_ui.refresh_road_types()
 	menu.pick(rural)
-	_expect(_tool.road_type_id == rural and _tool.speed_kmh == 80 and not _tool.sidewalks and _tool.zoning,
-		"the tool draws the rural type's attributes: %d %s %s" % [_tool.speed_kmh, _tool.sidewalks, _tool.zoning])
-	_expect(menu.custom_menu.tooltip_text == "1 + 1 lanes, 80 km/h, no sidewalks, 8.5 m wide\n19.2 / m, upkeep 0.128 / m / day",
+	_expect(_tool.road_type_id == rural and _tool.speed_kmh == 80 and not _tool.sidewalks and _tool.zoning and not _tool.street_lights,
+		"the tool draws the rural type's attributes: %d %s %s %s" % [_tool.speed_kmh, _tool.sidewalks, _tool.zoning, _tool.street_lights])
+	_expect(menu.custom_menu.tooltip_text == "1 + 1 lanes, 80 km/h, no sidewalks, no street lights, 8.5 m wide\n19.2 / m, upkeep 0.128 / m / day",
 		"its tooltip: %s" % menu.custom_menu.tooltip_text)
 	var rural_edge := await _draw(z + 100.0)
 	var rural_section: Dictionary = _simulation.get_edge_cross_section(rural_edge)
 	_expect(not bool(rural_section.get("sidewalks", true)) and int(rural_section.get("speed_kmh", 0)) == 80 and bool(rural_section.get("zoning", false))
+		and not bool(rural_section.get("street_lights", true))
 		and _layout(rural_edge) == [1, 1, 0, 0.0, 7.0] and String(rural_section.get("road_type", "")) == rural,
-		"the rural road has no sidewalks and 80 km/h: %s" % rural_section)
+		"the rural road has no sidewalks, no street lights and 80 km/h: %s" % rural_section)
 	_expect(_simulation.delete_road_type(rural).is_empty(), "the rural type is deleted")
 	_ui.refresh_road_types()
 	menu.pick(avenue)
@@ -271,7 +273,7 @@ func _run() -> void:
 	var many: Array[String] = []
 	for n in 12:
 		var name := "Overflow Test Road %02d" % n if n < 11 else "Overflow Test Road With 40 Chars In Name"
-		var made: Dictionary = _simulation.create_road_type(name, AVENUE_EDITED, 50, true)
+		var made: Dictionary = _simulation.create_road_type(name, AVENUE_EDITED, 50, true, true)
 		_expect(made.has("id"), "overflow type %d is created: %s" % [n, made])
 		many.append(String(made.get("id", "")))
 	_ui.refresh_road_types()

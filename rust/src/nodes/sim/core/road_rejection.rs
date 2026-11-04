@@ -139,6 +139,7 @@ impl RoadRejection {
             speed_kmh: RoadAttributes::speed_kmh_of(attempt.attributes.speed_ms),
             sidewalks: attempt.attributes.sidewalks,
             zoning: attempt.attributes.zoning,
+            street_lights: attempt.attributes.street_lights,
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
         };
         let json = serde_json::to_string(&replay).expect("attempt records serialize");
@@ -164,6 +165,7 @@ struct AttemptRecord<'a> {
     speed_kmh: u16,
     sidewalks: bool,
     zoning: bool,
+    street_lights: bool,
     points: Vec<[f32; 3]>,
 }
 
@@ -409,7 +411,7 @@ mod tests {
             snap: true,
             tunnel: true,
             median: None,
-            attributes: RoadAttributes::from_tool(100, false, false).unwrap(),
+            attributes: RoadAttributes::from_tool(100, false, false, false).unwrap(),
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
@@ -434,6 +436,7 @@ mod tests {
         assert_eq!(record["speed_kmh"], 100);
         assert_eq!(record["sidewalks"], false);
         assert_eq!(record["zoning"], false);
+        assert_eq!(record["street_lights"], false);
         // Every coordinate parses back to the submitted f32.
         let parsed: Vec<Vec<f64>> = serde_json::from_value(record["points"].clone()).unwrap();
         for (point, row) in points.iter().zip(&parsed) {

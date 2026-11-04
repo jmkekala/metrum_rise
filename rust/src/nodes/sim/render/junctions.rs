@@ -424,6 +424,7 @@ mod tests {
             physical_geometry: vec![p0, p1],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
         })

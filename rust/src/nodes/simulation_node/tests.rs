@@ -63,6 +63,7 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
         physical_geometry: vec![Vector3::ZERO, Vector3::new(20.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
     });

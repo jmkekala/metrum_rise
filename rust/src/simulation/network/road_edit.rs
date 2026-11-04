@@ -478,6 +478,7 @@ impl RoadTopologyPlan {
             if let Some(source) = runtime_source {
                 let live = graph.edge(source);
                 edge.no_building_spawn = live.no_building_spawn;
+                edge.no_street_lights = live.no_street_lights;
                 edge.vehicle_frontage_access = live.vehicle_frontage_access;
                 let speed_changed = edge.speed_limit != live.speed_limit;
                 edge.speed_limit = live.speed_limit;

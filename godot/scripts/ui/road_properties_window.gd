@@ -257,7 +257,7 @@ func _picked_type() -> Dictionary:
 	var index := _type_picker.selected
 	return _type_picker.get_item_metadata(index) if index >= 0 else {}
 
-# The in-place arguments for `type`: lanes, median, then speed, sidewalks and zoning
+# The in-place arguments for `type`: lanes, median, then speed, sidewalks, zoning and street lights
 # (`RoadTypeMenu.tool_attributes`: a walkway sends the built-ins').
 func _type_arguments(type: Dictionary) -> Array:
 	return [int(type.get("fwd_lanes", 0)), int(type.get("bkw_lanes", 0)), int(type.get("median_style", 0)),

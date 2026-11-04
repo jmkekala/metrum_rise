@@ -34,6 +34,7 @@ fn test_lane_geometry_and_length() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -95,6 +96,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
         physical_geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -221,6 +223,7 @@ fn test_highway_no_sidewalks() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -265,6 +268,7 @@ fn test_dedicated_footpath_centering() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -333,6 +337,7 @@ fn build_pedestrian_junction(
             physical_geometry: vec![start, end],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
@@ -608,6 +613,7 @@ fn test_rht_lane_offsets() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -841,6 +847,7 @@ fn test_crosswalk_counts() {
             physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
@@ -1187,6 +1194,7 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
                 physical_geometry: vec![p0, p1],
                 deleted: false,
                 no_building_spawn: false,
+                no_street_lights: false,
                 vehicle_frontage_access:
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
                 median: None,
@@ -1378,6 +1386,7 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
         physical_geometry: vec![p0, p1],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,

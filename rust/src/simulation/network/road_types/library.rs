@@ -15,10 +15,12 @@
 //! `{"format": "metrum-road-types", "version": 2, "next_id": 3, "types": [{"id": "custom:1",
 //! "name": "Boulevard", "parts": [{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
 //! {"kind": "median", "style": "grass", "width_m": 3.0}, ...], "speed_kmh": 50, "zoning":
-//! true}]}`. Part kinds `sidewalk`, `car_lane`, `median`, `footpath`; median styles `painted`,
-//! `grass`, `paving`. A car road without sidewalk parts has none. `speed_kmh` (a walkway's is 0
-//! and ignored) and `zoning` came with version 2: a version 1 entry reads as 50 km/h with
-//! zoning, and the next write stores the file as version 2, its entries as they were.
+//! true, "street_lights": true}]}`. Part kinds `sidewalk`, `car_lane`, `median`, `footpath`;
+//! median styles `painted`, `grass`, `paving`. A car road without sidewalk parts has none.
+//! `speed_kmh` (a walkway's is 0 and ignored) and `zoning` came with version 2: a version 1 entry
+//! reads as 50 km/h with zoning, and the next write stores the file as version 2, its entries as
+//! they were. `street_lights` came later in version 2 (`ROAD-101` RB3e), without a version
+//! change: an entry without it reads as lit and is written back as it was until edited.
 
 use super::{
     BUILTIN_ROAD_TYPES, DEFAULT_SPEED_KMH, LayoutRefusal, RoadCrossSection, RoadPart, RoadType,
@@ -66,15 +68,18 @@ struct StoredType {
     // Version 2; a version 1 entry has neither.
     #[serde(default = "default_speed_kmh")]
     speed_kmh: u16,
-    #[serde(default = "default_zoning")]
+    #[serde(default = "default_true")]
     zoning: bool,
+    // Added within version 2: an entry without it is lit.
+    #[serde(default = "default_true")]
+    street_lights: bool,
 }
 
 fn default_speed_kmh() -> u16 {
     DEFAULT_SPEED_KMH
 }
 
-fn default_zoning() -> bool {
+fn default_true() -> bool {
     true
 }
 
@@ -208,7 +213,8 @@ impl RoadTypeLibrary {
         self.free_name(name, except).map(|_| ())
     }
 
-    /// Adds a type named `name` (trimmed) with `parts`, `speed_kmh` and `zoning`, and returns
+    /// Adds a type named `name` (trimmed) with `parts`, `speed_kmh`, `zoning` and
+    /// `street_lights`, and returns
     /// its new id. Refused when the file cannot be written, the layout fails [`check_layout`],
     /// the speed [`check_speed_kmh`] (`speed_out_of_range`), the name breaks a rule
     /// ([`clean_name`]) or another type has it (`name_taken`), or the write fails
@@ -219,6 +225,7 @@ impl RoadTypeLibrary {
         parts: &[RoadPart],
         speed_kmh: i64,
         zoning: bool,
+        street_lights: bool,
     ) -> Result<String, RoadTypeRefusal> {
         self.reload_for_write()?;
         let (_, speed_kmh) = check_type(parts, speed_kmh)?;
@@ -226,12 +233,13 @@ impl RoadTypeLibrary {
         let id = format!("{CUSTOM_ID_PREFIX}{}", self.next_id);
         self.next_id += 1;
         self.entries
-            .push(stored(&id, &name, parts, speed_kmh, zoning));
+            .push(stored(&id, &name, parts, (speed_kmh, zoning, street_lights)));
         self.write()?;
         Ok(id)
     }
 
-    /// Gives custom type `id` the name `name`, the layout `parts`, `speed_kmh` and `zoning`;
+    /// Gives custom type `id` the name `name`, the layout `parts`, `speed_kmh`, `zoning` and
+    /// `street_lights`;
     /// built roads keep their own. Refused as [`Self::create`], and for a built-in
     /// (`road_type_builtin`) or an id the file does not hold (`road_type_unknown`). An unusable
     /// entry may be fixed this way.
@@ -242,12 +250,13 @@ impl RoadTypeLibrary {
         parts: &[RoadPart],
         speed_kmh: i64,
         zoning: bool,
+        street_lights: bool,
     ) -> Result<(), RoadTypeRefusal> {
         self.reload_for_write()?;
         let entry = self.entry_index(id)?;
         let (_, speed_kmh) = check_type(parts, speed_kmh)?;
         let name = self.free_name(name, Some(entry))?;
-        self.entries[entry] = stored(id, &name, parts, speed_kmh, zoning);
+        self.entries[entry] = stored(id, &name, parts, (speed_kmh, zoning, street_lights));
         self.write()
     }
 
@@ -402,13 +411,16 @@ pub(crate) fn check_type(
     Ok((section, speed_kmh))
 }
 
-fn stored(id: &str, name: &str, parts: &[RoadPart], speed_kmh: u16, zoning: bool) -> Value {
+// `attributes`: the speed in km/h, zoning and street lights.
+fn stored(id: &str, name: &str, parts: &[RoadPart], attributes: (u16, bool, bool)) -> Value {
+    let (speed_kmh, zoning, street_lights) = attributes;
     let stored = StoredType {
         id: id.to_string(),
         name: name.to_string(),
         parts: parts.iter().copied().map(StoredPart::from_part).collect(),
         speed_kmh,
         zoning,
+        street_lights,
     };
     serde_json::to_value(stored).expect("a road type serialises")
 }
@@ -431,6 +443,7 @@ fn custom_type(entry: &Value, listed: &[RoadType]) -> RoadType {
         parts,
         speed_kmh: 0,
         zoning: true,
+        street_lights: true,
         verdict: Err(refusal),
     };
     let stored = match StoredType::deserialize(entry) {
@@ -477,6 +490,7 @@ fn custom_type(entry: &Value, listed: &[RoadType]) -> RoadType {
         parts,
         speed_kmh,
         zoning: stored.zoning,
+        street_lights: stored.street_lights,
         verdict,
     }
 }

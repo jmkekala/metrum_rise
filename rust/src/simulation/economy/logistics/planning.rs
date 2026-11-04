@@ -260,6 +260,7 @@ mod tests {
             physical_geometry: points.to_vec(),
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
         });

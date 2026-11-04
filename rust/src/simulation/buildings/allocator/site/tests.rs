@@ -373,6 +373,7 @@ fn road_test_edge(
         physical_geometry: points,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,

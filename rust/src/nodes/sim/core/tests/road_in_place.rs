@@ -740,3 +740,88 @@ fn a_family_change_in_place_republishes_its_whole_street() {
     let published = published_chunks(&core);
     assert_eq!(fully_emitted_chunks(&mut core), published);
 }
+
+// The street's lights in world space along x (it runs along z = 0), sorted, from a full emission.
+fn street_light_xs(core: &mut SimCore) -> Vec<f32> {
+    let mesh = core
+        .transit_network
+        .try_generate_mesh_data(&core.region_graph, &core.heightmap)
+        .expect("current roadbed");
+    let mut xs: Vec<f32> = mesh.street_lights.iter().map(|light| light.position.x).collect();
+    xs.sort_by(f32::total_cmp);
+    xs
+}
+
+// What a road's street lights must never change: every product but the road payload's first
+// six lines (crossings, signs, lights and the three vertex layers): clips, profiles and lanes.
+fn simulation_products(core: &mut SimCore) -> String {
+    products(core).lines().skip(6).collect::<Vec<_>>().join("\n")
+}
+
+// `ROAD-101` RB3e: a road type's street lights given in place. Off: the road has none, and the
+// street around it ends at its two nodes, so each half is lit evenly on its own; the local
+// publication re-emits both halves wherever they run (a full emission draws the same chunks).
+// Lanes, clips, profiles and cost do not change. On again: the street is lit as before, bitwise.
+// Undo restores the lights.
+#[test]
+fn street_lights_turned_off_in_place_relight_the_street_and_undo() {
+    let (mut core, edge) = long_street();
+    let lit_xs = street_light_xs(&mut core);
+    let lit_chunks = published_chunks(&core);
+    let simulation = simulation_products(&mut core);
+    let lit = RoadAttributes::of_edge(core.region_graph.edge(edge));
+    assert!(lit.street_lights);
+    let verdict = core
+        .preview_edge_cross_section_internal(edge as i32, 1, 1, None, lit.lit(false))
+        .expect("lights off is a valid change");
+    assert_eq!(verdict.cost_delta, 0.0, "street lights cost nothing");
+    assert_eq!(verdict.buildings_removed, 0);
+
+    acknowledge(&mut core);
+    let undo_depth = core.undo_stack.len();
+    assert_eq!(edit(&mut core, edge, (1, 1, None), lit.lit(false)), "");
+    assert!(core.region_graph.edge(edge).no_street_lights);
+    core.finalize_network_render_products();
+    let unlit_chunks = published_chunks(&core);
+    assert_ne!(unlit_chunks, lit_chunks);
+    assert_eq!(fully_emitted_chunks(&mut core), unlit_chunks);
+    assert_eq!(simulation_products(&mut core), simulation);
+    let xs = street_light_xs(&mut core);
+    assert!(
+        xs.iter().all(|&x| !(0.0..=150.0).contains(&x)),
+        "none on the unlit road: {xs:?}"
+    );
+    for half in [
+        xs.iter().copied().filter(|&x| x < 0.0).collect::<Vec<_>>(),
+        xs.iter().copied().filter(|&x| x > 150.0).collect(),
+    ] {
+        assert!(half.len() >= 4, "each half stays lit: {xs:?}");
+        let gaps: Vec<f32> = half.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(
+            gaps.iter().all(|gap| (gap - gaps[0]).abs() < 1e-3),
+            "evenly spaced on its own: {gaps:?}"
+        );
+    }
+
+    // On again, through a local publication: the street as it was lit.
+    acknowledge(&mut core);
+    assert_eq!(edit(&mut core, edge, (1, 1, None), lit), "");
+    core.finalize_network_render_products();
+    assert_eq!(published_chunks(&core), lit_chunks);
+    assert_eq!(street_light_xs(&mut core), lit_xs);
+    assert_eq!(simulation_products(&mut core), simulation);
+
+    // Undo the "on": dark again; undo the "off": lit.
+    acknowledge(&mut core);
+    assert_eq!(core.undo_stack.len(), undo_depth + 2);
+    assert!(core.undo_action_internal());
+    assert!(core.region_graph.edge(edge).no_street_lights);
+    core.finalize_network_render_products();
+    assert_eq!(published_chunks(&core), unlit_chunks);
+    acknowledge(&mut core);
+    assert!(core.undo_action_internal());
+    assert!(!core.region_graph.edge(edge).no_street_lights);
+    core.finalize_network_render_products();
+    assert_eq!(published_chunks(&core), lit_chunks);
+    assert_eq!(fully_emitted_chunks(&mut core), lit_chunks);
+}

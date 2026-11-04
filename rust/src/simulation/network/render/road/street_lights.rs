@@ -73,7 +73,8 @@ struct Rule {
 }
 
 fn rule_for_edge(edge: &Edge) -> Option<Rule> {
-    if edge.deleted || edge.class != EdgeClass::Standard {
+    // A road whose type has street lights off has none, and ends its neighbours' streets.
+    if edge.deleted || edge.class != EdgeClass::Standard || edge.no_street_lights {
         return None;
     }
     // Spacings are the look-dev defaults from the street-light models' metadata (assumed, not

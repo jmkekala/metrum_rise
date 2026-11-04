@@ -88,6 +88,7 @@ pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -312,6 +313,7 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
         physical_geometry: vec![Vector3::new(x0, 0.0, 0.0), Vector3::new(x1, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
@@ -357,6 +359,7 @@ pub(super) fn build_4way_junction(
         physical_geometry: vec![Vector3::new(sx, 0.0, sz), Vector3::new(ex, 0.0, ez)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,

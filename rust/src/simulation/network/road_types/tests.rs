@@ -179,15 +179,16 @@ fn the_builtins_build_todays_roads_menu() {
         .iter()
         .map(RoadType::from_builtin)
         .collect();
-    let id_of = |section, speed| type_of(&types, section, speed).map(|ty| ty.id.as_str());
+    let id_of = |section, speed| type_of(&types, section, speed, true).map(|ty| ty.id.as_str());
     assert_eq!(id_of(RoadCrossSection::WALKWAY, 50), Some("builtin:walkway"));
     let two_lane = check_layout(&[S, B, F, S]).unwrap();
     assert_eq!(id_of(two_lane, 50), Some("builtin:road_2l"));
-    // Sidewalks and speed are part of the match.
+    // Sidewalks, speed and street lights are part of the match.
     assert_eq!(id_of(two_lane, 60), None);
+    assert!(type_of(&types, two_lane, 50, false).is_none());
     assert_eq!(id_of(check_layout(&[B, F]).unwrap(), 50), None);
     let divided = check_layout(&[S, B, grass(3.0), F, S]).unwrap();
-    assert!(type_of(&types, divided, 50).is_none());
+    assert!(type_of(&types, divided, 50, true).is_none());
 }
 
 #[test]
@@ -200,14 +201,14 @@ fn speeds_are_checked_on_the_10_kmh_grid() {
         assert_eq!(check_speed_kmh(road, speed), Err("speed_out_of_range"));
     }
     assert_eq!(check_speed_kmh(RoadCrossSection::WALKWAY, 999), Ok(0));
-    let tool = RoadAttributes::from_tool(100, false, false).unwrap();
+    let tool = RoadAttributes::from_tool(100, false, false, true).unwrap();
     assert_eq!(
         tool.speed_ms.to_bits(),
         (100.0_f32 * config::KMH_TO_MPS).to_bits()
     );
     assert_eq!(RoadAttributes::speed_kmh_of(tool.speed_ms), 100);
     assert_eq!(
-        RoadAttributes::from_tool(5, true, true),
+        RoadAttributes::from_tool(5, true, true, true),
         Err("speed_out_of_range")
     );
 }

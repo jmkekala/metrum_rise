@@ -38,8 +38,8 @@ use types::*;
 /// A stroke's edge: its lanes, median and class, and the road type's `attributes`
 /// (`ROAD-101`): a car road carries `FOOT` (its sidewalks) only with `attributes.sidewalks`
 /// and its speed limit; a walkway is always walked and keeps the default limit, which walking
-/// ignores; zoning off sets `no_building_spawn`. `base_cost` is left 0 for the caller's
-/// `CostCalculator` pass.
+/// ignores; zoning off sets `no_building_spawn`, street lights off `no_street_lights`.
+/// `base_cost` is left 0 for the caller's `CostCalculator` pass.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network) fn build_surface_edge(
     start_node: u32,
@@ -96,6 +96,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         physical_geometry: points,
         deleted: false,
         no_building_spawn: !attributes.zoning,
+        no_street_lights: !attributes.street_lights,
         vehicle_frontage_access,
         median,
     }

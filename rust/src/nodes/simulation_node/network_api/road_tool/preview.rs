@@ -44,18 +44,20 @@ impl SimulationNode {
     /// preview, commit and refusal report of the tool: `speed_kmh` the speed limit (20 to 120 in
     /// steps of 10; a walkway's stroke keeps the default limit whatever is set), `sidewalks`
     /// (a car road's two sidewalks, else a shoulder each side; a walkway is walked either way)
-    /// and `zoning` (lots and buildings along the road). Returns the empty string when set,
-    /// else `speed_out_of_range`, keeping the previous attributes. The built-in types send
-    /// (50, true, true): the edge every stroke built before road types.
+    /// `zoning` (lots and buildings along the road) and `street_lights` (visual only). Returns
+    /// the empty string when set, else `speed_out_of_range`, keeping the previous attributes.
+    /// The built-in types send (50, true, true, true): the edge every stroke built before road
+    /// types.
     #[func]
     pub fn set_road_tool_attributes(
         &mut self,
         speed_kmh: i32,
         sidewalks: bool,
         zoning: bool,
+        street_lights: bool,
     ) -> GString {
         use crate::simulation::network::road_types::RoadAttributes;
-        match RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning) {
+        match RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning, street_lights) {
             Ok(attributes) => {
                 self.road_tool_attributes = attributes;
                 GString::new()

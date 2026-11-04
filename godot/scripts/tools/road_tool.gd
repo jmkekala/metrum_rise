@@ -17,7 +17,8 @@
 ## label. The next stroke's lanes, median and attributes come from a road type (`ROAD-101`):
 ## `set_road_type` reads the type's cross-section from Rust's `get_road_types` and sets the
 ## lanes (per-call arguments of every preview and commit), the median through
-## `set_road_tool_median`, as before, and the type's speed, sidewalks and zoning through
+## `set_road_tool_median`, as before, and the type's speed, sidewalks, zoning and street lights
+## through
 ## `set_road_tool_attributes` (a walkway, which has no speed, sends the built-ins' defaults);
 ## each preview re-asserts the median and attributes, and the HUD's cost is the preview's
 ## `build_cost`, Rust's cost of the type over the stroke. R keeps the last road type picked (2-Lane Road at first),
@@ -65,10 +66,12 @@ signal tunnel_toggled(enabled: bool)
 var median_style: int = 0
 var median_width: float = 0.0
 # The next stroke's road-type attributes (`ROAD-101`), mirrored in Rust like the median: the
-# speed limit in km/h, sidewalks on both sides (else a shoulder each side) and zoning.
+# speed limit in km/h, sidewalks on both sides (else a shoulder each side), zoning and street
+# lights.
 var speed_kmh: int = 50
 var sidewalks: bool = true
 var zoning: bool = true
+var street_lights: bool = true
 ## The built-in type R starts with and falls back to when the picked type is gone.
 const DEFAULT_ROAD_TYPE := "builtin:road_2l"
 ## The built-in Walkway type, X's pick.
@@ -268,20 +271,22 @@ func set_median(style: int, width: float) -> String:
 	_queue_preview_update()
 	return ""
 
-## Sets the next stroke's speed limit, sidewalks and zoning through Rust and returns its refusal
-## key ("" when set; `speed_out_of_range` off Rust's grid, keeping the tool's attributes).
-func set_attributes(speed: int, with_sidewalks: bool, with_zoning: bool) -> String:
-	var reason: String = simulation_node.set_road_tool_attributes(speed, with_sidewalks, with_zoning)
+## Sets the next stroke's speed limit, sidewalks, zoning and street lights through Rust and
+## returns its refusal key ("" when set; `speed_out_of_range` off Rust's grid, keeping the tool's
+## attributes).
+func set_attributes(speed: int, with_sidewalks: bool, with_zoning: bool, with_lights: bool) -> String:
+	var reason: String = simulation_node.set_road_tool_attributes(speed, with_sidewalks, with_zoning, with_lights)
 	if not reason.is_empty():
 		return reason
 	speed_kmh = speed
 	sidewalks = with_sidewalks
 	zoning = with_zoning
+	street_lights = with_lights
 	_queue_preview_update()
 	return ""
 
-## Draws the next strokes with road type `id` (`ROAD-101`): its lanes, median, speed, sidewalks
-## and zoning as Rust's `get_road_types` lists them. Returns "" when picked, else the refusal
+## Draws the next strokes with road type `id` (`ROAD-101`): its lanes, median, speed, sidewalks,
+## zoning and street lights as Rust's `get_road_types` lists them. Returns "" when picked, else the refusal
 ## key: the type's `invalid_reason` when it is unusable, `road_type_unknown` when no type has
 ## `id`; a refused pick leaves the tool as it was (a usable type's median and speed always
 ## pass). `O(types x parts)` on a UI action.
@@ -293,7 +298,7 @@ func set_road_type(id: String) -> String:
 	if not bool(type.get("usable", false)):
 		return String(type.get("invalid_reason", "road_type_unknown"))
 	var attributes := RoadTypeMenu.tool_attributes(type, library.get("speeds", {}))
-	var reason := set_attributes(attributes[0], attributes[1], attributes[2])
+	var reason := set_attributes(attributes[0], attributes[1], attributes[2], attributes[3])
 	if not reason.is_empty():
 		return reason
 	reason = set_median(int(type.get("median_style", 0)), float(type.get("median_width", 0.0)))
@@ -420,7 +425,7 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	# commit and refusal report use the intent of the preview it submits.
 	simulation_node.set_road_tool_tunnel(tunnel_enabled)
 	simulation_node.set_road_tool_median(median_style, median_width)
-	simulation_node.set_road_tool_attributes(speed_kmh, sidewalks, zoning)
+	simulation_node.set_road_tool_attributes(speed_kmh, sidewalks, zoning, street_lights)
 	_preview = simulation_node.preview_road(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
 	if preview_metrics != null:
 		preview_metrics.dispatch(_preview_sequence, start_us, Time.get_ticks_usec(), true)
@@ -433,7 +438,7 @@ func _preview_road(points: PackedVector3Array) -> Dictionary:
 	_preview_tunnel = tunnel_enabled
 	_preview_median_style = median_style
 	_preview_median_width = median_width
-	_preview_attributes = [speed_kmh, sidewalks, zoning]
+	_preview_attributes = [speed_kmh, sidewalks, zoning, street_lights]
 	return _preview
 
 func _preview_is_for(points: PackedVector3Array) -> bool:
@@ -446,7 +451,7 @@ func _preview_is_for(points: PackedVector3Array) -> bool:
 		and tunnel_enabled == _preview_tunnel
 		and median_style == _preview_median_style
 		and median_width == _preview_median_width
-		and _preview_attributes == [speed_kmh, sidewalks, zoning]
+		and _preview_attributes == [speed_kmh, sidewalks, zoning, street_lights]
 		and int(_preview.get("surface_generation", -1)) == simulation_node.get_road_tool_surface_generation()
 	)
 

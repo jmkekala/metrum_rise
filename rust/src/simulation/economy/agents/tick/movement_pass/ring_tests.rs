@@ -88,6 +88,7 @@ fn road_edge(graph: &mut RegionGraph, from: u32, to: u32, a: Vector3, b: Vector3
         physical_geometry: vec![a, b],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
     })
@@ -184,6 +185,7 @@ pub(super) fn ring(spacing_m: f32, waiting: usize, feeder: usize) -> Ring {
             physical_geometry: vec![a, b],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
         });

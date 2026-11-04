@@ -380,6 +380,7 @@ fn node_entry_fixture(groups: usize, cars: usize) -> (AgentSystem, TransitNetwor
             physical_geometry: geometry.clone(),
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
         });

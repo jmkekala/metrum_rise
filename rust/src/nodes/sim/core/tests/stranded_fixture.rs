@@ -91,6 +91,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
             physical_geometry: vec![a, b],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
         });
@@ -116,6 +117,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
             physical_geometry: vec![a, b],
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
         });

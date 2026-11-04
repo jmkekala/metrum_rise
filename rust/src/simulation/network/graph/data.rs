@@ -101,6 +101,9 @@ pub struct Edge {
     /// Set by a road type with zoning off (`ROAD-101`; never from the speed) and
     /// player-toggleable in the road inspector.
     pub no_building_spawn: bool,
+    /// When `true` the road has no street lights (`ROAD-59`): set by a road type with street
+    /// lights off (`ROAD-101`). Visual only: no simulation system reads it.
+    pub no_street_lights: bool,
     /// Controls whether buildings along this edge may directly use only same-side lanes or both carriageways for car access.
     pub vehicle_frontage_access: VehicleFrontageAccess,
     /// The median between the two lane groups, if any (`ROAD-80`).

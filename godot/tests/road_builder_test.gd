@@ -13,6 +13,8 @@
 ## car-only warning, the Speed stepper (zoning off once at 80 km/h, unless the player set it, and
 ## never for an edited type), Rust's speed refusal and cost line; the created type's fields, the
 ## road tool's attributes and the drawn edge; Save keeps an edited type's own speed and zoning.
+## Street lights (`ROAD-101` RB3e): ticked for a new type; off, the description says so and the
+## cost stays; the created type, the road tool and the drawn edge have none; an edit loads it.
 ## Writes the road-type library, so it runs only in the isolated profile.
 extends SceneTree
 
@@ -201,7 +203,8 @@ func _run() -> void:
 		"the name is Rust's suggestion: %s" % _builder.name_edit.text)
 	_expect(_builder.tiles.size() == 5, "five part tiles")
 	_expect(_builder.sidewalks_check.button_pressed and _builder.zoning_check.button_pressed and int(_builder.speed_box.value) == 50
-		and _builder.speed_row.visible, "a new type has sidewalks, 50 km/h and zoning")
+		and _builder.speed_row.visible and _builder.street_lights_check.button_pressed and _builder.street_lights,
+		"a new type has sidewalks, 50 km/h, zoning and street lights")
 	_expect(_builder.cost_label.text == "15 / m, upkeep 0.10 / m / day" and _builder.warning_label.text.is_empty(),
 		"Rust's cost of the 2-Lane Road: %s" % _builder.cost_label.text)
 
@@ -400,6 +403,10 @@ func _run() -> void:
 	_builder.speed_box.value = 100
 	_expect(_builder.cost_label.text == "24 / m, upkeep 0.16 / m / day" and is_equal_approx(float(_builder.check.build_per_m), 24.0),
 		"Rust's cost at 100 km/h without sidewalks: %s" % _builder.cost_label.text)
+	_builder.street_lights_check.button_pressed = false
+	_expect(not _builder.street_lights and _builder.status_label.text == "1 + 1 lanes, 100 km/h, no sidewalks, no street lights, 8.5 m wide"
+		and _builder.cost_label.text == "24 / m, upkeep 0.16 / m / day" and not bool(_builder.check.get("street_lights", true)),
+		"street lights off: the description says so, the cost stays: %s / %s" % [_builder.status_label.text, _builder.cost_label.text])
 	_builder.sidewalks_check.button_pressed = true
 	_expect(_builder.parts == [SW, BACK, AHEAD, SW], "sidewalks back on: %s" % [_builder.parts])
 	_builder.sidewalks_check.button_pressed = false
@@ -408,31 +415,33 @@ func _run() -> void:
 	await process_frame
 	var highway := _type_named("Builder Test Highway")
 	_expect(int(highway.get("speed_kmh", 0)) == 100 and not bool(highway.get("zoning", true)) and not bool(highway.get("sidewalks", true))
-		and highway.get("parts", []) == [BACK, AHEAD], "the created type: %s" % highway)
+		and not bool(highway.get("street_lights", true)) and highway.get("parts", []) == [BACK, AHEAD], "the created type: %s" % highway)
 	var highway_id := String(highway.get("id", ""))
-	_expect(_tool.road_type_id == highway_id and _tool.speed_kmh == 100 and not _tool.sidewalks and not _tool.zoning,
-		"the road tool draws its attributes: %d %s %s" % [_tool.speed_kmh, _tool.sidewalks, _tool.zoning])
+	_expect(_tool.road_type_id == highway_id and _tool.speed_kmh == 100 and not _tool.sidewalks and not _tool.zoning and not _tool.street_lights,
+		"the road tool draws its attributes: %d %s %s %s" % [_tool.speed_kmh, _tool.sidewalks, _tool.zoning, _tool.street_lights])
 	var rural := await _draw(-100.0)
 	var rural_section: Dictionary = _simulation.get_edge_cross_section(rural)
 	_expect(int(rural_section.get("speed_kmh", 0)) == 100 and not bool(rural_section.get("sidewalks", true))
-		and not bool(rural_section.get("zoning", true)) and String(rural_section.get("road_type", "")) == highway_id,
+		and not bool(rural_section.get("zoning", true)) and not bool(rural_section.get("street_lights", true))
+		and String(rural_section.get("road_type", "")) == highway_id,
 		"the drawn road has the type's attributes: %s" % rural_section)
 	# Edit: the type's own attributes load and Save keeps them; an edit suggests nothing.
 	await _open()
 	list.pick(highway_id)
 	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and not _builder.sidewalks_check.button_pressed and int(_builder.speed_box.value) == 100
-		and not _builder.zoning_check.button_pressed, "an edited type loads its attributes")
+		and not _builder.zoning_check.button_pressed and not _builder.street_lights_check.button_pressed, "an edited type loads its attributes")
 	_builder.speed_box.value = 110
 	_builder.create_button.pressed.emit()
 	await process_frame
 	var saved := _type(highway_id)
-	_expect(int(saved.get("speed_kmh", 0)) == 110 and not bool(saved.get("zoning", true)) and not bool(saved.get("sidewalks", true)),
-		"Save keeps the edited type's own attributes: %s" % saved)
+	_expect(int(saved.get("speed_kmh", 0)) == 110 and not bool(saved.get("zoning", true)) and not bool(saved.get("sidewalks", true))
+		and not bool(saved.get("street_lights", true)), "Save keeps the edited type's own attributes: %s" % saved)
 	await _open()
 	list.pick(avenue)
 	_builder.speed_box.value = 90
 	_expect(_builder.zoning and _builder.zoning_check.button_pressed, "an edited type keeps its zoning at 90 km/h")
 	_builder.library_list.new_button.pressed.emit()
+	_expect(_builder.street_lights and _builder.street_lights_check.button_pressed, "a new type starts with street lights")
 	_builder.zoning_check.button_pressed = false
 	_builder.zoning_check.button_pressed = true
 	_builder.speed_box.value = 80

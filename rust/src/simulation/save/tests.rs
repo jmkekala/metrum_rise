@@ -144,6 +144,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         physical_geometry: points.clone(),
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
     });
@@ -199,6 +200,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
         physical_geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
     });
@@ -1601,6 +1603,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         physical_geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
     });
@@ -2218,5 +2221,29 @@ fn medians_round_trip_through_the_edge_table() {
             conn.execute_batch(bad).unwrap();
             assert!(network::load_graph(&conn).is_err(), "{bad} loaded");
         }
+    }
+}
+
+// `ROAD-101` RB3e (format 113): a road's street lights round-trip through the edge table, lit
+// by default.
+#[test]
+fn street_lights_round_trip_through_the_edge_table() {
+    let (mut graph, edge) = snapshot_test_graph();
+    for dark in [false, true] {
+        graph.edge_mut(edge).no_street_lights = dark;
+        let maps =
+            build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, &graph, &maps).unwrap();
+        tx.commit().unwrap();
+        let column: i64 = conn
+            .query_row("SELECT no_street_lights FROM network_edges", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(column, i64::from(dark));
+        assert_eq!(network::load_graph(&conn).unwrap().edge(edge).no_street_lights, dark);
     }
 }

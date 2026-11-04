@@ -147,20 +147,23 @@ func _on_custom_item(item_id: int) -> void:
 	type_picked.emit(id, _is_walkway(_types[id]))
 
 ## The attributes the road tool and an in-place edit send for `type` (`get_road_types` entry),
-## `[speed_kmh, sidewalks, zoning]`: the type's own, except that a walkway, which has neither a
-## speed nor sidewalks of its own, sends `speeds.default_kmh` with sidewalks, as every stroke did
-## before road types (its stroke builds the same footpath either way).
+## `[speed_kmh, sidewalks, zoning, street_lights]`: the type's own, except that a walkway, which
+## has neither a speed nor sidewalks of its own, sends `speeds.default_kmh` with sidewalks, as
+## every stroke did before road types (its stroke builds the same footpath either way).
 static func tool_attributes(type: Dictionary, speeds: Dictionary) -> Array:
+	var zoning := bool(type.get("zoning", true))
+	var lights := bool(type.get("street_lights", true))
 	if _is_walkway(type):
-		return [int(speeds.get("default_kmh", 50)), true, bool(type.get("zoning", true))]
-	return [int(type.get("speed_kmh", 0)), bool(type.get("sidewalks", true)), bool(type.get("zoning", true))]
+		return [int(speeds.get("default_kmh", 50)), true, zoning, lights]
+	return [int(type.get("speed_kmh", 0)), bool(type.get("sidewalks", true)), zoning, lights]
 
 static func _is_walkway(type: Dictionary) -> bool:
 	return int(type.get("fwd_lanes", 0)) + int(type.get("bkw_lanes", 0)) == 0
 
-## "2 + 2 lanes, Grass 3.0 m, 100 km/h, no sidewalks, 17.0 m wide" (or "Footpath, 2.0 m wide")
-## from Rust's figures for a `get_road_types` entry, a `check_road_layout` verdict or a road's
-## `get_edge_cross_section`; `with_width` false leaves the width out. A footpath has no speed.
+## "2 + 2 lanes, Grass 3.0 m, 100 km/h, no sidewalks, no street lights, 17.0 m wide" (or
+## "Footpath, 2.0 m wide") from Rust's figures for a `get_road_types` entry, a
+## `check_road_layout` verdict or a road's `get_edge_cross_section`; `with_width` false leaves
+## the width out. A footpath has no speed.
 static func describe(type: Dictionary, with_width: bool = true) -> String:
 	var fwd := int(type.get("fwd_lanes", 0))
 	var bkw := int(type.get("bkw_lanes", 0))
@@ -173,6 +176,8 @@ static func describe(type: Dictionary, with_width: bool = true) -> String:
 			text += ", %d km/h" % int(type.get("speed_kmh", 0))
 		if not bool(type.get("sidewalks", true)):
 			text += ", no sidewalks"
+	if not bool(type.get("street_lights", true)):
+		text += ", no street lights"
 	if with_width:
 		text += ", %.1f m wide" % float(type.get("total_m", 0.0))
 	return text

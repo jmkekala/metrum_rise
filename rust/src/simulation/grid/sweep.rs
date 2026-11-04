@@ -202,6 +202,7 @@ mod tests {
                 physical_geometry: points,
                 deleted: false,
                 no_building_spawn: false,
+                no_street_lights: false,
                 vehicle_frontage_access: VehicleFrontageAccess::BothSides,
                 median: None,
             });

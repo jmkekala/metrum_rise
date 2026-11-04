@@ -388,6 +388,7 @@ mod tests {
             class: EdgeClass::Standard,
             deleted: false,
             no_building_spawn: false,
+            no_street_lights: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,

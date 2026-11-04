@@ -45,6 +45,7 @@ pub(crate) fn road_edge(start_node: u32, end_node: u32, points: Vec<Vector3>, wi
         physical_geometry: points,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
     }

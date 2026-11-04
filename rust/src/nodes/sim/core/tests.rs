@@ -919,6 +919,7 @@ fn add_test_border_road(core: &mut SimCore) {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(180.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
     });
@@ -1157,6 +1158,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         geometry,
         deleted: false,
         no_building_spawn: false,
+        no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
     }
