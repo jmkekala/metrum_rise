@@ -761,6 +761,7 @@ fn measure_pocket_edit(core: &mut SimCore, remote_buildings: usize, remote_roads
         right: true,
         body_m: 40.0,
     };
+    // Without ids: the added transition and edge take the next ids, which the remote roads move.
     let local = |core: &SimCore| {
         let roadbed = &core.transit_network.roadbed;
         let graph = &core.region_graph;
@@ -776,14 +777,14 @@ fn measure_pocket_edit(core: &mut SimCore, remote_buildings: usize, remote_roads
         for &at in &nodes {
             for &edge in graph.node_adjacency(at) {
                 let piece = roadbed.span_piece(edge).expect("a span");
-                out += &format!("{edge} {:?}\n", piece.mesh().positions());
+                out += &format!("{:?}\n", piece.mesh().positions());
                 let lanes = &core.transit_network.lane_system;
                 for &id in &lanes.edge_lanes[&edge] {
                     out += &format!("{:?}\n", lanes.lanes[id].geometry);
                 }
             }
             let piece = roadbed.node_piece(at).expect("a node piece");
-            out += &format!("{at} {:?}\n", piece.mesh().positions());
+            out += &format!("{:?}\n", piece.mesh().positions());
         }
         out
     };

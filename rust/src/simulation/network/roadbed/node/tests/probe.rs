@@ -57,6 +57,16 @@ fn probe_fixtures() -> Vec<(String, RegionGraph)> {
     for link_m in [10.0, 13.0, 16.0, 20.0, 25.0, 30.0, 40.0] {
         set.push((format!("short_link_{link_m}"), short_link(link_m)));
     }
+    // Turn pockets (`ROAD-95`), recorded in round R5a2.
+    use crate::simulation::network::roadbed::fixtures as pockets;
+    for (name, graph) in [
+        ("t_right_pocket", pockets::t_right_pocket()),
+        ("one_way_right_pocket", pockets::one_way_right_pocket()),
+        ("two_plus_one_right_pocket", pockets::two_plus_one_right_pocket()),
+        ("straight_1x1_to_2x2", pockets::straight_1x1_to_2x2()),
+    ] {
+        set.push((name.to_string(), graph));
+    }
     set
 }
 
@@ -1980,6 +1990,55 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x87926626f99140ad,
         ],
     ),
+    // Turn pockets (`ROAD-95`), recorded by round R5a2: new entries, every other entry unchanged.
+    (
+        "t_right_pocket",
+        [
+            0x3afeffb0ee418eb6,
+            0x4cf9fe2efb8a7af3,
+            0xa3be4007fbf03d83,
+            0xaa86d8c750437be6,
+            0xe71d5d36c5ee2d60,
+            0x22af890eb610c468,
+            0xaecd896ccc2f9595,
+        ],
+    ),
+    (
+        "one_way_right_pocket",
+        [
+            0x79e130fc36fd6c4d,
+            0x9af782198329d481,
+            0x0be5def56aa07b87,
+            0xc9242c670a1d85ff,
+            0xea0f2f2425f9afce,
+            0xeaae0db9437fc779,
+            0x9830d3935a933f3f,
+        ],
+    ),
+    (
+        "two_plus_one_right_pocket",
+        [
+            0xc35886d408f7a181,
+            0x8393ca9a20a74a9c,
+            0x37de5d34931c048a,
+            0x23200d6c4947b5db,
+            0x423ce45cdac75393,
+            0x682a33c3506d5163,
+            0xfc2acff9dae4bf48,
+        ],
+    ),
+    (
+        "straight_1x1_to_2x2",
+        [
+            0xa9d0b661f0d6b40b,
+            0x92c5b6e5b49386aa,
+            0xa9abc111f7609fda,
+            0xf72e274d01d23c55,
+            0x1ddbab1178d45da1,
+            0xf666fd5ed0688037,
+            0xea9f1359f25fc3a9,
+        ],
+    ),
 ];
 
 // Recorded by `TERRAIN-07-B`: the strip layer is new, so every entry is new; the seven
@@ -2144,4 +2203,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("short_link_25", 0x545a60317e3c77bf),
     ("short_link_30", 0x5875266d8a2ea949),
     ("short_link_40", 0xed90621b256b52af),
+    // Turn pockets (`ROAD-95`), recorded by round R5a2.
+    ("t_right_pocket", 0xb39623a7c7a3bd70),
+    ("one_way_right_pocket", 0x9f0797ef5652d9ca),
+    ("two_plus_one_right_pocket", 0xd65835f90817caae),
+    ("straight_1x1_to_2x2", 0xf29dd3d5cc0bd09a),
 ];
