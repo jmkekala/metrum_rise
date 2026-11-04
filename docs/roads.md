@@ -204,7 +204,11 @@ frame:
 | Divided body (`body_for_edge`, [Medians](#medians-road-80)) | the car road's bands with the split opened into kerb, median, kerb | ..., ground, raised, raised, raised, ground, ... |
 
 `w` is `max(edge.width, LANE_WIDTH)`; `Edge::width` includes a median (`ROAD-80`). The profile, not the `Edge::width` doc comment, defines what
-width means. The raised offset is `CURB_STEP_HEIGHT_M` (0.12 m). New band kinds, such as medians,
+width means. A turn pocket edge ([Turn pockets](#turn-pockets-road-95)) centres its carriageway on
+`Edge::kerb_shift_m` instead of the centreline: its bands are `[shift - w/2, 0]` and
+`[0, shift + w/2]` (the split stays at 0, so each side keeps one core band), and the curb and
+sidewalk move with the carriageway edge of their side. Every other edge has shift 0 and its
+profile is bitwise unchanged. The raised offset is `CURB_STEP_HEIGHT_M` (0.12 m). New band kinds, such as medians,
 parking or cycle tracks, are added as explicit ordered bands with a level; nothing else in the
 compiler may special-case them.
 
@@ -230,7 +234,10 @@ in the forward frame (right-hand traffic, forward on the right), before and afte
 once on load (at most 1.75 m per lane of imbalance, reattached as after any rebuild). Before the
 fix such a lane ran on the kerb and connectors left the carriageway at the kerb corners (the
 connector sweep's `four_way_2x1` fixture: 2 connectors 1.24 m outside). The fork's
-`median_center_offset` is the source; its pocket term waits for the pockets round.
+`median_center_offset` is the source. On a pocket edge (`ROAD-95`) the line lies at
+`kerb_shift_m + (bkw - fwd) * LANE_WIDTH / 2`, which counts a kerb pocket's lane out: the base
+road's lanes keep their offsets and the pocket lane lies one lane beyond its kerb-side
+neighbour.
 
 ### Default junction lane use (`ROAD-94`)
 
@@ -319,6 +326,73 @@ so a save written by an earlier build of this branch with multi-lane junctions n
 its saved connectors are not the rebuilt ones). Kuopio has 352 vehicle connectors (R4a3 324,
 `dev` 440), 0 failing in the sweep; 1+1 cities are bitwise unchanged (the 100k city's 24,834).
 The acceptance (`TRAFFIC-23`) is in [`traffic.md`](traffic.md#advance-lane-choice-road-94).
+
+### Turn pockets (`ROAD-95`)
+
+A turn pocket adds a lane for one turn on the last stretch of a road before a junction. Round R5a1
+(2026-11-04, branch `port-r5-pockets`, not landed) built the model, the geometry, the lanes and the
+save; the pocket edit, its API and the tool are rounds R5a2-R5b2 (`PLAN-R5` decisions D1-D17, the
+user's R5-a..R5-c). Ported from Veeti's road-chain branch (fork `ROAD-67` stages 3-5) without its
+geometric taper records, its compiler previews or its road-tool mode.
+
+- **Data (D1).** `Edge::pocket: Option<RoadPocket { end, left, right }>`: pocket lanes for the
+  direction that approaches `end`, counted in `fwd_lanes` / `bkw_lanes` and `Edge::width`. `left` is
+  the lane left of the through lanes as its drivers see it (rank 0), `right` the lane on their right.
+  The edge is a short pocket edge split off its base road at a hidden degree-two node of type
+  `NodeType::LaneTransition`; every rule reading the type also checks two live arms
+  (`RegionGraph::is_lane_transition`), so a stale type is inert. No lengths are stored: the
+  taper is the layout's.
+- **Validation** (`Edge::validate_pocket`, loads and edits): a surface car road (`invalid_road`,
+  `pocket_requires_surface_road`), at least one through lane besides the pocket lanes and at most
+  four lanes in that direction (`invalid_pocket_dimensions`, `pocket_lane_limit`), and an inner
+  kerb pocket (the drivers' left under right-hand traffic) only on a one-way road
+  (`pocket_requires_one_way`, D15). A left pocket inside a raised median is round R5b1's.
+- **Profile and lanes.** A kerb pocket moves its own kerb, curb and sidewalk out by one lane and
+  keeps the other side bit for bit (`kerb_shift_m` = half a lane towards that kerb; see
+  [Cross-section profile](#cross-section-profile) and [Lane centring](#lane-centring-road-100)).
+  Worked offsets (right-hand traffic, forward pocket): 1+1 with a right pocket, lanes -1.75 / +1.75
+  / +5.25, carriageway -3.5 to 7.0; one-way 1+0, the through lane on the centreline and the pocket
+  at +3.5; 2+1, lanes 0 / +3.5 / +7.0 and -3.5; one-way left kerb pocket, -3.5 / 0, carriageway
+  -5.25 to 1.75. The sidewalk lanes take their own side's band (`sidewalk_offset`).
+- **Transition.** The base edge's profile and the pocket edge's differ, so the transition is laid
+  out, and its one straight sector on the pocket side tapers every boundary (D4: a one-lane step,
+  21 m, 10.5 m on each arm; the other sector keeps its offsets). Both mouths lie at 10.5 m. No
+  crossing and no crossing toggle there (D6, as at a continuing raised median). A road with a
+  raised median keeps its median centred on the lane groups' line, which a kerb pocket does not
+  move; the median noses out on both sides of the laid-out transition (open question for R5b1).
+- **Lane use (D4).** One mask function, `pocket_mask`, feeds the connectors, the solid zone, the
+  entry-lane groups (`approach_group`) and the arrows: the pocket lane serves its turn alone and
+  the other lanes the permissive default of the movements left. A 1+1 approach with a right
+  pocket paints L+S / R at a four-way and S / R at a T; 2+2 L+S / S / R; the one-way left kerb
+  pocket L / S+R. When the node no longer offers the pocket's turn, or the pockets would take every
+  movement it offers, the lanes take the base rule: no lane is left without a movement.
+- **Targets at a transition (D5).** Straight into a pocket edge that gains exactly its pocket
+  lanes: each through lane keeps its rank (plus one per left pocket lane) and the lane beside a
+  pocket lane also forks into it. The mouths lie 21 m apart, so every pair is a connector: the
+  through lanes straight, the fork a lateral-shift biarc. The leaving direction maps 1:1.
+- **Lane-count changes (D16).** No authored transition: a road continued straight on by one of
+  another lane count keeps today's behaviour, pinned by `straight_1x1_to_2x2`: the node is laid
+  out and tapers both sides, the forward lane fans into both lanes ahead, the two backward lanes
+  merge into one, and D8's one default zebra stays.
+- **Topology.** `split_edge` keeps the pocket on the half that keeps its end; the other half keeps
+  the lanes as a plain road (round R5a2 refuses strokes onto a pocket, D10). A bulldozed pair
+  resets a transition left with one arm to a junction; `unite_nodes` already resets the type.
+- **Save format 115.** `network_edges.pocket_end` (0 none, 1 start, 2 end) and `pocket_roles`
+  (bit 1 left, bit 2 right), node type 6; a pocket `validate_pocket` refuses fails the load
+  ([`simulation.md`](simulation.md)).
+- **Cost.** `kerb_shift_m`, `pocket_lanes` and `pocket_mask` are `O(1)`; `DefaultLaneUse::new`
+  reads the approach's pocket in `O(1)` and the transition test is `O(degree)`, only where
+  connectors are rebuilt, entry lanes are chosen or arrows painted. No per-tick state, no
+  allocation. Products of roads without pockets are unchanged: the R8 probe (town, hill, steep,
+  Kuopio, the R3D rows) equals the `dev` control entry for entry; the payload stage of
+  `benchmark_road_preview_stages` (release lib tests, 4 workers, P-cores, C B B C C B B C, FRESH
+  2026-11-04) p50 ms median ctl / branch: `sloped_t` 0.377 / 0.382, `sloped_branch` 0.399 / 0.379,
+  `divided_t` 0.450 / 0.441, each inside the other's spread, payload vertices equal.
+- **Tests** (`network/test_pockets.rs`, `lane_use` and `save` tests): the profile table and its
+  mirror, the lane offsets, validation, the transition's one-sided taper and no crossing, the
+  transition connectors, the masks and arrows with the fallback, the count change, the stale
+  type, the ported `pocket_keeps_opposite_kerb_and_two_through_lanes_aligned` (its right half),
+  and the save round trip with its refusals.
 
 ### Junction layout
 

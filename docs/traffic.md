@@ -708,7 +708,10 @@ crossings).
     counts it as waiting for a home (a walker with no home, no destination and no next one, not
     stranded) until it is rehoused or gone; the notice adds "N residents waiting for a home"
     (`get_stranded_walkers_report`'s `waiting_for_home`). Cost: O(log set) per evicted walker,
-    and the same report rebuild.
+    and the same report rebuild. A walker with no home whose job ends on the way
+    (`assign_work_building` cancels its trip, `TRAFFIC-24`) waits at its lane end the same way and
+    is put in the set the same way (2026-11-04, report-only: the economy envelope is
+    byte-identical).
 - **Measured (`TRAFFIC-19`, 2026-11-02; release test binaries of the control `3de19c2b` and the
   branch, each with R6's uncommitted crossings-off variant and the probe, one session; FRESH).**
   The probe is `populated_city::watchdog_probe` (ignored; `TRAFFIC19_RESIDENTS`, `TRAFFIC19_DAYS`,

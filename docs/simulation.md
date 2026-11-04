@@ -263,6 +263,14 @@ shows the version and `saved_lanes` only (116 connector rows deleted at the node
 2+2 edges, 1,524 rows renumbered; 2,310 -> 2,194 rows), every other table identical
 (`lane_connections` 1,416 rows both); `placements.json` is re-pinned.
 
+Save format 115 (`ROAD-95`, round R5a1, 2026-11-04) adds two `network_edges` columns for a road's
+turn pocket, `pocket_end` (0 none, 1 start, 2 end) and `pocket_roles` (bit 1 left, bit 2 right),
+and node type 6, `LaneTransition` ([`roads.md`](roads.md#turn-pockets-road-95)). A pocket that
+`Edge::validate_pocket` refuses fails the load, as an invalid median does; there is no repair and
+no older save loads. The Kuopio fixture is re-recorded in format 115: `sqldiff` shows only the
+version and the two new columns (0 on all 70 edges), every table's row count is unchanged, and
+`placements.json` is re-pinned.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per
