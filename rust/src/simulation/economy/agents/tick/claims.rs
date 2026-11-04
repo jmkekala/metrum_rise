@@ -334,7 +334,6 @@ fn agent_lane_change_target(
             has_access_plan: (agents.access_flags[i] & ACCESS_PLAN_VALID) != 0,
             blocked_time: agents.overtake_blocked_time_s[i],
             cooldown: agents.overtake_cooldown_s[i],
-            turn_preparation,
         },
         preparation.network,
         preparation.lane_buckets,

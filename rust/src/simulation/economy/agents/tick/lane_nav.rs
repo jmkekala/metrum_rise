@@ -299,11 +299,8 @@ pub(in crate::simulation::economy::agents) fn lane_hosts_turn_preparation(
     if count <= 1 {
         return true;
     }
-    let change_end = lane_change_end(
-        lane.length,
-        network.lane_system.needs_turn_preparation(lane_id),
-    );
-    let available = lane.length - (lane.length - change_end - OVERTAKE_EDGE_BUFFER_M).max(0.0);
+    let available =
+        lane.length - (lane.length - lane_change_end(lane) - OVERTAKE_EDGE_BUFFER_M).max(0.0);
     turn_lane_change_length(0.0, available, u16::from(count.saturating_sub(1)))
         .is_some_and(|length| available > length + OVERTAKE_EDGE_BUFFER_M)
 }
@@ -615,7 +612,7 @@ pub(super) fn sibling_lane_reaches_edge(
 /// (`LaneSystem::needs_turn_preparation`), at most `turn_preparation_window_m` of it remain and
 /// the car has not reached the solid approach zone (`APPROACH_SOLID_LENGTH_M`), where no change
 /// starts and the selector would be wasted work for the queue at the stop line. The flag is read
-/// first, so a car on any other lane pays one byte read. O(1), no allocation.
+/// first, so a car on any other lane pays one read of its lane. O(1), no allocation.
 #[inline]
 pub(super) fn junction_approach_node(
     lane_id: usize,
@@ -623,11 +620,9 @@ pub(super) fn junction_approach_node(
     network: &TransitNetwork,
     graph: &RegionGraph,
 ) -> Option<u32> {
-    if !network.lane_system.needs_turn_preparation(lane_id) {
-        return None;
-    }
     let lane = network.lane_system.lanes.get(lane_id)?;
-    if lane.edge_id == usize::MAX || lane.lane_type != LaneType::Vehicle {
+    if lane.solid_zone_m <= 0.0 || lane.edge_id == usize::MAX || lane.lane_type != LaneType::Vehicle
+    {
         return None;
     }
     let edge = graph.get_edge(lane.edge_id)?;

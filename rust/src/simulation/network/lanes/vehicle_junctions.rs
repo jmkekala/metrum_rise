@@ -13,7 +13,7 @@ use super::super::roadbed::{ArmKey, Corner, EdgeEnd, MouthFrame, RoadVec2};
 use super::geometry::build_cum_dist;
 use super::lane_use::DefaultLaneUse;
 use super::rebuild::vehicle_lane_offset;
-use super::{Lane, LaneSuccessors, LaneType};
+use super::{APPROACH_SOLID_LENGTH_M, Lane, LaneSuccessors, LaneType};
 use godot::prelude::*;
 use std::collections::HashMap;
 
@@ -79,8 +79,7 @@ pub(crate) fn vehicle_lane_end(
 
 /// Builds vehicle intersection connection lanes at a single node: one connector per allowed
 /// pair of an inbound and an outbound lane, under the node's whitelist or else the default lane
-/// use (`ROAD-94`). Writes `turn_preparation` (by lane id, grown to the lane count) for every
-/// inbound lane. `kerb_corners` are its layout's fitted kerb corners
+/// use (`ROAD-94`). Writes every inbound lane's solid approach zone (`Lane::solid_zone_m`). `kerb_corners` are its layout's fitted kerb corners
 /// (`NodeWalkways::collect_with_kerbs`), empty without a layout.
 pub(crate) fn build_vehicle_connections_at_node(
     lanes: &mut Vec<Lane>,
@@ -88,7 +87,6 @@ pub(crate) fn build_vehicle_connections_at_node(
     graph: &RegionGraph,
     node_id: usize,
     node_lanes: &mut std::collections::HashMap<usize, Vec<usize>>,
-    turn_preparation: &mut Vec<bool>,
     kerb_corners: &[Corner],
 ) {
     // (edge, lane index, lane id, its end at the node).
@@ -139,7 +137,6 @@ pub(crate) fn build_vehicle_connections_at_node(
     // Dead ends allow the U-turn at an open node; the router reads the same edge-level rule.
     let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
 
-    turn_preparation.resize(lanes.len(), false);
     for &(in_edge_id, in_lane_idx, in_lane_id, in_end) in &inbound {
         // Global whitelist mode: if the node has ANY user vehicle connection (lane_idx ≠ ±100),
         // ALL unspecified turns are blocked. Only explicitly listed turns are permitted; an arm
@@ -150,7 +147,7 @@ pub(crate) fn build_vehicle_connections_at_node(
         let defaults = (explicit.is_none() && !node_has_any_vehicle_conn)
             .then(|| DefaultLaneUse::new(graph, in_edge_id, node_id as u32));
         // A multi-lane approach to a whitelisted node needs its lane chosen too.
-        turn_preparation[in_lane_id] = defaults.as_ref().map_or_else(
+        let needs_lane_choice = defaults.as_ref().map_or_else(
             || {
                 let edge = graph.edge(in_edge_id);
                 let count = if lanes[in_lane_id].is_fwd {
@@ -162,6 +159,11 @@ pub(crate) fn build_vehicle_connections_at_node(
             },
             DefaultLaneUse::needs_lane_choice,
         );
+        lanes[in_lane_id].solid_zone_m = if needs_lane_choice {
+            APPROACH_SOLID_LENGTH_M
+        } else {
+            0.0
+        };
 
         for &(out_edge_id, out_lane_idx, out_lid, out_end) in &outbound {
             let allowed = match &defaults {
@@ -220,6 +222,7 @@ pub(crate) fn build_vehicle_connections_at_node(
                 lane_type: LaneType::Vehicle,
                 next_lanes: LaneSuccessors::one(out_lid),
                 node_id,
+                solid_zone_m: 0.0,
             });
             node_lanes.entry(node_id).or_default().push(conn_id);
             lanes[in_lane_id].next_lanes.push(conn_id);

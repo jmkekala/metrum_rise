@@ -6,7 +6,7 @@ use super::super::lane_nav::EntryLanes;
 use super::occupancy::{idm_gap_bucket, lane_change_gap_clear};
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::lanes::{APPROACH_SOLID_LENGTH_M, LaneType};
+use crate::simulation::network::lanes::{Lane, LaneType};
 
 const LANE_CHANGE_DURATION_S: f32 = 3.5;
 /// Minimum longitudinal distance for a lane-change S-curve.
@@ -49,9 +49,6 @@ pub(in crate::simulation::economy::agents::tick) struct LaneChangeParams {
     pub blocked_time: f32,
     /// Remaining discretionary maneuver cooldown in seconds.
     pub cooldown: f32,
-    /// Whether the lane approaches a junction whose lanes serve different movements
-    /// (`LaneSystem::needs_turn_preparation`), so its solid approach zone forbids changes.
-    pub turn_preparation: bool,
 }
 
 /// Reason for a selected lateral maneuver.
@@ -103,7 +100,7 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
 ) -> Option<LaneChange> {
     let source = transit_network.lane_system.lanes.get(params.lane_id)?;
     // No change of any kind starts in the solid zone before a movement-selective junction.
-    let change_end = lane_change_end(source.length, params.turn_preparation);
+    let change_end = lane_change_end(source);
     if params.lane_d >= change_end {
         return None;
     }
@@ -210,7 +207,7 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     }
     // A car on a flagged lane keeps to the lanes its route turns from (S8): an overtake out of
     // them in a queue may find no gap to return before the junction.
-    if params.turn_preparation
+    if source.solid_zone_m > 0.0
         && route_lanes().is_some_and(|lanes| !lanes.contains(target.lane_idx))
     {
         return None;
@@ -222,19 +219,13 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     })
 }
 
-/// Distance along a lane of `length` metres after which no lane change starts: the lane end,
-/// or the start of the solid approach zone (`APPROACH_SOLID_LENGTH_M`) on a lane flagged for turn
-/// preparation. Shared by the tick and the route preview.
+/// Distance along `lane` after which no lane change starts: the lane end, or the start of the
+/// solid approach zone (`Lane::solid_zone_m`, `APPROACH_SOLID_LENGTH_M` on a lane flagged for
+/// turn preparation). One subtraction on the lane's own cache line. Shared by the tick and the
+/// route preview.
 #[inline(always)]
-pub(in crate::simulation::economy::agents::tick) fn lane_change_end(
-    length: f32,
-    turn_preparation: bool,
-) -> f32 {
-    if turn_preparation {
-        length - APPROACH_SOLID_LENGTH_M
-    } else {
-        length
-    }
+pub(in crate::simulation::economy::agents::tick) fn lane_change_end(lane: &Lane) -> f32 {
+    lane.length - lane.solid_zone_m
 }
 
 /// Bounds one turn preparation step so the remaining adjacent steps still fit before the

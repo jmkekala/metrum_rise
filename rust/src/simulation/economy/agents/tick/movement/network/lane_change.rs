@@ -102,7 +102,6 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
                 has_access_plan,
                 blocked_time: *slices.overtake_blocked_time.get(i),
                 cooldown: *slices.overtake_cooldown.get(i),
-                turn_preparation,
             },
             transit_network,
             lane_buckets,

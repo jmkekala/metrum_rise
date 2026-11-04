@@ -219,8 +219,12 @@ mod tests {
         assert!(network.lane_system.needs_turn_preparation(from));
         let length = network.lane_system.lanes[from].length;
         let buckets = vec![Vec::new(); network.lane_system.lanes.len()];
+        // The same lanes with the approach's zone cleared (an unflagged lane).
+        let mut open = TransitNetwork::new();
+        open.lane_system.rebuild(&mut graph);
+        open.lane_system.lanes[from].solid_zone_m = 0.0;
         for frontage in [false, true] {
-            let params = |d, turn_preparation| LaneChangeParams {
+            let params = |d| LaneChangeParams {
                 lane_id: from,
                 lane_d: d,
                 speed: 4.0,
@@ -229,10 +233,10 @@ mod tests {
                 has_access_plan: frontage,
                 blocked_time: 0.0,
                 cooldown: 0.0,
-                turn_preparation,
             };
             let change = |d, flagged| {
-                choose_lane_change(params(d, flagged), &network, &buckets, to, || None)
+                let network = if flagged { &network } else { &open };
+                choose_lane_change(params(d), network, &buckets, to, || None)
             };
             let early = change(0.0, true).unwrap();
             assert!(early.length <= length - APPROACH_SOLID_LENGTH_M);

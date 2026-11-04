@@ -117,7 +117,6 @@ impl LaneSystem {
             graph,
             node_id,
             &mut self.node_lanes,
-            &mut self.turn_preparation,
             layout
                 .and_then(|layout| layout.kerb_corners.as_deref())
                 .unwrap_or_default(),
@@ -355,8 +354,8 @@ impl LaneSystem {
         // approaches no node any more.
         for &e_id in &rebuild_edges {
             for lane_id in self.edge_lanes.remove(&e_id).into_iter().flatten() {
-                if let Some(flag) = self.turn_preparation.get_mut(lane_id) {
-                    *flag = false;
+                if let Some(lane) = self.lanes.get_mut(lane_id) {
+                    lane.solid_zone_m = 0.0;
                 }
             }
         }

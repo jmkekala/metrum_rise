@@ -307,10 +307,7 @@ fn preparation_change(
         .then(|| lane_change_target_toward(lane_id, detach_lane, network))
         .flatten();
     // The tick's solid approach zone: no change starts in it (`lane_change_end`).
-    let change_end = lane_change_end(
-        lane.length,
-        network.lane_system.needs_turn_preparation(lane_id),
-    );
+    let change_end = lane_change_end(lane);
     if let Some(target) = frontage {
         let length = lane_change_length_for_speed(agents.speed[i]);
         return (change_end - lane_d > length + OVERTAKE_EDGE_BUFFER_M)

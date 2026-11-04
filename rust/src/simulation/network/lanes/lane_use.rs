@@ -483,7 +483,6 @@ mod junction_tests {
                         }
                     }
                     lanes.clear();
-                    assert!(lanes.turn_preparation.is_empty());
                 }
             }
         }
