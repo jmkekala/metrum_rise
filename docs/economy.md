@@ -961,6 +961,33 @@ the breakdown, like its prepare test, switches the test-only checks off through 
 `contract::timing_mode` as the economy runners ([`roads.md`](roads.md#road-68-open-questions)
 question 50); its `populated_city.rs` change re-keys the economy snapshots once more.
 
+**Published snapshots (`PERF-13`, fixed 2026-11-04).** From `TRAFFIC-19` (`173578b3`) until
+the fix the 10k preparation failed its exact-continuation check, and so did the 100k one when it
+was next run (`9f2808bc`); nothing was published and `./run.sh --perf-contract` stopped at its first prepare. The cause was the loader,
+not the snapshot code: it took a walker that waits at the end of its lane with no plan, its route
+cursor one past its path, off the sidewalk as a stale route, and the walkers queued behind it then
+walked on ([`traffic.md`](traffic.md#walkers-follow-their-routes-sidewalks-road-74), *End of
+path*). Neither the fixture revision nor the save format changed with the fix, so the snapshots
+keep their keys. Freshly prepared on `perf13-save-continuation` (release test binary SHA-256
+`0db52a5f6ed1a89e`, `RAYON_NUM_THREADS=8`): `perf_contract_prepare` passes and publishes at 10k,
+30k and 100k (generation and continuation 26, 101 and 627 s) and `perf_contract_fiscal_prepare`
+at 10k and 30k (15 and 40 s). The runner reads and writes them in `$ARTIFACTS/snapshots`, where
+`$ARTIFACTS` is its `--artifacts` directory (by default `perf-contract` in the checkout's cargo
+target directory), as `populated_city_<residents>.sqlite` and `fiscal_stress_<residents>.sqlite`;
+the ignored tests take the same directory as `METRUM_PERF_CACHE`. A checkout without them
+prepares them in the runner's first step. One `./run.sh --perf-contract --binary "$TEST_BINARY"`
+then ran on them (both locks, `RAYON_NUM_THREADS=8`, P-cores; load average 9.9 at its start, just
+after another agent's tests, so its timings establish nothing): every prepare reused its snapshot
+(`generation_s` null), and the full and fiscal days (24 of 24 active intervals at both tiers),
+the isolated phases, the locality gates and the agent contract ran in 69.1 s. It exits 1 on seven
+work-count scaling limits, the parked `PERF-03`–`PERF-05` kind: `buyer_sites_built`,
+`staffing_trials`, `supplier_searches`, `supplier_routes` and `job_search_keys` in the baseline,
+`buyer_sites_built` and `cch_searches` in the fiscal workload. That is the set the `ROAD-68`
+runs of 2026-10-24 record ([`roads.md`](roads.md#attribution-of-the-perf-contract-rise-road-68-g)).
+Against the 2026-10-14 full runs below (ten failed limits) no time limit fails any more,
+`census_buildings` and `owner_slots_prepared` no longer fail, and `buyer_sites_built` fails in
+both workloads.
+
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:
 the isolated configuration/asset mutation test and lane-geometry regression pass, as do

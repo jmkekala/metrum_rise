@@ -637,7 +637,12 @@ crossings).
   - *End of path.* A walker whose route ends at a node that is not its exit keeps its lane and
     plans again from its end (`junction/walk.rs::replan_from_lane`; no record when a route is
     found) instead of dropping the lane and planning from the node. One with no plan waits at the
-    end of its lane; its replan gate plans from there once it has a destination. Traced case
+    end of its lane; its replan gate plans from there once it has a destination. Its lane end has
+    moved its route cursor one past its (usually empty) path, and a save keeps it there: the loader
+    took that cursor for a stale route and dropped the walker's lane, then the orphan repair sent
+    it home, so a loaded game diverged from the unsaved one (`PERF-13`, fixed 2026-11-04). Nothing
+    gives such a walker a destination while its home stands, so it waits for good and walkers
+    behind it queue there (`TRAFFIC-24`). Traced case
     (`TRAFFIC-19` probe, 100k baseline, default crossings): resident 140399 walks home from a shop
     when its household loses that home (`evict_household_member_home`), which clears its
     destination, exit and route on road 2365. It walks to the lane's end at node 790, where the
@@ -810,9 +815,12 @@ crossings).
   new home; a crossing-free block with walkers left at every node and on sidewalks, no watchdog
   move and no step over 2 m on the road, identical for 1 and 8 workers. `stranded_fixture`:
   walkers stranded at nodes without a lane (two that took their sidewalks, one at a node with
-  none) saved mid-backoff and loaded continue frame for frame. The watchdog's own test now drives
-  a car, and `trips::test_walking_agent_recovers_from_stale_edge_after_road_split` expects its
-  walker at a dead end to turn back through the node's connector from the sidewalk it stands on.
+  none) saved mid-backoff and loaded continue frame for frame; since `PERF-13`, two walkers whose
+  trip ended mid-walk, one waiting at its lane's end and one behind it, do too
+  (`walkers_kept_at_their_path_end_continue_across_a_save_file`, fails at `d0b29ce6`). The
+  watchdog's own test now drives a car, and
+  `trips::test_walking_agent_recovers_from_stale_edge_after_road_split` expects its walker at a
+  dead end to turn back through the node's connector from the sidewalk it stands on.
 - **Measured (round T19b, 2026-11-02; FRESH, one session; release test binaries: the control
   `br4`, `edb8a46f` with R6's variant and the probe, whose non-test Rust equals `8baa904f`'s, and
   the branch at `d4d577fb` (built before one doc comment was rewrapped) with the same; `RAYON_NUM_THREADS=6`, the default thread stack).**
