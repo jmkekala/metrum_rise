@@ -986,7 +986,12 @@ work-count scaling limits, the parked `PERF-03`–`PERF-05` kind: `buyer_sites_b
 runs of 2026-10-24 record ([`roads.md`](roads.md#attribution-of-the-perf-contract-rise-road-68-g)).
 Against the 2026-10-14 full runs below (ten failed limits) no time limit fails any more,
 `census_buildings` and `owner_slots_prepared` no longer fail, and `buyer_sites_built` fails in
-both workloads.
+both workloads. Republished 2026-11-04 with the `TRAFFIC-24` fix (round T24, branch `traffic24-walker-home`,
+release test binary SHA-256 `71e4f46c439d9cb7`, `RAYON_NUM_THREADS=8`), since walkers whose job
+ends on the way now walk home and the prepared cities differ: `perf_contract_prepare` passes its
+continuation check and publishes at 10k, 30k and 100k (31, 144 and 599 s) and
+`perf_contract_fiscal_prepare` at 10k and 30k (20 and 53 s). Fixture revision and save format
+are unchanged.
 
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:

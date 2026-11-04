@@ -896,6 +896,7 @@ Failed planning or replanning must:
   - `pos_x`, `pos_y = origin door_pos`
   - `transit = TRANSIT_ACCESS_EGRESS`
 - If that plan build fails, the agent stays in `IN_BUILDING`, keeps its requested destination/activity, and sets `next_replan_time = sim_time + BUILDING_REPLAN_DELAY_S`.
+- A save keeps that retry time: the loader recognises an agent in `IN_BUILDING` with no plan and `next_replan_time > 0` (`save/agents.rs::loaded_departure_backoff`) and keeps the timer while it clears the plan fields, so a game loaded mid-backoff retries at the same tick as the unsaved one (`SAVE-03`). Before, the loader zeroed the timer and the agent retried at once.
 
 #### `IMMIGRATING`
 

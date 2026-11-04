@@ -640,9 +640,25 @@ crossings).
     end of its lane; its replan gate plans from there once it has a destination. Its lane end has
     moved its route cursor one past its (usually empty) path, and a save keeps it there: the loader
     took that cursor for a stale route and dropped the walker's lane, then the orphan repair sent
-    it home, so a loaded game diverged from the unsaved one (`PERF-13`, fixed 2026-11-04). Nothing
-    gives such a walker a destination while its home stands, so it waits for good and walkers
-    behind it queue there (`TRAFFIC-24`). Traced case
+    it home, so a loaded game diverged from the unsaved one (`PERF-13`, fixed 2026-11-04). A
+    walker whose trip was taken from it on the way (its job ends mid-walk: `assign_work_building`
+    clears its destination, exit and route) reaches its lane end with no plan, no destination and
+    no trip to recover. With a home it plans home from that lane end and walks home
+    (`walk_home::head_home_without_trip`, `TRAFFIC-24`, 2026-11-04): the give-up rule's walk home
+    from where it stands, along sidewalks and crossings as any walk, with no record since no trip
+    failed; with no route home it is stranded there on the stranded backoff (one `NoRoute` record,
+    outcome `Stranded`). With no home it keeps waiting at its lane end for its household's next
+    home. Before, nothing gave such a walker a destination while its home stood, so it waited for
+    good and the walkers behind it queued there. The rule fires at the lane-end event, never on a
+    scan: one route query per such walker, once (it leaves with a plan or stranded), and O(1) per
+    tick for a homeless walker waiting there; walkers already waiting in an older save go home on
+    their first tick. The 100k lane audit (one day at 32x on the `dev` snapshot) counts 24 to 26
+    walkers with a home waiting so on `dev` and 0 with the fix (29 walk home), and none without a
+    home in either run, so stepping off the lane while waiting is not needed. Tests:
+    `a_walker_whose_job_ends_on_the_way_walks_home_from_its_lane_end_and_frees_the_sidewalk`
+    (fails without the fix: the walker never sets off) and
+    `a_walker_with_no_home_whose_job_ends_on_the_way_waits_at_its_lane_end`. A walker standing
+    with no lane and no trip (the `stand_on_sidewalk` early return) is unchanged. Traced case
     (`TRAFFIC-19` probe, 100k baseline, default crossings): resident 140399 walks home from a shop
     when its household loses that home (`evict_household_member_home`), which clears its
     destination, exit and route on road 2365. It walks to the lane's end at node 790, where the
