@@ -44,8 +44,10 @@ fn is_grass(median: RoadMedian) -> bool {
 enum Uvs {
     // World XZ metres.
     World,
-    // Station along the edge and signed lateral offset.
-    RoadSpace,
+    // Station along the edge and the signed lateral offset from `centre_m`. The road shader
+    // draws a carriageway centred on lateral 0, so a carriageway passes its own centre: a pocket
+    // edge's lies `Edge::kerb_shift_m` off the centreline (`ROAD-95`), every other road's on it.
+    RoadSpace { centre_m: f32 },
 }
 
 pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
@@ -72,7 +74,7 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
         emit_curb_faces(mesh, piece);
         // Footpaths draw their own path surface (road_path.gdshader) in road space.
         let (uvs, color) = if edge.primary_type == TransitType::Foot {
-            (Uvs::RoadSpace, footpath_color(edge))
+            (Uvs::RoadSpace { centre_m: 0.0 }, footpath_color(edge))
         } else {
             (Uvs::World, sidewalk_color())
         };
@@ -91,7 +93,9 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
             piece,
             BandKind::Carriageway,
             MeshLayer::Road,
-            Uvs::RoadSpace,
+            Uvs::RoadSpace {
+                centre_m: edge.kerb_shift_m(),
+            },
             road_space_color(edge),
         );
         emit_skirts(mesh, piece);
@@ -157,9 +161,9 @@ fn emit_band(
         let vertices = triangle.map(|vertex| piece.positions()[vertex as usize]);
         let uvs = match uvs {
             Uvs::World => vertices.map(|vertex| Vector2::new(vertex.x as f32, vertex.z as f32)),
-            Uvs::RoadSpace => triangle.map(|vertex| {
+            Uvs::RoadSpace { centre_m } => triangle.map(|vertex| {
                 let [s_m, lateral_m] = piece.road_space()[vertex as usize];
-                Vector2::new(s_m, lateral_m)
+                Vector2::new(s_m, lateral_m - centre_m)
             }),
         };
         push_triangle(mesh, layer, vertices, uvs, color);
@@ -193,7 +197,7 @@ fn emit_curb_faces(mesh: &mut NetworkMeshData, piece: &PieceMesh) {
 mod tests {
     use super::super::super::RoadRenderer;
     use crate::simulation::network::lanes::LaneSystem;
-    use crate::simulation::network::roadbed::fixtures::mixed_profiles;
+    use crate::simulation::network::roadbed::fixtures::{mixed_profiles, t_right_pocket};
     use crate::simulation::network::roadbed::{RoadbedSystem, SurfaceChunkKey};
     use crate::simulation::terrain::{TerrainSystem, render_frame_centre, render_frame_local};
     use godot::prelude::Vector3;
@@ -303,5 +307,48 @@ mod tests {
             "{clipped} clipped triangles in {} chunks",
             chunks.len()
         );
+    }
+
+    // `ROAD-95`: the road shader draws `fwd + bkw` lanes centred on road-space lateral 0, so a
+    // pocket edge's carriageway, `kerb_shift_m` off its centreline, passes laterals from its own
+    // centre: the 1+2 pocket edge's asphalt spans -5.25..5.25, not -3.5..7.0 (whose last 1.75 m
+    // the shader drew as the gravel shoulder). Every other span keeps its centreline laterals.
+    #[test]
+    fn a_pocket_carriageway_passes_road_space_from_its_own_centre() {
+        let graph = t_right_pocket();
+        let mut roadbed = RoadbedSystem::new_with_chunk_grid(512.0, -256.0, -256.0);
+        roadbed.compile_dirty(&graph);
+        let targets: BTreeSet<SurfaceChunkKey> = roadbed.occupied_chunks().collect();
+        let chunks = RoadRenderer.generate_mesh_chunks_with_surface(
+            &graph,
+            &mut LaneSystem::new(),
+            &TerrainSystem::new(4, 4),
+            &crate::simulation::terrain::graded::NoSites,
+            &roadbed,
+            &targets,
+            None,
+            &Default::default(),
+        );
+        // The pocket edge (2 forward, 1 backward lanes) and the 1+1 roads, by their road-space
+        // colour's lane counts; node pieces carry no road space (zero alpha).
+        let (mut pocket, mut plain) = ((f32::MAX, f32::MIN), (f32::MAX, f32::MIN));
+        for mesh in chunks.values() {
+            for (uv, colour) in mesh.road_uvs.iter().zip(&mesh.road_colors) {
+                if colour.a == 0.0 {
+                    continue;
+                }
+                let range = if (colour.r * 255.0).round() == 2.0 {
+                    &mut pocket
+                } else {
+                    &mut plain
+                };
+                *range = (range.0.min(uv.y), range.1.max(uv.y));
+            }
+        }
+        let close = |(low, high): (f32, f32), half: f32| {
+            (low + half).abs() < 1.0e-3 && (high - half).abs() < 1.0e-3
+        };
+        assert!(close(pocket, 5.25), "pocket edge laterals {pocket:?}");
+        assert!(close(plain, 3.5), "1+1 laterals {plain:?}");
     }
 }
