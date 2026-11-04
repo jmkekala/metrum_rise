@@ -13,8 +13,8 @@ use super::{cache_dir, residents, snapshot, timing_mode};
 use crate::config::{CAR_LENGTH, IDM_S_MIN};
 use crate::nodes::sim::core::state::SimCore;
 use crate::simulation::economy::agents::{
-    ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, MODE_WALK, TRANSIT_INTERSECTION,
-    TRANSIT_NETWORK,
+    ACCESS_LANE_ATTACH_PENDING, ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, MODE_WALK,
+    TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 
 // Cars closer than this to a lane's start count as one stack.
@@ -92,6 +92,53 @@ fn detach_plans(core: &SimCore) -> serde_json::Value {
     serde_json::json!({
         "planned": planned, "at_lane_end": at_end, "beyond_lane_end": beyond_end,
         "looping": looping, "at_lane_end_top_targets": top,
+    })
+}
+
+// `TRAFFIC-24`: walkers waiting at the end of a road lane with no plan and no destination (not
+// stranded, which have a plan home), with and without a home, and the other walkers on those
+// lanes, which queue behind them. From the agent columns alone, so the `dev` control and the fix
+// count the same way. O(agents), serial: a test diagnostic.
+fn walkers_at_path_end(core: &SimCore) -> serde_json::Value {
+    let agents = &core.agents.agents;
+    let lanes = &core.transit_network.lane_system.lanes;
+    let buildings = core.allocator.buildings.len();
+    let walker_on_road_lane = |i: usize| {
+        agents.transit[i] == TRANSIT_NETWORK
+            && agents.transit_mode[i] == MODE_WALK
+            && lanes
+                .get(agents.current_lane_id[i])
+                .is_some_and(|lane| lane.edge_id != usize::MAX)
+    };
+    let (mut with_home, mut without_home) = (0_u32, 0_u32);
+    let mut waiting_lanes = std::collections::BTreeMap::<usize, u32>::new();
+    for i in 0..agents.len() {
+        if !walker_on_road_lane(i)
+            || agents.access_flags[i] & (ACCESS_PLAN_VALID | ACCESS_WALK_STRANDED) != 0
+            || agents.target_building[i] != usize::MAX
+        {
+            continue;
+        }
+        let lane = agents.current_lane_id[i];
+        if agents.lane_distance[i] < lanes[lane].length - 1e-3 {
+            continue;
+        }
+        if agents.home_building[i] < buildings {
+            with_home += 1;
+        } else {
+            without_home += 1;
+        }
+        *waiting_lanes.entry(lane).or_default() += 1;
+    }
+    let on_waiting_lanes = (0..agents.len())
+        .filter(|&i| {
+            walker_on_road_lane(i) && waiting_lanes.contains_key(&agents.current_lane_id[i])
+        })
+        .count() as u32;
+    let waiting: u32 = waiting_lanes.values().sum();
+    serde_json::json!({
+        "with_home": with_home, "without_home": without_home,
+        "lanes": waiting_lanes.len(), "queued_behind": on_waiting_lanes - waiting,
     })
 }
 
@@ -303,6 +350,7 @@ fn work_since(start: &[u64; crate::debug::work::WORK_COUNT]) -> serde_json::Valu
         "trip_failures": delta(Work::TripFailures),
         "missed_turns": delta(Work::MissedTurns),
         "missing_connections": delta(Work::MissingConnections),
+        "walkers_home_after_cancel": delta(Work::WalkersHomeAfterCancel),
     })
 }
 
@@ -365,6 +413,7 @@ fn traffic07_lane_entry_audit() {
                     "residents": residents(), "minute": now - start, "audit": audit(core),
                     "waits": waits.summary(now), "detach_plans": detach_plans(core),
                     "work": work_since(&work_start),
+                    "walkers_at_path_end": walkers_at_path_end(core),
                 })
             );
             waits.standing_queues(core, now - start);

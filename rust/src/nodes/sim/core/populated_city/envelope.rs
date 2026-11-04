@@ -668,6 +668,15 @@ fn sim02_envelope() {
                 "fingerprint":crate::debug::work::debug_hash(&semantic_fingerprint(&city)),
             })
         );
+        // `TRAFFIC-24` attribution, outside the day record so a control's records compare
+        // byte for byte.
+        eprintln!(
+            "SIM02_WALKS {}",
+            serde_json::json!({
+                "residents":residents, "workload":workload, "day":record.day,
+                "walkers_home_after_cancel":delta(Work::WalkersHomeAfterCancel),
+            })
+        );
         day_work = work;
         day_treasury = record.treasury;
         day_flows = [0.0; MONEY_FLOW_COUNT];

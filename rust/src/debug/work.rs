@@ -112,11 +112,14 @@ pub(crate) enum Work {
     /// Junction entries that found no connector onto the planned road or detach lane
     /// (`[JUNCTION_MISSING_CONN]`).
     MissingConnections,
+    /// Walkers with no destination and a home, their trip taken from them on the way, that
+    /// set off home from the end of their lane (`TRAFFIC-24`).
+    WalkersHomeAfterCancel,
 }
 
 /// Number of [`Work`] counters.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const WORK_COUNT: usize = Work::MissingConnections as usize + 1;
+pub(crate) const WORK_COUNT: usize = Work::WalkersHomeAfterCancel as usize + 1;
 
 #[cfg(test)]
 static COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
@@ -266,6 +269,7 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "admissions_dropped",
     "missed_turns",
     "missing_connections",
+    "walkers_home_after_cancel",
 ];
 
 /// Hashes a value's `Debug` rendering without building the string. Test-only exact state
