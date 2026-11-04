@@ -425,6 +425,73 @@ fn a_walker_off_every_sidewalk_walks_to_one_and_continues_across_a_save_file() {
     );
 }
 
+// `PERF-13`: two walkers whose trip was taken from them on the way (no plan and no destination,
+// as when a job ends mid-walk) walk to the end of their sidewalk on road 2. The first keeps its
+// lane there with its cursor one past its empty path (`TRAFFIC-19`), the second waits behind it.
+// Saved and loaded, the city continues as the unsaved one, frame for frame: the loader took the
+// first walker off its lane as a stale route, so the second walked on to the end.
+#[test]
+fn walkers_kept_at_their_path_end_continue_across_a_save_file() {
+    let mut continuous = stranded_core();
+    let lane = foot_lane(&continuous, 2, false, true);
+    let length = continuous.transit_network.lane_system.lanes[lane].length;
+    let mut kept = [0; 2];
+    for (k, walker) in kept.iter_mut().enumerate() {
+        let agents = &mut continuous.agents;
+        let i = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+        agents.transit_mode[i] = MODE_WALK;
+        agents.transit[i] = TRANSIT_NETWORK;
+        agents.speed[i] = AGENT_WALK_SPEED_MS;
+        agents.current_building[i] = usize::MAX;
+        agents.current_edge[i] = 2;
+        agents.current_node[i] = 2;
+        agents.current_lane_id[i] = lane;
+        agents.lane_distance[i] = length - 20.0 - 4.0 * k as f32;
+        *walker = i;
+    }
+    // Every agent's walker state with its road and route cursor.
+    let state = |core: &SimCore| {
+        let agents = &core.agents;
+        let cursors: Vec<_> = (0..agents.len())
+            .map(|i| (agents.current_edge[i], agents.current_path_index[i]))
+            .collect();
+        (walkers_state(core), cursors)
+    };
+    for _ in 0..600 {
+        continuous.step_frame(FRAME_DT_S);
+    }
+    let agents = &continuous.agents;
+    assert_eq!(
+        (
+            agents.current_lane_id[kept[0]],
+            agents.lane_distance[kept[0]],
+            agents.current_path_index[kept[0]],
+            agents.current_path[kept[0]].len(),
+        ),
+        (lane, length, 1, 0),
+        "the first walker waits at its lane's end"
+    );
+    assert_eq!(agents.current_lane_id[kept[1]], lane);
+    assert!(
+        agents.lane_distance[kept[1]] < length,
+        "the second walker waits behind it"
+    );
+    let path = temp_save_path("walkers_kept_at_path_end");
+    continuous
+        .save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let mut loaded = test_core();
+    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    loaded.time.speed_multiplier = continuous.time.speed_multiplier;
+    assert_eq!(state(&loaded), state(&continuous));
+    for _ in 0..600 {
+        continuous.step_frame(FRAME_DT_S);
+        loaded.step_frame(FRAME_DT_S);
+        assert_eq!(state(&loaded), state(&continuous));
+    }
+}
+
 // A walker's lane, node, distance, position, flags, backoff step and next plan time, bitwise.
 type WalkerState = (usize, u32, u32, u32, u32, u8, u8, u32);
 

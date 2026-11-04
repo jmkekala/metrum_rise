@@ -453,10 +453,12 @@ pub(super) fn validate_loaded_agents(
             agents.target_building[i] = usize::MAX;
             clear = true;
         }
-        // A failed route retains its old cursor while waiting to retry. The empty path
-        // makes it inactive; preserving it keeps an ordinary continuation bit-identical.
+        // A failed route retains its old cursor while waiting to retry, and a walker with no
+        // trip left keeps its lane with the cursor one past its path. The empty path makes it
+        // inactive; preserving it keeps an ordinary continuation bit-identical.
         if agents.current_path_index[i] > agents.current_path[i].len()
             && !loaded_empty_network_path_has_replan_context(agents, i, graph)
+            && !loaded_walker_kept_at_path_end(agents, i)
         {
             clear = true;
         }
@@ -548,6 +550,18 @@ fn loaded_empty_network_path_has_replan_context(
         && agents.current_node[i] < graph.node_count() as u32
         && agents.current_edge[i] < graph.edge_count()
         && !graph.edge(agents.current_edge[i]).deleted
+}
+
+// A walker whose path ends short of its exit with no plan keeps its road lane and waits at its
+// end (`TRAFFIC-19`, `handle_lane_end`): the lane end has moved its cursor one past the path. Not
+// a stale route: clearing it took the walker off the sidewalk, and the orphan repair then sent it
+// home, which the running game does not (`PERF-13`).
+fn loaded_walker_kept_at_path_end(agents: &AgentSystem, i: usize) -> bool {
+    agents.transit_mode[i] == MODE_WALK
+        && agents.transit[i] == TRANSIT_NETWORK
+        && agents.current_lane_id[i] != usize::MAX
+        && agents.access_flags[i] & ACCESS_PLAN_VALID == 0
+        && agents.current_path_index[i] == agents.current_path[i].len() + 1
 }
 
 fn preserve_loaded_network_retry_state(
