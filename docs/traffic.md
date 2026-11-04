@@ -1359,7 +1359,7 @@ Acceptance record (`ROAD-94`, 2026-11-04, rounds R4a2 and R4a3; artifact folders
 32x, 8 workers, each binary preparing its own city; control `dev` `9f2808bc` plus the same
 test-only harness, whose audit lines equal R4a3's control's exactly): the fix ((a) entry-lane
 choice, (b) lane-aware recovery, S8, the permissive masks, Q3-1) **meets the missed turns but not
-the deliveries, so `TRAFFIC-23` stays in progress.** Node entry run both ways (decision S1):
+the deliveries; deliveries were then made a measurement, not a gate (user decision, below).** Node entry run both ways (decision S1):
 
 | | control (`dev`) | S1: wait for a preferred lane (shipped) | S1 alternative: any clear lane |
 | --- | ---: | ---: | ---: |
@@ -1424,6 +1424,20 @@ the deliveries, so `TRAFFIC-23` stays in progress.** Node entry run both ways (d
   new binary carries all of this round's code, so the field's own saving is not isolated: the
   row runs 0.4% more instructions than R4a3's and 1% fewer cycles, 2.9% fewer instructions and
   3% fewer cycles than `dev`.
+- **Decision (user, 2026-11-04): on this grid deliveries are a measurement, not a gate.** Route
+  search is free flow (`TRAFFIC-17`), so all border freight takes one path, and the comparison with
+  `dev`'s every-lane connectors measures that one movement's lane capacity, not the lane rules.
+  `TRAFFIC-23` is accepted on missed turns, missing connections, gridlock cycles, lanes over fit,
+  determinism, 1+1 cities unchanged, the sweeps and the per-tick cost; deliveries are re-measured
+  once `TRAFFIC-17` lets traffic spread over routes. Two-day runs (fresh, test-only diagnostic
+  builds whose first-day audit lines equal the shipped code's and the control's exactly; deliveries
+  counted from the start): `dev` 2,073 after day one and 3,113 after day two, the shipped code
+  1,863 and **3,156**, R4a3's masks (a comparator only) 2,074 and 3,130. The shipped code's border
+  queue (140 held at midnight, 98 at day two's first sample) clears early on day two (0-2 held at
+  the later samples), with 22 missed turns over the two days. So the day-one shortfall is the
+  queue's timing at the funnel, not lost throughput. Open, not attributed: the `PERF-06` network
+  30,000 row above; the turn row's sibling scan has a candidate fix (a per-lane set of the exits
+  each lane reaches, built with the connectors).
 
 Ownership split:
 

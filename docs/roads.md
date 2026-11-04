@@ -318,7 +318,7 @@ added and 1,523 renumbered, every other table and the version identical; save fo
 so a save written by an earlier build of this branch with multi-lane junctions no longer loads:
 its saved connectors are not the rebuilt ones). Kuopio has 352 vehicle connectors (R4a3 324,
 `dev` 440), 0 failing in the sweep; 1+1 cities are bitwise unchanged (the 100k city's 24,834).
-The acceptance (`TRAFFIC-23`, still open) is in [`traffic.md`](traffic.md#advance-lane-choice-road-94).
+The acceptance (`TRAFFIC-23`) is in [`traffic.md`](traffic.md#advance-lane-choice-road-94).
 
 ### Junction layout
 
