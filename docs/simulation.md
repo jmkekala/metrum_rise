@@ -253,6 +253,16 @@ loads. The Kuopio fixture is re-recorded in format 113 with
 `record_kuopio_reference_save`: `sqldiff` shows only the version and the new column, 0 on all 70
 edges, and every table's row count is unchanged; `placements.json` is re-pinned.
 
+Save format 114 (`ROAD-94`, round R4a1, 2026-11-04) changes no table: the default junction lane
+use builds one vehicle connector per allowed lane pair instead of every pair
+([`roads.md`](roads.md#default-junction-lane-use-road-94)), and a save stores its connectors in
+`saved_lanes`, so a format-113 save would load connectors the rebuild no longer makes. The
+version bump refuses it; there is no repair. The per-lane turn-preparation flag is derived on
+every lane rebuild and never saved. The Kuopio fixture is re-recorded in format 114: `sqldiff`
+shows the version and `saved_lanes` only (116 connector rows deleted at the nodes of its 17
+2+2 edges, 1,524 rows renumbered; 2,310 -> 2,194 rows), every other table identical
+(`lane_connections` 1,416 rows both); `placements.json` is re-pinned.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per

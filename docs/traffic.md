@@ -235,7 +235,10 @@ Vehicle junction movement uses explicit connector lanes generated in
 `network/lanes/vehicle_junctions.rs`.
 
 For every allowed inbound-to-outbound vehicle lane pair at a node, the lane system creates a
-connection lane with:
+connection lane. A pair is allowed by the node's whitelist when it has user vehicle connections,
+else by the [default junction lane use](roads.md#default-junction-lane-use-road-94) (`ROAD-94`):
+one connector per pair the approach lane's movement share and the target fan allow, not every
+pair. Each connector has:
 
 - `edge_id = usize::MAX`
 - `lane_type = LaneType::Vehicle`
@@ -1205,7 +1208,114 @@ Acceptance record (`TRAFFIC-16`, round R14B, 2026-10-31; the artifact folders st
 ## Planned Lane Changes
 
 Planned lane changes solve a different problem from overtaking: a car may need to move to a sibling
-lane on the same edge to reach the exact `planned_detach_lane_id` for building access.
+lane on the same edge to reach the exact `planned_detach_lane_id` for building access, or to a
+lane that makes its next junction movement (`ROAD-94`).
+
+### Advance lane choice (`ROAD-94`)
+
+Junction lane use and target pairing are owned by
+[`roads.md`](roads.md#default-junction-lane-use-road-94); this section owns how a car gets onto
+a lane that makes its turn. Ported from Veeti's road-chain branch (`6ec0b858`, `1ae3b22f`),
+re-derived onto `dev`'s lane-end handling.
+
+- **Window.** A car on a road lane flagged by the lane use (`LaneSystem::needs_turn_preparation`)
+  prepares its turn in the last `70 m x (count - 1) + 30 m` of the lane, `count` the lanes in its
+  direction: 100 m on a 2+2 road, 170 m on a 3+3, 240 m on a 4+4. Fixed for every road speed
+  (PLAN-R4 D2): 70 m is the longest lane-change S-curve, 30 m the 12 m road-end buffer plus room
+  to start. The guard (`lane_nav.rs` `junction_approach_node`) reads the flag first, so a car on
+  any other lane (every lane of a 1+1 road) pays one byte read.
+- **Selector.** Inside the window `junction_approach_lane` takes where the car goes next from
+  `planned_next_target` (the next path edge, or the zero-hop detach lane's edge; one function
+  with the route preview and the connector choice, D1) and picks the nearest same-direction lane
+  that continues onto it (a direct pass-through or a connector), ties by `(|index delta|,
+  |index|, lane id)`. The car's own lane wins when it already makes the movement, so it never
+  weaves. Claim classification (`claims.rs` `agent_turn_lane_target`) and the movement step
+  (`movement/network/lane_change.rs` `turn_lane_target`) call the same selector on the same
+  inputs, both out of line behind the flag read.
+- **The move.** `choose_lane_change` moves one adjacent lane toward the selected lane through the
+  planned-change machinery (lateral claim, owner `fetch_min`, gap check, reservation, S-curve);
+  no new agent column. A pending frontage change keeps priority, and no discretionary overtake or
+  return starts inside a window. The budget divides the distance left before the solid zone over
+  the steps still needed: `min(speed x 3.5 s, (available - 12 m) / steps - 0.25 m)`, never under
+  the 18 m minimum (`turn_lane_change_length`).
+- **Solid approach zone.** No change of any kind (frontage, turn, overtake, return) starts in
+  the last `APPROACH_SOLID_LENGTH_M` = 20 m of a flagged lane (`lane_change_end`); the turn budget
+  extends its 12 m end buffer to the zone (8 m more) rather than charging both, and the window
+  guard stops at the zone, so a queue at the stop line runs no selector. The lane lines there are
+  painted solid ([`roads.md`](roads.md#default-junction-lane-use-road-94)). The route preview's
+  preparation step uses the same zone.
+- **Missed turn (D8).** A car that reaches the lane end on a lane without a connector to its
+  planned road, while a sibling lane has one (a lane-use miss, not a missing road turn), takes its
+  lane's first successor in stable order onto another road (`junction/enter.rs`
+  `follow_missed_turn`), drops its node path and logs `[MISSED_TURN]` on `traffic`; a wait for
+  that connector keeps the car and its path at the lane end. Right after that entry, the lane-end
+  handler replans from the end of the road it entered (`replan.rs` `replan_after_missed_turn`:
+  `plan_network_replan` with the car's access flags, or `plan_border_network_replan` for
+  freight). A failed replan only sets the replan backoff; the car drives on and `dev`'s
+  empty-path replan at the next lane end is the last resort, so nothing teleports. A destination
+  turn may enter its road on any lane (a connector to the detach edge) and reach the exact detach
+  lane by frontage changes. A missed turn is not a trip failure; a genuine missing connection
+  keeps `dev`'s failure report.
+- **Bounds.** Per tick, per car on a road lane: outside a window, one byte read in claims and
+  one in movement, plus two compares in `choose_lane_change`; no other column read, no
+  allocation, no route query. Inside a window: `O(D + L x C)` twice (`D` the node degree, `L`
+  the lanes in the car's direction, `C` their successors), the existing `O(L)` adjacent-lane
+  lookup and one `O(log K)` gap test. At a lane end, `follow_missed_turn` costs `O(L x C + C)`
+  lookups only on a missing connection, and a missed turn costs one route query (an event, not
+  per tick).
+
+Acceptance record (`ROAD-94`, 2026-11-04, rounds R4a2 and R4a3; artifact folders stay local):
+
+- `benchmark_lane_transitions` (4 workers, P-cores, alternating pairs against `dev` `9f2808bc`
+  with the same test-only `turn` scenario): the five guard-only rows within noise after two
+  inlining fixes (R4a2: the missed-turn recovery had made `enter_next_edge_connector` recursive
+  and the added code had moved the movement pass's per-agent steps into other codegen units, so
+  `handle_network_movement` called them out of line; `#[inline]` on the steps and a non-recursive
+  entry restored it, and the fork's per-tick missed-turn gate moved to the lane end). The
+  blocked row's remaining +2.6% (+0.16 ms at 65,536 groups) follows the codegen-unit partition: a
+  test-only edit applied to both sides flips its sign (roads.md question 36). The `turn` row,
+  the only measurement of the window's cost: 65,536 approach arms of 2+2 four-ways, every car
+  in its window on the wrong lane: +12.1 ms, about 0.09 us per car per tick, the worst case
+  (131,072 lane changes against the control's none). R4a3's session (12:52, `.run.lock` and the
+  exclusive timing lock, P-cores, load 1.4, the same control binary against the final code, three
+  alternating pairs, medians in ms at 65,536 groups): clear 5.10 / 5.04, merge 5.44 / 5.53,
+  blocked 6.10 / 6.28 (+2.8%, as R4a2's +2.6%), lateral 5.20 / 5.15, cruise 3.66 / 3.85 (+5.2%;
+  ranges 3.51-3.75 and 3.71-3.96 overlap), turn 3.52 / 15.31. Transition counts equal in every
+  row. The cruise rise is not attributed: the zone adds two compares to every
+  `choose_lane_change` call, and question 36's partition effect was not profiled this round.
+- Economy envelope and determinism (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements`, `RAYON_NUM_THREADS=6`, the gate's tiers: baseline and fiscal_stress
+  10k and 30k, arrivals 30k): branch and control (`dev` plus the same test-only harness) both
+  PASS with the same 13 stale-baseline notes; all 70 `SIM02_DAY` records byte-identical; the
+  built cities' lanes hashes (`SIM02_LANES`) equal (10k `9537bde0101110fd`, 30k
+  `726f721b92d2abbc`): the envelope cities are 1+1 and the lane use changes none of their
+  connectors. Determinism: no difference (repeat, 1 and 3 threads, reload) on both.
+- Locality: `incremental_lane_rebuild_scaling` local products equal at 0 to 100,000 background
+  edges and equal to the control's (`90ceffa5f4b95fd1`), median 0.030-0.034 ms, flat;
+  `populated_road_plan_scaling` identical local products at 4 to 100,004 parcels, compile p50
+  0.19-0.46 ms with no trend in size (the control alternates 0.17-0.51 ms the same way).
+- Connector sweeps: the re-recorded Kuopio save 324 connectors (94 U-turns, `dev` 440), 0
+  failing; the generated 100k city 24,834 (10 U-turns), 0 failing, equal to the control (a 1+1
+  city).
+- 100k lane audit (the prepared city, one day at 32x, 8 workers): every `TRAFFIC07_AUDIT` and
+  `TRAFFIC14_CYCLES` line equal to the control's: 0 lanes over capacity, 0 stacked, held at
+  node 1,841-2,614, 0 gridlock cycles at all 7 samples, 4,374 freight deliveries, 9 trip
+  failures, 0 `[MISSED_TURN]`, 0 missing connections.
+- **10k 4-Lane variant (`METRUM_PERF_ARTERIALS=4lane`, test builds only: the populated city's
+  cross streets and border trunk as 2+2): failing, open as `TRAFFIC-23`.** One day at 32x:
+  68,635 missed turns (2,994 cars, 1,435 of them ten times or more, at most 113), 0 missing
+  connections, 0 trip failures, **19 freight deliveries against the control's 2,073**, about
+  5,900 vehicles on lanes all day against 940-1,850, 300 lanes over their fit against 0-5, and
+  557 cars waiting more than an hour at the border node. 98.5% of the misses are on 2+2
+  approaches of 30-40 m, the cross streets' 50 m blocks between their mouths: a lane change
+  needs `18 m + 12 m` (`38 m` with the solid zone's extra 8 m), and a car turning onto a cross
+  street enters the lane the target fan gives it (a right turn the outer lane, D10), so a turn
+  off on the other side one block later cannot be prepared; the replan from the next node often
+  needs another such turn, and the circling cars saturate the grid. The same city without the
+  solid zone (a diagnostic build) misses 54,839 turns with 24 deliveries, so the zone is not the
+  cause. A diagnostic of the border hold found no claim starvation: each tick a held car loses
+  the lane only to the car that entered it before it in the same pass. The 100k and envelope
+  cities are 1+1, so no contract tier exercises this.
 
 Ownership split:
 

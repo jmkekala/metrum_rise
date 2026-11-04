@@ -232,6 +232,68 @@ fix such a lane ran on the kerb and connectors left the carriageway at the kerb 
 connector sweep's `four_way_2x1` fixture: 2 connectors 1.24 m outside). The fork's
 `median_center_offset` is the source; its pocket term waits for the pockets round.
 
+### Default junction lane use (`ROAD-94`)
+
+At a node without user vehicle connections, each approach's lanes get a contiguous share of the
+movements its arms offer, and the lane rebuild builds one connector per allowed lane pair
+(`lanes/lane_use.rs`, `DefaultLaneUse`; `vehicle_junctions.rs`). Before, every inbound lane got a
+connector to every outbound lane of every other arm. Ported from Veeti's road-chain branch
+(`6ec0b858`, without its pockets, bus lanes and priority rules).
+
+- **Movements.** An arm's direction is the first non-degenerate XZ segment of its physical
+  centreline away from the node (graph-only, so paint and preview share it). Against the
+  approach's incoming direction an arm is straight within +-45 degrees (inclusive), else left or
+  right by the sign of the cross product. An arm offers a movement only when it has lanes leaving
+  the node: an arm whose lanes all enter the node (a one-way pointing in) offers none.
+- **Lane masks** by the approach's lane count towards the node, rank 0 the innermost lane
+  (leftmost under right-hand traffic, mirrored under `DRIVE_ON_LEFT`):
+
+  | Lanes | Left, straight and right offered | Left and straight | Straight and right | Left and right |
+  | --- | --- | --- | --- | --- |
+  | 1 | all | all | all | all |
+  | 2 | L+S / S+R | L / S | S / R | L / R |
+  | 3 | L / S / R | L / S / S | S / S / R | L / L / R |
+  | 4 | L / S / S / R | L / S / S / S | S / S / S / R | L / L / R / R |
+
+  Left and right alone split into contiguous halves, the odd lane to the left.
+- **Targets.** A movement's source lanes fan onto the target arm's outgoing lanes in rank order
+  without crossing (`target_matches`): a left turn uses the target's inner lanes, a right turn
+  its outer lanes, straight the whole group, so uneven counts (1+2, 2+1) still give every source
+  lane an exit. A one-lane approach onto a multi-lane road turns left into the inner lane and
+  right into the outer lane (PLAN-R4 D10): side streets onto avenues lose their turns into the
+  far lanes.
+- **Whitelists win.** A node with any user vehicle connection keeps whitelist mode: only the
+  listed turns, as before. U-turns stay dead-end only (`open_node_allows_u_turn`); at a divided
+  dead end every forward lane keeps its U-turn connectors.
+- **Degree two.** A 2+2 road continuing through a bend or a pass-through node maps its lanes 1:1
+  (one movement, so no lane choice), where it had all pairs (D9): no lane swapping at bends.
+- **Turn preparation flag.** Every inbound road lane gets a rebuild-derived byte,
+  `LaneSystem::needs_turn_preparation`: true when its approach has more than one lane and the
+  node is whitelisted or its default lane use offers more than one movement. Written at every
+  full and incremental node rebuild (an incremental rebuild clears the lanes it retires), never
+  saved. The car's advance lane choice, its 20 m solid approach zone and the solid lane lines
+  read it ([`traffic.md`](traffic.md#planned-lane-changes); the paint through
+  `approach_needs_lane_choice`, the same rule from the graph alone).
+- **Cost.** `DefaultLaneUse::new` is `O(degree)` per inbound lane and `allows` `O(lanes)` per
+  pair, only where connectors are rebuilt (the existing closure); no allocation (the builder's old
+  per-inbound list of default pairs is gone). Single-lane approaches keep exactly the turns they
+  had (`single_lane_approaches_keep_every_turn_they_had_before_the_default_lane_use` pins the
+  seven single-lane fixtures' turn sets).
+- **Save format 114.** Saves store connectors, so the format moves to 114 with no repair
+  ([`simulation.md`](simulation.md)).
+
+Connector counts, before and after (R4a1, 2026-11-04): `four_way_1x1`, `skew_60` 16 / 16;
+`t_1x1` 9 / 9; `bend_45`, `t_one_way` 4 / 4 (identical sets); `four_way_2x2` 64 / 32 (the hub's
+48 turns become 16; 16 dead-end U-turns unchanged); `four_way_2x1` 36 / 24; the Kuopio reference
+save 440 / 324 vehicle connectors (116 fewer, all at the nodes of its 17 2+2 edges). Products
+re-recorded for the change, lanes only (every other product asserted equal): the reference probe's
+`t_mixed_4lane_through` flat and sloped; the roadbed node probe's 117 multi-lane entries of 141
+(the changed set equals the multi-lane set; its one-lane entries hash as before); the median
+probe's six 2+2 spans (1:1 at the pass-through node); the R8 probe's Kuopio lanes hash
+(`a37745957cd1f02d` -> `9427ff4517b4199f`), with every 1+1 city's lanes and every other product
+unchanged. The R4a3 acceptance (connector sweeps, the 100k audit, the 4-Lane variant, the
+envelope) is in [`traffic.md`](traffic.md#planned-lane-changes).
+
 ### Junction layout
 
 A layout is built for every node except degree-two pass-through nodes: two arms whose directions
@@ -2403,6 +2465,15 @@ These need a user decision; work that does not depend on them continues.
       terrain function with it; a profile puts it in the legacy terrain CDT's R-tree code
       (`road_exterior_support_point` +2,100 samples per run, `source_sample_parameter_on_road_
       constraint` +1,200, `rstar`'s bulk-load insertion sort +930, at 12 kHz).
+    - **Evidence (2026-11-04, `ROAD-94` round R4a2, the agent movement pass).** The advance lane
+      choice's added code moved `handle_network_movement`'s per-agent steps (replan gates, lane
+      entry, lane change, lane end) out of its codegen unit: on the control it was one 21,272-byte
+      function with them inlined, on the branch 1,299 bytes calling every step out of line, and
+      `benchmark_lane_transitions`' guard-only rows ran 6-17% slower with identical transition
+      and work counts. Fixed structurally (`76560115`: `#[inline]` on the sibling-module steps, a
+      non-recursive connector entry; then `3eaf7293` moved a per-tick path read to the lane end):
+      21,039 bytes. What remained (blocked +2.6%, +0.16 ms) flipped sign when the same test-only
+      edit was applied to both sides, so it was recorded as layout under (a).
     - **Options.** (a) keep 16 units and fix each hot path found structurally, as round 4 did,
       and attribute every unexplained stage change by profile; (b) build release with
       `codegen-units = 1` (with or without thin LTO), so no added code moves another function's
@@ -12005,6 +12076,18 @@ Act, under which every longitudinal line is white:
 | Centre K1, lane line K2_1 | ≤ 50 km/h | 1 m / 3 m | 0.10 m |
 | Centre K1_2 / K1_3, lane line K2_1_2 / K2_1_3 | > 50 km/h | 3 m / 9 m | 0.15 m |
 | (none) | two-way 1 + 1 street at ≤ 50 km/h | unmarked | |
+
+Before a junction whose approach lanes serve different movements (the
+[default junction lane use](#default-junction-lane-use-road-94) gives them a lane choice, or the
+node whitelists its turns), the lane lines inside that approach's lane group are solid (pattern 2,
+the line's own width) over the last `APPROACH_SOLID_LENGTH_M` (20 m) of the span's marking range
+on that side, and dashed before; the centre line and the other group's lane lines are unchanged
+(`markings.rs`, `ROAD-94`). Undivided roads split their lane lines at the centre line (backward
+group on the left under right-hand traffic); divided roads take the group from the per-group
+loop. The rule is `lanes::approach_needs_lane_choice`, graph-only, the same rule the connector
+builder writes into the lanes' turn-preparation flag, so a preview paints what its commit paints.
+`O(degree)` per edge end at emission; a section pair outside a zone is emitted as one segment,
+bitwise as before.
 
 Zebra crossings use the Finnish L3_2 dimensions (Traficom, Liite 15, 2020, at 50 km/h or less): 0.5 m stripes with 0.5 m gaps, 2.5 m long along the road (formerly 0.4 m gaps and 2.0 m).
 
