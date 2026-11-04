@@ -3,6 +3,7 @@
 //! Cosmetic sign regressions using isolated graph, lane, and surface fixtures.
 
 use super::*;
+use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::network::graph::Node;
 use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::render::road::RoadRenderer;
@@ -85,6 +86,10 @@ fn junction_with_lanes(
     surface.compile_dirty(&graph);
     lanes.rebuild(&mut graph);
     (graph, lanes, surface, terrain)
+}
+
+fn verge(f: &(RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem)) -> VergeGround<'_> {
+    VergeGround::new(&f.3, &f.2)
 }
 
 fn generate(
@@ -346,7 +351,7 @@ fn signs_keep_two_metres_from_every_light_and_shift_away_from_junction() {
     let s = crossing_s(sections, marking).unwrap();
     let (shifted, shifted_s) = place(
         sections,
-        &f.3,
+        &mut verge(&f),
         &poles,
         s,
         1.0,
@@ -517,7 +522,15 @@ fn every_sign_pole_uses_the_kerb_face_and_interpolated_sidewalk_height() {
             RoadSignKind::CurveRight,
             RoadSignKind::Uneven,
         ] {
-            let sign = pose(SectionRun::span(&sections), &f.3, 60.0, side, side, kind).unwrap();
+            let sign = pose(
+                SectionRun::span(&sections),
+                &mut verge(&f),
+                60.0,
+                side,
+                side,
+                kind,
+            )
+            .unwrap();
             assert!((sign.position.z.abs() - distance).abs() < 1e-5);
             assert_eq!(sign.position.y, height.unwrap());
         }
@@ -525,11 +538,19 @@ fn every_sign_pole_uses_the_kerb_face_and_interpolated_sidewalk_height() {
 }
 
 #[test]
-fn without_a_sidewalk_the_sign_uses_the_verge_and_terrain_height() {
-    let f = fixture(
-        &[Vector3::ZERO, Vector3::new(120.0, 0.0, 0.0)],
+fn without_a_sidewalk_the_sign_uses_the_verge_and_the_drawn_ground_height() {
+    let mut f = fixture(
+        &[Vector3::new(0.0, 20.0, 0.0), Vector3::new(120.0, 20.0, 0.0)],
         &[(0, 1, 1, 1)],
     );
+    // A road 20 m up, the ground rising 5 % from it on either side: the verge is a graded cut,
+    // whose drawn height is neither the base terrain's nor its raw sample's (1 m).
+    for z in 0..256 {
+        for x in 0..256 {
+            let (_, wz) = f.3.grid_to_world_coords(x, z);
+            f.3.set_height(x, z, (20.0 + 0.05 * wz.abs()) / crate::config::HEIGHT_SCALE);
+        }
+    }
     let mut sections = f.2.sections(0).unwrap().to_vec();
     for section in &mut sections {
         section.bands.retain(|band| band.kind != BandKind::Sidewalk);
@@ -553,16 +574,28 @@ fn without_a_sidewalk_the_sign_uses_the_verge_and_terrain_height() {
         assert_eq!(distance, outer + 0.75);
         let sign = pose(
             SectionRun::span(&sections),
-            &f.3,
+            &mut verge(&f),
             60.0,
             side,
             side,
             RoadSignKind::Speed50,
         )
         .unwrap();
-        assert_eq!(
-            sign.position.y,
-            f.3.sample_height_world(sign.position.x, sign.position.z)
+        let drawn = crate::simulation::terrain::graded::GradedSurface {
+            terrain: &f.3,
+            roadbed: &f.2,
+            sites: &crate::simulation::terrain::graded::NoSites,
+            query_index: None,
+        }
+        .surface_height_at(
+            f64::from(sign.position.x),
+            f64::from(sign.position.z),
+            &mut crate::simulation::terrain::graded::QueryScratch::default(),
+        ) as f32;
+        assert_eq!(sign.position.y.to_bits(), drawn.to_bits());
+        assert!(
+            (sign.position.y - 20.0).abs() < 1.0,
+            "on the ground beside the road: {sign:?}"
         );
     }
 }
@@ -920,7 +953,7 @@ fn uneven_and_steep_signs_obey_gap_and_pole_clearance() {
     assert!(
         place_spaced(
             sections,
-            &f.3,
+            &mut verge(&f),
             &poles,
             end - 1.0,
             1.0,

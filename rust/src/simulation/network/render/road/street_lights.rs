@@ -9,10 +9,10 @@
 //! city-wide scan or recursive chain dependency.
 
 use super::standard_surface::CompiledSurfaceCoverage;
+use super::verge::VergeGround;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::roadbed::{BandKind, NodeKind, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::{EdgeClass, TransitType};
-use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
 /// Street light models, in the order of `godot/assets/models/street_lights/`.
@@ -106,11 +106,12 @@ fn rule_for_edge(edge: &Edge) -> Option<Rule> {
 /// Lights are spaced along whole streets: chains of edges through degree-two nodes that take the
 /// same family of light. Each edge emits the chain's lights that fall on it, so every chunk
 /// rebuild agrees. Endpoint resolution is O(degree * (chain sections + walk steps)), degree <= 6,
-/// plus O(chain length + lights) for placement. Scratch allocation is per chain, never per pole.
+/// plus O(chain length + lights) for placement, and one `ground` query per pole off a sidewalk.
+/// Scratch allocation is per chain, never per pole.
 pub(super) fn place_street_lights(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
-    terrain: &TerrainSystem,
+    ground: &mut VergeGround<'_>,
     coverage: &CompiledSurfaceCoverage,
 ) -> Vec<StreetLight> {
     let mut lights = Vec::new();
@@ -123,11 +124,11 @@ pub(super) fn place_street_lights(
             continue;
         };
         let (start, end) = chain_end_nodes(graph, &chain);
-        let start_m = separated_end_margin(graph, roadbed, terrain, start, chain[0].0);
-        let end_m = separated_end_margin(graph, roadbed, terrain, end, chain[chain.len() - 1].0);
+        let start_m = separated_end_margin(graph, roadbed, start, chain[0].0);
+        let end_m = separated_end_margin(graph, roadbed, end, chain[chain.len() - 1].0);
         place_along_chain(
             &mut lights,
-            terrain,
+            ground,
             &chain,
             &runs,
             edge_idx,
@@ -298,7 +299,6 @@ fn arm_rank(graph: &RegionGraph, edge: usize) -> Option<(u8, usize)> {
 fn separated_end_margin(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
-    terrain: &TerrainSystem,
     node: u32,
     target: usize,
 ) -> f32 {
@@ -358,7 +358,7 @@ fn separated_end_margin(
         let mut margin = normal;
         let found = loop {
             let along = if from_start { margin } else { total - margin };
-            let poles = poles_at(terrain, &chain, &runs, along, &rule);
+            let poles = poles_at(&chain, &runs, along, &rule);
             let clear = poles.iter().flatten().all(|pole| {
                 accepted.iter().all(|&(owner, other)| {
                     owner == chain_key
@@ -387,9 +387,9 @@ fn planar_distance(a: Vector3, b: Vector3) -> f32 {
     (a.x - b.x).hypot(a.z - b.z)
 }
 
-// The poles `place_along_chain` would put `along` metres from the chain's start.
+// The poles `place_along_chain` would put `along` metres from the chain's start, in plan: the
+// clearance between end poles is planar, so a pole off a sidewalk is not given its height.
 fn poles_at(
-    terrain: &TerrainSystem,
     chain: &[(usize, bool)],
     runs: &[Run],
     along: f32,
@@ -414,7 +414,7 @@ fn poles_at(
         .unwrap_or(sections.len() - 2);
     let (a, b) = (&sections[i], &sections[i + 1]);
     let side = chain_side(&runs[0], chain[0].1) * if forward { 1.0 } else { -1.0 };
-    let place = |side| place_at(terrain, a, b, s, side, rule.kind);
+    let place = |side| place_at(None, a, b, s, side, rule.kind);
     if rule.both_sides {
         [place(1.0), place(-1.0)]
     } else {
@@ -425,7 +425,7 @@ fn poles_at(
 #[allow(clippy::too_many_arguments)]
 fn place_along_chain(
     lights: &mut Vec<StreetLight>,
-    terrain: &TerrainSystem,
+    ground: &mut VergeGround<'_>,
     chain: &[(usize, bool)],
     runs: &[Run],
     edge_idx: usize,
@@ -484,7 +484,7 @@ fn place_along_chain(
         }
         let (a, b) = (&sections[section_index], &sections[section_index + 1]);
         for &side in sides {
-            if let Some(light) = place_at(terrain, a, b, s, side, rule.kind) {
+            if let Some(light) = place_at(Some(&mut *ground), a, b, s, side, rule.kind) {
                 lights.push(light);
             }
         }
@@ -504,8 +504,9 @@ fn chain_side(first: &Run, forward: bool) -> f32 {
     if forward { world } else { -world }
 }
 
+// `ground` gives a pole off a sidewalk its height; `None` places in plan only (height 0).
 fn place_at(
-    terrain: &TerrainSystem,
+    ground: Option<&mut VergeGround<'_>>,
     a: &RoadSection,
     b: &RoadSection,
     s: f32,
@@ -522,23 +523,26 @@ fn place_at(
     let lateral = a.lateral_xz.lerp(b.lateral_xz, t).try_normalize()?;
     let near = if t < 0.5 { a } else { b };
     let (offset_m, band_height) = pole_offset(near, side, kind)?;
-    let ground = center + lateral * f64::from(offset_m * side);
-    let height = band_height
-        .unwrap_or_else(|| terrain.sample_height_world(ground.x as f32, ground.y as f32));
+    let position = center + lateral * f64::from(offset_m * side);
+    let height = match (band_height, ground) {
+        (Some(height), _) => height,
+        (None, Some(ground)) => ground.height_at(position.x, position.y),
+        (None, None) => 0.0,
+    };
     if !height.is_finite() {
         return None;
     }
     // The model's arm points along +X; turn it toward the road centre.
     let toward_road = -lateral * f64::from(side);
     Some(StreetLight {
-        position: Vector3::new(ground.x as f32, height, ground.y as f32),
+        position: Vector3::new(position.x as f32, height, position.y as f32),
         yaw: (-toward_road.y).atan2(toward_road.x) as f32,
         kind,
     })
 }
 
 // Lateral distance of the pole from the centreline on `side`, and the surface height there when
-// the pole stands on a compiled band (None: on the verge, use the terrain).
+// the pole stands on a compiled band (None: on the verge, it stands on the drawn ground).
 fn pole_offset(
     section: &RoadSection,
     side: f32,

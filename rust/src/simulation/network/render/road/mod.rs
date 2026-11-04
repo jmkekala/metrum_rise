@@ -26,6 +26,7 @@ pub(crate) mod road_signs;
 /// Roadbed rendering: piece surfaces, bridge structures and lane markings.
 pub mod standard_surface;
 pub(crate) mod street_lights;
+mod verge;
 
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.01;
 pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_DECAL_RENDER_Z_BIAS_M;
@@ -312,11 +313,13 @@ fn emit_into(
                 standard_surface::emit_compiled_lane_markings(mesh, graph, roadbed, pieces);
             },
             || {
-                let lights = street_lights::place_street_lights(graph, roadbed, terrain, covered);
+                let mut ground = verge::VergeGround::new(terrain, roadbed);
+                let lights =
+                    street_lights::place_street_lights(graph, roadbed, &mut ground, covered);
                 let signs = road_signs::place_road_signs(
                     graph,
                     roadbed,
-                    terrain,
+                    &mut ground,
                     covered,
                     &lights,
                 );

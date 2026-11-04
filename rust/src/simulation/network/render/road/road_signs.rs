@@ -11,6 +11,7 @@
 
 use super::standard_surface::CompiledSurfaceCoverage;
 use super::street_lights::StreetLight;
+use super::verge::VergeGround;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::lanes::CrosswalkMarking;
 use crate::simulation::network::roadbed::{
@@ -20,7 +21,6 @@ use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::network::validate::{
     RADIUS_WINDOW_HALF_WIDTHS, centreline, design_radius, visit_grades, visit_turning_radii,
 };
-use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 use std::collections::HashMap;
 
@@ -825,7 +825,7 @@ fn offset(section: &RoadSection, side: f32) -> Option<(f32, Option<f32>)> {
 
 fn pose(
     sections: SectionRun<'_>,
-    terrain: &TerrainSystem,
+    verge: &mut VergeGround<'_>,
     s: f32,
     side: f32,
     direction: f32,
@@ -848,7 +848,7 @@ fn pose(
         .lerp(b.center_xz + b.lateral_xz * f64::from(side * ob), t);
     let height = match (ha, hb) {
         (Some(a), Some(b)) => a + (b - a) * t as f32,
-        _ => terrain.sample_height_world(ground.x as f32, ground.y as f32),
+        _ => verge.height_at(ground.x, ground.y),
     };
     if !height.is_finite() {
         return None;
@@ -865,7 +865,7 @@ fn pose(
 #[allow(clippy::too_many_arguments)]
 fn place(
     sections: SectionRun<'_>,
-    terrain: &TerrainSystem,
+    ground: &mut VergeGround<'_>,
     poles: &PoleGrid,
     s: f32,
     away: f32,
@@ -891,7 +891,7 @@ fn place(
         let pb = b.center_xz + b.lateral_xz * f64::from(side * ob);
         let span = f64::from((b.s_m - a.s_m).max(f32::EPSILON));
         let velocity = (pb - pa) * (f64::from(away) / span);
-        let sign = pose(sections, terrain, s, side, direction, kind)?;
+        let sign = pose(sections, ground, s, side, direction, kind)?;
         let progress = poles.advance(sign.position, velocity);
         if progress == 0.0 {
             return Some((sign, s));
@@ -1121,7 +1121,7 @@ impl SignSpacing {
 #[allow(clippy::too_many_arguments)]
 fn place_spaced(
     sections: &[RoadSection],
-    terrain: &TerrainSystem,
+    ground: &mut VergeGround<'_>,
     poles: &PoleGrid,
     mut s: f32,
     direction: f32,
@@ -1136,7 +1136,7 @@ fn place_spaced(
         }
         let (sign, actual) = place(
             SectionRun::span(sections),
-            terrain,
+            ground,
             poles,
             s,
             direction,
@@ -1197,7 +1197,7 @@ fn order_signs(signs: &mut Vec<RoadSign>) {
 pub(super) fn place_road_signs(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
-    terrain: &TerrainSystem,
+    ground: &mut VergeGround<'_>,
     coverage: &CompiledSurfaceCoverage,
     lights: &[StreetLight],
 ) -> Vec<RoadSign> {
@@ -1277,7 +1277,7 @@ pub(super) fn place_road_signs(
                         let last = sections.last().s_m;
                         let sign_s = (s - direction * CROSSING_SIGN_SETBACK_M).clamp(first, last);
                         if let Some((sign, placed_s)) = place(
-                            sections, terrain, &poles, sign_s, away, side, direction, kind,
+                            sections, ground, &poles, sign_s, away, side, direction, kind,
                         ) {
                             if side == direction && direction == away {
                                 let slot = usize::from(!at_start);
@@ -1339,7 +1339,7 @@ pub(super) fn place_road_signs(
                     if (changes || lengths[&edge_id] >= repeat_m)
                         && let Some((sign, s)) = place_spaced(
                             visible,
-                            terrain,
+                            ground,
                             &poles,
                             speed_starts[slot],
                             direction,
@@ -1388,7 +1388,7 @@ pub(super) fn place_road_signs(
                             s.min(mouth)
                         };
                         if let Some((sign, s)) = place_spaced(
-                            visible, terrain, &poles, s, direction, kind, &spacing, span,
+                            visible, ground, &poles, s, direction, kind, &spacing, span,
                         ) {
                             if covered.contains(&edge_id) {
                                 signs.push(sign);

@@ -12113,8 +12113,19 @@ Every standard road and footpath gets street lights, placed in Rust with the roa
   Before/after: `screenshots/2026-10-09-roads/lights-width-change-*.png`.
 - One-sided streets (1 + 1) keep one side of the world along the whole chain; wider roads get
   both sides, paired. The pole stands 0.35 m inside the back of the sidewalk on its surface, arm
-  over the road; without a sidewalk, 0.75 m beyond the kerb or shoulder on the terrain; beside a
-  footpath, 0.5 m beyond its edge.
+  over the road; without a sidewalk, 0.75 m beyond the kerb or shoulder on the drawn ground; beside
+  a footpath, 0.5 m beyond its edge, also on the drawn ground. The drawn ground (`verge.rs`, shared
+  with road signs beside a road without sidewalks) is a grounded road's top where one holds the
+  point, else the graded ground the terrain renders (`TERRAIN-07-F`), from one graded point query
+  per pole on a scratch warm for the whole placement pass: allocation-free per pole. The query
+  grades by the roadbed and terrain only, without building sites: a road chunk is emitted again
+  when its roadbed or terrain changes, never when a building appears, so a height that read the
+  sites would depend on when the chunk was last emitted; this way every rebuild agrees. Where a
+  building pad grades the ground beside a verge, the pole follows the road's grading. Until
+  `ROAD-101` RB3e these poles took the base heightmap's raw sample, without its 20x height
+  scale: on ground above a few metres the pole stood under the terrain with its lamp, so a road
+  without sidewalks was dark near the camera while the far lamp map (plan positions only) still
+  lit it.
 - Kinds: 8 m galvanised steel (residential), wooden pole with an older sodium-coloured luminaire
   (residential edges whose cosmetic age is above 0.65), 10 m main-road pole (more than two lanes),
   post-top path light (footpaths). Spacing belongs to the family: 30 m residential (minimum 12 m),

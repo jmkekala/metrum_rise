@@ -10,6 +10,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::graded::{GradedSurface, NoSites, QueryScratch};
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::*;
 
@@ -222,7 +223,11 @@ fn emit(
         rebuilt_edges: Vec::new(),
         rebuilt_nodes: Vec::new(),
     };
-    super::place_street_lights(&f.0, &f.1, &f.2, &coverage)
+    super::place_street_lights(&f.0, &f.1, &mut verge(f), &coverage)
+}
+
+fn verge(f: &(RegionGraph, super::RoadbedSystem, TerrainSystem)) -> super::VergeGround<'_> {
+    super::VergeGround::new(&f.2, &f.1)
 }
 
 fn signature(lights: &[StreetLight]) -> Vec<[u32; 5]> {
@@ -377,7 +382,78 @@ fn exhausted_margins_keep_the_existing_single_middle_light() {
     };
     let rule = super::rule_for_edge(f.0.edge(0)).unwrap();
     let mut lights = Vec::new();
-    super::place_along_chain(&mut lights, &f.2, &[(0, true)], &[run], 0, &rule, 8.0, 2.0);
+    super::place_along_chain(
+        &mut lights,
+        &mut verge(&f),
+        &[(0, true)],
+        &[run],
+        0,
+        &rule,
+        8.0,
+        2.0,
+    );
     assert_eq!(lights.len(), 1);
     assert!((lights[0].position.x - 5.0).abs() < 1e-5);
+}
+
+#[test]
+fn verge_poles_stand_on_the_drawn_ground_of_a_graded_slope() {
+    // A 2 + 2 road without sidewalks and the same road with them, level along their length on
+    // ground 30 m up that rises 6 % across them: the verge cuts into the slope on one side and
+    // fills on the other, so the drawn ground there is graded, neither the road's height nor
+    // the base terrain's. Poles used to stand on the base heightmap's raw sample, without its
+    // height scale: 28.5 m under the drawn ground here.
+    let height = |z: f32| 30.0 + 0.06 * z;
+    let (car_only, sidewalks) = (0, 1);
+    let points = [
+        Vector3::new(-60.0, height(-30.0), -30.0),
+        Vector3::new(60.0, height(-30.0), -30.0),
+        Vector3::new(-60.0, height(30.0), 30.0),
+        Vector3::new(60.0, height(30.0), 30.0),
+    ];
+    let mut f = fixture(&points, &[(0, 1, 2, 2), (2, 3, 2, 2)]);
+    f.0.edge_mut(car_only).allowed_types =
+        crate::simulation::network::types::TransitFlags::CAR;
+    f.1 = super::RoadbedSystem::new(64.0);
+    f.1.compile_dirty(&f.0);
+    let level = emit(&f, vec![car_only, sidewalks]);
+    for z in 0..256 {
+        for x in 0..256 {
+            let (_, wz) = f.2.grid_to_world_coords(x, z);
+            f.2.set_height(x, z, height(wz) / config::HEIGHT_SCALE);
+        }
+    }
+    let lights = emit(&f, vec![car_only, sidewalks]);
+    let surface = GradedSurface {
+        terrain: &f.2,
+        roadbed: &f.1,
+        sites: &NoSites,
+        query_index: None,
+    };
+    let mut scratch = QueryScratch::default();
+    let (mut verge_poles, mut graded) = (0, 0);
+    for light in &lights {
+        let (x, z) = (light.position.x, light.position.z);
+        if z < 0.0 {
+            // Beside the road without sidewalks.
+            verge_poles += 1;
+            let drawn = surface.surface_height_at(f64::from(x), f64::from(z), &mut scratch) as f32;
+            assert_eq!(light.position.y.to_bits(), drawn.to_bits(), "{light:?}");
+            let base = height(z);
+            graded += usize::from((drawn - base).abs() > 0.05);
+        }
+    }
+    assert!(verge_poles >= 4, "both sides lit: {lights:?}");
+    assert!(graded > 0, "the verge is graded ground, not the base terrain");
+    // A sidewalk pole stands on its band whatever the terrain under it.
+    let on_sidewalks = |lights: &[StreetLight]| {
+        signature(
+            &lights
+                .iter()
+                .filter(|light| light.position.z > 0.0)
+                .copied()
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(on_sidewalks(&level), on_sidewalks(&lights));
 }
