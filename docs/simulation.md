@@ -246,6 +246,13 @@ on the ground), so daily upkeep follows each road's type. The Kuopio fixture is 
 format 112 with `record_kuopio_reference_save`; only the version and the renamed table change
 (`sqldiff`: the scheduler row's values and every table's row count are unchanged).
 
+Save format 113 (`ROAD-101`, round RB3e, 2026-11-04) adds `network_edges.no_street_lights` (0 or
+1; a road type with street lights off sets it,
+[`roads.md`](roads.md#road-type-attributes-and-costs-road-101-rounds-rb3a-rb3c)). No older save
+loads. The Kuopio fixture is re-recorded in format 113 with
+`record_kuopio_reference_save`: `sqldiff` shows only the version and the new column, 0 on all 70
+edges, and every table's row count is unchanged; `placements.json` is re-pinned.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per

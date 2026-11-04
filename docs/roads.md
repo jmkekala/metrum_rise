@@ -10568,6 +10568,19 @@ independent of zoning; speed per type; costs by type; Road Properties changes al
   through-arm zebras and walks the far kerb (`a_t_whose_stem_has_no_sidewalks_is_crossed_by_the_far_side`,
   `road_mixed_junction_test`). Through-crossings over such an arm are the follow-up RB3d
   (`ROAD-101` row).
+- **Street lights (round RB3e, 2026-11-04).** A type has `street_lights` too (the user's
+  decisions: a "Street lights" checkbox in the builder, ticked by default; every built-in lit; no
+  cost change; Road Properties changes it; save format 113). The edge stores
+  `no_street_lights` (`ROAD-59`'s placement gives such an edge no rule, so it has no lights and
+  ends its neighbours' streets, each lit evenly on its own). The library reads an entry without
+  the field as lit, within version 2, and writes it back as it was until it is edited;
+  `get_road_types`, `check_road_layout` and `get_edge_cross_section` report it; the stroke,
+  commit, attempt and prepared-input records carry it inside `RoadAttributes`; a split keeps it
+  on every piece; `road_type` matches it. In place the change re-spaces the lights of the road's
+  street and of the streets meeting it, in every chunk they cross (the publication's street
+  closure, [street lights](#street-lights-road-59)); lanes, routing, walking and the economy do
+  not change (`street_lights_turned_off_in_place_relight_the_street_and_undo`). The builder's
+  description and the type's tooltip say "no street lights"; the picker lines do not.
 - **The 80 km/h rules are gone** (D5): neither creation nor load sets `no_building_spawn` from
   the speed; 80 km/h is only the builder's once-only zoning suggestion
   ([`zoning.md`](zoning.md#8-road-no-build-flag)).
@@ -10617,12 +10630,13 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
 - **Attributes** (round RB3c). Under the strip: **Sidewalks** (both ends together; the type
   without them sends lanes and medians only), **Speed** (a stepper on Rust's grid,
   `get_road_types().speeds`: 20-120 km/h in steps of 10; hidden for a footpath, which has no
-  speed) and **Zoning**. A new type whose speed first reaches `no_zoning_from_kmh` (80) gets
-  zoning off once, unless the player set the Zoning checkbox; an edited type keeps its own. Under
+  speed), **Zoning** and **Street lights** (round RB3e; ticked for a new type). A new type whose
+  speed first reaches `no_zoning_from_kmh` (80) gets zoning off once, unless the player set the
+  Zoning checkbox; an edited type keeps its own. Under
   them Rust's description ("1 + 1 lanes, 100 km/h, no sidewalks, 8.5 m wide"), Rust's cost line
   from `check_road_layout` ("24 / m, upkeep 0.16 / m / day") and, for a type without sidewalks
   that zones, "No sidewalks: buildings here are reached by car only". Create and Save send the
-  controls' speed and zoning: an edited type keeps its own.
+  controls' speed, zoning and street lights: an edited type keeps its own.
 - **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m")
   until the player types one. Create road (Save when editing) is enabled only when the layout
   passes and `check_road_type_name` accepts the name (empty, over 40 characters, control
@@ -12139,6 +12153,25 @@ Every standard road and footpath gets street lights, placed in Rust with the roa
   to 2 + 2 split its residential street, and the street's chunks away from the edit kept the old
   spacing until a full emission. `O(pieces in the changed chunks)` plus the streets walked; no
   city scan. Test `a_family_change_in_place_republishes_its_whole_street`.
+- Timing (`ROAD-101` RB3e, 2026-11-04, one session): `.run.lock` and the exclusive timing lock,
+  `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, 1-minute load 1.80 at the start, no game
+  running; release builds of the branch (`ecf23071`) and of its base `068d1f1d` with the same bench
+  row and harness timing applied, runs C B B C. `road_chunk_benchmark` (`$BENCH_BINARY --bench
+  chunk_emit_only`), Criterion medians in µs, control / branch: `chunk_emit_only` /1 197.6 209.0 /
+  241.8 221.1, /64 236.8 221.1 / 222.4 206.0, /256 228.4 187.0 / 227.1 224.7, /1024 215.6 228.1 /
+  215.2 191.7; bridge /1024 288.4 288.8 / 273.9 271.3; tunnel /1024 279.6 283.1 / 292.0 290.4;
+  divided /1024 304.6 318.7 / 288.9 285.7: within the runs' spread. The new
+  `shoulder_chunk_emit_only` (the local road without sidewalks: two verge lights) /1 55.4 54.9 /
+  53.4 52.7, /1024 55.1 55.1 / 54.0 53.7: no rise, because lights and signs are placed on their half
+  of the emission's `rayon::join` beside about 50 µs of pieces. Measured directly (a release scratch
+  test, not kept; one thread): one warm verge query 1.1-1.3 µs on flat ground beside a road; placing
+  that street's two lights 3.5 µs against 0.2 µs with sidewalks, the scratch's first-query warm-up
+  included. `populated_road_type_edit_scaling` (the T's side road made 80 km/h without sidewalks, 0
+  / 1k / 10k / 100k remote buildings), now also timing the local publication after each commit with
+  the city's chunks acknowledged, p50 ms control / branch: commit 1.14 0.68 / 1.09 0.68, 2.25 0.46 /
+  2.21 1.89, 0.75 1.07 / 0.86 1.25, 0.97 1.00 / 1.00 0.99; publication 1.78 1.10 / 1.70 1.18, 3.37
+  0.75 / 4.03 3.36, 1.21 1.70 / 1.14 1.86, 0.99 0.94 / 1.08 1.01; one chunk published at every tier
+  on both (the T's streets lie in it), flat in the remote city; local products identical per tier.
 - Each light is routed to its render chunk like a triangle and travels in the chunk payload as
   five floats (chunk-local x, y, z, yaw, kind). Godot keeps them outside the chunk meshes, which
   junction previews hide, and batches them per 64 m cell, model and level of detail into
