@@ -148,18 +148,30 @@ impl RoadProfile {
         } else {
             Level::Ground
         };
-        // Outer offsets of the curb or shoulder and of the sidewalk, mirrored on the left.
-        let curb_m = half_carriageway + curb_width;
-        let sidewalk_m = half_carriageway + curb_width + sidewalk_width;
+        // The carriageway's edges: centred, or moved by a pocket's kerb shift (`ROAD-95`), which
+        // moves one kerb by a lane and keeps the other. The split between the two carriageway
+        // bands stays on the centreline (the shift is half a lane, under the half width), so
+        // each side keeps one core band.
+        let shift_m = edge.kerb_shift_m();
+        let (left_m, right_m) = if shift_m == 0.0 {
+            (-half_carriageway, half_carriageway)
+        } else {
+            (shift_m - half_carriageway, shift_m + half_carriageway)
+        };
+        // Offsets of the curb or shoulder and of the sidewalk outside each edge; a centred
+        // profile mirrors exactly.
+        let (left_curb_m, right_curb_m) = (left_m - curb_width, right_m + curb_width);
+        let (left_sidewalk_m, right_sidewalk_m) =
+            (left_curb_m - sidewalk_width, right_curb_m + sidewalk_width);
         if sidewalk_width > 0.0 {
-            push(BandKind::Sidewalk, -sidewalk_m, -curb_m, raised);
+            push(BandKind::Sidewalk, left_sidewalk_m, left_curb_m, raised);
         }
-        push(BandKind::CurbOrShoulder, -curb_m, -half_carriageway, raised);
-        push(BandKind::Carriageway, -half_carriageway, 0.0, Level::Ground);
-        push(BandKind::Carriageway, 0.0, half_carriageway, Level::Ground);
-        push(BandKind::CurbOrShoulder, half_carriageway, curb_m, raised);
+        push(BandKind::CurbOrShoulder, left_curb_m, left_m, raised);
+        push(BandKind::Carriageway, left_m, 0.0, Level::Ground);
+        push(BandKind::Carriageway, 0.0, right_m, Level::Ground);
+        push(BandKind::CurbOrShoulder, right_m, right_curb_m, raised);
         if sidewalk_width > 0.0 {
-            push(BandKind::Sidewalk, curb_m, sidewalk_m, raised);
+            push(BandKind::Sidewalk, right_curb_m, right_sidewalk_m, raised);
         }
         profile
     }
@@ -242,6 +254,26 @@ impl RoadProfile {
             .iter()
             .map(|band| band.start_m.abs().max(band.end_m.abs()))
             .fold(0.0, f32::max)
+    }
+
+    /// Distances from the centerline to the outer carriageway boundary and to the outermost band
+    /// boundary on one side (`positive`: the positive lateral side), in metres; the carriageway
+    /// distance is zero for a footpath. Equal on both sides of a centred profile, apart on a
+    /// pocket edge's (`ROAD-95`).
+    pub fn side_half_widths_m(&self, positive: bool) -> (f32, f32) {
+        let reach = |band: &ProfileBand| {
+            if positive { band.end_m } else { -band.start_m }
+        };
+        let carriageway = self
+            .bands()
+            .iter()
+            .filter(|band| band.kind == BandKind::Carriageway)
+            .map(reach)
+            .fold(0.0, f32::max);
+        (
+            carriageway,
+            self.bands().iter().map(reach).fold(0.0, f32::max),
+        )
     }
 
     /// Distance from the centerline to the outer carriageway boundary, in metres; zero for a

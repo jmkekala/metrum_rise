@@ -241,6 +241,33 @@ pub(crate) fn t_right_pocket() -> RegionGraph {
     pocket_junction(1, 1, false, true, false)
 }
 
+/// [`pocket_junction`]: a T whose one-way west arm (one lane towards the junction) has a right
+/// pocket.
+pub(crate) fn one_way_right_pocket() -> RegionGraph {
+    pocket_junction(1, 0, false, true, false)
+}
+
+/// [`pocket_junction`]: a T whose 2+1 west arm has a right pocket.
+pub(crate) fn two_plus_one_right_pocket() -> RegionGraph {
+    pocket_junction(2, 1, false, true, false)
+}
+
+/// A 1+1 road continued straight on by a 2+2 road at a plain degree-two node (D16: a lane-count
+/// change has no authored transition): [`straight_pair`] with sidewalks on both.
+pub(crate) fn straight_1x1_to_2x2() -> RegionGraph {
+    let lanes = |fwd: u8, bkw: u8| {
+        move |mut edge: Edge| {
+            edge.fwd_lanes = fwd;
+            edge.bkw_lanes = bkw;
+            edge.width = Edge::cross_section_width_m(fwd, bkw, None);
+            edge
+        }
+    };
+    let mut graph = straight_pair(lanes(1, 1), lanes(2, 2), false, false);
+    finalize(&mut graph);
+    graph
+}
+
 /// Footpath width in the footpath fixtures.
 pub(crate) const FOOTPATH_M: f32 = 2.5;
 

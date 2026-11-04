@@ -54,13 +54,15 @@ fn collect_walkways(graph: &RegionGraph, nodes: &[u32], parallel: bool) -> Walkw
 }
 
 /// Lateral offset of road sidewalk lane `lane_idx` (100 or -100) in its edge's forward frame:
-/// the centre of the edge profile's raised walkway, midway between the carriageway edge and the
-/// sidewalk's outer edge, where the junction layout's walkways run too.
-pub(super) fn sidewalk_offset(edge: &Edge, lane_idx: i8) -> f32 {
+/// the centre of the edge profile's raised walkway on that lane's side, midway between the
+/// carriageway edge and the sidewalk's outer edge, where the junction layout's walkways run too.
+/// Per side, so a pocket edge's moved kerb (`ROAD-95`) moves its sidewalk lane with it.
+pub(crate) fn sidewalk_offset(edge: &Edge, lane_idx: i8) -> f32 {
     let profile = RoadProfile::for_edge(edge);
-    let centre_m = 0.5 * (profile.carriageway_half_width_m() + profile.half_width_m());
     let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
     let side = if lane_idx > 0 { -1.0 } else { 1.0 };
+    let (carriageway_m, outer_m) = profile.side_half_widths_m(side * side_mul > 0.0);
+    let centre_m = 0.5 * (carriageway_m + outer_m);
     side * centre_m * side_mul
 }
 

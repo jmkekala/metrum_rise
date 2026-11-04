@@ -693,7 +693,8 @@ pub(crate) fn crossing_arm_eligible(graph: &RegionGraph, node: u32, edge: usize)
     let Some(incidents) = node_incidents(graph, node) else {
         return false;
     };
-    if ends_a_structure(graph, &incidents) {
+    // A lane transition never crosses (`ROAD-95`, D6): the crossing would span a taper.
+    if ends_a_structure(graph, &incidents) || graph.is_lane_transition(node) {
         return false;
     }
     let span_owned = passes_through(graph, &incidents);
@@ -748,13 +749,21 @@ struct DegreeTwoCrossings {
 // the strip within the half of its edge the far node leaves it (`JunctionLayout` gives each end
 // at most half), or it is not eligible. A default crossing on a layout that cannot hold it moves
 // to the other eligible arm when that arm has no override, and is dropped when it has one
-// ([`NodeArms::layout`]).
+// ([`NodeArms::layout`]). A lane transition (`ROAD-95`, D6) has no crossing at all, overrides
+// included: as at a continuing raised median, a crossing would span the taper, and its arms are
+// not eligible for the toggle ([`crossing_arm_eligible`]).
 fn degree_two_crossings(
     graph: &RegionGraph,
     node: u32,
     arms: [(ArmKey, RoadVec2); 2],
     span_owned: bool,
 ) -> DegreeTwoCrossings {
+    if graph.is_lane_transition(node) {
+        return DegreeTwoCrossings {
+            crosses: [false; 2],
+            fallback: None,
+        };
+    }
     let overrides = &graph.node(node).crosswalk_overrides;
     let fits = |key: ArmKey| {
         !span_owned

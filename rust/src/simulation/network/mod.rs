@@ -841,3 +841,5 @@ pub mod test_ped_junction;
 pub mod test_topology;
 /// Automated tests for vehicle U-turn constraints.
 pub mod test_uturn;
+#[cfg(test)]
+mod test_pockets;

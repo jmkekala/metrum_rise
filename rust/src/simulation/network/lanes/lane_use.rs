@@ -5,7 +5,7 @@
 //! evaluated only while junction connectors are rebuilt; a node with a vehicle lane whitelist
 //! bypasses it entirely.
 
-use super::super::graph::RegionGraph;
+use super::super::graph::{Edge, RegionGraph};
 use crate::config;
 use godot::prelude::*;
 
@@ -93,6 +93,37 @@ fn lane_mask(rank: usize, count: usize, available: u8) -> u8 {
     mask
 }
 
+// The movements approach lane `rank` of `count` serves when the approach ends in a turn pocket
+// (`ROAD-95`, D4): a pocket lane (`pocket_left` at rank 0, `pocket_right` at rank `count - 1`)
+// serves its turn alone, and the other lanes the permissive default (`lane_mask`) of the movements
+// left, as the user authored the lane for that turn: a through car in it would defeat the pocket,
+// and a turn into the pocket's direction from a through lane would cross its path. A pocket whose
+// turn the node does not offer (its side road was removed) is not dedicated, and neither pocket
+// is when the pocketed turns are every movement the node offers, so no lane is ever left without
+// a movement: the lanes then take the base rule. Without a pocket it is `lane_mask`.
+fn pocket_mask(
+    rank: usize,
+    count: usize,
+    available: u8,
+    pocket_left: bool,
+    pocket_right: bool,
+) -> u8 {
+    let left = pocket_left && available & LEFT != 0;
+    let right = pocket_right && available & RIGHT != 0;
+    let taken = if left { LEFT } else { 0 } | if right { RIGHT } else { 0 };
+    let base = count - usize::from(left) - usize::from(right);
+    if taken == 0 || available & !taken == 0 || base == 0 {
+        return lane_mask(rank, count, available);
+    }
+    if left && rank == 0 {
+        return LEFT;
+    }
+    if right && rank == count - 1 {
+        return RIGHT;
+    }
+    lane_mask(rank - usize::from(left), base, available & !taken)
+}
+
 // Overlapping integer rank intervals produce monotone fans/merges for unequal lane counts.
 // Left/right turns use the corresponding outer target group; straight uses the whole group.
 fn target_matches(rank: usize, count: usize, target: usize, targets: usize, turn: u8) -> bool {
@@ -111,13 +142,17 @@ fn target_matches(rank: usize, count: usize, target: usize, targets: usize, turn
         && (target - start + 1) * count > rank * span
 }
 
-/// The default lane use of one approach to an open node: the movements its arms offer and the
-/// approach's lane count towards the node. Rebuild-only; whitelists bypass it entirely.
+/// The default lane use of one approach to an open node: the movements its arms offer, the
+/// approach's lane count towards the node and the turn pocket it ends in (`ROAD-95`).
+/// Rebuild-only; whitelists bypass it entirely.
 pub(super) struct DefaultLaneUse {
     incoming: Vector2,
     available: u8,
     count: usize,
     node: u32,
+    // The approach's pocket lanes at this node: rank 0 (left) and rank `count - 1` (right).
+    pocket_left: bool,
+    pocket_right: bool,
 }
 
 impl DefaultLaneUse {
@@ -126,11 +161,13 @@ impl DefaultLaneUse {
     pub(super) fn new(graph: &RegionGraph, edge: usize, node: u32) -> Self {
         let incoming = -outward(graph, edge, node);
         let approach = graph.edge(edge);
-        let count = usize::from(if approach.end_node == node {
+        let is_fwd = approach.end_node == node;
+        let count = usize::from(if is_fwd {
             approach.fwd_lanes
         } else {
             approach.bkw_lanes
         });
+        let pocket = approach.pocket.filter(|pocket| pocket.serves(is_fwd));
         let mut available = 0;
         for &other in graph.node_adjacency(node) {
             let arm = graph.edge(other);
@@ -148,7 +185,21 @@ impl DefaultLaneUse {
             available,
             count,
             node,
+            pocket_left: pocket.is_some_and(|pocket| pocket.left),
+            pocket_right: pocket.is_some_and(|pocket| pocket.right),
         }
+    }
+
+    // The movements of approach lane `rank`: the one mask rule of connectors, the entry-lane
+    // walk and the arrows (`pocket_mask`).
+    fn mask(&self, rank: usize) -> u8 {
+        pocket_mask(
+            rank,
+            self.count,
+            self.available,
+            self.pocket_left,
+            self.pocket_right,
+        )
     }
 
     /// Whether the approach's lanes serve different movements, so a car must pick its lane
@@ -162,23 +213,34 @@ impl DefaultLaneUse {
     pub(super) fn allows(&self, graph: &RegionGraph, from: i8, edge: usize, to: i8) -> bool {
         let turn = movement(self.incoming, outward(graph, edge, self.node));
         let rank = lane_rank(from, self.count);
-        if lane_mask(rank, self.count, self.available) & turn == 0 {
+        if self.mask(rank) & turn == 0 {
             return false;
         }
         let mut group_rank = 0;
         let mut group_count = 0;
         for candidate in 0..self.count {
-            if lane_mask(candidate, self.count, self.available) & turn != 0 {
+            if self.mask(candidate) & turn != 0 {
                 group_rank += usize::from(candidate < rank);
                 group_count += 1;
             }
         }
         let target = graph.edge(edge);
-        let target_count = usize::from(if target.start_node == self.node {
+        let leaves_fwd = target.start_node == self.node;
+        let target_count = usize::from(if leaves_fwd {
             target.fwd_lanes
         } else {
             target.bkw_lanes
         });
+        if turn == STRAIGHT
+            && let Some((left, right)) = self.pocket_gain(graph, target, leaves_fwd, target_count)
+        {
+            // D5: the through lanes keep their place across a pocket's transition, and the
+            // lane beside each pocket lane also forks into it.
+            let target = lane_rank(to, target_count);
+            return target == rank + usize::from(left)
+                || (left && rank == 0 && target == 0)
+                || (right && rank == self.count - 1 && target == target_count - 1);
+        }
         target_matches(
             group_rank,
             group_count,
@@ -186,6 +248,25 @@ impl DefaultLaneUse {
             target_count,
             turn,
         )
+    }
+}
+
+impl DefaultLaneUse {
+    // At a lane transition (`ROAD-95`), the pocket roles `(left, right)` of `target` when this
+    // approach continues straight into it and gains exactly its pocket lanes: the lanes leaving
+    // the node towards the target's pocket end. `None` at any other node, including a plain
+    // lane-count change, which keeps the monotone fan (D5, D16). `O(degree)`.
+    fn pocket_gain(
+        &self,
+        graph: &RegionGraph,
+        target: &Edge,
+        leaves_fwd: bool,
+        target_count: usize,
+    ) -> Option<(bool, bool)> {
+        let pocket = target.pocket.filter(|pocket| pocket.serves(leaves_fwd))?;
+        (graph.is_lane_transition(self.node)
+            && target_count == self.count + usize::from(target.pocket_lanes(leaves_fwd)))
+        .then_some((pocket.left, pocket.right))
     }
 }
 
@@ -210,7 +291,7 @@ pub(crate) fn approach_group(
     let mut first = usize::MAX;
     let mut len = 0;
     for rank in 0..policy.count {
-        if lane_mask(rank, policy.count, policy.available) & turn != 0 {
+        if policy.mask(rank) & turn != 0 {
             if first == usize::MAX {
                 first = rank;
             }
@@ -307,10 +388,7 @@ pub(crate) fn approach_arrow_masks(
     }
     for rank in 0..count {
         let index = lane_idx(rank);
-        paint(
-            index,
-            lane_mask(lane_rank(index, count), count, policy.available),
-        );
+        paint(index, policy.mask(lane_rank(index, count)));
     }
 }
 
@@ -330,6 +408,71 @@ fn lane_leaves(graph: &RegionGraph, edge: usize, lane_idx: i8, node: u32) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `ROAD-95` (D4): every pocket combination leaves every lane a movement the node offers, the
+    // lanes together every movement, a dedicated pocket lane its turn alone and no other lane
+    // that turn; without the turn on offer, or when the pockets would take every movement, the
+    // base rule.
+    #[test]
+    fn pocket_masks_dedicate_the_pocket_lane_and_never_strand_a_lane() {
+        for count in 2..=4 {
+            for available in 1..=7u8 {
+                for (pocket_left, pocket_right) in [(true, false), (false, true), (true, true)] {
+                    let base = usize::from(pocket_left) + usize::from(pocket_right);
+                    if count <= base {
+                        continue;
+                    }
+                    let masks: Vec<_> = (0..count)
+                        .map(|rank| pocket_mask(rank, count, available, pocket_left, pocket_right))
+                        .collect();
+                    assert!(
+                        masks
+                            .iter()
+                            .all(|&mask| mask != 0 && mask & !available == 0)
+                    );
+                    assert_eq!(masks.iter().fold(0, |a, b| a | b), available);
+                    let left = pocket_left && available & LEFT != 0;
+                    let right = pocket_right && available & RIGHT != 0;
+                    let taken = if left { LEFT } else { 0 } | if right { RIGHT } else { 0 };
+                    if taken == 0 || available & !taken == 0 {
+                        let plain: Vec<_> = (0..count)
+                            .map(|rank| lane_mask(rank, count, available))
+                            .collect();
+                        assert_eq!(masks, plain);
+                        continue;
+                    }
+                    for (rank, &mask) in masks.iter().enumerate() {
+                        let pocket = (left && rank == 0) || (right && rank == count - 1);
+                        if pocket {
+                            assert_eq!(mask.count_ones(), 1);
+                            assert_ne!(mask & taken, 0);
+                        } else {
+                            assert_eq!(mask & taken, 0, "{count} {available} {masks:?}");
+                        }
+                    }
+                }
+            }
+        }
+        // The plan's worked cases (right-hand ranks): L+S / R, L+S / S / R, a T stem L / R.
+        assert_eq!(
+            (0..2)
+                .map(|r| pocket_mask(r, 2, 7, false, true))
+                .collect::<Vec<_>>(),
+            [LEFT | STRAIGHT, RIGHT]
+        );
+        assert_eq!(
+            (0..3)
+                .map(|r| pocket_mask(r, 3, 7, false, true))
+                .collect::<Vec<_>>(),
+            [LEFT | STRAIGHT, STRAIGHT, RIGHT]
+        );
+        assert_eq!(
+            (0..2)
+                .map(|r| pocket_mask(r, 2, LEFT | RIGHT, false, true))
+                .collect::<Vec<_>>(),
+            [LEFT, RIGHT]
+        );
+    }
 
     #[test]
     fn lane_use_shared_and_dedicated_one_to_four_lanes() {
