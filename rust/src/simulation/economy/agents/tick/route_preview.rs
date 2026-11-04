@@ -18,7 +18,12 @@ use super::super::{
 use super::access::{LocalAccessPath, local_access_path, local_access_target_segment};
 use super::lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, connector_choice_seed,
-    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane, lane_origin_node, lane_terminal_node,
+    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane, junction_approach_lane,
+    junction_approach_node, lane_origin_node, lane_terminal_node, turn_preparation_window_m,
+};
+use super::traffic::{
+    OVERTAKE_EDGE_BUFFER_M, lane_change_length_for_speed, lane_change_target_toward,
+    turn_lane_change_length,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -127,8 +132,12 @@ fn walk_lanes(
     let detach_node = agents.planned_detach_node[i];
     let detaches = plan_valid && detach_lane != usize::MAX;
     let mut connectors = Vec::new();
-    // Each path node adds at most one road lane and one connector; the detach adds two more.
-    for _ in 0..2 * path.len() + 4 {
+    // Where the car last crossed a node, as `current_node` reads on the tick: the agent's own
+    // value on its first lane, then each lane's start.
+    let mut current_node = agents.current_node[i];
+    // Each path node adds at most one road lane and one connector, and up to three preparation
+    // changes on a four-lane approach; the detach adds a few more. Read-only, off the tick.
+    for _ in 0..6 * path.len() + 12 {
         let Some(lane) = network.lane_system.lanes.get(lane_id) else {
             return;
         };
@@ -152,6 +161,22 @@ fn walk_lanes(
             }
             continue;
         }
+        if mode == MODE_CAR
+            && let Some(target) = preparation_change(
+                agents,
+                i,
+                lane_id,
+                lane_d,
+                current_node,
+                path_idx,
+                network,
+                graph,
+            )
+        {
+            span(target.1);
+            (lane_id, lane_d) = target;
+            continue;
+        }
         // The detach lane itself, or a sibling the car changes from before the detach point.
         if detaches
             && (lane_id == detach_lane || lane_d < detach_d)
@@ -172,6 +197,7 @@ fn walk_lanes(
         let Some(node) = lane_terminal_node(lane_id, network, graph) else {
             return;
         };
+        current_node = node;
         let before = path_idx.min(path.len());
         let hold_frontage = plan_valid && before == 1 && path.first() == Some(&node);
         let hold_tail = plan_valid && before >= path.len();
@@ -211,13 +237,77 @@ fn walk_lanes(
             (lane_id, lane_d) = (detach_lane, 0.0);
             continue;
         }
+        // A lane whose lane use has no connector to the detach lane enters the detach road on
+        // another lane, as the movement step does; the frontage change then reaches the lane.
+        let mut seed_target = detach_lane;
         if !collect_connector_lanes_to_lane(lane_id, detach_lane, network, &mut connectors) {
-            route.end = RouteEnd::NoConnection { node };
-            return;
+            let edge = network.lane_system.lanes[detach_lane].edge_id;
+            if mode != MODE_CAR
+                || !collect_connector_lanes_to_edge(lane_id, edge, network, &mut connectors)
+            {
+                route.end = RouteEnd::NoConnection { node };
+                return;
+            }
+            seed_target = edge;
         }
-        let seed = connector_choice_seed(i, lane_id, detach_lane, node, path_idx);
+        let seed = connector_choice_seed(i, lane_id, seed_target, node, path_idx);
         (lane_id, lane_d) = (connectors[stable_index(seed, connectors.len())], 0.0);
     }
+}
+
+// The next lane change car `i` makes on road lane `lane_id` from `lane_d` under the movement
+// step's rules, as `(target lane, distance where the change ends)`: a frontage change toward the
+// detach lane first, else a turn preparation step at the window's start (the earliest point the
+// car may start it). `None` when the car stays on its lane to the end.
+#[allow(clippy::too_many_arguments)]
+fn preparation_change(
+    agents: &AgentVec,
+    i: usize,
+    lane_id: usize,
+    lane_d: f32,
+    current_node: u32,
+    path_idx: usize,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<(usize, f32)> {
+    let lane = &network.lane_system.lanes[lane_id];
+    let edge = graph.edge(lane.edge_id);
+    let count = if lane.is_fwd {
+        edge.fwd_lanes
+    } else {
+        edge.bkw_lanes
+    };
+    let plan_valid = agents.access_flags[i] & ACCESS_PLAN_VALID != 0;
+    let detach_lane = lane_index(agents.planned_detach_lane_id[i]);
+    let detach_d = agents.planned_detach_lane_d[i];
+    let frontage = (plan_valid && detach_lane != usize::MAX && lane_d < detach_d)
+        .then(|| lane_change_target_toward(lane_id, detach_lane, network))
+        .flatten();
+    if let Some(target) = frontage {
+        let length = lane_change_length_for_speed(agents.speed[i]);
+        return (lane.length - lane_d > length + OVERTAKE_EDGE_BUFFER_M)
+            .then_some((target, lane_d + length));
+    }
+    let start = lane_d.max(lane.length - turn_preparation_window_m(count));
+    let goal = junction_approach_node(lane_id, start, network, graph).and_then(|_| {
+        junction_approach_lane(
+            lane_id,
+            current_node,
+            &agents.current_path[i],
+            path_idx,
+            agents.access_flags[i],
+            agents.planned_detach_node[i],
+            detach_lane,
+            network,
+            graph,
+        )
+    })?;
+    let target = lane_change_target_toward(lane_id, goal, network)?;
+    let steps = (i16::from(network.lane_system.lanes[goal].lane_idx) - i16::from(lane.lane_idx))
+        .unsigned_abs();
+    let available = lane.length - start;
+    let length = turn_lane_change_length(agents.speed[i], available, steps)?;
+    (available > length + OVERTAKE_EDGE_BUFFER_M).then_some((target, start + length))
 }
 
 fn ingress_points(

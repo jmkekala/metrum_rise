@@ -12,14 +12,12 @@ pub(crate) use junction::connector_turn_speed;
 pub(super) use junction::{junction_car_speed, junction_entry_speed};
 pub(super) use lane_change::{
     LANE_CHANGE_FINISH_EPS_M, LANE_CHANGE_MIN_LENGTH_M, LaneChangeKind, LaneChangeParams,
-    OVERTAKE_COOLDOWN_S, OVERTAKE_MIN_SPEED_GAIN_MS, choose_lane_change, lane_change_finished,
-    overtake_follow_gap, planned_lane_change_target,
+    OVERTAKE_COOLDOWN_S, OVERTAKE_EDGE_BUFFER_M, OVERTAKE_MIN_SPEED_GAIN_MS, choose_lane_change,
+    lane_change_finished, lane_change_length_for_speed, lane_change_target_toward,
+    overtake_follow_gap, planned_lane_change_target, turn_lane_change_length,
 };
 #[cfg(test)]
-pub(super) use lane_change::{
-    cruise_lane_return_target, lane_change_length_for_speed, lane_change_target_toward,
-    overtaking_lane_target,
-};
+pub(super) use lane_change::{cruise_lane_return_target, overtaking_lane_target};
 pub(in crate::simulation::economy::agents) use occupancy::lane_attach_slot_clear;
 pub(super) use occupancy::{
     ConnectorEntry, claim_connector_entry, claim_lane_entry, idm_gap_bucket, lane_change_gap_clear,

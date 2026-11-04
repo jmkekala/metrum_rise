@@ -6,7 +6,7 @@ use super::super::super::super::super::MODE_CAR;
 use super::super::super::super::claims::LaneClaimContext;
 use super::super::super::super::lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, connector_choice_seed,
-    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane,
+    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane, sibling_lane_reaches_edge,
 };
 use super::super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::super::traffic::{
@@ -158,6 +158,23 @@ pub(super) unsafe fn enter_next_edge_connector(
                 Ok(LaneEndAction::Break)
             }
             ConnectorEntry::MissingConnection => {
+                if let Some(action) = follow_missed_turn(
+                    i,
+                    lane_id,
+                    from_edge,
+                    to_edge,
+                    node_id,
+                    path_idx_before_lane_end,
+                    path_len,
+                    speed,
+                    remaining_dist,
+                    transit_network,
+                    lane_buckets,
+                    lane_claims,
+                    slices,
+                ) {
+                    return Ok(action);
+                }
                 traffic_log!(
                     "[JUNCTION_MISSING_CONN] agent={} node={} from_lane={} from_edge={} to_edge={} path_idx={}/{} reason=no-connection-lane",
                     i,
@@ -206,15 +223,24 @@ pub(super) unsafe fn enter_detach_lane_connector(
         let s_path_idx = &slices.path_idx;
         let s_lane_d = &slices.lane_d;
         let s_speed = &slices.speed;
-        if *slices.tmode.get(i) == MODE_CAR
-            && direct_vehicle_lane_to_lane(lane_id, detach_lane_id, transit_network)
-        {
+        let car = *slices.tmode.get(i) == MODE_CAR;
+        let detach_edge = target_edge_for_lane(detach_lane_id, transit_network);
+        // A car whose lane does not run into the detach lane itself enters the detach road on
+        // the lane it does run into; the frontage change then reaches the detach lane.
+        let direct = if !car {
+            None
+        } else if direct_vehicle_lane_to_lane(lane_id, detach_lane_id, transit_network) {
+            Some(detach_lane_id)
+        } else {
+            direct_vehicle_lane_to_edge(lane_id, detach_edge, transit_network)
+        };
+        if let Some(direct) = direct {
             return Some(Ok(enter_direct_vehicle_lane(
                 i,
                 lane_id,
-                detach_lane_id,
+                direct,
                 from_edge,
-                target_edge_for_lane(detach_lane_id, transit_network),
+                detach_edge,
                 node_id,
                 path_idx.min(path_len),
                 path_len,
@@ -226,7 +252,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
             )));
         }
 
-        let connector_entry = claim_connector_to_lane(
+        let mut connector_entry = claim_connector_to_lane(
             i,
             lane_id,
             detach_lane_id,
@@ -235,6 +261,18 @@ pub(super) unsafe fn enter_detach_lane_connector(
             lane_buckets,
             lane_claims,
         );
+        // Under the default lane use a connector may reach the detach road on another lane only.
+        if car && matches!(connector_entry, ConnectorEntry::MissingConnection) {
+            connector_entry = claim_connector_to_edge(
+                i,
+                lane_id,
+                detach_edge,
+                connector_choice_seed(i, lane_id, detach_edge, node_id, *s_path_idx.get(i)),
+                transit_network,
+                lane_buckets,
+                lane_claims,
+            );
+        }
 
         match connector_entry {
             ConnectorEntry::Enter(conn_lane_id) => {
@@ -305,6 +343,23 @@ pub(super) unsafe fn enter_detach_lane_connector(
                 Some(Ok(LaneEndAction::Break))
             }
             ConnectorEntry::MissingConnection => {
+                if let Some(action) = follow_missed_turn(
+                    i,
+                    lane_id,
+                    from_edge,
+                    detach_edge,
+                    node_id,
+                    path_idx.min(path_len),
+                    path_len,
+                    speed,
+                    remaining_dist,
+                    transit_network,
+                    lane_buckets,
+                    lane_claims,
+                    slices,
+                ) {
+                    return Some(Ok(action));
+                }
                 traffic_log!(
                     "[JUNCTION_MISSING_CONN] agent={} node={} from_lane={} from_edge={} to_lane={} path_idx={}/{} reason=zero-hop-no-connection-lane",
                     i,
@@ -327,6 +382,83 @@ pub(super) unsafe fn enter_detach_lane_connector(
                 None
             }
         }
+    }
+}
+
+// A car at the end of road lane `lane_id` with no way onto `to_edge` while another lane of its
+// carriageway has one missed a lane-use turn: it could not reach a lane that makes the turn
+// before the junction. It takes this lane's first successor in stable order whose road is not
+// `to_edge` (a real connector or pass-through lane, so it never leaves the lane graph) and drops
+// its node path; the replan gate then plans on that road from its end (`ensure_exact_access_plan`,
+// `replan_after_missed_turn`). A wait for that connector keeps the car and its path at the lane
+// end. `None` when no sibling makes the turn (a missing road turn, not a lane-use miss) or the lane
+// has no other way on: the caller's failure path runs. O(L x C + C) lookups, no allocation, no
+// route query.
+#[allow(clippy::too_many_arguments)]
+unsafe fn follow_missed_turn(
+    i: usize,
+    lane_id: usize,
+    from_edge: usize,
+    to_edge: usize,
+    node_id: u32,
+    path_idx_before_lane_end: usize,
+    path_len: usize,
+    speed: f32,
+    remaining_dist: &mut f32,
+    transit_network: &TransitNetwork,
+    lane_buckets: &[Vec<(f32, usize)>],
+    lane_claims: &LaneClaimContext<'_>,
+    slices: &MovementSlices,
+) -> Option<LaneEndAction> {
+    unsafe {
+        if *slices.tmode.get(i) != MODE_CAR
+            || !sibling_lane_reaches_edge(lane_id, to_edge, transit_network)
+        {
+            return None;
+        }
+        let lanes = &transit_network.lane_system.lanes;
+        let onward_edge = lanes[lane_id].next_lanes.iter().find_map(|&next| {
+            let lane = &lanes[next];
+            let road = if lane.edge_id == usize::MAX {
+                *lane.next_lanes.first()?
+            } else {
+                next
+            };
+            let edge = lanes[road].edge_id;
+            (edge != to_edge && edge != usize::MAX).then_some(edge)
+        })?;
+        // The onward road is one this lane reaches, so the entry finds its connector or
+        // pass-through lane and never comes back here; a car is never handed back as a walker.
+        let action = enter_next_edge_connector(
+            i,
+            lane_id,
+            from_edge,
+            onward_edge,
+            None,
+            node_id,
+            path_idx_before_lane_end,
+            path_len,
+            speed,
+            remaining_dist,
+            transit_network,
+            lane_buckets,
+            lane_claims,
+            slices,
+        )
+        .ok()?;
+        if *slices.lane_id.get(i) != lane_id {
+            slices.path.get_mut(i).clear();
+            *slices.path_idx.get_mut(i) = 0;
+            traffic_log!(
+                "[MISSED_TURN] agent={} node={} lane={} wanted_edge={} onward_edge={}",
+                i,
+                node_id,
+                lane_id,
+                to_edge,
+                onward_edge
+            );
+        }
+        Some(action)
     }
 }
 

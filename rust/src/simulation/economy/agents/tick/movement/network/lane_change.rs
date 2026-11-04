@@ -4,12 +4,14 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_NETWORK};
 use super::super::super::claims::LaneClaimContext;
+use super::super::super::lane_nav::{junction_approach_lane, junction_approach_node};
 use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::traffic::{
     LaneChangeKind, LaneChangeParams, OVERTAKE_COOLDOWN_S, choose_lane_change, claim_lane_entry,
     lane_change_finished, lane_change_gap_clear, planned_lane_change_target,
 };
 use crate::simulation::network::TransitNetwork;
+use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
 
 /// Applies active lane-change lifecycle, planned lane changes, and conservative overtaking.
@@ -20,6 +22,7 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
     lane_id: usize,
     lane_buckets: &[Vec<(f32, usize)>],
     transit_network: &TransitNetwork,
+    graph: &RegionGraph,
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> usize {
@@ -62,6 +65,22 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
             },
             transit_network,
             lane_buckets,
+            // The same selector as claim classification (`agent_turn_lane_target`).
+            junction_approach_node(lane_id, lane_d, transit_network, graph)
+                .and_then(|_| {
+                    junction_approach_lane(
+                        lane_id,
+                        *slices.cur_n.get(i),
+                        slices.path.get(i),
+                        *slices.path_idx.get(i),
+                        *slices.access_flags.get(i),
+                        *slices.planned_detach_n.get(i),
+                        detach_lane_id,
+                        transit_network,
+                        graph,
+                    )
+                })
+                .unwrap_or(usize::MAX),
         );
         let Some(choice) = choice else {
             if crate::debug::Channel::Traffic.enabled()

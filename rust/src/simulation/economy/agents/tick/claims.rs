@@ -7,7 +7,9 @@ use super::super::{
     MODE_WALK, TRANSIT_ACCESS_EGRESS, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use super::access::planned_detach_is_legal;
-use super::lane_nav::{held_attach_origin, lane_origin_node};
+use super::lane_nav::{
+    held_attach_origin, junction_approach_lane, junction_approach_node, lane_origin_node,
+};
 use super::traffic::{
     LaneChangeParams, choose_lane_change, connector_turn_speed, junction_car_speed,
     lane_attach_slot_clear, lane_change_finished, lane_entry_slot_clear,
@@ -330,8 +332,49 @@ fn agent_lane_change_target(
         },
         preparation.network,
         preparation.lane_buckets,
+        if preparation
+            .network
+            .lane_system
+            .needs_turn_preparation(agents.current_lane_id[i])
+        {
+            agent_turn_lane_target(agents, i, preparation)
+        } else {
+            usize::MAX
+        },
     )
     .map(|choice| choice.target_lane_id)
+}
+
+// The lane car `i` must reach before the junction ahead, or `usize::MAX` outside its turn
+// preparation window; the same selector as the movement step's lane change. Kept out of line so
+// the route column reads stay off the ordinary classification path. O(1) outside the window,
+// O(D + L x C) inside it; no allocation, no route query.
+#[inline(never)]
+fn agent_turn_lane_target(
+    agents: &AgentVec,
+    i: usize,
+    preparation: &ClaimPreparation<'_>,
+) -> usize {
+    junction_approach_node(
+        agents.current_lane_id[i],
+        agents.lane_distance[i],
+        preparation.network,
+        preparation.graph,
+    )
+    .and_then(|_| {
+        junction_approach_lane(
+            agents.current_lane_id[i],
+            agents.current_node[i],
+            &agents.current_path[i],
+            agents.current_path_index[i],
+            agents.access_flags[i],
+            agents.planned_detach_node[i],
+            agents.planned_detach_lane_id[i] as usize,
+            preparation.network,
+            preparation.graph,
+        )
+    })
+    .unwrap_or(usize::MAX)
 }
 
 fn agent_network_claim_distance(

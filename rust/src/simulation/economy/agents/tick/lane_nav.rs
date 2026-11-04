@@ -305,11 +305,168 @@ pub(super) fn planned_next_connector(
         transit_network,
         graph,
     )? {
+        // A lane whose lane use has no connector to the detach lane itself enters the detach
+        // road on another lane and changes to it on the frontage, as the movement step does.
         NextTarget::Lane(detach_lane_id) => {
-            connection_lane_to_lane_unclaimed(lane_id, detach_lane_id, transit_network)
+            connection_lane_to_lane_unclaimed(lane_id, detach_lane_id, transit_network).or_else(
+                || {
+                    let edge = transit_network.lane_system.lanes[detach_lane_id].edge_id;
+                    connection_lane_to_edge(lane_id, edge, transit_network)
+                },
+            )
         }
         NextTarget::Edge(target_edge) => {
             connection_lane_to_edge(lane_id, target_edge, transit_network)
         }
     }
+}
+
+// Metres of approach a car needs per lane it may have to cross to reach its turn lane: the
+// longest lane-change S-curve (`LANE_CHANGE_MAX_LENGTH_M`).
+const TURN_PREPARATION_PER_LANE_M: f32 = 70.0;
+// Metres of approach beyond the lane changes: the 12 m road-end buffer plus room to start.
+const TURN_PREPARATION_SLACK_M: f32 = 30.0;
+
+/// Length of the turn-preparation window at the end of an approach with `count` lanes in the
+/// car's direction: `70 m x (count - 1) + 30 m`, fixed for every road speed (`ROAD-94`, D2).
+#[inline(always)]
+pub(super) fn turn_preparation_window_m(count: u8) -> f32 {
+    f32::from(count.saturating_sub(1)) * TURN_PREPARATION_PER_LANE_M + TURN_PREPARATION_SLACK_M
+}
+
+/// Whether vehicle lane `lane_id` continues onto road `edge`: straight through a pass-through
+/// node, or through one of its connectors. O(successors), no allocation.
+pub(super) fn vehicle_lane_reaches_edge(
+    lane_id: usize,
+    edge: usize,
+    network: &TransitNetwork,
+) -> bool {
+    let lanes = &network.lane_system.lanes;
+    lanes.get(lane_id).is_some_and(|lane| {
+        lane.next_lanes.iter().any(|&next| {
+            let next = &lanes[next];
+            next.edge_id == edge
+                || (next.edge_id == usize::MAX
+                    && next
+                        .next_lanes
+                        .first()
+                        .is_some_and(|&out| lanes[out].edge_id == edge))
+        })
+    })
+}
+
+/// Whether any vehicle lane of `lane_id`'s carriageway (same edge, same direction, `lane_id`
+/// included) continues onto road `edge`: a lane that cannot make a road turn its siblings make
+/// has missed a lane-use turn, not a missing road turn. O(L x C) for L lanes of C successors.
+pub(super) fn sibling_lane_reaches_edge(
+    lane_id: usize,
+    edge: usize,
+    network: &TransitNetwork,
+) -> bool {
+    let lanes = &network.lane_system;
+    let Some(source) = lanes.lanes.get(lane_id) else {
+        return false;
+    };
+    lanes
+        .edge_lanes
+        .get(&source.edge_id)
+        .is_some_and(|siblings| {
+            siblings.iter().any(|&id| {
+                let lane = &lanes.lanes[id];
+                lane.lane_type == LaneType::Vehicle
+                    && lane.is_fwd == source.is_fwd
+                    && vehicle_lane_reaches_edge(id, edge, network)
+            })
+        })
+}
+
+/// Returns the node road lane `lane_id` approaches when a car at `lane_d` on it is inside the
+/// node's turn-preparation window: the lane is flagged by the lane use
+/// (`LaneSystem::needs_turn_preparation`) and at most `turn_preparation_window_m` of it remain.
+/// The flag is read first, so a car on any other lane pays one byte read. O(1), no allocation.
+#[inline]
+pub(super) fn junction_approach_node(
+    lane_id: usize,
+    lane_d: f32,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<u32> {
+    if !network.lane_system.needs_turn_preparation(lane_id) {
+        return None;
+    }
+    let lane = network.lane_system.lanes.get(lane_id)?;
+    if lane.edge_id == usize::MAX || lane.lane_type != LaneType::Vehicle {
+        return None;
+    }
+    let edge = graph.get_edge(lane.edge_id)?;
+    let count = if lane.is_fwd {
+        edge.fwd_lanes
+    } else {
+        edge.bkw_lanes
+    };
+    if count <= 1 || lane.length - lane_d > turn_preparation_window_m(count) {
+        return None;
+    }
+    Some(if lane.is_fwd {
+        edge.end_node
+    } else {
+        edge.start_node
+    })
+}
+
+/// Chooses the lane of `lane_id`'s carriageway nearest to it that makes the route's next movement
+/// at the lane's end, where `planned_next_target` says the car goes (the next path edge, or the
+/// zero-hop detach lane's edge). Returns `lane_id` itself when it already makes the movement, so
+/// a car on a good lane does not weave, and `None` when the route has no next movement there or
+/// no lane makes it. Ties go to the smallest `(|lane index delta|, |lane index|, lane id)`, a pure
+/// function of the lane snapshot and the car's columns. Called inside the window
+/// (`junction_approach_node`) only. O(D + L x C): the target is O(node degree), then L sibling
+/// lanes of C successors each; no allocation, no route query.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn junction_approach_lane(
+    lane_id: usize,
+    current_node: u32,
+    path: &[u32],
+    path_idx: usize,
+    access_flags: u8,
+    planned_detach_node: u32,
+    planned_detach_lane_id: usize,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<usize> {
+    let lanes = &network.lane_system;
+    let lane = lanes.lanes.get(lane_id)?;
+    let target_edge = match planned_next_target(
+        lane_id,
+        current_node,
+        path,
+        path_idx,
+        access_flags,
+        planned_detach_node,
+        planned_detach_lane_id,
+        network,
+        graph,
+    )? {
+        NextTarget::Edge(edge) => edge,
+        NextTarget::Lane(detach_lane_id) => lanes.lanes.get(detach_lane_id)?.edge_id,
+    };
+    lanes
+        .edge_lanes
+        .get(&lane.edge_id)?
+        .iter()
+        .copied()
+        .filter(|&candidate| {
+            let sibling = &lanes.lanes[candidate];
+            sibling.is_fwd == lane.is_fwd
+                && sibling.lane_type == LaneType::Vehicle
+                && vehicle_lane_reaches_edge(candidate, target_edge, network)
+        })
+        .min_by_key(|&candidate| {
+            let index = lanes.lanes[candidate].lane_idx;
+            (
+                (i16::from(index) - i16::from(lane.lane_idx)).unsigned_abs(),
+                index.unsigned_abs(),
+                candidate,
+            )
+        })
 }

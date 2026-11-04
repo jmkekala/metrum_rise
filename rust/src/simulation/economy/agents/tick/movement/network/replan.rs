@@ -9,10 +9,12 @@ use super::super::super::super::{
 use super::super::super::access::planned_detach_is_legal;
 use super::super::super::lane_nav::lane_terminal_node;
 use super::super::super::planning::{
-    BuiltNetworkReplan, BuiltTripPlan, plan_immigration_trip, plan_network_replan,
+    BuiltNetworkReplan, BuiltTripPlan, plan_border_network_replan, plan_immigration_trip,
+    plan_network_replan,
 };
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::FailureCause;
+use super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
 };
@@ -20,12 +22,15 @@ use super::walk_home::{give_up_trip, retry_home, retry_home_without_lane};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::traffic_log;
 use std::sync::atomic::AtomicU32;
 
 /// Runs the pre-movement replan gates and returns whether the agent may keep moving this tick.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+// Keep rare route planning out of the small, frequently executed movement loop.
+#[inline(never)]
 pub(super) unsafe fn prepare_network_replan(
     i: usize,
     sim_time: f32,
@@ -142,10 +147,22 @@ unsafe fn ensure_exact_access_plan(
         let s_next_replan_time = &slices.next_replan_time;
 
         let target_building = *s_tgt_b.get(i);
-        if *s_transit.get(i) == TRANSIT_IMMIGRATING
-            || (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0
-            || target_building == usize::MAX
-        {
+        if *s_transit.get(i) == TRANSIT_IMMIGRATING {
+            return true;
+        }
+        if (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0 || target_building == usize::MAX {
+            // One length test for every other car; the replan itself runs once per missed turn.
+            if *s_tmode.get(i) == MODE_CAR && slices.path.get(i).is_empty() {
+                replan_after_missed_turn(
+                    i,
+                    sim_time,
+                    allocator,
+                    transit_network,
+                    graph,
+                    pathfind_count,
+                    slices,
+                );
+            }
             return true;
         }
 
@@ -216,6 +233,91 @@ unsafe fn ensure_exact_access_plan(
                 );
                 false
             }
+        }
+    }
+}
+
+// A car that followed a missed turn (`follow_missed_turn`) has a valid plan, no node path and a
+// road lane under it. It plans again from that lane's end, early enough to choose the road's next
+// lane, and keeps driving: a destination car through `plan_network_replan` with its access flags
+// kept, a freight car through `plan_border_network_replan`. A zero-hop trip (an empty path at its
+// detach node, or its detach lane on this road) is left alone. A failed replan sets the replan
+// backoff and changes nothing else: the car drives to its lane end, where the junction's
+// existing empty-path replan runs. Cost on a match: one route query; never on the next tick of
+// the same lane unless the backoff has passed.
+unsafe fn replan_after_missed_turn(
+    i: usize,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    slices: &MovementSlices,
+) {
+    unsafe {
+        let flags = *slices.access_flags.get(i);
+        let lane_id = *slices.lane_id.get(i);
+        if flags & ACCESS_PLAN_VALID == 0 || sim_time < *slices.next_replan_time.get(i) {
+            return;
+        }
+        let Some(lane) = transit_network.lane_system.lanes.get(lane_id) else {
+            return;
+        };
+        let Some(node) = lane_terminal_node(lane_id, transit_network, graph) else {
+            return;
+        };
+        let target_building = *slices.tgt_b.get(i);
+        let replanned = if target_building == usize::MAX {
+            let border = *slices.freight_target_border_node.get(i);
+            if flags & ACCESS_FREIGHT_BORDER_DESTINATION == 0 || node == border {
+                return;
+            }
+            plan_border_network_replan(
+                node,
+                lane.edge_id,
+                border,
+                graph,
+                transit_network,
+                pathfind_count,
+            )
+            .map(|plan| apply_network_replan(i, plan, slices))
+            .is_some()
+        } else {
+            if node == *slices.planned_detach_n.get(i)
+                || transit_network
+                    .lane_system
+                    .lanes
+                    .get(*slices.planned_detach_lane.get(i) as usize)
+                    .is_some_and(|detach| detach.edge_id == lane.edge_id)
+            {
+                return;
+            }
+            plan_network_replan(
+                node,
+                lane.edge_id,
+                None,
+                target_building,
+                MODE_CAR,
+                flags,
+                allocator,
+                transit_network,
+                graph,
+                pathfind_count,
+                Some((i, "missed-turn-replan")),
+            )
+            .map(|plan| apply_network_replan(i, plan, slices))
+            .is_ok()
+        };
+        if !replanned {
+            *slices.next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+            traffic_log!(
+                "[MISSED_TURN_REPLAN_FAILED] agent={} node={} lane={} target_bldg={} retry_after_s={:.1}",
+                i,
+                node,
+                lane_id,
+                target_building,
+                NETWORK_REPLAN_DELAY_S,
+            );
         }
     }
 }

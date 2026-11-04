@@ -208,7 +208,6 @@ impl LaneSystem {
     /// (default lane use with a lane choice, or a multi-lane approach to a whitelisted node), so
     /// a car must be on a lane that makes its turn before the node. `O(1)`.
     #[inline]
-    #[allow(dead_code, reason = "read by the advance lane choice from R4a2 on")]
     pub(crate) fn needs_turn_preparation(&self, lane_id: usize) -> bool {
         self.turn_preparation.get(lane_id).copied().unwrap_or(false)
     }

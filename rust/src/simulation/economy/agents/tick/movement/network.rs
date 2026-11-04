@@ -117,6 +117,7 @@ pub(super) unsafe fn handle_network_movement(
                 lane_id,
                 lane_buckets,
                 transit_network,
+                graph,
                 lane_claims,
                 slices,
             );
