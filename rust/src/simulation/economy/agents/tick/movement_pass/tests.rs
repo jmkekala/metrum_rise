@@ -125,6 +125,127 @@ fn lane_change_fixture(count: usize, cruise: bool) -> (AgentSystem, TransitNetwo
     (agents, network)
 }
 
+// The four arm ends of a `turn_fixture` junction, relative to its centre.
+const TURN_ARMS: [(f32, f32); 4] = [(-100.0, 0.0), (100.0, 0.0), (0.0, -100.0), (0.0, 100.0)];
+
+// The advance lane choice's window (`ROAD-94`): `count` approach arms of 2+2 four-ways (four
+// arms each, 400 m apart, built and lane-rebuilt like a real junction, so on a lane-use build
+// the lanes carry its connectors and turn-preparation flags). Each arm has two cars inside the
+// preparation window, each on the lane that cannot make its next turn under the lane use: the
+// inner lane's car turns right and the outer lane's car turns left. The turns come from the arms'
+// geometry, so the fixture is the same on a build without the lane use (the timing control).
+// Returns the cars' `(lane, lane_d)` start states too.
+fn turn_fixture(count: usize) -> (AgentSystem, TransitNetwork, RegionGraph, Vec<(usize, f32)>) {
+    let mut graph = RegionGraph::new();
+    let junctions = count.div_ceil(4);
+    let side = (junctions as f64).sqrt().ceil() as usize;
+    let mut arms = Vec::with_capacity(junctions * 4);
+    for junction in 0..junctions {
+        let (x, z) = (
+            (junction % side) as f32 * 400.0,
+            (junction / side) as f32 * 400.0,
+        );
+        let centre = graph.add_node(Vector3::new(x, 0.0, z), NodeType::Junction);
+        for (dx, dz) in TURN_ARMS {
+            let end = Vector3::new(x + dx, 0.0, z + dz);
+            let start = graph.add_node(end, NodeType::Junction);
+            let geometry = vec![end, Vector3::new(x, 0.0, z)];
+            let edge = graph.add_edge(Edge {
+                start_node: start,
+                end_node: centre,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                class: EdgeClass::Standard,
+                width: 14.0,
+                fwd_lanes: 2,
+                bkw_lanes: 2,
+                speed_limit: 14.0,
+                base_cost: 1.0,
+                physical_length: 100.0,
+                start_clip: 0.0,
+                end_clip: 0.0,
+                geometry: geometry.clone(),
+                physical_geometry: geometry,
+                deleted: false,
+                no_building_spawn: false,
+                no_street_lights: false,
+                vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+                median: None,
+            });
+            arms.push((start, centre, edge));
+        }
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    let lanes = &network.lane_system;
+    let mut agents = AgentSystem::new();
+    let mut starts = Vec::with_capacity(count * 2);
+    for (arm, &(start, centre, edge)) in arms.iter().enumerate().take(count) {
+        let mut inbound: Vec<usize> = lanes.edge_lanes[&edge]
+            .iter()
+            .copied()
+            .filter(|&id| lanes.lanes[id].is_fwd && lanes.lanes[id].lane_type == LaneType::Vehicle)
+            .collect();
+        inbound.sort_by_key(|&id| lanes.lanes[id].lane_idx);
+        let (dx, dz) = TURN_ARMS[arm % 4];
+        // Heading `-(dx, dz)` into the centre, the right exit's end is `(dz, -dx)` from it and the
+        // left exit's `(-dz, dx)` (lane 0 is the inner, left lane in right-hand traffic).
+        for (slot, lane_d, exit) in [(0, 15.0, (dz, -dx)), (1, 45.0, (-dz, dx))] {
+            let lane = inbound[slot];
+            let exit_arm = TURN_ARMS.iter().position(|&end| end == exit).unwrap();
+            let destination = arms[arm / 4 * 4 + exit_arm].0;
+            let i = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+            agents.transit_mode[i] = MODE_CAR;
+            agents.transit[i] = TRANSIT_NETWORK;
+            agents.current_edge[i] = edge;
+            agents.current_node[i] = start;
+            agents.current_path[i] = vec![start, centre, destination];
+            agents.current_path_index[i] = 1;
+            starts.push((lane, lane_d));
+        }
+    }
+    (agents, network, graph, starts)
+}
+
+// Puts the turn fixture's cars back at their start states, at 8 m/s with no lane change yet.
+fn reset_turn_fixture(agents: &mut AgentSystem, starts: &[(usize, f32)]) {
+    for (i, &(lane, lane_d)) in starts.iter().enumerate() {
+        agents.current_lane_id[i] = lane;
+        agents.lane_distance[i] = lane_d;
+        agents.speed[i] = 8.0;
+        agents.current_path_index[i] = 1;
+        agents.lane_change_from_lane_id[i] = u32::MAX;
+        agents.lane_change_start_d[i] = 0.0;
+        agents.lane_change_length_m[i] = 0.0;
+        // No discretionary change: on a build without the lane use the cars just drive on.
+        agents.overtake_cooldown_s[i] = f32::MAX;
+        agents.overtake_blocked_time_s[i] = 0.0;
+    }
+}
+
+#[test]
+fn turn_fixture_cars_change_toward_their_turn_lanes() {
+    let (mut agents, network, graph, starts) = turn_fixture(8);
+    reset_turn_fixture(&mut agents, &starts);
+    let n = agents.len();
+    agents.prepare_lane_buckets_for_tick(&network, n);
+    agents.dispatch_movement_pass(
+        &BuildingAllocator::new(),
+        &network,
+        &graph,
+        0.25,
+        &TimeSystem::new(),
+        n,
+    );
+    for (i, &(lane, _)) in starts.iter().enumerate() {
+        // Every car is in its window on the wrong lane, with a clear gap on the other one.
+        assert_eq!(agents.lane_change_from_lane_id[i], lane as u32, "car {i}");
+        assert_ne!(agents.current_lane_id[i], lane, "car {i}");
+    }
+}
+
 fn move_fixture(agents: &mut AgentSystem, network: &TransitNetwork) {
     let n = agents.len();
     agents.invalidate_lane_bucket_snapshot();
@@ -213,23 +334,35 @@ fn benchmark_lane_transitions() {
     use std::{hint::black_box, time::Instant};
 
     let allocator = BuildingAllocator::new();
-    let graph = RegionGraph::new();
+    let empty_graph = RegionGraph::new();
     let clock = TimeSystem::new();
     for count in [512, 8_192, 65_536] {
-        for scenario in ["clear", "merge", "blocked", "lateral", "cruise"] {
+        for scenario in ["clear", "merge", "blocked", "lateral", "cruise", "turn"] {
             let blocked = scenario == "blocked";
             let cruise = scenario == "cruise";
             let lateral = scenario == "lateral" || cruise;
-            let (mut agents, network) = if lateral {
-                lane_change_fixture(count, cruise)
+            // `turn` is the only scenario with cars inside a turn-preparation window (`ROAD-94`);
+            // the others run on lanes without the flag and so measure the window's guard only.
+            let turn = scenario == "turn";
+            let (mut agents, network, turn_graph, turn_starts) = if turn {
+                let (agents, network, graph, starts) = turn_fixture(count);
+                (agents, network, Some(graph), starts)
+            } else if lateral {
+                let (agents, network) = lane_change_fixture(count, cruise);
+                (agents, network, None, Vec::new())
             } else {
-                connector_exit_fixture(count, blocked, MODE_CAR)
+                let (agents, network) = connector_exit_fixture(count, blocked, MODE_CAR);
+                (agents, network, None, Vec::new())
             };
+            let graph = turn_graph.as_ref().unwrap_or(&empty_graph);
             let n = agents.len();
             let stride = if blocked || lateral { 3 } else { 2 };
             let mut samples = [0.0; 21];
             for sample in 0..24 {
-                for group in 0..count {
+                if turn {
+                    reset_turn_fixture(&mut agents, &turn_starts);
+                }
+                for group in (0..count).filter(|_| !turn) {
                     for offset in 0..stride {
                         let i = group * stride + offset;
                         if cruise {
@@ -265,14 +398,14 @@ fn benchmark_lane_transitions() {
                 agents.invalidate_lane_bucket_snapshot();
                 agents.prepare_lane_buckets_for_tick(&network, n);
                 let start = Instant::now();
-                agents.dispatch_movement_pass(&allocator, &network, &graph, 0.25, &clock, n);
+                agents.dispatch_movement_pass(&allocator, &network, graph, 0.25, &clock, n);
                 if sample >= 3 {
                     samples[sample - 3] = start.elapsed().as_secs_f64() * 1_000.0;
                 }
                 black_box(&agents);
             }
             samples.sort_by(f64::total_cmp);
-            let transitions = if lateral {
+            let transitions = if lateral || turn {
                 agents
                     .lane_change_from_lane_id
                     .iter()
