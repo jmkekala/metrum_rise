@@ -246,32 +246,47 @@ connector to every outbound lane of every other arm. Ported from Veeti's road-ch
   right by the sign of the cross product. An arm offers a movement only when it has lanes leaving
   the node: an arm whose lanes all enter the node (a one-way pointing in) offers none.
 - **Lane masks** by the approach's lane count towards the node, rank 0 the innermost lane
-  (leftmost under right-hand traffic, mirrored under `DRIVE_ON_LEFT`):
+  (leftmost under right-hand traffic, mirrored under `DRIVE_ON_LEFT`). **Permissive by default
+  (user decision, 2026-11-04):** "By default it should allow many connections that are
+  reasonable. If user want to restrict turns he can do it with the junction inspection tool."
+  Where straight on is offered every lane goes straight, the innermost lane also turns left and
+  the outermost also right, so no lane's movement crosses another's:
 
   | Lanes | Left, straight and right offered | Left and straight | Straight and right | Left and right |
   | --- | --- | --- | --- | --- |
   | 1 | all | all | all | all |
-  | 2 | L+S / S+R | L / S | S / R | L / R |
-  | 3 | L / S / R | L / S / S | S / S / R | L / L / R |
-  | 4 | L / S / S / R | L / S / S / S | S / S / S / R | L / L / R / R |
+  | 2 | L+S / S+R | L+S / S | S / S+R | L / R |
+  | 3 | L+S / S / S+R | L+S / S / S | S / S / S+R | L / L / R |
+  | 4 | L+S / S / S / S+R | L+S / S / S / S | S / S / S / S+R | L / L / R / R |
 
-  Left and right alone split into contiguous halves, the odd lane to the left.
+  Left and right alone (a T's stem) split into contiguous halves, the odd lane to the left.
+  Before the decision (R4a1-R4a3) three or more lanes had dedicated L / S.. / R lanes and two
+  lanes with two movements L / S or S / R (`TRAFFIC-23`'s border cross streets: the outer lane
+  right-only). Whitelists (the junction inspection tool) are unchanged and still bypass the
+  default. The paint is unchanged: the solid zone reads only whether an approach has more than
+  one lane and more than one movement (`approach_needs_lane_choice`), which the masks do not
+  change.
 - **Targets.** A movement's source lanes fan onto the target arm's outgoing lanes in rank order
   without crossing (`target_matches`): a left turn uses the target's inner lanes, a right turn
   its outer lanes, straight the whole group, so uneven counts (1+2, 2+1) still give every source
-  lane an exit. A one-lane approach onto a multi-lane road turns left into the inner lane and
-  right into the outer lane (PLAN-R4 D10): side streets onto avenues lose their turns into the
-  far lanes.
+  lane an exit. **A single-lane group fans onto every lane of its target group** (`TRAFFIC-23`,
+  D10 relaxed for one lane): a one-lane approach onto a multi-lane road may turn into any lane, so
+  the car's entry picks the lane its route needs next ([`traffic.md`](traffic.md#advance-lane-choice-road-94));
+  real-world "nearest lane" is not kept, as `dev`'s all-pairs connectors never kept it either.
+  A multi-lane group keeps its monotone fan (no connectors crossing inside a group).
 - **Whitelists win.** A node with any user vehicle connection keeps whitelist mode: only the
   listed turns, as before. U-turns stay dead-end only (`open_node_allows_u_turn`); at a divided
   dead end every forward lane keeps its U-turn connectors.
 - **Degree two.** A 2+2 road continuing through a bend or a pass-through node maps its lanes 1:1
   (one movement, so no lane choice), where it had all pairs (D9): no lane swapping at bends.
-- **Turn preparation flag.** Every inbound road lane gets a rebuild-derived byte,
-  `LaneSystem::needs_turn_preparation`: true when its approach has more than one lane and the
-  node is whitelisted or its default lane use offers more than one movement. Written at every
-  full and incremental node rebuild (an incremental rebuild clears the lanes it retires), never
-  saved. The car's advance lane choice, its 20 m solid approach zone and the solid lane lines
+- **Turn preparation flag.** Every inbound road lane gets a rebuild-derived solid zone length,
+  `Lane::solid_zone_m` (`APPROACH_SOLID_LENGTH_M` = 20 m when flagged, else 0;
+  `LaneSystem::needs_turn_preparation` reads it): flagged when its approach has more than one
+  lane and the node is whitelisted or its default lane use offers more than one movement.
+  Written at every full and incremental node rebuild (an incremental rebuild clears the lanes it
+  retires), never saved (lanes are rebuilt from the graph on load; `saved_lanes` stores identities
+  and frontage state only). Since `TRAFFIC-23` (decision Q3-1) it is a field on the lane the tick
+  already reads, not a side vector by lane id, so `lane_change_end` is `length - solid_zone_m`. The car's advance lane choice, its 20 m solid approach zone and the solid lane lines
   read it ([`traffic.md`](traffic.md#planned-lane-changes); the paint through
   `approach_needs_lane_choice`, the same rule from the graph alone).
 - **Cost.** `DefaultLaneUse::new` is `O(degree)` per inbound lane and `allows` `O(lanes)` per
@@ -293,6 +308,17 @@ probe's six 2+2 spans (1:1 at the pass-through node); the R8 probe's Kuopio lane
 (`a37745957cd1f02d` -> `9427ff4517b4199f`), with every 1+1 city's lanes and every other product
 unchanged. The R4a3 acceptance (connector sweeps, the 100k audit, the 4-Lane variant, the
 envelope) is in [`traffic.md`](traffic.md#planned-lane-changes).
+
+`TRAFFIC-23` (R4a4, 2026-11-04: permissive masks and one-lane fans) re-recorded, lanes only with
+every other product asserted equal: the reference probe's `t_mixed_4lane_through` flat and sloped
+again; the roadbed node probe's 67 entries that are junctions of three or more arms with a
+multi-lane road (bends, pass-throughs, ends and the junctions whose masks and fans are unchanged,
+77 entries, hash as before); the Kuopio reference save (`saved_lanes` only, `sqldiff`: 28 rows
+added and 1,523 renumbered, every other table and the version identical; save format stays 114,
+so a save written by an earlier build of this branch with multi-lane junctions no longer loads:
+its saved connectors are not the rebuilt ones). Kuopio has 352 vehicle connectors (R4a3 324,
+`dev` 440), 0 failing in the sweep; 1+1 cities are bitwise unchanged (the 100k city's 24,834).
+The acceptance (`TRAFFIC-23`, still open) is in [`traffic.md`](traffic.md#advance-lane-choice-road-94).
 
 ### Junction layout
 

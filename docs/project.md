@@ -51,11 +51,17 @@ wait at a full exit brake to a stop ([TRAFFIC-16](traffic.md#junction-speeds)); 
 saturated junctions (30k deliveries -13.5%), and the 100k ring it causes is detoured whenever it
 locks.
 
-On multi-lane roads each lane now serves its share of a junction's movements (on a 2+2 approach
-to a crossroads: left and straight, straight and right) instead of every lane turning everywhere,
-and cars move into a lane that makes their turn before the junction; the lane lines are solid over
-the last 20 m, where no car changes lanes. A car that misses its turn takes a legal one and
-replans. 1+1 streets are unchanged. On dense 2+2 grids with 50 m blocks the missed turns still saturate traffic ([TRAFFIC-23](roadmap.md)), so this has not landed. Save format 114
+On multi-lane roads each lane now serves its share of a junction's movements instead of every
+lane turning everywhere: every lane goes straight where straight on exists, the innermost lane
+also turns left and the outermost also right (the user's permissive default; the junction
+inspection tool's whitelist restricts further), and a one-lane side street may turn into any lane.
+Cars entering a multi-lane road take the lane their next turn needs, move into it before the
+junction where there is room, and keep to it rather than overtake out of it; the lane lines are
+solid over the last 20 m, where no car changes lanes. A car that misses its turn takes a legal one
+and replans on a road its lane reaches. 1+1 streets are unchanged. On the dense 2+2 grid with 50 m
+blocks missed turns fall from 68,635 to 10 a day, but freight deliveries stay 10% under `dev`'s:
+the border link's single right-turn lane carries the whole southbound border flow
+([TRAFFIC-23](roadmap.md), in progress), so this has not landed. Save format 114
 ([ROAD-94](roads.md#default-junction-lane-use-road-94),
 [traffic.md](traffic.md#advance-lane-choice-road-94); branch `port-r4a-lane-use`, not landed:
 waiting for the user's test).
@@ -1424,6 +1430,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TRAFFIC-23` round R4a4 (branch `port-r4a-lane-use`, 2026-11-04, not landed): entry-lane choice by the route's next turn with one-lane turn groups fanning to every target lane, a lane-aware missed-turn recovery and replan (the CCH origin seeded per departure the car's lane reaches), discretionary overtakes kept in the route's lanes, the permissive default lane use (user decision) and the solid zone as a lane field. The 10k 4-Lane variant: 10 missed turns a day (68,635 before), 1,863 deliveries against `dev`'s 2,073 (one right-turn lane carries the border flow); 1+1 cities unchanged ([`traffic.md`](traffic.md#advance-lane-choice-road-94)).
 - `ROAD-94` rounds R4a1-R4a3 (branch `port-r4a-lane-use`, 2026-11-04, not landed: waiting for the user's test): the default junction lane use builds one connector per allowed lane pair (`lanes/lane_use.rs`) and flags approaches whose lanes serve different movements; cars choose their turn lane in a `70 m x (lanes - 1) + 30 m` window, no lane change starts in the last 20 m (painted solid), and a missed turn follows a legal connector and replans at the lane end. Save format 114 (connectors are saved); Kuopio re-recorded. Open: the 10k 4-Lane audit variant misses 68,635 turns a day with 19 deliveries against `dev`'s 2,073 (`TRAFFIC-23`) ([`roads.md`](roads.md#default-junction-lane-use-road-94), [`traffic.md`](traffic.md#advance-lane-choice-road-94)).
 - `ROAD-101` rounds RB1a, RB1b and RB2 (branch `road101-builder`, 2026-11-03, not landed: waiting for the user's test): roads are drawn by picking a road type from the Roads menu (built-ins as before, then the player's custom types in a "Custom roads" drop-down, from a per-user library shared by every city); the Road Builder window builds, edits, duplicates and deletes custom types from parts on a strip drawn to scale, by click or drag and drop ([`roads.md`](roads.md#the-road-builder-road-101-round-rb2)); the drawing panel's lane and median rows and keys are gone; Road Properties changes a road's type in place with Rust's verdict and undo. Built roads keep their own layout, so saves are unchanged and load without the library; library edits have no undo ([`roads.md`](roads.md#road-types-and-the-road-library-road-101)).
 - `ROAD-101` rounds RB3a-RB3c (branch `road101-rb3`, 2026-11-03/04, not landed: waiting for the user's test): road types gain sidewalks (both or none), a speed limit and zoning, set in the Road Builder and drawn by the road tool; build and upkeep cost follow the type (the 2-Lane Road keeps 15 / m and 0.1 / m / day; [`economy.md`](economy.md#road-costs-road-101)); Road Properties changes a built road's type with its speed, sidewalks and zoning, charges the difference and asks before zoning off demolishes buildings; the 80 km/h automatic no-build rules are gone. Save format 112 ([`roads.md`](roads.md#road-type-attributes-and-costs-road-101-rounds-rb3a-rb3c)). RB3e (2026-11-04): a type may have its street lights off (builder checkbox, ticked by default; Road Properties; no cost; save format 113); street lights beside roads without sidewalks stand on the drawn ground again instead of under it, and an edit re-spaces its whole street's lights in every chunk ([`roads.md`](roads.md#street-lights-road-59)).

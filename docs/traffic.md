@@ -1223,7 +1223,8 @@ re-derived onto `dev`'s lane-end handling.
   direction: 100 m on a 2+2 road, 170 m on a 3+3, 240 m on a 4+4. Fixed for every road speed
   (PLAN-R4 D2): 70 m is the longest lane-change S-curve, 30 m the 12 m road-end buffer plus room
   to start. The guard (`lane_nav.rs` `junction_approach_node`) reads the flag first, so a car on
-  any other lane (every lane of a 1+1 road) pays one byte read.
+  any other lane (every lane of a 1+1 road) pays one read of its lane (`Lane::solid_zone_m`, on
+  the lane's own cache line since decision Q3-1 of `TRAFFIC-23`).
 - **Selector.** Inside the window `junction_approach_lane` takes where the car goes next from
   `planned_next_target` (the next path edge, or the zero-hop detach lane's edge; one function
   with the route preview and the connector choice, D1) and picks the nearest same-direction lane
@@ -1238,6 +1239,30 @@ re-derived onto `dev`'s lane-end handling.
   return starts inside a window. The budget divides the distance left before the solid zone over
   the steps still needed: `min(speed x 3.5 s, (available - 12 m) / steps - 0.25 m)`, never under
   the 18 m minimum (`turn_lane_change_length`).
+- **Entry-lane choice (`TRAFFIC-23` (a)).** A car entering a road with more than one lane in its
+  direction takes a lane from which it can follow its route without a lane change up to the
+  route's next lane-selective movement (`lane_nav.rs` `preferred_entry_lanes`): the walk follows
+  the path and narrows the usable ranks by the default lane use's group for the movement at each
+  node (`lanes::approach_group`), carries them across every group that maps 1:1 onto the next
+  road (straight on between equal counts, a pass-through, a one-lane turn onto a one-lane road),
+  and stops at the first group that does not (a turn onto a wider road, a fan), at the planned
+  detach lane on the road or its zero-hop turn, at a whitelisted node or a U-turn, or where the
+  next group shares no lane with the ranks kept (the car must then change lanes on a later,
+  longer road). No preference when every lane is usable. The lane end's connector choice keeps
+  only the connectors onto a preferred lane when any reaches one, then the shortest as before
+  (`collect_connector_lanes_to_edge`); a preferred connector that is occupied makes the car wait,
+  as for any connector. The node entry (`prepare_lane_entry`, decision S1) rotates its seed over
+  the preferred lanes only and waits while they are busy; the zero-hop fallback prefers the
+  detach lane's own rank; the route preview passes the same inputs, so the inspector shows the
+  lane the tick takes. It works because a single-lane turn group fans onto every lane of its
+  target ([`roads.md`](roads.md#default-junction-lane-use-road-94)). The per-tick selector is
+  unchanged (one node ahead, decision S6).
+- **Discretionary changes keep the route's lanes (S8).** On a flagged lane a discretionary
+  overtake or return whose target lies outside the lanes `preferred_entry_lanes` gives for the
+  current road (`route_lane_group`, the route read as `planned_next_target` reads it) is refused:
+  an overtake out of the chosen lane in a standing queue may find no gap to return before the
+  junction. Evaluated only after every other condition of the change has passed (the target is
+  useful and its gap clear), never otherwise; a 1+1 road is never flagged.
 - **Solid approach zone.** No change of any kind (frontage, turn, overtake, return) starts in
   the last `APPROACH_SOLID_LENGTH_M` = 20 m of a flagged lane (`lane_change_end`); the turn budget
   extends its 12 m end buffer to the zone (8 m more) rather than charging both, and the window
@@ -1251,7 +1276,16 @@ re-derived onto `dev`'s lane-end handling.
   that connector keeps the car and its path at the lane end. Right after that entry, the lane-end
   handler replans from the end of the road it entered (`replan.rs` `replan_after_missed_turn`:
   `plan_network_replan` with the car's access flags, or `plan_border_network_replan` for
-  freight). A failed replan only sets the replan backoff; the car drives on and `dev`'s
+  freight). **Lane-aware (`TRAFFIC-23` (b)):** the onward road is the first successor (stable
+  order) whose lane can host a turn preparation (`lane_hosts_turn_preparation`: one lane, or the
+  18 m change and the end buffers fit before its solid zone from its start, more than 38.25 m on
+  a flagged two-lane lane), else the first that is not the wanted one (S2); when the road the car
+  entered cannot host a preparation, the replan's first hop is restricted to the roads its lane
+  reaches (`plan_network_replan`'s `first_lane`, S3): `TripQueryScratch::network_path` builds the
+  predicate (`vehicle_lane_reaches_edge`) and `CchGraph::find_path_in` seeds the origin per
+  accepted departure, as a restricted origin; that forward sweep is never retained, so the next
+  unrestricted query from the node is unchanged (S7). Every other caller passes `None` and is
+  unchanged. A failed replan only sets the replan backoff; the car drives on and `dev`'s
   empty-path replan at the next lane end is the last resort, so nothing teleports. A destination
   turn may enter its road on any lane (a connector to the detach edge) and reach the exact detach
   lane by frontage changes. A missed turn is not a trip failure; a genuine missing connection
@@ -1262,7 +1296,11 @@ re-derived onto `dev`'s lane-end handling.
   the lanes in the car's direction, `C` their successors), the existing `O(L)` adjacent-lane
   lookup and one `O(log K)` gap test. At a lane end, `follow_missed_turn` costs `O(L x C + C)`
   lookups only on a missing connection, and a missed turn costs one route query (an event, not
-  per tick).
+  per tick). The entry-lane choice costs `O(hops x degree)` per entry event on a multi-lane road
+  (one edge read on a one-lane road), the S8 check the same walk only on a tick where a
+  discretionary change on a flagged lane would otherwise start (a refused car is asked again on
+  the next such tick while it stays blocked beside a clear, useful lane), the restricted replan one `O(successors)` predicate
+  call per departure of the origin; no allocation, no extra route query, nothing per tick.
 
 Acceptance record (`ROAD-94`, 2026-11-04, rounds R4a2 and R4a3; artifact folders stay local):
 
@@ -1316,6 +1354,76 @@ Acceptance record (`ROAD-94`, 2026-11-04, rounds R4a2 and R4a3; artifact folders
   cause. A diagnostic of the border hold found no claim starvation: each tick a held car loses
   the lane only to the car that entered it before it in the same pass. The 100k and envelope
   cities are 1+1, so no contract tier exercises this.
+
+`TRAFFIC-23` record (round R4a4, 2026-11-04; fresh runs, artifact folders stay local; one day at
+32x, 8 workers, each binary preparing its own city; control `dev` `9f2808bc` plus the same
+test-only harness, whose audit lines equal R4a3's control's exactly): the fix ((a) entry-lane
+choice, (b) lane-aware recovery, S8, the permissive masks, Q3-1) **meets the missed turns but not
+the deliveries, so `TRAFFIC-23` stays in progress.** Node entry run both ways (decision S1):
+
+| | control (`dev`) | S1: wait for a preferred lane (shipped) | S1 alternative: any clear lane |
+| --- | ---: | ---: | ---: |
+| `[MISSED_TURN]` / day | 0 | **10** | 1,131 |
+| freight deliveries | 2,073 | **1,863** (-10.1%) | 2,088 |
+| vehicles on lanes (samples 0-1440) | 937-1,841 | 1,012-1,709 | 1,002-2,052 |
+| held at node (7 samples) | 0, 1, 20, 115, 11, 0, 0 | 3, 0, 21, 15, 6, **129, 140** | 1, 11, 131, 184, 1, 1, 1 |
+| waits over 1 h / over 4 h (worst) | 47 / 4 | 126 / 83 | 177 / 25 |
+| lanes over fit | 0-5 | 0-2 | 0-5 |
+| trip failures / missing connections / gridlock cycles | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| prepare continuation check | passes | passes | passes |
+
+- **Misses attributed** (`[MISSED_TURN]` with the traffic channel, classified against the save):
+  waiting, all 10 on the 373 m trunk (outer lane wanting a cross street, one per car, no
+  chains): the trunk's lanes host a preparation, so each is the gap model's standing-queue limit,
+  not a lane the car could not have chosen. Any clear lane: 553 on the 506 m border link (freight
+  that took the other lane when its preferred lane's slot was busy) and 578 on the trunk, 479 cars,
+  chains up to 12 (a car off its lane in a standing queue never merges back). A
+  `RAYON_NUM_THREADS=1` repeat of the waiting run gives the same audit lines.
+- **The border hold, exactly** (a test-only breakdown of the held cars at every sample, not
+  committed): waiting, every held car at minutes 1200 and 1440 (129 and 140) stands at the border
+  node entering the 506 m border link with the outer lane preferred: the route turns right at the
+  link's far junction (a 2+2 four-way: the inner lane serves left and straight, the outer straight
+  and right). The outer lane holds 116-131 cars with its entry slot occupied (nearest car
+  0.8-4.9 m from the start) while the inner lane holds 3-5 cars (nearest 24-61 m). So it is the
+  single right-turn lane carrying the whole southbound border flow (on `dev` both lanes turn
+  right), with S1 refusing the free lane; the deliveries missing at the day's end are the queue on
+  that lane and the held freight. The alternative's peak (184 at minute 720) is both lanes' queues
+  of the same flow, then cleared.
+- Diagnostics (not shipped, test-only builds): with S8 off the waiting run makes 1,968
+  deliveries and 226 misses, holds up to 225 cars and 148 wait over 4 h, so S8 is not the cause
+  of the shortfall. **With R4a3's lane masks instead of the permissive ones** (everything else
+  as shipped) it makes **2,074 deliveries with 8 misses**; its border hold (the same node, lane
+  and movement) peaks at 167 cars at minute 720 with 72 waiting over 4 h at minute 960 (`dev` 115
+  and 4), then clears (0 from minute 1200). So the delivery shortfall comes with the permissive
+  masks (user decision), which on this grid let straight traffic share the turn lanes (two-lane
+  approaches with two movements, L+S / S and S / S+R, at the border cross streets' T junctions);
+  the hold itself is the single right-turn lane in both.
+- Other gates, fresh: economy envelope and determinism (`RAYON_NUM_THREADS=6`) PASS on both with
+  the same 13 notes, all 70 `SIM02_DAY` records byte-identical to the control's (md5
+  `35345ab0110821f9`, as R4a3), lanes hashes equal (10k `9537bde0101110fd`, 30k
+  `726f721b92d2abbc`), no determinism difference; the 100k one-day audit identical to the
+  control's line for line (4,374 deliveries, 0 missed turns); connector sweeps 0 failing: Kuopio
+  352 connectors (94 U-turns; R4a3 324, `dev` 440), the 100k city 24,834 (equal to the control);
+  locality: `incremental_lane_rebuild_scaling` local products `90ceffa5f4b95fd1` at 0 to 100,000
+  background edges, median 0.030-0.084 ms with no trend in size (the control 0.030-0.034 ms),
+  `populated_road_plan_scaling` identical local products, compile p50 0.18-0.31 ms (control
+  0.19-0.34 ms).
+- Timing (one session, 15:23, `.run.lock` and the exclusive timing lock, P-cores, load 3.6 after
+  the gate runs with no cargo, rustc or godot; three alternating pairs against the control, 4
+  workers; medians in ms at 65,536 groups): clear 5.09 / 5.13, merge 5.48 / 5.50, blocked 6.07 /
+  6.11, lateral 5.16 / 5.28 (+2.3%), cruise 3.53 / 3.53, turn 3.54 / 17.07; transition counts
+  equal in every row. The turn row's window cost rose from R4a3's 15.31 ms (+12%): the
+  selector scans every sibling lane's successors (`O(L x C)`) and one-lane turn groups now have
+  a connector to each target lane (instruction samples in `junction_approach_lane`'s filter
+  2.40% against 1.63%). PERF-06 (C F F C) work counts equal; network 30k 0.49 / 0.75 / 0.81 /
+  0.59 ms, sub-millisecond rows within their usual spread only loosely (noted, not a claim).
+  `benchmark_claim_preparation` checksums equal, 1,048,576 mixed 0.51 / 0.54 / 0.52 / 0.55 ms.
+  Decision Q3-1's check (`perf stat`, the 65,536 cruise row alone, two runs each, the same
+  test-only row filter): the new code 5.676 G instructions, 0.959 G branches, 2.04-2.05 G cycles;
+  R4a3's code 5.652-5.658 G, 0.953-0.954 G, 2.05-2.09 G; `dev` 5.843 G, 0.983 G, 2.11 G. The
+  new binary carries all of this round's code, so the field's own saving is not isolated: the
+  row runs 0.4% more instructions than R4a3's and 1% fewer cycles, 2.9% fewer instructions and
+  3% fewer cycles than `dev`.
 
 Ownership split:
 
