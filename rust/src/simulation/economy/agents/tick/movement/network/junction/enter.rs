@@ -84,6 +84,7 @@ pub(super) unsafe fn enter_next_edge_connector(
         ) {
             return Ok(action);
         }
+        crate::debug::work::add(crate::debug::work::Work::MissingConnections, 1);
         traffic_log!(
             "[JUNCTION_MISSING_CONN] agent={} node={} from_lane={} from_edge={} to_edge={} path_idx={}/{} reason=no-connection-lane",
             i,
@@ -405,6 +406,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
                 ) {
                     return Some(Ok(action));
                 }
+                crate::debug::work::add(crate::debug::work::Work::MissingConnections, 1);
                 traffic_log!(
                     "[JUNCTION_MISSING_CONN] agent={} node={} from_lane={} from_edge={} to_lane={} path_idx={}/{} reason=zero-hop-no-connection-lane",
                     i,
@@ -493,6 +495,7 @@ unsafe fn follow_missed_turn(
         if *slices.lane_id.get(i) != lane_id {
             slices.path.get_mut(i).clear();
             *slices.path_idx.get_mut(i) = 0;
+            crate::debug::work::add(crate::debug::work::Work::MissedTurns, 1);
             traffic_log!(
                 "[MISSED_TURN] agent={} node={} lane={} wanted_edge={} onward_edge={}",
                 i,

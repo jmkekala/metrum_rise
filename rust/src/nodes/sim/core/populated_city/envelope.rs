@@ -584,6 +584,13 @@ fn sim02_envelope() {
     let started = std::time::Instant::now();
     let mut city = PopulatedCity::build(residents);
     let build_s = started.elapsed().as_secs_f64();
+    // The city's lanes and connectors, for comparing builds (`ROAD-94`: a 1 + 1 city's lanes
+    // are unchanged by the default lane use).
+    eprintln!(
+        "SIM02_LANES {}",
+        serde_json::json!({"residents":residents, "workload":workload,
+            "lanes":format!("{:016x}", lanes_fingerprint(&city.core))})
+    );
     match workload.as_str() {
         "fiscal_stress" => apply_fiscal_stress(&mut city),
         "arrivals" => apply_arrival_wave(&mut city),
@@ -678,6 +685,31 @@ fn sim02_envelope() {
             "record":format!("{:?}", city.record()),
         })
     );
+}
+
+// Hash of every lane's identity, geometry bits, length and successors, and of the edge and node
+// lane maps in key order. O(lanes + connectors), once per run.
+fn lanes_fingerprint(core: &SimCore) -> u64 {
+    let lanes = &core.transit_network.lane_system;
+    let mut h = DefaultHasher::new();
+    lanes.lanes.len().hash(&mut h);
+    for lane in &lanes.lanes {
+        (lane.edge_id, lane.is_fwd, lane.lane_idx, lane.node_id).hash(&mut h);
+        (lane.lane_type as u8).hash(&mut h);
+        for p in &lane.geometry {
+            p.to_array().map(f32::to_bits).hash(&mut h);
+        }
+        lane.length.to_bits().hash(&mut h);
+        lane.next_lanes.hash(&mut h);
+    }
+    for map in [&lanes.edge_lanes, &lanes.node_lanes] {
+        let mut keys: Vec<_> = map.keys().copied().collect();
+        keys.sort_unstable();
+        for key in keys {
+            (key, &map[&key]).hash(&mut h);
+        }
+    }
+    h.finish()
 }
 
 // ---------------------------------------------------------------------------------------------

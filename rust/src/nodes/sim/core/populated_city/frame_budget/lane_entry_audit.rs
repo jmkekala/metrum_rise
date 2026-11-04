@@ -293,6 +293,19 @@ fn trace_entries(
     reported
 }
 
+// The audit's event counters since `start`.
+fn work_since(start: &[u64; crate::debug::work::WORK_COUNT]) -> serde_json::Value {
+    use crate::debug::work::{Work, snapshot};
+    let now = snapshot();
+    let delta = |work: Work| now[work as usize] - start[work as usize];
+    serde_json::json!({
+        "freight_deliveries": delta(Work::FreightDeliveries),
+        "trip_failures": delta(Work::TripFailures),
+        "missed_turns": delta(Work::MissedTurns),
+        "missing_connections": delta(Work::MissingConnections),
+    })
+}
+
 #[test]
 #[ignore = "TRAFFIC-07 lane-entry audit over one game day of a prepared snapshot; release"]
 fn traffic07_lane_entry_audit() {
@@ -327,6 +340,9 @@ fn traffic07_lane_entry_audit() {
     let mut previous_removed = 0;
     let mut traced = 0;
     let mut frame = 0_u64;
+    // Event counts since the audit's start (`ROAD-94`: missed turns, missing connectors, and the
+    // deliveries a control compares).
+    let work_start = crate::debug::work::snapshot();
     loop {
         if trace && traced < 400 {
             traced += trace_entries(
@@ -348,6 +364,7 @@ fn traffic07_lane_entry_audit() {
                 serde_json::json!({
                     "residents": residents(), "minute": now - start, "audit": audit(core),
                     "waits": waits.summary(now), "detach_plans": detach_plans(core),
+                    "work": work_since(&work_start),
                 })
             );
             waits.standing_queues(core, now - start);

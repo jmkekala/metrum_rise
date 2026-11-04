@@ -374,19 +374,20 @@ fn street_grid_in_world(
     // Cross streets go in one block at a time, so a row meets existing junctions instead of
     // splitting a street that runs the whole city: every split recompiles the longer remainder's
     // span, which made the grid grow with rows × crosses × city side (`ROAD-52`).
+    let arterial = arterial_lanes();
     for i in 0..crosses {
         let x = i as f32 * CROSS_SPACING_M - half_x;
         for block in row_z.windows(2) {
-            add_road(&mut core, (x, block[0]), (x, block[1]));
+            add_road(&mut core, (x, block[0]), (x, block[1]), arterial);
         }
     }
     for (row, &z) in row_z.iter().enumerate() {
-        let (start, end) = match trunk_rows.iter().position(|&trunk| trunk == row) {
-            Some(k) if k % 2 == 0 => (-edge_x, half_x),
-            Some(_) => (-half_x, edge_x),
-            None => (-half_x, half_x),
+        let (start, end, lanes) = match trunk_rows.iter().position(|&trunk| trunk == row) {
+            Some(k) if k % 2 == 0 => (-edge_x, half_x, arterial),
+            Some(_) => (-half_x, edge_x, arterial),
+            None => (-half_x, half_x, 1),
         };
-        add_road(&mut core, (start, z), (end, z));
+        add_road(&mut core, (start, z), (end, z), lanes);
     }
     {
         let core = &mut core;
@@ -411,11 +412,24 @@ fn street_grid_in_world(
     (core, row_z, half_x)
 }
 
-fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
+// Lanes per direction of the grid's arterials: every cross street and the border trunks. One
+// (the 2-Lane Road) unless a test sets `METRUM_PERF_ARTERIALS=4lane`, which gives them the
+// 4-Lane Road (2 + 2): the `ROAD-94` diagnosis variant, the one populated city whose approaches
+// have lanes to choose. Not a contract tier.
+fn arterial_lanes() -> i32 {
+    #[cfg(test)]
+    if let Ok(value) = std::env::var("METRUM_PERF_ARTERIALS") {
+        assert_eq!(value, "4lane", "METRUM_PERF_ARTERIALS is 4lane");
+        return 2;
+    }
+    1
+}
+
+fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32), lanes: i32) {
     let outcome = core.add_road_internal(
         vec![Vector3::new(x0, 0.0, z0), Vector3::new(x1, 0.0, z1)],
-        1,
-        1,
+        lanes,
+        lanes,
     );
     assert!(
         outcome.committed,
