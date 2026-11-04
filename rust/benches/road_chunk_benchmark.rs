@@ -6,15 +6,15 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use godot::prelude::{Color, Vector2, Vector3};
 use metrum_rise::simulation::core::config::WorldConfig;
 use metrum_rise::simulation::network::TransitNetwork;
-use metrum_rise::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use metrum_rise::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadPocket};
 use metrum_rise::simulation::network::render::NetworkMeshData;
-use metrum_rise::simulation::network::roadbed::{PieceId, SurfaceChunkKey};
+use metrum_rise::simulation::network::roadbed::{EdgeEnd, PieceId, SurfaceChunkKey};
 use metrum_rise::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
 use metrum_rise::simulation::terrain::TerrainSystem;
 use metrum_rise::simulation::terrain::graded::NoSites;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
 const EXPECTED_RENDER_CHUNK_SPAN_M: f32 = 510.0;
@@ -31,7 +31,9 @@ const STRUCTURE_RISE_M: f32 = 6.0;
 // grounded approaches (`ROAD-61`: a tunnel's lining and headwalls, a bridge's deck and abutments),
 // or the grounded edge with a 3 m kerbed grass median (`ROAD-80`: noses, kerbs, the grass layer),
 // or the grounded edge without sidewalks (`ROAD-101`: shoulders, and street lights on the verge,
-// each standing on the drawn ground from one graded query).
+// each standing on the drawn ground from one graded query), or a T whose west arm ends in a 60 m
+// right turn pocket (`ROAD-95`: the transition's taper, the asymmetric span and the pocket
+// approach's arrows), the pocket edge the local road.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocalRoad {
     Plain,
@@ -39,6 +41,7 @@ enum LocalRoad {
     Tunnel,
     Divided,
     Shoulders,
+    Pocket,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -175,6 +178,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
         (LocalRoad::Tunnel, "tunnel_chunk_emit_only"),
         (LocalRoad::Divided, "divided_chunk_emit_only"),
         (LocalRoad::Shoulders, "shoulder_chunk_emit_only"),
+        (LocalRoad::Pocket, "pocket_chunk_emit_only"),
     ] {
         let mut signature = None;
         for distant_chunks in STRUCTURE_DISTANT_CHUNK_COUNTS {
@@ -249,6 +253,7 @@ fn build_road_chunk_fixture(distant_chunks: usize, local: LocalRoad) -> RoadChun
             graph.edge_mut(edge).allowed_types = TransitFlags::CAR;
             edge
         }
+        LocalRoad::Pocket => add_pocket_junction(&mut graph),
     };
     let local_chunk = (
         ((0.0 - chunk_origin_x_m) / render_chunk_span_m).floor() as i32,
@@ -280,6 +285,12 @@ fn build_road_chunk_fixture(distant_chunks: usize, local: LocalRoad) -> RoadChun
     assert_eq!(added_distant_chunks, distant_chunks);
     graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
+    if local == LocalRoad::Pocket {
+        // The junction and the transition are laid out on solved planes, as an edit lays them
+        // out; the other fixtures have no such node, so their surfaces are as before.
+        let nodes: HashSet<u32> = (0..graph.node_count() as u32).collect();
+        graph.finalize_junction_endpoint_profiles(&nodes, None, &mut HashSet::new());
+    }
 
     let mut network = TransitNetwork::new_for_world(&config);
     network.lane_system.rebuild(&mut graph);
@@ -418,6 +429,37 @@ fn add_edge(
         median: None,
         pocket: None,
     })
+}
+
+// A T at the origin whose west arm, from 150 m west, ends in a right turn pocket from its lane
+// transition 60 m west of the junction; 80 m east and south arms (the south one the right turn).
+// Returns the pocket edge.
+fn add_pocket_junction(graph: &mut RegionGraph) -> usize {
+    let node = |graph: &mut RegionGraph, x: f32, z: f32, kind: NodeType| {
+        graph.add_node(Vector3::new(x, 0.0, z), kind)
+    };
+    let center = node(graph, 0.0, 0.0, NodeType::Junction);
+    let transition = node(graph, -60.0, 0.0, NodeType::LaneTransition);
+    let west = node(graph, -150.0, 0.0, NodeType::Junction);
+    let east = node(graph, 80.0, 0.0, NodeType::Junction);
+    let south = node(graph, 0.0, 80.0, NodeType::Junction);
+    let mut connect = |a: u32, b: u32| {
+        let (start, end) = (graph.node(a).pos, graph.node(b).pos);
+        add_edge(graph, (a, b), (start, end), EdgeClass::Standard)
+    };
+    connect(west, transition);
+    let pocket = connect(transition, center);
+    connect(center, east);
+    connect(south, center);
+    graph.set_edge_pocket(
+        pocket,
+        Some(RoadPocket {
+            end: EdgeEnd::End,
+            left: false,
+            right: true,
+        }),
+    );
+    pocket
 }
 
 // A grounded approach, a `class` edge with its deck `rise_m` above the approaches' far ends, and

@@ -436,7 +436,7 @@ impl RegionGraph {
     /// them; the centreline, id and everything else are kept. The result must pass
     /// [`Edge::validate_pocket`]. The pocket's transition node and the split are the pocket edit's;
     /// callers re-lay out both end nodes and rebuild their lanes. `O(1)`.
-    pub(crate) fn set_edge_pocket(&mut self, id: usize, pocket: Option<RoadPocket>) {
+    pub fn set_edge_pocket(&mut self, id: usize, pocket: Option<RoadPocket>) {
         let edge = self.edge_mut(id);
         edge.set_pocket(pocket);
         debug_assert_eq!(edge.validate_pocket(), Ok(()));

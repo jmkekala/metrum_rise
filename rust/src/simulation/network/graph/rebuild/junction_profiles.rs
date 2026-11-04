@@ -288,7 +288,7 @@ impl RegionGraph {
     /// `changed_edges`; `O(touching edges * points + local degree)`. The solve runs in this
     /// thread's buffers, so it allocates nothing once they have grown to its neighbourhood but
     /// the profiles it changes and the R-tree's removals (`ROAD-68-K17`).
-    pub(crate) fn finalize_junction_endpoint_profiles(
+    pub fn finalize_junction_endpoint_profiles(
         &mut self,
         affected_nodes: &HashSet<u32>,
         terrain: Option<&TerrainSystem>,
