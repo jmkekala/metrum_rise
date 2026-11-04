@@ -9,6 +9,7 @@ use super::super::{
 use super::access::planned_detach_is_legal;
 use super::lane_nav::{
     held_attach_origin, junction_approach_lane, junction_approach_node, lane_origin_node,
+    route_lane_group,
 };
 use super::traffic::{
     LaneChangeParams, choose_lane_change, connector_turn_speed, junction_car_speed,
@@ -341,6 +342,18 @@ fn agent_lane_change_target(
             agent_turn_lane_target(agents, i, preparation)
         } else {
             usize::MAX
+        },
+        || {
+            route_lane_group(
+                agents.current_lane_id[i],
+                &agents.current_path[i],
+                agents.current_path_index[i],
+                agents.access_flags[i],
+                agents.planned_detach_node[i],
+                agents.planned_detach_lane_id[i] as usize,
+                preparation.network,
+                preparation.graph,
+            )
         },
     )
     .map(|choice| choice.target_lane_id)

@@ -231,8 +231,9 @@ mod tests {
                 cooldown: 0.0,
                 turn_preparation,
             };
-            let change =
-                |d, flagged| choose_lane_change(params(d, flagged), &network, &buckets, to);
+            let change = |d, flagged| {
+                choose_lane_change(params(d, flagged), &network, &buckets, to, || None)
+            };
             let early = change(0.0, true).unwrap();
             assert!(early.length <= length - APPROACH_SOLID_LENGTH_M);
             assert!(change(length - 19.0, true).is_none());

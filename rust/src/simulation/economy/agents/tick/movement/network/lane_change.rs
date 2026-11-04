@@ -4,7 +4,9 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_NETWORK};
 use super::super::super::claims::LaneClaimContext;
-use super::super::super::lane_nav::{junction_approach_lane, junction_approach_node};
+use super::super::super::lane_nav::{
+    junction_approach_lane, junction_approach_node, route_lane_group,
+};
 use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::traffic::{
     LaneChangeKind, LaneChangeParams, OVERTAKE_COOLDOWN_S, choose_lane_change, claim_lane_entry,
@@ -108,6 +110,18 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
                 turn_lane_target(i, lane_id, lane_d, transit_network, graph, slices)
             } else {
                 usize::MAX
+            },
+            || {
+                route_lane_group(
+                    lane_id,
+                    slices.path.get(i),
+                    *slices.path_idx.get(i),
+                    *slices.access_flags.get(i),
+                    *slices.planned_detach_n.get(i),
+                    detach_lane_id,
+                    transit_network,
+                    graph,
+                )
             },
         );
         let Some(choice) = choice else {

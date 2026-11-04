@@ -2,6 +2,7 @@
 
 //! Lane-change and conservative overtaking helper rules.
 
+use super::super::lane_nav::EntryLanes;
 use super::occupancy::{idm_gap_bucket, lane_change_gap_clear};
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
 use crate::simulation::network::TransitNetwork;
@@ -89,12 +90,16 @@ pub(in crate::simulation::economy::agents::tick) fn lane_change_finished(
 /// (`junction_approach_lane`), or `usize::MAX` outside a preparation window; a car inside one
 /// changes only toward that lane, one adjacent step at a time, and never overtakes there. No
 /// change starts in the last `APPROACH_SOLID_LENGTH_M` of a flagged lane (`lane_change_end`).
-/// Work is bounded by the current edge's lane count and O(log K) occupancy queries.
+/// On a flagged lane a discretionary overtake or return must land in `route_lanes()`, the lanes
+/// from which the route's next lane-selective movement is made (`route_lane_group`, `TRAFFIC-23`
+/// S8): evaluated only when such a change would otherwise start, at O(hops x degree).
+/// Work is otherwise bounded by the current edge's lane count and O(log K) occupancy queries.
 pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     params: LaneChangeParams,
     transit_network: &TransitNetwork,
     lane_buckets: &[Vec<(f32, usize)>],
     turn_lane_id: usize,
+    route_lanes: impl FnOnce() -> Option<EntryLanes>,
 ) -> Option<LaneChange> {
     let source = transit_network.lane_system.lanes.get(params.lane_id)?;
     // No change of any kind starts in the solid zone before a movement-selective junction.
@@ -200,7 +205,17 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     } else {
         target_gap > OVERTAKE_RETURN_TARGET_GAP_M
     };
-    (useful && lane_change_gap_clear(target_bucket, lane_d, params.speed)).then_some(LaneChange {
+    if !useful || !lane_change_gap_clear(target_bucket, lane_d, params.speed) {
+        return None;
+    }
+    // A car on a flagged lane keeps to the lanes its route turns from (S8): an overtake out of
+    // them in a queue may find no gap to return before the junction.
+    if params.turn_preparation
+        && route_lanes().is_some_and(|lanes| !lanes.contains(target.lane_idx))
+    {
+        return None;
+    }
+    Some(LaneChange {
         target_lane_id,
         length,
         kind,

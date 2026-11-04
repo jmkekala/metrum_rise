@@ -157,8 +157,8 @@ fn direction_lane_count(edge: usize, is_fwd: bool, network: &TransitNetwork) -> 
 /// change lanes on a later road, so this road's entry keeps what holds up to there). `None` when
 /// every lane is usable, including a road with one lane in that direction (a 1+1 city never pays
 /// more than this edge read). Called at entry events only (a connector choice at a lane end, a
-/// node entry): O(hops x degree) over the remaining path, no allocation, no route query
-/// (`ROAD-94` D7, `TRAFFIC-23`).
+/// node entry) and before a discretionary change on a flagged lane: O(hops x degree) over the
+/// remaining path, no allocation, no route query (`ROAD-94` D7, `TRAFFIC-23`).
 #[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::economy::agents) fn preferred_entry_lanes(
     edge: usize,
@@ -239,6 +239,43 @@ pub(in crate::simulation::economy::agents) fn preferred_entry_lanes(
         cur_node = next;
         idx += 1;
     }
+}
+
+/// The lanes of the road under road lane `lane_id` from which the car's route makes its next
+/// lane-selective movement: `preferred_entry_lanes` for that road, the route read as
+/// `planned_next_target` reads it. A discretionary overtake or return on a flagged lane must stay
+/// inside them (`TRAFFIC-23`, S8). O(hops x degree), no allocation, no route query; called only
+/// when such a change would otherwise start.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn route_lane_group(
+    lane_id: usize,
+    path: &[u32],
+    path_idx: usize,
+    access_flags: u8,
+    planned_detach_node: u32,
+    planned_detach_lane_id: usize,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<EntryLanes> {
+    let edge = network.lane_system.lanes.get(lane_id)?.edge_id;
+    let origin = lane_origin_node(lane_id, network, graph)?;
+    let terminal = lane_terminal_node(lane_id, network, graph)?;
+    let next_idx = if path.get(path_idx) == Some(&terminal) {
+        path_idx + 1
+    } else {
+        path_idx
+    };
+    preferred_entry_lanes(
+        edge,
+        origin,
+        path,
+        next_idx,
+        access_flags,
+        planned_detach_node,
+        planned_detach_lane_id,
+        network,
+        graph,
+    )
 }
 
 /// Whether a car entering road lane `lane_id` at its start can still reach any sibling lane
