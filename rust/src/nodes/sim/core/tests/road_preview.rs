@@ -1081,7 +1081,7 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
 // approach's two lanes serve different movements, so the divider between them is solid over the
 // last `APPROACH_SOLID_LENGTH_M` before the junction and dashed before it; the centre line and the
 // dividers of the lanes leaving the junction stay dashed. Each approach lane carries arrows for
-// its movements, at 12 m and 42 m back from the mouth. A straight 2 + 2 road has no junction to
+// its movements, one glyph 12 m back from the mouth. A straight 2 + 2 road has no junction to
 // choose a lane for: no solid line, no arrow. The paint reads the graph alone, so the T's 2 + 2
 // preview composes its committed chunks, arrows included.
 #[test]
@@ -1251,50 +1251,45 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
                 .iter()
                 .filter(|q| !on_line(q.1) && (q.1 - centre).abs() < 1.5)
                 .collect();
-            // Two glyphs centred 12 m and 42 m back from the mouth, 5 m long, and nothing else
-            // painted in the lane.
-            let mut glyphs = 0;
-            for back in [12.0, 42.0] {
-                let glyph: Vec<_> = paint
-                    .iter()
-                    .filter(|q| (q.0 - mouth - back).abs() <= 2.5)
-                    .collect();
-                glyphs += glyph.len();
-                assert_eq!(
-                    glyph.len(),
-                    triangles,
-                    "{name}: lane {lane} shows its movements {back} m back"
-                );
-                // Vertices in the driver's frame: `x` right of the lane's centre, `y` ahead.
-                let points: Vec<_> = glyph
-                    .iter()
-                    .flat_map(|q| q.4.iter())
-                    .map(|&(distance, lateral)| {
-                        ((lateral - centre) * hand, mouth + back - distance)
-                    })
-                    .collect();
-                assert!(
-                    points.iter().all(|p| p.0.abs() <= 1.3 && p.1.abs() <= 2.55),
-                    "{name}: lane {lane}'s arrow stays in its lane and its 5 m"
-                );
-                // The tail's middle, between its two corners.
-                let (low, high) = points
-                    .iter()
-                    .filter(|p| p.1 < -2.45)
-                    .fold((f32::MAX, f32::MIN), |(lo, hi), p| {
-                        (lo.min(p.0), hi.max(p.0))
-                    });
-                let tail = (low + high) * 0.5;
-                assert!(
-                    (tail - tail_side * tail.abs()).abs() < 1.0e-3
-                        && (tail_side == 0.0) == (tail.abs() < 0.05),
-                    "{name}: lane {lane}'s tail sits at {tail}"
-                );
-            }
+            // One glyph centred 12 m back from the mouth, 5 m long, and nothing else painted in
+            // the lane.
+            let back = 12.0;
+            let glyph: Vec<_> = paint
+                .iter()
+                .filter(|q| (q.0 - mouth - back).abs() <= 2.5)
+                .collect();
             assert_eq!(
-                glyphs,
+                glyph.len(),
+                triangles,
+                "{name}: lane {lane} shows its movements {back} m back"
+            );
+            // Vertices in the driver's frame: `x` right of the lane's centre, `y` ahead.
+            let points: Vec<_> = glyph
+                .iter()
+                .flat_map(|q| q.4.iter())
+                .map(|&(distance, lateral)| ((lateral - centre) * hand, mouth + back - distance))
+                .collect();
+            assert!(
+                points.iter().all(|p| p.0.abs() <= 1.3 && p.1.abs() <= 2.55),
+                "{name}: lane {lane}'s arrow stays in its lane and its 5 m"
+            );
+            // The tail's middle, between its two corners.
+            let (low, high) = points
+                .iter()
+                .filter(|p| p.1 < -2.45)
+                .fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                    (lo.min(p.0), hi.max(p.0))
+                });
+            let tail = (low + high) * 0.5;
+            assert!(
+                (tail - tail_side * tail.abs()).abs() < 1.0e-3
+                    && (tail_side == 0.0) == (tail.abs() < 0.05),
+                "{name}: lane {lane}'s tail sits at {tail}"
+            );
+            assert_eq!(
+                glyph.len(),
                 paint.len(),
-                "{name}: lane {lane} holds only its two glyphs"
+                "{name}: lane {lane} holds only its one glyph"
             );
         }
     }

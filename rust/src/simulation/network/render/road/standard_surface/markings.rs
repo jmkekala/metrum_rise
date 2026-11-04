@@ -289,8 +289,8 @@ fn emit_painted_median(
 
 // The turn arrows (`ROAD-75`) of `edge_idx`'s approach lanes, from `lanes::approach_arrow_masks`
 // (graph-only): forward lanes before the end node, backward lanes before the start node. Each
-// glyph is centred on its lane at the `approach_arrow_stations` back from the marking range's end
-// on its side, which already stops at a mouth or a span-owned crossing strip, and drapes on the
+// lane carries one glyph, centred on the lane at `approach_arrow_station` back from the marking
+// range's end on its side, which already stops at a mouth or a span-owned crossing strip, and drapes on the
 // sections vertex by vertex. Left and right are the driver's, so the glyphs need no mirroring
 // under `DRIVE_ON_LEFT`: the lane offsets and the lane ranks behind the masks are mirrored.
 // O(degree + lanes x 29 triangles x (log sections + bands)) per edge, allocation-free.
@@ -302,7 +302,9 @@ fn emit_approach_arrows(
     (range_start, range_end): (f32, f32),
 ) {
     let edge = graph.edge(edge_idx);
-    let stations = approach_arrow_stations(range_end - range_start);
+    let Some(back) = approach_arrow_station(range_end - range_start) else {
+        return;
+    };
     for node in [edge.end_node, edge.start_node] {
         // Travel runs with the stations for forward lanes, against them for backward lanes.
         let (direction, range_end) = if node == edge.end_node {
@@ -312,31 +314,31 @@ fn emit_approach_arrows(
         };
         approach_arrow_masks(graph, edge_idx, node, |lane_idx, mask| {
             let lateral = vehicle_lane_offset(edge, lane_idx);
-            for back in stations.into_iter().flatten() {
-                let centre = range_end - direction * back;
-                // Glyph coordinates: `x` metres to the driver's right, `y` ahead.
-                let point = |(x, y): (f32, f32)| {
-                    point_at(sections, centre + direction * y, lateral + direction * x)
-                };
-                arrow_glyph(&ARROW_STYLE, mask, |triangle| {
-                    if let [Some(a), Some(b), Some(c)] = triangle.map(point) {
-                        emit_marking_triangle(mesh, [a, b, c]);
-                    }
-                });
-            }
+            let centre = range_end - direction * back;
+            // Glyph coordinates: `x` metres to the driver's right, `y` ahead.
+            let point = |(x, y): (f32, f32)| {
+                point_at(sections, centre + direction * y, lateral + direction * x)
+            };
+            arrow_glyph(&ARROW_STYLE, mask, |triangle| {
+                if let [Some(a), Some(b), Some(c)] = triangle.map(point) {
+                    emit_marking_triangle(mesh, [a, b, c]);
+                }
+            });
         });
     }
 }
 
-// Stations of an approach's arrows, metres back from the end of a marking range `length` long:
-// 12 m, and 42 m on a range of 50 m or more; a range under 20 m holds one arrow halfway, at least
-// 4 m back and only where the glyph (5 m long) keeps 1.5 m clear of both range ends.
-fn approach_arrow_stations(length: f32) -> [Option<f32>; 2] {
+// The station of an approach's one arrow set (user decision 2026-11-04: one per lane, near the
+// junction), metres back from the end of a marking range `length` long: 12 m, inside the 20 m
+// solid zone, on a range of 20 m or more; a shorter range holds its arrow halfway, at least 4 m
+// back and only where the glyph (5 m long) keeps 1.5 m clear of both range ends, so a range under
+// 8 m has none.
+fn approach_arrow_station(length: f32) -> Option<f32> {
     if length >= 20.0 {
-        return [Some(12.0), (length >= 50.0).then_some(42.0)];
+        return Some(12.0);
     }
     let back = (length * 0.5).max(4.0);
-    [(back <= length - 4.0).then_some(back), None]
+    (back <= length - 4.0).then_some(back)
 }
 
 // The turn-arrow glyph's outline table (`ROAD-75`), in glyph metres: `x` to the driver's right,
@@ -679,29 +681,26 @@ mod tests {
         }
     }
 
-    // `ROAD-75`: every arrow glyph (2.5 m either side of its station) stays 1.5 m clear of both
-    // ends of its marking range; 12 m and 42 m back on a long range, one arrow on a short one.
+    // `ROAD-75`: the one arrow glyph (2.5 m either side of its station) stays 1.5 m clear of both
+    // ends of its marking range; 12 m back on a range of 20 m or more, halfway on a shorter one
+    // down to 8 m, none below.
     #[test]
     fn arrow_stations_stay_clear_of_the_range_ends() {
         for step in 0..=800 {
             let length = step as f32 * 0.25;
-            let stations: Vec<f32> = approach_arrow_stations(length)
-                .into_iter()
-                .flatten()
-                .collect();
-            for &back in &stations {
+            let station = approach_arrow_station(length);
+            if let Some(back) = station {
                 assert!(
                     back - 2.5 >= 1.5 && back + 2.5 <= length - 1.5,
                     "range {length}: arrow at {back}"
                 );
             }
             let expected = match length {
-                l if l >= 50.0 => vec![12.0, 42.0],
-                l if l >= 20.0 => vec![12.0],
-                l if l >= 8.0 => vec![(l * 0.5).max(4.0)],
-                _ => Vec::new(),
+                l if l >= 20.0 => Some(12.0),
+                l if l >= 8.0 => Some((l * 0.5).max(4.0)),
+                _ => None,
             };
-            assert_eq!(stations, expected, "range {length}");
+            assert_eq!(station, expected, "range {length}");
         }
     }
 }

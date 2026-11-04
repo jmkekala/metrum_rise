@@ -12150,10 +12150,11 @@ turn-only arrow (a T's stem) bends at 0.8 m ahead. The glyph is shifted sideways
 centred on the lane and stays within 1.25 m of the lane's centre (a 3.5 m lane keeps at least
 0.5 m clear either side); only left + right glyphs (with or without straight) are narrowed to
 fit. Triangles per glyph: S 3, L+S and S+R 16, L and R 15, L+R 28, L+S+R 29 (the fork's strokes:
-8 to 14). Every vertex is draped on the span's sections. It is centred 12 m and, on a marking
-range of 50 m or more, 42 m back from the end of the range on its side; a range under 20 m holds
-one arrow halfway back, at least 4 m, only where the glyph stays 1.5 m clear of both range ends
-(`approach_arrow_stations`). The range already stops at a junction's mouth and at a pass-through
+8 to 14). Every vertex is draped on the span's sections. Each lane carries one glyph (user
+decision 2026-11-04, after a 2 + 2 cross showed eight arrows with a 42 m repeat): centred 12 m
+back from the end of the range on its side, inside the 20 m solid zone, on a range of 20 m or
+more; a shorter range holds it halfway back, at least 4 m, only where the glyph stays 1.5 m clear
+of both range ends, so the shortest range with an arrow is 8 m (`approach_arrow_station`). The range already stops at a junction's mouth and at a pass-through
 node's crossing strip, so no arrow reaches a zebra. Each glyph point is draped on the span's
 sections. Left and right are the driver's; under `DRIVE_ON_LEFT` the lane offsets and the lane
 ranks behind the masks are mirrored, the glyphs are not. Cost at emission only: `O(degree + the
@@ -12171,8 +12172,8 @@ start, no cargo, rustc or godot). Payload stage p50 ms, median of four (range): 
 (0.365-0.390); `divided_t` 0.448 (0.438-0.460) and 0.446 (0.435-0.482): unchanged within noise.
 Payload vertices per pose are equal (9,845 / 9,973 / 12,226): these fixtures are 1 + 1 roads, so
 the session measures the arrow rule's guard and the moved lane-count check, not glyph emission. A
-2 + 2 four-way adds 64 triangles per approach (two glyphs of 16 per lane), 768 vertices for the
-junction; no multi-lane benchmark fixture exists to time that emission.
+2 + 2 four-way adds 32 triangles per approach (one glyph of 16 per lane), 384 vertices for the
+junction (the timed two-station build had twice that); no multi-lane benchmark fixture exists to time that emission.
 
 Zebra crossings use the Finnish L3_2 dimensions (Traficom, Liite 15, 2020, at 50 km/h or less): 0.5 m stripes with 0.5 m gaps, 2.5 m long along the road (formerly 0.4 m gaps and 2.0 m).
 
