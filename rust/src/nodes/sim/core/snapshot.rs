@@ -131,6 +131,9 @@ pub(crate) enum SimulationRuntimeSnapshot {
     VegetationEdit(VegetationEditUndo),
     /// Previous designations and affected lots of one gesture; buildings are never snapshotted.
     CellZoningEdit(crate::simulation::zoning::CellZoningEdit),
+    /// The buildings and occupancy a turn pocket edit moved between its pair of edges
+    /// (`ROAD-95`), restored after its graph checkpoint.
+    RoadDependents(crate::simulation::network::pockets::PocketDependentsUndo),
 }
 
 /// Bounded inverse journal for one vegetation brush stroke.

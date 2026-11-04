@@ -114,6 +114,31 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Widen a tunnel by drawing it again"
 		"cross_section_too_wide_for_curve":
 			return "Too wide for this curve"
+		# Turn pockets (`ROAD-95`): the pocket edit and the strokes and edits it refuses.
+		"pocket_road_too_short":
+			return "Road too short for a pocket here"
+		"pocket_movement_missing":
+			return "The junction has no such turn from this road"
+		"pocket_junction_whitelisted":
+			return "Clear the junction's turn rules first"
+		"pocket_median_gap":
+			return "Turn pockets beside a median are not available yet"
+		"pocket_requires_surface_road":
+			return "Turn pockets are for roads on the ground"
+		"pocket_lane_limit":
+			return "At most 4 lanes in each direction, the pocket included"
+		"pocket_requires_one_way":
+			return "A left turn pocket needs a one-way road"
+		"invalid_pocket_dimensions":
+			return "Pocket length 20 to 300 m, in steps of 10"
+		"pocket_unchanged":
+			return "No change"
+		"pocket_transition_changed":
+			return "The pocket's road has changed: remove the pocket and add it again"
+		"pocket_edit_first":
+			return "Remove the turn pocket first"
+		"stroke_splits_pocket":
+			return "Roads cannot cross or join a turn pocket: remove it first"
 		"median_requires_both_directions":
 			return "A median needs lanes in both directions"
 		"median_requires_vehicle_road":

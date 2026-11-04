@@ -1083,6 +1083,60 @@ impl BuildingAllocator {
         halves
     }
 
+    /// [`Self::migrate_split_frontages`]'s inverse for two edges joined into `first`
+    /// (`ROAD-95`, a turn pocket removed or resized): the buildings fronting `second` front
+    /// `first` with their cell index offset by `offset_cells` (the first edge's cells), and
+    /// every building of either edge takes its frontage parameter along the joined edge,
+    /// `length_m` long. `undo` receives each moved row's previous edge, cell and frontage. Returns
+    /// the buildings moved. The rows are found among the 512 m chunk candidates of both edges'
+    /// geometry in `graph` (the retained geometry of a deleted `second` included), as the split's
+    /// are; `O(candidates log candidates)`, `O(B)` while the chunk index is stale.
+    pub(crate) fn migrate_join_frontages(
+        &mut self,
+        graph: &RegionGraph,
+        [first, second]: [usize; 2],
+        offset_cells: usize,
+        length_m: f32,
+        cell_m: f32,
+        undo: &mut Vec<(usize, usize, usize, f32)>,
+    ) -> usize {
+        let edges = std::collections::HashSet::from([first, second]);
+        let fronting: Vec<usize> =
+            match self.attachment_repair_candidates(graph, &edges, [], cell_m) {
+                Some(candidates) => candidates
+                    .into_iter()
+                    .filter(|&idx| edges.contains(&self.buildings[idx].edge_idx))
+                    .collect(),
+                None => (0..self.buildings.len())
+                    .filter(|&idx| edges.contains(&self.buildings[idx].edge_idx))
+                    .collect(),
+            };
+        debug_assert!(
+            self.buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| edges.contains(&b.edge_idx))
+                .map(|(idx, _)| idx)
+                .eq(fronting.iter().copied()),
+            "the join's chunk candidates hold every building fronting edges {first} and {second}"
+        );
+        for &building_idx in &fronting {
+            let b = &mut self.buildings[building_idx];
+            undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
+            if b.edge_idx == second {
+                b.edge_idx = first;
+                b.cell_x += offset_cells;
+            }
+            let half_cells = b.width_cells as f32 * 0.5;
+            b.frontage_t = (b.cell_x as f32 + half_cells) * cell_m / length_m.max(0.001);
+        }
+        let moved = fronting.len();
+        if moved > 0 {
+            self.record_building_changes(fronting);
+        }
+        moved
+    }
+
     /// Puts back the rows [`Self::migrate_split_frontages`] moved, from its `undo` entries,
     /// and records them. O(rows).
     pub(crate) fn restore_split_frontages(&mut self, rows: &[(usize, usize, usize, f32)]) {

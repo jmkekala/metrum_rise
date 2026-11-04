@@ -21,6 +21,7 @@ pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
 pub(crate) mod cch_adoption;
+pub(crate) mod pockets;
 pub(crate) mod road_edit;
 pub(crate) mod road_types;
 pub mod topology;

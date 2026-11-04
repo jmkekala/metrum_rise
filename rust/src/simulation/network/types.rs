@@ -62,6 +62,15 @@ pub enum NodeType {
     LaneTransition,
 }
 
+impl NodeType {
+    /// Whether the junction profile solve lays a plane at a node of this type and pins its
+    /// arms to it: a junction, and a lane transition (`ROAD-95`), whose two arms of different
+    /// profiles meet in a laid-out node piece as a plain lane-count change does.
+    pub(crate) fn solves_junction_profile(self) -> bool {
+        matches!(self, Self::Junction | Self::LaneTransition)
+    }
+}
+
 /// Architectural classification of a road edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EdgeClass {

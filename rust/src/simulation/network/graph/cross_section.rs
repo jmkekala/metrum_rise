@@ -13,6 +13,7 @@ use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
 use crate::simulation::pathing::cost::CostCalculator;
+use godot::prelude::Vector3;
 
 /// Most vehicle lanes one direction of a road carries, as the road tool offers them.
 pub(crate) const MAX_LANES_PER_DIRECTION: u8 = 4;
@@ -218,12 +219,73 @@ impl Edge {
         lanes * config::LANE_WIDTH * 0.5 * side * direction
     }
 
+    /// `points` (this edge's polyline) shifted sideways by [`Self::kerb_shift_m`], mitred at
+    /// interior points as lane polylines are: the carriageway's axis, about which the roadbed
+    /// spans `width / 2` plus its side band on both sides exactly. A pocket edge's corridor checks
+    /// and zoning cells read it (`ROAD-95`, D17); without a pocket it is `points`. `O(points)`,
+    /// one allocation.
+    pub(crate) fn carriageway_axis(&self, points: &[Vector3]) -> Vec<Vector3> {
+        let shift = self.kerb_shift_m();
+        if shift == 0.0 || points.len() < 2 {
+            return points.to_vec();
+        }
+        // The lanes' normal (`lanes::geometry::build_one_lane`): positive offsets lie right of
+        // the forward direction under right-hand traffic.
+        let normal = |a: Vector3, b: Vector3| {
+            let (dx, dz) = (b.x - a.x, b.z - a.z);
+            let length = dx.hypot(dz);
+            if length > 1e-6 {
+                Vector3::new(-dz / length, 0.0, dx / length)
+            } else {
+                Vector3::ZERO
+            }
+        };
+        let last = points.len() - 1;
+        (0..=last)
+            .map(|index| {
+                let offset = if index == 0 {
+                    normal(points[0], points[1])
+                } else if index == last {
+                    normal(points[last - 1], points[last])
+                } else {
+                    let (n1, n2) = (
+                        normal(points[index - 1], points[index]),
+                        normal(points[index], points[index + 1]),
+                    );
+                    let bisector = n1 + n2;
+                    let length = bisector.length();
+                    if length > 1e-6 {
+                        let bisector = bisector / length;
+                        bisector / bisector.dot(n1).max(0.1)
+                    } else {
+                        n1
+                    }
+                };
+                points[index] + offset * shift
+            })
+            .collect()
+    }
+
     /// The pocket lanes among the lanes of one direction (`is_fwd`): one per pocket role when
     /// those lanes approach the pocket's end, else zero. `O(1)`.
     pub fn pocket_lanes(&self, is_fwd: bool) -> u8 {
         self.pocket
             .filter(|pocket| pocket.serves(is_fwd))
             .map_or(0, |pocket| u8::from(pocket.left) + u8::from(pocket.right))
+    }
+
+    /// Gives this edge the turn pocket `pocket`, or removes its pocket: the lanes of the
+    /// direction a pocket serves change by the difference in pocket lanes and the width with
+    /// them ([`RegionGraph::set_edge_pocket`] on a record outside the graph, such as the pocket
+    /// edit's planned piece). Unvalidated; see [`Self::validate_pocket`]. `O(1)`.
+    pub(crate) fn set_pocket(&mut self, pocket: Option<RoadPocket>) {
+        let (fwd, bkw) = (self.pocket_lanes(true), self.pocket_lanes(false));
+        self.fwd_lanes -= fwd;
+        self.bkw_lanes -= bkw;
+        self.pocket = pocket;
+        self.fwd_lanes += self.pocket_lanes(true);
+        self.bkw_lanes += self.pocket_lanes(false);
+        self.width = Edge::cross_section_width_m(self.fwd_lanes, self.bkw_lanes, self.median);
     }
 
     /// Whether this edge's pocket is one a pocket edit could have built (`ROAD-95`): a car road
@@ -374,17 +436,9 @@ impl RegionGraph {
     /// them; the centreline, id and everything else are kept. The result must pass
     /// [`Edge::validate_pocket`]. The pocket's transition node and the split are the pocket edit's;
     /// callers re-lay out both end nodes and rebuild their lanes. `O(1)`.
-    // The pocket edit (`ROAD-95` round R5a2) is its first caller outside the fixtures.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_edge_pocket(&mut self, id: usize, pocket: Option<RoadPocket>) {
         let edge = self.edge_mut(id);
-        let (fwd, bkw) = (edge.pocket_lanes(true), edge.pocket_lanes(false));
-        edge.fwd_lanes -= fwd;
-        edge.bkw_lanes -= bkw;
-        edge.pocket = pocket;
-        edge.fwd_lanes += edge.pocket_lanes(true);
-        edge.bkw_lanes += edge.pocket_lanes(false);
-        edge.width = Edge::cross_section_width_m(edge.fwd_lanes, edge.bkw_lanes, edge.median);
+        edge.set_pocket(pocket);
         debug_assert_eq!(edge.validate_pocket(), Ok(()));
     }
 

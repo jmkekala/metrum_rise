@@ -174,7 +174,7 @@ impl SimCore {
         });
     }
 
-    fn push_undo_snapshot(&mut self, snapshot: SimulationSnapshot) {
+    pub(super) fn push_undo_snapshot(&mut self, snapshot: SimulationSnapshot) {
         // Every edit adopts a commit's deferred lots before it records its undo (`ROAD-68-G`
         // part 7), so the record holds them.
         debug_assert!(!self.cell_lots_pending());
@@ -478,6 +478,11 @@ impl SimCore {
                     }
                     SimulationRuntimeSnapshot::BuildingRemoval(removal) => {
                         self.restore_building_removal_undo(*removal);
+                    }
+                    // The graph is restored above; the entrances follow in the local lane
+                    // rebuild below, which covers the restored roads.
+                    SimulationRuntimeSnapshot::RoadDependents(dependents) => {
+                        dependents.restore(&mut self.allocator);
                     }
                     SimulationRuntimeSnapshot::VegetationEdit(journal) => {
                         // Every cell restores independently and every patch revision only has

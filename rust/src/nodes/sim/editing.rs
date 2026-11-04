@@ -1092,6 +1092,18 @@ impl SimCore {
             2 => crate::simulation::network::types::EdgeClass::Tunnel,
             _ => crate::simulation::network::types::EdgeClass::Standard,
         };
+        // A turn pocket stays on the ground (`ROAD-95`, `pocket_requires_surface_road`): its
+        // pocket is removed first.
+        if class != crate::simulation::network::types::EdgeClass::Standard
+            && self.region_graph.edge(edge_idx).pocket.is_some()
+        {
+            debug_log!(
+                "road",
+                "edge_class_change_rejected edge={} reason=pocket_edit_first",
+                edge_idx
+            );
+            return;
+        }
         if class == crate::simulation::network::types::EdgeClass::Standard {
             let edge = self.region_graph.edge(edge_idx);
             let points = if edge.physical_geometry.len() >= 2 {

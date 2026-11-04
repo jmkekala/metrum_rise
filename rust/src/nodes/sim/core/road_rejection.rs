@@ -283,6 +283,10 @@ fn validation_detail(
             "a solved road centreline misses its junction plane by more than 1 mm".to_owned(),
             None,
         ),
+        "stroke_splits_pocket" => (
+            "the stroke would split or join a turn pocket or its transition (`ROAD-95`)".to_owned(),
+            None,
+        ),
         "field_overlap" => ("the road corridor overlaps a farm field".to_owned(), None),
         "parcel_overlap" => ("the road corridor overlaps zoned parcels".to_owned(), None),
         "validation_unavailable" => (

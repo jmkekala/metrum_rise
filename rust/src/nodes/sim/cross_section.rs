@@ -166,6 +166,14 @@ impl SimCore {
             ));
         };
         let current = graph.edge(edge);
+        // A pocket edge's lanes are its base road's plus the pocket's (`ROAD-95`): the pocket is
+        // removed first, and its base road edited.
+        if current.pocket.is_some() {
+            return Err(RoadRejection::new(
+                "pocket_edit_first",
+                format!("edge {edge} carries a turn pocket"),
+            ));
+        }
         current
             .validate_cross_section(fwd, bkw, median)
             .map_err(|reason| {

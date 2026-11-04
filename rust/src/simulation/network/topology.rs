@@ -129,14 +129,24 @@ impl TransitNetwork {
     ) {
         if let Some(journal) = self.road_edit_split_undo.take() {
             for undo in journal.into_iter().rev() {
-                allocator.restore_split_frontages(&undo.buildings);
-                allocator.edge_occupancy.remove(&undo.new_edge_id);
-                if let Some(occupancy) = undo.occupancy {
-                    allocator.edge_occupancy.insert(undo.edge_id, occupancy);
-                } else {
-                    allocator.edge_occupancy.remove(&undo.edge_id);
-                }
+                undo.restore(allocator);
             }
+        }
+    }
+}
+
+impl RoadSplitDependentsUndo {
+    /// Puts back the buildings and occupancy of the split this entry journaled. O(rows).
+    pub(super) fn restore(
+        self,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
+        allocator.restore_split_frontages(&self.buildings);
+        allocator.edge_occupancy.remove(&self.new_edge_id);
+        if let Some(occupancy) = self.occupancy {
+            allocator.edge_occupancy.insert(self.edge_id, occupancy);
+        } else {
+            allocator.edge_occupancy.remove(&self.edge_id);
         }
     }
 }
@@ -1065,14 +1075,9 @@ pub fn split_edge(
     zoning: &mut crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
-    let old_edge = graph.edge(edge_id);
-    let geometry = &old_edge.geometry;
     let split_pos = graph.node(junction_node_id).pos;
-
-    // Physical distance guard: Don't split if too close to either end (e.g. < 0.2m)
-    let start_pos = geometry[0];
-    let end_pos = *geometry.last().unwrap();
-    if split_pos.distance_to(start_pos) < 0.2 || split_pos.distance_to(end_pos) < 0.2 {
+    let old_end_node = graph.edge(edge_id).end_node;
+    let Some(split) = split_edge_graph(graph, edge_id, segment_idx, junction_node_id, None) else {
         crate::traffic_log!(
             "[ROAD_SPLIT_APPLY] action=skip-too-close edge={} junction=N{} segment={} t={:.3} split=({:.1},{:.1})",
             edge_id,
@@ -1083,6 +1088,94 @@ pub fn split_edge(
             split_pos.z,
         );
         return;
+    };
+    let new_edge_id = split.new_edge_id;
+
+    // --- MIGRATION LOGIC ---
+    let new_len_first = split.first_length_m;
+    let new_len_second = split.second_length_m;
+    crate::traffic_log!(
+        "[ROAD_SPLIT_APPLY] action=split edge={} new_edge={} junction=N{} segment={} t={:.3} old_end=N{} len_first={:.2} len_second={:.2} geom_first={} geom_second={}",
+        edge_id,
+        new_edge_id,
+        junction_node_id,
+        segment_idx,
+        t,
+        old_end_node,
+        new_len_first,
+        new_len_second,
+        graph.edge(edge_id).geometry.len(),
+        graph.edge(new_edge_id).geometry.len(),
+    );
+    let split_x = (new_len_first / zoning.config.zone_cell_m).floor() as usize;
+
+    if let Some(splits) = &mut network.recorded_road_splits {
+        splits.push(super::road_edit::PlannedRoadSplit {
+            edge_id,
+            new_edge_id,
+            far_node: split.far_node,
+            first_length_m: new_len_first,
+            second_length_m: new_len_second,
+        });
+    }
+
+    migrate_split_dependents(
+        graph,
+        edge_id,
+        new_edge_id,
+        split_x,
+        new_len_first,
+        new_len_second,
+        zoning,
+        allocator,
+        &mut network.road_edit_split_undo,
+    );
+
+    network.mark_point_dirty(split_pos);
+    if network.bulk_load {
+        network.bulk_dirty_edges.insert(edge_id);
+        network.bulk_dirty_edges.insert(new_edge_id);
+    }
+}
+
+/// The halves of a graph-only split ([`split_edge_graph`]).
+pub(crate) struct SplitHalves {
+    /// The second half's edge id; the first half keeps the split edge's.
+    pub(crate) new_edge_id: usize,
+    /// The node the second half reaches, whose turn rules and crossing overrides moved to it;
+    /// `None` for a self-loop.
+    pub(crate) far_node: Option<u32>,
+    /// The halves' physical lengths at the split, before any junction finalization: the lengths
+    /// the dependents' migration partitions the frontage by.
+    pub(crate) first_length_m: f32,
+    /// See [`Self::first_length_m`].
+    pub(crate) second_length_m: f32,
+}
+
+/// Splits edge `edge_id` at node `junction_node_id`, on its control segment `segment_idx`, on
+/// the graph alone: the first half keeps the id and runs to the node, the second half runs from
+/// it to the old end, in slot `reuse` (a deleted edge's, so an edit that joins and splits again
+/// reuses its id) or appended. The far node's crossing overrides (`ROAD-74`) and turn rules
+/// (`ROAD-103`) move to the second half, and a turn pocket stays with the half that keeps its end
+/// (`ROAD-95`). Buildings, occupancy and dirty marks are the caller's ([`split_edge`] migrates
+/// them; the pocket edit does too). `None`, with nothing changed, when the node lies within
+/// 0.2 m of either end. O(points + far node rules).
+pub(crate) fn split_edge_graph(
+    graph: &mut RegionGraph,
+    edge_id: usize,
+    segment_idx: usize,
+    junction_node_id: u32,
+    reuse: Option<usize>,
+) -> Option<SplitHalves> {
+    let old_edge = graph.edge(edge_id);
+    let geometry = &old_edge.geometry;
+    let split_pos = graph.node(junction_node_id).pos;
+
+    // Physical distance guard: Don't split if too close to either end (e.g. < 0.2m)
+    let start_pos = geometry[0];
+    let end_pos = *geometry.last().unwrap();
+    if split_pos.distance_to(start_pos) < 0.2 || split_pos.distance_to(end_pos) < 0.2 {
+        return None;
     }
 
     let old_end_node = old_edge.end_node;
@@ -1180,7 +1273,17 @@ pub fn split_edge(
     new_edge.base_cost = cost_new;
     new_edge.physical_length = length_new;
 
-    let new_edge_id = graph.add_edge(new_edge);
+    let new_edge_id = match reuse {
+        Some(slot) => {
+            debug_assert!(graph.edges[slot].deleted, "only a deleted slot is reused");
+            graph.edges[slot] = new_edge;
+            graph.adjacency[junction_node_id as usize].push(slot);
+            graph.adjacency[old_end_node as usize].push(slot);
+            graph.add_to_spatial_index(slot);
+            slot
+        }
+        None => graph.add_edge(new_edge),
+    };
     // The far end's arm is now the second half (`ROAD-74`); a self-loop's start keeps its arm on
     // the first half too. Its turn rules move with the arm (`ROAD-103`).
     let self_loop = graph.edges[edge_id].start_node == old_end_node;
@@ -1198,52 +1301,12 @@ pub fn split_edge(
             .crosswalk_overrides
             .insert(new_edge_id, marked);
     }
-
-    // --- MIGRATION LOGIC ---
-    let new_len_first = graph.edge(edge_id).physical_length;
-    let new_len_second = graph.edge(new_edge_id).physical_length;
-    crate::traffic_log!(
-        "[ROAD_SPLIT_APPLY] action=split edge={} new_edge={} junction=N{} segment={} t={:.3} old_end=N{} len_first={:.2} len_second={:.2} geom_first={} geom_second={}",
-        edge_id,
+    Some(SplitHalves {
         new_edge_id,
-        junction_node_id,
-        segment_idx,
-        t,
-        old_end_node,
-        new_len_first,
-        new_len_second,
-        graph.edge(edge_id).geometry.len(),
-        graph.edge(new_edge_id).geometry.len(),
-    );
-    let split_x = (new_len_first / zoning.config.zone_cell_m).floor() as usize;
-
-    if let Some(splits) = &mut network.recorded_road_splits {
-        splits.push(super::road_edit::PlannedRoadSplit {
-            edge_id,
-            new_edge_id,
-            far_node: (!self_loop).then_some(old_end_node),
-            first_length_m: new_len_first,
-            second_length_m: new_len_second,
-        });
-    }
-
-    migrate_split_dependents(
-        graph,
-        edge_id,
-        new_edge_id,
-        split_x,
-        new_len_first,
-        new_len_second,
-        zoning,
-        allocator,
-        &mut network.road_edit_split_undo,
-    );
-
-    network.mark_point_dirty(split_pos);
-    if network.bulk_load {
-        network.bulk_dirty_edges.insert(edge_id);
-        network.bulk_dirty_edges.insert(new_edge_id);
-    }
+        far_node: (!self_loop).then_some(old_end_node),
+        first_length_m: graph.edge(edge_id).physical_length,
+        second_length_m: graph.edge(new_edge_id).physical_length,
+    })
 }
 
 fn split_physical_geometry(

@@ -607,6 +607,110 @@ impl SimulationNode {
         true
     }
 
+    /// The turn pocket at end `end` (0 start, 1 end) of road `edge_id`, or reached through its
+    /// lane transition there (`ROAD-95`): `has_pocket`, and with one `left`, `right`,
+    /// `length_m` (its body from the junction, D7), `pocket_edge` and `junction`. Also
+    /// `one_way` (a left kerb pocket needs a one-way road; inner pockets on two-way roads wait
+    /// for round R5b1) and the length range `min_length_m`, `max_length_m`, `step_m`,
+    /// `default_length_m`. Empty for an id that is not a live edge.
+    #[func]
+    pub fn get_road_pocket(&self, edge_id: i32, end: i32) -> VarDictionary {
+        use crate::simulation::network::pockets::{
+            POCKET_BODY_DEFAULT_M, POCKET_BODY_MAX_M, POCKET_BODY_MIN_M, POCKET_BODY_STEP_M,
+        };
+        let core = self.lock_core();
+        let Some(edge) = usize::try_from(edge_id)
+            .ok()
+            .and_then(|edge| core.region_graph.get_edge(edge))
+            .filter(|edge| !edge.deleted)
+        else {
+            return VarDictionary::new();
+        };
+        let mut result = vdict! {
+            "has_pocket": false,
+            "one_way": edge.fwd_lanes == 0 || edge.bkw_lanes == 0,
+            "min_length_m": POCKET_BODY_MIN_M,
+            "max_length_m": POCKET_BODY_MAX_M,
+            "step_m": POCKET_BODY_STEP_M,
+            "default_length_m": POCKET_BODY_DEFAULT_M,
+        };
+        if let Some(state) = core.get_road_pocket_internal(edge_id, pocket_end(end)) {
+            result.set("has_pocket", true);
+            result.set("left", state.pocket.left);
+            result.set("right", state.pocket.right);
+            result.set("length_m", state.body_m);
+            result.set("pocket_edge", state.edge as i64);
+            result.set("junction", i64::from(state.junction));
+        }
+        result
+    }
+
+    /// The commit's verdict on a turn pocket at end `end` (0 start, 1 end) of road `edge_id`
+    /// with lanes on the drivers' `left` and `right` and a `length_m` body from the junction
+    /// (20-300 m by 10; both off removes the pocket) (`ROAD-95`), without applying it:
+    /// `is_valid`; when valid `cost_delta` (what Apply charges, never negative); when refused
+    /// `invalid_reason` (stable key) and `detail`. The same check as [`Self::set_road_pocket`]
+    /// (D11: no geometry preview).
+    #[func]
+    pub fn preview_road_pocket(
+        &mut self,
+        edge_id: i32,
+        end: i32,
+        left: bool,
+        right: bool,
+        length_m: f32,
+    ) -> VarDictionary {
+        let Some(request) = pocket_request(edge_id, end, left, right, length_m) else {
+            return vdict! {
+                "is_valid": false,
+                "invalid_reason": "invalid_road",
+                "detail": format!("edge {edge_id} is not a road"),
+            };
+        };
+        match self.lock_core().preview_road_pocket_internal(request) {
+            Ok(verdict) => vdict! {
+                "is_valid": true,
+                "cost_delta": verdict.cost_delta,
+            },
+            Err(rejection) => vdict! {
+                "is_valid": false,
+                "invalid_reason": rejection.reason,
+                "detail": rejection.detail,
+            },
+        }
+    }
+
+    /// Gives end `end` of road `edge_id` the turn pocket [`Self::preview_road_pocket`] checks,
+    /// resizes or changes its pocket, or removes it, with an undo record (`ROAD-95`); its pieces
+    /// publish now, as a crossing toggle's do, and the verdict's `cost_delta` is charged.
+    /// Returns whether it was applied: a refused edit changes nothing.
+    #[func]
+    pub fn set_road_pocket(
+        &mut self,
+        edge_id: i32,
+        end: i32,
+        left: bool,
+        right: bool,
+        length_m: f32,
+    ) -> bool {
+        let Some(request) = pocket_request(edge_id, end, left, right, length_m) else {
+            return false;
+        };
+        let (snapshot, publication) = {
+            let mut core = self.lock_core();
+            if !core.set_road_pocket_internal(request) {
+                return false;
+            }
+            let publication = core.finalize_network_render_products();
+            (core.build_snapshot(), publication)
+        };
+        *self.snapshot.write().unwrap() = snapshot;
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
+        true
+    }
+
     /// Whether road arm `edge_id` at `node_id` can cross, so the select tool offers its
     /// crossing toggle (`ROAD-74`).
     #[func]
@@ -646,6 +750,33 @@ impl SimulationNode {
         self.lock_core()
             .clear_lane_source_internal(node_id, from_edge, from_lane);
     }
+}
+
+// A road end from Godot: 0 the start, anything else the end.
+fn pocket_end(end: i32) -> crate::simulation::network::roadbed::EdgeEnd {
+    use crate::simulation::network::roadbed::EdgeEnd;
+    if end == 0 {
+        EdgeEnd::Start
+    } else {
+        EdgeEnd::End
+    }
+}
+
+// A pocket edit from Godot's arguments; `None` for a negative edge id.
+fn pocket_request(
+    edge_id: i32,
+    end: i32,
+    left: bool,
+    right: bool,
+    length_m: f32,
+) -> Option<crate::simulation::network::pockets::PocketRequest> {
+    Some(crate::simulation::network::pockets::PocketRequest {
+        edge: usize::try_from(edge_id).ok()?,
+        end: pocket_end(end),
+        left,
+        right,
+        body_m: length_m,
+    })
 }
 
 // A lane count from Godot; out of range saturates, so the edit's check refuses it.

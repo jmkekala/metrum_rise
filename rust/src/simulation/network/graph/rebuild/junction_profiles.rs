@@ -8,7 +8,7 @@ use crate::simulation::network::roadbed::{
     CURB_STEP_HEIGHT_M, EdgeEnd, RoadVec2, directions_pass_through, edges_pass_through,
     incident_direction, terminal_plane,
 };
-use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
+use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use std::cell::RefCell;
@@ -568,7 +568,9 @@ impl RegionGraph {
             let end_node = self.get_valid_node(edge.end_node);
             for (node_id, at_start) in [(start_node, true), (end_node, false)] {
                 if !affected(node_id)
-                    || self.nodes[node_id as usize].node_type != NodeType::Junction
+                    || !self.nodes[node_id as usize]
+                        .node_type
+                        .solves_junction_profile()
                 {
                     continue;
                 }
@@ -719,7 +721,12 @@ impl RegionGraph {
         node_id: u32,
         limit_mode: JunctionProfileLimitMode,
     ) -> Option<NodeSolve> {
-        if self.nodes.get(node_id as usize)?.node_type != NodeType::Junction {
+        if !self
+            .nodes
+            .get(node_id as usize)?
+            .node_type
+            .solves_junction_profile()
+        {
             return None;
         }
         ProfileSolveScratch::with(|scratch| {

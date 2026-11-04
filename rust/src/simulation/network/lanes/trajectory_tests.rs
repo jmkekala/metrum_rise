@@ -664,6 +664,12 @@ fn fixtures() -> Vec<(String, RegionGraph)> {
             uneven_star(&[(0.0, 2, 1), (90.0, 2, 1), (180.0, 2, 1), (270.0, 2, 1)]),
         ),
     ];
+    // `ROAD-95`: a T whose west arm has a right turn pocket (the junction is node 0, the
+    // transition node 1).
+    fixtures.push((
+        "t_right_pocket".to_string(),
+        super::super::roadbed::fixtures::t_right_pocket(),
+    ));
     fixtures.extend(footpath_fixtures(false).into_iter().filter(|(name, _)| {
         name.starts_with("t_beside_arm/") || name.starts_with("through_road/")
     }));
@@ -679,7 +685,13 @@ fn junction_connectors_stay_on_the_carriageway_without_backward_steps_or_kinks()
         roadbed.compile_dirty(&graph);
         let mut lanes = LaneSystem::new();
         lanes.rebuild(&mut graph);
-        let counts = measure_connectors(&graph, &roadbed, &lanes, [0], true);
+        // A pocket fixture's transition is measured too.
+        let nodes = if name == "t_right_pocket" {
+            vec![0, 1]
+        } else {
+            vec![0]
+        };
+        let counts = measure_connectors(&graph, &roadbed, &lanes, nodes, true);
         assert!(counts.connectors > 0, "{name}: no connectors measured");
         clean &= counts.clean();
         report.push_str(&counts.report(&name));

@@ -142,7 +142,11 @@ impl<M: CellMaps> CellStore<M> {
                 if edge.deleted || edge.class != EdgeClass::Standard {
                     0.0
                 } else {
-                    f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH)
+                    // A pocket edge's corridor runs on its carriageway's axis (D17), up to its
+                    // kerb shift off the indexed centreline.
+                    f64::from(edge.width) * 0.5
+                        + f64::from(crate::config::SIDEWALK_WIDTH)
+                        + f64::from(edge.kerb_shift_m().abs())
                 }
             })
             .reduce(|| 0.0, f64::max)
@@ -428,8 +432,17 @@ fn edge_candidates(
     {
         return Vec::new();
     }
-    let points: Vec<_> = edge
-        .physical_geometry
+    // A turn pocket edge's carriageway is centred off its centreline (`ROAD-95`, D17): its
+    // cells front the carriageway's own axis, so both sides take the exact half-width. Every
+    // other road reads its centreline as before.
+    let shifted;
+    let source = if edge.kerb_shift_m() != 0.0 {
+        shifted = edge.carriageway_axis(&edge.physical_geometry);
+        &shifted
+    } else {
+        &edge.physical_geometry
+    };
+    let points: Vec<_> = source
         .iter()
         .map(|point| DVec2::new(f64::from(point.x), f64::from(point.z)))
         .collect();
@@ -885,9 +898,16 @@ fn overlaps_road_corridors_bounded(
             return;
         }
         let half_width = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+        // A pocket edge's corridor is its carriageway's, about the axis shifted by its kerb
+        // shift (`ROAD-95`, D17), segment by segment: exact on both sides, with no allocation.
+        let shift = f64::from(edge.kerb_shift_m());
         for segment in edge.physical_geometry.windows(2) {
-            let a = DVec2::new(f64::from(segment[0].x), f64::from(segment[0].z));
-            let b = DVec2::new(f64::from(segment[1].x), f64::from(segment[1].z));
+            let mut a = DVec2::new(f64::from(segment[0].x), f64::from(segment[0].z));
+            let mut b = DVec2::new(f64::from(segment[1].x), f64::from(segment[1].z));
+            if shift != 0.0 {
+                let lateral = (b - a).normalize_or_zero().perp() * shift;
+                (a, b) = (a + lateral, b + lateral);
+            }
             // The contracted corridor lies inside this full-width envelope. Rounding
             // disjoint coordinate intervals cannot create positive-area intersection.
             if !CellBounds::from_points([a, b])

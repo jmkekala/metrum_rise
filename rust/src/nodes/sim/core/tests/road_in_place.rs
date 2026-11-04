@@ -349,7 +349,11 @@ fn a_lane_edit_survives_a_save_file() {
 // A one-cell house on a default residential parcel fronting `edge` near `(x, z)`, with the zone
 // index, sites and entrance cache current, as the `editing` tests build one. Returns the
 // building's index and its parcel's id.
-fn house_fronting(core: &mut SimCore, edge: usize, (x, z): (f32, f32)) -> (usize, u64) {
+pub(super) fn house_fronting(
+    core: &mut SimCore,
+    edge: usize,
+    (x, z): (f32, f32),
+) -> (usize, u64) {
     use crate::assets::AssetManifest;
     if core.allocator.registry.get("test:house").is_none() {
         let manifest: AssetManifest = serde_json::from_value(serde_json::json!({

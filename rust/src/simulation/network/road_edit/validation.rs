@@ -47,6 +47,7 @@ const PREVIEW_TUNNEL_APPROACH_REASON: &str = "tunnel_approach_too_short";
 const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_SAME_NODE_REASON: &str = "same_node_connection";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
+const STROKE_SPLITS_POCKET_REASON: &str = "stroke_splits_pocket";
 const PREVIEW_GRADE_CHANGE_REASON: &str = "road_grade_change";
 const PREVIEW_TOO_STEEP_REASON: &str = "road_too_steep";
 // The road tool's warning for a grade above its class's design tier, which it does not refuse.
@@ -593,6 +594,17 @@ fn validate_against_graph(
             None,
         );
     }
+    if stroke_splits_pocket(
+        &validation_graph,
+        existing_graph,
+        &source_node_ids,
+        &source_edge_ids,
+    ) {
+        return (
+            validation.with_invalid_reason(STROKE_SPLITS_POCKET_REASON),
+            None,
+        );
+    }
     let (stroke, rederived) = edit_profiles(
         &validation_graph,
         new_edge_idx,
@@ -652,6 +664,38 @@ fn validate_against_graph(
         stroke_ends,
     );
     (validation, topology_plan)
+}
+
+// D10 (`ROAD-95`): whether the stroke's excerpt split, merged or rerouted a turn pocket edge, or
+// gave a pocket's transition node a third arm (a crossing, an end snapped onto it or a node
+// captured on the stroke's line): a split would leave the pocket on a half that no longer reaches
+// its junction, and a third arm ends the transition. The pocket is removed or the road drawn
+// elsewhere first. Order-independent over the excerpt's maps, O(excerpt records).
+fn stroke_splits_pocket(
+    local: &RegionGraph,
+    existing: &RegionGraph,
+    source_nodes: &HashMap<u32, u32>,
+    source_edges: &HashMap<usize, usize>,
+) -> bool {
+    let local_node = |source: u32| {
+        source_nodes
+            .get(&existing.get_valid_node(source))
+            .map(|&node| local.get_valid_node(node))
+    };
+    let edge_changed = source_edges.iter().any(|(&source, &copy)| {
+        let edge = existing.edge(source);
+        let copied = local.edge(copy);
+        edge.pocket.is_some()
+            && (copied.deleted
+                || Some(local.get_valid_node(copied.start_node)) != local_node(edge.start_node)
+                || Some(local.get_valid_node(copied.end_node)) != local_node(edge.end_node))
+    });
+    edge_changed
+        || source_nodes.iter().any(|(&source, &copy)| {
+            existing.is_lane_transition(source)
+                && (local.get_valid_node(copy) != copy
+                    || local.live_node_connection_count(copy) != 2)
+        })
 }
 
 // The local post-edit graph of a prepared stroke, or the refusal: a stroke whose ends meet one

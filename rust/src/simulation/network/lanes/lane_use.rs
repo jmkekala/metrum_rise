@@ -328,6 +328,15 @@ pub(crate) fn approach_needs_lane_choice(graph: &RegionGraph, edge: usize, node:
             || DefaultLaneUse::new(graph, edge, node).needs_lane_choice())
 }
 
+/// Whether `node` offers the lanes of `edge` that approach it a left and a right turn, as
+/// `(left, right)`: an arm in that direction with lanes leaving the node, the movements the
+/// default lane use classifies. A turn pocket needs its turn offered (`ROAD-95`,
+/// `pocket_movement_missing`). O(degree), no allocation.
+pub(crate) fn approach_offers_turns(graph: &RegionGraph, edge: usize, node: u32) -> (bool, bool) {
+    let available = DefaultLaneUse::new(graph, edge, node).available;
+    (available & LEFT != 0, available & RIGHT != 0)
+}
+
 /// The turn arrows (`ROAD-75`) of the lanes of `edge` that approach `node`: `paint(lane_idx,
 /// movements)` for every lane that carries one, with the movement bits 1 left, 2 straight, 4
 /// right. At a node that whitelists its vehicle turns, a lane listed in the whitelist shows the

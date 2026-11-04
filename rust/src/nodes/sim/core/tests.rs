@@ -20,6 +20,7 @@ mod road_crosswalks;
 mod road_in_place;
 mod road_reference_probe;
 mod road_plan_scaling;
+mod road_pockets;
 mod road_preview;
 mod road_terrain_plan;
 mod road_over_tunnels;

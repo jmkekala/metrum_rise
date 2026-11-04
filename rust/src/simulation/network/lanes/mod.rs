@@ -28,7 +28,8 @@ pub mod vehicle_junctions;
 pub(crate) use bounds::LanePlanarBox;
 pub(crate) use identity::LaneIdentity;
 pub(crate) use lane_use::{
-    approach_arrow_masks, approach_group, approach_needs_lane_choice, lane_rank,
+    approach_arrow_masks, approach_group, approach_needs_lane_choice, approach_offers_turns,
+    lane_rank,
 };
 pub use successors::LaneSuccessors;
 
