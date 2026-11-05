@@ -10,7 +10,9 @@ use super::{
     triangulate_constrained_rings_xz,
 };
 use crate::config;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadPocket};
+use crate::simulation::network::graph::{
+    Edge, RegionGraph, RoadMedian, RoadPocket, SidewalkSides,
+};
 use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
@@ -345,6 +347,18 @@ pub(crate) fn four_way_2x2_left_right_pocket() -> RegionGraph {
 /// [`pocket_junction`]: a T whose 1+1 west arm has a right pocket.
 pub(crate) fn t_right_pocket() -> RegionGraph {
     pocket_junction(1, 1, false, true, false)
+}
+
+/// [`t_right_pocket`] with the west arm's one sidewalk on `sides` (`ROAD-107`): the pocket moves
+/// its kerb out with the bands of that side, a shoulder or a sidewalk. Base road and pocket edge
+/// alike.
+pub(crate) fn t_right_pocket_one_sided(sides: SidewalkSides) -> RegionGraph {
+    let mut graph = t_right_pocket();
+    for edge in [0, 1] {
+        graph.edge_mut(edge).set_sidewalks(sides);
+    }
+    finalize(&mut graph);
+    graph
 }
 
 /// [`pocket_junction`]: a T whose one-way west arm (one lane towards the junction) has a right

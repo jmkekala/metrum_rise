@@ -217,6 +217,47 @@ fn a_right_pocket_splits_the_road_and_undo_restores_it() {
 // Ported and extended: `invalid_pocket_is_transactionally_refused`. Every refusal is the
 // preview's and the commit's and changes nothing.
 #[test]
+fn a_pocket_on_a_one_sided_road_keeps_its_sidewalk_on_that_side() {
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::lanes::LaneType;
+    use crate::simulation::network::road_types::RoadAttributes;
+    use crate::simulation::network::roadbed::RoadProfile;
+    for sides in [SidewalkSides::LEFT, SidewalkSides::RIGHT] {
+        let (mut core, node) = crossing(true);
+        let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+        let attributes = RoadAttributes::new(50, sides, true);
+        assert!(core.set_edge_cross_section_internal(west as i32, 1, 1, None, attributes));
+        let plain = RoadProfile::for_edge(core.region_graph.edge(west));
+        assert_eq!(pocket_edit(&mut core, request(west, end, (false, true), 60.0)), "");
+        let pocket = core.get_road_pocket_internal(west as i32, end).unwrap().edge;
+        let graph = &core.region_graph;
+        assert_eq!(graph.edge(pocket).sidewalk_sides(), sides, "the split keeps the side");
+        assert_eq!(graph.edge(west).sidewalk_sides(), sides);
+        // A right pocket under right-hand traffic: the kerb on the approach's right moves out by
+        // a lane with the bands beyond it, and the other side stays.
+        let approach_right = graph.edge(pocket).pocket.unwrap().end == EdgeEnd::End;
+        let widened = RoadProfile::for_edge(graph.edge(pocket));
+        let (kerb, outer) = widened.side_half_widths_m(approach_right);
+        let (plain_kerb, plain_outer) = plain.side_half_widths_m(approach_right);
+        assert_eq!(kerb, plain_kerb + crate::config::LANE_WIDTH);
+        assert_eq!(outer - kerb, plain_outer - plain_kerb, "{sides:?}: the band moves whole");
+        assert_eq!(
+            widened.side_half_widths_m(!approach_right),
+            plain.side_half_widths_m(!approach_right)
+        );
+        let lanes = &core.transit_network.lane_system;
+        let foot: Vec<i8> = lanes.edge_lanes[&pocket]
+            .iter()
+            .map(|&id| &lanes.lanes[id])
+            .filter(|lane| lane.lane_type == LaneType::Foot)
+            .map(|lane| lane.lane_idx)
+            .collect();
+        let idx = if sides.left() { 100 } else { -100 };
+        assert_eq!(foot, [idx, idx], "{sides:?}: a lane each way, on its sidewalk only");
+    }
+}
+
+#[test]
 fn pocket_edits_are_refused_with_a_reason() {
     let (mut core, node) = crossing(true);
     let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));

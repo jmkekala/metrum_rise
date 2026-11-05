@@ -13,9 +13,9 @@ mod memory;
 // The measured stroke: the T's side road on flat ground, a tunnel through the hill south of the
 // T, a road over that tunnel (`ROAD-61` round R8h), or a road under a bridge south of the T on
 // flat ground (`ROAD-99`), or a road climbing from the ground to join that bridge mid-span
-// (`ROAD-99` follow-up B1), or the T's side road with a 3 m kerbed grass median (`ROAD-80`); or
-// no stroke: the T's side road, drawn, widened in place or given that median in place
-// (`ROAD-80`).
+// (`ROAD-99` follow-up B1), or the T's side road with a 3 m kerbed grass median (`ROAD-80`) or
+// with its one sidewalk on the left (`ROAD-107`); or no stroke: the T's side road, drawn, widened
+// in place or given that median in place (`ROAD-80`), or that one side in place.
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
@@ -24,9 +24,11 @@ enum Measured {
     UnderBridge,
     JoinBridge,
     Divided,
+    OneSided,
     LaneEdit,
     MedianEdit,
     TypeEdit,
+    SideEdit,
     PocketEdit,
 }
 
@@ -36,6 +38,11 @@ const GRASS: crate::simulation::network::graph::RoadMedian =
         style: crate::simulation::network::graph::MedianStyle::KerbedGrass,
         width_m: 3.0,
     };
+
+// The one-sided measurements' road type (`ROAD-107`): the default's, its sidewalk on the left.
+fn one_sided() -> crate::simulation::network::road_types::RoadAttributes {
+    crate::simulation::network::road_types::RoadAttributes::new(50, SidewalkSides::LEFT, true)
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum CellScenario {
@@ -125,6 +132,33 @@ fn populated_median_edit_scaling() {
         false,
         CellScenario::None,
         Measured::MedianEdit,
+    );
+}
+
+// `ROAD-107` locality: the T's side road drawn with one sidewalk, planned as the remote city grows.
+#[test]
+#[ignore = "unprofiled one-sided road planning locality; run alone with --release --ignored --nocapture"]
+fn populated_one_sided_road_plan_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::OneSided,
+    );
+}
+
+// `ROAD-107` locality: the T's side road's right sidewalk removed in place: its lanes rebuilt on
+// one side, the walkers and entrances of that side moved.
+#[test]
+#[ignore = "unprofiled in-place sidewalk side edit locality; run alone with --release --ignored --nocapture"]
+fn populated_road_side_edit_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::SideEdit,
     );
 }
 
@@ -246,7 +280,11 @@ fn measure_populated_road_plan_scaling(
     );
     let in_place = matches!(
         measured,
-        Measured::LaneEdit | Measured::MedianEdit | Measured::TypeEdit | Measured::PocketEdit
+        Measured::LaneEdit
+            | Measured::MedianEdit
+            | Measured::TypeEdit
+            | Measured::SideEdit
+            | Measured::PocketEdit
     );
     if in_place {
         road_terrain_plan::commit_ready(
@@ -463,6 +501,7 @@ fn measure_populated_road_plan_scaling(
             let section = match measured {
                 Measured::LaneEdit => (2, 2, None, RoadAttributes::DEFAULT),
                 Measured::MedianEdit => (1, 1, Some(GRASS), RoadAttributes::DEFAULT),
+                Measured::SideEdit => (1, 1, None, one_sided()),
                 _ => (1, 1, None, RoadAttributes::new(80, SidewalkSides::NONE, true)),
             };
             let products = if measured == Measured::PocketEdit {
@@ -528,7 +567,7 @@ fn measure_populated_road_plan_scaling(
         let mut preview_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let points = match measured {
-            Measured::Ground | Measured::Divided => {
+            Measured::Ground | Measured::Divided | Measured::OneSided => {
                 vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)]
             }
             Measured::Tunnel => vec![
@@ -550,6 +589,7 @@ fn measure_populated_road_plan_scaling(
             Measured::LaneEdit
             | Measured::MedianEdit
             | Measured::TypeEdit
+            | Measured::SideEdit
             | Measured::PocketEdit => {
                 unreachable!("measured by measure_lane_edit or measure_pocket_edit")
             }
@@ -562,7 +602,11 @@ fn measure_populated_road_plan_scaling(
             snap_to_existing_roads: true,
             tunnel,
             median: (measured == Measured::Divided).then_some(GRASS),
-            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            attributes: if measured == Measured::OneSided {
+                one_sided()
+            } else {
+                crate::simulation::network::road_types::RoadAttributes::DEFAULT
+            },
         };
         for iteration in 0..103 {
             let start = Instant::now();
@@ -607,6 +651,7 @@ fn measure_populated_road_plan_scaling(
                 "under_bridge": measured == Measured::UnderBridge,
                 "join_bridge": measured == Measured::JoinBridge,
                 "divided": measured == Measured::Divided,
+                "one_sided": measured == Measured::OneSided,
                 "cell_reservations": cells, "remote_painted_cells": background_cells,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
@@ -722,7 +767,7 @@ fn measure_lane_edit(
             "remote_buildings": remote_buildings, "remote_roads": remote_roads,
             "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
             "rayon_threads": rayon::current_num_threads(), "median": median.is_some(),
-            "sidewalks": attributes.sidewalks.any(), "speed_ms": attributes.speed_ms,
+            "sidewalks": attributes.sidewalks.bits(), "speed_ms": attributes.speed_ms,
             "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
             "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
             "toggle_p50_ms": p50(&mut toggles),

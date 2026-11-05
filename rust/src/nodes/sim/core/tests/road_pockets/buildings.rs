@@ -421,3 +421,54 @@ fn a_pocketed_arm_with_houses_on_both_curbs_save() {
     core.allocator.complete_all_construction();
     core.save_game_settled(&save, None).expect("save");
 }
+
+// `ROAD-107` round S2's stills' city (`METRUM_S2_SAVE`), every road drawn left to right or top to
+// bottom as named: a street along z = 0 with its one sidewalk on the left (north) and houses grown
+// on both sides west of x = -40, bare east of it; a T at (0, -120) whose stem runs north with its
+// sidewalk on its left, and another at (300, -120) on its right; a two-sided road ending at
+// (-250, 120) and continued east with one sidewalk (the 12 m taper). Ignored: it writes a file.
+#[test]
+#[ignore = "writes the stills' save: METRUM_S2_SAVE"]
+fn one_sided_streets_save() {
+    use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::road_types::RoadAttributes;
+    let save = std::env::var("METRUM_S2_SAVE").expect("METRUM_S2_SAVE");
+    let mut core = test_core();
+    core.treasury.balance = 1.0e7;
+    core.benchmark_mode = false;
+    register_houses(&mut core);
+    for (a, b, sides) in [
+        ((-200.0, 0.0), (200.0, 0.0), SidewalkSides::LEFT),
+        ((-100.0, -120.0), (100.0, -120.0), SidewalkSides::BOTH),
+        ((0.0, -120.0), (0.0, -220.0), SidewalkSides::LEFT),
+        ((200.0, -120.0), (400.0, -120.0), SidewalkSides::BOTH),
+        ((300.0, -120.0), (300.0, -220.0), SidewalkSides::RIGHT),
+        ((-400.0, 120.0), (-250.0, 120.0), SidewalkSides::BOTH),
+        ((-250.0, 120.0), (-100.0, 120.0), SidewalkSides::LEFT),
+    ] {
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points: vec![Vector3::new(a.0, 0.0, a.1), Vector3::new(b.0, 0.0, b.1)],
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                tunnel: false,
+                median: None,
+                attributes: RoadAttributes::new(50, sides, true),
+                preview: None,
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert!(outcome.committed, "{}", outcome.rejection);
+    }
+    core.precompute_road_mesh_data();
+    let street = core.get_hovered_edge_internal(-100.0, 0.0) as usize;
+    for sign in [1.0, -1.0] {
+        let houses = grow(&mut core, street, sign, [-170.0, -40.0]);
+        eprintln!("S2_STILLS side {sign} houses {houses:?}");
+    }
+    core.allocator.complete_all_construction();
+    core.save_game_settled(&save, None).expect("save");
+}

@@ -58,6 +58,7 @@ fn probe_fixtures() -> Vec<(String, RegionGraph)> {
         set.push((format!("short_link_{link_m}"), short_link(link_m)));
     }
     // Turn pockets (`ROAD-95`), recorded in round R5a2.
+    use crate::simulation::network::graph::SidewalkSides;
     use crate::simulation::network::roadbed::fixtures as pockets;
     for (name, graph) in [
         ("t_right_pocket", pockets::t_right_pocket()),
@@ -94,6 +95,15 @@ fn probe_fixtures() -> Vec<(String, RegionGraph)> {
         (
             "undivided_2x2_left_right_pocket",
             pockets::undivided_2x2_left_right_pocket(),
+        ),
+        // Round S2: a right pocket on a one-sided road, on its shoulder side and its sidewalk's.
+        (
+            "t_right_pocket_left_sidewalk",
+            pockets::t_right_pocket_one_sided(SidewalkSides::LEFT),
+        ),
+        (
+            "t_right_pocket_right_sidewalk",
+            pockets::t_right_pocket_one_sided(SidewalkSides::RIGHT),
         ),
     ] {
         set.push((name.to_string(), graph));
@@ -2281,6 +2291,30 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xe69e92f15971ed3b,
         ],
     ),
+    (
+        "t_right_pocket_left_sidewalk",
+        [
+            0xe8931ceec52ef2c2,
+            0x31a36b1ec18a2bc1,
+            0xc1ad8444a8dac76e,
+            0x400900f9dd455790,
+            0x750db5d6ddadcc62,
+            0xe01e3cf69058e99f,
+            0x32b47541ce3eecd6,
+        ],
+    ),
+    (
+        "t_right_pocket_right_sidewalk",
+        [
+            0xe8931ceec52ef2c2,
+            0x4f613ddec8edeedd,
+            0xd59c13d4eab2eb17,
+            0xb0d3489228048a06,
+            0xb2ac3a8c2c375968,
+            0x3c2390a9dcd03b23,
+            0x9eaefee7e7fb09e4,
+        ],
+    ),
 ];
 
 // Recorded by `TERRAIN-07-B`: the strip layer is new, so every entry is new; the seven
@@ -2472,4 +2506,6 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("four_way_1x1_left_right_pocket", 0x35e644f19860eced),
     ("undivided_2x2_left_pocket", 0x3c20a6e986fab845),
     ("undivided_2x2_left_right_pocket", 0x6e2d2cf56781779d),
+    ("t_right_pocket_left_sidewalk", 0xe78d672c935e5c86),
+    ("t_right_pocket_right_sidewalk", 0xe0b57b946ec170d8),
 ];
