@@ -111,6 +111,18 @@ impl RoadMedian {
     }
 }
 
+/// The circle a roundabout ring edge follows (`ROAD-62`), held by every edge of the ring: a split
+/// re-samples both halves from it ([`RoundaboutRing::arc`]) and the ring's edits and joins read
+/// it. Saved in the sparse `roundabout_edges` table.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundaboutRing {
+    /// The circle's centre on the XZ plane.
+    pub centre: Vector2,
+    /// The radius of the ring's centreline in metres: half of the diameter between the outside
+    /// asphalt kerbs less the ring's lanes.
+    pub radius_m: f32,
+}
+
 /// Which sides of a car road carry a sidewalk (`ROAD-107`), in the edge's forward frame: the
 /// left is the negative lateral side (sidewalk lane 100, building and lot side 1), the right the
 /// positive one (lane -100, side -1). A car road is walked (`TransitFlags::FOOT`) exactly when it
@@ -468,8 +480,8 @@ impl Edge {
     /// on its side (on a two-way road the oncoming lanes move with it, `ROAD-95` round R5c1), or
     /// inside a raised median at least [`config::LANE_WIDTH`] + [`POCKET_MEDIAN_STUB_M`] wide on
     /// the base road, which it narrows by a lane (round R5b1, D3): `pocket_requires_wide_median`
-    /// beside a painted or narrower median. Edits and loads share it; the error is the stable
-    /// refusal key. `O(1)`.
+    /// beside a painted or narrower median. A ring edge takes none (`roundabout_fixed`,
+    /// `ROAD-62`). Edits and loads share it; the error is the stable refusal key. `O(1)`.
     pub(crate) fn validate_pocket(&self) -> Result<(), &'static str> {
         let Some(pocket) = self.pocket else {
             return Ok(());
@@ -479,6 +491,9 @@ impl Edge {
             || self.allowed_types & TransitFlags::CAR == 0
         {
             return Err("invalid_road");
+        }
+        if self.roundabout.is_some() {
+            return Err("roundabout_fixed");
         }
         if self.class != EdgeClass::Standard {
             return Err("pocket_requires_surface_road");
@@ -538,7 +553,8 @@ impl Edge {
     /// Whether this edge may carry `fwd` forward and `bkw` backward lanes and `median` after an
     /// in-place edit (`ROAD-80`): it must be a live road (a footpath stays a footpath), keep at
     /// least one lane and stay within [`MAX_LANES_PER_DIRECTION`] per direction; a median must
-    /// be valid, on a car road, between two directions. The error is the stable refusal key.
+    /// be valid, on a car road, between two directions; a ring edge keeps its section
+    /// (`roundabout_fixed`, `ROAD-62`). The error is the stable refusal key.
     pub(crate) fn validate_cross_section(
         &self,
         fwd: u8,
@@ -547,6 +563,9 @@ impl Edge {
     ) -> Result<(), &'static str> {
         if self.deleted || self.primary_type != TransitType::Road {
             return Err("cross_section_not_road");
+        }
+        if self.roundabout.is_some() {
+            return Err("roundabout_fixed");
         }
         if fwd > MAX_LANES_PER_DIRECTION || bkw > MAX_LANES_PER_DIRECTION {
             return Err("too_many_lanes");

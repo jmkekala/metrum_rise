@@ -4,7 +4,8 @@
 //! whitelist, or else the default lane use of `ROAD-94`), from the incoming lane's end to the
 //! outgoing lane's start. Both ends are the lanes' points on their arms' mouth frames
 //! ([`MouthFrame`]), and the connector leaves and joins along the arms' directions there, never
-//! along a lane polyline's end piece. Its curve is [`VehicleTurn`].
+//! along a lane polyline's end piece, a ring lane's excepted (`ring_lane_outward`). Its curve is
+//! [`VehicleTurn`].
 //! Each connector is checked against the node's kerb corners once per lane rebuild; a
 //! violation is logged on the `traffic` debug channel, and nothing repairs the curve.
 
@@ -25,6 +26,8 @@ pub(crate) use turn::VehicleTurn;
 
 const VEHICLE_DIRECT_PASS_THROUGH_EPS_M: f32 = 0.05;
 const VEHICLE_DIRECT_PASS_THROUGH_DOT: f32 = 0.98;
+// A ring lane's direction at its end is taken over at least this distance.
+const RING_LANE_DIRECTION_PIECE_M: f64 = 0.01;
 
 /// Where a vehicle lane meets the node: its point on its arm's mouth frame and the arm's
 /// direction away from the node there. The lane rebuild ends the lane exactly at `point`.
@@ -77,6 +80,27 @@ pub(crate) fn vehicle_lane_end(
     }
 }
 
+// The direction of `lane` away from the node at its end there: from the tip to the first lane
+// point at least `RING_LANE_DIRECTION_PIECE_M` off. A ring lane (`ROAD-62`) is a polygon of 1 m
+// sides turning about 4 degrees at each, which a frame's direction, interpolated between two
+// knots, leaves by up to half of that: a connector on the frame's direction would steer against
+// the ring on leaving or joining the lane. `None` for a degenerate lane. `O(lane points)` at worst.
+fn ring_lane_outward(lane: &Lane, leaves: bool) -> Option<RoadVec2> {
+    let flat = |p: &Vector3| RoadVec2::new(f64::from(p.x), f64::from(p.z));
+    let from_tip = |points: &mut dyn Iterator<Item = &Vector3>| {
+        let tip = flat(points.next()?);
+        points
+            .map(|point| flat(point) - tip)
+            .find(|piece| piece.length() >= RING_LANE_DIRECTION_PIECE_M)
+            .map(RoadVec2::normalize)
+    };
+    if leaves {
+        from_tip(&mut lane.geometry.iter())
+    } else {
+        from_tip(&mut lane.geometry.iter().rev())
+    }
+}
+
 /// Builds vehicle intersection connection lanes at a single node: one connector per allowed
 /// pair of an inbound and an outbound lane, under the node's whitelist or else the default lane
 /// use (`ROAD-94`). Writes every inbound lane's solid approach zone (`Lane::solid_zone_m`). `kerb_corners` are its layout's fitted kerb corners
@@ -122,8 +146,13 @@ pub(crate) fn build_vehicle_connections_at_node(
                     let Some(&lid) = lane_map.get(&(e_idx, is_fwd, lane_idx)) else {
                         continue;
                     };
-                    let lane_end = vehicle_lane_end(&frame, end, edge, lane_idx);
+                    let mut lane_end = vehicle_lane_end(&frame, end, edge, lane_idx);
                     let leaves = is_fwd == (end == EdgeEnd::Start);
+                    if edge.roundabout.is_some()
+                        && let Some(outward) = ring_lane_outward(&lanes[lid], leaves)
+                    {
+                        lane_end.outward = outward;
+                    }
                     let list = if leaves { &mut outbound } else { &mut inbound };
                     list.push((e_idx, lane_idx, lid, lane_end));
                 }

@@ -207,6 +207,7 @@ mod tests {
                 median: None,
                 pocket: None,
                 sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+                roundabout: None,
             });
             graph.edge_mut(edge).deleted = deleted;
         }

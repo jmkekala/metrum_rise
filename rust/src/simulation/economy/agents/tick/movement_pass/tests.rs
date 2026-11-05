@@ -173,6 +173,7 @@ fn turn_fixture(count: usize) -> (AgentSystem, TransitNetwork, RegionGraph, Vec<
                 median: None,
                 pocket: None,
                 sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+                roundabout: None,
             });
             arms.push((start, centre, edge));
         }
@@ -520,6 +521,7 @@ fn node_entry_fixture(groups: usize, cars: usize) -> (AgentSystem, TransitNetwor
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
         let lane = network.lane_system.lanes.len();
         network.lane_system.lanes.push(Lane {

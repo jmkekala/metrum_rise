@@ -94,6 +94,7 @@ pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     }
 }
 
@@ -321,6 +322,7 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     };
     graph.add_edge(make(n0, n1, 0.0, 100.0));
     graph.add_edge(make(n1, n2, 100.0, 200.0));
@@ -369,6 +371,7 @@ pub(super) fn build_4way_junction(
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     };
     let ew = graph.add_edge(arm(nw, nc, -100.0, 0.0, 0.0, 0.0));
     // One-way crosses need outgoing arms as well as incoming arms.
@@ -453,6 +456,7 @@ pub(super) fn build_short_block_street(link_m: f32, arms: [(f32, f32); 3]) -> Sh
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         })
     };
     let north = node(&mut graph, 0.0, -100.0);

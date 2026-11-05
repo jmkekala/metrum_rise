@@ -289,6 +289,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 median,
                 pocket,
                 sidewalks,
+                roundabout: None,
             };
             // A median loads only as a stroke or an edit could have built it (`ROAD-80`), a
             // pocket only as a pocket edit could have (`ROAD-95`), and sidewalks only on a car

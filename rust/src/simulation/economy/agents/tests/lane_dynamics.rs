@@ -376,6 +376,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         };
         edges.push(graph.add_edge(e));
     }

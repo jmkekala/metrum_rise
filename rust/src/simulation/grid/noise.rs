@@ -174,6 +174,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         });
 
         // 2. Tick once - source cells should be positive
@@ -255,6 +256,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         });
 
         let mut graph_high = graph_low.clone();

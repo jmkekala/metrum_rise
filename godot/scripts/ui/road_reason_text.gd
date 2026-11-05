@@ -139,6 +139,14 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Remove the turn pocket first"
 		"stroke_splits_pocket":
 			return "Roads cannot cross or join a turn pocket: remove it first"
+		"roundabout_fixed":
+			return "A roundabout's ring cannot be changed"
+		"roundabout_crossed":
+			return "Roads cannot cross a roundabout: end the road on its ring"
+		"roundabout_island":
+			return "Roads cannot go on a roundabout's island"
+		"roundabout_arm_node_taken":
+			return "This point of the roundabout already has a road"
 		"median_requires_both_directions":
 			return "A median needs lanes in both directions"
 		"median_requires_vehicle_road":

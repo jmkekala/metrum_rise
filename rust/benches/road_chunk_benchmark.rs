@@ -432,6 +432,7 @@ fn add_edge(
         median: None,
         pocket: None,
         sidewalks: SidewalkSides::BOTH,
+        roundabout: None,
     })
 }
 

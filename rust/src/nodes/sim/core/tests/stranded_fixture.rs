@@ -96,6 +96,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
     }
     if spur {
@@ -124,6 +125,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         });
     }
     core.region_graph.rebuild_adjacency_list();

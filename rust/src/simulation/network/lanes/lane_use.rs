@@ -153,6 +153,8 @@ pub(super) struct DefaultLaneUse {
     // The approach's pocket lanes at this node: rank 0 (left) and rank `count - 1` (right).
     pocket_left: bool,
     pocket_right: bool,
+    // The approach is a roundabout ring edge (`ROAD-62`).
+    ring: bool,
 }
 
 impl DefaultLaneUse {
@@ -187,12 +189,19 @@ impl DefaultLaneUse {
             node,
             pocket_left: pocket.is_some_and(|pocket| pocket.left),
             pocket_right: pocket.is_some_and(|pocket| pocket.right),
+            ring: approach.roundabout.is_some(),
         }
     }
 
     // The movements of approach lane `rank`: the one mask rule of connectors, the entry-lane
-    // walk and the arrows (`pocket_mask`).
+    // walk and the arrows (`pocket_mask`). Every lane of a ring serves every movement (D10): a
+    // lane of about 20 m between two arms has no room to change lanes, so the permissive rule's
+    // inner lane, straight only, could never leave. The exit fan is the default one, a one-lane
+    // exit merging both ring lanes and a two-lane exit taking them 1:1.
     fn mask(&self, rank: usize) -> u8 {
+        if self.ring {
+            return self.available;
+        }
         pocket_mask(
             rank,
             self.count,

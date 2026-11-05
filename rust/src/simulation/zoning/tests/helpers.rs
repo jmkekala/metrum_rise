@@ -48,6 +48,7 @@ pub(super) fn make_straight_road_span(start_x: f32, end_x: f32) -> (RegionGraph,
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     (graph, edge_idx)
 }
@@ -78,6 +79,7 @@ pub(super) fn add_vertical_road_at_x(graph: &mut RegionGraph, x: f32) -> usize {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     })
 }
 
@@ -122,6 +124,7 @@ pub(super) fn make_quarter_arc_road(radius_m: f32) -> (RegionGraph, usize) {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     (graph, edge_idx)
 }

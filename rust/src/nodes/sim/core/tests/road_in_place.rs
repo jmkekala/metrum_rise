@@ -1003,3 +1003,58 @@ fn street_lights_turned_off_in_place_relight_the_street_and_undo() {
     assert_eq!(published_chunks(&core), lit_chunks);
     assert_eq!(fully_emitted_chunks(&mut core), lit_chunks);
 }
+
+// A ring keeps its section, class, zoning and shape (`ROAD-62`, `roundabout_fixed`).
+#[test]
+fn a_ring_edge_refuses_every_in_place_edit() {
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    use crate::simulation::network::roundabouts::{
+        RING_SPEED_MS, RoundaboutLayout, RoundaboutRequest, RoundaboutSite,
+    };
+    use crate::simulation::network::types::EdgeClass;
+    let mut core = test_core();
+    let site = RoundaboutSite::Ground {
+        centre: Vector3::new(100.0, 0.0, 100.0),
+        lanes: 1,
+    };
+    let request = RoundaboutRequest {
+        site,
+        diameter_m: 36.0,
+    };
+    let applied = RoundaboutLayout::prepare(&core.region_graph, request)
+        .unwrap()
+        .apply(&mut core.region_graph);
+    let edge = applied.ring[0];
+    assert_eq!(
+        core.region_graph
+            .edge(edge)
+            .validate_cross_section(2, 0, None),
+        Err("roundabout_fixed")
+    );
+    let mut with_pocket = core.region_graph.edge(edge).clone();
+    with_pocket.pocket = Some(crate::simulation::network::graph::RoadPocket {
+        end: EdgeEnd::End,
+        left: false,
+        right: true,
+    });
+    assert_eq!(with_pocket.validate_pocket(), Err("roundabout_fixed"));
+
+    core.set_edge_class_internal(edge as i32, 1);
+    assert_eq!(core.region_graph.edge(edge).class, EdgeClass::Standard);
+    core.set_no_building_spawn_internal(edge as i32, false);
+    assert!(core.region_graph.edge(edge).no_building_spawn);
+    assert_eq!(core.region_graph.edge(edge).speed_limit, RING_SPEED_MS);
+
+    let node = applied.nodes[0];
+    let before = core.region_graph.node(node).pos;
+    assert!(!core.move_network_node_internal(node as i32, before + Vector3::new(3.0, 0.0, 0.0)));
+    assert_eq!(core.region_graph.node(node).pos, before);
+    assert_eq!(
+        core.last_road_rejection
+            .as_ref()
+            .map(|refusal| refusal.reason.as_str()),
+        Some("roundabout_fixed")
+    );
+    assert_eq!(core.region_graph.edge(edge).sidewalks, SidewalkSides::RIGHT);
+}

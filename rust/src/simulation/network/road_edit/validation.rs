@@ -32,7 +32,7 @@ use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, grade_violation,
 };
 use crate::simulation::network::{
-    TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, topology,
+    TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, roundabouts, topology,
     topology::StrokeGrade,
 };
 use crate::simulation::terrain::TerrainSystem;
@@ -48,6 +48,8 @@ const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_SAME_NODE_REASON: &str = "same_node_connection";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
 const STROKE_SPLITS_POCKET_REASON: &str = "stroke_splits_pocket";
+const ROUNDABOUT_CROSSED_REASON: &str = "roundabout_crossed";
+const ROUNDABOUT_ARM_NODE_TAKEN_REASON: &str = "roundabout_arm_node_taken";
 const PREVIEW_GRADE_CHANGE_REASON: &str = "road_grade_change";
 const PREVIEW_TOO_STEEP_REASON: &str = "road_too_steep";
 // The road tool's warning for a grade above its class's design tier, which it does not refuse.
@@ -542,6 +544,13 @@ fn validate_against_graph(
         );
     }
 
+    let grounded = prepared_input.class == EdgeClass::Standard && !prepared_input.tunnel;
+    if let Some(reason) =
+        roundabouts::stroke_ring_refusal(existing_graph, prepared_points, grounded)
+    {
+        return (validation.with_invalid_reason(reason), None);
+    }
+
     // The profile check passed, so a tunnel stroke has its bore.
     let bore = prepared_input
         .tunnel
@@ -612,6 +621,9 @@ fn validate_against_graph(
         &required_edge_ids,
         &source_edge_ids,
     );
+    if let Some(reason) = ring_join_refusal(&validation_graph, &stroke) {
+        return (validation.with_invalid_reason(reason), None);
+    }
     if let Some(refused) = edit_geometry_violation(
         &validation_graph,
         existing_graph,
@@ -664,6 +676,42 @@ fn validate_against_graph(
         stroke_ends,
     );
     (validation, topology_plan)
+}
+
+// D9 (`ROAD-62`): the drawn road `stroke` joins a ring at one point. Two of its pieces at a ring
+// node run on through the ring (`roundabout_crossed`; a stroke through the island is
+// [`roundabouts::stroke_ring_refusal`]'s), and a ring node takes one arm
+// (`roundabout_arm_node_taken`: a second at one point never fits and is not a roundabout). The
+// excerpt has every arm of a node the stroke touches. `O(stroke pieces x degree)`.
+fn ring_join_refusal(local: &RegionGraph, stroke: &[usize]) -> Option<&'static str> {
+    stroke.iter().find_map(|&piece| {
+        let edge = local.edge(piece);
+        [edge.start_node, edge.end_node]
+            .into_iter()
+            .find_map(|node| {
+                let node = local.get_valid_node(node);
+                roundabouts::ring_at(local, node)?;
+                let (mut drawn, mut others) = (0, 0);
+                for &id in local.node_adjacency(node) {
+                    let arm = local.edge(id);
+                    if arm.deleted || arm.roundabout.is_some() {
+                        continue;
+                    }
+                    if stroke.contains(&id) {
+                        drawn += 1;
+                    } else {
+                        others += 1;
+                    }
+                }
+                if drawn > 1 {
+                    Some(ROUNDABOUT_CROSSED_REASON)
+                } else if others > 0 {
+                    Some(ROUNDABOUT_ARM_NODE_TAKEN_REASON)
+                } else {
+                    None
+                }
+            })
+    })
 }
 
 // D10 (`ROAD-95`): whether the stroke's excerpt split, merged or rerouted a turn pocket edge, or

@@ -72,6 +72,7 @@ fn ring_core() -> SimCore {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
     }
     core.transit_network

@@ -53,6 +53,7 @@ fn grid(side: u32) -> RegionGraph {
                     median: None,
                     pocket: None,
                     sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+                    roundabout: None,
                 });
             }
         }

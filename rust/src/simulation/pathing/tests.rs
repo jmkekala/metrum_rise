@@ -32,6 +32,7 @@ fn test_slope_cost_calculation() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     };
 
     let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
@@ -93,6 +94,7 @@ fn test_pathing_avoids_steep_slope() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     };
     let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);
     edge_ab.base_cost = cost_ab;
@@ -125,6 +127,7 @@ fn test_pathing_avoids_steep_slope() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     };
     let (cost_ac, dist_ac) = cost::CostCalculator::calculate_costs(&edge_ac);
     edge_ac.base_cost = cost_ac;
@@ -162,6 +165,7 @@ fn test_pathing_avoids_steep_slope() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     };
     let (cost_cb, dist_cb) = cost::CostCalculator::calculate_costs(&edge_cb);
     edge_cb.base_cost = cost_cb;
@@ -215,6 +219,7 @@ fn test_bidirectional_walkway_pathing() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     });
 
     let cch = CchGraph::build(&graph);
@@ -269,6 +274,7 @@ fn test_car_uturn_allowed() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
 
     let cch = CchGraph::build(&graph);
@@ -328,6 +334,7 @@ fn test_border_spur_routes_to_connected_residential_branch() {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         }
     };
     graph.add_edge(edge(n0, center, 241.03, 0.0, 9.35));
@@ -396,6 +403,7 @@ fn test_car_avoids_walkway_shortcut() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.add_edge(Edge {
         start_node: n1,
@@ -421,6 +429,7 @@ fn test_car_avoids_walkway_shortcut() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
 
     // Walkway shortcut n0 -> n2 directly
@@ -448,6 +457,7 @@ fn test_car_avoids_walkway_shortcut() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     });
 
     let cch = cch::CchGraph::build(&graph);
@@ -527,6 +537,7 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         })
     };
 
@@ -656,6 +667,7 @@ fn walkers_are_priced_at_walking_pace_and_take_the_shorter_footpath() {
             } else {
                 crate::simulation::network::graph::SidewalkSides::BOTH
             },
+            roundabout: None,
         };
         (edge.base_cost, edge.physical_length) = cost::CostCalculator::calculate_costs(&edge);
         graph.add_edge(edge);

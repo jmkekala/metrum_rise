@@ -288,6 +288,18 @@ fn validation_detail(
             "the stroke would split or join a turn pocket or its transition (`ROAD-95`)".to_owned(),
             None,
         ),
+        "roundabout_crossed" => (
+            "the stroke would run on through a roundabout's ring (`ROAD-62`, D9)".to_owned(),
+            None,
+        ),
+        "roundabout_island" => (
+            "the stroke would end on or cross a roundabout's island (`ROAD-62`, D9)".to_owned(),
+            None,
+        ),
+        "roundabout_arm_node_taken" => (
+            "the ring node already has its arm (`ROAD-62`, D9)".to_owned(),
+            None,
+        ),
         "field_overlap" => ("the road corridor overlaps a farm field".to_owned(), None),
         "parcel_overlap" => ("the road corridor overlaps zoned parcels".to_owned(), None),
         "validation_unavailable" => (

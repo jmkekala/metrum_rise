@@ -925,6 +925,7 @@ fn add_test_border_road(core: &mut SimCore) {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     core.transit_network
         .lane_system
@@ -1263,6 +1264,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     }
 }
 

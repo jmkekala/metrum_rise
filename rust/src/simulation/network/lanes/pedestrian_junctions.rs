@@ -250,7 +250,8 @@ fn route_enters_arm_asphalt(route: &[Vector3], arm: &SidewalkMouth) -> bool {
     })
 }
 
-fn segment_distance_xz(a0: Vector3, a1: Vector3, b0: Vector3, b1: Vector3) -> f32 {
+/// The XZ distance between two segments, zero where they cross. `O(1)`.
+pub(crate) fn segment_distance_xz(a0: Vector3, a1: Vector3, b0: Vector3, b1: Vector3) -> f32 {
     let side = |p: Vector3, q0: Vector3, q1: Vector3| {
         (q1.x - q0.x) * (p.z - q0.z) - (q1.z - q0.z) * (p.x - q0.x)
     };

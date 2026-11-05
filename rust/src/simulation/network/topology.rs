@@ -1157,9 +1157,10 @@ pub(crate) struct SplitHalves {
 /// it to the old end, in slot `reuse` (a deleted edge's, so an edit that joins and splits again
 /// reuses its id) or appended. The far node's crossing overrides (`ROAD-74`) and turn rules
 /// (`ROAD-103`) move to the second half, and a turn pocket stays with the half that keeps its end
-/// (`ROAD-95`). Buildings, occupancy and dirty marks are the caller's ([`split_edge`] migrates
-/// them; the pocket edit does too). `None`, with nothing changed, when the node lies within
-/// 0.2 m of either end. O(points + far node rules).
+/// (`ROAD-95`). A ring edge's halves stay on the ring, re-sampled from its circle (`ROAD-62`).
+/// Buildings, occupancy and dirty marks are the caller's ([`split_edge`] migrates them; the pocket
+/// edit does too). `None`, with nothing changed, when the node lies within 0.2 m of either end.
+/// O(points + far node rules).
 pub(crate) fn split_edge_graph(
     graph: &mut RegionGraph,
     edge_id: usize,
@@ -1195,7 +1196,7 @@ pub(crate) fn split_edge_graph(
     // Splitting changes topology, not the solved profile of the retained road. Partition the
     // original physical polyline by horizontal station so its independently materialized
     // junction supports survive even when they do not coincide with control knots.
-    let (part1_physical, part2_physical) =
+    let (mut part1_physical, mut part2_physical) =
         split_physical_geometry(old_edge, segment_idx, split_pos);
     if part1_geo.last().unwrap().distance_to(split_pos) > SPLIT_KNOT_MERGE_M {
         part1_geo.push(split_pos);
@@ -1203,6 +1204,15 @@ pub(crate) fn split_edge_graph(
         // An existing control knot can already equal the junction. Both split halves must meet
         // the authoritative node even when the physical profile has an independent height.
         *part1_geo.last_mut().unwrap() = split_pos;
+    }
+    // A ring edge's halves are re-sampled from its circle with leads at the new node (`ROAD-62`,
+    // D7): a cut in the middle of a chord leaves the node's ring arms off their common tangent,
+    // and from 60 m its corners do not fit. The caller's solve derives their profiles.
+    if let Some(ring) = old_edge.roundabout {
+        part1_geo = ring.arc(start_pos, split_pos);
+        part2_geo = ring.arc(split_pos, end_pos);
+        part1_physical = part1_geo.clone();
+        part2_physical = part2_geo.clone();
     }
 
     let primary_type = old_edge.primary_type;
@@ -1215,6 +1225,7 @@ pub(crate) fn split_edge_graph(
     let no_building_spawn = old_edge.no_building_spawn;
     let no_street_lights = old_edge.no_street_lights;
     let sidewalks = old_edge.sidewalks;
+    let roundabout = old_edge.roundabout;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
     let median = old_edge.median;
     // A turn pocket stays with the half that keeps its end (`ROAD-95`); the other half keeps the
@@ -1269,6 +1280,7 @@ pub(crate) fn split_edge_graph(
         median,
         pocket: second_pocket,
         sidewalks,
+        roundabout,
     };
     let (cost_new, length_new) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);

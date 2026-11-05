@@ -149,6 +149,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     let mut zoning = ZoningSystem::new(&config);
     zoning
@@ -207,6 +208,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     (graph, edge_id)
@@ -1612,6 +1614,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
 
     let mut zoning = ZoningSystem::new(&config);

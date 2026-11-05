@@ -14,6 +14,9 @@ use crate::simulation::network::graph::{
     Edge, RegionGraph, RoadMedian, RoadPocket, SidewalkSides,
 };
 use crate::simulation::network::lanes::LaneSystem;
+use crate::simulation::network::roundabouts::{
+    RoundaboutApplied, RoundaboutLayout, RoundaboutRequest, RoundaboutSite,
+};
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
@@ -52,6 +55,7 @@ pub(crate) fn road_edge(start_node: u32, end_node: u32, points: Vec<Vector3>, wi
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     }
 }
 
@@ -471,6 +475,130 @@ pub(crate) fn footpath_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
     .into_iter()
     .map(|(name, arms)| (format!("{name}/{sloped}"), footpath_star(&arms, sloped)))
     .collect()
+}
+
+/// A hub at the origin with one arm 120 m long per angle (degrees), `arm` lanes (leaving, entering)
+/// the hub. Even arms leave the hub from their edge's start, odd ones from its end. Every road has
+/// sidewalks.
+pub(crate) fn hub_graph(
+    angles_deg: &[f32],
+    (out, into): (u8, u8),
+    sloped: bool,
+) -> (RegionGraph, u32) {
+    let mut graph = RegionGraph::new();
+    let hub = graph.add_node(point(0.0, 0.0, sloped), NodeType::Junction);
+    for (index, angle) in angles_deg.iter().enumerate() {
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let far = graph.add_node(point(cos * 120.0, sin * 120.0, sloped), NodeType::Junction);
+        let (a, b, fwd, bkw) = if index % 2 == 0 {
+            (hub, far, out, into)
+        } else {
+            (far, hub, into, out)
+        };
+        let id = connect(&mut graph, a, b, 7.0, sloped);
+        *graph.edge_mut(id) = divided(graph.edge(id).clone(), fwd, bkw, None);
+    }
+    finalize(&mut graph);
+    (graph, hub)
+}
+
+/// A hub of [`hub_graph`]'s arms converted into a ring of `diameter_m` (`ROAD-62`), laid out as an
+/// edit does: the graph and the plan's ids, or the plan's refusal. The arms keep their ids, 0 up.
+pub(crate) fn converted_ring(
+    diameter_m: f32,
+    angles_deg: &[f32],
+    arm: (u8, u8),
+    sloped: bool,
+) -> Result<(RegionGraph, RoundaboutApplied), &'static str> {
+    let (mut graph, hub) = hub_graph(angles_deg, arm, sloped);
+    let site = RoundaboutSite::Junction(hub);
+    let layout = RoundaboutLayout::prepare(&graph, RoundaboutRequest { site, diameter_m })?;
+    let applied = layout.apply(&mut graph);
+    finalize(&mut graph);
+    Ok((graph, applied))
+}
+
+/// A bare ring of `lanes` lanes and `diameter_m` around the origin, laid out as an edit does.
+pub(crate) fn bare_ring(
+    diameter_m: f32,
+    lanes: u8,
+    sloped: bool,
+) -> (RegionGraph, RoundaboutApplied) {
+    let mut graph = RegionGraph::new();
+    let site = RoundaboutSite::Ground {
+        centre: point(0.0, 0.0, sloped),
+        lanes,
+    };
+    let applied = RoundaboutLayout::prepare(&graph, RoundaboutRequest { site, diameter_m })
+        .expect("empty ground")
+        .apply(&mut graph);
+    finalize(&mut graph);
+    (graph, applied)
+}
+
+fn flat_distance_m(a: Vector3, b: Vector3) -> f32 {
+    (a.x - b.x).hypot(a.z - b.z)
+}
+
+/// Joins an arm 60 m long of `arm` lanes (leaving, entering the ring) to `graph`'s ring at
+/// `angle_deg`, as a stroke ending on it does: at a ring node there, else in the middle
+/// of the chord nearest the angle, on a split. Returns the ring node and the arm; the caller
+/// lays the graph out.
+pub(crate) fn join_ring_arm(
+    graph: &mut RegionGraph,
+    angle_deg: f32,
+    (out, into): (u8, u8),
+    sloped: bool,
+) -> (u32, usize) {
+    let (sin, cos) = angle_deg.to_radians().sin_cos();
+    let radial = Vector3::new(cos, 0.0, sin);
+    let on_ring = |edge: &Edge| !edge.deleted && edge.roundabout.is_some();
+    let ring = graph
+        .edges()
+        .iter()
+        .find_map(|edge| edge.roundabout.filter(|_| on_ring(edge)));
+    let ring = ring.expect("a ring");
+    let centre = Vector3::new(ring.centre.x, 0.0, ring.centre.y);
+    let target = centre + radial * ring.radius_m;
+    let mut best = (f32::INFINITY, 0, 0);
+    for (id, edge) in graph
+        .edges()
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| on_ring(edge))
+    {
+        for (segment, pair) in edge.geometry.windows(2).enumerate() {
+            let middle = pair[0].lerp(pair[1], 0.5);
+            let distance_m = flat_distance_m(middle, target);
+            if distance_m < best.0 {
+                best = (distance_m, id, segment);
+            }
+        }
+    }
+    let (_, id, segment) = best;
+    let edge = graph.edge(id);
+    let (first, last) = (edge.start_node, edge.end_node);
+    let ends = [first, last].map(|node| graph.node(node).pos);
+    let middle = edge.geometry[segment].lerp(edge.geometry[segment + 1], 0.5);
+    let node = if let Some(at) = ends
+        .iter()
+        .position(|&end| flat_distance_m(end, target) < 2.0)
+    {
+        [first, last][at]
+    } else {
+        let node = graph.add_node(middle, NodeType::Junction);
+        crate::simulation::network::topology::split_edge_graph(graph, id, segment, node, None)
+            .expect("a join away from the ends");
+        node
+    };
+    let at = graph.node(node).pos;
+    let far = at + radial * 60.0;
+    let far_y = if sloped { SLOPE * far.x } else { at.y };
+    let far = Vector3::new(far.x, far_y, far.z);
+    let far_node = graph.add_node(far, NodeType::Junction);
+    let points = vec![at, at.lerp(far, 1.0 / 3.0), at.lerp(far, 2.0 / 3.0), far];
+    let edge = divided(road_edge(node, far_node, points, 7.0), out, into, None);
+    (node, graph.add_edge(edge))
 }
 
 /// FNV-1a hashes of one network's roadbed products, by component: graph clips and physical

@@ -108,6 +108,50 @@ fn probe_fixtures() -> Vec<(String, RegionGraph)> {
     ] {
         set.push((name.to_string(), graph));
     }
+    // Roundabouts (`ROAD-62`), recorded in round R7a: a one-lane and a two-lane ring, uneven arms,
+    // a bare ring and one joined mid-chord, flat and sloped.
+    use crate::simulation::network::roadbed::fixtures::{
+        bare_ring, converted_ring, finalize, join_ring_arm,
+    };
+    for sloped in [false, true] {
+        for (name, diameter_m, angles, arm) in [
+            (
+                "ring_36_four_arms",
+                36.0,
+                &[0.0, 90.0, 180.0, 270.0][..],
+                (1, 1),
+            ),
+            (
+                "ring_50_four_arms",
+                50.0,
+                &[0.0, 90.0, 180.0, 270.0][..],
+                (2, 2),
+            ),
+            (
+                "ring_36_uneven_arms",
+                36.0,
+                &[10.0, 80.0, 170.0, 300.0][..],
+                (1, 1),
+            ),
+            (
+                "ring_36_six_arms",
+                36.0,
+                &[0.0, 60.0, 120.0, 180.0, 240.0, 300.0][..],
+                (1, 1),
+            ),
+        ] {
+            let (graph, _) = converted_ring(diameter_m, angles, arm, sloped).unwrap();
+            set.push((format!("{name}/{sloped}"), graph));
+        }
+        set.push((
+            format!("ring_36_bare/{sloped}"),
+            bare_ring(36.0, 1, sloped).0,
+        ));
+        let (mut joined, _) = bare_ring(60.0, 1, sloped);
+        join_ring_arm(&mut joined, 150.0, (1, 1), sloped);
+        finalize(&mut joined);
+        set.push((format!("ring_60_joined/{sloped}"), joined));
+    }
     set
 }
 
@@ -2315,6 +2359,150 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x9eaefee7e7fb09e4,
         ],
     ),
+    (
+        "ring_36_four_arms/false",
+        [
+            0xc2964fc18f44276b,
+            0xe7d28887ee57ebc1,
+            0xd9ec20745377d6cc,
+            0x63c2f50e331e6b8c,
+            0x250366c1d9635e69,
+            0xbfe6c80625ec3dd8,
+            0x81084450be122fda,
+        ],
+    ),
+    (
+        "ring_50_four_arms/false",
+        [
+            0x33e1fd099e57139e,
+            0xde137ceae0efa068,
+            0x5dd08385fff521ed,
+            0xa9387441d1478d7b,
+            0xf90d517bfc2c082f,
+            0xfcbdf266e1cf23f8,
+            0x90a7c8a289b0caf4,
+        ],
+    ),
+    (
+        "ring_36_uneven_arms/false",
+        [
+            0x7c7c010f29567696,
+            0x2d50e51529ccec61,
+            0x408f868ffa9cb062,
+            0x5259dc8c0bfbac95,
+            0x60c3e143610985a6,
+            0xd38c99b7ec1eb2f5,
+            0xf3a2278c070ac14d,
+        ],
+    ),
+    (
+        "ring_36_six_arms/false",
+        [
+            0xf520e1446a5d0e0b,
+            0x5b472de39795f712,
+            0xbda4adda19a5346e,
+            0xf73df9361f4a6991,
+            0x7e2a3bee9ec214ff,
+            0x920d05a5896cafbd,
+            0x62d3176385202578,
+        ],
+    ),
+    (
+        "ring_36_bare/false",
+        [
+            0xdbdebde6814ff3af,
+            0x0e3ffa1f5311ba0a,
+            0xcbf29ce484222325,
+            0x87b557fc600b795a,
+            0x70c9b82103059f06,
+            0x0ed738c1e2ea249c,
+            0x5e4674785fd5108b,
+        ],
+    ),
+    (
+        "ring_60_joined/false",
+        [
+            0x6b30fcc6bd67873f,
+            0x6c4768de4d44da15,
+            0x52bd208a4dea9f3f,
+            0x9798504b251bc9ed,
+            0xd129a9fbb7f87d23,
+            0x89d507422f565a62,
+            0xebb1e0a938f51097,
+        ],
+    ),
+    (
+        "ring_36_four_arms/true",
+        [
+            0xc929c0a3b5b8e02d,
+            0x85dcdbb106f47249,
+            0xd9ec20745377d6cc,
+            0x3d5627d17d29c73c,
+            0x5ae676e84bbc5583,
+            0xe1120ed85988b506,
+            0x6b1b83292e7ffe3c,
+        ],
+    ),
+    (
+        "ring_50_four_arms/true",
+        [
+            0x40ea92cdd7a1adf6,
+            0xb8a03c07a67e238c,
+            0x5dd08385fff521ed,
+            0x0aecfc779a5b5e14,
+            0xbd01011cb9a7ae73,
+            0x072bac1772d728dc,
+            0x1b725020f764e239,
+        ],
+    ),
+    (
+        "ring_36_uneven_arms/true",
+        [
+            0xcc844b65ad45ae82,
+            0x109485dbceeb5896,
+            0x408f868ffa9cb062,
+            0xa2f45e3f3eba1401,
+            0x78661b414e9047cf,
+            0xd1bb3e36669c676e,
+            0x44aa7d52d072a5f7,
+        ],
+    ),
+    (
+        "ring_36_six_arms/true",
+        [
+            0xf4f87354bde5069e,
+            0x207cc481fb9ceda1,
+            0xbda4adda19a5346e,
+            0x8606f0a60bcf2eb7,
+            0x8322891196728e48,
+            0x307d0a4a2a12b011,
+            0x9cb71be332bc1d45,
+        ],
+    ),
+    (
+        "ring_36_bare/true",
+        [
+            0xdbdebde6814ff3af,
+            0x0e3ffa1f5311ba0a,
+            0xcbf29ce484222325,
+            0x87b557fc600b795a,
+            0x70c9b82103059f06,
+            0x0ed738c1e2ea249c,
+            0x5e4674785fd5108b,
+        ],
+    ),
+    (
+        "ring_60_joined/true",
+        [
+            0x708a955b975ef2e5,
+            0xaef2b119070c6a53,
+            0x52bd208a4dea9f3f,
+            0x12646612d308afa6,
+            0xbcd9c96fff708766,
+            0xb22c4dcb8a2e6768,
+            0xd37f9338408a9609,
+        ],
+    ),
 ];
 
 // Recorded by `TERRAIN-07-B`: the strip layer is new, so every entry is new; the seven
@@ -2508,4 +2696,16 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("undivided_2x2_left_right_pocket", 0x6e2d2cf56781779d),
     ("t_right_pocket_left_sidewalk", 0xe78d672c935e5c86),
     ("t_right_pocket_right_sidewalk", 0xe0b57b946ec170d8),
+    ("ring_36_four_arms/false", 0xc06513bfc85b58d5),
+    ("ring_50_four_arms/false", 0x702f36c9d63225cd),
+    ("ring_36_uneven_arms/false", 0xebfd06bdbf0f5569),
+    ("ring_36_six_arms/false", 0x33c72d1797f9f585),
+    ("ring_36_bare/false", 0x3df35b394cb9c983),
+    ("ring_60_joined/false", 0xbac4411fc12229a3),
+    ("ring_36_four_arms/true", 0xd7ab0fb30195ebeb),
+    ("ring_50_four_arms/true", 0xe1b3110c1cd1898b),
+    ("ring_36_uneven_arms/true", 0x593243ac6adf8107),
+    ("ring_36_six_arms/true", 0x33799c424cd52f61),
+    ("ring_36_bare/true", 0x3df35b394cb9c983),
+    ("ring_60_joined/true", 0x8cb793d961ccf1d5),
 ];

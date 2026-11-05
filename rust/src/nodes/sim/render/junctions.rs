@@ -429,6 +429,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         })
     }
 

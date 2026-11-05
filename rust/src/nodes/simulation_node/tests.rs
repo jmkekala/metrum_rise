@@ -68,6 +68,7 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph
 }

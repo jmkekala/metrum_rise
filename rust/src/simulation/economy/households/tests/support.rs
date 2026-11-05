@@ -125,6 +125,7 @@ pub(super) fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     }
 }
 
@@ -160,6 +161,7 @@ pub(super) fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     }
 }
 

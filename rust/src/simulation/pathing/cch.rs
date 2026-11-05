@@ -394,6 +394,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         };
 
         let edges = vec![

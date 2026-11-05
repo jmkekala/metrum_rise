@@ -3,7 +3,7 @@
 //! Core graph data structures: Nodes, Edges, and the RegionGraph container.
 
 use super::super::types::*;
-use super::{RoadMedian, RoadPocket, SidewalkSides};
+use super::{RoadMedian, RoadPocket, RoundaboutRing, SidewalkSides};
 use godot::prelude::*;
 use rayon::prelude::*;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
@@ -114,6 +114,10 @@ pub struct Edge {
     /// The sides of a car road that carry a sidewalk (`ROAD-107`); `FOOT` is set exactly when it
     /// has one ([`Edge::set_sidewalks`]). `NONE` on a walkway and on a road without sidewalks.
     pub sidewalks: SidewalkSides,
+    /// The roundabout ring this edge belongs to, if any (`ROAD-62`). A ring edge is one-way in
+    /// the ring's sense of travel, carries its sidewalk on the outer side only and keeps its
+    /// shape: only the roundabout's own edits change it (`network::roundabouts`).
+    pub roundabout: Option<RoundaboutRing>,
 }
 
 impl Edge {

@@ -6,7 +6,10 @@ use super::*;
 use crate::config::HEIGHT_SCALE;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::road_edit::PreparedRoadInput;
-use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
+use crate::simulation::network::roadbed::{NodeArms, PieceId, RoadbedSystem};
+use crate::simulation::network::roundabouts::{
+    self, RoundaboutLayout, RoundaboutRequest, RoundaboutSite,
+};
 use crate::simulation::network::{build_surface_edge, road_types, types::EdgeClass};
 use crate::simulation::terrain::TerrainSystem;
 
@@ -535,4 +538,113 @@ fn the_structure_clearances_share_the_vehicle_envelope() {
     assert_eq!(TUNNEL_COVER_M.to_bits(), 5.0_f64.to_bits());
     assert_eq!(tunnel::ROAD_OVER_TUNNEL_M.to_bits(), 5.5_f32.to_bits());
     assert_eq!(bridge::ROAD_UNDER_BRIDGE_M.to_bits(), 4.85_f32.to_bits());
+}
+
+// A fixture with a bare ring of `diameter_m` at (128, 128) and its ring nodes.
+fn ring_fixture(diameter_m: f32) -> (Fixture, Vec<u32>) {
+    let mut fixture = Fixture::new(false);
+    let site = RoundaboutSite::Ground {
+        centre: fixture.point(128.0, 128.0),
+        lanes: 1,
+    };
+    let request = RoundaboutRequest { site, diameter_m };
+    let applied = RoundaboutLayout::prepare(&fixture.graph, request)
+        .unwrap()
+        .apply(&mut fixture.graph);
+    crate::simulation::network::roadbed::fixtures::finalize(&mut fixture.graph);
+    fixture.network.roadbed.compile_dirty(&fixture.graph);
+    (fixture, applied.nodes)
+}
+
+impl Fixture {
+    fn prepared(&self, raw: &[Vector3]) -> PreparedRoadInput {
+        prepare_road_input_for_tool(
+            raw,
+            &self.terrain,
+            &self.graph,
+            &self.network.roadbed,
+            true,
+            false,
+        )
+    }
+
+    fn verdict(&self, raw: &[Vector3]) -> &'static str {
+        validate_road_edit(&self.prepared(raw), 1, 1, &self.terrain, &self.graph)
+            .0
+            .invalid_reason
+    }
+}
+
+// D9 (`ROAD-62`). Ring nodes stand at 90, 210 and 330 degrees.
+#[test]
+fn a_stroke_joins_a_ring_from_outside_and_goes_no_further() {
+    let (fixture, nodes) = ring_fixture(36.0);
+    let at = |x: f32, z: f32| fixture.point(128.0 + x, 128.0 + z);
+    let through = [at(-90.0, 0.0), at(90.0, 0.0)];
+    assert_eq!(fixture.verdict(&through), "roundabout_crossed");
+    let onto_island = [at(90.0, 0.0), at(4.0, 0.0)];
+    assert_eq!(fixture.verdict(&onto_island), "roundabout_island");
+    let on_island = [at(4.0, 3.0), at(-4.0, 3.0)];
+    assert_eq!(fixture.verdict(&on_island), "roundabout_island");
+    let [first, second] = [nodes[0], nodes[1]].map(|node| fixture.graph.node(node).pos);
+    assert_eq!(
+        fixture.verdict(&[first, second]),
+        "roundabout_island",
+        "a chord"
+    );
+    // A bridge passes over; its end still may not stand on the island.
+    let over = |raw: &[Vector3]| {
+        let prepared = fixture.prepared(raw);
+        roundabouts::stroke_ring_refusal(&fixture.graph, &prepared.points, false)
+    };
+    assert_eq!(over(&through), None);
+    assert_eq!(over(&onto_island), Some("roundabout_island"));
+}
+
+#[test]
+fn a_stroke_joined_to_a_ring_keeps_the_ring_and_takes_the_point() {
+    for (diameter_m, radius_m) in [(30.0, 13.25), (36.0, 16.25), (60.0, 28.25)] {
+        let (mut fixture, nodes) = ring_fixture(diameter_m);
+        // Halfway between two ring nodes, at 30 degrees.
+        let (sin, cos) = 30f32.to_radians().sin_cos();
+        let (radial, far) = ((cos, sin), 90.0);
+        let at = |fixture: &Fixture, along: f32| {
+            fixture.point(128.0 + radial.0 * along, 128.0 + radial.1 * along)
+        };
+        let join = [at(&fixture, far), at(&fixture, radius_m)];
+        let (_, plan) = fixture.plan(&join);
+        fixture.adopt(&plan);
+        fixture.network.roadbed.compile_dirty(&fixture.graph);
+        assert!(
+            fixture.network.roadbed.failed_nodes().is_empty(),
+            "D{diameter_m}"
+        );
+        let ring_edges = fixture
+            .graph
+            .edges()
+            .iter()
+            .filter(|edge| !edge.deleted && edge.roundabout.is_some())
+            .count();
+        assert_eq!(ring_edges, 4, "D{diameter_m}: both halves stay on the ring");
+        let joined = fixture
+            .graph
+            .find_node_within(join[1], 0.1)
+            .expect("the join");
+        let mut arms = NodeArms::collect(&fixture.graph, joined).expect("a junction now");
+        arms.layout().unwrap();
+        // The join's node has its arm; a ring node without one takes the next.
+        let (sin, cos) = 60f32.to_radians().sin_cos();
+        let beside = fixture.point(128.0 + 90.0 * cos, 128.0 + 90.0 * sin);
+        let again = [beside, fixture.graph.node(joined).pos];
+        assert_eq!(
+            fixture.verdict(&again),
+            "roundabout_arm_node_taken",
+            "D{diameter_m}"
+        );
+        let free = [
+            fixture.point(128.0, 218.0),
+            fixture.graph.node(nodes[0]).pos,
+        ];
+        assert_eq!(fixture.verdict(&free), "", "D{diameter_m}");
+    }
 }

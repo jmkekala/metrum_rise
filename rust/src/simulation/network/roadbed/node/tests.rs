@@ -711,3 +711,4 @@ fn an_edit_rebuilds_only_its_closure() {
 mod families;
 mod footpaths;
 mod probe;
+mod rings;

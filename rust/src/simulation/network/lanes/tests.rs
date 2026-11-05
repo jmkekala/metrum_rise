@@ -40,6 +40,7 @@ fn test_lane_geometry_and_length() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -104,6 +105,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -234,6 +236,7 @@ fn test_highway_no_sidewalks() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -335,6 +338,7 @@ fn test_dedicated_footpath_centering() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -406,6 +410,7 @@ fn build_pedestrian_junction(
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         }));
     }
     graph.rebuild_adjacency_list();
@@ -684,6 +689,7 @@ fn test_rht_lane_offsets() {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph.rebuild_adjacency_list();
 
@@ -922,6 +928,7 @@ fn test_crosswalk_counts() {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
     }
     graph.rebuild_adjacency_list();
@@ -1271,6 +1278,7 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
                 median: None,
                 pocket: None,
                 sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+                roundabout: None,
             })
         };
 
@@ -1465,6 +1473,7 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     })
 }
 

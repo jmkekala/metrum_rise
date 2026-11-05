@@ -26,6 +26,7 @@ use crate::simulation::network::road_edit::{
 use crate::simulation::network::roadbed::{
     RoadbedDelta, RoadbedRestore, crossing_arm_eligible, visual_roadbed_half_width_m,
 };
+use crate::simulation::network::roundabouts::ring_at;
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -1046,6 +1047,10 @@ impl SimCore {
             return;
         }
         let edge_idx = edge_idx as usize;
+        // A ring never zones (`ROAD-62`).
+        if self.region_graph.edge(edge_idx).roundabout.is_some() {
+            return;
+        }
         self.region_graph.edge_mut(edge_idx).no_building_spawn = enabled;
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);
@@ -1092,6 +1097,15 @@ impl SimCore {
             2 => crate::simulation::network::types::EdgeClass::Tunnel,
             _ => crate::simulation::network::types::EdgeClass::Standard,
         };
+        // A ring edge keeps its class (`ROAD-62`, `roundabout_fixed`).
+        if self.region_graph.edge(edge_idx).roundabout.is_some() {
+            debug_log!(
+                "road",
+                "edge_class_change_rejected edge={} reason=roundabout_fixed",
+                edge_idx
+            );
+            return;
+        }
         // A turn pocket stays on the ground (`ROAD-95`, `pocket_requires_surface_road`): its
         // pocket is removed first.
         if class != crate::simulation::network::types::EdgeClass::Standard
@@ -1910,6 +1924,14 @@ impl SimCore {
             let node_id = self.region_graph.get_valid_node(node_id as u32);
             let old_pos = self.region_graph.node(node_id).pos;
             if old_pos == pos {
+                return false;
+            }
+            // A ring keeps its circle (`ROAD-62`): its nodes stay on it.
+            if ring_at(&self.region_graph, node_id).is_some() {
+                self.last_road_rejection = Some(RoadRejection::new(
+                    "roundabout_fixed",
+                    "a ring node stays on its circle",
+                ));
                 return false;
             }
             let mut affected_edges: HashSet<usize> = self
@@ -2782,6 +2804,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         })
     }
 
@@ -2832,6 +2855,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
 
         core.set_vehicle_frontage_access_internal(0, 0);
@@ -3005,6 +3029,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
         core.region_graph.rebuild_adjacency_list();
         let residential = core
@@ -3752,6 +3777,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
         core.region_graph.rebuild_adjacency_list();
 
@@ -3809,6 +3835,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
         core.region_graph.rebuild_adjacency_list();
         core.zoning

@@ -777,6 +777,68 @@ fn junction_connectors_stay_on_the_carriageway_without_backward_steps_or_kinks()
     assert!(clean, "junction connector violations:\n{report}");
 }
 
+// The ring sweep (`ROAD-62`): every connector of every arm node over the size and arm matrix, a
+// two-lane ring's inner lane leaving across the outer one among them (D10).
+#[test]
+fn ring_connectors_stay_on_the_carriageway_over_the_size_and_arm_matrix() {
+    use super::super::roadbed::fixtures::{bare_ring, converted_ring, join_ring_arm};
+    let equal =
+        |arms: usize| -> Vec<f32> { (0..arms).map(|i| i as f32 * 360.0 / arms as f32).collect() };
+    let mut report = String::new();
+    let mut clean = true;
+    let mut measure = |name: String, mut graph: RegionGraph, nodes: &[u32]| {
+        let mut roadbed = RoadbedSystem::new(64.0);
+        roadbed.compile_dirty(&graph);
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        let nodes = nodes.iter().map(|&node| node as usize);
+        let counts = measure_connectors(&graph, &roadbed, &lanes, nodes, true);
+        assert!(counts.connectors > 0, "{name}: no connectors measured");
+        clean &= counts.clean();
+        report.push_str(&counts.report(&name));
+        for line in &counts.lines {
+            writeln!(report, "  {line}").unwrap();
+        }
+    };
+    for (diameter_m, arm) in [
+        (30.0, (1, 1)),
+        (36.0, (1, 1)),
+        (45.0, (1, 1)),
+        (60.0, (1, 1)),
+        (45.0, (2, 2)),
+        (50.0, (2, 2)),
+        (60.0, (2, 2)),
+    ] {
+        for arms in 3..=6 {
+            let (graph, applied) = converted_ring(diameter_m, &equal(arms), arm, false).unwrap();
+            let name = format!("D{diameter_m} {arm:?} x{arms}");
+            measure(name, graph, &applied.nodes);
+        }
+    }
+    for (diameter_m, lanes, arm) in [
+        (45.0, 2, (1, 1)),
+        (50.0, 2, (1, 1)),
+        (80.0, 2, (1, 1)),
+        (80.0, 2, (2, 2)),
+    ] {
+        for arms in 3..=6 {
+            let (mut graph, _) = bare_ring(diameter_m, lanes, false);
+            let angles = [90.0, 210.0, 330.0, 30.0, 150.0, 270.0];
+            let nodes: Vec<u32> = angles[..arms]
+                .iter()
+                .map(|&angle| join_ring_arm(&mut graph, angle, arm, false).0)
+                .collect();
+            finalize(&mut graph);
+            measure(
+                format!("joined D{diameter_m} L{lanes} {arm:?} x{arms}"),
+                graph,
+                &nodes,
+            );
+        }
+    }
+    assert!(clean, "ring connector violations:\n{report}");
+}
+
 // Every vehicle turn of `lanes`: (road lane, target road lane, through a connector).
 fn vehicle_turn_pairs(lanes: &LaneSystem) -> Vec<(usize, usize, bool)> {
     let mut pairs = Vec::new();

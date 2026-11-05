@@ -93,6 +93,7 @@ fn build_shared() -> SharedSetup {
         median: None,
         pocket: None,
         sidewalks: metrum_rise::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     };
     let edge_ab = graph.add_edge(edge);
     graph.rebuild_adjacency_list();
@@ -205,6 +206,7 @@ fn create_access_edge(n0: u32, n1: u32) -> Edge {
         median: None,
         pocket: None,
         sidewalks: metrum_rise::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     }
 }
 

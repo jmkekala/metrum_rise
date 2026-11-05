@@ -265,6 +265,7 @@ mod tests {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
+            roundabout: None,
         });
         graph.rebuild_adjacency_list();
         topology.refresh(&network, &graph);

@@ -93,6 +93,7 @@ fn road_edge(graph: &mut RegionGraph, from: u32, to: u32, a: Vector3, b: Vector3
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     })
 }
 
@@ -192,6 +193,7 @@ pub(super) fn ring(spacing_m: f32, waiting: usize, feeder: usize) -> Ring {
             median: None,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+            roundabout: None,
         });
         let lanes = &mut network.lane_system.lanes;
         let dir = (b - a).normalized();

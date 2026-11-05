@@ -424,6 +424,7 @@ fn graph_with_connected_border() -> RegionGraph {
         median: None,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
+        roundabout: None,
     });
     graph
 }
