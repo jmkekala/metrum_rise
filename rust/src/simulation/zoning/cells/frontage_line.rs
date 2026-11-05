@@ -177,12 +177,17 @@ impl FrontageLine {
             .map(|point| DVec2::new(f64::from(point.x), f64::from(point.z)))
     }
 
-    /// The exact source address: first X/Z, last X/Z and the base width as f32 bits. SQLite
-    /// REAL canonicalizes signed zero, so both encodings of zero name the same point.
+    /// The exact source address ([`source_address`]): first X/Z, last X/Z and the base width.
     pub(super) fn source(&self) -> [u32; 5] {
         let [ax, az, bx, bz] = self.bits;
-        [ax, az, bx, bz, self.width].map(|v| if v == 0.0 { 0 } else { v.to_bits() })
+        source_address([ax, az, bx, bz, self.width])
     }
+}
+
+/// A straight road's exact source address from its first X/Z, last X/Z and width: their f32
+/// bits. SQLite REAL canonicalizes signed zero, so both encodings of zero name the same point.
+pub(super) fn source_address(values: [f32; 5]) -> [u32; 5] {
+    values.map(|v| if v == 0.0 { 0 } else { v.to_bits() })
 }
 
 /// How far `edge`'s curb on each directed side lies outside its base road's, indexed as its

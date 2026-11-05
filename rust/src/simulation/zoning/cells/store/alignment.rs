@@ -5,7 +5,9 @@
 use super::*;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::types::{EdgeClass, TransitType};
-use crate::simulation::zoning::cells::frontage_line::{FrontageLine, frames_for_edge};
+use crate::simulation::zoning::cells::frontage_line::{
+    FrontageLine, frames_for_edge, source_address,
+};
 use crate::simulation::zoning::cells::generation::straight_frame;
 use crate::simulation::zoning::cells::geometry::road_source_precision;
 use rayon::prelude::*;
@@ -34,6 +36,18 @@ impl RoadCellAlignment {
         graph: &RegionGraph,
         id: usize,
     ) -> Option<[GridFrame; 2]> {
+        let edge = graph.get_edge(id)?;
+        let (a, b) = (
+            edge.physical_geometry.first()?,
+            edge.physical_geometry.last()?,
+        );
+        // A road alone keeps its own address, as before pocket lines, and answers without the
+        // line walk (the cursor path asks per nearby road). A piece of a pocket line never
+        // holds its own address: the line's ends or its base width differ.
+        if edge.pocket.is_none() && source_address([a.x, a.z, b.x, b.z, edge.width]) == self.source
+        {
+            return Some(self.frames);
+        }
         (FrontageLine::of(graph, id)?.source() == self.source)
             .then(|| frames_for_edge(graph, id, self.frames))
     }
