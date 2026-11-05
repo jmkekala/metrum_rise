@@ -797,6 +797,94 @@ fn strokes_from_a_pocket_roads_far_end_commit() {
     );
 }
 
+// Beside a left turn pocket the centre line is a yellow no-crossing line, solid over the pocket
+// edge, as on Finnish streets (the user, 2026-11-05): no car crosses between the oncoming lane and
+// the pocket lane. A right pocket's centre line stays the dashed white line.
+#[test]
+fn a_left_pockets_centre_line_is_solid_yellow() {
+    use crate::simulation::network::render::road::RoadRenderer;
+    use godot::prelude::Color;
+    const SOLID: f32 = 2.0;
+    // The pocket edge runs from its transition (x = -70.5) to the crossing. A left pocket's
+    // centre line lies between the oncoming lane (z = -5.25) and the pocket lane (z = -1.75), a
+    // right pocket's between the oncoming lane (z = -1.75) and the through lane (z = 1.75).
+    for ((left, right), centre_z, solid_yellow) in
+        [((true, false), -3.5, true), ((false, true), 0.0, false)]
+    {
+        let (mut core, node) = crossing(true);
+        let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+        assert_eq!(
+            pocket_edit(&mut core, request(west, end, (left, right), 60.0)),
+            ""
+        );
+        core.precompute_road_mesh_data();
+        let mesh = RoadRenderer.generate_mesh_data_with_surface(
+            &core.region_graph,
+            &core.heightmap,
+            &core.transit_network.roadbed,
+        );
+        let centre: Vec<(f32, Color)> = mesh
+            .marking_vertices
+            .chunks(3)
+            .zip(mesh.marking_uvs.chunks(3))
+            .zip(mesh.marking_colors.chunks(3))
+            .filter_map(|((vertices, uvs), colors)| {
+                let centroid = vertices.iter().fold(Vector3::ZERO, |sum, &v| sum + v) / 3.0;
+                ((-55.0..-20.0).contains(&centroid.x) && (centroid.z - centre_z).abs() < 0.3)
+                    .then_some((uvs[0].y, colors[0]))
+            })
+            .collect();
+        assert!(!centre.is_empty(), "the pocket edge has a centre line");
+        let yellow = |color: Color| color.r > 0.9 && color.b < 0.2;
+        assert!(
+            centre
+                .iter()
+                .all(|&(pattern, color)| (pattern == SOLID) == solid_yellow
+                    && yellow(color) == solid_yellow),
+            "left {left}: {centre:?}"
+        );
+    }
+}
+
+// A turn pocket's lanes carry a second arrow set where they begin, 8 m past the transition's
+// piece, besides the one 12 m before the junction, when the pocket's marking range holds both
+// (the user, 2026-11-05: double arrows on pockets). The arrows' stations on the right pocket lane
+// (z = 5.25) of a 60 m and a shorter pocket.
+#[test]
+fn a_long_pocket_lane_carries_a_second_arrow_where_it_begins() {
+    use crate::simulation::network::render::road::RoadRenderer;
+    const SOLID: f32 = 2.0;
+    for (body_m, sets) in [(60.0, 2), (40.0, 2), (30.0, 1)] {
+        let (mut core, node) = crossing(true);
+        let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+        assert_eq!(
+            pocket_edit(&mut core, request(west, end, (false, true), body_m)),
+            ""
+        );
+        core.precompute_road_mesh_data();
+        let mesh = RoadRenderer.generate_mesh_data_with_surface(
+            &core.region_graph,
+            &core.heightmap,
+            &core.transit_network.roadbed,
+        );
+        let mut stations: Vec<f32> = mesh
+            .marking_vertices
+            .chunks(3)
+            .zip(mesh.marking_uvs.chunks(3))
+            .filter_map(|(vertices, uvs)| {
+                let centroid = vertices.iter().fold(Vector3::ZERO, |sum, &v| sum + v) / 3.0;
+                (uvs[0].y == SOLID && (centroid.z - 5.25).abs() < 1.2 && centroid.x < 0.0)
+                    .then_some(centroid.x)
+            })
+            .collect();
+        stations.sort_by(f32::total_cmp);
+        // A glyph is 5 m long: a gap over 3 m between triangle centroids starts the next set.
+        let found = stations.windows(2).filter(|pair| pair[1] - pair[0] > 3.0).count()
+            + usize::from(!stations.is_empty());
+        assert_eq!(found, sets, "{body_m} m pocket: arrow triangles at {stations:?}");
+    }
+}
+
 // D10: bulldozing the base road leaves the transition a road end, typed `Junction`, and the
 // pocket edge a short wide road whose lanes take the base rule.
 #[test]

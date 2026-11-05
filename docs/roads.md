@@ -923,7 +923,13 @@ no widening-side choice.
 - **Markings.** An undivided pocket edge's lane lines divide its own carriageway (the section's
   bounds), so the centre line runs between the oncoming lanes and the pocket lane and the divider
   between the pocket and the through lane, solid over its last 20 m; the base road keeps its 20 m solid zone before the
-  transition when it has several lanes; arrows per pocket-edge lane.
+  transition when it has several lanes; arrows per pocket-edge lane. Beside a left pocket the
+  centre line is a yellow no-crossing line (K3), solid over the whole pocket edge, as on Finnish
+  streets where overtaking is forbidden; every other centre line stays the dashed white K1 (the
+  user, 2026-11-05: yellow only where overtaking is forbidden). A pocket edge's lanes towards its
+  junction carry a second arrow set 8 m past the transition's piece when the marking range is
+  28 m or more (`pocket_arrow_station`; a 40 m pocket's range is about 30 m, a 30 m pocket's
+  about 20 m), where a driver picks the lane (the user, 2026-11-05: double arrows on pockets).
 - **Edit.** `pocket_piece` and `PocketEndView` read `validate_pocket`, so the edit and the Turn
   pocket section offer Left on every undivided two-way road with no change of their own. The
   corridor checks run on the widened left side; the cost is the pair's road weight change (D14),
@@ -12852,7 +12858,8 @@ fit. Triangles per glyph: S 3, L+S and S+R 16, L and R 15, L+R 28, L+S+R 29 (the
 decision 2026-11-04, after a 2 + 2 cross showed eight arrows with a 42 m repeat): centred 12 m
 back from the end of the range on its side, inside the 20 m solid zone, on a range of 20 m or
 more; a shorter range holds it halfway back, at least 4 m, only where the glyph stays 1.5 m clear
-of both range ends, so the shortest range with an arrow is 8 m (`approach_arrow_station`). The range already stops at a junction's mouth and at a pass-through
+of both range ends, so the shortest range with an arrow is 8 m (`approach_arrow_station`); a turn pocket edge adds
+a second set where its lanes begin ([Turn pockets](#turn-pockets-road-95)). The range already stops at a junction's mouth and at a pass-through
 node's crossing strip, so no arrow reaches a zebra. Each glyph point is draped on the span's
 sections. Left and right are the driver's; under `DRIVE_ON_LEFT` the lane offsets and the lane
 ranks behind the masks are mirrored, the glyphs are not. Cost at emission only: `O(degree + the

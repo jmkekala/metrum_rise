@@ -13,7 +13,7 @@
 
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
-    marking_dash_color,
+    marking_dash_color, marking_yellow_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{
@@ -176,16 +176,29 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
                         ),
                         _ => (marking_s_range, dashed),
                     };
-                    emit_lane_marking_sections(mesh, sections, range, dashed, line, |_| {
-                        Some(lateral)
-                    });
+                    emit_lane_marking_sections(
+                        mesh,
+                        sections,
+                        range,
+                        dashed,
+                        (line, marking_dash_color()),
+                        |_| Some(lateral),
+                    );
                 }
             }
             continue;
         }
         // Undivided, the carriageway holds the left group's lanes, then the right group's (the
         // backward lanes on the left under right-hand traffic); the divider between the groups
-        // is the centre line, dashed over the whole range.
+        // is the centre line, dashed over the whole range. Beside a left turn pocket (`ROAD-95`,
+        // the inner pocket lane next to the oncoming lanes) it is a yellow no-crossing line (K3),
+        // solid over the whole range, as on Finnish streets (the user, 2026-11-05).
+        let inner_pocket = edge.pocket.is_some_and(|pocket| pocket.inner_outer().0);
+        let (centre, centre_color) = if inner_pocket {
+            ((marking_s_range.0, marking_s_range.0), marking_yellow_color())
+        } else {
+            (marking_s_range, marking_dash_color())
+        };
         let (left_lanes, left, right) = if config::DRIVE_ON_LEFT {
             (edge.fwd_lanes, forward, backward)
         } else {
@@ -193,15 +206,22 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         };
         for divider in 1..total_lanes {
             let lane_fraction = divider as f32 / total_lanes as f32;
-            let dashed = match divider.cmp(&usize::from(left_lanes)) {
-                std::cmp::Ordering::Less => left,
-                std::cmp::Ordering::Equal => marking_s_range,
-                std::cmp::Ordering::Greater => right,
+            let (dashed, color) = match divider.cmp(&usize::from(left_lanes)) {
+                std::cmp::Ordering::Less => (left, marking_dash_color()),
+                std::cmp::Ordering::Equal => (centre, centre_color),
+                std::cmp::Ordering::Greater => (right, marking_dash_color()),
             };
-            emit_lane_marking_sections(mesh, sections, marking_s_range, dashed, line, |section| {
-                let (left, right) = carriageway_bounds(section)?;
-                Some(left + (right - left) * lane_fraction)
-            });
+            emit_lane_marking_sections(
+                mesh,
+                sections,
+                marking_s_range,
+                dashed,
+                (line, color),
+                |section| {
+                    let (left, right) = carriageway_bounds(section)?;
+                    Some(left + (right - left) * lane_fraction)
+                },
+            );
         }
     }
 }
@@ -307,7 +327,8 @@ fn emit_painted_median(
 // (graph-only): forward lanes before the end node, backward lanes before the start node. Each
 // lane carries one glyph, centred on the lane at `approach_arrow_station` back from the marking
 // range's end on its side, which already stops at a mouth or a span-owned crossing strip, and drapes on the
-// sections vertex by vertex. Left and right are the driver's, so the glyphs need no mirroring
+// sections vertex by vertex. A turn pocket edge's lanes towards its junction carry a second glyph
+// where they begin (`pocket_arrow_station`). Left and right are the driver's, so the glyphs need no mirroring
 // under `DRIVE_ON_LEFT`: the lane offsets and the lane ranks behind the masks are mirrored.
 // O(degree + lanes x 29 triangles x (log sections + bands)) per edge, allocation-free.
 fn emit_approach_arrows(
@@ -321,6 +342,11 @@ fn emit_approach_arrows(
     let Some(back) = approach_arrow_station(range_end - range_start) else {
         return;
     };
+    let pocket_node = edge.pocket.map(|pocket| match pocket.end {
+        EdgeEnd::Start => edge.start_node,
+        EdgeEnd::End => edge.end_node,
+    });
+    let pocket_back = pocket_arrow_station(range_end - range_start);
     for node in [edge.end_node, edge.start_node] {
         // Travel runs with the stations for forward lanes, against them for backward lanes.
         let (direction, range_end) = if node == edge.end_node {
@@ -328,18 +354,21 @@ fn emit_approach_arrows(
         } else {
             (-1.0, range_start)
         };
+        let second = pocket_back.filter(|_| pocket_node == Some(node));
         approach_arrow_masks(graph, edge_idx, node, |lane_idx, mask| {
             let lateral = vehicle_lane_offset(edge, lane_idx);
-            let centre = range_end - direction * back;
-            // Glyph coordinates: `x` metres to the driver's right, `y` ahead.
-            let point = |(x, y): (f32, f32)| {
-                point_at(sections, centre + direction * y, lateral + direction * x)
-            };
-            arrow_glyph(&ARROW_STYLE, mask, |triangle| {
-                if let [Some(a), Some(b), Some(c)] = triangle.map(point) {
-                    emit_marking_triangle(mesh, [a, b, c]);
-                }
-            });
+            for back in std::iter::once(back).chain(second) {
+                let centre = range_end - direction * back;
+                // Glyph coordinates: `x` metres to the driver's right, `y` ahead.
+                let point = |(x, y): (f32, f32)| {
+                    point_at(sections, centre + direction * y, lateral + direction * x)
+                };
+                arrow_glyph(&ARROW_STYLE, mask, |triangle| {
+                    if let [Some(a), Some(b), Some(c)] = triangle.map(point) {
+                        emit_marking_triangle(mesh, [a, b, c]);
+                    }
+                });
+            }
         });
     }
 }
@@ -355,6 +384,15 @@ fn approach_arrow_station(length: f32) -> Option<f32> {
     }
     let back = (length * 0.5).max(4.0);
     (back <= length - 4.0).then_some(back)
+}
+
+// The station of a turn pocket edge's second arrow set (`ROAD-95`, the user, 2026-11-05: where a
+// driver picks the lane), metres back from the end of a marking range `length` long: 8 m in from
+// the range's other end, just past the transition's piece, on a range of 28 m or more, so the two
+// glyphs (5 m long) stand at least 3 m apart. A 40 m pocket's range (about 30 m) has it, a 30 m
+// pocket's (about 20 m) not.
+fn pocket_arrow_station(length: f32) -> Option<f32> {
+    (length >= 28.0).then_some(length - 8.0)
 }
 
 // The turn-arrow glyph's outline table (`ROAD-75`), in glyph metres: `x` to the driver's right,
@@ -523,7 +561,7 @@ fn emit_lane_marking_sections(
     sections: &[RoadSection],
     marking_s_range: (f32, f32),
     dashed: (f32, f32),
-    line: FinnishLaneLine,
+    (line, color): (FinnishLaneLine, Color),
     lateral_at: impl Fn(&RoadSection) -> Option<f32>,
 ) {
     if sections.len() < 2 {
@@ -588,7 +626,7 @@ fn emit_lane_marking_sections(
                 b,
                 line.width_m * 0.5,
                 pattern,
-                marking_dash_color(),
+                color,
             );
         }
     }

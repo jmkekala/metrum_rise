@@ -801,6 +801,11 @@ pub(super) fn marking_dash_color() -> Color {
     Color::from_rgba(1.0, 1.0, 1.0, 1.0)
 }
 
+// Finnish yellow paint for a line between opposite directions of traffic (traffic yellow).
+pub(super) fn marking_yellow_color() -> Color {
+    Color::from_rgba(0.98, 0.75, 0.1, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::marking_dash_color;

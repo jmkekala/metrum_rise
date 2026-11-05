@@ -172,7 +172,7 @@ impl RoadPocket {
     // The pocket lanes `(inner, outer)` in lane-index order: the lane next to the line between
     // the lane groups (index 0 or -1) and the one at the kerb. Under right-hand traffic the
     // drivers' left is the inner side.
-    fn inner_outer(self) -> (bool, bool) {
+    pub(crate) fn inner_outer(self) -> (bool, bool) {
         if config::DRIVE_ON_LEFT {
             (self.right, self.left)
         } else {
