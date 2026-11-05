@@ -2417,6 +2417,61 @@ fn sidewalk_sides_round_trip_through_the_edge_table() {
 
 // `ROAD-101` RB3e (format 113): a road's street lights round-trip through the edge table, lit
 // by default.
+// `ROAD-62`, save format 117: a ring round-trips through the sparse `roundabout_edges` table.
+#[test]
+fn roundabout_rings_round_trip_through_their_table() {
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::roadbed::fixtures::converted_ring;
+    let (graph, applied) = converted_ring(36.0, &[0.0, 90.0, 180.0, 270.0], (1, 1), false).unwrap();
+    let save = |graph: &RegionGraph| {
+        let maps =
+            build_snapshot_maps(graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, graph, &maps).unwrap();
+        tx.commit().unwrap();
+        (conn, maps)
+    };
+    let (conn, maps) = save(&graph);
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM roundabout_edges", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 4, "ring edges only");
+    let loaded = network::load_graph(&conn).unwrap();
+    for &id in &applied.ring {
+        let saved = maps.edge_old_to_new[&id];
+        let (edge, back) = (graph.edge(id), loaded.edge(saved));
+        assert_eq!(back.roundabout, edge.roundabout);
+        assert_eq!(back.sidewalks, SidewalkSides::RIGHT);
+        assert_eq!(back.geometry, edge.geometry);
+    }
+    for &id in &applied.arms {
+        assert_eq!(loaded.edge(maps.edge_old_to_new[&id]).roundabout, None);
+    }
+    // A table that names a stray edge, an open ring and a two-way ring edge are refused.
+    for (name, sql) in [
+        (
+            "no edge",
+            "UPDATE roundabout_edges SET edge_id = 999 WHERE edge_id = (SELECT min(edge_id) FROM roundabout_edges)",
+        ),
+        (
+            "open ring",
+            "DELETE FROM roundabout_edges WHERE edge_id = (SELECT min(edge_id) FROM roundabout_edges)",
+        ),
+        (
+            "two way",
+            "UPDATE network_edges SET bkw_lanes = 1 WHERE edge_id = (SELECT min(edge_id) FROM roundabout_edges)",
+        ),
+    ] {
+        let (conn, _) = save(&graph);
+        conn.execute_batch(sql).unwrap();
+        assert!(network::load_graph(&conn).is_err(), "{name}");
+    }
+}
+
 #[test]
 fn street_lights_round_trip_through_the_edge_table() {
     let (mut graph, edge) = snapshot_test_graph();

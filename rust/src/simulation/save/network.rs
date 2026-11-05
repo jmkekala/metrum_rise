@@ -4,12 +4,13 @@
 
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{
-    Edge, MedianStyle, RegionGraph, RoadMedian, RoadPocket, SidewalkSides,
+    Edge, MedianStyle, RegionGraph, RoadMedian, RoadPocket, RoundaboutRing, SidewalkSides,
 };
+use crate::simulation::network::roundabouts::validate_ring_edge;
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, grade_violation,
 };
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
 
@@ -86,6 +87,26 @@ pub(super) fn save_network(
                 pocket_end,
                 pocket_roles,
                 i64::from(edge.sidewalks.bits())
+            ])?;
+        }
+    }
+
+    // Roundabout ring edges (`ROAD-62`), a sparse table.
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO roundabout_edges(edge_id, centre_x, centre_z, radius_m) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for (old_id, edge) in graph.edges().iter().enumerate() {
+            let (Some(ring), Some(&saved_id)) =
+                (edge.roundabout, maps.edge_old_to_new.get(&old_id))
+            else {
+                continue;
+            };
+            stmt.execute(params![
+                usize_to_i64(saved_id)?,
+                ring.centre.x,
+                ring.centre.y,
+                ring.radius_m
             ])?;
         }
     }
@@ -303,6 +324,32 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 SaveLoadError::custom(format!("edge {eid} has invalid sidewalks ({reason})"))
             })?;
             graph.add_edge(edge);
+        }
+    }
+
+    // A ring edge loads only as a roundabout edit could have built it (`ROAD-62`), once every
+    // edge of its ring has its circle.
+    {
+        let mut stmt = conn.prepare(
+            "SELECT edge_id, centre_x, centre_z, radius_m FROM roundabout_edges ORDER BY edge_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut ring_edges = Vec::new();
+        while let Some(row) = rows.next()? {
+            let eid = i64_to_usize(row.get(0)?)?;
+            if eid >= graph.edge_count() {
+                return Err(SaveLoadError::custom("ring row names no edge"));
+            }
+            graph.edge_mut(eid).roundabout = Some(RoundaboutRing {
+                centre: Vector2::new(row.get(1)?, row.get(2)?),
+                radius_m: row.get(3)?,
+            });
+            ring_edges.push(eid);
+        }
+        for eid in ring_edges {
+            validate_ring_edge(&graph, eid).map_err(|reason| {
+                SaveLoadError::custom(format!("edge {eid} is an invalid ring edge ({reason})"))
+            })?;
         }
     }
 
