@@ -579,15 +579,18 @@ found, added the benchmark row and rendered the stills for D2 and D13.
   (155.7-166.6) / 173.1 (171.2-176.0), `divided_chunk_emit_only/1` 268.9 (266.0-277.1) / 282.2
   (271.2-289.3), `/1024` 276.8 (271.6-284.7) / 288.9 (288.4-290.4); the new
   `pocket_chunk_emit_only` 722.1 (714.7-729.8) alone and 723.5 (721.7-732.0) beside 1,023
-  distant chunks (9,588 vertices, flat in city size). **Open:** the plain chunk row and
+  distant chunks (9,588 vertices, flat in city size). **Open then, resolved in round R5b2:** the plain chunk row and
   `sloped_t`'s payload sit 3-7% above the control's spread although a road without a pocket runs
   none of the round's new code (the one change on that path subtracts a zero shift). Four short
   A/B sessions (02:13-02:40, same conditions) narrowed it: a build without the road-space fix and
   one without the paint rule's transition term are as slow as the branch; the control's library
   with this round's bench file, and the control with one unused function added, are as fast as
   the control; the cold, out-of-line transition rule did not help. Unattributed (code layout of
-  the crate is the suspect, as `ROAD-94`'s blocked row); left for a profiling analysis before the
-  branch lands.
+  the crate is the suspect, as `ROAD-94`'s blocked row). The profiling analysis that followed
+  (round R5-T: `perf stat` on the timed loop, a `codegen-units = 1` pair) found the same control
+  flow and the hottest leaf of the height queries compiled differently once two modules grew:
+  rustc's codegen partition, fixed deterministically in round R5b2
+  ([the hot-leaf fix](#the-turn-pocket-tool-round-r5b2)).
 - **Stills A** (gamescope headless, 1280x720, isolated profile, a debug build): a 1+1 T with and
   without a right pocket, near and far; a 2+2 four-way with and without one; a one-way right
   pocket and a one-way left kerb pocket; the arrows and solid lines on the pocket approach; the
@@ -671,6 +674,83 @@ stay and the transition passes through.
   the narrowing close up and from above beside the other arms' round noses (the D3 shape
   question: straight, as built, or a quarter-circle variant, visual only); the same road refusing
   a right pocket; both pockets on one one-way approach at a T. Kept with the round's artifacts.
+
+#### The Turn pocket tool (round R5b2)
+
+Round R5b2 (2026-11-05, same branch) gave the pocket edit its tool (D12) and fixed the road chunk
+timing that round R5a3 left open.
+
+- **The Turn pocket section** (Road Properties, select tool; widgets in
+  `ui/road_pocket_section.gd`, the window `ui/road_properties_window.gd` the controller). With one
+  road selected by a click, the section edits that road's end nearest the click: Rust picks it
+  (`nearest_road_pocket_end`: a pocket edge's own pocket end wherever it is clicked, its far end
+  being the transition; else the end whose polyline end lies nearer) and `get_road_pocket` reads
+  it: the junction, the road from the junction outwards (a pocket edge and its base road joined),
+  its widest width, the pocket there, and whether the road can carry a pocket lane on each side
+  at all (`left_offered` / `right_offered` with the refusal key: `PocketEndView`, the edit's own
+  role checks without the length, the junction's turns or the compile). The heading names the end
+  by the road's heading into its junction over its last 20 m, by eight compass sectors ("Turn
+  pocket at the end towards north-east"; north is -Z). A line says what the end has ("Right
+  pocket, 60 m from the junction" or "No turn pocket at this end"); Left and Right check boxes
+  (a side the road cannot carry is disabled, its refusal text as the tooltip, unless the pocket
+  has it, so it can be removed); a Length stepper, 20-300 m in 10 m steps, default 60 m, "from the
+  junction"; the verdict line (Rust's refusal through `road_reason_text.gd`, or what Apply builds,
+  or "Removes the turn pocket" with both sides off) beside "Apply (+N)" with Rust's `cost_delta`.
+  No geometry preview (D11): the verdict is the commit's own check. Ctrl+Z undoes an applied
+  pocket (once the window has no focus, as for every in-place edit). The select tool highlights
+  the stretch the pocket body takes from the junction (the requested length, in the selection
+  highlight's material, cyan) and, since an add, a resize or a removal splits or joins the road,
+  selects the road under the click again after it. After any edit or undo (a new network render
+  generation) the window reads the end again and keeps an unapplied request unless the end
+  changed. No road-tool mode (D12); several selected roads, a junction click or a walkway hide
+  the section. The window opens at 400 x 600 px (minimum 360 x 540).
+- **Roles the section offers**: Left on a one-way road or beside a raised median of at least
+  3.8 m on the base road (`pocket_requires_one_way`, `pocket_requires_wide_median` otherwise);
+  Right on any car road at ground level without a median (`pocket_median_gap` beside one, until
+  a right pocket's transition can continue the median); `pocket_requires_surface_road` and
+  `pocket_lane_limit` disable both. `pocket_road_too_short`, `pocket_movement_missing`,
+  `pocket_junction_whitelisted` and `pocket_unchanged` ("No change") come from the verdict.
+- **The hot-leaf fix** (round R5b2's first commit). `PieceMesh::triangle_points` reads its three
+  positions directly and is `#[inline]`, and `geometry::triangle_height_at_xz` is `#[inline]`:
+  every top-surface height query of a chunk emit reads both per candidate triangle, from other
+  modules, and the `[u32; 3]::map` closure stayed an outlined `try_map` call in some of rustc's 16
+  codegen partitions (round R5-T: +2.2% instructions, iTLB misses x4 on the branch; the partition
+  re-rolls with any change of the library's module sizes). Products unchanged: every
+  `ROAD_CHUNK_STRUCTURE` digest (Bridge `cb18201082a6a342`, Tunnel `ad7f1df7066234bd`, Divided
+  `8e1700ac978547b6`, Shoulders `21d5d57ce1390007`, Pocket `de1c23b70f680aee`) and payload
+  vertex counts equal. Timing (FRESH 2026-11-05 04:38-04:43, one session, `.run.lock` and the
+  exclusive timing lock, P-cores, 4 workers, no cargo, rustc or Godot running, load 6.0 falling
+  to 1.7, C B B C C B B C with both controls at every C; `$BENCH_BINARY` of
+  `road_chunk_benchmark` and the release lib `$TEST_BINARY`; controls: the branch without the fix
+  (round R5b1's `ce481b32` binaries) and `42d92b70` with the same change), medians (ranges),
+  without the fix / with it / `42d92b70` with it, µs: `chunk_emit_only/1024` 181.0 (175.4-183.6) /
+  **97.6 (96.2-99.6)** / 98.9 (98.1-100.1); `divided_chunk_emit_only/1` 284.5 (276.4-305.0) /
+  145.2 (143.6-156.1) / 145.8 (144.9-157.1); `/1024` 288.9 (278.4-289.6) / 146.9 (144.7-156.3) /
+  150.3 (145.5-154.0); `pocket_chunk_emit_only/1` 717.1 (712.5-731.1) / 488.6 (483.4-520.2);
+  `/1024` 725.1 (720.7-731.0) / 506.6 (497.8-533.9). So -46% on the plain row, -49% divided and
+  -30% on the pocket T, and the branch equals a control carrying the same change within the spread:
+  the R5a3 open item is closed, and the patched control is the new baseline. The payload stage of
+  `benchmark_road_preview_stages` (p50 ms, without / with): `sloped_t` 0.382 (0.378-0.385) /
+  0.388 (0.375-0.388), `sloped_branch` 0.391 (0.385-0.395) / 0.398 (0.387-0.399), `divided_t`
+  0.447 (0.436-0.538) / 0.453 (0.435-0.466): unchanged within the spread (its packing reads few
+  height queries per vertex), payload vertices equal.
+- **Arms in ascending order (found by the Godot test).** Every node lists its arms in ascending
+  edge order: a load rebuilds the lists so and the road tool's replica restores them so from a
+  publication's records. The pocket edit's join pushed the joined edge to the far node's end and
+  a split into a reused slot pushed the slot, so an add, a resize, its undo and a removal left the
+  junction listing `[1, 2, 3, 0]`: debug builds panicked in the replica check, release builds let
+  the replica and a reloaded city iterate the arms in another order than the live graph. The join
+  now inserts in order and a reused slot's two nodes are sorted (`O(degree)`). Regression
+  `road_pockets::the_road_tool_replica_follows_pocket_edits_and_undo` (fails before the fix).
+- **Tests.** `road_pockets::the_turn_pocket_section_reads_the_end_nearest_the_click` (the end
+  pick, a pocket edge's own end, the view through the base road's transition: junction, road
+  from it, width; the offered roles undivided, on 5 m and on 3 m grass); the Godot bridge test
+  `godot/tests/road_pocket_test.gd` (ported from Veeti's `road_pockets_test.gd`): the section on a
+  1+1 crossing (heading, Left disabled with its tooltip, the highlight, the default height holds
+  every row), a right pocket's verdict and cost, "Road too short for a pocket here" at 300 m, add,
+  "No change", resize, undo back into the section, removal joining the road, the east arm's other
+  stored end, and on a divided 2+2 road Left offered, Right refused beside the median and a left
+  pocket narrowing the median to 1.5 m, undone.
 
 ### Junction layout
 
@@ -10767,7 +10847,8 @@ emptied parcels, never the buildings); Cancel leaves the roads as they are. A zo
 refreshes the no-build overlay, as the "No buildings" checkbox does. Every in-place refusal shows with
 its text, walkway <-> road among them ("A walkway cannot become a road: draw a road in its
 place", "A road cannot become a walkway"); the picker stays enabled on a walkway so that refusal
-shows. It opens at 400 x 500 px (minimum 360 x 460). The reason text is `ui/road_reason_text.gd`,
+shows. It opens at 400 x 600 px (minimum 360 x 540) since the Turn pocket section
+([round R5b2](#the-turn-pocket-tool-round-r5b2)). The reason text is `ui/road_reason_text.gd`,
 shared with the road tool's stroke preview, and words the road types' layout, name and library
 keys too. The median style row and width stepper live on as `ui/median_controls.gd` for the
 road builder's median part.
