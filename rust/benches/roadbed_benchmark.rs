@@ -245,6 +245,11 @@ fn bench_roadbed_span(c: &mut Criterion) {
         .build_span_piece(&graph, pocket)
         .expect("span builds");
     assert!(piece.mesh().top_triangle_count() > 0);
+    assert_eq!(
+        piece.start_mouth().profile.bands().len(),
+        9,
+        "the median continues through the transition"
+    );
     group.bench_function(BenchmarkId::new("build", "span_100m_left_pocket"), |b| {
         b.iter(|| black_box(roadbed.build_span_piece(black_box(&graph), pocket)))
     });

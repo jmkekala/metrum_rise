@@ -353,8 +353,10 @@ geometric taper records, its compiler previews or its road-tool mode.
 - **Validation** (`Edge::validate_pocket`, loads and edits): a surface car road (`invalid_road`,
   `pocket_requires_surface_road`), at least one through lane besides the pocket lanes and at most
   four lanes in that direction (`invalid_pocket_dimensions`, `pocket_lane_limit`), and an inner
-  kerb pocket (the drivers' left under right-hand traffic) only on a one-way road
-  (`pocket_requires_one_way`, D15). A left pocket inside a raised median is round R5b1's.
+  pocket (the drivers' left under right-hand traffic) only as a kerb pocket on a one-way road
+  (D15) or inside a raised median at least 3.8 m wide on the base road (round R5b1, D3):
+  `pocket_requires_one_way` on an undivided two-way road, `pocket_requires_wide_median` beside a
+  painted or narrower median (see [Left pockets in a median](#left-pockets-in-a-median-round-r5b1)).
 - **Profile and lanes.** A kerb pocket moves its own kerb, curb and sidewalk out by one lane and
   keeps the other side bit for bit (`kerb_shift_m` = half a lane towards that kerb; see
   [Cross-section profile](#cross-section-profile) and [Lane centring](#lane-centring-road-100)).
@@ -367,7 +369,9 @@ geometric taper records, its compiler previews or its road-tool mode.
   21 m, 10.5 m on each arm; the other sector keeps its offsets). Both mouths lie at 10.5 m. No
   crossing and no crossing toggle there (D6, as at a continuing raised median). A road with a
   raised median keeps its median centred on the lane groups' line, which a kerb pocket does not
-  move; the median noses out on both sides of the laid-out transition (open question for R5b1).
+  move; the median would nose out on both sides of the laid-out transition, so the edit refuses a
+  right pocket beside a median (`pocket_median_gap`; continuing it through the node piece is open,
+  round R5b1's handoff). A left pocket's transition passes through instead (round R5b1).
 - **Lane use (D4).** One mask function, `pocket_mask`, feeds the connectors, the solid zone, the
   entry-lane groups (`approach_group`) and the arrows: the pocket lane serves its turn alone and
   the other lanes the permissive default of the movements left. A 1+1 approach with a right
@@ -590,6 +594,83 @@ found, added the benchmark row and rendered the stills for D2 and D13.
   taper close up (linear, D2; unmarked over the node piece, D13 (a)). The 1+1 base road is
   unmarked (Finnish practice for two-lane streets at 50 km/h, `FinnishLaneLine`); the pocket edge,
   three lanes, is marked. Kept with the round's artifacts.
+
+#### Left pockets in a median (round R5b1)
+
+Round R5b1 (2026-11-05, same branch) opened left pockets on divided roads as the user's R5-c and
+D3 have them: the pocket lane takes a lane of the raised median, so the footprint and both kerbs
+stay and the transition passes through.
+
+- **Model.** On a two-way road with a raised median an inner pocket lane (the drivers' left
+  under right-hand traffic) narrows the median by a lane (`Edge::median_pocket_lanes`;
+  `Edge::set_pocket` subtracts it and gives it back on removal, exactly): 2+2 on 5 m grass becomes
+  2+3 on 1.5 m, `Edge::width` unchanged, no kerb shift. `lane_group_offset` then puts the lane
+  groups' line at -1.75 m, so the through lanes stay at 4.25 / 7.75 m (bit for bit the base
+  road's), the backward lanes at -4.25 / -7.75 and the pocket lane at 0.75 m beside the narrowed
+  median. The base road's median (`Edge::base_median`) must be raised and at least
+  `LANE_WIDTH + POCKET_MEDIAN_STUB_M` = 3.8 m: the pocket edge keeps a kerb stub of at least
+  0.3 m, which may lie below the style's minimum on the pocket edge only, so kerbed paving (at
+  most 3 m) never takes one. Loads check the base road's median. A right pocket beside a median
+  stays refused (`pocket_median_gap`), and so does a left and right pair there.
+- **The transition passes through.** The pocket edge's mouth profile is the base road's, so the
+  transition has no node piece, no crossing (D6) and no taper of its own. The median continues
+  through it without a nose: `median_lines_up` accepts a pocket pair whose narrowed side, moved a
+  lane out, equals the base road's median edge bit for bit, the far edge in line, one style
+  (`pocket_narrowing_lines_up`).
+- **The narrowing (D3).** On the pocket span the median's pocket-side edge runs linearly from
+  the base road's at the transition's mouth to its own over `LEFT_POCKET_TAPER_M` = 12 m (D4's
+  shortest taper; a pass-through has no node piece to split it over), the far edge constant
+  (`SpanModel::median_edges_at`, `RoadProfile::body_for_edge_edges`). Rows stand at the mouth,
+  every 2 m and the taper's end (a third cadence range of `PROFILE_TRANSITION_SECTION_STEP_M`):
+  six more rows than a plain divided span. The kerbs keep `MEDIAN_KERB_WIDTH_M` while the median
+  is at least its authored width, so the shared row is the base road's bit for bit. The centred
+  body profile became the `MedianEdges::centred` case of the new function, bitwise for every
+  existing divided span (round R5b1's first commit, proved with the roadbed probe, the median
+  tests and the reference probe before any pocket code). The pocket edge's junction end noses out
+  on its narrowed median as before. The edit refuses (`pocket_road_too_short`) a body whose
+  narrowing would reach that nose: the pocket edge must hold 12 m plus the junction's clip, a
+  crossing strip, the nose clearance and the stub's radius.
+- **Lanes.** The pocket lane starts on the adjacent through lane's mouth point at the transition,
+  copied (PLAN-R5 risk 4), and tapers straight to its own offset over the same 12 m
+  (`LaneTaper` in `build_one_lane`: per-knot offsets, one knot added where it arrives), so its
+  left edge follows the median's kerb. Both pocket-edge lanes 0 and 1 are therefore direct
+  successors of base lane 0 (no connector), lane 1 continues as lane 2 and the backward lanes run
+  on 1:1. At the junction the masks paint `L / S / S+R` (D4). The base road's two lanes prepare
+  the junction's turn before the fork (`transition_needs_lane_choice`, round R5a3), and
+  `pocket_fork_sources` maps the left turn and the inner straight lane to base lane 0 and the right
+  turn to base lane 1 (D5's rank + 1).
+- **Paint.** The divider between the pocket lane and the through lane starts where the
+  narrowing ends: the median's kerb is the line before it.
+- **Cost.** `PocketNarrowing::of`, `median_edges_at` and the arms rule are `O(1)`; the lane taper
+  is `O(points)` with one allocation per tapered lane at a rebuild. Per-tick code is unchanged.
+  Timing (FRESH 2026-11-05 04:20-04:25, one session, `.run.lock` and the exclusive timing lock,
+  P-cores, 4 workers, load 0.7, no cargo or Godot running, C B B C C B B C; control: `c141483a`'s
+  release lib tests and `roadbed_benchmark`, and the road chunk bench of `f6c95be8`, the same
+  code), medians (ranges) control / branch: `roadbed_span/build/span_100m_divided` 30.82
+  (30.26-31.18) / 31.04 (30.84-31.27) µs; the new `span_100m_left_pocket` (a 100 m pocket span
+  with the 12 m narrowing and one nose) 26.47 (25.98-27.01) µs, under the 50 µs line; payload stage
+  p50 ms `sloped_t` 0.395 (0.379-0.430) / 0.383 (0.380-0.387), `sloped_branch` 0.409
+  (0.387-0.453) / 0.389 (0.387-0.390), `divided_t` 0.469 (0.459-0.469) / 0.450 (0.444-0.455),
+  payload vertices equal; road chunk rows µs `chunk_emit_only/1024` 187.4 (185.7-189.3) / 175.6
+  (169.5-179.0), `divided_chunk_emit_only/1` 289.6 (272.6-306.2) / 282.2 (281.0-286.0), `/1024`
+  286.4 (275.8-291.1) / 295.2 (289.6-302.6), `pocket_chunk_emit_only/1` 728.0 (715.3-732.1) /
+  715.2 (712.7-738.4), `/1024` 732.9 (726.3-738.8) / 726.5 (723.0-736.1). Unchanged within the
+  spreads, which overlap on every row; the plain chunk row, 3-7% above its control in round R5a3,
+  is this time below it, so that open item looks like layout noise (its analysis is separate).
+- **Fixture and tests.** `fixtures::four_way_2x2_left_pocket` (a divided 2+2 four-way, 5 m
+  grass, the west arm's pocket edge 60 m) is in the roadbed product probe (a new entry; every
+  other entry unchanged) and the connector sweep (junction and transition, 0 violations). Tests:
+  the median's right edge linear over 12 m with the rows, the far edge bit for bit, the shared row,
+  watertight (`median_tests.rs`); the model table, removal, the 3.8 m rule and the refusals; the
+  pocket lane on the mouth point reaching 0.75 m at 12 m, the direct successors, the masks and the
+  fork sources (`test_pockets.rs`); the edit at both stored ends with preview = commit, resize,
+  removal giving the median back and undo, a 3.8 m median's stub and a short body refused
+  (`road_pockets.rs`); the save round trip and its refusals.
+- **Stills B** (D3; gamescope headless, 1280x720, isolated profile, a debug build): a divided 2+2
+  four-way on 5 m grass without and with a left pocket, near and far; the arrows (L / S / S+R);
+  the narrowing close up and from above beside the other arms' round noses (the D3 shape
+  question: straight, as built, or a quarter-circle variant, visual only); the same road refusing
+  a right pocket; both pockets on one one-way approach at a T. Kept with the round's artifacts.
 
 ### Junction layout
 
