@@ -12839,6 +12839,10 @@ Weather, clouds and the night sky (`RENDER-16`, `RENDER-17`, `RENDER-20`, `RENDE
   The bake runs after the opaque pass and is read the next frame, with the window published a
   frame late to match; a bake before the opaque pass split the frame's render pass and cost more
   than it saved. Outside the window, receivers evaluate the map as before.
+- **Asphalt receives it too.** `road_asphalt.gdshader` has its own `light()`, so it samples
+  `weather_cloud_sun()` once in `fragment()` and scales the directional diffuse and specular by
+  it, as terrain and paving do; without it, roads kept sharp tree shadows under an overcast sky
+  beside shadowless grass. One baked-map read per asphalt fragment.
 - **Wind** (`RENDER-18`). Trees and water share one wind from the weather state
   (`weather_wind.gdshaderinc`, the `weather_wind` global): a clock that runs with the game but
   never faster than normal speed (a time-lapse would only shake every tree) and stops while
