@@ -291,7 +291,10 @@ pub(super) fn walk_ray_cells(
 // junction (the rule depends on no direction in the world). A thin triangle holds its interior.
 // The height interpolates the vertices by barycentric weights from the same orientations.
 // [`CoverageTriangle`] is the same predicate with the per-triangle work done once. `O(1)`,
-// allocation-free.
+// allocation-free. Inlined: the hottest leaf of a chunk emit's height queries after
+// `PieceMesh::triangle_points`, called from `query.rs` per candidate triangle, so whether it is
+// inlined does not depend on the codegen partition.
+#[inline]
 pub(super) fn triangle_height_at_xz(triangle: &[RoadVec3; 3], point: RoadVec2) -> Option<f32> {
     // Outside the closed XZ box is outside the triangle, before the winding is computed.
     if !in_box(&triangle_box_xz(triangle), point.x, point.y) {
