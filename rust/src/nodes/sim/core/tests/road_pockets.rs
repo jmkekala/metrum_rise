@@ -818,3 +818,37 @@ fn moving_a_pocket_and_undo_preserve_a_cars_world_station() {
         pose(&core).distance_to(was)
     );
 }
+
+// Round R5b2 (found by `road_pocket_test.gd`): the road tool's replica follows every pocket edit
+// and undo through the publications Godot's calls make (`finalize_network_render_products`);
+// debug builds compare it with the live graph at each follow. Add, resize, undo, removal, as the
+// Road Properties window runs them: the removal's join listed the junction's arms out of order
+// ([1, 2, 3, 0]), which the replica (and a load) rebuild ascending.
+#[test]
+fn the_road_tool_replica_follows_pocket_edits_and_undo() {
+    use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    let (mut core, node) = crossing(true);
+    core.benchmark_mode = false;
+    let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+    core.refresh_road_terrain_inputs();
+    let mut context =
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(&core).expect("current"));
+    let first = core.publish_road_tool_view().expect("current roadbed");
+    assert!(context.apply(&first));
+    let right = (false, true);
+    let steps: [(&str, Option<PocketRequest>); 4] = [
+        ("add", Some(request(west, end, right, 60.0))),
+        ("resize", Some(request(west, end, right, 80.0))),
+        ("undo", None),
+        ("removal", Some(request(west, end, (false, false), 60.0))),
+    ];
+    for (step, edit) in steps {
+        match edit {
+            Some(edit) => assert!(core.set_road_pocket_internal(edit), "{step}"),
+            None => assert!(core.undo_action_internal(), "{step}"),
+        }
+        let publication = core.finalize_network_render_products().expect(step);
+        assert!(context.apply(&publication), "{step}");
+    }
+}

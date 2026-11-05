@@ -478,8 +478,12 @@ fn join_pair(graph: &mut RegionGraph, pair: &Pair, base: Edge) {
     graph.remove_from_spatial_index(first);
     graph.remove_from_spatial_index(second);
     graph.adjacency[transition as usize].retain(|&edge| edge != first && edge != second);
-    graph.adjacency[far as usize].retain(|&edge| edge != second);
-    graph.adjacency[far as usize].push(first);
+    // Each node lists its arms in ascending order, as a load rebuilds them and the road tool's
+    // replica restores them.
+    let far_arms = &mut graph.adjacency[far as usize];
+    far_arms.retain(|&edge| edge != second);
+    let at = far_arms.partition_point(|&edge| edge < first);
+    far_arms.insert(at, first);
     graph.edges[first] = base;
     graph.edges[second].deleted = true;
     graph.add_to_spatial_index(first);

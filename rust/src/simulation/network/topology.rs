@@ -1277,8 +1277,13 @@ pub(crate) fn split_edge_graph(
         Some(slot) => {
             debug_assert!(graph.edges[slot].deleted, "only a deleted slot is reused");
             graph.edges[slot] = new_edge;
-            graph.adjacency[junction_node_id as usize].push(slot);
-            graph.adjacency[old_end_node as usize].push(slot);
+            // A reused slot can be lower than arms already listed: keep each node's arms in
+            // ascending order, as a load rebuilds them and the road tool's replica restores them.
+            for node in [junction_node_id, old_end_node] {
+                let arms = &mut graph.adjacency[node as usize];
+                arms.push(slot);
+                arms.sort_unstable();
+            }
             graph.add_to_spatial_index(slot);
             slot
         }
