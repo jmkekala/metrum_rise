@@ -173,6 +173,7 @@ mod tests {
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
         });
 
         // 2. Tick once - source cells should be positive
@@ -253,6 +254,7 @@ mod tests {
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
         });
 
         let mut graph_high = graph_low.clone();

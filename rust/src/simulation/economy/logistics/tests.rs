@@ -4069,6 +4069,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
     let e1 = graph.add_edge(Edge {
         start_node: n1,
@@ -4093,6 +4094,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
     graph.rebuild_adjacency_list();
 
@@ -5278,6 +5280,8 @@ fn owa_export_keeps_the_one_day_buffer_for_a_later_local_buyer() {
 fn unreachable_local_input_need_does_not_hold_owa_export() {
     let (mut graph, mut network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
     graph.edge_mut(commercial_edge).allowed_types = TransitFlags::FOOT;
+    graph.edge_mut(commercial_edge).sidewalks =
+        crate::simulation::network::graph::SidewalkSides::NONE;
     graph.rebuild_adjacency_list();
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);

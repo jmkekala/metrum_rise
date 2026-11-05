@@ -403,7 +403,7 @@ pub(super) fn building_site_road_connection_lateral_offset_m(
     edge: &crate::simulation::network::graph::Edge,
     side: i8,
 ) -> f32 {
-    (edge.frontage_half_width_m(side) + side_band_width_m(edge)
+    (edge.frontage_half_width_m(side) + side_band_width_m(edge, side)
         - BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M)
         .max(0.0)
 }

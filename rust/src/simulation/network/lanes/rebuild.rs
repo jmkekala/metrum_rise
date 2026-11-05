@@ -63,9 +63,16 @@ pub(crate) fn sidewalk_offset(edge: &Edge, lane_idx: i8) -> f32 {
     let profile = RoadProfile::for_edge(edge);
     let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
     let side = if lane_idx > 0 { -1.0 } else { 1.0 };
-    let (carriageway_m, outer_m) = profile.side_half_widths_m(side * side_mul > 0.0);
+    let (carriageway_m, outer_m) =
+        profile.side_half_widths_m(sidewalk_lane_on_positive_side(lane_idx));
     let centre_m = 0.5 * (carriageway_m + outer_m);
     side * centre_m * side_mul
+}
+
+// Whether road sidewalk lane `lane_idx` (100 or -100) runs on its edge's positive lateral side,
+// the side [`sidewalk_offset`] places it on: -100 under right-hand traffic.
+fn sidewalk_lane_on_positive_side(lane_idx: i8) -> bool {
+    (lane_idx > 0) == config::DRIVE_ON_LEFT
 }
 
 /// Lateral offset of vehicle lane `lane_idx` in `edge`'s forward frame: forward lanes
@@ -293,8 +300,13 @@ impl LaneSystem {
                 build_lane(true, 0, LaneType::Foot, 0.0, insets, None);
                 build_lane(false, 0, LaneType::Foot, 0.0, insets, None);
             } else {
-                // Left (idx 100) and right (idx -100) sidewalks.
+                // Left (idx 100) and right (idx -100) sidewalks, each on a side with one
+                // (`ROAD-107`).
+                let sides = edge.sidewalk_sides();
                 for l_idx in [100, -100] {
+                    if !sides.on_lateral(sidewalk_lane_on_positive_side(l_idx)) {
+                        continue;
+                    }
                     let offset = sidewalk_offset(edge, l_idx);
                     let ends = sidewalk_ends(offset);
                     build_lane(true, l_idx, LaneType::Foot, offset, ends, None);

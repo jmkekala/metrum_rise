@@ -6,6 +6,7 @@
 use super::*;
 use crate::assets::authoring::files::token;
 use std::fs;
+use crate::simulation::network::graph::SidewalkSides;
 use crate::simulation::network::road_types::RoadAttributes;
 
 const S: RoadPart = RoadPart::Sidewalk;
@@ -96,7 +97,7 @@ fn types_round_trip_through_the_file() {
                 style: MedianStyle::KerbedGrass,
                 width_m: 3.5,
             }),
-            sidewalks: true,
+            sidewalks: SidewalkSides::BOTH,
         })
     );
     // Another handle (another game instance, the next session) reads the same types.
@@ -393,7 +394,7 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
     assert_eq!(library.error(), None);
     let old = &custom(&mut library)[0];
     assert_eq!((old.speed_kmh, old.zoning), (50, true));
-    assert_eq!(old.usable().map(|section| section.sidewalks), Some(true));
+    assert_eq!(old.usable().map(|section| section.sidewalks), Some(SidewalkSides::BOTH));
     // A rural road: no sidewalk parts, 80 km/h, no zoning; a highway-like 120 km/h.
     assert_eq!(
         library.create("Rural", &[B, F], 80, false, true),
@@ -419,10 +420,10 @@ fn speed_zoning_and_sidewalks_round_trip_and_version_1_reads_with_defaults() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             median: None,
-            sidewalks: false,
+            sidewalks: SidewalkSides::NONE,
         })
     );
-    let attributes = RoadAttributes::new(rural.speed_kmh, false, rural.zoning);
+    let attributes = RoadAttributes::new(rural.speed_kmh, SidewalkSides::NONE, rural.zoning);
     assert_eq!(
         attributes.speed_ms.to_bits(),
         (80.0_f32 * crate::config::KMH_TO_MPS).to_bits()

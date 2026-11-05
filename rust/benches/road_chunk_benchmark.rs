@@ -6,7 +6,9 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use godot::prelude::{Color, Vector2, Vector3};
 use metrum_rise::simulation::core::config::WorldConfig;
 use metrum_rise::simulation::network::TransitNetwork;
-use metrum_rise::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadPocket};
+use metrum_rise::simulation::network::graph::{
+    Edge, RegionGraph, RoadMedian, RoadPocket, SidewalkSides,
+};
 use metrum_rise::simulation::network::render::NetworkMeshData;
 use metrum_rise::simulation::network::roadbed::{EdgeEnd, PieceId, SurfaceChunkKey};
 use metrum_rise::simulation::network::types::{
@@ -251,6 +253,7 @@ fn build_road_chunk_fixture(distant_chunks: usize, local: LocalRoad) -> RoadChun
         LocalRoad::Shoulders => {
             let edge = add_world_road(&mut graph, -ROAD_LENGTH_M * 0.5, 0.0, &config);
             graph.edge_mut(edge).allowed_types = TransitFlags::CAR;
+            graph.edge_mut(edge).sidewalks = SidewalkSides::NONE;
             edge
         }
         LocalRoad::Pocket => add_pocket_junction(&mut graph),
@@ -428,6 +431,7 @@ fn add_edge(
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: SidewalkSides::BOTH,
     })
 }
 

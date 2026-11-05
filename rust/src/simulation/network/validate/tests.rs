@@ -11,6 +11,7 @@ fn add_edge(graph: &mut RegionGraph, start: u32, end: u32, points: Vec<Vector3>)
         end_node: end,
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         class: EdgeClass::Standard,
         width: 7.0,
         fwd_lanes: 1,

@@ -37,9 +37,9 @@ use roadbed::{RoadbedSystem, SurfaceChunkKey};
 use types::*;
 
 /// A stroke's edge: its lanes, median and class, and the road type's `attributes`
-/// (`ROAD-101`): a car road carries `FOOT` (its sidewalks) only with `attributes.sidewalks`
-/// and its speed limit; a walkway is always walked and keeps the default limit, which walking
-/// ignores; zoning off sets `no_building_spawn`, street lights off `no_street_lights`.
+/// (`ROAD-101`): a car road carries the sidewalk sides `attributes.sidewalks` (`ROAD-107`),
+/// `FOOT` exactly when it has one, and its speed limit; a walkway is always walked and keeps
+/// the default limit, which walking ignores; zoning off sets `no_building_spawn`, street lights off `no_street_lights`.
 /// `base_cost` is left 0 for the caller's `CostCalculator` pass.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network) fn build_surface_edge(
@@ -57,7 +57,12 @@ pub(in crate::simulation::network) fn build_surface_edge(
     if !is_walkway {
         allowed_types |= TransitFlags::CAR;
     }
-    if is_walkway || attributes.sidewalks {
+    let sidewalks = if is_walkway {
+        SidewalkSides::NONE
+    } else {
+        attributes.sidewalks
+    };
+    if is_walkway || sidewalks.any() {
         allowed_types |= TransitFlags::FOOT;
     }
     let speed_limit = if is_walkway {
@@ -101,6 +106,7 @@ pub(in crate::simulation::network) fn build_surface_edge(
         vehicle_frontage_access,
         median,
         pocket: None,
+        sidewalks,
     }
 }
 

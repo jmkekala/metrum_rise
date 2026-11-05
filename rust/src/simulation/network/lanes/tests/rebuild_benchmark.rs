@@ -95,6 +95,7 @@ fn incremental_lane_rebuild_scaling() {
             let end = graph.add_node(position + Vector3::RIGHT * 40.0, NodeType::Junction);
             let edge = add_road_edge(&mut graph, start, end);
             graph.edge_mut(edge).allowed_types = TransitFlags::CAR;
+            graph.edge_mut(edge).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         }
         graph.rebuild_adjacency_list();
         let mut lanes = LaneSystem::new();

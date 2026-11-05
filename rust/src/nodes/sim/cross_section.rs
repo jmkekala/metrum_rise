@@ -20,7 +20,7 @@ use crate::debug_log;
 use crate::simulation::network::graph::{Edge, RegionGraphUndoDelta, RoadMedian};
 use crate::simulation::network::road_types::cost::{BUILD_COST_PER_M, road_weight};
 use crate::simulation::network::road_types::{RoadAttributes, RoadCrossSection};
-use crate::simulation::network::roadbed::{side_band_width_m, visual_roadbed_half_width_m};
+use crate::simulation::network::roadbed::{visual_roadbed_half_width_m, widest_side_band_width_m};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, validate_edge,
@@ -231,12 +231,14 @@ impl SimCore {
         median: Option<RoadMedian>,
         attributes: RoadAttributes,
     ) -> f32 {
-        visual_roadbed_half_width_m(&Edge {
+        let mut probe = Edge {
             primary_type: current.primary_type,
-            allowed_types: Edge::sidewalk_flags(current.allowed_types, attributes.sidewalks),
+            allowed_types: current.allowed_types,
             width: Edge::cross_section_width_m(fwd, bkw, median),
             ..Edge::default()
-        })
+        };
+        probe.set_sidewalks(attributes.sidewalks);
+        visual_roadbed_half_width_m(&probe)
     }
 
     // What the edit does beyond the road (`ROAD-101`): the buildings fronting it that zoning
@@ -366,7 +368,7 @@ impl SimCore {
         // The roadbed's own side band: a sidewalk, or a road without them its shoulder.
         let parcels = self.zoning.parcel_ids_overlapping_road_corridor(
             points,
-            edge.width * 0.5 + side_band_width_m(edge),
+            edge.width * 0.5 + widest_side_band_width_m(edge),
         );
         if let Some(first) = parcels.first() {
             return Some(RoadRejection::new(

@@ -49,6 +49,7 @@ pub(crate) fn road_edge(start_node: u32, end_node: u32, points: Vec<Vector3>, wi
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     }
 }
 
@@ -121,11 +122,13 @@ pub(crate) fn mixed_profiles(sloped: bool) -> RegionGraph {
     };
     add((-80.0, -60.0), (80.0, -50.0), |mut edge| {
         edge.allowed_types = TransitFlags::CAR;
+        edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         edge
     });
     add((-80.0, -100.0), (40.0, -140.0), |mut edge| {
         edge.primary_type = TransitType::Foot;
         edge.allowed_types = TransitFlags::FOOT;
+        edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         edge.width = 2.5;
         edge
     });
@@ -397,6 +400,7 @@ fn footpath_star(arms: &[(f32, bool)], sloped: bool) -> RegionGraph {
         if footpath {
             edge.primary_type = TransitType::Foot;
             edge.allowed_types = TransitFlags::FOOT;
+            edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
             edge.width = FOOTPATH_M;
             edge.fwd_lanes = 0;
         } else {

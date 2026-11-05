@@ -905,6 +905,7 @@ mod tests {
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         }
     }
 
@@ -1090,6 +1091,7 @@ mod tests {
                     edge.speed_limit = 14.0;
                     // No sidewalk: the occupants must drive, and only vehicle lanes have gaps.
                     edge.allowed_types = TransitFlags::CAR;
+                    edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
                     edge.bkw_lanes = 0;
                     graph.add_edge(edge);
                 }

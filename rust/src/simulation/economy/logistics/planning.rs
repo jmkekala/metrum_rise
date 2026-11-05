@@ -264,6 +264,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
         });
         graph.rebuild_adjacency_list();
         topology.refresh(&network, &graph);

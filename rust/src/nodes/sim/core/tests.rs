@@ -924,6 +924,7 @@ fn add_test_border_road(core: &mut SimCore) {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
     core.transit_network
         .lane_system
@@ -1261,6 +1262,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     }
 }
 
@@ -2573,11 +2575,15 @@ fn queued_business_reprices_freight_before_owner_funding() {
         .unwrap()
         .edge_idx();
     core.region_graph.edge_mut(edge).allowed_types = TransitFlags::FOOT;
+    core.region_graph.edge_mut(edge).sidewalks =
+        crate::simulation::network::graph::SidewalkSides::NONE;
     assert!(
         permit(&mut core).is_none(),
         "a gateway elsewhere cannot supply an entrance without vehicle access"
     );
     core.region_graph.edge_mut(edge).allowed_types = TransitFlags::FOOT | TransitFlags::CAR;
+    core.region_graph.edge_mut(edge).sidewalks =
+        crate::simulation::network::graph::SidewalkSides::BOTH;
     let entrance = core
         .allocator
         .demand_site_entrance(

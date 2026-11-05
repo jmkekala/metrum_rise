@@ -189,6 +189,7 @@ fn fixture(
                     TransitType::Road
                 },
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
                 class: EdgeClass::Standard,
                 width: if fwd + bkw == 0 {
                     2.0
@@ -414,6 +415,7 @@ fn verge_poles_stand_on_the_drawn_ground_of_a_graded_slope() {
     let mut f = fixture(&points, &[(0, 1, 2, 2), (2, 3, 2, 2)]);
     f.0.edge_mut(car_only).allowed_types =
         crate::simulation::network::types::TransitFlags::CAR;
+    f.0.edge_mut(car_only).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
     f.1 = super::RoadbedSystem::new(64.0);
     f.1.compile_dirty(&f.0);
     let level = emit(&f, vec![car_only, sidewalks]);

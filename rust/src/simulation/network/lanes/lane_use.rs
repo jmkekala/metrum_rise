@@ -702,6 +702,7 @@ mod junction_tests {
                             f32::from(count) * config::LANE_WIDTH * 2.0,
                         );
                         edge.allowed_types = TransitFlags::CAR;
+                        edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
                         edge.fwd_lanes = count;
                         edge.bkw_lanes = count;
                         graph.add_edge(edge);
@@ -818,6 +819,7 @@ mod junction_tests {
                 f32::from(count) * config::LANE_WIDTH * 2.0,
             );
             edge.allowed_types = TransitFlags::CAR;
+            edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
             edge.fwd_lanes = count;
             edge.bkw_lanes = count;
             graph.add_edge(edge);

@@ -46,6 +46,7 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         });
     }
     // add_edge publishes a live edge regardless of the supplied deleted flag.

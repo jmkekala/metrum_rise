@@ -10,7 +10,7 @@
 //! weight = structure x (lanes x 0.4 x f(v) + median x f(v) + sidewalks)
 //!   f(v)      = 1 + (v_kmh - 50) / 50
 //!   median    = painted 0.05; kerbed grass or paving 0.1 + 0.1 x width_m
-//!   sidewalks = 0.2 (both) or 0
+//!   sidewalks = 0.1 per side with one (`ROAD-107`, D3): 0.2 both, 0.1 one, 0 none
 //!   structure = standard 1, bridge 3, tunnel 5
 //!   walkway   = structure x 0.25
 //! ```
@@ -19,7 +19,7 @@
 //! weighted daily upkeep roll all read it. Engine-free; `O(1)`, allocation-free.
 
 use super::{RoadAttributes, RoadCrossSection};
-use crate::simulation::network::graph::{Edge, MedianStyle, RoadMedian};
+use crate::simulation::network::graph::{Edge, MedianStyle, RoadMedian, SidewalkSides};
 use crate::simulation::network::types::EdgeClass;
 
 /// Build cost per metre of a weight-1.0 road (the 2-Lane Road at 50 km/h on the ground).
@@ -29,8 +29,8 @@ pub const UPKEEP_PER_M_DAY: f64 = 0.1;
 
 // Each car lane's weight at 50 km/h.
 const LANE_WEIGHT: f64 = 0.4;
-// Both sidewalks together.
-const SIDEWALKS_WEIGHT: f64 = 0.2;
+// Each side's sidewalk (`ROAD-107`, D3: half the 0.2 both sides cost before).
+const SIDEWALK_WEIGHT: f64 = 0.1;
 // A walkway's footpath, before its structure factor.
 const WALKWAY_WEIGHT: f64 = 0.25;
 // A painted median, whatever its width.
@@ -77,11 +77,8 @@ pub fn road_weight(section: RoadCrossSection, speed_kmh: u16, class: EdgeClass) 
     let median = section
         .median
         .map_or(0.0, |median| median_weight(median) * speed);
-    let sidewalks = if section.sidewalks {
-        SIDEWALKS_WEIGHT
-    } else {
-        0.0
-    };
+    // Both sides: 0.1 x 2.0 is bitwise the 0.2 they cost before `ROAD-107`.
+    let sidewalks = SIDEWALK_WEIGHT * f64::from(section.sidewalks.count());
     structure * (lanes + median + sidewalks)
 }
 
@@ -97,7 +94,11 @@ pub fn stroke_weight(
         fwd_lanes: fwd,
         bkw_lanes: bkw,
         median,
-        sidewalks: attributes.sidewalks && fwd + bkw > 0,
+        sidewalks: if fwd + bkw > 0 {
+            attributes.sidewalks
+        } else {
+            SidewalkSides::NONE
+        },
     };
     road_weight(
         section,
@@ -117,8 +118,8 @@ pub fn upkeep_per_m_day(weight: f64) -> f64 {
 }
 
 impl Edge {
-    /// This road's per-metre cost weight ([`road_weight`]) from its own lanes, median, sidewalks
-    /// (`FOOT` on a car road), speed limit (whole km/h) and class. `O(1)`.
+    /// This road's per-metre cost weight ([`road_weight`]) from its own lanes, median, sidewalk
+    /// sides, speed limit (whole km/h) and class. `O(1)`.
     pub fn cost_weight(&self) -> f64 {
         road_weight(
             RoadCrossSection::of_edge(self),
@@ -143,7 +144,7 @@ mod tests {
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             median: median.map(|(style, width_m)| RoadMedian { style, width_m }),
-            sidewalks,
+            sidewalks: SidewalkSides::both_or_none(sidewalks),
         }
     }
 
@@ -236,7 +237,7 @@ mod tests {
             stroke_weight(
                 (0, 0),
                 None,
-                RoadAttributes::new(120, true, true),
+                RoadAttributes::new(120, SidewalkSides::BOTH, true),
                 EdgeClass::Bridge
             ),
             0.75
@@ -249,14 +250,15 @@ mod tests {
         let mut edge = Edge {
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: SidewalkSides::BOTH,
             fwd_lanes: 1,
             bkw_lanes: 1,
             speed_limit: crate::config::DEFAULT_URBAN_ROAD_SPEED_MS,
             ..Default::default()
         };
         assert_eq!(edge.cost_weight().to_bits(), 1.0f64.to_bits());
-        edge.allowed_types = TransitFlags::CAR;
-        edge.speed_limit = RoadAttributes::new(80, false, true).speed_ms;
+        edge.set_sidewalks(SidewalkSides::NONE);
+        edge.speed_limit = RoadAttributes::new(80, SidewalkSides::NONE, true).speed_ms;
         assert!((edge.cost_weight() - 1.28).abs() < 1e-12);
         edge.class = EdgeClass::Bridge;
         assert!((edge.cost_weight() - 3.84).abs() < 1e-12);

@@ -33,6 +33,7 @@ fn fixture(
                 end_node: end as u32,
                 primary_type: TransitType::Road,
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
                 class: EdgeClass::Standard,
                 width: f32::from(fwd + bkw) * crate::config::LANE_WIDTH,
                 fwd_lanes: fwd,

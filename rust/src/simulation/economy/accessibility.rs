@@ -1229,6 +1229,7 @@ mod reservation_tests {
             start_node: start,
             end_node: end,
             allowed_types: TransitFlags::FOOT | TransitFlags::CAR,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             speed_limit: 0.5,
             base_cost: 140.0 / crate::config::MIN_ROUTE_SPEED_MS,
             physical_length: 140.0,

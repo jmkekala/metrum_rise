@@ -137,7 +137,7 @@ impl RoadRejection {
             median_style: RoadMedian::style_code(attempt.median),
             median_width: attempt.median.map_or(0.0, |median| median.width_m),
             speed_kmh: RoadAttributes::speed_kmh_of(attempt.attributes.speed_ms),
-            sidewalks: attempt.attributes.sidewalks,
+            sidewalks: attempt.attributes.sidewalks.any(),
             zoning: attempt.attributes.zoning,
             street_lights: attempt.attributes.street_lights,
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
@@ -415,7 +415,13 @@ mod tests {
             snap: true,
             tunnel: true,
             median: None,
-            attributes: RoadAttributes::from_tool(100, false, false, false).unwrap(),
+            attributes: RoadAttributes::from_tool(
+                100,
+                crate::simulation::network::graph::SidewalkSides::NONE,
+                false,
+                false,
+            )
+            .unwrap(),
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(

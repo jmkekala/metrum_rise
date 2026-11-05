@@ -1727,6 +1727,7 @@ mod tests {
         let points = [(0.0, 0.0), (80.0, 0.0), (160.0, 0.0)];
         let mut graph = road_through(&points);
         graph.edge_mut(1).allowed_types = TransitFlags::CAR;
+        graph.edge_mut(1).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         assert!(walking_proof(&mut graph));
     }
 

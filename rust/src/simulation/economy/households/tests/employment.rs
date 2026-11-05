@@ -3226,6 +3226,7 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
     // but cannot return to the home's forward-only door through the dead-end road.
     graph.edge_mut(0).bkw_lanes = 0;
     graph.edge_mut(0).allowed_types = TransitFlags::CAR;
+    graph.edge_mut(0).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);

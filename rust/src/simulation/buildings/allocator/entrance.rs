@@ -1451,6 +1451,7 @@ mod tests {
             end_node: end,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             width: 7.0,
             fwd_lanes: 1,
             bkw_lanes: 1,

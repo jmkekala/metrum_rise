@@ -198,6 +198,7 @@ mod tests {
             let end = graph.add_node(p, NodeType::Junction);
             let mut edge = road_edge(end, node, vec![p, Vector3::ZERO], 4.0 * LANE_WIDTH);
             edge.allowed_types = TransitFlags::CAR;
+            edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
             edge.fwd_lanes = 2;
             edge.bkw_lanes = 2;
             graph.add_edge(edge);

@@ -229,6 +229,7 @@ mod tests {
             end_node: end,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             fwd_lanes: 1,
             width: 7.0,
             speed_limit: 20.0,

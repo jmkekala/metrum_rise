@@ -804,7 +804,7 @@ fn building_site_debug_visible_road_sample(
 // inside it; a pocket edge's kerbs lie off its centreline (`ROAD-95`, D17).
 fn road_connection_lateral_offset_m(edge: &Edge, side: i8) -> f32 {
     (edge.frontage_half_width_m(side)
-        + crate::simulation::network::roadbed::side_band_width_m(edge)
+        + crate::simulation::network::roadbed::side_band_width_m(edge, side)
         - BUILDING_SITE_DEBUG_ROAD_SAMPLE_INSET_M)
         .max(0.0)
 }

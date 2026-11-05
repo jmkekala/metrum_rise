@@ -1214,6 +1214,7 @@ pub(crate) fn split_edge_graph(
     let class = old_edge.class;
     let no_building_spawn = old_edge.no_building_spawn;
     let no_street_lights = old_edge.no_street_lights;
+    let sidewalks = old_edge.sidewalks;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
     let median = old_edge.median;
     // A turn pocket stays with the half that keeps its end (`ROAD-95`); the other half keeps the
@@ -1267,6 +1268,7 @@ pub(crate) fn split_edge_graph(
         vehicle_frontage_access,
         median,
         pocket: second_pocket,
+        sidewalks,
     };
     let (cost_new, length_new) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);

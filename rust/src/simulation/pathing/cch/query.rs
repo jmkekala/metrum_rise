@@ -573,6 +573,7 @@ mod endpoint_tests {
                     base_cost: 1.0 + (node % 7) as f32 / 13.0,
                     physical_length: 1.0,
                     allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                    sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
                     fwd_lanes: 1,
                     bkw_lanes: 1,
                     ..Default::default()

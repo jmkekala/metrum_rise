@@ -58,12 +58,14 @@ fn four_lane(mut edge: Edge) -> Edge {
 
 fn rural(mut edge: Edge) -> Edge {
     edge.allowed_types = TransitFlags::CAR;
+    edge.sidewalks = metrum_rise::simulation::network::graph::SidewalkSides::NONE;
     edge
 }
 
 fn footpath(mut edge: Edge) -> Edge {
     edge.primary_type = TransitType::Foot;
     edge.allowed_types = TransitFlags::FOOT;
+    edge.sidewalks = metrum_rise::simulation::network::graph::SidewalkSides::NONE;
     edge.width = 2.5;
     edge.fwd_lanes = 0;
     edge.bkw_lanes = 0;
@@ -194,6 +196,7 @@ fn edge_through(start_node: u32, end_node: u32, points: Vec<Vector3>) -> Edge {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: metrum_rise::simulation::network::graph::SidewalkSides::BOTH,
     }
 }
 

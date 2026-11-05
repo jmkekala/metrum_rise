@@ -26,6 +26,7 @@ fn fixture(angle: f64, erase: bool) -> (RegionGraph, ZoningSystem, BuildingAlloc
         end_node: end,
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         class: EdgeClass::Standard,
         width: 7.0,
         fwd_lanes: 1,

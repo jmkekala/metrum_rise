@@ -423,6 +423,7 @@ fn graph_with_connected_border() -> RegionGraph {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
     graph
 }

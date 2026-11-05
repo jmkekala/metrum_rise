@@ -272,6 +272,7 @@ fn pocket_validation_refuses_what_no_pocket_edit_builds() {
     assert_eq!(edge.validate_pocket(), Err("pocket_requires_surface_road"));
     let mut edge = road(1, 1, right_at(EdgeEnd::End));
     edge.allowed_types = super::types::TransitFlags::FOOT;
+    edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
     assert_eq!(edge.validate_pocket(), Err("invalid_road"));
     // Codes round-trip.
     for pocket in [None, right_at(EdgeEnd::Start), right_at(EdgeEnd::End)] {

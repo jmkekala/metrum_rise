@@ -14,6 +14,7 @@ use super::road_edit_order::{ARM_M, Stroke, committed};
 use super::road_mesh_seams::open_road_edges_where;
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+use crate::simulation::network::graph::SidewalkSides;
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::roadbed::{PieceId, RoadVec3};
@@ -51,6 +52,7 @@ fn without_sidewalks(core: &mut SimCore, edges: &[usize]) {
     for &edge in edges {
         let edge = core.region_graph.edge_mut(edge);
         edge.allowed_types = TransitFlags::CAR;
+        edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         nodes.extend([edge.start_node, edge.end_node]);
     }
     let graph = &mut core.region_graph;
@@ -306,7 +308,7 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
 
 // A rural road type's attributes (`ROAD-101`): 100 km/h, no sidewalks, zoning off.
 fn rural() -> RoadAttributes {
-    RoadAttributes::from_tool(100, false, false, true).unwrap()
+    RoadAttributes::from_tool(100, SidewalkSides::NONE, false, true).unwrap()
 }
 
 // Commits one 1 + 1 stroke between `ends` through the road tool's path with `attributes`.
@@ -428,7 +430,7 @@ fn a_road_without_sidewalks_keeps_the_walking_proof() {
         let side_edge = edge_ending_at(&core, SIDE.0[1]);
         assert_eq!(
             core.region_graph.edge(side_edge).allowed_types & TransitFlags::FOOT != 0,
-            side.sidewalks
+            side.sidewalks.any()
         );
         let mut graph = core.region_graph.clone();
         core.transit_network.lane_system.rebuild(&mut graph);

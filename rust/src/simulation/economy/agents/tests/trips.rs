@@ -386,6 +386,7 @@ fn test_same_edge_car_trip_prefers_direct_frontage_lane_over_endpoint_wrap() {
     let n1 = g.add_node(Vector3::new(500.0, 0.0, 0.0), NodeType::Junction);
     g.add_edge(Edge {
         allowed_types: TransitFlags::CAR,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
         physical_length: 500.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],

@@ -485,7 +485,8 @@ impl SimulationNode {
             let section =
                 crate::simulation::network::road_types::RoadCrossSection::of_edge(edge);
             let speed_kmh = RoadAttributes::speed_kmh_of(edge.speed_limit);
-            result.set("sidewalks", section.sidewalks);
+            // Any side (`ROAD-107`): the side mask reaches Godot in round S2.
+            result.set("sidewalks", section.sidewalks.any());
             result.set("speed_kmh", i64::from(speed_kmh));
             result.set("zoning", !edge.no_building_spawn);
             result.set("street_lights", !edge.no_street_lights);
@@ -854,6 +855,7 @@ fn cross_section_spec(
 ) -> Result<(Option<RoadMedian>, RoadAttributes), RoadRejection> {
     let median = RoadMedian::from_tool(median_style, median_width)
         .map_err(|reason| RoadRejection::new(reason, "the median's style or width"))?;
+    let sidewalks = crate::simulation::network::graph::SidewalkSides::both_or_none(sidewalks);
     let attributes = RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning, street_lights)
         .map_err(|reason| RoadRejection::new(reason, format!("{speed_kmh} km/h")))?;
     Ok((median, attributes))

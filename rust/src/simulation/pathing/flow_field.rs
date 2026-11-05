@@ -524,6 +524,7 @@ mod tests {
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         }
     }
 
@@ -608,6 +609,7 @@ mod tests {
             edge.bkw_lanes = bkw;
             if primary_type == TransitType::Foot {
                 edge.allowed_types = TransitFlags::FOOT;
+                edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
             }
             graph.add_edge(edge);
             graph.rebuild_adjacency_list();

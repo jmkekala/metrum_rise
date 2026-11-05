@@ -882,6 +882,7 @@ mod tests {
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         }
     }
 

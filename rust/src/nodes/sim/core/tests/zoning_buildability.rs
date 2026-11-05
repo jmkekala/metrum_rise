@@ -73,6 +73,7 @@ fn fixture() -> SimCore {
             width: e.width,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             fwd_lanes: 1,
             bkw_lanes: 1,
             start_clip: e.start_clip,

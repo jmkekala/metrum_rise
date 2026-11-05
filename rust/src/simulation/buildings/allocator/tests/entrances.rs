@@ -43,6 +43,7 @@ fn entrance_on_a_road(sidewalks: bool) {
     graph.edge_mut(0).vehicle_frontage_access = VehicleFrontageAccess::BothSides;
     if !sidewalks {
         graph.edge_mut(0).allowed_types = crate::simulation::network::types::TransitFlags::CAR;
+        graph.edge_mut(0).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
     }
     network.lane_system.rebuild(&mut graph);
 

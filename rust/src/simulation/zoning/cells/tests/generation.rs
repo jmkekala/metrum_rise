@@ -33,6 +33,7 @@ fn polyline(graph: &mut RegionGraph, a: u32, b: u32, points: Vec<Vector3>) -> us
         end_node: b,
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         class: EdgeClass::Standard,
         width: 7.0,
         physical_length,

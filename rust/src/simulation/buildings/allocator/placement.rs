@@ -21,7 +21,9 @@ use crate::simulation::economy::demand::{
     private_zone_index,
 };
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::{RoadbedSystem, side_band_width_m};
+use crate::simulation::network::roadbed::{
+    RoadbedSystem, side_band_width_m, widest_side_band_width_m,
+};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::work_area::{
@@ -2122,12 +2124,13 @@ fn road_connection_lateral_offset_m(
     edge: &crate::simulation::network::graph::Edge,
     side: i8,
 ) -> f32 {
-    (edge.frontage_half_width_m(side) + side_band_width_m(edge) - BUILDING_SITE_ROAD_SAMPLE_INSET_M)
+    (edge.frontage_half_width_m(side) + side_band_width_m(edge, side)
+        - BUILDING_SITE_ROAD_SAMPLE_INSET_M)
         .max(0.0)
 }
 
 fn road_collision_half_width_m(edge: &crate::simulation::network::graph::Edge) -> f32 {
-    (edge.width * 0.5 + side_band_width_m(edge)).max(0.0)
+    (edge.width * 0.5 + widest_side_band_width_m(edge)).max(0.0)
 }
 
 /// Hashes a parcel's profile, stable ID, redevelopment generation and family/variant key

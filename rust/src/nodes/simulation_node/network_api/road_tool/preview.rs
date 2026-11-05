@@ -43,7 +43,8 @@ impl SimulationNode {
     /// Sets the road tool's road-type attributes (`ROAD-101`) for every later hover check,
     /// preview, commit and refusal report of the tool: `speed_kmh` the speed limit (20 to 120 in
     /// steps of 10; a walkway's stroke keeps the default limit whatever is set), `sidewalks`
-    /// (a car road's two sidewalks, else a shoulder each side; a walkway is walked either way)
+    /// (a car road's two sidewalks, else a shoulder each side; a walkway is walked either way;
+    /// one-sided roads, `ROAD-107`, take the side mask in round S2)
     /// `zoning` (lots and buildings along the road) and `street_lights` (visual only). Returns
     /// the empty string when set, else `speed_out_of_range`, keeping the previous attributes.
     /// The built-in types send (50, true, true, true): the edge every stroke built before road
@@ -57,6 +58,7 @@ impl SimulationNode {
         street_lights: bool,
     ) -> GString {
         use crate::simulation::network::road_types::RoadAttributes;
+        let sidewalks = crate::simulation::network::graph::SidewalkSides::both_or_none(sidewalks);
         match RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning, street_lights) {
             Ok(attributes) => {
                 self.road_tool_attributes = attributes;

@@ -148,6 +148,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
     let mut zoning = ZoningSystem::new(&config);
     zoning
@@ -205,6 +206,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     (graph, edge_id)
@@ -1609,6 +1611,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
 
     let mut zoning = ZoningSystem::new(&config);
@@ -1778,8 +1781,8 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         )
         .expect("insert crossing end node");
         conn.execute(
-            "INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access)
-             SELECT 1, 2, 3, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, 160.0, 160.0, start_clip, end_clip, no_building_spawn, vehicle_frontage_access FROM network_edges WHERE edge_id = 0",
+            "INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, sidewalks)
+             SELECT 1, 2, 3, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, 160.0, 160.0, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, sidewalks FROM network_edges WHERE edge_id = 0",
             [],
         )
         .expect("insert crossing edge");

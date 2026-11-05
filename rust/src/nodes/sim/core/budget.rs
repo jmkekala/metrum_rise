@@ -1600,6 +1600,7 @@ mod tests {
             };
             Edge {
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
                 fwd_lanes: lanes,
                 bkw_lanes: lanes,
                 class,

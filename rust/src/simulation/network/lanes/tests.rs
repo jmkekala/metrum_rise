@@ -39,6 +39,7 @@ fn test_lane_geometry_and_length() {
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
     graph.rebuild_adjacency_list();
 
@@ -102,6 +103,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
     graph.rebuild_adjacency_list();
 
@@ -152,6 +154,7 @@ fn incremental_lane_rebuild_is_lifted_without_the_renderer() {
         end_node: n2,
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         class: EdgeClass::Standard,
         width: 10.0,
         fwd_lanes: 1,
@@ -230,6 +233,7 @@ fn test_highway_no_sidewalks() {
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
     });
     graph.rebuild_adjacency_list();
 
@@ -276,6 +280,7 @@ fn test_dedicated_footpath_centering() {
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
     });
     graph.rebuild_adjacency_list();
 
@@ -346,6 +351,7 @@ fn build_pedestrian_junction(
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         }));
     }
     graph.rebuild_adjacency_list();
@@ -623,6 +629,7 @@ fn test_rht_lane_offsets() {
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     });
     graph.rebuild_adjacency_list();
 
@@ -674,6 +681,7 @@ fn one_way_and_uneven_lanes_sit_on_the_carriageway() {
             end_node: b,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             width: f32::from(fwd + bkw) * crate::config::LANE_WIDTH,
             fwd_lanes: fwd,
             bkw_lanes: bkw,
@@ -757,6 +765,7 @@ fn divided_lane_groups_sit_beside_the_median() {
             end_node: b,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             width: Edge::cross_section_width_m(fwd, bkw, median),
             fwd_lanes: fwd,
             bkw_lanes: bkw,
@@ -858,6 +867,7 @@ fn test_crosswalk_counts() {
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         });
     }
     graph.rebuild_adjacency_list();
@@ -1206,6 +1216,7 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
                 median: None,
                 pocket: None,
+                sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             })
         };
 
@@ -1399,6 +1410,7 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     })
 }
 

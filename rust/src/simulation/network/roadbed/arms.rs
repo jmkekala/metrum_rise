@@ -756,8 +756,9 @@ pub(super) fn transition_median_through(graph: &RegionGraph, node: u32) -> bool 
 }
 
 /// Whether arm `edge` of `node` can cross, so its crossing can be turned on or off (`ROAD-74`):
-/// a car road with sidewalks at a node where two or more road arms meet, which at a pass-through
-/// node must also hold the strip on its span. Whether it crosses is the D8 rule's
+/// a car road with sidewalks on both sides (`ROAD-107`) at a node where two or more road arms
+/// meet, which at a pass-through node must also hold the strip on its span. Whether it crosses
+/// is the D8 rule's
 /// ([`NodeArms::collect`], [`pass_through_crossings`]); this is the set that rule ranges over, so
 /// a toggle never stores an override that rule ignores. `O(degree)`.
 pub(crate) fn crossing_arm_eligible(graph: &RegionGraph, node: u32, edge: usize) -> bool {
@@ -784,7 +785,7 @@ pub(crate) fn crossing_arm_eligible(graph: &RegionGraph, node: u32, edge: usize)
         })
 }
 
-// D8 crossings (`ROAD-68-C`). Only car roads with sidewalks cross.
+// D8 crossings (`ROAD-68-C`). Only car roads with sidewalks on both sides cross (`ROAD-107`).
 // - Three or more arms: every such arm, unless a node override of `false` removes it.
 // - Two arms, bends and pass-through nodes alike: the legacy `ROAD-64` rule
 //   ([`degree_two_crossings`]).
@@ -872,11 +873,13 @@ fn is_road(graph: &RegionGraph, key: ArmKey) -> bool {
     graph.edge(key.edge).primary_type == TransitType::Road
 }
 
+// A crossing needs a sidewalk on both sides of its arm (`ROAD-107`, D5): a one-sided arm has
+// no zebra, toggle or strip, as an arm without sidewalks.
 fn has_sidewalks(graph: &RegionGraph, key: ArmKey) -> bool {
     let edge = graph.edge(key.edge);
     edge.primary_type == TransitType::Road
         && edge.allowed_types & TransitFlags::CAR != 0
-        && edge.allowed_types & TransitFlags::FOOT != 0
+        && edge.sidewalk_sides().both()
 }
 
 // Horizontal length of a control polyline: the station measure of `NodeArms` (exact duplicates

@@ -49,7 +49,7 @@ pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, MedianEdges, ProfileBand,
 pub(crate) use profile::{
     FOOTPATH_MIN_WIDTH_M, LEFT_POCKET_TAPER_M, PocketNarrowing, SHOULDER_BAND_WIDTH_M,
     preview_candidate_roadbed_half_width_m,
-    side_band_width_m, visual_roadbed_half_width_m,
+    side_band_width_m, visual_roadbed_half_width_m, widest_side_band_width_m,
 };
 pub(crate) use query::{GroundedPieceScratch, LocalSurfaceQuery};
 pub use query::{LaneSurfaceQuery, PieceId, WallSegment};

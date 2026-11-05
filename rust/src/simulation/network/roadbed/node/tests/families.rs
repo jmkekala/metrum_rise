@@ -49,6 +49,7 @@ fn make(graph: &mut RegionGraph, edge: usize, arm: Arm) {
         Arm::Sidewalks => return,
         Arm::Rural => {
             graph.edge_mut(edge).allowed_types = TransitFlags::CAR;
+            graph.edge_mut(edge).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
             return;
         }
         Arm::Bridge => STRUCTURE_RISE_M,

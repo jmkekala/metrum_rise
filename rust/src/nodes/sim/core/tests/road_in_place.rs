@@ -10,7 +10,7 @@ use super::road_crosswalks::{
     arm_towards, fully_emitted_chunks, products, published_chunks, t_junction_with_side,
 };
 use super::*;
-use crate::simulation::network::graph::RoadMedian;
+use crate::simulation::network::graph::{RoadMedian, SidewalkSides};
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::road_types::RoadAttributes;
 
@@ -459,7 +459,7 @@ fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
         .collect();
     let before = core.region_graph.edge(side).clone();
 
-    let rural = RoadAttributes::new(80, false, true);
+    let rural = RoadAttributes::new(80, SidewalkSides::NONE, true);
     assert_eq!(edit(&mut core, side, (1, 1, None), rural), "");
     let road = core.region_graph.edge(side);
     assert_eq!(road.allowed_types & TransitFlags::FOOT, 0);
@@ -528,7 +528,7 @@ fn a_speed_change_in_place_reroutes_by_the_new_cost() {
     };
     let slow = cost(&core);
     assert_eq!(
-        edit(&mut core, side, (1, 1, None), RoadAttributes::new(100, true, true)),
+        edit(&mut core, side, (1, 1, None), RoadAttributes::new(100, SidewalkSides::BOTH, true)),
         ""
     );
     // The rebuild is deferred (D7): the routing in use keeps the old cost until it is adopted.
@@ -549,7 +549,7 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
     let (mut core, _, side, west) = t_junction_with_side(test_core(), 1, 1);
     let (_, side_parcel) = house_fronting(&mut core, side, (12.0, 60.0));
     let (_, west_parcel) = house_fronting(&mut core, west, (-50.0, 12.0));
-    let off = RoadAttributes::new(50, true, false);
+    let off = RoadAttributes::new(50, SidewalkSides::BOTH, false);
     // The count comes from the road's 512 m chunks, or from the whole city while the chunk
     // index is stale.
     for stale in [false, true] {
@@ -611,7 +611,7 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
 fn sidewalks_added_next_to_a_parcel_are_refused() {
     use crate::simulation::zoning::ParcelGeometry;
     let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
-    let shoulders = RoadAttributes::new(50, false, true);
+    let shoulders = RoadAttributes::new(50, SidewalkSides::NONE, true);
     assert_eq!(edit(&mut core, side, (1, 1, None), shoulders), "");
     // A 4 m parcel from 4.6 m east of the side road's centreline: past its 4.25 m shoulder edge,
     // inside its 5.0 m sidewalk edge. Attached to the side road, as a frontage lot.
@@ -644,7 +644,7 @@ fn sidewalks_added_next_to_a_parcel_are_refused() {
         "parcel_overlap"
     );
     assert_eq!(
-        edit(&mut core, side, (1, 1, None), RoadAttributes::new(70, false, true)),
+        edit(&mut core, side, (1, 1, None), RoadAttributes::new(70, SidewalkSides::NONE, true)),
         ""
     );
 }

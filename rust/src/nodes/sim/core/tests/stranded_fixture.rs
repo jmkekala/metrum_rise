@@ -95,6 +95,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         });
     }
     if spur {
@@ -122,6 +123,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
         });
     }
     core.region_graph.rebuild_adjacency_list();

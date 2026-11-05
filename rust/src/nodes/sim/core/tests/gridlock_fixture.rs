@@ -71,6 +71,7 @@ fn ring_core() -> SimCore {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         });
     }
     core.transit_network

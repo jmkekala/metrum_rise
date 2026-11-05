@@ -434,7 +434,9 @@ fn road_rebuild(core: &mut crate::nodes::sim::core::SimCore) -> serde_json::Valu
         })
         .expect("a road with sidewalks");
     match mode.as_str() {
-        "car_only" => graph.edge_mut(edge).allowed_types &= !TransitFlags::FOOT,
+        "car_only" => graph
+            .edge_mut(edge)
+            .set_sidewalks(crate::simulation::network::graph::SidewalkSides::NONE),
         "same" => {}
         _ => panic!("METRUM_PERF_ROAD_REBUILD is car_only or same, not {mode}"),
     }

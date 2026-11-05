@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::nodes::sim::core::RoadEditPlan;
+use crate::simulation::network::graph::SidewalkSides;
 use godot::prelude::Vector2;
 use std::time::Instant;
 
@@ -462,7 +463,7 @@ fn measure_populated_road_plan_scaling(
             let section = match measured {
                 Measured::LaneEdit => (2, 2, None, RoadAttributes::DEFAULT),
                 Measured::MedianEdit => (1, 1, Some(GRASS), RoadAttributes::DEFAULT),
-                _ => (1, 1, None, RoadAttributes::new(80, false, true)),
+                _ => (1, 1, None, RoadAttributes::new(80, SidewalkSides::NONE, true)),
             };
             let products = if measured == Measured::PocketEdit {
                 measure_pocket_edit(&mut core, remote_buildings, background_roads)
@@ -721,7 +722,7 @@ fn measure_lane_edit(
             "remote_buildings": remote_buildings, "remote_roads": remote_roads,
             "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
             "rayon_threads": rayon::current_num_threads(), "median": median.is_some(),
-            "sidewalks": attributes.sidewalks, "speed_ms": attributes.speed_ms,
+            "sidewalks": attributes.sidewalks.any(), "speed_ms": attributes.speed_ms,
             "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
             "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
             "toggle_p50_ms": p50(&mut toggles),

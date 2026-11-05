@@ -421,6 +421,7 @@ impl Block {
         edge.physical_geometry = edge.geometry.clone();
         if !foot {
             edge.allowed_types = TransitFlags::CAR;
+            edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         }
         self.graph.add_edge(edge);
         self.graph.rebuild_adjacency_list();
@@ -513,6 +514,7 @@ fn a_walker_at_a_node_with_no_sidewalk_is_stranded_there_reported_and_walks_home
 
     // The spur gets its sidewalks: the next plan home succeeds and it walks home.
     block.graph.edge_mut(4).allowed_types = TransitFlags::CAR | TransitFlags::FOOT;
+    block.graph.edge_mut(4).sidewalks = crate::simulation::network::graph::SidewalkSides::BOTH;
     block.relane();
     agents.next_replan_time[idx] = agents.sim_time;
     assert!(

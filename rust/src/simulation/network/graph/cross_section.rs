@@ -111,6 +111,81 @@ impl RoadMedian {
     }
 }
 
+/// Which sides of a car road carry a sidewalk (`ROAD-107`), in the edge's forward frame: the
+/// left is the negative lateral side (sidewalk lane 100, building and lot side 1), the right the
+/// positive one (lane -100, side -1). A car road is walked (`TransitFlags::FOOT`) exactly when it
+/// has a side ([`Edge::set_sidewalks`] keeps the two together); the side without a sidewalk has
+/// the 0.75 m shoulder of a road without sidewalks. A walkway has none: its footpath is not a
+/// sidewalk. Saved as [`Self::bits`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SidewalkSides(u8);
+
+impl SidewalkSides {
+    /// No sidewalk: a car road with a shoulder on each side, or a walkway.
+    pub const NONE: Self = Self(0);
+    /// A sidewalk on the left (negative lateral) side only.
+    pub const LEFT: Self = Self(1);
+    /// A sidewalk on the right (positive lateral) side only.
+    pub const RIGHT: Self = Self(2);
+    /// A sidewalk on each side.
+    pub const BOTH: Self = Self(3);
+
+    /// The sides a save or tool code names (0 none, 1 left, 2 right, 3 both); `None` for any
+    /// other code.
+    pub fn from_bits(bits: i64) -> Option<Self> {
+        u8::try_from(bits).ok().filter(|bits| *bits <= 3).map(Self)
+    }
+
+    /// [`Self::from_bits`]'s inverse.
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Both sides when `both`, else none: the two choices a road type had before `ROAD-107`.
+    pub fn both_or_none(both: bool) -> Self {
+        if both { Self::BOTH } else { Self::NONE }
+    }
+
+    /// The sides of a road whose left and right ends carry a sidewalk as given.
+    pub fn of_ends(left: bool, right: bool) -> Self {
+        Self(u8::from(left) | u8::from(right) << 1)
+    }
+
+    /// Whether any side has a sidewalk.
+    pub fn any(self) -> bool {
+        self.0 != 0
+    }
+
+    /// Whether both sides have one: what a crossing needs (`ROAD-107`, D5).
+    pub fn both(self) -> bool {
+        self == Self::BOTH
+    }
+
+    /// Whether the left (negative lateral) side has one.
+    pub fn left(self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    /// Whether the right (positive lateral) side has one.
+    pub fn right(self) -> bool {
+        self.0 & 2 != 0
+    }
+
+    /// Whether the side at `positive_lateral` (the right) or the other has one.
+    pub fn on_lateral(self, positive_lateral: bool) -> bool {
+        if positive_lateral {
+            self.right()
+        } else {
+            self.left()
+        }
+    }
+
+    /// How many sides have one (0, 1 or 2).
+    pub fn count(self) -> u8 {
+        u8::from(self.left()) + u8::from(self.right())
+    }
+}
+
 /// A turn pocket at one end of an edge (`ROAD-95`): extra lanes of the direction that approaches
 /// `end` (the forward lanes when `end` is [`EdgeEnd::End`]), each serving one turn at the node
 /// there. The lane counts and `Edge::width` include the pocket lanes. `left` is the lane left of
@@ -471,13 +546,58 @@ impl Edge {
         Self::validate_median(self.allowed_types, fwd, bkw, median)
     }
 
-    /// A car road's `allowed_types` with its sidewalks (`FOOT`) on or off (`ROAD-101`). `O(1)`.
-    pub(crate) fn sidewalk_flags(allowed_types: u8, sidewalks: bool) -> u8 {
-        if sidewalks {
-            allowed_types | TransitFlags::FOOT
+    /// Gives a car road the sidewalks `sides` (`ROAD-107`) and with them its `FOOT` flag
+    /// (`ROAD-101`): walked exactly when a side has one. `O(1)`.
+    pub(crate) fn set_sidewalks(&mut self, sides: SidewalkSides) {
+        debug_assert!(
+            self.allowed_types & TransitFlags::CAR != 0,
+            "sidewalks on a car road"
+        );
+        self.sidewalks = sides;
+        if sides.any() {
+            self.allowed_types |= TransitFlags::FOOT;
         } else {
-            allowed_types & !TransitFlags::FOOT
+            self.allowed_types &= !TransitFlags::FOOT;
         }
+    }
+
+    /// Whether the edge's sidewalk sides agree with its modes (`ROAD-107`): a car road is walked
+    /// (`FOOT`) exactly when it has a side, and a walkway or other edge without cars has none
+    /// (`sidewalks_without_car_road`, `sidewalk_flag_mismatch`). Loads refuse an edge that breaks
+    /// it. `O(1)`.
+    pub(crate) fn validate_sidewalks(&self) -> Result<(), &'static str> {
+        let car_road =
+            self.primary_type != TransitType::Foot && self.allowed_types & TransitFlags::CAR != 0;
+        if !car_road {
+            return if self.sidewalks.any() {
+                Err("sidewalks_without_car_road")
+            } else {
+                Ok(())
+            };
+        }
+        if (self.allowed_types & TransitFlags::FOOT != 0) != self.sidewalks.any() {
+            return Err("sidewalk_flag_mismatch");
+        }
+        Ok(())
+    }
+
+    /// The sides of this edge with a sidewalk (`ROAD-107`): the stored mask on a walked road,
+    /// [`SidewalkSides::NONE`] on a walkway (its footpath is not a sidewalk) and on an edge
+    /// nobody walks. Debug builds assert the invariant that a car road is walked (`FOOT`)
+    /// exactly when it has a side, so an edge built without its mask fails here instead of
+    /// losing its sidewalks quietly. `O(1)`.
+    pub(crate) fn sidewalk_sides(&self) -> SidewalkSides {
+        if self.allowed_types & TransitFlags::CAR != 0 {
+            debug_assert_eq!(
+                self.allowed_types & TransitFlags::FOOT != 0,
+                self.sidewalks.any(),
+                "a car road is walked exactly when it has a sidewalk side (ROAD-107)"
+            );
+        }
+        if self.primary_type == TransitType::Foot || self.allowed_types & TransitFlags::FOOT == 0 {
+            return SidewalkSides::NONE;
+        }
+        self.sidewalks
     }
 
     /// The median rules alone, for an edge of `allowed_types` with `fwd` + `bkw` lanes: valid
@@ -540,8 +660,9 @@ impl RegionGraph {
     }
 
     /// Gives edge `id` `fwd` forward and `bkw` backward lanes, `median`, and the width they take,
-    /// and its road type's `attributes` (`ROAD-101`): the `FOOT` flag from `sidewalks`, the speed
-    /// limit (the routing `base_cost` recomputed from it when it changes),
+    /// and its road type's `attributes` (`ROAD-101`): the sidewalk sides and `FOOT` from
+    /// `sidewalks` (`ROAD-107`), the speed limit (the routing `base_cost` recomputed from it when
+    /// it changes),
     /// `no_building_spawn` from `zoning` and `no_street_lights` from `street_lights`. Keeps its centreline, id, class and everything else
     /// (`ROAD-80`). The cross-section must pass [`Edge::validate_cross_section`], so the edge is
     /// a car road. The spatial index reads the centreline only, so it is kept. Callers re-lay out
@@ -561,7 +682,7 @@ impl RegionGraph {
         edge.bkw_lanes = bkw;
         edge.median = median;
         edge.width = Edge::cross_section_width_m(fwd, bkw, median);
-        edge.allowed_types = Edge::sidewalk_flags(edge.allowed_types, attributes.sidewalks);
+        edge.set_sidewalks(attributes.sidewalks);
         edge.no_building_spawn = !attributes.zoning;
         edge.no_street_lights = !attributes.street_lights;
         if edge.speed_limit.to_bits() != attributes.speed_ms.to_bits() {
@@ -580,6 +701,7 @@ mod tests {
         let edge = Edge {
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: SidewalkSides::BOTH,
             ..Default::default()
         };
         let median = RoadMedian::from_tool(2, 5.0).unwrap();
@@ -631,6 +753,7 @@ mod tests {
         let mut edge = Edge {
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            sidewalks: SidewalkSides::BOTH,
             fwd_lanes: 2,
             bkw_lanes: 2,
             ..Default::default()

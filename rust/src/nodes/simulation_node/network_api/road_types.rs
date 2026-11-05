@@ -322,7 +322,7 @@ fn layout_to_variant(
         "bkw_lanes": section.map_or(0, |section| i64::from(section.bkw_lanes)),
         "median_style": i64::from(RoadMedian::style_code(median)),
         "median_width": median.map_or(0.0, |median| median.width_m),
-        "sidewalks": section.is_some_and(|section| section.sidewalks),
+        "sidewalks": section.is_some_and(|section| section.sidewalks.any()),
         "part_widths_m": PackedFloat32Array::from(widths.as_slice()),
         "carriageway_m": carriageway_m,
         "total_m": total_m,

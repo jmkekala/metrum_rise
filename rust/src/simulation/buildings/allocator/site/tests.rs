@@ -378,6 +378,7 @@ fn road_test_edge(
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         median: None,
         pocket: None,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
     }
 }
 
@@ -651,6 +652,7 @@ fn nearest_road_sample_on_a_road(sidewalks: bool) {
     let edge_idx = graph.edge_count() - 1;
     if !sidewalks {
         graph.edge_mut(edge_idx).allowed_types = crate::simulation::network::types::TransitFlags::CAR;
+        graph.edge_mut(edge_idx).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         network.roadbed.mark_edge_dirty(edge_idx);
     }
     network.roadbed.compile_dirty(&graph);

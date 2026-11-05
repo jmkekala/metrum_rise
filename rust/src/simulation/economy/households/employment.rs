@@ -2195,6 +2195,7 @@ mod tests {
                 fwd_lanes: 1,
                 bkw_lanes: 1,
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
                 width: 10.0,
                 speed_limit: 15.0,
                 base_cost: 300.0 + (edge % 3) as f32 / 7.0,

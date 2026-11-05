@@ -2781,6 +2781,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         })
     }
 
@@ -2830,6 +2831,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         });
 
         core.set_vehicle_frontage_access_internal(0, 0);
@@ -3002,6 +3004,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         });
         core.region_graph.rebuild_adjacency_list();
         let residential = core
@@ -3748,6 +3751,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         });
         core.region_graph.rebuild_adjacency_list();
 
@@ -3804,6 +3808,7 @@ mod tests {
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         });
         core.region_graph.rebuild_adjacency_list();
         core.zoning

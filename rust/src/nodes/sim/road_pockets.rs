@@ -23,7 +23,7 @@ use crate::simulation::network::pockets::{
 };
 use crate::simulation::network::road_types::cost::BUILD_COST_PER_M;
 use crate::simulation::network::road_types::{RoadAttributes, RoadCrossSection};
-use crate::simulation::network::roadbed::{EdgeEnd, side_band_width_m};
+use crate::simulation::network::roadbed::{EdgeEnd, widest_side_band_width_m};
 use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, validate_edge,
@@ -312,7 +312,7 @@ impl SimCore {
     fn pocket_corridor_refusal(&self, edge_idx: usize) -> Option<RoadRejection> {
         let edge = self.region_graph.edge(edge_idx);
         let axis = edge.carriageway_axis(centreline(edge));
-        let half_width_m = edge.width * 0.5 + side_band_width_m(edge);
+        let half_width_m = edge.width * 0.5 + widest_side_band_width_m(edge);
         if edge.class == EdgeClass::Standard
             && self
                 .watermap

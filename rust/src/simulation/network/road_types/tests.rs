@@ -33,9 +33,6 @@ fn every_layout_refusal_has_its_key_and_part() {
         ),
         (&[], "layout_no_car_lane", None),
         (&[S], "layout_sidewalks", None),
-        // One side only: none or both.
-        (&[B, F, S], "layout_sidewalks", None),
-        (&[S, B, F], "layout_sidewalks", None),
         (&[S, B, S, F, S], "layout_sidewalks", Some(2)),
         (&[B, S, F], "layout_sidewalks", Some(1)),
         (&[B, B, m, m, F], "layout_two_medians", Some(3)),
@@ -81,10 +78,10 @@ fn valid_layouts_build_their_cross_section() {
         fwd_lanes,
         bkw_lanes,
         median,
-        sidewalks: true,
+        sidewalks: SidewalkSides::BOTH,
     };
     let bare = |fwd_lanes, bkw_lanes, median| RoadCrossSection {
-        sidewalks: false,
+        sidewalks: SidewalkSides::NONE,
         ..section(fwd_lanes, bkw_lanes, median)
     };
     let cases: &[(&[RoadPart], RoadCrossSection)] = &[
@@ -101,6 +98,35 @@ fn valid_layouts_build_their_cross_section() {
             section(2, 2, Some(paving_median)),
         ),
         (&[S, B, B, B, B, F, F, F, F, S], section(4, 4, None)),
+        // One side only (`ROAD-107`): the end with the sidewalk names the side.
+        (
+            &[S, B, F],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::LEFT,
+                ..bare(1, 1, None)
+            },
+        ),
+        (
+            &[B, F, S],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::RIGHT,
+                ..bare(1, 1, None)
+            },
+        ),
+        (
+            &[F, S],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::RIGHT,
+                ..bare(1, 0, None)
+            },
+        ),
+        (
+            &[S, B, B, paving, F, F],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::LEFT,
+                ..bare(2, 2, Some(paving_median))
+            },
+        ),
     ];
     for (parts, expected) in cases {
         let section = check_layout(parts).unwrap();
@@ -127,6 +153,9 @@ fn widths_sum_to_the_edge_width_plus_sidewalks() {
     assert_eq!(carriageway, Edge::cross_section_width_m(0, 0, None));
     // Refused layouts still have widths for the builder to draw.
     assert_eq!(layout_widths(&[S, F, B, S]).2, 10.0);
+    // One sidewalk (`ROAD-107`): the other end gets its shoulder.
+    assert_eq!(layout_widths(&[S, B, F]), (vec![1.5, 3.5, 3.5], 7.0, 9.25));
+    assert_eq!(layout_widths(&[B, F, S]), (vec![3.5, 3.5, 1.5], 7.0, 9.25));
     // Without sidewalks the roadbed builds a 0.75 m shoulder each side.
     let (widths, carriageway, total) = layout_widths(&[B, grass(3.0), F]);
     assert_eq!((widths, carriageway, total), (vec![3.5, 3.0, 3.5], 10.0, 11.5));
@@ -158,7 +187,7 @@ fn the_builtins_build_todays_roads_menu() {
                 fwd_lanes,
                 bkw_lanes,
                 median: None,
-                sidewalks: fwd_lanes > 0,
+                sidewalks: SidewalkSides::both_or_none(fwd_lanes > 0),
             }
         );
         assert_eq!(ty.usable(), Some(section));
@@ -172,7 +201,7 @@ fn the_builtins_build_todays_roads_menu() {
     }
     assert_eq!(
         RoadAttributes::DEFAULT.speed_ms.to_bits(),
-        RoadAttributes::new(50, true, true).speed_ms.to_bits()
+        RoadAttributes::new(50, SidewalkSides::BOTH, true).speed_ms.to_bits()
     );
     assert_eq!(RoadAttributes::speed_kmh_of(config::DEFAULT_URBAN_ROAD_SPEED_MS), 50);
     let types: Vec<RoadType> = BUILTIN_ROAD_TYPES
@@ -201,14 +230,14 @@ fn speeds_are_checked_on_the_10_kmh_grid() {
         assert_eq!(check_speed_kmh(road, speed), Err("speed_out_of_range"));
     }
     assert_eq!(check_speed_kmh(RoadCrossSection::WALKWAY, 999), Ok(0));
-    let tool = RoadAttributes::from_tool(100, false, false, true).unwrap();
+    let tool = RoadAttributes::from_tool(100, SidewalkSides::NONE, false, true).unwrap();
     assert_eq!(
         tool.speed_ms.to_bits(),
         (100.0_f32 * config::KMH_TO_MPS).to_bits()
     );
     assert_eq!(RoadAttributes::speed_kmh_of(tool.speed_ms), 100);
     assert_eq!(
-        RoadAttributes::from_tool(5, true, true, true),
+        RoadAttributes::from_tool(5, SidewalkSides::BOTH, true, true),
         Err("speed_out_of_range")
     );
 }
@@ -234,6 +263,13 @@ fn suggested_names_describe_the_layout_and_skip_taken_ones() {
     let painted = section(&[S, B, median(MedianStyle::Painted, 1.5), F, S]);
     assert_eq!(suggested_name(painted, |_| false), "1+1 Painted 1.5 m");
     assert_eq!(suggested_name(section(&[S, F, F, S]), |_| false), "2+0");
+    // A road with one sidewalk names its side (`ROAD-107`).
+    assert_eq!(suggested_name(section(&[S, B, F]), |_| false), "1+1 L");
+    assert_eq!(suggested_name(section(&[F, S]), |_| false), "1+0 R");
+    assert_eq!(
+        suggested_name(section(&[B, grass(3.0), F, S]), |_| false),
+        "1+1 R Grass 3 m"
+    );
     let taken = ["2+2 grass 3 m", "2+2 Grass 3 m (2)"];
     let is_taken = |name: &str| taken.iter().any(|taken| same_name(taken, name));
     assert_eq!(suggested_name(divided, is_taken), "2+2 Grass 3 m (3)");

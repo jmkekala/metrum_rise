@@ -375,6 +375,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             median: None,
             pocket: None,
+            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         };
         edges.push(graph.add_edge(e));
     }

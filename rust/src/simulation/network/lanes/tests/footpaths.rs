@@ -29,6 +29,7 @@ fn add_edge(graph: &mut RegionGraph, start: u32, end: u32, footpath: bool) -> us
         } else {
             TransitFlags::CAR | TransitFlags::FOOT
         },
+        sidewalks: crate::simulation::network::graph::SidewalkSides::both_or_none(!footpath),
         class: EdgeClass::Standard,
         width: if footpath { 2.0 } else { 7.0 },
         fwd_lanes: u8::from(!footpath),

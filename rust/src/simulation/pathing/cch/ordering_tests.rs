@@ -52,6 +52,7 @@ fn grid(side: u32) -> RegionGraph {
                         crate::simulation::network::types::VehicleFrontageAccess::BothSides,
                     median: None,
                     pocket: None,
+                    sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
                 });
             }
         }
@@ -194,6 +195,11 @@ fn shortcut_alternatives_survive_recustomization_modes_and_one_way_edits() {
             TransitFlags::FOOT
         } else {
             TransitFlags::FOOT | TransitFlags::CAR
+        };
+        edge.sidewalks = if id % 3 == 0 {
+            crate::simulation::network::graph::SidewalkSides::NONE
+        } else {
+            crate::simulation::network::graph::SidewalkSides::BOTH
         };
         edge.base_cost = 2.0 + (id % 7) as f32;
         if id % 4 == 0 {
@@ -510,6 +516,11 @@ fn costs_from_each_match_point_queries() {
             TransitFlags::FOOT
         } else {
             TransitFlags::FOOT | TransitFlags::CAR
+        };
+        edge.sidewalks = if id % 3 == 0 {
+            crate::simulation::network::graph::SidewalkSides::NONE
+        } else {
+            crate::simulation::network::graph::SidewalkSides::BOTH
         };
         edge.base_cost = 2.0 + (id % 7) as f32;
         edge.bkw_lanes = u8::from(id % 4 != 0);

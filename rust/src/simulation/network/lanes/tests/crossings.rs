@@ -615,6 +615,7 @@ fn a_t_whose_stem_has_no_sidewalks_is_crossed_by_the_far_side() {
     for sloped in [false, true] {
         let mut graph = star(&[0.0, 180.0, 270.0], sloped);
         graph.edge_mut(2).allowed_types = TransitFlags::CAR;
+        graph.edge_mut(2).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
         let (lanes, _) = built(&mut graph);
         let (hub_x, hub_z) = (graph.node(HUB).pos.x, graph.node(HUB).pos.z);
         assert_eq!(crossing_edges(&lanes), BTreeSet::from([0, 1]), "{sloped}");
