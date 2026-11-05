@@ -96,6 +96,11 @@ func _init(font_size: int = 13) -> void:
 	_apply_button.pressed.connect(func() -> void: apply_pressed.emit())
 	apply_row.add_child(_apply_button)
 	rows.add_child(apply_row)
+	# The row stays hovered over its own controls: a control that stops the mouse ends Godot's
+	# hover chain at itself, so the row read as left over each check box, the length box, the
+	# spacer and Apply, and the window's highlight flickered. Passing still gives them their
+	# clicks and the wheel.
+	pass_mouse_to_row(self)
 
 ## Shows arm `arm` (a `get_junction_pockets` entry) without a request: the name, what the end
 ## has, the check boxes and length from its pocket (or none and the default length), each role
@@ -151,6 +156,15 @@ func show_verdict(verdict: Dictionary, accepted_text: String, apply_text: String
 		return
 	_verdict_label.add_theme_color_override("font_color", VERDICT_READY if ready else VERDICT_REFUSED)
 	_verdict_label.text = accepted_text if ready else RoadReasonText.text(verdict, "This road cannot take this pocket")
+
+## Makes every control under `node` (internal children too, such as the spin box's text field)
+## pass the mouse on instead of stopping it, so the row's `mouse_entered` / `mouse_exited` follow
+## the cursor over the whole row.
+static func pass_mouse_to_row(node: Node) -> void:
+	for child in node.get_children(true):
+		if child is Control and child.mouse_filter == Control.MOUSE_FILTER_STOP:
+			child.mouse_filter = Control.MOUSE_FILTER_PASS
+		pass_mouse_to_row(child)
 
 ## Draws the row's border in the strip's cyan while its road is highlighted.
 func set_highlighted(on: bool) -> void:

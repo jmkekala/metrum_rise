@@ -188,6 +188,12 @@ func _run() -> void:
 	_expect(window.row(1)._style.border_color == window.row(1).HIGHLIGHT, "the hovered row is outlined")
 	window.row(1).mouse_exited.emit()
 	_expect(tool._pocket_end_mi.mesh == null, "no highlight once the cursor leaves the rows")
+	# Godot's hover chain ends at a control that stops the mouse, and the row then reads as left:
+	# the highlight flickered as the cursor crossed a row's controls (the user, 2026-11-05).
+	# Headless Godot runs no hover, so the rule is checked on the row itself.
+	var stops := []
+	_controls_that_stop(window.row(1), stops)
+	_expect(stops.is_empty(), "every control in a row passes the cursor on to the row: %s" % [stops])
 
 	# The west arm: a right pocket's verdict and cost, then a length the road cannot hold.
 	var west_edge := int(west.info.edge)
@@ -303,6 +309,12 @@ func _run() -> void:
 	_expect(not window._window.visible and tool._pocket_end_mi.mesh == null, "the window closes with the junction")
 	tool.active = false
 	_finish(scene)
+
+func _controls_that_stop(node: Node, found: Array) -> void:
+	for child in node.get_children(true):
+		if child is Control and child.mouse_filter == Control.MOUSE_FILTER_STOP:
+			found.append(child.get_class())
+		_controls_that_stop(child, found)
 
 func _finish(scene: Node) -> void:
 	scene.free()
