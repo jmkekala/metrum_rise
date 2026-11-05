@@ -403,3 +403,29 @@ fn the_pocket_edit_keeps_the_buildings_it_moves_on_their_curb() {
         }
     }
 }
+
+// The stills' city (`METRUM_R5D3_SAVE`): the 2+2 four-way with a 60 m right pocket on its west
+// arm and houses grown on both curbs, the widened (south) and the kept (north) one, along the
+// pocket edge and the base road beyond it, saved settled. A build before round R5d3 grows no
+// house on the kept curb of the pocket edge. Ignored: it writes a file.
+#[test]
+#[ignore = "writes the stills' save: METRUM_R5D3_SAVE"]
+fn a_pocketed_arm_with_houses_on_both_curbs_save() {
+    let save = std::env::var("METRUM_R5D3_SAVE").expect("METRUM_R5D3_SAVE");
+    let (mut core, pocket) = pocketed(2, RIGHT);
+    let base = core.region_graph.edge(pocket).start_node;
+    let base = *core
+        .region_graph
+        .node_adjacency(base)
+        .iter()
+        .find(|&&edge| edge != pocket)
+        .expect("the base road");
+    for sign in [1.0, -1.0] {
+        let houses = [
+            grow(&mut core, pocket, sign, [-55.0, -25.0]),
+            grow(&mut core, base, sign, [-150.0, -85.0]),
+        ];
+        eprintln!("R5D3_STILLS side {sign} houses {houses:?}");
+    }
+    core.save_game_settled(&save, None).expect("save");
+}
