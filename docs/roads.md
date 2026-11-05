@@ -11546,7 +11546,11 @@ D1-D5, D22, D23).
   (`transition_right_pocket` 8.22 -> 8.42 us, `transition_left_pocket` 8.19 -> 8.40 us,
   `transition_right_pocket_divided` 12.27 -> 12.57 us), about 0.2-0.3 us per transition node on
   an edit. A profile of the right pocket row finds no function that accounts for it
-  (`RoadProfile::for_edge` 1.05% -> 1.27% of the samples); the cause is not established.
+  (`RoadProfile::for_edge` 1.05% -> 1.27% of the samples). A fixed-iteration `perf stat` loop of
+  that row (1,000,000 builds, one P-core, `C B B C`, means per build; a compile ran on other cores
+  throughout, so read the counts, not the absolute cycles) shows code placement, not added work:
+  instructions 123,409 -> 123,155 and branches 16,628 -> 16,513 fall, while cycles
+  40,179 -> 41,581, branch misses 4.5 -> 6.0 and L1 instruction misses 1,626 -> 1,683 rise.
 
 #### The road builder (ROAD-101, round RB2)
 
