@@ -328,6 +328,21 @@ impl Edge {
         })
     }
 
+    /// The width as the base road carries it (`ROAD-95`): this edge's width without its pocket
+    /// lanes and with the median they narrowed, the bits removing the pocket gives the road
+    /// back ([`Self::set_pocket`]); the stored width itself without a pocket. Zoning's curb
+    /// frames read it, so a pocket edit leaves the base road's grid (round R5d1). `O(1)`.
+    pub(crate) fn base_width_m(&self) -> f32 {
+        if self.pocket.is_none() {
+            return self.width;
+        }
+        Edge::cross_section_width_m(
+            self.fwd_lanes - self.pocket_lanes(true),
+            self.bkw_lanes - self.pocket_lanes(false),
+            self.base_median(),
+        )
+    }
+
     /// Whether this edge's pocket is one a pocket edit could have built (`ROAD-95`): a car road
     /// at ground level (a bridge's or tunnel's taper would lie on a structure piece), at least one
     /// through lane besides the pocket lanes in the approaching direction, at most

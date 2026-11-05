@@ -150,6 +150,16 @@ impl GridFrame {
         self
     }
 
+    /// This lattice moved `metres` along basis axis `axis` (0 or 1, as [`Self::axes`] orders
+    /// them), on the micrometre phase itself: the other phase keeps its bits, and moving back
+    /// gives the frame back exactly. A turn pocket's widened curb reads its base road's frame
+    /// moved by the kerb's move (`ROAD-95` round R5d1).
+    pub(super) fn moved(mut self, axis: usize, metres: f64) -> Self {
+        let delta = (metres * COORDINATE_SCALE).round() as i64;
+        self.key.phase[axis] = (self.key.phase[axis] + delta).rem_euclid(self.key.cell_micrometres);
+        self
+    }
+
     /// Compares phases only after two sources have explicitly selected the same basis.
     pub(super) fn phase_matches(self, other: Self, precision_m: f64) -> bool {
         if self.key.axis != other.key.axis

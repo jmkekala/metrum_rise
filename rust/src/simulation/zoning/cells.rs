@@ -5,6 +5,7 @@
 //! Cell coordinates address a persistent oriented grid, independently of road array indices.
 //! Building lots are consumers of cell paint; an unpainted cell is not a land reservation.
 
+mod frontage_line;
 mod generation;
 mod geometry;
 mod lots;

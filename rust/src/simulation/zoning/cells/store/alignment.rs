@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::network::graph::Edge;
 use crate::simulation::network::types::{EdgeClass, TransitType};
+use crate::simulation::zoning::cells::frontage_line::{FrontageLine, frames_for_edge};
 use crate::simulation::zoning::cells::generation::straight_frame;
 use crate::simulation::zoning::cells::geometry::road_source_precision;
 use rayon::prelude::*;
@@ -13,10 +13,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 /// Persistent curb frames and their source address. Empty roads retain these choices too.
+/// A turn pocket's pieces hold their base road's line and frames (`ROAD-95` round R5d1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RoadCellAlignment {
-    // Exact f32 bits: first X/Z, last X/Z, width. Heights do not select an XZ grid.
+    // Exact f32 bits: first X/Z, last X/Z, width of the road's frontage line (the road, or the
+    // pocket pieces of one base road at its base width). Heights do not select an XZ grid.
     source: [u32; 5],
+    // The line's end nodes.
     #[serde(skip)]
     nodes: [u32; 2],
     // Directed left (-1), right (+1). A split recovers these through its original endpoints.
@@ -24,17 +27,26 @@ pub(crate) struct RoadCellAlignment {
 }
 
 impl RoadCellAlignment {
-    /// Rejects a stale source address when queried against a graph snapshot.
+    /// Rejects a stale source address when queried against a graph snapshot. A pocket piece's
+    /// widened curb reads the line's frame moved out by its kerb's move.
     pub(in crate::simulation::zoning::cells) fn frames_for(
         self,
         graph: &RegionGraph,
         id: usize,
     ) -> Option<[GridFrame; 2]> {
-        (source(graph.get_edge(id)?)? == self.source).then_some(self.frames)
+        (FrontageLine::of(graph, id)?.source() == self.source)
+            .then(|| frames_for_edge(graph, id, self.frames))
+    }
+
+    /// Test-only: the directed left and right curb frames.
+    #[cfg(test)]
+    pub(crate) fn frames(self) -> [GridFrame; 2] {
+        self.frames
     }
 }
 
 struct StraightRoad {
+    line: FrontageLine,
     source: [u32; 5],
     nodes: [u32; 2],
     points: Vec<DVec2>,
@@ -43,15 +55,11 @@ struct StraightRoad {
     basis: GridFrame,
 }
 
-fn source(edge: &Edge) -> Option<[u32; 5]> {
-    let a = edge.physical_geometry.first()?;
-    let b = edge.physical_geometry.last()?;
-    // SQLite REAL canonicalizes signed zero. Both encodings name the same source point.
-    Some([a.x, a.z, b.x, b.z, edge.width].map(|v| if v == 0.0 { 0 } else { v.to_bits() }))
-}
-
 impl StraightRoad {
-    fn new(edge: &Edge, cell_m: f64) -> Option<Self> {
+    // Edge `id`'s frontage line, if it is a straight standard road: the edge, or the pocket
+    // pieces of its base road, whose frames it shares.
+    fn new(graph: &RegionGraph, id: usize, cell_m: f64) -> Option<Self> {
+        let edge = graph.get_edge(id)?;
         if edge.deleted
             || edge.primary_type != TransitType::Road
             || edge.class != EdgeClass::Standard
@@ -59,11 +67,8 @@ impl StraightRoad {
         {
             return None;
         }
-        let points: Vec<_> = edge
-            .physical_geometry
-            .iter()
-            .map(|p| DVec2::new(f64::from(p.x), f64::from(p.z)))
-            .collect();
+        let line = FrontageLine::of(graph, id)?;
+        let points: Vec<_> = line.points(graph).collect();
         let bounds = CellBounds::from_points(points.iter().copied());
         let straight_precision = road_source_precision(bounds).max(1e-4);
         let direction = (*points.last()? - points[0]).normalize_or_zero();
@@ -75,8 +80,9 @@ impl StraightRoad {
             return None;
         }
         Some(Self {
-            source: source(edge)?,
-            nodes: [edge.start_node, edge.end_node],
+            source: line.source(),
+            nodes: line.ends,
+            line,
             points,
             bounds,
             precision: road_source_precision(bounds.expanded(6.0 * cell_m)),
@@ -137,8 +143,9 @@ impl StraightRoad {
 }
 
 impl CellStore {
-    /// The `edited` roads and every road at their endpoints: the roads whose curb frames
-    /// [`Self::refresh_road_alignments`] refreshes. O(edited roads + their incidences).
+    /// The `edited` roads and every road at their endpoints, with the other pocket pieces of
+    /// each one's base road (`ROAD-95` round R5d1), which share its frames: the roads whose curb
+    /// frames [`Self::refresh_road_alignments`] refreshes. O(edited roads + their incidences).
     pub(crate) fn road_alignment_scope(
         graph: &RegionGraph,
         edited: &BTreeSet<usize>,
@@ -156,6 +163,13 @@ impl CellStore {
                 }
             }
         }
+        let mut pieces = Vec::new();
+        for &id in &scope {
+            if let Some(line) = FrontageLine::of(graph, id) {
+                pieces.extend(line.members().filter(|&piece| piece != id));
+            }
+        }
+        scope.extend(pieces);
         scope
     }
 }
@@ -185,10 +199,7 @@ impl<M: CellMaps> CellStore<M> {
         graph: &RegionGraph,
         config: &WorldConfig,
     ) -> bool {
-        let Some(road) = graph
-            .get_edge(id)
-            .and_then(|e| StraightRoad::new(e, f64::from(config.zone_cell_m)))
-        else {
+        let Some(road) = StraightRoad::new(graph, id, f64::from(config.zone_cell_m)) else {
             return false;
         };
         if self.road_alignments.contains_key(&id)
@@ -252,9 +263,7 @@ impl<M: CellMaps> CellStore<M> {
         let roads: BTreeMap<_, _> = crate::thread_pools::install(|| {
             scope
                 .par_iter()
-                .filter_map(|&id| {
-                    StraightRoad::new(graph.get_edge(id)?, cell_m).map(|road| (id, road))
-                })
+                .filter_map(|&id| StraightRoad::new(graph, id, cell_m).map(|road| (id, road)))
                 .collect()
         });
         // Old deleted parents still describe splits. Endpoint lookup is local and avoids
@@ -324,7 +333,8 @@ fn select_bases(
                             .flatten()
                     })
                     .filter(|(_, old)| road.continues(*old))
-                    .min_by_key(|(id, _)| *id)
+                    // The line's own pieces first: a pocket piece keeps its base road's basis.
+                    .min_by_key(|(id, _)| (!road.line.contains(*id), *id))
                     .map(|(_, old)| *old)
             });
         if let Some(prior) = prior {
@@ -369,12 +379,12 @@ fn select_phases(
 ) -> BTreeMap<(usize, usize), GridFrame> {
     let raw: BTreeMap<_, _> = roads
         .iter()
-        .map(|(&id, _)| {
+        .map(|(&id, road)| {
             (
                 id,
                 [
-                    straight_frame(graph, id, bases[&id], -1.0),
-                    straight_frame(graph, id, bases[&id], 1.0),
+                    straight_frame(graph, &road.line, bases[&id], -1.0),
+                    straight_frame(graph, &road.line, bases[&id], 1.0),
                 ],
             )
         })
@@ -393,7 +403,8 @@ fn select_phases(
                     .flatten()
             })
             .filter(|(_, old)| road.inherits_phase(*old))
-            .min_by_key(|(source, _)| (*source != id, *source));
+            // Its own record first, or a piece's of the same base road (`ROAD-95` round R5d1).
+            .min_by_key(|(source, _)| (!road.line.contains(*source), *source));
         if let Some((_, old)) = continuing {
             let values = old.source.map(|v| f64::from(f32::from_bits(v)));
             let previous_direction = DVec2::new(values[2] - values[0], values[3] - values[1]);

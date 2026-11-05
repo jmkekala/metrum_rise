@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::simulation::zoning::cells::CELL_FRONTAGE_UNITS;
+use crate::simulation::zoning::cells::frontage_line::kerb_offset_m;
 use crate::simulation::zoning::cells::geometry::road_contact_precision;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,37 +16,49 @@ struct Interval {
 }
 
 /// Proves that a cell crossing an edge endpoint has continuous, eligible straight frontage.
-/// Endpoint columns query k intersecting roads and P points in O(log R + P + k log k).
+/// `start` lies on `supplier`'s centreline (its carriageway axis for a pocket edge), whose
+/// curb on the side `normal` points to lies `half_width` out. Between roads without a pocket
+/// the frontage is a collinear centreline of the same width; where either has one, the same
+/// curb line on that side (`ROAD-95` round R5d1), so the curb a pocket does not move runs on
+/// through its transition. Endpoint columns query k intersecting roads and P points in
+/// O(log R + P + k log k).
 pub(super) fn column_is_covered(
     graph: &RegionGraph,
-    width: f32,
+    supplier: &Edge,
     start: DVec2,
     tangent: DVec2,
+    normal: DVec2,
+    half_width: f64,
     length: f64,
 ) -> bool {
     let bounds = CellBounds::from_points([start, start + tangent * length]);
     // Current graph points are f32. This bound covers their collinear subdivision error;
     // final whole-cell road/cell predicates remain unchanged.
     let epsilon = super::super::geometry::road_source_precision(bounds);
-    let query = bounds.expanded(epsilon);
+    // A pocket edge's axis lies off the centrelines of the roads continuing it.
+    let query = bounds.expanded(epsilon + f64::from(supplier.kerb_shift_m().abs()));
     let mut intervals = Vec::new();
     graph.visit_edges_near_aabb(
         Vector3::new(query.min.x as f32, 0.0, query.min.y as f32),
         Vector3::new(query.max.x as f32, 0.0, query.max.y as f32),
         |id| {
             let edge = graph.edge(id);
+            let plain = supplier.pocket.is_none() && edge.pocket.is_none();
             if edge.no_building_spawn
                 || edge.primary_type != TransitType::Road
                 || !graph.fronts_ground(id)
-                || edge.width != width
+                || (plain && edge.width != supplier.width)
                 || edge.physical_geometry.len() < 2
             {
                 return;
             }
+            // With a pocket on either road, its curb line on this side against the supplier's.
+            let offset = (!plain).then(|| normal * (kerb_offset_m(edge, normal) - half_width));
             let mut min = f64::INFINITY;
             let mut max = f64::NEG_INFINITY;
             for point in &edge.physical_geometry {
-                let point = DVec2::new(f64::from(point.x), f64::from(point.z)) - start;
+                let point = DVec2::new(f64::from(point.x), f64::from(point.z));
+                let point = offset.map_or(point, |offset| point + offset) - start;
                 if point.perp_dot(tangent).abs() > epsilon {
                     return;
                 }
@@ -152,9 +165,9 @@ fn frame_candidates<M: CellMaps>(
         }
         let tangent = axes[along] * delta[along].signum();
         let right = DVec2::new(tangent.y, -tangent.x);
-        let offset =
-            (f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH)) / cell_m;
         for sign in [-1, 1] {
+            // A pocket edge's curb on this side lies off its centreline's half-width (D17).
+            let offset = kerb_offset_m(edge, axes[depth] * f64::from(sign)) / cell_m;
             let boundary = first[depth] + f64::from(sign) * offset;
             if (boundary - boundary.round()).abs() > epsilon {
                 continue;
