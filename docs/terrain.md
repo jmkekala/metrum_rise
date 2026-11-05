@@ -4626,6 +4626,17 @@ the road, one site chunk lookup and the seams near the point
 | `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles), never ground a road covers or a portal opening cuts | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
 | `raycast_base(origin, dir)` | the authored base | `intersect_terrain_internal` | terrain brushes |
 
+**The tile's interpolation choice (`TERRAIN-19`, 2026-11-05).** "Without a seam or pad within
+the cap" is one predicate for every query: no road or pad seam whose XZ box lies within the cap
+and the 1 m window pad of the tile's rectangle grown by one `GL0` spacing, by Euclidean box
+distance (`GradedSurface::quiet`). The `_near` queries read it from the shared query index's
+per-tile `has_seams`, which until then counted every grounded seam the axis-aligned window met:
+a road ending off a tile's corner (its nearest seam box 71.9 m away, inside the window on each
+axis) made `ground_height_near` answer the `GL0` triangles where `ground_height_at` answered the
+bilinear base, 9 um apart on the user's save, and the debug build's sampled comparison panicked
+on load (vegetation land cover). The index now applies the gather's predicate; regression
+`graded_queries::a_road_beyond_the_cap_off_a_tiles_corner_leaves_it_on_its_base`.
+
 **The ground over a tunnel bore (`ROAD-61`, rounds R2b and R8).** A tunnel span is never on the
 visible surface: over a bore the surface is the graded ground, which past a portal row is the hill
 (below). The roadbed marks a buried piece in its query index and answers the exposed pieces' top

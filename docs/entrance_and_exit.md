@@ -447,8 +447,14 @@ Use this exact derived rule:
 
 - `same_side_car_lane_id = car_lane_fwd` and `opposite_side_car_lane_id = car_lane_bkw` when `side == -1`
 - `same_side_car_lane_id = car_lane_bkw` and `opposite_side_car_lane_id = car_lane_fwd` when `side == 1`
-- `same_side_cross_point = edge_pos + normal * (edge.width * 0.5)`
-- `opposite_side_cross_point = edge_pos - normal * (edge.width * 0.5)`
+- `same_side_cross_point = edge_pos + normal * edge.frontage_half_width_m(side)`
+- `opposite_side_cross_point = edge_pos - normal * edge.frontage_half_width_m(-side)`
+
+`Edge::frontage_half_width_m(side)` is the distance from the centreline to that side's kerb:
+`edge.width * 0.5` bit for bit on any road without a turn pocket; on a pocket edge, whose
+carriageway lies `kerb_shift_m` off its centreline, half the width moved by that shift, so both
+points stand on the true kerbs (`ROAD-95` round R5d3). The building's side offset, its lot's
+front gaps and its site's road tie-in probes read the same per-side kerb.
 
 Then:
 

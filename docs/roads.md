@@ -482,6 +482,27 @@ pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
   pocket moves keeps its cells through the transition, and a neighbouring road's junction
   anchor reads the base road's curb; end-column continuity, pinned frames and curve sources
   read the pocket's curb and axis ([`zoning.md`](zoning.md#turn-pocket-pieces--road-95-round-r5d1)).
+  Since round R5d3 the buildings on those lots do too: every building, lot, parcel and entrance
+  reader takes each side's kerb from the carriageway axis (`Edge::frontage_half_width_m(side)`,
+  `Edge::carriageway_segment` for segment tests): the side offset on placement, load, repair and
+  lot alignment, the lot's front gaps, the site's road tie-in probes, explicit sites and authored
+  parcels (front, road overlap, cursor reach), the car's road crossing in the entrance quote and
+  the agents' access path ([`entrance_and_exit.md`](entrance_and_exit.md)). Before it, a building
+  on a widened curb read the symmetric half-width: its side offset 1.75 m short, a 1.75 m front
+  gap (paving drawn across the sidewalk) and its pad tied in on the carriageway, 0.12 m under the
+  sidewalk; on the kept curb of a one-side pocket the tie-in probe lay 1.75 m past the road and
+  no house grew. Roads without a pocket read bit for bit what they did (FRESH 2026-11-05: a
+  plain-road product digest equal on both trees, the R8 probe equal, the `SIM-02` envelope's 75
+  lines byte-identical and determinism passing). In the 10k 4-Lane city with 11 right pockets put
+  in before zoning (`METRUM_PERF_POCKETS=right`, one day at 32x) 5 houses front pocket edges and
+  the day ends with 0 trip failures, 0 missing connections and no walker stranded. Tests
+  (`nodes/sim/core/tests/road_pockets/buildings.rs`): houses grown through the growth path on
+  each curb of a right, left and both pocket edge (1+1 and 2+2) meet the plain road's contract
+  (side offset and lot front on the sidewalk's outer edge, no front gap, the pad at the
+  sidewalk's top, the entrance on its own sidewalk lane's line, its own road's lanes); the edit's
+  dependents migration keeps the houses on the kept curb there through an add, a resize, a
+  removal and each undo (bit for bit, lanes by road, index and direction); a house on the curb a
+  pocket would widen still refuses it (`parcel_overlap`).
   Still symmetric: the cursor's snap width, signs and pedestrian insets (conservative, D17).
 - **Godot calls** (`network_api.rs`): `get_road_pocket(edge, end)` (`has_pocket`, `left`, `right`,
   `length_m`, `pocket_edge`, `junction`, `one_way` and the length range),
