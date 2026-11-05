@@ -1027,3 +1027,69 @@ fn a_left_pocket_on_an_undivided_road_forks_and_shifts_the_oncoming_lanes() {
         );
     }
 }
+
+// `ROAD-95` round R5d3: the kerb a building, lot or entrance fronts on each side is its profile's
+// carriageway edge on that side (`Edge::frontage_half_width_m`, `side` 1 left of the forward
+// direction, the profile's negative side), for right, left and both pockets at either stored
+// end, one-way kerb pockets and both divided cases; without a pocket bit for bit `width / 2`.
+// `Edge::carriageway_segment` moves a segment by the kerb shift along the lanes' normal.
+#[test]
+fn the_frontage_half_width_is_each_sides_carriageway_edge() {
+    let both = |end| {
+        Some(RoadPocket {
+            end,
+            left: true,
+            right: true,
+        })
+    };
+    let mut cases = vec![
+        ("2+2 plain", road(2, 2, None)),
+        ("1+0 plain", road(1, 0, None)),
+        ("divided plain", divided_road(2, 2, 5.0, None)),
+        ("1+0 right", road(1, 0, right_at(EdgeEnd::End))),
+        ("1+0 left kerb", road(1, 0, left_at(EdgeEnd::End))),
+        (
+            "divided right",
+            divided_road(2, 2, 5.0, right_at(EdgeEnd::End)),
+        ),
+        (
+            "divided left",
+            divided_road(2, 2, 5.0, left_at(EdgeEnd::End)),
+        ),
+    ];
+    for (lanes, end) in [(1, EdgeEnd::End), (2, EdgeEnd::End), (1, EdgeEnd::Start)] {
+        for (name, pocket) in [
+            ("right", right_at(end)),
+            ("left", left_at(end)),
+            ("both", both(end)),
+        ] {
+            cases.push((name, road(lanes, lanes, pocket)));
+        }
+    }
+    for (name, edge) in cases {
+        let profile = RoadProfile::for_edge(&edge);
+        for side in [1i8, -1] {
+            let (kerb, _) = profile.side_half_widths_m(side < 0);
+            let half = edge.frontage_half_width_m(side);
+            assert!(
+                (half - kerb).abs() < 1e-5,
+                "{name} {:?}: side {side} {half} against the profile's {kerb}",
+                edge.pocket
+            );
+            if edge.pocket.is_none() {
+                assert_eq!(half.to_bits(), (edge.width * 0.5).to_bits(), "{name}");
+            }
+        }
+        let (a, b) = (
+            godot::prelude::Vector2::new(10.0, 0.0),
+            godot::prelude::Vector2::new(20.0, 0.0),
+        );
+        let (sa, sb) = edge.carriageway_segment(a, b);
+        let shift = edge.kerb_shift_m();
+        assert_eq!((sa.x, sb.x), (a.x, b.x), "{name}");
+        assert!(
+            (sa.y - shift).abs() < 1e-6 && (sb.y - shift).abs() < 1e-6,
+            "{name}"
+        );
+    }
+}
