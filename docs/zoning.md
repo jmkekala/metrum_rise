@@ -389,6 +389,10 @@ path is for invalid saved data only; it must never leave illegal parcel geometry
 - Roads without sidewalks may zone (the rural road, design D1): their lots derive as on any
   road and their buildings are car-only destinations, 0.75 m shoulder instead of the sidewalk
   (the road builder warns "No sidewalks: buildings here are reached by car only")
+- D1 holds per side on a road with one sidewalk (`ROAD-107`): both sides zone; a lot or
+  building on the sidewalk side fronts the sidewalk and is walked to, one on the shoulder side
+  fronts the 0.75 m shoulder (its door probe and grading read that side's band,
+  `side_band_width_m(edge, side)`) and is a car-only destination, its door having no foot lane
 - Persistence: saved on `network_edges`
 - Topology: split edges copy the flag to both children
 - Overlay: zoning tool draws no-build edge guide lines

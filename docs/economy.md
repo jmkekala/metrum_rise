@@ -327,7 +327,7 @@ exactly 1.0 and the old flat constants stay the anchors:
 weight = structure x (lanes x 0.4 x f(v) + median x f(v) + sidewalks)
   f(v)       = 1 + (v_kmh - 50) / 50        (30 -> 0.6, 80 -> 1.6, 100 -> 2.0, 120 -> 2.4)
   median     = painted 0.05; kerbed grass or paving 0.1 + 0.1 x width_m
-  sidewalks  = 0.2 (both sides) or 0
+  sidewalks  = 0.1 per side with one: 0.2 both, 0.1 one (`ROAD-107`, D3), 0 none
   structure  = ground 1, bridge 3, tunnel 5 (the stroke's prepared class, its whole length)
   walkway    = structure x 0.25 (a footpath: no lanes, no speed)
 build / m = 15 x weight      upkeep / m / day = 0.1 x weight
@@ -342,6 +342,7 @@ Lanes and speed multiply, sidewalks add, zoning costs nothing. `O(1)`, allocatio
 | 4-Lane Road, 50 | 1.80 | 27 | 0.18 |
 | One-Way 1L / 2L, 50 | 0.60 / 1.00 | 9 / 15 | 0.06 / 0.10 |
 | 1 + 1 residential, 30 | 0.68 | 10.2 | 0.068 |
+| 1 + 1, 50, one sidewalk (`ROAD-107`) | 0.90 | 13.5 | 0.090 |
 | 1 + 1 painted 1 m, 50 | 1.05 | 15.75 | 0.105 |
 | 2 + 2 grass 3 m, 50 | 2.20 | 33 | 0.22 |
 | 1 + 1, 80, no sidewalks | 1.28 | 19.2 | 0.128 |

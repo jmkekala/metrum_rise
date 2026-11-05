@@ -192,14 +192,18 @@ plane over exactly the node piece's extent. Heights never feed back into layout.
 
 ### Cross-section profile
 
-`RoadProfile` is a pure function of the edge (`primary_type`, `allowed_types`, `width`, `class`),
-ported unchanged from the legacy band rule. Bands are listed left to right in the edge's forward
-frame:
+`RoadProfile` is a pure function of the edge (`primary_type`, `allowed_types`, `sidewalks`,
+`width`, `class`), ported unchanged from the legacy band rule and applied per side since
+`ROAD-107`: each side of a car road with a sidewalk (`Edge::sidewalks`, left = negative lateral)
+has the curb and sidewalk, each side without one the shoulder. Bands are listed left to right in
+the edge's forward frame:
 
 | Edge | Bands | Levels |
 | --- | --- | --- |
 | Car road with sidewalks | sidewalk 1.35 m, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, curb, sidewalk | raised, raised, ground, ground, raised, raised |
 | Car road without sidewalks | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, shoulder | raised, ground, ground, raised |
+| Car road with the left sidewalk only (`ROAD-107`) | sidewalk 1.35 m, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, shoulder 0.75 m | raised, raised, ground, ground, raised |
+| Car road with the right sidewalk only (`ROAD-107`) | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, curb 0.15 m, sidewalk 1.35 m | raised, ground, ground, raised, raised |
 | Footpath | footpath `max(edge.width, 2 m)` | ground |
 | Divided body (`body_for_edge`, [Medians](#medians-road-80)) | the car road's bands with the split opened into kerb, median, kerb | ..., ground, raised, raised, raised, ground, ... |
 
@@ -11429,6 +11433,74 @@ independent of zoning; speed per type; costs by type; Road Properties changes al
   runs in `thread_pools::install`. The coordinator's review then made the count local (the
   road's 512 m chunks; the whole city only while the chunk index is stale).
 - **Saves**: format 112 (the weighted upkeep roll); no older save loads.
+
+#### One-sided sidewalks (ROAD-107, round S1)
+
+Round S1 (2026-11-05, branch `port-s1-sidewalks`): the model, roadbed, lanes, crossings,
+buildings and save. The builder's two checkboxes, Road Properties and the Godot calls that carry
+the side are round S2; until then Godot still passes and reads the sidewalks as a bool (both or
+none), so no stroke the game draws is one-sided yet. Plan: PLAN-R7 sections 2.1-2.4 (decisions
+D1, D3-D5, D22, D23).
+
+- **Model.** `Edge::sidewalks: SidewalkSides`, a mask in the edge's forward frame: left (1, the
+  negative lateral side: sidewalk lane 100, building and lot side 1), right (2, the positive
+  side: lane -100, side -1), both (3), none (0). A car road is walked (`FOOT`) exactly when it
+  has a side (`Edge::set_sidewalks` sets both; `Edge::sidewalk_sides` asserts it in debug
+  builds, so an edge built without its mask fails loudly); `FOOT` keeps its routing meaning and
+  every router, flow field and accessibility reader is unchanged. A walkway has none. A split
+  copies the mask to both halves; a stroke takes it from its type's `RoadAttributes::sidewalks`.
+- **Road types.** `RoadCrossSection::sidewalks` and `RoadAttributes::sidewalks` are the mask.
+  `check_layout` accepts a sidewalk at either end, at both or at none (`layout_sidewalks` stays
+  for a sidewalk inside the road and for a lone sidewalk); `parts()` draws the sidewalk at the
+  ends the mask names; `base_name` adds " L" or " R" ("1+1 L"); `type_of` compares the mask;
+  `layout_widths` counts a 0.75 m shoulder at each end without a sidewalk. A library entry with
+  one sidewalk end, listed unusable before, is usable now (no file format change: the parts are
+  stored). Cost: 0.1 per side with a sidewalk (D3, half the 0.2 both sides cost,
+  [`economy.md`](economy.md#road-costs-road-101)).
+- **Roadbed.** `RoadProfile::for_edge` builds each side by its own rule (table above); the
+  carriageway and a pocket's kerb shift are unchanged. `side_band_width_m(edge, side)` is per
+  side (door probes, site grading, building debug); `widest_side_band_width_m` (the larger side)
+  serves the symmetric corridors (in-place widening and pocket corridor checks, building
+  collision), as `RoadAttributes::corridor_side_m` and the visual roadbed half width do for the
+  stroke and preview corridor (D4: conservative by 0.75 m on the shoulder side). Layouts,
+  tapers, walkways, lights and signs were per band already: a one-sided road continuing a
+  two-sided one is a laid-out pair whose missing sidewalk tapers over D4's 12 m.
+- **Walkers.** The lane rebuild builds sidewalk lane 100 only on a road with the left sidewalk
+  and -100 only with the right. Pedestrian junctions and walkways were per side already: a
+  corner between a sidewalk side and a shoulder side has no corner walk, so the sidewalk ends
+  there (RB3a D2 (a)), and a one-sided road keeps its walk network connected along its side.
+- **Crossings (D5).** An arm needs sidewalks on both sides to cross: a one-sided arm has no
+  zebra, no toggle (`crossing_arm_eligible`) and no default degree-two crossing.
+- **Buildings and lots (D1 per side).** A building or lot on the sidewalk side fronts the
+  sidewalk and its door has foot lanes; one on the shoulder side fronts the shoulder, its door
+  finds no foot lane, so it is a car-only destination as on a road without sidewalks
+  ([`zoning.md`](zoning.md#8-road-no-build-flag)).
+- **Save format 116**: `network_edges.sidewalks` (0-3); a load refuses a code outside 0-3,
+  sidewalks on an edge without cars, and a car road whose mask disagrees with its `FOOT` flag.
+  Every road built before is both or none, so every existing product is bitwise unchanged
+  (roadbed probe, R8 probe, envelope). Kuopio re-recorded.
+- **Tests and probe entries.** `profile_table_matches_the_legacy_band_rule` (one-sided row),
+  `valid_layouts_build_their_cross_section` (one-ended layouts),
+  `a_one_sided_road_builds_foot_lanes_on_its_sidewalk_side_only`,
+  `a_one_sided_stem_has_one_corner_walk_on_its_sidewalk_side` (and its crossing toggle),
+  `sidewalk_sides_round_trip_through_the_edge_table`,
+  `a_one_sided_road_is_walked_to_on_its_sidewalk_side_only`; the roadbed probe's new family
+  entries `one_sided_pass_through`, `one_sided_stem_left`, `one_sided_stem_right`,
+  `one_sided_continues_two_sided` and `one_sided_one_way_t` (flat and sloped), which the family
+  watertightness and crossing checks run too. The connector fixture list
+  (`junction_connectors_stay_on_the_carriageway_without_backward_steps_or_kinks`) gains the two
+  stems, the continuing road and a one-way stem; the straight pair has no connector to measure.
+- **Timing** (2026-11-05, Criterion `$BENCH_BINARY --bench --noplot 'roadbed_junction/build'`
+  and `'roadbed_span/build'`, `roadbed_benchmark`, 4 workers, P-cores, control and branch in
+  `C B B C` twice in one session, the control `dev` `167eeea6`, medians of four runs each): the
+  span rows' ranges overlap the control's (`span_100m` 11.10 -> 11.03 us, `span_400m` 39.00 ->
+  38.82 us; `span_100m_footpath`'s median 3.72 -> 3.85 us, with a wide branch range). Junction
+  rows: `t` 23.98 -> 24.05 us, `four_way` 39.06 -> 39.35 us, `six_way` 66.35 -> 66.75 us within
+  spread. **Not within spread:** the transition rows, +2.4 to +2.5%
+  (`transition_right_pocket` 8.22 -> 8.42 us, `transition_left_pocket` 8.19 -> 8.40 us,
+  `transition_right_pocket_divided` 12.27 -> 12.57 us), about 0.2-0.3 us per transition node on
+  an edit. A profile of the right pocket row finds no function that accounts for it
+  (`RoadProfile::for_edge` 1.05% -> 1.27% of the samples); the cause is not established.
 
 #### The road builder (ROAD-101, round RB2)
 
