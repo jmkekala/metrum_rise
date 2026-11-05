@@ -265,6 +265,14 @@ connector to every outbound lane of every other arm. Ported from Veeti's road-ch
   | 2 | L+S / S+R | L+S / S | S / S+R | L / R |
   | 3 | L+S / S / S+R | L+S / S / S | S / S / S+R | L / L / R |
   | 4 | L+S / S / S / S+R | L+S / S / S / S | S / S / S / S+R | L / L / R / R |
+  | 2, right pocket (1+1 approach) | L+S / R | L+S / S (base) | S / R | L / R |
+  | 3, right pocket (2+2 approach) | L+S / S / R | L+S / S / S (base) | S / S / R | L / L / R |
+  | 2, left kerb pocket (one-way) | L / S+R | L / S | S / S+R (base) | L / R |
+
+  The pocket rows ([Turn pockets](#turn-pockets-road-95), D4): the pocket lane (the last lane of a
+  right pocket, the first of a left one) serves its turn alone and the other lanes share the
+  movements left as the plain rows do; "(base)" where the junction does not offer the pocket's
+  turn, so the lanes take the plain rule.
 
   Left and right alone (a T's stem) split into contiguous halves, the odd lane to the left.
   Before the decision (R4a1-R4a3) three or more lanes had dedicated L / S.. / R lanes and two
@@ -491,6 +499,97 @@ pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
   accepted); the publication splice equal to a full emission after an add, a resize and each
   undo; a car on the pocket edge kept in place by a resize and its undo. `t_right_pocket` (junction
   and transition) is in the connector fixture sweep.
+
+#### Pockets in traffic (round R5a3)
+
+Round R5a3 (2026-11-05, same branch) ran pockets in a populated city, fixed the two defects it
+found, added the benchmark row and rendered the stills for D2 and D13.
+
+- **Lane choice through a transition** (a fix; [`traffic.md`](traffic.md#advance-lane-choice-road-94)).
+  A pocket edge is one taper and a body long: at a 40 m body its lanes run about 30 m, too short
+  to change lanes on (a change needs 18 m and the end buffers before the 20 m solid zone). The
+  transition offers one movement, so before this round nothing before the fork prepared the
+  junction's turn: the base road's lanes were not flagged, the window selector targeted the pocket
+  edge (which every lane reaches) and the entry-lane walk stopped at the transition's fan. A car on
+  the wrong base lane entered the wrong pocket-edge lane and missed its turn. Now a base approach
+  of more than one lane to a transition is flagged when the pocket edge's approach needs a lane
+  choice (`transition_needs_lane_choice`, one rule for the connector builder's flag and the
+  markings' solid zone, so the base road's lane line is solid over the 20 m before the
+  transition), and the window selector and the entry-lane walk target the base lanes whose D5
+  connectors reach the pocket-edge lanes that make the movement at the junction
+  (`pocket_fork_sources`). A 1+1 base road has one forward lane: nothing changes there.
+- **The pocket lane's asphalt** (a fix). The road shader draws `fwd + bkw` lanes centred on
+  road-space lateral 0 and tints what lies past their half-width as the gravel shoulder; a pocket
+  edge's carriageway lies `kerb_shift_m` off its centreline, so the outer 1.75 m of a right pocket
+  lane rendered as a pale band. The span's carriageway now passes laterals from its own centre
+  (`top_surface.rs`); every other road's shift is 0, so its payload is bitwise unchanged.
+- **Populated exercise** (`METRUM_PERF_POCKETS=right`, test builds, `populated_city.rs`): once the
+  street grid is built and before it is zoned, a 40 m right pocket on every 2+2 arterial end at a
+  junction, in edge-id order (end before start), then one whole lane rebuild so the snapshot's
+  continuation check compares like lane numbering; a `PERF_POCKETS` line counts the placed pockets
+  and refusals by reason. In a zoned city the parcels refuse every widening (`parcel_overlap`), so
+  the pockets go in before zoning; the 1+1 row streets get none, since their pockets cost the
+  back-to-back lots (the one-block-wider grid then housed 9,302 residents for 10,000). The 10k
+  4-Lane city takes 11 pockets (both ends of the trunk's 400 m links and the border link's east
+  end); 399 cross-street ends are `pocket_road_too_short` (50 m blocks) and 77
+  `pocket_movement_missing` (no right turn there).
+- **Results** (FRESH 2026-11-05, release lib tests, the 10k city with
+  `METRUM_PERF_ARTERIALS=4lane`, one day at 32x, 8 workers, `.run.lock`, each binary preparing its
+  own city; control `dev` `70377fee` plus the test-only R8 probe; the branch at the round's final
+  code). Deliveries are a measurement (`TRAFFIC-17`); a missed turn is intended behaviour, counted.
+
+  | | control (`dev`) | branch, no pockets | branch, 11 pockets |
+  | --- | ---: | ---: | ---: |
+  | `[MISSED_TURN]` / day | 10 | 10 | 19 |
+  | gridlock cycles (`TRAFFIC14_CYCLES`, 7 samples) | 0 | 0 | 0 |
+  | lanes over fit (7 samples) | 0, 0, 1, 1, 2, 0, 1 | same | 0, 0, 1, 1, 0, 0, 0 |
+  | held at node (7 samples) | 3, 0, 21, 15, 6, 129, 140 | same | 0, 0, 6, 67, 61, 117, 84 |
+  | waits over 1 h / over 4 h at day end | 126 / 83 | same | 71 / 48 |
+  | trip failures / missing connections | 0 / 0 | 0 / 0 | 0 / 0 |
+  | freight deliveries | 1,863 | 1,863 | 1,986 |
+
+  The branch without pockets equals the control line for line (every `TRAFFIC07_AUDIT` and
+  `TRAFFIC14_CYCLES` record). With pockets, before the lane-choice fix the same city missed 9,982
+  turns (2,268 with the entry-lane walk alone): 98% on the wrong pocket-edge lane at the border
+  link's junction and the chain of misses its replans made up the 50 m cross-street blocks. After
+  it, every miss traced (traffic channel, each car's events before it): the control's 10 are on
+  the trunk's 400 m links (the gap model's standing-queue limit); with pockets 13 are cars that
+  join the base road from a frontage in its last 14-34 m before a transition (no room for a change
+  before the fork, and the pocket edge hosts none; on `dev` the same join left about 85 m to the
+  junction), 3 are one such car's replan chain, 2 one car whose change on the base road did not
+  start in its window (a queue beside it) and the miss its replan chained, and 1 a cross-street
+  block at a path's end. So the pockets trade the trunk's standing-queue misses for late frontage
+  joins near a transition. The border hold peaks at 117 cars instead of 140 and is 84 at day end;
+  deliveries rise 6.6%.
+- **Benchmark row** `pocket_chunk_emit_only` (`benches/road_chunk_benchmark.rs`): a T whose west
+  arm ends in a 60 m right pocket, the pocket edge the local road, emission only, beside
+  `divided_chunk_emit_only`; existing fixtures' meshes bitwise equal to the control's
+  (`ROAD_CHUNK_STRUCTURE` digests).
+- **Timing** (FRESH 2026-11-05 02:09-02:12, one session, `.run.lock` and the exclusive timing lock,
+  P-cores, 4 workers, load 1.3, no cargo or Godot running, C B B C C B B C; control: the lib tests
+  of round R5a2's `5499a3c3` plus the R8 probe (paint unchanged to `42d92b70`) and the Criterion
+  bench built at `42d92b70`). Payload stage of `benchmark_road_preview_stages`, p50 ms median
+  (range), payload vertices equal: `sloped_t` 0.381 (0.379-0.385) / 0.391 (0.382-0.395),
+  `sloped_branch` 0.387 (0.381-0.400) / 0.399 (0.388-0.408), `divided_t` 0.449 (0.438-0.459) /
+  0.450 (0.447-0.454). Road chunk Criterion rows, µs median (range): `chunk_emit_only/1024` 161.6
+  (155.7-166.6) / 173.1 (171.2-176.0), `divided_chunk_emit_only/1` 268.9 (266.0-277.1) / 282.2
+  (271.2-289.3), `/1024` 276.8 (271.6-284.7) / 288.9 (288.4-290.4); the new
+  `pocket_chunk_emit_only` 722.1 (714.7-729.8) alone and 723.5 (721.7-732.0) beside 1,023
+  distant chunks (9,588 vertices, flat in city size). **Open:** the plain chunk row and
+  `sloped_t`'s payload sit 3-7% above the control's spread although a road without a pocket runs
+  none of the round's new code (the one change on that path subtracts a zero shift). Four short
+  A/B sessions (02:13-02:40, same conditions) narrowed it: a build without the road-space fix and
+  one without the paint rule's transition term are as slow as the branch; the control's library
+  with this round's bench file, and the control with one unused function added, are as fast as
+  the control; the cold, out-of-line transition rule did not help. Unattributed (code layout of
+  the crate is the suspect, as `ROAD-94`'s blocked row); left for a profiling analysis before the
+  branch lands.
+- **Stills A** (gamescope headless, 1280x720, isolated profile, a debug build): a 1+1 T with and
+  without a right pocket, near and far; a 2+2 four-way with and without one; a one-way right
+  pocket and a one-way left kerb pocket; the arrows and solid lines on the pocket approach; the
+  taper close up (linear, D2; unmarked over the node piece, D13 (a)). The 1+1 base road is
+  unmarked (Finnish practice for two-lane streets at 50 km/h, `FinnishLaneLine`); the pocket edge,
+  three lanes, is marked. Kept with the round's artifacts.
 
 ### Junction layout
 

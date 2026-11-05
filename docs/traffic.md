@@ -1284,6 +1284,23 @@ re-derived onto `dev`'s lane-end handling.
   lane the tick takes. It works because a single-lane turn group fans onto every lane of its
   target ([`roads.md`](roads.md#default-junction-lane-use-road-94)). The per-tick selector is
   unchanged (one node ahead, decision S6).
+- **Turn pockets (`ROAD-95`, round R5a3).** A pocket lane is its turn's only lane, and the other
+  lanes of the pocket edge do not make that turn ([`roads.md`](roads.md#turn-pockets-road-95), D4).
+  The fork into it is a connector at the lane transition (D5: each base lane keeps its rank and the
+  lane beside the pocket lane also forks into it), so a car picks the pocket at the fork and turns
+  without a lane change. A pocket edge is one taper and a body long, about 30 m of lane at a 40 m
+  body: too short to change lanes on. So the lane choice reads through the transition: the
+  entry-lane walk continues past a transition's fan into a pocket edge to the movement at the
+  pocket's junction, and a base approach of more than one lane to a transition is flagged when the
+  pocket edge's approach needs a lane choice (`transition_needs_lane_choice`): its window selector
+  targets the base lanes whose connectors reach the lanes making the movement
+  (`pocket_fork_sources`), S8 keeps it there, and its last 20 m before the transition are a solid
+  zone like any flagged approach (the paint reads the same rule). A 1+1 base road has one forward
+  lane and needs none of this. A car that joins the base road from a frontage too close to the
+  transition to change lanes misses the turn and replans (the populated record is in
+  [`roads.md`](roads.md#pockets-in-traffic-round-r5a3)). Cost: at entry events the walk adds
+  `O(degree + lanes)` at a transition; the window selector reads one edge (whether the next road
+  has a pocket) on every other approach; the flag is written at connector rebuilds.
 - **Discretionary changes keep the route's lanes (S8).** On a flagged lane a discretionary
   overtake or return whose target lies outside the lanes `preferred_entry_lanes` gives for the
   current road (`route_lane_group`, the route read as `planned_next_target` reads it) is refused:
