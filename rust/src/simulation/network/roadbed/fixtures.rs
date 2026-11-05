@@ -255,6 +255,18 @@ pub(crate) fn pocket_junction_at(
 /// sidewalks; the pocket edge has `left` and `right` pocket lanes for its forward lanes. A left
 /// pocket narrows the median by a lane. Laid out as an edit does ([`finalize`]).
 pub(crate) fn divided_pocket_junction(median_m: f32, left: bool, right: bool) -> RegionGraph {
+    four_way_pocket_junction(2, grass(median_m), left, right)
+}
+
+/// [`divided_pocket_junction`]'s four-way with its west and east arms `lanes` + `lanes` on
+/// `median` (none: an undivided road, `ROAD-95` round R5c1, where a left pocket moves the kerb on
+/// the oncoming side); the cross street 1+1 without one.
+pub(crate) fn four_way_pocket_junction(
+    lanes: u8,
+    median: Option<RoadMedian>,
+    left: bool,
+    right: bool,
+) -> RegionGraph {
     let mut graph = RegionGraph::new();
     let center = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
     let transition = graph.add_node(point(-60.0, 0.0, false), NodeType::LaneTransition);
@@ -265,17 +277,16 @@ pub(crate) fn divided_pocket_junction(median_m: f32, left: bool, right: bool) ->
         far(0.0, 80.0),
         far(0.0, -80.0),
     );
-    let add = |graph: &mut RegionGraph, a: u32, b: u32, median: Option<RoadMedian>| {
+    let add = |graph: &mut RegionGraph, a: u32, b: u32, lanes: u8, median: Option<RoadMedian>| {
         let (pa, pb) = (graph.node(a).pos, graph.node(b).pos);
         let points = polyline((pa.x, pa.z), (pb.x, pb.z), 20.0, false);
-        let lanes = if median.is_some() { 2 } else { 1 };
         graph.add_edge(divided(road_edge(a, b, points, 7.0), lanes, lanes, median))
     };
-    add(&mut graph, west, transition, grass(median_m));
-    let pocket = add(&mut graph, transition, center, grass(median_m));
-    add(&mut graph, center, east, grass(median_m));
-    add(&mut graph, south, center, None);
-    add(&mut graph, center, north, None);
+    add(&mut graph, west, transition, lanes, median);
+    let pocket = add(&mut graph, transition, center, lanes, median);
+    add(&mut graph, center, east, lanes, median);
+    add(&mut graph, south, center, 1, None);
+    add(&mut graph, center, north, 1, None);
     graph.set_edge_pocket(
         pocket,
         Some(RoadPocket {
@@ -286,6 +297,29 @@ pub(crate) fn divided_pocket_junction(median_m: f32, left: bool, right: bool) ->
     );
     finalize(&mut graph);
     graph
+}
+
+/// [`four_way_pocket_junction`]: an undivided 1+1 four-way whose west arm has a left pocket
+/// (`ROAD-95` round R5c1).
+pub(crate) fn four_way_1x1_left_pocket() -> RegionGraph {
+    four_way_pocket_junction(1, None, true, false)
+}
+
+/// [`four_way_pocket_junction`]: an undivided 1+1 four-way whose west arm has a left and a right
+/// pocket.
+pub(crate) fn four_way_1x1_left_right_pocket() -> RegionGraph {
+    four_way_pocket_junction(1, None, true, true)
+}
+
+/// [`four_way_pocket_junction`]: an undivided 2+2 four-way whose west arm has a left pocket.
+pub(crate) fn undivided_2x2_left_pocket() -> RegionGraph {
+    four_way_pocket_junction(2, None, true, false)
+}
+
+/// [`four_way_pocket_junction`]: an undivided 2+2 four-way whose west arm has a left and a right
+/// pocket.
+pub(crate) fn undivided_2x2_left_right_pocket() -> RegionGraph {
+    four_way_pocket_junction(2, None, true, true)
 }
 
 /// [`divided_pocket_junction`] on a 5 m grass median with a left pocket.

@@ -343,7 +343,7 @@ impl PocketPlan {
     /// one reached through its transition), joins it, and cuts the base road for the requested
     /// pocket. The error is the refusal key: `invalid_road`, the pocket's own checks
     /// ([`Edge::validate_pocket`]: `pocket_requires_surface_road`, `pocket_lane_limit`,
-    /// `pocket_requires_one_way`, `pocket_requires_wide_median`, `invalid_pocket_dimensions`),
+    /// `pocket_requires_wide_median`, `invalid_pocket_dimensions`),
     /// `pocket_median_gap` (the median would not line up across the transition),
     /// `pocket_junction_whitelisted` (D9), `pocket_movement_missing` (the junction offers no such
     /// turn), `pocket_road_too_short` (the base road keeps less than two taper halves and a metre

@@ -2,8 +2,8 @@
 
 ## The Road Properties window's Turn pocket section against the native bridge (`ROAD-95`, D12).
 ## On a 1 + 1 crossing the section edits the clicked road's end nearest the click, named by its
-## junction's direction and highlighted: Left is off on a two-way road without a median (its
-## refusal as the tooltip), Right adds a pocket ("Apply (+N)", Rust's verdict line), a length the
+## junction's direction and highlighted: Left is offered on a two-way road without a median too
+## (round R5c1), Right adds a pocket ("Apply (+N)", Rust's verdict line), a length the
 ## road cannot hold and an unchanged request show Rust's refusal texts, Apply adds, resizes and
 ## removes the pocket (the selection follows the road under the click as the edit splits and
 ## joins it), Ctrl+Z (undo) brings the previous pocket back into the section, and the other
@@ -138,8 +138,7 @@ func _run() -> void:
 	_expect(section.visible, "the section shows for one car road")
 	_expect(section._heading_label.text == "Turn pocket at the end towards east", "the end's name: %s" % section._heading_label.text)
 	_expect(_state(window) == "No turn pocket at this end", "no pocket yet: %s" % _state(window))
-	_expect(section._left_check.disabled and section._left_check.tooltip_text == "A left turn pocket needs a one-way road or a raised median",
-		"Left is off on an undivided two-way road: %s" % section._left_check.tooltip_text)
+	_expect(not section._left_check.disabled, "Left is offered on an undivided two-way road")
 	_expect(not section._right_check.disabled and section._length_spin.value == 60.0, "Right is offered, 60 m by default")
 	_expect(section._apply_button.disabled, "nothing to apply before a request")
 	_expect(tool._pocket_end_mi.mesh != null, "the end is highlighted")

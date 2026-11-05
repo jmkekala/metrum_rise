@@ -246,13 +246,13 @@ fn pocket_lanes_leave_the_through_lanes_in_place() {
 fn pocket_validation_refuses_what_no_pocket_edit_builds() {
     let mut edge = road(1, 1, right_at(EdgeEnd::End));
     assert_eq!(edge.validate_pocket(), Ok(()));
-    // An inner (left) kerb pocket needs a one-way road; a median pocket is round R5b1's.
-    edge.pocket = Some(RoadPocket {
+    // An inner (left) kerb pocket on an undivided two-way road (round R5c1).
+    edge.set_pocket(Some(RoadPocket {
         end: EdgeEnd::End,
         left: true,
         right: false,
-    });
-    assert_eq!(edge.validate_pocket(), Err("pocket_requires_one_way"));
+    }));
+    assert_eq!(edge.validate_pocket(), Ok(()));
     edge.pocket = Some(RoadPocket {
         end: EdgeEnd::End,
         left: false,
@@ -643,9 +643,11 @@ fn a_left_pocket_narrows_the_median_and_keeps_the_footprint() {
         painted.validate_pocket(),
         Err("pocket_requires_wide_median")
     );
+    // Round R5c1: an undivided road takes it as a kerb pocket.
     let mut undivided = road(2, 2, None);
     undivided.set_pocket(left_at(EdgeEnd::End));
-    assert_eq!(undivided.validate_pocket(), Err("pocket_requires_one_way"));
+    assert_eq!(undivided.validate_pocket(), Ok(()));
+    assert_eq!(undivided.kerb_shift_m(), -config::LANE_WIDTH * 0.5);
 }
 
 // At the left pocket's pass-through transition the pocket lane starts on the base road's lane 0
@@ -774,4 +776,254 @@ fn left_and_right_pockets_on_a_divided_road_fork_across_the_transitions_piece() 
         arrows(&graph, POCKET_EDGE, JUNCTION),
         [(0, LEFT), (1, STRAIGHT), (2, STRAIGHT), (3, RIGHT)]
     );
+}
+
+// (base lanes each way, left, right, the pocket edge's kerb shift, carriageway edges and lane
+// offsets by lane index), forward pocket, right-hand traffic.
+type UndividedCase = (u8, bool, bool, f32, (f32, f32), &'static [(i8, f32)]);
+
+// Round R5c1: a left pocket on an undivided two-way road widens the road by a lane on the
+// oncoming side. The through lanes keep their offsets bit for bit, the pocket lane opens beside
+// the centre line where the oncoming lanes were, and the oncoming lanes move a full lane out with
+// their kerb; the far (right) kerb stays. With a right pocket too, each kerb moves out a lane.
+// The backward pocket (stored start end) is the mirror. The carriageway axis (the corridor's)
+// lies on the carriageway's centre.
+#[test]
+fn a_left_pocket_on_an_undivided_road_widens_its_oncoming_side() {
+    let cases: [UndividedCase; 4] = [
+        (
+            1,
+            true,
+            false,
+            -1.75,
+            (-7.0, 3.5),
+            &[(-1, -5.25), (0, -1.75), (1, 1.75)],
+        ),
+        (
+            1,
+            true,
+            true,
+            0.0,
+            (-7.0, 7.0),
+            &[(-1, -5.25), (0, -1.75), (1, 1.75), (2, 5.25)],
+        ),
+        (
+            2,
+            true,
+            false,
+            -1.75,
+            (-10.5, 7.0),
+            &[(-2, -8.75), (-1, -5.25), (0, -1.75), (1, 1.75), (2, 5.25)],
+        ),
+        (
+            2,
+            true,
+            true,
+            0.0,
+            (-10.5, 10.5),
+            &[
+                (-2, -8.75),
+                (-1, -5.25),
+                (0, -1.75),
+                (1, 1.75),
+                (2, 5.25),
+                (3, 8.75),
+            ],
+        ),
+    ];
+    let line = [Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)];
+    for (lanes, left, right, shift, expected, offsets) in cases {
+        let at = |end| Some(RoadPocket { end, left, right });
+        let base = road(lanes, lanes, None);
+        let edge = road(lanes, lanes, at(EdgeEnd::End));
+        let name = format!("{lanes}+{lanes} left {left} right {right}");
+        assert_eq!(edge.validate_pocket(), Ok(()), "{name}");
+        assert_eq!(
+            (edge.fwd_lanes, edge.bkw_lanes),
+            (lanes + u8::from(left) + u8::from(right), lanes)
+        );
+        assert_eq!(edge.kerb_shift_m().to_bits(), shift.to_bits(), "{name}");
+        let profile = RoadProfile::for_edge(&edge);
+        assert_eq!(carriageway(&profile), expected, "{name}");
+        assert_eq!(0.5 * (expected.0 + expected.1), shift);
+        for &(lane, offset) in offsets {
+            assert_eq!(
+                vehicle_lane_offset(&edge, lane).to_bits(),
+                offset.to_bits(),
+                "{name} lane {lane}"
+            );
+        }
+        // The through lanes keep their place; the oncoming lanes move a lane out.
+        for lane in 0..lanes as i8 {
+            assert_eq!(
+                vehicle_lane_offset(&edge, lane + 1).to_bits(),
+                vehicle_lane_offset(&base, lane).to_bits()
+            );
+        }
+        for lane in -(lanes as i8)..0 {
+            assert_eq!(
+                vehicle_lane_offset(&edge, lane),
+                vehicle_lane_offset(&base, lane) - config::LANE_WIDTH
+            );
+        }
+        // The far kerb, its curb and sidewalk stay bit for bit without a right pocket.
+        let base_profile = RoadProfile::for_edge(&base);
+        if !right {
+            assert_eq!(
+                profile.side_half_widths_m(true),
+                base_profile.side_half_widths_m(true)
+            );
+        }
+        let (base_left, own_left) = (
+            base_profile.side_half_widths_m(false),
+            profile.side_half_widths_m(false),
+        );
+        assert!((own_left.1 - base_left.1 - config::LANE_WIDTH).abs() < 1e-5);
+        let axis = edge.carriageway_axis(&line);
+        assert!(
+            axis.iter()
+                .zip(&line)
+                .all(|(a, p)| a.x == p.x && a.z.to_bits() == (p.z + shift).to_bits()),
+            "{name}: {axis:?}"
+        );
+        // The backward pocket at the stored start is the mirror image.
+        let mirrored = road(lanes, lanes, at(EdgeEnd::Start));
+        assert_eq!(mirrored.validate_pocket(), Ok(()));
+        assert_eq!(mirrored.kerb_shift_m(), -shift);
+        assert_eq!(
+            carriageway(&RoadProfile::for_edge(&mirrored)),
+            (-expected.1, -expected.0)
+        );
+        for &(lane, offset) in offsets {
+            assert_eq!(
+                vehicle_lane_offset(&mirrored, -lane - 1).to_bits(),
+                (-offset).to_bits(),
+                "{name} mirrored lane {lane}"
+            );
+        }
+        let axis = mirrored.carriageway_axis(&line);
+        assert!(axis.iter().all(|a| a.z == -shift), "{axis:?}");
+        // Removing the pocket gives the base road back.
+        let mut removed = edge.clone();
+        removed.set_pocket(None);
+        assert_eq!(
+            (removed.fwd_lanes, removed.bkw_lanes, removed.width),
+            (base.fwd_lanes, base.bkw_lanes, base.width)
+        );
+    }
+}
+
+// Round R5c1 at the transition and the junction: base lane 0 forks into the pocket edge's lanes
+// 0 (the pocket) and 1, base lane i runs into i + 1 (D5's rank + 1), a right pocket's fork as
+// before; the oncoming lanes 1:1, each a lateral shift of a full lane across the transition's
+// piece (every connector there is straight or shifts exactly one lane). The left kerb tapers
+// (both kerbs with a right pocket too), no crossing (D6). The masks (D4) are `L / S+R` on 1+1,
+// `L / S / S+R` on 2+2 and `L / S / S / R` with both; the base road's lanes prepare the turn
+// before the fork when there are several (`transition_needs_lane_choice`, `pocket_fork_sources`).
+#[test]
+fn a_left_pocket_on_an_undivided_road_forks_and_shifts_the_oncoming_lanes() {
+    use super::roadbed::fixtures::{
+        four_way_1x1_left_pocket, four_way_1x1_left_right_pocket, undivided_2x2_left_pocket,
+        undivided_2x2_left_right_pocket,
+    };
+    type ForkCase = (RegionGraph, Vec<(i8, i8)>, Vec<(i8, i8)>, Vec<(i8, u8)>);
+    let cases: [ForkCase; 4] = [
+        (
+            four_way_1x1_left_pocket(),
+            vec![(0, 0), (0, 1)],
+            vec![(-1, -1)],
+            vec![(0, LEFT), (1, STRAIGHT | RIGHT)],
+        ),
+        (
+            four_way_1x1_left_right_pocket(),
+            vec![(0, 0), (0, 1), (0, 2)],
+            vec![(-1, -1)],
+            vec![(0, LEFT), (1, STRAIGHT), (2, RIGHT)],
+        ),
+        (
+            undivided_2x2_left_pocket(),
+            vec![(0, 0), (0, 1), (1, 2)],
+            vec![(-2, -2), (-1, -1)],
+            vec![(0, LEFT), (1, STRAIGHT), (2, STRAIGHT | RIGHT)],
+        ),
+        (
+            undivided_2x2_left_right_pocket(),
+            vec![(0, 0), (0, 1), (1, 2), (1, 3)],
+            vec![(-2, -2), (-1, -1)],
+            vec![(0, LEFT), (1, STRAIGHT), (2, STRAIGHT), (3, RIGHT)],
+        ),
+    ];
+    for (mut graph, entering, leaving, masks) in cases {
+        assert!(graph.is_lane_transition(TRANSITION));
+        let layout = layout_of(&graph, TRANSITION);
+        let right = graph.edge(POCKET_EDGE).pocket.unwrap().right;
+        let tapered = layout
+            .sectors
+            .iter()
+            .filter(|sector| {
+                layout.boundaries[sector.boundaries.clone()]
+                    .iter()
+                    .any(|boundary| boundary.taper.is_some())
+            })
+            .count();
+        assert_eq!(tapered, 1 + usize::from(right));
+        for arm in &layout.arms {
+            assert_eq!(arm.crosswalk, None, "no crossing at a transition");
+            assert!(!crossing_arm_eligible(&graph, TRANSITION, arm.key.edge));
+        }
+        layout_of(&graph, JUNCTION);
+        let lanes = lanes_of(&mut graph);
+        let pairs = |edge, to_edge| -> Vec<(i8, i8)> {
+            connections(&graph, &lanes, edge, TRANSITION)
+                .into_iter()
+                .map(|(from, target, to)| {
+                    assert_eq!(target, to_edge);
+                    (from, to)
+                })
+                .collect()
+        };
+        assert_eq!(pairs(0, POCKET_EDGE), entering);
+        assert_eq!(pairs(POCKET_EDGE, 0), leaving);
+        let mut shifted = 0;
+        for &id in &lanes.node_lanes[&(TRANSITION as usize)] {
+            let lane = &lanes.lanes[id];
+            if lane.lane_type != LaneType::Vehicle {
+                continue;
+            }
+            let (first, last) = (lane.geometry[0], *lane.geometry.last().unwrap());
+            assert!((last.x - first.x).abs() > 15.0, "the mouths lie apart");
+            let shift = (last.z - first.z).abs();
+            assert!(
+                shift < 1e-4 || (shift - config::LANE_WIDTH).abs() < 1e-3,
+                "{shift}"
+            );
+            // The oncoming lanes run west (-x) and shift a lane.
+            if last.x < first.x {
+                assert!((shift - config::LANE_WIDTH).abs() < 1e-3, "{shift}");
+                shifted += 1;
+            }
+        }
+        assert_eq!(shifted, leaving.len());
+        assert_eq!(arrows(&graph, POCKET_EDGE, JUNCTION), masks);
+        let several = graph.edge(0).fwd_lanes > 1;
+        assert_eq!(
+            super::lanes::transition_needs_lane_choice(&graph, 0, TRANSITION),
+            several
+        );
+        for &id in &lanes.edge_lanes[&0] {
+            let lane = &lanes.lanes[id];
+            let approaches = lane.lane_type == LaneType::Vehicle && lane.is_fwd;
+            assert_eq!(lanes.needs_turn_preparation(id), approaches && several);
+        }
+        let fork =
+            |ranks| super::lanes::pocket_fork_sources(&graph, 0, TRANSITION, POCKET_EDGE, ranks);
+        assert_eq!(fork((0, 1)), Some((0, 1)), "the left turn: base lane 0");
+        let count = usize::from(graph.edge(POCKET_EDGE).fwd_lanes);
+        let base = usize::from(graph.edge(0).fwd_lanes);
+        assert_eq!(
+            fork((count - 1, 1)),
+            Some((base - 1, 1)),
+            "the kerb lane: the base road's outer lane"
+        );
+    }
 }

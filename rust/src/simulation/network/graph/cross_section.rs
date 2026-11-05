@@ -116,8 +116,9 @@ impl RoadMedian {
 /// there. The lane counts and `Edge::width` include the pocket lanes. `left` is the lane left of
 /// the through lanes as its drivers see it (rank 0, `lanes::lane_rank`), `right` the lane on
 /// their right. Under right-hand traffic a right pocket moves the kerb out by one lane and only
-/// that kerb ([`Edge::kerb_shift_m`]); a left pocket does the same on the other kerb of a one-way
-/// road, and on a divided road takes a lane of the raised median, keeping both kerbs
+/// that kerb ([`Edge::kerb_shift_m`]); a left pocket does the same on the other kerb of a road
+/// without a median, where on a two-way road the oncoming lanes move out by a lane with it (round
+/// R5c1), and on a divided road takes a lane of the raised median, keeping both kerbs
 /// (`Edge::median_pocket_lanes`). The edge is the short pocket edge, split off its base road at a
 /// degree-two [`NodeType::LaneTransition`] node; the taper between them is the roadbed's (D4). Lengths are
 /// never stored.
@@ -219,8 +220,9 @@ impl Edge {
             -1.0
         };
         let (inner, outer) = pocket.inner_outer();
-        // An inner pocket moves the kerb on a one-way road only; on a divided road it takes the
-        // median's room (`ROAD-95` round R5b1), so the footprint keeps both kerbs.
+        // An inner pocket moves its kerb on a road without a median (on a two-way road the
+        // oncoming lanes move out with it, round R5c1); on a divided road it takes the median's
+        // room (`ROAD-95` round R5b1), so the footprint keeps both kerbs.
         let inner_kerb = inner && self.median_pocket_lanes() == 0;
         let lanes = f32::from(u8::from(outer)) - f32::from(u8::from(inner_kerb));
         lanes * config::LANE_WIDTH * 0.5 * side * direction
@@ -329,12 +331,13 @@ impl Edge {
     /// Whether this edge's pocket is one a pocket edit could have built (`ROAD-95`): a car road
     /// at ground level (a bridge's or tunnel's taper would lie on a structure piece), at least one
     /// through lane besides the pocket lanes in the approaching direction, at most
-    /// [`MAX_LANES_PER_DIRECTION`] lanes there, and an inner kerb pocket (the drivers' left
-    /// under right-hand traffic) on a one-way road, where it moves that kerb, or inside a raised
-    /// median at least [`config::LANE_WIDTH`] + [`POCKET_MEDIAN_STUB_M`] wide on the base road,
-    /// which it narrows by a lane (`ROAD-95` round R5b1, D3): `pocket_requires_one_way` on an
-    /// undivided two-way road, `pocket_requires_wide_median` beside a painted or narrower
-    /// median. Edits and loads share it; the error is the stable refusal key. `O(1)`.
+    /// [`MAX_LANES_PER_DIRECTION`] lanes there, and an inner pocket (the drivers' left under
+    /// right-hand traffic) as a kerb pocket on a road without a median, where it moves the kerb
+    /// on its side (on a two-way road the oncoming lanes move with it, `ROAD-95` round R5c1), or
+    /// inside a raised median at least [`config::LANE_WIDTH`] + [`POCKET_MEDIAN_STUB_M`] wide on
+    /// the base road, which it narrows by a lane (round R5b1, D3): `pocket_requires_wide_median`
+    /// beside a painted or narrower median. Edits and loads share it; the error is the stable
+    /// refusal key. `O(1)`.
     pub(crate) fn validate_pocket(&self) -> Result<(), &'static str> {
         let Some(pocket) = self.pocket else {
             return Ok(());
@@ -363,19 +366,15 @@ impl Edge {
         if lanes <= self.pocket_lanes(is_fwd) {
             return Err("invalid_pocket_dimensions");
         }
-        if pocket.inner_outer().0 && opposite > 0 {
+        if pocket.inner_outer().0
+            && opposite > 0
+            && let Some(median) = self.base_median()
+        {
             // Inside a divided road the pocket takes a lane of a raised median and leaves at
-            // least a kerb stub (D3).
-            let base = self.base_median();
-            match base {
-                None => return Err("pocket_requires_one_way"),
-                Some(median)
-                    if !median.is_raised()
-                        || median.width_m < config::LANE_WIDTH + POCKET_MEDIAN_STUB_M =>
-                {
-                    return Err("pocket_requires_wide_median");
-                }
-                Some(_) => {}
+            // least a kerb stub (D3). On an undivided road it moves the kerb on the oncoming
+            // side by a lane (round R5c1), as on a one-way road.
+            if !median.is_raised() || median.width_m < config::LANE_WIDTH + POCKET_MEDIAN_STUB_M {
+                return Err("pocket_requires_wide_median");
             }
         }
         Ok(())

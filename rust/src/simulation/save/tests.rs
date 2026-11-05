@@ -2293,7 +2293,6 @@ fn pockets_round_trip_through_the_edge_table() {
         "UPDATE network_edges SET pocket_roles = 0 WHERE edge_id = 1",
         "UPDATE network_edges SET pocket_roles = 4 WHERE edge_id = 1",
         "UPDATE network_edges SET pocket_end = 3 WHERE edge_id = 1",
-        "UPDATE network_edges SET pocket_roles = 1 WHERE edge_id = 1",
         "UPDATE network_edges SET fwd_lanes = 1 WHERE edge_id = 1",
         "UPDATE network_edges SET class = 1 WHERE edge_id = 1",
         "UPDATE network_nodes SET node_type = 7 WHERE node_id = 1",
@@ -2302,6 +2301,18 @@ fn pockets_round_trip_through_the_edge_table() {
         conn.execute_batch(bad).unwrap();
         assert!(network::load_graph(&conn).is_err(), "{bad} loaded");
     }
+    // Round R5c1: a left role on the undivided two-way road loads (a kerb pocket, as a right one).
+    let conn = save(&graph);
+    conn.execute_batch("UPDATE network_edges SET pocket_roles = 1 WHERE edge_id = 1")
+        .unwrap();
+    assert_eq!(
+        network::load_graph(&conn).unwrap().edge(1).pocket,
+        Some(RoadPocket {
+            end: EdgeEnd::End,
+            left: true,
+            right: false
+        })
+    );
 
     // Round R5b1: a left pocket's edge stores its narrowed median (1.5 m, below grass's 2 m
     // minimum), which loads because its base road's (5 m) is valid; a stub the base road could

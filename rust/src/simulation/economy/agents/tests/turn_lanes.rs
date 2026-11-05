@@ -538,6 +538,55 @@ fn a_car_replanned_after_the_fork_misses_the_pocket_and_reaches_its_door() {
     );
 }
 
+// Round R5c1: a left pocket on an undivided four-way (`roadbed::fixtures::four_way_pocket_junction`,
+// the nodes and edges of `pocket_junction_network` with the north arm 5), with lanes and routing
+// built.
+fn undivided_pocket_network(lanes: u8, right: bool) -> (TransitNetwork, RegionGraph) {
+    let mut graph = crate::simulation::network::roadbed::fixtures::four_way_pocket_junction(
+        lanes, None, true, right,
+    );
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+    (network, graph)
+}
+
+// Round R5c1 (D4, D5): on an undivided road a left-turning car takes the left pocket at the fork
+// (base lane 0 into the pocket edge's lane 0) and turns from it; a straight car keeps the through
+// lane beside it; a right-turning car on a 2+2 road moves to the outer lane before the fork. With
+// a right pocket too, the right turn takes that pocket. No lane change on the pocket edge.
+#[test]
+fn a_left_turning_car_takes_the_pocket_on_an_undivided_road() {
+    // (lanes, right pocket, border node: 5 north = left, 3 east = straight, 4 south = right, the
+    // pocket edge's lane the car drives).
+    for (lanes, right, border, expected) in [
+        (1, false, 5, 0),
+        (1, false, 3, 1),
+        (1, false, 4, 1),
+        (2, false, 5, 0),
+        (2, false, 3, 1),
+        (2, false, 4, 2),
+        (2, true, 5, 0),
+        (2, true, 3, 1),
+        (2, true, 4, 3),
+    ] {
+        let (mut network, mut graph) = undivided_pocket_network(lanes, right);
+        let pocket = vehicle_lane(&network, 1, 0);
+        assert_eq!(
+            connector_exits(&network, pocket),
+            vec![4],
+            "the pocket lane turns left only"
+        );
+        let (driven, changed) = drive_through_the_pocket(&mut network, &mut graph, border);
+        assert_eq!(
+            driven,
+            vec![expected],
+            "{lanes}+{lanes} right {right} to {border}"
+        );
+        assert!(!changed, "no lane change on the pocket edge");
+    }
+}
+
 // `ROAD-95`: a pocket edge is too short to change lanes on, so the entry-lane walk reads through
 // the transition: on a 2+2 road whose junction approach has a right pocket (3+2 at a four-way:
 // L+S / S / R), a car entering the base road for the right turn takes its outer lane (the one

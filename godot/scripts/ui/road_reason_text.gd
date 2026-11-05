@@ -127,8 +127,6 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Turn pockets are for roads on the ground"
 		"pocket_lane_limit":
 			return "At most 4 lanes in each direction, the pocket included"
-		"pocket_requires_one_way":
-			return "A left turn pocket needs a one-way road or a raised median"
 		"pocket_requires_wide_median":
 			return "A left turn pocket needs a raised median at least 3.8 m wide"
 		"invalid_pocket_dimensions":

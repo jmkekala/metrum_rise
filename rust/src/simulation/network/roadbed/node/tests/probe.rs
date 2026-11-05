@@ -78,6 +78,23 @@ fn probe_fixtures() -> Vec<(String, RegionGraph)> {
             "four_way_2x2_left_right_pocket",
             pockets::four_way_2x2_left_right_pocket(),
         ),
+        // Round R5c1: left pockets on undivided roads, alone and beside a right one.
+        (
+            "four_way_1x1_left_pocket",
+            pockets::four_way_1x1_left_pocket(),
+        ),
+        (
+            "four_way_1x1_left_right_pocket",
+            pockets::four_way_1x1_left_right_pocket(),
+        ),
+        (
+            "undivided_2x2_left_pocket",
+            pockets::undivided_2x2_left_pocket(),
+        ),
+        (
+            "undivided_2x2_left_right_pocket",
+            pockets::undivided_2x2_left_right_pocket(),
+        ),
     ] {
         set.push((name.to_string(), graph));
     }
@@ -2092,6 +2109,56 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x1dcc17848011ca01,
         ],
     ),
+    // Round R5c1: left pockets on undivided roads, alone and beside a right one; every other
+    // entry unchanged.
+    (
+        "four_way_1x1_left_pocket",
+        [
+            0xcc04d2a3b182d420,
+            0x4af0a1e7b20ee8ae,
+            0xa60b045d508d27ca,
+            0x5025ae85ffde7855,
+            0xa5b81bea6d87a462,
+            0x5a40aaee7c5ffe24,
+            0xc837aafee4bf2661,
+        ],
+    ),
+    (
+        "four_way_1x1_left_right_pocket",
+        [
+            0x79f1ed4c2751eb30,
+            0x92a54d38ac300ebb,
+            0xe70327ca76c7b193,
+            0x0c3721b0ccf4ae2e,
+            0xa6e420291b72c10e,
+            0xe690dc766c651bab,
+            0x1cafb03ffde14da3,
+        ],
+    ),
+    (
+        "undivided_2x2_left_pocket",
+        [
+            0x1ed3664ec6ddc130,
+            0xb61161fb19f7329d,
+            0x7cc3f22d635138b3,
+            0xbdef848c470688d8,
+            0xefe4792c83846e48,
+            0x858fbeb33f8ce384,
+            0x4f007c3a1d3b5fc6,
+        ],
+    ),
+    (
+        "undivided_2x2_left_right_pocket",
+        [
+            0xdcc8f37fd58ab470,
+            0xa8e78fd08cc57c2c,
+            0x2295d104429bf8bb,
+            0xa493aa61d3e51433,
+            0xd6af7f12ee6c5789,
+            0x29c4ae6d2b4a4d1b,
+            0xe69e92f15971ed3b,
+        ],
+    ),
 ];
 
 // Recorded by `TERRAIN-07-B`: the strip layer is new, so every entry is new; the seven
@@ -2266,4 +2333,9 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     // Round R5b1a.
     ("four_way_2x2_right_pocket", 0x3c930dccf14cdd65),
     ("four_way_2x2_left_right_pocket", 0x42b8381b17d3c395),
+    // Round R5c1.
+    ("four_way_1x1_left_pocket", 0xf09b9185e42d7ca5),
+    ("four_way_1x1_left_right_pocket", 0x35e644f19860eced),
+    ("undivided_2x2_left_pocket", 0x3c20a6e986fab845),
+    ("undivided_2x2_left_right_pocket", 0x6e2d2cf56781779d),
 ];

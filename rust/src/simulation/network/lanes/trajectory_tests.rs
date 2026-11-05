@@ -685,6 +685,31 @@ fn fixtures() -> Vec<(String, RegionGraph)> {
         "four_way_2x2_left_right_pocket".to_string(),
         super::super::roadbed::fixtures::four_way_2x2_left_right_pocket(),
     ));
+    // Round R5c1: left pockets on undivided roads: the oncoming lanes shift a full lane across
+    // the transition's piece.
+    {
+        use super::super::roadbed::fixtures as pockets;
+        for (name, graph) in [
+            (
+                "four_way_1x1_left_pocket",
+                pockets::four_way_1x1_left_pocket(),
+            ),
+            (
+                "four_way_1x1_left_right_pocket",
+                pockets::four_way_1x1_left_right_pocket(),
+            ),
+            (
+                "undivided_2x2_left_pocket",
+                pockets::undivided_2x2_left_pocket(),
+            ),
+            (
+                "undivided_2x2_left_right_pocket",
+                pockets::undivided_2x2_left_right_pocket(),
+            ),
+        ] {
+            fixtures.push((name.to_string(), graph));
+        }
+    }
     fixtures.extend(footpath_fixtures(false).into_iter().filter(|(name, _)| {
         name.starts_with("t_beside_arm/") || name.starts_with("through_road/")
     }));

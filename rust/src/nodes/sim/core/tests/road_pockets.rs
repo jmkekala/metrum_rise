@@ -235,10 +235,6 @@ fn pocket_edits_are_refused_with_a_reason() {
         "invalid_pocket_dimensions"
     );
     assert_eq!(
-        pocket_edit(&mut core, request(west, end, (true, false), 60.0)),
-        "pocket_requires_one_way"
-    );
-    assert_eq!(
         pocket_edit(&mut core, request(west, end, (false, false), 60.0)),
         "pocket_unchanged"
     );
@@ -807,6 +803,123 @@ fn the_pocket_corridor_is_asymmetric() {
     }
 }
 
+// Round R5c1: a left pocket on the undivided 1+1 crossing's west arm through the edit, at both
+// stored ends. The pocket edge has two lanes towards the crossing and its kerb shift on the
+// oncoming side; the transition is laid out (a node piece) and no node fails; it costs what a
+// right pocket of the same length costs (D14). Preview is commit for the add, a resize, a right
+// pocket added beside it and the removal, which gives the base road back; undo restores the
+// pair. The corridor is checked on the widened side (D17): a parcel on the left of the approach
+// refuses a left pocket, one on the right does not. A junction with turn rules still refuses.
+#[test]
+fn a_left_pocket_on_an_undivided_road_widens_its_oncoming_side_through_the_edit() {
+    for west_to_east in [true, false] {
+        let (mut core, node) = crossing(west_to_east);
+        let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+        let base = core.region_graph.edge(west).clone();
+        let left = (true, false);
+        let cost = |core: &mut SimCore, roles| {
+            core.preview_road_pocket_internal(request(west, end, roles, 60.0))
+                .unwrap()
+                .cost_delta
+        };
+        let left_cost = cost(&mut core, left);
+        assert!(left_cost > 0.0);
+        assert_eq!(left_cost, cost(&mut core, (false, true)));
+        assert_eq!(pocket_edit(&mut core, request(west, end, left, 60.0)), "");
+        let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+        assert_eq!((state.pocket.left, state.pocket.right), (true, false));
+        let pocket = core.region_graph.edge(state.edge).clone();
+        let is_fwd = end == EdgeEnd::End;
+        assert_eq!(
+            (pocket.fwd_lanes, pocket.bkw_lanes),
+            if is_fwd { (2, 1) } else { (1, 2) }
+        );
+        assert_eq!(pocket.width, base.width + 3.5);
+        // Towards the oncoming side: -z, whichever way the arm is stored.
+        let shift = if is_fwd { -1.75 } else { 1.75 };
+        assert_eq!(pocket.kerb_shift_m(), shift);
+        let transition = if is_fwd {
+            pocket.start_node
+        } else {
+            pocket.end_node
+        };
+        assert_eq!(
+            core.region_graph.node(transition).node_type,
+            NodeType::LaneTransition
+        );
+        core.precompute_road_mesh_data();
+        assert!(core.transit_network.roadbed.failed_nodes().is_empty());
+        assert!(
+            core.transit_network
+                .roadbed
+                .node_piece(transition)
+                .is_some(),
+            "a laid-out transition"
+        );
+        // The pocket lane lies beside the centre line (z = -1.75), the oncoming lane a lane out.
+        let lanes = &core.transit_network.lane_system;
+        let mid_z = |id: usize| {
+            let geometry = &lanes.lanes[id].geometry;
+            geometry[geometry.len() / 2].z
+        };
+        let towards = vehicle_lanes(&core, state.edge, is_fwd);
+        let away = vehicle_lanes(&core, state.edge, !is_fwd);
+        let pocket_lane = if is_fwd { towards[0].1 } else { towards[1].1 };
+        assert!((mid_z(pocket_lane) + 1.75).abs() < 1e-3);
+        assert!((mid_z(away[0].1) + 5.25).abs() < 1e-3);
+        assert_eq!(pocket_edit(&mut core, request(west, end, left, 90.0)), "");
+        assert_eq!(
+            pocket_edit(&mut core, request(west, end, (true, true), 90.0)),
+            ""
+        );
+        let both = core.region_graph.edge(state.edge);
+        assert_eq!(both.fwd_lanes + both.bkw_lanes, 4);
+        assert_eq!(both.kerb_shift_m(), 0.0);
+        assert_eq!(
+            pocket_edit(&mut core, request(west, end, (false, false), 90.0)),
+            ""
+        );
+        let joined = core.region_graph.edge(west);
+        assert_eq!(
+            (joined.fwd_lanes, joined.bkw_lanes, joined.width),
+            (base.fwd_lanes, base.bkw_lanes, base.width)
+        );
+        assert!(joined.pocket.is_none());
+        assert!(core.undo_action_internal());
+        let restored = core.get_road_pocket_internal(west as i32, end).unwrap();
+        assert_eq!((restored.pocket.left, restored.pocket.right), (true, true));
+        assert!(core.undo_action_internal());
+        let restored = core.get_road_pocket_internal(west as i32, end).unwrap();
+        assert_eq!((restored.pocket.left, restored.pocket.right), (true, false));
+        assert!((restored.body_m - 90.0).abs() < 1e-3);
+    }
+    for (z, expected) in [(-10.5, "parcel_overlap"), (10.5, "")] {
+        let (mut core, node) = crossing(true);
+        let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+        let residential = core
+            .zoning
+            .profiles
+            .default_runtime_id_for_zone_type(ZoneType::Residential)
+            .unwrap();
+        core.zoning
+            .place_or_rezone_default_parcel_at(-40.0, z, residential, &core.region_graph)
+            .expect("a parcel fronting the west arm");
+        assert_eq!(
+            pocket_edit(&mut core, request(west, end, (true, false), 60.0)),
+            expected,
+            "parcel at z {z}"
+        );
+    }
+    let (mut core, node) = crossing(true);
+    let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+    let east = arm_towards(&core, node, Vector3::new(150.0, 0.0, 0.0));
+    core.set_lane_connection_internal(node, west as i32, 0, east as i32, 0);
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (true, false), 60.0)),
+        "pocket_junction_whitelisted"
+    );
+}
+
 // The edit's publication splices the rebuilt chunks: what Godot is sent equals a full emission
 // after the add, a resize and each undo.
 #[test]
@@ -886,8 +999,9 @@ fn moving_a_pocket_and_undo_preserve_a_cars_world_station() {
 // Round R5b2 (D12): what the Road Properties window's Turn pocket section reads. The end nearest
 // a click; a pocket edge's own pocket end wherever it is clicked (its far end is the
 // transition); the same junction and the whole road from it through the base road's transition;
-// the roles the road can carry: left only on a one-way road or beside a raised median of at
-// least 3.8 m, right beside a median too (round R5b1a: its transition carries the median through).
+// the roles the road can carry: left on a road without a median (round R5c1) or beside a raised
+// median of at least 3.8 m, right beside a median too (round R5b1a: its transition carries the
+// median through).
 #[test]
 fn the_turn_pocket_section_reads_the_end_nearest_the_click() {
     use crate::simulation::network::pockets::{PocketEndView, nearest_pocket_end};
@@ -900,7 +1014,7 @@ fn the_turn_pocket_section_reads_the_end_nearest_the_click() {
     assert_eq!(view.junction, node);
     assert_eq!(
         (view.left, view.right),
-        (Err("pocket_requires_one_way"), Ok(()))
+        (Ok(()), Ok(()))
     );
     assert_eq!(
         pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
