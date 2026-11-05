@@ -6,7 +6,7 @@
 //! ([`measure_connectors`]) also serves the save sweep (`nodes::sim::core::tests::
 //! junction_connector_sweep`), which runs it on every node of a loaded city.
 
-use super::super::graph::RegionGraph;
+use super::super::graph::{RegionGraph, SidewalkSides};
 use super::super::roadbed::fixtures::{finalize, footpath_fixtures, point, road_edge};
 use super::super::roadbed::{
     ArmKey, BandKind, EdgeEnd, MouthFrame, NodeKind, NodeWalkways, RoadVec2, RoadbedSystem,
@@ -634,6 +634,15 @@ fn uneven_star(arms: &[(f32, u8, u8)]) -> RegionGraph {
     graph
 }
 
+// `graph` with the sidewalk sides of `edges` set (`ROAD-107`), laid out again.
+fn with_sidewalks(mut graph: RegionGraph, edges: &[(usize, SidewalkSides)]) -> RegionGraph {
+    for &(edge, sides) in edges {
+        graph.edge_mut(edge).set_sidewalks(sides);
+    }
+    finalize(&mut graph);
+    graph
+}
+
 fn fixtures() -> Vec<(String, RegionGraph)> {
     let mut fixtures = vec![
         (
@@ -713,6 +722,32 @@ fn fixtures() -> Vec<(String, RegionGraph)> {
     fixtures.extend(footpath_fixtures(false).into_iter().filter(|(name, _)| {
         name.starts_with("t_beside_arm/") || name.starts_with("through_road/")
     }));
+    // `ROAD-107`: one-sided roads (round S1, PLAN-R7 2.2's fixtures): a T whose stem has its
+    // sidewalk on its left and on its right, a one-sided road continuing a two-sided one and a
+    // one-sided one-way stem. A straight pair of equal one-sided roads passes through: its lanes
+    // join with no connector to measure. The carriageway is unchanged, so the connectors hold
+    // to it whatever the sides.
+    use SidewalkSides as Sides;
+    let straight = || star(&[(0.0, 1), (180.0, 1)]);
+    let t = || star(&[(0.0, 1), (180.0, 1), (270.0, 1)]);
+    let one_way_t = || uneven_star(&[(0.0, 1, 1), (180.0, 1, 1), (270.0, 1, 0)]);
+    for (name, graph) in [
+        ("one_sided_stem_left", with_sidewalks(t(), &[(2, Sides::LEFT)])),
+        (
+            "one_sided_stem_right",
+            with_sidewalks(t(), &[(2, Sides::RIGHT)]),
+        ),
+        (
+            "one_sided_continues_two_sided",
+            with_sidewalks(straight(), &[(1, Sides::RIGHT)]),
+        ),
+        (
+            "one_sided_one_way_stem",
+            with_sidewalks(one_way_t(), &[(2, Sides::RIGHT)]),
+        ),
+    ] {
+        fixtures.push((name.to_string(), graph));
+    }
     fixtures
 }
 
