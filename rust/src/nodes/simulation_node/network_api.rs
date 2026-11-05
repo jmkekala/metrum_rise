@@ -609,70 +609,75 @@ impl SimulationNode {
 
     /// The turn pocket at end `end` (0 start, 1 end) of road `edge_id`, or reached through its
     /// lane transition there (`ROAD-95`): `has_pocket`, and with one `left`, `right`,
-    /// `length_m` (its body from the junction, D7) and `pocket_edge`. For the Road Properties
-    /// window's Turn pocket section (D12): `junction` (the node at this end), `road` (the road's
-    /// polyline from the junction outwards, the pocket and its base road joined), `width_m`
-    /// (its widest edge), `left_offered` / `right_offered` (whether the road can carry a pocket
-    /// lane on that side at all: the edit's role checks, without the length, the junction's
-    /// turns and the compile) with `left_refusal` / `right_refusal` (the key, empty when
-    /// offered), and the length range `min_length_m`, `max_length_m`, `step_m`,
-    /// `default_length_m`. Empty for an id that is not a live edge.
+    /// `length_m` (its body from the junction, D7) and `pocket_edge`. For the Junction window's
+    /// Turn pockets rows: `junction` (the node at this end), `road` (the road's polyline from
+    /// the junction outwards, the pocket and its base road joined), `width_m` (its widest
+    /// edge), `left_offered` / `right_offered` (whether the road can carry a pocket lane on
+    /// that side at all: the edit's role checks, without the length, the junction's turns and
+    /// the compile) with `left_refusal` / `right_refusal` (the key, empty when offered), and the
+    /// length range `min_length_m`, `max_length_m`, `step_m`, `default_length_m`. Empty for an
+    /// id that is not a live edge.
     #[func]
     pub fn get_road_pocket(&self, edge_id: i32, end: i32) -> VarDictionary {
-        use crate::simulation::network::pockets::{
-            POCKET_BODY_DEFAULT_M, POCKET_BODY_MAX_M, POCKET_BODY_MIN_M, POCKET_BODY_STEP_M,
-            PocketEndView,
-        };
+        use crate::simulation::network::pockets::PocketEndView;
         let core = self.lock_core();
-        let Some(view) = usize::try_from(edge_id)
+        usize::try_from(edge_id)
             .ok()
             .and_then(|edge| PocketEndView::of(&core.region_graph, edge, pocket_end(end)))
-        else {
-            return VarDictionary::new();
-        };
-        let refusal = |role: Result<(), &'static str>| role.err().unwrap_or("");
-        let mut result = vdict! {
-            "has_pocket": false,
-            "junction": i64::from(view.junction),
-            "road": PackedVector3Array::from_iter(view.road.iter().copied()),
-            "width_m": view.width_m,
-            "left_offered": view.left.is_ok(),
-            "right_offered": view.right.is_ok(),
-            "left_refusal": refusal(view.left),
-            "right_refusal": refusal(view.right),
-            "min_length_m": POCKET_BODY_MIN_M,
-            "max_length_m": POCKET_BODY_MAX_M,
-            "step_m": POCKET_BODY_STEP_M,
-            "default_length_m": POCKET_BODY_DEFAULT_M,
-        };
-        if let Some(state) = core.get_road_pocket_internal(edge_id, pocket_end(end)) {
-            result.set("has_pocket", true);
-            result.set("left", state.pocket.left);
-            result.set("right", state.pocket.right);
-            result.set("length_m", state.body_m);
-            result.set("pocket_edge", state.edge as i64);
-        }
-        result
+            .map_or_else(VarDictionary::new, |view| {
+                pocket_end_dictionary(&core, &view, edge_id, pocket_end(end))
+            })
     }
 
-    /// The end (0 start, 1 end) of road `edge_id` the Road Properties window's Turn pocket
-    /// section edits for a click at (`world_x`, `world_z`) (`ROAD-95`, D12): a pocket edge's
-    /// pocket end, else the end nearer the click. -1 for an id that is not a live edge.
+    /// The Junction window's Turn pockets rows at node `node_id` (`ROAD-95`, round R5c2): one
+    /// dictionary per car road arm with a lane into the junction, clockwise from north by the
+    /// direction it comes from (ties by edge id), each [`Self::get_road_pocket`]'s for that end
+    /// plus `edge`, `end` (0 start, 1 end; a pocket edge's pocket end), `bearing_deg` (from the
+    /// junction to the arm's point 20 m out, clockwise from north = -Z), `road_type` (the name of
+    /// the road type its road without the pocket matches, as [`Self::get_edge_cross_section`]'s
+    /// `road_type`; empty for a custom layout) and that road's `fwd_lanes`, `bkw_lanes`,
+    /// `median_style` and `median_width`. Empty for a lane transition node, a node without
+    /// such an arm, or an id that is not a node. `O(degree + arm points)`.
     #[func]
-    pub fn nearest_road_pocket_end(&self, edge_id: i32, world_x: f32, world_z: f32) -> i32 {
-        use crate::simulation::network::pockets::nearest_pocket_end;
-        use crate::simulation::network::roadbed::EdgeEnd;
-        let core = self.lock_core();
-        let Some(edge) = usize::try_from(edge_id)
-            .ok()
-            .filter(|&edge| core.region_graph.get_edge(edge).is_some_and(|edge| !edge.deleted))
-        else {
-            return -1;
+    pub fn get_junction_pockets(&self, node_id: u32) -> VarArray {
+        let rows: Vec<_> = {
+            let core = self.lock_core();
+            core.junction_pocket_arms_internal(node_id)
+                .into_iter()
+                .map(|arm| {
+                    let edge_id = arm.edge as i32;
+                    let mut row = pocket_end_dictionary(&core, &arm.view, edge_id, arm.end);
+                    let (section, ..) = arm.base;
+                    row.set("edge", i64::from(edge_id));
+                    row.set(
+                        "end",
+                        i64::from(arm.end == crate::simulation::network::roadbed::EdgeEnd::End),
+                    );
+                    row.set("bearing_deg", arm.bearing_deg);
+                    row.set("fwd_lanes", i64::from(section.fwd_lanes));
+                    row.set("bkw_lanes", i64::from(section.bkw_lanes));
+                    row.set(
+                        "median_style",
+                        i64::from(RoadMedian::style_code(section.median)),
+                    );
+                    row.set(
+                        "median_width",
+                        section.median.map_or(0.0, |median| median.width_m),
+                    );
+                    (row, arm.base)
+                })
+                .collect()
         };
-        match nearest_pocket_end(&core.region_graph, edge, world_x, world_z) {
-            EdgeEnd::Start => 0,
-            EdgeEnd::End => 1,
+        // The library is matched without the core lock.
+        let mut result = VarArray::new();
+        for (mut row, (section, speed_kmh, street_lights)) in rows {
+            row.set(
+                "road_type",
+                self.road_type_name_of(section, speed_kmh, street_lights),
+            );
+            result.push(&row.to_variant());
         }
+        result
     }
 
     /// The commit's verdict on a turn pocket at end `end` (0 start, 1 end) of road `edge_id`
@@ -790,6 +795,41 @@ fn pocket_end(end: i32) -> crate::simulation::network::roadbed::EdgeEnd {
     } else {
         EdgeEnd::End
     }
+}
+
+// `get_road_pocket`'s dictionary for end `end` of road `edge_id`, whose pocket view is `view`.
+fn pocket_end_dictionary(
+    core: &crate::nodes::sim::core::SimCore,
+    view: &crate::simulation::network::pockets::PocketEndView,
+    edge_id: i32,
+    end: crate::simulation::network::roadbed::EdgeEnd,
+) -> VarDictionary {
+    use crate::simulation::network::pockets::{
+        POCKET_BODY_DEFAULT_M, POCKET_BODY_MAX_M, POCKET_BODY_MIN_M, POCKET_BODY_STEP_M,
+    };
+    let refusal = |role: Result<(), &'static str>| role.err().unwrap_or("");
+    let mut result = vdict! {
+        "has_pocket": false,
+        "junction": i64::from(view.junction),
+        "road": PackedVector3Array::from_iter(view.road.iter().copied()),
+        "width_m": view.width_m,
+        "left_offered": view.left.is_ok(),
+        "right_offered": view.right.is_ok(),
+        "left_refusal": refusal(view.left),
+        "right_refusal": refusal(view.right),
+        "min_length_m": POCKET_BODY_MIN_M,
+        "max_length_m": POCKET_BODY_MAX_M,
+        "step_m": POCKET_BODY_STEP_M,
+        "default_length_m": POCKET_BODY_DEFAULT_M,
+    };
+    if let Some(state) = core.get_road_pocket_internal(edge_id, end) {
+        result.set("has_pocket", true);
+        result.set("left", state.pocket.left);
+        result.set("right", state.pocket.right);
+        result.set("length_m", state.body_m);
+        result.set("pocket_edge", state.edge as i64);
+    }
+    result
 }
 
 // A pocket edit from Godot's arguments; `None` for a negative edge id.

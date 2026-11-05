@@ -13,6 +13,7 @@ extends CanvasLayer
 const CityStatusPanel = preload("res://scripts/ui/city_status_panel.gd")
 const DemandMeter = preload("res://scripts/ui/demand_meter.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
+const JunctionWindow = preload("res://scripts/ui/junction_window.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadBuilderWindow = preload("res://scripts/ui/road_builder/road_builder_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -87,6 +88,7 @@ var _industry_asset_buttons: Dictionary = {}
 var select_main_btn: Button
 var bulldoze_btn: Button
 var road_properties_panel: Node
+var junction_window: Node
 var clock_panel: PanelContainer
 var clock_label: Label
 var speed_label: Label
@@ -648,6 +650,9 @@ func _build_auxiliary_windows() -> void:
 	add_child(road_properties_panel)
 	if road_properties_panel.has_method("setup"):
 		road_properties_panel.setup(simulation_node, input_manager.select_tool)
+	junction_window = JunctionWindow.new()
+	junction_window.setup(simulation_node, input_manager.select_tool)
+	add_child(junction_window)
 	road_builder = RoadBuilderWindow.new()
 	road_builder.setup(simulation_node)
 	add_child(road_builder)
@@ -966,6 +971,17 @@ func show_road_properties_multi(edge_indices: Array, screen_pos: Vector2 = Vecto
 func hide_road_properties():
 	if road_properties_panel and road_properties_panel.has_method("close_window"):
 		road_properties_panel.close_window()
+
+## Shows the Junction window (turn pockets, `ROAD-95`) for junction `node_id`, clicked at
+## `screen_pos`.
+func show_junction_window(node_id: int, screen_pos: Vector2 = Vector2.ZERO) -> void:
+	if junction_window:
+		junction_window.show_for_node(node_id, screen_pos)
+
+## Hides the Junction window.
+func hide_junction_window() -> void:
+	if junction_window:
+		junction_window.close_window()
 
 func _color_from_hex(hex: String, alpha: float) -> Color:
 	if hex.length() == 7 and hex.begins_with("#"):

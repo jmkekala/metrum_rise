@@ -7,10 +7,10 @@
 ## (`ROAD-74`). Rust decides: hovering a toggle asks for the commit's verdict, and a click
 ## commits only a toggle that verdict accepted. The Road Properties window's lane steppers
 ## (`ROAD-80`) ask the same kind of verdict for the selected roads' lanes and commit on Apply.
-## Turn pockets (`ROAD-95`, D12): the window's Turn pocket section edits the end of the one
-## selected road nearest the click (Rust picks it), highlighted over the length a pocket would
-## take from its junction; an applied pocket splits or joins the road, so the selection follows
-## the road under the click.
+## A junction click also opens the Junction window (`junction_window.gd`) beside the click: its
+## Turn pockets rows (`ROAD-95`, round R5c2) edit each incoming road's pocket, and this tool draws
+## the highlighted row's road from the junction over the requested length and redraws the
+## junction's lanes after an edit or an undo.
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
@@ -32,7 +32,7 @@ var active: bool = false:
 			selected_edges.clear()
 			_connected_nodes.clear()
 			_clear_node_visuals()
-			selected_node = -1
+			_select_node(-1)
 
 # Edge Selection
 var selected_edges: Array[int] = []
@@ -42,12 +42,10 @@ var _last_hovered: int = -1
 
 var _highlight_mi: MeshInstance3D = null
 var _highlight_tween: Tween = null
-# The Turn pocket section's end: a strip from the junction over the pocket's length, drawn with
-# the selection highlight's material in its own colour.
+# The Junction window's highlighted road: a strip from the junction over the pocket's length,
+# drawn with the selection highlight's material in its own colour.
 var _pocket_end_mi: MeshInstance3D = null
 const POCKET_END_COLOR := Color(0.2, 0.9, 1.0, 0.3)
-# Where the click that selected the road hit the world (null without one).
-var _click_world = null
 
 # Node Selection
 var selected_node: int = -1
@@ -117,7 +115,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			_mouse_pressed = true
 			_last_click_screen_pos = event.position
 			var pos = _world_position(event.position)
-			_click_world = pos
 			
 			# If we have a node selected, check if we clicked a UI control (lane sphere or crosswalk)
 			if selected_node != -1:
@@ -140,7 +137,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				edge_idx = simulation_node.get_hovered_edge(pos.x, pos.z)
 				var building_inspector = _get_building_inspector()
 				if edge_idx == -1 and building_inspector and building_inspector.try_inspect(pos, _last_click_screen_pos):
-					selected_node = -1
+					_select_node(-1)
 					_set_selection([])
 					_clear_node_visuals()
 					return
@@ -148,14 +145,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				if nearest_node != -1:
 					if building_inspector:
 						building_inspector.close_window()
-					selected_node = nearest_node
+					_select_node(nearest_node)
 					_set_selection([]) # Clear edge selection
 					_build_node_visuals(selected_node)
 					return
 			
 			# Otherwise we clicked an edge
 			_clear_node_visuals()
-			selected_node = -1
+			_select_node(-1)
 			if edge_idx != -1:
 				var building_inspector = _get_building_inspector()
 				if building_inspector:
@@ -558,7 +555,6 @@ func _rebuild_highlight() -> void:
 		_highlight_tween.tween_property(mat, "emission", Color(1.0, 1.0, 1.0), 0.5)
 
 func _clear_highlight() -> void:
-	clear_pocket_end()
 	if _highlight_tween:
 		_highlight_tween.kill()
 		_highlight_tween = null
@@ -567,55 +563,34 @@ func _clear_highlight() -> void:
 		var mat := _highlight_mi.material_override as StandardMaterial3D
 		if mat: mat.emission = Color(1, 1, 1)
 
-# ── Turn pocket (`ROAD-95`) ─────────────────────────────────────────────────
+# ── Junction window (`ROAD-95` turn pockets) ────────────────────────────────
 
-## The road end the Turn pocket section edits: Rust's `get_road_pocket` for the end of the one
-## selected road nearest the click (`nearest_road_pocket_end`), with that `edge` and `end`
-## added; {} unless exactly one road was selected by a click.
-func selected_pocket_end() -> Dictionary:
-	if selected_edges.size() != 1 or _click_world == null:
-		return {}
-	var edge := selected_edges[0]
-	var end: int = simulation_node.nearest_road_pocket_end(edge, _click_world.x, _click_world.z)
-	if end < 0:
-		return {}
-	var info: Dictionary = simulation_node.get_road_pocket(edge, end)
-	if info.is_empty():
-		return {}
-	info["edge"] = edge
-	info["end"] = end
-	return info
+# Selects junction `node` (-1: none) and opens the Junction window beside the click, or closes it.
+func _select_node(node: int) -> void:
+	selected_node = node
+	if not main_ui:
+		return
+	if node == -1:
+		main_ui.hide_junction_window()
+	else:
+		main_ui.show_junction_window(node, _last_click_screen_pos)
 
-## Selects the road under the click again when an edit or an undo replaced the selected one (a
-## pocket edit splits or joins it). Returns whether the selection changed.
-func follow_click_selection() -> bool:
-	if selected_edges.size() != 1 or _click_world == null:
+## Commits the Junction window's pocket `left` / `right` / `length_m` at end `end` of road `edge`
+## (Rust's `set_road_pocket`, with its undo record: Ctrl+Z) and redraws the junction's lanes,
+## which the pocket changes. Returns whether Rust applied it.
+func set_junction_pocket(edge: int, end: int, left: bool, right: bool, length_m: float) -> bool:
+	if not simulation_node.set_road_pocket(edge, end, left, right, length_m):
 		return false
-	var edge: int = simulation_node.get_hovered_edge(_click_world.x, _click_world.z)
-	if edge < 0 or edge == selected_edges[0]:
-		return false
-	var selection: Array[int] = [edge]
-	selected_edges = selection
-	_connected_nodes.clear()
-	_register_nodes(edge)
-	_rebuild_highlight()
+	refresh_junction_visuals()
 	return true
 
-## Rust's verdict on the pocket `left` / `right` / `length_m` at end `info` (from
-## `selected_pocket_end`).
-func preview_selected_road_pocket(info: Dictionary, left: bool, right: bool, length_m: float) -> Dictionary:
-	return simulation_node.preview_road_pocket(int(info.edge), int(info.end), left, right, length_m)
+## Redraws the selected junction's lane spheres and crosswalk toggles (after an edit or an undo).
+func refresh_junction_visuals() -> void:
+	if selected_node != -1:
+		_build_node_visuals(selected_node)
 
-## Commits that pocket with its undo record (Ctrl+Z); on success the selection follows the road
-## under the click. Returns whether Rust applied it.
-func set_selected_road_pocket(info: Dictionary, left: bool, right: bool, length_m: float) -> bool:
-	if not simulation_node.set_road_pocket(int(info.edge), int(info.end), left, right, length_m):
-		return false
-	follow_click_selection()
-	return true
-
-## Highlights the stretch of `info`'s road (its polyline from the junction outwards) a pocket of
-## `length_m` takes from the junction, as wide as its widest edge.
+## Highlights the stretch of `info`'s road (a Junction window row's arm: its polyline from the
+## junction outwards) a pocket of `length_m` takes from the junction, as wide as its widest edge.
 func show_pocket_end(info: Dictionary, length_m: float) -> void:
 	var road: PackedVector3Array = info.get("road", PackedVector3Array())
 	if road.size() < 2:
@@ -646,7 +621,7 @@ func show_pocket_end(info: Dictionary, length_m: float) -> void:
 	im.surface_end()
 	_pocket_end_mi.mesh = im
 
-## Removes the Turn pocket end's highlight.
+## Removes that highlight.
 func clear_pocket_end() -> void:
 	if _pocket_end_mi:
 		_pocket_end_mi.mesh = null

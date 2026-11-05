@@ -247,7 +247,7 @@ fn pocket_piece(base: &Edge, pocket: RoadPocket) -> Result<Edge, &'static str> {
     Ok(piece)
 }
 
-/// One road end as the Road Properties window's Turn pocket section shows it (`ROAD-95`, D12):
+/// One road end as the Junction window's Turn pockets rows show it (`ROAD-95`, round R5c2):
 /// the junction there, the road from it outwards (the pocket edge and its base road joined) and
 /// whether the road can carry a pocket lane on each side, from the edit's own role checks.
 pub(crate) struct PocketEndView {
@@ -292,23 +292,6 @@ impl PocketEndView {
             left: role(true, false),
             right: role(false, true),
         })
-    }
-}
-
-/// The end of road `edge` nearest the point (`x`, `z`) for the pocket edit (`ROAD-95`, D12): a
-/// pocket edge's pocket end (its other end is the transition, not a road end), else the end whose
-/// polyline end point lies nearer in XZ (ties: the start). `O(1)`.
-pub(crate) fn nearest_pocket_end(graph: &RegionGraph, edge: usize, x: f32, z: f32) -> EdgeEnd {
-    let edge = graph.edge(edge);
-    if let Some(pocket) = edge.pocket {
-        return pocket.end;
-    }
-    let distance =
-        |point: Option<&Vector3>| point.map_or(f32::INFINITY, |p| (p.x - x).hypot(p.z - z));
-    if distance(edge.geometry.last()) < distance(edge.geometry.first()) {
-        EdgeEnd::End
-    } else {
-        EdgeEnd::Start
     }
 }
 

@@ -996,20 +996,17 @@ fn moving_a_pocket_and_undo_preserve_a_cars_world_station() {
     );
 }
 
-// Round R5b2 (D12): what the Road Properties window's Turn pocket section reads. The end nearest
-// a click; a pocket edge's own pocket end wherever it is clicked (its far end is the
-// transition); the same junction and the whole road from it through the base road's transition;
-// the roles the road can carry: left on a road without a median (round R5c1) or beside a raised
-// median of at least 3.8 m, right beside a median too (round R5b1a: its transition carries the
-// median through).
+// Rounds R5b2 and R5c2: what a Junction window row reads for a road end (`PocketEndView`): the
+// same junction and the whole road from it through the base road's transition, from either
+// piece; the roles the road can carry: left on a road without a median (round R5c1) or beside a
+// raised median of at least 3.8 m, right beside a median too (round R5b1a: its transition carries
+// the median through).
 #[test]
-fn the_turn_pocket_section_reads_the_end_nearest_the_click() {
-    use crate::simulation::network::pockets::{PocketEndView, nearest_pocket_end};
+fn a_pocket_end_view_reads_the_road_from_its_junction() {
+    use crate::simulation::network::pockets::PocketEndView;
     let (mut core, node) = crossing(true);
     let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
     let graph = &core.region_graph;
-    assert_eq!(nearest_pocket_end(graph, west, -20.0, 1.0), end);
-    assert_ne!(nearest_pocket_end(graph, west, -130.0, 1.0), end);
     let view = PocketEndView::of(graph, west, end).unwrap();
     assert_eq!(view.junction, node);
     assert_eq!(
@@ -1022,10 +1019,6 @@ fn the_turn_pocket_section_reads_the_end_nearest_the_click() {
     );
     let state = core.get_road_pocket_internal(west as i32, end).unwrap();
     let graph = &core.region_graph;
-    assert_eq!(
-        nearest_pocket_end(graph, state.edge, -69.0, 1.0),
-        state.pocket.end
-    );
     let pocket = graph.edge(state.edge);
     let transition = match state.pocket.end {
         EdgeEnd::End => pocket.start_node,
@@ -1037,7 +1030,12 @@ fn the_turn_pocket_section_reads_the_end_nearest_the_click() {
         .copied()
         .find(|&edge| edge != state.edge);
     let base = base.expect("the base road");
-    let base_end = nearest_pocket_end(graph, base, -80.0, 1.0);
+    // The base road's end at the transition, towards the junction.
+    let base_end = if graph.get_valid_node(graph.edge(base).end_node) == transition {
+        EdgeEnd::End
+    } else {
+        EdgeEnd::Start
+    };
     let view = PocketEndView::of(graph, base, base_end).unwrap();
     assert_eq!(view.junction, node);
     let (first, last) = (view.road[0], *view.road.last().unwrap());
@@ -1058,6 +1056,111 @@ fn the_turn_pocket_section_reads_the_end_nearest_the_click() {
         let view = PocketEndView::of(&core.region_graph, west, end).unwrap();
         assert_eq!((view.left, view.right), (left, Ok(())));
     }
+}
+
+// Round R5c2: the Junction window's rows at a crossing. Its four arms clockwise from north,
+// each at its stored end at the junction, named by its road without the pocket; a pocket edit
+// splits and joins the arm, never the junction: the node keeps its id and its four rows (the
+// west one now the pocket edge, at its pocket end) through the add, a resize, undo and the
+// removal; the pocket's transition lists none; an outgoing one-way arm (no lane into the
+// junction) has no row.
+#[test]
+fn the_junction_window_lists_each_car_arm_clockwise_from_north() {
+    for west_to_east in [true, false] {
+        let (mut core, node) = crossing(west_to_east);
+        let rows = |core: &SimCore, node: u32| -> Vec<(usize, EdgeEnd, i32)> {
+            core.junction_pocket_arms_internal(node)
+                .iter()
+                .map(|arm| {
+                    assert_eq!(arm.view.junction, node);
+                    let section = arm.base.0;
+                    assert_eq!((section.fwd_lanes, section.bkw_lanes), (1, 1));
+                    (arm.edge, arm.end, arm.bearing_deg.round() as i32)
+                })
+                .collect()
+        };
+        let towards = [
+            Vector3::new(0.0, 0.0, -150.0),
+            Vector3::new(150.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 150.0),
+            Vector3::new(-150.0, 0.0, 0.0),
+        ];
+        let expected: Vec<_> = towards
+            .iter()
+            .zip([0, 90, 180, 270])
+            .map(|(&point, bearing)| {
+                let (edge, end) = arm_end(&core, node, point);
+                (edge, end, bearing)
+            })
+            .collect();
+        assert_eq!(rows(&core, node), expected);
+        let (west, end) = arm_end(&core, node, towards[3]);
+        for (body_m, roles) in [(60.0, (false, true)), (80.0, (false, true))] {
+            assert_eq!(
+                pocket_edit(&mut core, request(west, end, roles, body_m)),
+                ""
+            );
+            let after = rows(&core, node);
+            assert_eq!(after.len(), 4);
+            assert_eq!(after[..3], expected[..3], "the other arms keep their rows");
+            let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+            assert_eq!(
+                (after[3].0, after[3].1, after[3].2),
+                (state.edge, state.pocket.end, 270)
+            );
+            let pocket = core.region_graph.edge(state.edge);
+            let transition = match state.pocket.end {
+                EdgeEnd::End => pocket.start_node,
+                EdgeEnd::Start => pocket.end_node,
+            };
+            assert!(core.junction_pocket_arms_internal(transition).is_empty());
+        }
+        assert!(core.undo_action_internal());
+        let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+        assert!((state.body_m - 60.0).abs() < 1e-3);
+        assert_eq!(rows(&core, node)[3].0, state.edge);
+        assert_eq!(
+            pocket_edit(&mut core, request(west, end, (false, false), 60.0)),
+            ""
+        );
+        let (joined, joined_end) = arm_end(&core, node, towards[3]);
+        assert_eq!(rows(&core, node)[3], (joined, joined_end, 270));
+        assert!(core.undo_action_internal());
+        assert_eq!(
+            rows(&core, node).len(),
+            4,
+            "the node keeps its id through undo"
+        );
+    }
+    // A one-way road through a two-way one: its leaving arm has no lane into the junction.
+    let mut core = test_core();
+    for (points, bkw) in [
+        (
+            [
+                Vector3::new(-150.0, 0.0, 0.0),
+                Vector3::new(150.0, 0.0, 0.0),
+            ],
+            0,
+        ),
+        (
+            [
+                Vector3::new(0.0, 0.0, -150.0),
+                Vector3::new(0.0, 0.0, 150.0),
+            ],
+            1,
+        ),
+    ] {
+        assert!(core.add_road_internal(points.to_vec(), 1, bkw).committed);
+    }
+    let node = (0..core.region_graph.node_count() as u32)
+        .find(|&node| live_arms(&core, node).len() == 4)
+        .expect("the crossing");
+    let bearings: Vec<i32> = core
+        .junction_pocket_arms_internal(node)
+        .iter()
+        .map(|arm| arm.bearing_deg.round() as i32)
+        .collect();
+    assert_eq!(bearings, [0, 180, 270]);
 }
 
 // Round R5b2 (found by `road_pocket_test.gd`): the road tool's replica follows every pocket edit

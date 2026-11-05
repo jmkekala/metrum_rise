@@ -16,16 +16,19 @@
 use super::core::{RoadRejection, SimCore, SimulationRuntimeSnapshot, SimulationSnapshot};
 use crate::debug_log;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
+use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::pockets::{
-    PocketApplied, PocketDependentsUndo, PocketPlan, PocketRequest, PocketState,
+    PocketApplied, PocketDependentsUndo, PocketEndView, PocketPlan, PocketRequest, PocketState,
     migrate_pocket_dependents,
 };
 use crate::simulation::network::road_types::cost::BUILD_COST_PER_M;
+use crate::simulation::network::road_types::{RoadAttributes, RoadCrossSection};
 use crate::simulation::network::roadbed::{EdgeEnd, side_band_width_m};
-use crate::simulation::network::types::EdgeClass;
+use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, validate_edge,
 };
+use godot::prelude::Vector3;
 use std::collections::HashSet;
 
 /// What an accepted pocket edit charges, for the Road Properties window's Apply label.
@@ -34,6 +37,26 @@ pub(crate) struct PocketVerdict {
     /// The build cost of the pair after the edit less before it, floored at 0 (D14: the
     /// in-place rule, never refunded).
     pub(crate) cost_delta: f64,
+}
+
+/// How far out along an arm the Junction window reads the direction it comes from (round R5c2).
+const ARM_BEARING_RUN_M: f32 = 20.0;
+
+/// One road arm of a junction as the Junction window's Turn pockets section lists it (`ROAD-95`,
+/// round R5c2): its end at the junction, the direction it comes from and the road it belongs to.
+pub(crate) struct JunctionPocketArm {
+    /// The arm's edge at the junction (a pocket edge when the arm has a pocket).
+    pub(crate) edge: usize,
+    /// Its end at the junction.
+    pub(crate) end: EdgeEnd,
+    /// The bearing from the junction to the arm's point [`ARM_BEARING_RUN_M`] out along it (or
+    /// its far end), degrees clockwise from north (-Z) in `[0, 360)`.
+    pub(crate) bearing_deg: f32,
+    /// The pocket query's view of this end ([`PocketEndView::of`]).
+    pub(crate) view: PocketEndView,
+    /// The road's cross-section without its pocket, its speed (km/h) and street lights: what
+    /// the window names the road by.
+    pub(crate) base: (RoadCrossSection, u16, bool),
 }
 
 // One tried edit: its undo checkpoint, the plan, the nodes laid out and the verdict.
@@ -57,6 +80,48 @@ impl SimCore {
             .ok()
             .filter(|&edge| edge < self.region_graph.edge_count())?;
         PocketState::find(&self.region_graph, edge, end)
+    }
+
+    /// The Junction window's Turn pockets rows at `node_id` (`ROAD-95`, round R5c2): one
+    /// [`JunctionPocketArm`] per car road arm with a lane into the junction (an arm without one
+    /// has no approach to take a pocket), clockwise from north by
+    /// [`JunctionPocketArm::bearing_deg`] (ties: edge id, then the start end first). A pocket
+    /// edge arm has its pocket end here. Empty for a lane transition node (a pocket's own,
+    /// edited from its junction) or an id that is not a node. `O(degree + arm points)`,
+    /// allocating: a UI query.
+    pub(crate) fn junction_pocket_arms_internal(&self, node_id: u32) -> Vec<JunctionPocketArm> {
+        let graph = &self.region_graph;
+        if node_id as usize >= graph.node_count() {
+            return Vec::new();
+        }
+        let node = graph.get_valid_node(node_id);
+        if graph.is_lane_transition(node) {
+            return Vec::new();
+        }
+        let mut arms: Vec<JunctionPocketArm> = graph
+            .node_adjacency(node)
+            .iter()
+            .flat_map(|&edge| [(edge, EdgeEnd::Start), (edge, EdgeEnd::End)])
+            .filter(|&(edge, end)| is_car_approach(graph, edge, end, node))
+            .filter_map(|(edge, end)| {
+                let view = PocketEndView::of(graph, edge, end)?;
+                debug_assert_eq!(view.junction, node, "an arm's pocket end is its junction");
+                Some(JunctionPocketArm {
+                    edge,
+                    end,
+                    bearing_deg: bearing_out(&view.road),
+                    base: base_section(graph.edge(edge)),
+                    view,
+                })
+            })
+            .collect();
+        arms.sort_by(|a, b| {
+            a.bearing_deg
+                .total_cmp(&b.bearing_deg)
+                .then(a.edge.cmp(&b.edge))
+                .then((a.end == EdgeEnd::End).cmp(&(b.end == EdgeEnd::End)))
+        });
+        arms
     }
 
     /// Gives a road end the turn pocket `request` asks for, resizes or changes its pocket, or
@@ -310,4 +375,58 @@ impl SimCore {
             runtime: Some(SimulationRuntimeSnapshot::RoadDependents(dependents)),
         });
     }
+}
+
+// Whether end `end` of `edge` is a live car road arm at `node` with a lane into it. `O(1)`.
+fn is_car_approach(graph: &RegionGraph, edge: usize, end: EdgeEnd, node: u32) -> bool {
+    let record = graph.edge(edge);
+    let (at, lanes_in) = match end {
+        EdgeEnd::Start => (record.start_node, record.bkw_lanes),
+        EdgeEnd::End => (record.end_node, record.fwd_lanes),
+    };
+    !record.deleted
+        && record.primary_type == TransitType::Road
+        && record.allowed_types & TransitFlags::CAR != 0
+        && lanes_in > 0
+        && graph.get_valid_node(at) == node
+}
+
+// The bearing of `road` (a polyline from the junction outwards) at `ARM_BEARING_RUN_M` along it
+// in XZ (or at its far end), degrees clockwise from north (-Z); 0 for a degenerate road.
+// `O(points)`.
+fn bearing_out(road: &[Vector3]) -> f32 {
+    let Some(&origin) = road.first() else {
+        return 0.0;
+    };
+    let mut out = road.last().copied().unwrap_or(origin);
+    let mut run = 0.0;
+    for pair in road.windows(2) {
+        let step = (pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z);
+        if run + step >= ARM_BEARING_RUN_M {
+            out = pair[0].lerp(pair[1], (ARM_BEARING_RUN_M - run) / step);
+            break;
+        }
+        run += step;
+    }
+    let (east, north) = (out.x - origin.x, origin.z - out.z);
+    if east.hypot(north) < 1e-4 {
+        return 0.0;
+    }
+    east.atan2(north).to_degrees().rem_euclid(360.0)
+}
+
+// The cross-section, speed (km/h) and street lights `edge` names its road by: a pocket edge's
+// without its pocket lanes and with the median they narrowed. `O(1)`.
+fn base_section(edge: &Edge) -> (RoadCrossSection, u16, bool) {
+    let section = RoadCrossSection {
+        fwd_lanes: edge.fwd_lanes - edge.pocket_lanes(true),
+        bkw_lanes: edge.bkw_lanes - edge.pocket_lanes(false),
+        median: edge.base_median(),
+        ..RoadCrossSection::of_edge(edge)
+    };
+    (
+        section,
+        RoadAttributes::speed_kmh_of(edge.speed_limit),
+        !edge.no_street_lights,
+    )
 }

@@ -35,6 +35,10 @@ class UiStub extends Node:
 		pass
 	func show_road_properties_multi(_edges: Array[int], _point: Vector2) -> void:
 		pass
+	func show_junction_window(_node: int, _point: Vector2) -> void:
+		pass
+	func hide_junction_window() -> void:
+		pass
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -147,7 +151,7 @@ func _run() -> void:
 	_expect(not window._apply_button.disabled, "an accepted change can be applied")
 	_expect(window._verdict_label.text == "2 + 2 lanes, 50 km/h", "the verdict: %s" % window._verdict_label.text)
 	var widening := roundi(float(window._verdict.get("cost_delta", 0.0)))
-	_expect(widening > 0 and window._apply_button.text == "Apply (+%s)" % window._thousands(widening),
+	_expect(widening > 0 and window._apply_button.text == "Apply (+%s)" % window.UIStyle.thousands(widening),
 		"Apply shows the cost difference: %s" % window._apply_button.text)
 	var generation := simulation.get_network_render_generation()
 	window._apply_button.pressed.emit()

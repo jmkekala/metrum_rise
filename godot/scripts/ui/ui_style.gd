@@ -344,6 +344,15 @@ static func panel_style(
 	style.border_color = border_color
 	return style
 
+## An amount with thousands separators, for Apply labels: 1230 -> "1,230".
+static func thousands(value: int) -> String:
+	var digits := str(absi(value))
+	var text := ""
+	while digits.length() > 3:
+		text = "," + digits.substr(digits.length() - 3) + text
+		digits = digits.substr(0, digits.length() - 3)
+	return ("-" if value < 0 else "") + digits + text
+
 static func window_body_style() -> StyleBoxFlat:
 	return panel_style(BG_DARK, CORNER_WINDOW)
 

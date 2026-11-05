@@ -50,9 +50,31 @@ impl SimulationNode {
         speed_kmh: u16,
         street_lights: bool,
     ) -> GString {
+        self.matching_road_type(section, speed_kmh, street_lights, |ty| ty.id.as_str())
+    }
+
+    /// The name of that road type ([`Self::road_type_of`]), or the empty string (the Junction
+    /// window's rows, `ROAD-95` round R5c2).
+    pub(crate) fn road_type_name_of(
+        &self,
+        section: RoadCrossSection,
+        speed_kmh: u16,
+        street_lights: bool,
+    ) -> GString {
+        self.matching_road_type(section, speed_kmh, street_lights, |ty| ty.name.as_str())
+    }
+
+    // `field` of the road type `type_of` matches, or the empty string.
+    fn matching_road_type(
+        &self,
+        section: RoadCrossSection,
+        speed_kmh: u16,
+        street_lights: bool,
+        field: fn(&RoadType) -> &str,
+    ) -> GString {
         self.with_road_types(|library| {
             type_of(library.types(), section, speed_kmh, street_lights)
-                .map_or_else(GString::new, |ty| ty.id.as_str().into())
+                .map_or_else(GString::new, |ty| field(ty).into())
         })
     }
 }

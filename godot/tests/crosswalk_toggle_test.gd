@@ -17,6 +17,10 @@ class UiStub extends Node:
 		pass
 	func show_road_properties_multi(_edges: Array[int], _point: Vector2) -> void:
 		pass
+	func show_junction_window(_node: int, _point: Vector2) -> void:
+		pass
+	func hide_junction_window() -> void:
+		pass
 
 class TerrainStub extends Node3D:
 	pass
