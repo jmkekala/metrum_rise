@@ -15,22 +15,30 @@
 ## ("Apply removes N buildings. This cannot be undone.": undo brings back the road, never the
 ## buildings); Cancel leaves the roads as they are. The picker stays enabled on a walkway so the
 ## refusal (walkway <-> road) shows with its text. The window opens tall enough for every row.
+## Turn pocket (`ROAD-95`, D12; widgets in `road_pocket_section.gd`): with one car road selected,
+## the section edits the end nearest the click (highlighted by the select tool): Left / Right and
+## the length from the junction ask Rust's verdict (no geometry preview, D11) and Apply commits it
+## ("Apply (+N)", Ctrl+Z undoes). After an edit or an undo (a new render generation) the section
+## reads the end again, following the road under the click when the edit split or joined it.
 ## Rust methods called: get_road_types(), get_edge_cross_section(), get_edge_class(),
-## get_no_building_spawn(), get_edge_geometry_3d(), get_height_at().
+## get_no_building_spawn(), get_edge_geometry_3d(), get_height_at(),
+## get_network_render_generation(); through the select tool get_road_pocket(),
+## nearest_road_pocket_end(), preview_road_pocket(), set_road_pocket().
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 const RoadTypeMenu = preload("res://scripts/ui/road_type_menu.gd")
 const RoadReasonText = preload("res://scripts/ui/road_reason_text.gd")
+const RoadPocketSection = preload("res://scripts/ui/road_pocket_section.gd")
 ## The picker's text for a road whose cross-section no type has.
 const CUSTOM_LAYOUT := "Custom layout"
 const VERDICT_READY := Color(0.55, 0.95, 0.55)
 const VERDICT_REFUSED := Color.YELLOW
 # Every row fits at the default size: the class buttons, the road type and its layout, the
-# verdict with Apply, and No buildings.
-const DEFAULT_SIZE := Vector2i(400, 500)
-const MIN_SIZE := Vector2i(360, 460)
+# verdict with Apply, No buildings and the Turn pocket section.
+const DEFAULT_SIZE := Vector2i(400, 600)
+const MIN_SIZE := Vector2i(360, 540)
 
 var _simulation_node: Node
 var _select_tool: Node
@@ -44,6 +52,12 @@ var _layout_label: Label
 var _verdict_label: Label
 var _apply_button: Button
 var _demolish_dialog: ConfirmationDialog
+var _pocket_separator: HSeparator
+var _pocket_section: VBoxContainer
+# The road end the pocket section shows (the select tool's `selected_pocket_end`), and the
+# render generation it was read at.
+var _pocket_info: Dictionary = {}
+var _pocket_generation := -1
 # The select tool's verdict on the picked type (`preview_selected_edge_cross_section`).
 var _verdict: Dictionary = {}
 # Rust's speed grid (`get_road_types().speeds`), for a walkway's attributes.
@@ -146,6 +160,13 @@ func _build_window() -> void:
 	_no_build_check.toggled.connect(_on_no_build_toggled)
 	root_vbox.add_child(_no_build_check)
 
+	_pocket_separator = HSeparator.new()
+	root_vbox.add_child(_pocket_separator)
+	_pocket_section = RoadPocketSection.new(14)
+	_pocket_section.changed.connect(_on_pocket_changed)
+	_pocket_section.apply_pressed.connect(_on_pocket_apply)
+	root_vbox.add_child(_pocket_section)
+
 	_demolish_dialog = ConfirmationDialog.new()
 	_demolish_dialog.title = "Remove buildings"
 	_demolish_dialog.ok_button_text = "Apply"
@@ -176,6 +197,8 @@ func close_window() -> void:
 	if _window:
 		UIStyle.save_persistent_window_layout(_window)
 		_window.hide()
+	if _select_tool and _select_tool.has_method("clear_pocket_end"):
+		_select_tool.clear_pocket_end()
 
 func _place_window_near_cursor(screen_pos: Vector2) -> void:
 	UIStyle.place_window_near_cursor(_window, screen_pos, get_viewport())
@@ -185,6 +208,7 @@ func _refresh() -> void:
 		return
 
 	_refresh_type()
+	refresh_pocket()
 	if _selected_edges.size() == 1:
 		var edge_idx := _selected_edges[0]
 		_warning_label.text = ""
@@ -323,3 +347,57 @@ func _on_class_button_pressed(class_index: int) -> void:
 func _on_no_build_toggled(enabled: bool) -> void:
 	if _select_tool and _select_tool.has_method("set_selected_edge_no_building_spawn"):
 		_select_tool.set_selected_edge_no_building_spawn(enabled)
+
+## Reads the selected road end again (`selected_pocket_end`) and shows it, or hides the section
+## when it has none (several roads, a junction click, a walkway: no car road). Resets the
+## request to the end's pocket.
+func refresh_pocket() -> void:
+	_pocket_info = _select_tool.selected_pocket_end() if _select_tool and _select_tool.has_method("selected_pocket_end") else {}
+	_pocket_generation = _simulation_node.get_network_render_generation() if _simulation_node else -1
+	# A road that is no car road (a walkway) refuses both roles as `invalid_road`.
+	var shown: bool = not _pocket_info.is_empty() and not (_pocket_info.get("left_refusal", "") == "invalid_road" \
+		and _pocket_info.get("right_refusal", "") == "invalid_road")
+	_pocket_separator.visible = shown
+	_pocket_section.visible = shown
+	if not shown:
+		if _select_tool and _select_tool.has_method("clear_pocket_end"):
+			_select_tool.clear_pocket_end()
+		return
+	_pocket_section.show_end(_pocket_info)
+	_select_tool.show_pocket_end(_pocket_info, float(_pocket_section.request()[2]))
+
+# After an edit or an undo publishes (a new render generation), the road under the click and its
+# end are read again; the player's unapplied request stays unless the end changed.
+func _process(_delta: float) -> void:
+	if _window == null or not _window.visible or _pocket_info.is_empty() or _simulation_node == null:
+		return
+	var generation: int = _simulation_node.get_network_render_generation()
+	if generation == _pocket_generation:
+		return
+	_pocket_generation = generation
+	if _select_tool.follow_click_selection():
+		_selected_edges = _select_tool.selected_edges.duplicate()
+		_refresh()
+		return
+	var info: Dictionary = _select_tool.selected_pocket_end()
+	if info != _pocket_info:
+		refresh_pocket()
+
+func _on_pocket_changed(left: bool, right: bool, length_m: float) -> void:
+	if _pocket_info.is_empty():
+		return
+	_select_tool.show_pocket_end(_pocket_info, length_m)
+	var verdict: Dictionary = _select_tool.preview_selected_road_pocket(_pocket_info, left, right, length_m)
+	var cost := roundi(float(verdict.get("cost_delta", 0.0)))
+	var accepted := "Removes the turn pocket" if not left and not right \
+		else RoadPocketSection.describe(left, right, length_m)
+	_pocket_section.show_verdict(verdict, accepted, "Apply (+%s)" % _thousands(cost) if cost > 0 else "Apply")
+
+func _on_pocket_apply() -> void:
+	var request: Array = _pocket_section.request()
+	if _select_tool.set_selected_road_pocket(_pocket_info, request[0], request[1], request[2]):
+		_selected_edges = _select_tool.selected_edges.duplicate()
+		_refresh()
+		return
+	# The verdict changed since the preview: show why now.
+	_on_pocket_changed(request[0], request[1], request[2])

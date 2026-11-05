@@ -220,6 +220,85 @@ fn find_pair(graph: &RegionGraph, edge: usize, end: EdgeEnd) -> Result<Option<Pa
     }))
 }
 
+// The base road with `pocket` set, when the road can carry its roles: the pocket's own checks
+// ([`Edge::validate_pocket`]), then `pocket_median_gap` for a right pocket beside a median (its
+// transition is laid out, so a median would nose out on both sides of it; a left pocket narrows
+// a raised median and passes through). `O(points)` for the clone.
+fn pocket_piece(base: &Edge, pocket: RoadPocket) -> Result<Edge, &'static str> {
+    let mut piece = base.clone();
+    piece.set_pocket(Some(pocket));
+    piece.validate_pocket()?;
+    if base.median.is_some() && pocket.right {
+        return Err("pocket_median_gap");
+    }
+    Ok(piece)
+}
+
+/// One road end as the Road Properties window's Turn pocket section shows it (`ROAD-95`, D12):
+/// the junction there, the road from it outwards (the pocket edge and its base road joined) and
+/// whether the road can carry a pocket lane on each side, from the edit's own role checks.
+pub(crate) struct PocketEndView {
+    /// The node at this end: the pocket's junction, else the road's own end node.
+    pub(crate) junction: u32,
+    /// The road's physical polyline from the junction outwards.
+    pub(crate) road: Vec<Vector3>,
+    /// The widest of its edges, metres.
+    pub(crate) width_m: f32,
+    /// A left pocket's refusal on this road whatever its length (`Ok` when the road can carry
+    /// one): [`Edge::validate_pocket`] and the median rule the edit applies.
+    pub(crate) left: Result<(), &'static str>,
+    /// The same for a right pocket.
+    pub(crate) right: Result<(), &'static str>,
+}
+
+impl PocketEndView {
+    /// End `end` of road `edge` (or the pocket reached through its transition there), `None`
+    /// for an edge that is not live. `O(edge points + degree)`, allocating: a UI query.
+    pub(crate) fn of(graph: &RegionGraph, edge: usize, end: EdgeEnd) -> Option<Self> {
+        let selected = graph.get_edge(edge).filter(|edge| !edge.deleted)?;
+        let (base, end, width_m) = match find_pair(graph, edge, end).ok().flatten() {
+            Some(pair) => {
+                let pocket = graph.edge(pair.pocket);
+                let width_m = pocket
+                    .width
+                    .max(graph.edge(pair.first).width)
+                    .max(graph.edge(pair.second).width);
+                (joined_base(graph, &pair), pocket.pocket?.end, width_m)
+            }
+            None => (selected.clone(), end, selected.width),
+        };
+        let role = |left, right| pocket_piece(&base, RoadPocket { end, left, right }).map(|_| ());
+        let mut road = base.physical_geometry.clone();
+        if end == EdgeEnd::End {
+            road.reverse();
+        }
+        Some(Self {
+            junction: graph.get_valid_node(node_at(&base, end)),
+            road,
+            width_m,
+            left: role(true, false),
+            right: role(false, true),
+        })
+    }
+}
+
+/// The end of road `edge` nearest the point (`x`, `z`) for the pocket edit (`ROAD-95`, D12): a
+/// pocket edge's pocket end (its other end is the transition, not a road end), else the end whose
+/// polyline end point lies nearer in XZ (ties: the start). `O(1)`.
+pub(crate) fn nearest_pocket_end(graph: &RegionGraph, edge: usize, x: f32, z: f32) -> EdgeEnd {
+    let edge = graph.edge(edge);
+    if let Some(pocket) = edge.pocket {
+        return pocket.end;
+    }
+    let distance =
+        |point: Option<&Vector3>| point.map_or(f32::INFINITY, |p| (p.x - x).hypot(p.z - z));
+    if distance(edge.geometry.last()) < distance(edge.geometry.first()) {
+        EdgeEnd::End
+    } else {
+        EdgeEnd::Start
+    }
+}
+
 // The pair joined into one record with `first`'s id: the base piece's lanes and attributes,
 // both polylines end to end. `O(points)`.
 fn joined_base(graph: &RegionGraph, pair: &Pair) -> Edge {
@@ -301,14 +380,7 @@ impl PocketPlan {
             };
         }
         let pocket = RoadPocket { end, left, right };
-        let mut piece = base.clone();
-        piece.set_pocket(Some(pocket));
-        piece.validate_pocket()?;
-        // A right pocket's transition is laid out, so a median would nose out on both sides of
-        // it; a left pocket narrows a raised median (`validate_pocket`) and passes through.
-        if base.median.is_some() && right {
-            return Err("pocket_median_gap");
-        }
+        let piece = pocket_piece(&base, pocket)?;
         if !body_m.is_finite()
             || !(POCKET_BODY_MIN_M..=POCKET_BODY_MAX_M).contains(&body_m)
             || body_m % POCKET_BODY_STEP_M != 0.0

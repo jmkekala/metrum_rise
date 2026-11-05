@@ -819,6 +819,69 @@ fn moving_a_pocket_and_undo_preserve_a_cars_world_station() {
     );
 }
 
+// Round R5b2 (D12): what the Road Properties window's Turn pocket section reads. The end nearest
+// a click; a pocket edge's own pocket end wherever it is clicked (its far end is the
+// transition); the same junction and the whole road from it through the base road's transition;
+// the roles the road can carry: left only on a one-way road or beside a raised median of at
+// least 3.8 m, right not beside a median.
+#[test]
+fn the_turn_pocket_section_reads_the_end_nearest_the_click() {
+    use crate::simulation::network::pockets::{PocketEndView, nearest_pocket_end};
+    let (mut core, node) = crossing(true);
+    let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+    let graph = &core.region_graph;
+    assert_eq!(nearest_pocket_end(graph, west, -20.0, 1.0), end);
+    assert_ne!(nearest_pocket_end(graph, west, -130.0, 1.0), end);
+    let view = PocketEndView::of(graph, west, end).unwrap();
+    assert_eq!(view.junction, node);
+    assert_eq!(
+        (view.left, view.right),
+        (Err("pocket_requires_one_way"), Ok(()))
+    );
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
+        ""
+    );
+    let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+    let graph = &core.region_graph;
+    assert_eq!(
+        nearest_pocket_end(graph, state.edge, -69.0, 1.0),
+        state.pocket.end
+    );
+    let pocket = graph.edge(state.edge);
+    let transition = match state.pocket.end {
+        EdgeEnd::End => pocket.start_node,
+        EdgeEnd::Start => pocket.end_node,
+    };
+    let base = graph
+        .node_adjacency(transition)
+        .iter()
+        .copied()
+        .find(|&edge| edge != state.edge);
+    let base = base.expect("the base road");
+    let base_end = nearest_pocket_end(graph, base, -80.0, 1.0);
+    let view = PocketEndView::of(graph, base, base_end).unwrap();
+    assert_eq!(view.junction, node);
+    let (first, last) = (view.road[0], *view.road.last().unwrap());
+    assert!(first.x.abs() < 1e-3 && first.z.abs() < 1e-3, "{first:?}");
+    assert!(
+        (last.x + 150.0).abs() < 1e-3 && last.z.abs() < 1e-3,
+        "{last:?}"
+    );
+    assert!(
+        view.width_m > graph.edge(base).width,
+        "the pocket edge is wider"
+    );
+    assert_eq!(view.right, Ok(()));
+    for (median_m, left) in [(5.0, Ok(())), (3.0, Err("pocket_requires_wide_median"))] {
+        let (mut core, node) = crossing(true);
+        let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+        divide_arm(&mut core, west, 2, median_m);
+        let view = PocketEndView::of(&core.region_graph, west, end).unwrap();
+        assert_eq!((view.left, view.right), (left, Err("pocket_median_gap")));
+    }
+}
+
 // Round R5b2 (found by `road_pocket_test.gd`): the road tool's replica follows every pocket edit
 // and undo through the publications Godot's calls make (`finalize_network_render_products`);
 // debug builds compare it with the live graph at each follow. Add, resize, undo, removal, as the
