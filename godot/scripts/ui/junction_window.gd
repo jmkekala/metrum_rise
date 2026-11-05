@@ -97,6 +97,9 @@ func _build_window() -> void:
 ## Shows junction `node_id`, clicked at `screen_pos`: opening beside the click, or staying where
 ## the player put it unless it would cover the click.
 func show_for_node(node_id: int, screen_pos: Vector2 = Vector2.ZERO) -> void:
+	if node_id != _node:
+		# Another junction: the last one's unapplied requests go.
+		_clear_rows()
 	_node = node_id
 	_last_changed_key = ""
 	_hovered = -1
@@ -122,15 +125,7 @@ func refresh() -> void:
 	if _simulation_node == null or _node < 0:
 		return
 	_generation = _simulation_node.get_network_render_generation()
-	var kept := {}
-	for row in _rows:
-		if row.has_request():
-			kept[_key(row.info)] = row.request()
-		# Hidden at once (out of the layout), freed after the signal that may be running.
-		row.visible = false
-		row.queue_free()
-	_rows.clear()
-	_hovered = -1
+	var kept := _clear_rows()
 	var arms: Array = _simulation_node.get_junction_pockets(_node)
 	for arm: Dictionary in arms:
 		var row = JunctionPocketRow.new()
@@ -149,6 +144,19 @@ func refresh() -> void:
 	_scroll.visible = not _rows.is_empty()
 	_summary_label.visible = _rows.is_empty()
 	_update_highlight()
+
+# Drops every row, returning the unapplied requests by arm key.
+func _clear_rows() -> Dictionary:
+	var kept := {}
+	for row in _rows:
+		if row.has_request():
+			kept[_key(row.info)] = row.request()
+		# Hidden at once (out of the layout), freed after the signal that may be running.
+		row.visible = false
+		row.queue_free()
+	_rows.clear()
+	_hovered = -1
+	return kept
 
 ## The rows' count (for the tests and the stills).
 func row_count() -> int:
