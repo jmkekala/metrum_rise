@@ -980,7 +980,16 @@ no widening-side choice.
   library file whose code changed, and no code on the node piece path), split it: control 8.28,
   that binary 8.38, branch 8.49. Half follows the bench file's own change, half the unrelated
   `validate_pocket` body: code placement, not work on the path (round R5-T's codegen partition
-  effect). Open for the user: 0.2 µs on an 8 µs row, far inside the 0.1 ms four-way target.
+  effect). After round R5c2 was merged onto it (FRESH 2026-11-05 11:34-11:40, the same conditions,
+  load 5.0 falling to 1.6, control `7c4da321`'s roadbed bench, merged tree `57404c4a`): every
+  `roadbed_junction/build` row overlapping except `transition_right_pocket` 8.19 (8.10-8.26) /
+  8.29 (8.28-8.30). Proof that it is placement and not work: a fixed-iteration loop of the same
+  piece (1,000,000 builds of the bench's graph, one P-core, `perf stat` user counters, setup
+  subtracted, C M M C) runs 120,635 instructions and 16,261 branches per build on the merged tree
+  against 123,614 and 16,648 on `7c4da321` (-2.4%, -2.3%: less work), and 41,711 cycles against
+  40,870 (+2.1%), with branch misses 3.9 to 5.0 and L1 instruction-cache misses 1,624 to 1,640 per
+  build: the codegen and layout of the build changed, the work did not. Accepted as code
+  placement, as rounds R4a2 and R5-T.
 - **Tests.** `test_pockets.rs`: the offsets, kerb shift, carriageway and axis at both stored ends,
   alone and with a right pocket, 1+1 and 2+2; the transition's connectors (the fork, rank + 1,
   the oncoming lanes 1:1 with a one-lane shift), its taper and no crossing, the masks, the lane
