@@ -436,7 +436,6 @@ fn one_sided_streets_save() {
     let save = std::env::var("METRUM_S2_SAVE").expect("METRUM_S2_SAVE");
     let mut core = test_core();
     core.treasury.balance = 1.0e7;
-    core.benchmark_mode = false;
     register_houses(&mut core);
     for (a, b, sides) in [
         ((-200.0, 0.0), (200.0, 0.0), SidewalkSides::LEFT),
@@ -447,6 +446,7 @@ fn one_sided_streets_save() {
         ((-400.0, 120.0), (-250.0, 120.0), SidewalkSides::BOTH),
         ((-250.0, 120.0), (-100.0, 120.0), SidewalkSides::LEFT),
     ] {
+        core.precompute_road_mesh_data();
         let outcome = core.commit_road(
             RoadCommitRequest {
                 points: vec![Vector3::new(a.0, 0.0, a.1), Vector3::new(b.0, 0.0, b.1)],
@@ -464,6 +464,7 @@ fn one_sided_streets_save() {
         assert!(outcome.committed, "{}", outcome.rejection);
     }
     core.precompute_road_mesh_data();
+    core.benchmark_mode = false;
     let street = core.get_hovered_edge_internal(-100.0, 0.0) as usize;
     for sign in [1.0, -1.0] {
         let houses = grow(&mut core, street, sign, [-170.0, -40.0]);
