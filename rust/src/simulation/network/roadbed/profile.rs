@@ -19,6 +19,11 @@ pub const CURB_STEP_HEIGHT_M: f32 = 0.12;
 // only the shoulder (`ROAD-101`'s road types say so in their widths).
 const CURB_BAND_WIDTH_M: f32 = 0.15;
 pub(crate) const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
+// `(sidewalk, curb or shoulder)` widths of one side of a car road (`ROAD-107`): the sidewalk
+// proper and its curb, which together are `config::SIDEWALK_WIDTH`, or the shoulder alone.
+const SIDEWALK_SIDE_BANDS_M: (f32, f32) =
+    (config::SIDEWALK_WIDTH - CURB_BAND_WIDTH_M, CURB_BAND_WIDTH_M);
+const SHOULDER_SIDE_BANDS_M: (f32, f32) = (0.0, SHOULDER_BAND_WIDTH_M);
 // A footpath is at least this wide: a walkway's whole width (`Edge::cross_section_width_m`).
 pub(crate) const FOOTPATH_MIN_WIDTH_M: f32 = 2.0;
 /// Width of each kerb of a raised median at its authored width (`ROAD-80`), inside the median's
@@ -137,28 +142,16 @@ impl RoadProfile {
 
         let half_carriageway =
             (edge.width.max(config::LANE_WIDTH) * 0.5).max(config::LANE_WIDTH * 0.5);
-        // `(sidewalk, curb or shoulder)` widths of one side: a sidewalk side's curb and walk, else
-        // the shoulder alone.
-        let side_widths = |sidewalk: bool| {
-            let (sidewalk_total, curb_width) = if sidewalk {
-                let total = config::SIDEWALK_WIDTH;
-                (total, CURB_BAND_WIDTH_M.min(total))
-            } else {
-                (0.0, SHOULDER_BAND_WIDTH_M)
-            };
-            ((sidewalk_total - curb_width).max(0.0), curb_width)
-        };
         let sides = edge.sidewalk_sides();
-        let (left_sidewalk_width, left_curb_width) = side_widths(sides.left());
-        let (right_sidewalk_width, right_curb_width) = side_widths(sides.right());
-        // A zero-width curb would leave the raised bands at ground level (legacy rule).
-        let raised = |curb_width: f32| {
-            if curb_width > 0.0 {
-                Level::Raised
+        let side_bands = |sidewalk: bool| {
+            if sidewalk {
+                SIDEWALK_SIDE_BANDS_M
             } else {
-                Level::Ground
+                SHOULDER_SIDE_BANDS_M
             }
         };
+        let (left_sidewalk_width, left_curb_width) = side_bands(sides.left());
+        let (right_sidewalk_width, right_curb_width) = side_bands(sides.right());
         // The carriageway's edges: centred, or moved by a pocket's kerb shift (`ROAD-95`), which
         // moves one kerb by a lane and keeps the other. The split between the two carriageway
         // bands stays on the centreline (the shift is half a lane, under the half width), so
@@ -177,34 +170,14 @@ impl RoadProfile {
             right_curb_m + right_sidewalk_width,
         );
         if left_sidewalk_width > 0.0 {
-            push(
-                BandKind::Sidewalk,
-                left_sidewalk_m,
-                left_curb_m,
-                raised(left_curb_width),
-            );
+            push(BandKind::Sidewalk, left_sidewalk_m, left_curb_m, Level::Raised);
         }
-        push(
-            BandKind::CurbOrShoulder,
-            left_curb_m,
-            left_m,
-            raised(left_curb_width),
-        );
+        push(BandKind::CurbOrShoulder, left_curb_m, left_m, Level::Raised);
         push(BandKind::Carriageway, left_m, 0.0, Level::Ground);
         push(BandKind::Carriageway, 0.0, right_m, Level::Ground);
-        push(
-            BandKind::CurbOrShoulder,
-            right_m,
-            right_curb_m,
-            raised(right_curb_width),
-        );
+        push(BandKind::CurbOrShoulder, right_m, right_curb_m, Level::Raised);
         if right_sidewalk_width > 0.0 {
-            push(
-                BandKind::Sidewalk,
-                right_curb_m,
-                right_sidewalk_m,
-                raised(right_curb_width),
-            );
+            push(BandKind::Sidewalk, right_curb_m, right_sidewalk_m, Level::Raised);
         }
         profile
     }
