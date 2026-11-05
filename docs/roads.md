@@ -475,9 +475,14 @@ pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
   `road_edit::tests::a_split_arm_keeps_the_far_junctions_turn_rules` (planned and cold).
 - **Zoning cells (D17).** Cell generation's support planes, the corridor overlap test and the
   cell reach read a pocket edge's carriageway axis (the overlap test per segment, no
-  allocation); every other road reads its centreline bit for bit as before. Still symmetric:
-  the junction anchor of a neighbouring road's cells (`junction_anchor`), the curve continuity
-  test, the cursor's snap width, signs and pedestrian insets (conservative, D17).
+  allocation); every other road reads its centreline bit for bit as before. Since round R5d1
+  (the user's report "the zoning is quite broken after I make pockets") the curb frames do too:
+  the pieces a pocket splits off one straight base road share that road's frames, each curb
+  reading them moved out by its kerb's move, so a pocket edit re-phases no grid, the curb no
+  pocket moves keeps its cells through the transition, and a neighbouring road's junction
+  anchor reads the base road's curb; end-column continuity, pinned frames and curve sources
+  read the pocket's curb and axis ([`zoning.md`](zoning.md#turn-pocket-pieces--road-95-round-r5d1)).
+  Still symmetric: the cursor's snap width, signs and pedestrian insets (conservative, D17).
 - **Godot calls** (`network_api.rs`): `get_road_pocket(edge, end)` (`has_pocket`, `left`, `right`,
   `length_m`, `pocket_edge`, `junction`, `one_way` and the length range),
   `preview_road_pocket(edge, end, left, right, length_m)` (`is_valid`, `cost_delta` or

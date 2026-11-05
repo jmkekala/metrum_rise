@@ -822,7 +822,9 @@ using the remaining length. Each group uses its endpoint chord orientation; inte
 road points constrain the frontage support line. Height-only polyline subdivision does not move
 the grid. Straight groups use one endpoint phase, with a perpendicular incident road contributing
 its curb offset at a junction. The first slice reuses the parcel frontage offset
-`edge.width / 2 + SIDEWALK_WIDTH`; compiled surface exclusions are supplied by the caller.
+`edge.width / 2 + SIDEWALK_WIDTH`, about a turn pocket edge's carriageway axis rather than its
+centreline ([turn pocket pieces](#turn-pocket-pieces--road-95-round-r5d1)); compiled surface
+exclusions are supplied by the caller.
 Ground-level eligible road spans generate cells; bridge and tunnel spans do not.
 A tunnel's bore lies in the hill: its buried pieces neither block nor clear the cells over it,
 generated or painted, and a tunnel drawn under painted cells is not refused for them (`ROAD-61`
@@ -867,6 +869,8 @@ an exact frame only when their periodic difference fits the source-coordinate un
 An unchanged straight curb, including a same-width split or reversed child, retains its prior
 directed phase when no perpendicular corner constrains that side. A junction anchor across the
 road cannot rephase the uninterrupted backside; same-side corners retain their alignment rules.
+The pieces a turn pocket splits off one straight base road hold that base road's choices
+([turn pocket pieces](#turn-pocket-pieces--road-95-round-r5d1)).
 Incompatible existing choices remain separate, and painted/claimed cell frames remain pinned.
 Ordered constraint propagation does not traverse beyond the affected ring; independent source
 sampling uses Rayon. Work is O((K + A) log K + X) for affected roads K, adjacency incidences A and
@@ -3440,3 +3444,126 @@ Builds: baseline is HEAD `398f7bab` with extension SHA-256
 only by rustfmt line moves: `1cc1b854accd2524b7f3d935288870438d2dc722c4856033bee6b4e6275672e0`,
 rechecked with one headless run (`final-headless-a`: lag 0 / 1 / 4 paused, 0 / 1 / 2 running).
 Machine: i9-12900K, Godot 4.7.2.
+
+### Turn pocket pieces — `ROAD-95` round R5d1
+
+**Status: 2026-11-05, branch `port-r5d1-zoning` off `port-r5-pockets` (not landed).** The user's report after round
+R5c: "the zoning is quite broken after I make pockets". On their dump (a 2+2 four-way with a
+pocket on every arm) the north arm's pocket edge had no cells on its west side, the quadrants by
+the crossing were stair-stepped, one held a hole and another a stray row. Two causes, both
+confirmed:
+
+- **Frames off the curb.** `straight_frame`, `junction_anchor` and the load's alignment check put
+  each curb at `width / 2 + SIDEWALK_WIDTH` about the raw centreline. A pocket edge's
+  carriageway lies `Edge::kerb_shift_m` off it ([roads.md](roads.md#turn-pockets-road-95), D17),
+  while its candidates and corridor already used that axis, so on the widened side the frame lay
+  1.75 m inside the true curb. Row 0 then met the corridor, the support rule dropped the whole
+  side, and the dropped side's rows 1-5 still beat the cross road's candidates (a cell loses to
+  every higher-priority raw candidate it meets), hence the steps and holes. The other side lay
+  1.75 m out.
+- **A new phase per piece.** `inherits_phase` kept a parent's frames only at an equal width, so a
+  pocket edge took a fresh phase from its own ends (along-phase 2.06 m against its base road's
+  6.48 m in the dump), and a removal, or a resize that lengthened the base piece, recomputed
+  from the merged road's ends.
+
+**Frontage lines.** A road's curb frames now belong to its frontage line
+(`zoning/cells/frontage_line.rs`): the road alone, or the pieces a pocket split off one straight
+base road, joined through their live lane transitions at the base road's width
+(`Edge::base_width_m`: the width without the pocket lanes, the median they narrowed restored).
+Every piece's record holds the line's source (its outer ends and base width) and frames, so:
+
+- an add, resize, role change, removal and undo leave the base road's frames bit for bit (the
+  pieces inherit them as a same-width subdivision of the line; the joined road is the line), and
+  a fresh refresh of a pocketed road gives the frames it had without its pocket;
+- each piece's curb reads the line's frame moved out by its kerb's move (`GridFrame::moved`,
+  exact micrometre phase arithmetic): a kerb pocket's lane on its side, nothing on the other.
+  The unwidened curb keeps the base road's frame, so its cells run straight through the
+  transition; the widened curb keeps the along-phase, its rows starting on its true curb;
+- junction anchors read a neighbour's base width and order a node's arms by each line's lowest
+  piece id (a pocket edit keeps its base road's id on one piece), so no cross road re-phases;
+- end columns: a column across a piece end is covered where the neighbouring piece's curb line
+  on that side continues it (between roads without pockets the old same-width centreline test,
+  bit for bit), and its coverage fractions use the centreline's ends: the pocket edge's shifted
+  f32 axis ends a few micrometres along from the shared transition, which left a fractional gap
+  and dropped the transition column of a turned road's unwidened curb;
+- pinned (painted) straight frames find a pocket edge's curb on each side, and curve sources on
+  a curved pocket edge validate against its axis.
+
+A chain that is not one straight line (a pocket on a bending road) leaves each piece its own
+line at its base width, as before but on its true curbs. Roads without a pocket piece at an end
+are their own line: every product is unchanged. Bounds: the line walk is `O(1)` (three pieces at
+most, no allocation) per frame lookup, alignment and anchor; the alignment refresh scope adds the
+other pieces of each road's line. No per-tick code changed.
+
+**Saves.** The record format is unchanged, but a pocket piece's record now names its line, so a
+save written before this round with a pocket fails its load ("invalid or duplicate road grid
+alignment"), as any stale record does; only unlanded `port-r5-pockets` saves can hold pockets.
+Save and load keep the pieces' records and give the live cells (test below).
+
+**The user's crossing** (FRESH 2026-11-05; the ignored test
+`road_pockets::cells::the_users_pocketed_crossing_dump` with `METRUM_R5D1_DUMP` set). Their dump's
+crossing records were written by the old rules, so a copy without them was loaded, its pockets
+removed and the city saved as a shared control; each binary then added the user's four pockets
+(west left, east right, north both, south left, 60 m) to that control. Cells within 85 m of the
+crossing along both roads are "near" (the pocket pieces and their tapers):
+
+| Quadrant | Reach | Control | Before (`f0d1e048`) | After | After: lost under road | After: lost cut off or under a moved cell | After: unexplained |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| NW | near | 48 | 20 | 25 | 13 | 35 | 0 |
+| NW | far | 102 | 102 | 102 | 0 | 0 | 0 |
+| NE | near | 48 | 16 | 25 | 13 | 35 | 0 |
+| NE | far | 144 | 138 | 138 | 1 | 5 | 0 |
+| SW | near | 48 | 18 | 33 | 6 | 20 | 0 |
+| SW | far | 36 | 30 | 30 | 1 | 5 | 0 |
+| SE | near | 50 | 32 | 50 | 0 | 0 | 0 |
+| SE | far | 99 | 99 | 99 | 0 | 0 | 0 |
+
+Totals: control 575, before 455 (10 losses no road, cut-off or other cell explains: holes in the
+SE quadrant, whose two curbs no pocket moves), after 502. After the round the SE quadrant is the
+control's bit for bit; NW and NE, where both bounding curbs widen, lose the cells behind the two
+tapers (about two columns of six each) and keep the rest on the moved lattices; SW, with one
+widened curb, one taper. Removing the four pockets gives the control's frames and cells back bit
+for bit (before the round neither). No hole in either state. A cell counts as cut off when one
+of the five cells before it in its lattice column lies under road (a cell needs an unbroken
+column to its road), and as under a moved cell when a cell of the pocketed state overlaps it.
+
+**Tests** (`nodes/sim/core/tests/road_pockets/cells.rs`, FRESH):
+`a_pocket_keeps_its_base_roads_grid_and_moves_only_its_widened_curb` (a right, a left and both
+pockets on the west arm of 1+1 and 2+2 crossings, square and turned 0.45 degrees: both pieces'
+records equal the arm's, every other road's unchanged; every cell fronting the pocket edge lies on
+its true curb and keeps the arm's along-phase, the unwidened curb's cells on the arm's frame; every
+cell beyond the unwidened curb unchanged; every loss under road, cut off or under a moved cell; no
+new hole; a resize keeps the frames, resizing back, the removal and each undo give the frames,
+cells and frontage links back bit for bit) and
+`the_users_pocketed_crossing_keeps_its_grid_through_a_save_and_removal` (the user's layout; a save
+and load accepts every piece's record and gives the live frames, cells and links; removing the
+four pockets gives the crossing back). On `f0d1e048`'s zoning code both fail at their first
+assertion: the pocket edge's frames are not the arm's (1+1, square, right pocket: along and
+lateral phases (5.0, 6.75) / (5.0, 3.25) m against the arm's (0, 5.0) / (5.0, 5.0); the user's
+layout: the west pocket edge's (9.5, 0.25) / (9.5, 9.75) against (0, 8.5) / (0, 1.5)).
+
+**Timing** (FRESH 2026-11-05 15:04, C B B C C B B C, five runs each, release lib tests, P-cores
+(`taskset -c 0,2,..,14`), 4 workers, `METRUM_DEBUG=0`, `.run.lock` and the exclusive timing lock;
+control: `f0d1e048`'s zoning code; medians of 20 with ranges, microseconds):
+
+| Row (background roads) | Control | Branch |
+| --- | ---: | ---: |
+| `benchmark_cell_zoning_locality` generation (0) | 60.175 (58.699-61.789) | 60.291 (57.733-61.709) |
+| generation (10,000) | 60.760 (58.712-61.751) | 60.898 (58.327-62.277) |
+| pick (10,000) | 0.592 (0.582-0.608) | 0.592 (0.585-0.624) |
+| brush (10,000) | 3.402 (3.365-3.504) | 3.404 (3.354-3.717) |
+| `benchmark_zoning_snap_locality` (0) | 0.044 (0.043-0.046) | 0.045 (0.044-0.076) |
+| snap (1,000) | 0.058 (0.057-0.059) | 0.056 (0.054-0.060) |
+| snap (10,000) | 0.061 (0.060-0.063) | 0.060 (0.060-0.063) |
+
+The generation row runs without prepared frames, through the frontage line and its anchors. A
+first session without the lone-road check in `frames_for` measured the snap at 0.054 / 0.062 /
+0.070 against 0.044 / 0.058 / 0.061 (the line walk per nearby road on the cursor path); the
+check restored it. The session above started at load 11.5 just after builds; a confirmation
+session at load 3.5 (15:26) agrees, every row's ranges overlapping.
+
+**Trade-off at square crossings.** Two perpendicular roads share one lattice in each quadrant.
+A pocket moves its widened curb's lattice 3.5 m out, and the cross road keeps its frame (it is
+not re-phased), so a quadrant a pocket widens into holds two lattices again, which meet in the
+usual stepped seam. Crossings that are not square (the user's, 90.45 degrees) had that seam
+before.
