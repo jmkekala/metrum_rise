@@ -305,8 +305,8 @@ impl RoundaboutLayout {
 
     /// Installs the plan on `graph`, graph records only: the ring nodes and edges, each arm cut
     /// and moved to its ring node under its own id, the old node retired with its crossing
-    /// overrides. The caller lays out the nodes ([`RoundaboutApplied::nodes`] and the arms' far
-    /// ends) and owns lanes, dependents, terrain and undo. `O(ring points + arm points)`.
+    /// overrides. The caller lays out the ring nodes ([`RoundaboutApplied::nodes`]), solves the
+    /// arms' profiles and owns lanes, dependents, terrain and undo. `O(ring points + arm points)`.
     pub(crate) fn apply(self, graph: &mut RegionGraph) -> RoundaboutApplied {
         let nodes: Vec<u32> = self
             .points
@@ -314,10 +314,9 @@ impl RoundaboutLayout {
             .map(|&point| graph.add_node(point, NodeType::Junction))
             .collect();
         let mut arms = Vec::with_capacity(self.arms.len());
-        for ((id, arm), &node) in self.arms.into_iter().zip(&nodes) {
+        for ((id, mut arm), &node) in self.arms.into_iter().zip(&nodes) {
             let old = self.old_node.expect("arms replace a junction");
             graph.remove_from_spatial_index(id);
-            let mut arm = arm;
             if arm.start_node == old {
                 arm.start_node = node;
             } else {
@@ -554,8 +553,12 @@ fn cut_arms(
         let mut arm = edge.clone();
         arm.geometry = geometry;
         arm.physical_geometry = physical_geometry.ok_or("roundabout_arm_too_short")?;
-        arm.start_clip = 0.0;
-        arm.end_clip = 0.0;
+        // Its far end keeps its clip: that node is not touched.
+        if at_start {
+            arm.start_clip = 0.0;
+        } else {
+            arm.end_clip = 0.0;
+        }
         (arm.base_cost, arm.physical_length) = CostCalculator::calculate_costs(&arm);
         let angle = (point.z - ring.centre.y).atan2(point.x - ring.centre.x);
         entries.push(RingEntry {
