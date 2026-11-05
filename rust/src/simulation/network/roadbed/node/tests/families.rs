@@ -9,18 +9,25 @@
 //! car roads with sidewalks cross (D8); structure ends have no node piece.
 
 use super::*;
+use crate::simulation::network::graph::SidewalkSides;
 use crate::simulation::network::roadbed::ArmLayout;
 use crate::simulation::network::roadbed::fixtures::finalize;
 use crate::simulation::network::types::{EdgeClass, TransitFlags};
 
 // What one fixture arm is: a car road with sidewalks, without them (shoulders), a bridge or a
-// tunnel (with sidewalks).
+// tunnel (with sidewalks), or a 1 + 1 road with one sidewalk, on its edge's left or right
+// (`ROAD-107`; the shoulder on the other side), or the fixtures' one-way road with its sidewalk
+// on the right. `OneSided` is how `arm_kind` reads any of them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Arm {
     Sidewalks,
     Rural,
     Bridge,
     Tunnel,
+    Left,
+    Right,
+    OneWayRight,
+    OneSided,
 }
 
 // One fixture arm: its angle in degrees, its carriageway width and its kind.
@@ -47,6 +54,21 @@ fn family(arms: &[ArmSpec], sloped: bool) -> RegionGraph {
 fn make(graph: &mut RegionGraph, edge: usize, arm: Arm) {
     let rise_m = match arm {
         Arm::Sidewalks => return,
+        Arm::OneWayRight => {
+            graph.edge_mut(edge).set_sidewalks(SidewalkSides::RIGHT);
+            return;
+        }
+        Arm::Left | Arm::Right | Arm::OneSided => {
+            let sides = if arm == Arm::Right {
+                SidewalkSides::RIGHT
+            } else {
+                SidewalkSides::LEFT
+            };
+            let edge = graph.edge_mut(edge);
+            edge.set_sidewalks(sides);
+            (edge.fwd_lanes, edge.bkw_lanes) = (1, 1);
+            return;
+        }
         Arm::Rural => {
             graph.edge_mut(edge).allowed_types = TransitFlags::CAR;
             graph.edge_mut(edge).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
@@ -76,7 +98,7 @@ fn make(graph: &mut RegionGraph, edge: usize, arm: Arm) {
 
 /// The family fixtures by name; node 0 is the hub.
 pub(super) fn family_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
-    use Arm::{Bridge, Rural, Sidewalks as Walk, Tunnel};
+    use Arm::{Bridge, Left, OneWayRight, Right, Rural, Sidewalks as Walk, Tunnel};
     let (two, four) = (TWO_LANE_M, FOUR_LANE_M);
     let mut set: Vec<(&str, Vec<ArmSpec>)> = vec![
         // Roads without sidewalks, and where they meet roads with sidewalks.
@@ -173,6 +195,34 @@ pub(super) fn family_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
             "tunnel_pass_through",
             vec![(0.0, two, Walk), (180.0, two, Tunnel)],
         ),
+        // One sidewalk (`ROAD-107`, round S1): a straight pair of one-sided roads (both edges
+        // run east, so one side), a T whose stem (leaving the hub) has its sidewalk on its left
+        // and on its right, a one-sided road continuing a two-sided one (D4's band taper) and a
+        // T whose stem is a one-sided one-way road (D23).
+        (
+            "one_sided_pass_through",
+            vec![(0.0, two, Left), (180.0, two, Left)],
+        ),
+        (
+            "one_sided_stem_left",
+            vec![(0.0, two, Walk), (180.0, two, Walk), (270.0, two, Left)],
+        ),
+        (
+            "one_sided_stem_right",
+            vec![(0.0, two, Walk), (180.0, two, Walk), (270.0, two, Right)],
+        ),
+        (
+            "one_sided_continues_two_sided",
+            vec![(0.0, two, Walk), (180.0, two, Right)],
+        ),
+        (
+            "one_sided_one_way_t",
+            vec![
+                (0.0, two, Walk),
+                (180.0, two, Walk),
+                (270.0, two, OneWayRight),
+            ],
+        ),
     ];
     // The two straight-sector steps with their changing arm curving away (D4 on curved arms).
     set.push((
@@ -201,6 +251,7 @@ fn arm_kind(graph: &RegionGraph, edge: usize) -> Arm {
         EdgeClass::Bridge => Arm::Bridge,
         EdgeClass::Tunnel => Arm::Tunnel,
         EdgeClass::Standard if edge.allowed_types & TransitFlags::FOOT == 0 => Arm::Rural,
+        EdgeClass::Standard if !edge.sidewalks.both() => Arm::OneSided,
         EdgeClass::Standard => Arm::Sidewalks,
     }
 }
@@ -269,14 +320,16 @@ fn road_families_build_watertight_pieces_flat_and_sloped() {
                     // Only car roads with sidewalks cross (D8): every such arm of a junction,
                     // one at a degree-two node.
                     let crossing = |arm: &ArmLayout| arm.crosswalk.is_some();
+                    // A one-sided arm crosses as a rural one does: not at all (`ROAD-107`, D5).
+                    let crosses = |kind: Arm| !matches!(kind, Arm::Rural | Arm::OneSided);
                     for arm in &hub.layout().arms {
-                        if kinds[arm.key.edge] == Arm::Rural {
-                            assert!(!crossing(arm), "{name}: a rural arm crosses");
+                        if !crosses(kinds[arm.key.edge]) {
+                            assert!(!crossing(arm), "{name}: an arm without sidewalks crosses");
                             assert_eq!(hub.crosswalk_kerbs(arm.key), None, "{name}");
                         }
                     }
                     let crossings = hub.layout().arms.iter().filter(|arm| crossing(arm)).count();
-                    let walkable = kinds.iter().filter(|&&kind| kind != Arm::Rural).count();
+                    let walkable = kinds.iter().filter(|&&kind| crosses(kind)).count();
                     let expected = match kinds.len() {
                         2 => walkable.min(1),
                         _ => walkable,
@@ -410,6 +463,57 @@ fn a_node_piece_where_only_structures_meet_stands_off_the_terrain() {
             assert_eq!(!seams.is_empty(), *grounded, "{name}");
             let changes = roadbed.take_terrain_changes();
             assert_eq!(!changes.segments.is_empty(), *grounded, "{name}");
+        }
+    }
+}
+
+// `ROAD-107`: a T whose stem has one sidewalk lays out, and its walkways keep the through road's
+// corner walk opposite the stem and one corner walk beside the stem, on the stem's sidewalk side;
+// the other corner meets the stem's shoulder, so its sidewalk ends there (RB3a D2 (a)). The stem
+// leaves the hub from its edge's start, so its left is its negative lateral side.
+#[test]
+fn a_one_sided_stem_has_one_corner_walk_on_its_sidewalk_side() {
+    use crate::simulation::network::roadbed::{ArmKey, NodeWalkways, crossing_arm_eligible};
+    for sloped in [false, true] {
+        let fixtures = family_fixtures(sloped);
+        for (name, sidewalk_positive) in [
+            ("one_sided_stem_left", false),
+            ("one_sided_stem_right", true),
+        ] {
+            let name = format!("{name}/{sloped}");
+            let (_, graph) = fixtures.iter().find(|(found, _)| *found == name).unwrap();
+            assert_eq!(
+                graph.edge(2).start_node,
+                0,
+                "{name}: the stem leaves the hub"
+            );
+            let walkways = NodeWalkways::collect(graph, 0).expect("the T lays out");
+            let stem = ArmKey {
+                edge: 2,
+                end: EdgeEnd::Start,
+            };
+            assert!(
+                walkways.sidewalk_end(stem, sidewalk_positive).is_some(),
+                "{name}"
+            );
+            assert!(
+                walkways.sidewalk_end(stem, !sidewalk_positive).is_none(),
+                "{name}"
+            );
+            let corners: Vec<_> = walkways
+                .corners()
+                .map(|corner| (corner.from, corner.to))
+                .collect();
+            assert_eq!(corners.len(), 2, "{name}: {corners:?}");
+            let at_stem = corners
+                .iter()
+                .filter(|(from, to)| *from == stem || *to == stem)
+                .count();
+            assert_eq!(at_stem, 1, "{name}: {corners:?}");
+            // No crossing and no toggle on the one-sided stem (D5); the through road keeps both.
+            assert!(walkways.crossings().all(|(key, _)| key != stem), "{name}");
+            assert!(!crossing_arm_eligible(graph, 0, 2), "{name}");
+            assert!(crossing_arm_eligible(graph, 0, 0) && crossing_arm_eligible(graph, 0, 1));
         }
     }
 }

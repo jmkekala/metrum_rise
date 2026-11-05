@@ -1109,6 +1109,68 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x808d87d84942f9b0,
         ],
     ),
+    // One-sided sidewalks (`ROAD-107`), recorded by round S1: new entries, every other entry
+    // unchanged.
+    (
+        "one_sided_pass_through/false",
+        [
+            0x758373470f12dfa5,
+            0xcf281781e9d1ea23,
+            0x483511bc262bb349,
+            0x78d90ef1105b45b4,
+            0x4add7030300964c3,
+            0x7b7c50191a04561e,
+            0x21bfca86d2695d12,
+        ],
+    ),
+    (
+        "one_sided_stem_left/false",
+        [
+            0x5adec4ac0a31114a,
+            0x7ffd81f478e91d9c,
+            0xf07e0234b55e891e,
+            0xf1c91bbc222978ba,
+            0xc9ff17e549216d13,
+            0x73ddd15760af336e,
+            0x98b1776250e6c671,
+        ],
+    ),
+    (
+        "one_sided_stem_right/false",
+        [
+            0x5adec4ac0a31114a,
+            0x3a6c1916f55c1f53,
+            0x1a0cace1d914d856,
+            0xb094cea5a8f965de,
+            0x14a38b96b95be1c1,
+            0x649193ec87f5415d,
+            0x3093586c214290b9,
+        ],
+    ),
+    (
+        "one_sided_continues_two_sided/false",
+        [
+            0xfbd01f1fb25b829c,
+            0x68749e0770e69c8a,
+            0xc447508d074769f5,
+            0xba1e17f605fa1a89,
+            0x95d6c6bc5dba9b4f,
+            0x1f05f179e21ca83a,
+            0xa8360fbf3993d977,
+        ],
+    ),
+    (
+        "one_sided_one_way_t/false",
+        [
+            0x5adec4ac0a31114a,
+            0x3a6c1916f55c1f53,
+            0x1a0cace1d914d856,
+            0xb094cea5a8f965de,
+            0x14a38b96b95be1c1,
+            0x419d7f043cb69c33,
+            0x3093586c214290b9,
+        ],
+    ),
     (
         "band_step_curved/false",
         [
@@ -1914,6 +1976,66 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
         ],
     ),
     (
+        "one_sided_pass_through/true",
+        [
+            0x45fd26e520d97809,
+            0x7543800e26b0bdff,
+            0x483511bc262bb349,
+            0xeccf73687e974853,
+            0xa447c3ecdd6f943e,
+            0x9ee56d7ebca76dc8,
+            0x892e21eb444677b9,
+        ],
+    ),
+    (
+        "one_sided_stem_left/true",
+        [
+            0x86498cd789f973f3,
+            0x70cf1682f960b7b9,
+            0xf07e0234b55e891e,
+            0x4803f2b760de914b,
+            0x642740799d2708d1,
+            0x0918d7218b0c8a86,
+            0x9d0d203585d05b8b,
+        ],
+    ),
+    (
+        "one_sided_stem_right/true",
+        [
+            0x86498cd789f973f3,
+            0xf599238e03bb2b76,
+            0x1a0cace1d914d856,
+            0x945dc053e105f6df,
+            0x8cdcbfa8124a76fb,
+            0x3d716b25367d7abe,
+            0x40dc605da97f1c3a,
+        ],
+    ),
+    (
+        "one_sided_continues_two_sided/true",
+        [
+            0xb39996db3641ae2c,
+            0x9ed720c8fd500427,
+            0xc447508d074769f5,
+            0xe61b18aa317095ed,
+            0x3ca3b25f92666498,
+            0x8323da71575ad5f4,
+            0xf3067f6367c3d030,
+        ],
+    ),
+    (
+        "one_sided_one_way_t/true",
+        [
+            0x86498cd789f973f3,
+            0xf599238e03bb2b76,
+            0x1a0cace1d914d856,
+            0x945dc053e105f6df,
+            0x8cdcbfa8124a76fb,
+            0xfd30370bd5cdb388,
+            0x40dc605da97f1c3a,
+        ],
+    ),
+    (
         "band_step_curved/true",
         [
             0xdc7afc910bfcb601,
@@ -2247,6 +2369,13 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("tunnel_t/false", 0x9a80bd4325829842),
     ("tunnel_bend/false", 0x25ec9de2f2b9c2df),
     ("tunnel_pass_through/false", 0x35cefc37c2835c7c),
+    // One-sided sidewalks (`ROAD-107`), recorded by round S1: new entries, every other entry
+    // unchanged.
+    ("one_sided_pass_through/false", 0x5e4f0cfe7c09089b),
+    ("one_sided_stem_left/false", 0xca0fd295c5363afb),
+    ("one_sided_stem_right/false", 0x82d8bc936db2c3e7),
+    ("one_sided_continues_two_sided/false", 0x84db0bacb6ef4fda),
+    ("one_sided_one_way_t/false", 0x82d8bc936db2c3e7),
     ("band_step_curved/false", 0x37629ac5df89e879),
     ("band_width_step_curved/false", 0xd3bc48a4d792eb19),
     ("t/true", 0x8e5e0a77ca65c074),
@@ -2314,6 +2443,11 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("tunnel_t/true", 0x325433505d341b02),
     ("tunnel_bend/true", 0x457629880f59b079),
     ("tunnel_pass_through/true", 0xc3ca85f4194972d4),
+    ("one_sided_pass_through/true", 0x3c1645f0499fe67f),
+    ("one_sided_stem_left/true", 0x58035def016e8a4e),
+    ("one_sided_stem_right/true", 0xf70851d7c1c1da34),
+    ("one_sided_continues_two_sided/true", 0x7e835e5fe23cffbf),
+    ("one_sided_one_way_t/true", 0xf70851d7c1c1da34),
     ("band_step_curved/true", 0x023fc8a5bc92c4b7),
     ("band_width_step_curved/true", 0x673bc994f267b9d6),
     ("short_link_10", 0x0288e54ed509e89b),

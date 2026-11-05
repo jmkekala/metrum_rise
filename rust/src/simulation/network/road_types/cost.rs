@@ -174,6 +174,17 @@ mod tests {
                 2.2,
             ),
             ("rural", section(1, 1, None, false), 80, Standard, 1.28),
+            // One sidewalk costs half of both (`ROAD-107`, D3): 0.8 + 0.1.
+            (
+                "1+1 left sidewalk",
+                RoadCrossSection {
+                    sidewalks: SidewalkSides::LEFT,
+                    ..section(1, 1, None, true)
+                },
+                50,
+                Standard,
+                0.9,
+            ),
             (
                 "highway-like",
                 section(2, 2, Some((KerbedGrass, 3.0)), false),

@@ -251,6 +251,60 @@ fn test_highway_no_sidewalks() {
     }
 }
 
+// `ROAD-107`: a road with one sidewalk builds that side's two foot lanes (one per direction,
+// lane 100 on the left, -100 on the right) and none on the shoulder side; the built side's lanes
+// lie exactly where a two-sided road's lanes of that side lie.
+#[test]
+fn a_one_sided_road_builds_foot_lanes_on_its_sidewalk_side_only() {
+    use crate::simulation::network::graph::SidewalkSides;
+    let foot_lanes = |sides: SidewalkSides| {
+        let mut graph = RegionGraph::new();
+        let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let points = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)];
+        let mut edge = Edge {
+            start_node: n1,
+            end_node: n2,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 13.9,
+            base_cost: 1.0,
+            physical_length: 100.0,
+            geometry: points.clone(),
+            physical_geometry: points,
+            ..Default::default()
+        };
+        edge.set_sidewalks(sides);
+        graph.add_edge(edge);
+        graph.rebuild_adjacency_list();
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        let mut found: Vec<_> = lanes
+            .lanes
+            .iter()
+            .filter(|lane| lane.edge_id == 0 && lane.lane_type == LaneType::Foot)
+            .map(|lane| (lane.lane_idx, lane.is_fwd, lane.geometry.clone()))
+            .collect();
+        found.sort_by_key(|(idx, fwd, _)| (*idx, *fwd));
+        found
+    };
+    let both = foot_lanes(SidewalkSides::BOTH);
+    assert_eq!(both.len(), 4);
+    for (sides, idx) in [(SidewalkSides::LEFT, 100), (SidewalkSides::RIGHT, -100)] {
+        let one = foot_lanes(sides);
+        let expected: Vec<_> = both.iter().filter(|lane| lane.0 == idx).cloned().collect();
+        assert_eq!(one.len(), 2, "{sides:?}");
+        assert_eq!(one, expected, "{sides:?}");
+    }
+    // The left sidewalk is on the negative lateral side: -z for a road along +x.
+    let left = foot_lanes(SidewalkSides::LEFT);
+    assert!(left.iter().all(|lane| lane.2.iter().all(|point| point.z < -3.5)));
+    assert!(foot_lanes(SidewalkSides::NONE).is_empty());
+}
+
 #[test]
 fn test_dedicated_footpath_centering() {
     let mut graph = RegionGraph::new();

@@ -2343,6 +2343,75 @@ fn pockets_round_trip_through_the_edge_table() {
     }
 }
 
+// `ROAD-107`, save format 116: a road's sidewalk sides round-trip through `network_edges`'
+// `sidewalks` column (0 none, 1 left, 2 right, 3 both), and the loaded one-sided road builds the
+// same lanes bit for bit; a code outside 0-3, sidewalks on a walkway, or a mask that disagrees
+// with the road's `FOOT` flag does not load.
+#[test]
+fn sidewalk_sides_round_trip_through_the_edge_table() {
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::lanes::LaneSystem;
+    use crate::simulation::network::roadbed::fixtures::{footpath_fixtures, t_junction};
+    let mut graph = t_junction(false);
+    graph.edge_mut(0).set_sidewalks(SidewalkSides::LEFT);
+    graph.edge_mut(1).set_sidewalks(SidewalkSides::RIGHT);
+    graph.edge_mut(2).set_sidewalks(SidewalkSides::NONE);
+    let save = |graph: &RegionGraph| {
+        let maps =
+            build_snapshot_maps(graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, graph, &maps).unwrap();
+        tx.commit().unwrap();
+        conn
+    };
+    let conn = save(&graph);
+    let column: Vec<i64> = conn
+        .prepare("SELECT sidewalks FROM network_edges ORDER BY edge_id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(column, [1, 2, 0]);
+    let mut loaded = network::load_graph(&conn).unwrap();
+    for edge in 0..3 {
+        assert_eq!(loaded.edge(edge).sidewalks, graph.edge(edge).sidewalks);
+        assert_eq!(loaded.edge(edge).allowed_types, graph.edge(edge).allowed_types);
+    }
+    let (mut lanes, mut loaded_lanes) = (LaneSystem::new(), LaneSystem::new());
+    lanes.rebuild(&mut graph);
+    loaded_lanes.rebuild(&mut loaded);
+    assert_eq!(lanes.lanes.len(), loaded_lanes.lanes.len());
+    for (lane, loaded) in lanes.lanes.iter().zip(&loaded_lanes.lanes) {
+        assert_eq!((lane.edge_id, lane.lane_idx), (loaded.edge_id, loaded.lane_idx));
+        assert_eq!(lane.geometry, loaded.geometry);
+    }
+    for bad in [
+        "UPDATE network_edges SET sidewalks = 4 WHERE edge_id = 0",
+        "UPDATE network_edges SET sidewalks = -1 WHERE edge_id = 0",
+        // Walked without a side, and a side without being walked.
+        "UPDATE network_edges SET sidewalks = 0 WHERE edge_id = 0",
+        "UPDATE network_edges SET sidewalks = 3 WHERE edge_id = 2",
+    ] {
+        let conn = save(&graph);
+        conn.execute_batch(bad).unwrap();
+        assert!(network::load_graph(&conn).is_err(), "{bad} loaded");
+    }
+    // A walkway has no sidewalk: its footpath is not one.
+    let (_, paths) = footpath_fixtures(false).swap_remove(0);
+    let path = (0..paths.edge_count())
+        .find(|&edge| paths.edge(edge).fwd_lanes == 0)
+        .unwrap();
+    let conn = save(&paths);
+    conn.execute_batch(&format!(
+        "UPDATE network_edges SET sidewalks = 1 WHERE edge_id = {path}"
+    ))
+    .unwrap();
+    assert!(network::load_graph(&conn).is_err());
+}
+
 // `ROAD-101` RB3e (format 113): a road's street lights round-trip through the edge table, lit
 // by default.
 #[test]

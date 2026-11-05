@@ -3263,6 +3263,56 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
     );
 }
 
+// `ROAD-107` (D1 per side): a 1 + 1 road with its only sidewalk on the left (side 1), a house on
+// each side. The left house fronts the sidewalk: its door has foot lanes and a walking resident
+// of the left home reaches it. The right house fronts the shoulder: car lanes only, a car-only
+// destination as on a road without sidewalks, so the planner refuses a walk there and a resident
+// with a car reaches it.
+#[test]
+fn a_one_sided_road_is_walked_to_on_its_sidewalk_side_only() {
+    use crate::simulation::economy::agents::tick::estimate_building_origin_trip_seconds;
+    use crate::simulation::network::graph::SidewalkSides;
+    let (mut graph, mut network) = simple_work_graph();
+    graph.edge_mut(0).set_sidewalks(SidewalkSides::LEFT);
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "one_sided", ZoneClass::Residential);
+    // The left of a road running +x is -z.
+    let house = |x: f32, side: i8| {
+        let mut building = make_building(x, ZoneType::Residential, &asset, 0.0);
+        building.center_y = -12.0 * f32::from(side);
+        building.facing_dir = Vector2::new(0.0, f32::from(side));
+        building.side = side;
+        building
+    };
+    allocator.buildings.push(house(0.0, 1));
+    allocator.buildings.push(house(100.0, 1));
+    allocator.buildings.push(house(100.0, -1));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    for (index, left) in [(0, true), (1, true), (2, false)] {
+        let entrance = &allocator.entrances[index];
+        let foot = entrance.foot_lane_fwd != usize::MAX && entrance.foot_lane_bkw != usize::MAX;
+        assert_eq!(foot, left, "house {index}: foot lanes on the sidewalk side only");
+        assert!(entrance.car_lane_fwd != usize::MAX || entrance.car_lane_bkw != usize::MAX);
+    }
+    let trip = |target: usize, has_car: bool| {
+        estimate_building_origin_trip_seconds(
+            0,
+            target,
+            has_car,
+            &allocator,
+            &network,
+            &graph,
+            &std::sync::atomic::AtomicU32::new(0),
+            None,
+        )
+    };
+    assert!(trip(1, false).is_some(), "a walk along the sidewalk");
+    assert_eq!(trip(2, false), None, "no walk to the shoulder side");
+    assert!(trip(2, true).is_some(), "a car reaches the shoulder side");
+}
+
 #[test]
 fn walking_component_proofs_follow_directed_lane_connectors() {
     use crate::simulation::economy::agents::tick::{

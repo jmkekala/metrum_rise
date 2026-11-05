@@ -532,6 +532,29 @@ mod tests {
         );
         assert_eq!(RoadProfile::for_edge(&rural).half_width_m(), 4.25);
 
+        // One sidewalk (`ROAD-107`): the left side keeps its curb and sidewalk, the right gets
+        // the shoulder of a road without sidewalks. The half width is the larger side's.
+        let mut one_sided = road.clone();
+        one_sided.sidewalks = crate::simulation::network::graph::SidewalkSides::LEFT;
+        let bands = RoadProfile::for_edge(&one_sided);
+        let expected = [
+            (BandKind::Sidewalk, -5.0, -3.65, Level::Raised),
+            (BandKind::CurbOrShoulder, -3.65, -3.5, Level::Raised),
+            (BandKind::Carriageway, -3.5, 0.0, Level::Ground),
+            (BandKind::Carriageway, 0.0, 3.5, Level::Ground),
+            (BandKind::CurbOrShoulder, 3.5, 4.25, Level::Raised),
+        ];
+        assert_eq!(bands.bands().len(), expected.len());
+        for (band, (kind, start, end, level)) in bands.bands().iter().zip(expected) {
+            assert_eq!((band.kind, band.level), (kind, level));
+            assert!((band.start_m - start).abs() < 1e-6 && (band.end_m - end).abs() < 1e-6);
+        }
+        assert_eq!(bands.half_width_m(), 5.0);
+        assert_eq!(bands.side_half_widths_m(true), (3.5, 4.25));
+        assert_eq!(side_band_width_m(&one_sided, 1), config::SIDEWALK_WIDTH);
+        assert_eq!(side_band_width_m(&one_sided, -1), SHOULDER_BAND_WIDTH_M);
+        assert_eq!(widest_side_band_width_m(&one_sided), config::SIDEWALK_WIDTH);
+
         let path = edge(1.0, TransitFlags::FOOT, TransitType::Foot);
         let path = RoadProfile::for_edge(&path);
         assert_eq!(path.bands().len(), 1);
