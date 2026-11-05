@@ -279,6 +279,11 @@ edge without cars, or a car road whose sides disagree with its `FOOT` flag fails
 re-recorded in format 116: `sqldiff` shows only the version and the new column (3 on all 70
 edges), every table's row count is unchanged, and `placements.json` is re-pinned.
 
+Save format 117 (`ROAD-62`, round R7a, 2026-11-06) adds the table `roundabout_edges` (`edge_id`,
+`centre_x`, `centre_z`, `radius_m`): the circle of each roundabout ring edge, sparse. A load refuses a
+ring edge no roundabout edit could have built. No older save loads. The Kuopio fixture is re-recorded
+in format 117: `sqldiff` shows only the version and the new, empty table.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per

@@ -246,7 +246,8 @@ neighbour.
 ### Default junction lane use (`ROAD-94`)
 
 At a node without user vehicle connections, each approach's lanes get a contiguous share of the
-movements its arms offer, and the lane rebuild builds one connector per allowed lane pair
+movements its arms offer (on a roundabout's ring every lane serves all of them:
+[lane rule](#roundabouts-road-62)), and the lane rebuild builds one connector per allowed lane pair
 (`lanes/lane_use.rs`, `DefaultLaneUse`; `vehicle_junctions.rs`). Before, every inbound lane got a
 connector to every outbound lane of every other arm. Ported from Veeti's road-chain branch
 (`6ec0b858`, without its pockets, bus lanes and priority rules).
@@ -1057,6 +1058,93 @@ no widening-side choice.
   a right one and both (far, near, from above); 2+2 four-ways with a left pocket and both (near,
   from above); the oncoming lanes' shift across the piece, oblique and close up; the arrows; a
   divided road's left pocket (unchanged). Kept with the round's artifacts for the user's review.
+
+### Roundabouts (`ROAD-62`)
+
+A roundabout is a ring of one-way road edges around a grass island, built on empty ground or in
+place of a junction. Round R7a (branch `port-r7a-ring`, not landed) is the model, the geometry and
+the lane rule on the graph: there is no tool yet (round R7b adds the transaction, the tool and
+bulldozing the whole ring), and no give-way (round R7c: entering cars do not yet yield to the ring).
+
+**Model.** `Edge::roundabout: Option<RoundaboutRing>` holds the circle (centre on the XZ plane and
+the centreline radius) on every ring edge. A ring edge is one-way in the sense of travel (forward
+lanes only, 1 or 2), `lanes x 3.5 m` wide, 20 km/h, unzoned (`no_building_spawn`), with street lights,
+class Standard, no median and no pocket. Its sidewalk is the outer side only (`ROAD-107`): the
+ring runs against the XZ angle under right-hand traffic, so the island is on the drivers' left and
+the outer side is `RIGHT` in the edge's forward frame (`LEFT` under `DRIVE_ON_LEFT`, where the ring
+runs the other way). The island side has the 0.75 m shoulder, no walk. Save format 117 keeps the
+circles in the sparse table `roundabout_edges(edge_id, centre_x, centre_z, radius_m)`; a load
+refuses a ring edge no edit could have built (`validate_ring_edge`: section, circle, and the same
+circle arriving at its start and leaving its end).
+
+**Geometry** (`network/roundabouts.rs`, `RoundaboutRing::arc`). The diameter is measured between
+the outside asphalt kerbs, the sidewalk additional (D21); the centreline radius is
+`(diameter - lanes x 3.5) / 2`. Ring nodes lie on the circle, ring edge `i` runs from node `i` to
+the next in the sense of travel. A ring edge is its two nodes, a **1 m straight tangent lead** at each,
+and between them supports at the crossings of the circle's tangents at most 1 m of arc apart, so
+every segment touches the circle and none cuts inside it. The leads decide whether a ring lays out:
+without them the two ring arms of a node curve away from one point and the island sector is
+`CornerDoesNotFit`; with them it is `Straight` at 180.00 degrees, and the node is an ordinary
+three-arm junction with two `Concave` 90 degree corners at the full 3.5 m on the approach's sides.
+The ring is level at the centre's height; the profile solve grades the arms. A bare ring on empty
+ground is three pass-through nodes at 90, 210 and 330 degrees (D8), no node piece.
+
+**Conversion.** In place of a junction (`RoundaboutSite::Junction`, degree 3 to 6, at most 60 m so
+everything inside stays within the 30 m lane reattach reach, D14), the centre is the node, each arm is
+cut where it leaves the circle and keeps its id, far node, lanes and attributes, and the node retires.
+The ring has two lanes when an arm enters with two or more, else one. Refusals, nothing touched:
+`invalid_roundabout_junction`, `invalid_roundabout_dimensions`,
+`roundabout_requires_three_to_six_arms`, `roundabout_has_lane_restrictions`,
+`roundabout_arm_has_pocket`, `roundabout_requires_ordinary_surface_arms`, `roundabout_arm_too_short`,
+`roundabout_replacement_too_large`, `roundabout_arms_too_close` (nodes within 3 m of arc: no edge
+between them can be built) and `roundabout_overlaps_road` (the ring's corridor against every other
+road by XZ distance, bridges and tunnels included: the check has no heights).
+
+**Sizes** (`diameter_range_m`): one lane 30-60 m, default 36; two lanes 45-80 m, default 50.
+Whether arms fit is the junction layout's answer, not a rule of the plan. Measured on the outer-only
+ring over 30/36/45/60 m (one lane) and 45/50/60/80 m (two lanes), 3 to 6 equal arms of 1+1 and 2+2
+roads, flat and on a 2.5% slope: every arm node lays out at the full 3.5 m corners, its piece
+watertight. Two arms need 9-10 m of ring between their nodes with 1+1 arms and 15-16 m with 2+2 arms:
+two ring mouths, with no zebra strip, since the ring arms are one-sided and have no crossing. So
+six equal arms fit at every size, the one-lane floor of 30 m and the two-lane 45 m included. (PLAN-R7
+measured a two-sided ring, whose zebras added 3 m at each mouth: 15-16 m and 21-22 m, six arms
+from 33 m and 50 m. Those floors do not apply to the ring as built.) A pass-through ring node
+counts as an arm for this: a stroke that joins within 10 m (1+1) or 16 m (2+2) of a bare ring node, and
+not onto it, is refused with `junction_corner_does_not_fit`.
+
+**Lane rule** (D10, `DefaultLaneUse`). At a ring node the entry's one movement is the turn onto the
+ring: a 1+1 arm's lane fans onto both ring lanes (`TRAFFIC-23`), a 2+2 arm's lanes go inner to inner
+and outer to outer. Every lane of the ring serves every movement: the permissive rule would
+leave a two-lane ring's inner lane straight only, and a lane of about 20 m between two arms has no
+room to change lanes, so it could never leave. A one-lane exit merges both ring lanes, a two-lane
+exit takes them 1:1. The inner lane's exit crosses the outer lane's straight connector; as at any
+junction today nothing arbitrates that (`TRAFFIC-09`). A two-lane ring lane has two movements, so it
+keeps the solid zone and the arrows of any lane choice. A connector leaves and joins a ring lane
+along the lane's own direction rather than its mouth frame's: a ring lane is a polygon of 1 m sides,
+and the frame, interpolated between two knots, is up to half a side's turn off it, which the
+connector sweep reads as a counter-steer.
+
+**Crossings and walkers.** A ring arm is one-sided, so it is not crossing-eligible: no ring zebra,
+no override anywhere. The approach arm has the default zebra just outside its curb returns. Walkers
+go round on the outer sidewalk and cross each arm on its zebra.
+
+**Joins** (D9, `road_edit/validation.rs`, `roundabouts::stroke_ring_refusal`). A stroke ending on a
+ring edge splits it like any road: `split_edge_graph` re-samples both halves from the circle with
+leads at the new node, which keeps the node's ring arms exactly straight (a split left on a chord
+fails to lay out from 60 m). A stroke ending at a ring node without an arm becomes its arm. Refused:
+running on through the ring (`roundabout_crossed`), ending on the island or running a chord across it
+(`roundabout_island`), a second arm at a ring node (`roundabout_arm_node_taken`). A bridge or tunnel
+passes over or under; its end still may not stand on the island. An end within the 2 m join tolerance
+inside the circle is a join.
+
+**Fixed.** A ring keeps its section, class, pocket-free state, zoning and node positions:
+`validate_cross_section`, `validate_pocket` and a node move refuse with `roundabout_fixed`, the class
+change and the zoning toggle do nothing on a ring edge.
+
+**Bounds.** Plan `O(arm points + ring points + clearance)`, clearance `O(ring log E + ring points x
+nearby points)`, a split `O(points)`, the stroke check `O(log E + edges within 40 m of the stroke + ring
+edges x stroke points)`, all on edits. The lane rule is one `bool` read while connectors are rebuilt.
+Nothing runs per tick.
 
 ### Junction layout
 
