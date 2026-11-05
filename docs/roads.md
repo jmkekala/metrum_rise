@@ -369,9 +369,9 @@ geometric taper records, its compiler previews or its road-tool mode.
   21 m, 10.5 m on each arm; the other sector keeps its offsets). Both mouths lie at 10.5 m. No
   crossing and no crossing toggle there (D6, as at a continuing raised median). A road with a
   raised median keeps its median centred on the lane groups' line, which a kerb pocket does not
-  move; the median would nose out on both sides of the laid-out transition, so the edit refuses a
-  right pocket beside a median (`pocket_median_gap`; continuing it through the node piece is open,
-  round R5b1's handoff). A left pocket's transition passes through instead (round R5b1).
+  move, and the transition's node piece carries it through (round R5b1a, see
+  [Right pockets on divided roads](#right-pockets-on-divided-roads-round-r5b1a)). A left
+  pocket's transition passes through instead (round R5b1).
 - **Lane use (D4).** One mask function, `pocket_mask`, feeds the connectors, the solid zone, the
   entry-lane groups (`approach_group`) and the arrows: the pocket lane serves its turn alone and
   the other lanes the permissive default of the movements left. A 1+1 approach with a right
@@ -427,9 +427,10 @@ pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
   without arms, typed `Junction`.
 - **Refusals**, each the preview's and the commit's, each changing nothing: `invalid_road`, the
   model's (`pocket_requires_surface_road`, `pocket_lane_limit`, `pocket_requires_one_way`,
-  `invalid_pocket_dimensions`), `pocket_median_gap` (any median, raised or painted, until round
-  R5b1 decides how a transition carries it), `pocket_junction_whitelisted` (D9, also for a
-  removal), `pocket_movement_missing` (the junction offers no such turn to the approach),
+  `invalid_pocket_dimensions`), `pocket_median_gap` (since round R5b1a: the pair's medians would
+  not line up across the transition, which no accepted pocket meets),
+  `pocket_junction_whitelisted` (D9, also for a removal), `pocket_movement_missing` (the junction
+  offers no such turn to the approach),
   `pocket_road_too_short` (the base road keeps less than two taper halves and a metre beyond the
   transition; also the closure compile's `node_piece_failed`, PLAN-R5 risk 3: "Road too short
   for a pocket here"), `pocket_unchanged`, `pocket_transition_changed`. The cross-section edit and
@@ -613,8 +614,8 @@ stay and the transition passes through.
   median. The base road's median (`Edge::base_median`) must be raised and at least
   `LANE_WIDTH + POCKET_MEDIAN_STUB_M` = 3.8 m: the pocket edge keeps a kerb stub of at least
   0.3 m, which may lie below the style's minimum on the pocket edge only, so kerbed paving (at
-  most 3 m) never takes one. Loads check the base road's median. A right pocket beside a median
-  stays refused (`pocket_median_gap`), and so does a left and right pair there.
+  most 3 m) never takes one. Loads check the base road's median. A right pocket beside a median,
+  and a left and right pair there, came with round R5b1a.
 - **The transition passes through.** The pocket edge's mouth profile is the base road's, so the
   transition has no node piece, no crossing (D6) and no taper of its own. The median continues
   through it without a nose: `median_lines_up` accepts a pocket pair whose narrowed side, moved a
@@ -706,9 +707,9 @@ timing that round R5a3 left open.
   the section. The window opens at 400 x 600 px (minimum 360 x 540).
 - **Roles the section offers**: Left on a one-way road or beside a raised median of at least
   3.8 m on the base road (`pocket_requires_one_way`, `pocket_requires_wide_median` otherwise);
-  Right on any car road at ground level without a median (`pocket_median_gap` beside one, until
-  a right pocket's transition can continue the median); `pocket_requires_surface_road` and
-  `pocket_lane_limit` disable both. `pocket_road_too_short`, `pocket_movement_missing`,
+  Right on any car road at ground level, beside a median too (its transition's piece carries the
+  median through, [round R5b1a](#right-pockets-on-divided-roads-round-r5b1a));
+  `pocket_requires_surface_road` and `pocket_lane_limit` disable both. `pocket_road_too_short`, `pocket_movement_missing`,
   `pocket_junction_whitelisted` and `pocket_unchanged` ("No change") come from the verdict.
 - **The hot-leaf fix** (round R5b2's first commit). `PieceMesh::triangle_points` reads its three
   positions directly and is `#[inline]`, and `geometry::triangle_height_at_xz` is `#[inline]`:
@@ -749,8 +750,90 @@ timing that round R5a3 left open.
   1+1 crossing (heading, Left disabled with its tooltip, the highlight, the default height holds
   every row), a right pocket's verdict and cost, "Road too short for a pocket here" at 300 m, add,
   "No change", resize, undo back into the section, removal joining the road, the east arm's other
-  stored end, and on a divided 2+2 road Left offered, Right refused beside the median and a left
-  pocket narrowing the median to 1.5 m, undone.
+  stored end, and on a divided 2+2 road Left and Right offered beside the median (Right's verdict
+  accepted) and a left pocket narrowing the median to 1.5 m, undone.
+
+#### Right pockets on divided roads (round R5b1a)
+
+Round R5b1a (2026-11-05, on its own branch beside R5b2, then moved onto `port-r5-pockets`; not
+landed) opened right (kerb) pockets beside a median, and the left and right pair on one divided
+approach (R5a1 decision 6).
+
+- **The rule (`arms::transition_median_through`).** A kerb pocket's transition is laid out (the
+  pocket edge's mouth profile is a lane wider on its kerb side). Its piece carries a raised
+  median through when the node is a lane transition whose two road arms carry one raised median
+  that lines up: the edge rule `medians_line_up` (the pass-through rule's, now per edge pair),
+  which a right pocket always meets, since its kerb shift cancels the pocket lane in
+  `Edge::lane_group_offset` (2+2 on 5 m grass and its 3+2 pocket edge both put the line at 0),
+  and a left and right pair meets through `pocket_narrowing_lines_up`; and both edges at least
+  `MEDIAN_THROUGH_MIN_EDGE_M` long, which the body and remainder minimums guarantee. D6 stays: no
+  crossing at a transition, so nothing opens the median. `O(1)` at every node of another type,
+  `O(degree)` at a transition.
+- **The node piece.** The layout is unchanged (its input is the median-free mouth profile; the
+  median has no taper of its own, so every other node's layout is bitwise). Such a node's mouth
+  sections are the divided body rows of each edge's own median (`RoadProfile::body_for_edge`),
+  which its spans start from as at a continuing pass-through. The core ring then holds each
+  mouth's two ground median vertices; it is cut along the median's edges, the straight lines
+  between the two mouths' median vertices, into the carriageway on either side, each side
+  triangulated as the core is (the CDT, `O(n log n)` for `n` ring vertices), and the median's
+  kerb and median tops and its two curb faces (facing the carriageway) join the two mouth rows:
+  a constant `O(1)` strip. A grass median's top in a node piece draws on the median grass layer.
+- **Spans.** An end at such a node is a through end: no nose, the shared row the piece's body
+  row (`SpanModel::new`).
+- **Left and right on one approach.** The pocket edge's median is a lane narrower (the left
+  pocket's), so the piece narrows the median by a lane between its mouths, over the layout's
+  21 m, instead of the pocket span's 12 m (`PocketNarrowing::on_span`: the span narrowing, the
+  pocket lane's taper and the divider's start apply only where the transition passes through).
+  Both pocket lanes then fork off across the piece as connectors: base lane 0 into pocket-edge
+  lanes 0 and 1, base lane 1 into 2 and 3; the left pocket lane runs at its own 0.75 m from the
+  mouth. The junction paints `L / S / S / R`.
+- **Painted medians.** Accepted: a painted median adds no band, the transition is laid out as on
+  an undivided road, and the hatching ends in its marking noses either side of the piece (node
+  pieces carry no markings, D13 (a)).
+- **Refusal.** `pocket_median_gap` now means the pair's medians would not line up across the
+  transition (the same `medians_line_up`, on the planned pair); it holds for every pocket
+  `validate_pocket` accepts. Text: "The median cannot continue past a pocket here". A left pocket
+  beside a kerb pocket skips the span narrowing's length check (`narrowing_fits`).
+- **Cost.** Per-tick code is unchanged. The new node path is the cut ring's two CDTs and a
+  six-vertex strip per mouth pair, only at such a transition; every other node takes the old
+  path after one `O(1)` node-type test. Timing (FRESH 2026-11-05 06:29-06:40, one session, `.run.lock`
+  and the exclusive timing lock, P-cores, 4 workers, load 3.6 falling to 1.1, no cargo, rustc or
+  Godot running, C B B C C B B C; control: `204c95e5`'s release lib tests, road chunk and roadbed
+  benches built in the round's worktree before any change), medians (ranges) of the four runs,
+  control / branch: `roadbed_junction/build` µs `t` 24.75 (24.50-24.86) / 24.12 (23.93-24.50),
+  `four_way` 39.86 (39.40-40.10) / 39.07 (38.34-39.47), `six_way` 66.90 (66.25-67.81) / 66.42
+  (65.92-68.96), `t_footpath` 35.56 (35.28-35.78) / 34.89 (34.57-35.25); the new
+  `transition_right_pocket` (a 2+2 road's laid-out transition) 8.17 (8.12-8.37) and
+  `transition_right_pocket_divided` (the same on 5 m grass, its piece carrying the median) 12.22
+  (12.20-12.25), branch only; `roadbed_span/build` µs `span_100m_divided` 30.62 (30.42-30.68) /
+  31.00 (30.73-31.67), its ranges 0.05 µs apart, so a one-minute recheck of that row alone
+  (06:44-06:45, the same conditions) gave 30.75 (30.41-31.15) / 30.53 (30.30-30.94): noise;
+  `span_100m_left_pocket` 26.11 (25.92-26.33) / 26.09 (25.94-26.32); payload stage p50 ms
+  `sloped_t` 0.385 (0.375-0.389) / 0.383 (0.378-0.393), `sloped_branch` 0.390 (0.376-0.411) /
+  0.381 (0.378-0.387), `divided_t` 0.448 (0.444-0.460) / 0.448 (0.441-0.454), payload vertices
+  equal; road chunk rows µs `chunk_emit_only/1024` 169.3 (166.2-181.0) / 172.0 (164.5-179.2),
+  `divided_chunk_emit_only/1` 279.0 (276.6-291.7) / 278.8 (276.4-281.1), `/1024` 285.8
+  (282.4-289.8) / 284.7 (275.6-287.8), `pocket_chunk_emit_only/1` 720.2 (713.6-732.4) / 708.5
+  (699.7-721.1), `/1024` 723.9 (719.2-737.5) / 712.7 (709.2-722.1). Every existing row unchanged
+  within spread.
+- **Proof for existing products.** The roadbed product probe's 146 existing entries and their
+  strip probes are unchanged; two new fixtures are recorded, `fixtures::four_way_2x2_right_pocket`
+  and `four_way_2x2_left_right_pocket`, also in the connector sweep (junction and transition, 0
+  violations). Every other gate FRESH on `6efbe8bd`: debug lib 2069 passed, 0
+  failed, 204 ignored; the R8 probe (town, hill, steep, Kuopio, the R3D rows) equal to round
+  R5b1's entry for entry; economy envelope and determinism PASS, all 75 `SIM02_DAY` /
+  `SIM02_LANES` lines byte-identical to R5a2's binary; connector save sweeps Kuopio 352 and the
+  100k city 24,834 connectors, 0 failing; clippy's warning set equal to `dev`'s on every commit.
+- **Tests.** `node/tests.rs`: the transition's piece (body-row mouths, the median top, watertight
+  with both spans, curb faces looking at the carriageway, no slivers, no nose on either span);
+  `median_tests.rs`: both spans watertight from the piece's rows, the pocket span's own median
+  without a taper; `test_pockets.rs`: the left and right pair's connectors, the pocket lane at its
+  own offset and the masks; `road_pockets.rs`: the edit at both stored ends (add, resize, adding
+  the left pocket, removal, undo, preview = commit), a painted median accepted. The edit and
+  refusal tests fail on R5b1's tree (`pocket_median_gap`).
+- **Stills** (gamescope headless, 1280x720, isolated profile): a right pocket on a 2+2 road on
+  5 m grass near, far and from above, the median running through the transition; both pockets
+  on one divided approach; a painted median with a right pocket. Kept with the round's artifacts.
 
 ### Junction layout
 
