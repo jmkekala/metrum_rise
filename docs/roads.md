@@ -12843,7 +12843,11 @@ The centre line of an undivided road is the dashed K1 on a 1 + 1 road above 40 k
 2-Lane Road, 50 km/h) and a solid no-crossing line where its own cross-section carries several
 lanes one way (2 + 2, 2 + 1, 3 + 3; a pocket's lanes not counted) or beside a left turn pocket
 (the user, 2026-11-05, `ROAD-106`; before, every 1 + 1 road at 50 km/h was unmarked and every
-centre line dashed).
+centre line dashed). Cost, measured at the R5 landing (2026-11-05, P-cores, C B B C twice,
+4 workers, release, `dev` `70377fee` against `r5-land` `a00e8909`): the road preview payload stage
+(`benchmark_road_preview_stages`) p50 0.38 -> 0.43 ms on `sloped_t` and `sloped_branch` and
+0.45 -> 0.49 ms on `divided_t`, with 13% and 8% more payload vertices, the new centre lines; per
+vertex within 3%.
 
 Before a junction whose approach lanes serve different movements (the
 [default junction lane use](#default-junction-lane-use-road-94) gives them a lane choice, or the

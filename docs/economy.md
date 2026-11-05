@@ -991,7 +991,11 @@ release test binary SHA-256 `71e4f46c439d9cb7`, `RAYON_NUM_THREADS=8`), since wa
 ends on the way now walk home and the prepared cities differ: `perf_contract_prepare` passes its
 continuation check and publishes at 10k, 30k and 100k (31, 144 and 599 s) and
 `perf_contract_fiscal_prepare` at 10k and 30k (20 and 53 s). Fixture revision and save format
-are unchanged.
+are unchanged. Republished 2026-11-05 for save format 115 with the `ROAD-95` turn pockets landing
+(branch `r5-land` `a00e8909`, release test binary SHA-256 `2c48a328a25c9f67`,
+`RAYON_NUM_THREADS=8`): `perf_contract_prepare` passes its continuation check and publishes at
+10k, 30k and 100k (25, 99 and 479 s) and `perf_contract_fiscal_prepare` at 10k and 30k (13 and
+40 s). Fixture revision unchanged.
 
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:
