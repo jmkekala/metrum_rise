@@ -142,3 +142,96 @@ fn steep_t_near_query_matches_the_canonical_grade_at_the_south_reach() {
         "near {near}, at {reference}"
     );
 }
+
+// `TERRAIN-19`: a tile's interpolation choice in the shared query index is the gather's own
+// (`quiet()`): no road or pad seam whose box comes within the cap and window pad of the tile's
+// apron rectangle, by Euclidean box distance. A road ending diagonally off a tile's corner, its
+// seams inside the axis-aligned cap window but all farther than that, leaves the tile on its
+// bilinear base, so `ground_height_near` answers what `ground_height_at` and the gather reference
+// do. Before round R5d3 the index counted every seam the window met, and on a curved base the
+// two disagreed by micrometres: the debug-only check panicked loading the user's save
+// ((34.68, -416.08), 145.0654401 against 145.0654313).
+#[test]
+fn a_road_beyond_the_cap_off_a_tiles_corner_leaves_it_on_its_base() {
+    let (_, strokes, order) = reference_fixtures().swap_remove(0);
+    let mut core = committed(&strokes, &order, false);
+    core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+        .expect("blank world");
+    core.treasury.balance = 1.0e9;
+    // A curved base over the tile [0, 64]^2, where the GL0 triangles leave the bilinear base.
+    core.sculpt_terrain_internal(Vector2::new(32.0, 32.0), 40.0, 4.0);
+    let points = [Vector2::new(126.0, 126.0), Vector2::new(220.0, 220.0)]
+        .map(|p| Vector3::new(p.x, core.get_world_surface_height_internal(p), p.y))
+        .to_vec();
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            tunnel: false,
+            median: None,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+            preview: None,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    // The precondition: the cap window of the tile's apron meets the road's seams, every one
+    // more than the cap and window pad from the apron.
+    let apron = [-0.5, -0.5, 64.5, 64.5];
+    let reach = crate::simulation::terrain::graded::CAP_M + 1.0;
+    let window = [-0.5 - reach, -0.5 - reach, 64.5 + reach, 64.5 + reach];
+    let roadbed = &core.transit_network.roadbed;
+    let (mut pieces, mut seams) = (Vec::new(), Vec::new());
+    roadbed.grounded_pieces_in_bounds(window, &mut pieces);
+    roadbed.grounded_seams_from_pieces(window, &pieces, &mut seams);
+    assert!(!seams.is_empty(), "the window meets the road's seams");
+    for ([a, b], _) in &seams {
+        let dx = (a.x.min(b.x) - apron[2])
+            .max(apron[0] - a.x.max(b.x))
+            .max(0.0);
+        let dz = (a.z.min(b.z) - apron[3])
+            .max(apron[1] - a.z.max(b.z))
+            .max(0.0);
+        assert!(dx.hypot(dz) > reach, "a seam {} m off", dx.hypot(dz));
+    }
+    let cell_m = core.config.zone_cell_m;
+    core.allocator.prepare_building_site_query_index(cell_m);
+    let surface = GradedSurface {
+        terrain: &core.heightmap,
+        roadbed: &core.transit_network.roadbed,
+        sites: &core.allocator,
+        query_index: Some(&core.terrain_query_index),
+    };
+    let reference = GradedSurface {
+        query_index: None,
+        ..surface
+    };
+    for i in 0..16 {
+        for j in 0..16 {
+            let (x, z) = (2.13 + 3.71 * f64::from(i), 1.37 + 3.83 * f64::from(j));
+            let base = reference.base_height_at(x, z, &mut QueryScratch::default());
+            let expected = reference.ground_height_at(x, z, &mut QueryScratch::default());
+            assert_eq!(
+                expected.to_bits(),
+                base.to_bits(),
+                "({x}, {z}): the bilinear base"
+            );
+            let mut scratch = QueryScratch::default();
+            surface.gather_near(x, z, 1.0, &mut scratch);
+            let near = surface.ground_height_near(x, z, &mut scratch);
+            let at = surface.ground_height_at(x, z, &mut QueryScratch::default());
+            let (rendered, _) =
+                surface.surface_height_and_normal_near(x, z, &mut QueryScratch::default());
+            for (name, value) in [("near", near), ("at", at), ("surface near", rendered)] {
+                assert_eq!(
+                    value.to_bits(),
+                    expected.to_bits(),
+                    "({x}, {z}): {name} {value}, base {expected}"
+                );
+            }
+        }
+    }
+}
