@@ -459,7 +459,11 @@ pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
   (`SimulationRuntimeSnapshot::RoadDependents`), restored after the graph; lanes rebuild locally.
 - **Strokes and bulldoze (D10).** A stroke whose excerpt splits, merges or reroutes a pocket edge,
   or gives a transition a third arm (a crossing, an end snapped onto it, a node captured on its
-  line), is refused (`stroke_splits_pocket`, `road_edit::validation`, `O(excerpt records)`). A
+  line), is refused (`stroke_splits_pocket`, `road_edit::validation`, `O(excerpt records)`). The
+  transition's arms in the excerpt are counted against the existing arms it copied: an excerpt
+  that reaches a junction copies its pocket edges but not always their base roads, and before
+  round R5d2 (2026-11-05, the user's report) such a transition's single arm read as a lost one, so
+  a road joined to the far end of an arm at a crossing with two pockets was refused. A
   bulldozed pair resets its transition to a road end.
 - **Split turn rules (`ROAD-103`, PLAN-R5 risk 1).** Before this round a stroke that split an arm
   of a junction with turn rules left the rules keyed by the old edge id, the half that no longer
