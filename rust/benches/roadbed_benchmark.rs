@@ -13,7 +13,8 @@
 //! four-way in 0.1 ms and a six-way in 0.3 ms. `build/t_footpath` adds an 80 m footpath in one
 //! of the T's corners, at sidewalk height (D5). `build/transition_right_pocket` is a right turn
 //! pocket's laid-out lane transition on a 2+2 road (`ROAD-95`), `_divided` the same on a 5 m
-//! grass median, which its piece carries through (round R5b1a). `publish/t_closure` marks a T's
+//! grass median, which its piece carries through (round R5b1a); `build/transition_left_pocket`
+//! a left pocket's on the undivided 2+2 road (round R5c1). `publish/t_closure` marks a T's
 //! node dirty and compiles its closure: the node piece and its three incident spans.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
@@ -354,10 +355,17 @@ fn bench_roadbed_junction(c: &mut Criterion) {
         });
     }
     // A right turn pocket's transition (`ROAD-95`): a 100 m base road into the transition node
-    // 0 and a 100 m pocket edge on, undivided and on a 5 m grass median.
-    for (name, edge, divided) in [
-        ("transition_right_pocket", four_lane as fn(Edge) -> Edge, false),
-        ("transition_right_pocket_divided", divided_5m, true),
+    // 0 and a 100 m pocket edge on, undivided and on a 5 m grass median; and a left pocket's on
+    // the undivided road, whose oncoming lanes and kerb move out by a lane (round R5c1).
+    for (name, edge, divided, left) in [
+        (
+            "transition_right_pocket",
+            four_lane as fn(Edge) -> Edge,
+            false,
+            false,
+        ),
+        ("transition_right_pocket_divided", divided_5m, true, false),
+        ("transition_left_pocket", four_lane, false, true),
     ] {
         let mut graph = RegionGraph::new();
         let transition = graph.add_node(Vector3::ZERO, NodeType::LaneTransition);
@@ -373,8 +381,8 @@ fn bench_roadbed_junction(c: &mut Criterion) {
             pocket,
             Some(RoadPocket {
                 end: EdgeEnd::End,
-                left: false,
-                right: true,
+                left,
+                right: !left,
             }),
         );
         graph.rebuild_intersection_clips();

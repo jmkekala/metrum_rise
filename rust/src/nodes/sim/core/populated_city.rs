@@ -428,13 +428,14 @@ fn arterial_lanes() -> i32 {
     1
 }
 
-// `METRUM_PERF_POCKETS=right` (test builds, `ROAD-95` round R5a3): once the street grid is built
-// and before it is zoned, as a player would add them before zoning, a 40 m right turn pocket on
-// every arterial road's end at a junction: the border trunks' approaches, and the cross streets'
-// 50 m blocks, which are too short for one (`pocket_road_too_short`). Zoned parcels refuse the
-// widening (`parcel_overlap`), so a built city takes none; and the 1+1 row streets get none: their
-// pockets would cost the back-to-back lots behind them (with them the wider grid housed 9,302
-// residents for 10,000). The requests are listed before the first edit, by edge id and then its
+// `METRUM_PERF_POCKETS=right`, `left` or `both` (test builds, `ROAD-95` rounds R5a3 and R5c1): once
+// the street grid is built and before it is zoned, as a player would add them before zoning, a
+// 40 m turn pocket of those roles on every arterial road's end at a junction (a left pocket on
+// these undivided roads moves the oncoming side out by a lane): the border trunks' approaches,
+// and the cross streets' 50 m blocks, which are too short for one (`pocket_road_too_short`).
+// Zoned parcels refuse the widening (`parcel_overlap`), so a built city takes none; and the 1+1
+// row streets get none: their pockets would cost the back-to-back lots behind them (with them the
+// wider grid housed 9,302 residents for 10,000). The requests are listed before the first edit, by edge id and then its
 // end node first, its start second: a pocket at the end keeps the road's id on the part that
 // still reaches its start junction. Prints the placed pockets and the refusals by reason on a
 // `PERF_POCKETS` line. Not a contract tier.
@@ -447,7 +448,12 @@ fn add_perf_pockets(core: &mut SimCore) {
     let Ok(value) = std::env::var("METRUM_PERF_POCKETS") else {
         return;
     };
-    assert_eq!(value, "right", "METRUM_PERF_POCKETS is right");
+    let (left, right) = match value.as_str() {
+        "right" => (false, true),
+        "left" => (true, false),
+        "both" => (true, true),
+        _ => panic!("METRUM_PERF_POCKETS is right, left or both"),
+    };
     let graph = &core.region_graph;
     let junction = |node: u32| graph.node_adjacency(graph.get_valid_node(node)).len() >= 3;
     let requests: Vec<PocketRequest> = (0..graph.edge_count())
@@ -466,8 +472,8 @@ fn add_perf_pockets(core: &mut SimCore) {
             .map(move |(end, _)| PocketRequest {
                 edge,
                 end,
-                left: false,
-                right: true,
+                left,
+                right,
                 body_m: 40.0,
             })
         })
