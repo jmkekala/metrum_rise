@@ -44,7 +44,7 @@ impl PointDistance for EdgeEntry {
 pub struct Node {
     /// World-space 3-D position (metres). Y component reflects terrain height.
     pub pos: Vector3,
-    /// Classification of the node (regular junction, cul-de-sac end, highway border, etc.).
+    /// Classification of the node (junction or road end, border connection, lane transition, etc.).
     pub node_type: NodeType,
     /// Turn restriction table for vehicles at this junction.
     ///

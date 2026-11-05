@@ -365,16 +365,6 @@ impl SimulationNode {
             .get_closest_node_internal(world_pos, max_dist)
     }
 
-    /// Placeholder for cul-de-sac tools.
-    #[func]
-    pub fn set_node_cul_de_sac(&mut self, _node_id: i32, _enabled: bool, _radius: f32) {}
-
-    /// Placeholder for cul-de-sac tools.
-    #[func]
-    pub fn has_cul_de_sac(&self, _node_id: i32) -> bool {
-        false
-    }
-
     /// Returns the number of road connections for a node.
     #[func]
     pub fn get_node_connection_count(&self, node_id: i32) -> i32 {

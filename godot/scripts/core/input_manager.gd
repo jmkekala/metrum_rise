@@ -3,7 +3,7 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
 ## Routes input events to the active tool node (RoadTool, ZoningTool,
-## MoveTool, SelectTool, CulDeSacTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool,
+## MoveTool, SelectTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool,
 ## VegetationTool, FieldEditTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
@@ -27,7 +27,6 @@ signal world_ready
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_tool = $"../ZoningTool"
 @onready var move_tool = $"../MoveTool"
-var cul_de_sac_tool: Node3D
 var service_building_tool: Node3D
 var industry_building_tool: Node3D
 var field_edit_tool: Node3D
@@ -41,7 +40,7 @@ var building_inspector: Node
 var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
 var current_tool: Tool = Tool.NONE
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
@@ -79,13 +78,6 @@ func _ready():
 	var frame_camera := get_node_or_null("../CameraNode")
 	if frame_camera != null:
 		frame_camera.process_priority = CAMERA_SETTLE_PROCESS_PRIORITY
-	if not has_node("../CulDeSacTool"):
-		var rt = Node3D.new()
-		rt.name = "CulDeSacTool"
-		rt.set_script(load("res://scripts/tools/cul_de_sac_tool.gd"))
-		get_parent().call_deferred("add_child", rt)
-		cul_de_sac_tool = rt
-	
 	if not has_node("../SelectTool"):
 		var st = Node3D.new()
 		st.name = "SelectTool"
@@ -156,9 +148,6 @@ func _ready():
 	agent_inspector.building_requested.connect(_on_agent_building_requested)
 	get_parent().call_deferred("add_child", agent_inspector)
 
-	# Hide overlay mesh if exists in cul-de-sac tool
-	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
-		cul_de_sac_tool.get_node("PreviewMesh").visible = false
 	call_deferred("_configure_world_camera_policy")
 	add_to_group("graphics_settings")
 
@@ -287,7 +276,6 @@ func _unhandled_input(event):
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
-			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
 			KEY_B: _toggle_tool(Tool.BULLDOZE)
 			KEY_E:
 				if current_tool == Tool.VEGETATION:
@@ -442,9 +430,6 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 				road_tool.active = enabled
 				if enabled:
 					road_tool.set_road_type(road_tool.WALKWAY_ROAD_TYPE)
-		Tool.CUL_DE_SAC:
-			if cul_de_sac_tool:
-				cul_de_sac_tool.active = enabled
 		Tool.AGENT: if agents_node: pass # Agents diag always available
 		Tool.ZONING:
 			if zoning_tool: zoning_tool.active = enabled

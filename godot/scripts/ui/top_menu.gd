@@ -491,7 +491,6 @@ func _on_help_menu_pressed(id: int) -> void:
 					"Z  Zoning tool",
 					"M  Move tool",
 					"V  Select tool",
-					"C  Cul-de-sac tool",
 					"Y  Terrain sculpt",
 					"Space  Pause / unpause",
 					"Escape  Cancel active tool",

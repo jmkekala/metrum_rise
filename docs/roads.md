@@ -11322,8 +11322,8 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   `MainUI.refresh_road_types()` lists the library again and re-picks the tool's type, so an
   edited type draws its new layout from the next stroke on.
 - **Roads menu** (`ui/road_type_menu.gd`): the five built-ins as buttons, then one fixed-width
-  "Custom roads" drop-down listing every usable custom type, a separator and "Road builder...",
-  then Cul-De-Sac (a tool button). The tool's current type is marked: its built-in button
+  "Custom roads" drop-down listing every usable custom type, a separator and "Road builder...".
+  The tool's current type is marked: its built-in button
   pressed, or the drop-down showing the custom type's name (trimmed with an ellipsis) in the
   pressed style with the item checked. However many types the library holds, the row fits a
   1280 x 720 screen (RB2; RB1b's row of up to ten type buttons ran off it with two custom

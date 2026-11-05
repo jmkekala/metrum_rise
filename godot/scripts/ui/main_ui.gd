@@ -289,14 +289,6 @@ func _build_ui():
 		road_tool.road_type_changed.connect(road_type_menu.mark)
 	road_type_menu.setup(simulation_node)
 	road_sub_menu.add_child(road_type_menu)
-	road_sub_menu.add_child(VSeparator.new())
-
-	var cul_de_sac_btn = Button.new()
-	cul_de_sac_btn.text = "Cul-De-Sac"
-	cul_de_sac_btn.custom_minimum_size = Vector2(100, 0)
-	cul_de_sac_btn.focus_mode = Control.FOCUS_NONE
-	road_sub_menu.add_child(cul_de_sac_btn)
-	cul_de_sac_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.CUL_DE_SAC))
 	
 	road_combined_hbox.add_child(options_panel)
 	road_combined_hbox.add_child(sep)
