@@ -122,7 +122,7 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 		"pocket_junction_whitelisted":
 			return "Clear the junction's turn rules first"
 		"pocket_median_gap":
-			return "Turn pockets beside a median are not available yet"
+			return "The median cannot continue past a pocket here"
 		"pocket_requires_surface_road":
 			return "Turn pockets are for roads on the ground"
 		"pocket_lane_limit":

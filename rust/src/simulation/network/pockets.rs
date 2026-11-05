@@ -13,7 +13,10 @@
 use super::graph::{Edge, RegionGraph, RoadPocket};
 use super::lanes::approach_offers_turns;
 use super::lanes::vehicle_junctions::node_whitelists_vehicle_turns;
-use super::roadbed::{CROSSWALK_DEPTH_M, EdgeEnd, LEFT_POCKET_TAPER_M, NOSE_CLEARANCE_M};
+use super::roadbed::{
+    CROSSWALK_DEPTH_M, EdgeEnd, LEFT_POCKET_TAPER_M, NOSE_CLEARANCE_M, PocketNarrowing,
+    medians_line_up,
+};
 use super::topology::{self, RoadSplitDependentsUndo, SplitHalves};
 use super::types::NodeType;
 use crate::simulation::buildings::allocator::{BuildingAllocator, EdgeOccupancy};
@@ -221,14 +224,24 @@ fn find_pair(graph: &RegionGraph, edge: usize, end: EdgeEnd) -> Result<Option<Pa
 }
 
 // The base road with `pocket` set, when the road can carry its roles: the pocket's own checks
-// ([`Edge::validate_pocket`]), then `pocket_median_gap` for a right pocket beside a median (its
-// transition is laid out, so a median would nose out on both sides of it; a left pocket narrows
-// a raised median and passes through). `O(points)` for the clone.
+// ([`Edge::validate_pocket`]), then `pocket_median_gap` when the median would not run on past the
+// transition. A left pocket's transition narrows a raised median and passes through
+// (`validate_pocket`); a right pocket's is laid out and its piece carries a raised median between
+// its mouths, while a painted one ends in chevrons either side of it (round R5b1a). Both halves
+// are at least `MEDIAN_THROUGH_MIN_EDGE_M` long (`POCKET_BODY_MIN_M` plus the taper half,
+// `BASE_REMAINDER_MIN_M`), so the pair's edge rule decides; it holds for every pocket
+// `validate_pocket` accepts. `O(points)` for the clone.
 fn pocket_piece(base: &Edge, pocket: RoadPocket) -> Result<Edge, &'static str> {
     let mut piece = base.clone();
     piece.set_pocket(Some(pocket));
     piece.validate_pocket()?;
-    if base.median.is_some() && pocket.right {
+    let piece_end = match pocket.end {
+        EdgeEnd::Start => EdgeEnd::End,
+        EdgeEnd::End => EdgeEnd::Start,
+    };
+    if let Some(median) = base.median
+        && !medians_line_up((base, pocket.end), (&piece, piece_end), median.is_raised())
+    {
         return Err("pocket_median_gap");
     }
     Ok(piece)
@@ -331,10 +344,10 @@ impl PocketPlan {
     /// pocket. The error is the refusal key: `invalid_road`, the pocket's own checks
     /// ([`Edge::validate_pocket`]: `pocket_requires_surface_road`, `pocket_lane_limit`,
     /// `pocket_requires_one_way`, `pocket_requires_wide_median`, `invalid_pocket_dimensions`),
-    /// `pocket_median_gap` (a right pocket beside a median), `pocket_junction_whitelisted` (D9),
-    /// `pocket_movement_missing` (the junction offers no such turn), `pocket_road_too_short` (the
-    /// base road keeps less than two taper halves and a metre beyond the transition),
-    /// `pocket_unchanged`, `pocket_transition_changed`. The compile's own refusals come later.
+    /// `pocket_median_gap` (the median would not line up across the transition),
+    /// `pocket_junction_whitelisted` (D9), `pocket_movement_missing` (the junction offers no such
+    /// turn), `pocket_road_too_short` (the base road keeps less than two taper halves and a metre
+    /// beyond the transition), `pocket_unchanged`, `pocket_transition_changed`. The compile's own refusals come later.
     /// `O(edge points + degree)`.
     pub(crate) fn prepare(
         graph: &RegionGraph,
@@ -500,9 +513,10 @@ impl PocketPlan {
 // the junction, on a pocket edge `span_m` long: `LEFT_POCKET_TAPER_M` from the transition, and
 // beyond the junction's mouth (the base road's clip there, which the pocket keeps: its mouth
 // profile is the base road's), a crossing strip, the nose clearance and the narrowed median's
-// nose radius. True for every other pocket. `O(1)`.
+// nose radius. True for every other pocket, a left pocket beside a kerb pocket included: its
+// transition's piece narrows the median (`PocketNarrowing::on_span`). `O(1)`.
 fn narrowing_fits(base: &Edge, piece: &Edge, end: EdgeEnd, span_m: f32) -> bool {
-    if piece.median_pocket_lanes() == 0 {
+    if PocketNarrowing::on_span(piece).is_none() {
         return true;
     }
     let clip_m = match end {

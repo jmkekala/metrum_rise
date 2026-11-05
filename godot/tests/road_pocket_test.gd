@@ -8,8 +8,8 @@
 ## removes the pocket (the selection follows the road under the click as the edit splits and
 ## joins it), Ctrl+Z (undo) brings the previous pocket back into the section, and the other
 ## stored end (the east arm starts at the junction) takes one too. On a divided 2 + 2 road (5 m
-## grass) Left is offered and Right refused beside the median, and a left pocket narrows the
-## median through the window. The window's default size (and minimum width) holds every row with
+## grass) Left and Right are both offered beside the median (a right pocket's transition carries
+## it through), and a left pocket narrows the median through the window. The window's default size (and minimum width) holds every row with
 ## the section shown.
 ## Ported from Veeti's road-chain snapshot `efd58129` (`road_pockets_test.gd`: the pocket edit
 ## through the tool, add, resize, remove), adapted to the Road Properties window.
@@ -190,15 +190,16 @@ func _run() -> void:
 	await _undo("the east add")
 	_expect(_state(window) == "No turn pocket at this end", "undo removes the east pocket: %s" % _state(window))
 
-	# The divided road: Left offered, Right refused beside the median; a left pocket narrows it.
+	# The divided road: Left and Right offered beside the median; a left pocket narrows it.
 	var divided := simulation.get_hovered_edge(-60.0, 250.0)
 	var generation := simulation.get_network_render_generation()
 	_expect(simulation.set_edge_cross_section(divided, 2, 2, 2, 5.0, 50, true, true, true), "the west arm of B is divided")
 	await _await_generation(generation)
 	_click(tool, window, -30.0, 250.0)
 	_expect(not section._left_check.disabled, "Left is offered beside a 5 m raised median")
-	_expect(section._right_check.disabled and section._right_check.tooltip_text == "Turn pockets beside a median are not available yet",
-		"Right is refused beside a median: %s" % section._right_check.tooltip_text)
+	_expect(not section._right_check.disabled, "Right is offered beside a median: %s" % section._right_check.tooltip_text)
+	_request(window, false, true, 60.0)
+	_expect(_verdict(window) == "Right pocket, 60 m from the junction", "the right pocket's verdict beside a median: %s" % _verdict(window))
 	_request(window, true, false, 60.0)
 	_expect(_verdict(window) == "Left pocket, 60 m from the junction", "the left pocket's verdict: %s" % _verdict(window))
 	await _apply(window, "the left pocket")

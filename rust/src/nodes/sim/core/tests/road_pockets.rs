@@ -266,8 +266,8 @@ fn pocket_edits_are_refused_with_a_reason() {
         "pocket_junction_whitelisted"
     );
     core.clear_lane_connections_internal(node);
-    // A road with a median (R5a1 decision 6): a right pocket's laid-out transition would gap
-    // it; a left pocket needs a raised median of at least 3.8 m (round R5b1, D3).
+    // A road with a median: a right pocket's laid-out transition carries it through (round
+    // R5b1a); a left pocket needs a raised median of at least 3.8 m (round R5b1, D3).
     let grass = crate::simulation::network::graph::RoadMedian {
         style: crate::simulation::network::graph::MedianStyle::KerbedGrass,
         width_m: 3.0,
@@ -277,13 +277,10 @@ fn pocket_edits_are_refused_with_a_reason() {
     );
     assert!(core.set_edge_cross_section_internal(west as i32, 1, 1, Some(grass), attributes));
     assert_eq!(
-        pocket_edit(&mut core, request(west, end, right, 60.0)),
-        "pocket_median_gap"
-    );
-    assert_eq!(
         pocket_edit(&mut core, request(west, end, (true, false), 60.0)),
         "pocket_requires_wide_median"
     );
+    assert!(core.preview_road_pocket_internal(request(west, end, right, 60.0)).is_ok());
 }
 
 // Arm `west` of `crossing` made a `lanes` + `lanes` road on a `median_m` kerbed grass median.
@@ -399,6 +396,73 @@ fn a_left_pocket_on_a_divided_road_narrows_its_median_through_the_edit() {
     let state = core.get_road_pocket_internal(west as i32, end).unwrap();
     let stub = core.region_graph.edge(state.edge).median.unwrap().width_m;
     assert!((stub - 0.3).abs() < 1e-6, "{stub}");
+}
+
+// Round R5b1a: a right pocket on a divided 2+2 arm on 5 m grass through the edit, at both stored
+// ends, then a left pocket added beside it. The transition is laid out and its piece carries the
+// median: both mouths are divided body rows, which the spans start from. Preview is commit for
+// the add, the resize, the role change and the removal, which gives the base road back; undo
+// restores the pair. On a painted median a right pocket is accepted too (its hatching ends either
+// side of the transition's piece).
+#[test]
+fn a_right_pocket_on_a_divided_road_carries_the_median_through_its_transition() {
+    let body_rows = |core: &SimCore, transition: u32| {
+        let piece = core.transit_network.roadbed.node_piece(transition).unwrap();
+        piece
+            .mouths()
+            .iter()
+            .all(|(_, mouth)| mouth.profile.bands().len() == 9)
+    };
+    for west_to_east in [true, false] {
+        let (mut core, node) = crossing(west_to_east);
+        let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+        divide_arm(&mut core, west, 2, 5.0);
+        let base = core.region_graph.edge(west).clone();
+        assert_eq!(pocket_edit(&mut core, request(west, end, (false, true), 60.0)), "");
+        let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+        let pocket = core.region_graph.edge(state.edge).clone();
+        assert_eq!(pocket.median, base.median, "the median is kept");
+        let transition = if end == EdgeEnd::End {
+            pocket.start_node
+        } else {
+            pocket.end_node
+        };
+        core.precompute_road_mesh_data();
+        assert!(body_rows(&core, transition), "the median runs through");
+        assert_eq!(pocket_edit(&mut core, request(west, end, (false, true), 90.0)), "");
+        core.precompute_road_mesh_data();
+        assert!(body_rows(&core, transition));
+        // A left pocket beside it: the narrowing starts at the transition's mouth.
+        assert_eq!(pocket_edit(&mut core, request(west, end, (true, true), 90.0)), "");
+        let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+        assert!(state.pocket.left && state.pocket.right);
+        assert_eq!(core.region_graph.edge(state.edge).median.unwrap().width_m, 1.5);
+        core.precompute_road_mesh_data();
+        assert!(body_rows(&core, transition));
+        assert_eq!(
+            pocket_edit(&mut core, request(west, end, (false, false), 90.0)),
+            ""
+        );
+        let joined = core.region_graph.edge(west);
+        assert_eq!(
+            (joined.fwd_lanes, joined.bkw_lanes, joined.median, joined.width),
+            (base.fwd_lanes, base.bkw_lanes, base.median, base.width)
+        );
+        assert!(core.undo_action_internal());
+        let restored = core.get_road_pocket_internal(west as i32, end).unwrap();
+        assert!(restored.pocket.left && restored.pocket.right);
+    }
+    let (mut core, node) = crossing(true);
+    let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+    let painted = crate::simulation::network::graph::RoadMedian {
+        style: crate::simulation::network::graph::MedianStyle::Painted,
+        width_m: 2.0,
+    };
+    let attributes = crate::simulation::network::road_types::RoadAttributes::of_edge(
+        core.region_graph.edge(west),
+    );
+    assert!(core.set_edge_cross_section_internal(west as i32, 2, 2, Some(painted), attributes));
+    assert_eq!(pocket_edit(&mut core, request(west, end, (false, true), 60.0)), "");
 }
 
 // Ported: `pocket_roles_resize_remove_and_preview_cover_both_stored_directions`. At both stored
@@ -823,7 +887,7 @@ fn moving_a_pocket_and_undo_preserve_a_cars_world_station() {
 // a click; a pocket edge's own pocket end wherever it is clicked (its far end is the
 // transition); the same junction and the whole road from it through the base road's transition;
 // the roles the road can carry: left only on a one-way road or beside a raised median of at
-// least 3.8 m, right not beside a median.
+// least 3.8 m, right beside a median too (round R5b1a: its transition carries the median through).
 #[test]
 fn the_turn_pocket_section_reads_the_end_nearest_the_click() {
     use crate::simulation::network::pockets::{PocketEndView, nearest_pocket_end};
@@ -878,7 +942,7 @@ fn the_turn_pocket_section_reads_the_end_nearest_the_click() {
         let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
         divide_arm(&mut core, west, 2, median_m);
         let view = PocketEndView::of(&core.region_graph, west, end).unwrap();
-        assert_eq!((view.left, view.right), (left, Err("pocket_median_gap")));
+        assert_eq!((view.left, view.right), (left, Ok(())));
     }
 }
 
