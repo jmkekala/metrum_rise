@@ -643,12 +643,25 @@ pub(super) fn pass_through_crossings(
 pub(super) const MEDIAN_THROUGH_MIN_EDGE_M: f64 = 20.0;
 
 // Whether a pass-through node's two arms carry one median, raised when `raised` and painted
-// otherwise, that lines up across it (`ROAD-80`): equal style and width, the line between the
-// lane groups at one place (each arm's offset taken looking away from the node, so the other's
-// is its mirror), or a left turn pocket's narrowing starting there (`ROAD-95`,
-// [`pocket_narrowing_lines_up`]), and both edges at least `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
+// otherwise, that lines up across it ([`medians_line_up`]), and both edges are at least
+// `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
 fn median_lines_up(graph: &RegionGraph, arms: [ArmKey; 2], raised: bool) -> bool {
-    let [(a, a_end), (b, b_end)] = arms.map(|key| (graph.edge(key.edge), key.end));
+    let [a, b] = arms.map(|key| (graph.edge(key.edge), key.end));
+    medians_line_up(a, b, raised)
+        && [a.0, b.0]
+            .iter()
+            .all(|edge| horizontal_length_m(&edge.geometry) >= MEDIAN_THROUGH_MIN_EDGE_M)
+}
+
+/// Whether two edges leaving one node at ends `a.1` and `b.1` carry one median there, raised
+/// when `raised` and painted otherwise, that lines up across it (`ROAD-80`): equal style and
+/// width, the line between the lane groups at one place (each arm's offset taken looking away
+/// from the node, so the other's is its mirror), or a left turn pocket's narrowing starting there
+/// (`ROAD-95`, [`pocket_narrowing_lines_up`]). A right pocket keeps its edge's lane-group line,
+/// since its kerb shift cancels the pocket lane in [`Edge::lane_group_offset`]. The edge rule of
+/// a node's arms, without their lengths; the pocket edit checks its planned pair by it. `O(1)`.
+pub(crate) fn medians_line_up(a: (&Edge, EdgeEnd), b: (&Edge, EdgeEnd), raised: bool) -> bool {
+    let ((a, a_end), (b, b_end)) = (a, b);
     let outward = |edge: &Edge, end: EdgeEnd| match end {
         EdgeEnd::Start => edge.lane_group_offset(),
         EdgeEnd::End => -edge.lane_group_offset(),
@@ -658,10 +671,7 @@ fn median_lines_up(graph: &RegionGraph, arms: [ArmKey; 2], raised: bool) -> bool
         .zip(b.median)
         .is_some_and(|(median, other)| median.is_raised() == raised && median == other)
         && outward(a, a_end) == -outward(b, b_end);
-    (lines_up || raised && pocket_narrowing_lines_up([(a, a_end), (b, b_end)]))
-        && [a, b]
-            .iter()
-            .all(|edge| horizontal_length_m(&edge.geometry) >= MEDIAN_THROUGH_MIN_EDGE_M)
+    lines_up || raised && pocket_narrowing_lines_up([(a, a_end), (b, b_end)])
 }
 
 // Whether one arm is a left turn pocket's edge whose median narrowing starts at this node and
@@ -716,6 +726,33 @@ fn median_runs_through(graph: &RegionGraph, node: u32, raised: bool) -> bool {
     pass_through_crossings(graph, node).is_some_and(|[(a, a_crosses), (b, b_crosses)]| {
         !a_crosses && !b_crosses && median_lines_up(graph, [a, b], raised)
     })
+}
+
+/// Whether a raised median runs on through the node piece of lane transition `node` without a
+/// nose (`ROAD-95`): a laid-out transition (a right turn pocket's, its profiles differing by the
+/// pocket lane on the kerb side) whose two road arms carry one raised median that lines up
+/// ([`median_lines_up`]). Such a transition has no crossing (D6), so nothing opens the median;
+/// its piece carries the median between its two mouths' body rows, each span's own median, and
+/// both spans end there without a nose; beside a left pocket too, the piece narrows it by a
+/// lane ([`PocketNarrowing::on_span`]). A pass-through transition (a left pocket alone) is
+/// [`median_continues`]'s.
+/// `O(degree)`, `O(1)` at a node of any other type.
+pub(super) fn transition_median_through(graph: &RegionGraph, node: u32) -> bool {
+    if !graph.is_lane_transition(node) {
+        return false;
+    }
+    let Some(incidents) = node_incidents(graph, node) else {
+        return false;
+    };
+    match incidents[..] {
+        [(a, _), (b, _)] => {
+            !passes_through(graph, &incidents)
+                && is_road(graph, a)
+                && is_road(graph, b)
+                && median_lines_up(graph, [a, b], true)
+        }
+        _ => false,
+    }
 }
 
 /// Whether arm `edge` of `node` can cross, so its crossing can be turned on or off (`ROAD-74`):

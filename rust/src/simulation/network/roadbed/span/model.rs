@@ -5,7 +5,9 @@
 //! station rule, which `ROAD-68-D` makes one constructive subdivision, and the width-change
 //! taper, which `ROAD-68-F` part 2 leaves to node pieces (a pass-through pair has one profile).
 
-use super::super::arms::{edges_pass_through, median_continues, pass_through_crossings};
+use super::super::arms::{
+    edges_pass_through, median_continues, pass_through_crossings, transition_median_through,
+};
 use super::super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::super::mesh::{RowLayout, push_section_row};
 use super::super::profile::{LEFT_POCKET_TAPER_M, MedianEdges, PocketNarrowing, RoadProfile};
@@ -240,20 +242,25 @@ impl<'a> SpanModel<'a> {
             crossing_m(EdgeEnd::Start, start_kind, start_mouth_m),
             crossing_m(EdgeEnd::End, end_kind, end_mouth_m),
         ];
-        // Only a raised median asks whether it runs on through a node (`ROAD-80`).
+        // Only a raised median asks whether it runs on through a node (`ROAD-80`): a
+        // pass-through node, or a lane transition whose node piece carries it (`ROAD-95`).
         let raised = edge.median.is_some_and(|median| median.is_raised());
-        let through = [
-            (start_kind, EdgeEnd::Start),
-            (end_kind, EdgeEnd::End),
-        ]
-        .map(|(kind, end)| {
-            raised
-                && kind == Some(NodeKind::PassThrough)
-                && median_continues(graph, node_at(graph, edge, end))
-        });
+        let through =
+            [(start_kind, EdgeEnd::Start), (end_kind, EdgeEnd::End)].map(|(kind, end)| {
+                raised
+                    && match kind {
+                        Some(NodeKind::PassThrough) => {
+                            median_continues(graph, node_at(graph, edge, end))
+                        }
+                        Some(NodeKind::Bend) => {
+                            transition_median_through(graph, node_at(graph, edge, end))
+                        }
+                        _ => false,
+                    }
+            });
         // A left pocket's median narrows from its transition's mouth, where it continues the
-        // base road's (`ROAD-95`).
-        let taper = PocketNarrowing::of(edge).and_then(|narrowing| {
+        // base road's (`ROAD-95`), unless the transition's piece narrows it.
+        let taper = PocketNarrowing::on_span(edge).and_then(|narrowing| {
             let (through, from_s_m, sign) = match narrowing.end {
                 EdgeEnd::Start => (through[0], start_mouth_m, 1.0),
                 EdgeEnd::End => (through[1], end_mouth_m, -1.0),

@@ -217,8 +217,10 @@ impl LaneSystem {
 
         // A left turn pocket's lane in a narrowed median (`ROAD-95`, D3) starts on the adjacent
         // through lane's mouth point at its transition, copied so the base road's lane runs on
-        // into both directly, and tapers to its own offset beside the median's narrowing.
-        let narrowing = PocketNarrowing::of(edge);
+        // into both directly, and tapers to its own offset beside the median's narrowing. Beside
+        // a kerb pocket the transition's piece narrows the median and the lane starts at its own
+        // offset, a connector's fork (round R5b1a).
+        let narrowing = PocketNarrowing::on_span(edge);
         let pocket_taper = |lane_idx: i8| {
             let narrowing = narrowing?;
             let fwd = narrowing.end == EdgeEnd::Start;

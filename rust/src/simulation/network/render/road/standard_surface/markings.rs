@@ -150,8 +150,9 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             let (centre, half) = (edge.lane_group_offset(), edge.median_half_width());
             // A left turn pocket's lane forks off beside the median's narrowing (`ROAD-95`, D3):
             // its divider from the through lane starts where the narrowing ends, the median
-            // kerb being the line before it.
-            let narrowing = PocketNarrowing::of(edge).map(|narrowing| match narrowing.end {
+            // kerb being the line before it. Beside a kerb pocket the transition's piece narrows
+            // the median (round R5b1a), so the divider starts at the span's mouth.
+            let narrowing = PocketNarrowing::on_span(edge).map(|narrowing| match narrowing.end {
                 EdgeEnd::Start => (true, (sections[0].s_m + LEFT_POCKET_TAPER_M, f32::MAX)),
                 EdgeEnd::End => (
                     false,

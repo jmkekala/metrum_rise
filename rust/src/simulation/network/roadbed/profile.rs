@@ -381,6 +381,15 @@ impl PocketNarrowing {
             right_moves,
         })
     }
+
+    /// The narrowing `edge`'s span carries from its transition's mouth: [`Self::of`] where the
+    /// transition passes through (a left pocket alone). Beside a kerb pocket, whose kerb shift
+    /// lays the transition out, the transition's node piece narrows the median between its two
+    /// mouths instead, over the layout's taper, and the left pocket lane forks off there as the
+    /// kerb pocket's does (`ROAD-95` round R5b1a); the span keeps its own median. `O(1)`.
+    pub(crate) fn on_span(edge: &Edge) -> Option<Self> {
+        Self::of(edge).filter(|_| edge.kerb_shift_m() == 0.0)
+    }
 }
 
 /// Returns the complete visible roadbed half-width, including curb or shoulder and sidewalk.

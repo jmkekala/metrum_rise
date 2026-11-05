@@ -711,7 +711,7 @@ const TIP_SHARED_SLOTS: usize = 4;
 
 impl RowLayout {
     // The ground slot `g` where a body layout's left carriageway ends, at the median's kerb.
-    fn median_ground_slot(&self) -> u8 {
+    pub(super) fn median_ground_slot(&self) -> u8 {
         let kinds = &self.kinds[..usize::from(self.band_count)];
         let median = kinds
             .iter()

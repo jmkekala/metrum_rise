@@ -80,7 +80,7 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
         };
         for kind in NON_ROAD_KINDS {
             // A kerbed grass median's top draws on the grass layer (`ROAD-80`); paving stays
-            // with the sidewalk. Only spans have median bands: every mouth is median-free.
+            // with the sidewalk.
             let layer = if kind == BandKind::Median && edge.median.is_some_and(is_grass) {
                 MeshLayer::MedianGrass
             } else {
@@ -119,14 +119,22 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
         );
         emit_curb_faces(mesh, piece);
         for kind in NON_ROAD_KINDS {
-            emit_band(
-                mesh,
-                piece,
-                kind,
-                MeshLayer::Sidewalk,
-                Uvs::World,
-                sidewalk_color(),
-            );
+            // A lane transition's piece carries a raised median through (`ROAD-95`): a grass
+            // one's top draws on the grass layer, as on its spans. Asked only of a piece with a
+            // median top, `O(degree)`.
+            let grass = kind == BandKind::Median
+                && !piece.band_triangles(kind).is_empty()
+                && graph.node_adjacency(node).iter().any(|&edge| {
+                    graph
+                        .get_edge(edge)
+                        .is_some_and(|edge| !edge.deleted && edge.median.is_some_and(is_grass))
+                });
+            let layer = if grass {
+                MeshLayer::MedianGrass
+            } else {
+                MeshLayer::Sidewalk
+            };
+            emit_band(mesh, piece, kind, layer, Uvs::World, sidewalk_color());
         }
         emit_band(
             mesh,

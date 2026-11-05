@@ -24,13 +24,16 @@
 //! - curb faces along every boundary between bands of different levels, except across mouths
 //! - one outer chain per sector, from one arm's mouth corner back along its outermost boundary,
 //!   across the sector and out to the next arm's mouth corner, so the road lies on its left
+//! - at a lane transition that carries a raised median through (`ROAD-95`), the core cut along
+//!   the median's edges and the median's kerb and median tops and curb faces between the two
+//!   mouths' divided body rows
 //!
 //! Every vertex is `P(x, z) + level` at its XZ ([`surface_height_m`]). Vertices are shared by
 //! exact position, so strips, faces and the core meet on the same vertices, and every mouth
 //! vertex is the mouth section's own. `O(V + n log n)` for `V` emitted vertices and `n` core-loop
 //! vertices; allocates only the piece and reuses [`NodeScratch`].
 
-use super::arms::{ArmsScratch, CentrelinePosition, NodeArms};
+use super::arms::{ArmsScratch, CentrelinePosition, NodeArms, transition_median_through};
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{
     ArmInput, ArmKey, BoundaryBand, CoreVertexSource, Crosswalk, EdgeEnd, JunctionLayout,
@@ -200,6 +203,9 @@ pub(super) struct NodePlan {
     // Ascending arm key, the arms' input order.
     mouths: Vec<(ArmKey, Arc<MouthSection>)>,
     approaches: Vec<(ArmKey, RoadSection)>,
+    // A lane transition whose piece carries a raised median between its two mouths (`ROAD-95`,
+    // `arms::transition_median_through`): its mouths are divided body rows.
+    median_through: bool,
 }
 
 impl NodePlan {
@@ -321,9 +327,11 @@ pub(super) fn plan_node(graph: &RegionGraph, node: u32) -> Result<Option<NodePla
             stations,
             ..
         } = scratch;
+        let median_through = transition_median_through(graph, arms.node);
         let mouths = (0..arms.len())
             .map(|index| {
-                let section = mouth_section(graph, arms, index, stations[index], &plane)?;
+                let section =
+                    mouth_section(graph, arms, index, stations[index], &plane, median_through)?;
                 Ok((arms.key(index), Arc::new(section)))
             })
             .collect::<Result<Vec<_>, NodeError>>()?;
@@ -333,7 +341,9 @@ pub(super) fn plan_node(graph: &RegionGraph, node: u32) -> Result<Option<NodePla
             .filter_map(|arm| {
                 let crosswalk = arm.crosswalk?;
                 let station_m = crosswalk.inner_station_m;
-                let (section, _) = section_at(graph, arms, arm.input_index, station_m, &plane);
+                let profile = RoadProfile::for_edge(graph.edge(arm.key.edge));
+                let (section, _) =
+                    section_at(graph, arms, (arm.input_index, &profile), station_m, &plane);
                 Some((arm.key, section))
             })
             .collect();
@@ -344,6 +354,7 @@ pub(super) fn plan_node(graph: &RegionGraph, node: u32) -> Result<Option<NodePla
             plane,
             mouths,
             approaches,
+            median_through,
         }))
     })
 }
@@ -415,18 +426,25 @@ fn lateral_sign(end: EdgeEnd) -> f64 {
 }
 
 // The mouth section of arm `index` at `station_m`, in its edge's forward frame: vertices on the
-// arm's offset curves, heights on the node plane.
+// arm's offset curves, heights on the node plane. The mouth profile, or at a lane transition
+// that carries the median through (`median_through`, `ROAD-95`) the divided body profile at the
+// edge's own median, centred on its lane groups' line: where its span starts.
 fn mouth_section(
     graph: &RegionGraph,
     arms: &NodeArms,
     index: usize,
     station_m: f64,
     plane: &JunctionEndpointProfilePlane,
+    median_through: bool,
 ) -> Result<MouthSection, NodeError> {
     let key = arms.key(index);
-    let (section, centre) = section_at(graph, arms, index, station_m, plane);
+    let edge = graph.edge(key.edge);
+    let profile = match edge.median.filter(|_| median_through) {
+        Some(median) => RoadProfile::body_for_edge(edge, median.width_m),
+        None => RoadProfile::for_edge(edge),
+    };
+    let (section, centre) = section_at(graph, arms, (index, &profile), station_m, plane);
     centre.on_plane(key)?;
-    let profile = RoadProfile::for_edge(graph.edge(key.edge));
     let sign = lateral_sign(key.end);
     let input = arms.input(index);
     let xz = |lateral_m: f32| input.offset_point(station_m, sign * f64::from(lateral_m));
@@ -479,12 +497,12 @@ impl ArmCentre {
     }
 }
 
-// Arm `index`'s cross-section at `station_m`, in its edge's forward frame and span stations, on
-// the arm's offset curves with heights on the node plane; and its centre there.
+// Arm `index`'s cross-section of `profile` at `station_m`, in its edge's forward frame and span
+// stations, on the arm's offset curves with heights on the node plane; and its centre there.
 fn section_at(
     graph: &RegionGraph,
     arms: &NodeArms,
-    index: usize,
+    (index, profile): (usize, &RoadProfile),
     station_m: f64,
     plane: &JunctionEndpointProfilePlane,
 ) -> (RoadSection, ArmCentre) {
@@ -495,7 +513,6 @@ fn section_at(
     let xz = |lateral_m: f32| input.offset_point(station_m, sign * f64::from(lateral_m));
     let centre = ArmCentre::at(arms, index, station_m, plane);
     let level = |level: Level| arms.level_at_node(index, level);
-    let profile = RoadProfile::for_edge(edge);
     let lateral_xz = ((input.offset_point(station_m, 1.0) - centre.xz) * sign).normalize();
     let section = RoadSection {
         edge_idx: key.edge,
@@ -564,6 +581,8 @@ type VertexIds = HashMap<[u64; 3], u32, BuildHasherDefault<PointHasher>>;
 pub(crate) struct NodeScratch {
     vertex_ids: VertexIds,
     ring: Vec<u32>,
+    // One side of a lane transition's core ring, cut along the median it carries.
+    half: Vec<u32>,
     outside: Vec<bool>,
     stack: Vec<FixedFaceHandle<InnerTag>>,
     lines: Vec<PathPoint>,
@@ -727,6 +746,7 @@ pub(super) fn build_node_piece(
     let NodeScratch {
         vertex_ids,
         ring,
+        half,
         outside,
         stack,
         lines,
@@ -756,7 +776,9 @@ pub(super) fn build_node_piece(
     let core_input = &inputs[layout.arms[0].input_index];
     let core_kind = core_input.left.bands[core_input.left.core_bands - 1].kind;
     core_ring(&mut builder, &plan, ring)?;
-    if !fan_core(&mut builder, plan.arms.position, ring, core_kind) {
+    if plan.median_through {
+        median_core(&mut builder, &plan, ring, (half, outside, stack))?;
+    } else if !fan_core(&mut builder, plan.arms.position, ring, core_kind) {
         triangulate_ring(&mut builder, ring, core_kind, outside, stack)?;
     }
     let mut chains = Vec::with_capacity(layout.sectors.len() + layout.attachments.len());
@@ -1041,6 +1063,90 @@ fn push_mouth_interior(
     };
     for offset_m in ordered {
         ring.push(builder.mouth_vertex(arm, offset_m, Level::Ground)?);
+    }
+    Ok(())
+}
+
+// A lane transition's core around the raised median it carries (`ROAD-95`): the core ring cut
+// along the median's two edges into the carriageway on either side, each side triangulated as
+// the core is, and the median between the two mouths' body rows: its kerb and median tops and
+// the curb faces along both edges, facing the carriageway. Each mouth row's six median vertices
+// (ground, kerb, median, median, kerb, ground: `RowLayout::median_ground_slot`) pair across the
+// piece with the other mouth's in reverse, since the two arms leave the node in opposite
+// directions; the median's edges are the straight lines between them: in line where only a
+// right pocket meets the base road (`arms::transition_median_through`), narrowing by a lane over
+// the piece where a left pocket lane forks off beside it too. The ring holds each
+// mouth's two ground median vertices between its carriageway corners (`push_mouth_interior`),
+// so the cuts join existing ring vertices. `O(n log n)` for `n` ring vertices, the core's own
+// triangulation bound.
+fn median_core(
+    builder: &mut MeshBuilder<'_>,
+    plan: &NodePlan,
+    ring: &[u32],
+    (half, outside, stack): (
+        &mut Vec<u32>,
+        &mut Vec<bool>,
+        &mut Vec<FixedFaceHandle<InnerTag>>,
+    ),
+) -> Result<(), NodeError> {
+    // Arm `arm`'s median vertices by increasing lateral offset on the arm, its right side first.
+    let median = |builder: &mut MeshBuilder<'_>, arm: usize| {
+        let mouth = &plan.mouths[arm].1;
+        let ground = usize::from(RowLayout::new(&mouth.profile).median_ground_slot());
+        let mut ids = [0u32; 6];
+        for (slot, id) in ids.iter_mut().enumerate() {
+            *id = builder.vertex_at(mouth.vertices[ground + slot]);
+        }
+        if plan.arms.key(arm).end == EdgeEnd::End {
+            ids.reverse();
+        }
+        ids
+    };
+    let (a, b) = (median(builder, 0), median(builder, 1));
+    // Arm 0's left median edge is arm 1's right one and the other way round: the carriageway
+    // beside each runs round the ring from the one mouth's ground vertex to the other's.
+    for (from, to, arm) in [(a[5], b[0], 1), (b[5], a[0], 0)] {
+        let missing = NodeError::MouthVertex {
+            arm: plan.arms.key(arm),
+        };
+        let position = |id: u32| ring.iter().position(|&vertex| vertex == id);
+        let (start, end) = position(from).zip(position(to)).ok_or(missing)?;
+        half.clear();
+        let mut index = start;
+        half.push(ring[index]);
+        while index != end {
+            index = (index + 1) % ring.len();
+            half.push(ring[index]);
+        }
+        triangulate_ring(builder, half, BandKind::Carriageway, outside, stack)?;
+    }
+    // The tops between the raised vertices: kerb, median, kerb.
+    for slot in 1..4 {
+        let kind = if slot == 2 {
+            BandKind::Median
+        } else {
+            BandKind::CurbOrShoulder
+        };
+        builder.top(kind, [a[slot], a[slot + 1], b[4 - slot]]);
+        builder.top(kind, [a[slot], b[4 - slot], b[5 - slot]]);
+    }
+    // Each curb face runs from arm 0's mouth to arm 1's as (ground, raised) pairs and faces its
+    // left when the median lies on its right.
+    let xz = |builder: &MeshBuilder<'_>, vertex: u32| {
+        let point = builder.positions[vertex as usize];
+        robust::Coord {
+            x: point.x,
+            y: point.z,
+        }
+    };
+    let (top_right, top_left) = (xz(builder, a[2]), xz(builder, a[3]));
+    let centre = robust::Coord {
+        x: 0.5 * (top_right.x + top_left.x),
+        y: 0.5 * (top_right.y + top_left.y),
+    };
+    for (p, q) in [((a[0], a[1]), (b[5], b[4])), ((a[5], a[4]), (b[0], b[1]))] {
+        let face_left = robust::orient2d(xz(builder, p.0), xz(builder, q.0), centre) < 0.0;
+        builder.curb(p, q, face_left);
     }
     Ok(())
 }

@@ -661,3 +661,51 @@ fn a_left_pockets_median_narrows_linearly_over_its_first_twelve_metres() {
     let (low, high) = sections.iter().rev().find_map(median_outline).unwrap();
     assert_eq!(low, high, "the tip row closes the outline");
 }
+
+// Round R5b1a: a right pocket on a 2+2 road on 5 m grass, alone and beside a left pocket
+// (`fixtures::divided_pocket_junction`, the laid-out transition node 1 between the base road's
+// edge 0 and the pocket edge 1). The node is no pass-through, but its piece carries the median:
+// both spans start from its divided body rows with no nose there and are watertight. Beside the
+// left pocket the piece narrows the median, so the pocket span keeps its own from its mouth.
+#[test]
+fn spans_beside_a_right_pockets_transition_keep_their_median() {
+    use crate::simulation::network::roadbed::fixtures::{
+        four_way_2x2_left_right_pocket, four_way_2x2_right_pocket,
+    };
+    for (name, graph, own) in [
+        ("four_way_2x2_right_pocket", four_way_2x2_right_pocket(), (-2.5, 2.5)),
+        ("four_way_2x2_left_right_pocket", four_way_2x2_left_right_pocket(), (-2.5, -1.0)),
+    ] {
+        assert!(!median_continues(&graph, 1), "{name}: laid out");
+        let roadbed = compiled(&graph);
+        let piece = roadbed.node_piece(1).expect("the transition's piece");
+        let (base, pocket) = (
+            roadbed.span_piece(0).unwrap(),
+            roadbed.span_piece(1).unwrap(),
+        );
+        let mouth = |edge: usize, end: EdgeEnd| {
+            piece
+                .mouths()
+                .iter()
+                .find(|(key, _)| key.edge == edge && key.end == end)
+                .map(|(_, mouth)| mouth.vertices.clone())
+                .unwrap()
+        };
+        assert_eq!(base.end_mouth().vertices, mouth(0, EdgeEnd::End), "{name}");
+        assert_eq!(pocket.start_mouth().vertices, mouth(1, EdgeEnd::Start), "{name}");
+        assert_eq!(
+            median_outline(base.sections().last().unwrap()),
+            Some((-2.5, 2.5)),
+            "{name}"
+        );
+        for edge in 0..graph.edge_count() {
+            assert_watertight(name, roadbed.span_piece(edge).unwrap());
+        }
+        // The pocket span's median from its mouth to 20 m on: its own, no nose and no taper.
+        let sections = pocket.sections();
+        let mouth_m = sections[0].s_m;
+        for section in sections.iter().take_while(|section| section.s_m - mouth_m <= 20.0) {
+            assert_eq!(median_outline(section), Some(own), "{name}: {}", section.s_m);
+        }
+    }
+}

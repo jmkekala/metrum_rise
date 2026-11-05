@@ -675,6 +675,16 @@ fn fixtures() -> Vec<(String, RegionGraph)> {
         "four_way_2x2_left_pocket".to_string(),
         super::super::roadbed::fixtures::four_way_2x2_left_pocket(),
     ));
+    // Round R5b1a: a right pocket on a divided road, alone and beside a left one; the median
+    // runs through the laid-out transition.
+    fixtures.push((
+        "four_way_2x2_right_pocket".to_string(),
+        super::super::roadbed::fixtures::four_way_2x2_right_pocket(),
+    ));
+    fixtures.push((
+        "four_way_2x2_left_right_pocket".to_string(),
+        super::super::roadbed::fixtures::four_way_2x2_left_right_pocket(),
+    ));
     fixtures.extend(footpath_fixtures(false).into_iter().filter(|(name, _)| {
         name.starts_with("t_beside_arm/") || name.starts_with("through_road/")
     }));

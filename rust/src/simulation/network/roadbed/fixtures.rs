@@ -293,6 +293,18 @@ pub(crate) fn four_way_2x2_left_pocket() -> RegionGraph {
     divided_pocket_junction(5.0, true, false)
 }
 
+/// [`divided_pocket_junction`] on a 5 m grass median with a right pocket: its laid-out
+/// transition carries the median through its node piece (`ROAD-95` round R5b1a).
+pub(crate) fn four_way_2x2_right_pocket() -> RegionGraph {
+    divided_pocket_junction(5.0, false, true)
+}
+
+/// [`divided_pocket_junction`] on a 5 m grass median with a left and a right pocket: the left
+/// pocket's narrowing starts at the laid-out transition's mouth (`ROAD-95` round R5b1a).
+pub(crate) fn four_way_2x2_left_right_pocket() -> RegionGraph {
+    divided_pocket_junction(5.0, true, true)
+}
+
 /// [`pocket_junction`]: a T whose 1+1 west arm has a right pocket.
 pub(crate) fn t_right_pocket() -> RegionGraph {
     pocket_junction(1, 1, false, true, false)

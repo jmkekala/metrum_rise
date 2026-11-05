@@ -735,3 +735,43 @@ fn a_left_pocket_lane_forks_off_lane_zero_at_the_transition() {
     assert_eq!(fork((1, 2)), Some((0, 2)), "straight: both");
     assert_eq!(fork((2, 1)), Some((1, 1)), "the right turn: base lane 1");
 }
+
+// Round R5b1a: a left and a right pocket on one divided approach. The kerb pocket lays the
+// transition out and its piece narrows the median by a lane, so both pocket lanes fork off
+// across it as connectors: base lane 0 into pocket-edge lanes 0 and 1, base lane 1 into lanes 2
+// and 3 (D5's rank + 1 and the kerb fork), the backward lanes 1:1. The left pocket lane starts
+// at its own 0.75 m at the mouth, no taper on the span; the junction paints `L / S / S / R`.
+#[test]
+fn left_and_right_pockets_on_a_divided_road_fork_across_the_transitions_piece() {
+    let mut graph = super::roadbed::fixtures::four_way_2x2_left_right_pocket();
+    assert!(!crossing_arm_eligible(&graph, TRANSITION, 0));
+    let lanes = lanes_of(&mut graph);
+    assert_eq!(
+        connections(&graph, &lanes, 0, TRANSITION),
+        BTreeSet::from([
+            (0, POCKET_EDGE, 0),
+            (0, POCKET_EDGE, 1),
+            (1, POCKET_EDGE, 2),
+            (1, POCKET_EDGE, 3)
+        ])
+    );
+    assert_eq!(
+        connections(&graph, &lanes, POCKET_EDGE, TRANSITION),
+        BTreeSet::from([(-1, 0, -1), (-2, 0, -2)])
+    );
+    let pocket_lane = lanes
+        .edge_lanes[&POCKET_EDGE]
+        .iter()
+        .map(|&id| &lanes.lanes[id])
+        .find(|lane| lane.lane_type == LaneType::Vehicle && lane.is_fwd && lane.lane_idx == 0)
+        .unwrap();
+    assert!(
+        pocket_lane.geometry.iter().all(|point| point.z == 0.75),
+        "its own offset from the mouth: {:?}",
+        pocket_lane.geometry
+    );
+    assert_eq!(
+        arrows(&graph, POCKET_EDGE, JUNCTION),
+        [(0, LEFT), (1, STRAIGHT), (2, STRAIGHT), (3, RIGHT)]
+    );
+}

@@ -261,6 +261,89 @@ fn node_pieces_are_watertight_and_meet_spans_on_shared_mouth_edges() {
     }
 }
 
+// `ROAD-95` round R5b1a: a right pocket on a 2+2 road on 5 m grass, alone and beside a left
+// pocket (`fixtures::divided_pocket_junction`, the transition node 1 between the base road's
+// edge 0 and the pocket edge 1). The absolute median rule holds across the transition (the
+// kerb shift cancels the pocket lane in the lane groups' line), so the laid-out transition
+// carries the median: both its mouths are divided body rows of their edges' own medians (the
+// piece narrowing it beside a left pocket), its piece has a median top between them and is
+// watertight with both spans (its curb faces looking at the carriageway), and neither span
+// noses out there.
+#[test]
+fn a_right_pockets_transition_carries_the_median_through_its_piece() {
+    use crate::simulation::network::roadbed::fixtures::divided_pocket_junction;
+    for (name, left) in [("right", false), ("left and right", true)] {
+        let graph = divided_pocket_junction(5.0, left, true);
+        let (base, pocket) = (graph.edge(0), graph.edge(1));
+        if !left {
+            assert_eq!(base.median, pocket.median, "{name}");
+            assert_eq!(
+                base.lane_group_offset().to_bits(),
+                pocket.lane_group_offset().to_bits(),
+                "{name}: the kerb shift cancels the pocket lane"
+            );
+        }
+        assert!(pocket.kerb_shift_m() != 0.0, "{name}: a kerb pocket");
+        assert!(transition_median_through(&graph, 1), "{name}");
+        let roadbed = compiled(&graph);
+        assert!(roadbed.failed_nodes().is_empty(), "{name}");
+        let piece = roadbed.node_piece(1).expect("a laid-out transition");
+        assert_eq!(piece.kind(), NodeKind::Bend);
+        for (key, mouth) in piece.mouths() {
+            assert_eq!(mouth.profile.bands().len(), 9, "{name}: {key:?} body row");
+            let bands = mouth.profile.bands();
+            let median = bands
+                .iter()
+                .position(|band| band.kind == BandKind::Median)
+                .unwrap();
+            // Each edge's own median: the base road's -2.5 .. 2.5 m; beside a left pocket the
+            // pocket edge's narrowed -2.5 .. -1.0 m, the piece narrowing it.
+            let outline = if left && key.edge == 1 {
+                (-2.5, -1.0)
+            } else {
+                (-2.5, 2.5)
+            };
+            assert_eq!(
+                (bands[median - 1].start_m, bands[median + 1].end_m),
+                outline,
+                "{name}: {key:?}"
+            );
+        }
+        assert!(!piece.mesh().band_triangles(BandKind::Median).is_empty());
+        check_watertight(name, &roadbed, piece);
+        check_strips(name, piece);
+        // No nose beside the transition: every span row within the nose's reach of it is a full
+        // body row whose far edge is the base road's.
+        for (edge, end) in [(0, EdgeEnd::End), (1, EdgeEnd::Start)] {
+            let span = roadbed.span_piece(edge).unwrap();
+            let sections = span.sections();
+            let mouth_m = match end {
+                EdgeEnd::Start => sections[0].s_m,
+                EdgeEnd::End => sections[sections.len() - 1].s_m,
+            };
+            for section in sections {
+                if (section.s_m - mouth_m).abs() > 8.0 {
+                    continue;
+                }
+                let bands = &section.bands;
+                let median = bands.iter().position(|band| band.kind == BandKind::Median);
+                let median = median.unwrap_or_else(|| panic!("{name}: edge {edge} noses out"));
+                let (left_m, right_m) = (
+                    bands[median - 1].lateral_start_m,
+                    bands[median + 1].lateral_end_m,
+                );
+                let outline = if left && edge == 1 { -1.0 } else { 2.5 };
+                assert_eq!(
+                    (left_m, right_m),
+                    (-2.5, outline),
+                    "{name}: edge {edge} at {}",
+                    section.s_m
+                );
+            }
+        }
+    }
+}
+
 // D4 and open question 9: no sliver top triangle, a curb face only where a raised band
 // meets the carriageway (its raised edge borders a raised top triangle, its ground edge a ground
 // one), and outer chains along their outermost band, never along a step.
