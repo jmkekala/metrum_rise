@@ -8,7 +8,7 @@
 use super::super::arms::{edges_pass_through, median_continues, pass_through_crossings};
 use super::super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::super::mesh::{RowLayout, push_section_row};
-use super::super::profile::RoadProfile;
+use super::super::profile::{MedianEdges, RoadProfile};
 use super::super::{RoadBand, RoadSection, RoadVec2, RoadVec3};
 use super::MouthSection;
 use crate::simulation::network::graph::rebuild::{
@@ -376,6 +376,12 @@ impl<'a> SpanModel<'a> {
         width_m(body.noses[0]).min(width_m(body.noses[1]))
     }
 
+    /// Where the raised median lies at station `s_m` (`ROAD-80`): [`Self::median_width_at`]
+    /// centred on the line between the lane groups. `O(1)`.
+    pub(in crate::simulation::network::roadbed) fn median_edges_at(&self, s_m: f32) -> MedianEdges {
+        MedianEdges::centred(self.edge.lane_group_offset(), self.median_width_at(s_m))
+    }
+
     // The profile and row layout of the row at `s_m`.
     fn row_profile(&self, s_m: f32) -> (RoadProfile, &RowLayout) {
         match (self.row_kind(s_m), &self.body) {
@@ -385,7 +391,7 @@ impl<'a> SpanModel<'a> {
                 &body.layout,
             ),
             (RowKind::Body, Some(body)) => (
-                RoadProfile::body_for_edge(self.edge, self.median_width_at(s_m)),
+                RoadProfile::body_for_edge_edges(self.edge, self.median_edges_at(s_m)),
                 &body.layout,
             ),
         }
