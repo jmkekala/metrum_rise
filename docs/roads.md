@@ -683,38 +683,61 @@ stay and the transition passes through.
 #### The Turn pocket tool (round R5b2)
 
 Round R5b2 (2026-11-05, same branch) gave the pocket edit its tool (D12) and fixed the road chunk
-timing that round R5a3 left open.
+timing that round R5a3 left open. Round R5c2 (2026-11-05, the user's decision after trying R5:
+"edit the junction itself and set from the junction properties the incoming roads, whether they
+have left or right pocket or both") moved the tool from Road Properties to a Junction window; Road
+Properties has no pocket section any more (one way to do it).
 
-- **The Turn pocket section** (Road Properties, select tool; widgets in
-  `ui/road_pocket_section.gd`, the window `ui/road_properties_window.gd` the controller). With one
-  road selected by a click, the section edits that road's end nearest the click: Rust picks it
-  (`nearest_road_pocket_end`: a pocket edge's own pocket end wherever it is clicked, its far end
-  being the transition; else the end whose polyline end lies nearer) and `get_road_pocket` reads
-  it: the junction, the road from the junction outwards (a pocket edge and its base road joined),
-  its widest width, the pocket there, and whether the road can carry a pocket lane on each side
-  at all (`left_offered` / `right_offered` with the refusal key: `PocketEndView`, the edit's own
-  role checks without the length, the junction's turns or the compile). The heading names the end
-  by the road's heading into its junction over its last 20 m, by eight compass sectors ("Turn
-  pocket at the end towards north-east"; north is -Z). A line says what the end has ("Right
-  pocket, 60 m from the junction" or "No turn pocket at this end"); Left and Right check boxes
+- **The Junction window** (round R5c2; the select tool and `ui/junction_window.gd` are the
+  controllers, each row the view `ui/junction_pocket_row.gd`). A junction click in the select tool
+  opens it beside the click (`UIStyle.place_window_near_cursor`: right of it, or left near the
+  screen edge; a visible window the player moved stays unless it would cover the click), movable
+  and resizable, its size kept between sessions; the lane spheres, connection arches and
+  crosswalk toggles stay in the world. The window keeps the game's keyboard
+  (`UIStyle.keep_keyboard_with_game`; the length stepper takes arrows and the wheel, no typing),
+  so Ctrl+Z undoes with it open. Its "Turn pockets" section has one compact row per incoming car
+  road, from Rust's `get_junction_pockets(node)`: one entry per car road arm with a lane into the
+  junction (an outgoing one-way arm has no approach and no row), clockwise from north by the
+  bearing from the junction to the arm's point 20 m out (ties by edge id), each
+  `get_road_pocket(edge, end)`'s dictionary for that end plus `edge`, `end` (a pocket edge's pocket
+  end), `bearing_deg`, `road_type` (the name of the type the road matches without its pocket,
+  empty for a custom layout) and that road's `fwd_lanes`, `bkw_lanes`, `median_style`,
+  `median_width`; empty for a lane transition node or a node without such an arm.
+  `O(degree + arm points)`, reusing `PocketEndView::of` per arm; it reads, never edits. A row:
+  "From west · 2-Lane Road" (eight compass sectors, north = -Z; a custom road reads "2 + 2 lanes,
+  Grass 5.0 m") with what its end has ("Right, 60 m" or "No pocket"); Left and Right check boxes
   (a side the road cannot carry is disabled, its refusal text as the tooltip, unless the pocket
-  has it, so it can be removed); a Length stepper, 20-300 m in 10 m steps, default 60 m, "from the
-  junction"; the verdict line (Rust's refusal through `road_reason_text.gd`, or what Apply builds,
-  or "Removes the turn pocket" with both sides off) beside "Apply (+N)" with Rust's `cost_delta`.
-  No geometry preview (D11): the verdict is the commit's own check. Ctrl+Z undoes an applied
-  pocket (once the window has no focus, as for every in-place edit). The select tool highlights
-  the stretch the pocket body takes from the junction (the requested length, in the selection
-  highlight's material, cyan) and, since an add, a resize or a removal splits or joins the road,
-  selects the road under the click again after it. After any edit or undo (a new network render
-  generation) the window reads the end again and keeps an unapplied request unless the end
-  changed. No road-tool mode (D12); several selected roads, a junction click or a walkway hide
-  the section. The window opens at 400 x 600 px (minimum 360 x 540).
-- **Roles the section offers**: Left on a one-way road or beside a raised median of at least
-  3.8 m on the base road (`pocket_requires_one_way`, `pocket_requires_wide_median` otherwise);
+  has it, so it can be removed); a Length stepper, 20-300 m in 10 m steps, default 60 m or the
+  pocket's own length, "from the junction"; the verdict line (Rust's refusal through
+  `road_reason_text.gd`, what Apply builds, "Removes the turn pocket" with both sides off, or "No
+  change") beside "Apply (+N)" with Rust's `cost_delta`. No geometry preview (D11): the verdict is
+  the commit's own check (`preview_road_pocket` on each change, `set_road_pocket` on Apply through
+  the select tool, which redraws the junction's lanes). The hovered row's road, else the last
+  changed row's, is highlighted from the junction over the requested length (the selection
+  highlight's material, cyan at alpha 0.3, as wide as the road's widest edge), and that row is
+  outlined in the same cyan. After an Apply or an undo (a new network render generation) the
+  window reads the arms again: a pocket edit splits and joins the arm, never the junction, so the
+  node keeps its id, and each unapplied request whose arm (edge and end) is still there is kept
+  with a fresh verdict. A lane transition node or a node without an incoming car road shows no
+  Turn pockets section, only a line saying to edit a pocket from its junction. The window opens at
+  440 x 480 px (minimum 420 x 300): four rows fit without scrolling, more arms scroll.
+- **Removed with it** (round R5c2): Road Properties' Turn pocket section and its select-tool
+  wiring (the end highlight on road selection, the stored click point, `selected_pocket_end`,
+  `follow_click_selection`) and the Rust query only it used, `nearest_road_pocket_end`
+  (`pockets::nearest_pocket_end`). Road Properties opens at 400 x 500 px again (minimum
+  360 x 460).
+- **Round R5b2's section** (superseded): Road Properties edited the end of one clicked road
+  nearest the click, named by the road's heading into its junction ("towards north-east"), with
+  the same controls, verdict and highlight; after an edit the selection followed the road under
+  the click.
+- **Roles a row offers**: Left on any car road without a median at ground level (a two-way road
+  widens on the oncoming side, [round R5c1](#left-pockets-on-two-way-roads-round-r5c1)) or beside a
+  raised median of at least 3.8 m on the base road (`pocket_requires_wide_median` otherwise);
   Right on any car road at ground level, beside a median too (its transition's piece carries the
   median through, [round R5b1a](#right-pockets-on-divided-roads-round-r5b1a));
-  `pocket_requires_surface_road` and `pocket_lane_limit` disable both. `pocket_road_too_short`, `pocket_movement_missing`,
-  `pocket_junction_whitelisted` and `pocket_unchanged` ("No change") come from the verdict.
+  `pocket_requires_surface_road` and `pocket_lane_limit` disable both. `pocket_road_too_short`,
+  `pocket_movement_missing`, `pocket_junction_whitelisted` and `pocket_unchanged` ("No change")
+  come from the verdict.
 - **The hot-leaf fix** (round R5b2's first commit). `PieceMesh::triangle_points` reads its three
   positions directly and is `#[inline]`, and `geometry::triangle_height_at_xz` is `#[inline]`:
   every top-surface height query of a chunk emit reads both per candidate triangle, from other
@@ -747,15 +770,23 @@ timing that round R5a3 left open.
   the replica and a reloaded city iterate the arms in another order than the live graph. The join
   now inserts in order and a reused slot's two nodes are sorted (`O(degree)`). Regression
   `road_pockets::the_road_tool_replica_follows_pocket_edits_and_undo` (fails before the fix).
-- **Tests.** `road_pockets::the_turn_pocket_section_reads_the_end_nearest_the_click` (the end
-  pick, a pocket edge's own end, the view through the base road's transition: junction, road
-  from it, width; the offered roles undivided, on 5 m and on 3 m grass); the Godot bridge test
-  `godot/tests/road_pocket_test.gd` (ported from Veeti's `road_pockets_test.gd`): the section on a
-  1+1 crossing (heading, Left disabled with its tooltip, the highlight, the default height holds
-  every row), a right pocket's verdict and cost, "Road too short for a pocket here" at 300 m, add,
-  "No change", resize, undo back into the section, removal joining the road, the east arm's other
-  stored end, and on a divided 2+2 road Left and Right offered beside the median (Right's verdict
-  accepted) and a left pocket narrowing the median to 1.5 m, undone.
+- **Tests.** `road_pockets::a_pocket_end_view_reads_the_road_from_its_junction` (the view through
+  the base road's transition: junction, road from it, width; the offered roles undivided, on 5 m
+  and on 3 m grass) and `road_pockets::the_junction_window_lists_each_car_arm_clockwise_from_north`
+  (round R5c2: a crossing's four rows at both stored orientations, named by the road without its
+  pocket; the node keeps its id and its rows through an add, a resize, undo and the removal, the
+  pocket edge listed at its pocket end; a transition lists none; an outgoing one-way arm has no
+  row); the Godot bridge test `godot/tests/road_pocket_test.gd` (ported from Veeti's
+  `road_pockets_test.gd`, reworked for the Junction window in round R5c2): on a 1+1 crossing four
+  rows named "From north" .. "From west", four rows fit the default height, the highlight follows
+  the hovered row and then the last changed one, a right pocket's verdict and "Apply (+N)" equal
+  to Rust's cost, "Road too short for a pocket here" at 300 m, Apply (the window stays on the
+  junction, another row's unapplied request kept), a resize, undo back to 60 m, removal joining
+  the road, the east arm's other stored end, a lane transition click without a pocket section, a
+  one-way arm offering Left (its leaving arm without a row), a divided 2+2 arm on 5 m grass
+  offering Left and Right with a left pocket narrowing the median to 1.5 m, undone, Road
+  Properties without a pocket section, and the window closing with the junction. Left is offered
+  on the 1+1 crossing's arms (round R5c1's rule; asserted since the two rounds were merged).
 
 #### Right pockets on divided roads (round R5b1a)
 
@@ -11063,8 +11094,8 @@ emptied parcels, never the buildings); Cancel leaves the roads as they are. A zo
 refreshes the no-build overlay, as the "No buildings" checkbox does. Every in-place refusal shows with
 its text, walkway <-> road among them ("A walkway cannot become a road: draw a road in its
 place", "A road cannot become a walkway"); the picker stays enabled on a walkway so that refusal
-shows. It opens at 400 x 600 px (minimum 360 x 540) since the Turn pocket section
-([round R5b2](#the-turn-pocket-tool-round-r5b2)). The reason text is `ui/road_reason_text.gd`,
+shows. It opens at 400 x 500 px (minimum 360 x 460); its round R5b2 Turn pocket section moved to
+the Junction window ([round R5c2](#the-turn-pocket-tool-round-r5b2)). The reason text is `ui/road_reason_text.gd`,
 shared with the road tool's stroke preview, and words the road types' layout, name and library
 keys too. The median style row and width stepper live on as `ui/median_controls.gd` for the
 road builder's median part.
