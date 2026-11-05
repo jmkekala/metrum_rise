@@ -11,8 +11,10 @@
 //! mouth sections, core CDT, strips, curb faces, chains, grid and footprint. Arms are 100 m
 //! two-lane roads with sidewalks and crosswalks, 12 m knots, on a 2.5% slope. Targets: a
 //! four-way in 0.1 ms and a six-way in 0.3 ms. `build/t_footpath` adds an 80 m footpath in one
-//! of the T's corners, at sidewalk height (D5). `publish/t_closure` marks a T's node dirty and
-//! compiles its closure: the node piece and its three incident spans.
+//! of the T's corners, at sidewalk height (D5). `build/transition_right_pocket` is a right turn
+//! pocket's laid-out lane transition on a 2+2 road (`ROAD-95`), `_divided` the same on a 5 m
+//! grass median, which its piece carries through (round R5b1a). `publish/t_closure` marks a T's
+//! node dirty and compiles its closure: the node piece and its three incident spans.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::Vector3;
@@ -349,6 +351,45 @@ fn bench_roadbed_junction(c: &mut Criterion) {
         assert!(piece.expect("node has a piece").mesh().top_triangle_count() > 0);
         group.bench_function(BenchmarkId::new("build", name), |b| {
             b.iter(|| black_box(roadbed.build_node_piece(black_box(&graph), 0)))
+        });
+    }
+    // A right turn pocket's transition (`ROAD-95`): a 100 m base road into the transition node
+    // 0 and a 100 m pocket edge on, undivided and on a 5 m grass median.
+    for (name, edge, divided) in [
+        ("transition_right_pocket", four_lane as fn(Edge) -> Edge, false),
+        ("transition_right_pocket_divided", divided_5m, true),
+    ] {
+        let mut graph = RegionGraph::new();
+        let transition = graph.add_node(Vector3::ZERO, NodeType::LaneTransition);
+        let (base, body) = (
+            centerline(100.0, Shape::Straight, (-100.0, 0.0)),
+            centerline(100.0, Shape::Straight, (0.0, 0.0)),
+        );
+        let start = graph.add_node(base[0], NodeType::Junction);
+        let end = graph.add_node(body[body.len() - 1], NodeType::Junction);
+        graph.add_edge(edge(edge_through(start, transition, base)));
+        let pocket = graph.add_edge(edge(edge_through(transition, end, body)));
+        graph.set_edge_pocket(
+            pocket,
+            Some(RoadPocket {
+                end: EdgeEnd::End,
+                left: false,
+                right: true,
+            }),
+        );
+        graph.rebuild_intersection_clips();
+        let piece = roadbed
+            .build_node_piece(&graph, transition)
+            .expect("node builds")
+            .expect("a laid-out transition");
+        let body_rows = piece
+            .mouths()
+            .iter()
+            .filter(|(_, mouth)| mouth.profile.bands().len() == 9)
+            .count();
+        assert_eq!(body_rows, 2 * usize::from(divided), "{name}: the median runs through");
+        group.bench_function(BenchmarkId::new("build", name), |b| {
+            b.iter(|| black_box(roadbed.build_node_piece(black_box(&graph), transition)))
         });
     }
 
