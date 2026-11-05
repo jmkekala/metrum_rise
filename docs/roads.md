@@ -495,7 +495,13 @@ pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
   plain-road product digest equal on both trees, the R8 probe equal, the `SIM-02` envelope's 75
   lines byte-identical and determinism passing). In the 10k 4-Lane city with 11 right pockets put
   in before zoning (`METRUM_PERF_POCKETS=right`, one day at 32x) 5 houses front pocket edges and
-  the day ends with 0 trip failures, 0 missing connections and no walker stranded. Tests
+  the day ends with 0 trip failures, 0 missing connections and no walker stranded. Timing of the
+  per-access code the crossing points touch (FRESH 2026-11-05, one session, `.run.lock` and the
+  exclusive timing lock, P-cores, 4 workers, C B B C x3, release lib tests, control the R5d1
+  head's): the `PERF-06` agent tick (network, access egress and ingress, 10k and 30k agents,
+  single-tick samples) and the demand-site freight quotes, every row's medians inside each
+  other's ranges (freight 65,536 candidates 11.86 / 11.90 ms, egress 30k 1.40 / 1.35 ms), work
+  counts identical. Tests
   (`nodes/sim/core/tests/road_pockets/buildings.rs`): houses grown through the growth path on
   each curb of a right, left and both pocket edge (1+1 and 2+2) meet the plain road's contract
   (side offset and lot front on the sidewalk's outer edge, no front gap, the pad at the
