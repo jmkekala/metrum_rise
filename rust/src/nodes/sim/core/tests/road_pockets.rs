@@ -754,6 +754,47 @@ fn strokes_onto_a_pocket_are_refused() {
     );
 }
 
+// D10: a stroke from a pocket road's far end commits, and the pockets stay. Its excerpt reaches
+// the crossing's other pocket edges but not their base roads, so their transitions hold one arm
+// there and gain none (the user's save, 2026-11-05).
+#[test]
+fn strokes_from_a_pocket_roads_far_end_commit() {
+    let (mut core, node) = crossing(true);
+    let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
+        ""
+    );
+    let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+    let (east, east_end) = arm_end(&core, node, Vector3::new(150.0, 0.0, 0.0));
+    assert_eq!(
+        pocket_edit(&mut core, request(east, east_end, (false, true), 60.0)),
+        ""
+    );
+    let east_state = core.get_road_pocket_internal(east as i32, east_end).unwrap();
+    let points = vec![
+        Vector3::new(-150.0, 0.0, 0.0),
+        Vector3::new(-150.0, 0.0, 100.0),
+    ];
+    core.last_road_rejection = None;
+    let committed = core.add_road_internal(points, 1, 1).committed;
+    assert_eq!(
+        core.last_road_rejection
+            .as_ref()
+            .map(|refusal| refusal.reason.as_str()),
+        None
+    );
+    assert!(committed);
+    assert_eq!(
+        core.get_road_pocket_internal(state.edge as i32, end),
+        Some(state)
+    );
+    assert_eq!(
+        core.get_road_pocket_internal(east_state.edge as i32, east_end),
+        Some(east_state)
+    );
+}
+
 // D10: bulldozing the base road leaves the transition a road end, typed `Junction`, and the
 // pocket edge a short wide road whose lanes take the base rule.
 #[test]

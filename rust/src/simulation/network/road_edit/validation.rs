@@ -670,7 +670,10 @@ fn validate_against_graph(
 // gave a pocket's transition node a third arm (a crossing, an end snapped onto it or a node
 // captured on the stroke's line): a split would leave the pocket on a half that no longer reaches
 // its junction, and a third arm ends the transition. The pocket is removed or the road drawn
-// elsewhere first. Order-independent over the excerpt's maps, O(excerpt records).
+// elsewhere first. The excerpt may hold only one of a transition's two arms (a pocket edge of a
+// junction the stroke's excerpt reaches, without its base road), so its arms are counted against
+// the existing arms the excerpt copied: a split of a copied arm keeps the count, a new arm raises
+// it. Order-independent over the excerpt's maps, O(excerpt records).
 fn stroke_splits_pocket(
     local: &RegionGraph,
     existing: &RegionGraph,
@@ -694,7 +697,12 @@ fn stroke_splits_pocket(
         || source_nodes.iter().any(|(&source, &copy)| {
             existing.is_lane_transition(source)
                 && (local.get_valid_node(copy) != copy
-                    || local.live_node_connection_count(copy) != 2)
+                    || local.live_node_connection_count(copy)
+                        != existing
+                            .node_adjacency(source)
+                            .iter()
+                            .filter(|edge| source_edges.contains_key(edge))
+                            .count())
         })
 }
 
