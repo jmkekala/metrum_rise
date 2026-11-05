@@ -608,9 +608,10 @@ found, added the benchmark row and rendered the stills for D2 and D13.
 - **Stills A** (gamescope headless, 1280x720, isolated profile, a debug build): a 1+1 T with and
   without a right pocket, near and far; a 2+2 four-way with and without one; a one-way right
   pocket and a one-way left kerb pocket; the arrows and solid lines on the pocket approach; the
-  taper close up (linear, D2; unmarked over the node piece, D13 (a)). The 1+1 base road is
-  unmarked (Finnish practice for two-lane streets at 50 km/h, `FinnishLaneLine`); the pocket edge,
-  three lanes, is marked. Kept with the round's artifacts.
+  taper close up (linear, D2; unmarked over the node piece, D13 (a)). The 1+1 base road was
+  unmarked then (Finnish practice for two-lane streets at 50 km/h, `FinnishLaneLine`; since
+  `ROAD-106` only at 40 km/h or less); the pocket edge, three lanes, is marked. Kept with the
+  round's artifacts.
 
 #### Left pockets in a median (round R5b1)
 
@@ -924,9 +925,9 @@ no widening-side choice.
   bounds), so the centre line runs between the oncoming lanes and the pocket lane and the divider
   between the pocket and the through lane, solid over its last 20 m; the base road keeps its 20 m solid zone before the
   transition when it has several lanes; arrows per pocket-edge lane. Beside a left pocket the
-  centre line is a yellow no-crossing line (K3), solid over the whole pocket edge, as on Finnish
-  streets where overtaking is forbidden; every other centre line stays the dashed white K1 (the
-  user, 2026-11-05: yellow only where overtaking is forbidden). A pocket edge's lanes towards its
+  centre line is a no-crossing line (K3), solid white over the whole pocket edge (the user,
+  2026-11-05; white, as every longitudinal line since the 2020 Road Traffic Act); a right pocket
+  on a 1 + 1 road keeps the dashed centre line (`ROAD-106`). A pocket edge's lanes towards its
   junction carry a second arrow set 8 m past the transition's piece when the marking range is
   28 m or more (`pocket_arrow_station`; a 40 m pocket's range is about 30 m, a 30 m pocket's
   about 20 m), where a driver picks the lane (the user, 2026-11-05: double arrows on pockets).
@@ -12805,7 +12806,14 @@ Act, under which every longitudinal line is white:
 |---|---|---|---|
 | Centre K1, lane line K2_1 | ≤ 50 km/h | 1 m / 3 m | 0.10 m |
 | Centre K1_2 / K1_3, lane line K2_1_2 / K2_1_3 | > 50 km/h | 3 m / 9 m | 0.15 m |
-| (none) | two-way 1 + 1 street at ≤ 50 km/h | unmarked | |
+| (none) | two-way 1 + 1 street at ≤ 40 km/h | unmarked | |
+| No-crossing K3 (solid) | centre line of an undivided road with several lanes one way, or beside a left turn pocket | solid | as K1 |
+
+The centre line of an undivided road is the dashed K1 on a 1 + 1 road above 40 km/h (the built-in
+2-Lane Road, 50 km/h) and a solid no-crossing line where its own cross-section carries several
+lanes one way (2 + 2, 2 + 1, 3 + 3; a pocket's lanes not counted) or beside a left turn pocket
+(the user, 2026-11-05, `ROAD-106`; before, every 1 + 1 road at 50 km/h was unmarked and every
+centre line dashed).
 
 Before a junction whose approach lanes serve different movements (the
 [default junction lane use](#default-junction-lane-use-road-94) gives them a lane choice, or the
@@ -12919,12 +12927,12 @@ level 11.72-11.74 → 11.74-11.78 ms, 22 m 12.87 → 12.84-12.88 ms, 10 m 10.98-
 Limitations: wheel paths assume 3.5 m lanes; overlapping crossings take the first owner's
 paint; the crossing does not yet follow a raised table.
 
-Leaving 1 + 1 streets at urban speed unmarked is an assumption from common Finnish practice
-(the residential streets in the Kuopio references have no centre line), not from the table. The
-road tool has no street hierarchy and gives every road 50 km/h, so every two-lane road counts as
+Leaving 1 + 1 streets at residential speed unmarked is an assumption from common Finnish
+practice (the residential streets in the Kuopio references have no centre line), not from the
+table. Road types carry their speed (`ROAD-101`), so a 1 + 1 type at 40 km/h or less counts as
 residential. Lane-line quads stay continuous geometry; `road_marking.gdshader` cuts the dashes
 from UV.x (metres) and the pattern in UV.y (2 solid, 3 short, 4 long). Paint opacity rose from
-0.35 to 0.8. Edge lines (K6), no-crossing lines (K3), warning lines (K4), wetness from weather, gravel roads and footpath surface variants are not wired yet.
+0.35 to 0.8. Edge lines (K6), warning lines (K4), wetness from weather, gravel roads and footpath surface variants are not wired yet.
 
 Footpaths draw as Finnish light-traffic asphalt (`godot/assets/materials/road_path.gdshader`,
 functions in `godot/scripts/shaders/path_surface_finnish.gdshaderinc`, also from Codex look-dev):

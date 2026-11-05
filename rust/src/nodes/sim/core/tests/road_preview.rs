@@ -1003,13 +1003,13 @@ fn only_a_kerbed_grass_median_draws_on_the_grass_layer() {
 // A painted median is paint (`ROAD-80`, R3-c): on a 1 + 1 street, whose lanes are unmarked,
 // every marking is the median's: within half its width of the line between the lane groups,
 // meeting on that line at both noses, reaching the full width between them, with diagonals
-// across. On a 2 + 2 road the lane dividers stay outside the hatched gap. Undivided, the street
-// has no marking at all.
+// across. On a 2 + 2 road the lane dividers stay outside the hatched gap. Undivided, a 40 km/h
+// street has no marking at all; a 50 km/h one (the built-in 2-Lane Road) has its centre line.
 #[test]
 fn a_painted_median_is_hatched_between_the_lane_groups() {
     use crate::simulation::network::render::road::RoadRenderer;
     let ends = [Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)];
-    let marking = |median: Option<RoadMedian>, lanes: i32| {
+    let marking_at = |median: Option<RoadMedian>, lanes: i32, speed_kmh: f32| {
         let mut core = committed(&[], &[], false);
         let points = stroke(&core, ends);
         let outcome = core.commit_road(
@@ -1020,7 +1020,10 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median,
-                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+                attributes: crate::simulation::network::road_types::RoadAttributes {
+                    speed_ms: speed_kmh / 3.6,
+                    ..crate::simulation::network::road_types::RoadAttributes::DEFAULT
+                },
                 preview: None,
             },
             std::time::Instant::now(),
@@ -1034,7 +1037,13 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
         );
         mesh.marking_vertices
     };
-    assert!(marking(None, 1).is_empty(), "an undivided 1 + 1 street is unmarked");
+    let marking = |median: Option<RoadMedian>, lanes: i32| marking_at(median, lanes, 40.0);
+    assert!(marking(None, 1).is_empty(), "an undivided 40 km/h 1 + 1 street is unmarked");
+    let centre = marking_at(None, 1, 50.0);
+    assert!(
+        !centre.is_empty() && centre.iter().all(|v| v.z.abs() <= 0.05 + 1.0e-3),
+        "a 50 km/h 1 + 1 road has its centre line, and nothing else"
+    );
     let painted = RoadMedian::from_tool(1, 2.0).unwrap();
     let half = 1.0;
     // Paint half width plus a line's half width, and float slack.
@@ -1079,8 +1088,9 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
 
 // The solid approach zone (`ROAD-94`) and the turn arrows (`ROAD-75`): on a 2 + 2 T every
 // approach's two lanes serve different movements, so the divider between them is solid over the
-// last `APPROACH_SOLID_LENGTH_M` before the junction and dashed before it; the centre line and the
-// dividers of the lanes leaving the junction stay dashed. Each approach lane carries arrows for
+// last `APPROACH_SOLID_LENGTH_M` before the junction and dashed before it; the dividers of the
+// lanes leaving the junction stay dashed, and the centre line between the 2 + 2 groups is a solid
+// no-crossing line over the whole span (several lanes one way, the user, 2026-11-05). Each approach lane carries arrows for
 // its movements, one glyph 12 m back from the mouth. A straight 2 + 2 road has no junction to
 // choose a lane for: no solid line, no arrow. The paint reads the graph alone, so the T's 2 + 2
 // preview composes its committed chunks, arrows included.
@@ -1114,9 +1124,20 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
     };
     let straight = triangles(&committed(&[wide], &[0], false));
     assert!(!straight.is_empty(), "a 2 + 2 road is marked");
+    // The road runs along x: its centre line lies on z = 0, its lane dividers at +-LANE_WIDTH.
     assert!(
-        straight.iter().all(|&(_, _, pattern, _)| pattern != SOLID),
+        straight
+            .iter()
+            .filter(|&&(_, _, pattern, _)| pattern == SOLID)
+            .all(|(centroid, ..)| centroid.z.abs() < 0.3),
         "a road without a junction has no solid approach zone"
+    );
+    assert!(
+        straight
+            .iter()
+            .filter(|(centroid, ..)| centroid.z.abs() < 0.3)
+            .all(|&(_, _, pattern, _)| pattern == SOLID),
+        "the centre line of a 2 + 2 road is solid"
     );
 
     let mut core = committed(&[wide], &[0], false);
@@ -1215,14 +1236,19 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
             "{name}: the solid zone ends at the junction, the dashes lie before it"
         );
         // Lines lie on lane edges; any other paint is an arrow, solid, inside an approach lane.
+        // The centre line (lateral 0) is solid over the whole arm.
         let on_line = |lateral: f32| {
-            [-LANE_WIDTH, 0.0, LANE_WIDTH]
+            [-LANE_WIDTH, LANE_WIDTH]
                 .iter()
                 .any(|&at| (lateral - at).abs() < 0.3)
         };
         assert!(
             arm.iter().filter(|q| q.3 == SOLID && on_line(q.1)).count() == solid.len(),
-            "{name}: only the approach divider is solid"
+            "{name}: of the lane dividers only the approach divider is solid"
+        );
+        assert!(
+            line(0.0).all(|q| q.3 == SOLID),
+            "{name}: the centre line is solid"
         );
         assert!(line(0.0).count() > 0 && line(-LANE_WIDTH).count() > 0);
         // The marking range ends where the solid zone does, at the mouth.
@@ -1295,9 +1321,10 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
     }
 }
 
-// `ROAD-75`: a lane rule edit repaints its node's arms. On a 1 + 1 T, unmarked, whitelisting the
-// side road's approach lane into the west arm paints a left-turn arrow on it; the published
-// chunks then hold what a full paint of the city holds, and undo takes the arrow off again.
+// `ROAD-75`: a lane rule edit repaints its node's arms. On a 1 + 1 T, whose arms carry only their
+// centre lines, whitelisting the side road's approach lane into the west arm paints a left-turn
+// arrow on it; the published chunks then hold what a full paint of the city holds, and undo takes
+// the arrow off again.
 #[test]
 fn a_lane_rule_edit_repaints_the_arrows_of_its_arms() {
     let (mut core, node, side, west) = super::road_crosswalks::t_junction();
@@ -1318,7 +1345,7 @@ fn a_lane_rule_edit_repaints_the_arrows_of_its_arms() {
         assert_eq!(chunks, full, "the chunks hold the city's paint");
         chunks
     };
-    assert_eq!(painted(&mut core), 0, "a 1 + 1 T is unmarked");
+    let centre_lines = painted(&mut core);
     let graph = &core.region_graph;
     let approach = if graph.edge(side).end_node == node {
         0
@@ -1332,9 +1359,9 @@ fn a_lane_rule_edit_repaints_the_arrows_of_its_arms() {
     };
     core.set_lane_connection_internal(node, side as i32, approach, west as i32, leave);
     assert!(
-        painted(&mut core) > 0,
+        painted(&mut core) > centre_lines,
         "the whitelisted lane carries its arrow"
     );
     assert!(core.undo_action_internal());
-    assert_eq!(painted(&mut core), 0, "undo takes the arrow off");
+    assert_eq!(painted(&mut core), centre_lines, "undo takes the arrow off");
 }

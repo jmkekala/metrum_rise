@@ -13,7 +13,7 @@
 
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
-    marking_dash_color, marking_yellow_color,
+    marking_dash_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{
@@ -50,9 +50,10 @@ const HATCH_SPACING_M: f32 = 3.0;
 // length. A raised median's nose is a semicircle instead (`roadbed::span`), as a painted nose
 // stays pointed in road-marking practice.
 const PAINTED_NOSE_LENGTH_M: f32 = 4.0;
-// One lane each way at urban speed stays unmarked, as Finnish residential streets are. The road
-// tool has no street hierarchy, so a 1+1 road at 50 km/h (its default) counts as residential.
-const UNMARKED_STREET_MAX_KMH: f32 = 50.0;
+// One lane each way at residential speed stays unmarked, as Finnish residential streets are: a
+// road type at 40 km/h or less. The built-in 2-Lane Road (50 km/h) has its dashed centre line
+// (the user, 2026-11-05; road types carry their speed since `ROAD-101`).
+const UNMARKED_STREET_MAX_KMH: f32 = 40.0;
 
 #[derive(Clone, Copy)]
 struct FinnishLaneLine {
@@ -176,28 +177,26 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
                         ),
                         _ => (marking_s_range, dashed),
                     };
-                    emit_lane_marking_sections(
-                        mesh,
-                        sections,
-                        range,
-                        dashed,
-                        (line, marking_dash_color()),
-                        |_| Some(lateral),
-                    );
+                    emit_lane_marking_sections(mesh, sections, range, dashed, line, |_| {
+                        Some(lateral)
+                    });
                 }
             }
             continue;
         }
         // Undivided, the carriageway holds the left group's lanes, then the right group's (the
         // backward lanes on the left under right-hand traffic); the divider between the groups
-        // is the centre line, dashed over the whole range. Beside a left turn pocket (`ROAD-95`,
-        // the inner pocket lane next to the oncoming lanes) it is a yellow no-crossing line (K3),
-        // solid over the whole range, as on Finnish streets (the user, 2026-11-05).
+        // is the centre line: a no-crossing line (K3, solid over the whole range) where several
+        // lanes run one way on the road's own cross-section (its pocket lanes not counted) or
+        // beside a left turn pocket (`ROAD-95`, the inner pocket lane next to the oncoming lanes),
+        // else dashed over the whole range (the user, 2026-11-05).
         let inner_pocket = edge.pocket.is_some_and(|pocket| pocket.inner_outer().0);
-        let (centre, centre_color) = if inner_pocket {
-            ((marking_s_range.0, marking_s_range.0), marking_yellow_color())
+        let several_one_way = edge.fwd_lanes - edge.pocket_lanes(true) > 1
+            || edge.bkw_lanes - edge.pocket_lanes(false) > 1;
+        let centre = if inner_pocket || several_one_way {
+            (marking_s_range.0, marking_s_range.0)
         } else {
-            (marking_s_range, marking_dash_color())
+            marking_s_range
         };
         let (left_lanes, left, right) = if config::DRIVE_ON_LEFT {
             (edge.fwd_lanes, forward, backward)
@@ -206,22 +205,15 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         };
         for divider in 1..total_lanes {
             let lane_fraction = divider as f32 / total_lanes as f32;
-            let (dashed, color) = match divider.cmp(&usize::from(left_lanes)) {
-                std::cmp::Ordering::Less => (left, marking_dash_color()),
-                std::cmp::Ordering::Equal => (centre, centre_color),
-                std::cmp::Ordering::Greater => (right, marking_dash_color()),
+            let dashed = match divider.cmp(&usize::from(left_lanes)) {
+                std::cmp::Ordering::Less => left,
+                std::cmp::Ordering::Equal => centre,
+                std::cmp::Ordering::Greater => right,
             };
-            emit_lane_marking_sections(
-                mesh,
-                sections,
-                marking_s_range,
-                dashed,
-                (line, color),
-                |section| {
-                    let (left, right) = carriageway_bounds(section)?;
-                    Some(left + (right - left) * lane_fraction)
-                },
-            );
+            emit_lane_marking_sections(mesh, sections, marking_s_range, dashed, line, |section| {
+                let (left, right) = carriageway_bounds(section)?;
+                Some(left + (right - left) * lane_fraction)
+            });
         }
     }
 }
@@ -561,7 +553,7 @@ fn emit_lane_marking_sections(
     sections: &[RoadSection],
     marking_s_range: (f32, f32),
     dashed: (f32, f32),
-    (line, color): (FinnishLaneLine, Color),
+    line: FinnishLaneLine,
     lateral_at: impl Fn(&RoadSection) -> Option<f32>,
 ) {
     if sections.len() < 2 {
@@ -626,7 +618,7 @@ fn emit_lane_marking_sections(
                 b,
                 line.width_m * 0.5,
                 pattern,
-                color,
+                marking_dash_color(),
             );
         }
     }

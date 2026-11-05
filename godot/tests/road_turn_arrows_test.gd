@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Selective turn arrows through the native bridge (`ROAD-75`): a four-way of two 1 + 1 streets
-## publishes no marking at all, while a four-way of two 2 + 2 roads paints arrows inside the
+## publishes only their centre lines (`ROAD-106`: dashed at 50 km/h) and no arrow, while a
+## four-way of two 2 + 2 roads paints arrows inside the
 ## approach lanes before the junction (the dividers lie on the lane edges, so paint between them
 ## is an arrow). Ported from the arrow half of Veeti's `road_marking_rules_test.gd` onto dev's API.
 extends SceneTree
@@ -62,6 +63,15 @@ func _markings(x_min: float, x_max: float) -> PackedVector3Array:
 				found.append(vertex)
 	return found
 
+# The vertices of `vertices` off the 1 + 1 four-way's two centre lines (z = 0 and x = STREETS_X;
+# a line is 0.10 m wide): its arrows, if it had any.
+func _off_street_centre_lines(vertices: PackedVector3Array) -> PackedVector3Array:
+	var off := PackedVector3Array()
+	for vertex: Vector3 in vertices:
+		if absf(vertex.z) > 0.1 and absf(vertex.x - STREETS_X) > 0.1:
+			off.append(vertex)
+	return off
+
 func _road_chunks() -> int:
 	var count := 0
 	var mesh: Dictionary = simulation.get_road_mesh_data(true)
@@ -84,7 +94,9 @@ func _run() -> void:
 		frames += 1
 		await process_frame
 	_expect(_road_chunks() > 0, "the 1 + 1 four-way publishes its chunks")
-	_expect(_markings(-1.0e6, 1.0e6).is_empty(), "a 1 + 1 four-way has no marking, so no arrow")
+	var streets := _markings(-1.0e6, 1.0e6)
+	_expect(not streets.is_empty() and _off_street_centre_lines(streets).is_empty(),
+		"a 1 + 1 four-way paints its centre lines and no arrow")
 	await _cross(ROADS_X, 2)
 	var arrows := PackedVector3Array()
 	frames = 0
@@ -95,7 +107,7 @@ func _run() -> void:
 			if vertex.z > LANE_PAINT_MIN_Z and vertex.z < LANE_PAINT_MAX_Z:
 				arrows.append(vertex)
 	_expect(not arrows.is_empty(), "the 2 + 2 four-way's west approach paints arrows in its lanes")
-	_expect(_markings(-1.0e6, 0.0).is_empty(), "the 1 + 1 four-way stays unmarked")
+	_expect(_off_street_centre_lines(_markings(-1.0e6, 0.0)).is_empty(), "the 1 + 1 four-way keeps no arrow")
 	scene.free()
 	if _failures == 0:
 		print("road_turn_arrows_test: PASS")

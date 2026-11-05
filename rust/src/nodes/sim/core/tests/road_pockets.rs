@@ -797,18 +797,18 @@ fn strokes_from_a_pocket_roads_far_end_commit() {
     );
 }
 
-// Beside a left turn pocket the centre line is a yellow no-crossing line, solid over the pocket
-// edge, as on Finnish streets (the user, 2026-11-05): no car crosses between the oncoming lane and
-// the pocket lane. A right pocket's centre line stays the dashed white line.
+// Beside a left turn pocket the centre line is a no-crossing line, solid white over the pocket
+// edge (the user, 2026-11-05; every longitudinal line is white since the 2020 Road Traffic Act):
+// no car crosses between the oncoming lane and the pocket lane. A right pocket on a 1 + 1 road
+// keeps the dashed centre line.
 #[test]
-fn a_left_pockets_centre_line_is_solid_yellow() {
+fn a_left_pockets_centre_line_is_solid() {
     use crate::simulation::network::render::road::RoadRenderer;
-    use godot::prelude::Color;
     const SOLID: f32 = 2.0;
     // The pocket edge runs from its transition (x = -70.5) to the crossing. A left pocket's
     // centre line lies between the oncoming lane (z = -5.25) and the pocket lane (z = -1.75), a
     // right pocket's between the oncoming lane (z = -1.75) and the through lane (z = 1.75).
-    for ((left, right), centre_z, solid_yellow) in
+    for ((left, right), centre_z, solid) in
         [((true, false), -3.5, true), ((false, true), 0.0, false)]
     {
         let (mut core, node) = crossing(true);
@@ -823,25 +823,20 @@ fn a_left_pockets_centre_line_is_solid_yellow() {
             &core.heightmap,
             &core.transit_network.roadbed,
         );
-        let centre: Vec<(f32, Color)> = mesh
+        let patterns: Vec<f32> = mesh
             .marking_vertices
             .chunks(3)
             .zip(mesh.marking_uvs.chunks(3))
-            .zip(mesh.marking_colors.chunks(3))
-            .filter_map(|((vertices, uvs), colors)| {
+            .filter_map(|(vertices, uvs)| {
                 let centroid = vertices.iter().fold(Vector3::ZERO, |sum, &v| sum + v) / 3.0;
                 ((-55.0..-20.0).contains(&centroid.x) && (centroid.z - centre_z).abs() < 0.3)
-                    .then_some((uvs[0].y, colors[0]))
+                    .then_some(uvs[0].y)
             })
             .collect();
-        assert!(!centre.is_empty(), "the pocket edge has a centre line");
-        let yellow = |color: Color| color.r > 0.9 && color.b < 0.2;
+        assert!(!patterns.is_empty(), "the pocket edge has a centre line");
         assert!(
-            centre
-                .iter()
-                .all(|&(pattern, color)| (pattern == SOLID) == solid_yellow
-                    && yellow(color) == solid_yellow),
-            "left {left}: {centre:?}"
+            patterns.iter().all(|&pattern| (pattern == SOLID) == solid),
+            "left {left}: {patterns:?}"
         );
     }
 }
