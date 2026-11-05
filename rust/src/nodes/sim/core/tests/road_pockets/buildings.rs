@@ -11,7 +11,7 @@ use super::cells::four_way;
 use super::*;
 use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
 use crate::simulation::network::roadbed::RoadProfile;
-use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
+use crate::simulation::zoning::cells::CellSelectionShape;
 use glam::DVec2;
 use godot::prelude::Vector2;
 
@@ -67,26 +67,17 @@ fn grow(core: &mut SimCore, edge: usize, sign: f32, xs: [f32; 2]) -> Vec<usize> 
     // The first two rows of cells (a house's lot is two deep), by their centres.
     let cell_m = core.config.zone_cell_m;
     let row = f64::from(sign * (outer + cell_m));
-    core.zoning.generate_cells(
-        &core.region_graph,
-        CellBounds {
-            min: DVec2::splat(-256.0),
-            max: DVec2::splat(256.0),
-        },
-        |_| false,
-    );
     let path = [
         DVec2::new(f64::from(xs[0]), row),
         DVec2::new(f64::from(xs[1]), row),
     ];
-    let selection = core.zoning.cells.select(
-        CellSelectionShape::Brush {
-            radius_m: f64::from(0.6 * cell_m),
-        },
-        &path,
-    );
-    assert!(!selection.cells.is_empty(), "cells beside the curb");
-    core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
+    // The cell tool's gesture: its preview and commit, which keep off the road's pavement.
+    let brush = CellSelectionShape::Brush {
+        radius_m: f64::from(0.6 * cell_m),
+    };
+    let preview = core.preview_cell_selection_internal(brush, &path);
+    assert!(!preview.selection.cells.is_empty(), "cells beside the curb");
+    assert!(core.apply_cell_selection_internal(&preview, 1));
     core.prepare_cell_lots_internal();
     let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
         &core.zoning,
@@ -406,8 +397,8 @@ fn the_pocket_edit_keeps_the_buildings_it_moves_on_their_curb() {
 
 // The stills' city (`METRUM_R5D3_SAVE`): the 2+2 four-way with a 60 m right pocket on its west
 // arm and houses grown on both curbs, the widened (south) and the kept (north) one, along the
-// pocket edge and the base road beyond it, saved settled. A build before round R5d3 grows no
-// house on the kept curb of the pocket edge. Ignored: it writes a file.
+// pocket edge and the base road beyond it, built and saved settled. A build before round R5d3
+// grows no house on the kept curb of the pocket edge. Ignored: it writes a file.
 #[test]
 #[ignore = "writes the stills' save: METRUM_R5D3_SAVE"]
 fn a_pocketed_arm_with_houses_on_both_curbs_save() {
@@ -427,5 +418,6 @@ fn a_pocketed_arm_with_houses_on_both_curbs_save() {
         ];
         eprintln!("R5D3_STILLS side {sign} houses {houses:?}");
     }
+    core.allocator.complete_all_construction();
     core.save_game_settled(&save, None).expect("save");
 }
