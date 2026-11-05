@@ -1109,7 +1109,7 @@ two ring mouths, with no zebra strip, since the ring arms are one-sided and have
 six equal arms fit at every size, the one-lane floor of 30 m and the two-lane 45 m included. (PLAN-R7
 measured a two-sided ring, whose zebras added 3 m at each mouth: 15-16 m and 21-22 m, six arms
 from 33 m and 50 m. Those floors do not apply to the ring as built.) A pass-through ring node
-counts as an arm for this: a stroke that joins within 10 m (1+1) or 16 m (2+2) of a bare ring node, and
+counts as an arm for this: a stroke that joins within 10 m (1+1) or 15 m (2+2) of a bare ring node, and
 not onto it, is refused with `junction_corner_does_not_fit`.
 
 **Lane rule** (D10, `DefaultLaneUse`). At a ring node the entry's one movement is the turn onto the

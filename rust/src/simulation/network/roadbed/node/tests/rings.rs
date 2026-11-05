@@ -138,7 +138,7 @@ fn a_join_near_a_bare_ring_node_needs_the_arc_of_a_mouth() {
     for (diameter_m, lanes, arm, radius_m, refused_m, fits_m) in [
         (36.0, 1, (1, 1), 16.25f32, 9.0, 10.0),
         (60.0, 1, (1, 1), 28.25, 9.0, 10.0),
-        (50.0, 2, (2, 2), 23.25, 15.0, 16.0),
+        (50.0, 2, (2, 2), 21.5, 14.0, 15.0),
     ] {
         let fits = |arc_m: f32| {
             let (mut graph, _) = bare_ring(diameter_m, lanes, false);
