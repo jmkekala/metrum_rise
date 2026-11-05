@@ -64,6 +64,11 @@ fn probe_fixtures() -> Vec<(String, RegionGraph)> {
         ("one_way_right_pocket", pockets::one_way_right_pocket()),
         ("two_plus_one_right_pocket", pockets::two_plus_one_right_pocket()),
         ("straight_1x1_to_2x2", pockets::straight_1x1_to_2x2()),
+        // Round R5b1: a left pocket narrowing a divided road's median.
+        (
+            "four_way_2x2_left_pocket",
+            pockets::four_way_2x2_left_pocket(),
+        ),
     ] {
         set.push((name.to_string(), graph));
     }
@@ -2039,6 +2044,19 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xea9f1359f25fc3a9,
         ],
     ),
+    // Round R5b1: a left pocket in a divided road's median; every other entry unchanged.
+    (
+        "four_way_2x2_left_pocket",
+        [
+            0x1646ac8b650ffbeb,
+            0x5ff1fb72860d42b4,
+            0xe52db5cb4752617b,
+            0x124e5c3d50b08925,
+            0xb44936f64b416981,
+            0x50dce1dcbd02e603,
+            0x776be84bcd900cab,
+        ],
+    ),
 ];
 
 // Recorded by `TERRAIN-07-B`: the strip layer is new, so every entry is new; the seven
@@ -2208,4 +2226,6 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("one_way_right_pocket", 0x9f0797ef5652d9ca),
     ("two_plus_one_right_pocket", 0xd65835f90817caae),
     ("straight_1x1_to_2x2", 0xf29dd3d5cc0bd09a),
+    // Round R5b1.
+    ("four_way_2x2_left_pocket", 0x4334955040fd0985),
 ];

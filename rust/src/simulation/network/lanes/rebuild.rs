@@ -3,9 +3,11 @@
 //! Full and local lane reconstruction with deterministic indexed publication.
 
 use super::super::graph::{Edge, RegionGraph};
-use super::super::roadbed::{ArmKey, Corner, EdgeEnd, NodeWalkways, RoadProfile};
+use super::super::roadbed::{
+    ArmKey, Corner, EdgeEnd, LEFT_POCKET_TAPER_M, NodeWalkways, PocketNarrowing, RoadProfile,
+};
 use super::super::types::{TransitFlags, TransitType};
-use super::geometry::{LaneEnd, build_one_lane};
+use super::geometry::{LaneEnd, LaneTaper, build_one_lane};
 use super::pedestrian_junctions::{build_pedestrian_connections_at_node, footpath_end_insets};
 use super::vehicle_junctions::{
     build_vehicle_connections_at_node, vehicle_lane_end, vehicle_mouth_frame,
@@ -213,61 +215,88 @@ impl LaneSystem {
 
         let mut edge_lane_indices = Vec::new();
 
-        let mut build_lane =
-            |is_fwd: bool, l_idx: i8, l_type: LaneType, l_off: f32, ends: [LaneEnd; 2]| {
-                build_one_lane(
-                    &mut self.lanes,
-                    lane_map,
-                    &mut edge_lane_indices,
-                    edge_idx,
-                    edge,
-                    is_fwd,
-                    l_idx,
-                    l_type,
-                    l_off,
-                    ends,
-                );
-            };
+        // A left turn pocket's lane in a narrowed median (`ROAD-95`, D3) starts on the adjacent
+        // through lane's mouth point at its transition, copied so the base road's lane runs on
+        // into both directly, and tapers to its own offset beside the median's narrowing.
+        let narrowing = PocketNarrowing::of(edge);
+        let pocket_taper = |lane_idx: i8| {
+            let narrowing = narrowing?;
+            let fwd = narrowing.end == EdgeEnd::Start;
+            let (pocket_lane, adjacent) = if fwd { (0, 1) } else { (-1, -2) };
+            (lane_idx == pocket_lane).then(|| {
+                let index = usize::from(narrowing.end == EdgeEnd::End);
+                let mut ends = vehicle_ends(lane_idx);
+                if let Some(frame) = frames[index] {
+                    ends[index] = LaneEnd::Mouth {
+                        station_m: frame.station_m,
+                        point: vehicle_lane_end(&frame, narrowing.end, edge, adjacent).point,
+                    };
+                }
+                let taper = LaneTaper {
+                    end: narrowing.end,
+                    from_offset: vehicle_lane_offset(edge, adjacent),
+                    over_m: LEFT_POCKET_TAPER_M,
+                };
+                (ends, taper)
+            })
+        };
+
+        let mut build_lane = |is_fwd: bool,
+                              l_idx: i8,
+                              l_type: LaneType,
+                              l_off: f32,
+                              ends: [LaneEnd; 2],
+                              taper: Option<LaneTaper>| {
+            build_one_lane(
+                &mut self.lanes,
+                lane_map,
+                &mut edge_lane_indices,
+                edge_idx,
+                edge,
+                is_fwd,
+                l_idx,
+                l_type,
+                l_off,
+                ends,
+                taper,
+            );
+        };
 
         // 1. Forward Lanes (lane 0 is closest to the centre)
         for l in 0..edge.fwd_lanes {
             let lane_idx = l as i8;
             let offset = vehicle_lane_offset(edge, lane_idx);
-            build_lane(
-                true,
-                lane_idx,
-                LaneType::Vehicle,
-                offset,
-                vehicle_ends(lane_idx),
-            );
+            let (ends, taper) = pocket_taper(lane_idx)
+                .map_or((vehicle_ends(lane_idx), None), |(ends, taper)| {
+                    (ends, Some(taper))
+                });
+            build_lane(true, lane_idx, LaneType::Vehicle, offset, ends, taper);
         }
 
         // 2. Backward Lanes
         for l in 0..edge.bkw_lanes {
             let lane_idx = -(l as i8) - 1;
             let offset = vehicle_lane_offset(edge, lane_idx);
-            build_lane(
-                false,
-                lane_idx,
-                LaneType::Vehicle,
-                offset,
-                vehicle_ends(lane_idx),
-            );
+            let (ends, taper) = pocket_taper(lane_idx)
+                .map_or((vehicle_ends(lane_idx), None), |(ends, taper)| {
+                    (ends, Some(taper))
+                });
+            build_lane(false, lane_idx, LaneType::Vehicle, offset, ends, taper);
         }
 
         // 3. Sidewalks
         if (edge.allowed_types & TransitFlags::FOOT) != 0 {
             if edge.primary_type == TransitType::Foot {
                 // Dedicated Footpath: center lane
-                build_lane(true, 0, LaneType::Foot, 0.0, insets);
-                build_lane(false, 0, LaneType::Foot, 0.0, insets);
+                build_lane(true, 0, LaneType::Foot, 0.0, insets, None);
+                build_lane(false, 0, LaneType::Foot, 0.0, insets, None);
             } else {
                 // Left (idx 100) and right (idx -100) sidewalks.
                 for l_idx in [100, -100] {
                     let offset = sidewalk_offset(edge, l_idx);
                     let ends = sidewalk_ends(offset);
-                    build_lane(true, l_idx, LaneType::Foot, offset, ends);
-                    build_lane(false, l_idx, LaneType::Foot, offset, ends);
+                    build_lane(true, l_idx, LaneType::Foot, offset, ends, None);
+                    build_lane(false, l_idx, LaneType::Foot, offset, ends, None);
                 }
             }
         }

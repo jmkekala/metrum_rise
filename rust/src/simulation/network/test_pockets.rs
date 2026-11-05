@@ -9,8 +9,8 @@ use super::graph::{Edge, RegionGraph, RoadPocket};
 use super::lanes::rebuild::vehicle_lane_offset;
 use super::lanes::{LaneSystem, LaneType, approach_arrow_masks, approach_group};
 use super::roadbed::fixtures::{
-    one_way_right_pocket, pocket_junction, road_edge, straight_1x1_to_2x2, t_right_pocket,
-    two_plus_one_right_pocket,
+    four_way_2x2_left_pocket, one_way_right_pocket, pocket_junction, road_edge,
+    straight_1x1_to_2x2, t_right_pocket, two_plus_one_right_pocket,
 };
 use super::roadbed::{
     BandKind, EdgeEnd, JunctionLayout, NodeArms, RoadProfile, Side, crossing_arm_eligible,
@@ -567,4 +567,171 @@ fn pocket_keeps_opposite_kerb_and_two_through_lanes_aligned() {
     }
     layout_of(&graph, TRANSITION);
     layout_of(&graph, JUNCTION);
+}
+
+// `ROAD-95` round R5b1: a divided road of `fwd` + `bkw` lanes on a `median_m` grass median, with
+// `pocket` (lanes and median as the pocket edit sets them).
+fn divided_road(fwd: u8, bkw: u8, median_m: f32, pocket: Option<RoadPocket>) -> Edge {
+    let mut edge = road(fwd, bkw, None);
+    edge.median = super::graph::RoadMedian::from_tool(2, median_m).unwrap();
+    edge.width = Edge::cross_section_width_m(fwd, bkw, edge.median);
+    edge.set_pocket(pocket);
+    edge
+}
+
+fn left_at(end: EdgeEnd) -> Option<RoadPocket> {
+    Some(RoadPocket {
+        end,
+        left: true,
+        right: false,
+    })
+}
+
+// D3: a left pocket on a divided road takes a lane of the raised median and keeps the footprint,
+// so the transition's two mouth profiles are one: 2+2 on 5 m grass becomes 2+3 on 1.5 m, its
+// through lanes and the far direction's bit for bit, the pocket lane at 0.75 m beside the
+// narrowed median (PLAN-R5 2.1's worked case). The base road needs a raised median of at least
+// 3.8 m (a 0.3 m stub); a narrower or painted one, or none, is refused. Backward mirrors it.
+#[test]
+fn a_left_pocket_narrows_the_median_and_keeps_the_footprint() {
+    let base = divided_road(2, 2, 5.0, None);
+    let pocket = divided_road(2, 2, 5.0, left_at(EdgeEnd::End));
+    assert_eq!(
+        (pocket.fwd_lanes, pocket.bkw_lanes, pocket.width),
+        (3, 2, base.width)
+    );
+    assert_eq!(pocket.median.unwrap().width_m, 1.5);
+    assert_eq!(
+        (pocket.median_pocket_lanes(), pocket.kerb_shift_m()),
+        (1, 0.0)
+    );
+    assert_eq!(pocket.base_median(), base.median);
+    assert_eq!(RoadProfile::for_edge(&pocket), RoadProfile::for_edge(&base));
+    assert_eq!(pocket.validate_pocket(), Ok(()));
+    let offsets: Vec<f32> = [-2, -1, 0, 1, 2]
+        .into_iter()
+        .map(|lane| vehicle_lane_offset(&pocket, lane))
+        .collect();
+    assert_eq!(offsets, [-7.75, -4.25, 0.75, 4.25, 7.75]);
+    for (pocket_lane, base_lane) in [(-2, -2), (-1, -1), (1, 0), (2, 1)] {
+        assert_eq!(
+            vehicle_lane_offset(&pocket, pocket_lane).to_bits(),
+            vehicle_lane_offset(&base, base_lane).to_bits()
+        );
+    }
+    let backward = divided_road(2, 2, 5.0, left_at(EdgeEnd::Start));
+    assert_eq!((backward.fwd_lanes, backward.bkw_lanes), (2, 3));
+    assert_eq!(vehicle_lane_offset(&backward, -1), -0.75);
+    // Removing the pocket gives the base road back bit for bit.
+    let mut removed = pocket.clone();
+    removed.set_pocket(None);
+    assert_eq!(
+        (removed.fwd_lanes, removed.median, removed.width),
+        (base.fwd_lanes, base.median, base.width)
+    );
+    // The 3.8 m rule: the stub may lie below grass's 2 m minimum on the pocket edge.
+    let stub = divided_road(2, 2, 3.8, left_at(EdgeEnd::End));
+    assert_eq!(stub.validate_pocket(), Ok(()));
+    assert!((stub.median.unwrap().width_m - 0.3).abs() < 1e-6);
+    let narrow = divided_road(2, 2, 3.0, left_at(EdgeEnd::End));
+    assert_eq!(narrow.validate_pocket(), Err("pocket_requires_wide_median"));
+    let mut painted = road(2, 2, None);
+    painted.median = super::graph::RoadMedian::from_tool(1, 2.0).unwrap();
+    painted.width = Edge::cross_section_width_m(2, 2, painted.median);
+    painted.set_pocket(left_at(EdgeEnd::End));
+    assert_eq!(
+        painted.validate_pocket(),
+        Err("pocket_requires_wide_median")
+    );
+    let mut undivided = road(2, 2, None);
+    undivided.set_pocket(left_at(EdgeEnd::End));
+    assert_eq!(undivided.validate_pocket(), Err("pocket_requires_one_way"));
+}
+
+// At the left pocket's pass-through transition the pocket lane starts on the base road's lane 0
+// mouth point bit for bit (risk 4), so both pocket-edge lanes 0 and 1 are direct successors of
+// base lane 0 (no connector), lane 1 continues as lane 2, and the backward lanes run on 1:1. The
+// pocket lane tapers straight from that point to its own 0.75 m 12 m along, beside the median's
+// narrowing (lane edge = median edge + half a lane). At the junction it serves the left turn
+// alone (`L / S / S+R`, D4). The base road's two lanes prepare the junction's turn before the
+// fork (`transition_needs_lane_choice`; `pocket_fork_sources` with D5's rank + 1).
+#[test]
+fn a_left_pocket_lane_forks_off_lane_zero_at_the_transition() {
+    let mut graph = four_way_2x2_left_pocket();
+    assert!(!crossing_arm_eligible(&graph, TRANSITION, 0));
+    let lanes = lanes_of(&mut graph);
+    let lane = |edge: usize, fwd: bool, index: i8| {
+        let id = lanes.edge_lanes[&edge]
+            .iter()
+            .copied()
+            .find(|&id| {
+                let lane = &lanes.lanes[id];
+                lane.lane_type == LaneType::Vehicle && lane.is_fwd == fwd && lane.lane_idx == index
+            })
+            .unwrap();
+        (id, &lanes.lanes[id])
+    };
+    let (_, base_lane) = lane(0, true, 0);
+    let (pocket_id, pocket_lane) = lane(POCKET_EDGE, true, 0);
+    let (through_id, through) = lane(POCKET_EDGE, true, 1);
+    assert_eq!(pocket_lane.geometry[0], *base_lane.geometry.last().unwrap());
+    assert_eq!(through.geometry[0], pocket_lane.geometry[0]);
+    let mut successors: Vec<usize> = base_lane.next_lanes.iter().copied().collect();
+    successors.sort_unstable();
+    assert_eq!(
+        successors,
+        [pocket_id, through_id],
+        "direct successors, no connector"
+    );
+    assert_eq!(
+        connections(&graph, &lanes, 0, TRANSITION),
+        BTreeSet::from([
+            (0, POCKET_EDGE, 0),
+            (0, POCKET_EDGE, 1),
+            (1, POCKET_EDGE, 2)
+        ])
+    );
+    assert_eq!(
+        connections(&graph, &lanes, POCKET_EDGE, TRANSITION),
+        BTreeSet::from([(-1, 0, -1), (-2, 0, -2)])
+    );
+    // The taper: lateral z along the +x road; 4.25 at the mouth, 0.75 from 12 m on.
+    let start = pocket_lane.geometry[0];
+    let lateral_at = |x: f32| {
+        let points = &pocket_lane.geometry;
+        let i = points
+            .windows(2)
+            .position(|p| p[0].x <= x && x <= p[1].x)
+            .unwrap();
+        let t = (x - points[i].x) / (points[i + 1].x - points[i].x);
+        points[i].z + (points[i + 1].z - points[i].z) * t
+    };
+    assert_eq!(start.z, 4.25);
+    for d in [0.0, 3.0, 6.0, 9.0, 12.0, 20.0, 40.0] {
+        let expected = 4.25 + (0.75 - 4.25) * (d / 12.0f32).min(1.0);
+        assert!((lateral_at(start.x + d) - expected).abs() < 1e-4, "{d}");
+    }
+    // The junction's masks, and the lane choice before the fork.
+    assert_eq!(
+        arrows(&graph, POCKET_EDGE, JUNCTION),
+        [(0, LEFT), (1, STRAIGHT), (2, STRAIGHT | RIGHT)]
+    );
+    for index in [0, 1] {
+        assert!(
+            lanes.needs_turn_preparation(lane(0, true, index).0),
+            "base lane {index}"
+        );
+    }
+    assert!(super::lanes::transition_needs_lane_choice(
+        &graph, 0, TRANSITION
+    ));
+    let fork = |ranks| super::lanes::pocket_fork_sources(&graph, 0, TRANSITION, POCKET_EDGE, ranks);
+    assert_eq!(fork((0, 1)), Some((0, 1)), "the left turn: base lane 0");
+    assert_eq!(
+        fork((1, 1)),
+        Some((0, 1)),
+        "straight on lane 1: base lane 0"
+    );
+    assert_eq!(fork((1, 2)), Some((0, 2)), "straight: both");
+    assert_eq!(fork((2, 1)), Some((1, 1)), "the right turn: base lane 1");
 }

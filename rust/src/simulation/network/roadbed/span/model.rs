@@ -8,7 +8,7 @@
 use super::super::arms::{edges_pass_through, median_continues, pass_through_crossings};
 use super::super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::super::mesh::{RowLayout, push_section_row};
-use super::super::profile::{MedianEdges, RoadProfile};
+use super::super::profile::{LEFT_POCKET_TAPER_M, MedianEdges, PocketNarrowing, RoadProfile};
 use super::super::{RoadBand, RoadSection, RoadVec2, RoadVec3};
 use super::MouthSection;
 use crate::simulation::network::graph::rebuild::{
@@ -115,12 +115,23 @@ pub(in crate::simulation::network::roadbed) enum RowKind {
 }
 
 // A divided span's raised median (`ROAD-80`): its authored width, each end's nose as its tip
-// and full-width stations (`None` where the median continues through the node), and the body
-// row layout.
+// and full-width stations (`None` where the median continues through the node), a left turn
+// pocket's narrowing (`ROAD-95`), and the body row layout.
 struct MedianBody {
     width_m: f32,
     noses: [Option<(f32, f32)>; 2],
+    taper: Option<MedianTaper>,
     layout: RowLayout,
+}
+
+// A left turn pocket's median narrowing on its span (`ROAD-95`, D3): from the transition's
+// mouth station, where the median has the base road's edges, one edge runs straight to this
+// edge's own over `LEFT_POCKET_TAPER_M`.
+#[derive(Clone, Copy)]
+struct MedianTaper {
+    from_s_m: f32,
+    to_s_m: f32,
+    narrowing: PocketNarrowing,
 }
 
 /// The section model of one edge between its two mouth stations.
@@ -240,7 +251,26 @@ impl<'a> SpanModel<'a> {
                 && kind == Some(NodeKind::PassThrough)
                 && median_continues(graph, node_at(graph, edge, end))
         });
-        let body = median_body(edge, (start_mouth_m, end_mouth_m), crossings_m, through);
+        // A left pocket's median narrows from its transition's mouth, where it continues the
+        // base road's (`ROAD-95`).
+        let taper = PocketNarrowing::of(edge).and_then(|narrowing| {
+            let (through, from_s_m, sign) = match narrowing.end {
+                EdgeEnd::Start => (through[0], start_mouth_m, 1.0),
+                EdgeEnd::End => (through[1], end_mouth_m, -1.0),
+            };
+            through.then_some(MedianTaper {
+                from_s_m,
+                to_s_m: from_s_m + sign * LEFT_POCKET_TAPER_M,
+                narrowing,
+            })
+        });
+        let body = median_body(
+            edge,
+            (start_mouth_m, end_mouth_m),
+            crossings_m,
+            through,
+            taper,
+        );
         // A node piece's mouth fixes the frame at that end.
         if let Some(mouth) = mouths[0] {
             start_tangent = mouth.section.tangent_xz;
@@ -377,9 +407,47 @@ impl<'a> SpanModel<'a> {
     }
 
     /// Where the raised median lies at station `s_m` (`ROAD-80`): [`Self::median_width_at`]
-    /// centred on the line between the lane groups. `O(1)`.
+    /// centred on the line between the lane groups, except over a left turn pocket's narrowing
+    /// (`ROAD-95`, D3), where the pocket side's edge runs linearly from the base road's at the
+    /// transition's mouth to this edge's own `LEFT_POCKET_TAPER_M` further on; the other edge
+    /// stays. A nose cuts the narrowing short where the two would overlap (the pocket edit
+    /// refuses such a body). `O(1)`.
     pub(in crate::simulation::network::roadbed) fn median_edges_at(&self, s_m: f32) -> MedianEdges {
-        MedianEdges::centred(self.edge.lane_group_offset(), self.median_width_at(s_m))
+        let centred =
+            MedianEdges::centred(self.edge.lane_group_offset(), self.median_width_at(s_m));
+        let Some((taper, width_m)) = self
+            .body
+            .as_ref()
+            .and_then(|body| body.taper.map(|taper| (taper, body.width_m)))
+        else {
+            return centred;
+        };
+        let t = (s_m - taper.from_s_m) / (taper.to_s_m - taper.from_s_m);
+        if t >= 1.0 {
+            return centred;
+        }
+        let from = taper.narrowing.at_transition;
+        // Inside a nose the centred edge lies inside the narrowing; elsewhere it is the edge's
+        // own full width, which the narrowing never goes inside.
+        let in_nose = centred.width_m < width_m;
+        let (left_m, right_m) = if taper.narrowing.right_moves {
+            let moving = lerp_from(from.right_m, centred.right_m, t);
+            (
+                centred.left_m,
+                if in_nose { centred.right_m } else { moving },
+            )
+        } else {
+            let moving = lerp_from(from.left_m, centred.left_m, t);
+            (
+                if in_nose { centred.left_m } else { moving },
+                centred.right_m,
+            )
+        };
+        MedianEdges {
+            left_m,
+            right_m,
+            width_m: right_m - left_m,
+        }
     }
 
     // The profile and row layout of the row at `s_m`.
@@ -528,7 +596,9 @@ impl<'a> SpanModel<'a> {
             push_protected_section_sample(samples, protected, distance_m, total_length);
         }
         // Cadence ranges `(start, end)`: the profile fades at each planed end.
-        let mut cadence = [None; 2];
+        // The third is a left pocket's median narrowing (`ROAD-95`): rows every
+        // `PROFILE_TRANSITION_SECTION_STEP_M` from the transition's mouth to its end.
+        let mut cadence = [None; 3];
         if let Some((start_profile_s_m, end_profile_s_m)) = self.profile_range {
             let profile_fade_m = JUNCTION_PROFILE_BLEND_ZONE_M
                 .min((end_profile_s_m - start_profile_s_m).max(0.0) * 0.5);
@@ -543,6 +613,12 @@ impl<'a> SpanModel<'a> {
             for distance_m in [start_profile_s_m, end_profile_s_m] {
                 push_protected_section_sample(samples, protected, distance_m, total_length);
             }
+        }
+        if let Some(taper) = self.body.as_ref().and_then(|body| body.taper) {
+            cadence[2] = Some((
+                taper.from_s_m.min(taper.to_s_m),
+                taper.from_s_m.max(taper.to_s_m),
+            ));
         }
         let cadence = cadence.map(|range| {
             range.map(|(start_m, end_m)| {
@@ -592,6 +668,7 @@ impl<'a> SpanModel<'a> {
         let cadence_steps = [
             PROFILE_TRANSITION_SECTION_STEP_M,
             PROFILE_TRANSITION_SECTION_STEP_M,
+            PROFILE_TRANSITION_SECTION_STEP_M,
         ];
         let fixed = samples.len();
         for index in 1..fixed {
@@ -637,6 +714,7 @@ fn median_body(
     (start_mouth_m, end_mouth_m): (f32, f32),
     crossings_m: [Option<f32>; 2],
     through: [bool; 2],
+    taper: Option<MedianTaper>,
 ) -> Option<MedianBody> {
     let median = edge.median.filter(|median| median.is_raised())?;
     let radius_m = 0.5 * median.width_m;
@@ -669,6 +747,7 @@ fn median_body(
     Some(MedianBody {
         width_m: median.width_m,
         noses,
+        taper,
         layout: RowLayout::new(&RoadProfile::body_for_edge(edge, median.width_m)),
     })
 }
@@ -998,6 +1077,16 @@ fn segment_tangent_xz(points: &[RoadVec3], preferred_index: usize) -> RoadVec2 {
         }
     }
     RoadVec2::X
+}
+
+// `from + (to - from) t` for `t` in `[0, 1)`: exactly `from` at `t = 0`, so a narrowing's first
+// row is the neighbour's bit for bit.
+fn lerp_from(from: f32, to: f32, t: f32) -> f32 {
+    if t <= 0.0 {
+        from
+    } else {
+        from + (to - from) * t
+    }
 }
 
 #[cfg(test)]

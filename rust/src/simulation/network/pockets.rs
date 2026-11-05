@@ -13,7 +13,7 @@
 use super::graph::{Edge, RegionGraph, RoadPocket};
 use super::lanes::approach_offers_turns;
 use super::lanes::vehicle_junctions::node_whitelists_vehicle_turns;
-use super::roadbed::EdgeEnd;
+use super::roadbed::{CROSSWALK_DEPTH_M, EdgeEnd, LEFT_POCKET_TAPER_M, NOSE_CLEARANCE_M};
 use super::topology::{self, RoadSplitDependentsUndo, SplitHalves};
 use super::types::NodeType;
 use crate::simulation::buildings::allocator::{BuildingAllocator, EdgeOccupancy};
@@ -251,8 +251,8 @@ impl PocketPlan {
     /// one reached through its transition), joins it, and cuts the base road for the requested
     /// pocket. The error is the refusal key: `invalid_road`, the pocket's own checks
     /// ([`Edge::validate_pocket`]: `pocket_requires_surface_road`, `pocket_lane_limit`,
-    /// `pocket_requires_one_way`, `invalid_pocket_dimensions`), `pocket_median_gap` (no pocket
-    /// beside a median until `ROAD-95` round R5b1), `pocket_junction_whitelisted` (D9),
+    /// `pocket_requires_one_way`, `pocket_requires_wide_median`, `invalid_pocket_dimensions`),
+    /// `pocket_median_gap` (a right pocket beside a median), `pocket_junction_whitelisted` (D9),
     /// `pocket_movement_missing` (the junction offers no such turn), `pocket_road_too_short` (the
     /// base road keeps less than two taper halves and a metre beyond the transition),
     /// `pocket_unchanged`, `pocket_transition_changed`. The compile's own refusals come later.
@@ -304,7 +304,9 @@ impl PocketPlan {
         let mut piece = base.clone();
         piece.set_pocket(Some(pocket));
         piece.validate_pocket()?;
-        if base.median.is_some() {
+        // A right pocket's transition is laid out, so a median would nose out on both sides of
+        // it; a left pocket narrows a raised median (`validate_pocket`) and passes through.
+        if base.median.is_some() && right {
             return Err("pocket_median_gap");
         }
         if !body_m.is_finite()
@@ -322,7 +324,7 @@ impl PocketPlan {
         }
         let total_m = xz_length_m(&base.geometry);
         let span_m = body_m + POCKET_TAPER_HALF_M;
-        if total_m - span_m < BASE_REMAINDER_MIN_M {
+        if total_m - span_m < BASE_REMAINDER_MIN_M || !narrowing_fits(&base, &piece, end, span_m) {
             return Err("pocket_road_too_short");
         }
         if let Some(state) = pair.and_then(|_| PocketState::find(graph, edge, request.end))
@@ -420,6 +422,26 @@ impl PocketPlan {
         applied.pocket_edge = Some(pocket_edge);
         applied
     }
+}
+
+// Whether a left pocket's median narrowing (`ROAD-95`, D3) ends before the pocket edge's nose at
+// the junction, on a pocket edge `span_m` long: `LEFT_POCKET_TAPER_M` from the transition, and
+// beyond the junction's mouth (the base road's clip there, which the pocket keeps: its mouth
+// profile is the base road's), a crossing strip, the nose clearance and the narrowed median's
+// nose radius. True for every other pocket. `O(1)`.
+fn narrowing_fits(base: &Edge, piece: &Edge, end: EdgeEnd, span_m: f32) -> bool {
+    if piece.median_pocket_lanes() == 0 {
+        return true;
+    }
+    let clip_m = match end {
+        EdgeEnd::Start => base.start_clip,
+        EdgeEnd::End => base.end_clip,
+    };
+    let nose_m = clip_m
+        + CROSSWALK_DEPTH_M as f32
+        + NOSE_CLEARANCE_M
+        + 0.5 * piece.median.map_or(0.0, |median| median.width_m);
+    span_m - LEFT_POCKET_TAPER_M >= nose_m
 }
 
 // The cut of `base` at `station_m` along its control polyline: the segment, the point there (its

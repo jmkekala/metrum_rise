@@ -31,6 +31,8 @@ pub(crate) use lane_use::{
     approach_arrow_masks, approach_group, approach_needs_lane_choice, approach_offers_turns,
     lane_rank, pocket_fork_sources,
 };
+#[cfg(test)]
+pub(crate) use lane_use::transition_needs_lane_choice;
 pub use successors::LaneSuccessors;
 
 /// Length of the solid zone before a junction on an approach whose lanes serve different

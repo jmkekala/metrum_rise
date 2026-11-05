@@ -27,8 +27,8 @@ use crate::simulation::network::lanes::{
     APPROACH_SOLID_LENGTH_M, approach_arrow_masks, approach_needs_lane_choice,
 };
 use crate::simulation::network::roadbed::{
-    BandKind, EdgeEnd, NOSE_CLEARANCE_M, RoadSection, RoadbedSystem,
-    painted_median_continues,
+    BandKind, EdgeEnd, LEFT_POCKET_TAPER_M, NOSE_CLEARANCE_M, PocketNarrowing, RoadSection,
+    RoadbedSystem, painted_median_continues,
 };
 use crate::simulation::network::types::TransitType;
 use godot::prelude::{Color, Vector2, Vector3};
@@ -148,21 +148,36 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             // its lanes' edges, and no centre line between them.
             let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
             let (centre, half) = (edge.lane_group_offset(), edge.median_half_width());
-            for (lanes, direction, dashed) in [
-                (edge.fwd_lanes, 1.0, forward),
-                (edge.bkw_lanes, -1.0, backward),
+            // A left turn pocket's lane forks off beside the median's narrowing (`ROAD-95`, D3):
+            // its divider from the through lane starts where the narrowing ends, the median
+            // kerb being the line before it.
+            let narrowing = PocketNarrowing::of(edge).map(|narrowing| match narrowing.end {
+                EdgeEnd::Start => (true, (sections[0].s_m + LEFT_POCKET_TAPER_M, f32::MAX)),
+                EdgeEnd::End => (
+                    false,
+                    (
+                        f32::MIN,
+                        sections[sections.len() - 1].s_m - LEFT_POCKET_TAPER_M,
+                    ),
+                ),
+            });
+            for (lanes, direction, dashed, fwd) in [
+                (edge.fwd_lanes, 1.0, forward, true),
+                (edge.bkw_lanes, -1.0, backward, false),
             ] {
                 for divider in 1..lanes {
                     let lateral =
                         centre + (half + f32::from(divider) * config::LANE_WIDTH) * side * direction;
-                    emit_lane_marking_sections(
-                        mesh,
-                        sections,
-                        marking_s_range,
-                        dashed,
-                        line,
-                        |_| Some(lateral),
-                    );
+                    let (range, dashed) = match narrowing {
+                        Some((pocket_fwd, (from, to))) if pocket_fwd == fwd && divider == 1 => (
+                            (marking_s_range.0.max(from), marking_s_range.1.min(to)),
+                            (dashed.0.max(from), dashed.1.min(to)),
+                        ),
+                        _ => (marking_s_range, dashed),
+                    };
+                    emit_lane_marking_sections(mesh, sections, range, dashed, line, |_| {
+                        Some(lateral)
+                    });
                 }
             }
             continue;

@@ -2302,6 +2302,31 @@ fn pockets_round_trip_through_the_edge_table() {
         conn.execute_batch(bad).unwrap();
         assert!(network::load_graph(&conn).is_err(), "{bad} loaded");
     }
+
+    // Round R5b1: a left pocket's edge stores its narrowed median (1.5 m, below grass's 2 m
+    // minimum), which loads because its base road's (5 m) is valid; a stub the base road could
+    // not have had, or a left pocket without a raised median, fails the file.
+    let graph = crate::simulation::network::roadbed::fixtures::four_way_2x2_left_pocket();
+    let conn = save(&graph);
+    let mut loaded = network::load_graph(&conn).unwrap();
+    assert_eq!(loaded.edge(1).median, graph.edge(1).median);
+    assert_eq!(loaded.edge(1).pocket, graph.edge(1).pocket);
+    let (mut graph, mut lanes, mut loaded_lanes) = (graph, LaneSystem::new(), LaneSystem::new());
+    lanes.rebuild(&mut graph);
+    loaded_lanes.rebuild(&mut loaded);
+    assert_eq!(lanes.lanes.len(), loaded_lanes.lanes.len());
+    for (lane, loaded) in lanes.lanes.iter().zip(&loaded_lanes.lanes) {
+        assert_eq!(lane.geometry, loaded.geometry);
+    }
+    for bad in [
+        "UPDATE network_edges SET median_width = 0.2 WHERE edge_id = 1",
+        "UPDATE network_edges SET median_style = 1 WHERE edge_id = 1",
+        "UPDATE network_edges SET median_width = 1.5 WHERE edge_id = 0",
+    ] {
+        let conn = save(&graph);
+        conn.execute_batch(bad).unwrap();
+        assert!(network::load_graph(&conn).is_err(), "{bad} loaded");
+    }
 }
 
 // `ROAD-101` RB3e (format 113): a road's street lights round-trip through the edge table, lit

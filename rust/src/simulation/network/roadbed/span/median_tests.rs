@@ -587,3 +587,77 @@ const WITHOUT_RAISED_MEDIAN: &[(&str, [u64; 7])] = &[
         ],
     ),
 ];
+
+// `ROAD-95` round R5b1 (D3): a left turn pocket on a divided 2+2 road with a 5 m grass median
+// (`fixtures::four_way_2x2_left_pocket`: edge 0 the base road into the transition node 1, 60 m
+// west of the junction, edge 1 the pocket edge with a 1.5 m median). The transition passes
+// through: the median continues without a nose, and on the pocket span its right edge (the
+// pocket side) runs linearly from the base road's 2.5 m to its own -1.0 m over 12 m, with rows
+// at the mouth, every 2 m and the taper's end; the left edge stays the base road's bit for bit.
+// Both spans are watertight.
+#[test]
+fn a_left_pockets_median_narrows_linearly_over_its_first_twelve_metres() {
+    use crate::simulation::network::roadbed::fixtures::four_way_2x2_left_pocket;
+    let graph = four_way_2x2_left_pocket();
+    assert!(
+        median_continues(&graph, 1),
+        "no nose either side of the transition"
+    );
+    assert!(pass_through_crossings(&graph, 1).is_some_and(|arms| arms.iter().all(|(_, c)| !c)));
+    let roadbed = compiled(&graph);
+    assert!(roadbed.node_piece(1).is_none(), "a pass-through");
+    let (base, pocket) = (
+        roadbed.span_piece(0).unwrap(),
+        roadbed.span_piece(1).unwrap(),
+    );
+    // The shared row: the base span's end row is the pocket span's start row.
+    assert_eq!(&*base.end_mouth().vertices, &*pocket.start_mouth().vertices);
+    assert_eq!(
+        pocket.start_mouth().profile.bands().len(),
+        9,
+        "a body row through the node"
+    );
+    let sections = pocket.sections();
+    let mouth_m = sections[0].s_m;
+    let base_outline = median_outline(base.sections().last().unwrap()).unwrap();
+    assert_eq!(base_outline, (-2.5, 2.5));
+    let mut rows = Vec::new();
+    for section in sections {
+        let d_m = section.s_m - mouth_m;
+        let Some((left, right)) = median_outline(section) else {
+            continue;
+        };
+        if d_m <= 12.0 + 1e-4 {
+            rows.push(d_m);
+            assert_eq!(
+                left.to_bits(),
+                (-2.5f32).to_bits(),
+                "{d_m}: the far edge stays"
+            );
+            let expected = 2.5 + (-1.0 - 2.5) * (d_m / 12.0);
+            assert!(
+                (right - expected).abs() < 1e-5,
+                "{d_m}: {right} on the line {expected}"
+            );
+        } else if d_m < 20.0 {
+            assert_eq!(
+                (left, right),
+                (-2.5, -1.0),
+                "{d_m}: the pocket edge's own median"
+            );
+        }
+    }
+    assert_eq!(rows.len(), 7, "rows at 0, 2, .., 12 m: {rows:?}");
+    for (row, d_m) in rows.iter().enumerate() {
+        assert!((d_m - 2.0 * row as f32).abs() < 1e-3, "{rows:?}");
+    }
+    for edge in 0..graph.edge_count() {
+        assert_watertight(
+            "four_way_2x2_left_pocket",
+            roadbed.span_piece(edge).unwrap(),
+        );
+    }
+    // The pocket edge still noses out at the junction: the last body row is a tip.
+    let (low, high) = sections.iter().rev().find_map(median_outline).unwrap();
+    assert_eq!(low, high, "the tip row closes the outline");
+}

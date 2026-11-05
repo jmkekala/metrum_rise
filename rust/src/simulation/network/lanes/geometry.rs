@@ -3,7 +3,7 @@
 //! Lane geometry construction and authoritative agent position sampling.
 
 use super::super::graph::Edge;
-use super::super::roadbed::RoadVec2;
+use super::super::roadbed::{EdgeEnd, RoadVec2};
 use super::{Lane, LaneSuccessors, LaneType};
 use crate::config;
 use godot::prelude::*;
@@ -88,8 +88,24 @@ impl LaneEnd {
     }
 }
 
+/// A lane whose offset changes near one end of its edge (`ROAD-95`, D3): a left turn pocket's
+/// lane, which leaves the adjacent through lane's line at its transition and runs straight to its
+/// own offset beside the narrowed median.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaneTaper {
+    /// The edge end the taper starts at.
+    pub end: EdgeEnd,
+    /// The lane's offset at the edge's clip there, in the edge's forward frame.
+    pub from_offset: f32,
+    /// Metres along the edge from the clip over which the offset reaches the lane's own.
+    pub over_m: f32,
+}
+
 /// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and
-/// `edge_lane_indices`. `ends` says where the lane stops at the edge's start and end.
+/// `edge_lane_indices`. `ends` says where the lane stops at the edge's start and end; with a
+/// `taper` its offset runs linearly from the taper's at the edge's clip to `lane_offset`
+/// (stations along the physical polyline, as the roadbed's span measures them), through a knot
+/// added where it arrives. `O(points)`; a taper allocates the knotted centreline.
 #[allow(clippy::too_many_arguments)]
 pub fn build_one_lane(
     lanes: &mut Vec<Lane>,
@@ -102,8 +118,22 @@ pub fn build_one_lane(
     lane_type: LaneType,
     lane_offset: f32,
     ends: [LaneEnd; 2],
+    taper: Option<LaneTaper>,
 ) {
-    let pts = &edge.physical_geometry;
+    let knotted;
+    let (pts, offsets): (&[Vector3], Option<Vec<f32>>) = match taper {
+        Some(taper) => {
+            let (points, offsets) = tapered_knots(edge, taper, lane_offset);
+            knotted = points;
+            (&knotted, Some(offsets))
+        }
+        None => (&edge.physical_geometry, None),
+    };
+    let offset_at = |index: usize| {
+        offsets
+            .as_ref()
+            .map_or(lane_offset, |offsets| offsets[index])
+    };
     let mut geometry = Vec::with_capacity(pts.len());
 
     let mut dir0 = pts[1] - pts[0];
@@ -114,7 +144,7 @@ pub fn build_one_lane(
         Vector3::new(1.0, 0.0, 0.0)
     };
     let n0 = Vector3::new(-t0.z, 0.0, t0.x);
-    geometry.push(pts[0] + n0 * lane_offset);
+    geometry.push(pts[0] + n0 * offset_at(0));
 
     for j in 1..pts.len() - 1 {
         let mut d1 = pts[j] - pts[j - 1];
@@ -135,7 +165,7 @@ pub fn build_one_lane(
         let n2 = Vector3::new(-t2.z, 0.0, t2.x);
         let bisect = (n1 + n2).normalized();
         let dot = n1.dot(bisect).max(0.1);
-        geometry.push(pts[j] + bisect * (lane_offset / dot));
+        geometry.push(pts[j] + bisect * (offset_at(j) / dot));
     }
 
     let mut d_last = pts[pts.len() - 1] - pts[pts.len() - 2];
@@ -146,7 +176,7 @@ pub fn build_one_lane(
         t0
     };
     let n_last = Vector3::new(-t_last.z, 0.0, t_last.x);
-    geometry.push(pts[pts.len() - 1] + n_last * lane_offset);
+    geometry.push(pts[pts.len() - 1] + n_last * offset_at(pts.len() - 1));
 
     // A layout end replaces every lane point at or short of its station with the layout's own
     // point, so the lane ends exactly where the node's pedestrian connectors start. The points
@@ -199,6 +229,57 @@ pub fn build_one_lane(
     });
     lane_map.insert((edge_idx, is_fwd, lane_idx), new_lane_id);
     edge_lane_indices.push(new_lane_id);
+}
+
+// `edge`'s physical polyline with a knot where `taper` arrives at `own` (unless one lies within a
+// millimetre), and each knot's lane offset: `taper.from_offset` up to the clip at the taper's end,
+// `own` from `over_m` beyond it, linear between. O(points), one allocation each.
+fn tapered_knots(edge: &Edge, taper: LaneTaper, own: f32) -> (Vec<Vector3>, Vec<f32>) {
+    let source = &edge.physical_geometry;
+    let mut cumulative = Vec::with_capacity(source.len());
+    let mut running = 0.0;
+    for (index, point) in source.iter().enumerate() {
+        if index > 0 {
+            running += source[index - 1].distance_to(*point);
+        }
+        cumulative.push(running);
+    }
+    let total = running;
+    // Stations from the taper's end.
+    let (clip, from_end) = match taper.end {
+        EdgeEnd::Start => (edge.start_clip, false),
+        EdgeEnd::End => (edge.end_clip, true),
+    };
+    let station = |s: f32| if from_end { total - s } else { s };
+    let arrive_m = station(clip + taper.over_m);
+    let mut points = Vec::with_capacity(source.len() + 1);
+    let mut stations = Vec::with_capacity(source.len() + 1);
+    for (index, &point) in source.iter().enumerate() {
+        if index > 0 {
+            let (before, after) = (cumulative[index - 1], cumulative[index]);
+            if before + 1e-3 < arrive_m && arrive_m < after - 1e-3 {
+                let t = (arrive_m - before) / (after - before);
+                points.push(source[index - 1].lerp(point, t));
+                stations.push(arrive_m);
+            }
+        }
+        points.push(point);
+        stations.push(cumulative[index]);
+    }
+    let offsets = stations
+        .iter()
+        .map(|&s| {
+            let t = (station(s) - clip) / taper.over_m;
+            if t <= 0.0 {
+                taper.from_offset
+            } else if t >= 1.0 {
+                own
+            } else {
+                taper.from_offset + (own - taper.from_offset) * t
+            }
+        })
+        .collect();
+    (points, offsets)
 }
 
 // Keeps the lane points strictly beyond each layout end's station and puts the layout point in

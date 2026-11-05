@@ -25,7 +25,7 @@ use super::layout::{
     LayoutError, LayoutScratch,
 };
 use super::mesh::{SpanEnd, StripKind};
-use super::profile::{Level, ProfileBand, RoadProfile};
+use super::profile::{Level, MedianEdges, PocketNarrowing, ProfileBand, RoadProfile};
 use super::span::{PASS_THROUGH_DOT_THRESHOLD, edge_points, incident_direction, is_surface_edge};
 use super::{BandKind, RoadVec2};
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -645,20 +645,55 @@ pub(super) const MEDIAN_THROUGH_MIN_EDGE_M: f64 = 20.0;
 // Whether a pass-through node's two arms carry one median, raised when `raised` and painted
 // otherwise, that lines up across it (`ROAD-80`): equal style and width, the line between the
 // lane groups at one place (each arm's offset taken looking away from the node, so the other's
-// is its mirror), and both edges at least `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
+// is its mirror), or a left turn pocket's narrowing starting there (`ROAD-95`,
+// [`pocket_narrowing_lines_up`]), and both edges at least `MEDIAN_THROUGH_MIN_EDGE_M` long. `O(1)`.
 fn median_lines_up(graph: &RegionGraph, arms: [ArmKey; 2], raised: bool) -> bool {
     let [(a, a_end), (b, b_end)] = arms.map(|key| (graph.edge(key.edge), key.end));
     let outward = |edge: &Edge, end: EdgeEnd| match end {
         EdgeEnd::Start => edge.lane_group_offset(),
         EdgeEnd::End => -edge.lane_group_offset(),
     };
-    a.median
+    let lines_up = a
+        .median
         .zip(b.median)
         .is_some_and(|(median, other)| median.is_raised() == raised && median == other)
-        && outward(a, a_end) == -outward(b, b_end)
+        && outward(a, a_end) == -outward(b, b_end);
+    (lines_up || raised && pocket_narrowing_lines_up([(a, a_end), (b, b_end)]))
         && [a, b]
             .iter()
             .all(|edge| horizontal_length_m(&edge.geometry) >= MEDIAN_THROUGH_MIN_EDGE_M)
+}
+
+// Whether one arm is a left turn pocket's edge whose median narrowing starts at this node and
+// whose median there has exactly the other arm's edges (`ROAD-95`, D3): the pocket's transition,
+// where its median continues the base road's of one style, the edge on the far side in line and
+// the pocket side a lane further out, so both spans' shared row agrees bit for bit. The other
+// arm's median is its own, centred. `O(1)`.
+fn pocket_narrowing_lines_up(arms: [(&Edge, EdgeEnd); 2]) -> bool {
+    // A median's edges looking away from the node: mirrored at an edge's end.
+    let outward = |edges: MedianEdges, end: EdgeEnd| match end {
+        EdgeEnd::Start => (edges.left_m, edges.right_m),
+        EdgeEnd::End => (-edges.right_m, -edges.left_m),
+    };
+    let lines_up = |(pocket, pocket_end): (&Edge, EdgeEnd), (base, base_end): (&Edge, EdgeEnd)| {
+        let (Some(narrowing), Some(median), Some(base_median)) =
+            (PocketNarrowing::of(pocket), pocket.median, base.median)
+        else {
+            return false;
+        };
+        let (left, right) = outward(narrowing.at_transition, pocket_end);
+        let (base_left, base_right) = outward(
+            MedianEdges::centred(base.lane_group_offset(), base_median.width_m),
+            base_end,
+        );
+        narrowing.end == pocket_end
+            && base.median_pocket_lanes() == 0
+            && median.style == base_median.style
+            && base_median.is_raised()
+            && (left, right) == (-base_right, -base_left)
+    };
+    let [a, b] = arms;
+    lines_up(a, b) || lines_up(b, a)
 }
 
 /// Whether a raised median runs on through `node` without a nose (`ROAD-80`): a pass-through

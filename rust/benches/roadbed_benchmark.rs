@@ -16,8 +16,8 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::Vector3;
-use metrum_rise::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
-use metrum_rise::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, RoadbedSystem};
+use metrum_rise::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadPocket};
+use metrum_rise::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, EdgeEnd, RoadbedSystem};
 use metrum_rise::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
@@ -77,6 +77,14 @@ fn divided(edge: Edge) -> Edge {
     let mut edge = four_lane(edge);
     edge.median = RoadMedian::from_tool(2, 4.0).unwrap();
     edge.width = 18.0;
+    edge
+}
+
+// A 2+2 road with a 5 m kerbed grass median, wide enough for a left pocket (`ROAD-95`).
+fn divided_5m(edge: Edge) -> Edge {
+    let mut edge = four_lane(edge);
+    edge.median = RoadMedian::from_tool(2, 5.0).unwrap();
+    edge.width = 19.0;
     edge
 }
 
@@ -211,6 +219,35 @@ fn bench_roadbed_span(c: &mut Criterion) {
             b.iter(|| black_box(roadbed.build_span_piece(black_box(&graph), edge)))
         });
     }
+
+    // A left turn pocket's 100 m span (`ROAD-95`, D3): a 2+2 road on a 5 m grass median runs
+    // through a lane transition into the pocket edge, whose median narrows to 1.5 m over its
+    // first 12 m (six more rows than `span_100m_divided`'s); a nose at its free end.
+    let mut graph = RegionGraph::new();
+    let (base, body) = (
+        centerline(48.0, Shape::Straight, (10.0, 20.0)),
+        centerline(100.0, Shape::Straight, (58.0, 20.0)),
+    );
+    let start = graph.add_node(base[0], NodeType::Junction);
+    let transition = graph.add_node(body[0], NodeType::LaneTransition);
+    let end = graph.add_node(body[body.len() - 1], NodeType::Junction);
+    graph.add_edge(divided_5m(edge_through(start, transition, base)));
+    let pocket = graph.add_edge(divided_5m(edge_through(transition, end, body)));
+    graph.set_edge_pocket(
+        pocket,
+        Some(RoadPocket {
+            end: EdgeEnd::End,
+            left: true,
+            right: false,
+        }),
+    );
+    let piece = roadbed
+        .build_span_piece(&graph, pocket)
+        .expect("span builds");
+    assert!(piece.mesh().top_triangle_count() > 0);
+    group.bench_function(BenchmarkId::new("build", "span_100m_left_pocket"), |b| {
+        b.iter(|| black_box(roadbed.build_span_piece(black_box(&graph), pocket)))
+    });
 
     // Publish one 100 m arm of a T junction: closure, build, chunk index and generation.
     let mut graph = RegionGraph::new();

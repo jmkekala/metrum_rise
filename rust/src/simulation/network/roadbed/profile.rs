@@ -325,6 +325,64 @@ impl MedianEdges {
     }
 }
 
+/// Over how many metres from its transition a left turn pocket's span narrows the raised median
+/// by a lane (`ROAD-95`, D3): D4's shortest taper, on the pocket span alone, since a left
+/// pocket's transition passes through with no node piece to split it over.
+pub(crate) const LEFT_POCKET_TAPER_M: f32 = 12.0;
+
+/// A left turn pocket's median narrowing on its edge (`ROAD-95`, D3), for an edge whose raised
+/// median a pocket lane narrows (`Edge::median_pocket_lanes`): the end at its transition, the
+/// median's edges there (the base road's, in this edge's forward frame) and which edge moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PocketNarrowing {
+    /// The edge's end at the transition node, opposite the pocket's junction.
+    pub(crate) end: crate::simulation::network::roadbed::EdgeEnd,
+    /// The median at the transition: this edge's own, its moving edge a lane further out.
+    pub(crate) at_transition: MedianEdges,
+    /// Whether the moving edge is the right (positive) one.
+    pub(crate) right_moves: bool,
+}
+
+impl PocketNarrowing {
+    /// The narrowing of `edge`'s median, or `None` without a pocket lane in its median. `O(1)`.
+    pub(crate) fn of(edge: &Edge) -> Option<Self> {
+        use crate::simulation::network::roadbed::EdgeEnd;
+        if edge.median_pocket_lanes() == 0 {
+            return None;
+        }
+        let pocket = edge.pocket?;
+        let median = edge.median?;
+        // The inner lanes of the forward group lie towards the line between the groups from the
+        // driving side: the median's right edge under right-hand traffic, its left one for the
+        // backward group.
+        let forward = pocket.end == EdgeEnd::End;
+        let right_moves = forward != config::DRIVE_ON_LEFT;
+        let own = MedianEdges::centred(edge.lane_group_offset(), median.width_m);
+        let lane_m = f32::from(edge.median_pocket_lanes()) * config::LANE_WIDTH;
+        let at_transition = if right_moves {
+            MedianEdges {
+                right_m: own.right_m + lane_m,
+                width_m: median.width_m + lane_m,
+                ..own
+            }
+        } else {
+            MedianEdges {
+                left_m: own.left_m - lane_m,
+                width_m: median.width_m + lane_m,
+                ..own
+            }
+        };
+        Some(Self {
+            end: match pocket.end {
+                EdgeEnd::Start => EdgeEnd::End,
+                EdgeEnd::End => EdgeEnd::Start,
+            },
+            at_transition,
+            right_moves,
+        })
+    }
+}
+
 /// Returns the complete visible roadbed half-width, including curb or shoulder and sidewalk.
 pub(crate) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
     RoadProfile::for_edge(edge).half_width_m()

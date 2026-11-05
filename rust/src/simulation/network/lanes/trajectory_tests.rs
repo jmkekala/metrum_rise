@@ -670,6 +670,11 @@ fn fixtures() -> Vec<(String, RegionGraph)> {
         "t_right_pocket".to_string(),
         super::super::roadbed::fixtures::t_right_pocket(),
     ));
+    // Round R5b1: a divided four-way whose west arm has a left pocket in its median.
+    fixtures.push((
+        "four_way_2x2_left_pocket".to_string(),
+        super::super::roadbed::fixtures::four_way_2x2_left_pocket(),
+    ));
     fixtures.extend(footpath_fixtures(false).into_iter().filter(|(name, _)| {
         name.starts_with("t_beside_arm/") || name.starts_with("through_road/")
     }));
@@ -686,7 +691,7 @@ fn junction_connectors_stay_on_the_carriageway_without_backward_steps_or_kinks()
         let mut lanes = LaneSystem::new();
         lanes.rebuild(&mut graph);
         // A pocket fixture's transition is measured too.
-        let nodes = if name == "t_right_pocket" {
+        let nodes = if name.ends_with("_pocket") {
             vec![0, 1]
         } else {
             vec![0]

@@ -266,7 +266,8 @@ fn pocket_edits_are_refused_with_a_reason() {
         "pocket_junction_whitelisted"
     );
     core.clear_lane_connections_internal(node);
-    // A road with a median (R5a1 decision 6, until round R5b1).
+    // A road with a median (R5a1 decision 6): a right pocket's laid-out transition would gap
+    // it; a left pocket needs a raised median of at least 3.8 m (round R5b1, D3).
     let grass = crate::simulation::network::graph::RoadMedian {
         style: crate::simulation::network::graph::MedianStyle::KerbedGrass,
         width_m: 3.0,
@@ -279,6 +280,125 @@ fn pocket_edits_are_refused_with_a_reason() {
         pocket_edit(&mut core, request(west, end, right, 60.0)),
         "pocket_median_gap"
     );
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (true, false), 60.0)),
+        "pocket_requires_wide_median"
+    );
+}
+
+// Arm `west` of `crossing` made a `lanes` + `lanes` road on a `median_m` kerbed grass median.
+fn divide_arm(core: &mut SimCore, west: usize, lanes: u8, median_m: f32) {
+    let grass = crate::simulation::network::graph::RoadMedian {
+        style: crate::simulation::network::graph::MedianStyle::KerbedGrass,
+        width_m: median_m,
+    };
+    let attributes = crate::simulation::network::road_types::RoadAttributes::of_edge(
+        core.region_graph.edge(west),
+    );
+    assert!(core.set_edge_cross_section_internal(
+        west as i32,
+        lanes,
+        lanes,
+        Some(grass),
+        attributes
+    ));
+}
+
+// Round R5b1 (D3): a left pocket on a divided 2+2 arm through the edit, at both stored ends. The
+// pocket edge keeps the footprint and narrows the 5 m median to 1.5 m; the transition passes
+// through (no node piece) and the median continues there without a nose; preview is commit for
+// the add, a resize and the removal, which gives the base road its median back; undo restores
+// the pocket. A 3.8 m median takes one with a 0.3 m stub, and a body too short for the
+// narrowing and the junction's nose is refused.
+#[test]
+fn a_left_pocket_on_a_divided_road_narrows_its_median_through_the_edit() {
+    for west_to_east in [true, false] {
+        let (mut core, node) = crossing(west_to_east);
+        let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+        divide_arm(&mut core, west, 2, 5.0);
+        let base = core.region_graph.edge(west).clone();
+        let left = (true, false);
+        assert_eq!(pocket_edit(&mut core, request(west, end, left, 60.0)), "");
+        let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+        let pocket = core.region_graph.edge(state.edge).clone();
+        assert_eq!(pocket.median.unwrap().width_m, 1.5);
+        assert_eq!(pocket.width, base.width, "the footprint stays");
+        assert_eq!(pocket.fwd_lanes + pocket.bkw_lanes, 5);
+        let transition = if end == EdgeEnd::End {
+            pocket.start_node
+        } else {
+            pocket.end_node
+        };
+        assert_eq!(
+            core.region_graph.node(transition).node_type,
+            NodeType::LaneTransition
+        );
+        core.precompute_road_mesh_data();
+        assert!(
+            core.transit_network
+                .roadbed
+                .node_piece(transition)
+                .is_none(),
+            "a pass-through"
+        );
+        // The median continues through: the pocket span's row there is a divided body row.
+        let span = core.transit_network.roadbed.span_piece(state.edge).unwrap();
+        let row = if end == EdgeEnd::End {
+            span.start_mouth()
+        } else {
+            span.end_mouth()
+        };
+        assert_eq!(row.profile.bands().len(), 9, "no nose at the transition");
+        assert_eq!(pocket_edit(&mut core, request(west, end, left, 90.0)), "");
+        assert_eq!(
+            pocket_edit(&mut core, request(west, end, (false, false), 90.0)),
+            ""
+        );
+        let joined = core.region_graph.edge(west);
+        assert_eq!(
+            (
+                joined.fwd_lanes,
+                joined.bkw_lanes,
+                joined.median,
+                joined.width
+            ),
+            (base.fwd_lanes, base.bkw_lanes, base.median, base.width)
+        );
+        assert!(core.undo_action_internal());
+        let restored = core.get_road_pocket_internal(west as i32, end).unwrap();
+        assert!(restored.pocket.left && !restored.pocket.right);
+        assert!((restored.body_m - 90.0).abs() < 1e-3);
+    }
+    // The widest grass median (12 m, an 8.5 m remainder) at a crossing of a 4+4 road on 12 m: the
+    // shortest body leaves no room for the narrowing before the junction's nose; 40 m does.
+    let (mut core, node) = crossing(true);
+    let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+    for towards in [
+        Vector3::new(0.0, 0.0, -150.0),
+        Vector3::new(0.0, 0.0, 150.0),
+    ] {
+        let (arm, _) = arm_end(&core, node, towards);
+        divide_arm(&mut core, arm, 4, 12.0);
+    }
+    divide_arm(&mut core, west, 2, 12.0);
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (true, false), 20.0)),
+        "pocket_road_too_short"
+    );
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (true, false), 40.0)),
+        ""
+    );
+    let (mut core, node) = crossing(true);
+    let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
+    divide_arm(&mut core, west, 2, 3.8);
+    assert_eq!(
+        pocket_edit(&mut core, request(west, end, (true, false), 60.0)),
+        ""
+    );
+    let state = core.get_road_pocket_internal(west as i32, end).unwrap();
+    let stub = core.region_graph.edge(state.edge).median.unwrap().width_m;
+    assert!((stub - 0.3).abs() < 1e-6, "{stub}");
 }
 
 // Ported: `pocket_roles_resize_remove_and_preview_cover_both_stored_directions`. At both stored

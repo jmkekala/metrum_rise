@@ -3,7 +3,7 @@
 //! Road graph and lane connection serialization.
 
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadPocket};
+use crate::simulation::network::graph::{Edge, MedianStyle, RegionGraph, RoadMedian, RoadPocket};
 use crate::simulation::network::validate::{
     RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, grade_violation,
 };
@@ -240,15 +240,19 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let allowed_types = i64_to_u8(row.get(4)?)?;
             let fwd_lanes = i64_to_u8(row.get(7)?)?;
             let bkw_lanes = i64_to_u8(row.get(8)?)?;
-            // A median loads only as a stroke or an edit could have built it (`ROAD-80`).
-            let median = RoadMedian::from_tool(row.get(16)?, row.get(17)?)
-                .and_then(|median| {
-                    Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, median)
-                        .map(|()| median)
-                })
-                .map_err(|reason| {
-                    SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
-                })?;
+            let invalid_median = |reason| {
+                SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
+            };
+            // Read as stored: a left pocket's edge carries its base road's median a lane
+            // narrower (`ROAD-95`), so the rules check the base road's below.
+            let median = match row.get::<_, i32>(16)? {
+                0 => None,
+                code => Some(RoadMedian {
+                    style: MedianStyle::from_code(code)
+                        .ok_or_else(|| invalid_median("unknown_median_style"))?,
+                    width_m: row.get(17)?,
+                }),
+            };
             let pocket = RoadPocket::from_codes(row.get(19)?, row.get(20)?).map_err(|reason| {
                 SaveLoadError::custom(format!("edge {eid} has an invalid pocket ({reason})"))
             })?;
@@ -279,7 +283,10 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 median,
                 pocket,
             };
-            // A pocket loads only as a pocket edit could have built it (`ROAD-95`).
+            // A median loads only as a stroke or an edit could have built it (`ROAD-80`), and
+            // a pocket only as a pocket edit could have (`ROAD-95`).
+            Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, edge.base_median())
+                .map_err(invalid_median)?;
             edge.validate_pocket().map_err(|reason| {
                 SaveLoadError::custom(format!("edge {eid} has an invalid pocket ({reason})"))
             })?;
