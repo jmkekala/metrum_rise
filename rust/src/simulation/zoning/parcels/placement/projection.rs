@@ -26,7 +26,11 @@ pub(crate) fn road_edge_at(graph: &RegionGraph, world_pos: Vector2) -> Option<us
         let Some(projected) = project_point_to_edge(graph, edge_idx, world_pos) else {
             return;
         };
-        if projected.dist_m > edge.width * 0.5 + crate::config::SIDEWALK_WIDTH {
+        // The road reaches its curb on the cursor's side (a pocket edge's lie off its
+        // centreline, `ROAD-95`, D17).
+        if projected.dist_m
+            > edge.frontage_half_width_m(projected.side) + crate::config::SIDEWALK_WIDTH
+        {
             return;
         }
         if best.is_none_or(|current| {
@@ -63,7 +67,10 @@ pub(crate) fn project_buildable_road_point_at(
         let Some(projected) = project_point_to_edge(graph, edge_idx, world_pos) else {
             continue;
         };
-        let max_centerline_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH + depth_m + 8.0;
+        let max_centerline_dist = edge.frontage_half_width_m(projected.side)
+            + crate::config::SIDEWALK_WIDTH
+            + depth_m
+            + 8.0;
         if projected.dist_m > max_centerline_dist {
             continue;
         }

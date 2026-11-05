@@ -13,7 +13,7 @@ use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
 use crate::simulation::pathing::cost::CostCalculator;
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 
 /// Most vehicle lanes one direction of a road carries, as the road tool offers them.
 pub(crate) const MAX_LANES_PER_DIRECTION: u8 = 4;
@@ -226,6 +226,37 @@ impl Edge {
         let inner_kerb = inner && self.median_pocket_lanes() == 0;
         let lanes = f32::from(u8::from(outer)) - f32::from(u8::from(inner_kerb));
         lanes * config::LANE_WIDTH * 0.5 * side * direction
+    }
+
+    /// Distance from the centreline to the carriageway's edge on the side a building or lot
+    /// fronts: `side` 1 left of the forward direction, -1 right (`Building::side`,
+    /// `ZoningParcel::side`). Half the width, moved by [`Self::kerb_shift_m`] on a pocket edge, so
+    /// each side reaches its own kerb (`ROAD-95`, D17): a 1+1 road's right pocket gives 7.0 m on
+    /// the right and 3.5 m on the left. Bit for bit `width / 2` without a pocket. `O(1)`.
+    pub(crate) fn frontage_half_width_m(&self, side: i8) -> f32 {
+        let shift = self.kerb_shift_m();
+        if shift == 0.0 {
+            return self.width * 0.5;
+        }
+        // The shift points along the lanes' normal, right of the forward direction.
+        self.width * 0.5 - f32::from(side) * shift
+    }
+
+    /// The centreline segment `a`-`b` (plan x, z) shifted sideways by [`Self::kerb_shift_m`], as
+    /// [`Self::carriageway_axis`] moves it: a segment of the carriageway's axis, about which the
+    /// road spans `width / 2` plus its side band on both sides (`ROAD-95`, D17). The building and
+    /// parcel corridor tests read it segment by segment, with no allocation. `a` and `b` unchanged
+    /// without a pocket or for a degenerate segment. `O(1)`.
+    pub(crate) fn carriageway_segment(&self, a: Vector2, b: Vector2) -> (Vector2, Vector2) {
+        let shift = self.kerb_shift_m();
+        let ab = b - a;
+        let length = ab.length();
+        if shift == 0.0 || length <= 1e-6 {
+            return (a, b);
+        }
+        // The lanes' normal, right of the forward direction.
+        let lateral = Vector2::new(-ab.y, ab.x) * (shift / length);
+        (a + lateral, b + lateral)
     }
 
     /// `points` (this edge's polyline) shifted sideways by [`Self::kerb_shift_m`], mitred at

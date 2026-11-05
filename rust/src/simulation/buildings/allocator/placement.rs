@@ -32,6 +32,7 @@ use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
+use super::geometry::frontage_side_offset_m;
 use super::site::building_site_support_tie_in_is_valid;
 
 const EXPLICIT_SERVICE_FRONTAGE_MIN_SEARCH_M: f32 = 50.0;
@@ -505,7 +506,7 @@ impl BuildingAllocator {
     ) -> Option<ResolvedPlacement> {
         let edge_idx = parcel.edge_idx();
         let edge = graph.edge(edge_idx);
-        let edge_width = edge.width;
+        let side_offset_m = frontage_side_offset_m(edge, parcel.side());
         let zone_cell_m = zoning.config.zone_cell_m;
         if parcel.occupied_building().is_some() || !graph.takes_buildings(edge_idx) {
             return None;
@@ -537,7 +538,7 @@ impl BuildingAllocator {
             support_height_m: 0.0,
             facing_dir: parcel.normal() * -1.0,
             frontage_t: parcel.frontage_center_t(),
-            edge_width,
+            side_offset_m,
             front_gap_m: [0.0; 3],
         };
         if self.placement_overlaps_existing_flat_support(&placement) {
@@ -993,7 +994,7 @@ impl BuildingAllocator {
             support_height_m: 0.0,
             facing_dir: -outward,
             frontage_t: projection.t,
-            edge_width: edge.width,
+            side_offset_m: frontage_side_offset_m(edge, projection.side),
             front_gap_m: [0.0; 3],
         })
     }
@@ -1114,8 +1115,12 @@ impl BuildingAllocator {
             }
             let road_half_width = road_collision_half_width_m(edge);
             for segment in edge.physical_geometry.windows(2) {
-                let start = Vector2::new(segment[0].x, segment[0].z);
-                let end = Vector2::new(segment[1].x, segment[1].z);
+                // A pocket edge's road spans the half-width about its carriageway's axis
+                // (`ROAD-95`, D17).
+                let (start, end) = edge.carriageway_segment(
+                    Vector2::new(segment[0].x, segment[0].z),
+                    Vector2::new(segment[1].x, segment[1].z),
+                );
                 let delta = end - start;
                 if delta.length_squared()
                     <= EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M * EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M
@@ -1360,7 +1365,7 @@ impl BuildingAllocator {
             support_height_m: building.support_height_m,
             facing_dir: building.facing_dir,
             frontage_t: building.frontage_t,
-            edge_width: edge.width,
+            side_offset_m: frontage_side_offset_m(edge, building.side),
             front_gap_m: [0.0; 3],
         };
         if self.placement_overlaps_existing_flat_support(&placement) {
@@ -1625,7 +1630,7 @@ impl BuildingAllocator {
             return None;
         }
         let normal = Vector2::new(tangent.y, -tangent.x) * side as f32;
-        Some(center + normal * road_connection_lateral_offset_m(edge))
+        Some(center + normal * road_connection_lateral_offset_m(edge, side))
     }
 
     fn validate_neighbor_site_height(
@@ -1881,7 +1886,7 @@ impl BuildingAllocator {
             zone_type: placement.zone_type,
             facing_dir: placement.facing_dir,
             frontage_t: placement.frontage_t,
-            side_offset: placement.edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
+            side_offset: placement.side_offset_m,
             front_gap_m: placement.front_gap_m,
             center_x: placement.center_2d.x,
             center_y: placement.center_2d.y,
@@ -2111,9 +2116,14 @@ fn sort_driveway_connection_candidates(candidates: &mut [DrivewayConnectionCandi
     });
 }
 
-// The road's outer edge (sidewalk, or shoulder on a road without sidewalks), just inside it.
-fn road_connection_lateral_offset_m(edge: &crate::simulation::network::graph::Edge) -> f32 {
-    (edge.width * 0.5 + side_band_width_m(edge) - BUILDING_SITE_ROAD_SAMPLE_INSET_M).max(0.0)
+// The road's outer edge on `side` (sidewalk, or shoulder on a road without sidewalks), just
+// inside it; a pocket edge's kerbs lie off its centreline (`ROAD-95`, D17).
+fn road_connection_lateral_offset_m(
+    edge: &crate::simulation::network::graph::Edge,
+    side: i8,
+) -> f32 {
+    (edge.frontage_half_width_m(side) + side_band_width_m(edge) - BUILDING_SITE_ROAD_SAMPLE_INSET_M)
+        .max(0.0)
 }
 
 fn road_collision_half_width_m(edge: &crate::simulation::network::graph::Edge) -> f32 {
@@ -2250,7 +2260,8 @@ struct ResolvedPlacement {
     support_height_m: f32,
     facing_dir: Vector2,
     frontage_t: f32,
-    edge_width: f32,
+    // See `Building::side_offset`.
+    side_offset_m: f32,
     // See `Building::front_gap_m`; measured with the site support, before commit.
     front_gap_m: [f32; 3],
 }
@@ -2529,7 +2540,7 @@ mod tests {
             support_height_m: 14.0,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
-            edge_width: 8.0,
+            side_offset_m: 5.5,
             front_gap_m: [0.0; 3],
         };
         let overlapping = ResolvedPlacement {
@@ -2550,7 +2561,7 @@ mod tests {
             support_height_m: 14.0,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
-            edge_width: 8.0,
+            side_offset_m: 5.5,
             front_gap_m: [0.0; 3],
         };
 

@@ -36,7 +36,8 @@ impl BuildingAllocator {
             return None;
         }
         let outward = Vector2::new(tangent.y, -tangent.x).normalized() * side as f32;
-        let setback = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+        // The curb on this side: a pocket edge's kerbs lie off its centreline (`ROAD-95`, D17).
+        let setback = frontage_side_offset_m(edge, side);
         let frontage_center = centerline + outward * setback;
         Some((
             frontage_center + outward * (depth_m * 0.5),
@@ -310,8 +311,12 @@ pub(crate) fn lot_front_gaps(
                 }
                 let outer = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
                 for pair in edge.physical_geometry.windows(2) {
-                    let a = Vector2::new(pair[0].x, pair[0].z);
-                    let b = Vector2::new(pair[1].x, pair[1].z);
+                    // A pocket edge's road spans `outer` about its carriageway's axis
+                    // (`ROAD-95`, D17).
+                    let (a, b) = edge.carriageway_segment(
+                        Vector2::new(pair[0].x, pair[0].z),
+                        Vector2::new(pair[1].x, pair[1].z),
+                    );
                     let ab = b - a;
                     let t = if ab.length_squared() > 0.0 {
                         ((point - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
@@ -328,6 +333,14 @@ pub(crate) fn lot_front_gaps(
             0.0
         }
     })
+}
+
+/// [`Building::side_offset`](super::Building::side_offset) for a frontage on `side` of `edge`
+/// (`1` left of its forward direction, `-1` right): the curb on that side, the carriageway's edge
+/// plus the sidewalk. A pocket edge's kerbs lie off its centreline (`ROAD-95`, D17); bit for bit
+/// `width / 2 + SIDEWALK_WIDTH` on any other road. `O(1)`.
+pub(crate) fn frontage_side_offset_m(edge: &Edge, side: i8) -> f32 {
+    edge.frontage_half_width_m(side) + crate::config::SIDEWALK_WIDTH
 }
 
 /// The gap of [`lot_front_gaps`] at lateral position `s` in `-1..=1` across the lot front,

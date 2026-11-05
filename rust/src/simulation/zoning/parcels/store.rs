@@ -319,7 +319,8 @@ impl ParcelStore {
         edge: &crate::simulation::network::graph::Edge,
         range: [f32; 2],
     ) -> Vec<&ZoningParcel> {
-        let pad = edge.width * 0.5
+        // A pocket edge's farther kerb (`ROAD-95`, D17).
+        let pad = edge.frontage_half_width_m(1).max(edge.frontage_half_width_m(-1))
             + crate::config::SIDEWALK_WIDTH
             + crate::simulation::zoning::MIN_PARCEL_DEPTH_M * 0.5;
         let mut station = 0.0;

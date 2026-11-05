@@ -49,8 +49,10 @@ pub(in crate::simulation::economy::agents::tick) fn local_access_path(
         let edge_pos = entrance_edge_pos(entrance, graph)?;
         let normal = entrance_edge_normal(entrance, graph)?;
         let edge = graph.edge(entrance.edge_idx);
-        let same_side_cross_point = edge_pos + normal * (edge.width * 0.5);
-        let opposite_side_cross_point = edge_pos - normal * (edge.width * 0.5);
+        // Each side's kerb: a pocket edge's lie off its centreline (`ROAD-95`, D17).
+        let same_side_cross_point = edge_pos + normal * edge.frontage_half_width_m(entrance.side);
+        let opposite_side_cross_point =
+            edge_pos - normal * edge.frontage_half_width_m(-entrance.side);
         path.points[0] = entrance.door_pos;
         path.points[1] = same_side_cross_point;
         path.points[2] = opposite_side_cross_point;

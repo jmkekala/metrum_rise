@@ -30,6 +30,8 @@ use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 
+use super::geometry::frontage_side_offset_m;
+
 const REZONE_GRACE_DAYS: u8 = 3;
 const FRONTAGE_ATTACHMENT_REPAIR_MIN_SEARCH_M: f32 = 50.0;
 const FRONTAGE_ATTACHMENT_REPAIR_SEARCH_MARGIN_M: f32 = 20.0;
@@ -964,7 +966,7 @@ impl BuildingAllocator {
                 (
                     parcel.front_center() + parcel.normal() * (depth_m * 0.5),
                     parcel.normal(),
-                    edge.width * 0.5 + crate::config::SIDEWALK_WIDTH,
+                    frontage_side_offset_m(edge, building.side),
                 )
             } else {
                 // Explicit placement has no frontage grid cell. Its saved normalized
@@ -1262,9 +1264,13 @@ impl BuildingAllocator {
                 continue;
             };
             // A lot's centre, its frontage, the connection the test or the search measures,
-            // the edge's centreline under it.
-            let reach_m =
-                largest_lot_m + search_m.max(tolerance_m) + edge.width * 0.5 + SIDEWALK_WIDTH;
+            // the edge's centreline under it (a pocket edge's farther kerb, `ROAD-95`).
+            let reach_m = largest_lot_m
+                + search_m.max(tolerance_m)
+                + edge
+                    .frontage_half_width_m(1)
+                    .max(edge.frontage_half_width_m(-1))
+                + SIDEWALK_WIDTH;
             let ends;
             let points = if edge.physical_geometry.len() >= 2 {
                 edge.physical_geometry.as_slice()
@@ -1336,7 +1342,7 @@ impl BuildingAllocator {
             return false;
         };
 
-        let edge_width = graph.edge(projection.edge_idx).width;
+        let side_offset = frontage_side_offset_m(graph.edge(projection.edge_idx), projection.side);
         let building = &mut self.buildings[building_idx];
         let changed = building.edge_idx != projection.edge_idx
             || building.side != projection.side
@@ -1347,7 +1353,7 @@ impl BuildingAllocator {
         building.edge_idx = projection.edge_idx;
         building.side = projection.side;
         building.frontage_t = projection.t;
-        building.side_offset = edge_width * 0.5 + SIDEWALK_WIDTH;
+        building.side_offset = side_offset;
         true
     }
 
@@ -1394,7 +1400,7 @@ impl BuildingAllocator {
                 parcel.side(),
                 parcel.frontage_center_t(),
                 cell_lot,
-                edge.width,
+                edge,
             )
         })
     }
@@ -1519,7 +1525,7 @@ impl BuildingAllocator {
             target_side,
             target_frontage_t,
             cell_lot,
-            edge.width,
+            edge,
         ) {
             return repaired_parcel;
         }
@@ -1527,7 +1533,7 @@ impl BuildingAllocator {
         building.edge_idx = target_edge_idx;
         building.side = target_side;
         building.frontage_t = target_frontage_t;
-        building.side_offset = edge.width * 0.5 + SIDEWALK_WIDTH;
+        building.side_offset = frontage_side_offset_m(edge, target_side);
         let zone_cell_m = zoning.config.zone_cell_m;
         let half_m = |cells: u16| f32::from(cells) * zone_cell_m * 0.5;
         let front_gap_m = super::geometry::lot_front_gaps(
@@ -1660,7 +1666,7 @@ impl BuildingAllocator {
             return None;
         }
         let normal = Vector2::new(tangent.y, -tangent.x) * side as f32;
-        Some(center + normal * (edge.width * 0.5 + SIDEWALK_WIDTH))
+        Some(center + normal * frontage_side_offset_m(edge, side))
     }
 }
 
@@ -2069,7 +2075,7 @@ impl BuildingAllocator {
 }
 
 // Whether aligning `building` to a parcel frontage on `edge_idx` would move it: a cell lot
-// takes the frontage exactly, with the side offset of the edge's `edge_width`; another parcel
+// takes the frontage exactly, with the side offset of `edge` on `side`; another parcel
 // tolerates a millimetre of `t`.
 fn parcel_attachment_differs(
     building: &crate::simulation::buildings::allocator::Building,
@@ -2077,13 +2083,13 @@ fn parcel_attachment_differs(
     side: i8,
     frontage_t: f32,
     cell_lot: bool,
-    edge_width: f32,
+    edge: &crate::simulation::network::graph::Edge,
 ) -> bool {
     building.edge_idx != edge_idx
         || building.side != side
         || if cell_lot {
             building.frontage_t != frontage_t
-                || building.side_offset != edge_width * 0.5 + SIDEWALK_WIDTH
+                || building.side_offset != frontage_side_offset_m(edge, side)
         } else {
             (building.frontage_t - frontage_t).abs() > 0.001
         }

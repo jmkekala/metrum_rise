@@ -372,7 +372,8 @@ pub(super) fn nearest_building_site_road_surface_sample(
                 return;
             }
             let normal = Vector2::new(tangent.y, -tangent.x) * projection.side as f32;
-            let probe = center + normal * building_site_road_connection_lateral_offset_m(edge);
+            let probe = center
+                + normal * building_site_road_connection_lateral_offset_m(edge, projection.side);
             let dist_sq = probe.distance_squared_to(pos);
             if dist_sq > radius_m * radius_m {
                 return;
@@ -396,11 +397,14 @@ pub(super) fn nearest_building_site_road_surface_sample(
     best.map(|(_, _, probe, height_m)| (probe, height_m))
 }
 
-// The road's outer edge (sidewalk, or shoulder on a road without sidewalks), just inside it.
+// The road's outer edge on `side` (sidewalk, or shoulder on a road without sidewalks), just
+// inside it; a pocket edge's kerbs lie off its centreline (`ROAD-95`, D17).
 pub(super) fn building_site_road_connection_lateral_offset_m(
     edge: &crate::simulation::network::graph::Edge,
+    side: i8,
 ) -> f32 {
-    (edge.width * 0.5 + side_band_width_m(edge) - BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M)
+    (edge.frontage_half_width_m(side) + side_band_width_m(edge)
+        - BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M)
         .max(0.0)
 }
 

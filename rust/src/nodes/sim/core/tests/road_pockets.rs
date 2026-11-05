@@ -16,6 +16,7 @@ use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::pockets::PocketRequest;
 use crate::simulation::network::roadbed::EdgeEnd;
 
+mod buildings;
 mod cells;
 
 // A four-way crossing at the origin of two 300 m roads drawn west to east and north to south

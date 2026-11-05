@@ -20,7 +20,9 @@ pub(crate) fn geometry_from_attachment(
     let road_pos = sample_pos_on_polyline(&edge.physical_geometry, edge.physical_length, s_m);
     let tangent = sample_tangent_on_polyline(&edge.physical_geometry, edge.physical_length, s_m);
     let normal = Vector2::new(tangent.y, -tangent.x) * side as f32;
-    let front_center = road_pos + normal * (edge.width * 0.5 + crate::config::SIDEWALK_WIDTH);
+    // The curb on this side: a pocket edge's kerbs lie off its centreline (`ROAD-95`, D17).
+    let front_center =
+        road_pos + normal * (edge.frontage_half_width_m(side) + crate::config::SIDEWALK_WIDTH);
     let center = front_center + normal * (depth_m * 0.5);
     let half_frontage = frontage_m * 0.5;
     let front_left = front_center - tangent * half_frontage;

@@ -39,12 +39,12 @@ fn geometry_overlaps_road_edge(
     }
     let half_width = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
     edge.physical_geometry.windows(2).any(|window| {
-        geometry_overlaps_road_corridor_segment(
-            geometry,
+        // A pocket edge's corridor lies about its carriageway's axis (`ROAD-95`, D17).
+        let (start, end) = edge.carriageway_segment(
             Vector2::new(window[0].x, window[0].z),
             Vector2::new(window[1].x, window[1].z),
-            half_width,
-        )
+        );
+        geometry_overlaps_road_corridor_segment(geometry, start, end, half_width)
     })
 }
 

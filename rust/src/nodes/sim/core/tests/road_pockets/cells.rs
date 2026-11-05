@@ -132,7 +132,7 @@ fn holes(cells: &BTreeSet<Cell>) -> BTreeSet<Cell> {
 // A four-way crossing at the origin of two 400 m roads of `lanes` + `lanes` lanes: one west to
 // east, one north to south turned `skew_deg` off square (the user's dump crosses at about
 // 90.45 degrees, so its two roads take independent grid bases). Returns the core and the node.
-fn four_way(lanes: i32, skew_deg: f64) -> (SimCore, u32) {
+pub(super) fn four_way(lanes: i32, skew_deg: f64) -> (SimCore, u32) {
     let mut core = test_core();
     core.treasury.balance = 1.0e7;
     let (sin, cos) = skew_deg.to_radians().sin_cos();

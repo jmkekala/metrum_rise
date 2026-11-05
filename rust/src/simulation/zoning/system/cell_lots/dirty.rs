@@ -219,6 +219,8 @@ impl ZoningSystem {
             )
             .expanded(
                 f64::from(edge.width) * 0.5
+                    // A pocket edge's widened curb (`ROAD-95`, D17).
+                    + f64::from(edge.kerb_shift_m().abs())
                     + f64::from(crate::config::SIDEWALK_WIDTH)
                     + f64::from(self.config.zone_cell_m) * CELL_DEPTH as f64,
             );

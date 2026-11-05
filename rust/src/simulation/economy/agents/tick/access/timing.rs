@@ -43,8 +43,9 @@ pub(in crate::simulation::economy::agents::tick) fn local_access_distance(
     let edge_pos = entrance_edge_pos(entrance, graph)?;
     let normal = entrance_edge_normal(entrance, graph)?;
     let edge = graph.edge(entrance.edge_idx);
-    let same_side_cross_point = edge_pos + normal * (edge.width * 0.5);
-    let opposite_side_cross_point = edge_pos - normal * (edge.width * 0.5);
+    // Each side's kerb: a pocket edge's lie off its centreline (`ROAD-95`, D17).
+    let same_side_cross_point = edge_pos + normal * edge.frontage_half_width_m(entrance.side);
+    let opposite_side_cross_point = edge_pos - normal * edge.frontage_half_width_m(-entrance.side);
     Some(
         segment_distance(entrance.door_pos, same_side_cross_point)
             + segment_distance(same_side_cross_point, opposite_side_cross_point)
