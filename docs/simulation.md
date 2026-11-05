@@ -273,7 +273,7 @@ version and the two new columns (0 on all 70 edges), every table's row count is 
 
 Save format 116 (`ROAD-107`, round S1, 2026-11-05) adds the `network_edges` column `sidewalks`, a
 road's sidewalk sides (0 none, 1 left, 2 right, 3 both;
-[`roads.md`](roads.md#one-sided-sidewalks-road-107-round-s1)). A code outside 0-3, sidewalks on an
+[`roads.md`](roads.md#one-sided-sidewalks-road-107)). A code outside 0-3, sidewalks on an
 edge without cars, or a car road whose sides disagree with its `FOOT` flag fails the load
 (`Edge::validate_sidewalks`); there is no repair and no older save loads. The Kuopio fixture is
 re-recorded in format 116: `sqldiff` shows only the version and the new column (3 on all 70

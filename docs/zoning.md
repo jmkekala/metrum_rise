@@ -393,6 +393,8 @@ path is for invalid saved data only; it must never leave illegal parcel geometry
   building on the sidewalk side fronts the sidewalk and is walked to, one on the shoulder side
   fronts the 0.75 m shoulder (its door probe and grading read that side's band,
   `side_band_width_m(edge, side)`) and is a car-only destination, its door having no foot lane
+  (the road builder warns "No sidewalk on the right: buildings on that side are reached by car
+  only", naming the side)
 - Persistence: saved on `network_edges`
 - Topology: split edges copy the flag to both children
 - Overlay: zoning tool draws no-build edge guide lines

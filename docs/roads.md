@@ -11058,8 +11058,9 @@ road's sidewalks), the speed limit (with `base_cost` recomputed, only when the s
 `no_building_spawn`; `cross_section_unchanged` compares the full spec. A widening is judged on the
 roadbed half-width (`visual_roadbed_half_width_m`: sidewalks, or without them the 0.75 m
 shoulders), so sidewalks added beside a parcel are refused (`parcel_overlap`) though the
-carriageway keeps its width, and the parcel corridor is `width / 2` plus the road's side band
-(`side_band_width_m`). Walkers on a removed sidewalk go through the same reattach as cars: the
+carriageway keeps its width, and the parcel corridor is `width / 2` plus the road's wider side
+band (`widest_side_band_width_m`); a side gaining a sidewalk counts as a widening whatever the
+larger side does ([`ROAD-107`](#one-sided-sidewalks-road-107)). Walkers on a removed sidewalk go through the same reattach as cars: the
 nearest sidewalk lane within 30 m, else laneless on their road (`TRAFFIC-19`'s case); none is
 moved or lost. The closure's entrances are rebuilt, so the road's buildings become car-only
 destinations, and the deferred routing rebuild takes the new speed and the walking topology.
@@ -11139,7 +11140,7 @@ did not build.
 The Road Properties window (select tool) carries a road-type picker (`ROAD-101`, replacing the
 R3 lane steppers and Median rows): the usable types, each line with its speed and Rust's build
 cost per metre ("4-Lane Road (50 km/h, 27 / m)"), the selected road's marked from
-`get_edge_cross_section`'s `road_type` (section, sidewalks and speed; zoning is not matched), or
+`get_edge_cross_section`'s `road_type` (section, sidewalk sides and speed; zoning is not matched), or
 a disabled "Custom layout" when no type has its cross-section (duplicate layouts resolve to the
 first type in list order). A pick asks the in-place check (`preview_edge_cross_section` through
 the select tool) with the type's lanes, median, speed, sidewalks and zoning for every selected
@@ -11383,17 +11384,18 @@ Rounds RB3a (Rust model, library and stroke), RB3b and RB3b2 (in place, costs), 
 independent of zoning; speed per type; costs by type; Road Properties changes all three in place.
 
 - **Attributes.** A type has `speed_kmh` (20-120 in steps of 10, `speed_out_of_range` off the
-  grid; every built-in 50; a walkway has none and lists 0), `sidewalks` (both sides or none) and
-  `zoning`. A stroke carries them as `RoadAttributes` from `set_road_tool_attributes` through the
+  grid; every built-in 50; a walkway has none and lists 0), `sidewalks` (its sides, `ROAD-107`:
+  0 none, 1 left, 2 right, 3 both) and `zoning`. A stroke carries them as `RoadAttributes` from `set_road_tool_attributes` through the
   preview, commit, attempt record and plan (`is_for`: preview = commit); the edge gets `FOOT`
   only with sidewalks, `speed_limit = speed_kmh / 3.6` (50 bitwise the old default) and
   `no_building_spawn = !zoning`. A split stroke keeps them on every piece. Type matching
   (`road_type`) compares the section, sidewalks and speed, never zoning, so "No buildings" stays
   a per-road override.
-- **The sidewalk rule.** A car road's layout has a sidewalk at both ends or none; without them
-  the roadbed draws its 0.75 m shoulder each side (`layout_widths` counts it in the total), the
-  corridor and parcel checks reach the shoulder, and a building fronting the road probes the
-  shoulder for its door, so it is a car-only destination. Sidewalks and zoning are independent:
+- **The sidewalk rule.** A car road's layout has a sidewalk at either end, at both or at none
+  (`ROAD-107`; both or none until then); at an end without one the roadbed draws its 0.75 m
+  shoulder (`layout_widths` counts it in the total), and a building fronting that side probes
+  the shoulder for its door, so it is a car-only destination. On a road with neither the corridor
+  and parcel checks reach the shoulder. Sidewalks and zoning are independent:
   a road without sidewalks may zone (a rural road with driveways; every agent owns a car), and
   the road builder warns "No sidewalks: buildings here are reached by car only". The walking
   proof checks only the edges walkers cross, so such a road keeps it (round RB3a; open question
@@ -11434,13 +11436,12 @@ independent of zoning; speed per type; costs by type; Road Properties changes al
   road's 512 m chunks; the whole city only while the chunk index is stale).
 - **Saves**: format 112 (the weighted upkeep roll); no older save loads.
 
-#### One-sided sidewalks (ROAD-107, round S1)
+#### One-sided sidewalks (ROAD-107)
 
 Round S1 (2026-11-05, branch `port-s1-sidewalks`): the model, roadbed, lanes, crossings,
-buildings and save. The builder's two checkboxes, Road Properties and the Godot calls that carry
-the side are round S2; until then Godot still passes and reads the sidewalks as a bool (both or
-none), so no stroke the game draws is one-sided yet. Plan: PLAN-R7 sections 2.1-2.4 (decisions
-D1, D3-D5, D22, D23).
+buildings and save. Round S2 (2026-11-05, branch `port-s2-sidewalk-ui`): the Godot calls, the
+road builder, Road Properties and the attempt record. Plan: PLAN-R7 sections 2.1-2.5 (decisions
+D1-D5, D22, D23).
 
 - **Model.** `Edge::sidewalks: SidewalkSides`, a mask in the edge's forward frame: left (1, the
   negative lateral side: sidewalk lane 100, building and lot side 1), right (2, the positive
@@ -11451,7 +11452,8 @@ D1, D3-D5, D22, D23).
   copies the mask to both halves; a stroke takes it from its type's `RoadAttributes::sidewalks`.
 - **Road types.** `RoadCrossSection::sidewalks` and `RoadAttributes::sidewalks` are the mask.
   `check_layout` accepts a sidewalk at either end, at both or at none (`layout_sidewalks` stays
-  for a sidewalk inside the road and for a lone sidewalk); `parts()` draws the sidewalk at the
+  for a sidewalk inside the road; a sidewalk alone is its left one, so `layout_no_car_lane`,
+  which the builder shows for a bare end); `parts()` draws the sidewalk at the
   ends the mask names; `base_name` adds " L" or " R" ("1+1 L"); `type_of` compares the mask;
   `layout_widths` counts a 0.75 m shoulder at each end without a sidewalk. A library entry with
   one sidewalk end, listed unusable before, is usable now (no file format change: the parts are
@@ -11479,6 +11481,45 @@ D1, D3-D5, D22, D23).
   sidewalks on an edge without cars, and a car road whose mask disagrees with its `FOOT` flag.
   Every road built before is both or none, so every existing product is bitwise unchanged
   (roadbed probe, R8 probe, envelope). Kuopio re-recorded.
+- **Godot (round S2).** The side crosses the bridge as the code 0 none, 1 left, 2 right, 3 both
+  (`SidewalkSides::from_bits`), in the road's forward frame, which is the direction it was drawn:
+  `set_road_tool_attributes`, `preview_edge_cross_section` and `set_edge_cross_section` take it,
+  `get_road_types`, `check_road_layout` and `get_edge_cross_section` report it, and the attempt
+  record carries it, so a replay sets it back. Any other code is `sidewalks_out_of_range`, the
+  previous attributes kept. A record written before the code holds a bool, whose save no longer
+  loads at format 116.
+- **Road builder (D2).** "Left sidewalk" and "Right sidewalk" checkboxes in the attribute row,
+  one per end of the strip and independent; an end without one is the shoulder band. The
+  description reads "sidewalk on the left" or "... right", both sides go unsaid, and the Roads
+  row's tooltip and Road Properties read the same text. A type that zones warns per side: "No
+  sidewalk on the right: buildings on that side are reached by car only" (a type with neither
+  keeps "No sidewalks: buildings here are reached by car only").
+- **Road Properties and in-place edits.** `road_type` matches the sides, so a road whose sides no
+  type has reads "Custom layout" and keeps them until the player picks a type: the picker is the
+  only way to change them, and it sends that type's sides in each selected road's own forward
+  frame. A pick adds or removes one side with the rest of the in-place edit: lanes rebuilt
+  locally, undo restores the whole edge. Walkers on a removed side reattach within the 30 m
+  reach, which on most roads puts them on the kept sidewalk at the same station; the house on
+  that side becomes a car-only destination. `edit_tunnel_width` and the larger-side comparison
+  are unchanged (a tunnel's bore is the larger side, reached to both sides), but any side gaining
+  a sidewalk runs the widening checks (`SidewalkSides::adds_to`), since moving from one sidewalk
+  to two leaves the larger side alone; they use the stroke's symmetric corridor, so a sidewalk
+  added opposite a parcel inside 1.5 m of the kerb is refused too (D4). Bound: `O(1)` for the
+  test, then the check's existing `O(points + parcel hits)`.
+- **Pockets.** A kerb pocket moves its own side's bands out, a sidewalk or a shoulder; its split
+  copies the sides, and the sidewalk lanes stay on the side that has them
+  (`a_pocket_on_a_one_sided_road_keeps_its_sidewalk_on_that_side`, probe entries
+  `t_right_pocket_left_sidewalk` and `t_right_pocket_right_sidewalk`).
+- **Locality** (2026-11-05, release `$TEST_BINARY`, 8 workers, `nodes::sim::core::tests::
+  road_plan_scaling::<name> --exact --ignored --nocapture --test-threads=1`, unpinned, an
+  informational run, no control). `populated_one_sided_road_plan_scaling` (a left-only stroke at
+  1,000 / 10,000 / 100,000 background buildings): identical prepared products, compile p50
+  0.18 / 0.45 / 0.21 ms against the two-sided road's 0.27 / 0.41 / 0.18 ms in the same session.
+  `populated_road_side_edit_scaling` (the right sidewalk removed in place at 0 / 1,000 / 10,000 /
+  100,000): identical local products, verdict p50 0.44 / 0.50 / 0.42 / 0.42 ms, commit 1.05 /
+  0.83 / 0.80 / 1.36 ms, undo 0.34 / 0.23 / 0.28 / 0.71 ms, publish 1.50 / 1.35 / 1.12 / 1.34 ms,
+  the same shape as `populated_road_type_edit_scaling` run beside it (commit 0.57 / 0.73 / 0.72 /
+  1.28 ms), whose commit rises the same way at 100,000 (the `O(A / P + B / P)` membership passes).
 - **Tests and probe entries.** `profile_table_matches_the_legacy_band_rule` (one-sided row),
   `valid_layouts_build_their_cross_section` (one-ended layouts),
   `a_one_sided_road_builds_foot_lanes_on_its_sidewalk_side_only`,
@@ -11490,6 +11531,11 @@ D1, D3-D5, D22, D23).
   watertightness and crossing checks run too. The connector fixture list
   (`junction_connectors_stay_on_the_carriageway_without_backward_steps_or_kinks`) gains the two
   stems, the continuing road and a one-way stem; the straight pair has no connector to measure.
+  Round S2: `one_sidewalk_removed_in_place_keeps_the_other_and_undoes`,
+  `a_sidewalk_added_on_the_shoulder_side_is_checked_against_parcels`,
+  `a_left_sidewalk_is_on_the_left_of_the_stroke_either_way_it_is_drawn`, and the Godot tests
+  `road_builder_test`, `road_cross_section_test`, `road_lane_edit_test` and
+  `road_rejection_report_test`.
 - **Timing** (2026-11-05, Criterion `$BENCH_BINARY --bench --noplot 'roadbed_junction/build'`
   and `'roadbed_span/build'`, `roadbed_benchmark`, 4 workers, P-cores, control and branch in
   `C B B C` twice in one session, the control `dev` `167eeea6`, medians of four runs each): the
@@ -11518,9 +11564,10 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   hatching, a kerbed grass or paving median. Above each part a procedural `_draw()` glyph (an
   arrow up for a forward lane, down for a backward one; the median's surface; a pedestrian for a
   sidewalk), under it Rust's width, and beside the strip the lane split ("2 + 2"), the road
-  width (between the sidewalks) and the total width. Sidewalks are fixed at both ends; they
-  cannot be moved, removed or opened. Without sidewalks (round RB3c) each end is the roadbed's
-  0.75 m shoulder band, drawn as gravel between edge lines, never a part sent to Rust. Every change asks `check_road_layout`; an invalid layout is
+  width (between the sidewalks) and the total width. A sidewalk is fixed at its end; it cannot
+  be moved, removed or opened. An end without one (round RB3c, each end on its own since
+  `ROAD-107`) is the roadbed's 0.75 m shoulder band, drawn as gravel between edge lines, never a
+  part sent to Rust. Every change asks `check_road_layout`; an invalid layout is
   tinted red with Rust's reason (`road_reason_text.gd`) under the strip, never auto-sorted.
 - **Parts in.** Five tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
   median (each median at its style's default width; no footpath tile: the Walkway stays a
@@ -11531,15 +11578,17 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
 - **Part popup.** Clicking a part opens a `PopupPanel`: for a median its style (Painted, Grass,
   Paving) and width in 0.5 m steps within the style's range (`median_controls.gd`, without
   None), and for any part Move left / Move right (swaps with an interior neighbour) and Remove.
-- **Attributes** (round RB3c). Under the strip: **Sidewalks** (both ends together; the type
-  without them sends lanes and medians only), **Speed** (a stepper on Rust's grid,
+- **Attributes** (round RB3c). Under the strip: **Left sidewalk** and **Right sidewalk**
+  (`ROAD-107`: one per end, left and right as the road is drawn; a type without one sends no
+  sidewalk part at that end), **Speed** (a stepper on Rust's grid,
   `get_road_types().speeds`: 20-120 km/h in steps of 10; hidden for a footpath, which has no
   speed), **Zoning** and **Street lights** (round RB3e; ticked for a new type). A new type whose
   speed first reaches `no_zoning_from_kmh` (80) gets zoning off once, unless the player set the
   Zoning checkbox; an edited type keeps its own. Under
   them Rust's description ("1 + 1 lanes, 100 km/h, no sidewalks, 8.5 m wide"), Rust's cost line
-  from `check_road_layout` ("24 / m, upkeep 0.16 / m / day") and, for a type without sidewalks
-  that zones, "No sidewalks: buildings here are reached by car only". Create and Save send the
+  from `check_road_layout` ("24 / m, upkeep 0.16 / m / day") and, for a type that zones, "No
+  sidewalks: buildings here are reached by car only" without sidewalks, or with one "No sidewalk
+  on the right: buildings on that side are reached by car only". Create and Save send the
   controls' speed, zoning and street lights: an edited type keeps its own.
 - **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m")
   until the player types one. Create road (Save when editing) is enabled only when the layout
