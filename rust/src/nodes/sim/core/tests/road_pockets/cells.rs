@@ -404,13 +404,16 @@ fn the_users_pocketed_crossing_keeps_its_grid_through_a_save_and_removal() {
     assert_eq!(removed, control, "removed");
 }
 
-// The user's dump (`METRUM_R5D1_DUMP`, a copy) with its crossing's alignment records dropped
-// (they were written by the pre-R5d1 rules, which the load now refuses), so the frames start
-// from the network as an older save's do: prints each road's frames, the cell table per
-// quadrant, near the crossing (within the pockets' reach) or far, for the pocketed crossing and
-// for it with its pockets removed and then put back, and a map of each. With
-// `METRUM_R5D1_SAVE` it saves the pocketed city there (for the stills). Ignored: the dump is not
-// in the repository.
+// The user's crossing (`METRUM_R5D1_DUMP`): their dump, a copy with its crossing's alignment
+// records dropped (written by the pre-R5d1 rules, which the load now refuses, so the frames start
+// from the network as an older save's do), or a control save this test wrote from it. A dump's
+// pockets are removed first; the city without them is the control (`METRUM_R5D1_CONTROL_SAVE`
+// saves it and stops). Then the user's four pockets go in (west left, east right, north both,
+// south left, 60 m each, as in the dump) and the test prints each road's frames, a map, and the
+// cell table per quadrant, near the crossing (within the pockets' reach) or far; with
+// `METRUM_R5D1_SAVE` it saves the pocketed city (the stills). Last it removes the pockets and
+// says whether the control came back bit for bit. The same control save run on two binaries
+// compares their pocket edits on one city. Ignored: the dump is not in the repository.
 #[test]
 #[ignore = "needs the user's dump: METRUM_R5D1_DUMP"]
 fn the_users_pocketed_crossing_dump() {
@@ -433,23 +436,17 @@ fn the_users_pocketed_crossing_dump() {
     let junction = at(4);
     let east = (at(1) - at(0)).normalize();
     let south = (at(3) - at(2)).normalize();
-    // Each arm by its far node (west, east, north, south), with its pocket's roles and body.
+    // Each arm by its far node (west, east, north, south) and the user's pocket on it.
+    let arms = [
+        (0, (true, false)),
+        (1, (false, true)),
+        (2, (true, true)),
+        (3, (true, false)),
+    ];
     let far = |core: &SimCore, node: u32| {
         let pos = core.region_graph.node(node).pos;
         arm_end(core, 4, pos)
     };
-    let arms: Vec<(u32, (bool, bool), f32)> = [0, 1, 2, 3]
-        .into_iter()
-        .map(|node| {
-            let (arm, end) = far(&core, node);
-            let state = core
-                .get_road_pocket_internal(arm as i32, end)
-                .expect("pocket");
-            // The edit takes 10 m steps; the measured body rounds a little off one.
-            let body = (state.body_m / 10.0).round() * 10.0;
-            (node, (state.pocket.left, state.pocket.right), body)
-        })
-        .collect();
     let report = |core: &mut SimCore, label: &str| -> Zoning {
         let zoning = zoning(core, junction);
         for (id, edge) in core.region_graph.edges().iter().enumerate() {
@@ -474,27 +471,40 @@ fn the_users_pocketed_crossing_dump() {
         eprintln!("{}", map(core, &zoning.cells, junction, 140.0));
         zoning
     };
-    let pocketed = report(&mut core, "dump");
-    for &(node, _, body) in &arms {
+    let present: Vec<_> = arms
+        .iter()
+        .filter_map(|&(node, roles)| {
+            let (arm, end) = far(&core, node);
+            let state = core.get_road_pocket_internal(arm as i32, end)?;
+            assert_eq!((state.pocket.left, state.pocket.right), roles);
+            // The edit takes 10 m steps; the measured body rounds a little off one.
+            assert_eq!((state.body_m / 10.0).round(), 6.0);
+            Some(node)
+        })
+        .collect();
+    if !present.is_empty() {
+        report(&mut core, "dump");
+    }
+    for node in present {
         let (arm, end) = far(&core, node);
         assert_eq!(
-            pocket_edit(&mut core, request(arm, end, (false, false), body)),
+            pocket_edit(&mut core, request(arm, end, (false, false), 60.0)),
             ""
         );
     }
-    let control = report(&mut core, "removed");
-    for &(node, roles, body) in &arms {
-        let (arm, end) = far(&core, node);
-        assert_eq!(pocket_edit(&mut core, request(arm, end, roles, body)), "");
+    let control = report(&mut core, "control");
+    if let Ok(save) = std::env::var("METRUM_R5D1_CONTROL_SAVE") {
+        core.save_game_settled(&save, None).expect("save");
+        return;
     }
-    let again = report(&mut core, "re-added");
-    eprintln!(
-        "re-added equals the dump's pocketed crossing: {}",
-        again == pocketed
-    );
+    for &(node, roles) in &arms {
+        let (arm, end) = far(&core, node);
+        assert_eq!(pocket_edit(&mut core, request(arm, end, roles, 60.0)), "");
+    }
+    let pocketed = report(&mut core, "pocketed");
     // The table: per quadrant, near the crossing (both stations within 85 m: the pockets and
     // their tapers) or far, the control's and the pocketed counts, the cells lost and gained,
-    // and the losses under road, under a moved cell, and unexplained.
+    // and the losses under road, cut off or under a moved cell, and unexplained.
     let class = |&(frame, x, y): &Cell| {
         let centre = frame.world(f64::from(x) + 0.5, f64::from(y) + 0.5) - junction;
         let (a, b) = (centre.dot(east), centre.dot(south));
@@ -506,15 +516,16 @@ fn the_users_pocketed_crossing_dump() {
         };
         (quadrant, a.abs() <= 85.0 && b.abs() <= 85.0)
     };
-    let lost: BTreeSet<Cell> = control.cells.difference(&again.cells).copied().collect();
-    let unexplained: Vec<DVec2> = unexplained_losses(&core, &control.cells, &again.cells);
+    let lost: BTreeSet<Cell> = control.cells.difference(&pocketed.cells).copied().collect();
+    let gained: BTreeSet<Cell> = pocketed.cells.difference(&control.cells).copied().collect();
+    let unexplained = unexplained_losses(&core, &control.cells, &pocketed.cells);
     let road: BTreeSet<Cell> = lost
         .iter()
         .copied()
         .filter(|&cell| under_road(&core, cell))
         .collect();
-    eprintln!("unexplained losses at {unexplained:?}");
     let centre = |&(frame, x, y): &Cell| frame.world(f64::from(x) + 0.5, f64::from(y) + 0.5);
+    eprintln!("unexplained losses at {unexplained:?}");
     eprintln!(
         "| quadrant | reach | control | pocketed | lost | gained | lost under road | lost cut off or under a moved cell | unexplained |"
     );
@@ -526,29 +537,51 @@ fn the_users_pocketed_crossing_dump() {
                     .filter(|c| class(c) == (quadrant, near))
                     .count()
             };
-            let gained: BTreeSet<Cell> = again.cells.difference(&control.cells).copied().collect();
-            let lost_here = count(&lost);
-            let road_here = count(&road);
             let unexplained_here = unexplained
                 .iter()
                 .filter(|point| {
-                    let cell = control.cells.iter().find(|c| centre(c) == **point).unwrap();
-                    class(cell) == (quadrant, near)
+                    lost.iter()
+                        .find(|cell| centre(cell) == **point)
+                        .is_some_and(|cell| class(cell) == (quadrant, near))
                 })
                 .count();
             eprintln!(
-                "| {quadrant} | {} | {} | {} | {lost_here} | {} | {road_here} | {} | {unexplained_here} |",
+                "| {quadrant} | {} | {} | {} | {} | {} | {} | {} | {unexplained_here} |",
                 if near { "near" } else { "far" },
                 count(&control.cells),
-                count(&again.cells),
+                count(&pocketed.cells),
+                count(&lost),
                 count(&gained),
-                lost_here - road_here - unexplained_here,
+                count(&road),
+                count(&lost) - count(&road) - unexplained_here,
             );
         }
     }
     if let Ok(save) = std::env::var("METRUM_R5D1_SAVE") {
         core.save_game_settled(&save, None).expect("save");
     }
+    for &(node, _) in &arms {
+        let (arm, end) = far(&core, node);
+        assert_eq!(
+            pocket_edit(&mut core, request(arm, end, (false, false), 60.0)),
+            ""
+        );
+    }
+    let mut removed = zoning(&mut core, junction);
+    removed
+        .frames
+        .retain(|id, _| control.frames.contains_key(id));
+    let control_frames: BTreeMap<_, _> = control
+        .frames
+        .iter()
+        .filter(|(id, _)| removed.frames.contains_key(id))
+        .map(|(&id, &frames)| (id, frames))
+        .collect();
+    eprintln!(
+        "removed again: frames equal the control's {}, cells {}",
+        removed.frames == control_frames,
+        removed.cells == control.cells
+    );
 }
 
 // A text map of `cells` around `centre`, one character per 2.5 m: a letter per frame, `#` on a
