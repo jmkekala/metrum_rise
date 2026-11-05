@@ -105,8 +105,9 @@ static func set_font_size(control: Control, base_size: int) -> void:
 ## Lets the game keep the keyboard while `window` is open, so the camera keys, zoom and Esc keep
 ## working. The window takes the focus only while the left button is down inside it: an
 ## unfocusable embedded window stops getting the mouse once it leaves, which would end a resize
-## drag at its edge. On release it is shown again without the focus. Only for windows without
-## text fields.
+## drag at its edge. On release it is shown again without the focus, unless the click went into
+## an editable text field (a spin box's number, not its arrows): that keeps the keyboard for
+## typing until the field is submitted (Enter) or left, then the game has it again.
 static func keep_keyboard_with_game(window: Window) -> void:
 	window.unfocusable = true
 	window.window_input.connect(func(event: InputEvent) -> void:
@@ -116,10 +117,34 @@ static func keep_keyboard_with_game(window: Window) -> void:
 		if button.pressed:
 			window.unfocusable = false
 			window.grab_focus()
-		else:
-			window.unfocusable = true
-			_drop_focus.call_deferred(window)
+			return
+		# The event's position is the embedder's; the field's rect is the window's.
+		var field := window.gui_get_focus_owner() as LineEdit
+		if field != null and field.editable \
+				and field.get_global_rect().has_point(button.position - Vector2(window.position)):
+			_give_keyboard_back_after_typing(window, field)
+			return
+		window.unfocusable = true
+		_drop_focus.call_deferred(window)
 	)
+
+# The game gets the keyboard back once `field` is submitted or loses the focus. Each signal
+# connects once, however often the field is clicked.
+static func _give_keyboard_back_after_typing(window: Window, field: LineEdit) -> void:
+	var left := _typing_done.bind(window)
+	if not field.focus_exited.is_connected(left):
+		field.focus_exited.connect(left, CONNECT_ONE_SHOT)
+	var submitted := _typing_submitted.bind(window)
+	if not field.text_submitted.is_connected(submitted):
+		field.text_submitted.connect(submitted, CONNECT_ONE_SHOT)
+
+static func _typing_submitted(_text: String, window: Window) -> void:
+	_typing_done(window)
+
+static func _typing_done(window: Window) -> void:
+	if is_instance_valid(window):
+		window.unfocusable = true
+		_drop_focus.call_deferred(window)
 
 # Showing an embedded window again registers it without the focus, in the same frame.
 static func _drop_focus(window: Window) -> void:

@@ -171,6 +171,23 @@ func _run() -> void:
 	var west = window.row(3)
 	_expect(not west._left_check.disabled, "Left is offered on an undivided two-way road")
 	_expect(not west._right_check.disabled and west._length_spin.value == 60.0, "Right is offered, 60 m by default")
+	# Godot's spin box ignores its arrows when its text cannot be edited (the user found the
+	# length stuck at 60 m, 2026-11-05). Headless Godot routes no click into the window, so the
+	# rule is checked on the box.
+	_expect(west._length_spin.get_line_edit().editable, "the length box's arrows and number are live")
+	# The window keeps the game's keyboard after a click on the arrows, and keeps its own for
+	# typing after a click into the number until the number is submitted.
+	var number: LineEdit = west._length_spin.get_line_edit()
+	var origin := Vector2(window._window.position)
+	var arrows_at: Vector2 = origin + west._length_spin.get_global_rect().end - Vector2(4.0, 6.0)
+	_window_click(window._window, arrows_at)
+	_expect(window._window.unfocusable, "a click on the arrows leaves the keyboard to the game")
+	number.grab_focus()
+	_window_click(window._window, origin + number.get_global_rect().get_center())
+	_expect(not window._window.unfocusable, "a click into the number keeps the keyboard for typing")
+	number.text_submitted.emit(number.text)
+	_expect(window._window.unfocusable, "Enter gives the keyboard back to the game")
+	await process_frame
 	_expect(_state(west) == "No pocket" and west._apply_button.disabled, "no pocket and nothing to apply yet")
 	_expect(tool._pocket_end_mi.mesh == null, "no road highlighted before a hover or a change")
 	# The scroll area's own minimum height is nil: the window's default height must hold the
@@ -309,6 +326,15 @@ func _run() -> void:
 	_expect(not window._window.visible and tool._pocket_end_mi.mesh == null, "the window closes with the junction")
 	tool.active = false
 	_finish(scene)
+
+# A left click at `at` (the embedder's coordinates) as the window's input signal carries it.
+func _window_click(window: Window, at: Vector2) -> void:
+	for pressed in [true, false]:
+		var event := InputEventMouseButton.new()
+		event.button_index = MOUSE_BUTTON_LEFT
+		event.pressed = pressed
+		event.position = at
+		window.window_input.emit(event)
 
 func _controls_that_stop(node: Node, found: Array) -> void:
 	for child in node.get_children(true):

@@ -704,8 +704,11 @@ Properties has no pocket section any more (one way to do it).
   screen edge; a visible window the player moved stays unless it would cover the click), movable
   and resizable, its size kept between sessions; the lane spheres, connection arches and
   crosswalk toggles stay in the world. The window keeps the game's keyboard
-  (`UIStyle.keep_keyboard_with_game`; the length stepper takes arrows and the wheel, no typing),
-  so Ctrl+Z undoes with it open. Its "Turn pockets" section has one compact row per incoming car
+  (`UIStyle.keep_keyboard_with_game`), so Ctrl+Z undoes with it open. The length stepper's arrows
+  step it by 10 m and leave the keyboard to the game; a click on its number keeps the window's
+  keyboard for typing until Enter or a click elsewhere (the wheel steps it while typing). Its text
+  stays editable: Godot 4.7's spin box ignores its arrows when its text is not, which left the
+  length stuck at 60 m until the user's play-test (2026-11-05). Its "Turn pockets" section has one compact row per incoming car
   road, from Rust's `get_junction_pockets(node)`: one entry per car road arm with a lane into the
   junction (an outgoing one-way arm has no approach and no row), clockwise from north by the
   bearing from the junction to the arm's point 20 m out (ties by edge id), each

@@ -73,9 +73,9 @@ func _init(font_size: int = 13) -> void:
 	_length_spin.suffix = "m"
 	_length_spin.rounded = true
 	_length_spin.tooltip_text = "Pocket length"
-	# Arrows and the wheel only: the window leaves the keyboard (Ctrl+Z) to the game.
-	_length_spin.get_line_edit().editable = false
-	_length_spin.get_line_edit().add_theme_color_override("font_uneditable_color", UIStyle.TEXT_PRIMARY)
+	# The arrows step it and hand the keyboard straight back to the game (Ctrl+Z); a click on the
+	# number keeps it for typing until Enter or a click elsewhere (`keep_keyboard_with_game`). Its
+	# text stays editable: Godot's spin box ignores its arrows when its text is not.
 	UIStyle.set_font_size(_length_spin.get_line_edit(), font_size)
 	_length_spin.value_changed.connect(func(_value: float) -> void: _emit_changed())
 	controls.add_child(_length_spin)
