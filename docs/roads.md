@@ -1146,6 +1146,17 @@ nearby points)`, a split `O(points)`, the stroke check `O(log E + edges within 4
 edges x stroke points)`, all on edits. The lane rule is one `bool` read while connectors are rebuilt.
 Nothing runs per tick.
 
+**Timing** (round R7a, 2026-11-06, `$BENCH_BINARY` of `roadbed_benchmark` at the branch against the
+head before the round, C B B C twice, P-cores, 4 workers, medians of 4). No roadbed code changed;
+`Edge` grew by the ring field. `roadbed_junction/build` and `roadbed_span/build`: 14 of 17 rows
+within spread, among them `four_way` +1.2%, `t` +0.4%, `span_100m` +0.5%. Three are outside:
+`span_100m_footpath` +3.0% (3.625 to 3.733 us, ranges apart) and `transition_left_pocket` +1.3%,
+`transition_right_pocket` +0.8% (medians above the control's range, ranges touching). A fixed-iteration
+`perf stat` loop of those three rows, C B B C, gives equal work per build on both sides: 61,863-61,865
+instructions and 8,755 branches (footpath), 123,932-123,968 and 16,669-16,672 (left pocket, each value
+on both sides), 123,078 and 16,506 (right pocket), with cycles and instruction-cache misses
+overlapping. So the three rows are code placement in the benchmark binary, not added work.
+
 ### Junction layout
 
 A layout is built for every node except degree-two pass-through nodes: two arms whose directions
