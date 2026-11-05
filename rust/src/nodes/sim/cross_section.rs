@@ -5,10 +5,11 @@
 //! crosswalk toggle's transaction shape (`ROAD-74`). The check is the commit's: the edit is
 //! applied to the graph, its two nodes are laid out again, their closure is compiled into a
 //! scratch roadbed (fields, painted cells, steepened profiles) and the graph is put back; a
-//! widening of the roadbed (lanes, a median, sidewalks added) is also checked against water,
-//! parcels and the curve radius. The preview runs the same check, so the select tool's verdict
-//! is the commit's, with the buildings a zoning-off change demolishes and the difference in
-//! build cost Apply charges; the commit pushes the check's local checkpoint (whole
+//! widening of the roadbed (lanes, a median, a sidewalk added on either side, `ROAD-107`) is also
+//! checked against water, parcels and the curve radius, on the corridor a stroke of that type
+//! checks: the larger side, reached to both sides. The preview runs the same check, so the select
+//! tool's verdict is the commit's, with the buildings a zoning-off change demolishes and the
+//! difference in build cost Apply charges; the commit pushes the check's local checkpoint (whole
 //! `Node`/`Edge` records) as its undo record and rebuilds lanes, cars and entrances locally, as
 //! an undo does. `O(closure pieces)` for the check, plus a parallel `O(B / P)` count when zoning
 //! goes off; the commit tail is `O(local lanes + invalidated)` plus the undo's parallel
@@ -192,6 +193,8 @@ impl SimCore {
                 ),
             ));
         }
+        // The roadbed's larger side, which a tunnel's bore and the corridor checks reach to both
+        // sides of it: a sidewalk added on a road's shoulder side leaves that unchanged.
         let widens = Self::roadbed_half_width_m(current, fwd, bkw, median, attributes)
             > visual_roadbed_half_width_m(current);
         if widens && current.class == EdgeClass::Tunnel {
@@ -206,11 +209,13 @@ impl SimCore {
             .map(|node| graph.get_valid_node(node))
             .collect();
         let edges = self.live_edges_at(&nodes, edge);
+        // A side given a sidewalk widens there whatever the larger side does (`ROAD-107`).
+        let check_corridor = widens || attributes.sidewalks.adds_to(current.sidewalk_sides());
         let mut corridor = None;
         let tried = self.try_graph_edit(&edges, &nodes, |core| {
             let changed =
                 core.apply_edge_cross_section(edge, (fwd, bkw, median, attributes), &nodes);
-            if widens {
+            if check_corridor {
                 corridor = core.widened_corridor_refusal(edge);
             }
             changed

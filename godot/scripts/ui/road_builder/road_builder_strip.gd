@@ -3,8 +3,8 @@
 ## The road builder's strip (`ROAD-101`): the layout seen across the road, left to right looking
 ## the way it is drawn, drawn to scale with a floor of MIN_PART_PX per part so a 0.5 m painted
 ## median stays clickable. Rows, top to bottom: a "+" slot marker on every boundary a part may be
-## inserted at (between the two ends: the sidewalks, or for a road without sidewalks its shoulder
-## bands), each part's glyph, its surface, and its width. An invalid
+## inserted at (between the two ends: each a sidewalk, or on a side without one the shoulder
+## band), each part's glyph, its surface, and its width. An invalid
 ## layout is tinted red. Clicking a slot selects it and clicking a part (not an end) asks for
 ## its popup; parts drag along the strip to move, off it to be removed, and the palette's tiles
 ## drop into it. A view: it shows the parts and Rust's widths it is given and reports gestures

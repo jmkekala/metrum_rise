@@ -151,7 +151,9 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 		"layout_footpath_alone":
 			return "A footpath is a walkway on its own"
 		"layout_sidewalks":
-			return "Sidewalks at both ends or none"
+			return "A sidewalk goes at an end of the road"
+		"sidewalks_out_of_range":
+			return "Unknown sidewalk sides"
 		"layout_two_medians":
 			return "One median at most"
 		"layout_lane_order":

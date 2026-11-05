@@ -484,12 +484,13 @@ func set_selected_edge_class(class_int: int) -> void:
 		get_node("../RoadTool").update_main_mesh()
 
 ## Rust's verdict on giving every selected road `fwd` + `bkw` lanes, the median `median_style`
-## of `median_width` metres (`ROAD-80`) and a road type's `speed_kmh`, `sidewalks`, `zoning` and
-## `street_lights` (`ROAD-101`) in place: the first refusal (`invalid_reason`, `detail`), else `is_valid` with the
+## of `median_width` metres (`ROAD-80`) and a road type's `speed_kmh`, `sidewalks` (Rust's side
+## code in each road's own forward direction, `ROAD-107`), `zoning` and `street_lights`
+## (`ROAD-101`) in place: the first refusal (`invalid_reason`, `detail`), else `is_valid` with the
 ## selection's totals of Rust's `buildings_removed` and `cost_delta`, and `demolition_permanent`
 ## when any road's is. Each road is checked as it stands, as Apply commits them one by one.
 func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float,
-		speed_kmh: int, sidewalks: bool, zoning: bool, street_lights: bool) -> Dictionary:
+		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool) -> Dictionary:
 	var total := {"is_valid": true, "buildings_removed": 0, "cost_delta": 0.0, "demolition_permanent": false}
 	for idx in selected_edges:
 		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width,
@@ -505,7 +506,7 @@ func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, 
 ## attributes, each with its undo record, and returns how many were refused. The edits publish
 ## their chunks at once; zoning off refreshes the no-build overlay, as the checkbox does.
 func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float,
-		speed_kmh: int, sidewalks: bool, zoning: bool, street_lights: bool) -> int:
+		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool) -> int:
 	var refused := 0
 	for idx in selected_edges:
 		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, speed_kmh, sidewalks,

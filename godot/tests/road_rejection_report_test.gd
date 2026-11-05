@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Refused road strokes are explained on `events` with their exact inputs, the console dump names
-## its save and road generation, and a replay against that save reproduces each refusal.
+## its save and road generation, and a replay against that save reproduces each refusal. A record
+## carries the road type's sidewalk sides (`ROAD-107`), and a replay sets them back in Rust.
 extends SceneTree
 
 const DebugConsoleScript := preload("res://scripts/ui/debug_console/debug_console.gd")
@@ -12,6 +13,7 @@ const TIMEOUT_FRAMES := 600
 const SHORT_EARLY := [Vector3(-60.25, 0.0, 30.5), Vector3(-59.75, 0.0, 30.5)]
 const SHORT_LATE := [Vector3(80.125, 0.0, -20.0), Vector3(80.625, 0.0, -20.0)]
 const ROAD := [Vector3(-200, 0, -100), Vector3(-100, 0, -100)]
+const ROAD_AFTER_REPLAY := [Vector3(-200, 0, 100), Vector3(-100, 0, 100)]
 # A loop out of and back into the road's east end: the tool check refuses it.
 const LOOP := [Vector3(-100, 0, -100), Vector3(-150, 0, -50), Vector3(-100.2, 0, -100.1)]
 
@@ -54,7 +56,10 @@ func _run() -> void:
 	_expect(validation.get("invalid_reason") == "same_node_connection", "the tool check must refuse the loop: %s" % validation.get("invalid_reason"))
 	var tool_attempt: int = simulation.log_road_tool_rejection(points, 1, 1, true, validation)
 	_expect(tool_attempt > 0, "the tool report must return its attempt number")
+	# The late stroke is a left-only type's: its record must name the side.
+	simulation.set_road_tool_attributes(50, 1, true, true)
 	result = await _commit(simulation, SHORT_LATE, 1, 1, true)
+	simulation.set_road_tool_attributes(50, 3, true, true)
 	_expect(result.get("reason") == "too_short", "the late stroke must be refused: %s" % result)
 
 	var lines := _event_lines(first_seq)
@@ -70,6 +75,7 @@ func _run() -> void:
 		_expect(int(records[1]["attempt"]) == tool_attempt, "the record must carry the tool's attempt number")
 		var replayed: Array = records[0]["points"]
 		_expect(Vector3(replayed[0][0], replayed[0][1], replayed[0][2]) == SHORT_EARLY[0], "records must keep exact coordinates")
+		_expect(int(records[0]["sidewalks"]) == 3 and int(records[2]["sidewalks"]) == 1, "records must name the sidewalk sides: %s" % [records.map(func(r: Dictionary) -> int: return int(r["sidewalks"]))])
 
 	# The console dump saves the game first and names that save and its road generation.
 	await console._dump()
@@ -106,6 +112,11 @@ func _run() -> void:
 		_expect(not verdict["reproduced"] and verdict["line"].contains("NOT reproduced: refused by tool for too_short"), "a different reason must not count as reproduced: %s" % verdict["line"])
 		# ROAD-53: the click check now refuses what the commit refuses.
 		_expect(verdicts[2]["line"].contains("reproduced, refused by tool"), "the short stroke must be refused at the click: %s" % verdicts[2]["line"])
+		# The replay left the record's sides in Rust: the next stroke is drawn with them.
+		var next := await _commit(replay, ROAD_AFTER_REPLAY, 1, 1, true)
+		_expect(next.get("committed", false), "the road after the replay must commit: %s" % next)
+		var drawn: Dictionary = replay.get_edge_cross_section(replay.get_hovered_edge(ROAD_AFTER_REPLAY[0].x + 50.0, ROAD_AFTER_REPLAY[0].z))
+		_expect(int(drawn.get("sidewalks", -1)) == 1, "a replay must set the record's sides: %s" % drawn)
 	replay_host.queue_free()
 	await process_frame
 	print("Road rejection report tests: %d failures" % _failures)

@@ -308,7 +308,7 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
 
 // A rural road type's attributes (`ROAD-101`): 100 km/h, no sidewalks, zoning off.
 fn rural() -> RoadAttributes {
-    RoadAttributes::from_tool(100, SidewalkSides::NONE, false, true).unwrap()
+    RoadAttributes::from_tool(100, 0, false, true).unwrap()
 }
 
 // Commits one 1 + 1 stroke between `ends` through the road tool's path with `attributes`.
@@ -331,6 +331,32 @@ fn commit_with(core: &mut SimCore, ends: [Vector2; 2], attributes: RoadAttribute
         Default::default(),
     );
     assert!(outcome.committed, "{}", outcome.rejection);
+}
+
+// `ROAD-107`: left and right are the stroke's, however it is drawn: the left sidewalk's lane lies
+// left of the drawn direction (north of an eastward stroke, -z), and the mask reads back as drawn.
+#[test]
+fn a_left_sidewalk_is_on_the_left_of_the_stroke_either_way_it_is_drawn() {
+    for (from, to) in [(-60.0, 60.0), (60.0, -60.0)] {
+        let mut core = test_core();
+        core.treasury.balance = 1.0e7;
+        core.precompute_road_mesh_data();
+        let left_only = RoadAttributes::new(50, SidewalkSides::LEFT, true);
+        commit_with(&mut core, [Vector2::new(from, 0.0), Vector2::new(to, 0.0)], left_only);
+        let edge = core.get_hovered_edge_internal(0.0, 0.0) as usize;
+        assert_eq!(core.region_graph.edge(edge).sidewalk_sides(), SidewalkSides::LEFT);
+        let lanes = &core.transit_network.lane_system;
+        let sidewalks: Vec<_> = lanes.edge_lanes[&edge]
+            .iter()
+            .map(|&id| &lanes.lanes[id])
+            .filter(|lane| lane.lane_type == LaneType::Foot)
+            .collect();
+        assert_eq!(sidewalks.len(), 2, "one sidewalk, a lane each way");
+        for lane in sidewalks {
+            let north_of_road = lane.geometry[0].z < 0.0;
+            assert_eq!(north_of_road, to > from, "drawn from {from} to {to}");
+        }
+    }
 }
 
 // The live edges with a node at `x` = 0 off the through road: the cross stroke's pieces.

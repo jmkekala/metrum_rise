@@ -179,14 +179,14 @@ func _run() -> void:
 	# in-place check still refuses it with its reason.
 	_expect(simulation.check_road_layout([{"kind": "sidewalk"}, {"kind": "median", "style": 2, "width_m": 3.0},
 		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true, true).get("invalid_reason", "") != "", "a one-way median layout is refused")
-	window.show_verdict(tool.preview_selected_edge_cross_section(1, 0, 2, 3.0, 50, true, true, true))
+	window.show_verdict(tool.preview_selected_edge_cross_section(1, 0, 2, 3.0, 50, 3, true, true))
 	_expect(window._apply_button.disabled, "a one-way median cannot be applied")
 	_expect(window._verdict_label.text == "A median needs lanes in both directions", "the one-way refusal: %s" % window._verdict_label.text)
 	await _undo("the median")
 	_expect(int(simulation.get_edge_cross_section(edge).get("median_style", -1)) == 0, "undo removes the median")
 
 	# A layout no type has shows as "Custom layout", which cannot be picked.
-	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0, 50, true, true, true), "a 3 + 1 layout is set in place")
+	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0, 50, 3, true, true), "a 3 + 1 layout is set in place")
 	window.show_for_edges(selection)
 	_expect(_picked_text(window) == window.CUSTOM_LAYOUT and window._type_picker.is_item_disabled(window._type_picker.selected), "a 3 + 1 road shows Custom layout: %s" % _picked_text(window))
 	_expect(window._layout_label.text == "3 + 1 lanes, 50 km/h", "the custom layout's lanes: %s" % window._layout_label.text)
@@ -256,6 +256,33 @@ func _run() -> void:
 	_expect(bool(section.get("street_lights", false)) and String(section.get("road_type", "")) == "builtin:road_2l",
 		"undo lights it again: %s" % section)
 	_expect(simulation.delete_road_type(unlit).is_empty(), "the unlit type is deleted")
+
+	# One side (`ROAD-107`): the type is matched by its sides, picked and undone; a road no type
+	# has reads "Custom layout", and nothing makes it two-sided but a picked type.
+	var left_only := String(simulation.create_road_type("Lane Edit Left", [{"kind": "sidewalk"},
+		{"kind": "car_lane", "forward": false}, {"kind": "car_lane", "forward": true}], 50, true, true).get("id", ""))
+	_expect(not left_only.is_empty(), "the left-only type is created")
+	window.show_for_edges(selection)
+	_pick(window, left_only)
+	_expect(not window._apply_button.disabled and window._verdict_label.text == "1 + 1 lanes, 50 km/h, sidewalk on the left",
+		"the left-only verdict: %s" % window._verdict_label.text)
+	window._apply_button.pressed.emit()
+	section = simulation.get_edge_cross_section(edge)
+	_expect(int(section.get("sidewalks", -1)) == 1 and String(section.get("road_type", "")) == left_only, "Apply removes one side: %s" % section)
+	_expect(_picked_text(window).begins_with("Lane Edit Left") and window._layout_label.text == "1 + 1 lanes, 50 km/h, sidewalk on the left",
+		"the window shows the one-sided road: %s / %s" % [_picked_text(window), window._layout_label.text])
+	_expect(simulation.delete_road_type(left_only).is_empty(), "the left-only type is deleted")
+	window.show_for_edges(selection)
+	_expect(_picked_text(window) == window.CUSTOM_LAYOUT, "no type has its sides: %s" % _picked_text(window))
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", -1)) == 1, "showing it changes nothing")
+	_pick(window, "builtin:road_2l")
+	_expect(not window._apply_button.disabled and window._verdict_label.text == "1 + 1 lanes, 50 km/h", "the 2-Lane Road adds the side back: %s" % window._verdict_label.text)
+	window._apply_button.pressed.emit()
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", -1)) == 3, "Apply adds the right side")
+	await _undo("the added side")
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", -1)) == 1, "undo takes it off")
+	await _undo("the removed side")
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", -1)) == 3, "undo restores both sides")
 
 	# A walkway keeps the picker enabled so the refusal shows.
 	var walkway: int = simulation.get_hovered_edge(0.0, -80.0)

@@ -137,7 +137,7 @@ impl RoadRejection {
             median_style: RoadMedian::style_code(attempt.median),
             median_width: attempt.median.map_or(0.0, |median| median.width_m),
             speed_kmh: RoadAttributes::speed_kmh_of(attempt.attributes.speed_ms),
-            sidewalks: attempt.attributes.sidewalks.any(),
+            sidewalks: attempt.attributes.sidewalks.bits(),
             zoning: attempt.attributes.zoning,
             street_lights: attempt.attributes.street_lights,
             points: attempt.points.iter().map(|p| [p.x, p.y, p.z]).collect(),
@@ -161,9 +161,10 @@ struct AttemptRecord<'a> {
     // The median as the road tool names it (`RoadMedian::from_tool`): style 0 is none.
     median_style: i32,
     median_width: f32,
-    // The road type's attributes as the road tool sets them (`set_road_tool_attributes`).
+    // The road type's attributes as the road tool sets them (`set_road_tool_attributes`):
+    // `sidewalks` is the side code (`ROAD-107`).
     speed_kmh: u16,
-    sidewalks: bool,
+    sidewalks: u8,
     zoning: bool,
     street_lights: bool,
     points: Vec<[f32; 3]>,
@@ -415,13 +416,7 @@ mod tests {
             snap: true,
             tunnel: true,
             median: None,
-            attributes: RoadAttributes::from_tool(
-                100,
-                crate::simulation::network::graph::SidewalkSides::NONE,
-                false,
-                false,
-            )
-            .unwrap(),
+            attributes: RoadAttributes::from_tool(100, 1, false, false).unwrap(),
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
         assert_eq!(
@@ -444,7 +439,7 @@ mod tests {
         assert_eq!(record["snap"], true);
         assert_eq!(record["tunnel"], true);
         assert_eq!(record["speed_kmh"], 100);
-        assert_eq!(record["sidewalks"], false);
+        assert_eq!(record["sidewalks"], 1, "the side code, left only");
         assert_eq!(record["zoning"], false);
         assert_eq!(record["street_lights"], false);
         // Every coordinate parses back to the submitted f32.

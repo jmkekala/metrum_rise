@@ -453,7 +453,8 @@ impl SimulationNode {
     /// Road `edge_id`'s cross-section for the Road Properties window (`ROAD-80`): `fwd_lanes`,
     /// `bkw_lanes`, `width` (carriageway metres), `class`, `median_style`, `median_width`,
     /// `editable` (a live road with vehicle lanes, which [`Self::set_edge_cross_section`] can
-    /// change), `ROAD-101`'s `sidewalks` (a car road's two sidewalks; false for a walkway),
+    /// change), `sidewalks` (`ROAD-107`: the sides with one in the road's forward direction, 0
+    /// none, 1 left, 2 right, 3 both; 0 for a walkway),
     /// `speed_kmh` (the speed limit in whole km/h), `zoning` (lots and buildings along it) and
     /// `street_lights`, and `road_type` (the id of the first usable road type, built-ins first,
     /// whose layout builds exactly this cross-section, sidewalks included, at this speed with
@@ -485,8 +486,7 @@ impl SimulationNode {
             let section =
                 crate::simulation::network::road_types::RoadCrossSection::of_edge(edge);
             let speed_kmh = RoadAttributes::speed_kmh_of(edge.speed_limit);
-            // Any side (`ROAD-107`): the side mask reaches Godot in round S2.
-            result.set("sidewalks", section.sidewalks.any());
+            result.set("sidewalks", i64::from(section.sidewalks.bits()));
             result.set("speed_kmh", i64::from(speed_kmh));
             result.set("zoning", !edge.no_building_spawn);
             result.set("street_lights", !edge.no_street_lights);
@@ -503,7 +503,9 @@ impl SimulationNode {
     /// The commit's verdict on giving road `edge_id` `fwd` forward and `bkw` backward lanes, the
     /// median `median_style` (0 none, 1 painted, 2 kerbed grass, 3 kerbed paving) of
     /// `median_width` metres, and a road type's `speed_kmh` (20 to 120 in steps of 10),
-    /// `sidewalks`, `zoning` and `street_lights` in place (`ROAD-80`, `ROAD-101`; pass the road's own values from
+    /// `sidewalks` (`ROAD-107`: the road's forward frame, codes as in
+    /// [`Self::set_road_tool_attributes`]), `zoning` and `street_lights` in place (`ROAD-80`,
+    /// `ROAD-101`; pass the road's own values from
     /// [`Self::get_edge_cross_section`] for what stays), without applying it: `is_valid`; when
     /// valid `buildings_removed` (the buildings on the road that zoning off demolishes, for a
     /// confirmation), `demolition_permanent` (true with any `buildings_removed`: undo restores
@@ -520,7 +522,7 @@ impl SimulationNode {
         median_style: i32,
         median_width: f32,
         speed_kmh: i32,
-        sidewalks: bool,
+        sidewalks: i32,
         zoning: bool,
         street_lights: bool,
     ) -> VarDictionary {
@@ -568,7 +570,7 @@ impl SimulationNode {
         median_style: i32,
         median_width: f32,
         speed_kmh: i32,
-        sidewalks: bool,
+        sidewalks: i32,
         zoning: bool,
         street_lights: bool,
     ) -> bool {
@@ -845,18 +847,20 @@ fn lanes_u8(count: i32) -> u8 {
     u8::try_from(count).unwrap_or(u8::MAX)
 }
 
-// An in-place edit's median and road-type attributes (speed in km/h, sidewalks, zoning, street
-// lights) from Godot's arguments, or the refusal (`unknown_median_style`,
-// `median_width_out_of_range`, `speed_out_of_range`).
+// An in-place edit's median and road-type attributes (speed in km/h, sidewalk sides, zoning,
+// street lights) from Godot's arguments, or the refusal (`unknown_median_style`,
+// `median_width_out_of_range`, `speed_out_of_range`, `sidewalks_out_of_range`).
 fn cross_section_spec(
     median_style: i32,
     median_width: f32,
-    (speed_kmh, sidewalks, zoning, street_lights): (i32, bool, bool, bool),
+    (speed_kmh, sidewalks, zoning, street_lights): (i32, i32, bool, bool),
 ) -> Result<(Option<RoadMedian>, RoadAttributes), RoadRejection> {
     let median = RoadMedian::from_tool(median_style, median_width)
         .map_err(|reason| RoadRejection::new(reason, "the median's style or width"))?;
-    let sidewalks = crate::simulation::network::graph::SidewalkSides::both_or_none(sidewalks);
-    let attributes = RoadAttributes::from_tool(speed_kmh.into(), sidewalks, zoning, street_lights)
-        .map_err(|reason| RoadRejection::new(reason, format!("{speed_kmh} km/h")))?;
+    let attributes =
+        RoadAttributes::from_tool(speed_kmh.into(), sidewalks.into(), zoning, street_lights)
+            .map_err(|reason| {
+                RoadRejection::new(reason, format!("{speed_kmh} km/h, sidewalks {sidewalks}"))
+            })?;
     Ok((median, attributes))
 }

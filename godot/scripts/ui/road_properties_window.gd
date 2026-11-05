@@ -6,9 +6,10 @@
 ## draggable Window surface and preserves its placement within the session.
 ## Road type (`ROAD-101`, `ROAD-80`): a picker lists the usable road types, each with its speed
 ## and Rust's build cost per metre, and shows the selected road's (Rust's `road_type` for its
-## cross-section, sidewalks and speed, or "Custom layout" when no type matches; zoning is not
-## matched). A pick asks Rust's verdict for the type's lanes, median, speed, sidewalks and zoning
-## on every selected road through the select tool (the in-place edit's check, no geometry
+## cross-section, sidewalk sides and speed, or "Custom layout" when no type matches; zoning is not
+## matched). A pick asks Rust's verdict for the type's lanes, median, speed, sidewalk sides
+## (`ROAD-107`: left and right in each road's own drawn direction) and zoning on every selected
+## road through the select tool (the in-place edit's check, no geometry
 ## preview) and shows it beside Apply, which reads "Apply (+1,230)" with the selection's cost
 ## difference from Rust (charged, never refunded) and commits an accepted change (Ctrl+Z undoes
 ## the roads). When zoning off would demolish buildings, Apply first asks in a confirmation

@@ -49,9 +49,9 @@ static func part_name(part: Dictionary) -> String:
 static func part_hint(part: Dictionary) -> String:
 	match String(part.get("kind", "")):
 		"sidewalk":
-			return "A sidewalk on both sides, or none (the Sidewalks checkbox)"
+			return "A sidewalk on this side (the Left sidewalk and Right sidewalk checkboxes)"
 		"shoulder":
-			return "No sidewalks: a shoulder each side that walkers do not use"
+			return "No sidewalk: a shoulder on this side that walkers do not use"
 		"car_lane":
 			if bool(part.get("forward", true)):
 				return "Traffic runs the way the road is drawn (right of the median)"

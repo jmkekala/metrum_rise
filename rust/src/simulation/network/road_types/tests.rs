@@ -32,7 +32,7 @@ fn every_layout_refusal_has_its_key_and_part() {
             Some(2),
         ),
         (&[], "layout_no_car_lane", None),
-        (&[S], "layout_sidewalks", None),
+        (&[S], "layout_no_car_lane", None),
         (&[S, B, S, F, S], "layout_sidewalks", Some(2)),
         (&[B, S, F], "layout_sidewalks", Some(1)),
         (&[B, B, m, m, F], "layout_two_medians", Some(3)),
@@ -230,14 +230,14 @@ fn speeds_are_checked_on_the_10_kmh_grid() {
         assert_eq!(check_speed_kmh(road, speed), Err("speed_out_of_range"));
     }
     assert_eq!(check_speed_kmh(RoadCrossSection::WALKWAY, 999), Ok(0));
-    let tool = RoadAttributes::from_tool(100, SidewalkSides::NONE, false, true).unwrap();
+    let tool = RoadAttributes::from_tool(100, 0, false, true).unwrap();
     assert_eq!(
         tool.speed_ms.to_bits(),
         (100.0_f32 * config::KMH_TO_MPS).to_bits()
     );
     assert_eq!(RoadAttributes::speed_kmh_of(tool.speed_ms), 100);
     assert_eq!(
-        RoadAttributes::from_tool(5, SidewalkSides::BOTH, true, true),
+        RoadAttributes::from_tool(5, 3, true, true),
         Err("speed_out_of_range")
     );
 }

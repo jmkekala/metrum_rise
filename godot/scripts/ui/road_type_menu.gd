@@ -9,7 +9,8 @@
 ## in the pressed style with the item checked. A view: a pick emits `type_picked`, and the host
 ## activates the tool and calls `RoadTool.set_road_type`. `refresh` rebuilds the row from Rust
 ## after a library edit; unusable entries are never listed (the builder lists them). Each type's
-## tooltip gives its layout, speed, "no sidewalks", "No zoning" and Rust's cost per metre.
+## tooltip gives its layout, speed, its sidewalk side ("sidewalk on the left", "no sidewalks"),
+## "No zoning" and Rust's cost per metre.
 ## Rust methods called: get_road_types().
 extends HBoxContainer
 
@@ -20,6 +21,12 @@ signal road_builder_requested
 
 const MedianControls = preload("res://scripts/ui/median_controls.gd")
 ## The drop-down's text while the tool draws a built-in type.
+## Rust's sidewalk side codes (`ROAD-107`), in a road's forward direction: a road type's and a
+## road's `sidewalks`, and what the road tool and an in-place edit send.
+const SIDEWALKS_NONE := 0
+const SIDEWALK_LEFT := 1
+const SIDEWALK_RIGHT := 2
+const SIDEWALKS_BOTH := 3
 const CUSTOM_ROADS := "Custom roads"
 ## The drop-down item id of "Road builder..."; custom type `i` is item id `i + 1`.
 const BUILDER_ITEM := 0
@@ -147,21 +154,22 @@ func _on_custom_item(item_id: int) -> void:
 	type_picked.emit(id, _is_walkway(_types[id]))
 
 ## The attributes the road tool and an in-place edit send for `type` (`get_road_types` entry),
-## `[speed_kmh, sidewalks, zoning, street_lights]`: the type's own, except that a walkway, which
-## has neither a speed nor sidewalks of its own, sends `speeds.default_kmh` with sidewalks, as
-## every stroke did before road types (its stroke builds the same footpath either way).
+## `[speed_kmh, sidewalks, zoning, street_lights]` (`sidewalks` is Rust's side code): the type's
+## own, except that a walkway, which has neither a speed nor sidewalks of its own, sends
+## `speeds.default_kmh` with both sidewalks, as every stroke did before road types (its stroke
+## builds the same footpath either way).
 static func tool_attributes(type: Dictionary, speeds: Dictionary) -> Array:
 	var zoning := bool(type.get("zoning", true))
 	var lights := bool(type.get("street_lights", true))
 	if _is_walkway(type):
-		return [int(speeds.get("default_kmh", 50)), true, zoning, lights]
-	return [int(type.get("speed_kmh", 0)), bool(type.get("sidewalks", true)), zoning, lights]
+		return [int(speeds.get("default_kmh", 50)), SIDEWALKS_BOTH, zoning, lights]
+	return [int(type.get("speed_kmh", 0)), int(type.get("sidewalks", SIDEWALKS_BOTH)), zoning, lights]
 
 static func _is_walkway(type: Dictionary) -> bool:
 	return int(type.get("fwd_lanes", 0)) + int(type.get("bkw_lanes", 0)) == 0
 
-## "2 + 2 lanes, Grass 3.0 m, 100 km/h, no sidewalks, no street lights, 17.0 m wide" (or
-## "Footpath, 2.0 m wide") from Rust's figures for a `get_road_types` entry, a
+## "2 + 2 lanes, Grass 3.0 m, 100 km/h, no sidewalks, no street lights, 17.0 m wide" ("sidewalk
+## on the left" or "... right" for a road with one; or "Footpath, 2.0 m wide") from Rust's figures for a `get_road_types` entry, a
 ## `check_road_layout` verdict or a road's `get_edge_cross_section`; `with_width` false leaves
 ## the width out. A footpath has no speed.
 static func describe(type: Dictionary, with_width: bool = true) -> String:
@@ -174,13 +182,23 @@ static func describe(type: Dictionary, with_width: bool = true) -> String:
 	if fwd + bkw > 0:
 		if int(type.get("speed_kmh", 0)) > 0:
 			text += ", %d km/h" % int(type.get("speed_kmh", 0))
-		if not bool(type.get("sidewalks", true)):
-			text += ", no sidewalks"
+		text += _sidewalk_text(int(type.get("sidewalks", SIDEWALKS_BOTH)))
 	if not bool(type.get("street_lights", true)):
 		text += ", no street lights"
 	if with_width:
 		text += ", %.1f m wide" % float(type.get("total_m", 0.0))
 	return text
+
+# A car road's sidewalks in a description; both sides, the usual case, go unsaid.
+static func _sidewalk_text(sides: int) -> String:
+	match sides:
+		SIDEWALKS_NONE:
+			return ", no sidewalks"
+		SIDEWALK_LEFT:
+			return ", sidewalk on the left"
+		SIDEWALK_RIGHT:
+			return ", sidewalk on the right"
+	return ""
 
 ## Rust's cost of a type per metre on the ground, "15 / m, upkeep 0.10 / m / day", from its
 ## `build_per_m` and `upkeep_per_m_day` (`get_road_types`, `check_road_layout`).

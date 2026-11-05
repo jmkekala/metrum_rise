@@ -6,13 +6,14 @@
 ##
 ## Left: the library column (built-ins to duplicate; the player's types to edit, duplicate or
 ## delete, unusable ones greyed with their reason; the library error when the file cannot be
-## written). Right: five part tiles, the strip with the layout to scale (sidewalks fixed at both
-## ends, or without sidewalks a 0.75 m shoulder band each side, drawn but not a part), the lane
-## split and widths, the type's attributes (a "Sidewalks" checkbox for both sides together, a
-## "Speed" stepper on Rust's grid, hidden for a footpath, a "Zoning" checkbox and a "Street
-## lights" checkbox, ticked for a new type), Rust's
-## verdict under them with the type's cost per metre from Rust and a warning when a road without
-## sidewalks zones (buildings reached by car only), and a footer with the name (Rust's
+## written). Right: five part tiles, the strip with the layout to scale (each end a fixed sidewalk,
+## or on a side without one a 0.75 m shoulder band, drawn but not a part), the lane split and
+## widths, the type's attributes ("Left sidewalk" and "Right sidewalk" checkboxes, one per end
+## and independent, `ROAD-107`, left and right as the road is drawn, a "Speed" stepper on Rust's
+## grid, hidden for a footpath, a "Zoning" checkbox and a "Street lights" checkbox, ticked for a
+## new type), Rust's verdict under them with the type's cost per metre from Rust and a warning
+## when a road zones with a side or both without a sidewalk (buildings there are reached by car
+## only), and a footer with the name (Rust's
 ## suggestion until the player types one), Cancel and Create road (Save when editing). A new
 ## type whose speed first reaches Rust's `no_zoning_from_kmh` (80) gets zoning off once, unless
 ## the player set the Zoning checkbox; the type's flag decides from then on. Parts go
@@ -45,7 +46,7 @@ const RoadTypeLibraryList = preload("res://scripts/ui/road_builder/road_type_lib
 const DEFAULT_SIZE := Vector2i(960, 440)
 const MIN_SIZE := Vector2i(760, 400)
 const SIDEWALK := {"kind": "sidewalk"}
-## A layout's end without sidewalks: the roadbed's shoulder band, drawn on the strip, never sent
+## A layout's end without a sidewalk: the roadbed's shoulder band, drawn on the strip, never sent
 ## to Rust.
 const SHOULDER := {"kind": "shoulder"}
 ## A new layout: the 2-Lane Road's.
@@ -57,8 +58,10 @@ const STATUS_REFUSED := Color(1.0, 0.45, 0.38)
 const STATUS_NAME := Color.YELLOW
 const STATUS_READY := Color(0.55, 0.95, 0.55)
 const STATUS_COST := Color(0.85, 0.85, 0.85)
-## The warning for a type without sidewalks that zones (design D1).
+## The warning for a type without sidewalks that zones (design D1), and per side for a type with
+## one (`ROAD-107`), which `CAR_ONLY_SIDE_WARNING` names.
 const CAR_ONLY_WARNING := "No sidewalks: buildings here are reached by car only"
+const CAR_ONLY_SIDE_WARNING := "No sidewalk on the %s: buildings on that side are reached by car only"
 
 var window: Window
 var library_list: RoadTypeLibraryList
@@ -71,7 +74,8 @@ var widths_label: Label
 var status_label: Label
 var cost_label: Label
 var warning_label: Label
-var sidewalks_check: CheckBox
+var left_sidewalk_check: CheckBox
+var right_sidewalk_check: CheckBox
 var speed_box: SpinBox
 var speed_row: Control
 var zoning_check: CheckBox
@@ -81,8 +85,8 @@ var cancel_button: Button
 var create_button: Button
 var delete_dialog: ConfirmationDialog
 
-## The layout being built, left to right (Rust's part dictionaries; without sidewalks its two
-## ends are SHOULDER, which `rust_parts` leaves out).
+## The layout being built, left to right (Rust's part dictionaries; an end without a sidewalk is
+## SHOULDER, which `rust_parts` leaves out).
 var parts: Array = []
 ## The type's speed limit in km/h, whether it zones (lots and buildings along it) and whether it
 ## has street lights.
@@ -230,17 +234,24 @@ func _build_tiles() -> Control:
 		tiles.append(tile)
 	return row
 
-# The type's attributes: Sidewalks (both sides together), Speed, Zoning and Street lights.
+# One end's sidewalk checkbox.
+func _sidewalk_check(row: Control, left: bool) -> CheckBox:
+	var side := "left" if left else "right"
+	var check_box := CheckBox.new()
+	check_box.text = "%s sidewalk" % side.capitalize()
+	check_box.focus_mode = Control.FOCUS_NONE
+	check_box.tooltip_text = "A sidewalk on the %s of the direction the road is drawn; without it a 0.75 m shoulder that walkers do not use" % side
+	UIStyle.set_font_size(check_box, 14)
+	check_box.toggled.connect(func(on: bool): set_sidewalk(left, on))
+	row.add_child(check_box)
+	return check_box
+
+# The type's attributes: a sidewalk checkbox per end, Speed, Zoning and Street lights.
 func _build_attributes() -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 18)
-	sidewalks_check = CheckBox.new()
-	sidewalks_check.text = "Sidewalks"
-	sidewalks_check.focus_mode = Control.FOCUS_NONE
-	sidewalks_check.tooltip_text = "A sidewalk on both sides, or none: a 0.75 m shoulder each side that walkers do not use"
-	UIStyle.set_font_size(sidewalks_check, 14)
-	sidewalks_check.toggled.connect(set_sidewalks)
-	row.add_child(sidewalks_check)
+	left_sidewalk_check = _sidewalk_check(row, true)
+	right_sidewalk_check = _sidewalk_check(row, false)
 	var speed := HBoxContainer.new()
 	speed.add_theme_constant_override("separation", 6)
 	var label := _label(speed, 14)
@@ -341,12 +352,15 @@ func is_open() -> bool:
 # else custom type `id` named `type_name`; `from` is the `get_road_types` entry it starts from
 # (its speed, zoning and street lights), or empty for the built-ins' 50 km/h with zoning and
 # street lights. A layout without parts
-# gets bare sidewalks; one without sidewalks gets its shoulder ends.
+# gets bare sidewalks; a car layout gets a shoulder at each end without a sidewalk.
 func _start(layout: Array, id: String, type_name: String, from: Dictionary = {}) -> void:
 	_close_popup()
 	var start: Array = layout.duplicate(true) if not layout.is_empty() else [SIDEWALK.duplicate(), SIDEWALK.duplicate()]
-	if not start.any(func(part: Dictionary): return String(part.get("kind", "")) in ["sidewalk", "footpath"]):
-		start = [SHOULDER.duplicate()] + start + [SHOULDER.duplicate()]
+	if not start.any(func(part: Dictionary): return String(part.get("kind", "")) == "footpath"):
+		if String(start[0].get("kind", "")) != "sidewalk":
+			start.push_front(SHOULDER.duplicate())
+		if String(start[-1].get("kind", "")) != "sidewalk":
+			start.push_back(SHOULDER.duplicate())
 	parts = start
 	editing_id = id
 	_name_typed = not id.is_empty()
@@ -376,23 +390,18 @@ func _refresh_library() -> void:
 func rust_parts() -> Array:
 	return parts.filter(func(part: Dictionary): return String(part.get("kind", "")) != "shoulder")
 
-## Whether the layout has sidewalks (its ends are sidewalks, not shoulders).
-func has_sidewalks() -> bool:
-	return parts.is_empty() or String(parts[0].get("kind", "")) != "shoulder"
+## Whether the layout has a sidewalk on its left (`left`) or right end, not a shoulder.
+func has_sidewalk(left: bool) -> bool:
+	return parts.is_empty() or String(parts[0 if left else -1].get("kind", "")) != "shoulder"
 
 # A footpath layout (a walkway, only from a hand-written entry): no speed and no sidewalks.
 func _is_footpath() -> bool:
 	return parts.any(func(part: Dictionary): return String(part.get("kind", "")) == "footpath")
 
-## Gives the layout sidewalks on both sides (`on`) or a shoulder each side: the two ends are
-## replaced together, the parts between keep their places.
-func set_sidewalks(on: bool) -> void:
-	var body := parts.duplicate()
-	for end in [0, -1]:
-		if not body.is_empty() and String(body[end].get("kind", "")) in ["sidewalk", "shoulder"]:
-			body.remove_at(end if end == 0 else body.size() - 1)
-	var cap: Dictionary = SIDEWALK if on else SHOULDER
-	parts = [cap.duplicate()] + body + [cap.duplicate()]
+## Gives the layout's left (`left`) or right end a sidewalk (`on`) or a shoulder: the other end
+## and the parts between keep their places.
+func set_sidewalk(left: bool, on: bool) -> void:
+	parts[0 if left else -1] = (SIDEWALK if on else SHOULDER).duplicate()
 	_close_popup()
 	strip.set_slot(strip.selected_slot)
 	_layout_changed()
@@ -471,22 +480,31 @@ func set_median(index: int, style: int, width_m: float) -> void:
 	parts[index] = {"kind": "median", "style": style, "width_m": width_m}
 	_layout_changed()
 
-# Asks Rust's verdict on the layout and shows it. Without sidewalks the strip draws a shoulder
-# band each side, (total - carriageway) / 2 from Rust's widths.
+# Asks Rust's verdict on the layout and shows it. The strip draws a shoulder band at each end
+# without a sidewalk, sharing what Rust's total has beyond its parts.
 func _layout_changed() -> void:
 	check = _simulation_node.check_road_layout(rust_parts(), speed_kmh, zoning, street_lights)
 	var valid := bool(check.get("is_valid", false))
 	var widths: PackedFloat32Array = check.get("part_widths_m", PackedFloat32Array())
-	if not has_sidewalks():
-		var shoulder := 0.5 * (float(check.get("total_m", 0.0)) - float(check.get("carriageway_m", 0.0)))
-		var drawn := PackedFloat32Array([shoulder])
+	var shoulders := int(not has_sidewalk(true)) + int(not has_sidewalk(false))
+	if shoulders > 0:
+		var parts_m := 0.0
+		for width in widths:
+			parts_m += width
+		var shoulder := (float(check.get("total_m", 0.0)) - parts_m) / shoulders
+		var drawn := PackedFloat32Array()
+		if not has_sidewalk(true):
+			drawn.append(shoulder)
 		drawn.append_array(widths)
-		drawn.append(shoulder)
+		if not has_sidewalk(false):
+			drawn.append(shoulder)
 		widths = drawn
 	strip.set_layout(parts, widths, valid)
 	var footpath := _is_footpath()
-	sidewalks_check.set_pressed_no_signal(has_sidewalks())
-	sidewalks_check.disabled = footpath
+	left_sidewalk_check.set_pressed_no_signal(has_sidewalk(true))
+	right_sidewalk_check.set_pressed_no_signal(has_sidewalk(false))
+	left_sidewalk_check.disabled = footpath
+	right_sidewalk_check.disabled = footpath
 	speed_row.visible = not footpath
 	strip.selected_part = _popup_index
 	lanes_label.text = "%d + %d" % [int(check.get("fwd_lanes", 0)), int(check.get("bkw_lanes", 0))] if valid else "-"
@@ -516,7 +534,7 @@ func _update_actions() -> void:
 	var name_reason: String = _simulation_node.check_road_type_name(name_edit.text, editing_id)
 	create_button.disabled = not valid or not name_reason.is_empty() or not _library_writable()
 	cost_label.text = RoadTypeMenu.cost_text(check) if valid else ""
-	warning_label.text = CAR_ONLY_WARNING if valid and zoning and not has_sidewalks() and not _is_footpath() else ""
+	warning_label.text = _car_only_warning() if valid and zoning and not _is_footpath() else ""
 	if not valid:
 		_status(RoadReasonText.text(check, "This layout cannot be built"), STATUS_REFUSED)
 	elif not _library_writable():
@@ -525,6 +543,14 @@ func _update_actions() -> void:
 		_status(RoadReasonText.text({"invalid_reason": name_reason}), STATUS_NAME)
 	else:
 		_status(RoadTypeMenu.describe(check), STATUS_READY)
+
+# The warning for the side or sides whose buildings no walker reaches, or "".
+func _car_only_warning() -> String:
+	if not has_sidewalk(true) and not has_sidewalk(false):
+		return CAR_ONLY_WARNING
+	if has_sidewalk(true) and has_sidewalk(false):
+		return ""
+	return CAR_ONLY_SIDE_WARNING % ("right" if has_sidewalk(true) else "left")
 
 func _status(text: String, color: Color) -> void:
 	status_label.text = text

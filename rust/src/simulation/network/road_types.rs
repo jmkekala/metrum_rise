@@ -190,11 +190,20 @@ impl LayoutRefusal {
     }
 }
 
+// Whether a layout's left and right ends are sidewalks. One part cannot be both: alone it is the
+// left one.
+fn sidewalk_ends(parts: &[RoadPart]) -> (bool, bool) {
+    (
+        parts.first() == Some(&RoadPart::Sidewalk),
+        parts.len() > 1 && parts.last() == Some(&RoadPart::Sidewalk),
+    )
+}
+
 /// Checks a layout and returns the cross-section it builds, or the first rule it breaks, in this
 /// order:
 /// - a footpath anywhere but as the whole layout: `layout_footpath_alone`;
-/// - a sidewalk inside the road, or a layout of one sidewalk alone: `layout_sidewalks` (a car
-///   road has a sidewalk at either end, at both or at none, `ROAD-107`);
+/// - a sidewalk inside the road: `layout_sidewalks` (a car road has a sidewalk at either end, at
+///   both or at none, `ROAD-107`);
 /// - two medians: `layout_two_medians`;
 /// - a backward lane right of a forward one (right-hand traffic): `layout_lane_order`;
 /// - no car lane: `layout_no_car_lane`;
@@ -213,12 +222,7 @@ pub fn check_layout(parts: &[RoadPart]) -> Result<RoadCrossSection, LayoutRefusa
             Err(LayoutRefusal::new("layout_footpath_alone", Some(at)))
         };
     }
-    let [left_end, right_end] =
-        [parts.first(), parts.last()].map(|end| end == Some(&RoadPart::Sidewalk));
-    // One part cannot be both ends' sidewalk.
-    if left_end && right_end && parts.len() < 2 {
-        return Err(LayoutRefusal::new("layout_sidewalks", None));
-    }
+    let (left_end, right_end) = sidewalk_ends(parts);
     let sidewalks = SidewalkSides::of_ends(left_end, right_end);
     let skip = usize::from(left_end);
     let inside = &parts[skip..parts.len() - usize::from(right_end)];
@@ -300,11 +304,13 @@ pub fn layout_widths(parts: &[RoadPart]) -> (Vec<f32>, f32, f32) {
         .map(|part| part.width_m())
         .sum();
     let car_road = !parts.is_empty() && !parts.contains(&RoadPart::Footpath);
-    let shoulders = [parts.first(), parts.last()]
-        .into_iter()
-        .filter(|end| car_road && *end != Some(&RoadPart::Sidewalk))
-        .count();
-    let shoulders_m = shoulders as f32 * SHOULDER_BAND_WIDTH_M;
+    let (left_end, right_end) = sidewalk_ends(parts);
+    let shoulders = if car_road {
+        2 - u8::from(left_end) - u8::from(right_end)
+    } else {
+        0
+    };
+    let shoulders_m = f32::from(shoulders) * SHOULDER_BAND_WIDTH_M;
     (widths, total - sidewalks, total + shoulders_m)
 }
 
@@ -385,17 +391,19 @@ impl RoadAttributes {
         }
     }
 
-    /// The road tool's attributes from Godot's values, or `speed_out_of_range` (see
-    /// [`check_speed_kmh`]; the car-road range applies, as the tool cannot know a walkway).
+    /// The road tool's attributes from Godot's values (`sidewalks` is the
+    /// [`SidewalkSides::from_bits`] code), or `speed_out_of_range` (see [`check_speed_kmh`]; the
+    /// car-road range applies, as the tool cannot know a walkway) or `sidewalks_out_of_range`.
     pub fn from_tool(
         speed_kmh: i64,
-        sidewalks: SidewalkSides,
+        sidewalks: i64,
         zoning: bool,
         street_lights: bool,
     ) -> Result<Self, &'static str> {
         let car_road = RoadCrossSection::undivided(1, 0);
-        check_speed_kmh(car_road, speed_kmh)
-            .map(|speed| Self::new(speed, sidewalks, zoning).lit(street_lights))
+        let speed = check_speed_kmh(car_road, speed_kmh)?;
+        let sidewalks = SidewalkSides::from_tool(sidewalks)?;
+        Ok(Self::new(speed, sidewalks, zoning).lit(street_lights))
     }
 
     /// How far a stroke's parcel corridor reaches beyond each side of its carriageway: a

@@ -500,6 +500,114 @@ fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
     assert_ne!(entrance.foot_lane_fwd.min(entrance.foot_lane_bkw), usize::MAX);
 }
 
+// `ROAD-107`: one side's sidewalk removed in place and added back. The removed side's foot lanes
+// go and its walkers reattach across the road to the kept sidewalk's lanes, none lost; the kept
+// side's lanes and walkers stay as they are. The house on the
+// removed side gets a car-only entrance, the one on the kept side keeps walking. A lane edit that
+// passes the road's own attributes keeps the one side; undo restores the mask and both entrances.
+#[test]
+fn one_sidewalk_removed_in_place_keeps_the_other_and_undoes() {
+    use crate::nodes::sim::render::lane_pose::sample_lane_pose;
+    use crate::simulation::economy::agents::MODE_WALK;
+    use crate::simulation::network::types::TransitFlags;
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let (east, _) = house_fronting(&mut core, side, (12.0, 60.0));
+    let (west, _) = house_fronting(&mut core, side, (-12.0, 60.0));
+    // The kept side is the one the east house's door is on (the side road runs along +z, so
+    // which lateral that is comes from the building's own side: 1 left, -1 right).
+    let east_side = core.allocator.buildings[east].side;
+    assert_eq!(core.allocator.buildings[west].side, -east_side);
+    let (kept, kept_lane, removed_lane) = if east_side > 0 {
+        (SidewalkSides::LEFT, 100, -100)
+    } else {
+        (SidewalkSides::RIGHT, -100, 100)
+    };
+    let sidewalk_lanes = |core: &SimCore, idx: i8| -> Vec<usize> {
+        let lanes = &core.transit_network.lane_system;
+        lanes_of(core, side, LaneType::Foot)
+            .into_iter()
+            .filter(|&id| lanes.lanes[id].lane_idx == idx)
+            .collect()
+    };
+    let walks = |core: &SimCore, house: usize| {
+        let entrance = &core.allocator.entrances[house];
+        entrance.foot_lane_fwd.min(entrance.foot_lane_bkw) != usize::MAX
+    };
+    assert!(walks(&core, east) && walks(&core, west));
+    let (start, end) = {
+        let road = core.region_graph.edge(side);
+        (road.start_node, road.end_node)
+    };
+    let mut walkers = Vec::new();
+    for lane_id in lanes_of(&core, side, LaneType::Foot) {
+        let lane = &core.transit_network.lane_system.lanes[lane_id];
+        let (at, _) = sample_lane_pose(lane, 40.0).unwrap();
+        let from = if lane.is_fwd { start } else { end };
+        let on_kept = lane.lane_idx == kept_lane;
+        let walker = core.agents.spawn_housed_agent(usize::MAX, at.x, at.z);
+        core.agents.agents.transit_mode[walker] = MODE_WALK;
+        core.agents
+            .agents
+            .enter_lane(walker, &core.transit_network.lane_system, lane_id, 40.0, from);
+        walkers.push((walker, on_kept));
+    }
+    assert_eq!(walkers.len(), 4, "a lane each way on each sidewalk");
+    let agents = core.agents.agents.current_lane_id.len();
+    let positions: Vec<_> = walkers
+        .iter()
+        .map(|&(w, _)| (core.agents.agents.pos_x[w].to_bits(), core.agents.agents.pos_y[w].to_bits()))
+        .collect();
+    let two_sided = core.region_graph.edge(side).clone();
+    let two_sided_weight = two_sided.cost_weight();
+
+    let one_side = RoadAttributes::new(50, kept, true);
+    assert_eq!(edit(&mut core, side, (1, 1, None), one_side), "");
+    let road = core.region_graph.edge(side);
+    assert_eq!(road.sidewalk_sides(), kept);
+    assert_ne!(road.allowed_types & TransitFlags::FOOT, 0, "still walked");
+    assert!(road.cost_weight() < two_sided_weight, "one sidewalk costs less");
+    assert_eq!(sidewalk_lanes(&core, kept_lane).len(), 2);
+    assert!(sidewalk_lanes(&core, removed_lane).is_empty());
+    assert_eq!(core.agents.agents.current_lane_id.len(), agents, "no walker is lost");
+    let lanes = &core.transit_network.lane_system;
+    for (&(walker, on_kept), &position) in walkers.iter().zip(&positions) {
+        let a = &core.agents.agents;
+        let lane = a.current_lane_id[walker];
+        // Within the 30 m reach everyone is on the kept sidewalk: 8.5 m across for those moved.
+        assert_eq!(lanes.lanes[lane].lane_idx, kept_lane, "walker {walker} on lane {lane}");
+        assert_eq!(a.pos_y[walker].to_bits(), position.1, "walker {walker} stays abreast");
+        if on_kept {
+            assert_eq!(a.pos_x[walker].to_bits(), position.0, "walker {walker} kept its place");
+        }
+    }
+    assert!(walks(&core, east) && !walks(&core, west), "only the kept side walks");
+    let entrance = &core.allocator.entrances[west];
+    assert_eq!(entrance.curb_pos, entrance.door_pos, "a car-only entrance");
+    assert_ne!(entrance.car_lane_fwd.min(entrance.car_lane_bkw), usize::MAX);
+
+    // A lane edit with the road's own attributes must not turn it two-sided.
+    let own = RoadAttributes::of_edge(core.region_graph.edge(side));
+    assert_eq!(own.sidewalks, kept);
+    assert_eq!(edit(&mut core, side, (1, 0, None), own), "");
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), kept);
+    assert!(core.undo_action_internal());
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), kept);
+
+    assert!(core.undo_action_internal());
+    let road = core.region_graph.edge(side);
+    assert_eq!(road.sidewalk_sides(), SidewalkSides::BOTH);
+    assert_eq!(road.allowed_types, two_sided.allowed_types);
+    assert_eq!(sidewalk_lanes(&core, removed_lane).len(), 2, "undo brings the lanes back");
+    assert!(walks(&core, east) && walks(&core, west));
+
+    // Added back through an edit: the side and its entrance return.
+    assert_eq!(edit(&mut core, side, (1, 1, None), one_side), "");
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::DEFAULT), "");
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), SidewalkSides::BOTH);
+    assert_eq!(sidewalk_lanes(&core, removed_lane).len(), 2);
+    assert!(walks(&core, east) && walks(&core, west));
+}
+
 // `ROAD-101` (C): a speed change in place recomputes the road's routing cost, and the routing
 // hierarchy the edit schedules routes by it: from the T to the side road's far end costs half as
 // much at 100 km/h as at 50.
@@ -647,6 +755,72 @@ fn sidewalks_added_next_to_a_parcel_are_refused() {
         edit(&mut core, side, (1, 1, None), RoadAttributes::new(70, SidewalkSides::NONE, true)),
         ""
     );
+}
+
+// `ROAD-107`: a sidewalk added on a road's shoulder side leaves the roadbed's larger side alone
+// but still widens that side, so the widening checks run: a parcel inside it refuses both the
+// second sidewalk and moving the one sidewalk over. Taking the sidewalk off is never checked. The
+// corridor is the stroke's, reached to both sides of the road, so a sidewalk added opposite the
+// parcel on a road with none is refused too (D4).
+#[test]
+fn a_sidewalk_added_on_the_shoulder_side_is_checked_against_parcels() {
+    use crate::simulation::zoning::ParcelGeometry;
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    // The side road runs along +z: its right (positive lateral) side is east or west.
+    let lanes = &core.transit_network.lane_system;
+    let right = lanes_of(&core, side, LaneType::Foot)
+        .into_iter()
+        .find(|&id| lanes.lanes[id].lane_idx == -100)
+        .unwrap();
+    let right_x = lanes.lanes[right].geometry[0].x.signum();
+    let shoulders = RoadAttributes::new(50, SidewalkSides::NONE, true);
+    assert_eq!(edit(&mut core, side, (1, 1, None), shoulders), "");
+    // A 4 m parcel past the right shoulder edge (4.25 m), inside a right sidewalk's edge (5.0 m).
+    let (x0, z0, size) = (right_x * 4.6, 58.0, 4.0);
+    let at = |dx: f32, dz: f32| godot::prelude::Vector2::new(x0 + right_x * dx, z0 + dz);
+    let profile = core
+        .zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    let corners = [at(0.0, 0.0), at(0.0, size), at(size, size), at(size, 0.0)];
+    let (min_x, max_x) = (x0.min(x0 + right_x * size), x0.max(x0 + right_x * size));
+    core.zoning.parcels.insert_new(
+        ParcelGeometry {
+            edge_idx: side,
+            side: -1,
+            frontage_center_t: 0.6,
+            frontage_m: size,
+            depth_m: size,
+            front_center: at(0.0, size * 0.5),
+            center: at(size * 0.5, size * 0.5),
+            tangent: godot::prelude::Vector2::new(0.0, 1.0),
+            normal: godot::prelude::Vector2::new(right_x, 0.0),
+            corners,
+            aabb_min: godot::prelude::Vector2::new(min_x, z0),
+            aabb_max: godot::prelude::Vector2::new(max_x, z0 + size),
+        },
+        profile,
+    );
+    let sides = |sides| RoadAttributes::new(50, sides, true);
+    assert_eq!(
+        edit(&mut core, side, (1, 1, None), sides(SidewalkSides::LEFT)),
+        "parcel_overlap",
+        "the stroke's symmetric corridor"
+    );
+    // A left sidewalk beside the parcel, as a state the corridor check would not have let in,
+    // set directly: the larger side is already the sidewalk's.
+    core.region_graph
+        .edge_mut(side)
+        .set_sidewalks(SidewalkSides::LEFT);
+    for gained in [SidewalkSides::BOTH, SidewalkSides::RIGHT] {
+        assert_eq!(
+            edit(&mut core, side, (1, 1, None), sides(gained)),
+            "parcel_overlap",
+            "{gained:?}"
+        );
+    }
+    assert_eq!(edit(&mut core, side, (1, 1, None), sides(SidewalkSides::NONE)), "");
 }
 
 // `ROAD-101` (D10): Apply charges the build-cost difference over the road's length outside

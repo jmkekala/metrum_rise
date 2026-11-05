@@ -66,10 +66,10 @@ signal tunnel_toggled(enabled: bool)
 var median_style: int = 0
 var median_width: float = 0.0
 # The next stroke's road-type attributes (`ROAD-101`), mirrored in Rust like the median: the
-# speed limit in km/h, sidewalks on both sides (else a shoulder each side), zoning and street
-# lights.
+# speed limit in km/h, the sides with a sidewalk in the stroke's direction (Rust's code, 0 none,
+# 1 left, 2 right, 3 both; a shoulder on a side without), zoning and street lights.
 var speed_kmh: int = 50
-var sidewalks: bool = true
+var sidewalks: int = RoadTypeMenu.SIDEWALKS_BOTH
 var zoning: bool = true
 var street_lights: bool = true
 ## The built-in type R starts with and falls back to when the picked type is gone.
@@ -271,10 +271,10 @@ func set_median(style: int, width: float) -> String:
 	_queue_preview_update()
 	return ""
 
-## Sets the next stroke's speed limit, sidewalks, zoning and street lights through Rust and
-## returns its refusal key ("" when set; `speed_out_of_range` off Rust's grid, keeping the tool's
-## attributes).
-func set_attributes(speed: int, with_sidewalks: bool, with_zoning: bool, with_lights: bool) -> String:
+## Sets the next stroke's speed limit, sidewalk sides, zoning and street lights through Rust and
+## returns its refusal key ("" when set; `speed_out_of_range` off Rust's grid or
+## `sidewalks_out_of_range`, keeping the tool's attributes).
+func set_attributes(speed: int, with_sidewalks: int, with_zoning: bool, with_lights: bool) -> String:
 	var reason: String = simulation_node.set_road_tool_attributes(speed, with_sidewalks, with_zoning, with_lights)
 	if not reason.is_empty():
 		return reason

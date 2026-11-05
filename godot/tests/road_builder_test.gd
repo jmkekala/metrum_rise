@@ -9,12 +9,15 @@
 ## row draws a road with its layout; edit (the tool re-picks it), duplicate (a custom type and a
 ## built-in), delete after a confirmation; an unusable entry listed with its reason and fixed;
 ## an unparsable library shows its error and writes nothing; Esc and Cancel write nothing. The
-## type's attributes (`ROAD-101`): Sidewalks off draws shoulders and sends no sidewalk parts, the
-## car-only warning, the Speed stepper (zoning off once at 80 km/h, unless the player set it, and
+## type's attributes (`ROAD-101`): both sidewalks off draws shoulders and sends no sidewalk parts,
+## the car-only warning, the Speed stepper (zoning off once at 80 km/h, unless the player set it, and
 ## never for an edited type), Rust's speed refusal and cost line; the created type's fields, the
 ## road tool's attributes and the drawn edge; Save keeps an edited type's own speed and zoning.
 ## Street lights (`ROAD-101` RB3e): ticked for a new type; off, the description says so and the
 ## cost stays; the created type, the road tool and the drawn edge have none; an edit loads it.
+## One side (`ROAD-107`): the two ends are independent, the shoulder is drawn on the other, the
+## description, name, cost and warning name the side; a left-only type is usable, in the Roads
+## row, drawn and read back as left, and an edit loads it; a right-only type likewise.
 ## Writes the road-type library, so it runs only in the isolated profile.
 extends SceneTree
 
@@ -202,7 +205,8 @@ func _run() -> void:
 	_expect(_builder.name_edit.text == String(_builder.check.suggested_name) and not _builder.name_edit.text.is_empty(),
 		"the name is Rust's suggestion: %s" % _builder.name_edit.text)
 	_expect(_builder.tiles.size() == 5, "five part tiles")
-	_expect(_builder.sidewalks_check.button_pressed and _builder.zoning_check.button_pressed and int(_builder.speed_box.value) == 50
+	_expect(_builder.left_sidewalk_check.button_pressed and _builder.right_sidewalk_check.button_pressed
+		and _builder.zoning_check.button_pressed and int(_builder.speed_box.value) == 50
 		and _builder.speed_row.visible and _builder.street_lights_check.button_pressed and _builder.street_lights,
 		"a new type has sidewalks, 50 km/h, zoning and street lights")
 	_expect(_builder.cost_label.text == "15 / m, upkeep 0.10 / m / day" and _builder.warning_label.text.is_empty(),
@@ -375,12 +379,13 @@ func _run() -> void:
 	_expect(not _ui.road_type_menu.custom_ids.has(copy), "the Roads row drops it")
 	_builder.close()
 
-	# Attributes: Sidewalks off (both ends together, shoulders drawn), the car-only warning, the
-	# Speed stepper with zoning off once at 80 km/h, Rust's speed refusal and cost line.
+	# Attributes: both sidewalks off (shoulders drawn), the car-only warning, the Speed stepper
+	# with zoning off once at 80 km/h, Rust's speed refusal and cost line.
 	await _open()
-	_builder.sidewalks_check.button_pressed = false
+	_builder.left_sidewalk_check.button_pressed = false
+	_builder.right_sidewalk_check.button_pressed = false
 	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and _builder.rust_parts() == [BACK, AHEAD], "no sidewalks: shoulder ends, not parts: %s" % [_builder.parts])
-	_expect(_builder.strip.valid and not bool(_builder.check.sidewalks) and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 0.75],
+	_expect(_builder.strip.valid and int(_builder.check.sidewalks) == 0 and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 0.75],
 		"the strip draws 0.75 m shoulders: %s" % _builder.strip.widths_m)
 	_expect(_builder.widths_label.text == "Road 7.0 m\nTotal 8.5 m", "the widths without sidewalks: %s" % _builder.widths_label.text)
 	_expect(_builder.status_label.text == "1 + 1 lanes, 50 km/h, no sidewalks, 8.5 m wide", "the description: %s" % _builder.status_label.text)
@@ -407,9 +412,11 @@ func _run() -> void:
 	_expect(not _builder.street_lights and _builder.status_label.text == "1 + 1 lanes, 100 km/h, no sidewalks, no street lights, 8.5 m wide"
 		and _builder.cost_label.text == "24 / m, upkeep 0.16 / m / day" and not bool(_builder.check.get("street_lights", true)),
 		"street lights off: the description says so, the cost stays: %s / %s" % [_builder.status_label.text, _builder.cost_label.text])
-	_builder.sidewalks_check.button_pressed = true
+	_builder.left_sidewalk_check.button_pressed = true
+	_builder.right_sidewalk_check.button_pressed = true
 	_expect(_builder.parts == [SW, BACK, AHEAD, SW], "sidewalks back on: %s" % [_builder.parts])
-	_builder.sidewalks_check.button_pressed = false
+	_builder.left_sidewalk_check.button_pressed = false
+	_builder.right_sidewalk_check.button_pressed = false
 	_type_name("Builder Test Highway")
 	_builder.create_button.pressed.emit()
 	await process_frame
@@ -428,7 +435,8 @@ func _run() -> void:
 	# Edit: the type's own attributes load and Save keeps them; an edit suggests nothing.
 	await _open()
 	list.pick(highway_id)
-	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and not _builder.sidewalks_check.button_pressed and int(_builder.speed_box.value) == 100
+	_expect(_builder.parts == [SH, BACK, AHEAD, SH] and not _builder.left_sidewalk_check.button_pressed
+		and not _builder.right_sidewalk_check.button_pressed and int(_builder.speed_box.value) == 100
 		and not _builder.zoning_check.button_pressed and not _builder.street_lights_check.button_pressed, "an edited type loads its attributes")
 	_builder.speed_box.value = 110
 	_builder.create_button.pressed.emit()
@@ -447,6 +455,65 @@ func _run() -> void:
 	_builder.speed_box.value = 80
 	_expect(_builder.zoning, "zoning the player set stays on at 80 km/h")
 	_builder.close()
+
+	# One side (`ROAD-107`): each end on its own, the shoulder drawn on the other.
+	await _open()
+	_builder.right_sidewalk_check.button_pressed = false
+	_expect(_builder.parts == [SW, BACK, AHEAD, SH] and _builder.rust_parts() == [SW, BACK, AHEAD]
+		and _builder.left_sidewalk_check.button_pressed and not _builder.right_sidewalk_check.button_pressed,
+		"the right end alone becomes a shoulder: %s" % [_builder.parts])
+	_expect(_builder.strip.valid and int(_builder.check.sidewalks) == 1 and Array(_builder.strip.widths_m) == [1.5, 3.5, 3.5, 0.75],
+		"Rust reads the left side, the strip draws the shoulder: %s" % _builder.strip.widths_m)
+	_expect(is_equal_approx(float(_builder.check.total_m), 9.25) and _builder.status_label.text.contains("sidewalk on the left")
+		and not _builder.status_label.text.contains("no sidewalks"), "the left-only description: %s" % _builder.status_label.text)
+	_expect(_builder.warning_label.text == "No sidewalk on the right: buildings on that side are reached by car only",
+		"the warning names the side: %s" % _builder.warning_label.text)
+	_expect(_builder.name_edit.text == "1+1 L" and _builder.cost_label.text == "13.5 / m, upkeep 0.09 / m / day",
+		"one sidewalk's name and cost: %s / %s" % [_builder.name_edit.text, _builder.cost_label.text])
+	_expect(_builder.strip.is_interior(1) and not _builder.strip.is_interior(3), "the ends stay fixed")
+	_builder.zoning_check.button_pressed = false
+	_expect(_builder.warning_label.text.is_empty(), "no warning without zoning")
+	_builder.zoning_check.button_pressed = true
+	_builder.left_sidewalk_check.button_pressed = false
+	_expect(_builder.warning_label.text == _builder.CAR_ONLY_WARNING and _builder.parts == [SH, BACK, AHEAD, SH], "neither side: the road's warning")
+	_builder.right_sidewalk_check.button_pressed = true
+	_expect(_builder.parts == [SH, BACK, AHEAD, SW] and int(_builder.check.sidewalks) == 2
+		and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 1.5] and _builder.status_label.text.contains("sidewalk on the right")
+		and _builder.warning_label.text == "No sidewalk on the left: buildings on that side are reached by car only" and _builder.name_edit.text == "1+1 R",
+		"right only: %s / %s" % [_builder.status_label.text, _builder.warning_label.text])
+	_builder.create_button.pressed.emit()
+	await process_frame
+	var right_type := _type_named("1+1 R")
+	_expect(bool(right_type.get("usable", false)) and int(right_type.get("sidewalks", -1)) == 2 and right_type.get("parts", []) == [BACK, AHEAD, SW],
+		"the right-only type: %s" % right_type)
+	await _open()
+	_builder.right_sidewalk_check.button_pressed = false
+	_expect(_builder.parts == [SW, BACK, AHEAD, SH], "a new layout again, then left only: %s" % [_builder.parts])
+	_builder.create_button.pressed.emit()
+	await process_frame
+	var left_type := _type_named("1+1 L")
+	var left_id := String(left_type.get("id", ""))
+	_expect(bool(left_type.get("usable", false)) and int(left_type.get("sidewalks", -1)) == 1 and left_type.get("parts", []) == [SW, BACK, AHEAD],
+		"the left-only type is usable: %s" % left_type)
+	_expect(_ui.road_type_menu.custom_ids.has(left_id) and _tool.road_type_id == left_id and _tool.sidewalks == 1,
+		"the Roads row lists it and the tool draws it: %s" % _tool.sidewalks)
+	_expect(_ui.road_type_menu.custom_menu.tooltip_text.contains("sidewalk on the left"), "the Roads row's tooltip names the side: %s" % _ui.road_type_menu.custom_menu.tooltip_text)
+	var left_road := await _draw(-50.0)
+	var left_section: Dictionary = _simulation.get_edge_cross_section(left_road)
+	_expect(int(left_section.get("sidewalks", -1)) == 1 and String(left_section.get("road_type", "")) == left_id,
+		"the drawn road reads back as left: %s" % left_section)
+	await _open()
+	list.pick(left_id)
+	_expect(_builder.parts == [SW, BACK, AHEAD, SH] and _builder.left_sidewalk_check.button_pressed and not _builder.right_sidewalk_check.button_pressed,
+		"an edited left-only type loads its side: %s" % [_builder.parts])
+	_builder.right_sidewalk_check.button_pressed = true
+	_builder.create_button.pressed.emit()
+	await process_frame
+	_expect(int(_type(left_id).get("sidewalks", -1)) == 3, "Save writes the new sides")
+	_expect(int(_simulation.get_edge_cross_section(left_road).get("sidewalks", -1)) == 1, "a road already built keeps its sides")
+	_expect(_simulation.delete_road_type(left_id).is_empty() and _simulation.delete_road_type(String(right_type.get("id", ""))).is_empty(), "the one-sided types are deleted")
+	_tool.reload_road_type()
+	_ui.road_type_menu.refresh()
 
 	# An unusable entry, added by hand: listed with its reason, not in the Roads row, fixed.
 	# Spliced into Rust's text: Godot's JSON would write the integers back as floats.

@@ -46,15 +46,15 @@ func _run() -> void:
 	scene.add_child(simulation)
 	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "fixture world must load")
 	simulation.set_simulation_speed(0.0)
-	_expect(simulation.set_road_tool_attributes(50, true, true, true).is_empty(), "the 2-Lane Road's attributes")
+	_expect(simulation.set_road_tool_attributes(50, 3, true, true).is_empty(), "the 2-Lane Road's attributes")
 	if not await _commit(PackedVector3Array([_ground_point(-60.0, 0.0), _ground_point(60.0, 0.0)])):
 		_finish(scene)
 		return
-	_expect(simulation.set_road_tool_attributes(50, false, true, true).is_empty(), "a stem without sidewalks")
+	_expect(simulation.set_road_tool_attributes(50, 0, true, true).is_empty(), "a stem without sidewalks")
 	if not await _commit(PackedVector3Array([_ground_point(0.0, 0.0), _ground_point(0.0, 60.0)])):
 		_finish(scene)
 		return
-	simulation.set_road_tool_attributes(50, true, true, true)
+	simulation.set_road_tool_attributes(50, 3, true, true)
 
 	var west: int = simulation.get_hovered_edge(-30.0, 0.0)
 	var east: int = simulation.get_hovered_edge(30.0, 0.0)

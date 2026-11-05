@@ -141,6 +141,11 @@ impl SidewalkSides {
         self.0
     }
 
+    /// The sides Godot names by the same code, or `sidewalks_out_of_range`.
+    pub fn from_tool(bits: i64) -> Result<Self, &'static str> {
+        Self::from_bits(bits).ok_or("sidewalks_out_of_range")
+    }
+
     /// Both sides when `both`, else none: the two choices a road type had before `ROAD-107`.
     pub fn both_or_none(both: bool) -> Self {
         if both { Self::BOTH } else { Self::NONE }
@@ -183,6 +188,12 @@ impl SidewalkSides {
     /// How many sides have one (0, 1 or 2).
     pub fn count(self) -> u8 {
         u8::from(self.left()) + u8::from(self.right())
+    }
+
+    /// Whether this has a sidewalk on a side `before` does not: that side's band widens from a
+    /// shoulder to a sidewalk, even when the road's larger side stays as it was.
+    pub fn adds_to(self, before: Self) -> bool {
+        self.0 & !before.0 != 0
     }
 }
 
