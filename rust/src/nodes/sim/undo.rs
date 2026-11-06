@@ -902,6 +902,7 @@ impl SimCore {
         }
         // Restored records and the agents they displaced changed slots directly.
         self.agents.rebuild_household_members();
+        self.agents.rebuild_parking_work();
         self.agents.invalidate_lane_bucket_snapshot();
 
         self.households.restore_building_undo(undo.households);

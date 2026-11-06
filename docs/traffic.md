@@ -421,7 +421,8 @@ these lists, and departures never route-query each candidate.
 | Destination choice | O(k), first free fitting entry, no route query or allocation |
 | Complete departure quote | O(k + Q), three exact leg quotes after selecting one place |
 | Ordinary movement | O(1) additional phase/access work per agent |
-| Eligibility / ordered resource phase | O(agents + transitions × Q); exclusive resource commits use deterministic dense agent order |
+| Ordered resource phase | O(C log C + W + T × Q) for C candidates, W lost reservations watched and T transitions, with no pass over the population; exclusive resource commits use ascending agent order |
+| `has_car` | O(cars changed × household members) per tick; O(arrival carriers) for a car no household owns yet |
 | Sleeping parked vehicles | No simulation-tick vehicle iteration |
 | Candidate storage at 100k nonempty doors | Approximately 9.6 MB map/header storage + 1.6 MB per mean candidate capacity + 0.4 MB per mean road-component count + 1.6 MB per mean distinct car target count; about 38 MB at 12/2/4 including Arc headers; empty lists omitted |
 
@@ -433,6 +434,25 @@ Returning home releases custody even if the car remains at a distant bay. The wa
 destination in the ordered transition phase. A failed claim walks or waits for a saved timing-wheel
 event. Route-buffer preparation uses the next eligible event slot; unavailable routes use 30
 simulation seconds. No per-agent retry countdown polls for supply.
+
+The phase visits candidates only (`tick/parking/candidates.rs`). An agent is due in it, with no
+retry pending, when it is `ready`, when a departure is due, when it is inside on its `WalkToDoor`
+leg, or when it drives with its old bay still held. The movement pass finds all four as it runs:
+each agent's step ends in one check on the row it has just used, so a site that sets `ready` needs
+no push of its own, and an agent `ready` freezes is noted instead of stepped, which also retries a
+commit that could not finish. The notes go into the running shard's scratch, are merged and sorted,
+and the phase walks them in ascending agent order, so 1 and 8 workers commit the same way. The
+timing wheel's retry wakes its agent for the next commit, and a bay a replan kept from being
+released carries to the next tick. The lists are reused and are never saved.
+
+Custody reaches agents the other way, through two event lists `ParkingSystem` fills at each custody
+write. A borrower whose reservation ended joins a watch that sets `ready` and `replan_needed` before
+movement, and stays on it while it drives a junction connector, which is no place to replan from.
+A car whose custody changed has `has_car` rewritten for its household's members, or its arrival
+carrier, just before the tick. That moment matters: the economy reads `has_car` between ticks, so a
+reservation made in a commit shows from the next tick, as it did when a pass rewrote the column.
+Rows that change with no event, a load and an undo, ask the next tick for one O(agents) rebuild.
+Debug test builds check every tick of every test against the full scans these lists replaced.
 
 The itinerary is `WalkToCar → PullOut → Drive → PullIn → WalkToDoor` inside the ordinary
 access/network/access FSM. Pull-out uses `lane_attach_slot_clear` and `claim_lane_entry`, including

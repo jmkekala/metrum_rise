@@ -19,6 +19,7 @@ mod parking;
 #[cfg(test)]
 mod ring_capacity_tests;
 pub(crate) use access::LocalAccessPath as ParkingAccessPath;
+pub(crate) use parking::ParkingWork;
 pub(crate) use planning::quote_parking_leg;
 #[cfg(test)]
 pub(crate) use planning::quote_parking_trip;
@@ -92,7 +93,8 @@ impl AgentSystem {
         self.tick_internal(allocator, transit_network, graph, delta, time, None);
     }
 
-    /// Advances residents with persistent parking; O(agents + transitions × route query work).
+    /// Advances residents with persistent parking. Its own phases are O(candidates + transitions
+    /// × route query work): only the movement pass the city always runs visits every agent.
     /// Shared parking mutations commit in stable agent order after parallel movement.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn tick_with_parking(
@@ -146,6 +148,7 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
     ) {
         self.gridlock.bind_loaded_lanes(transit_network);
+        self.rebuild_parking_work();
         let n = self.agents.len();
         if n == 0 {
             return;

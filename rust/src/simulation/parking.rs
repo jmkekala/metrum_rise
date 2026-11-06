@@ -64,6 +64,11 @@ pub(crate) struct ParkingSystem {
     pending_economy: Vec<u64>,
     // Inspection-only departure outcomes since load; never saved or read by decisions.
     pub(crate) departures: stats::DepartureStats,
+    // Cars whose custody changed since the last agent tick, and the borrowers whose reservation
+    // ended: the events `has_car` and the trip recovery follow instead of scanning agents.
+    // Derived, never saved; reused between ticks.
+    pub(crate) custody_changes: Vec<Handle<Vehicle>>,
+    pub(crate) lost_reservations: Vec<crate::simulation::economy::agents::AgentHandle>,
 }
 
 impl ParkingSystem {
@@ -210,6 +215,7 @@ impl ParkingSystem {
         }
         self.vehicles.reserved[v] = place;
         self.places.reservation[p] = car;
+        self.custody_changes.push(car);
         true
     }
 
@@ -231,9 +237,11 @@ impl ParkingSystem {
             return false;
         }
         self.places.reservation[p] = Handle::NONE;
+        self.note_reservation_ended(v);
         self.vehicles.reserved[v] = Handle::NONE;
         self.vehicles.place[v] = place;
         self.places.occupant[p] = car;
+        self.custody_changes.push(car);
         self.mark_dirty(chunk_at([
             self.places.position[p][0],
             self.places.position[p][2],
@@ -249,6 +257,7 @@ impl ParkingSystem {
         let pos = self.places.position[p];
         self.places.occupant[p] = Handle::NONE;
         self.vehicles.place[v] = Handle::NONE;
+        self.custody_changes.push(car);
         let key = chunk_at([pos[0], pos[2]]);
         let chunk = self.chunks.get_mut(&key).expect("occupied parking chunk");
         if !chunk.release_pending {
@@ -276,7 +285,17 @@ impl ParkingSystem {
                 self.release_events.push(key);
             }
         }
+        self.note_reservation_ended(v);
         self.vehicles.reserved[v] = Handle::NONE;
+        self.custody_changes.push(car);
+    }
+
+    // The borrower's trip may have depended on the reservation ending now. O(1).
+    fn note_reservation_ended(&mut self, v: usize) {
+        let borrower = self.vehicles.borrower[v];
+        if !self.vehicles.reserved[v].is_none() && !borrower.is_none() {
+            self.lost_reservations.push(borrower);
+        }
     }
 
     fn mark_dirty(&mut self, key: (i32, i32)) {

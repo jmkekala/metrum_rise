@@ -35,9 +35,9 @@ pub(super) enum Phase {
     FrontageAgents,
     /// Lane rows updated when the frontage cadence fires.
     FrontageLanes,
-    /// Resident custody/availability rows classified before ordinary movement.
+    /// `has_car` rows rewritten after a custody change, and agents on the lost-reservation watch.
     ParkingEligibilityAgents,
-    /// Rows inspected by the deterministic parking resource phase.
+    /// Candidates walked by the deterministic parking resource phase.
     ParkingTransitionAgents,
 }
 
@@ -458,6 +458,9 @@ fn benchmark_agent_tick_contract() {
                 work, repeat_work,
                 "PERF-06 work counts must be deterministic"
             );
+            // No custody changes and nothing is due in these fixtures: nothing to visit.
+            assert_eq!(work[Phase::ParkingEligibilityAgents as usize], 0);
+            assert_eq!(work[Phase::ParkingTransitionAgents as usize], 0);
 
             eprintln!(
                 "PERF_AGENT {}",

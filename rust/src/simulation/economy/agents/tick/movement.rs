@@ -62,7 +62,10 @@ impl AgentSystem {
     ) {
         // Safety: index i is unique to this thread via par_iter.
         unsafe {
-            if slices.parking_trip.get(i).ready { return; }
+            if slices.parking_trip.get(i).ready {
+                slices.note_frozen_parking_agent(i);
+                return;
+            }
             let s_cur_n = &slices.cur_n;
             let s_tmode = &slices.tmode;
             let s_walk_phase = &slices.walk_phase;
@@ -85,6 +88,8 @@ impl AgentSystem {
             let was_walking = *s_tmode.get(i) != MODE_CAR;
             let previous_x = *s_pos_x.get(i);
             let previous_z = *s_pos_y.get(i);
+            let pulling_out =
+                slices.parking_trip.get(i).phase == crate::simulation::parking::ParkingTripPhase::PullOut;
 
             match *s_transit.get(i) {
                 TRANSIT_IN_BUILDING => {
@@ -147,6 +152,8 @@ impl AgentSystem {
                     *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                 }
             }
+
+            slices.note_parking_step(i, pulling_out, sim_time);
 
             // Visual-only state: derive the walk cycle from actual movement after
             // the FSM has advanced the agent. This keeps local access walking and

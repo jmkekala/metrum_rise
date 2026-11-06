@@ -15,6 +15,8 @@ thread_local! {
 /// Worker-local route storage; preparing once keeps repeated commute estimates allocation-free.
 #[derive(Default)]
 pub(crate) struct TripQueryScratch {
+    // Agents this movement shard found due in the parking phase; never route state.
+    parking_candidates: Vec<usize>,
     cch: CchPathScratch,
     possible: Vec<usize>,
     next: Vec<usize>,
@@ -459,6 +461,17 @@ impl TripQueryScratch {
             scratch.prepare(network, graph);
             quote(scratch)
         })
+    }
+
+    /// Notes agent `i` for the ordered parking phase in the running shard's list: a shard owns
+    /// its scratch, so the note takes no lock. O(1); the list keeps its storage between ticks.
+    pub(in super::super::super) fn note_parking_candidate(i: usize) {
+        QUERY.with_borrow_mut(|scratch| scratch.parking_candidates.push(i));
+    }
+
+    /// Moves this shard's notes to `merged`, in no useful order; the caller sorts. O(notes).
+    pub(in super::super::super) fn drain_parking_candidates(&mut self, merged: &mut Vec<usize>) {
+        merged.append(&mut self.parking_candidates);
     }
 
     /// Runs a planning callback with `owned` installed as the current thread-local scratch.

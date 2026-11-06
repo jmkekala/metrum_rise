@@ -47,6 +47,9 @@ pub struct ParkingTrip {
     pub(crate) ready: bool,
 }
 
+// Every agent's row is in the movement pass's working set: growth here costs each tick.
+const _: () = assert!(std::mem::size_of::<ParkingTrip>() == 56);
+
 impl ParkingTrip {
     /// Reconstructs derived route storage after a saved/cloned record is restored.
     /// O(prepared nodes) allocation at load/undo only; no work when capacity is sufficient.
@@ -164,6 +167,12 @@ impl ParkingSystem {
         true
     }
 
+    /// The household a live car belongs to, as its handle's bits; `u64::MAX` for one still on
+    /// its way in. O(1).
+    pub(crate) fn vehicle_owner(&self, car: Handle<Vehicle>) -> Option<u64> {
+        self.vehicle_handles.resolve(car).map(|v| self.vehicles.owner[v])
+    }
+
     /// O(1), allocation-free lookup of the persistent household car.
     pub(crate) fn household_car(&self, owner: u64) -> Handle<Vehicle> {
         self.owners.get(&owner).copied().unwrap_or(Handle::NONE)
@@ -204,6 +213,7 @@ impl ParkingSystem {
             return;
         }
         self.vehicles.moving[v] = moving;
+        self.custody_changes.push(car);
         if let Some(p) = self.place_handles.resolve(self.vehicles.place[v]) {
             let pos = self.places.position[p];
             self.mark_dirty(chunk_at([pos[0], pos[2]]));
@@ -380,6 +390,7 @@ impl ParkingSystem {
             && self.vehicles.borrower[v] == borrower
         {
             self.vehicles.borrower[v] = Handle::NONE;
+            self.custody_changes.push(car);
         }
     }
 

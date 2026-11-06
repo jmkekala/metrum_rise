@@ -987,6 +987,7 @@ pub(in crate::simulation::economy::agents) fn prepare_requested_routes(agents: &
         trip.prepare_route_buffer(&mut agents.agents.current_path[i]);
         agents.agents.parking_trip[i].retry_pending = false;
         agents.agents.next_replan_time[i] = 0.0;
+        agents.wake_parking_agent(handle);
     }
 }
 

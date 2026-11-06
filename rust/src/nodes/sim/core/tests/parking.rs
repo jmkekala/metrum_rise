@@ -436,6 +436,43 @@ fn parking_home_demolition_cannot_start_a_door_to_door_car_leg() {
     );
 }
 
+// The economy reads `has_car` between ticks, so a custody change shows there from the next tick
+// on, not from the commit that made it.
+#[test]
+fn has_car_follows_custody_at_the_next_tick() {
+    let mut c = SimCore::new(
+        WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    c.treasury.balance = 10_000_000.0;
+    commit_with(
+        &mut c,
+        (-600.0, 0.0),
+        (600.0, 0.0),
+        crate::simulation::network::graph::RoadParking { left: true, right: true },
+    );
+    let id = register_lot(&mut c);
+    let mut manifest = c.allocator.registry.get(&id).unwrap().manifest.clone();
+    manifest.building.as_mut().unwrap().household_capacity = Some(4);
+    c.allocator.registry.register("parking", manifest, String::new());
+    c.place_service_building_internal(&id, -450.0, -30.0).unwrap();
+    c.place_service_building_internal(&id, 450.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    let (home, target) = if c.allocator.entrances[0].side == -1 { (0, 1) } else { (1, 0) };
+    let agent = c.debug_add_parking_commuter(home, target).unwrap();
+    c.time.speed_multiplier = 8.0;
+    c.step_frame(1.0 / 60.0);
+    assert!(c.agents.has_car[agent], "the seeded car is available");
+    c.agents.release_departure(agent);
+    while c.agents.parking_trip[agent].phase == crate::simulation::parking::ParkingTripPhase::None {
+        c.step_frame(1.0 / 60.0);
+    }
+    assert!(c.agents.has_car[agent], "the reservation shows from the next tick");
+    c.step_frame(1.0 / 60.0);
+    assert!(!c.agents.has_car[agent]);
+}
+
 #[test]
 fn parking_move_in_save_round_trip_mid_arrival() {
     use crate::simulation::economy::agents::HouseholdAgeComposition;

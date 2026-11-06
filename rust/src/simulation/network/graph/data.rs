@@ -122,6 +122,9 @@ pub struct Edge {
     pub roundabout: Option<RoundaboutRing>,
 }
 
+// Routing and lanes read edges in bulk: growth here costs them all.
+const _: () = assert!(std::mem::size_of::<Edge>() == 120);
+
 impl Edge {
     /// Returns permitted traversal modes in one direction of a live edge.
     /// Walking is bidirectional; every other mode requires a lane in that direction.

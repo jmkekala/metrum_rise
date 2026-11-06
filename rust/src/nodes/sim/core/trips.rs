@@ -231,6 +231,7 @@ impl SimCore {
                 if let Some(i) = self.agents.resolve_agent(agent) {
                     self.agents.agents.parking_trip[i].retry_pending = false;
                     self.agents.agents.next_replan_time[i] = 0.0;
+                    self.agents.wake_parking_agent(agent);
                 }
             }
             TripEvent::FreightDispatch { shipment } => {

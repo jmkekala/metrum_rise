@@ -17,6 +17,7 @@ use godot::prelude::{Vector2, Vector3};
 
 mod departure;
 pub(super) mod parking;
+mod parking_candidates;
 mod detach;
 mod junctions;
 mod lane_dynamics;

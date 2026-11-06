@@ -81,6 +81,7 @@ impl AgentSystem {
             |i| unsafe {
                 if movement_claim_modes[i] == MovementClaimMode::HeldEntry {
                     *slices.speed.get_mut(i) = 0.0;
+                    slices.note_frozen_parking_agent(i);
                     return;
                 }
                 if movement_claim_modes[i] == MovementClaimMode::Dynamic {

@@ -292,12 +292,32 @@ impl SimCore {
             }
             let car = self.parking.household_car(owner);
             if arrival.is_none() { self.parking.park_new_car(car, home_handle); }
+            self.parking.custody_changes.push(car);
             for member in members {
                 self.agents.agents.parking_trip[member].vehicle = car;
             }
         }
         events.clear();
         self.households.parking_changes = events;
+    }
+
+    /// Rewrites `has_car` for the holders of every car whose custody changed since the last
+    /// tick, the one point it may change: the economy reads it between ticks. O(changes ×
+    /// household members); the list keeps its storage.
+    pub(crate) fn publish_parking_custody(&mut self) {
+        let mut changed = std::mem::take(&mut self.parking.custody_changes);
+        for car in changed.drain(..) {
+            if let Some(owner) = self.parking.vehicle_owner(car) {
+                let household = self
+                    .households
+                    .handles
+                    .resolve(crate::simulation::core::handles::Handle::from_bits(owner));
+                self.agents.refresh_car_holders(car, household, &self.parking);
+            }
+        }
+        self.parking.custody_changes = changed;
+        #[cfg(all(test, debug_assertions))]
+        self.agents.audit_has_car(&self.parking);
     }
 
     /// Rebuilds only door catchments through the maintained site-cell index around changed

@@ -307,6 +307,7 @@ impl SimCore {
         record_crash_phase_for_core(self, "agent tick");
         run_sim_phase("agent tick", || {
             self.publish_parking_households();
+            self.publish_parking_custody();
             self.agents.tick_with_parking(
                 &self.allocator,
                 &mut self.transit_network,

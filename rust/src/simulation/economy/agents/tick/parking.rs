@@ -12,50 +12,14 @@ use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntranc
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use crate::simulation::parking::stats::DepartureOutcome;
 use crate::simulation::parking::{ParkingSystem, ParkingTrip, ParkingTripPhase};
-use rayon::prelude::*;
+mod candidates;
 mod recovery;
+pub(crate) use candidates::ParkingWork;
 
 impl AgentSystem {
-    pub(super) fn prepare_parking_movement(
-        &mut self,
-        parking: &ParkingSystem,
-        network: &TransitNetwork,
-    ) {
-        #[cfg(test)]
-        super::contract::add(
-            super::contract::Phase::ParkingEligibilityAgents,
-            self.agents.len(),
-        );
-        let handles = &self.handles;
-        let ages = &self.agents.age_group;
-        let lanes = &self.agents.current_lane_id;
-        self.agents
-            .has_car
-            .par_iter_mut()
-            .zip(self.agents.parking_trip.par_iter_mut())
-            .enumerate()
-            .for_each(|(i, (flag, trip))| {
-                *flag =
-                    ages[i] != AGE_CHILD && parking.available_to(trip.vehicle, handles.handle(i));
-                if matches!(
-                    trip.phase,
-                    ParkingTripPhase::PullOut | ParkingTripPhase::Drive | ParkingTripPhase::PullIn
-                ) && !parking.trip_reserved(trip.vehicle, trip.destination)
-                    && !(trip.phase == ParkingTripPhase::Drive
-                        && network
-                            .lane_system
-                            .lanes
-                            .get(lanes[i])
-                            .is_some_and(|lane| lane.edge_id == usize::MAX))
-                {
-                    trip.ready = true;
-                    trip.replan_needed = true;
-                }
-            });
-    }
-
-    /// O(agents + T × Q) deterministic resource phase. Sleeping cars are never scanned.
-    /// Independent ready classification uses Rayon; exclusive resource commits use agent order.
+    /// O(C log C + T × Q) deterministic resource phase, for C candidates and T transitions:
+    /// sleeping cars and idle agents are never visited. Exclusive resource commits use ascending
+    /// agent order, whatever the worker count (`candidates.rs`).
     pub(super) fn commit_parking_transitions(
         &mut self,
         parking: &mut ParkingSystem,
@@ -63,15 +27,13 @@ impl AgentSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
-        #[cfg(test)]
-        super::contract::add(
-            super::contract::Phase::ParkingTransitionAgents,
-            self.agents.len(),
-        );
+        let candidates = self.take_parking_candidates();
+        #[cfg(all(test, debug_assertions))]
+        self.audit_parking_candidates(&candidates, parking);
         // The existing movement phase already prepares route scratch for this revision.
         let mut scratch = std::mem::take(&mut self.movement_serial_query);
         TripQueryScratch::with_owned(&mut scratch, || {
-            for i in 0..self.agents.len() {
+            for &i in &candidates {
                 let trip = self.agents.parking_trip[i];
                 if trip.retry_pending {
                     continue;
@@ -219,6 +181,7 @@ impl AgentSystem {
             }
         });
         self.movement_serial_query = scratch;
+        self.finish_parking_candidates(candidates, parking);
     }
 
     // O(1) only on an actual home-arrival event, never a sleeping borrower poll.
