@@ -849,48 +849,6 @@ fn shelf_below_target(
     })
 }
 
-/// Activity a sales-scaled store funds at census `sales` (`ECON-24`): its sales, or while it
-/// refills its shelf, that of one whole worker above what they need. Staffing to sales alone
-/// holds a shelf where it is, so a store whose whole workers land exactly on its sales never
-/// recovers from a dip. Below `reorder_threshold_days` of sales it starts refilling, and it goes
-/// on until it holds `stock_target_days` of them: the last census's funded jobs above what the
-/// sales need mark a refill under way, so the band between the two lines is the hysteresis and a
-/// shelf's daily swing inside it changes no job. One worker keeps the jobs a refill opens, and
-/// loses when it ends, to the fewest; a store with no input left has nothing to refill with, and
-/// a store at its physical size has no worker to add. O(ports).
-pub(crate) fn store_funded_activity(
-    building: &Building,
-    profile: &EconomyProfileRuntime,
-    sales: f32,
-    physical: u32,
-) -> f32 {
-    if sales <= 0.0
-        || profile.stock_target_days <= 0.0
-        || !is_sales_scaled_commercial_store(building, profile)
-    {
-        return sales;
-    }
-    let sales_jobs = (physical as f32 * sales).ceil() as u32;
-    let shelf_days = if building.funded_job_capacity > sales_jobs {
-        profile.stock_target_days
-    } else {
-        profile.reorder_threshold_days
-    };
-    let area = output_area_scale_for_building(building, profile);
-    let refill = profile.outputs.iter().any(|port| {
-        building.inventory_units(port.resource_runtime_id)
-            < profile.net_output_units_per_day(port) * area * sales * shelf_days
-    }) && profile
-        .inputs
-        .iter()
-        .all(|input| building.inventory_units(input.resource_runtime_id) > 0.0);
-    if refill && sales_jobs < physical {
-        (sales_jobs + 1) as f32 / physical as f32
-    } else {
-        sales
-    }
-}
-
 /// Returns production factors using an explicit demand-responsive activity floor.
 pub(crate) fn building_operation_factors_with_floor_scale(
     catalog: &RuntimeEconomyCatalog,

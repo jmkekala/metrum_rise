@@ -560,20 +560,6 @@ answer to "how much of this operation can run":
   (`operation.rs`). Owner equity is capital, never sales.
 - **Activities:** accepted recipe activity, as a share of full output. Sales-scaled stores,
   service stores, farms and mines produce, restock and staff to it.
-- **Shelf refill (`ECON-24`):** a sales-scaled store (`store` kind in a commercial zone; of the
-  shipped profiles only `grocery_basic`) funds one worker above what its sales need while it refills
-  its shelf. Staffing to sales alone holds a shelf where it is, so a store whose whole workers land
-  exactly on its sales never recovers from a dip: 12 of 15 grocery workers make 160 units a day for
-  160 residents. The refill starts below `reorder_threshold_days` of sales and runs until the shelf
-  holds `stock_target_days` of them. Funded jobs above what the sales need mark a refill under way,
-  so no new state is saved, and the band between the two lines is the hysteresis: a shelf's daily
-  swing inside it changes no job. Above target the job closes and its worker, unpaid, leaves after 2
-  days. A store with no input on hand, or at its physical size, adds nobody.
-  The extra wage counts against the same sales: the refill plan needs recurring revenue above all
-  costs with the refill's goods left out, because goods bought for the shelf are stock, and working
-  capital must carry the larger input buffer. A plan at or below the sales' own staffing is
-  unchanged, so a store that cannot fund the refill keeps the funding it had. The customer proof
-  allows the same activity. Costs: O(ports) per store and one extra staffing trial, no new search.
 - **Customers:** each store, in stable building order, claims its output from the nearest
   reachable households with exact directed shopping access (`reserve_consumer_outputs` →
   `ConsumerMarket::claim_reachable`, `customers/routing.rs`), with no distance bound, from
@@ -728,8 +714,7 @@ throughput = base_rate × staffing_factor × input_factor × output_headroom_fac
 - **Census activity bounds staffing and output.** A store or service store without census
   activity produces nothing and holds no paid staff. Groceries refill their shelf at full staffed
   rate up to `stock_target_days` of funded sales, then produce at their census share, so rounding
-  up to whole workers creates no surplus; a shelf below its reorder line also funds a worker to
-  refill it ([`ECON-24`](#funding-census-econ-17)). Farms and mines staff to the exports and local buyers
+  up to whole workers creates no surplus. Farms and mines staff to the exports and local buyers
   they can finance.
 
 Hourly production is O(buildings) with Rayon; area production follows the indexed site list.

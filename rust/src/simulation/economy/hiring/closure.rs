@@ -1029,16 +1029,9 @@ impl JobFunding {
                     financed[0] + revenue - old_revenue - freight_change,
                     financed[1] + capital_change - freight_change,
                 ];
-                // A store's shelf refill is funded above its sales (`ECON-24`).
-                let supported = super::super::households::store_funded_activity(
-                    building,
-                    profile,
-                    demand_activity,
-                    physical,
-                );
-                if !exports && supported < self.activities[index] {
-                    *ceiling = (*ceiling).min((physical as f32 * supported).ceil() as u32);
-                    *activity_ceiling = (*activity_ceiling).min(supported);
+                if !exports && demand_activity < self.activities[index] {
+                    *ceiling = (*ceiling).min((physical as f32 * demand_activity).ceil() as u32);
+                    *activity_ceiling = (*activity_ceiling).min(demand_activity);
                 }
                 if !(headroom[0] > 0.0 && headroom[1] >= 0.0) {
                     *ceiling = (*ceiling).min(self.capacities[index] - 1);
