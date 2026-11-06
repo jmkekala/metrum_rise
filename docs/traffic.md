@@ -1053,7 +1053,7 @@ the border trunk's, and that ring alone gives 769 (1+1) and 1,034 (4-Lane); 32 r
 conflict test to pay for. It does not catch up: over three days the ring-free cities deliver 4,383 and
 4,449 and clear their border queues (1 held car at the end), the 8-ring cities 2,137 and 2,851, with
 66 and 588 held. A single-lane ring at 20 km/h on the only border trunk is a capacity limit of this
-fixture, not a lock.
+fixture, not a lock ([measured](#what-a-ring-carries-road-62-round-r7c2)).
 
 Most of that is the ring, not the yielding. A measurement build with the rule switched off: 864
 deliveries with the one ring, 605 with eight (710 with give-way), 1,333 on the 4-Lane city (965), and
@@ -1087,10 +1087,180 @@ The rows outside spread, fixed-iteration `perf stat` of each row alone (the same
 both sides, C B B C): blocked 3.93 / 3.95 G instructions, 2.15-2.18 / 2.16-2.18 G cycles, overlapping;
 lateral 7.19 / 7.18 G instructions, 1.176 / 1.181 G branches, 35.6 / 35.1 M L1d misses, but 2.95-2.96 /
 3.05-3.07 G cycles. So lateral does no more work and takes 3.5% more cycles: a cycle profile puts
-+360 of the +377 samples on `sibling_vehicle_lane_with_idx`, a function this round did not touch,
-which reads `Lane`'s small fields; adding the index moves them by 4 bytes. That is the likely cause
-and it is not proven; the row is left as measured. The whole benchmark runs 92.81 / 92.86 G
-instructions, cycles overlapping (39.97-40.64 / 40.20-40.51 G).
++360 of the +377 samples on `sibling_vehicle_lane_with_idx`, a function this round did not touch.
+Round R7c2 tested the field shift below and it is not the cause. The whole benchmark runs 92.81 /
+92.86 G instructions, cycles overlapping (39.97-40.64 / 40.20-40.51 G).
+
+**The lateral row (round R7c2, 2026-11-06, fresh; lock, cores and workers as above).** `offset_of!`:
+`Lane` is 104 bytes on both sides; only `is_fwd`, `lane_type` and `lane_idx` move, 96 / 97 / 98 to
+100 / 101 / 102, with `ring_entry` at 96. A `repr(C)` build with the control's offsets and
+`ring_entry` at 100 does **not** bring the row back: 65,536 groups, medians of six runs each in one
+session (C, R7c's binary, the branch with this round's test code, the variant, in mirrored order):
+5.234 / 5.540 / 5.231 / 5.476 ms. So the control's offsets are slow in one binary, and the moved
+offsets are as fast as the control in another whose non-test source equals R7c's, with the same
+instructions in the function. 17 binaries of this hot code fall into two groups, 5.16-5.22 ms and
+5.34-5.56 ms, and both offset layouts appear in both (the three real control builds fast, the
+control-offset variant slow, branch builds on either side); the function's address modulo 64 does
+not sort them. The variant was dropped. Fixed-iteration counters on R7c's filtered builds, a fast
+control and a slow branch binary (C B B C): cycles +2%, L1 load misses -2%, MITE uops
+-13%, DSB uops -1%, store-forward blocks -5%, but stall cycles on L1d misses +5.6% and load-bound
+cycles +5.3%. So it is no front-end loss and no extra work: the same loads overlap less well in
+some link layouts. Which placement does that is not known. The row is link-layout variance of
+about 5% on identical source, not a cost of the field, and it says little about either side.
+
+### What a ring carries (`ROAD-62`, round R7c2)
+
+Round R7c2 (2026-11-06, branch `port-r7c2-capacity`, not landed). Fixture `ring_capacity_tests`: no
+city, four arms, a source on every entry lane that places a car whenever the lane's entry slot is
+clear, a sink near the end of each exit arm. Flows are cars per **simulated minute**, 600 s after a
+120 s warm-up; the median and range of nine starts, because the symmetrical fixture settles into
+different periodic orbits (one case: 72 to 82). Turns are by exit in the ring's sense of travel:
+first = right, third = left. 1x is the agent step at game speed 1 (1/60 s), 32x the step of the day
+runs (0.533 s). `$TEST_BINARY simulation::economy::agents::tick::ring_capacity_tests::measure_capacity
+--ignored --nocapture`, `METRUM_CAPACITY_TRACE=1` for the lanes. All numbers fresh on `409272b9`;
+the rule-off columns come from a measurement build that is not committed.
+
+What the constants allow. The steady bumper gap at speed `v` under limit `v0` is `(s0 + vT) / sqrt(1
+- (v / v0)^4)`, so a lane's flow `v / (L + gap)` tops out at:
+
+| Limit | 13.89 m/s (50 km/h) | 6.00 (straight connector) | 5.56 (ring) | 4.47 (right turn) | 4.07 (ring entry and exit, 36 m) |
+| --- | --- | --- | --- | --- | --- |
+| Top of the curve, cars/min | 70.5 | 49.6 | 47.7 | 42.5 | 40.3 |
+
+A queue starting from rest does not reach that on a free road: it discharges at 55.1 at 50 km/h and
+40.7 (40.1-41.4) at 20 km/h. A connector is too short to settle, so a short turn runs slightly over
+its figure. A ring of `a` arms whose cars each use `s` of its `a` sections carries at most `a x
+lane / s`: with a lane of 49, 98 for through traffic, 65 for the third exit.
+
+| Cars/min, all arms queued unless noted | 1x | 32x | No give-way, 1x | No give-way, 32x |
+| --- | --- | --- | --- | --- |
+| Road 1+1 at 50 / 20 km/h, one lane | 55.1 / 40.7 | 56.3 / 35.4 | | |
+| Road 2+2 at 50 / 20 km/h, both lanes | 110.2 / 81.3 | 112.5 / 70.7 | | |
+| Junction 1+1 through, one arm / four | 49.7 / 199.0 | 49.8 / 199.0 | | |
+| Junction 1+1 right / left, four arms | 177.9 / 188.8 | 168.1 / 179.8 | | |
+| Junction 1+1 mixed (arm's own discharge, no queue) | 220.5 | 225.0 | | |
+| Junction 2+2 through, one arm / four | 99.0 / 396.2 | 95.7 / 383.1 | | |
+| Junction 2+2 right / left (one lane each) | 180.1 / 197.3 | 168.9 / 192.0 | | |
+| Junction 2+2 mixed (no queue) | 440.9 | 450.0 | | |
+| Ring 36 m one lane, one arm through | 44.3 | 37.5 | 44.3 | 40.2 |
+| through, four arms | 72.7 (72-82) | 66.4 (62-67) | 97.9 | 8.7 (8-12) |
+| first exit | 140.0 (130-140) | 146.3 (135-146) | 177.1 | 160.7 |
+| third exit | 51.9 (51-58) | 43.5 (43-47) | 10.5 (8-12) | 8.3 |
+| mixed, a third each | 66.7 (66-68) | 56.6 (56-57) | 97.9 | 9.6 (8-40) |
+| Ring 50 m two lanes, one arm through | 90.5 | 82.7 | 92.3 | 89.2 |
+| through, four arms | 143.2 (138-146) | 132.3 (124-133) | 140 (108-194) | 41.5 (20-80) |
+| first exit (arm's own discharge, no queue) | 220.4 | 225.0 | 220.5 | 225.0 |
+| third exit (inner lane only) | 54.3 (54-58) | 39.4 (34-42) | 11.1 | 8.4 |
+| mixed | 132.0 (132-135) | 117.0 (115-122) | 157 (141-172) | 138 (126-146) |
+| Ring 50 m, 2+2 and 1+1 arms (the fan), through / mixed | 152.7 / 115.7 | 128.7 / 103.4 | 191 / 177 | 113 / 77 |
+
+**One stream.** A single arm on a ring is what a plain right turn is: 44.3 against 44.5, because
+every car entering a ring makes a right turn on a 4.07 m/s connector. Removing either the connector
+speed or give-way alone changes nothing at 1x, removing both gives 49.0, a straight connector's
+figure: the third hold, read at the line 9.5 m before the ring lane, lands on the same headway.
+
+**All arms.** Without give-way a ring reaches its bound (97.9, a lane of 49). With it the ring lanes
+are not full: in the mixed case they run 33.8 cars/min at 5.0 m/s, 71% of a lane, and the entries
+stand. A trace of the heads at the line, through traffic at 1x: 82% of the ticks wait for a car on
+the circulating connector, 13% for an arriving head, 4% for their own connector, 1% free. That
+first hold closes for the whole connector, 10.75 m on the 36 m ring and 15-17.5 m on the 50 m, 2 to
+3 s a car. Each hold switched off alone, in a measurement build, through / mixed at 1x:
+
+| One lane | Rule | No circulating hold | No arriving-head hold | No slot hold | No rule |
+| --- | --- | --- | --- | --- | --- |
+| through | 72.7 | 88.3 | 87.5 | 81.4 | 97.9 |
+| mixed | 66.7 | 89.9 | 77.5 | 78.4 | 97.9 |
+| first exit | 140.0 | 140.0 | 177.2 | 158.7 | 177.1 |
+
+So the rule takes a quarter to a third of a saturated ring and is what keeps it running: without it
+the third exit falls to 10, and at 32x the one-lane ring's through and mixed cases fall to about 9. The first
+exit's whole loss is the arriving head that leaves anyway (R7c's decision 8).
+
+The city is less sensitive to any one hold than the fixture: a one-ring day from the same snapshot with one hold off gives 791, 830 and 841 deliveries on 1+1
+(rule 769) and 1,114, 1,171 and 1,075 on 4-Lane (rule 1,034), 0 detours each; all three off 471 with
+17 detours, and 1,243. R7c's rule-off day (864) was prepared without the rule as well, so the two
+differ; days with the rule off are not stable. No hold brings the trunk near the ring-free 1,385 and
+1,863.
+
+What was ruled out, each on the same fixture: entry and exit connectors raised to 6 m/s: mixed 67.8,
+through 82 (66-82), ranges overlapping; braking at ring nodes removed: 74.6 and 66.8, inside the ranges; lane-end
+claims: 0 lost at 1x, 60 of 2,300 at 32x; a connector head waiting at the ring lane's slot: 5,464
+ticks over 2,888 exits at 1x, 0.03 s a car; the fan: no loss of its own. **No defect was found on
+ring lanes or connectors**, so nothing outside test code changed. Ring connectors do allow 6 m/s, 21.6
+km/h, over 40% of the ring, above the ring's limit; it does not limit anything.
+
+**Two lanes against one.** A two-lane ring carries twice a one-lane ring: 2.04 for one stream, 1.97
+through, 1.98 mixed at 1x; 2.2, 2.0, 2.1 at 32x. The third exit, on one lane by construction, gains
+nothing.
+
+**What a plain junction does.** Four crossing through streams carry 199.0, exactly four times one
+stream: they drive through each other. That is the missing conflict of `TRAFFIC-09`, not capacity.
+Only two opposing streams can run at once, 99.4, before any lost time, so a one-lane ring's 72.7
+through is about three quarters of what a crossing with conflicts could carry at best.
+
+**The game speed.** At 32x the step is 0.533 s and a slot test reads the last tick, so one stream
+onto a 4.07 m/s connector takes exactly three ticks a car: 37.5. At 6 m/s it gets 47.0. Speeds 1 to
+16 give 44.3 to 46.9, 32 gives 37.5. A plain through stream does not lose (49.7, 49.8).
+
+**The city.** `METRUM_AUDIT_JUNCTION=<nodes>` on `traffic07_lane_entry_audit` counts cars into each
+connector by game hour (fresh, 32x, R7c's snapshots; a game day is 24 simulated minutes):
+
+| Trunk junction, one day | 1+1, plain | 1+1, one ring | 4-Lane, plain | 4-Lane, one ring |
+| --- | --- | --- | --- | --- |
+| Deliveries | 1,385 | 769 | 1,863 | 1,034 |
+| Those whose carrier crossed it | 1,221 (88%) | 610 (79%) | 1,703 (91%) | 875 (85%) |
+| Cars through it (ring: entries), per minute | 2,853, 119 | 1,517, 63 | 3,751, 156 | 1,934, 81 |
+| In from the trunk | 1,090 | 580 | 1,655 | 519 |
+
+Every ring-free delivery but the local ones crosses this one node. With a ring the entries are flat
+at every hour of the day, the trunk's lane holds 136-159 cars at all 24 hours (the 4-Lane city's
+141-168) and the row's arm up to 122: **the ring is saturated all day**, at 63 cars a minute against
+the fixture's 57-66 at 32x, and 70.5 at 1x against 67-73. The fixture and the city agree. Offering
+the ring-free day's movements to the fixture in steps (`measure_city_movements`) gives the ceiling for
+that traffic: the plain junction takes all of 140 to 150 a minute, a one-lane ring 47-50 at 1x and
+39-40 at 32x, a two-lane ring with lanes used evenly about 110-125 at 1x and at best 110 at 32x,
+unstable above that, against 119 and 156 wanted.
+40% of the plain day's movements are third exits, and in the city routes then shift off them (free
+flow costs the longer ring): the row's arm, 37 cars a day plain, sends 423 with a ring.
+
+**Why two lanes lose as much as one in the city.** They are not used. 4-Lane trunk, one ring: the inner
+lane carries 436 entries with a queue of 141-168, the outer 83 with a queue of at most 11. The ring's
+exits to a two-lane arm run 1:1 (D10), so `preferred_entry_lanes` follows the route through the ring
+to the next turn off it, and the block after the first exit needs the left lane. At a plain junction
+the turn fans onto both target lanes and the choice ends there. The plan expected no preference. A
+measurement build that stops the preference at a ring: both trunk lanes queue (782 and 473 entries),
+ring entries 2,791 a day, 116 a minute, the fixture's figure and 1.84 times the one-lane ring;
+deliveries 1,246; but 3,298 missed turns against 20, since those cars then stand in the wrong lane on a
+short block. So not a fix: the capacity exists and the lane rule keeps it out of reach on this grid.
+
+**Without the trunk junction.** `METRUM_PERF_RINGS_SKIP_TRUNK=1` leaves the junctions next to a border
+plain; D17's default is unchanged (fresh: 710 and 965 again, hashes `9d1150dd...`, `14f11455...`).
+One day at 32x, 8 workers:
+
+| 10k day | 1+1, 1 ring | 1+1, 8 rings | 1+1, no ring | 4-Lane, 1 ring | 4-Lane, 8 rings | 4-Lane, no ring |
+| --- | --- | --- | --- | --- | --- | --- |
+| Saturation reports / detours / cycles | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Trip failures, all / ring | 0 / 0 | 0 / 0 | 0 / - | 0 / 0 | 0 / 0 | 0 / - |
+| Freight deliveries | 1,419 | 1,421 | 1,385 | 1,759 | 1,909 | 1,863 |
+| Held at nodes, peak / end | 283 / 283 | 321 / 321 | 260 / 260 | 163 / 147 | 129 / 62 | 163 / 140 |
+| Vehicles on lanes, peak | 2,896 | 3,134 | 2,869 | 3,098 | 3,202 | 3,082 |
+| Missed turns | 0 | 0 | 0 | 148 | 199 | 10 |
+| Cars into the rings | 51 | 1,704 | - | 126 | 1,094 | - |
+| Stands at an entry: count, p50 / p95 / max (s) | 6, 0.5 / 0.5 / 0.5 | 557, 1.1 / 5.9 / 97.0 | - | 12, 1.1 / 3.2 / 4.8 | 193, 1.1 / 5.3 / 29.9 | - |
+
+So the rings elsewhere cost nothing; the loss is the one ring on the one junction the city's freight
+crosses. The single ring takes almost no traffic in either run, so that column says little. The
+4-Lane city's missed turns rise, 148 and 199 against 10: rings on a grid of 30-40 m links, a
+measurement.
+
+**Game speed in the day.** R7c's table is at 32x. The same snapshots at 1x (86,400 frames): 1,386 no
+ring, 826 one ring, 780 eight on 1+1; 1,889, 1,138, 1,062 on 4-Lane. The ring-free city moves 0-1.4%,
+the rings 7-10%, so the 32x table understates a ring by that much, and the ratio is still 56-60%.
+
+Not known: how the rule's windows would behave at other ring sizes (only 36 m and 50 m ran); what a
+junction with `TRAFFIC-09` conflicts would carry on the trunk (the 99.4 is an upper bound, not a
+measurement); what `TRAFFIC-17` routing would do to the trunk's load, since a single border trunk has no
+other way in.
 
 ### Gridlock check (`TRAFFIC-14`)
 
