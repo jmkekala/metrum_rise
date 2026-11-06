@@ -9,6 +9,7 @@
 
 use crate::nodes::sim::core::state::SimCore;
 use crate::simulation::economy::agents::tick::FailurePlaces;
+use crate::simulation::economy::logistics::{ShipmentEndpoint, ShipmentStatus};
 use crate::simulation::network::lanes::LaneType;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,6 +39,141 @@ pub(super) struct RingDay {
     confirmed_peak: u32,
     saturated_peak: u32,
     saturated_ring_junctions: BTreeSet<u32>,
+    junction: Option<JunctionFlows>,
+}
+
+// `METRUM_AUDIT_JUNCTION=<node,node,...>` (`ROAD-62` round R7c2): what crosses one junction, a plain
+// node or the four nodes of a ring. Cars into each connector there by game hour, the deepest queue
+// on each lane feeding it, and of the day's deliveries those whose carrier used it, by kind.
+struct JunctionFlows {
+    connectors: Vec<ConnectorFlow>,
+    feeders: BTreeMap<usize, [usize; 24]>,
+    start_s: f32,
+    day_s: f32,
+    crossed: BTreeSet<u64>,
+    settled: BTreeMap<u64, &'static str>,
+}
+
+struct ConnectorFlow {
+    lane: usize,
+    from: usize,
+    last_in: usize,
+    hours: [u32; 24],
+}
+
+impl JunctionFlows {
+    fn new(core: &SimCore) -> Option<Self> {
+        let nodes: BTreeSet<usize> = std::env::var("METRUM_AUDIT_JUNCTION")
+            .ok()?
+            .split(',')
+            .map(|node| node.parse().expect("METRUM_AUDIT_JUNCTION: node ids"))
+            .collect();
+        let lanes = &core.transit_network.lane_system.lanes;
+        let mut connectors = Vec::new();
+        let mut feeders = BTreeMap::new();
+        for (from, lane) in lanes.iter().enumerate() {
+            if lane.lane_type != LaneType::Vehicle {
+                continue;
+            }
+            for &next in lane.next_lanes.iter() {
+                let connector = &lanes[next];
+                if connector.edge_id == usize::MAX && nodes.contains(&connector.node_id) {
+                    connectors.push(ConnectorFlow {
+                        lane: next,
+                        from,
+                        last_in: usize::MAX,
+                        hours: [0; 24],
+                    });
+                    feeders.insert(from, [0; 24]);
+                }
+            }
+        }
+        // What was settled before the day is not the day's.
+        let settled = core
+            .logistics
+            .shipments
+            .iter()
+            .filter(|shipment| !matches!(shipment.status, ShipmentStatus::InTransit))
+            .map(|shipment| (shipment.id, "before"))
+            .collect();
+        Some(Self {
+            connectors,
+            feeders,
+            start_s: core.agents.sim_time,
+            day_s: core.time.seconds_per_day as f32,
+            crossed: BTreeSet::new(),
+            settled,
+        })
+    }
+
+    fn after_frame(&mut self, core: &SimCore) {
+        let buckets = &core.agents.lane_buckets;
+        let agents = &core.agents.agents;
+        let elapsed = (core.agents.sim_time - self.start_s) / self.day_s;
+        let hour = ((elapsed.fract() * 24.0) as usize).min(23);
+        for flow in &mut self.connectors {
+            let bucket = &buckets[flow.lane];
+            for &(_, car) in bucket {
+                if agents.freight_shipment_id[car] != 0 {
+                    self.crossed.insert(agents.freight_shipment_id[car]);
+                }
+            }
+            let newest = bucket.first().map_or(usize::MAX, |car| car.1);
+            if newest != usize::MAX {
+                flow.hours[hour] += u32::from(newest != flow.last_in);
+                flow.last_in = newest;
+            }
+        }
+        for (&lane, peaks) in &mut self.feeders {
+            peaks[hour] = peaks[hour].max(buckets[lane].len());
+        }
+        for shipment in &core.logistics.shipments {
+            if !matches!(
+                shipment.status,
+                ShipmentStatus::InTransit | ShipmentStatus::Failed | ShipmentStatus::Expired
+            ) {
+                let kind = match (shipment.source, shipment.destination) {
+                    (ShipmentEndpoint::OwaBorder(_), _) => "import",
+                    (_, ShipmentEndpoint::OwaBorder(_)) => "export",
+                    _ => "local",
+                };
+                self.settled.entry(shipment.id).or_insert(kind);
+            }
+        }
+    }
+
+    fn report(&self, core: &SimCore) {
+        let lanes = &core.transit_network.lane_system.lanes;
+        let edge_of = |lane: usize| lanes[lanes[lane].next_lanes[0]].edge_id;
+        let mut kinds: BTreeMap<&str, (u32, u32)> = BTreeMap::new();
+        for (id, &kind) in &self.settled {
+            let row = kinds.entry(kind).or_default();
+            row.0 += 1;
+            row.1 += u32::from(self.crossed.contains(id));
+        }
+        let movements: Vec<_> = self
+            .connectors
+            .iter()
+            .map(|flow| {
+                serde_json::json!({
+                    "connector": flow.lane, "node": lanes[flow.lane].node_id,
+                    "from_lane": flow.from, "from_edge": lanes[flow.from].edge_id as i64,
+                    "to_edge": edge_of(flow.lane), "length_m": lanes[flow.lane].length,
+                    "ring_entry": core.transit_network.lane_system.ring_entry(flow.lane).is_some(),
+                    "total": flow.hours.iter().sum::<u32>(), "hours": flow.hours,
+                })
+            })
+            .collect();
+        let feeders: Vec<_> = self
+            .feeders
+            .iter()
+            .map(|(lane, peaks)| serde_json::json!({"lane": lane, "edge": lanes[*lane].edge_id as i64, "peaks": peaks}))
+            .collect();
+        eprintln!(
+            "JUNCTION_FLOWS {}",
+            serde_json::json!({"deliveries_by_kind": kinds, "movements": movements, "feeders": feeders})
+        );
+    }
 }
 
 impl RingDay {
@@ -91,6 +227,7 @@ impl RingDay {
             confirmed_peak: 0,
             saturated_peak: 0,
             saturated_ring_junctions: BTreeSet::new(),
+            junction: JunctionFlows::new(core),
         }
     }
 
@@ -116,6 +253,9 @@ impl RingDay {
     }
 
     pub(super) fn after_frame(&mut self, core: &mut SimCore) {
+        if let Some(junction) = &mut self.junction {
+            junction.after_frame(core);
+        }
         let kept = core.agents.trip_failures.kept.take().unwrap_or_default();
         self.failures += kept.len() as u64;
         for failure in &kept {
@@ -259,6 +399,9 @@ impl RingDay {
     }
 
     pub(super) fn report(mut self, core: &SimCore) {
+        if let Some(junction) = &self.junction {
+            junction.report(core);
+        }
         if std::env::var_os("METRUM_AUDIT_RINGS").is_some() {
             self.dump(core);
         }

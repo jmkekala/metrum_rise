@@ -531,11 +531,40 @@ fn add_perf_roundabouts(core: &mut SimCore) {
         .filter(|&(degree, _)| degree >= 3)
         .collect();
     junctions.sort_unstable_by_key(|&(degree, node)| (std::cmp::Reverse(degree), node));
+    // `METRUM_PERF_RINGS_SKIP_TRUNK` (round R7c2, a measurement): the junctions on a border trunk
+    // stay plain, so the rings stand where only the grid's own traffic crosses them. Off by
+    // default: D17's selection is unchanged.
+    let trunk_junctions: Vec<u32> = if std::env::var_os("METRUM_PERF_RINGS_SKIP_TRUNK").is_some() {
+        let mut borders = Vec::new();
+        crate::simulation::economy::logistics::collect_connected_border_nodes(
+            &core.region_graph,
+            &mut borders,
+        );
+        let neighbours = |&node: &u32| -> Vec<u32> {
+            let adjacent = core.region_graph.node_adjacency(node).iter();
+            adjacent
+                .map(|&edge| core.region_graph.edge(edge))
+                .map(|edge| {
+                    if edge.start_node == node {
+                        edge.end_node
+                    } else {
+                        edge.start_node
+                    }
+                })
+                .collect()
+        };
+        borders.iter().flat_map(neighbours).collect()
+    } else {
+        Vec::new()
+    };
     let mut placed = Vec::new();
     let mut refused: BTreeMap<String, u32> = BTreeMap::new();
     for (_, node) in junctions {
         if placed.len() == wanted {
             break;
+        }
+        if trunk_junctions.contains(&node) {
+            continue;
         }
         let site = RoundaboutSite::Junction(node);
         let diameter_m = default_diameter_m(site.lanes(&core.region_graph));

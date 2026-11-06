@@ -15,6 +15,8 @@ mod lane_nav;
 mod movement;
 mod movement_pass;
 mod planning;
+#[cfg(test)]
+mod ring_capacity_tests;
 mod route_preview;
 mod runtime;
 mod schedule;
