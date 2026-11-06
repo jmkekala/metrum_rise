@@ -1,4 +1,7 @@
 // Shared surface program; wrappers only choose which faces are visible.
+#ifdef ZONING_SITE_SURFACE
+#include "res://scripts/shaders/zoning_ground.gdshaderinc"
+#endif
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D roughness_tex : hint_roughness_r, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -39,6 +42,11 @@ void fragment() {
 	ROUGHNESS = paving.roughness;
 	METALLIC = 0.0;
 	SPECULAR = PAVING_SPECULAR;
+#ifdef ZONING_SITE_SURFACE
+	if (zoning_mask_enabled) {
+		apply_zoning_ground(world_pos, CAMERA_POSITION_WORLD, ALBEDO, EMISSION);
+	}
+#endif
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
 		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 }

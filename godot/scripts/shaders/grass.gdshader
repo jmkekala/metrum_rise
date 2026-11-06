@@ -176,6 +176,7 @@ void vertex() {
 }
 
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
+#include "res://scripts/shaders/zoning_ground.gdshaderinc"
 
 void fragment() {
 	// cull_disabled flips back-face normals before fragment(); keep the authored soft-up basis.
@@ -212,6 +213,9 @@ void fragment() {
 	EMISSION = color * ground_shadow_ambient * scene_ambient_light.rgb
 		* mix(1.0, canopy_floor_sky_transmission, 1.0 - pow(1.0 - forest_cover, 2.0));
 	standard_light_cloud_sun = standard_light_cloud(VERTEX, INV_VIEW_MATRIX);
+	if (zoning_mask_enabled) {
+		apply_zoning_ground(root_position, CAMERA_POSITION_WORLD, ALBEDO, EMISSION);
+	}
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
 		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 }

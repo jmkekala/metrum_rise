@@ -3,6 +3,10 @@
 ## Verifies cell gestures, independent Erase, cancellation, native selection and chunk reuse.
 extends "res://tests/road_junction_preview_test.gd"
 
+class MaskHost extends Node3D:
+	func is_overlay_requested() -> bool:
+		return true
+
 class CellSimulationStub extends Node3D:
 	var hit := Vector3(5, 0, 20)
 	var revision := 1
@@ -35,6 +39,7 @@ func _run() -> void:
 	simulation = SimulationNode.new()
 	root.add_child(simulation)
 	await _test_cell_bridge()
+	_test_preview_mask_lifecycle()
 	simulation.free()
 	if _failures == 0:
 		print("zoning_cells_tool_test: PASS")
@@ -139,21 +144,29 @@ func _test_cell_bridge() -> void:
 	var outside := await _cell_chunk(1, 0)
 	_expect(not outside.get("busy", true) and outside.get("outside", false), "Outside chunks need no preparation")
 	var cold := simulation.try_get_zoning_cell_chunk_packed(0, 0, PackedInt64Array())
-	_expect(cold.get("busy", false) and not cold.has("vertices"), "Cold chunks defer generation and never publish partial geometry")
+	_expect(cold.get("busy", false) and not cold.has("mask"), "Cold chunks defer generation and never publish partial geometry")
 	var empty := await _cell_chunk(0, 0)
-	_expect(empty.get("vertices", PackedVector3Array()).is_empty(), "Queued cell preparation completes while paused")
+	_expect(not empty.has("mask"), "Queued cell preparation completes while paused")
 	if not await _commit(PackedVector3Array([Vector3(-96, 0, 0), Vector3(96, 0, 0)])):
 		return
 	var initial := await _cell_chunk(0, 0)
+	_expect(initial.mask.size() == 256 * 256 * 4, "Mask is one RGBA8 2 m texel per chunk")
+	for style in _mask_styles(initial):
+		_expect(style == 0.5, "Unpainted rectangles carry the quiet style")
 	var remote := await _cell_chunk(0, -1)
+	initial = await _cell_chunk(0, 0)
 	var unchanged := await _cell_chunk(0, 0, initial.version)
-	_expect(unchanged.get("unchanged", false) and not unchanged.has("vertices"), "Unchanged chunk uploads no geometry")
+	_expect(unchanged.get("unchanged", false) and not unchanged.has("mask"), "Unchanged chunk uploads no geometry")
 	var preview := simulation.get_zoning_cells_preview_packed(2, PackedVector2Array([Vector2(0, 20)]), 20.0, 1)
 	_expect(preview.get("cell_count", 0) >= 100, "Fill covers six rows along the complete road side")
 	_expect(simulation.apply_zoning_cells_preview(preview.cells, preview.dependencies, 1), "Native paint commits the preview")
 	_expect(not simulation.apply_zoning_cells_preview(preview.cells, preview.dependencies, 2), "Consumed preview cannot repaint stale cells")
 	var painted := await _cell_chunk(0, 0, initial.version)
-	_expect(not painted.get("unchanged", true) and painted.colors != initial.colors, "Paint changes only the affected chunk payload")
+	_expect(not painted.get("unchanged", true) and painted.rows != initial.rows, "Paint changes only the affected chunk payload")
+	_expect(painted.mask == initial.mask, "Painting changes style without changing conservative coverage")
+	for style in _mask_styles(painted):
+		_expect(style == 1.0, "Vacant painted cells carry the fill flag")
+	_expect(not preview.get("masks", []).is_empty(), "Preview exports the same ground-mask path")
 	var endpoint := simulation.get_closest_node(Vector3(96, 0, 0), 1.0)
 	_expect(endpoint >= 0, "Move fixture resolves the road endpoint")
 	if endpoint >= 0:
@@ -162,15 +175,18 @@ func _test_cell_bridge() -> void:
 		var after_rejection := await _cell_chunk(0, 0, painted.version)
 		_expect(after_rejection.get("unchanged", false), "Rejected movement does not invalidate the zoning mesh")
 	var remote_after := await _cell_chunk(0, -1, remote.version)
-	_expect(remote_after.get("unchanged", false), "Opposite road side retains its chunk mesh")
+	_expect(remote_after.get("unchanged", false), "Opposite-side masks keep their existing versions")
 	_expect(simulation.apply_zoning_parcel_at(0.0, -16.0, 0, 2, 2), "Manual parcels remain usable beside painted cells")
+	var manual := await _cell_chunk(0, -1)
+	for style in _mask_styles(manual):
+		_expect(style == 0.5, "Unzoned manual parcels and cells share the quiet style")
 	var suppressed := simulation.get_zoning_cells_preview_packed(0, PackedVector2Array([Vector2(0, -16)]), 20.0, 1)
 	_expect(not suppressed.get("valid", true), "A manual reservation suppresses cached empty cells")
 	_expect(simulation.undo_action(), "Completed cell gesture queues a local undo")
 	var restored := false
 	for attempt in range(100):
 		var payload := await _cell_chunk(0, 0)
-		if payload.get("colors", PackedColorArray()) == initial.colors:
+		if _mask_styles(payload) == _mask_styles(initial):
 			restored = true
 			break
 		await create_timer(0.01).timeout
@@ -179,3 +195,36 @@ func _test_cell_bridge() -> void:
 	if endpoint >= 0:
 		_expect(simulation.move_network_node(endpoint, Vector3(120, 0, 0)), "Clear road extension returns successful movement")
 		_expect(simulation.get_node_pos(endpoint) == Vector3(120, 0, 0), "Accepted movement publishes the new position")
+
+func _mask_styles(payload: Dictionary) -> PackedFloat32Array:
+	var styles := PackedFloat32Array()
+	var rows: PackedByteArray = payload.get("rows", PackedByteArray())
+	for index in int(payload.get("rectangle_count", 0)):
+		styles.append(rows.decode_float((index * 3 + 1) * 16 + 8))
+	return styles
+
+func _test_preview_mask_lifecycle() -> void:
+	var host := MaskHost.new()
+	root.add_child(host)
+	var camera := Camera3D.new()
+	host.add_child(camera)
+	camera.position = Vector3(0, 100, 100)
+	camera.look_at(Vector3.ZERO)
+	camera.current = true
+	var renderer := preload("res://scripts/renderers/zoning_cells_overlay.gd").new()
+	renderer.simulation_node = simulation
+	host.add_child(renderer)
+	renderer.set_process(false)
+	var payload := simulation.get_zoning_cells_preview_packed(0, PackedVector2Array([Vector2(25, 25)]), 20.0, 1)
+	_expect(payload.get("valid", false), "Preview lifecycle fixture selects a cell")
+	renderer.set_preview(payload)
+	_expect(not renderer._preview_keys.is_empty(), "Preview publishes its mask immediately")
+	var uploads: int = renderer._masks.uploads
+	renderer.set_preview(payload)
+	_expect(renderer._masks.uploads == uploads, "An unchanged preview uploads nothing")
+	# Controller cancellation clears its Dictionary before notifying the renderer. Both hold
+	# that same Dictionary, so emptiness alone must not suppress removing resident layers.
+	payload.clear()
+	renderer.set_preview({})
+	_expect(renderer._preview_keys.is_empty() and renderer._masks.entries.is_empty(), "Cancellation clears resident preview masks even after the shared payload was cleared")
+	host.free()

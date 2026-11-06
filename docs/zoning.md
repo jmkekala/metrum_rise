@@ -1396,7 +1396,7 @@ spacing, road fill and free/unzoned parcels remain under the Parcels workflow.
 Godot sends pointer paths to the packed Rust bridge and renders the returned exact selection.
 Cell and brush paths retain their segments; marquee retains its start/end, and fill retains its
 clicked seed. Release commits one transaction. Escape, right-click, changing workflows/settings
-or releasing over UI cancels without an edit. A retained hover reuses its mesh. Authoring dependency
+or releasing over UI cancels without an edit. A retained hover reuses its mask. Authoring dependency
 changes reject/cancel stale gestures; materializing another visible chunk alone does not. Commit
 revalidates the retained cell identities and current reservations before writing any paint.
 
@@ -1404,7 +1404,7 @@ Generation completeness is metadata on the existing cell chunk index. Fill mater
 neighbors while following the same four-neighbor/profile/frame traversal as an already generated
 selection. Empty regions are cached too. Road eligibility, geometry, external sites and manual
 parcel changes invalidate intersecting cached chunks, including the direct conflict halo.
-Paint updates only its own overlay chunk; cached empty geometry stays usable. Cold and differently
+Paint updates only intersected mask chunks; cached empty geometry stays usable. Cold and differently
 ordered view queries have matching cell footprints around competing rotated roads.
 
 Demand lot preparation uses this same completeness cache. Each requested chunk generates its
@@ -1414,17 +1414,6 @@ indices. Lot derivation still runs for every dirty lot region, even when geometr
 current. Road/frontage invalidation retains its existing semantics; an occupancy release that
 keeps its lot queues only lot derivation, and one that frees the claims also invalidates their
 halo (`SIM-02-K`).
-
-The renderer polls visible chunk metadata in one nonblocking call and uploads at most two changed
-chunks per frame. Each full cell and authored parcel belongs to its centre's 512 m chunk. Derived
-lots are represented by their cells, so they do not cause a second whole-city parcel mesh upload.
-Parcel insert/remove/rezone/occupancy operations maintain versions beside the existing parcel
-chunk index. Idle polling is `O(visible chunks)`; payload work visits only changed chunks' cell
-blocks and parcel candidates. The 6% cell inset is visual only; selection and reservations retain
-the complete canonical square. Height changes refresh only chunks whose 512 m region (plus a
-96 m draping margin) changed samples; see
-[road-commit overlay latency](#road-commit-cell-overlay-latency--2026-09-30).
-Rendering memory acceptance remains outstanding.
 
 Completed gestures use the shared Rust undo stack with local paint and affected-lot journals.
 An unchanged immediate inverse restores the original lot identities and redevelopment generations.
@@ -1482,6 +1471,47 @@ Runner: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 <release-test-binary> -
 `355729e9766c5ad508fc6a34dd59675f654a58ca96cb6a7e6d1b00851bdffd2f`. No competing build/test process
 ran during the measurements. The debug extension used by the Godot checks has SHA-256
 `c90ec9d2cf754eca8bfcbdfea3a6e6e7e7cffd84cfa610491a07180d44cae543`.
+
+#### Ground mask rendering
+
+Cells, authored parcels and the painting preview tint the receiving ground
+(`scripts/shaders/zoning_ground.gdshaderinc`) instead of drawing overlay meshes. Base and graded
+terrain, site ground, lot paving and grass (at the blade root) call it behind the global
+`zoning_mask_enabled` switch; roads do not, so zones never paint over them. Trees, buildings and
+vehicles occlude the zones through the normal depth buffer. No-build guide lines stay ordinary
+depth-tested lines. Rendering only; no simulation state changes.
+
+Data per nonempty 512 m chunk: a 256 × 256 RGBA8 index mask (2 m texels, 256 KiB) plus RGBA32F
+rows. Three rows (48 bytes) describe each exact cell or parcel rectangle: chunk-local origin and
+axis; extents, style and handedness; linear profile colour. A texel holds zero (empty), an odd
+u32 `2 * row + 1` (one rectangle) or an even `2 * row` (an interned candidate list, needed where
+rotated or sub-texel boundaries share a texel). The shader tests the exact rectangles, so edges
+are analytic at any zoom and the mask resolution never shows. Row layer zero maps world chunks to
+their committed and preview layers. Styles: painted 30 % fill, occupied 15 % (zone stays readable
+under buildings), unpainted 1.5 %, preview 50 %; brighter edges from world-position derivatives, fading over 400–1800 m.
+
+Refresh: cell, parcel/occupancy revisions and the world-reset epoch; height changes do not touch
+the mask. A cell revision stamps every chunk the cell crosses. Polling is `O(visible chunks)`, at
+most two committed chunks rebuild per frame, and a rebuild costs the indexed local query plus
+`O(C log C + T + B)` (C rectangles, T = 65,536 texels, B their clipped texel-AABB area), built
+after the simulation lock is released. Paint-only changes upload the rows (32 KiB), not the mask.
+The preview builds its own layers for the affected visible chunks in the same update.
+
+Cost per ground fragment: hidden, one coherent branch and no texture reads; shown, five fetches
+for a single-candidate texel (lookup, index, frame, extent, colour), more on candidate lists
+(at most four candidates in the fixtures).
+
+Memory: 320 KiB per GPU layer for a 300-cell roadside chunk, 768 KiB for a dense 2,500-cell one
+(the row height is shared by the pool, so one dense chunk raises every layer). Residency follows
+the visible chunks, not the world: a 20 km world with 10 % of its 1,600 chunks zoned at roadside
+density would be 80 MiB only if every one were resident at once.
+
+Measured (unprofiled release, M2 Pro, Metal, 1440 × 960): mask build p50 0.42 ms (300 cells) and
+1.33 ms (2,500 cells); a 60-cell preview 1.42 ms; one-cell paint update p95 1.2–1.3 ms with
+0–128 remote roads, unchanged as the background grows. Frame p50 with
+`tests/zoning_ground_capture.gd` (its own blank world): hidden 10.85 → 10.84 ms, shown
+10.91 → 11.35 ms against the previous overlay. Metal reports no GPU timestamps, so GPU time is
+not measured.
 
 ### Loaded reservations and boundary precision
 
@@ -3611,3 +3641,4 @@ A pocket moves its widened curb's lattice 3.5 m out, and the cross road keeps it
 not re-phased), so a quadrant a pocket widens into holds two lattices again, which meet in the
 usual stepped seam. Crossings that are not square (the user's, 90.45 degrees) had that seam
 before.
+

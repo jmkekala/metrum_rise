@@ -150,7 +150,17 @@ func _reference(fixture: Dictionary) -> void:
 	road.remove_child(road.road_mesh_root)
 	scene.add_child(road.road_mesh_root)
 	var road_chunks := road._road_chunk_instances.size()
-	scene.add_child(await _capture_terrain())
+	var water := Node3D.new()
+	water.name = "Water"
+	scene.add_child(water)
+	var terrain := TerrainScript.new()
+	terrain.name = "Terrain"
+	scene.add_child(terrain)
+	simulation.acknowledge_network_render(generation)
+	var terrain_deadline := Time.get_ticks_msec() + 20000
+	while simulation.is_terrain_dirty() and Time.get_ticks_msec() < terrain_deadline:
+		await process_frame
+	_expect(not simulation.is_terrain_dirty(), "Production terrain must settle")
 	var overlay := OverlayScript.new()
 	scene.add_child(overlay)
 	overlay.set_tool_active(true)
@@ -158,18 +168,18 @@ func _reference(fixture: Dictionary) -> void:
 	var cell_meshes := 0
 	var uploaded_cells := 0
 	var palette := {}
-	for instance: MeshInstance3D in overlay._cell_chunks._chunks.values():
-		if instance.mesh == null:
+	for payload: Dictionary in overlay._cell_chunks._chunks.values():
+		if not payload.has("rows"):
 			continue
 		cell_meshes += 1
-		var arrays := instance.mesh.surface_get_arrays(0)
-		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
-		uploaded_cells += vertices.size() / 6
-		for index in range(0, colors.size(), 6):
-			var key := colors[index].to_html(true)
+		uploaded_cells += int(payload.rectangle_count)
+		var rows: PackedByteArray = payload.rows
+		for index in int(payload.rectangle_count):
+			var offset := (index * 3 + 2) * 16
+			var color := Color(rows.decode_float(offset), rows.decode_float(offset + 4), rows.decode_float(offset + 8))
+			var key := color.to_html(true)
 			palette[key] = palette.get(key, 0) + 1
-	_expect(uploaded_cells == cell_count, "Visible chunks must upload every cell exactly once")
+	_expect(uploaded_cells >= cell_count, "Visible masks cover all cells, including duplicate crossing candidates")
 	if fixture.get("paint", false):
 		_expect(palette.size() == 4, "Paint reference must show three profiles and empty cells")
 	for frame in range(5):

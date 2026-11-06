@@ -12313,6 +12313,11 @@ state or hidden repair paths for missing geometry.
 
 Current deterministic rules:
 
+- Zoning is drawn into the ground: base/graded `terrain_surface`, `site_ground`, lot paving and
+  grass call `apply_zoning_ground()` from `zoning_ground.gdshaderinc` behind the global
+  `zoning_mask_enabled` switch (no texture reads while zoning is hidden). Road materials do not,
+  and reflection undersides and terrain debug views skip it. A new ground material that can hold
+  zone cells must call it too. See [ground mask rendering](zoning.md#ground-mask-rendering).
 - `WATER-04` planar reflection buildings (2026-10-07): each building or scaffold batch gets one
   instance in the mirror world sharing its MultiMesh, materials and window schedules; no mesh,
   buffer or material is copied. It draws out to 1000 m from the mirrored camera (32 m margin),

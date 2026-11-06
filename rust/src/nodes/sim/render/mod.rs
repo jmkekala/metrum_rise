@@ -28,3 +28,4 @@ pub mod water;
 pub(crate) mod water_reflection;
 /// Zoning and environment rendering (image overlays).
 pub mod zoning;
+pub(crate) mod zoning_mask;

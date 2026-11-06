@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Zoning overlay visibility and road eligibility; cell and parcel meshes use visible chunks.
+## Zoning view visibility and road eligibility; cells and parcels tint the ground surface.
 ##
 ## Rust methods called: get_zoning_overlay_revision(), get_zoning_overlay_occupancy_revision(),
 ##   try_get_zoning_parcels_overlay_packed(), try_get_no_building_spawn_lines()
@@ -29,13 +29,6 @@ func _ready():
 	add_child(cells)
 	_cell_chunks = cells
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var mat := StandardMaterial3D.new()
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.vertex_color_use_as_albedo = true
-	mat.no_depth_test = true
-	material_override = mat
 	position = Vector3.ZERO
 	visible = false
 
@@ -149,11 +142,8 @@ func _rebuild_no_build_overlay() -> bool:
 	if not _no_build_mesh_instance:
 		_no_build_mesh_instance = MeshInstance3D.new()
 		_no_build_mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		var mat := StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.albedo_color = Color(1.0, 0.5, 0.0, 0.9)
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.no_depth_test = true
+		var mat := ShaderMaterial.new()
+		mat.shader = preload("res://scripts/shaders/zoning_lines.gdshader")
 		_no_build_mesh_instance.material_override = mat
 		add_sibling(_no_build_mesh_instance)
 
@@ -174,3 +164,6 @@ func _rebuild_no_build_overlay() -> bool:
 	im.surface_end()
 	_no_build_mesh_instance.mesh = im
 	return true
+
+func set_cell_preview(payload: Dictionary) -> void:
+	_cell_chunks.set_preview(payload)

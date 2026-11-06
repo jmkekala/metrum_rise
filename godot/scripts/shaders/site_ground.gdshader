@@ -28,6 +28,7 @@ void vertex() {
 }
 
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
+#include "res://scripts/shaders/zoning_ground.gdshaderinc"
 
 void fragment() {
 	cloud_sun = weather_cloud_sun(world_pos);
@@ -52,6 +53,9 @@ void fragment() {
 	EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
 	ROUGHNESS = site_roughness;
 	SPECULAR = 0.08;
+	if (zoning_mask_enabled) {
+		apply_zoning_ground(world_pos, CAMERA_POSITION_WORLD, ALBEDO, EMISSION);
+	}
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
 		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 }

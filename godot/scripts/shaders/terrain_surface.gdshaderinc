@@ -151,6 +151,7 @@ uniform float contour_flat_relief_start_m = 0.10;
 uniform float contour_flat_relief_end_m = 1.25;
 
 #include "res://scripts/shaders/terrain_cells.gdshaderinc"
+#include "res://scripts/shaders/zoning_ground.gdshaderinc"
 
 varying float h;
 varying vec2 var_centered_uv;
@@ -1026,6 +1027,9 @@ void fragment() {
 			SPECULAR = 0.08;
 		}
 	}
+	}
+	if (zoning_mask_enabled && terrain_visual_debug_mode == 0 && !WATER_REFLECTION_UNDERSIDE) {
+		apply_zoning_ground(var_world_pos, CAMERA_POSITION_WORLD, ALBEDO, EMISSION);
 	}
 	if (terrain_visual_debug_mode == 0) {
 #ifdef TERRAIN_GRADED

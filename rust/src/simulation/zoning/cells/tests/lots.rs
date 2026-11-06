@@ -23,6 +23,39 @@ fn fixture() -> (ZoningSystem, CellLot, ParcelId) {
 }
 
 #[test]
+fn occupancy_overlay_versions_cover_cross_chunk_lots_without_invalidating_remote_chunks() {
+    let (store, grid) = rectangular_cells(54, 3);
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    zoning.cells = store;
+    let paint = zoning.cells.select(CellSelectionShape::Fill, &[DVec2::splat(5.0)]);
+    zoning.paint_cells(&paint, 1, |_| false).unwrap();
+    // The 500–530 m lot straddles the existing 512 m rendering boundary.
+    let lot = CellLot::new(CellKey { grid, x: 50, y: 0 }, 3, 2, CellFrontage::MinY).unwrap();
+    let id = zoning.install_prevalidated_cell_lot(lot, 0, -1, 0.2, 1).unwrap();
+    let remote = zoning.parcels.chunk_revision((2, 0));
+    let mut versions = [(0, 0), (1, 0)].map(|chunk| zoning.parcels.chunk_revision(chunk));
+    for occupied in [true, false] {
+        if occupied {
+            assert!(zoning.occupy_parcel(id.raw(), 7));
+        } else {
+            assert!(zoning.clear_parcel_occupancy(id.raw()));
+        }
+        for (index, chunk) in [(0, 0), (1, 0)].into_iter().enumerate() {
+            let revision = zoning.parcels.chunk_revision(chunk);
+            assert_ne!(revision, versions[index]);
+            versions[index] = revision;
+        }
+        assert_eq!(zoning.parcels.chunk_revision((2, 0)), remote);
+        for key in lot.cells() {
+            let claim = zoning.cells.lot(key).unwrap();
+            assert_eq!(claim, id.raw());
+            assert_eq!(zoning.parcels.get(ParcelId::from_raw(claim)).unwrap()
+                .occupied_building().is_some(), occupied);
+        }
+    }
+}
+
+#[test]
 fn coverage_geometry_respects_all_frontages_and_rotated_frames() {
     for direction in [DVec2::X, DVec2::new(0.8, 0.6), DVec2::new(0.2, 1.0)] {
         let frame = GridFrame::new(DVec2::splat(5.0), direction, 10.0).unwrap();

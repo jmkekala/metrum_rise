@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Visible cell-grid chunks from Rust; retained meshes upload only after a chunk changes.
+## Visible ground-mask chunks from Rust; retained textures upload only after local changes.
 ## Generation, reservations, cell ownership and paint remain in the simulation.
 extends Node3D
 
 var simulation_node: Node
 var _chunks: Dictionary = {}
 var _versions: Dictionary = {}
-var _material: StandardMaterial3D
+var _masks := preload("res://scripts/renderers/zoning_ground_masks.gd").new()
+var _preview_keys: Dictionary = {}
+var _preview_payload: Dictionary = {}
+var _preview_view: Array[Vector2i] = []
 var _span: float
 var _reported_visible := false
 const VIEW_DISTANCE_M := 2000.0
@@ -15,15 +18,16 @@ const UPLOADS_PER_FRAME := 2
 
 func full_refresh() -> void:
 	_versions.clear()
+	_chunks.clear()
+	_preview_keys.clear()
+	_preview_payload.clear()
+	_preview_view.clear()
+	_masks.clear()
+	_masks.setup(simulation_node.get_terrain_world_size())
 
 func _ready() -> void:
 	_span = simulation_node.get_zoning_cell_chunk_span()
-	_material = StandardMaterial3D.new()
-	_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_material.vertex_color_use_as_albedo = true
-	_material.no_depth_test = true
+	_masks.setup(simulation_node.get_terrain_world_size())
 	top_level = true
 
 func _process(_delta: float) -> void:
@@ -32,9 +36,12 @@ func _process(_delta: float) -> void:
 	if visible != _reported_visible:
 		_reported_visible = visible
 		simulation_node.set_zoning_cell_overlay_visible(visible)
+	RenderingServer.global_shader_parameter_set("zoning_mask_enabled", visible)
 	if not visible:
 		return
 	var keys := _visible_chunks()
+	if not _preview_payload.is_empty() and keys != _preview_view:
+		_upload_preview(keys)
 	var requested: Dictionary = {}
 	var packed := PackedInt32Array()
 	for key in keys:
@@ -43,9 +50,10 @@ func _process(_delta: float) -> void:
 		packed.append(key.y)
 	for key in _chunks.keys():
 		if not requested.has(key):
-			_chunks[key].queue_free()
+			_masks.remove(Vector3i(key.x, key.y, 0))
 			_chunks.erase(key)
 			_versions.erase(key)
+	_masks.publish()
 	var metadata: Dictionary = simulation_node.try_get_zoning_cell_chunk_states(packed)
 	if bool(metadata.get("busy", true)):
 		return
@@ -55,7 +63,7 @@ func _process(_delta: float) -> void:
 	var uploads := 0
 	for i in range(keys.size()):
 		var key: Vector2i = keys[i]
-		# Per chunk: cell revision, generated flag, parcel revision, local height revision.
+		# Per chunk: crossing-owner revision, generated flag, parcel revision, world epoch.
 		var version := PackedInt64Array([states[i * 4], states[i * 4 + 2], states[i * 4 + 3]])
 		var known: PackedInt64Array = _versions.get(key, PackedInt64Array())
 		if states[i * 4 + 1] != 0 and known == version:
@@ -73,30 +81,37 @@ func _process(_delta: float) -> void:
 			break
 
 func _replace_chunk(key: Vector2i, payload: Dictionary) -> void:
-	var instance: MeshInstance3D = _chunks.get(key)
-	if instance == null:
-		instance = MeshInstance3D.new()
-		instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		instance.material_override = _material
-		add_child(instance)
-		_chunks[key] = instance
-	var vertices: PackedVector3Array = payload.get("vertices", PackedVector3Array())
-	var colors: PackedColorArray = payload.get("colors", PackedColorArray())
-	if vertices.is_empty():
-		instance.mesh = null
+	_chunks[key] = payload
+	_masks.replace(Vector3i(key.x, key.y, 0), payload)
+	_masks.publish()
+
+func set_preview(payload: Dictionary) -> void:
+	if payload.is_empty() and _preview_payload.is_empty() and _preview_keys.is_empty():
 		return
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = vertices
-	arrays[Mesh.ARRAY_COLOR] = colors
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	var lines: PackedVector3Array = payload.get("lines", PackedVector3Array())
-	if not lines.is_empty():
-		arrays[Mesh.ARRAY_VERTEX] = lines
-		arrays[Mesh.ARRAY_COLOR] = payload.get("line_colors", PackedColorArray())
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arrays)
-	instance.mesh = mesh
+	_preview_payload = payload
+	_upload_preview(_visible_chunks())
+
+func _upload_preview(keys: Array[Vector2i]) -> void:
+	_preview_view = keys
+	var retained := {}
+	var visible_keys := {}
+	for key in keys:
+		visible_keys[key] = true
+	for chunk: Dictionary in _preview_payload.get("masks", []):
+		var key: Vector2i = chunk.chunk
+		if not visible_keys.has(key):
+			continue
+		var address := Vector3i(key.x, key.y, 1)
+		retained[address] = true
+		_masks.replace(address, chunk)
+	for key: Vector3i in _preview_keys:
+		if not retained.has(key):
+			_masks.remove(key)
+	_preview_keys = retained
+	_masks.publish()
+
+func _exit_tree() -> void:
+	_masks.clear()
 
 func _visible_chunks() -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []

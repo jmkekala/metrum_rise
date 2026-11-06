@@ -21,6 +21,23 @@ window/stretch/mode="disabled"
 
 [shader_globals]
 
+zoning_mask_enabled={
+"type": "bool",
+"value": false
+}
+zoning_mask_bounds={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+zoning_masks={
+"type": "sampler2DArray",
+"value": ""
+}
+zoning_rows={
+"type": "sampler2DArray",
+"value": ""
+}
+
 street_lamp_cells={
 "type": "sampler2D",
 "value": ""

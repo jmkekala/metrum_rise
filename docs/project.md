@@ -15,6 +15,10 @@ reach Godot through the render snapshot from cached poses, and a building stands
 with a sidewalk (`ROAD-109`). Only format 118 loads
 ([save contract](simulation.md#save-bytes-road-68-k16)). See [Parking](traffic.md#parking).
 
+Zoning cells, parcels and the painting preview are now drawn into the ground surface itself
+(graded terrain included), so trees and buildings stand on them and roads stay clear; the overlay
+meshes are gone ([ground mask](zoning.md#ground-mask-rendering)).
+
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
 Vulkan/MoltenVK and Linux Vulkan, without slowing streaming or setup
