@@ -3949,10 +3949,10 @@ fn a_family_on_a_job_that_cannot_carry_it_moves_when_one_opens() {
 
 #[test]
 fn a_second_adult_counts_the_first_adults_wage() {
-    // Alone, the 60 wage would have to carry half of a family of four: too little.
-    assert_eq!(CarryMarket::new(2, 2, 1).search(), CARRY_FAR);
+    // Alone, the 60 wage would have to carry half of a family of five: too little.
+    assert_eq!(CarryMarket::new(2, 3, 1).search(), CARRY_FAR);
     // Beside a 90 wage it is enough, so the shorter commute wins.
-    let mut market = CarryMarket::new(2, 2, 1);
+    let mut market = CarryMarket::new(2, 3, 1);
     market.households.households[0].employed_adults = 1;
     market.households.households[0].gross_daily_wages = 90.0;
     assert_eq!(market.search(), CARRY_NEAR);

@@ -383,7 +383,7 @@ the live policy.
 | Property tax | 2 / 25 / 35 per day | Per occupied home / active commercial / active industrial building, × 1.75 per level above 1. City-owned and unzoned buildings pay none. |
 | Unemployment benefit | 30/day | Per unemployed adult, for at most `unemployment_max_days` (30) |
 | Pension | 30/day | Per elder |
-| Child support | 10/day | Per child |
+| Child support | 20/day | Per child |
 
 Daily budget history keeps separate buckets for each tax, each property class and each transfer.
 Pending transaction taxes roll into the report at the daily close.
@@ -634,8 +634,9 @@ required = (members × essentials + home electricity + property tax
 A job carries the household when its net wage reaches that. Unemployment benefit and savings do not
 count, and transfers are their full rates, not scaled by treasury reliability as in admission. With
 the shipped figures (35.33 a member, 0.25 a home, 2.00 property tax at level 1) a single adult needs
-37.58 net, a parent with one child 62.91 net (gross 71.5), so the 60-wage service job carries the
-first and not the second. Beside a partner's 90 wage a second adult of a family of four needs 44.37.
+37.58 net, a parent with one child 52.91 net (gross 60.2), so the 60-wage service job, 52.80 net,
+carries the first and just not the second. Beside a partner's 90 wage a second adult of a family of
+four needs 34.37.
 
 - An adult without a job takes a carrying job first and otherwise, as before, the best it has: the
   rule never leaves anyone unemployed who had an option. A job that fills first falls through to

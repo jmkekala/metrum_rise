@@ -230,12 +230,12 @@ fn household_ledger_reconciles_wages_vat_property_and_transfers() {
         elder_count: 0,
     };
     let balance = ledger.household(composition, 1, false, 90.0, 1.75);
-    // Net 79.20 + child support 10 - (2 * 36.84 + property 2), including the home electricity reserve.
-    assert!((balance.surplus() - 13.52).abs() < 1e-4);
+    // Net 79.20 + child support 20 - (2 * 36.84 + property 2), including the home electricity reserve.
+    assert!((balance.surplus() - 23.52).abs() < 1e-4);
     // Treasury gets withheld income tax + grocery VAT + property, never VAT on service sales.
     assert!((balance.taxes - (10.8 + 4.0 + 2.0)).abs() < 1e-4);
     let unemployed = ledger.household(composition, 0, false, 90.0, 1.75);
-    assert!((unemployed.transfers - 10.0).abs() < 1e-4);
+    assert!((unemployed.transfers - 20.0).abs() < 1e-4);
 }
 
 #[test]

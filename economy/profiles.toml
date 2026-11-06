@@ -420,7 +420,7 @@ startup_treasury_balance = 500000.0
 unemployment_daily_benefit_per_member = 30.0
 unemployment_max_days = 30
 pension_daily_benefit_per_elder = 30.0
-child_support_daily_benefit_per_child = 10.0
+child_support_daily_benefit_per_child = 20.0
 
 [runtime_tuning.logistics]
 # Maximum cargo mass for one simulated freight vehicle; batching is per resource.
