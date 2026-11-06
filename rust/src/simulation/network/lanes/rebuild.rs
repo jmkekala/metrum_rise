@@ -128,6 +128,7 @@ impl LaneSystem {
             graph,
             node_id,
             &mut self.node_lanes,
+            &mut self.ring_entries,
             layout
                 .and_then(|layout| layout.kerb_corners.as_deref())
                 .unwrap_or_default(),

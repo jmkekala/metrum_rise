@@ -787,7 +787,7 @@ fn entry_state(
             continue;
         }
         let in_the_way = if lane_entry_slot_clear(connector, buckets) {
-            ring_entry_blocker(connector, lanes, buckets)
+            ring_entry_blocker(connector, &network.lane_system, buckets)
         } else {
             Some(connector)
         };
@@ -803,7 +803,9 @@ fn entry_state(
 
 /// Whether a car at the end of `from` may roll onto ring entry `connector`, or a sibling the claim
 /// would take in its place: a one-lane arm fans onto both lanes of a two-lane ring, so the lane-end
-/// hold reads the same candidates as the claim. O(successors of `from`), no allocation.
+/// hold reads the same candidates as the claim. O(successors of `from`), no allocation. Out of line
+/// to keep the speed pass's ordinary connector path as it was.
+#[inline(never)]
 pub(super) fn ring_approach_clear(
     from: usize,
     connector: usize,

@@ -109,7 +109,8 @@ impl Site {
     fn entry(&self, arm: usize) -> (usize, RingEntry) {
         let lane = self.entry_lane(arm);
         let mut next = self.lanes()[lane].next_lanes.iter().copied();
-        next.find_map(|c| Some((c, self.lanes()[c].ring_entry?)))
+        let system = &self.network.lane_system;
+        next.find_map(|c| Some((c, system.ring_entry(c)?)))
             .expect("an arm's entry lane has a ring entry")
     }
 }
@@ -127,16 +128,17 @@ fn with_car(buckets: &mut [Vec<(f32, usize)>], lane: usize, d: f32) {
 fn a_ring_entry_gives_way_to_each_of_its_three_holds_in_turn() {
     let site = four();
     let lanes = site.lanes();
+    let system = &site.network.lane_system;
     let (connector, entry) = site.entry(0);
     let (circulating, ring_in) = (entry.circulating as usize, entry.ring_in as usize);
     let ring_out = lanes[connector].next_lanes[0];
     let empty = vec![Vec::new(); lanes.len()];
-    assert_eq!(ring_entry_blocker(connector, lanes, &empty), None);
+    assert_eq!(ring_entry_blocker(connector, system, &empty), None);
 
     let mut buckets = empty.clone();
     with_car(&mut buckets, circulating, lanes[circulating].length - 0.5);
     assert_eq!(
-        ring_entry_blocker(connector, lanes, &buckets),
+        ring_entry_blocker(connector, system, &buckets),
         Some(circulating)
     );
 
@@ -144,48 +146,49 @@ fn a_ring_entry_gives_way_to_each_of_its_three_holds_in_turn() {
     let mut buckets = empty.clone();
     with_car(&mut buckets, ring_in, lanes[ring_in].length - gap + 0.01);
     assert_eq!(
-        ring_entry_blocker(connector, lanes, &buckets),
+        ring_entry_blocker(connector, system, &buckets),
         Some(ring_in)
     );
     let mut buckets = empty.clone();
     with_car(&mut buckets, ring_in, lanes[ring_in].length - gap - 0.01);
-    assert_eq!(ring_entry_blocker(connector, lanes, &buckets), None);
+    assert_eq!(ring_entry_blocker(connector, system, &buckets), None);
     // A head standing at the lane's end is not arriving: it waits for its exit or for the two
     // lanes the rule tests itself.
     let mut buckets = empty.clone();
     with_car(&mut buckets, ring_in, lanes[ring_in].length);
-    assert_eq!(ring_entry_blocker(connector, lanes, &buckets), None);
+    assert_eq!(ring_entry_blocker(connector, system, &buckets), None);
 
     let mut buckets = empty.clone();
     with_car(&mut buckets, ring_out, 1.0);
     assert_eq!(
-        ring_entry_blocker(connector, lanes, &buckets),
+        ring_entry_blocker(connector, system, &buckets),
         Some(ring_out)
     );
     // A car past the slot leaves room ahead: this is the slot test, not the box rule.
     let mut buckets = empty;
     with_car(&mut buckets, ring_out, CAR_LENGTH + IDM_S_MIN + 0.1);
-    assert_eq!(ring_entry_blocker(connector, lanes, &buckets), None);
+    assert_eq!(ring_entry_blocker(connector, system, &buckets), None);
 }
 
 #[test]
 fn an_ordinary_connector_owes_no_give_way() {
     let site = four();
     let lanes = site.lanes();
+    let system = &site.network.lane_system;
     let (entry_connector, entry) = site.entry(0);
     // The circulating connector, and an exit off the ring, are no ring entries.
-    assert_eq!(lanes[entry.circulating as usize].ring_entry, None);
+    assert_eq!(system.ring_entry(entry.circulating as usize), None);
     let exit = lanes[entry.ring_in as usize]
         .next_lanes
         .iter()
         .copied()
         .find(|&next| next != entry.circulating as usize)
         .unwrap();
-    assert_eq!(lanes[exit].ring_entry, None);
+    assert_eq!(system.ring_entry(exit), None);
     let mut buckets = vec![Vec::new(); lanes.len()];
     with_car(&mut buckets, entry.circulating as usize, 0.0);
-    assert_eq!(ring_entry_blocker(exit, lanes, &buckets), None);
-    assert!(ring_entry_blocker(entry_connector, lanes, &buckets).is_some());
+    assert_eq!(ring_entry_blocker(exit, system, &buckets), None);
+    assert!(ring_entry_blocker(entry_connector, system, &buckets).is_some());
 }
 
 // What the yield run records: the tick the circulating car left the connector ahead of the entry,

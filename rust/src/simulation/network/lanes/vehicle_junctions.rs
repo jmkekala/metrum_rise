@@ -17,6 +17,7 @@ use super::rebuild::vehicle_lane_offset;
 use super::{APPROACH_SOLID_LENGTH_M, Lane, LaneSuccessors, LaneType, RingEntry};
 use godot::prelude::*;
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 
 mod turn;
 
@@ -111,6 +112,7 @@ pub(crate) fn build_vehicle_connections_at_node(
     graph: &RegionGraph,
     node_id: usize,
     node_lanes: &mut std::collections::HashMap<usize, Vec<usize>>,
+    ring_entries: &mut Vec<RingEntry>,
     kerb_corners: &[Corner],
 ) {
     // (edge, lane index, lane id, its end at the node).
@@ -260,7 +262,7 @@ pub(crate) fn build_vehicle_connections_at_node(
         }
     }
 
-    mark_ring_entries(lanes, graph, &inbound);
+    mark_ring_entries(lanes, ring_entries, graph, &inbound);
 }
 
 // Writes `Lane::ring_entry` on the connectors from an arm onto a ring lane at this node: each
@@ -270,6 +272,7 @@ pub(crate) fn build_vehicle_connections_at_node(
 // give way to. `O(inbound x connectors)`, a node without a ring returns at once.
 fn mark_ring_entries(
     lanes: &mut [Lane],
+    ring_entries: &mut Vec<RingEntry>,
     graph: &RegionGraph,
     inbound: &[(usize, i8, usize, VehicleLaneEnd)],
 ) {
@@ -290,7 +293,7 @@ fn mark_ring_entries(
             let Some(ring_out) = ring_lane_of(lanes, connector) else {
                 continue;
             };
-            lanes[connector].ring_entry = ring_ins().find_map(|&(_, _, ring_in, _)| {
+            let entry = ring_ins().find_map(|&(_, _, ring_in, _)| {
                 let successors = lanes[ring_in].next_lanes.iter().copied();
                 let mut circulating =
                     successors.filter(|&next| ring_lane_of(lanes, next) == Some(ring_out));
@@ -299,6 +302,10 @@ fn mark_ring_entries(
                     ring_in: ring_in as u32,
                 })
             });
+            if let Some(entry) = entry {
+                ring_entries.push(entry);
+                lanes[connector].ring_entry = NonZeroU32::new(ring_entries.len() as u32);
+            }
         }
     }
 }

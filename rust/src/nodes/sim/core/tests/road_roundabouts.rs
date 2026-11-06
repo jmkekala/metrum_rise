@@ -516,11 +516,13 @@ fn bulldozing_a_ring_piece_removes_the_ring_and_leaves_the_arms_as_road_ends() {
 #[test]
 fn a_rings_give_way_returns_with_the_lanes_on_a_load() {
     let entries = |core: &SimCore| {
-        let lanes = &core.transit_network.lane_system.lanes;
+        let system = &core.transit_network.lane_system;
+        let lanes = &system.lanes;
         let mut found: Vec<(usize, usize)> = lanes
             .iter()
-            .filter_map(|lane| {
-                let entry = lane.ring_entry?;
+            .enumerate()
+            .filter_map(|(id, lane)| {
+                let entry = system.ring_entry(id)?;
                 let target = lane.next_lanes[0];
                 let circulating = &lanes[entry.circulating as usize];
                 assert_eq!(circulating.next_lanes[0], target);

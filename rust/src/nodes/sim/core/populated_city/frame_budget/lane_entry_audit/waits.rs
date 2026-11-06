@@ -323,8 +323,9 @@ impl<'a> Occupancy<'a> {
     // The car ring entry `lane` gives way to (`ROAD-62`): on the circulating connector, or the head
     // of the ring lane close enough to its end. An observer of its own: not the tick's test.
     fn ring_entry_holder(&self, lane: usize) -> Option<usize> {
-        let lanes = &self.core.transit_network.lane_system.lanes;
-        let entry = lanes[lane].ring_entry?;
+        let system = &self.core.transit_network.lane_system;
+        let lanes = &system.lanes;
+        let entry = system.ring_entry(lane)?;
         let (circulating, ring_in) = (entry.circulating as usize, entry.ring_in as usize);
         let head = self.buckets[ring_in].last();
         self.buckets[circulating]

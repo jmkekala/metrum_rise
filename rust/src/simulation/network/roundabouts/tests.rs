@@ -758,7 +758,7 @@ fn assert_ring_entries(graph: &RegionGraph, lanes: &LaneSystem, nodes: &[u32]) {
         let entries_ring = !on_ring(lane.edge_id) && lane.lane_type == LaneType::Vehicle;
         for &connector in lane.next_lanes.iter().filter(|_| entries_ring) {
             let target = all[connector].next_lanes[0];
-            let Some(entry) = all[connector].ring_entry else {
+            let Some(entry) = lanes.ring_entry(connector) else {
                 assert!(!on_ring(all[target].edge_id), "lane {id} enters unmarked");
                 continue;
             };
@@ -770,7 +770,7 @@ fn assert_ring_entries(graph: &RegionGraph, lanes: &LaneSystem, nodes: &[u32]) {
             assert_eq!(all[circulating].next_lanes[0], target);
             assert!(all[ring_in].next_lanes.contains(&circulating));
             assert_eq!(all[circulating].node_id, all[connector].node_id);
-            assert_eq!(all[circulating].ring_entry, None);
+            assert_eq!(lanes.ring_entry(circulating), None);
         }
     }
     assert!(seen > 0);
@@ -802,13 +802,13 @@ fn give_way_survives_an_incremental_rebuild_and_retires_with_its_connectors() {
     let mut lanes = LaneSystem::new();
     lanes.rebuild(&mut graph);
     let old: Vec<usize> = (0..lanes.lanes.len())
-        .filter(|&id| lanes.lanes[id].ring_entry.is_some())
+        .filter(|&id| lanes.ring_entry(id).is_some())
         .collect();
     assert_eq!(old.len(), 4);
     lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([applied.arms[0]]));
     assert_ring_entries(&graph, &lanes, &applied.nodes);
-    let live = (0..lanes.lanes.len()).filter(|&id| lanes.lanes[id].ring_entry.is_some());
+    let live = (0..lanes.lanes.len()).filter(|&id| lanes.ring_entry(id).is_some());
     assert_eq!(live.count(), 4);
     // The arm's rebuild retired its node's connectors and every ring node next to it.
-    assert!(old.iter().any(|&id| lanes.lanes[id].ring_entry.is_none()));
+    assert!(old.iter().any(|&id| lanes.ring_entry(id).is_none()));
 }

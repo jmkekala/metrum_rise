@@ -53,7 +53,8 @@ impl RingDay {
                 ring_nodes.extend([edge.start_node, edge.end_node]);
             }
         }
-        let lanes = &core.transit_network.lane_system.lanes;
+        let system = &core.transit_network.lane_system;
+        let lanes = &system.lanes;
         let mut entries = Vec::new();
         for (id, lane) in lanes.iter().enumerate() {
             if lane.edge_id == usize::MAX || lane.lane_type != LaneType::Vehicle {
@@ -63,7 +64,7 @@ impl RingDay {
                 .next_lanes
                 .iter()
                 .copied()
-                .filter(|&next| lanes[next].ring_entry.is_some())
+                .filter(|&next| system.ring_entry(next).is_some())
                 .collect();
             if let Some(&first) = connectors.first() {
                 entries.push(EntryWatch {
@@ -192,7 +193,7 @@ impl RingDay {
                 lanes[lane].edge_id as i64,
                 lanes[lane].node_id as i64,
                 lanes[lane].length,
-                lanes[lane].ring_entry,
+                core.transit_network.lane_system.ring_entry(lane),
                 &lanes[lane].next_lanes[..],
                 cars.join(" | ")
             )

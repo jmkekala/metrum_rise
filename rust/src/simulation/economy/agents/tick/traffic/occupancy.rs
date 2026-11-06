@@ -6,7 +6,7 @@ use super::super::super::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};
 use super::super::claims::LaneClaimContext;
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
 use crate::simulation::economy::agents::determinism::stable_index;
-use crate::simulation::network::lanes::Lane;
+use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::roundabouts::RING_SPEED_MS;
 
 // How far from its end a ring lane's head must be for an entry to go: the lane-change gap's
@@ -85,14 +85,15 @@ pub(in crate::simulation::economy::agents::tick) fn lane_entry_slot_clear(
 /// the ring lane's slot is what it waits for, and those are tested; if it waits for its exit, it
 /// is not coming. So an entry only ever stands for the ring lane it enters or for a moving car,
 /// and giving way adds no wait a plain junction lacks. A pure function of last tick's buckets, like
-/// the claims'. `O(log bucket)`, no allocation.
+/// the claims'. `O(log bucket)`, no allocation. Out of line: only a ring entry comes here, and
+/// the slot test inlined once more changes how the hot paths around it are compiled.
+#[inline(never)]
 pub(in crate::simulation::economy::agents::tick) fn ring_entry_blocker(
     connector: usize,
-    lanes: &[Lane],
+    lanes: &LaneSystem,
     lane_buckets: &[Vec<(f32, usize)>],
 ) -> Option<usize> {
-    let lane = lanes.get(connector)?;
-    let entry = lane.ring_entry?;
+    let entry = lanes.ring_entry(connector)?;
     let (circulating, ring_in) = (entry.circulating as usize, entry.ring_in as usize);
     // As `lane_entry_slot_clear`: a lane the snapshot does not hold yet counts as blocked.
     if lane_buckets
@@ -102,12 +103,12 @@ pub(in crate::simulation::economy::agents::tick) fn ring_entry_blocker(
         return Some(circulating);
     }
     if let Some(&(head_d, _)) = lane_buckets.get(ring_in).and_then(|bucket| bucket.last()) {
-        let to_end_m = lanes[ring_in].length - head_d;
+        let to_end_m = lanes.lanes[ring_in].length - head_d;
         if to_end_m <= RING_ENTRY_HEAD_GAP_M && to_end_m > RING_HEAD_STANDING_M {
             return Some(ring_in);
         }
     }
-    let ring_out = *lane.next_lanes.first()?;
+    let ring_out = *lanes.lanes[connector].next_lanes.first()?;
     (!lane_entry_slot_clear(ring_out, lane_buckets)).then_some(ring_out)
 }
 
@@ -116,10 +117,14 @@ pub(in crate::simulation::economy::agents::tick) fn ring_entry_blocker(
 #[inline(always)]
 pub(in crate::simulation::economy::agents::tick) fn ring_entry_clear(
     connector: usize,
-    lanes: &[Lane],
+    lanes: &LaneSystem,
     lane_buckets: &[Vec<(f32, usize)>],
 ) -> bool {
-    ring_entry_blocker(connector, lanes, lane_buckets).is_none()
+    lanes
+        .lanes
+        .get(connector)
+        .is_none_or(|lane| lane.ring_entry.is_none())
+        || ring_entry_blocker(connector, lanes, lane_buckets).is_none()
 }
 
 /// Returns whether a target lane has a speed-scaled safe gap at the current distance.
@@ -155,7 +160,7 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
     candidate_connectors: &mut Vec<usize>,
     any_routing_valid: bool,
     choice_seed: u64,
-    lanes: &[Lane],
+    lanes: &LaneSystem,
     lane_buckets: &[Vec<(f32, usize)>],
     lane_claims: &LaneClaimContext<'_>,
 ) -> ConnectorEntry {

@@ -79,13 +79,14 @@ mod tests {
 
     #[test]
     fn test_claim_connector_entry_reports_entry_blockers() {
+        let no_lanes = crate::simulation::network::lanes::LaneSystem::new();
         let lane_buckets = vec![Vec::new()];
         let lane_claims = [AtomicUsize::new(usize::MAX)];
         let modes = [MovementClaimMode::Dynamic; 2];
         let claim_context = LaneClaimContext::new(&lane_claims, &modes);
         let mut candidates = vec![0];
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, true, 0, &[], &lane_buckets, &claim_context),
+            claim_connector_entry(0, &mut candidates, true, 0, &no_lanes, &lane_buckets, &claim_context),
             ConnectorEntry::Enter(0)
         );
         assert_eq!(lane_claims[0].load(Ordering::Relaxed), 0);
@@ -93,7 +94,7 @@ mod tests {
 
         let mut candidates = vec![0];
         assert_eq!(
-            claim_connector_entry(1, &mut candidates, true, 0, &[], &lane_buckets, &claim_context),
+            claim_connector_entry(1, &mut candidates, true, 0, &no_lanes, &lane_buckets, &claim_context),
             ConnectorEntry::ClaimedThisTick
         );
 
@@ -107,7 +108,7 @@ mod tests {
                 &mut candidates,
                 true,
                 0,
-                &[],
+                &no_lanes,
                 &occupied_buckets,
                 &claim_context,
             ),
@@ -116,7 +117,7 @@ mod tests {
 
         let mut candidates = Vec::new();
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, false, 0, &[], &lane_buckets, &claim_context,),
+            claim_connector_entry(0, &mut candidates, false, 0, &no_lanes, &lane_buckets, &claim_context,),
             ConnectorEntry::MissingConnection
         );
     }

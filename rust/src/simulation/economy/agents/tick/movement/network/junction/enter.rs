@@ -629,7 +629,7 @@ fn claim_connector_to_edge(
             &mut connector_candidates,
             any_routing_valid,
             seed,
-            &transit_network.lane_system.lanes,
+            &transit_network.lane_system,
             lane_buckets,
             lane_claims,
         )
@@ -659,7 +659,7 @@ fn claim_connector_to_lane(
             &mut connector_candidates,
             any_routing_valid,
             seed,
-            &transit_network.lane_system.lanes,
+            &transit_network.lane_system,
             lane_buckets,
             lane_claims,
         )
