@@ -1899,8 +1899,7 @@ bridge command, which ordinary gameplay never calls.
 | Parked publication | Per dirty chunk O(C log C) for C parked cars, empty bays never visited: a copy of cached poses on the sim thread, parallel over chunks, in reused buffers, plus one support solve per car on a place with no pose for its model. O(1) and no allocation per custody event. Nothing when no chunk is dirty |
 | Sleeping parked cars | No simulation-tick iteration |
 
-The size of a place and a car, and of the trip column (`ParkingTrip`, 56 bytes, asserted), are
-tracked as `PARK-06`.
+The trip column (`ParkingTrip`, 56 bytes, asserted) shrinks under `PARK-06`.
 
 ### Kerbside parking lanes (`PARK-05`)
 
