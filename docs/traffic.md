@@ -454,6 +454,32 @@ reservation made in a commit shows from the next tick, as it did when a pass rew
 Rows that change with no event, a load and an undo, ask the next tick for one O(agents) rebuild.
 Debug test builds check every tick of every test against the full scans these lists replaced.
 
+Measured on the idle `PERF-06` fixtures (2026-11-06, `port-park-merge`, release test binaries, 8
+workers, P-cores, nothing else running), the parking phases count 0 rows where the merged branch
+counted N, and the tick is back with `dev`. Slots ran `dev`, B1, final, final, B1, `dev`, 60 samples
+a slot, one measured tick a sample; quartiles of the two slots of each binary, in ms. `dev` is
+SHA-256 `139c9563`, the final build `b71f08f9`, B1 without the leg check below `b5a25d1c`.
+
+```sh
+RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" simulation::economy::agents::tick::contract::benchmark_agent_tick_contract --exact --ignored --nocapture --test-threads=1
+```
+
+| State | Agents | `dev` q1 / median / q3 | Final q1 / median / q3 |
+| --- | ---: | --- | --- |
+| network | 10,000 | 0.330 / 0.463 / 0.668 | 0.310 / 0.431 / 0.598 |
+| network | 30,000 | 0.651 / 0.917 / 1.235 | 0.602 / 0.778 / 1.007 |
+| access_egress | 10,000 | 0.589 / 0.778 / 1.048 | 0.610 / 0.795 / 1.071 |
+| access_egress | 30,000 | 1.449 / 1.780 / 2.474 | 1.521 / 1.831 / 2.462 |
+| access_ingress | 10,000 | 0.226 / 0.296 / 0.400 | 0.203 / 0.254 / 0.333 |
+| access_ingress | 30,000 | 0.358 / 0.443 / 0.572 | 0.377 / 0.478 / 0.567 |
+
+An earlier session the same night, same method, set the merged branch before B1 (`c6939703`) beside
+B1: medians at 30k network 1.023 against 0.877, ingress 0.606 against 0.481, egress 1.980 against
+1.979. So the two passes were not all of the egress cost: every access step also copied the 56-byte
+trip row into a lookup that returns nothing off a parking leg, which the phase check now skips
+(30k egress 1.958 to 1.831). The samples spread widely at these sub-millisecond ticks; read the
+columns as overlapping, not as a ranking.
+
 The itinerary is `WalkToCar → PullOut → Drive → PullIn → WalkToDoor` inside the ordinary
 access/network/access FSM. Pull-out uses `lane_attach_slot_clear` and `claim_lane_entry`, including
 `ACCESS_LANE_ATTACH_PENDING`. Pull-in uses the existing `try_network_detach`. Both use the lot's
