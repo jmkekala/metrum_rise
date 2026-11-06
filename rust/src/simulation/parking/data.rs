@@ -38,6 +38,8 @@ pub(crate) struct Place {
     pub reservation: Handle<Vehicle>,
     pub chunk_slot: usize,
     pub source_slot: usize,
+    // Derived, never saved: this bay's slot in its chunk's `parked` list, or `NOT_PARKED`.
+    pub parked_slot: u32,
     // Derived, never saved: the row-major pose of `ground_model` standing here on the ground as
     // it is now. A car's contacts belong to its model, so the pose is one model's.
     pub ground: [f32; 12],
@@ -46,6 +48,9 @@ pub(crate) struct Place {
 
 /// `Place::ground_model` of a place with no valid pose: new, loaded, or its ground moved.
 pub(super) const GROUND_UNSOLVED: u8 = u8::MAX;
+
+/// `Place::parked_slot` of a bay on no parked list: empty, or its car is moving.
+pub(super) const NOT_PARKED: u32 = u32::MAX;
 
 /// A persistent car, independent of the resident movement FSM in PARK-01.
 #[derive(StructOfArray)]
@@ -66,6 +71,11 @@ pub(crate) struct Vehicle {
 #[derive(Default, Debug)]
 pub(super) struct Chunk {
     pub places: Vec<Handle<Place>>,
+    // Derived, never saved: the bays a parked car stands on, in no order. Its capacity follows
+    // `places`, so a custody event never allocates.
+    pub parked: Vec<Handle<Place>>,
+    // The publication this chunk's last one replaced, whose buffers the next rebuild reuses.
+    pub spare: Option<Arc<render::ParkedChunk>>,
     pub dirty: bool,
     pub release_pending: bool,
     pub wake_after: Option<Handle<Vehicle>>,

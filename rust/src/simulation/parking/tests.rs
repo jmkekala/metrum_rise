@@ -3,6 +3,9 @@
 //! Local store, query, towing and publication regressions.
 
 use super::*;
+
+mod parked_list;
+
 fn bay(x: f32, z: f32) -> Bay {
     Bay {
         identity: [0, 0],
@@ -81,14 +84,14 @@ fn save_round_trip_and_chunk_acknowledgements() {
     s.fill_test_fleet();
     s.build_dirty_chunks();
     let key = (-1, 0);
-    let first = s.pending[&key].clone();
+    let first = s.pending_update(key).clone();
     s.build_dirty_chunks();
-    assert!(Arc::ptr_eq(&first.chunk, &s.pending[&key].chunk));
+    assert!(Arc::ptr_eq(&first.chunk, &s.pending_update(key).chunk));
     let json = s.save_json(|s| s).unwrap();
     let mut loaded = ParkingSystem::load_json(&json).unwrap();
     loaded.build_dirty_chunks();
     assert_eq!(loaded.save_json(|s| s).unwrap(), json);
-    assert_eq!(loaded.pending[&key].chunk.buckets, first.chunk.buckets);
+    assert!(loaded.pending_update(key).chunk.buckets().eq(first.chunk.buckets()));
     let pos = s.release(s.vehicle_handles.handle(0)).unwrap();
     s.rehouse_near(pos);
     s.build_dirty_chunks();

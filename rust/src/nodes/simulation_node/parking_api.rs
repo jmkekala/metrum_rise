@@ -162,10 +162,8 @@ fn pack_parked(snapshot: &crate::nodes::sim::core::RenderSnapshot) -> VarDiction
         update.set("version", chunk.version as i64);
         let mut buckets = VarDictionary::new();
         let mut identities = VarDictionary::new();
-        for (&bucket, buffer) in &chunk.buckets {
-            buckets.set(bucket as i32, PackedFloat32Array::from(buffer.as_slice()));
-        }
-        for (&bucket, ids) in &chunk.identities {
+        for (bucket, poses, ids) in chunk.buckets() {
+            buckets.set(bucket as i32, PackedFloat32Array::from(poses));
             identities.set(
                 bucket as i32,
                 PackedInt64Array::from_iter(ids.iter().map(|&id| id as i64)),

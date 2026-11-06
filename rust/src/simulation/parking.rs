@@ -43,12 +43,21 @@ pub(crate) struct ParkingSystem {
     pub(crate) release_events: Vec<(i32, i32)>,
     retired_dirty: Vec<Handle<Place>>,
     usable_places: usize,
-    pending: std::collections::BTreeMap<(i32, i32), render::ParkedUpdate>,
+    // One update per chunk, in chunk order. A list, because a map would allocate each time the
+    // renderer's answer empties it.
+    pending: Vec<render::ParkedUpdate>,
     published: std::collections::BTreeMap<(i32, i32), Arc<render::ParkedChunk>>,
     // The renderer's half of the publication; a replaced system starts a new one.
     publication: ParkedPublication,
     pending_changed: bool,
     acknowledged: u64,
+    // The update list before the current one, refilled once no snapshot holds it.
+    spare_updates: Arc<Vec<render::ParkedUpdate>>,
+    // Rebuild slots, reused every frame; `dirty` says how many are in use.
+    jobs: Vec<render::ChunkJob>,
+    // Chunk buffers and update lists created because no spare was free.
+    #[cfg(test)]
+    buffer_creations: usize,
     // Only off-map cars are indexed here. Parking release never scans sleeping vehicles.
     pub(crate) diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     building_sources: HashMap<u64, Vec<PlaceSource>>,
@@ -107,6 +116,7 @@ impl ParkingSystem {
             reservation: Handle::NONE,
             chunk_slot: chunk.places.len(),
             source_slot: source_list.len(),
+            parked_slot: data::NOT_PARKED,
             ground: [0.0; 12],
             ground_model: data::GROUND_UNSOLVED,
         });
@@ -114,6 +124,7 @@ impl ParkingSystem {
         self.place_handles.register_appended(self.places.len());
         let handle = self.place_handles.handle(self.places.len() - 1);
         chunk.places.push(handle);
+        chunk.parked.reserve(chunk.places.len() - chunk.parked.len());
         source_list.push(handle);
         let capacity = self.chunks.len();
         if self.dirty.capacity() < capacity {
@@ -242,6 +253,7 @@ impl ParkingSystem {
         self.vehicles.place[v] = place;
         self.places.occupant[p] = car;
         self.custody_changes.push(car);
+        self.set_parked(p, !self.vehicles.moving[v]);
         self.mark_dirty(chunk_at([
             self.places.position[p][0],
             self.places.position[p][2],
@@ -258,6 +270,7 @@ impl ParkingSystem {
         self.places.occupant[p] = Handle::NONE;
         self.vehicles.place[v] = Handle::NONE;
         self.custody_changes.push(car);
+        self.set_parked(p, false);
         let key = chunk_at([pos[0], pos[2]]);
         let chunk = self.chunks.get_mut(&key).expect("occupied parking chunk");
         if !chunk.release_pending {

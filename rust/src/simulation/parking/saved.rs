@@ -218,6 +218,7 @@ impl ParkingSystem {
                 reservation: Handle::from_bits(place.reservation),
                 chunk_slot: chunk.places.len(),
                 source_slot: list.len(),
+                parked_slot: super::data::NOT_PARKED,
                 ground: [0.0; 12],
                 ground_model: super::data::GROUND_UNSOLVED,
             });
@@ -305,6 +306,18 @@ impl ParkingSystem {
                     .insert(car);
             }
         }
+        // Every occupant resolved above. The parked lists are derived: a moving car holds its
+        // bay without standing on it.
+        for chunk in system.chunks.values_mut() {
+            chunk.parked.reserve(chunk.places.len());
+        }
+        for p in 0..system.places.len() {
+            if let Some(v) = system.vehicle_handles.resolve(system.places.occupant[p]) {
+                system.set_parked(p, !system.vehicles.moving[v]);
+            }
+        }
+        #[cfg(test)]
+        system.check_parked_lists()?;
         for (key, after) in saved.arrival_cursors {
             let chunk = system.chunks.entry(key).or_default();
             chunk.release_pending = true;
@@ -448,6 +461,8 @@ impl ParkingSystem {
                 return Err("trip has no exclusive custody".into());
             }
         }
+        #[cfg(test)]
+        self.check_parked_lists()?;
         Ok(())
     }
 }

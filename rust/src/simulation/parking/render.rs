@@ -6,18 +6,66 @@
 //! is building, so moving cars and parked chunks reach Godot from one custody state. Godot never
 //! takes the core lock for them: it answers through [`ParkedAck`]'s atomics.
 
-use super::data::GROUND_UNSOLVED;
+use super::data::{GROUND_UNSOLVED, NOT_PARKED};
 use super::*;
 use rayon::prelude::*;
-use std::collections::BTreeMap;
+use std::cell::Cell;
+use std::cmp::Reverse;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// One chunk's immutable publication; an empty bucket map removes its previous instances.
+/// One chunk's immutable publication; no buckets removes its previous instances. Three flat
+/// buffers, so the next rebuild can reuse them whole.
 #[derive(Debug, Default)]
 pub(crate) struct ParkedChunk {
     pub version: u64,
-    pub buckets: BTreeMap<u8, Vec<f32>>,
-    pub identities: BTreeMap<u8, Vec<u64>>,
+    // Twelve floats and one identity a car, bucket by bucket, each bucket in bay handle order.
+    poses: Vec<f32>,
+    identities: Vec<u64>,
+    // Each bucket present, ascending, and the car index it ends at.
+    runs: Vec<(u8, u32)>,
+}
+
+impl ParkedChunk {
+    /// Each bucket with its poses and identities, ascending. O(buckets), no copy.
+    pub(crate) fn buckets(&self) -> impl Iterator<Item = (u8, &[f32], &[u64])> {
+        let mut start = 0;
+        self.runs.iter().map(move |&(bucket, end)| {
+            let cars = start as usize..end as usize;
+            start = end;
+            (
+                bucket,
+                &self.poses[cars.start * 12..cars.end * 12],
+                &self.identities[cars],
+            )
+        })
+    }
+
+    /// How many cars this chunk shows. O(1).
+    pub(crate) fn cars(&self) -> usize {
+        self.identities.len()
+    }
+
+    /// What this chunk's buffers can hold, summed.
+    #[cfg(test)]
+    pub(crate) fn capacities(&self) -> usize {
+        self.poses.capacity() + self.identities.capacity() + self.runs.capacity()
+    }
+
+    fn clear(&mut self) {
+        self.poses.clear();
+        self.identities.clear();
+        self.runs.clear();
+    }
+
+    fn push(&mut self, bucket: u8, pose: &[f32; 12], identity: u64) {
+        self.poses.extend_from_slice(pose);
+        self.identities.push(identity);
+        let cars = self.identities.len() as u32;
+        match self.runs.last_mut() {
+            Some(run) if run.0 == bucket => run.1 = cars,
+            _ => self.runs.push((bucket, cars)),
+        }
+    }
 }
 
 /// One chunk of a publication and the serial that published it. The buffers are shared.
@@ -84,11 +132,39 @@ impl ParkedPublication {
 #[cfg(test)]
 pub(crate) type PublishedPose = (u8, PlaceSource, [f32; 3], f32, [f32; 12]);
 
-// One rebuilt chunk and the poses it had to solve, applied after the parallel build.
-pub(crate) struct BuiltChunk {
+// A slot of one frame's rebuild: the chunk, the buffers it writes, which nothing else holds, and
+// the poses it had to solve, applied after the parallel build.
+#[derive(Debug, Default)]
+pub(crate) struct ChunkJob {
     key: (i32, i32),
-    payload: ParkedChunk,
+    chunk: Option<Arc<ParkedChunk>>,
     solved: Vec<(usize, u8, [f32; 12])>,
+}
+
+#[cfg(test)]
+impl ChunkJob {
+    /// What this slot's solved list can hold.
+    pub(crate) fn solved_capacity(&self) -> usize {
+        self.solved.capacity()
+    }
+}
+
+// A load solves every car at once; a slot keeps no more than a busy frame's arrivals need.
+const SOLVED_KEPT: usize = 64;
+
+// Bucket, bay, place row and car row of each car of the chunk being rebuilt.
+type ParkedOrder = Vec<(u8, Handle<Place>, usize, usize)>;
+
+thread_local! {
+    // One per worker: its size follows the largest chunk the worker met, however many there are.
+    static PARKED_ORDER: Cell<ParkedOrder> = const { Cell::new(Vec::new()) };
+}
+
+// A car's pose on flat ground with no contacts, for tests.
+#[cfg(test)]
+pub(super) fn flat_pose(_: u8, _: PlaceSource, [x, y, z]: [f32; 3], heading: f32) -> [f32; 12] {
+    let (s, c) = heading.sin_cos();
+    [c, 0.0, s, x, 0.0, 1.0, 0.0, y, -s, 0.0, c, z]
 }
 
 impl ParkingSystem {
@@ -100,10 +176,29 @@ impl ParkingSystem {
     /// Rebuilds the dirty chunks with row-major flat poses, for tests without a ground.
     #[cfg(test)]
     pub(crate) fn build_dirty_chunks(&mut self) {
-        self.build_dirty_chunks_with(|_, _, [x, y, z], heading| {
-            let (s, c) = heading.sin_cos();
-            [c, 0.0, s, x, 0.0, 1.0, 0.0, y, -s, 0.0, c, z]
-        });
+        self.build_dirty_chunks_with(flat_pose);
+    }
+
+    /// Puts a bay on its chunk's parked list or takes it off; a repeat changes nothing. Every
+    /// custody event comes here. O(1), and `add_place` has reserved the room, so no allocation.
+    pub(super) fn set_parked(&mut self, p: usize, parked: bool) {
+        let slot = self.places.parked_slot[p];
+        if parked == (slot != NOT_PARKED) {
+            return;
+        }
+        let [x, _, z] = self.places.position[p];
+        let chunk = self.chunks.get_mut(&chunk_at([x, z])).expect("indexed bay");
+        if parked {
+            self.places.parked_slot[p] = chunk.parked.len() as u32;
+            chunk.parked.push(self.place_handles.handle(p));
+        } else {
+            self.places.parked_slot[p] = NOT_PARKED;
+            chunk.parked.swap_remove(slot as usize);
+            if let Some(&moved) = chunk.parked.get(slot as usize) {
+                let moved = self.place_handles.resolve(moved).expect("parked bay");
+                self.places.parked_slot[moved] = slot;
+            }
+        }
     }
 
     /// [`Self::solve_dirty_chunks`] and [`Self::install_dirty_chunks`] with one pose function.
@@ -112,51 +207,76 @@ impl ParkingSystem {
         &mut self,
         pose: impl Fn(u8, PlaceSource, [f32; 3], f32) -> [f32; 12] + Sync,
     ) {
-        let built = self.solve_dirty_chunks(pose);
-        self.install_dirty_chunks(built);
+        let mut jobs = self.take_dirty_jobs();
+        self.solve_dirty_chunks(&mut jobs, pose);
+        self.install_dirty_chunks(jobs);
+    }
+
+    /// One rebuild slot per dirty chunk, each with buffers only it holds: the chunk's spare when
+    /// the last holder has let it go. O(dirty chunks). A new buffer means a chunk's first rebuild,
+    /// or a snapshot outliving two publications, which the sim thread's two never do.
+    pub(crate) fn take_dirty_jobs(&mut self) -> Vec<ChunkJob> {
+        #[cfg(test)]
+        for key in &self.dirty {
+            self.check_parked_list(*key, &self.chunks[key]).unwrap();
+        }
+        let mut jobs = std::mem::take(&mut self.jobs);
+        if jobs.len() < self.dirty.len() {
+            jobs.resize_with(self.dirty.len(), ChunkJob::default);
+        }
+        for (job, &key) in jobs.iter_mut().zip(&self.dirty) {
+            let spare = self.chunks.get_mut(&key).expect("dirty chunk").spare.take();
+            let free = spare.filter(|chunk| Arc::strong_count(chunk) == 1);
+            #[cfg(test)]
+            {
+                self.buffer_creations += usize::from(free.is_none());
+            }
+            job.key = key;
+            job.chunk = Some(free.unwrap_or_default());
+        }
+        jobs
     }
 
     /// Builds every dirty chunk's payload, in parallel: a copy of each parked car's cached pose.
-    /// O(sum(Pc + C log C)) for Pc places and C parked cars per dirty chunk, plus Q, the ground
-    /// solve, only for a car on a place with no pose for its model: a new or moved-ground place,
-    /// or a car of another model arrived since the last solve. Sorting fixes payload order.
+    /// O(sum(C log C)) for C parked cars per dirty chunk, empty bays never visited, plus Q, the
+    /// ground solve, only for a car on a place with no pose for its model: a new or moved-ground
+    /// place, or a car of another model arrived since the last solve. The log is the sort: the
+    /// list is in no order, and the payload's order is bay handle order within each bucket.
     pub(crate) fn solve_dirty_chunks(
         &self,
+        jobs: &mut [ChunkJob],
         pose: impl Fn(u8, PlaceSource, [f32; 3], f32) -> [f32; 12] + Sync,
-    ) -> Vec<BuiltChunk> {
+    ) {
+        let jobs = &mut jobs[..self.dirty.len()];
         crate::thread_pools::install(|| {
-            self.dirty
-                .par_iter()
-                .map(|&key| self.build_chunk(key, &pose))
-                .collect()
-        })
+            jobs.par_iter_mut()
+                .for_each(|job| self.build_chunk(job, &pose));
+        });
     }
 
     fn build_chunk(
         &self,
-        key: (i32, i32),
+        job: &mut ChunkJob,
         pose: &(impl Fn(u8, PlaceSource, [f32; 3], f32) -> [f32; 12] + Sync),
-    ) -> BuiltChunk {
-        let chunk = &self.chunks[&key];
-        let mut parked: Vec<_> = chunk
-            .places
-            .iter()
-            .filter_map(|&handle| {
-                let p = self.place_handles.resolve(handle).expect("render bay");
-                let v = self.vehicle_handles.resolve(self.places.occupant[p])?;
-                (!self.vehicles.moving[v]).then_some((handle, p, v))
-            })
-            .collect();
+    ) {
+        let chunk = &self.chunks[&job.key];
+        // Taken, not borrowed: a ground solve must stay free to run Rayon work on this thread.
+        let mut parked = PARKED_ORDER.take();
+        parked.clear();
+        parked.extend(chunk.parked.iter().map(|&handle| {
+            let p = self.place_handles.resolve(handle).expect("parked bay");
+            let v = self
+                .vehicle_handles
+                .resolve(self.places.occupant[p])
+                .expect("parked car");
+            (self.vehicles.model[v] * 10 + self.vehicles.colour[v], handle, p, v)
+        }));
         parked.sort_unstable();
-        let mut built = BuiltChunk {
-            key,
-            payload: ParkedChunk {
-                version: chunk.version + 1,
-                ..ParkedChunk::default()
-            },
-            solved: Vec::new(),
-        };
-        for (_, p, v) in parked {
+        let shared = job.chunk.as_mut().expect("a prepared job");
+        let payload = Arc::get_mut(shared).expect("a job's buffers are its own");
+        payload.clear();
+        payload.version = chunk.version + 1;
+        for &(bucket, _, p, v) in &parked {
             let model = self.vehicles.model[v];
             let grounded = if self.places.ground_model[p] == model {
                 self.places.ground[p]
@@ -167,73 +287,79 @@ impl ParkingSystem {
                     self.places.position[p],
                     self.places.heading[p],
                 );
-                built.solved.push((p, model, solved));
+                job.solved.push((p, model, solved));
                 solved
             };
-            let bucket = model * 10 + self.vehicles.colour[v];
-            let payload = &mut built.payload;
-            payload
-                .buckets
-                .entry(bucket)
-                .or_default()
-                .extend_from_slice(&grounded);
-            payload
-                .identities
-                .entry(bucket)
-                .or_default()
-                .push(self.places.occupant[p].to_bits() | (1_u64 << 62));
+            let identity = self.places.occupant[p].to_bits() | (1_u64 << 62);
+            payload.push(bucket, &grounded, identity);
         }
-        built
+        PARKED_ORDER.set(parked);
     }
 
-    /// Installs built chunks under one new serial, with the poses they solved. O(D log pending).
-    pub(crate) fn install_dirty_chunks(&mut self, built: Vec<BuiltChunk>) {
-        if built.is_empty() {
+    /// Installs built chunks under one new serial, with the poses they solved, and keeps each
+    /// chunk's previous publication as its spare. O(D + (P + D) log (P + D)), P pending chunks.
+    pub(crate) fn install_dirty_chunks(&mut self, mut jobs: Vec<ChunkJob>) {
+        if self.dirty.is_empty() {
+            self.jobs = jobs;
             return;
         }
         self.publication.serial += 1;
         let serial = self.publication.serial;
-        for BuiltChunk {
-            key,
-            payload,
-            solved,
-        } in built
-        {
-            for (p, model, pose) in solved {
+        for job in &mut jobs[..self.dirty.len()] {
+            for (p, model, pose) in job.solved.drain(..) {
                 self.places.ground[p] = pose;
                 self.places.ground_model[p] = model;
             }
+            if job.solved.capacity() > SOLVED_KEPT {
+                job.solved = Vec::new();
+            }
+            let (key, built) = (job.key, job.chunk.take().expect("a built job"));
             let chunk = self.chunks.get_mut(&key).expect("dirty chunk");
-            chunk.version = payload.version;
+            chunk.version = built.version;
             chunk.dirty = false;
-            let chunk = Arc::new(payload);
-            self.published.insert(key, Arc::clone(&chunk));
-            self.pending
-                .insert(key, ParkedUpdate { key, serial, chunk });
+            chunk.spare = self.published.insert(key, Arc::clone(&built));
+            let chunk = built;
+            self.pending.push(ParkedUpdate { key, serial, chunk });
         }
+        // Newest first within a chunk, so the older update is the one dropped.
+        self.pending
+            .sort_unstable_by_key(|update| (update.key, Reverse(update.serial)));
+        self.pending.dedup_by_key(|update| update.key);
         self.pending_changed = true;
         self.dirty.clear();
+        self.jobs = jobs;
+    }
+
+    /// Points a snapshot about to be rebuilt at the current publication, so that the list it held
+    /// frees its chunks before this frame's rebuild wants them. O(1), allocation-free.
+    pub(crate) fn release_snapshot(&self, parked: &mut ParkedPublication) {
+        parked.clone_from(&self.publication);
     }
 
     /// Applies the renderer's answers since the last snapshot: drops acknowledged chunks and
-    /// lists every chunk again on a full request. O(1) without answers, O(pending chunks) on an
-    /// acknowledgement, O(all chunks) on a renderer reconnect.
+    /// lists every chunk again on a full request, and lets the spare list go of its chunks.
+    /// O(1) without answers, O(pending chunks) on an acknowledgement, O(all chunks) on a renderer
+    /// reconnect, plus O(spare list) once after a change.
     pub(crate) fn take_renderer_answers(&mut self) {
+        if let Some(list) = Arc::get_mut(&mut self.spare_updates) {
+            list.clear();
+        }
         let installed = self.publication.ack.installed.load(Ordering::Relaxed);
         if installed != self.acknowledged {
             self.acknowledged = installed;
             let listed = self.pending.len();
-            self.pending.retain(|_, update| update.serial > installed);
+            self.pending.retain(|update| update.serial > installed);
             self.pending_changed |= self.pending.len() != listed;
         }
         if self.publication.ack.full.swap(false, Ordering::Relaxed) {
             self.publication.serial += 1;
             let serial = self.publication.serial;
             self.publication.full_serial = serial;
+            // Every pending chunk is a published one, so this is the whole list, in chunk order.
+            self.pending.clear();
             for (&key, chunk) in &self.published {
                 let chunk = Arc::clone(chunk);
-                self.pending
-                    .insert(key, ParkedUpdate { key, serial, chunk });
+                self.pending.push(ParkedUpdate { key, serial, chunk });
             }
             self.pending_changed = true;
         }
@@ -241,9 +367,21 @@ impl ParkingSystem {
 
     /// The publication for a snapshot. O(1) when no chunk changed, else O(pending chunks) `Arc`
     /// copies: buffers are never copied, and the list is built once for every snapshot after.
+    /// Two lists take turns, as the sim thread's two snapshots do; a third is made only if a
+    /// snapshot outlives them.
     pub(crate) fn publication(&mut self) -> ParkedPublication {
         if std::mem::take(&mut self.pending_changed) {
-            self.publication.updates = Arc::new(self.pending.values().cloned().collect());
+            if Arc::get_mut(&mut self.spare_updates).is_none() {
+                self.spare_updates = Arc::default();
+                #[cfg(test)]
+                {
+                    self.buffer_creations += 1;
+                }
+            }
+            let list = Arc::get_mut(&mut self.spare_updates).expect("the spare list is free");
+            list.clear();
+            list.extend_from_slice(&self.pending);
+            std::mem::swap(&mut self.publication.updates, &mut self.spare_updates);
         }
         self.publication.clone()
     }
@@ -300,7 +438,7 @@ impl ParkingSystem {
         } else {
             self.pending
                 .iter()
-                .map(|(&key, update)| (key, Arc::clone(&update.chunk)))
+                .map(|update| (update.key, Arc::clone(&update.chunk)))
                 .collect()
         }
     }
@@ -337,9 +475,8 @@ impl ParkingSystem {
     pub(crate) fn published_poses(&self) -> Vec<PublishedPose> {
         let mut poses = Vec::new();
         for chunk in self.published.values() {
-            for (bucket, ids) in &chunk.identities {
-                let poses_of_bucket = chunk.buckets[bucket].as_chunks::<12>().0;
-                for (&id, &pose) in ids.iter().zip(poses_of_bucket) {
+            for (_, poses_of_bucket, ids) in chunk.buckets() {
+                for (&id, &pose) in ids.iter().zip(poses_of_bucket.as_chunks::<12>().0) {
                     let car = Handle::from_bits(id & !(1_u64 << 62));
                     let v = self.vehicle_handles.resolve(car).expect("published car");
                     let p = self
@@ -353,6 +490,53 @@ impl ParkingSystem {
             }
         }
         poses
+    }
+
+    /// Chunk buffers and update lists made so far because no spare was free.
+    #[cfg(test)]
+    pub(crate) fn buffer_creations(&self) -> usize {
+        self.buffer_creations
+    }
+
+    /// Every chunk's parked list against a scan of its bays. O(places), test builds only.
+    #[cfg(test)]
+    pub(crate) fn check_parked_lists(&self) -> Result<(), String> {
+        self.chunks
+            .iter()
+            .try_for_each(|(&key, chunk)| self.check_parked_list(key, chunk))
+    }
+
+    // Reciprocal, as `Place` and `Vehicle` are: a bay is listed exactly when a car stands on it,
+    // at the slot it records, and nothing else is listed.
+    #[cfg(test)]
+    fn check_parked_list(&self, key: (i32, i32), chunk: &data::Chunk) -> Result<(), String> {
+        let mut listed = 0;
+        for &handle in &chunk.places {
+            let p = self.place_handles.resolve(handle).ok_or("stale chunk bay")?;
+            let car = self.vehicle_handles.resolve(self.places.occupant[p]);
+            let slot = self.places.parked_slot[p];
+            if car.is_some_and(|v| !self.vehicles.moving[v]) {
+                listed += 1;
+                if chunk.parked.get(slot as usize) != Some(&handle) {
+                    return Err(format!("{key:?}: parked bay {handle:?} is not at slot {slot}"));
+                }
+            } else if slot != NOT_PARKED {
+                return Err(format!("{key:?}: bay {handle:?} is listed with no parked car"));
+            }
+        }
+        if listed != chunk.parked.len() {
+            return Err(format!("{key:?}: {} listed, {listed} parked", chunk.parked.len()));
+        }
+        Ok(())
+    }
+
+    /// The update of one listed chunk.
+    #[cfg(test)]
+    pub(crate) fn pending_update(&self, key: (i32, i32)) -> &ParkedUpdate {
+        self.pending
+            .iter()
+            .find(|update| update.key == key)
+            .expect("a listed chunk")
     }
 
     /// O(off-map home chunks) inspection; never visits sleeping parked cars or supply.

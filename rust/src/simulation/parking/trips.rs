@@ -215,6 +215,7 @@ impl ParkingSystem {
         self.vehicles.moving[v] = moving;
         self.custody_changes.push(car);
         if let Some(p) = self.place_handles.resolve(self.vehicles.place[v]) {
+            self.set_parked(p, !moving);
             let pos = self.places.position[p];
             self.mark_dirty(chunk_at([pos[0], pos[2]]));
         }
@@ -473,7 +474,7 @@ mod custody_tests {
         let parked_count = |p: &ParkingSystem| {
             p.publications(true)
                 .iter()
-                .map(|(_, c)| c.identities.values().map(Vec::len).sum::<usize>())
+                .map(|(_, c)| c.cars())
                 .sum::<usize>()
         };
         assert_eq!(parked_count(&parking), 1);

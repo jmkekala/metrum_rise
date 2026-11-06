@@ -9,6 +9,7 @@ use std::time::Instant;
 
 mod kerb;
 mod poses;
+mod published;
 
 fn core() -> SimCore {
     let mut core = SimCore::new(
@@ -309,7 +310,7 @@ fn parking_resident_save_round_trip_and_handoff_at_every_leg() {
                 .parking
                 .publications(true)
                 .iter()
-                .map(|(_, chunk)| chunk.identities.values().map(Vec::len).sum::<usize>())
+                .map(|(_, chunk)| chunk.cars())
                 .sum::<usize>();
             assert_eq!(
                 moving + parked,
@@ -381,7 +382,7 @@ fn a_car_entering_and_leaving_a_bay_is_drawn_once_in_every_snapshot() {
                     .sum::<usize>();
                 let parked = installed
                     .values()
-                    .map(|chunk| chunk.identities.values().map(Vec::len).sum::<usize>())
+                    .map(|chunk| chunk.cars())
                     .sum::<usize>();
                 assert_eq!(
                     moving + parked,

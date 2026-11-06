@@ -189,26 +189,29 @@ impl SimCore {
 impl SimCore {
     /// The sim thread's end of a step: answers the renderer, rebuilds dirty parked chunks and
     /// returns the publication for the snapshot being built, whose moving cars come from the
-    /// same custody state. O(1) and allocation-free when nothing is dirty.
-    pub(crate) fn publish_parked_chunks(&mut self) -> ParkedPublication {
+    /// same custody state, in `parked`, the half of the snapshot being rebuilt. O(1) when nothing
+    /// is dirty. Allocation-free once each dirty chunk has been rebuilt twice, unless a chunk has
+    /// more cars than ever before.
+    pub(crate) fn publish_parked_chunks(&mut self, parked: &mut ParkedPublication) {
+        self.parking.release_snapshot(parked);
         self.parking.take_renderer_answers();
         self.build_parked_chunks();
-        self.parking.publication()
+        *parked = self.parking.publication();
     }
 
     /// Rebuilds dirty parked chunks from the cached poses; a place without a pose for its car's
     /// model takes the existing vehicle-contact solve once. Reads the live ground, so it runs
-    /// where the site index is ready. O(dirty chunks' places + new poses × Q).
+    /// where the site index is ready. O(dirty chunks' parked cars log them + new poses × Q).
     pub(crate) fn build_parked_chunks(&mut self) {
         if !self.parking.has_dirty_chunks() {
             return;
         }
-        let built = self
-            .parking
-            .solve_dirty_chunks(|model, source, pos, heading| {
+        let mut jobs = self.parking.take_dirty_jobs();
+        self.parking
+            .solve_dirty_chunks(&mut jobs, |model, source, pos, heading| {
                 self.parked_ground_pose(model, source, pos, heading)
             });
-        self.parking.install_dirty_chunks(built);
+        self.parking.install_dirty_chunks(jobs);
     }
 
     // A parked car's row-major instance pose, on its own street or lot. A bay on a bridge or in

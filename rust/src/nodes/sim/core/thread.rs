@@ -116,7 +116,7 @@ pub(crate) fn run_sim_thread(
     cmd_rx: std::sync::mpsc::Receiver<SimCommand>,
 ) {
     let target = Duration::from_micros(16_667); // ~60 Hz
-    let mut recycled_snapshot = RenderSnapshot::default();
+    let mut recycled_snapshot = Some(RenderSnapshot::default());
     let mut next_tick = Instant::now();
     let mut ready_command = None;
     // Coalesced controls survive wakes until the next tick or structural-edit snapshot.
@@ -417,7 +417,7 @@ pub(crate) fn run_sim_thread(
             cell_prepare_ms = cell_prepare_start.elapsed().as_secs_f64() * 1000.0;
 
             let snapshot_start = Instant::now();
-            let available_snapshot = std::mem::take(&mut recycled_snapshot);
+            let available_snapshot = recycled_snapshot.take().unwrap_or_default();
             record_crash_phase_for_core(&core, "snapshot build");
             let snapshot = run_sim_phase("snapshot build", || {
                 core.build_snapshot_reusing(available_snapshot)
@@ -443,7 +443,7 @@ pub(crate) fn run_sim_thread(
             let mut current = snapshot.write().expect("render snapshot lock poisoned");
             std::mem::replace(&mut *current, new_snapshot)
         };
-        recycled_snapshot = previous_snapshot;
+        recycled_snapshot = Some(previous_snapshot);
         let snapshot_write_ms = snapshot_write_start.elapsed().as_secs_f64() * 1000.0;
         let active_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
         if let Some(summary) = crash_frame_summary {

@@ -551,7 +551,7 @@ impl SimCore {
         // Cull, pose and bucket the agents in parallel; instance order stays agent order, the
         // interpolation identity contract (`SIM-02-K`).
         self.build_agent_instances(&mut snapshot);
-        snapshot.parked = self.publish_parked_chunks();
+        self.publish_parked_chunks(&mut snapshot.parked);
         snapshot.vehicle_world_epoch = self.world_epoch;
 
         let node_positions = self.network_node_positions_snapshot();
