@@ -2,6 +2,9 @@
 
 //! Dense parking rows, source identities, and bounded neighbourhood indices.
 
+// `soa_derive`'s expansion writes `field: field` for every column of `Place` and `Vehicle`.
+#![allow(clippy::redundant_field_names)]
+
 use super::*;
 use soa_derive::StructOfArray;
 

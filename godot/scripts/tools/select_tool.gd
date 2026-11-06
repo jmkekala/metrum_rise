@@ -533,7 +533,7 @@ func set_selected_edge_parking_side(side_bit: int, enabled: bool) -> Dictionary:
 			continue
 		var args := [idx, int(section.get("fwd_lanes", 0)), int(section.get("bkw_lanes", 0)),
 			int(section.get("median_style", 0)), float(section.get("median_width", 0.0)), wanted,
-			int(section.get("speed_kmh", 50)), bool(section.get("sidewalks", true)), bool(section.get("zoning", true)),
+			int(section.get("speed_kmh", 50)), int(section.get("sidewalks", 3)), bool(section.get("zoning", true)),
 			bool(section.get("street_lights", true))]
 		var verdict: Dictionary = simulation_node.callv("preview_edge_cross_section", args)
 		if not bool(verdict.get("is_valid", false)) or not simulation_node.callv("set_edge_cross_section", args):

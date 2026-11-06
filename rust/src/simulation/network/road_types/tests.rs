@@ -140,12 +140,26 @@ fn valid_layouts_build_their_cross_section() {
         (&[S, P, B, F, P, S], parked(true, true)),
         (&[S, P, B, F, S], parked(true, false)),
         (&[S, B, F, P, S], parked(false, true)),
-        // Without sidewalks the kerb is the road's edge.
+        // Without a sidewalk the kerb is the road's edge, side by side (`ROAD-107`).
         (
             &[P, B, F],
             RoadCrossSection {
                 sidewalks: SidewalkSides::NONE,
                 ..parked(true, false)
+            },
+        ),
+        (
+            &[S, P, B, F],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::LEFT,
+                ..parked(true, false)
+            },
+        ),
+        (
+            &[B, F, P, S],
+            RoadCrossSection {
+                sidewalks: SidewalkSides::RIGHT,
+                ..parked(false, true)
             },
         ),
         (
