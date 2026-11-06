@@ -199,7 +199,7 @@ meshes/materials identical; parked meshes omit lamps/beams.
   frame when nothing changed, and the listed `Arc` vector is rebuilt only when a chunk or an
   acknowledgement changes it, `O(listed chunks)` pointer copies.
 - A chunk lists the bays its parked cars stand on (`Chunk::parked`, with `Place::parked_slot`: 12
-  bytes a bay, derived, never saved, rebuilt at load). `occupy`, `release` and `set_moving` keep it
+  to 20 bytes a bay as the list's room doubles, derived, never saved, rebuilt at load). `occupy`, `release` and `set_moving` keep it
   in O(1) and allocate nothing, because `add_place` reserves the room. A rebuild reads that list and
   never an empty bay. It is O(C log C), not O(C), for a sort: the buffer's order is bay handle order
   within each bucket and the list has none. A sorted set would drop the sort, but allocate on
