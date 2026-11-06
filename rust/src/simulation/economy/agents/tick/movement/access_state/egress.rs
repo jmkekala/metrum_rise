@@ -126,7 +126,11 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             walk_across_lot(i, delta, sim_time, allocator, transit_network, graph, slices);
             return;
         }
-        let parking_entrance = slices.parking.and_then(|p| p.trip_entrance(trip, true, allocator, transit_network, graph));
+        // Off a parking leg there is no endpoint to look up: most agents here, every tick.
+        let parking_entrance = slices
+            .parking
+            .filter(|_| trip.phase != ParkingTripPhase::None)
+            .and_then(|p| p.trip_entrance(trip, true, allocator, transit_network, graph));
         let entrance = parking_entrance.as_ref().unwrap_or(&allocator.entrances[b_id]);
         let attach_lane_id = *s_plan_attach_lane.get(i) as usize;
         let attach_lane_d = *s_plan_attach_lane_d.get(i);

@@ -75,7 +75,11 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             return;
         }
         let trip = *slices.parking_trip.get(i);
-        let parking_entrance = slices.parking.and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph));
+        // Off a parking leg there is no endpoint to look up: most agents here, every tick.
+        let parking_entrance = slices
+            .parking
+            .filter(|_| trip.phase != crate::simulation::parking::ParkingTripPhase::None)
+            .and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph));
         let entrance = parking_entrance.as_ref().unwrap_or(&allocator.entrances[b_id]);
         let detach_lane_id = *s_plan_detach_lane.get(i) as usize;
         let detach_lane_d = *s_plan_detach_lane_d.get(i);
