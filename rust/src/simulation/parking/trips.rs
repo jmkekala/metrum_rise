@@ -423,7 +423,7 @@ mod custody_tests {
         let (first, second) = (parking.add_place(source(0), bay(0.0)), parking.add_place(source(1), bay(20.0)));
         let car = parking.assign_household(1, crate::simulation::zoning::profiles::ZoneDensity::Low, [0.0; 2]);
         let driver = AgentHandle::from_parts(1, 0);
-        let mut reports = |parking: &mut ParkingSystem, write: &dyn Fn(&mut ParkingSystem)| {
+        let reports = |parking: &mut ParkingSystem, write: &dyn Fn(&mut ParkingSystem)| {
             parking.custody_changes.clear();
             write(parking);
             assert_eq!(parking.custody_changes, [car]);

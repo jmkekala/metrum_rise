@@ -7,8 +7,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 ## Snapshot
 
 Parking (`PARK-01`, `PARK-02`, `PARK-05`, Veeti's `feat/parking`) is merged onto branch
-`port-park-merge` at save format 118, not landed on `dev`: the review's tick and rule fixes and the
-fixture supply are still open, so the rows stay in progress. Parked cars now reach Godot through
+`port-park-merge` at save format 118, not landed on `dev`: the fixture supply and the landing gates
+are still open, so the rows stay in progress. Parked cars now reach Godot through
 the render snapshot from cached poses ([render path](traffic.md#physical-parking-foundation-park-01)), and the
 parking tick visits candidates from events instead of every agent. Parking state and kerbside
 lanes coexist with lane-choice routing, turn pockets, one-sided sidewalks and roundabouts; only
