@@ -79,7 +79,7 @@ pub(in crate::simulation::economy::agents::tick) fn lane_entry_slot_clear(
 
 /// The lane an entry onto a roundabout ring gives way to now, `None` when `connector` is free to
 /// go or is no ring entry (`ROAD-62`): a car on the circulating connector, a ring lane head
-/// arriving within [`RING_ENTRY_HEAD_GAP_M`] of the node, or a blocked entry slot on the ring lane
+/// arriving within the lane-change gap of the node, or a blocked entry slot on the ring lane
 /// itself ("room ahead", the slot test a connector's exit makes, not the box rule). A head already
 /// standing at the end holds nothing back: if it waits for the ring, the circulating connector or
 /// the ring lane's slot is what it waits for, and those are tested; if it waits for its exit, it
@@ -94,10 +94,14 @@ pub(in crate::simulation::economy::agents::tick) fn ring_entry_blocker(
     let lane = lanes.get(connector)?;
     let entry = lane.ring_entry?;
     let (circulating, ring_in) = (entry.circulating as usize, entry.ring_in as usize);
-    if !lane_buckets[circulating].is_empty() {
+    // As `lane_entry_slot_clear`: a lane the snapshot does not hold yet counts as blocked.
+    if lane_buckets
+        .get(circulating)
+        .is_none_or(|bucket| !bucket.is_empty())
+    {
         return Some(circulating);
     }
-    if let Some(&(head_d, _)) = lane_buckets[ring_in].last() {
+    if let Some(&(head_d, _)) = lane_buckets.get(ring_in).and_then(|bucket| bucket.last()) {
         let to_end_m = lanes[ring_in].length - head_d;
         if to_end_m <= RING_ENTRY_HEAD_GAP_M && to_end_m > RING_HEAD_STANDING_M {
             return Some(ring_in);
