@@ -61,12 +61,18 @@ A road edge carries `parking: RoadParking { left, right }`, its kerbs looking al
 direction. Each parking lane is `PARKING_LANE_WIDTH_M` (2.5 m) and is part of `edge.width`
 (`Edge::cross_section_width_m`); the traffic lanes keep their widths and
 `Edge::lane_group_offset` moves them half a parking lane off a one-sided parking kerb. Only a
-road with a car lane may park (`parking_requires_vehicle_road`, checked on the stroke and on
-load). Splits copy the setting; no graph operation reverses an edge. Save format 118 stores it as
-`network_edges.parking` (bit 0 left, bit 1 right).
+road with a car lane may park (`parking_requires_vehicle_road`), and a kerb only with a sidewalk
+on its own side (`layout_parking_needs_sidewalk`, D4): a kerb bay's walking access is on its own
+side, so on a shoulder it would be supply nobody reaches. `check_layout` and
+`Edge::validate_parking` hold both rules side by side, on the stroke, in place (a sidewalk cannot
+be taken from under its parking lane) and on load. Splits copy the setting; no graph operation
+reverses an edge. Save format 118 stores it as `network_edges.parking` (bit 0 left, bit 1 right).
+A parking lane weighs 0.2 per side in `road_weight`, between a sidewalk's 0.1 and a lane
+([road costs](economy.md#road-costs-road-101)).
 
-The road builder (`ROAD-101`) has a Parking lane part, allowed only at a kerb (next to a sidewalk, or
-outermost on a road without them; `layout_parking_at_kerb`), so at most one per side; a type's parking reaches the road tool
+The road builder (`ROAD-101`) has a Parking lane part, allowed only at a kerb next to a sidewalk
+(`layout_parking_at_kerb`; outermost on a side with no sidewalk it is
+`layout_parking_needs_sidewalk`), so at most one per side; a type's parking reaches the road tool
 through `set_road_tool_parking` and travels with the stroke through preview, commit and the
 refusal report like the median. Road types store it as the `parking` part kind. A clicked
 Parking tile always lands at a kerb: the one on the selected slot's side, the right on a tie, the
@@ -78,9 +84,19 @@ so kerbs, junction mouths, crossings and the roadbed queries need no new band ki
 reserved `BandKind::Parking` stays unused. The markings set it off: a solid 0.10 m line a parking
 lane's width in from each parking kerb, drawn on every road with parking (an unmarked 1 + 1
 street included), and the lane dividers split only the traffic lanes' share of the carriageway.
+It stops where a ring entry's give-way row begins, as the dividers do (`ROAD-62`, R7d's triangles),
+and it stops at the taper to a turn pocket on its side: the span ends there, the taper lying in
+the transition's node piece, and a pocket edge paints no line on a kerb its pocket moves
+(`Edge::pocket_moves_kerb`, D5).
 The asphalt shader gets the parking sides and the median's width (half metres) in spare bits of
 the lane-count channels (`road_space_color`), so the parking lane draws as the same asphalt, not
 as the gravel shoulder past the traffic lanes' width, and wheel paths stay in the traffic lanes.
+That repack is the one product exception to `dev`, accepted as a fix (D6: the far carriageway of a
+divided road drew as shoulder). Measured on real meshes
+(`the_repack_moves_only_a_divided_roads_green_channel`): a road with no median and no parking is
+bit for bit what it was; a divided road moves green alone, on every carriageway vertex of its
+spans, by the median's width in half metres, with red, blue and alpha untouched and junction
+asphalt (zero alpha) unchanged. The R8 probe holds no median, so it does not see this.
 
 Kerbside bays are places in the shared pool (`parking/kerb.rs`), one `PlaceSource::Kerb { edge,
 right }` per parking lane, saved with the other places. Each is 6 m long (`KERB_BAY_LENGTH_M`)
@@ -88,7 +104,12 @@ and 2.5 m wide, centred half a parking lane in from the carriageway's edge of th
 `RoadSection` bands, never `edge.width` or mesh triangles. Bays run end to end, whole bays only,
 centred in each free stretch. A stretch starts 5 m past the span's first section or its start
 crossing strip and ends 5 m before the last section or its end crossing strip, because Finnish
-rules forbid parking within 5 m of a junction or crossing. A building's driveways and its
+rules forbid parking within 5 m of a junction or crossing. A turn pocket takes the kerb it moves
+(D5): a pocket edge holds no bays on that side, a divided road's left pocket, which takes the
+median, moves neither kerb, and the far kerb keeps its bays. The base road's bays end 5 m short of
+the span's end, so short of the taper. A pocket added under existing bays goes through the normal
+edit path: the rebuilt owners reconcile, the bays go and their cars are towed; undo returns them.
+A building's driveways and its
 street-entered lot bays cut a gap of their half width plus 1 m each side on their own kerb; a
 building without driveway anchors keeps a 3 m drive clear opposite its main entrance, where its
 deliveries and drop-offs pull in, so parked cars never wall off a frontage
@@ -180,6 +201,14 @@ meshes/materials identical; parked meshes omit lamps/beams.
 - One off-lane path still try-locks the core: `smooth_car_render_data` re-grounds interpolated
   off-lane cars. It is `dev`'s, and failing it draws the snapshot's own validated pose, so the car
   still updates.
+
+**A parked car stands on its own street or lot.** `SimCore::parked_ground_pose` reads its own
+surface, not `dev`'s visible one: a bay on the ground takes the road on the ground
+(`grounded_height_at`) or the graded ground, so a deck overhead never lifts it; a kerb bay on a
+bridge or in a tunnel takes the road piece nearest its own height (`height_nearest_at`), so it
+stands on its deck or tunnel floor. Same contacts and one gather, so the cost of the exact solve;
+moving cars keep `dev`'s solve. A car in its pull-in or pull-out under a deck is such a moving
+car, and takes `dev`'s top surface for those seconds.
 
 **Parked poses are cached.** Each place keeps one grounded 12-float pose and the model it was
 solved for (`Place::ground`, 49 bytes a bay, 4.9 MB at 100k bays), derived and never saved. A
@@ -414,10 +443,26 @@ car-mode leg finishes at a door; arrival asserts this in debug builds. The
 now apply to these driving legs through the shared detach function.
 
 Removing a reserved bay cancels its claim. A bounded three-handle reverse link retains disabled
-endpoint geometry only while its borrower needs it; it is excluded from usable supply. Recovery
+endpoint geometry only while its borrower needs it; it is excluded from usable supply. Every
+recovery that rewrites the itinerary drops the links it no longer names, in O(1)
+(`retain_retired_places`), so a superseded destination gives its slot back. One edit can still
+tow a borrowed car through more bays than there are slots with no recovery between; with every
+slot taken the newest bay goes unretained, since no trip names a bay it was towed through and a
+destination recovery replaces anyway. Evicting the oldest instead would drop the bay the walker
+is heading for. Removal never panics on a full set. Recovery
 walks to the car's actual new place, replans from its actual lane position, or reverses an unfinished
 pull-in to the driveway before choosing replacement supply. It never moves a travelling car by
 towing. The owned-car watchdog requests this ordered recovery rather than teleporting.
+
+A door with no foot lane (a car-only building, `ROAD-107` D1) reaches nothing on foot, so its own
+bays are always candidates (D4), at the straight walk across the lot: `BuildingEntrance::lot_door`
+marks a hosted bay's access, `in_lot_candidate` quotes door to bay or bay to bay when no lane
+joins them (O(1), only after the lane quote fails), and the leg has no lanes, which is how
+`walk_across_lot` knows it: at walking pace from where the walker stands, then the usual arrival
+or `ready`. Cost: O(1) more per place in a catchment rebuild, nothing on a door with foot lanes.
+A car-only building without a bay of its own has no catchment: its car stays off the map and its
+residents stay in, retrying every 30 s, the console saying why. That is a city without supply,
+`PARK-03`'s question.
 
 Moving and parked cars come from one snapshot (see the render path above), so neither renderer
 can run ahead of a transition. Model and colour persist across the switch. Origin occupancy is released after pull-out reaches the network; destination reservation

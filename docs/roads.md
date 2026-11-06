@@ -11539,7 +11539,8 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
   parts, left to right looking along the road's forward direction: `Sidewalk` (1.5 m,
   `SIDEWALK_WIDTH`), `CarLane { forward }` (3.5 m), at most one `Median` (style and width in the
   style's range), `Footpath` (2 m, the Walkway's only part, valid only alone) and `Parking`
-  (2.5 m kerbside parking lane at a kerb: next to a sidewalk, or outermost without them, `PARK-05`,
+  (2.5 m kerbside parking lane at a kerb, next to a sidewalk on its own side, `PARK-05`,
+  `layout_parking_needs_sidewalk`,
   [`traffic.md`](traffic.md#kerbside-parking-lanes-park-05)). One check
   (`check_layout`, `O(parts)`, allocation-free) turns a layout into the edge's cross-section
   (fwd, bkw, median, sidewalks) or a refusal with its key: a sidewalk at each end or none at
@@ -11637,8 +11638,8 @@ independent of zoning; speed per type; costs by type; Road Properties changes al
 - **The 80 km/h rules are gone** (D5): neither creation nor load sets `no_building_spawn` from
   the speed; 80 km/h is only the builder's once-only zoning suggestion
   ([`zoning.md`](zoning.md#8-road-no-build-flag)).
-- **Costs.** One rule weights build and upkeep per metre by lanes, speed, median, sidewalks and
-  structure, anchored at the 2-Lane Road's 15 / m and 0.1 / m / day; the table and the
+- **Costs.** One rule weights build and upkeep per metre by lanes, speed, median, sidewalks,
+  parking lanes and structure, anchored at the 2-Lane Road's 15 / m and 0.1 / m / day; the table and the
   difference-charged, never-refunded type change are in
   [`economy.md`](economy.md#road-costs-road-101). The stroke preview's `build_cost`, the builder's
   cost line, every type's tooltip and the Road Properties picker read it from Rust.

@@ -324,16 +324,17 @@ the upkeep roll). The **weight** is in 2-lane-road units, so the 2-Lane Road at 
 exactly 1.0 and the old flat constants stay the anchors:
 
 ```
-weight = structure x (lanes x 0.4 x f(v) + median x f(v) + sidewalks)
+weight = structure x (lanes x 0.4 x f(v) + median x f(v) + sidewalks + parking)
   f(v)       = 1 + (v_kmh - 50) / 50        (30 -> 0.6, 80 -> 1.6, 100 -> 2.0, 120 -> 2.4)
   median     = painted 0.05; kerbed grass or paving 0.1 + 0.1 x width_m
   sidewalks  = 0.1 per side with one: 0.2 both, 0.1 one (`ROAD-107`, D3), 0 none
+  parking    = 0.2 per side with a parking lane: 0.4 both, 0.2 one (`PARK-05`), 0 none
   structure  = ground 1, bridge 3, tunnel 5 (the stroke's prepared class, its whole length)
   walkway    = structure x 0.25 (a footpath: no lanes, no speed)
 build / m = 15 x weight      upkeep / m / day = 0.1 x weight
 ```
 
-Lanes and speed multiply, sidewalks add, zoning costs nothing. `O(1)`, allocation-free.
+Lanes and speed multiply, sidewalks and parking lanes add, zoning costs nothing. `O(1)`, allocation-free.
 
 | Type | weight | build / m | upkeep / m / day |
 |---|---:|---:|---:|
