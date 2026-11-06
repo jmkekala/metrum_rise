@@ -1066,7 +1066,8 @@ place of a junction. Round R7a (branch `port-r7a-ring`, not landed) is the model
 the lane rule on the graph; round R7b (branch `port-r7b-tool`, not landed) the transaction, the tool
 and bulldozing the whole ring; round R7c (branch `port-r7c-giveway`, not landed)
 [give-way on entry](traffic.md#give-way-on-entry-to-a-roundabout-road-62) and the populated
-acceptance: entering cars yield to the ring without waiting for `TRAFFIC-06`.
+acceptance: entering cars yield to the ring without waiting for `TRAFFIC-06`; round R7d (branch
+`port-r7d-entry`, not landed) the entry's sign and paint.
 `METRUM_PERF_ROUNDABOUTS=n` (test builds) makes rings of the populated grid's n highest-degree
 junctions through this transaction, before zoning, as `METRUM_PERF_POCKETS` adds pockets.
 
@@ -1157,7 +1158,33 @@ Refused otherwise: running on through the ring (`roundabout_crossed`), ending on
 a chord across it (`roundabout_island`), a second arm at a ring node (`roundabout_arm_node_taken`). A
 bridge or tunnel passes over or under; its end still may not stand on the island. An end within the
 2 m join tolerance inside the circle is a join. A road between two neighbouring ring nodes is refused
-as two roads between any two nodes are (`surface_geometry_invalid`).
+as two roads between any two nodes are, in its own words (`roundabout_neighbour_nodes`, "A road cannot
+link two neighbouring points of a roundabout"; on a bare ring every two nodes are neighbours). Only
+the words are the ring's: the graph drops the doubled road, and the validator names it when it finds
+the stroke gone. Any other road doubling another stays `surface_geometry_invalid`.
+
+**Signs and paint at an entry** (D18, D19, round R7d). A ring entry (`roundabouts::enters_ring`,
+`O(degree)`) is a road other than a ring edge with lanes towards a node a ring runs through. An exit, a
+bare ring node and a plain junction have neither sign nor paint. Both come from the graph and the
+pieces alone, through the emitters every road uses, so a stroke's preview paints the commit's row (a
+preview's overlay carries no signs), and a bulldozed ring takes them with it: its arms recompile as
+road ends.
+- **Pole.** One B5 over D2 per entry, on its traffic's right, facing it ([road signs](#road-signs-road-60)).
+- **Triangle row.** The give-way line (Traficom, Liite 15, L2), four triangles to a lane, 0.5 m at the
+  base and 0.6 m long, 0.4 m apart, tips at the driver (`markings.rs`, `emit_give_way_rows`, one more
+  use of the arrows' draped triangle). It lies on the arm's span with its bases 0.25 m before the mouth,
+  so **outside the zebra**, where a Finnish roundabout has it inside. That is where the cars are: the
+  lane ends at the mouth, 0.25 m short of the bars, and an entry is held there
+  ([give-way](traffic.md#give-way-on-entry-to-a-roundabout-road-62)), its connector running over the
+  zebra. The arm's lines stop at the row's tips. A marking range under 1.7 m has no row.
+- Cost: both read only an edit's rebuilt roads, `O(degree + lanes x triangles x (log sections + bands))`
+  per edge, without allocation. A road entering no ring pays the `enters_ring` tests and keeps its
+  payload bitwise (the R8 probe's lines equal the last reference's). Nothing runs per tick. Timing
+  (2026-11-06, `$BENCH_BINARY` of `road_chunk_benchmark` at the branch against the head before the round,
+  C B B C twice, P-cores, 4 workers, medians of 4, in us): all 14 `*chunk_emit_only` rows overlap the
+  control's range; `chunk_emit_only/1024` 97.8 (96.6-101.0) / 98.6 (97.5-102.8), `/1` 97.7 / 99.5,
+  `divided_chunk_emit_only/1024` 159.8 / 165.3 (151.8-174.0), `pocket_chunk_emit_only/1` 490.1 / 498.4. A
+  first session right after the test suites, load 5, read up to +10% and was repeated at load 1.
 
 **The edit** (`nodes/sim/roundabouts.rs`, the turn pocket's transaction). One `try_graph_edit` over
 the old junction, the arms' far nodes and the ring nodes: `RoundaboutLayout::prepare`, the land
@@ -1208,6 +1235,16 @@ converted to a 36 m ring over background tiers of 0, 1,000, 10,000 and 100,000 b
 The local products (ring nodes, spans, lanes) are identical across the tiers. Verdict p50 1.13, 0.87,
 0.59 and 0.87 ms, commit 3.57, 1.47, 3.99 and 1.66 ms, undo 0.59, 0.39, 1.05 and 0.69 ms: flat, and the
 verdict inside the 1-3 ms a pose may take.
+
+The stroke's way in (round R7d, 2026-11-06, `populated_ring_join_scaling`, same conditions): a bare 36 m
+ring south of the T per tier and a 1 + 1 stroke joined 40 degrees round from a node, so the join slides
+it. The ring, its pieces, the arm and the lanes are identical across the tiers; each undo restores
+the bare ring. Pose (`RoadPreviewContext::preview_road`, plan and pieces) p50 1.84, 2.10, 2.76 and 1.39 ms,
+the commit's plan 0.66, 0.52, 0.63 and 0.32 ms, commit (replanned, no reused preview) 3.10, 3.42, 3.41
+and 4.09 ms, undo 1.89, 2.06, 2.20 and 2.81 ms. The pose stays inside the 1-3 ms. Commit and undo
+rise by about 1 ms from no city to 100,000 buildings, not traced: one informational run, with test
+builds' city checks off. Its publication column reads 0.02 ms at every tier and was not looked into,
+so it is no measurement of publishing.
 
 **Timing** (round R7a, 2026-11-06, `$BENCH_BINARY` of `roadbed_benchmark` at the branch against the
 head before the round, C B B C twice, P-cores, 4 workers, medians of 4). No roadbed code changed;
@@ -13523,14 +13560,20 @@ cosmetic: traffic ignores them.
 
   They make the game honest about the roads placement still accepts: the hill in
   `traffic-signs.sqlite` gets 16 % and 18 % signs (`warning-sign-steep-after.png`).
+- **Ring entries (B5 over D2, `ROAD-62`, D18).** One pole per entry, on the right of its traffic
+  and facing it, 2 m before the crossing sign, or before the mouth where the entry has no zebra, and
+  away from street lights as any sign. It is placed after every crossing sign and outside the gap
+  below, so it never drops one (the fork stood it first, 2 m from the mouth, and the gap lost the
+  zebra's sign); later signs keep clear of it. D2 is not an asset: the renderer adds the fork's
+  blue disc with its three white arrows to B5's mesh, with a grey plate behind it, as model `B5-D2`.
 - Signs facing the same way on the same side keep 12 m apart along the street, in priority
-  crossing, speed, warning; a lower sign moves on, away from the junction, or is left out.
+  crossing, ring entry, speed, warning; a lower sign moves on, away from the junction, or is left out.
 - Poles stand 0.5 m behind the kerb face on the sidewalk (measured from the face; it was
   measured from the sidewalk's inner edge, which put poles in the walking line), or 0.75 m beyond the kerb or shoulder on the
   terrain where there is no sidewalk, and keep 2 m from street-light poles by sliding along the
   road away from the junction; a sign with no room on its edge is left out.
-- Priority, yield and stop signs (B1, B5, B6) are modelled and shipped but not placed: junction
-  priority does not exist yet.
+- Priority, yield and stop signs (B1, B5, B6) are modelled and shipped but, a ring entry's B5 apart,
+  not placed: junction priority does not exist yet.
 - Models: `godot/assets/models/road_signs/`, faces rasterized from public-domain Finnish sign
   SVGs (`credits.txt`), geometry CC BY 4.0; metres, pole base at the origin, printed face +Z. Commons has
   steep-hill faces only up to 13 %, so 14–18 % are composed from numeral paths of the real signs.
