@@ -41,6 +41,7 @@ impl ParkedChunk {
     }
 
     /// How many cars this chunk shows. O(1).
+    #[cfg(test)]
     pub(crate) fn cars(&self) -> usize {
         self.identities.len()
     }
