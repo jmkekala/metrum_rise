@@ -130,10 +130,11 @@ fn a_join_near_a_bare_node_slides_it_and_undo_restores_the_ring() {
     assert_eq!(products(&mut core), before);
 }
 
-// Opposite arms would leave a half turn: a bare node goes in, mid-arc, and comes out on undo.
+// Opposite arms on a small ring: the second takes the bare node between them, which would leave a
+// half turn, so a bare node goes in mid-arc, and comes out on undo.
 #[test]
 fn a_half_turn_takes_a_bare_node_in_the_middle_of_its_arc() {
-    let (mut core, radius_m) = bare(36.0, 1);
+    let (mut core, radius_m) = bare(30.0, 1);
     draw(&mut core, stroke_at(radius_m, 0.0), 1).unwrap();
     let (state, before) = (graph_state(&core), products(&mut core));
     draw(&mut core, stroke_at(radius_m, 180.0), 1).unwrap();
@@ -216,6 +217,207 @@ fn six_arms_join_a_bare_ring_at_the_smallest_size() {
             assert_eq!(ring_edges(&core).len(), 6, "only the arms' nodes are left");
         }
     }
+}
+
+// A stroke may start on a ring as well as end on one, or join two rings: each end takes its own
+// node.
+#[test]
+fn both_ends_of_a_stroke_can_join() {
+    let (mut core, radius_m) = bare(36.0, 1);
+    let mut outward = stroke_at(radius_m, 0.0);
+    outward.reverse();
+    draw(&mut core, outward, 1).unwrap();
+    assert_ring_sound(&mut core);
+
+    let (mut core, radius_m) = bare(36.0, 1);
+    assert_eq!(ring_edit(&mut core, ground(Vector3::new(150.0, 0.0, 0.0), 1, 36.0)), "");
+    let between = vec![
+        Vector3::new(radius_m, 0.0, 0.0),
+        Vector3::new(150.0 - radius_m, 0.0, 0.0),
+    ];
+    draw(&mut core, between, 1).unwrap();
+    assert_ring_sound(&mut core);
+    assert_eq!(ring_edges(&core).len(), 6, "both rings kept their nodes");
+
+    let (mut core, radius_m) = bare(36.0, 1);
+    let at = |angle: f32, r: f32| {
+        let (sin, cos) = angle.to_radians().sin_cos();
+        Vector3::new(cos * r, 0.0, sin * r)
+    };
+    let around = vec![
+        at(0.0, radius_m),
+        at(0.0, 70.0),
+        at(60.0, 80.0),
+        at(120.0, 70.0),
+        at(120.0, radius_m),
+    ];
+    // Every two ring nodes of a bare ring are neighbours, and two roads between the same two
+    // nodes are refused anywhere; nothing changes.
+    let state = graph_state(&core);
+    assert_eq!(draw(&mut core, around, 1).unwrap_err(), "surface_geometry_invalid");
+    assert_eq!(graph_state(&core), state);
+}
+
+// Joins in any order at any angle leave a sound ring or refuse with a ring's reason, and a refusal
+// changes nothing. A fixed sequence of pseudo-random angles over every size.
+#[test]
+fn joins_in_any_sequence_leave_a_sound_ring() {
+    let mut seed = 0x2545_f491_u32;
+    let mut next = move || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        seed >> 8
+    };
+    for (diameter_m, lanes, arm) in [(30.0, 1, 1), (36.0, 1, 1), (60.0, 1, 2), (45.0, 2, 2), (80.0, 2, 1)] {
+        for round in 0..6 {
+            let (mut core, radius_m) = bare(diameter_m, lanes);
+            for _ in 0..7 {
+                let angle = (next() % 3600) as f32 * 0.1;
+                let before = graph_state(&core);
+                match draw(&mut core, stroke_at(radius_m, angle), arm) {
+                    Ok(()) => assert_ring_sound(&mut core),
+                    Err(why) => {
+                        assert!(
+                            matches!(
+                                why.as_str(),
+                                "roundabout_arms_too_close"
+                                    | "roundabout_arm_node_taken"
+                                    | "surface_geometry_invalid"
+                                    | "junction_arm_angle"
+                            ),
+                            "D{diameter_m} round {round} at {angle}: {why}"
+                        );
+                        assert_eq!(graph_state(&core), before);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// `ROAD-68-E` on a join: the road tool's replica previews the stroke onto a bare ring, the node's
+// slide and the half turn's new node included, and the commit installs that preview's own pieces;
+// a fresh commit gives the same pieces bitwise. The replica follows the ring's edits and undo.
+#[test]
+fn a_preview_near_a_bare_node_is_what_the_commit_installs() {
+    use crate::nodes::sim::core::road_preview::{RoadPreviewRequest, road_tool_snapshot_from_core};
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    use crate::simulation::network::roadbed::PieceId;
+    use std::sync::Arc;
+    let (mut core, radius_m) = bare(36.0, 1);
+    let (mut control, _) = bare(36.0, 1);
+    for core in [&mut core, &mut control] {
+        draw(core, stroke_at(radius_m, 0.0), 1).unwrap();
+        core.precompute_road_mesh_data();
+        core.refresh_road_terrain_inputs();
+    }
+    let mut context =
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(&core).expect("current"));
+    let points = stroke_at(radius_m, 180.0);
+    let surface_generation = context.view.surface_generation;
+    let request = RoadPreviewRequest {
+        surface_generation,
+        points: points.clone(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+        tunnel: false,
+        median: None,
+        attributes: RoadAttributes::DEFAULT,
+    };
+    let preview = Arc::new(context.preview_road(request));
+    assert!(preview.validation.is_valid, "{}", preview.validation.invalid_reason);
+    let compiled = preview.pieces.as_ref().expect("a valid stroke compiles pieces");
+    let commit = |core: &mut SimCore, preview| {
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points: points.clone(),
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                tunnel: false,
+                median: None,
+                attributes: RoadAttributes::DEFAULT,
+                preview,
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert!(outcome.committed, "{}", outcome.rejection);
+    };
+    commit(&mut core, Some(Arc::clone(&preview)));
+    assert!(core.last_road_edit_metrics.preview_plan_reused);
+    let mesh = |core: &SimCore, id: PieceId| {
+        let roadbed = &core.transit_network.roadbed;
+        match id {
+            PieceId::Span(edge) => roadbed.span_piece(edge).map(|span| span.mesh()),
+            PieceId::Node(node) => roadbed.node_piece(node).map(|piece| piece.mesh()),
+        }
+        .map(std::ptr::from_ref)
+    };
+    for (id, piece) in compiled.delta.pieces() {
+        assert_eq!(mesh(&core, id), piece.map(std::ptr::from_ref), "{id:?}");
+    }
+    commit(&mut control, None);
+    assert_eq!(graph_state(&core), graph_state(&control));
+    assert_eq!(products(&mut core), products(&mut control));
+    assert_ring_sound(&mut core);
+}
+
+// The replica's follow is compared with the live graph at each step in debug builds: a ring on
+// empty ground, a conversion, their undos and a bulldoze.
+#[test]
+fn the_road_tool_replica_follows_ring_edits_and_undo() {
+    use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    let (mut core, node) = crossing(1);
+    core.benchmark_mode = false;
+    core.refresh_road_terrain_inputs();
+    let mut context =
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(&core).expect("current"));
+    let first = core.publish_road_tool_view().expect("current roadbed");
+    assert!(context.apply(&first));
+    let follow = |core: &mut SimCore, context: &mut RoadPreviewContext, step: &str| {
+        let publication = core.finalize_network_render_products().expect(step);
+        assert!(context.apply(&publication), "{step}");
+    };
+    assert!(core.place_roundabout_internal(ground(Vector3::new(300.0, 0.0, 300.0), 1, 36.0)));
+    follow(&mut core, &mut context, "ground");
+    assert!(core.place_roundabout_internal(junction(node, 36.0)));
+    follow(&mut core, &mut context, "conversion");
+    let ring = core.region_graph.edges().iter().position(|edge| {
+        edge.roundabout.is_some_and(|ring| ring.centre.x == 0.0) && !edge.deleted
+    });
+    assert!(core.bulldoze_road_edge_for_test(ring.unwrap()));
+    follow(&mut core, &mut context, "bulldoze");
+    for step in ["undo bulldoze", "undo conversion", "undo ground"] {
+        assert!(core.undo_action_internal());
+        follow(&mut core, &mut context, step);
+    }
+}
+
+// A large ring with more edges than the stroke's excerpt reaches by incidence: the join walks the
+// whole ring all the same, here 7 edges, and takes the bare node it lands near.
+#[test]
+fn a_join_walks_a_ring_beyond_the_excerpts_reach() {
+    let (mut core, radius_m) = bare(80.0, 2);
+    for angle in [30.0, 150.0, 270.0] {
+        draw(&mut core, stroke_at(radius_m, angle), 1).unwrap();
+    }
+    draw(&mut core, stroke_at(radius_m, 180.0), 1).unwrap();
+    let edges = ring_edges(&core).len();
+    assert_eq!(edges, 7, "three arms and three bare nodes, then a split");
+    draw(&mut core, stroke_at(radius_m, 82.0), 1).unwrap();
+    assert_eq!(ring_edges(&core).len(), edges, "the bare node at 90 degrees moved");
+    assert_ring_sound(&mut core);
+}
+
+// A caller without a plan near a ring plans all the same: only a plan moves a bare node.
+#[test]
+fn a_plan_less_stroke_near_a_ring_takes_the_bare_node_too() {
+    let (mut core, radius_m) = bare(36.0, 1);
+    core.precompute_road_mesh_data();
+    assert!(core.add_road_internal(stroke_at(radius_m, 0.0), 1, 1).committed);
+    assert_eq!(ring_edges(&core).len(), 3);
 }
 
 // The plan's R7b row: a stroke joined to a bare ring in the middle of a chord lays out at 60 m,

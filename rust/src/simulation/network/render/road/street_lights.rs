@@ -10,7 +10,7 @@
 
 use super::standard_surface::CompiledSurfaceCoverage;
 use super::verge::VergeGround;
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::{Edge, RegionGraph, SidewalkSides};
 use crate::simulation::network::roadbed::{BandKind, NodeKind, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use godot::prelude::Vector3;
@@ -70,6 +70,9 @@ struct Rule {
     // A street whose lit length is shorter than this gets one light in its middle.
     min_gap_m: f32,
     both_sides: bool,
+    // The side of each edge a one-sided street keeps its lights on, when the road decides: a
+    // ring's are on its sidewalk, the island has none (`ROAD-62`, D20).
+    edge_side: Option<f32>,
 }
 
 fn rule_for_edge(edge: &Edge) -> Option<Rule> {
@@ -99,6 +102,13 @@ fn rule_for_edge(edge: &Edge) -> Option<Rule> {
         spacing_m,
         min_gap_m,
         both_sides,
+        edge_side: edge.roundabout.map(|_| {
+            if edge.sidewalks == SidewalkSides::RIGHT {
+                1.0
+            } else {
+                -1.0
+            }
+        }),
     })
 }
 
@@ -490,7 +500,9 @@ fn poles_at(
         .position(|pair| pair[1].s_m >= s)
         .unwrap_or(sections.len() - 2);
     let (a, b) = (&sections[i], &sections[i + 1]);
-    let side = chain_side(&runs[0], chain[0].1) * if forward { 1.0 } else { -1.0 };
+    let side = rule
+        .edge_side
+        .unwrap_or_else(|| chain_side(&runs[0], chain[0].1) * if forward { 1.0 } else { -1.0 });
     let place = |side| place_at(None, a, b, s, side, rule.kind);
     if rule.both_sides {
         [place(1.0), place(-1.0)]
@@ -528,7 +540,9 @@ fn place_along_chain(
     };
     let run = &runs[index];
     let forward = chain[index].1;
-    let side_sign = chain_side(&runs[0], chain[0].1) * if forward { 1.0 } else { -1.0 };
+    let side_sign = rule
+        .edge_side
+        .unwrap_or_else(|| chain_side(&runs[0], chain[0].1) * if forward { 1.0 } else { -1.0 });
     let sides: &[f32] = if rule.both_sides {
         &[1.0, -1.0]
     } else {

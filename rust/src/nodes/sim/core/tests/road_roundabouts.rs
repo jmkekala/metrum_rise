@@ -266,6 +266,10 @@ fn a_car_and_a_walker_in_the_circle_reattach() {
             .0
     };
     assert!(attached(car, LaneType::Vehicle).distance_to(was) <= 30.0);
+    assert!(
+        core.agents.agents.current_path[car].is_empty(),
+        "the retired junction leaves the live route"
+    );
     assert!(attached(walker, LaneType::Foot).distance_to(walked) <= 30.0);
     assert!(core.undo_action_internal());
     let lanes = &core.transit_network.lane_system;
@@ -366,6 +370,30 @@ fn the_rest_of_the_refusal_list_stands_on_a_city() {
         ring_edit(&mut core, junction(node, 36.0)),
         "roundabout_has_lane_restrictions"
     );
+}
+
+// D20: a ring's street lights stand on its outer sidewalk, the island has none, on a bare ring and
+// a converted one.
+#[test]
+fn a_rings_lights_stand_on_its_outer_sidewalk() {
+    let outer_lights = |core: &mut SimCore, kerb_m: f32| {
+        core.precompute_road_mesh_data();
+        let mesh = core
+            .transit_network
+            .try_generate_mesh_data(&core.region_graph, &core.heightmap)
+            .expect("current roadbed");
+        assert!(!mesh.street_lights.is_empty());
+        for light in &mesh.street_lights {
+            let from_centre = light.position.x.hypot(light.position.z);
+            assert!(from_centre > kerb_m, "a light {from_centre} m from the centre");
+        }
+    };
+    let mut core = test_core();
+    assert_eq!(ring_edit(&mut core, ground(Vector3::ZERO, 1, 36.0)), "");
+    outer_lights(&mut core, 18.0);
+    let (mut core, node) = crossing(2);
+    assert_eq!(ring_edit(&mut core, junction(node, 50.0)), "");
+    outer_lights(&mut core, 25.0);
 }
 
 // A ring reaching visible water refuses, as a road does.
