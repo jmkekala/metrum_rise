@@ -473,6 +473,117 @@ fn has_car_follows_custody_at_the_next_tick() {
     assert!(!c.agents.has_car[agent]);
 }
 
+// A member joining with the household finds the car its carrier brought: no custody changed, so
+// the publication that names it the household's car is what reports it.
+#[test]
+fn a_household_moving_in_with_its_car_gets_it_at_publication() {
+    use crate::simulation::economy::agents::HouseholdAgeComposition;
+    let mut c = SimCore::new(
+        WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    c.treasury.balance = 10_000_000.0;
+    commit_with(
+        &mut c,
+        (-600.0, 0.0),
+        (600.0, 0.0),
+        crate::simulation::network::graph::RoadParking { left: true, right: true },
+    );
+    let id = register_lot(&mut c);
+    let mut manifest = c.allocator.registry.get(&id).unwrap().manifest.clone();
+    manifest.building.as_mut().unwrap().household_capacity = Some(4);
+    c.allocator.registry.register("parking", manifest, String::new());
+    c.place_service_building_internal(&id, 0.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    let border = if c.allocator.entrances[0].side == -1 {
+        c.region_graph.edge(0).start_node
+    } else {
+        c.region_graph.edge(0).end_node
+    };
+    let pos = c.region_graph.node(border).pos;
+    let carrier = c.agents.spawn_household_arrival_carrier(
+        0,
+        2,
+        HouseholdAgeComposition { adult_count: 2, ..Default::default() },
+        border,
+        pos.x,
+        pos.z,
+    );
+    let handle = c.agents.agent_handle(carrier);
+    assert!(c.agents.start_parking_move_in(
+        carrier,
+        &mut c.parking,
+        &c.allocator,
+        &c.transit_network,
+        &c.region_graph
+    ));
+    let car = c.agents.parking_trip[carrier].vehicle;
+    assert!(!car.is_none());
+    c.time.speed_multiplier = 8.0;
+    let indoors = |c: &SimCore| {
+        let i = c.agents.resolve_agent(handle).unwrap();
+        c.agents.transit[i] == crate::simulation::economy::agents::TRANSIT_IN_BUILDING
+            && c.agents.parking_trip[i].phase == crate::simulation::parking::ParkingTripPhase::None
+    };
+    for _ in 0..40_000 {
+        c.step_frame(1.0 / 60.0);
+        if indoors(&c) {
+            break;
+        }
+    }
+    assert!(indoors(&c));
+    // Past the frames of the arrival's own custody changes.
+    c.step_frame(1.0 / 60.0);
+    c.step_frame(1.0 / 60.0);
+    let i = c.agents.resolve_agent(handle).unwrap();
+    assert!(c.households.materialize_arrival_carrier(i, &mut c.agents, &c.allocator));
+    c.step_frame(1.0 / 60.0);
+    let adults: Vec<_> = (0..c.agents.len())
+        .filter(|&i| c.agents.parking_trip[i].vehicle == car)
+        .collect();
+    assert_eq!(adults.len(), 2, "both adults hold the household's car");
+    assert!(c.parking.vehicle_place(car).is_some());
+    assert!(adults.iter().all(|&i| c.agents.has_car[i]));
+}
+
+// Undo puts agent rows back without events; `has_car` must not stay as the row kept it.
+#[test]
+fn undoing_a_bulldoze_rewrites_has_car_from_the_cars_as_they_stand() {
+    let mut c = SimCore::new(
+        WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
+            .with_chunking(128.0, 0.0)
+            .with_terrain_resolution(2.0),
+    );
+    c.treasury.balance = 10_000_000.0;
+    commit_with(
+        &mut c,
+        (-600.0, 0.0),
+        (600.0, 0.0),
+        crate::simulation::network::graph::RoadParking { left: true, right: true },
+    );
+    let id = register_lot(&mut c);
+    let mut manifest = c.allocator.registry.get(&id).unwrap().manifest.clone();
+    manifest.building.as_mut().unwrap().household_capacity = Some(4);
+    c.allocator.registry.register("parking", manifest, String::new());
+    c.place_service_building_internal(&id, -450.0, -30.0).unwrap();
+    c.place_service_building_internal(&id, 450.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    let (home, target) = if c.allocator.entrances[0].side == -1 { (0, 1) } else { (1, 0) };
+    let agent = c.debug_add_parking_commuter(home, target).unwrap();
+    c.time.speed_multiplier = 8.0;
+    c.step_frame(1.0 / 60.0);
+    assert!(c.agents.has_car[agent]);
+    assert!(c.bulldoze_building(home));
+    for _ in 0..3 {
+        c.step_frame(1.0 / 60.0);
+    }
+    assert!(c.undo_action_internal());
+    for _ in 0..3 {
+        c.step_frame(1.0 / 60.0);
+    }
+}
+
 #[test]
 fn parking_move_in_save_round_trip_mid_arrival() {
     use crate::simulation::economy::agents::HouseholdAgeComposition;

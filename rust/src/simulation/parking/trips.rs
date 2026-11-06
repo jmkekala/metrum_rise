@@ -406,6 +406,37 @@ impl ParkingSystem {
 mod custody_tests {
     use super::*;
 
+    // `has_car` is rewritten from these reports alone, so each write to a car's custody reports,
+    // whatever other write happens to stand beside it in today's callers.
+    #[test]
+    fn every_custody_write_reports_its_car() {
+        let mut parking = ParkingSystem::default();
+        let bay = |x| Bay {
+            identity: [0, 0],
+            position: [x, 0.0, 0.0],
+            path: [[x, 0.0]; 4],
+            heading: 0.0,
+            width: 2.5,
+            length: 5.0,
+        };
+        let source = |anchor| PlaceSource::Building { building: 0, anchor };
+        let (first, second) = (parking.add_place(source(0), bay(0.0)), parking.add_place(source(1), bay(20.0)));
+        let car = parking.assign_household(1, crate::simulation::zoning::profiles::ZoneDensity::Low, [0.0; 2]);
+        let driver = AgentHandle::from_parts(1, 0);
+        let mut reports = |parking: &mut ParkingSystem, write: &dyn Fn(&mut ParkingSystem)| {
+            parking.custody_changes.clear();
+            write(parking);
+            assert_eq!(parking.custody_changes, [car]);
+        };
+        reports(&mut parking, &|p| assert!(p.occupy(car, first)));
+        reports(&mut parking, &|p| assert!(p.reserve(car, second)));
+        reports(&mut parking, &|p| p.cancel_reservation(car));
+        reports(&mut parking, &|p| assert!(p.reserve_trip(car, driver, second)));
+        reports(&mut parking, &|p| p.set_moving(car, true));
+        reports(&mut parking, &|p| assert!(p.release(car).is_some()));
+        reports(&mut parking, &|p| p.finish_outing(car, driver));
+    }
+
     #[test]
     fn one_borrower_reservation_conservation_and_handoff() {
         let mut parking = ParkingSystem::default();

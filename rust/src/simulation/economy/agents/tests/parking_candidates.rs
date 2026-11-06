@@ -209,3 +209,63 @@ fn replaced_rows_are_rebuilt_at_the_next_tick() {
     assert!(!world.agents.has_car[0]);
     assert_eq!(world.candidates(), 1, "the driver's replan and its bay are found from the row");
 }
+
+#[test]
+fn a_walker_put_inside_on_its_last_leg_finishes_its_trip() {
+    let mut world = World::new();
+    world.agents.agents.planned_target_building[1] = usize::MAX;
+    world.tick_until(ParkingTripPhase::WalkToDoor);
+    world.tick();
+    // Not an arrival: a resident an edit puts indoors has no `ready` to be found by.
+    world.agents.agents.transit[0] = TRANSIT_IN_BUILDING;
+    world.tick();
+    assert_eq!(world.agents.parking_trip[0].phase, ParkingTripPhase::None);
+}
+
+// A car held off its lane at the attach point is not stepped, so `ready` alone does not reach it.
+#[test]
+fn a_driver_held_at_its_lane_entry_is_still_a_candidate() {
+    use crate::simulation::economy::agents::data::MovementClaimMode;
+    let mut world = World::new();
+    world.agents.agents.planned_target_building[1] = usize::MAX;
+    world.tick_until(ParkingTripPhase::PullOut);
+    let lane = world.agents.planned_attach_lane_id[0] as usize;
+    let distance = world.agents.planned_attach_lane_d[0];
+    let blocker = world.agents.spawn_housed_agent(0, 45.0, -12.0);
+    let pin = |agents: &mut AgentSystem, network: &TransitNetwork| {
+        agents.agents.transit[blocker] = TRANSIT_NETWORK;
+        agents.agents.transit_mode[blocker] = MODE_CAR;
+        agents.agents.current_lane_id[blocker] = lane;
+        agents.agents.current_edge[blocker] = network.lane_system.lanes[lane].edge_id;
+        agents.agents.lane_distance[blocker] = distance;
+        agents.agents.speed[blocker] = 0.0;
+        agents.lane_bucket_snapshot_valid = false;
+    };
+    for _ in 0..2000 {
+        pin(&mut world.agents, &world.network);
+        world.tick();
+        if world.agents.parking_trip[0].phase == ParkingTripPhase::Drive {
+            break;
+        }
+    }
+    assert_eq!(world.agents.current_lane_id[0], usize::MAX, "held off its lane");
+    pin(&mut world.agents, &world.network);
+    world.tick();
+    world.parking.cancel_reservation(world.car());
+    pin(&mut world.agents, &world.network);
+    world.tick();
+    assert_eq!(world.agents.movement_claim_modes[0], MovementClaimMode::HeldEntry);
+    assert!(world.candidates() >= 1, "the replan the lost reservation asks for runs");
+}
+
+#[test]
+fn a_car_no_household_owns_yet_reaches_the_carrier_bringing_it_in() {
+    let mut world = World::new();
+    let car = world.car();
+    let carrier = world.agents.spawn_housed_agent(0, 45.0, -12.0);
+    world.agents.agents.parking_trip[carrier].vehicle = car;
+    let handle = world.agents.agent_handle(carrier);
+    world.agents.arrival_carriers.push(handle);
+    world.agents.refresh_car_holders(car, None, &world.parking);
+    assert!(world.agents.has_car[carrier]);
+}
