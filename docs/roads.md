@@ -11742,7 +11742,7 @@ D1-D5, D22, D23).
   `a_one_sided_road_builds_foot_lanes_on_its_sidewalk_side_only`,
   `a_one_sided_stem_has_one_corner_walk_on_its_sidewalk_side` (and its crossing toggle),
   `sidewalk_sides_round_trip_through_the_edge_table`,
-  `a_one_sided_road_is_walked_to_on_its_sidewalk_side_only`; the roadbed probe's new family
+  `a_one_sided_road_is_walked_to_on_its_sidewalk_side`; the roadbed probe's new family
   entries `one_sided_pass_through`, `one_sided_stem_left`, `one_sided_stem_right`,
   `one_sided_continues_two_sided` and `one_sided_one_way_t` (flat and sloped), which the family
   watertightness and crossing checks run too. The connector fixture list
