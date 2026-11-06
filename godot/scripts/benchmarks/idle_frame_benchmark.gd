@@ -11,6 +11,9 @@
 ## frame pacing can be compared against the display refresh rather than measured as throughput.
 ## METRUM_IDLE_BENCH_CANOPY_DENSITY starts a new game on the pinned world at that many canopy stems
 ## per hectare instead of loading it with the default forest.
+## METRUM_IDLE_BENCH_VIEWS adds explicit camera views, "name:x,z,yaw,pitch,distance;...".
+## METRUM_IDLE_BENCH_TREE_FAR_M draws trees out to that distance, for comparing far stands drawn
+## as trees with the terrain standing in for them.
 ## METRUM_IDLE_BENCH_TERRAIN is retained as an ignored matrix label for old launch scripts; every
 ## pose now uses the production graded terrain.
 extends RefCounted
@@ -98,6 +101,12 @@ func run(bench: Node) -> void:
 	bench._metrics = _report
 
 	_report["terrain"] = "graded"
+	# Probe: draw trees out to this distance instead of TreeSpecies.TREE_FAR_M (the ground term
+	# keeps its own range), so a stand drawn as trees can be compared with the ground standing in.
+	var tree_far_m := float(OS.get_environment("METRUM_IDLE_BENCH_TREE_FAR_M"))
+	if tree_far_m > 0.0:
+		_vegetation.far_range_override_m = tree_far_m
+	_report["tree_far_override_m"] = tree_far_m
 	var load_start_us := Time.get_ticks_usec()
 	print("[IDLE_BENCH] LOAD_BEGIN t_us=%d" % load_start_us)
 	var save_path := OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH")
@@ -192,6 +201,12 @@ func run(bench: Node) -> void:
 			var xz: Vector2 = centre + pose.offset
 			var y := float(bench.simulation_node.get_world_surface_height(xz))
 			bench.camera.focus_on(Vector3(xz.x, y, xz.y), pose.radius)
+		if pose.has("view"):
+			# An explicit orbit view, offset from the world centre: [x, z, yaw, pitch, distance].
+			var v: Array = pose.view
+			var vxz: Vector2 = centre + Vector2(v[0], v[1])
+			var vy := float(bench.simulation_node.get_world_surface_height(vxz))
+			bench.camera.set_view_state(PackedFloat32Array([vxz.x, vy, vxz.y, v[2], v[3], v[4], 0.0]))
 		if pose.get("look_up", false):
 			# orbit() clamps the pitch, so an oversized upward drag lands exactly on the limit.
 			bench.camera.orbit(Vector2(0.0, -100000.0))
@@ -387,7 +402,17 @@ func _selected(text: String, all: Array) -> Array:
 
 func _selected_poses(text: String) -> Array:
 	var wanted := text.split(",", false)
-	return POSES.filter(func(pose): return wanted.is_empty() or pose.name in wanted)
+	var poses := POSES.filter(func(pose): return wanted.is_empty() or pose.name in wanted)
+	# METRUM_IDLE_BENCH_VIEWS adds explicit views, "name:x,z,yaw,pitch,distance;..." with x and z
+	# offsets from the world centre, yaw and pitch in radians and the orbit distance in metres.
+	for entry in OS.get_environment("METRUM_IDLE_BENCH_VIEWS").split(";", false):
+		var parts := entry.split(":")
+		var values := Array(parts[1].split(",")).map(func(value): return float(value)) if parts.size() == 2 else []
+		if values.size() != 5:
+			push_error("METRUM_IDLE_BENCH_VIEWS: ignoring malformed view '%s'" % entry)
+			continue
+		poses.append({"name": parts[0], "view": values})
+	return poses
 
 # From `start_us` (the load call) to the first of three frames in a row on which the terrain
 # renderer has settled, and whether the load flow had handed the game over then (input_manager's
