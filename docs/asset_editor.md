@@ -549,7 +549,8 @@ stores and edits that entrance in the same anchor list as the optional site-layo
 
 - `driveway`: vehicle connector pinned to the road-facing plot edge and pointing inward into the
   lot; requires `width_m`
-- `parking`: car stop/stand position inside the lot; requires `width_m` and `length_m`
+- `parking`: the entry edge of a bay inside the lot, which runs `length_m` along `forward`; requires
+  `width_m` and `length_m`
 - `loading_bay`: freight/service stop position inside the lot; requires `width_m` and `length_m`
 - All building anchor positions must remain inside the authored lot footprint. `driveway` anchors
   must lie on the frontage edge; the editor lets them slide along that edge and derives their
@@ -563,9 +564,9 @@ stores and edits that entrance in the same anchor list as the optional site-layo
 
 Runtime use in v1:
 
-- `entrance/main` remains the only anchor consumed by the live entrance/exit system.
-- `driveway`, `parking`, and `loading_bay` anchors are semantic site-layout metadata only. They do
-  not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
+- `entrance/main` remains the only anchor consumed by the live entrance/exit system; a fitting
+  `parking` anchor is public supply ([anchor lots](traffic.md#anchor-lots-park-01)).
+- `driveway`, `parking`, and `loading_bay` anchors do not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
   visuals by themselves.
 - Building yard polygons are authored explicitly through `[[site_surfaces]]`. Live gameplay treats
   them as material/layout regions on the flat building-site support plane.
@@ -1085,8 +1086,9 @@ Anchor requirements by asset class:
 
 - Buildings require exactly one `entrance` anchor named `main` that marks the main door or primary access point used by the generic entrance/exit system.
 - Buildings may define optional `driveway`, `parking`, and `loading_bay` anchors. These are authored
-  site-layout metadata in v1. They do not generate visual yard surfaces; vehicle parking and
-  freight stop behavior remain later runtime hooks.
+  site-layout metadata. They do not generate visual yard surfaces. A fitting `parking` anchor is
+  public supply ([anchor lots](traffic.md#anchor-lots-park-01)); freight stop behavior remains a
+  later runtime hook.
 - Buildings may define optional `[[site_surfaces]]` polygons for authored yard materials: asphalt
   and concrete. Live gameplay renders/queries these polygons as material/layout regions on the flat
   building-site support plane.

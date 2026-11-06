@@ -401,6 +401,8 @@ path is for invalid saved data only; it must never leave illegal parcel geometry
     one-sided road zones on its sidewalk side, and a ring never did (`ROAD-62`). A road type's
     stored `zoning` value stays as it is; the Zoning checkbox is disabled while no side has a
     sidewalk.
+    The zoning overlay shows this as cells on the walked side alone; its orange guide lines still
+    mark only `no_building_spawn` (`ROAD-110`).
   - **Parcels and zoned buildings.** Parcels attach only to a side that zones; road fill fills
     only those sides. `resolve_slot` and the demand candidates read the parcel's side. A building
     found on a side without a sidewalk (a save from before the rule) goes at the next maintenance

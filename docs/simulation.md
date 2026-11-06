@@ -285,12 +285,11 @@ ring edge no roundabout edit could have built. No older save loads. The Kuopio f
 in format 117: `sqldiff` shows only the version and the new, empty table.
 
 Save format 118 (`PARK-01`, `PARK-02`, `PARK-05`, branch `port-park-merge`, 2026-11-06, not landed)
-takes the parking branch's own formats (its 110-116) on top of 117 in one step, with no migration; no
-older save loads. `network_edges` gains `parking` after `sidewalks`: the edge's kerbside parking lanes
+adds parking on top of 117 in one step, with no migration; no older save loads. `network_edges` gains `parking` after `sidewalks`: the edge's kerbside parking lanes
 as a bit set (bit 0 left, bit 1 right, looking along the edge; 0 without any; each lane is included
 in the stored `width`), and a load fails on any other value. New tables: `parking_state`, one
 JSON row with parking ownership, custody, claims, itinerary and recovery state and economy endpoint
-quote stamps ([`traffic.md`](traffic.md#resident-parking-trips-park-02-round-2a)), and
+quote stamps ([`traffic.md`](traffic.md#parking-in-a-save)), and
 `building_detached_poses`. New columns: `agents.parking_trip`, `households.shopping_has_car` and
 `household_destinations.parking_components`. Workplace route caches move to the `WRC3` layout
 (48-byte entries) and scheduler payloads are stored as signed bits. The Kuopio fixture is re-recorded
@@ -1250,6 +1249,13 @@ the efficiency cores at the lowest CPU and I/O priority (`taskset -c 16-23 nice 
 and their p99 by 14% and 28%. A 100k 1× run that overlapped another build read 15% slower per
 frame. Builds and tests therefore never run during `PERF-07` or `PERF-01`; the envelope,
 determinism checks and `./run.sh --test` are not timing runs and may share the machine.
+
+### Parking frame and load acceptance (`PARK-02`)
+
+Round M5a's session writes here, against a `dev` control of the same boot on the fixture with
+kerbside supply: `PERF-07` at 30k at 1x and 32x and 100k at 1x, the parked rebuild's share on the
+sim thread and the departure quotes' cost (D11); the 100k 32x frame, reported only (`PERF-08`); the
+100k `load_check` with the JSON columns' share (`PARK-06`) and the catchment publication named.
 
 ## GPU compute
 

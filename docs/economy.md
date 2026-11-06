@@ -690,7 +690,7 @@ Two caches serve the search:
 Neither cache changes a result. Parking publication shares per-destination bay component unions
 and exact car target contexts with the existing job/store/service bucket indices. Shopping and
 service feasibility use actual borrower availability; a proposed car return starts at the proposed
-destination bay. See [the resident trip contract](traffic.md#resident-parking-trips-park-02-round-2a).
+destination bay. See [the resident trip contract](traffic.md#economy-quotes-park-02).
 
 Searches run from the `job requests` queue, queued at each agent's hourly phase and served a
 slot's searches together against the hourly job board (`SIM-02-J`,
@@ -949,9 +949,6 @@ issues in `PERF-03`–`PERF-05` is parked. Existing budgets and counters remain 
 unchanged. A reported budget failure describes measured simulation performance; it does not
 mean the diagnostic suite is unfinished. Earlier implementation notes below retain their
 historical acceptance status.
-
-The round-2a parking change records a matched round-1b control, fresh full contract, agent
-pairs, locality and employment measurements in [PARK-02 acceptance](traffic.md#round-2a-verification-2026-11-01).
 
 Routine commands:
 
@@ -1909,6 +1906,15 @@ workers: identical work counts, the same seven work-count failures, and hour mea
 run-to-run spread (the control's baseline 30k moved 4.09–4.57 ms across two sessions that day).
 The cities hold no footpath and their walking proof holds. Commands and results are in
 [`roads.md`](roads.md#footpath-junctions-and-the-bend-crossing-fallback-pre-d).
+
+#### Parking contract acceptance (`PARK-02`)
+
+Round M5a's session writes here: `perf_contract_day` at 10k and 30k with counters against a `dev`
+control of the same boot, on the fixture with kerbside supply, and the shift of the economic
+figures with each moved metric attributed: employed, deliveries, out-of-stock over the last 14
+days, bankruptcies, the car's share of commutes and of shopping trips, adult home minutes. The
+agent tick, locality and employment reach are in
+[parking acceptance](traffic.md#parking-acceptance-park-01-park-02-park-05).
 
 ### `ECON-13` economy tick baseline
 

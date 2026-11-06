@@ -348,6 +348,11 @@ save; the pocket edit, its API and the tool are rounds R5a2-R5b2 (`PLAN-R5` deci
 user's R5-a..R5-c). Ported from Veeti's road-chain branch (fork `ROAD-67` stages 3-5) without its
 geometric taper records, its compiler previews or its road-tool mode.
 
+- **Parking (`PARK-05`, D5).** A pocket keeps the edge's parking width, and takes the kerb it moves
+  (`Edge::pocket_moves_kerb`): that side of the pocket edge has no kerbside bays and no parking
+  line, its 2.5 m strip stays unmarked, and the far kerb keeps both. A divided road's left pocket
+  takes the median and moves neither kerb. The base road's line and bays end short of the taper
+  ([kerbside lanes](traffic.md#kerbside-parking-lanes-park-05)).
 - **Data (D1).** `Edge::pocket: Option<RoadPocket { end, left, right }>`: pocket lanes for the
   direction that approaches `end`, counted in `fwd_lanes` / `bkw_lanes` and `Edge::width`. `left` is
   the lane left of the through lanes as its drivers see it (rank 0), `right` the lane on their right.
@@ -10846,6 +10851,12 @@ next measured.
 
 ## Measurement and acceptance
 
+### Parking commit acceptance (`PARK-02`)
+
+Round M5a's session writes here the commit breakdown on the K22 saved cities with parking: the
+door catchment rebuild, the frontage reconcile and the kerb bays against the stage budgets, and the
+populated locality check with kerbside bays.
+
 ### Baseline (`ROAD-67-A`, legacy compiler)
 
 Fresh rendered baseline, 2026-10-23:
@@ -11397,6 +11408,11 @@ data, the save and the roadbed; round R3b2: the road tool, the window, the grass
 painted hatching). Ported from the fork's `graph/cross_section.rs`, its geometry constructed
 here.
 
+**Asphalt.** The shader reads the median's width from the green channel's upper bits
+(`road_space_color`, in half metres; `PARK-05`, D6), so a divided road's whole carriageway draws as
+asphalt and its wheel paths stay in the lanes: before it, the outer part of the far carriageway drew
+as shoulder. See [kerbside lanes](traffic.md#kerbside-parking-lanes-park-05).
+
 **Data.** `Edge::median: Option<RoadMedian { style, width_m }>`; `MedianStyle` is `Painted`
 (0.5-2 m), `KerbedGrass` (2-12 m) or `KerbedPaving` (1-3 m), the width the whole separator's,
 kerbs included. No authored end setbacks (R3-i): noses and clearances are derived. A median needs
@@ -11639,7 +11655,7 @@ independent of zoning; speed per type; costs by type; Road Properties changes al
   the speed; 80 km/h is only the builder's once-only zoning suggestion
   ([`zoning.md`](zoning.md#8-road-no-build-flag)).
 - **Costs.** One rule weights build and upkeep per metre by lanes, speed, median, sidewalks,
-  parking lanes and structure, anchored at the 2-Lane Road's 15 / m and 0.1 / m / day; the table and the
+  parking lanes (0.2 a side, D3) and structure, anchored at the 2-Lane Road's 15 / m and 0.1 / m / day; the table and the
   difference-charged, never-refunded type change are in
   [`economy.md`](economy.md#road-costs-road-101). The stroke preview's `build_cost`, the builder's
   cost line, every type's tooltip and the Road Properties picker read it from Rust.
@@ -11836,8 +11852,7 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   `road_lane_edit_test` applies a 100 km/h type without sidewalks or zoning in place, its cost
   on Apply and the demolition confirmation's two buttons; `road_mixed_junction_test` the T with
   a sidewalk-less stem.
-- Not in v1: parking, bike, bus or tram lanes, one-sided sidewalks, lane
-  widths, an off-centre median, reordering sidewalks, unsaved-change prompts (selecting another
+- Not in v1: bike, bus or tram lanes, lane widths, an off-centre median, reordering sidewalks, unsaved-change prompts (selecting another
   type discards the layout being built).
 
 #### Grass layer (round R3b2)

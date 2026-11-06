@@ -8,28 +8,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 Parking (`PARK-01`, `PARK-02`, `PARK-05`, Veeti's `feat/parking`) is merged onto branch
 `port-park-merge` at save format 118, not landed on `dev`: the fixture supply and the landing gates
-are still open, so the rows stay in progress. Parked cars now reach Godot through
-the render snapshot from cached poses ([render path](traffic.md#physical-parking-foundation-park-01)), and the
-parking tick visits candidates from events instead of every agent. Parking state and kerbside
-lanes coexist with lane-choice routing, turn pockets, one-sided sidewalks and roundabouts; only
-format 118 loads ([save contract](simulation.md#save-bytes-road-68-k16)). The figures in the next
-paragraph are the branch's own, measured before this merge on its author's machine.
-
-`PARK-01` round 1b ships building anchors, the standalone lot, persistent test
-cars, local towing, saves and parked chunk rendering on `dev`. Kerbside waits for the widening
-roadbed parking band after the median profile work. Lot rebuilds stay below 0.223 ms at 100k
-background; targeted/bridge checks pass, with the two known base probe failures in the full suite.
-`PARK-02` round 2a implements resident ownership/custody and walking–parking–driving trips,
-including exact economy quotes, departure reservations, save/load and coherent moving/parked
-rendering. Traffic integration passes 30 parking regressions and 11 bridge scripts; the full
-Rust suite has only the two probes freshly reproduced on plain `dev`.
-Agent work scales 3× and candidate rebuilding stays about 0.75 ms through 100k background.
-Five existing economy counter limits and the external-review approval remain open; freight and
-wider lifecycle work remain for round 2b. Pass p06 exposes rejected anchor reasons, brings move-in
-cars through reserved parking, and delivers stored cars from external connections through
-bounded scheduled events; save version 111 preserves these arrivals. The merged `TRAFFIC-13/15/16/14` fixes retain the shared detach
-rules and parking reservations through gridlock detours
-([design and acceptance](traffic.md#resident-parking-trips-park-02-round-2a)).
+are still open. A household's car now stands in a kerbside or lot bay, and a resident walks to it,
+drives, parks and walks on, with the economy quoting the same trip; freight keeps its door-to-door
+path until round 2b. The parking tick visits candidates from events, not every agent, parked cars
+reach Godot through the render snapshot from cached poses, and a building stands on a road side
+with a sidewalk (`ROAD-109`). Only format 118 loads
+([save contract](simulation.md#save-bytes-road-68-k16)). See [Parking](traffic.md#parking).
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
