@@ -10,6 +10,9 @@ pub(super) fn first_water_surfaces_for_rays(
     directions: &[Vector3],
     max_distance_m: f32,
 ) -> Vec<f32> {
+    if !core.watermap.has_water() {
+        return vec![f32::NAN; directions.len()];
+    }
     crate::thread_pools::install(|| {
         directions
             .par_iter()
@@ -24,6 +27,15 @@ pub(super) fn first_water_surfaces_for_rays(
             })
             .collect()
     })
+}
+
+// Exact source revisions, not render acknowledgements: the march reads base terrain and depth.
+fn reflection_sources(core: &SimCore) -> [i64; 3] {
+    [
+        core.heightmap.source_generation() as i64,
+        core.watermap.render_generation() as i64,
+        i64::from(core.watermap.has_water()),
+    ]
 }
 
 #[godot_api(secondary)]
@@ -617,11 +629,27 @@ impl SimulationNode {
         result
     }
 
+    /// Terrain revision, water revision and whether depth is stored, for the reflection vote.
+    /// O(1), nonblocking: empty means retry. Returns the shared previous array without a heap
+    /// allocation when unchanged. The renderer must discard it when replacing the loaded world.
+    #[func]
+    pub fn get_water_reflection_sources(&self, previous: PackedInt64Array) -> PackedInt64Array {
+        let Some(core) = self.try_lock_core() else {
+            return PackedInt64Array::new();
+        };
+        let sources = reflection_sources(&core);
+        if previous.as_slice() == sources {
+            previous
+        } else {
+            PackedInt64Array::from(sources.as_slice())
+        }
+    }
+
     /// Height of the visible water surface each ray from `origin` along a unit direction first
     /// comes down onto, or NaN where it meets land first or nothing within `max_distance_m`.
     ///
-    /// Empty while the simulation holds the core: the water reflection calls this every frame
-    /// and must never wait for the lock. O(rays * `max_distance_m` / 4 m), rays in parallel.
+    /// Empty while the simulation holds the core; the renderer retries without caching a miss.
+    /// O(rays * `max_distance_m` / 4 m), rays in parallel; O(rays) for a dry world.
     #[func]
     pub fn get_first_water_surfaces(
         &self,
@@ -687,5 +715,57 @@ impl SimulationNode {
                 .iter()
                 .copied(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reflection_sources_and_dry_shortcut_follow_water_and_terrain_replacements() {
+        let mut core = SimCore::new(crate::simulation::core::config::WorldConfig::new(
+            70.0, 70.0, 10.0, 10.0,
+        ));
+        core.heightmap =
+            crate::simulation::terrain::TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
+        core.watermap = crate::simulation::water::WaterSystem::with_chunking(8, 8, 10.0, 4);
+        let origin = Vector3::new(0.0, 10.0, 0.0);
+        let rays = [
+            Vector3::DOWN,
+            Vector3::UP,
+            Vector3::new(0.1, -1.0, 0.0).normalized(),
+        ];
+        let dry = reflection_sources(&core);
+        assert_eq!(dry[2], 0);
+        for depth in [0.0, 2.0, 0.0] {
+            core.watermap
+                .replace_baseline_depth_from_dense(&[depth; 64])
+                .unwrap();
+            let sources = reflection_sources(&core);
+            assert_ne!(sources[1], dry[1]);
+            assert_eq!(sources[2], i64::from(depth != 0.0));
+            let expected: Vec<_> = rays
+                .iter()
+                .map(|&direction| {
+                    crate::nodes::sim::render::water_reflection::first_water_surface(
+                        &core.watermap,
+                        &core.heightmap,
+                        origin,
+                        direction,
+                        128.0,
+                    )
+                    .to_bits()
+                })
+                .collect();
+            let actual = first_water_surfaces_for_rays(&core, origin, &rays, 128.0);
+            assert_eq!(
+                actual.into_iter().map(f32::to_bits).collect::<Vec<_>>(),
+                expected
+            );
+        }
+        core.heightmap.set_height(3, 3, 1.0);
+        assert_ne!(reflection_sources(&core)[0], dry[0]);
+        assert_eq!(reflection_sources(&core)[2], 0);
     }
 }

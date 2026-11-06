@@ -8,6 +8,26 @@ const Reflection := preload("res://scripts/renderers/water_reflection.gd")
 class TerrainSource extends Node3D:
 	var patches := {}
 
+class VoteSource extends Node:
+	var sources := PackedInt64Array([0, 0, 1])
+	var marches := 0
+	var busy := false
+	var march_busy := false
+
+	func get_water_reflection_sources(_previous: PackedInt64Array) -> PackedInt64Array:
+		return PackedInt64Array() if busy else sources.duplicate()
+
+	func get_first_water_surfaces(_origin: Vector3, rays: PackedVector3Array, _reach: float) -> PackedFloat32Array:
+		marches += 1
+		var levels := PackedFloat32Array()
+		if not march_busy:
+			levels.resize(rays.size())
+			levels.fill(2.0)
+		return levels
+
+	func select_water_reflection_planes(_levels: PackedFloat32Array, _weights: PackedFloat32Array, _previous: PackedFloat32Array) -> PackedFloat32Array:
+		return PackedFloat32Array([2.0, NAN])
+
 var _failures := 0
 
 func _initialize() -> void:
@@ -31,6 +51,7 @@ func _clip_coverage(distance_m: float, pixel_span_m: float) -> float:
 	return clampf(0.5 + distance_m / maxf(pixel_span_m, 0.0001), 0.0, 1.0)
 
 func _run() -> void:
+	_test_vote_cache()
 	var terrain_code := FileAccess.get_file_as_string("res://assets/materials/terrain.gdshader")
 	_expect(terrain_code.contains("alpha_to_coverage_and_one, depth_draw_always"),
 		"mirror coverage must write depth on surviving MSAA samples")
@@ -91,3 +112,62 @@ func _run() -> void:
 	terrain.free()
 	print("water_reflection_math_test: %s" % ("PASS" if _failures == 0 else "FAIL"))
 	quit(_failures)
+
+
+func _test_vote_cache() -> void:
+	var renderer := Reflection.new()
+	var simulation := VoteSource.new()
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(800, 600)
+	root.add_child(viewport)
+	var camera := Camera3D.new()
+	viewport.add_child(camera)
+	camera.position = Vector3(0.0, 100.0, 0.0)
+	camera.rotation.x = -0.6
+	renderer._simulation = simulation
+	renderer._vote_planes(camera)
+	renderer._vote_planes(camera)
+	_expect(simulation.marches == 1, "unchanged view must keep the last vote")
+	camera.position.x += 0.00001
+	renderer._vote_planes(camera)
+	_expect(simulation.marches == 1, "sub-epsilon motion must reuse the vote")
+	camera.position.x += 0.001
+	renderer._vote_planes(camera)
+	_expect(simulation.marches == 2, "accumulated camera movement must invalidate")
+	camera.rotation.y += 0.01
+	renderer._vote_planes(camera)
+	camera.fov += 1.0
+	renderer._vote_planes(camera)
+	viewport.size.x += 1
+	renderer._vote_planes(camera)
+	camera.h_offset += 1.0
+	renderer._vote_planes(camera)
+	_expect(simulation.marches == 6, "rotation, projection, viewport and offsets must invalidate")
+	for index in [0, 1]:
+		simulation.sources[index] += 1
+		renderer._vote_planes(camera)
+	_expect(simulation.marches == 8, "terrain and water revisions must invalidate")
+	simulation.busy = true
+	camera.position.x += 1.0
+	_expect(renderer._vote_planes(camera)[0] == 2.0, "busy core must preserve the last levels")
+	simulation.busy = false
+	simulation.march_busy = true
+	renderer._vote_planes(camera)
+	simulation.march_busy = false
+	renderer._vote_planes(camera)
+	_expect(simulation.marches == 10, "failed march must retry instead of caching the new pose")
+	simulation.sources[1] += 1
+	simulation.sources[2] = 0
+	_expect(is_nan(renderer._vote_planes(camera)[0]), "removing water must clear the old planes")
+	camera.position.x += 1.0
+	renderer._vote_planes(camera)
+	_expect(simulation.marches == 10, "dry worlds must skip marching even while moving")
+	simulation.sources[1] += 1
+	simulation.sources[2] = 1
+	renderer._vote_planes(camera)
+	renderer._on_terrain_reset()
+	renderer._vote_planes(camera)
+	_expect(simulation.marches == 12, "water additions and world replacement must invalidate")
+	renderer.free()
+	simulation.free()
+	viewport.free()

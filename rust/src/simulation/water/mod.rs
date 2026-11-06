@@ -150,6 +150,11 @@ impl WaterSystem {
         self
     }
 
+    /// Whether any baseline depth is stored. O(1), including after clearing or replacing water.
+    pub(crate) fn has_water(&self) -> bool {
+        self.baseline.depth.materialized_chunk_count() != 0
+    }
+
     /// Returns a dense row-major snapshot of baseline water depth above terrain.
     pub(crate) fn clone_baseline_depth_dense(&self) -> Vec<f32> {
         self.baseline.clone_dense()

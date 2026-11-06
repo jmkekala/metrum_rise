@@ -63,7 +63,14 @@ var _environment: Environment
 var _fog_effects: Array[WaterReflectionFogEffect] = []
 var _reflection_sun: DirectionalLight3D
 # Levels the last vote chose, which the next vote favours.
-var _voted_levels := PackedFloat32Array()
+var _voted_levels := PackedFloat32Array([NAN, NAN])
+# Inputs of the last successful vote. Compare against that pose so sub-epsilon motion accrues.
+var _vote_sources := PackedInt64Array()
+var _vote_valid := false
+var _vote_transform := Transform3D.IDENTITY
+var _vote_projection := Projection()
+var _vote_rect := Rect2()
+var _vote_offsets := Vector2.ZERO
 # Per vote ray, the water level it last came down onto, or NAN.
 var _ray_levels := PackedFloat32Array()
 var _ray_weights := PackedFloat32Array()
@@ -159,7 +166,6 @@ func _exit_tree() -> void:
 
 # After every node has moved the camera and the key light for this frame.
 func _update_before_draw() -> void:
-	_sync_tree_patches()
 	_building_proxies.sync()
 	var main_viewport := get_viewport()
 	var main_camera := main_viewport.get_camera_3d() if main_viewport != null else null
@@ -184,6 +190,7 @@ func _update_before_draw() -> void:
 			continue
 		if not synced:
 			synced = true
+			_sync_tree_patches()
 			_sync_environment()
 			_sync_key_light()
 			_proxy_frame += 1
@@ -342,11 +349,33 @@ func _sync_environment() -> void:
 # where a mirror has no lake. Rust marches the rays against the terrain and the water
 # as drawn (get_first_water_surfaces), so water a hill hides gets no vote and a river stepping
 # down its valley polls at the levels it is drawn at. O(VOTE_COLUMNS * VOTE_ROWS *
-# VOTE_MAX_DISTANCE_M / 4 m) samples in Rust per frame.
+# VOTE_MAX_DISTANCE_M / 4 m) samples only when a vote input changes; O(1) otherwise.
 func _vote_planes(camera: Camera3D) -> PackedFloat32Array:
 	if _simulation == null:
-		return PackedFloat32Array([NAN, NAN])
+		return _voted_levels
+	var sources: PackedInt64Array = _simulation.get_water_reflection_sources(_vote_sources)
+	# No lock means retry next frame, not a successful vote for these inputs.
+	if sources.is_empty():
+		return _voted_levels
+	if sources[2] == 0:
+		if sources != _vote_sources:
+			_voted_levels = PackedFloat32Array([NAN, NAN])
+			_ray_levels.clear()
+			_vote_sources = sources
+			_vote_valid = false
+		return _voted_levels
 	var rect := camera.get_viewport().get_visible_rect()
+	var transform := camera.global_transform
+	var projection := camera.get_camera_projection()
+	var offsets := Vector2(camera.h_offset, camera.v_offset)
+	# Absolute tolerances: relative approximate equality grows too loose far from world zero.
+	if _vote_valid and sources == _vote_sources and rect == _vote_rect \
+			and projection == _vote_projection and offsets == _vote_offsets \
+			and transform.origin.distance_squared_to(_vote_transform.origin) <= 1.0e-8 \
+			and transform.basis.x.distance_squared_to(_vote_transform.basis.x) <= 1.0e-12 \
+			and transform.basis.y.distance_squared_to(_vote_transform.basis.y) <= 1.0e-12 \
+			and transform.basis.z.distance_squared_to(_vote_transform.basis.z) <= 1.0e-12:
+		return _voted_levels
 	# The rows start at the horizon, or the top of the screen when it is above, and close up
 	# towards it with the square of their spacing: far water is a thin band just under the
 	# horizon in a low view. Rows fixed over the lower two thirds of the screen all passed
@@ -372,8 +401,15 @@ func _vote_planes(camera: Camera3D) -> PackedFloat32Array:
 		camera.global_position, _ray_directions, VOTE_MAX_DISTANCE_M)
 	# Empty while the simulation holds its core. Last frame's levels stand in: abstaining rays
 	# emptied the vote then, and the reflection flickered off.
-	if levels.size() == _ray_directions.size():
-		_ray_levels = levels
+	if levels.size() != _ray_directions.size():
+		return _voted_levels
+	_ray_levels = levels
+	_vote_sources = sources
+	_vote_transform = transform
+	_vote_projection = projection
+	_vote_rect = rect
+	_vote_offsets = offsets
+	_vote_valid = true
 	# Rust owns selection and its hysteresis. Row weights are immutable screen shares; a second
 	# lake is ranked against other lakes, without a separate absolute entry/exit threshold.
 	if _ray_weights.is_empty():
@@ -401,7 +437,9 @@ func _on_terrain_reset() -> void:
 	_proxies.clear()
 	_grid_materials.clear()
 	_dirty_terrain_patches.clear()
-	_voted_levels.clear()
+	_voted_levels = PackedFloat32Array([NAN, NAN])
+	_vote_valid = false
+	_vote_sources.clear()
 	_ray_levels.clear()
 
 func _sync_proxies() -> void:
@@ -478,6 +516,8 @@ func _sync_tree_patches() -> void:
 	_dirty_tree_patches.clear()
 
 func _free_tree_proxies(patch: Node) -> void:
+	if _tree_proxies.is_empty():
+		return
 	for child in patch.get_children():
 		var id := child.get_instance_id()
 		if _tree_proxies.has(id):

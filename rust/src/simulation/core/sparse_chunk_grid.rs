@@ -17,7 +17,7 @@ pub(crate) struct SparseChunkGrid<T: Copy + PartialEq> {
     height: usize,
     chunk_size: usize,
     default_value: T,
-    chunks: HashMap<u64, Arc<Vec<T>>>,
+    chunks: HashMap<u64, Arc<Vec<T>>, foldhash::fast::FixedState>,
 }
 
 impl<T: Copy + PartialEq> SparseChunkGrid<T> {
@@ -28,7 +28,7 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
             height,
             chunk_size: chunk_size.max(1),
             default_value,
-            chunks: HashMap::new(),
+            chunks: HashMap::default(),
         }
     }
 
@@ -410,8 +410,7 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
         Ok(())
     }
 
-    /// Returns the number of materialized chunks currently stored.
-    #[cfg(test)]
+    /// Returns the number of materialized chunks in O(1); zero means every cell is default.
     pub(crate) fn materialized_chunk_count(&self) -> usize {
         self.chunks.len()
     }
