@@ -408,6 +408,7 @@ impl AgentSystem {
         a.pos_y[i] = origin.door_pos.y;
         a.transit[i] = TRANSIT_ACCESS_EGRESS;
         a.current_path[i] = plan.current_path;
+        a.walk_lanes[i].clear();
         a.current_path_index[i] = usize::from(a.current_path[i].len() >= 2);
         a.planned_target_building[i] = usize::MAX;
         a.planned_activity[i] = 0;

@@ -239,6 +239,7 @@ impl AgentSystem {
             a.planned_detach_lane_id[i] = plan.planned_detach_lane_id as u32;
             a.planned_detach_lane_d[i] = plan.planned_detach_lane_d;
             a.current_path[i] = plan.current_path;
+            a.walk_lanes[i].clear();
             a.current_path_index[i] = usize::from(a.current_path[i].len() >= 2);
             a.access_flags[i] =
                 plan.access_flags | (a.access_flags[i] & ACCESS_LANE_ATTACH_PENDING);
