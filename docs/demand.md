@@ -287,6 +287,10 @@ same applicant stream (`DEM-02-C`). For each physically launchable offer:
 - Acceptance consumes all of the family's adults from the job budget and adds its transfer claims.
   A refusal changes nothing.
 
+The offer prices a family on the average open wage. Job choice then keeps the promise: it holds each
+wage to the same essentials, so a family takes a job that carries it while one is open
+([`ECON-23`](economy.md#agents-supply-labor)).
+
 **Worker homes.** Ready homes claimed by workplace planning stay available only to families with
 an adult. Families without workers use only unreserved ready homes, so they cannot take housing
 promised to a new employer's staff.

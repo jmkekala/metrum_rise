@@ -38,6 +38,7 @@ pub(crate) use destinations::{
 pub(crate) use electricity::ElectricityProfiles;
 pub(crate) use employment::{WORKPLACE_QUOTE_PASSES, WagePayment};
 pub(crate) use job_board::{JobBoardRoll, SavedJobBoard, SavedJobBoardSweep};
+pub(crate) use metrics::HouseholdEssentials;
 pub(crate) use removal::HouseholdExitPolicy;
 pub use replenishment::{
     REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,
@@ -48,7 +49,7 @@ pub use replenishment::{
 #[cfg(test)]
 pub(crate) use metrics::{
     applicant_workers, candidate_immigrant_household_size_from_flat_size,
-    commercial_activity_signal_for_city,
+    commercial_activity_signal_for_city, household_daily_utility_allowance,
 };
 
 pub(crate) use metrics::{
@@ -59,7 +60,7 @@ pub(crate) use metrics::{
     building_operation_factors, building_staffing_ratio, building_total_output_inventory,
     candidate_immigrant_household_size_for_vacancy, commercial_activity_sums_for_city,
     consume_hourly_production_inputs, consumer_basket_cost, effective_service_funding,
-    funded_input_demand_scale, household_daily_utility_allowance, household_is_housed,
+    funded_input_demand_scale, household_is_housed,
     household_reserve_days, industrial_input_coverage_factor, industrial_output_headroom_factor,
     level_tuning_value, local_utility_service_costs, output_area_scale_for_building,
     physical_worker_capacity_for_profile, saleable_output_stock,

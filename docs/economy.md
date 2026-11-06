@@ -611,7 +611,8 @@ Work schedules come from the profile or zone (`work_profile_by_zone_type`).
 
 Working-age adults without a job accept any reachable funded offer, regardless of savings. This
 matches the labor pool admission assumes. Employed adults reconsider when their job lock expires
-(5–9 days, spread per agent) or after 2 unpaid days, and switch only for a better score:
+(5–9 days, spread per agent) or after 2 unpaid days, and switch only for a better score, or to
+[carry their household](#agents-supply-labor):
 
 ```text
 work_score = 0.35 × income_pressure + 0.35 × supply_pressure + 0.20 − 0.10 × commute_penalty
@@ -619,6 +620,41 @@ work_score = 0.35 × income_pressure + 0.35 × supply_pressure + 0.20 − 0.10 �
 
 The commute penalty is commute seconds ÷ 1,800, capped at 1. Switching requires a score of at
 least 0.45; unemployed adults take the best offer regardless.
+
+**Carrying the household (`ECON-23`).** Job choice holds a wage to the figures admission priced
+the family against ([`demand.md`](demand.md#household-admission)), `HouseholdEssentials`, instead of
+the average open wage. One adult's required net wage is:
+
+```text
+required = (members × essentials + home electricity + property tax
+            − pension − child support − net wages of the household's other adults)
+           ÷ adults not yet earning, this one included
+```
+
+A job carries the household when its net wage reaches that. Unemployment benefit and savings do not
+count, and transfers are their full rates, not scaled by treasury reliability as in admission. With
+the shipped figures (35.33 a member, 0.25 a home, 2.00 property tax at level 1) a single adult needs
+37.58 net, a parent with one child 62.91 net (gross 71.5), so the 60-wage service job carries the
+first and not the second. Beside a partner's 90 wage a second adult of a family of four needs 44.37.
+
+- An adult without a job takes a carrying job first and otherwise, as before, the best it has: the
+  rule never leaves anyone unemployed who had an option. A job that fills first falls through to
+  the next option.
+- An adult on a carrying job never moves to one that cannot carry the household.
+- An adult on a job that cannot carry it moves to the best carrying option at its next search,
+  whatever its savings or commute. The score threshold does not apply. Income only rises by such a
+  move, so moves do not cycle.
+- With no carrying option, everything is as before: a job below the line is still a job.
+
+"Open" means on the home's ranked options below, and a worker looks only when its lock has run out.
+A worker who stays is locked again for 5–9 days, so an adult on a job that cannot carry it sees a
+job only if it is open at that search; unemployed adults search every hour and usually take it
+first. In a full town no job opens and such a family stays where it is: forced onto the 60-wage job
+in `growth_scenario` it runs short all year. The rule keeps a family off that job, it does not swap
+it with a single adult on a better one.
+
+The test is O(1) per searcher on top of the O(options) scan: no allocation and no route query.
+`HouseholdEssentials` is built once per search batch, O(profile ports²), allocation-free.
 
 **Job search.** Each searching resident key `(home, eligible household car)` keeps the 24 best options, ranked by
 commute penalty, then higher wage, capacity, vacancy and lower building ID. Two exact lower bounds

@@ -79,6 +79,7 @@ impl SimCore {
             &self.region_graph,
             minute_of_day,
             Some(&self.parking),
+            &self.fiscal_policy,
         );
     }
 

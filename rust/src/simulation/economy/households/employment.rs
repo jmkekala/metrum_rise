@@ -10,7 +10,8 @@ use super::building_economy::liquidate_outputs_until_budget;
 use super::candidate_visits::CandidateVisits;
 use super::data::{Household, HouseholdSystem};
 use super::metrics::{
-    UTILITY_SERVICE_POWER, demand_sink_cash_cost_per_resident_excluding_resource,
+    HouseholdEssentials, UTILITY_SERVICE_POWER,
+    demand_sink_cash_cost_per_resident_excluding_resource,
     household_demand_profile, household_supply_resource_runtime_id, household_supply_unit_price,
     physical_worker_capacity_for_profile, service_funded_worker_capacity,
 };
@@ -33,9 +34,7 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-#[cfg(test)]
-use crate::simulation::economy::fiscal::CityFiscalPolicy;
-use crate::simulation::economy::fiscal::tax_amount;
+use crate::simulation::economy::fiscal::{CityFiscalPolicy, daily_property_tax, tax_amount};
 #[cfg(test)]
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
@@ -65,6 +64,7 @@ const JOB_ROUTE_SCAN_CANDIDATES: usize = JOB_SEARCH_CANDIDATES * 4;
 const COMMUTE_PENALTY_MAX_SECONDS: f32 = 30.0 * 60.0;
 const EMPTY_JOB_CHOICE: JobChoice = JobChoice {
     building_idx: usize::MAX,
+    carries: false,
     score: 0.0,
 };
 const EMPTY_HOME_JOB_OPTION: HomeJobOption = HomeJobOption {
@@ -109,7 +109,45 @@ type CurrentJobOptionKey = (HomeJobOptionsKey, usize);
 #[derive(Clone, Copy)]
 struct JobChoice {
     building_idx: usize,
+    // Whether its wage carries the household (`ECON-23`); such jobs rank first.
+    carries: bool,
     score: f32,
+}
+
+// What a job's wage is held to (`ECON-23`): the figures admission priced the household against.
+#[derive(Clone, Copy)]
+struct CarryTerms<'a> {
+    essentials: HouseholdEssentials,
+    fiscal: &'a CityFiscalPolicy,
+}
+
+impl CarryTerms<'_> {
+    fn net_wage(&self, gross: f32) -> f32 {
+        gross - tax_amount(gross, self.fiscal.income_tax_rate)
+    }
+
+    // The net wage one adult must earn for `household` to meet its essentials, utilities and
+    // property tax. Permanent transfers and the wages of its other adults count first; the rest
+    // falls evenly on the adults not yet earning, this one included, as admission expects every
+    // adult to work. Unemployment benefit and savings do not count. `own_gross` is the part of
+    // the household's wages this adult earns now. O(1).
+    fn required_net_wage(
+        &self,
+        household: &Household,
+        home_level: u8,
+        own_gross: f32,
+        employed: bool,
+    ) -> f32 {
+        let cost = f32::from(household.member_count) * self.essentials.per_member
+            + self.essentials.per_home
+            + daily_property_tax(ZoneType::Residential, home_level.max(1), self.fiscal);
+        let transfers = f32::from(household.elder_count) * self.fiscal.pension_per_elder_per_day
+            + f32::from(household.child_count) * self.fiscal.child_support_per_child_per_day;
+        let others = self.net_wage((household.gross_daily_wages - own_gross).max(0.0));
+        let other_earners = household.employed_adults.saturating_sub(u16::from(employed));
+        let earners = household.adult_count.saturating_sub(other_earners).max(1);
+        (cost - transfers - others) / f32::from(earners)
+    }
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -326,6 +364,10 @@ impl HouseholdSystem {
         self.expire_workplace_route_cache();
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let fiscal = CityFiscalPolicy::from_runtime_tuning(
+            &load_runtime_economy_tuning()
+                .unwrap_or_else(|err| panic!("could not load built-in runtime tuning: {err}")),
+        );
         eject_inactive_work_assignments(&mut self.households, agents, allocator, &catalog);
         agents.handles.register_appended(agents.len());
         self.job_requests.clear();
@@ -350,6 +392,7 @@ impl HouseholdSystem {
             graph,
             minute_of_day,
             None,
+            &fiscal,
         );
     }
 
@@ -405,6 +448,7 @@ impl HouseholdSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
         parking: Option<&ParkingSystem>,
+        fiscal: &CityFiscalPolicy,
     ) -> usize {
         if self.job_requests.is_empty() {
             return 0;
@@ -431,6 +475,7 @@ impl HouseholdSystem {
                 graph,
                 minute_of_day,
                 parking,
+                fiscal,
             );
         }
         self.job_batch = batch;
@@ -512,6 +557,7 @@ impl HouseholdSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
         parking: Option<&ParkingSystem>,
+        fiscal: &CityFiscalPolicy,
     ) {
         let start = Instant::now();
         let catalog = load_runtime_economy_catalog()
@@ -619,13 +665,18 @@ impl HouseholdSystem {
                     .push_back((self.workplace_route_cache_pass, key));
             }
         }
+        let carry = CarryTerms {
+            essentials: HouseholdEssentials::new(&catalog, &tuning, fiscal.household_vat_rate),
+            fiscal,
+        };
         let mut plans: Vec<_> = batch
             .par_iter()
             .filter_map(|&agent_idx| {
                 plan_agent_workplace(
                     agent_idx,
                     agents,
-                    allocator.buildings.len(),
+                    &allocator.buildings,
+                    carry,
                     &catalog,
                     &tuning,
                     target_days,
@@ -951,7 +1002,8 @@ struct JobAssignmentPlan {
 fn plan_agent_workplace(
     i: usize,
     agents: &AgentSystem,
-    building_count: usize,
+    buildings: &[Building],
+    carry: CarryTerms,
     catalog: &RuntimeEconomyCatalog,
     tuning: &RuntimeEconomyTuning,
     target_days: f32,
@@ -967,6 +1019,7 @@ fn plan_agent_workplace(
         return None;
     }
 
+    let building_count = buildings.len();
     let home_idx = agents.home_building[i];
     if home_idx == usize::MAX || home_idx >= building_count {
         return None;
@@ -994,6 +1047,32 @@ fn plan_agent_workplace(
     let stock_pressure =
         (1.0 - (household.stock_days / target_days.max(0.1)).clamp(0.0, 1.0)).clamp(0.0, 1.0);
 
+    // `ECON-23`: a job that cannot carry the household gives way to one that can. Below, an
+    // adult on a carrying job never takes one that cannot; an adult on one that cannot moves
+    // whatever its savings or commute once a carrying job is open; an adult without a job takes
+    // a carrying job first and otherwise, as without this rule, the best it has.
+    let employed = old_job < building_count;
+    let unpaid_days = agents.consecutive_unpaid_days[i];
+    let own_wage = buildings
+        .get(old_job)
+        .and_then(|work| active_work_profile(catalog, work))
+        .map(EconomyProfileRuntime::average_daily_wage);
+    let required_net_wage = carry.required_net_wage(
+        household,
+        buildings[home_idx].level,
+        own_wage.filter(|_| unpaid_days == 0).unwrap_or(0.0),
+        employed,
+    );
+    let carries = |wage: f32| carry.net_wage(wage) >= required_net_wage;
+    let current_carries = unpaid_days < JOB_UNPAID_ABANDON_DAYS && own_wage.is_some_and(carries);
+    let must_move = employed
+        && !current_carries
+        && options
+            .options
+            .iter()
+            .take(usize::from(options.option_count))
+            .any(|option| option.building_idx != old_job && carries(option.average_daily_wage));
+
     let mut choices = [EMPTY_JOB_CHOICE; JOB_SEARCH_CANDIDATES];
     let mut choice_count = 0usize;
     let mut current_job_score = if old_job < building_count
@@ -1015,9 +1094,15 @@ fn plan_agent_workplace(
         let candidate = option.building_idx;
         let score = W_INCOME * income_pressure + W_STOCK * stock_pressure + W_JOB * 1.0
             - W_COMMUTE * option.commute_penalty;
+        let option_carries = carries(option.average_daily_wage);
         if candidate == old_job {
             current_job_score = Some(score);
-        } else if old_job >= building_count || score >= GO_TO_WORK_THRESHOLD {
+        } else if !employed
+            || (must_move && option_carries)
+            || (!must_move
+                && (option_carries || !current_carries)
+                && score >= GO_TO_WORK_THRESHOLD)
+        {
             // Demand counts unemployed adults as the first available labor supply.
             // Savings must not make those adults refuse every funded, reachable offer;
             // income/stock pressure still controls voluntary switches from an existing job.
@@ -1026,6 +1111,7 @@ fn plan_agent_workplace(
                 &mut choice_count,
                 JobChoice {
                     building_idx: candidate,
+                    carries: option_carries,
                     score,
                 },
             );
@@ -1035,7 +1121,7 @@ fn plan_agent_workplace(
     if choice_count == 0 {
         return None;
     }
-    if current_job_score.is_some_and(|score| score >= choices[0].score) {
+    if !must_move && current_job_score.is_some_and(|score| score >= choices[0].score) {
         return None;
     }
 
@@ -1094,7 +1180,9 @@ fn insert_job_choice(
 ) {
     let len = (*choice_count).min(JOB_SEARCH_CANDIDATES);
     let mut insert_at = 0;
-    while insert_at < len && choices[insert_at].score >= choice.score {
+    while insert_at < len
+        && (choices[insert_at].carries, choices[insert_at].score) >= (choice.carries, choice.score)
+    {
         insert_at += 1;
     }
     if len == JOB_SEARCH_CANDIDATES && insert_at == len {

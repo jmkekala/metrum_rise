@@ -247,6 +247,71 @@ pub(crate) fn consumer_basket_cost(catalog: &RuntimeEconomyCatalog, vat: f32) ->
     basket
 }
 
+/// What one household's recurring income must cover, as admission prices it: a resident's
+/// store-sold basket with VAT and imported utilities, and one home's electricity allowance
+/// (`docs/demand.md#household-admission`). Job choice holds a wage to the same figures
+/// (`ECON-23`).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct HouseholdEssentials {
+    /// Daily cost of each member.
+    pub(crate) per_member: f32,
+    /// Daily electricity allowance of the home itself.
+    pub(crate) per_home: f32,
+}
+
+impl HouseholdEssentials {
+    /// The figures at `vat`. Admission must stay affordable with imported utilities, before
+    /// local coverage exists. O(profile ports²), allocation-free.
+    pub(crate) fn new(
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        vat: f32,
+    ) -> Self {
+        let sold_in_stores = |resource| {
+            catalog.all_profiles().iter().any(|profile| {
+                matches!(
+                    profile.kind,
+                    EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore
+                ) && profile
+                    .outputs
+                    .iter()
+                    .any(|port| port.resource_runtime_id == resource)
+            })
+        };
+        let mut supplies = 0.0_f32;
+        for profile in catalog.all_profiles() {
+            if profile.kind != EconomyProfileRuntimeKind::DemandSink {
+                continue;
+            }
+            for input in &profile.inputs {
+                if !sold_in_stores(input.resource_runtime_id) {
+                    continue;
+                }
+                let price = catalog
+                    .unit_price_for_resource(input.resource_runtime_id)
+                    .unwrap_or_else(|| {
+                        let resource = catalog
+                            .resource_id_for_runtime_id(input.resource_runtime_id)
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "resource '{resource}' used by household demand sink has no catalog price"
+                        )
+                    });
+                supplies += profile.consumption_rate_per_resident.max(0.0) * price.max(0.0);
+            }
+        }
+        let per_home = household_daily_utility_allowance(catalog, tuning, 0.0)
+            * tuning.owa_import_price_multiplier;
+        Self {
+            per_member: supplies * (1.0 + vat)
+                + household_daily_utility_allowance(catalog, tuning, 1.0)
+                    * tuning.owa_import_price_multiplier
+                - per_home,
+            per_home,
+        }
+    }
+}
+
 /// Visits each housed family's recurring goods budget after taxes, utilities and property, for
 /// the households in `range`. The callback receives household index, desired resident count and
 /// gross spending including VAT. Savings and temporary benefits do not enter the budget; finite

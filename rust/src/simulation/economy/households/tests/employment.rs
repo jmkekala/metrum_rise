@@ -3838,3 +3838,122 @@ fn a_job_board_swept_over_an_hour_equals_one_built_at_once() {
     }
     assert!(missed.saved().front.is_none() && missed.saved().sweep.is_none());
 }
+
+// `ECON-23` market: a home, a 60-wage job next door and a 90-wage job down the road, one funded
+// job at each unless `far_funded` closes the far one, and one adult household member.
+struct CarryMarket {
+    households: HouseholdSystem,
+    allocator: BuildingAllocator,
+    agents: AgentSystem,
+    adult: usize,
+    graph: RegionGraph,
+    network: TransitNetwork,
+}
+
+const CARRY_NEAR: usize = 1;
+const CARRY_FAR: usize = 2;
+
+impl CarryMarket {
+    fn new(adults: u16, children: u16, far_funded: u32) -> Self {
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let mut allocator = BuildingAllocator::new();
+        let home = register_test_asset(&mut allocator, "test", "carry_home", ZoneClass::Residential);
+        let shop = register_test_asset(&mut allocator, "test", "carry_shop", ZoneClass::Commercial);
+        allocator
+            .buildings
+            .push(make_building(0.0, ZoneType::Residential, &home, 0.0));
+        for (x, profile, funded) in [
+            (20.0, "personal_service_small", 1),
+            (200.0, "grocery_basic", far_funded),
+        ] {
+            let mut job = make_building(x, ZoneType::Commercial, &shop, 0.0);
+            job.economy_profile_runtime_id = catalog.profile_for_id(profile).unwrap().runtime_id;
+            job.funded_job_capacity = funded;
+            allocator.buildings.push(job);
+        }
+        let (graph, network) = simple_work_graph();
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        let mut households = HouseholdSystem::new();
+        let mut household = make_household(0, adults + children, 5.0, 5.0);
+        household.adult_count = adults;
+        household.child_count = children;
+        households.households.push(household);
+        let mut agents = AgentSystem::new();
+        let adult = agents.spawn_housed_agent(0, 0.0, 0.0);
+        agents.assign_household_id(adult, 0);
+        agents.transit[adult] = TRANSIT_IN_BUILDING;
+        agents.current_building[adult] = 0;
+        Self {
+            households,
+            allocator,
+            agents,
+            adult,
+            graph,
+            network,
+        }
+    }
+
+    // The adult already holds the 60-wage job, its lock run out.
+    fn on_the_near_job(mut self) -> Self {
+        self.agents.assign_work_building(self.adult, CARRY_NEAR, 0);
+        self.allocator.buildings[CARRY_NEAR].worker_count = 1;
+        self.households.households[0].employed_adults = 1;
+        self.households.households[0].gross_daily_wages = 60.0;
+        self
+    }
+
+    fn search(mut self) -> usize {
+        self.households.assign_agent_workplaces_from_census(
+            &mut self.agents,
+            &mut self.allocator,
+            &self.network,
+            &self.graph,
+            420,
+        );
+        self.agents.work_building[self.adult]
+    }
+}
+
+#[test]
+fn a_family_passes_a_job_that_cannot_carry_it_while_one_that_can_is_open() {
+    assert_eq!(CarryMarket::new(1, 1, 1).search(), CARRY_FAR);
+    assert_eq!(
+        CarryMarket::new(1, 0, 1).search(),
+        CARRY_NEAR,
+        "the same wage carries a single adult, who takes the shorter commute"
+    );
+}
+
+#[test]
+fn a_family_with_no_carrying_job_open_still_takes_the_job() {
+    assert_eq!(CarryMarket::new(1, 1, 0).search(), CARRY_NEAR);
+}
+
+#[test]
+fn a_family_on_a_job_that_cannot_carry_it_moves_when_one_opens() {
+    assert_eq!(
+        CarryMarket::new(1, 1, 1).on_the_near_job().search(),
+        CARRY_FAR
+    );
+    assert_eq!(
+        CarryMarket::new(1, 1, 0).on_the_near_job().search(),
+        CARRY_NEAR,
+        "with nothing better open the family keeps the job"
+    );
+    assert_eq!(
+        CarryMarket::new(1, 0, 1).on_the_near_job().search(),
+        CARRY_NEAR,
+        "a single adult whose wage carries it stays"
+    );
+}
+
+#[test]
+fn a_second_adult_counts_the_first_adults_wage() {
+    // Alone, the 60 wage would have to carry half of a family of four: too little.
+    assert_eq!(CarryMarket::new(2, 2, 1).search(), CARRY_FAR);
+    // Beside a 90 wage it is enough, so the shorter commute wins.
+    let mut market = CarryMarket::new(2, 2, 1);
+    market.households.households[0].employed_adults = 1;
+    market.households.households[0].gross_daily_wages = 90.0;
+    assert_eq!(market.search(), CARRY_NEAR);
+}

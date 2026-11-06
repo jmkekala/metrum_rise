@@ -42,6 +42,7 @@ pub(in crate::simulation::economy::demand) enum FundedJobs<'a> {
     Published,
 }
 use crate::simulation::economy::households::{
+    HouseholdEssentials,
     CommercialActivitySums, CommercialActivityTerms, Household, HouseholdSystem,
     active_worker_capacity_for_profile_with_floor_scale, affordable_consumer_residents,
     commercial_activity_sums_for_city, household_is_housed, household_reserve_days,
@@ -641,33 +642,10 @@ impl DailyDemandSnapshot {
         treasury_balance: f64,
     ) -> Self {
         let demand_sink_rates_by_resource = demand_sink_rates_by_resource(catalog);
-        let mut daily_supply_cost_per_resident = 0.0_f32;
-        for &(resource_runtime_id, consumption_rate_per_resident) in &demand_sink_rates_by_resource
-        {
-            let resource_price = catalog
-                .unit_price_for_resource(resource_runtime_id)
-                .unwrap_or_else(|| {
-                    let resource_id = catalog
-                        .resource_id_for_runtime_id(resource_runtime_id)
-                        .unwrap_or("<unknown>");
-                    panic!(
-                        "resource '{resource_id}' used by household demand sink has no catalog price"
-                    )
-                });
-            daily_supply_cost_per_resident +=
-                consumption_rate_per_resident.max(0.0) * resource_price.max(0.0);
-        }
-        // Admission must remain affordable with imported utilities, before local coverage exists.
-        let daily_home_electricity_cost =
-            crate::simulation::economy::households::household_daily_utility_allowance(
-                catalog, tuning, 0.0,
-            ) * tuning.owa_import_price_multiplier;
-        let daily_essential_cost_per_resident = daily_supply_cost_per_resident
-            * (1.0 + fiscal_policy.household_vat_rate)
-            + crate::simulation::economy::households::household_daily_utility_allowance(
-                catalog, tuning, 1.0,
-            ) * tuning.owa_import_price_multiplier
-            - daily_home_electricity_cost;
+        let HouseholdEssentials {
+            per_member: daily_essential_cost_per_resident,
+            per_home: daily_home_electricity_cost,
+        } = HouseholdEssentials::new(catalog, tuning, fiscal_policy.household_vat_rate);
         let commercial_activity_signal = totals
             .activity
             .signal(CommercialActivityTerms::new(catalog));
