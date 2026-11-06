@@ -6,7 +6,7 @@
 ##
 ## Left: the library column (built-ins to duplicate; the player's types to edit, duplicate or
 ## delete, unusable ones greyed with their reason; the library error when the file cannot be
-## written). Right: five part tiles, the strip with the layout to scale (each end a fixed sidewalk,
+## written). Right: six part tiles, the strip with the layout to scale (each end a fixed sidewalk,
 ## or on a side without one a 0.75 m shoulder band, drawn but not a part), the lane split and
 ## widths, the type's attributes ("Left sidewalk" and "Right sidewalk" checkboxes, one per end
 ## and independent, `ROAD-107`, left and right as the road is drawn, a "Speed" stepper on Rust's
@@ -217,7 +217,8 @@ func _label(parent: Control, font_size: int) -> Label:
 	parent.add_child(label)
 	return label
 
-# The five part tiles: the lanes by direction and the three medians at their default widths.
+# The six part tiles: the lanes by direction, the three medians at their default widths and the
+# kerbside parking lane (`PARK-05`).
 func _build_tiles() -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
@@ -226,10 +227,11 @@ func _build_tiles() -> Control:
 	]
 	for style in [RoadPartGlyph.PAINTED, RoadPartGlyph.GRASS, RoadPartGlyph.PAVING]:
 		tile_parts.append({"kind": "median", "style": style, "width_m": 0.0})
+	tile_parts.append({"kind": "parking"})
 	for part in tile_parts:
 		var tile := RoadPartTile.new(part)
 		tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		tile.picked.connect(func(picked: Dictionary): insert_part(picked, strip.selected_slot))
+		tile.picked.connect(func(picked: Dictionary): insert_part(picked, _click_slot(picked)))
 		row.add_child(tile)
 		tiles.append(tile)
 	return row
@@ -432,6 +434,24 @@ func set_street_lights(on: bool) -> void:
 func _library_writable() -> bool:
 	return String(_library.get("error", "")).is_empty()
 
+# Where a clicked tile goes: the selected "+" slot, except a parking lane, which may only stand
+# at a kerb (`PARK-05`): the kerb on the selected slot's side, the right kerb on a tie (right-hand
+# traffic); the other kerb when that one already parks. A dragged tile still lands where it is
+# dropped.
+func _click_slot(part: Dictionary) -> int:
+	var slot := strip.selected_slot
+	if String(part.get("kind", "")) != "parking":
+		return slot
+	var left := 1
+	var right := parts.size() - 1
+	var chosen := left if slot - left < right - slot else right
+	var parks := func(kerb: int) -> bool:
+		var beside: Variant = parts[kerb] if kerb == left else parts[kerb - 1]
+		return String(Dictionary(beside).get("kind", "")) == "parking"
+	if parks.call(chosen):
+		chosen = right if chosen == left else left
+	return chosen
+
 ## Inserts `part` at `slot` (between the sidewalks) and selects the slot after it.
 func insert_part(part: Dictionary, slot: int) -> void:
 	slot = clampi(slot, 1, parts.size() - 1)
@@ -618,6 +638,9 @@ func _on_delete_confirmed() -> void:
 func _open_popup(index: int) -> void:
 	_popup_index = index
 	strip.selected_part = index
+	# The slot on the part's kerb side (a centred part's right), so the next clicked tile goes
+	# beside it towards that kerb, also after the click on the tile has closed this popup.
+	strip.set_slot(index if 2 * index + 1 < parts.size() else index + 1)
 	strip.queue_redraw()
 	var rect := strip.part_rect(index)
 	part_popup.show_for(parts[index], strip.is_interior(index - 1), strip.is_interior(index + 1), _median_styles,

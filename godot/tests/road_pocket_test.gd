@@ -285,7 +285,7 @@ func _run() -> void:
 	# narrows it.
 	var divided := simulation.get_hovered_edge(-60.0, 250.0)
 	var generation := simulation.get_network_render_generation()
-	_expect(simulation.set_edge_cross_section(divided, 2, 2, 2, 5.0, 50, 3, true, true), "the west arm of B is divided")
+	_expect(simulation.set_edge_cross_section(divided, 2, 2, 2, 5.0, 0, 50, 3, true, true), "the west arm of B is divided")
 	await _await_generation(generation)
 	await _click_node(tool, 0.0, 250.0)
 	west = _row(window, "west")

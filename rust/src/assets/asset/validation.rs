@@ -8,7 +8,7 @@ use super::{
 };
 use crate::assets::{ManifestError, is_valid_asset_id};
 
-const ZONE_CELL_M: f32 = 10.0;
+pub(crate) const ZONE_CELL_M: f32 = 10.0;
 const ANCHOR_FORWARD_UNIT_EPS: f32 = 0.02;
 const ANCHOR_LOT_EPS_M: f32 = 0.001;
 const ANCHOR_FRONTAGE_EDGE_EPS_M: f32 = 0.05;

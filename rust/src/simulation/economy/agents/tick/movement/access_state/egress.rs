@@ -9,7 +9,7 @@ use super::super::super::access::{
 };
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
-use super::super::super::slices::{MovementSlices, enter_lane};
+use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_attach};
 use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
@@ -76,7 +76,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             );
             return;
         }
-        let entrance = &allocator.entrances[b_id];
+        let trip = *slices.parking_trip.get(i);
+        let parking_entrance = slices.parking.and_then(|p| p.trip_entrance(trip, true, allocator, transit_network, graph));
+        let entrance = parking_entrance.as_ref().unwrap_or(&allocator.entrances[b_id]);
         let attach_lane_id = *s_plan_attach_lane.get(i) as usize;
         let attach_lane_d = *s_plan_attach_lane_d.get(i);
         let legal_attach = planned_attach_is_legal(
@@ -88,7 +90,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             transit_network,
             graph,
         );
-        let exact_path = if legal_attach {
+        let exact_path = if trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut {
+            slices.parking.and_then(|p| p.maneuver_path(trip.source, attach_lane_id, attach_lane_d, transit_network, false))
+        } else if legal_attach {
             local_access_path(
                 *s_tmode.get(i),
                 entrance,
@@ -157,6 +161,16 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 } else {
                     true
                 };
+                if trip.phase == crate::simulation::parking::ParkingTripPhase::PullOut {
+                    slices.parking_trip.get_mut(i).phase = crate::simulation::parking::ParkingTripPhase::Drive;
+                    if !attach_allowed {
+                        *s_pos_x.get_mut(i) = path.points[path.count - 1].x;
+                        *s_pos_y.get_mut(i) = path.points[path.count - 1].y;
+                        *s_cur_b.get_mut(i) = usize::MAX;
+                        hold_for_lane_attach!(slices, i, transit_network, attach_lane_id, attach_lane_d, origin_node);
+                        return;
+                    }
+                }
                 if !attach_allowed {
                     if crate::debug::Channel::Traffic.enabled() {
                         traffic_log!(

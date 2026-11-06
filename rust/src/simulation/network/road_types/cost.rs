@@ -94,6 +94,8 @@ pub fn stroke_weight(
         fwd_lanes: fwd,
         bkw_lanes: bkw,
         median,
+        // A parking lane (`PARK-05`) does not change a road's weight.
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         sidewalks: if fwd + bkw > 0 {
             attributes.sidewalks
         } else {
@@ -144,6 +146,7 @@ mod tests {
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             median: median.map(|(style, width_m)| RoadMedian { style, width_m }),
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             sidewalks: SidewalkSides::both_or_none(sidewalks),
         }
     }

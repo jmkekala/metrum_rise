@@ -18,6 +18,7 @@ var _bounds := Rect2()
 var _frontage_bound := false
 var _pointer_origin := Vector2.INF
 var _ground_origin := Vector3.ZERO
+var _ground_offset := Vector3.ZERO
 var _await_pointer := false
 var _committing := false
 var _has_meshes := false
@@ -191,6 +192,7 @@ func _begin(next_mode: String, objects: Array[Dictionary], document: Dictionary)
 	_has_anchors = objects.any(func(object): return object.kind == "anchor")
 	_has_surfaces = objects.any(func(object): return object.kind == "surface")
 	_pointer_origin = Vector2.INF
+	_ground_offset = Vector3.ZERO
 	_await_pointer = true
 	select(targets)
 	_capture_origins()
@@ -235,6 +237,9 @@ func handle_input(event: InputEvent) -> bool:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
 		cancel()
 		return true
+	if event is InputEventKey and event.pressed and event.keycode == KEY_R and mode == "place":
+		_turn_placement(-90.0 if event.shift_pressed else 90.0)
+		return true
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
 		cancel()
 		return false
@@ -253,10 +258,21 @@ func handle_input(event: InputEvent) -> bool:
 		else:
 			var point = editor._project_mouse_to_horizontal_plane(event.position, 0.0)
 			if point != null:
-				_place(point - _ground_origin)
+				_ground_offset = point - _ground_origin
+				_place(_ground_offset)
 		return true
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed and inside:
+		# Toolbars float over the viewport; their buttons count as panels too.
+		var control := editor.get_viewport().gui_get_hovered_control()
+		if control != null and control.mouse_filter == Control.MOUSE_FILTER_STOP:
+			inside = false
+		if not inside:
+			# A click on the panels drops the gesture and reaches them, so another button,
+			# list or dropdown works at once instead of being held by the object in hand.
+			if event.pressed:
+				cancel()
+			return false
+		if event.pressed:
 			confirm()
 		return true
 	return event is InputEventKey
@@ -276,9 +292,52 @@ func _rotate_transforms(delta: float) -> void:
 			part.position = editor._clamp_mesh_part_position_to_lot(object.index, _positions[slot])
 			editor._apply_mesh_part_transform_from_state(object.index, false)
 		else:
+			# A spot turns about the middle of its shape, not the point on its front edge.
 			var anchor: Dictionary = editor._site_anchors_data[object.index]
+			anchor.forward = editor._vector3_to_array(editor._forward_from_yaw(_angles[slot]), 0.001)
+			var centre := _positions[slot] + _footprint_middle(anchor)
 			anchor.forward = editor._vector3_to_array(editor._forward_from_yaw(yaw), 0.001)
-			anchor.position = editor._vector3_to_array(editor._clamp_site_anchor_position_to_lot(anchor, _positions[slot]), 0.01)
+			anchor.position = editor._vector3_to_array(editor._clamp_site_anchor_position_to_lot(anchor, centre - _footprint_middle(anchor)), 0.01)
+
+func _footprint_middle(anchor: Dictionary) -> Vector3:
+	var offsets: Array = editor._site_anchor_footprint_offsets(anchor)
+	var sum := Vector3.ZERO
+	for offset: Vector3 in offsets:
+		sum += offset
+	return sum / maxf(1, offsets.size())
+
+# Turns the objects being placed a quarter turn about their group centre and keeps them under the cursor.
+func _turn_placement(step: float) -> void:
+	# The hint already says why a Driveway does not turn.
+	if _frontage_bound:
+		return
+	var centre := _bounds.get_center()
+	var pivot := Vector3(centre.x, 0, centre.y)
+	var turn := Basis(Vector3.UP, deg_to_rad(step))
+	for slot in targets.size():
+		var object := targets[slot]
+		var position := pivot + turn * (_positions[slot] - pivot)
+		var yaw := wrapf(_angles[slot] + step, -180, 180)
+		match object.kind:
+			"mesh":
+				var part = editor._parts[object.index]
+				part.rotation_y = yaw
+				part.position = position
+				editor._apply_mesh_part_transform_from_state(object.index, false)
+			"anchor":
+				var anchor: Dictionary = editor._site_anchors_data[object.index]
+				anchor.forward = editor._vector3_to_array(editor._forward_from_yaw(yaw), 0.001)
+				anchor.position = editor._vector3_to_array(position, 0.01)
+			"surface":
+				var vertices: Array = editor._site_surfaces_data[object.index].vertices
+				for vertex in vertices.size():
+					var from := _vertices[slot][vertex]
+					var to := pivot + turn * Vector3(from.x - centre.x, 0, from.y - centre.y)
+					vertices[vertex][0] = to.x
+					vertices[vertex][1] = to.z
+	# The turned objects become the new origins; the cursor offset re-applies on top of them.
+	_capture_origins()
+	_place(_ground_offset)
 
 func _place(requested: Vector3) -> void:
 	var delta := Vector2(requested.x, requested.z)
@@ -317,7 +376,8 @@ func _refresh_geometry() -> void:
 		editor._update_site_surface_controls()
 
 func _hint(angle: float) -> void:
-	editor._view.hover_label.text = ("Rotate %.1f°" % angle if mode == "rotate" else "Place objects") + " · Click to confirm · Esc to cancel"
+	var turn := "A Driveway always faces the street" if _frontage_bound else "R turns 90°"
+	editor._view.hover_label.text = ("Rotate %.1f°" % angle if mode == "rotate" else "Place objects · " + turn) + " · Click to confirm · Esc to cancel"
 
 func confirm() -> void:
 	if mode.is_empty(): return

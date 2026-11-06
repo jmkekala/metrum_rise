@@ -127,6 +127,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
     let end = graph.add_node(points[1], NodeType::Junction);
     let length = points[0].distance_to(points[1]);
     let edge_idx = graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: start,
         end_node: end,
         primary_type: TransitType::Road,
@@ -186,6 +187,7 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -552,7 +554,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         adult_count: 2,
         employed_adults: 1,
         gross_daily_wages: 137.125,
-        shopping_has_car: false,
+        shopping_has_car: true,
         elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 1.5,
@@ -631,15 +633,15 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         front: Some((
             7,
             [
-                vec![(1 << 32 | 3, -1, 0, ([4, 0], 1), ([2, 5], 2))],
-                vec![(0, 2, 2, ([0, 0], 0), ([1, 0], 1))],
+                vec![(1 << 32 | 3, -1, 0, ([4, 0], 1), ([2, 5], 2), vec![2, 5, 9])],
+                vec![(0, 2, 2, ([0, 0], 0), ([1, 0], 1), vec![]) ],
             ],
         )),
         sweep: Some(SavedDestinationSweep {
             building_handles: 2,
             hour: 8,
             next_chunk: 300,
-            entries: [vec![(1, 0, -3, ([6, 0], 1), ([0, 0], 0))], Vec::new()],
+            entries: [vec![(1, 0, -3, ([6, 0], 1), ([0, 0], 0), vec![6])], Vec::new()],
         }),
     };
     households.destinations = DestinationRoll::restore(destinations.clone()).unwrap();
@@ -762,6 +764,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             cached_schedule_work_building: usize::MAX,
             cached_work_profile_index: u16::MAX,
             has_car: true,
+            parking_trip: Default::default(),
             vehicle_type: 0,
             current_path_index: 1,
             current_path: vec![n0, n1],
@@ -813,6 +816,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             cached_schedule_work_building: usize::MAX,
             cached_work_profile_index: u16::MAX,
             has_car: false,
+            parking_trip: Default::default(),
             vehicle_type: 0,
             current_path_index: 1,
             current_path: Vec::new(),
@@ -950,6 +954,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         save_to_sqlite(
             &path,
             SaveGameView {
+                parking: &Default::default(),
                 camera: Some(camera),
                 saved_at_unix: 0,
                 config: &config,
@@ -1422,7 +1427,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.households.households[0].gross_daily_wages, 137.125);
     assert!(
         loaded.households.households[0].shopping_has_car,
-        "shopping car eligibility is rebuilt from the persisted adult agents"
+        "shopping car eligibility is saved: it changes only at the hourly recount"
     );
     assert_eq!(loaded.households.households[0].elder_count, 0);
     assert_eq!(loaded.agents.len(), 2);
@@ -1592,6 +1597,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     let n0 = graph.add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
     let edge_id = graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -1739,6 +1745,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     save_to_sqlite(
         &path,
         SaveGameView {
+            parking: &Default::default(),
             camera: None,
             saved_at_unix: 0,
             config: &config,
@@ -2415,6 +2422,29 @@ fn sidewalk_sides_round_trip_through_the_edge_table() {
     assert!(network::load_graph(&conn).is_err());
 }
 
+// Format 116 keeps both branches' independent cross-section fields on the same edge.
+#[test]
+fn parking_and_pocket_round_trip_together() {
+    use crate::simulation::network::graph::RoadParking;
+    let mut graph = crate::simulation::network::roadbed::fixtures::t_right_pocket();
+    for code in 0..4 {
+        let edge = graph.edge_mut(1);
+        edge.width -= edge.parking.width_m();
+        edge.parking = RoadParking::from_code(code).unwrap();
+        edge.width += edge.parking.width_m();
+        let maps =
+            build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, &graph, &maps).unwrap();
+        tx.commit().unwrap();
+        let loaded = network::load_graph(&conn).unwrap();
+        assert_eq!(loaded.edge(1).parking, graph.edge(1).parking);
+        assert_eq!(loaded.edge(1).pocket, graph.edge(1).pocket);
+        assert_eq!(loaded.edge(1).width, graph.edge(1).width);
+    }
+}
 // `ROAD-101` RB3e (format 113): a road's street lights round-trip through the edge table, lit
 // by default.
 // `ROAD-62`, save format 117: a ring round-trips through the sparse `roundabout_edges` table.

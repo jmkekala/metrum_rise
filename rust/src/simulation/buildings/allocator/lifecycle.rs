@@ -940,6 +940,14 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
     ) -> Result<(), String> {
         for building in &mut self.buildings {
+            // An explicitly placed site can outlive its driveway road. Its saved rigid pose
+            // remains authoritative while disconnected; it offers no vehicle parking access.
+            if building.edge_idx == usize::MAX
+                && building.parcel_id == 0
+                && building.zone_type == ZoneType::None
+            {
+                continue;
+            }
             if building.edge_idx >= graph.edge_count() {
                 return Err(format!(
                     "building edge {} out of bounds for {} edges",

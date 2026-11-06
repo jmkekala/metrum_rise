@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Household membership counts, recounted from each household's member list at its hourly
-//! phase (`SIM-02-I`), and the load-time rebuild of shopping car access.
-
-use std::sync::atomic::Ordering;
+//! Household membership counts and shopping car access, recounted from each household's
+//! member list at its hourly phase (`SIM-02-I`).
 
 use super::data::HouseholdSystem;
 use super::employment::active_work_profile;
@@ -14,36 +12,12 @@ use crate::simulation::economy::agents::{
     AGE_ADULT, AGE_CHILD, AGE_ELDER, AgentSystem, age_group_can_shop, age_group_can_work,
 };
 use crate::simulation::economy::definitions::RuntimeEconomyCatalog;
-use rayon::prelude::*;
 
 impl HouseholdSystem {
-    /// Rebuilds derived shopping mode eligibility after restoring resident agents.
-    /// O(agents + households), parallel and allocation-free after scratch is sized.
-    /// Afterwards each household's phase recount keeps its flag (`SIM-02-I`).
-    pub(crate) fn rebuild_household_shopping_access(&mut self, agents: &AgentSystem) {
-        self.reset_shopping_car_scratch();
-        let flags = &self.shopping_car_scratch;
-        agents
-            .household_id
-            .par_iter()
-            .zip(agents.age_group.par_iter())
-            .zip(agents.has_car.par_iter())
-            .for_each(|((&household, &age), &has_car)| {
-                if household < flags.len() && has_car && age_group_can_shop(age) {
-                    flags[household].store(1, Ordering::Relaxed);
-                }
-            });
-        self.households
-            .par_iter_mut()
-            .zip(flags)
-            .for_each(|(household, flag)| {
-                household.shopping_has_car = flag.load(Ordering::Relaxed) != 0;
-            });
-    }
-
     pub(super) fn debug_validate_agent_household_refs(&self, _agents: &AgentSystem) {
         #[cfg(debug_assertions)]
         {
+            use rayon::prelude::*;
             let agents = _agents;
             let household_count = self.households.len();
             let households = &self.households;

@@ -27,7 +27,7 @@ use super::input::{
     xz_distance,
 };
 use crate::config;
-use crate::simulation::network::graph::{RegionGraph, RoadMedian};
+use crate::simulation::network::graph::{RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::interaction::find_intersection_2d;
 use crate::simulation::network::roadbed::{
     self, SKIRT_DEPTH_M, TUNNEL_LINING_THICKNESS_M, preview_candidate_roadbed_half_width_m,
@@ -97,6 +97,7 @@ pub(super) fn prepare_tunnel_input(
         endpoint_snap_enabled: snap_to_existing_roads,
         tunnel: true,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         forced_grade: None,
         elevated_ends: [false; 2],
@@ -118,6 +119,7 @@ pub(super) fn tunnel_section_half_width_m(
     fwd_lanes: u8,
     bkw_lanes: u8,
     median: Option<RoadMedian>,
+    parking: RoadParking,
     attributes: crate::simulation::network::road_types::RoadAttributes,
 ) -> f32 {
     preview_candidate_roadbed_half_width_m(
@@ -126,6 +128,7 @@ pub(super) fn tunnel_section_half_width_m(
         fwd_lanes,
         bkw_lanes,
         median,
+        parking,
         attributes,
     ) + TUNNEL_LINING_THICKNESS_M as f32
 }

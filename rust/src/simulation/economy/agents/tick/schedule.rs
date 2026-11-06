@@ -90,6 +90,7 @@ pub(super) fn maybe_schedule_work_trip(
     pathfind_count: &AtomicU32,
     operational_clock: &OperationalClockRuntimeTuning,
     economy_catalog: &RuntimeEconomyCatalog,
+    parking: Option<(&crate::simulation::parking::ParkingSystem, crate::simulation::core::handles::Handle<crate::simulation::parking::Vehicle>)>,
 ) -> Option<(usize, u8)> {
     // Shopping owns the agent through pickup and delivery acknowledgement, including
     // visits to the worker's own workplace and a return that reached home between hours.
@@ -174,16 +175,11 @@ pub(super) fn maybe_schedule_work_trip(
     }
 
     if (*cache.cached_commute_minutes == 0 || sim_time >= *cache.next_commute_refresh_time)
-        && let Some(estimate) = estimate_building_origin_trip_seconds(
-            home_building,
-            work_building,
-            has_car,
-            allocator,
-            transit_network,
-            graph,
-            pathfind_count,
-            None,
-        )
+        && let Some(estimate) = if let Some((parking, car)) = parking {
+            super::planning::estimate_parking_trip_seconds(home_building, work_building, car, has_car, parking, allocator, transit_network, graph, pathfind_count)
+        } else {
+            estimate_building_origin_trip_seconds(home_building, work_building, has_car, allocator, transit_network, graph, pathfind_count, None)
+        }
     {
         cache.record_commute_estimate(estimate, sim_time, time, operational_clock);
     }
@@ -431,6 +427,7 @@ mod tests {
                     &pathfind_count,
                     &tuning.operational_clock,
                     &catalog,
+                    None,
                 );
                 assert_eq!(trip, Some((0, ACTIVITY_HOME)));
                 assert_eq!(*cache.next_departure_target_building, usize::MAX);
@@ -451,6 +448,7 @@ mod tests {
                     &pathfind_count,
                     &tuning.operational_clock,
                     &catalog,
+                    None,
                 );
                 assert_eq!(
                     shopping, None,
@@ -495,6 +493,7 @@ mod tests {
                         &pathfind_count,
                         &tuning.operational_clock,
                         &catalog,
+                        None,
                     ),
                     None
                 );
@@ -558,6 +557,7 @@ mod tests {
                         &pathfind_count,
                         &clock,
                         &catalog,
+                        None,
                     ),
                     None
                 );
@@ -580,6 +580,7 @@ mod tests {
                         &pathfind_count,
                         &clock,
                         &catalog,
+                        None,
                     ),
                     Some((1, 1))
                 );
@@ -673,6 +674,7 @@ mod tests {
                     &pathfind_count,
                     &tuning.operational_clock,
                     &catalog,
+                    None,
                 );
                 assert_eq!(
                     trip.is_some(),

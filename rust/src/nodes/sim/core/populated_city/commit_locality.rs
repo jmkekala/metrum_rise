@@ -284,3 +284,177 @@ fn local_products(core: &mut SimCore, samples: &serde_json::Value) -> serde_json
         "buildings": buildings.len(), "buildings_digest": hash(&buildings),
     })
 }
+
+#[test]
+#[ignore = "PARK-01 matched release locality; setup excluded, run alone with eight workers"]
+fn benchmark_parking_locality() {
+    use crate::simulation::parking::{PlaceSource, lots::lot_bays};
+    use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
+    use crate::nodes::sim::core::RoadCommitRequest;
+    use std::collections::BTreeSet;
+    super::contract::timing_mode();
+    let tiers: Vec<usize> = std::env::var("METRUM_LOCALITY_TIERS")
+        .unwrap_or_else(|_| "0,1000,10000".to_owned())
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let mut reference = None;
+    let mut candidate_reference = None;
+    for background in tiers {
+        let start = Instant::now();
+        let mut core = super::zoned_city_in_world(NEIGHBOURHOOD_SIDE_M, WORLD_M);
+        add_background(&mut core, background);
+        let mut manifest = crate::assets::AssetManifest::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
+        )))
+        .unwrap();
+        // The bounds the game imports from the lot's glb files.
+        for part in &mut manifest.mesh_parts {
+            part.imported_bounds = Some(match part.name.as_str() {
+                "markings" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
+                "p_sign" => [[-0.3, 0.0, -0.03], [0.3, 2.6, 0.07]],
+                _ => [[-0.12, 0.0, -0.1], [0.12, 1.36, 0.1]],
+            });
+        }
+        let id = manifest.qualified_id("parking");
+        core.allocator
+            .registry
+            .register("parking", manifest, String::new());
+        let edge = core.region_graph.edge_count();
+        assert!(
+            core.commit_road(
+                RoadCommitRequest {
+                    points: vec![
+                        Vector3::new(-300.0, 0.0, -700.0),
+                        Vector3::new(300.0, 0.0, -700.0),
+                    ],
+                    fwd_lanes: 1,
+                    bkw_lanes: 1,
+                    snap_to_existing_roads: true,
+                    preview: None,
+                    tunnel: false,
+                    median: None,
+                    parking: crate::simulation::network::graph::RoadParking::NONE,
+                    attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+                },
+                Instant::now(),
+                RoadEditMetrics::default(),
+            ).committed
+        );
+        // Explicit placement validates the newly committed frontage's compiled surface.
+        core.precompute_road_mesh_data();
+        core.publish_road_tool_view();
+        let mut owners = Vec::new();
+        for n in 0..12 {
+            let index = core.allocator.buildings.len();
+            core.place_service_building_internal(&id, -240.0 + n as f32 * 40.0, -730.0)
+                .unwrap();
+            owners.push(core.allocator.building_handles.handle(index));
+        }
+        core.precompute_road_mesh_data();
+        core.publish_road_tool_view();
+        core.publish_pending_building_site_changes();
+        for owner in &owners {
+            assert!(
+                !core.parking.diagnostics.contains_key(&owner.to_bits()),
+                "lot diagnostics: {:?}",
+                core.parking.diagnostics.get(&owner.to_bits())
+            );
+        }
+        core.transit_network.settle_cch();
+        // The fixture publishes compiled road geometry without running a simulation frame.
+        // Publish its final entrance/catchment inputs before taking the timed local control.
+        core.rebuild_building_entrances_internal();
+        let indices: Vec<_> = owners.iter().map(|&owner| core.allocator.building_handles.resolve(owner).unwrap()).collect();
+        core.publish_parking_catchments(&indices);
+        core.complete_parking_economy_publication();
+        let setup_s = start.elapsed().as_secs_f64();
+        let products = |core: &SimCore| {
+            owners
+                .iter()
+                .map(|owner| {
+                    (2..8)
+                        .flat_map(|anchor| {
+                            core.parking.source_bays(PlaceSource::Building {
+                                building: owner.to_bits(),
+                                anchor,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = products(&core);
+        let geometry: Vec<_> = expected
+            .iter()
+            .map(|bays| bays.iter().map(|(_, bay)| *bay).collect::<Vec<_>>())
+            .collect();
+        assert!(geometry.iter().all(|bays| bays.len() == 6));
+        if let Some(reference) = &reference {
+            assert_eq!(reference, &geometry);
+        } else {
+            reference = Some(geometry);
+        }
+        let candidate_products = |core: &SimCore| owners.iter().map(|owner|
+            core.parking.candidate_products(owner.to_bits())
+        ).collect::<Vec<_>>();
+        let expected_candidates = candidate_products(&core);
+        assert!(expected_candidates.iter().all(|c| !c.is_empty()),
+            "local destination entrances: {:?}", indices.iter().map(|&i| &core.allocator.entrances[i]).collect::<Vec<_>>());
+        if let Some(reference) = &candidate_reference {
+            assert_eq!(reference, &expected_candidates);
+        } else {
+            candidate_reference = Some(expected_candidates.clone());
+        }
+        let mut candidate_samples = Vec::new();
+        let mut road_samples = Vec::new();
+        let mut site_samples = Vec::new();
+        let mut lot_samples = Vec::new();
+        for _ in 0..9 {
+            let start = Instant::now();
+            core.publish_parking_catchments(&indices);
+            candidate_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(candidate_products(&core), expected_candidates);
+            let start = Instant::now();
+            core.reconcile_parking_frontages(&BTreeSet::from([edge]));
+            road_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(products(&core), expected);
+            core.allocator
+                .parking_site_changes
+                .extend_from_slice(&owners);
+            let start = Instant::now();
+            core.publish_parking_sites();
+            site_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(products(&core), expected);
+            for &owner in &owners {
+                let index = core.allocator.building_handles.resolve(owner).unwrap();
+                let start = Instant::now();
+                let result = lot_bays(
+                    &core.allocator,
+                    index,
+                    &core.region_graph,
+                    &core.transit_network.roadbed,
+                );
+                lot_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(result.0.len(), 12);
+                assert!(result.1.is_empty());
+            }
+        }
+        candidate_samples.sort_by(f64::total_cmp);
+        road_samples.sort_by(f64::total_cmp);
+        site_samples.sort_by(f64::total_cmp);
+        lot_samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "PARKING_LOCALITY {}",
+            serde_json::json!({
+                "background":background, "buildings":core.allocator.buildings.len(),
+                "parcels":core.zoning.parcels().len(), "agents":core.agents.len(),
+                "roads":core.region_graph.edge_count(), "lots":owners.len(), "places":72,
+                "candidate_rebuild_ms":candidate_samples[4], "candidate_entries":expected_candidates.iter().map(Vec::len).sum::<usize>(),
+                "setup_s":setup_s, "road_rebuild_ms":road_samples[4], "site_publication_ms":site_samples[4],
+                "per_lot_ms":lot_samples[lot_samples.len()/2], "max_lot_ms":lot_samples.last(), "products":"identical"
+            })
+        );
+    }
+}

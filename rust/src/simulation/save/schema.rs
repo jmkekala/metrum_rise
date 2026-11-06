@@ -13,6 +13,8 @@ pub const NONE_REF: i64 = -1;
 
 /// The SQL schema string.
 pub const SCHEMA: &str = r#"
+CREATE TABLE building_detached_poses(building_id INTEGER PRIMARY KEY, center_x REAL NOT NULL, center_z REAL NOT NULL, facing_x REAL NOT NULL, facing_z REAL NOT NULL, side_offset REAL NOT NULL, gap_left REAL NOT NULL, gap_center REAL NOT NULL, gap_right REAL NOT NULL);
+CREATE TABLE parking_state(singleton INTEGER PRIMARY KEY CHECK(singleton = 1), data TEXT NOT NULL);
 CREATE TABLE save_meta(
     version INTEGER NOT NULL,
     saved_at_unix INTEGER NOT NULL,
@@ -275,7 +277,8 @@ CREATE TABLE network_edges(
     no_street_lights INTEGER NOT NULL DEFAULT 0,
     pocket_end INTEGER NOT NULL DEFAULT 0,
     pocket_roles INTEGER NOT NULL DEFAULT 0,
-    sidewalks INTEGER NOT NULL DEFAULT 0
+    sidewalks INTEGER NOT NULL DEFAULT 0,
+    parking INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE network_edge_geometry(
     edge_id INTEGER NOT NULL,
@@ -542,6 +545,7 @@ CREATE TABLE household_destinations(
     car_count INTEGER NOT NULL,
     car_a INTEGER NOT NULL,
     car_b INTEGER NOT NULL,
+    parking_components BLOB NOT NULL,
     PRIMARY KEY(buffer, kind, position)
 );
 CREATE TABLE households(
@@ -575,7 +579,8 @@ CREATE TABLE households(
     electricity_account TEXT NOT NULL,
     gross_daily_wages REAL NOT NULL,
     employed_adults INTEGER NOT NULL,
-    paid_workers_in_window INTEGER NOT NULL
+    paid_workers_in_window INTEGER NOT NULL,
+    shopping_has_car INTEGER NOT NULL
 );
 CREATE TABLE city_treasury(
     balance REAL NOT NULL,
@@ -782,7 +787,8 @@ CREATE TABLE agents(
     overtake_blocked_time_s REAL NOT NULL,
     overtake_cooldown_s REAL NOT NULL,
     job_lock_until_day INTEGER NOT NULL,
-    consecutive_unpaid_days INTEGER NOT NULL
+    consecutive_unpaid_days INTEGER NOT NULL,
+    parking_trip TEXT NOT NULL
 );
 CREATE TABLE agent_path_nodes(
     agent_id INTEGER NOT NULL,

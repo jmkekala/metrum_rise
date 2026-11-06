@@ -39,6 +39,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
     pathfind_count: &AtomicU32,
     debug_context: Option<(usize, &'static str)>,
     first_lane: Option<usize>,
+    destination_override: Option<BuildingEntrance>,
 ) -> Result<BuiltNetworkReplan, ReplanFailure> {
     let debug_context = debug_context.filter(|_| crate::debug::Channel::Traffic.enabled());
     let incoming_edge_valid = incoming_edge_is_incident_to_node(incoming_edge, start_node, graph);
@@ -68,7 +69,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             candidate_diagnostics,
         ));
     }
-    let destination_entrance = &allocator.entrances[target_building];
+    let destination_entrance = destination_override.as_ref().unwrap_or(&allocator.entrances[target_building]);
     if destination_entrance.edge_idx >= graph.edge_count() {
         emit_network_replan_diagnostics(
             debug_context,

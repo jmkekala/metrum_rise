@@ -1228,6 +1228,7 @@ pub(crate) fn split_edge_graph(
     let roundabout = old_edge.roundabout;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
     let median = old_edge.median;
+    let parking = old_edge.parking;
     // A turn pocket stays with the half that keeps its end (`ROAD-95`); the other half keeps the
     // lanes as a plain road.
     let pocket = old_edge.pocket;
@@ -1278,6 +1279,7 @@ pub(crate) fn split_edge_graph(
         no_street_lights,
         vehicle_frontage_access,
         median,
+        parking,
         pocket: second_pocket,
         sidewalks,
         roundabout,
@@ -1478,6 +1480,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
                 crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             );
             // Physical stations differ from the materialized control support stations.
@@ -1545,6 +1548,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
                 crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             ));
         }
@@ -1588,6 +1592,7 @@ mod tests {
                     1,
                     EdgeClass::Standard,
                     None,
+                    Default::default(),
                     crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 ));
             }
@@ -1638,6 +1643,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
                 crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             ));
             graph.rebuild_adjacency_list();
@@ -1691,6 +1697,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
                 crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             ));
         }
@@ -1707,6 +1714,7 @@ mod tests {
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
             crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         ));
         graph.rebuild_adjacency_list();

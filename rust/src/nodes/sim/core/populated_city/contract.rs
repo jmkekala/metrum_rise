@@ -413,6 +413,32 @@ fn perf_contract_phase() {
     );
 }
 
+#[test]
+#[ignore = "PARK-02 matched dense-district employment and bounded job reach diagnostic"]
+fn parking_employment_reach() {
+    use crate::simulation::economy::agents::{age_group_can_work, tick::ResidentMobility};
+    timing_mode();
+    let city = snapshot::load_snapshot(10_000, &cache_dir());
+    let c = &city.core;
+    let workers: Vec<_> = (0..c.agents.len()).filter(|&i| age_group_can_work(c.agents.age_group[i]) && c.agents.home_building[i] < c.allocator.buildings.len()).step_by(97).take(32).collect();
+    let jobs: Vec<_> = c.allocator.buildings.iter().enumerate().filter(|(_, b)| b.funded_job_capacity > 0).map(|(i, _)| i).collect();
+    let mut reachable = 0;
+    let mut available = 0;
+    let mut pairs = 0;
+    for &worker in &workers {
+        let mobility = ResidentMobility::for_agent(&c.parking, &c.agents, worker);
+        available += usize::from(mobility.eligible);
+        for &work in &jobs {
+            let seconds = mobility.seconds(c.agents.home_building[worker], work, &c.allocator, &c.transit_network, &c.region_graph, &c.agents.pathfind_count);
+            // One fixed real-time budget for both builds, independent of job-score saturation.
+            if seconds.is_some_and(|s| s <= 900) { reachable += 1; }
+            pairs += 1;
+        }
+    }
+    let r = city.record();
+    eprintln!("PARKING_EMPLOYMENT {}", serde_json::json!({"requested_residents":10000,"residents":r.residents,"households":r.households,"employed":r.employed,"jobs":r.jobs,"sample_workers":workers.len(),"sample_car_available":available,"workplaces":jobs.len(),"pairs":pairs,"reachable_within_900s":reachable}));
+}
+
 // `ROAD-101` acceptance (RB3a): `METRUM_PERF_ROAD_REBUILD=car_only` takes the sidewalks off the
 // frozen city's lowest-id road, as a player's road type without sidewalks would, and
 // `METRUM_PERF_ROAD_REBUILD=same` rebuilds the same derived state with every road unchanged

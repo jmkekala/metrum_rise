@@ -244,6 +244,7 @@ pub(super) unsafe fn prepare_lane_entry(
                     pathfind_count,
                     Some((i, "network-lane-entry")),
                     None,
+                    slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
                 ) {
                     Ok(replan) => apply_network_replan(i, replan, slices),
                     Err(failure) => {

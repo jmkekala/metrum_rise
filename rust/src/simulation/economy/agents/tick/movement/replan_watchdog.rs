@@ -91,6 +91,13 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
         }
         // Captured before the attempt is cleared, so the log shows where the agent failed.
         let mut failure = TripFailure::capture(i, cause, FailureOutcome::Replans, slices);
+        if slices.parking_trip.get(i).phase != crate::simulation::parking::ParkingTripPhase::None {
+            let trip = slices.parking_trip.get_mut(i);
+            trip.ready = true;
+            trip.replan_needed = true;
+            *slices.speed.get_mut(i) = 0.0;
+            return;
+        }
         clear_failed_replan_attempt(i, slices);
 
         let failures = slices.network_replan_failures.get(i).saturating_add(1);
@@ -270,7 +277,13 @@ unsafe fn recover_to_border(
         } else {
             TRANSIT_NETWORK
         };
-        *slices.tmode.get_mut(i) = MODE_CAR;
+        *slices.tmode.get_mut(i) = if *slices.pending_household_size.get(i) > 0
+            || (slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX)
+        {
+            MODE_WALK
+        } else {
+            MODE_CAR
+        };
         *slices.next_replan_time.get_mut(i) = 0.0;
         *slices.network_replan_failures.get_mut(i) = 0;
 
@@ -515,6 +528,7 @@ mod tests {
 
     fn test_edge(start_node: u32, end_node: u32) -> Edge {
         Edge {
+            parking: Default::default(),
             start_node,
             end_node,
             primary_type: TransitType::Road,

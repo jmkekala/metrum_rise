@@ -25,6 +25,7 @@ pub(crate) use tests::support::indexed_test_building;
 pub(crate) use admission_order::ChunkBounds;
 pub(crate) use entrance::{
     BuildingEntranceKey, DemandSiteEntranceKey, FreightEntranceAccess, building_local_xz_basis,
+    main_entrance_anchor,
 };
 pub(crate) use index::SavedVacancyOrder;
 #[cfg(test)]
@@ -531,6 +532,8 @@ pub struct BuildingAllocator {
     /// The graded terrain's site-change outbox (`TERRAIN-07-C`), filled with the legacy one
     /// above: one record per site before or after each change, with its support height.
     pub(crate) graded_site_changes: Vec<SiteChange>,
+    /// Stable owners changed by the site journal; consumed by physical parking publication.
+    pub(crate) parking_site_changes: Vec<Handle<Building>>,
     /// Separate explicit-site exclusion edits; ordinary parcel buildings do not block cells.
     /// Keeping envelopes separate avoids treating untouched land between sites as edited.
     pub(crate) cell_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
@@ -924,6 +927,7 @@ impl BuildingAllocator {
             site_cells: site::SiteCells::default(),
             building_site_dirty_bounds: Vec::new(),
             graded_site_changes: Vec::new(),
+            parking_site_changes: Vec::new(),
             cell_site_dirty_bounds: Vec::new(),
             site_feasibility: Default::default(),
             border_arrival: Default::default(),
@@ -1179,6 +1183,7 @@ impl BuildingAllocator {
         self.max_site_radius_count = 0;
         self.building_site_dirty_bounds.clear();
         self.graded_site_changes.clear();
+        self.parking_site_changes.clear();
         self.cell_site_dirty_bounds.clear();
         self.dirty = false;
         self.dirty_index = false;

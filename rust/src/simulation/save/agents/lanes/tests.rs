@@ -25,6 +25,7 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
     for i in 0..3 {
         let geometry = vec![points[i], points[i + 1]];
         graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: nodes[i],
             end_node: nodes[i + 1],
             primary_type: TransitType::Road,

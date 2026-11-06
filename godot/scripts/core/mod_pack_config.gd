@@ -7,7 +7,7 @@
 extends RefCounted
 
 const CFG_PATH := "user://active_packs.cfg"
-const DEFAULT_ENABLED_PACK_IDS := ["kenney"]
+const DEFAULT_ENABLED_PACK_IDS := ["kenney", "parking"]
 
 static func load_enabled_pack_ids() -> Array:
 	if not FileAccess.file_exists(CFG_PATH):

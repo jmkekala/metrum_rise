@@ -371,6 +371,7 @@ mod tests {
         ];
 
         let edge_defaults = Edge {
+            parking: Default::default(),
             start_node: 0,
             end_node: 0,
             primary_type: TransitType::Road,

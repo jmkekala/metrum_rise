@@ -113,10 +113,18 @@ pub struct YardLot<'a> {
     pub structures: &'a [[[f32; 2]; 2]],
 }
 
+/// Mesh parts no taller than this are ground dressing (paint, kerbs): cars and hedges may
+/// cross them. The asset editor's `yard_structure_bounds` keeps the same limit.
+pub const GROUND_DRESSING_MAX_HEIGHT_M: f32 = 0.15;
+
 /// The local `[min, max]` X/Z rectangle a mesh part's imported `[min, max]` bounds cover once
-/// the part's own transform places them; what [`YardLot::structures`] takes.
+/// the part's own transform places them; what [`YardLot::structures`] takes. `None` for ground
+/// dressing, which blocks nothing.
 pub fn structure_footprint(part: &super::MeshPart) -> Option<[[f32; 2]; 2]> {
     let [min, max] = part.imported_bounds?;
+    if (max[1] - min[1]) * part.scale <= GROUND_DRESSING_MAX_HEIGHT_M {
+        return None;
+    }
     let transform = part.local_transform();
     let mut rect = [[f32::INFINITY; 2], [f32::NEG_INFINITY; 2]];
     for (x, z) in [

@@ -179,18 +179,31 @@ func _run() -> void:
 	# in-place check still refuses it with its reason.
 	_expect(simulation.check_road_layout([{"kind": "sidewalk"}, {"kind": "median", "style": 2, "width_m": 3.0},
 		{"kind": "car_lane", "forward": true}, {"kind": "sidewalk"}], 50, true, true).get("invalid_reason", "") != "", "a one-way median layout is refused")
-	window.show_verdict(tool.preview_selected_edge_cross_section(1, 0, 2, 3.0, 50, 3, true, true))
+	window.show_verdict(tool.preview_selected_edge_cross_section(1, 0, 2, 3.0, 0, 50, 3, true, true))
 	_expect(window._apply_button.disabled, "a one-way median cannot be applied")
 	_expect(window._verdict_label.text == "A median needs lanes in both directions", "the one-way refusal: %s" % window._verdict_label.text)
 	await _undo("the median")
 	_expect(int(simulation.get_edge_cross_section(edge).get("median_style", -1)) == 0, "undo removes the median")
 
 	# A layout no type has shows as "Custom layout", which cannot be picked.
-	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0, 50, 3, true, true), "a 3 + 1 layout is set in place")
+	_expect(simulation.set_edge_cross_section(edge, 3, 1, 0, 0.0, 0, 50, 3, true, true), "a 3 + 1 layout is set in place")
 	window.show_for_edges(selection)
 	_expect(_picked_text(window) == window.CUSTOM_LAYOUT and window._type_picker.is_item_disabled(window._type_picker.selected), "a 3 + 1 road shows Custom layout: %s" % _picked_text(window))
 	_expect(window._layout_label.text == "3 + 1 lanes, 50 km/h", "the custom layout's lanes: %s" % window._layout_label.text)
 	await _undo("the custom layout")
+
+	# Kerbside parking (`PARK-05`): the Right box adds a parking lane in place, keeping the lanes.
+	window.show_for_edges(selection)
+	var right_box: CheckBox = window._parking_checks[window.PARKING_RIGHT]
+	_expect(not right_box.button_pressed, "a plain road has no parking lane")
+	generation = simulation.get_network_render_generation()
+	right_box.button_pressed = true
+	section = simulation.get_edge_cross_section(edge)
+	_expect(int(section.get("parking", 0)) == window.PARKING_RIGHT and _lanes(edge) == Vector2i(1, 1), "the Right box parks the right kerb: %s" % section)
+	_expect(is_equal_approx(float(section.get("width", 0.0)), 9.5), "a 1 + 1 road with a parking lane is 9.5 m wide")
+	_expect(right_box.button_pressed and simulation.get_network_render_generation() > generation, "the box stays ticked and the edit publishes")
+	await _undo("the parking lane")
+	_expect(int(simulation.get_edge_cross_section(edge).get("parking", -1)) == 0, "undo removes the parking lane")
 
 	# A 100 km/h type without sidewalks or zoning in place: nothing to demolish, applied at once.
 	var rural := String(simulation.create_road_type("Lane Edit Rural", [
@@ -294,6 +307,10 @@ func _run() -> void:
 	_pick(window, "builtin:road_2l")
 	_expect(window._apply_button.disabled, "a walkway cannot become a road")
 	_expect(window._verdict_label.text == "A walkway cannot become a road: draw a road in its place", "the walkway refusal: %s" % window._verdict_label.text)
+	var walkway_right: CheckBox = window._parking_checks[window.PARKING_RIGHT]
+	walkway_right.button_pressed = true
+	_expect(not walkway_right.button_pressed and int(simulation.get_edge_cross_section(walkway).get("parking", -1)) == 0, "a walkway keeps no parking lane")
+	_expect(window._verdict_label.text == "A walkway cannot become a road: draw a road in its place", "the walkway parking refusal: %s" % window._verdict_label.text)
 
 	# The median controls the road builder reuses step within the style's range.
 	var controls := MedianControls.new()

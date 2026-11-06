@@ -185,6 +185,7 @@ mod tests {
                 .map(|i| Vector3::new(-80.0 + 20.0 * i as f32, 0.0, z))
                 .collect();
             let edge = graph.add_edge(Edge {
+                parking: Default::default(),
                 start_node: west,
                 end_node: east,
                 primary_type: TransitType::Road,

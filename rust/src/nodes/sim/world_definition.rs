@@ -574,6 +574,7 @@ impl SimCore {
         self.vegetation_edits = Default::default();
         self.watermap = WaterSystem::from_world_config(&self.config);
         self.region_graph = crate::simulation::network::graph::RegionGraph::new();
+        self.parking = Default::default();
         self.transit_network = TransitNetwork::new_for_world(&self.config);
         self.zoning = ZoningSystem::new(&self.config);
         self.pollution = PollutionSystem::new(&self.config);

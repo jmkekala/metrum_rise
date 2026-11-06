@@ -39,7 +39,11 @@ impl SimCore {
         saved_at_unix: i64,
     ) -> Result<(), String> {
         self.adopt_pending_cell_lots();
+        self.precompute_road_mesh_data();
+        self.publish_road_tool_view();
+        self.publish_pending_building_site_changes();
         self.transit_network.settle_cch();
+        self.complete_parking_economy_publication();
         self.save_game_at(path, camera, saved_at_unix)
     }
 
@@ -120,6 +124,7 @@ impl SimCore {
                 resource_extraction: &self.resource_extraction,
                 agriculture: &self.agriculture,
                 agents: &self.agents,
+                parking: &self.parking,
                 network: &self.transit_network,
                 treasury: &self.treasury,
                 service_policy: &self.service_policy,
@@ -175,6 +180,7 @@ impl SimCore {
         self.watermap = loaded.water;
         self.resource_deposits = loaded.resource_deposits;
         self.region_graph = loaded.graph;
+        self.parking = loaded.parking;
         self.transit_network = loaded.transit_network;
         self.zoning = loaded.zoning;
         self.pollution = loaded.pollution;
@@ -262,6 +268,14 @@ impl SimCore {
         // And what the first planning slot would prepare on the live books (`SIM-02-K`).
         self.warm_loaded_planning();
         // And the first agent tick's scrub and lane buckets.
+        self.agents.parking_retries.reserve(self.agents.len());
+        self.prepare_loaded_parking_routes();
+        let buildings: Vec<_> = (0..self.allocator.buildings.len()).collect();
+        self.parking.refresh_retired_access(&self.transit_network,&self.region_graph);
+        // Catchments are derived and unsaved: rebuilding them is not new supply, so no
+        // waiting car wakes, as none did in the uninterrupted game.
+        self.publish_parking_catchments(&buildings);
+        self.complete_parking_economy_publication();
         self.agents
             .prepare_loaded_tick(&self.allocator, &self.transit_network);
         // And the stranded walkers' set and report, from their saved bits (`ROAD-74`).

@@ -71,6 +71,7 @@ pub(super) fn register_test_asset(
 
 pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
     Edge {
+        parking: Default::default(),
         start_node: n0,
         end_node: n1,
         primary_type: TransitType::Road,
@@ -299,6 +300,7 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
     let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
     let make = |s: u32, e: u32, x0: f32, x1: f32| Edge {
+        parking: Default::default(),
         start_node: s,
         end_node: e,
         primary_type: TransitType::Road,
@@ -348,6 +350,7 @@ pub(super) fn build_4way_junction(
     let nn = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
     let ns = graph.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
     let arm = |s: u32, e: u32, sx: f32, sz: f32, ex: f32, ez: f32| Edge {
+        parking: Default::default(),
         start_node: s,
         end_node: e,
         primary_type: TransitType::Road,
@@ -457,6 +460,7 @@ pub(super) fn build_short_block_street(link_m: f32, arms: [(f32, f32); 3]) -> Sh
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             roundabout: None,
+            parking: Default::default(),
         })
     };
     let north = node(&mut graph, 0.0, -100.0);

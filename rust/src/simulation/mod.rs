@@ -14,6 +14,7 @@ pub(crate) mod extraction;
 pub mod grid;
 pub mod network;
 pub mod pathing;
+pub(crate) mod parking;
 pub(crate) mod resources;
 pub(crate) mod save;
 pub mod terrain;

@@ -269,6 +269,7 @@ impl PopulatedCity {
                     );
                 }
             }
+            self.core.publish_parking_households();
             self.advance_hour();
             let housed = self.core.daily_city_flow_diagnostics().resident_agents;
             if housed >= residents || launched == 0 {

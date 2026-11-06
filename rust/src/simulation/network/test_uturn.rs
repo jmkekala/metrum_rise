@@ -18,6 +18,7 @@ mod tests {
         let edges = [(n0, n1), (n1, n2)];
         for (s, e) in edges {
             graph.add_edge(Edge {
+                parking: Default::default(),
                 start_node: s,
                 end_node: e,
                 primary_type: TransitType::Road,
@@ -101,6 +102,7 @@ mod tests {
         let edges = [(n0, n1), (n2, n1), (n3, n1)];
         for (s, e) in edges {
             graph.add_edge(Edge {
+                parking: Default::default(),
                 start_node: s,
                 end_node: e,
                 primary_type: TransitType::Road,
@@ -166,6 +168,7 @@ mod tests {
         let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
 
         graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,

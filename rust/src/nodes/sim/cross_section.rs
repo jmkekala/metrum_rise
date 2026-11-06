@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! In-place cross-section edits of an existing road (`ROAD-80`): its lane counts and median,
-//! and its road type's attributes (`ROAD-101`: sidewalks, speed, zoning), changed on the
+//! In-place cross-section edits of an existing road (`ROAD-80`): its lane counts, median and
+//! kerbside parking (`PARK-05`), and its road type's attributes (`ROAD-101`: sidewalks, speed,
+//! zoning), changed on the
 //! crosswalk toggle's transaction shape (`ROAD-74`). The check is the commit's: the edit is
 //! applied to the graph, its two nodes are laid out again, their closure is compiled into a
 //! scratch roadbed (fields, painted cells, steepened profiles) and the graph is put back; a
@@ -18,7 +19,7 @@
 
 use super::core::{RoadRejection, SimCore};
 use crate::debug_log;
-use crate::simulation::network::graph::{Edge, RegionGraphUndoDelta, RoadMedian};
+use crate::simulation::network::graph::{Edge, RegionGraphUndoDelta, RoadMedian, RoadParking};
 use crate::simulation::network::road_types::cost::{BUILD_COST_PER_M, road_weight};
 use crate::simulation::network::road_types::{RoadAttributes, RoadCrossSection};
 use crate::simulation::network::roadbed::{visual_roadbed_half_width_m, widest_side_band_width_m};
@@ -46,8 +47,9 @@ pub(crate) struct CrossSectionVerdict {
 }
 
 impl SimCore {
-    /// Changes road `edge_id` to `fwd` forward and `bkw` backward lanes, `median` and the road
-    /// type's `attributes` in place (`ROAD-80`, `ROAD-101`), keeping its centreline, id and class.
+    /// Changes road `edge_id` to `fwd` forward and `bkw` backward lanes, `median`, `parking`
+    /// (`PARK-05`) and the road type's `attributes` in place (`ROAD-80`, `ROAD-101`), keeping
+    /// its centreline, id and class.
     /// Both end nodes are laid out again at the new width and the lanes of their arms rebuilt;
     /// cars and walkers on a lane that no longer exists reattach to the nearest rebuilt lane of
     /// their kind, or stay laneless on their edge (`TRAFFIC-19`), never moved. Zoning turned off
@@ -64,21 +66,23 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
         let (checkpoint, nodes, verdict) =
-            match self.try_cross_section_edit(edge_id, fwd, bkw, median, attributes) {
+            match self.try_cross_section_edit(edge_id, fwd, bkw, median, parking, attributes) {
                 Ok(tried) => tried,
                 Err(rejection) => {
                     debug_log!(
                         "road",
-                        "cross_section_edit_rejected edge={} lanes={}+{} median={:?} attributes={:?} reason={}",
+                        "cross_section_edit_rejected edge={} lanes={}+{} median={:?} parking={:?} attributes={:?} reason={}",
                         edge_id,
                         fwd,
                         bkw,
                         median,
+                        parking,
                         attributes,
                         rejection.reason
                     );
@@ -88,7 +92,11 @@ impl SimCore {
         let edge = edge_id as usize;
         let zoning_off = !self.region_graph.edge(edge).no_building_spawn && !attributes.zoning;
         let incident = self.live_edges_at(&nodes, edge);
-        let changed = self.apply_edge_cross_section(edge, (fwd, bkw, median, attributes), &nodes);
+        let changed = self.apply_edge_cross_section(
+            edge,
+            (fwd, bkw, median, parking, attributes),
+            &nodes,
+        );
         let affected: HashSet<usize> = incident
             .into_iter()
             .chain(changed.iter().copied())
@@ -136,10 +144,11 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) -> Result<CrossSectionVerdict, RoadRejection> {
         self.adopt_pending_cell_lots();
-        self.try_cross_section_edit(edge_id, fwd, bkw, median, attributes)
+        self.try_cross_section_edit(edge_id, fwd, bkw, median, parking, attributes)
             .map(|(_, _, verdict)| verdict)
     }
 
@@ -154,6 +163,7 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) -> Result<(RegionGraphUndoDelta, HashSet<u32>, CrossSectionVerdict), RoadRejection> {
         let graph = &self.region_graph;
@@ -176,26 +186,33 @@ impl SimCore {
             ));
         }
         current
-            .validate_cross_section(fwd, bkw, median)
+            .validate_cross_section(fwd, bkw, median, parking)
             .map_err(|reason| {
                 RoadRejection::new(
                     reason,
-                    format!("{fwd}+{bkw} lanes, median {median:?} on edge {edge}"),
+                    format!(
+                        "{fwd}+{bkw} lanes, median {median:?}, parking {parking:?} on edge {edge}"
+                    ),
                 )
             })?;
-        if (current.fwd_lanes, current.bkw_lanes, current.median) == (fwd, bkw, median)
+        if (
+            current.fwd_lanes,
+            current.bkw_lanes,
+            current.median,
+            current.parking,
+        ) == (fwd, bkw, median, parking)
             && attributes.same_as(RoadAttributes::of_edge(current))
         {
             return Err(RoadRejection::new(
                 "cross_section_unchanged",
                 format!(
-                    "edge {edge} already has {fwd}+{bkw} lanes, median {median:?}, {attributes:?}"
+                    "edge {edge} already has {fwd}+{bkw} lanes, median {median:?}, parking {parking:?}, {attributes:?}"
                 ),
             ));
         }
         // The roadbed's larger side, which a tunnel's bore and the corridor checks reach to both
         // sides of it: a sidewalk added on a road's shoulder side leaves that unchanged.
-        let widens = Self::roadbed_half_width_m(current, fwd, bkw, median, attributes)
+        let widens = Self::roadbed_half_width_m(current, fwd, bkw, median, parking, attributes)
             > visual_roadbed_half_width_m(current);
         if widens && current.class == EdgeClass::Tunnel {
             return Err(RoadRejection::new(
@@ -203,7 +220,7 @@ impl SimCore {
                 "a tunnel is widened by drawing it again, which checks the cover across its bore",
             ));
         }
-        let verdict = self.cross_section_verdict(edge, fwd, bkw, median, attributes);
+        let verdict = self.cross_section_verdict(edge, fwd, bkw, median, parking, attributes);
         let nodes: HashSet<u32> = [current.start_node, current.end_node]
             .into_iter()
             .map(|node| graph.get_valid_node(node))
@@ -213,8 +230,11 @@ impl SimCore {
         let check_corridor = widens || attributes.sidewalks.adds_to(current.sidewalk_sides());
         let mut corridor = None;
         let tried = self.try_graph_edit(&edges, &nodes, |core| {
-            let changed =
-                core.apply_edge_cross_section(edge, (fwd, bkw, median, attributes), &nodes);
+            let changed = core.apply_edge_cross_section(
+                edge,
+                (fwd, bkw, median, parking, attributes),
+                &nodes,
+            );
             if check_corridor {
                 corridor = core.widened_corridor_refusal(edge);
             }
@@ -234,12 +254,13 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) -> f32 {
         let mut probe = Edge {
             primary_type: current.primary_type,
             allowed_types: current.allowed_types,
-            width: Edge::cross_section_width_m(fwd, bkw, median),
+            width: Edge::cross_section_width_m(fwd, bkw, median, parking),
             ..Edge::default()
         };
         probe.set_sidewalks(attributes.sidewalks);
@@ -257,6 +278,7 @@ impl SimCore {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) -> CrossSectionVerdict {
         let current = self.region_graph.edge(edge);
@@ -269,6 +291,7 @@ impl SimCore {
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             median,
+            parking,
             sidewalks: attributes.sidewalks,
         };
         let weight = road_weight(
@@ -337,11 +360,17 @@ impl SimCore {
     fn apply_edge_cross_section(
         &mut self,
         edge: usize,
-        (fwd, bkw, median, attributes): (u8, u8, Option<RoadMedian>, RoadAttributes),
+        (fwd, bkw, median, parking, attributes): (
+            u8,
+            u8,
+            Option<RoadMedian>,
+            RoadParking,
+            RoadAttributes,
+        ),
         nodes: &HashSet<u32>,
     ) -> HashSet<usize> {
         self.region_graph
-            .set_edge_cross_section(edge, fwd, bkw, median, attributes);
+            .set_edge_cross_section(edge, fwd, bkw, median, parking, attributes);
         self.region_graph
             .rebuild_intersection_clips_for_nodes(nodes);
         let mut changed = HashSet::new();

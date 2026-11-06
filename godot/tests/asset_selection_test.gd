@@ -147,8 +147,34 @@ func _test_context_commands() -> void:
 	actions.cancel()
 	expect(document.snapshot() == original and editor._site_anchors_data.size() == 1 and not document.can_undo(), "cancelled creation restores document and preview")
 	actions.begin_placement("create", [], {"kind": "parking"}, point)
+	var facing: Vector3 = editor._anchor_forward(editor._site_anchors_data[1])
+	actions._turn_placement(90.0)
+	var turned: Dictionary = editor._site_anchors_data[1]
+	expect(editor._anchor_forward(turned).is_equal_approx(Basis(Vector3.UP, PI / 2) * facing) and editor._anchor_position(turned).distance_to(point) < 4, "R turns a placed spot a quarter turn and keeps it under the cursor")
 	actions.confirm()
 	expect(document.snapshot().params.anchors.size() == 2 and document.can_undo(), "confirmed creation is persisted")
+	var spot: Array[Dictionary] = [{"kind": "anchor", "index": 1}]
+	var middle: Vector3 = editor._anchor_position(editor._site_anchors_data[1]) + actions._footprint_middle(editor._site_anchors_data[1])
+	actions.begin_rotation(spot, 180.0)
+	var reversed: Dictionary = editor._site_anchors_data[1]
+	expect((editor._anchor_position(reversed) + actions._footprint_middle(reversed)).distance_to(middle) < 0.05, "reversing a spot turns it in place about its middle")
+	document.undo()
+	actions.begin_placement("create", [], {"kind": "parking"}, point)
+	var panel_click := InputEventMouseButton.new()
+	panel_click.button_index = MOUSE_BUTTON_LEFT
+	panel_click.pressed = true
+	panel_click.position = editor._view._preview_view_rect.get_global_rect().end + Vector2(-2, -2) + Vector2(40, 0)
+	expect(not actions.handle_input(panel_click) and actions.mode.is_empty() and editor._site_anchors_data.size() == 2, "a click on the panels drops the object in hand and reaches the panel")
+	var shown: bool = editor._view.library.visible
+	var tab := InputEventKey.new()
+	tab.keycode = KEY_TAB
+	tab.pressed = true
+	editor._input(tab)
+	expect(editor._view.library.visible != shown, "Tab opens and closes the Library")
+	editor._input(tab)
+	var rejection: String = editor._parking_diagnostics()["rejected"][0]["reason"]
+	editor._session.validate()
+	expect(editor._session._issues.any(func(issue): return issue.get("anchor", -1) == 1 and str(issue.message).ends_with(rejection)), "a spot cars cannot reach is a validation issue, not ready to export")
 	document.undo()
 	expect(document.snapshot() == original and not document.can_undo(), "one undo removes complete placement")
 	document.redo()
@@ -179,6 +205,8 @@ func _test_context_commands() -> void:
 	actions.begin_placement("create", [], {"kind": "driveway"}, point)
 	var driveway: Dictionary = editor._site_anchors_data.back()
 	expect(editor._anchor_forward(driveway).dot(editor._driveway_anchor_forward()) > 0.99, "created driveway faces inward")
+	actions._turn_placement(90.0)
+	expect(editor._anchor_forward(driveway).dot(editor._driveway_anchor_forward()) > 0.99, "R never turns a driveway away from the street")
 	expect(not document.selection_actions(entrance).duplicate, "main entrance menu exposes its singleton constraint")
 	actions.confirm()
 	var drive: Array[Dictionary] = [{"kind": "anchor", "index": 1}]
@@ -555,6 +583,7 @@ func _test_access_point_input() -> void:
 	selection.press(_screen(Vector3(0, 0.1, -3)), MOUSE_BUTTON_LEFT)
 	selection.release(_screen(Vector3(0, 0.1, -3)))
 	expect(editor._selected_site_surface_index == 0 and editor._view.task_picker.selected == 2 and editor._view.site_picker.selected == 2, "bare yard click opens Surfaces without a toolbar action")
+	var label_clicks := 0
 	for scale in [1.0, 2.0]:
 		root.content_scale_factor = scale
 		root.size = Vector2i(Vector2(1920, 1080) * scale)
@@ -564,14 +593,34 @@ func _test_access_point_input() -> void:
 				await process_frame
 			camera.look_at_from_position(Vector3(-24, 30, -32), Vector3(0, 0, -2))
 			editor._cam_input._update_preview_offset()
+			# Names show only while hovered, selected or rejected; hovering the point shows it.
+			editor._preview.set_label_hover("anchor", index)
 			var label: Label3D = editor._preview.site_label("anchor", index)
 			var point := label.global_position + camera.global_basis.x * label.get_aabb().size.x * 0.3
 			var mouse := _screen(point)
 			expect(selection.picker._label_contains("anchor", index, mouse, camera), "anchor text uses its visible billboard bounds at %.1fx UI scale" % scale)
+			# A name floats above the ground, so it can cover another spot's shape; the shape the
+			# cursor is actually on wins, and the name selects only where no shape is under it.
+			var expected := index
+			for hit in selection.picker.collect(mouse, camera, "all"):
+				if hit["kind"] == "anchor" and not hit.get("label", false) and not hit.get("occluded", false):
+					expected = hit["index"]
+					break
+			if expected == index:
+				label_clicks += 1
 			_click(mouse)
-			expect(editor._selected_site_anchor_index == index and editor._view.site_picker.selected == 1, "clicking entrance/parking/loading/driveway text selects it and opens its settings")
+			expect(editor._selected_site_anchor_index == expected and editor._view.site_picker.selected == 1, "clicking entrance/parking/loading/driveway text selects it, or the shape under it, and opens its settings (anchor %d)" % index)
 			if scale == 1.0 and index == 1:
 				await _capture_access_selection()
+	expect(label_clicks > 0, "some access point text lies clear of other shapes and selects its own point")
+	editor._preview.set_label_hover("", -1)
+	var quiet := -1
+	for index in editor._site_anchors_data.size():
+		if index != editor._selected_site_anchor_index and editor._preview.parking_rejection(index).is_empty():
+			quiet = index
+			break
+	expect(quiet >= 0 and not editor._preview.site_label("anchor", quiet).visible, "an accepted, unselected, unhovered access point shows no name")
+	expect(editor._preview.site_label("anchor", editor._selected_site_anchor_index).visible, "the selected access point keeps its name")
 	root.content_scale_factor = 1.0
 	root.size = Vector2i(1920, 1080)
 	for frame in 8:

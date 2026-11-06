@@ -25,6 +25,7 @@ fn cold_road_commit_completes_terrain_plan_before_mutation() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
@@ -58,6 +59,7 @@ fn prepare_with_lanes(
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     )
@@ -204,6 +206,7 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     );
@@ -258,6 +261,7 @@ fn commit_stroke(core: &mut SimCore, points: &[Vector3]) -> String {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },
@@ -285,6 +289,7 @@ fn preview_validation(
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         })
         .validation
@@ -1824,6 +1829,7 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             });
             assert!(
@@ -1881,6 +1887,7 @@ fn tiles_graded_by_trunk_branch(core: &mut SimCore) -> Vec<(i32, i32)> {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: None,
         },

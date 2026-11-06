@@ -40,6 +40,22 @@ impl SimulationNode {
         }
     }
 
+    /// Sets the road tool's kerbside parking (`PARK-05`) for every later hover check, preview,
+    /// commit and refusal report of the tool: `code` bit 0 the left kerb, bit 1 the right, looking
+    /// along the stroke. Returns the empty string when set, else `parking_code_out_of_range`,
+    /// keeping the previous setting. Whether the stroke's lanes may carry it is the stroke's
+    /// check (`parking_requires_vehicle_road`).
+    #[func]
+    pub fn set_road_tool_parking(&mut self, code: i32) -> GString {
+        match crate::simulation::network::graph::RoadParking::from_code(code) {
+            Some(parking) => {
+                self.road_tool_parking = parking;
+                GString::new()
+            }
+            None => "parking_code_out_of_range".into(),
+        }
+    }
+
     /// Sets the road tool's road-type attributes (`ROAD-101`) for every later hover check,
     /// preview, commit and refusal report of the tool: `speed_kmh` the speed limit (20 to 120 in
     /// steps of 10; a walkway's stroke keeps the default limit whatever is set), `sidewalks`
@@ -123,6 +139,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
             });
             (query.surface_generation, validated)
@@ -185,7 +202,11 @@ impl SimulationNode {
                 &points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
-                (self.road_tool_median, self.road_tool_attributes),
+                (
+                    self.road_tool_median,
+                    self.road_tool_parking,
+                    self.road_tool_attributes,
+                ),
                 &query.terrain,
                 &query.region_graph,
                 &query.roadbed,
@@ -285,6 +306,7 @@ impl SimulationNode {
                 snap: snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
             },
             int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
@@ -324,6 +346,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 tunnel: self.road_tool_tunnel,
                 median: self.road_tool_median,
+                parking: self.road_tool_parking,
                 attributes: self.road_tool_attributes,
             }));
             context.last_preview = Some(Arc::clone(&preview));
@@ -616,6 +639,7 @@ impl SimulationNode {
                 prepared_points,
                 lanes,
                 self.road_tool_median,
+                self.road_tool_parking,
                 self.road_tool_attributes,
             );
             Self::apply_corridor_clearance(&mut dict, &clearance);

@@ -20,6 +20,8 @@ pub(crate) use data::AgentHandle;
 pub use data::{Agent, AgentSystem, AgentVec};
 pub(crate) use household_members::NO_MEMBER;
 
+pub use crate::simulation::parking::ParkingTrip;
+
 use determinism::stable_index;
 
 /// Child resident: consumes household resources but does not work or shop.

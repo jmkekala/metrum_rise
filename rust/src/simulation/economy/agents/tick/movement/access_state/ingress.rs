@@ -74,7 +74,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             arrive_in_building(i, b_id, ingress_target, sim_time, slices);
             return;
         }
-        let entrance = &allocator.entrances[b_id];
+        let trip = *slices.parking_trip.get(i);
+        let parking_entrance = slices.parking.and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph));
+        let entrance = parking_entrance.as_ref().unwrap_or(&allocator.entrances[b_id]);
         let detach_lane_id = *s_plan_detach_lane.get(i) as usize;
         let detach_lane_d = *s_plan_detach_lane_d.get(i);
         let legal_detach = planned_detach_is_legal(
@@ -86,7 +88,9 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             transit_network,
             graph,
         );
-        let exact_path = if legal_detach {
+        let exact_path = if trip.phase == crate::simulation::parking::ParkingTripPhase::PullIn {
+            slices.parking.and_then(|p| p.maneuver_path(trip.destination, detach_lane_id, detach_lane_d, transit_network, true))
+        } else if legal_detach {
             local_access_path(
                 *s_tmode.get(i),
                 entrance,
@@ -154,7 +158,13 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         *s_access_flags.get(i),
                     );
                 }
-                arrive_in_building(i, b_id, ingress_target, sim_time, slices);
+                if matches!(trip.phase, crate::simulation::parking::ParkingTripPhase::WalkToCar | crate::simulation::parking::ParkingTripPhase::PullIn) {
+                    slices.parking_trip.get_mut(i).ready = true;
+                    *s_speed.get_mut(i) = 0.0;
+                } else {
+
+                    arrive_in_building(i, b_id, ingress_target, sim_time, slices);
+                }
             }
         } else if let Some(ingress_origin) = local_access_point(
             *s_tmode.get(i),
@@ -218,6 +228,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     pathfind_count,
                     Some((i, "invalid-ingress-replan")),
                     None,
+                    slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
                 ) {
                     Ok(replan) => apply_network_replan(i, replan, slices),
                     Err(failure) => delay_or_recover_after_network_replan_failure(

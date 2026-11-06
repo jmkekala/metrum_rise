@@ -272,6 +272,7 @@ fn a_stroke_from_a_road_end_adopts_like_a_cold_add() {
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
             road_types::RoadAttributes::DEFAULT,
         ));
         fixture.network.roadbed.mark_edge_dirty(0);
@@ -304,6 +305,7 @@ fn adoption_preserves_remote_geometry_and_live_metadata_and_rejects_missing_sour
         1,
         EdgeClass::Standard,
         None,
+        Default::default(),
         road_types::RoadAttributes::DEFAULT,
     ));
     fixture.network.roadbed.compile_dirty(&fixture.graph);
@@ -366,6 +368,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
             road_types::RoadAttributes::DEFAULT,
         ));
     }

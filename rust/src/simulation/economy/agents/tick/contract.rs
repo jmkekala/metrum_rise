@@ -35,9 +35,13 @@ pub(super) enum Phase {
     FrontageAgents,
     /// Lane rows updated when the frontage cadence fires.
     FrontageLanes,
+    /// Resident custody/availability rows classified before ordinary movement.
+    ParkingEligibilityAgents,
+    /// Rows inspected by the deterministic parking resource phase.
+    ParkingTransitionAgents,
 }
 
-const PHASE_COUNT: usize = Phase::FrontageLanes as usize + 1;
+const PHASE_COUNT: usize = Phase::ParkingTransitionAgents as usize + 1;
 static COUNTS: [AtomicU64; PHASE_COUNT] = [const { AtomicU64::new(0) }; PHASE_COUNT];
 
 /// Adds an exact loop length after or at dispatch; absent from gameplay builds.
@@ -357,6 +361,8 @@ fn work_json(work: [u64; PHASE_COUNT]) -> serde_json::Value {
         "movement_agents": work[Phase::MovementAgents as usize],
         "frontage_agents": work[Phase::FrontageAgents as usize],
         "frontage_lanes": work[Phase::FrontageLanes as usize],
+        "parking_eligibility_agents": work[Phase::ParkingEligibilityAgents as usize],
+        "parking_transition_agents": work[Phase::ParkingTransitionAgents as usize],
     })
 }
 
@@ -386,7 +392,8 @@ fn benchmark_agent_tick_contract() {
                 access_fixture(count, transit)
             };
             let clock = TimeSystem::new();
-            agents.tick(&allocator, &mut network, &mut graph, 0.1, &clock);
+            let mut parking = crate::simulation::parking::ParkingSystem::default();
+            agents.tick_with_parking(&allocator, &mut network, &mut graph, 0.1, &clock, &mut parking);
             if mode != "network" {
                 reset_access_agents(&mut agents, &allocator, &network, &graph, transit);
             }
@@ -395,12 +402,13 @@ fn benchmark_agent_tick_contract() {
             reset();
             let before = snapshot();
             let started = Instant::now();
-            agents.tick(
+            agents.tick_with_parking(
                 &allocator,
                 &mut network,
                 &mut graph,
                 std::hint::black_box(0.1),
                 std::hint::black_box(&clock),
+                &mut parking,
             );
             let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
             let work = work_delta(before, snapshot());
@@ -414,12 +422,13 @@ fn benchmark_agent_tick_contract() {
                 } else {
                     access_fixture(count, transit)
                 };
-            repeat_agents.tick(
+            repeat_agents.tick_with_parking(
                 &repeat_allocator,
                 &mut repeat_network,
                 &mut repeat_graph,
                 0.1,
                 &clock,
+                &mut parking,
             );
             if mode != "network" {
                 reset_access_agents(
@@ -433,12 +442,13 @@ fn benchmark_agent_tick_contract() {
             repeat_network.frontage_delay_elapsed_s = 0.95;
             reset();
             let repeat_before = snapshot();
-            repeat_agents.tick(
+            repeat_agents.tick_with_parking(
                 &repeat_allocator,
                 &mut repeat_network,
                 &mut repeat_graph,
                 0.1,
                 &clock,
+                &mut parking,
             );
             let repeat_work = work_delta(repeat_before, snapshot());
             if mode != "network" {

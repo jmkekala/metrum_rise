@@ -84,12 +84,20 @@ fn edit(
 ) -> String {
     let before = (products(core), core.undo_stack.len());
     let preview = core
-        .preview_edge_cross_section_internal(edge as i32, fwd, bkw, median, attributes)
+        .preview_edge_cross_section_internal(
+            edge as i32,
+            fwd,
+            bkw,
+            median,
+            Default::default(),
+            attributes,
+        )
         .err()
         .map(|refusal| refusal.reason)
         .unwrap_or_default();
     assert_eq!(products(core), before.0, "a preview changes nothing");
-    let applied = core.set_edge_cross_section_internal(edge as i32, fwd, bkw, median, attributes);
+    let applied =
+        core.set_edge_cross_section_internal(edge as i32, fwd, bkw, median, Default::default(), attributes);
     assert_eq!(
         applied,
         preview.is_empty(),
@@ -664,13 +672,13 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
         core.allocator.rebuild_zone_index();
         core.allocator.dirty_index = stale;
         let verdict = core
-            .preview_edge_cross_section_internal(side as i32, 1, 1, None, off)
+            .preview_edge_cross_section_internal(side as i32, 1, 1, None, Default::default(), off)
             .unwrap();
         assert_eq!(verdict.buildings_removed, 1, "stale index: {stale}");
     }
     core.allocator.rebuild_zone_index();
     let verdict = core
-        .preview_edge_cross_section_internal(side as i32, 1, 1, None, off)
+        .preview_edge_cross_section_internal(side as i32, 1, 1, None, Default::default(), off)
         .unwrap();
     assert_eq!(verdict.buildings_removed, 1);
     assert!(verdict.demolition_permanent, "no undo restores a road's buildings");
@@ -688,7 +696,7 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
         Some(0)
     );
     assert_eq!(
-        core.preview_edge_cross_section_internal(west as i32, 1, 1, None, off)
+        core.preview_edge_cross_section_internal(west as i32, 1, 1, None, Default::default(), off)
             .unwrap()
             .buildings_removed,
         1
@@ -704,7 +712,7 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
     core.set_no_building_spawn_internal(west as i32, true);
     let on = RoadAttributes::DEFAULT;
     let verdict = core
-        .preview_edge_cross_section_internal(west as i32, 1, 1, None, on)
+        .preview_edge_cross_section_internal(west as i32, 1, 1, None, Default::default(), on)
         .unwrap();
     assert_eq!(verdict.buildings_removed, 0);
     assert!(!verdict.demolition_permanent);
@@ -833,7 +841,7 @@ fn an_in_place_type_change_charges_the_cost_difference_only() {
     let built = core.treasury.lifetime_build_cost;
     // 1+1 (weight 1.0) to 2+2 (1.8): 0.8 x 15 a metre.
     let verdict = core
-        .preview_edge_cross_section_internal(side as i32, 2, 2, None, RoadAttributes::DEFAULT)
+        .preview_edge_cross_section_internal(side as i32, 2, 2, None, Default::default(), RoadAttributes::DEFAULT)
         .unwrap();
     assert!((verdict.cost_delta - 12.0 * length).abs() < 1e-6 * length, "{verdict:?}");
     assert_eq!(edit_lanes(&mut core, side, 2, 2), "");
@@ -843,7 +851,7 @@ fn an_in_place_type_change_charges_the_cost_difference_only() {
     );
     let built = core.treasury.lifetime_build_cost;
     let verdict = core
-        .preview_edge_cross_section_internal(side as i32, 1, 1, None, RoadAttributes::DEFAULT)
+        .preview_edge_cross_section_internal(side as i32, 1, 1, None, Default::default(), RoadAttributes::DEFAULT)
         .unwrap();
     assert_eq!(verdict.cost_delta, 0.0);
     assert_eq!(edit_lanes(&mut core, side, 1, 1), "");
@@ -950,7 +958,7 @@ fn street_lights_turned_off_in_place_relight_the_street_and_undo() {
     let lit = RoadAttributes::of_edge(core.region_graph.edge(edge));
     assert!(lit.street_lights);
     let verdict = core
-        .preview_edge_cross_section_internal(edge as i32, 1, 1, None, lit.lit(false))
+        .preview_edge_cross_section_internal(edge as i32, 1, 1, None, Default::default(), lit.lit(false))
         .expect("lights off is a valid change");
     assert_eq!(verdict.cost_delta, 0.0, "street lights cost nothing");
     assert_eq!(verdict.buildings_removed, 0);
@@ -1029,7 +1037,7 @@ fn a_ring_edge_refuses_every_in_place_edit() {
     assert_eq!(
         core.region_graph
             .edge(edge)
-            .validate_cross_section(2, 0, None),
+            .validate_cross_section(2, 0, None, Default::default()),
         Err("roundabout_fixed")
     );
     let mut with_pocket = core.region_graph.edge(edge).clone();

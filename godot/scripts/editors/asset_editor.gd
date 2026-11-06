@@ -974,6 +974,7 @@ func _apply_site_surface_controls(field: String) -> void:
 func _update_site_surface_preview() -> void:
 	if _preview and _preview.has_method("set_site_surfaces"):
 		_preview.set_site_surfaces(_site_surfaces_data, _selected_site_surface_index)
+	_update_site_anchor_preview()
 
 func _site_surface_vertices(surface: Dictionary) -> Array[Vector2]:
 	return PreviewGeometry.surface_vertices(surface)
@@ -1153,6 +1154,7 @@ func _update_site_anchor_controls() -> void:
 	_view._site_anchor_yaw_spin.editable = has_anchor and not is_driveway
 	_view._site_anchor_width_spin.editable = has_size
 	_view._site_anchor_length_spin.editable = has_length
+	_update_site_anchor_issues()
 	_updating_site_anchor_controls = false
 	if _session != null:
 		_session.selection_changed()
@@ -1191,11 +1193,37 @@ func _apply_site_anchor_controls(field: String) -> void:
 
 func _update_site_anchor_preview() -> void:
 	if _preview and _preview.has_method("set_site_anchors"):
+		_preview.set_parking_diagnostics(_parking_diagnostics())
 		_preview.set_site_anchors(
 			_site_anchors_data,
 			_selected_site_anchor_indices,
 			_selected_site_anchor_index
 		)
+		_update_site_anchor_issues()
+
+# Runs the game's drive-in check over the current site, as {"rejected": [{anchor, reason, shape}]}.
+func _parking_diagnostics() -> Dictionary:
+	var params := {"anchors": _site_anchors_data, "site_surfaces": _site_surfaces_data,
+		"frontage_forward": [_frontage_fwd.x, _frontage_fwd.y, _frontage_fwd.z],
+		"lot_half_extents": [float(_view._width_spin.value) * 5.0, float(_view._depth_spin.value) * 5.0]}
+	return JSON.parse_string(_session.policy.parking_diagnostics_json(
+		JSON.stringify(params), _session.yard_structure_bounds()))
+
+# Shows each rejected spot's reason in the access list and, wrapped, above the selected spot's
+# properties, so a rejection never relies on the viewport labels alone.
+func _update_site_anchor_issues() -> void:
+	if not _view._site_anchor_list or not _preview or not _preview.has_method("parking_rejection"):
+		return
+	var list: ItemList = _view._site_anchor_list
+	for index in mini(list.item_count, _site_anchors_data.size()):
+		var rejection: String = _preview.parking_rejection(index)
+		# The list is rebuilt on every refresh, so only rejected rows need styling.
+		if not rejection.is_empty():
+			list.set_item_custom_fg_color(index, Color(1.0, 0.45, 0.4))
+			list.set_item_tooltip(index, "Rejected: " + rejection)
+	var selected: String = _preview.parking_rejection(_selected_site_anchor_index) if _selected_site_anchor_index >= 0 else ""
+	_view._site_anchor_issue_label.text = "Rejected: " + selected
+	_view._site_anchor_issue_label.visible = not selected.is_empty()
 
 func _anchor_position(anchor: Dictionary) -> Vector3:
 	return PreviewGeometry.vector3(anchor.get("position"))
@@ -1693,6 +1721,14 @@ func _input(event: InputEvent) -> void:
 		if event.is_action_pressed("ui_cancel"):
 			_yard_preview.exit()
 			get_viewport().set_input_as_handled()
+		return
+	if _menus.actions != null:
+		_menus.track_focus(event)
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_TAB \
+			and not _ui_captures_editor_text_input() and not _cam_input._ui_has_modal_popup():
+		# Tab opens the Library instead of moving keyboard focus between controls.
+		_view.toggle_library()
+		get_viewport().set_input_as_handled()
 		return
 	if _menus.actions != null and (_menus.actions.handle_input(event) or _menus.handle_right(event)):
 		get_viewport().set_input_as_handled()

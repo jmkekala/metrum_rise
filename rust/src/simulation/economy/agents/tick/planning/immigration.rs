@@ -29,18 +29,24 @@ pub(crate) fn plan_immigration_trip(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> Option<BuiltTripPlan> {
-    if target_building >= allocator.buildings.len() || target_building >= allocator.entrances.len()
-    {
-        return None;
-    }
-    let destination_entrance = &allocator.entrances[target_building];
+    let entrance = allocator.entrances.get(target_building)?;
+    plan_border_arrival(border_node, target_building, MODE_CAR, entrance,
+        transit_network, graph, pathfind_count)
+}
+
+/// Exact border-to-endpoint quote/materialization, O(Q) for two directed frontage choices.
+/// Cars receive a parking entrance; pedestrians receive the home door. Freight retains its wrapper.
+pub(crate) fn plan_border_arrival(
+    border_node: u32,
+    target_building: usize,
+    mode: u8,
+    destination_entrance: &crate::simulation::buildings::allocator::BuildingEntrance,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+) -> Option<BuiltTripPlan> {
     if destination_entrance.edge_idx >= graph.edge_count()
         || graph.edge(destination_entrance.edge_idx).deleted
-    {
-        return None;
-    }
-    if destination_entrance.car_lane_fwd == usize::MAX
-        && destination_entrance.car_lane_bkw == usize::MAX
     {
         return None;
     }
@@ -54,7 +60,7 @@ pub(crate) fn plan_immigration_trip(
                 graph.edge(destination_entrance.edge_idx).end_node
             };
             let planned_detach_lane_id =
-                candidate_lane_id(MODE_CAR, destination_entrance, destination_rank == 0, false);
+                candidate_lane_id(mode, destination_entrance, destination_rank == 0, false);
             if planned_detach_lane_id == usize::MAX {
                 continue;
             }
@@ -71,17 +77,17 @@ pub(crate) fn plan_immigration_trip(
             )?;
             let ingress_local_time_s = local_access_time_s(
                 local_access_distance(
-                    MODE_CAR,
+                    mode,
                     destination_entrance,
                     planned_detach_lane_id,
                     planned_detach_lane_d,
                     transit_network,
                     graph,
                 )?,
-                MODE_CAR,
+                mode,
             );
             let destination_frontage_time_s = frontage_time_s(
-                MODE_CAR,
+                mode,
                 planned_detach_lane_id,
                 planned_detach_lane_d,
                 false,
@@ -97,7 +103,7 @@ pub(crate) fn plan_immigration_trip(
                     planned_detach_node,
                     usize::MAX,
                     destination_entrance.edge_idx,
-                    MODE_CAR,
+                    mode,
                     transit_network,
                     graph,
                 )?
@@ -106,10 +112,10 @@ pub(crate) fn plan_immigration_trip(
                 network_path_time_s + destination_frontage_time_s + ingress_local_time_s;
             let candidate = PlannedTripCandidate {
                 total_cost_s,
-                mode_choice_cost_s: mode_choice_cost_for(MODE_CAR, total_cost_s),
+                mode_choice_cost_s: mode_choice_cost_for(mode, total_cost_s),
                 origin_rank: 0,
                 destination_rank,
-                mode: MODE_CAR,
+                mode,
                 planned_attach_node: border_node,
                 planned_detach_node,
                 planned_attach_lane_id: usize::MAX,
@@ -137,7 +143,7 @@ pub(crate) fn plan_immigration_trip(
         }
 
         Some(BuiltTripPlan {
-            mode: MODE_CAR,
+            mode,
             target_building,
             activity: 0,
             planned_attach_node: chosen.planned_attach_node,

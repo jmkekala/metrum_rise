@@ -74,6 +74,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
         let (a, b) = (corner(k), corner(k + 1));
         let length = a.distance_to(b);
         core.region_graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: k as u32,
             end_node: ((k + 1) % 4) as u32,
             primary_type: TransitType::Road,
@@ -103,6 +104,7 @@ fn stranded_core_with(spur: bool) -> SimCore {
         let (a, b) = (corner(0) - Vector3::new(60.0, 0.0, 0.0), corner(0));
         let node = core.region_graph.add_node(a, NodeType::Junction);
         core.region_graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: node,
             end_node: 0,
             primary_type: TransitType::Road,

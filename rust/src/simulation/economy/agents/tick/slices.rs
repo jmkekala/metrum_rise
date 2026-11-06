@@ -89,7 +89,9 @@ impl<T> RawSlice<T> {
 }
 
 /// Disjoint SoA slices used by `process_agent_movement` for parallel data access.
-pub(crate) struct MovementSlices {
+pub(crate) struct MovementSlices<'a> {
+    pub(super) parking: Option<&'a crate::simulation::parking::ParkingSystem>,
+    pub(super) parking_trip: RawSlice<crate::simulation::parking::ParkingTrip>,
     pub(super) home: RawSlice<usize>,
     pub(super) work: RawSlice<usize>,
     pub(super) age_group: RawSlice<u8>,
@@ -145,12 +147,14 @@ pub(crate) struct MovementSlices {
     pub(super) failures: FailureSink,
 }
 
-impl MovementSlices {
+impl<'a> MovementSlices<'a> {
     /// Borrows the movement columns without allocating; callers must keep their storage
     /// fixed and alive until the parallel pass and its serial claim phase finish.
     #[inline(always)]
     pub(super) fn new(agents: &mut AgentVec) -> Self {
         Self {
+            parking: None,
+            parking_trip: RawSlice::new(&mut agents.parking_trip),
             home: RawSlice::new(&mut agents.home_building),
             work: RawSlice::new(&mut agents.work_building),
             age_group: RawSlice::new(&mut agents.age_group),

@@ -18,6 +18,7 @@ use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
 };
 use crate::simulation::economy::agents::tick::{
+    ResidentMobility,
     BuildingWalkingAccess, PedestrianReachability, building_origin_trip_is_feasible,
     estimate_building_origin_trip_seconds,
 };
@@ -172,6 +173,7 @@ pub(super) fn prepare_walking_access(
 
 // One household's shopping round-trip test, shared by its candidate scans.
 struct ShoppingRoutes<'a> {
+    mobility: Option<ResidentMobility<'a>>,
     home_idx: usize,
     has_car: bool,
     walking: Option<&'a PedestrianReachability>,
@@ -195,16 +197,16 @@ impl ShoppingRoutes<'_> {
                 walking,
             )
         });
-        proven_shopping_walk(self.walking, self.home.as_ref(), store_access.as_ref())
-            || shopping_route_is_feasible(
-                self.home_idx,
-                store_idx,
-                self.has_car,
-                self.allocator,
-                self.transit_network,
-                self.graph,
-                self.pathfind_count,
-            )
+        if proven_shopping_walk(self.walking, self.home.as_ref(), store_access.as_ref()) {
+            return true;
+        }
+        if let Some(mobility) = self.mobility {
+            mobility.round_trip(self.home_idx, store_idx, self.allocator,
+                self.transit_network, self.graph, self.pathfind_count)
+        } else {
+            shopping_route_is_feasible(self.home_idx, store_idx, self.has_car,
+                self.allocator, self.transit_network, self.graph, self.pathfind_count)
+        }
     }
 }
 
@@ -250,6 +252,7 @@ impl StoreSupplyIndex<'_> {
         search_cursor: u32,
         candidates: &mut Vec<usize>,
         diagnostics: &mut ReplenishmentDiagnostics,
+        mobility: Option<ResidentMobility<'_>>,
     ) {
         candidates.clear();
         if home_idx >= allocator.buildings.len() {
@@ -259,6 +262,7 @@ impl StoreSupplyIndex<'_> {
         let routes = ShoppingRoutes {
             home_idx,
             has_car,
+            mobility,
             walking,
             home: home_access.or_else(|| {
                 walking.map(|walking| {
@@ -302,12 +306,11 @@ impl StoreSupplyIndex<'_> {
             );
 
             if has_car {
-                let home_car_components = car_components.building_components(
-                    allocator,
-                    graph,
-                    home_idx,
-                    TransitFlags::CAR,
-                );
+                let home_car_components = if let Some(mobility) = mobility {
+                    mobility.components(home_idx, car_components, allocator, transit_network, graph)
+                } else {
+                    car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR)
+                };
                 self.scan_candidate_bucket(
                     &self.stores.car_buckets,
                     home_car_components,
@@ -574,8 +577,9 @@ impl HouseholdSystem {
             transit_network,
             graph,
             household_vat_rate,
+            None,
         );
-        self.serve_visits(slot, usize::MAX, agents, allocator, transit_network, graph);
+        self.serve_visits(slot, usize::MAX, agents, allocator, transit_network, graph, None);
     }
 
     /// Runs the hour of every household whose hourly phase falls in this slot (`SIM-02-F`):
@@ -699,6 +703,7 @@ impl HouseholdSystem {
             transit_network,
             graph,
             tuning.fiscal.household_vat_rate,
+            None,
         );
         for household in std::mem::take(&mut self.held_shoppers) {
             if let Some(hid) = self.handles.resolve(household) {
@@ -724,6 +729,7 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         household_vat_rate: f32,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) -> usize {
         if self.restock_requests.is_empty() {
             return 0;
@@ -749,6 +755,7 @@ impl HouseholdSystem {
                 transit_network,
                 graph,
                 household_vat_rate,
+                parking,
             );
         }
         self.restock_batch = batch;
@@ -769,6 +776,7 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         household_vat_rate: f32,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -784,7 +792,7 @@ impl HouseholdSystem {
         let target_days = profile.stock_target_days;
         let trigger_days = profile.reorder_threshold_days;
         agents.register_appended_household_members();
-        let front = self.destination_front(slot, allocator, transit_network, graph, &catalog);
+        let front = self.destination_front(slot, allocator, transit_network, graph, &catalog, parking);
         let store_index = StoreSupplyIndex {
             stores: &front.stores,
             catalog: &catalog,
@@ -803,7 +811,10 @@ impl HouseholdSystem {
         let plans: Vec<_> = batch
             .par_iter()
             .map_init(
-                || Vec::with_capacity(GROCERY_SEARCH_CANDIDATES),
+                || {
+                    crate::simulation::economy::agents::tick::TripQueryScratch::prepare_thread(transit_network, graph);
+                    Vec::with_capacity(GROCERY_SEARCH_CANDIDATES)
+                },
                 |candidates, &(queued_slot, hid)| {
                     let household = &households[hid];
                     let mut diagnostics = ReplenishmentDiagnostics::default();
@@ -827,6 +838,7 @@ impl HouseholdSystem {
                         trigger_days,
                         candidates,
                         &mut diagnostics,
+                        parking,
                     );
                     (plan, diagnostics)
                 },
@@ -863,6 +875,7 @@ impl HouseholdSystem {
                 &catalog,
                 household_vat_rate,
                 &mut diagnostics,
+                parking,
             );
             if reserved {
                 self.held_shoppers.push(self.handles.handle(household_id));
@@ -1037,6 +1050,7 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         household_vat_rate: f32,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) -> (bool, f32) {
         let state = self.households[hid].replenishment_state;
         if !matches!(
@@ -1084,6 +1098,7 @@ impl HouseholdSystem {
                     .operational_clock
                     .household_shopping_leg_timeout_hours,
                 household_vat_rate,
+                parking,
             );
             return (true, vat);
         }
@@ -1103,6 +1118,7 @@ impl HouseholdSystem {
         seconds_per_day: f64,
         shopping_leg_timeout_hours: u16,
         household_vat_rate: f32,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) -> f32 {
         let Some(agent_idx) = shopping_carrier(&self.households[hid], hid, agents) else {
             return 0.0;
@@ -1116,6 +1132,7 @@ impl HouseholdSystem {
         store.operating_budget += store_revenue;
         store.daily_household_sales_value += store_revenue;
         self.households[hid].replenishment_state = REPLENISHMENT_SHOPPING_RETURNING;
+        let mobility = parking.map(|parking| ResidentMobility::for_agent(parking, agents, agent_idx));
         self.households[hid].shopping_timeout_hours_remaining = shopping_leg_budget_hours(
             store_idx,
             self.households[hid].home_building_id,
@@ -1126,6 +1143,7 @@ impl HouseholdSystem {
             &agents.pathfind_count,
             seconds_per_day,
             shopping_leg_timeout_hours,
+            mobility,
         );
         schedule_shopper_home(&self.households[hid], agents, ACTIVITY_SHOPPING);
         household_vat_collected
@@ -1179,6 +1197,7 @@ impl HouseholdSystem {
                     transit_network,
                     graph,
                     household_vat_rate,
+                    None,
                 )
                 .1;
         }
@@ -1367,6 +1386,7 @@ fn plan_household_replenishment(
     trigger_days: f32,
     candidates: &mut Vec<usize>,
     diagnostics: &mut ReplenishmentDiagnostics,
+    parking: Option<&crate::simulation::parking::ParkingSystem>,
 ) -> Option<ReplenishmentCandidatePlan> {
     if !restock_due(
         household,
@@ -1389,7 +1409,8 @@ fn plan_household_replenishment(
         });
     }
 
-    let has_car = agents.has_car[shopper_agent_id];
+    let mobility = parking.map(|parking| ResidentMobility::for_agent(parking, agents, shopper_agent_id));
+    let has_car = mobility.map_or(agents.has_car[shopper_agent_id], |m| m.eligible);
     store_index.fill_route_feasible_candidates(
         household.home_building_id,
         has_car,
@@ -1409,6 +1430,7 @@ fn plan_household_replenishment(
         household.replenishment_search_cursor,
         candidates,
         diagnostics,
+        mobility,
     );
     diagnostics.attempts += 1;
     diagnostics.candidate_count += candidates.len() as u32;
@@ -1544,6 +1566,7 @@ fn apply_replenishment_plan(
     catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
     household_vat_rate: f32,
     diagnostics: &mut ReplenishmentDiagnostics,
+    parking: Option<&crate::simulation::parking::ParkingSystem>,
 ) -> bool {
     let Some(household) = households.get(plan.household_id) else {
         return false;
@@ -1629,6 +1652,7 @@ fn apply_replenishment_plan(
 
     let household = &mut households[plan.household_id];
     if let Some((store_idx, amount, total_cost)) = found_sale {
+        let mobility = parking.map(|parking| ResidentMobility::for_agent(parking, agents, plan.shopper_agent_id));
         let leg_budget = shopping_leg_budget_hours(
             household.home_building_id,
             store_idx,
@@ -1639,6 +1663,7 @@ fn apply_replenishment_plan(
             &agents.pathfind_count,
             seconds_per_day,
             shopping_leg_timeout_hours,
+            mobility,
         );
         let store = &mut allocator.buildings[store_idx];
         store.remove_inventory_units(household_supply_resource, amount);
@@ -1805,18 +1830,14 @@ fn shopping_leg_budget_hours(
     pathfind_count: &std::sync::atomic::AtomicU32,
     seconds_per_day: f64,
     delay_allowance_hours: u16,
+    mobility: Option<ResidentMobility<'_>>,
 ) -> u16 {
-    let travel_seconds = estimate_building_origin_trip_seconds(
-        origin,
-        destination,
-        has_car,
-        allocator,
-        transit_network,
-        graph,
-        pathfind_count,
-        None,
-    )
-    .unwrap_or(0);
+    let travel_seconds = if let Some(mobility) = mobility {
+        mobility.seconds(origin, destination, allocator, transit_network, graph, pathfind_count)
+    } else {
+        estimate_building_origin_trip_seconds(origin, destination, has_car, allocator,
+            transit_network, graph, pathfind_count, None)
+    }.unwrap_or(0);
     let travel_hours = (f64::from(travel_seconds) * 24.0 / seconds_per_day).ceil() as u16;
     delay_allowance_hours.saturating_add(travel_hours)
 }

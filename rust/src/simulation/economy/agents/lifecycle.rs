@@ -97,6 +97,119 @@ impl AgentSystem {
         agent_idx
     }
 
+    /// Starts one paced move-in: O(k + Q), one cached candidate scan and one border route.
+    /// With no parking the household walks and retains its car off-map; no car ends at a door.
+    pub(crate) fn start_parking_move_in(
+        &mut self,
+        i: usize,
+        parking: &mut crate::simulation::parking::ParkingSystem,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        use crate::simulation::parking::{ParkingTrip, ParkingTripPhase};
+        use crate::simulation::zoning::profiles::{load_builtin_profile_registry, ZoneDensity};
+        let home = self.agents.home_building[i];
+        let Some(building) = allocator.buildings.get(home) else {
+            return false;
+        };
+        let home_handle = allocator.building_handles.handle(home).to_bits();
+        let border = self.agents.current_node[i];
+        if !self.agents.parking_trip[i].arrival_ownership {
+            let profiles = load_builtin_profile_registry().expect("built-in zoning profiles");
+            let density = profiles.density_for_runtime_id(building.zone_profile_runtime_id).unwrap_or(ZoneDensity::Low);
+            let car = parking.arrival_car(self.agent_handle(i).to_bits(), density, [building.center_x, building.center_y]);
+            self.agents.parking_trip[i].vehicle = car;
+            self.agents.parking_trip[i].arrival_ownership = true;
+        }
+        let car = self.agents.parking_trip[i].vehicle;
+        parking.store_arrival_car(car, home_handle);
+        self.agents.journey_start_time[i] = self.sim_time;
+        if !car.is_none()
+            && let Some(candidate) = parking.first_free_candidate(home_handle)
+            && let Some(entrance) = parking.place_entrance(candidate.place, allocator, network, graph)
+            && let Some(plan) = super::tick::plan_border_arrival(border, home, MODE_CAR,
+                &entrance, network, graph, &self.pathfind_count)
+            && parking.reserve_arrival(car, self.agent_handle(i), candidate.place) {
+            self.agents.parking_trip[i] = ParkingTrip { vehicle: car, arrival_ownership: true,
+                destination: candidate.place, target: home_handle, phase: ParkingTripPhase::Drive,
+                route_capacity: plan.current_path.len(), ..Default::default() };
+            self.leave_lane_buckets(i);
+            self.apply_border_origin_freight_plan(i, border, home, plan, graph);
+            self.join_lane_buckets(i);
+            return true;
+        }
+        let Some(entrance) = allocator.entrances.get(home) else {
+            return false;
+        };
+        let Some(plan) = super::tick::plan_border_arrival(border, home, MODE_WALK,
+            entrance, network, graph, &self.pathfind_count) else {
+            return false;
+        };
+        self.leave_lane_buckets(i);
+        self.apply_border_origin_freight_plan(i, border, home, plan, graph);
+        self.join_lane_buckets(i);
+        true
+    }
+
+    /// Creates a delivery-only carrier at a border, O(k + BQ) at a scheduled event boundary.
+    /// Tries connected borders in stable order; the reserved car stays unavailable until pull-in.
+    pub(crate) fn start_stored_car_arrival(
+        &mut self,
+        car: crate::simulation::core::handles::Handle<crate::simulation::parking::Vehicle>,
+        borders: &[u32],
+        parking: &mut crate::simulation::parking::ParkingSystem,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        use crate::simulation::parking::{ParkingTrip, ParkingTripPhase};
+        let Some(home) = parking.stored_car_home(car) else {
+            return false;
+        };
+        let Some(target) = allocator.building_handles.resolve(crate::simulation::core::handles::Handle::from_bits(home)) else {
+            return false;
+        };
+        let Some(candidate) = parking.first_free_candidate(home) else {
+            return false;
+        };
+        let Some(entrance) = parking.place_entrance(candidate.place, allocator, network, graph) else {
+            return false;
+        };
+        for &border in borders {
+            let Some(plan) = super::tick::plan_border_arrival(border, target, MODE_CAR, &entrance,
+                network, graph, &self.pathfind_count) else {
+                continue;
+            };
+            let pos = graph.node(border).pos;
+            let i = self.spawn_border_arrival_agent(target, border, pos.x, pos.z);
+            if !parking.reserve_arrival(car, self.agent_handle(i), candidate.place) {
+                self.remove_agent_record(i, "parking delivery cancelled");
+                return false;
+            }
+            self.agents.age_group[i] = AGE_CHILD; // A vehicle carrier never participates in employment.
+            self.agents.parking_trip[i] = ParkingTrip { vehicle: car, destination: candidate.place,
+                target: home, phase: ParkingTripPhase::Drive, delivery_only: true,
+                route_capacity: plan.current_path.len(), ..Default::default() };
+            self.apply_border_origin_freight_plan(i, border, target, plan, graph);
+            self.agents.journey_start_time[i] = self.sim_time;
+            return true;
+        }
+        false
+    }
+
+    /// Retires only completed delivery carriers through the normal lifecycle helpers.
+    /// O(completed carriers + lane entries), after the tick; handles survive each swap removal.
+    pub(crate) fn remove_completed_parking_deliveries(&mut self) {
+        let mut completed = std::mem::take(&mut self.completed_parking_deliveries);
+        for handle in completed.drain(..) {
+            if let Some(i) = self.resolve_agent(handle) {
+                self.remove_agent_record(i, "car parked after external arrival");
+            }
+        }
+        self.completed_parking_deliveries = completed;
+    }
+
     /// Puts an arrival carrier inside its home at once, as if it had driven there: it leaves the
     /// lane buckets while its lane state still names its entries, enters its home and has its
     /// held departure released, so it then materializes as on an ordinary arrival. Only the
@@ -131,6 +244,9 @@ impl AgentSystem {
     /// Rebuilds [`Self::arrival_carriers`] from the carriers' pending households, in dense
     /// order, after a load replaced the store. O(agents).
     pub(crate) fn rebuild_arrival_carriers(&mut self) {
+        if self.completed_parking_deliveries.capacity() < self.agents.len() {
+            self.completed_parking_deliveries.reserve(self.agents.len() - self.completed_parking_deliveries.len());
+        }
         self.handles.register_appended(self.agents.len());
         self.arrival_carriers = (0..self.agents.len())
             .filter(|&agent_idx| self.agents.pending_household_size[agent_idx] > 0)
@@ -457,7 +573,8 @@ impl AgentSystem {
             current_path: Vec::new(),
             current_path_index: 0,
             walk_lanes: Vec::new(),
-            has_car: true,
+            has_car: false,
+            parking_trip: Default::default(),
             vehicle_type: stable_index(visual_seed ^ 0xA11C_EC7A, 4) as u8,
             pedestrian_type: stable_index(visual_seed ^ 0x51DE_CAFE, 4) as u8,
             walk_phase: stable_unit_f32(visual_seed ^ 0xBEE5_100D),
@@ -469,6 +586,10 @@ impl AgentSystem {
     fn insert_agent(&mut self, agent: Agent) -> usize {
         let index = self.agents.len();
         self.agents.push(agent);
+        if self.parking_retries.capacity() < self.agents.len() { self.parking_retries.reserve(self.agents.len() - self.parking_retries.len()); }
+        if self.completed_parking_deliveries.capacity() < self.agents.len() {
+            self.completed_parking_deliveries.reserve(self.agents.len() - self.completed_parking_deliveries.len());
+        }
         self.handles.register_appended(self.agents.len());
         self.register_appended_household_members();
         // The lane-bucket snapshot reads appended agents at the next tick (`SIM-02-K`).
@@ -562,7 +683,7 @@ impl AgentSystem {
         self.agents.overtake_blocked_time_s[agent_idx] = 0.0;
         self.agents.overtake_cooldown_s[agent_idx] = 0.0;
         self.agents.transit[agent_idx] = TRANSIT_NETWORK;
-        self.agents.transit_mode[agent_idx] = MODE_CAR;
+        self.agents.transit_mode[agent_idx] = plan.mode;
         self.agents.speed[agent_idx] = 0.0;
         self.agents.planned_attach_node[agent_idx] = plan.planned_attach_node;
         self.agents.planned_detach_node[agent_idx] = plan.planned_detach_node;

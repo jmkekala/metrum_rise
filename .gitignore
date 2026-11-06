@@ -6,3 +6,6 @@ logs/
 benchmark-results/
 audit-state/
 tools/__pycache__/
+
+# Local parking acceptance captures.
+captures/parking/

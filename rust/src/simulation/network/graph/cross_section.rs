@@ -209,6 +209,55 @@ impl SidewalkSides {
     }
 }
 
+/// Width of one kerbside parking lane in metres: room for a parallel-parked car and its opened
+/// door's clearance from the traffic lane (`PARK-05`).
+pub const PARKING_LANE_WIDTH_M: f32 = 2.5;
+
+/// Which kerbs of a road carry a parking lane (`PARK-05`), left and right looking along the
+/// edge's forward direction. A parking lane widens the carriageway on its side; the traffic
+/// lanes keep their widths and shift away from it. Cars park along it, never drive in it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RoadParking {
+    /// A parking lane along the left kerb.
+    pub left: bool,
+    /// A parking lane along the right kerb.
+    pub right: bool,
+}
+
+impl RoadParking {
+    /// No parking lane.
+    pub const NONE: Self = Self {
+        left: false,
+        right: false,
+    };
+
+    /// The save and tool code: bit 0 left, bit 1 right.
+    pub fn code(self) -> i32 {
+        i32::from(self.left) | i32::from(self.right) << 1
+    }
+
+    /// [`Self::code`]'s inverse; `None` for a code outside 0-3.
+    pub fn from_code(code: i32) -> Option<Self> {
+        (0..=3).contains(&code).then_some(Self {
+            left: code & 1 != 0,
+            right: code & 2 != 0,
+        })
+    }
+
+    /// Total width the parking lanes add to the carriageway.
+    pub fn width_m(self) -> f32 {
+        f32::from(u8::from(self.left) + u8::from(self.right)) * PARKING_LANE_WIDTH_M
+    }
+
+    /// How far the traffic lanes' centre sits from the carriageway's: half a parking lane
+    /// towards the side without one when only one kerb parks, else zero.
+    pub fn lane_shift_m(self) -> f32 {
+        (f32::from(u8::from(self.left)) - f32::from(u8::from(self.right)))
+            * PARKING_LANE_WIDTH_M
+            * 0.5
+    }
+}
+
 /// A turn pocket at one end of an edge (`ROAD-95`): extra lanes of the direction that approaches
 /// `end` (the forward lanes when `end` is [`EdgeEnd::End`]), each serving one turn at the node
 /// there. The lane counts and `Edge::width` include the pocket lanes. `left` is the lane left of
@@ -289,6 +338,7 @@ impl Edge {
     /// [`Self::kerb_shift_m`] instead, so a kerb pocket's lane lies outside the base road's
     /// lanes, which keep their offsets: a 1+1 road with a forward right pocket has its lanes at
     /// -1.75, 1.75 and 5.25 m. `O(1)`, allocation-free.
+    /// Kerbside parking (`PARK-05`) shifts the lanes away from the parking side.
     pub fn lane_group_offset(&self) -> f32 {
         let side = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
         let centred = (f32::from(self.bkw_lanes) - f32::from(self.fwd_lanes))
@@ -296,9 +346,9 @@ impl Edge {
             * 0.5
             * side;
         if self.pocket.is_none() {
-            return centred;
+            return centred + self.parking.lane_shift_m();
         }
-        self.kerb_shift_m() + centred
+        self.kerb_shift_m() + centred + self.parking.lane_shift_m()
     }
 
     /// Lateral offset, in the edge's forward frame, of the carriageway's centre from the
@@ -431,7 +481,9 @@ impl Edge {
         if let Some(median) = self.median.as_mut() {
             median.width_m -= f32::from(narrowed) * config::LANE_WIDTH;
         }
-        self.width = Edge::cross_section_width_m(self.fwd_lanes, self.bkw_lanes, self.median);
+        self.width = Edge::cross_section_width_m(
+            self.fwd_lanes, self.bkw_lanes, self.median, self.parking,
+        );
     }
 
     /// The pocket lanes that take the raised median's room (`ROAD-95` round R5b1): the inner
@@ -469,6 +521,7 @@ impl Edge {
             self.fwd_lanes - self.pocket_lanes(true),
             self.bkw_lanes - self.pocket_lanes(false),
             self.base_median(),
+            self.parking,
         )
     }
 
@@ -543,23 +596,32 @@ impl Edge {
         }
     }
 
-    /// The carriageway width a road of `fwd` + `bkw` lanes and `median` has, as a stroke builds
-    /// it (`network::build_surface_edge`): a lane width each plus the median, at least 2 m.
-    pub(crate) fn cross_section_width_m(fwd: u8, bkw: u8, median: Option<RoadMedian>) -> f32 {
+    /// The carriageway width a road of `fwd` + `bkw` lanes, `median` and `parking` has, as a
+    /// stroke builds it (`network::build_surface_edge`): a lane width each plus the median, at
+    /// least 2 m, plus its parking lanes.
+    pub(crate) fn cross_section_width_m(
+        fwd: u8,
+        bkw: u8,
+        median: Option<RoadMedian>,
+        parking: RoadParking,
+    ) -> f32 {
         (f32::from(fwd + bkw) * config::LANE_WIDTH + median.map_or(0.0, |median| median.width_m))
             .max(2.0)
+            + parking.width_m()
     }
 
-    /// Whether this edge may carry `fwd` forward and `bkw` backward lanes and `median` after an
-    /// in-place edit (`ROAD-80`): it must be a live road (a footpath stays a footpath), keep at
-    /// least one lane and stay within [`MAX_LANES_PER_DIRECTION`] per direction; a median must
-    /// be valid, on a car road, between two directions; a ring edge keeps its section
+    /// Whether this edge may carry `fwd` forward and `bkw` backward lanes, `median` and
+    /// `parking` after an in-place edit (`ROAD-80`, `PARK-05`): it must be a live road (a
+    /// footpath stays a footpath), keep at least one lane and stay within
+    /// [`MAX_LANES_PER_DIRECTION`] per direction; a median must be valid, on a car road, between
+    /// two directions; parking needs a car lane; a ring edge keeps its section
     /// (`roundabout_fixed`, `ROAD-62`). The error is the stable refusal key.
     pub(crate) fn validate_cross_section(
         &self,
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
     ) -> Result<(), &'static str> {
         if self.deleted || self.primary_type != TransitType::Road {
             return Err("cross_section_not_road");
@@ -573,7 +635,8 @@ impl Edge {
         if fwd == 0 && bkw == 0 {
             return Err("cross_section_cannot_change_transit_mode");
         }
-        Self::validate_median(self.allowed_types, fwd, bkw, median)
+        Self::validate_median(self.allowed_types, fwd, bkw, median)?;
+        Self::validate_parking(self.allowed_types, fwd, bkw, parking)
     }
 
     /// Gives a car road the sidewalks `sides` (`ROAD-107`) and with them its `FOOT` flag
@@ -651,6 +714,24 @@ impl Edge {
         }
         Ok(())
     }
+
+    /// Whether a road of `allowed_types` with `fwd` + `bkw` lanes may carry `parking`
+    /// (`PARK-05`): kerbside parking needs a car lane to park from. The error is the stable
+    /// refusal key. `O(1)`.
+    pub(crate) fn validate_parking(
+        allowed_types: u8,
+        fwd: u8,
+        bkw: u8,
+        parking: RoadParking,
+    ) -> Result<(), &'static str> {
+        if parking == RoadParking::NONE {
+            return Ok(());
+        }
+        if allowed_types & TransitFlags::CAR == 0 || fwd + bkw == 0 {
+            return Err("parking_requires_vehicle_road");
+        }
+        Ok(())
+    }
 }
 
 impl RegionGraph {
@@ -689,7 +770,7 @@ impl RegionGraph {
         debug_assert_eq!(edge.validate_pocket(), Ok(()));
     }
 
-    /// Gives edge `id` `fwd` forward and `bkw` backward lanes, `median`, and the width they take,
+    /// Gives edge `id` `fwd` forward and `bkw` backward lanes, `median`, `parking`, and their width,
     /// and its road type's `attributes` (`ROAD-101`): the sidewalk sides and `FOOT` from
     /// `sidewalks` (`ROAD-107`), the speed limit (the routing `base_cost` recomputed from it when
     /// it changes),
@@ -704,14 +785,19 @@ impl RegionGraph {
         fwd: u8,
         bkw: u8,
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) {
         let edge = self.edge_mut(id);
-        debug_assert_eq!(edge.validate_cross_section(fwd, bkw, median), Ok(()));
+        debug_assert_eq!(
+            edge.validate_cross_section(fwd, bkw, median, parking),
+            Ok(())
+        );
         edge.fwd_lanes = fwd;
         edge.bkw_lanes = bkw;
         edge.median = median;
-        edge.width = Edge::cross_section_width_m(fwd, bkw, median);
+        edge.parking = parking;
+        edge.width = Edge::cross_section_width_m(fwd, bkw, median, parking);
         edge.set_sidewalks(attributes.sidewalks);
         edge.no_building_spawn = !attributes.zoning;
         edge.no_street_lights = !attributes.street_lights;
@@ -736,14 +822,17 @@ mod tests {
         };
         let median = RoadMedian::from_tool(2, 5.0).unwrap();
         assert_eq!(
-            edge.validate_cross_section(1, 0, median),
+            edge.validate_cross_section(1, 0, median, RoadParking::NONE),
             Err("median_requires_both_directions")
         );
         assert_eq!(
-            edge.validate_cross_section(0, 1, median),
+            edge.validate_cross_section(0, 1, median, RoadParking::NONE),
             Err("median_requires_both_directions")
         );
-        assert!(edge.validate_cross_section(1, 1, median).is_ok());
+        assert!(
+            edge.validate_cross_section(1, 1, median, RoadParking::NONE)
+                .is_ok()
+        );
         assert_eq!(
             Edge::validate_median(TransitFlags::FOOT, 1, 1, median),
             Err("median_requires_vehicle_road")
@@ -754,7 +843,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            foot.validate_cross_section(0, 0, median),
+            foot.validate_cross_section(0, 0, median, RoadParking::NONE),
             Err("cross_section_not_road")
         );
         assert!(RoadMedian::from_tool(1, f32::NAN).is_err());
@@ -789,9 +878,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(edge.median_half_width(), 0.0);
-        assert_eq!(Edge::cross_section_width_m(2, 2, None), 14.0);
+        assert_eq!(
+            Edge::cross_section_width_m(2, 2, None, RoadParking::NONE),
+            14.0
+        );
         let grass = RoadMedian::from_tool(2, 4.0).unwrap();
-        assert_eq!(Edge::cross_section_width_m(2, 2, grass), 18.0);
+        assert_eq!(
+            Edge::cross_section_width_m(2, 2, grass, RoadParking::NONE),
+            18.0
+        );
         edge.median = grass;
         assert_eq!(edge.median_half_width(), 2.0);
         assert_eq!(
@@ -804,5 +899,66 @@ mod tests {
             edge.effective_vehicle_frontage_access(),
             edge.vehicle_frontage_access
         );
+    }
+
+    #[test]
+    fn kerbside_parking_widens_the_road_and_shifts_the_lanes_off_its_side() {
+        let mut edge = Edge {
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            ..Default::default()
+        };
+        let right = RoadParking {
+            left: false,
+            right: true,
+        };
+        let both = RoadParking {
+            left: true,
+            right: true,
+        };
+        assert_eq!(Edge::cross_section_width_m(1, 1, None, right), 9.5);
+        assert_eq!(Edge::cross_section_width_m(1, 1, None, both), 12.0);
+        // A 2 m footpath-width floor applies to the lanes, not to the parking added after it.
+        assert_eq!(Edge::cross_section_width_m(0, 0, None, right), 4.5);
+        edge.parking = right;
+        assert_eq!(edge.lane_group_offset(), -1.25);
+        edge.parking = both;
+        assert_eq!(edge.lane_group_offset(), 0.0);
+        for code in 0..4 {
+            assert_eq!(RoadParking::from_code(code).map(RoadParking::code), Some(code));
+        }
+        assert_eq!(RoadParking::from_code(4), None);
+    }
+
+    #[test]
+    fn pocket_add_remove_keeps_parking_width_and_base_lane_offsets() {
+        for code in 0..4 {
+            let parking = RoadParking::from_code(code).unwrap();
+            let mut edge = Edge {
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                width: Edge::cross_section_width_m(1, 1, None, parking),
+                parking,
+                ..Default::default()
+            };
+            let width = edge.width;
+            let offset = edge.lane_group_offset();
+            edge.set_pocket(Some(RoadPocket {
+                end: EdgeEnd::End,
+                left: false,
+                right: true,
+            }));
+            assert_eq!(edge.width, width + config::LANE_WIDTH);
+            assert_eq!(edge.base_width_m(), width);
+            assert_eq!(edge.lane_group_offset(), offset);
+            assert_eq!(edge.parking, parking);
+            edge.set_pocket(None);
+            assert_eq!(edge.width, width);
+            assert_eq!(edge.lane_group_offset(), offset);
+        }
     }
 }

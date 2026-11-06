@@ -9,8 +9,8 @@ use super::super::super::super::{
 use super::super::super::access::planned_detach_is_legal;
 use super::super::super::lane_nav::{lane_hosts_turn_preparation, lane_terminal_node};
 use super::super::super::planning::{
-    BuiltNetworkReplan, BuiltTripPlan, plan_border_network_replan, plan_immigration_trip,
-    plan_network_replan,
+    BuiltNetworkReplan, BuiltTripPlan, plan_border_arrival, plan_border_network_replan,
+    plan_immigration_trip, plan_network_replan,
 };
 use super::super::super::slices::MovementSlices;
 use super::super::super::trip_failures::FailureCause;
@@ -103,14 +103,17 @@ unsafe fn bootstrap_immigration_trip(
 
         let border_node = *s_cur_n.get(i);
         let home_bldg = *s_tgt_b.get(i);
-        if let Some(plan) = plan_immigration_trip(
-            border_node,
-            home_bldg,
-            allocator,
-            transit_network,
-            graph,
-            pathfind_count,
-        ) {
+        let plan = if *slices.pending_household_size.get(i) > 0
+            || (slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX)
+        {
+            allocator.entrances.get(home_bldg).and_then(|entrance|
+                plan_border_arrival(border_node, home_bldg,
+                    crate::simulation::economy::agents::MODE_WALK, entrance,
+                    transit_network, graph, pathfind_count))
+        } else {
+            plan_immigration_trip(border_node, home_bldg, allocator, transit_network, graph, pathfind_count)
+        };
+        if let Some(plan) = plan {
             apply_immigration_trip(i, border_node, plan, slices);
             true
         } else {
@@ -195,6 +198,7 @@ unsafe fn ensure_exact_access_plan(
             pathfind_count,
             Some((i, "exact-access-replan")),
             None,
+            slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
         ) {
             Ok(replan) => {
                 apply_network_replan(i, replan, slices);
@@ -323,6 +327,7 @@ pub(super) unsafe fn replan_after_missed_turn(
                 pathfind_count,
                 Some((i, "missed-turn-replan")),
                 first_lane,
+                slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
             )
             .map(|plan| apply_network_replan(i, plan, slices))
             .is_ok()
@@ -404,11 +409,14 @@ unsafe fn repair_stale_detach_plan(
 
         let target_building = *s_tgt_b.get(i);
         let planned_detach_lane_id = *s_plan_detach_lane.get(i) as usize;
-        let detach_still_legal = target_building < allocator.entrances.len()
+        let trip = *slices.parking_trip.get(i);
+        let parking_entrance = slices.parking.and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph));
+        let target_entrance = parking_entrance.as_ref().or_else(|| allocator.entrances.get(target_building));
+        let detach_still_legal = target_entrance.is_some()
             && planned_detach_lane_id != usize::MAX
             && planned_detach_is_legal(
                 *s_tmode.get(i),
-                &allocator.entrances[target_building],
+                target_entrance.expect("validated destination"),
                 planned_detach_lane_id,
                 *s_plan_detach_lane_d.get(i),
                 *s_plan_detach_n.get(i),
@@ -459,6 +467,7 @@ unsafe fn repair_stale_detach_plan(
             pathfind_count,
             Some((i, "stale-detach-replan")),
             None,
+            slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
         ) {
             Ok(replan) => {
                 apply_network_replan(i, replan, slices);
@@ -573,7 +582,7 @@ unsafe fn apply_immigration_trip(
         let s_lane_d = &slices.lane_d;
         let s_cur_e = &slices.cur_e;
 
-        *s_tmode.get_mut(i) = MODE_CAR;
+        *s_tmode.get_mut(i) = plan.mode;
         *s_tgt_b.get_mut(i) = plan.target_building;
         *s_plan_attach_n.get_mut(i) = plan.planned_attach_node;
         *s_plan_detach_n.get_mut(i) = plan.planned_detach_node;
@@ -589,6 +598,7 @@ unsafe fn apply_immigration_trip(
         *s_lane_id.get_mut(i) = usize::MAX;
         *s_lane_d.get_mut(i) = 0.0;
         *s_speed.get_mut(i) = 0.0;
+        slices.parking_trip.get_mut(i).route_replaced(plan.current_path.len());
         *s_path.get_mut(i) = plan.current_path;
         slices.walk_lanes.get_mut(i).clear();
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
@@ -614,6 +624,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn apply_netwo
         let s_access_flags = &slices.access_flags;
         let s_next_replan_time = &slices.next_replan_time;
 
+        slices.parking_trip.get_mut(i).route_replaced(replan.current_path.len());
         *s_path.get_mut(i) = replan.current_path;
         slices.walk_lanes.get_mut(i).clear();
         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };

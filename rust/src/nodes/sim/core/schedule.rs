@@ -866,6 +866,7 @@ impl SimCore {
                             &self.transit_network,
                             &self.region_graph,
                             slot,
+                            Some(&self.parking),
                         );
                         // The stranded-walker report shares the slot (`ROAD-74`).
                         self.agents

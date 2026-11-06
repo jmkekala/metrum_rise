@@ -232,6 +232,8 @@ pub struct SimCore {
     pub allocator: BuildingAllocator,
     /// Agent FSM in Structure-of-Arrays layout.
     pub agents: AgentSystem,
+    /// Persistent physical parking supply and parked vehicles; PARK-01 does not alter trips.
+    pub(crate) parking: crate::simulation::parking::ParkingSystem,
     /// Explicit household runtime records and first-pass daily economy logic.
     pub households: HouseholdSystem,
     /// Active building-level freight reservations and delayed deliveries.
@@ -423,6 +425,7 @@ impl SimCore {
             environment_sweep: EnvironmentSweep::default(),
             allocator: BuildingAllocator::new_at_slot(next_slot - 1),
             agents: AgentSystem::new(),
+            parking: Default::default(),
             households: HouseholdSystem::new(),
             logistics: ShipmentSystem::new(),
             config,
@@ -1865,6 +1868,7 @@ impl SimCore {
         let changes = std::mem::take(&mut self.last_site_terrain_changes);
         self.record_graded_site_edit(&changes);
         self.last_site_terrain_changes = changes;
+        self.publish_parking_sites();
         self.publish_pending_production_site_removals();
         crate::nodes::simulation_node::vegetation_api::publish_yards(self);
         while let Some(bounds) = self.allocator.pop_pending_cell_site_dirty_bounds() {

@@ -484,17 +484,18 @@ func set_selected_edge_class(class_int: int) -> void:
 		get_node("../RoadTool").update_main_mesh()
 
 ## Rust's verdict on giving every selected road `fwd` + `bkw` lanes, the median `median_style`
-## of `median_width` metres (`ROAD-80`) and a road type's `speed_kmh`, `sidewalks` (Rust's side
-## code in each road's own forward direction, `ROAD-107`), `zoning` and `street_lights`
-## (`ROAD-101`) in place: the first refusal (`invalid_reason`, `detail`), else `is_valid` with the
-## selection's totals of Rust's `buildings_removed` and `cost_delta`, and `demolition_permanent`
-## when any road's is. Each road is checked as it stands, as Apply commits them one by one.
-func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float,
+## of `median_width` metres (`ROAD-80`), kerbside `parking` (`PARK-05`: bit 0 left, bit 1 right)
+## and a road type's `speed_kmh`, `sidewalks` (Rust's side code in each road's own forward
+## direction, `ROAD-107`), `zoning` and `street_lights` (`ROAD-101`) in place: the first refusal
+## (`invalid_reason`, `detail`), else `is_valid` with the selection's totals of Rust's
+## `buildings_removed` and `cost_delta`, and `demolition_permanent` when any road's is. Each road
+## is checked as it stands, as Apply commits them one by one.
+func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float, parking: int,
 		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool) -> Dictionary:
 	var total := {"is_valid": true, "buildings_removed": 0, "cost_delta": 0.0, "demolition_permanent": false}
 	for idx in selected_edges:
 		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width,
-			speed_kmh, sidewalks, zoning, street_lights)
+			parking, speed_kmh, sidewalks, zoning, street_lights)
 		if not bool(verdict.get("is_valid", false)):
 			return verdict
 		total.buildings_removed += int(verdict.get("buildings_removed", 0))
@@ -502,20 +503,45 @@ func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, 
 		total.demolition_permanent = total.demolition_permanent or bool(verdict.get("demolition_permanent", false))
 	return total
 
-## Gives every selected road Rust accepts `fwd` + `bkw` lanes, the median and the type's
-## attributes, each with its undo record, and returns how many were refused. The edits publish
-## their chunks at once; zoning off refreshes the no-build overlay, as the checkbox does.
-func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float,
+## Gives every selected road Rust accepts `fwd` + `bkw` lanes, the median, `parking` and the
+## type's attributes, each with its undo record, and returns how many were refused. The edits
+## publish their chunks at once; zoning off refreshes the no-build overlay, as the checkbox does.
+func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float, parking: int,
 		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool) -> int:
 	var refused := 0
 	for idx in selected_edges:
-		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, speed_kmh, sidewalks,
-				zoning, street_lights):
+		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, parking, speed_kmh,
+				sidewalks, zoning, street_lights):
 			refused += 1
 	_rebuild_highlight()
 	if not zoning:
 		_refresh_no_build_overlay()
 	return refused
+
+## Turns the kerbside parking lane `side_bit` (1 left, 2 right, looking along each road's drawn
+## direction) on or off on every selected road, keeping its lanes, median and attributes (`PARK-05`), each
+## with its undo record. Returns `refused` (how many roads Rust refused) and `verdict`, the first
+## refusal, for the window to show.
+func set_selected_edge_parking_side(side_bit: int, enabled: bool) -> Dictionary:
+	var refused := 0
+	var first_refusal := {}
+	for idx in selected_edges:
+		var section: Dictionary = simulation_node.get_edge_cross_section(idx)
+		var code := int(section.get("parking", 0))
+		var wanted := (code | side_bit) if enabled else (code & ~side_bit)
+		if wanted == code:
+			continue
+		var args := [idx, int(section.get("fwd_lanes", 0)), int(section.get("bkw_lanes", 0)),
+			int(section.get("median_style", 0)), float(section.get("median_width", 0.0)), wanted,
+			int(section.get("speed_kmh", 50)), bool(section.get("sidewalks", true)), bool(section.get("zoning", true)),
+			bool(section.get("street_lights", true))]
+		var verdict: Dictionary = simulation_node.callv("preview_edge_cross_section", args)
+		if not bool(verdict.get("is_valid", false)) or not simulation_node.callv("set_edge_cross_section", args):
+			refused += 1
+			if first_refusal.is_empty():
+				first_refusal = verdict
+	_rebuild_highlight()
+	return {"refused": refused, "verdict": first_refusal}
 
 func set_selected_edge_no_building_spawn(enabled: bool) -> void:
 	for idx in selected_edges:

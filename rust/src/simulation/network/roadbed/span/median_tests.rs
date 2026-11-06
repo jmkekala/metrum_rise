@@ -60,7 +60,7 @@ fn a_raised_median_continues_only_where_both_arms_carry_it_in_line() {
     // median noses out at the node. Of another width they are laid out.
     let wide = |edge: Edge| {
         let mut edge = divided(edge, 2, 2, None);
-        edge.width = Edge::cross_section_width_m(2, 2, grass(4.0));
+        edge.width = Edge::cross_section_width_m(2, 2, grass(4.0), Default::default());
         edge
     };
     let graph = straight_pair(with(2, 2, grass(4.0)), wide, false, false);
@@ -99,7 +99,7 @@ fn grass_road(edge: Edge) -> Edge {
 fn as_wide_as(median: Option<RoadMedian>) -> impl Fn(Edge) -> Edge {
     move |edge: Edge| {
         let mut edge = divided(edge, 2, 2, None);
-        edge.width = Edge::cross_section_width_m(2, 2, median);
+        edge.width = Edge::cross_section_width_m(2, 2, median, Default::default());
         edge
     }
 }

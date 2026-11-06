@@ -104,30 +104,33 @@ impl HouseholdTopology {
 }
 
 /// One destination: its building, 512 m chunk and the components its door reaches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DestinationEntry {
     pub(super) building: Handle<Building>,
     pub(super) chunk: (i32, i32),
     pub(super) foot: BuildingModeComponents,
     pub(super) car: BuildingModeComponents,
+    // Shared publication-time union; cloning an entry never allocates per destination.
+    pub(super) parking_car: Option<std::sync::Arc<[u32]>>,
 }
 
 /// One saved destination: building handle bits, chunk x and y, then the foot and car
 /// components as `(labels, count)`.
-pub(crate) type SavedDestination = (u64, i32, i32, ([u32; 2], usize), ([u32; 2], usize));
+pub(crate) type SavedDestination = (u64, i32, i32, ([u32; 2], usize), ([u32; 2], usize), Vec<u32>);
 
 impl DestinationEntry {
-    fn saved(self) -> SavedDestination {
+    fn saved(&self) -> SavedDestination {
         (
             self.building.to_bits(),
             self.chunk.0,
             self.chunk.1,
             self.foot.raw_parts(),
             self.car.raw_parts(),
+            self.parking_car.as_deref().unwrap_or_default().to_vec(),
         )
     }
 
-    fn loaded((building, x, y, foot, car): SavedDestination) -> Result<Self, String> {
+    fn loaded((building, x, y, foot, car, parking_car): SavedDestination) -> Result<Self, String> {
         Ok(Self {
             building: Handle::from_bits(building),
             chunk: (x, y),
@@ -135,6 +138,7 @@ impl DestinationEntry {
                 .ok_or("destination with too many foot components")?,
             car: BuildingModeComponents::from_raw_parts(car.0, car.1)
                 .ok_or("destination with too many car components")?,
+            parking_car: (!parking_car.is_empty()).then(|| parking_car.into()),
         })
     }
 }
@@ -158,9 +162,12 @@ impl DestinationIndex {
             entry
                 .foot
                 .append_bucket_entries(&mut foot_bucket_entries, entry.chunk, position);
-            entry
-                .car
-                .append_bucket_entries(&mut car_bucket_entries, entry.chunk, position);
+            // Legacy isolated fixtures have door components; resident folds leave those
+            // empty and share the full parking component union prepared on edits.
+            entry.car.append_bucket_entries(&mut car_bucket_entries, entry.chunk, position);
+            for &component in entry.parking_car.as_deref().unwrap_or_default() {
+                car_bucket_entries.push(crate::simulation::economy::accessibility::ReachableBucketEntry::new(component, entry.chunk, position));
+            }
         }
         Self {
             entries,
@@ -249,6 +256,7 @@ pub(super) struct DestinationFold<'a> {
     pub(super) topology: &'a HouseholdTopology,
     pub(super) supplies: u16,
     pub(super) services: Option<ResourceRuntimeId>,
+    pub(super) parking: Option<&'a crate::simulation::parking::ParkingSystem>,
 }
 
 impl DestinationFold<'_> {
@@ -269,11 +277,12 @@ impl DestinationFold<'_> {
             self.topology
                 .foot
                 .building_components(allocator, self.graph, idx, TransitFlags::FOOT);
-        let car =
-            self.topology
-                .car
-                .building_components(allocator, self.graph, idx, TransitFlags::CAR);
-        if foot.as_slice().is_empty() && car.as_slice().is_empty() {
+        let parking_car = self.parking.and_then(|parking| parking.economy_ends(allocator.building_handles.handle(idx).to_bits()))
+            .map(|ends| std::sync::Arc::clone(&ends.components));
+        let car = if self.parking.is_some() { BuildingModeComponents::default() } else {
+            self.topology.car.building_components(allocator, self.graph, idx, TransitFlags::CAR)
+        };
+        if foot.as_slice().is_empty() && car.as_slice().is_empty() && parking_car.as_ref().is_none_or(|components| components.is_empty()) {
             return None;
         }
         Some((
@@ -283,6 +292,7 @@ impl DestinationFold<'_> {
                 chunk: chunk_for_point(building.center_x, building.center_y),
                 foot,
                 car,
+                parking_car,
             },
         ))
     }
@@ -297,7 +307,7 @@ impl DestinationFold<'_> {
             if let Some((kinds, entry)) = self.entry(idx) {
                 for kind in [STORES, SERVICES] {
                     if kinds[kind] {
-                        back[kind].push(entry);
+                        back[kind].push(entry.clone());
                     }
                 }
             }

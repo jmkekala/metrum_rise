@@ -502,6 +502,10 @@ impl BuildingAllocator {
             let [min_x, min_z, max_x, max_z] = change.bounds;
             (min_x, min_z, max_x, max_z)
         });
+        let handle = self.building_handles.handle(building_idx);
+        if !handle.is_none() {
+            self.parking_site_changes.push(handle);
+        }
         self.graded_site_changes.extend(change);
         self.accumulate_pending_site_dirty_bounds(bounds);
         if self.buildings.get(building_idx).is_some_and(|building| {

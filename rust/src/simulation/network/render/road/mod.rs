@@ -733,13 +733,22 @@ impl NetworkMeshData {
 }
 
 // Per-vertex road description for the asphalt shader (road_asphalt.gdshader), in 8-bit
-// channels: forward and backward lane counts, the speed limit in km/h, and a cosmetic age in
-// the upper half of alpha. Junction asphalt keeps a zero alpha: it has no road space.
+// channels. Red: forward lanes (bits 0-2), parking lanes on the left (bit 3) and right (bit 4)
+// kerb (`PARK-05`), left-hand traffic (bit 5). Green: backward lanes (bits 0-2) and the median's
+// width in half metres (bits 3-7), so the shader knows the carriageway is wider than its lanes.
+// Blue: the speed limit in km/h. Alpha: a cosmetic age in its upper half. Junction asphalt keeps
+// a zero alpha: it has no road space.
 pub(super) fn road_space_color(edge: &crate::simulation::network::graph::Edge) -> Color {
     let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
+    let red = edge.fwd_lanes.min(7)
+        | (u8::from(edge.parking.left) << 3)
+        | (u8::from(edge.parking.right) << 4)
+        | (u8::from(crate::config::DRIVE_ON_LEFT) << 5);
+    let median_halves = (edge.median_half_width() * 4.0).round().min(31.0) as u8;
+    let green = edge.bkw_lanes.min(7) | (median_halves << 3);
     Color::from_rgba(
-        channel(f32::from(edge.fwd_lanes)),
-        channel(f32::from(edge.bkw_lanes)),
+        channel(f32::from(red)),
+        channel(f32::from(green)),
         channel(edge.speed_limit * 3.6),
         channel(128.0 + 127.0 * cosmetic_road_age(edge)),
     )
@@ -803,10 +812,33 @@ pub(super) fn marking_dash_color() -> Color {
 
 #[cfg(test)]
 mod tests {
-    use super::marking_dash_color;
+    use super::{marking_dash_color, road_space_color};
+    use crate::simulation::network::graph::{Edge, RoadMedian, RoadParking};
 
     #[test]
     fn lane_marking_colors_are_visible() {
         assert!(marking_dash_color().a > 0.0);
+    }
+
+    // road_asphalt.gdshader widens the carriageway past its lanes by these bits; without them
+    // it paints a parking lane or the far side of a median as gravel shoulder.
+    #[test]
+    fn road_space_color_packs_parking_lanes_and_median_width_beside_the_lane_counts() {
+        let byte = |channel: f32| (channel * 255.0).round() as u8;
+        let mut edge = Edge {
+            fwd_lanes: 2,
+            bkw_lanes: 1,
+            ..Default::default()
+        };
+        let plain = road_space_color(&edge);
+        assert_eq!((byte(plain.r), byte(plain.g)), (2, 1));
+        edge.parking = RoadParking {
+            left: false,
+            right: true,
+        };
+        edge.median = Some(RoadMedian::from_tool(2, 3.0).unwrap().unwrap());
+        let color = road_space_color(&edge);
+        assert_eq!((byte(color.r), byte(color.g)), (2 | 16, 1 | (6 << 3)));
+        assert_eq!((color.b, color.a), (plain.b, plain.a));
     }
 }

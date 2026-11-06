@@ -632,6 +632,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
                 super::super::road_types::RoadAttributes::DEFAULT,
             ));
         }
@@ -662,6 +663,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
                 super::super::road_types::RoadAttributes::DEFAULT,
             ));
         }
@@ -697,6 +699,7 @@ mod tests {
                 1,
                 EdgeClass::Standard,
                 None,
+                Default::default(),
                 super::super::road_types::RoadAttributes::DEFAULT,
             ));
         }
@@ -749,6 +752,7 @@ mod tests {
                     1,
                     EdgeClass::Standard,
                     None,
+                    Default::default(),
                     super::super::road_types::RoadAttributes::DEFAULT,
                 ));
             }
@@ -1021,6 +1025,7 @@ mod tests {
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
             super::super::road_types::RoadAttributes::DEFAULT,
         )
     }
@@ -1103,6 +1108,7 @@ mod tests {
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
             super::super::road_types::RoadAttributes::DEFAULT,
         ));
         graph.add_edge(super::super::build_surface_edge(
@@ -1113,6 +1119,7 @@ mod tests {
             1,
             EdgeClass::Standard,
             None,
+            Default::default(),
             super::super::road_types::RoadAttributes::DEFAULT,
         ));
         // Dead end at a: continue westward, away from the road.
@@ -1182,6 +1189,7 @@ mod tests {
                 1,
                 class,
                 None,
+                Default::default(),
                 super::super::road_types::RoadAttributes::DEFAULT,
             ));
         }
@@ -1255,6 +1263,7 @@ mod tests {
                 1,
                 class,
                 None,
+                Default::default(),
                 super::super::road_types::RoadAttributes::DEFAULT,
             ));
         }

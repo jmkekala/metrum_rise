@@ -303,6 +303,7 @@ impl HouseholdSystem {
             .remove_household(household_id, &self.households);
         self.note_household_structure_change();
         crate::debug::work::add(crate::debug::work::Work::HouseholdsRemoved, 1);
+        self.parking_changes.push(self.handles.handle(household_id));
         self.handles
             .swap_remove(household_id, self.households.len());
         self.households.swap_remove(household_id);

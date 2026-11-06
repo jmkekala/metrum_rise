@@ -80,6 +80,7 @@ fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview 
         snap_to_existing_roads: true,
         tunnel: false,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     })
 }
@@ -93,6 +94,7 @@ fn commit(core: &mut SimCore, points: &[Vector3], preview: Option<Arc<RoadPrevie
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview,
         },
@@ -241,6 +243,7 @@ pub(crate) fn drag(
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         });
         let span = span(called);
@@ -290,6 +293,7 @@ fn click(core: &mut SimCore, drag: Drag, [fwd_lanes, bkw_lanes]: [i32; 2]) -> se
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: Some(Arc::new(drag.preview)),
         },
@@ -768,6 +772,7 @@ fn tunnel_tiles_of_a_preview_commit_undo_and_load_equal_fresh_bakes() {
         snap_to_existing_roads: false,
         tunnel: true,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     };
     let mut pose = context.preview_road(request(&context));
@@ -796,6 +801,7 @@ fn tunnel_tiles_of_a_preview_commit_undo_and_load_equal_fresh_bakes() {
                 snap_to_existing_roads: false,
                 tunnel: true,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview,
             },

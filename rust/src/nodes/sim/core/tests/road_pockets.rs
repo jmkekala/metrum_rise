@@ -226,7 +226,7 @@ fn a_pocket_on_a_one_sided_road_keeps_its_sidewalk_on_that_side() {
         let (mut core, node) = crossing(true);
         let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
         let attributes = RoadAttributes::new(50, sides, true);
-        assert!(core.set_edge_cross_section_internal(west as i32, 1, 1, None, attributes));
+        assert!(core.set_edge_cross_section_internal(west as i32, 1, 1, None, Default::default(), attributes));
         let plain = RoadProfile::for_edge(core.region_graph.edge(west));
         assert_eq!(pocket_edit(&mut core, request(west, end, (false, true), 60.0)), "");
         let pocket = core.get_road_pocket_internal(west as i32, end).unwrap().edge;
@@ -315,7 +315,7 @@ fn pocket_edits_are_refused_with_a_reason() {
     let attributes = crate::simulation::network::road_types::RoadAttributes::of_edge(
         core.region_graph.edge(west),
     );
-    assert!(core.set_edge_cross_section_internal(west as i32, 1, 1, Some(grass), attributes));
+    assert!(core.set_edge_cross_section_internal(west as i32, 1, 1, Some(grass), Default::default(), attributes));
     assert_eq!(
         pocket_edit(&mut core, request(west, end, (true, false), 60.0)),
         "pocket_requires_wide_median"
@@ -337,6 +337,7 @@ fn divide_arm(core: &mut SimCore, west: usize, lanes: u8, median_m: f32) {
         lanes,
         lanes,
         Some(grass),
+        Default::default(),
         attributes
     ));
 }
@@ -501,7 +502,7 @@ fn a_right_pocket_on_a_divided_road_carries_the_median_through_its_transition() 
     let attributes = crate::simulation::network::road_types::RoadAttributes::of_edge(
         core.region_graph.edge(west),
     );
-    assert!(core.set_edge_cross_section_internal(west as i32, 2, 2, Some(painted), attributes));
+    assert!(core.set_edge_cross_section_internal(west as i32, 2, 2, Some(painted), Default::default(), attributes));
     assert_eq!(pocket_edit(&mut core, request(west, end, (false, true), 60.0)), "");
 }
 
@@ -527,7 +528,7 @@ fn pocket_roles_resize_remove_and_preview_cover_both_stored_directions() {
             core.region_graph.edge(west),
         );
         let (fwd, bkw) = if end == EdgeEnd::End { (1, 0) } else { (0, 1) };
-        assert!(core.set_edge_cross_section_internal(west as i32, fwd, bkw, None, attributes));
+        assert!(core.set_edge_cross_section_internal(west as i32, fwd, bkw, None, Default::default(), attributes));
         assert_eq!(
             pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
             ""
@@ -616,7 +617,7 @@ fn one_way_right_pocket_retains_the_through_lane_alignment() {
     let attributes = crate::simulation::network::road_types::RoadAttributes::of_edge(
         core.region_graph.edge(west),
     );
-    assert!(core.set_edge_cross_section_internal(west as i32, 1, 0, None, attributes));
+    assert!(core.set_edge_cross_section_internal(west as i32, 1, 0, None, Default::default(), attributes));
     assert_eq!(
         pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
         ""

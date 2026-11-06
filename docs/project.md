@@ -6,6 +6,27 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+The parking integration with `ROAD-94`/`ROAD-95` uses save format 116: parking state and
+kerbside lanes coexist with lane-choice routing, turn pockets and lane-transition nodes.
+Both parents' current-only loading policy is retained; see the
+[save contract](simulation.md#save-bytes-road-68-k16). Merge verification is in progress.
+
+`PARK-01` round 1b ships building anchors, the standalone lot, persistent test
+cars, local towing, saves and parked chunk rendering on `dev`. Kerbside waits for the widening
+roadbed parking band after the median profile work. Lot rebuilds stay below 0.223 ms at 100k
+background; targeted/bridge checks pass, with the two known base probe failures in the full suite.
+`PARK-02` round 2a implements resident ownership/custody and walking–parking–driving trips,
+including exact economy quotes, departure reservations, save/load and coherent moving/parked
+rendering. Traffic integration passes 30 parking regressions and 11 bridge scripts; the full
+Rust suite has only the two probes freshly reproduced on plain `dev`.
+Agent work scales 3× and candidate rebuilding stays about 0.75 ms through 100k background.
+Five existing economy counter limits and the external-review approval remain open; freight and
+wider lifecycle work remain for round 2b. Pass p06 exposes rejected anchor reasons, brings move-in
+cars through reserved parking, and delivers stored cars from external connections through
+bounded scheduled events; save version 111 preserves these arrivals. The merged `TRAFFIC-13/15/16/14` fixes retain the shared detach
+rules and parking reservations through gridlock detours
+([design and acceptance](traffic.md#resident-parking-trips-park-02-round-2a)).
+
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
 Vulkan/MoltenVK and Linux Vulkan, without slowing streaming or setup
@@ -46,7 +67,7 @@ ring came from shoppers who could never reach a door at a lane's end and circled
 locked; with that fixed the city built to day 12 has no ring. A gridlock check once a game minute
 now finds rings of waiting cars, sends one car with a free way out on a detour, and shows rings
 with no way out to the player as a notice and a ring round each locked junction; its state is
-saved (save format 109) ([TRAFFIC-14](traffic.md#gridlock-check-traffic-14)). Connector heads that
+saved (save format 110, combined with parking) ([TRAFFIC-14](traffic.md#gridlock-check-traffic-14)). Connector heads that
 wait at a full exit brake to a stop ([TRAFFIC-16](traffic.md#junction-speeds)); that slows
 saturated junctions (30k deliveries -13.5%), and the 100k ring it causes is detoured whenever it
 locks.

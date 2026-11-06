@@ -3,7 +3,7 @@
 //! Core graph data structures: Nodes, Edges, and the RegionGraph container.
 
 use super::super::types::*;
-use super::{RoadMedian, RoadPocket, RoundaboutRing, SidewalkSides};
+use super::{RoadMedian, RoadParking, RoadPocket, RoundaboutRing, SidewalkSides};
 use godot::prelude::*;
 use rayon::prelude::*;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
@@ -108,6 +108,8 @@ pub struct Edge {
     pub vehicle_frontage_access: VehicleFrontageAccess,
     /// The median between the two lane groups, if any (`ROAD-80`).
     pub median: Option<RoadMedian>,
+    /// Kerbside parking lanes (`PARK-05`), included in `width`.
+    pub parking: RoadParking,
     /// The turn pocket at one of the edge's ends, if any (`ROAD-95`); its lanes are counted in
     /// `fwd_lanes` / `bkw_lanes` and `width`.
     pub pocket: Option<RoadPocket>,

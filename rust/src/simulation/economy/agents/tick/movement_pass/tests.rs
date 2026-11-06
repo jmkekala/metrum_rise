@@ -76,7 +76,7 @@ fn pedestrian_connector_cannot_publish_a_vehicle_lane_exit() {
     let n = agents.len();
     agents.prepare_lane_buckets_for_tick(&network, n);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        agents.dispatch_movement_pass(&allocator, &network, &graph, 0.25, &clock, n);
+        agents.dispatch_movement_pass(&allocator, &network, &graph, 0.25, &clock, n, None);
     }));
     let error = result.expect_err("cross-mode connector exit must be rejected");
     let message = error.downcast_ref::<String>().expect("contract diagnostic");
@@ -174,6 +174,7 @@ fn turn_fixture(count: usize) -> (AgentSystem, TransitNetwork, RegionGraph, Vec<
                 pocket: None,
                 sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
                 roundabout: None,
+                parking: Default::default(),
             });
             arms.push((start, centre, edge));
         }
@@ -241,6 +242,7 @@ fn turn_fixture_cars_change_toward_their_turn_lanes() {
         0.25,
         &TimeSystem::new(),
         n,
+        None,
     );
     for (i, &(lane, _)) in starts.iter().enumerate() {
         // Every car is in its window on the wrong lane, with a clear gap on the other one.
@@ -260,6 +262,7 @@ fn move_fixture(agents: &mut AgentSystem, network: &TransitNetwork) {
         0.25,
         &TimeSystem::new(),
         n,
+        None,
     );
 }
 
@@ -401,7 +404,7 @@ fn benchmark_lane_transitions() {
                 agents.invalidate_lane_bucket_snapshot();
                 agents.prepare_lane_buckets_for_tick(&network, n);
                 let start = Instant::now();
-                agents.dispatch_movement_pass(&allocator, &network, graph, 0.25, &clock, n);
+                agents.dispatch_movement_pass(&allocator, &network, graph, 0.25, &clock, n, None);
                 if sample >= 3 {
                     samples[sample - 3] = start.elapsed().as_secs_f64() * 1_000.0;
                 }
@@ -499,6 +502,7 @@ fn node_entry_fixture(groups: usize, cars: usize) -> (AgentSystem, TransitNetwor
         let end = graph.add_node(Vector3::new(2_000.0, 0.0, z), NodeType::Junction);
         let geometry = vec![Vector3::new(0.0, 0.0, z), Vector3::new(2_000.0, 0.0, z)];
         let edge = graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: start,
             end_node: end,
             primary_type: TransitType::Road,

@@ -167,6 +167,7 @@ fn committed_with(
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },

@@ -46,6 +46,8 @@ pub(crate) struct RoadAttempt<'a> {
     pub(crate) tunnel: bool,
     /// The road tool's median (`ROAD-80`), which a replay sets before it draws.
     pub(crate) median: Option<RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`).
+    pub(crate) parking: crate::simulation::network::graph::RoadParking,
     /// The road tool's road-type attributes (`ROAD-101`), which a replay sets before it draws.
     pub(crate) attributes: RoadAttributes,
 }
@@ -136,6 +138,7 @@ impl RoadRejection {
             tunnel: attempt.tunnel,
             median_style: RoadMedian::style_code(attempt.median),
             median_width: attempt.median.map_or(0.0, |median| median.width_m),
+            parking: attempt.parking.code(),
             speed_kmh: RoadAttributes::speed_kmh_of(attempt.attributes.speed_ms),
             sidewalks: attempt.attributes.sidewalks.bits(),
             zoning: attempt.attributes.zoning,
@@ -161,6 +164,8 @@ struct AttemptRecord<'a> {
     // The median as the road tool names it (`RoadMedian::from_tool`): style 0 is none.
     median_style: i32,
     median_width: f32,
+    // Kerbside parking (`PARK-05`) as `RoadParking::code`: bit 0 left, bit 1 right.
+    parking: i32,
     // The road type's attributes as the road tool sets them (`set_road_tool_attributes`):
     // `sidewalks` is the side code (`ROAD-107`).
     speed_kmh: u16,
@@ -438,6 +443,7 @@ mod tests {
             snap: true,
             tunnel: true,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: RoadAttributes::from_tool(100, 1, false, false).unwrap(),
         };
         let (why, replay) = rejection.lines(7, RejectedBy::Commit, attempt, 42);
@@ -520,6 +526,7 @@ mod tests {
             snap: false,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         };
         let (why, _) = plain.lines(1, RejectedBy::Tool, attempt, 0);

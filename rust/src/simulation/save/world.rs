@@ -294,6 +294,8 @@ pub(super) fn save_world(
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
+    let mut detached_stmt =
+        tx.prepare("INSERT INTO building_detached_poses VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")?;
     for (saved_bid, b) in buildings.buildings.iter().enumerate() {
         if !b.daily_city_funded_input_cost.is_finite() {
             return Err(SaveLoadError::custom("invalid city input cost"));
@@ -311,12 +313,46 @@ pub(super) fn save_world(
             .edge_old_to_new
             .get(&b.edge_idx)
             .copied()
-            .ok_or_else(|| SaveLoadError::custom("missing building edge mapping"))?;
+            .map(usize_to_i64)
+            .transpose()?;
+        if saved_eid.is_none() {
+            if b.parcel_id != 0
+                || b.zone_type != ZoneType::None
+                || ![
+                    b.center_x,
+                    b.center_y,
+                    b.facing_dir.x,
+                    b.facing_dir.y,
+                    b.side_offset,
+                    b.front_gap_m[0],
+                    b.front_gap_m[1],
+                    b.front_gap_m[2],
+                ]
+                .into_iter()
+                .all(f32::is_finite)
+                || (b.facing_dir.length_squared() - 1.0).abs() > 0.001
+            {
+                return Err(SaveLoadError::custom(
+                    "invalid detached explicit building pose",
+                ));
+            }
+            detached_stmt.execute(params![
+                saved_bid_db,
+                b.center_x,
+                b.center_y,
+                b.facing_dir.x,
+                b.facing_dir.y,
+                b.side_offset,
+                b.front_gap_m[0],
+                b.front_gap_m[1],
+                b.front_gap_m[2]
+            ])?;
+        }
         bld_stmt.execute(params![
             saved_bid_db,
             i64::try_from(b.parcel_id)
                 .map_err(|_| SaveLoadError::custom("building parcel id overflow"))?,
-            usize_to_i64(saved_eid)?,
+            saved_eid.unwrap_or(NONE_REF),
             b.frontage_t,
             i64::from(b.side),
             usize_to_i64(b.cell_x)?,
@@ -463,7 +499,7 @@ pub(super) fn save_world(
             generation
         ])?;
     }
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)")?;
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window, shopping_has_car) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)")?;
     for (hid, household) in households.households.iter().enumerate() {
         let ledger = households
             .daily_ledgers()
@@ -525,6 +561,7 @@ pub(super) fn save_world(
             household.gross_daily_wages,
             i64::from(household.employed_adults),
             i64::from(ledger.paid_workers),
+            i64::from(household.shopping_has_car),
         ])?;
     }
 
@@ -667,7 +704,7 @@ pub(super) fn save_household_queue_state(
             generation
         ])?;
     }
-    let mut stmt = tx.prepare("INSERT INTO household_destinations(buffer, kind, position, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")?;
+    let mut stmt = tx.prepare("INSERT INTO household_destinations(buffer, kind, position, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b, parking_components) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)")?;
     let front = roll.front.as_ref().map(|(_, entries)| entries);
     let back = roll.sweep.as_ref().map(|sweep| &sweep.entries);
     for (buffer, entries) in [(0_i64, front), (1, back)] {
@@ -675,23 +712,24 @@ pub(super) fn save_household_queue_state(
             continue;
         };
         for (kind, entries) in entries.iter().enumerate() {
-            for (position, &(building, x, y, (foot, foot_count), (car, car_count))) in
+            for (position, (building, x, y, (foot, foot_count), (car, car_count), parking_car)) in
                 entries.iter().enumerate()
             {
                 stmt.execute(params![
                     buffer,
                     usize_to_i64(kind)?,
                     usize_to_i64(position)?,
-                    i64::from((building >> 32) as u32),
-                    i64::from(building as u32),
-                    i64::from(x),
-                    i64::from(y),
-                    usize_to_i64(foot_count)?,
+                    i64::from((*building >> 32) as u32),
+                    i64::from(*building as u32),
+                    i64::from(*x),
+                    i64::from(*y),
+                    usize_to_i64(*foot_count)?,
                     i64::from(foot[0]),
                     i64::from(foot[1]),
-                    usize_to_i64(car_count)?,
+                    usize_to_i64(*car_count)?,
                     i64::from(car[0]),
                     i64::from(car[1]),
+                    serde_json::to_vec(parking_car).map_err(|err| SaveLoadError::custom(err.to_string()))?,
                 ])?;
             }
         }
@@ -797,7 +835,7 @@ fn load_household_queue_state(
     households.shopper_departures = MinuteLeveler::restore(i64_to_u64(first_minute)?, &counts)
         .ok_or_else(|| SaveLoadError::custom("invalid shopper departure counts"))?;
     let mut buffers: [[Vec<SavedDestination>; 2]; 2] = Default::default();
-    let mut stmt = conn.prepare("SELECT buffer, kind, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b FROM household_destinations ORDER BY buffer, kind, position")?;
+    let mut stmt = conn.prepare("SELECT buffer, kind, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b, parking_components FROM household_destinations ORDER BY buffer, kind, position")?;
     let mut rows = stmt.query([])?;
     let chunk = |value: i64| {
         i32::try_from(value).map_err(|_| SaveLoadError::custom("destination chunk out of range"))
@@ -820,6 +858,7 @@ fn load_household_queue_state(
                 [i64_to_u32(row.get(10)?)?, i64_to_u32(row.get(11)?)?],
                 i64_to_usize(row.get(9)?)?,
             ),
+            serde_json::from_slice(&row.get::<_, Vec<u8>>(12)?).map_err(|err| SaveLoadError::custom(err.to_string()))?,
         ));
     }
     let [front, back] = buffers;
@@ -1577,7 +1616,7 @@ pub(super) fn load_buildings(
             front_gap_m: [0.0; 3],
             is_deserted: row.get::<_, i64>(25)? != 0,
             budget_distress: row.get::<_, i64>(26)? != 0,
-            edge_idx: i64_to_usize(row.get(2)?)?,
+            edge_idx: db_to_optional_usize(row.get(2)?)?,
             side: i64_to_i8(row.get(4)?)?,
             cell_x: i64_to_usize(row.get(5)?)?,
             cell_y: i64_to_u16(row.get(6)?)?,
@@ -1626,6 +1665,49 @@ pub(super) fn load_buildings(
             pending_redevelopment: row.get::<_, i64>(23)? != 0,
             rezone_grace_days_remaining: i64_to_u8(row.get(24)?)?,
         });
+    }
+    {
+        let mut stmt = conn.prepare("SELECT building_id,center_x,center_z,facing_x,facing_z,side_offset,gap_left,gap_center,gap_right FROM building_detached_poses ORDER BY building_id")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let index = i64_to_usize(row.get(0)?)?;
+            let b = allocator
+                .buildings
+                .get_mut(index)
+                .ok_or_else(|| SaveLoadError::custom("orphan detached building pose"))?;
+            let values: [f32; 8] = [
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+            ];
+            if b.edge_idx != usize::MAX
+                || b.parcel_id != 0
+                || b.zone_type != ZoneType::None
+                || !values.into_iter().all(f32::is_finite)
+                || (values[2] * values[2] + values[3] * values[3] - 1.0).abs() > 0.001
+            {
+                return Err(SaveLoadError::custom(
+                    "invalid detached explicit building pose",
+                ));
+            }
+            b.center_x = values[0];
+            b.center_y = values[1];
+            b.facing_dir = Vector2::new(values[2], values[3]);
+            b.side_offset = values[4];
+            b.front_gap_m = [values[5], values[6], values[7]];
+        }
+        if allocator
+            .buildings
+            .iter()
+            .any(|b| b.edge_idx == usize::MAX && b.facing_dir.length_squared() < 0.99)
+        {
+            return Err(SaveLoadError::custom("detached building has no saved pose"));
+        }
     }
     let mut stmt = conn.prepare(
         "SELECT building_id, resource_runtime_id, amount FROM building_inventories ORDER BY building_id, resource_runtime_id",
@@ -1910,7 +1992,7 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
         ));
     }
     load_city_hour(conn, &mut households)?;
-    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window FROM households ORDER BY household_id")?;
+    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window, shopping_has_car FROM households ORDER BY household_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
@@ -1941,7 +2023,8 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             adult_count,
             elder_count,
             gross_daily_wages: row.get(28)?,
-            shopping_has_car: false,
+            // Refreshed only at the household's hourly recount, so saved (`PARK-02`).
+            shopping_has_car: row.get::<_, i64>(31)? != 0,
             employed_adults: i64_to_u16(row.get(29)?)?,
             consumption_rate: row.get(8)?,
             stock_days: row.get(9)?,

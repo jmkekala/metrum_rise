@@ -69,6 +69,7 @@ pub(super) struct LoadedAgentRecord {
     pub cached_schedule_work_building: usize,
     pub cached_work_profile_index: u16,
     pub has_car: bool,
+    pub parking_trip: crate::simulation::parking::ParkingTrip,
     pub vehicle_type: u8,
     pub current_path_index: usize,
     pub current_path: Vec<u32>,
@@ -84,7 +85,7 @@ pub(super) fn save_agents(
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
     lanes::save_lane_references(tx, graph, network, maps)?;
-    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55)")?;
+    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days, parking_trip) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56)")?;
     let mut path_stmt = tx.prepare(
         "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
     )?;
@@ -183,7 +184,8 @@ pub(super) fn save_agents(
             agents.overtake_blocked_time_s[i],
             agents.overtake_cooldown_s[i],
             i64::from(agents.job_lock_until_day[i]),
-            i64::from(agents.consecutive_unpaid_days[i])
+            i64::from(agents.consecutive_unpaid_days[i]),
+            serde_json::to_string(&agents.parking_trip[i]).map_err(|e| SaveLoadError::custom(e.to_string()))?
         ])?;
 
         for (idx, &nid) in agents.current_path[i].iter().enumerate() {
@@ -221,7 +223,7 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
     let mut agents = AgentSystem::new();
     agents.sim_time = sim_time;
     {
-        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days FROM agents ORDER BY agent_id")?;
+        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days, parking_trip FROM agents ORDER BY agent_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let aid = i64_to_usize(row.get(0)?)?;
@@ -287,6 +289,7 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
                     cached_schedule_work_building: db_to_optional_usize(row.get(37)?)?,
                     cached_work_profile_index: i64_to_u16(row.get(38)?)?,
                     has_car: row.get(39)?,
+                    parking_trip: serde_json::from_str(&row.get::<_, String>(55)?).map_err(|e| SaveLoadError::custom(e.to_string()))?,
                     vehicle_type: i64_to_u8(row.get(40)?)?,
                     current_path_index: i64_to_usize(row.get(41)?)?,
                     current_path: car_paths.remove(&aid).unwrap_or_default(),
@@ -385,6 +388,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         current_path_index: rec.current_path_index,
         walk_lanes: Vec::new(),
         has_car: rec.has_car,
+        parking_trip: rec.parking_trip,
         vehicle_type: rec.vehicle_type,
         pedestrian_type: rec.pedestrian_type,
         walk_phase: rec.walk_phase,

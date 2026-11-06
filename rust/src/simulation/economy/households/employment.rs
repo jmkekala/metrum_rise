@@ -23,7 +23,8 @@ use crate::simulation::economy::accessibility::{
 };
 use crate::simulation::economy::agents::tick::{
     BuildingTripEnds, SharedNetworkQuotes, TripEstimate, TripQueryScratch,
-    estimate_building_origin_trip_seconds_with_scratch, estimate_trip_seconds_with_scratch,
+    estimate_building_origin_trip_seconds_with_scratch, estimate_parking_trip_seconds_within,
+    estimate_trip_seconds_with_scratch,
 };
 use crate::simulation::economy::agents::{
     AgentHandle, AgentSystem, TRANSIT_IN_BUILDING, age_group_can_work,
@@ -40,6 +41,7 @@ use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
+use crate::simulation::parking::{ParkingSystem, Vehicle};
 use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::ZoneType;
 use crate::{debug, debug_log};
@@ -73,14 +75,35 @@ const EMPTY_HOME_JOB_OPTION: HomeJobOption = HomeJobOption {
     open_slots: 0,
 };
 const EMPTY_WORKPLACE_ROUTE_ENTRY: WorkplaceRouteCacheEntry =
-    ((usize::MAX, usize::MAX, false), None);
+    ((usize::MAX, usize::MAX, false), WorkplaceCommute::legacy(None));
 
 pub(super) type WorkplaceRouteCacheKey = (usize, usize, bool);
-type WorkplaceRouteCacheEntry = (WorkplaceRouteCacheKey, Option<u16>);
+type WorkplaceRouteCacheEntry = (WorkplaceRouteCacheKey, WorkplaceCommute);
 /// Exact home/workplace/car quotations. Consumers only perform keyed lookups, so the
 /// existing fixed fast hasher changes neither choice order nor daily price invalidation.
 pub(super) type WorkplaceRouteCache =
-    HashMap<WorkplaceRouteCacheKey, Option<u16>, foldhash::fast::FixedState>;
+    HashMap<WorkplaceRouteCacheKey, WorkplaceCommute, foldhash::fast::FixedState>;
+/// One bounded home/work/mode cache value. Parking endpoint stamps replace the value when
+/// occupancy selects another bay; they do not create new cache keys or an availability epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WorkplaceCommute {
+    /// Physical seconds of the preferred feasible mode, or no feasible route.
+    pub seconds: Option<u16>,
+    /// Actual origin place, or MAX for a walking-only/legacy query.
+    pub source: u64,
+    /// Selected destination place, or MAX when driving has no fitting free place.
+    pub destination: u64,
+    /// Derived geometry stamp of those endpoints, unchanged by unrelated parking edits.
+    pub geometry: u64,
+}
+
+impl WorkplaceCommute {
+    /// Unstamped walking-only or isolated legacy quote; O(1), allocation-free.
+    pub(crate) const fn legacy(seconds: Option<u16>) -> Self {
+        Self { seconds, source: u64::MAX, destination: u64::MAX, geometry: 0 }
+    }
+}
+
 type CurrentJobOptionKey = (HomeJobOptionsKey, usize);
 
 #[derive(Clone, Copy)]
@@ -93,6 +116,7 @@ struct JobChoice {
 struct HomeJobOptionsKey {
     home_idx: usize,
     has_car: bool,
+    car: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -159,7 +183,7 @@ pub(super) struct JobSupplySnapshot {
 
 // Board hour, component generation, CCH build and metric, and lane count and revision that a
 // supply snapshot was built for.
-type JobSupplyKey = (u64, Option<u32>, u32, u64, usize, u64);
+type JobSupplyKey = (u64, Option<u32>, u32, u64, usize, u64, u64);
 
 /// One day's wage paid at a worker's daily phase (`SIM-02-G`).
 #[derive(Clone, Copy, Debug)]
@@ -325,6 +349,7 @@ impl HouseholdSystem {
             transit_network,
             graph,
             minute_of_day,
+            None,
         );
     }
 
@@ -379,6 +404,7 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         minute_of_day: u16,
+        parking: Option<&ParkingSystem>,
     ) -> usize {
         if self.job_requests.is_empty() {
             return 0;
@@ -404,6 +430,7 @@ impl HouseholdSystem {
                 transit_network,
                 graph,
                 minute_of_day,
+                parking,
             );
         }
         self.job_batch = batch;
@@ -484,6 +511,7 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         minute_of_day: u16,
+        parking: Option<&ParkingSystem>,
     ) {
         let start = Instant::now();
         let catalog = load_runtime_economy_catalog()
@@ -515,6 +543,7 @@ impl HouseholdSystem {
             batch,
             allocator.buildings.len(),
             self.households.len(),
+            parking,
         );
         if home_option_keys.is_empty() && current_job_keys.is_empty() {
             return;
@@ -526,6 +555,7 @@ impl HouseholdSystem {
             hour,
             self.destination_topology.generation(),
             transit_network,
+            parking,
         );
         if self
             .job_supply
@@ -543,9 +573,10 @@ impl HouseholdSystem {
                 graph,
                 &self.destination_topology,
                 speeds,
+                parking,
             );
             let target_searches =
-                supply.prepare_targets(&mut self.workplace_network_quotes, transit_network);
+                supply.prepare_targets(&mut self.workplace_network_quotes, transit_network, parking);
             agents
                 .pathfind_count
                 .fetch_add(target_searches as u32, std::sync::atomic::Ordering::Relaxed);
@@ -577,6 +608,7 @@ impl HouseholdSystem {
             &mut self.workplace_network_quotes,
             &mut self.workplace_query_shards,
             &agents.pathfind_count,
+            parking,
         );
         self.job_supply = Some(job_supply);
         // Reserve the completed batch before ordered insertion; no per-quote growth.
@@ -600,6 +632,7 @@ impl HouseholdSystem {
                     &self.households,
                     &home_job_options,
                     &current_job_options,
+                    parking,
                 )
             })
             .collect();
@@ -925,6 +958,7 @@ fn plan_agent_workplace(
     households: &[Household],
     home_job_options: &BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
     current_job_options: &BTreeMap<CurrentJobOptionKey, HomeJobOption>,
+    parking: Option<&ParkingSystem>,
 ) -> Option<JobAssignmentPlan> {
     if agents.transit[i] != TRANSIT_IN_BUILDING {
         return None;
@@ -953,10 +987,7 @@ fn plan_agent_workplace(
         return None;
     }
 
-    let home_key = HomeJobOptionsKey {
-        home_idx,
-        has_car: agents.has_car[i],
-    };
+    let home_key = home_job_key(agents, i, parking);
     let options = home_job_options.get(&home_key)?;
 
     let income_pressure = household_income_pressure(catalog, tuning, household);
@@ -1339,7 +1370,7 @@ pub(super) fn open_job(
     })
 }
 
-fn job_supply_key(hour: u64, components: Option<u32>, network: &TransitNetwork) -> JobSupplyKey {
+fn job_supply_key(hour: u64, components: Option<u32>, network: &TransitNetwork, parking: Option<&ParkingSystem>) -> JobSupplyKey {
     (
         hour,
         components,
@@ -1347,6 +1378,7 @@ fn job_supply_key(hour: u64, components: Option<u32>, network: &TransitNetwork) 
         network.cch_graph.metric_revision,
         network.lane_system.lanes.len(),
         network.lane_system.revision(),
+        parking.map_or(0, ParkingSystem::candidate_revision),
     )
 }
 
@@ -1374,7 +1406,8 @@ fn job_search_due(
 impl JobSupplySnapshot {
     // The network side of board `members` for `key`: each live member's door, components,
     // chunk and arrival ends, in handle order, and its buckets, with the top walking and car
-    // commute speeds `speeds`. O(members) on Rayon.
+    // commute speeds `speeds`. O(members + distinct bay component memberships) on Rayon.
+    #[allow(clippy::too_many_arguments)]
     fn build(
         key: JobSupplyKey,
         members: &[Handle<Building>],
@@ -1383,6 +1416,7 @@ impl JobSupplySnapshot {
         graph: &RegionGraph,
         topology: &super::destinations::HouseholdTopology,
         [max_walk_commute_speed, max_car_commute_speed]: [f32; 2],
+        parking: Option<&ParkingSystem>,
     ) -> Self {
         let entries: Vec<_> = members
             .par_iter()
@@ -1399,6 +1433,7 @@ impl JobSupplySnapshot {
                         .building_components(allocator, graph, idx, TransitFlags::CAR);
                 if foot_components.as_slice().is_empty()
                     && car_components.as_slice().is_empty()
+                    && parking.and_then(|p| p.economy_ends(building.to_bits())).is_none_or(|ends| ends.components.is_empty())
                     && allocator.household_capacity(idx) == 0
                 {
                     return None;
@@ -1419,6 +1454,7 @@ impl JobSupplySnapshot {
                 })
             })
             .collect();
+        let parking_slack = parking.map_or(0.0, |parking| entries.iter().filter_map(|entry| parking.economy_ends(entry.building.to_bits())).map(|ends| ends.node_slack_m).fold(0.0, f32::max));
         let node_slack_m = entries
             .iter()
             .filter_map(|entry| {
@@ -1430,7 +1466,7 @@ impl JobSupplySnapshot {
                         .max_node_distance(building.center_x, building.center_y),
                 )
             })
-            .fold(0.0, f32::max);
+            .fold(parking_slack, f32::max);
 
         let mut foot_bucket_entries = Vec::with_capacity(entries.len());
         let mut car_bucket_entries = Vec::with_capacity(entries.len());
@@ -1440,11 +1476,15 @@ impl JobSupplySnapshot {
                 entry.chunk,
                 entry_idx,
             );
-            entry.car_components.append_bucket_entries(
-                &mut car_bucket_entries,
-                entry.chunk,
-                entry_idx,
-            );
+            if let Some(parking) = parking {
+                if let Some(ends) = parking.economy_ends(entry.building.to_bits()) {
+                    for &component in ends.components.iter() {
+                        car_bucket_entries.push(crate::simulation::economy::accessibility::ReachableBucketEntry::new(component, entry.chunk, entry_idx));
+                    }
+                }
+            } else {
+                entry.car_components.append_bucket_entries(&mut car_bucket_entries, entry.chunk, entry_idx);
+            }
         }
 
         Self {
@@ -1473,19 +1513,18 @@ impl JobSupplySnapshot {
 
     // Prepares the members' arrival targets in the shared network quotes; returns the backward
     // target searches it ran.
-    fn prepare_targets(&self, quotes: &mut SharedNetworkQuotes, network: &TransitNetwork) -> usize {
-        let targets = std::array::from_fn(|mode| {
-            self.entries
-                .par_iter()
-                .flat_map_iter(|entry| {
-                    entry
-                        .trip_ends
-                        .network_targets(mode as u8)
-                        .into_iter()
-                        .flatten()
-                })
-                .collect()
+    fn prepare_targets(&self, quotes: &mut SharedNetworkQuotes, network: &TransitNetwork, parking: Option<&ParkingSystem>) -> usize {
+        let mut targets: [Vec<(u32, usize)>; 2] = std::array::from_fn(|mode| {
+            self.entries.par_iter().flat_map_iter(|entry| entry.trip_ends.network_targets(mode as u8).into_iter().flatten()).collect()
         });
+        if let Some(parking) = parking {
+            targets[usize::from(crate::simulation::economy::agents::MODE_CAR)].clear();
+            for entry in &self.entries {
+                if let Some(ends) = parking.economy_ends(entry.building.to_bits()) {
+                    targets[usize::from(crate::simulation::economy::agents::MODE_CAR)].extend_from_slice(&ends.targets);
+                }
+            }
+        }
         quotes.prepare_targets(targets, network)
     }
 
@@ -1501,6 +1540,17 @@ impl JobSupplySnapshot {
     }
 }
 
+// The actual eligible household car is part of the batch key; never share one household's
+// away car with another household at the same building. O(1) custody lookup.
+fn home_job_key(agents: &AgentSystem, i: usize, parking: Option<&ParkingSystem>) -> HomeJobOptionsKey {
+    let car = agents.parking_trip[i].vehicle;
+    let has_car = parking.map_or(agents.has_car[i], |parking| {
+        agents.age_group[i] != crate::simulation::economy::agents::AGE_CHILD
+            && parking.available_to(car, agents.handles.handle(i))
+    });
+    HomeJobOptionsKey { home_idx: agents.home_building[i], has_car, car: if parking.is_some() && has_car { car.to_bits() } else { u64::MAX } }
+}
+
 // The distinct homes, and current jobs from them, of the searchers in `batch` who may still
 // look for work, each list sorted. O(batch log batch).
 fn collect_home_job_option_keys(
@@ -1508,6 +1558,7 @@ fn collect_home_job_option_keys(
     batch: &[usize],
     building_count: usize,
     household_count: usize,
+    parking: Option<&ParkingSystem>,
 ) -> (Vec<HomeJobOptionsKey>, Vec<CurrentJobOptionKey>) {
     let requests: Vec<_> = batch
         .par_iter()
@@ -1515,12 +1566,8 @@ fn collect_home_job_option_keys(
             if !job_search_due(agents, i, building_count, household_count) {
                 return None;
             }
-            let home_idx = agents.home_building[i];
             let old_job = agents.work_building[i];
-            let key = HomeJobOptionsKey {
-                home_idx,
-                has_car: agents.has_car[i],
-            };
+            let key = home_job_key(agents, i, parking);
             let current_job_key = (old_job < building_count).then_some((key, old_job));
             Some((key, current_job_key))
         })
@@ -1552,6 +1599,7 @@ fn build_home_job_options(
     network_quotes: &mut SharedNetworkQuotes,
     shards: &mut Vec<WorkplaceQueryShard>,
     pathfind_count: &AtomicU32,
+    parking: Option<&ParkingSystem>,
 ) -> (
     BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
     BTreeMap<CurrentJobOptionKey, HomeJobOption>,
@@ -1607,6 +1655,7 @@ fn build_home_job_options(
                         &mut shard.query,
                         &mut route_entries,
                         &mut route_entry_count,
+                        parking,
                     );
                     shard.home.push(HomeJobOptionsBuild {
                         key,
@@ -1657,6 +1706,7 @@ fn build_home_job_options(
                     &mut shard.query,
                     &mut route_entries,
                     &mut route_entry_count,
+                    parking,
                 );
                 shard.current.push(CurrentJobOptionBuild {
                     key,
@@ -1706,6 +1756,7 @@ fn build_home_job_options_for_key(
     query: &mut TripQueryScratch,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
+    parking: Option<&ParkingSystem>,
 ) -> HomeJobOptions {
     crate::debug::work::add(crate::debug::work::Work::JobSearchKeys, 1);
     let Some(home) = allocator.buildings.get(key.home_idx) else {
@@ -1769,11 +1820,15 @@ fn build_home_job_options_for_key(
         &mut option_count,
         new_route_entries,
         new_route_entry_count,
+        parking,
     );
 
     if key.has_car {
-        let home_car_components =
-            car_components.building_components(allocator, graph, key.home_idx, TransitFlags::CAR);
+        let home_car_components = if let Some(parking) = parking {
+            parking.vehicle_place(Handle::from_bits(key.car))
+                .and_then(|place| parking.place_entrance(place, allocator, transit_network, graph))
+                .map_or_default(|entrance| car_components.entrance_components(&entrance, graph, TransitFlags::CAR))
+        } else { car_components.building_components(allocator, graph, key.home_idx, TransitFlags::CAR) };
         scan_home_job_bucket(
             &job_supply.car_buckets,
             home_car_components,
@@ -1797,6 +1852,7 @@ fn build_home_job_options_for_key(
             &mut option_count,
             new_route_entries,
             new_route_entry_count,
+            parking,
         );
     }
 
@@ -1828,6 +1884,7 @@ fn scan_home_job_bucket(
     option_count: &mut usize,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
+    parking: Option<&ParkingSystem>,
 ) {
     bucket_index.scan_nearest(components, origin_x, origin_y, |event| match event {
         ReachableBucketScanEvent::Item { item_idx } => {
@@ -1858,7 +1915,7 @@ fn scan_home_job_bucket(
                 query,
                 new_route_entries,
                 new_route_entry_count,
-            ) else {
+             parking, Handle::from_bits(key.car), allocator) else {
                 return true;
             };
             insert_home_job_option(
@@ -1879,7 +1936,7 @@ fn scan_home_job_bucket(
         } => !home_job_search_can_stop_after(
             options,
             *option_count,
-            home_trip_ends
+            (if parking.is_some() { 0.0 } else { home_trip_ends
                 .lower_bound_seconds_to_distance(
                     key.has_car,
                     origin_x,
@@ -1887,7 +1944,7 @@ fn scan_home_job_bucket(
                     next_min_distance_sq.sqrt(),
                     job_supply.node_slack_m,
                     max_commute_speed,
-                )
+                ) })
                 .max(lower_bound_travel_seconds(
                     next_min_distance_sq,
                     max_commute_speed,
@@ -1959,6 +2016,7 @@ fn build_current_job_option_for_key(
     query: &mut TripQueryScratch,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
+    parking: Option<&ParkingSystem>,
 ) -> Option<HomeJobOption> {
     let (home_key, work_idx) = key;
     let work = allocator.buildings.get(work_idx)?;
@@ -1977,7 +2035,7 @@ fn build_current_job_option_for_key(
         query,
         new_route_entries,
         new_route_entry_count,
-    )?;
+     parking, Handle::from_bits(home_key.car))?;
     let average_daily_wage = profile.average_daily_wage();
     // Funded jobs from the workplace's own row, which moves with it (`SIM-02-J`).
     let effective_capacity = work.funded_job_capacity;
@@ -2029,6 +2087,33 @@ fn home_job_option_order(left: HomeJobOption, right: HomeJobOption) -> CmpOrderi
         .then_with(|| left.building_idx.cmp(&right.building_idx))
 }
 
+// O(k) for the first free destination; O(1) endpoint stamps. Occupancy replaces the bounded
+// pair/mode cache value, while local geometry changes refresh only affected endpoint quotes.
+fn commute_endpoints(
+    parking: Option<&ParkingSystem>,
+    car: Handle<Vehicle>,
+    has_car: bool,
+    work: usize,
+    allocator: &BuildingAllocator,
+) -> (u64, u64, u64) {
+    let Some(parking) = parking else {
+        return (u64::MAX, u64::MAX, 0);
+    };
+    let source = has_car.then(|| parking.vehicle_place(car)).flatten();
+    let destination = source.and_then(|_| {
+        parking.first_free_candidate(allocator.building_handles.handle(work).to_bits())
+    });
+    let geometry = source.map_or(0, |source| parking.quote_geometry(source))
+        ^ destination.map_or(0, |candidate| {
+            parking.quote_geometry(candidate.place).rotate_left(1)
+        });
+    (
+        source.map_or(u64::MAX, |p| p.to_bits()),
+        destination.map_or(u64::MAX, |c| c.place.to_bits()),
+        geometry,
+    )
+}
+
 // A commute over `budget_s` cannot enter the ranked options; it is neither returned nor cached.
 #[allow(clippy::too_many_arguments)]
 fn cached_commute_seconds_within(
@@ -2048,18 +2133,33 @@ fn cached_commute_seconds_within(
     query: &mut TripQueryScratch,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
+    parking: Option<&ParkingSystem>,
+    car: Handle<Vehicle>,
+    allocator: &BuildingAllocator,
 ) -> Option<u16> {
     if home_idx == work_idx {
         return Some(0);
     }
     let key = (home_idx, work_idx, has_car);
-    if let Some(result) = route_cache.get(&key) {
-        return *result;
+    let (source, destination, geometry) = commute_endpoints(parking, car, has_car, work_idx, allocator);
+    if let Some(result) = route_cache.get(&key)
+        && result.source == source
+        && result.destination == destination
+        && result.geometry == geometry
+    {
+        return result.seconds;
     }
     if !exact_entrance_cache_available {
         return None;
     }
-    let TripEstimate::Seconds(result) = estimate_trip_seconds_with_scratch(
+    let estimate = if let Some(parking) = parking {
+        TripQueryScratch::with_owned(query, || {
+            estimate_parking_trip_seconds_within(
+                home_idx, work_idx, car, has_car, parking, allocator,
+                transit_network, graph, pathfind_count, budget_s, Some(network_quotes),
+            )
+        })
+    } else { estimate_trip_seconds_with_scratch(
         home_trip_ends,
         work_trip_ends,
         has_car,
@@ -2070,11 +2170,12 @@ fn cached_commute_seconds_within(
         budget_s,
         Some(network_quotes),
         query,
-    ) else {
+    ) };
+    let TripEstimate::Seconds(result) = estimate else {
         return None;
     };
     if *new_route_entry_count < JOB_ROUTE_SCAN_CANDIDATES {
-        new_route_entries[*new_route_entry_count] = (key, result);
+        new_route_entries[*new_route_entry_count] = (key, WorkplaceCommute { seconds: result, source, destination, geometry });
         *new_route_entry_count += 1;
     }
     result
@@ -2095,18 +2196,35 @@ fn cached_commute_seconds(
     query: &mut TripQueryScratch,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
+    parking: Option<&ParkingSystem>,
+    car: Handle<Vehicle>,
 ) -> Option<u16> {
     if home_idx == work_idx {
         return Some(0);
     }
     let key = (home_idx, work_idx, has_car);
-    if let Some(result) = route_cache.get(&key) {
-        return *result;
+    let (source, destination, geometry) = commute_endpoints(parking, car, has_car, work_idx, allocator);
+    if let Some(result) = route_cache.get(&key)
+        && result.source == source
+        && result.destination == destination
+        && result.geometry == geometry
+    {
+        return result.seconds;
     }
     if !exact_entrance_cache_available {
         return None;
     }
-    let result = estimate_building_origin_trip_seconds_with_scratch(
+    let result = if let Some(parking) = parking {
+        match TripQueryScratch::with_owned(query, || {
+            estimate_parking_trip_seconds_within(
+                home_idx, work_idx, car, has_car, parking, allocator,
+                transit_network, graph, pathfind_count, f32::INFINITY, Some(network_quotes),
+            )
+        }) {
+            TripEstimate::Seconds(result) => result,
+            TripEstimate::OverBudget => None,
+        }
+    } else { estimate_building_origin_trip_seconds_with_scratch(
         home_idx,
         work_idx,
         has_car,
@@ -2116,9 +2234,9 @@ fn cached_commute_seconds(
         pathfind_count,
         Some(network_quotes),
         query,
-    );
+    ) };
     if *new_route_entry_count < JOB_ROUTE_SCAN_CANDIDATES {
-        new_route_entries[*new_route_entry_count] = (key, result);
+        new_route_entries[*new_route_entry_count] = (key, WorkplaceCommute { seconds: result, source, destination, geometry });
         *new_route_entry_count += 1;
     }
     result

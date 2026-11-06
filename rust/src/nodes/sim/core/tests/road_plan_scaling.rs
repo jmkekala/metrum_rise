@@ -345,6 +345,7 @@ fn measure_populated_road_plan_scaling(
                 snap_to_existing_roads: true,
                 tunnel,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: None,
             },
@@ -632,6 +633,7 @@ fn measure_populated_road_plan_scaling(
             }
         };
         let request = || RoadPreviewRequest {
+            parking: Default::default(),
             surface_generation: generation,
             points: points.clone(),
             fwd_lanes: 1,
@@ -753,7 +755,8 @@ fn measure_lane_edit(
     let mut verdicts = Vec::new();
     for iteration in 0..103 {
         let start = Instant::now();
-        let verdict = core.preview_edge_cross_section_internal(side, fwd, bkw, median, attributes);
+        let verdict =
+            core.preview_edge_cross_section_internal(side, fwd, bkw, median, Default::default(), attributes);
         let ms = start.elapsed().as_secs_f64() * 1000.0;
         assert!(verdict.is_ok(), "{verdict:?}");
         if iteration >= 3 {
@@ -773,7 +776,7 @@ fn measure_lane_edit(
     let mut products = String::new();
     for _ in 0..20 {
         let start = Instant::now();
-        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median, attributes));
+        assert!(core.set_edge_cross_section_internal(side, fwd, bkw, median, Default::default(), attributes));
         commits.push(start.elapsed().as_secs_f64() * 1000.0);
         let start = Instant::now();
         core.precompute_road_mesh_data();
@@ -1095,6 +1098,7 @@ fn measure_ring_join(core: &mut SimCore, remote_buildings: usize, remote_roads: 
         snap_to_existing_roads: true,
         tunnel: false,
         median: None,
+        parking: Default::default(),
         attributes: RoadAttributes::DEFAULT,
     };
     let p50 = |samples: &mut Vec<f64>| {
@@ -1131,6 +1135,7 @@ fn measure_ring_join(core: &mut SimCore, remote_buildings: usize, remote_roads: 
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                parking: Default::default(),
                 attributes: RoadAttributes::DEFAULT,
                 preview: None,
             },

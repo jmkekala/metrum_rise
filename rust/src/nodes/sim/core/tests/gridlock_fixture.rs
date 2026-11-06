@@ -50,6 +50,7 @@ fn ring_core() -> SimCore {
         let (a, b) = (corner(k), corner(k + 1));
         let length = a.distance_to(b);
         core.region_graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: k as u32,
             end_node: ((k + 1) % 4) as u32,
             primary_type: TransitType::Road,

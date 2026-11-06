@@ -724,6 +724,9 @@ available in every build and scene.
   - `visual <mode>` lists the mode's values.
   - `visual <mode> <value>` takes a value name, alias or index.
   - `visual off` turns every visual mode off, which also returns residency to camera-based.
+  - `parking` (`park`) prints parking spots, car custody (parked, driving, stored off-map, in
+    use), trips under way by phase, why departure attempts since load drove or walked, and every
+    rejected parking spot with its building and reason. The same text goes to `events`.
   - `dump`
   - `clear`
 - **Copy** puts the visible, filtered lines on the clipboard.

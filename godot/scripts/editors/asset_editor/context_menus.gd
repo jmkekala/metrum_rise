@@ -40,9 +40,13 @@ func keyboard_context() -> bool:
 	if focus != null and editor._view.library.is_ancestor_of(focus): return false
 	return _viewport_focus
 
-func handle_right(event: InputEvent) -> bool:
+## Remembers whether the last press landed in the viewport, which owns keyboard shortcuts.
+## Runs ahead of every gesture, so a press a gesture consumes still counts.
+func track_focus(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		_viewport_focus = editor._view._preview_view_rect.get_global_rect().has_point(event.position)
+
+func handle_right(event: InputEvent) -> bool:
 	if not event is InputEventMouseButton or event.button_index != MOUSE_BUTTON_RIGHT or not event.pressed:
 		return false
 	if editor._cam_input._ui_has_modal_popup() or not editor._view._preview_view_rect.get_global_rect().has_point(event.position): return false

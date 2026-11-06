@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 // Bump when the revision inputs or their hashing algorithm changes. The source and bootstrap
 // manifests are hashed below; simulation changes that alter a fixture must also touch one of the
 // included sources or bump this marker explicitly. The save format is checked independently.
-const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v5";
+const FIXTURE_ALGORITHM_REVISION: &[u8] = b"perf-fixture-revision-v6";
 // Both tiers exercise rebuilding in the following day; day 7 had no execution census.
 const SNAPSHOT_DAY: u32 = 12;
 const SNAPSHOT_MINUTE: u16 = 0;

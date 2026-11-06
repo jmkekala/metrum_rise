@@ -9,11 +9,12 @@
 //!
 //! A part crosses the bridge as a dictionary: `{"kind": "sidewalk"}`, `{"kind": "car_lane",
 //! "forward": bool}`, `{"kind": "median", "style": 1 painted | 2 kerbed grass | 3 kerbed paving,
-//! "width_m": float}` or `{"kind": "footpath"}` (a walkway's single part). A car road has a
-//! sidewalk part at either end, at both or at none (`ROAD-107`); a listed type or checked layout
-//! gives the sides as `sidewalks` (0 none, 1 left, 2 right, 3 both). A type also has `speed_kmh`
-//! (20 to 120 in steps of 10; 0 for a walkway), `zoning` and `street_lights`; the tool draws them
-//! through `set_road_tool_attributes`.
+//! "width_m": float}`, `{"kind": "parking"}` (a kerbside parking lane, `PARK-05`) or
+//! `{"kind": "footpath"}` (a walkway's single part). A car road has a sidewalk part at either
+//! end, at both or at none (`ROAD-107`); a listed type or checked layout gives the sides as
+//! `sidewalks` (0 none, 1 left, 2 right, 3 both). A type also has `speed_kmh` (20 to 120 in steps
+//! of 10; 0 for a walkway), `zoning` and `street_lights`; the tool draws them through
+//! `set_road_tool_attributes`, and its parking through `set_road_tool_parking`.
 
 use super::super::*;
 use crate::simulation::network::graph::{MedianStyle, RoadMedian};
@@ -127,9 +128,9 @@ impl SimulationNode {
     /// dictionary that is not a part, else the layout check's keys, then `speed_out_of_range`
     /// outside 20 to 120 km/h in steps of 10; a walkway's speed is not checked); the
     /// cross-section a valid layout builds as `fwd_lanes`, `bkw_lanes`, `median_style` (0 none),
-    /// `median_width` and `sidewalks` (the sides, 0 none, 1 left, 2 right, 3 both; 0 when refused);
-    /// `speed_kmh` (as checked; 0 for a walkway), `zoning` and
-    /// `street_lights` (as given; they change no cost);
+    /// `median_width`, `parking` (bit 0 left, bit 1 right) and `sidewalks` (the sides, 0 none,
+    /// 1 left, 2 right, 3 both; 0 when refused); `speed_kmh` (as checked; 0 for a walkway),
+    /// `zoning` and `street_lights` (as given; they change no cost);
     /// `part_widths_m` (one per part, refused layouts included), `carriageway_m` (the road's
     /// width between its sidewalks) and `total_m` (sidewalks, and a 0.75 m shoulder on each side
     /// without one, included); `build_per_m` and `upkeep_per_m_day`, the valid type's cost per
@@ -324,6 +325,7 @@ fn layout_to_variant(
         "bkw_lanes": section.map_or(0, |section| i64::from(section.bkw_lanes)),
         "median_style": i64::from(RoadMedian::style_code(median)),
         "median_width": median.map_or(0.0, |median| median.width_m),
+        "parking": section.map_or(0, |section| i64::from(section.parking.code())),
         "sidewalks": section.map_or(0, |section| i64::from(section.sidewalks.bits())),
         "part_widths_m": PackedFloat32Array::from(widths.as_slice()),
         "carriageway_m": carriageway_m,
@@ -341,6 +343,7 @@ fn part_to_variant(part: RoadPart) -> VarDictionary {
             "width_m": median.width_m,
         },
         RoadPart::Footpath => vdict! { "kind": "footpath" },
+        RoadPart::Parking => vdict! { "kind": "parking" },
     }
 }
 
@@ -365,6 +368,7 @@ fn part_from_variant(part: &Variant) -> Result<RoadPart, &'static str> {
     match kind.to_string().as_str() {
         "sidewalk" => Ok(RoadPart::Sidewalk),
         "footpath" => Ok(RoadPart::Footpath),
+        "parking" => Ok(RoadPart::Parking),
         "car_lane" => Ok(RoadPart::CarLane {
             forward: field("forward")?.try_to().map_err(|_| UNKNOWN)?,
         }),

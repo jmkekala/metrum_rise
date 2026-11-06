@@ -12,6 +12,7 @@ mod graded_queries;
 mod junction_connector_sweep;
 pub(super) mod fields;
 pub(super) mod graded_stage;
+mod parking;
 mod road_edit_order;
 mod road_families;
 mod road_grade_separation;
@@ -592,6 +593,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
         snap_to_existing_roads: true,
         tunnel: false,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     });
 
@@ -827,6 +829,7 @@ fn planned_topology_rejection_restores_split_dependents() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     );
@@ -883,6 +886,7 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         },
     );
@@ -924,6 +928,7 @@ fn add_test_border_road(core: &mut SimCore) {
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         roundabout: None,
@@ -1263,6 +1268,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         no_street_lights: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         median: None,
+        parking: crate::simulation::network::graph::RoadParking::NONE,
         pocket: None,
         sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         roundabout: None,

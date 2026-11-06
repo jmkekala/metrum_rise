@@ -27,6 +27,7 @@ mod tests {
         let edges = [(n0, n1), (n2, n1), (n3, n1), (n4, n1)];
         for (s, e) in edges {
             graph.add_edge(Edge {
+                parking: Default::default(),
                 start_node: s,
                 end_node: e,
                 primary_type: TransitType::Road,

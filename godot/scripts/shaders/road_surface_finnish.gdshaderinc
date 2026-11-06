@@ -154,11 +154,14 @@ void fr_zebra_paint(vec4 crossing, vec2 world_xz, float lane_width, float aa, ve
 	micro_slope *= 1.0 - 0.35 * film;
 }
 
-// age, wetness and grass in 0..1; lanes and lane_width describe the carriageway centred on
-// road_m.y = 0. traffic in 0..1 scales the studded-tyre ruts: none on residential streets.
+// age, wetness and grass in 0..1; half_width is half the carriageway, centred on road_m.y = 0,
+// parking lanes and a median included. lane_l is the lateral position across the traffic lanes
+// from their left edge, parking lanes and a median left out, so wheel paths follow the lanes.
+// traffic in 0..1 scales the studded-tyre ruts: none on residential streets.
 // height_m is optical relief for fr_relief_normal, not geometry.
 void fr_surface_painted(sampler2D detail_map, vec2 world_xz, vec2 road_m, bool road_space,
-		float lanes, float lane_width, float traffic, float age, float wetness, bool gravel, float grass,
+		float half_width, float lane_l, float lane_width, float traffic, float age, float wetness,
+		bool gravel, float grass,
 		float footprint_m, vec4 crossing, out vec3 albedo, out float roughness, out float height_m,
 		out vec2 micro_slope, out float water) {
 	float s = road_m.x;
@@ -166,7 +169,6 @@ void fr_surface_painted(sampler2D detail_map, vec2 world_xz, vec2 road_m, bool r
 	float a = clamp(age, 0.0, 1.0);
 	float w = clamp(wetness, 0.0, 1.0);
 	float along = road_space ? 1.0 : 0.0;
-	float half_width = lanes * lane_width * 0.5;
 	vec4 d = texture(detail_map, world_xz / (gravel ? 2.0 : 0.8));
 	// Asphalt: the same aggregate at three times the size reads as ravelled patches of coarse
 	// stone, which survive mipmapping and a low render scale where the fine grain blurs out.
@@ -174,7 +176,7 @@ void fr_surface_painted(sampler2D detail_map, vec2 world_xz, vec2 road_m, bool r
 	float macro = fr_noise(s * 0.17 + l * 0.63 + 48.0) * 0.6 + fr_noise(s * 0.41 - l * 0.9 + 17.0) * 0.4;
 	float aa = max(0.002, min(footprint_m * 0.5, 0.10));
 	float wander = (fr_noise(s * 0.095 + 71.0) - 0.5) * 0.42 + (fr_noise(s * 0.37 + 27.0) - 0.5) * 0.10;
-	float lc = gravel ? l - wander : mod(l + half_width, lane_width) - lane_width * 0.5;
+	float lc = gravel ? l - wander : mod(lane_l, lane_width) - lane_width * 0.5;
 	float tw = 0.23 + 0.10 * fr_noise(s * 0.24 + 2.0);
 	// Wheel paths sit about 0.9 m either side of a lane centre. Only busy roads (traffic) show
 	// them: studded tyres rut and polish them. A residential street wears evenly.
@@ -306,7 +308,9 @@ void fr_surface(sampler2D detail_map, vec2 world_xz, vec2 road_m, bool road_spac
 		float lanes, float lane_width, float traffic, float age, float wetness, bool gravel, float grass,
 		float footprint_m, out vec3 albedo, out float roughness, out float height_m,
 		out vec2 micro_slope, out float water) {
-	fr_surface_painted(detail_map, world_xz, road_m, road_space, lanes, lane_width, traffic, age,
+	float half_width = lanes * lane_width * 0.5;
+	fr_surface_painted(detail_map, world_xz, road_m, road_space, half_width, road_m.y + half_width,
+		lane_width, traffic, age,
 		wetness, gravel, grass, footprint_m, vec4(0.0), albedo, roughness, height_m, micro_slope, water);
 }
 

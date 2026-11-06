@@ -502,6 +502,7 @@ mod tests {
 
     fn make_edge(s: u32, e: u32, cost: f32) -> Edge {
         Edge {
+            parking: Default::default(),
             start_node: s,
             end_node: e,
             primary_type: TransitType::Road,

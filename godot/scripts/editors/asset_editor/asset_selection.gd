@@ -5,6 +5,7 @@
 extends RefCounted
 
 const Picker = preload("res://scripts/editors/asset_editor/asset_picker.gd")
+const KeyLabels = preload("res://scripts/ui/key_labels.gd")
 const FILTERS := ["all", "mesh", "anchor", "surface"]
 const DRAG_THRESHOLD := 6.0
 var editor: Node
@@ -76,6 +77,7 @@ func update() -> void:
 			hovered = {}
 			view.picking_overlay.clear()
 			editor._preview.set_hover_outline(PackedVector3Array())
+			editor._preview.set_label_hover("", -1)
 			view.hover_label.text = ""
 		_enabled = false
 		return
@@ -362,7 +364,11 @@ func _draw_hover(camera: Camera3D) -> void:
 		for point in picker.surface_points(editor._selected_site_surface_index):
 			if picker.point_visible(camera, point):
 				overlay.vertices.append(camera.unproject_position(point))
-	view.hover_label.text = "%s · Click selects · Alt+click cycles overlaps" % _filter_label(_effective).capitalize()
+	var label_kind := ""
+	if hovered.get("kind") in ["anchor", "surface", "vertex"] and not hovered.get("occluded", false):
+		label_kind = "anchor" if hovered["kind"] == "anchor" else "surface"
+	editor._preview.set_label_hover(label_kind, hovered.get("index", -1))
+	view.hover_label.text = "%s · Click selects · %s+click cycles overlaps" % [_filter_label(_effective).capitalize(), KeyLabels.alt()]
 	if editor._preview.scale_reference_selected:
 		view.hover_label.text = "Scale reference · 1.8 m · Drag to move · Escape cancels · Preview only"
 	if hovered.is_empty():
@@ -387,9 +393,13 @@ func _draw_hover(camera: Camera3D) -> void:
 				outline.append(points[(edge + 1) % points.size()] + Vector3(0, 0.01, 0))
 			if hovered["kind"] == "vertex":
 				title += " · vertex %d" % (hovered["vertex"] + 1)
-		"anchor": title = "Anchor: " + editor._site_anchor_display_label(index)
+		"anchor":
+			title = "Anchor: " + editor._site_anchor_display_label(index)
+			var rejection: String = editor._preview.parking_rejection(index)
+			if not rejection.is_empty():
+				title += " · Rejected: " + rejection
 	if hovered["kind"] != "reference" and not hovered.get("occluded", false):
 		overlay.marker = camera.unproject_position(hovered["position"])
 		overlay.marker_radius = Picker.ANCHOR_RADIUS if hovered["kind"] == "anchor" else Picker.VERTEX_RADIUS
-	view.hover_label.text = title + (" · %d overlaps · Alt+click: next" % _cycle_keys.size() if _cycle_keys.size() > 1 else "")
+	view.hover_label.text = title + (" · %d overlaps · %s+click: next" % [_cycle_keys.size(), KeyLabels.alt()] if _cycle_keys.size() > 1 else "")
 	editor._preview.set_hover_outline(outline)

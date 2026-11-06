@@ -102,6 +102,7 @@ pub(super) fn make_building(
 
 pub(super) fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
     Edge {
+        parking: Default::default(),
         start_node,
         end_node,
         primary_type: TransitType::Foot,
@@ -132,6 +133,7 @@ pub(super) fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
 pub(super) fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x: f32) -> Edge {
     let length = (end_x - start_x).abs();
     Edge {
+        parking: Default::default(),
         start_node,
         end_node,
         primary_type: TransitType::Road,

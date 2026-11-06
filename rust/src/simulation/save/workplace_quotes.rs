@@ -5,18 +5,18 @@
 use super::{SaveLoadResult, SnapshotMaps};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::buildings::allocator::BuildingEntranceKey;
-use crate::simulation::economy::households::HouseholdSystem;
+use crate::simulation::economy::households::{HouseholdSystem, WorkplaceCommute};
 use crate::simulation::network::TransitNetwork;
 use rusqlite::{Connection, Transaction, params};
 use std::cmp::Ordering;
 
-const MAGIC: [u8; 4] = *b"WRC2";
+const MAGIC: [u8; 4] = *b"WRC3";
 // Magic, entry count (u64) and the workplace pass counter (u32).
 const HEADER_BYTES: usize = 16;
 // Little-endian home/work IDs (u64 each), car flag, presence flag, u16 seconds, then the u32
-// pass that added the quote (`SIM-02-G`).
-const ENTRY_BYTES: usize = 24;
-type QuoteEntry = ((usize, usize, bool), Option<u16>, u32);
+// pass that added the quote (`SIM-02-G`), followed by source/destination parking handles and their derived geometry stamp.
+const ENTRY_BYTES: usize = 48;
+type QuoteEntry = ((usize, usize, bool), WorkplaceCommute, u32);
 
 /// Writes the complete workplace quotes that were built against the current topology.
 pub(super) fn save(
@@ -134,7 +134,7 @@ fn encode(entries: &[QuoteEntry], pass: u32) -> SaveLoadResult<Vec<u8>> {
                 .to_le_bytes(),
         );
         blob.push(u8::from(has_car));
-        match value {
+        match value.seconds {
             Some(seconds) => {
                 blob.push(1);
                 blob.extend_from_slice(&seconds.to_le_bytes());
@@ -145,6 +145,9 @@ fn encode(entries: &[QuoteEntry], pass: u32) -> SaveLoadResult<Vec<u8>> {
             }
         }
         blob.extend_from_slice(&stamp.to_le_bytes());
+        blob.extend_from_slice(&value.source.to_le_bytes());
+        blob.extend_from_slice(&value.destination.to_le_bytes());
+        blob.extend_from_slice(&value.geometry.to_le_bytes());
     }
     Ok(blob)
 }
@@ -232,7 +235,10 @@ fn decode(blob: &[u8], building_count: usize) -> SaveLoadResult<(Vec<QuoteEntry>
             return Err(super::SaveLoadError::custom("expired workplace quote"));
         }
         previous = Some(key);
-        entries.push((key, value, stamp));
+        let source = u64::from_le_bytes(blob[offset + 24..offset + 32].try_into().unwrap());
+        let destination = u64::from_le_bytes(blob[offset + 32..offset + 40].try_into().unwrap());
+        let geometry = u64::from_le_bytes(blob[offset + 40..offset + 48].try_into().unwrap());
+        entries.push((key, WorkplaceCommute { seconds: value, source, destination, geometry }, stamp));
         offset += ENTRY_BYTES;
     }
     Ok((entries, pass))
@@ -246,20 +252,34 @@ mod tests {
     use crate::simulation::network::TransitNetwork;
     use rusqlite::Connection;
 
+    type LegacyQuoteEntry = ((usize, usize, bool), Option<u16>, u32);
+
+    fn legacy_entries(entries: &[LegacyQuoteEntry]) -> Vec<QuoteEntry> {
+        entries.iter()
+            .map(|&(key, seconds, pass)| (key, WorkplaceCommute::legacy(seconds), pass))
+            .collect()
+    }
+
+    #[test]
+    fn parking_endpoint_stamps_survive_quote_round_trip() {
+        let entries = vec![((1, 2, true), WorkplaceCommute { seconds: Some(317), source: 11, destination: 93, geometry: 734 }, 4)];
+        assert_eq!(decode(&encode(&entries, 5).unwrap(), 3).unwrap(), (entries, 5));
+    }
+
     #[test]
     fn quote_blob_roundtrips_sorted_entries() {
-        let entries = vec![
+        let entries = legacy_entries(&[
             ((2, 4, false), None, 7),
             ((2, 4, true), Some(65535), 9),
             ((8, 1, false), Some(37), 8),
-        ];
+        ]);
         let blob = encode(&entries, 9).unwrap();
         assert_eq!(decode(&blob, 9).unwrap(), (entries, 9));
     }
 
     #[test]
     fn quote_blob_rejects_bad_order_and_length() {
-        let entries = vec![((1, 2, false), Some(4), 3), ((1, 2, true), None, 3)];
+        let entries = legacy_entries(&[((1, 2, false), Some(4), 3), ((1, 2, true), None, 3)]);
         let mut blob = encode(&entries, 3).unwrap();
         blob.pop();
         assert!(decode(&blob, 3).is_err());
@@ -295,11 +315,11 @@ mod tests {
         let mut households = HouseholdSystem::new();
         let allocator = test_allocator(2);
         let network = TransitNetwork::new();
-        let entries = vec![
+        let entries = legacy_entries(&[
             ((0, 1, false), None, 4),
             ((0, 1, true), Some(65535), 6),
             ((1, 0, false), Some(37), 5),
-        ];
+        ]);
         households.restore_workplace_route_cache(
             allocator.building_ref_revision(),
             allocator.entrance_ref_revision(),
@@ -359,7 +379,7 @@ mod tests {
         let mut households = HouseholdSystem::new();
         let allocator = test_allocator(2);
         let network = TransitNetwork::new();
-        let entries = vec![((0, 1, false), Some(37), 0)];
+        let entries = legacy_entries(&[((0, 1, false), Some(37), 0)]);
         households.restore_workplace_route_cache(
             allocator.building_ref_revision(),
             allocator.entrance_ref_revision(),
@@ -429,7 +449,7 @@ mod tests {
             u64::MAX,
             u64::MAX,
             u32::MAX,
-            vec![((0, 0, false), Some(12), 0)],
+            legacy_entries(&[((0, 0, false), Some(12), 0)]),
             0,
         );
         let allocator = BuildingAllocator::new();
@@ -479,7 +499,7 @@ mod tests {
             allocator.building_ref_revision(),
             allocator.entrance_ref_revision(),
             network.cch_graph.build_generation,
-            vec![((2, 0, false), Some(12), 0)],
+            legacy_entries(&[((2, 0, false), Some(12), 0)]),
             0,
         );
         let maps = SnapshotMaps {

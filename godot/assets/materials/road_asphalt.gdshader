@@ -12,6 +12,8 @@ render_mode cull_back, depth_draw_opaque;
 uniform sampler2D detail_texture : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float wetness : hint_range(0.0, 1.0) = 0.0;
 uniform float lane_width_m = 3.5;
+// PARKING_LANE_WIDTH_M in rust/src/simulation/network/graph/cross_section.rs (`PARK-05`).
+const float PARKING_LANE_WIDTH_M = 2.5;
 
 varying vec3 world_pos;
 // Sample cloud transmission once per fragment for both direct-light terms.
@@ -28,10 +30,27 @@ void vertex() {
 
 void fragment() {
 	cloud_sun = weather_cloud_sun(world_pos);
-	// 8-bit channels: lane counts and km/h arrive as exact integers; alpha >= 128 is road space.
+	// 8-bit channels arrive as exact integers; alpha >= 128 is road space. Red: forward lanes
+	// (bits 0-2), parking lanes on the left (bit 3) and right (bit 4) kerb, left-hand traffic
+	// (bit 5). Green: backward lanes (bits 0-2), the median's width in half metres (bits 3-7).
 	vec4 road = COLOR * 255.0;
-	float lanes = round(road.r) + round(road.g);
+	float red = round(road.r);
+	float green = round(road.g);
+	float fwd = mod(red, 8.0);
+	float bkw = mod(green, 8.0);
+	float park_left = mod(floor(red / 8.0), 2.0);
+	float park_right = mod(floor(red / 16.0), 2.0);
+	float median_m = floor(green / 8.0) * 0.5;
+	float lanes = fwd + bkw;
 	bool lane_space = road.a >= 127.5 && lanes > 0.5;
+	// Lanes, median and parking lanes fill the carriageway, centred on the road-space centreline.
+	float half_width = lane_space
+		? 0.5 * (lanes * lane_width_m + median_m + (park_left + park_right) * PARKING_LANE_WIDTH_M)
+		: 0.5 * lane_width_m;
+	// Across the traffic lanes from their left edge, with the median closed up.
+	float left_lanes = mod(floor(red / 32.0), 2.0) > 0.5 ? fwd : bkw;
+	float lane_l = UV.y + half_width - park_left * PARKING_LANE_WIDTH_M;
+	lane_l -= step(left_lanes * lane_width_m, lane_l) * median_m;
 	float age = road.a >= 127.5 ? (road.a - 128.0) / 127.0 : 0.5;
 	vec2 road_m = lane_space ? UV : world_pos.xz;
 	// Studded tyres rut multi-lane and fast roads; a two-lane street at 50 km/h wears evenly.
@@ -42,7 +61,8 @@ void fragment() {
 	float height_m;
 	vec2 micro_slope;
 	float water;
-	fr_surface_painted(detail_texture, world_pos.xz, road_m, lane_space, max(lanes, 1.0), lane_width_m,
+	fr_surface_painted(detail_texture, world_pos.xz, road_m, lane_space, half_width,
+		lane_space ? lane_l : road_m.y + half_width, lane_width_m,
 		traffic, age, wetness, false, 0.0, length(fwidth(road_m)), crossing,
 		albedo, roughness, height_m, micro_slope, water);
 	vec3 relief = fr_relief_normal(road_m, height_m, micro_slope, water);

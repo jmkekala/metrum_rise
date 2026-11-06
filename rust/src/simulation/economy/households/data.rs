@@ -3,7 +3,6 @@
 //! Household record storage and building-reference maintenance.
 
 use rayon::prelude::*;
-use std::sync::atomic::AtomicU32;
 
 use super::metrics::household_supply_resource_runtime_id;
 use super::replenishment::{
@@ -225,6 +224,8 @@ pub struct HouseholdSystem {
     pub households: Vec<Household>,
     /// Stable handles of the dense households; saved with the store.
     pub(crate) handles: HandleTable<Household>,
+    /// Admission/removal events for persistent parking ownership, drained at publication.
+    pub(crate) parking_changes: Vec<Handle<Household>>,
     /// Derived before each hourly demand pass; rebuilt from persisted arrival carriers.
     pub(crate) pending_arrivals: PendingHouseholdArrivals,
     /// Households whose shopper was reserved and held since SimCore last paced departures.
@@ -246,7 +247,6 @@ pub struct HouseholdSystem {
     /// Advances at every change of the policy the census's copy freezes (`SIM-02-I`); part of
     /// the census key. Not saved: a loaded game counts afresh.
     pub(crate) census_policy_revision: u64,
-    pub(super) shopping_car_scratch: Vec<AtomicU32>,
     pub(super) removal_candidates_scratch: Vec<(usize, f32, f32)>,
     pub(super) removal_agent_indices_scratch: Vec<usize>,
     pub(super) workplace_route_cache: super::employment::WorkplaceRouteCache,
@@ -350,6 +350,7 @@ impl HouseholdSystem {
         Self {
             households: Vec::new(),
             handles: HandleTable::default(),
+            parking_changes: Vec::new(),
             pending_arrivals: PendingHouseholdArrivals::default(),
             held_shoppers: Vec::new(),
             held_visitors: Vec::new(),
@@ -358,7 +359,6 @@ impl HouseholdSystem {
             census_run: Default::default(),
             structure: Default::default(),
             census_policy_revision: 0,
-            shopping_car_scratch: Vec::new(),
             removal_candidates_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
             workplace_route_cache: Default::default(),
@@ -491,7 +491,7 @@ impl HouseholdSystem {
     /// save serialization.
     pub(crate) fn workplace_route_cache_entries(
         &self,
-    ) -> impl Iterator<Item = ((usize, usize, bool), Option<u16>, u32)> + '_ {
+    ) -> impl Iterator<Item = ((usize, usize, bool), super::employment::WorkplaceCommute, u32)> + '_ {
         self.workplace_route_cache_order
             .iter()
             .map(|&(pass, key)| (key, self.workplace_route_cache[&key], pass))
@@ -508,7 +508,7 @@ impl HouseholdSystem {
         building_revision: u64,
         entrance_revision: u64,
         cch_generation: u32,
-        mut entries: Vec<(super::employment::WorkplaceRouteCacheKey, Option<u16>, u32)>,
+        mut entries: Vec<(super::employment::WorkplaceRouteCacheKey, super::employment::WorkplaceCommute, u32)>,
         pass: u32,
     ) {
         // Quotes of one pass expire together, so their order within it is immaterial.
@@ -891,12 +891,6 @@ impl HouseholdSystem {
             }
         }
     }
-
-    /// Returns zeroed per-household car-eligibility flags for the load-time resident census.
-    pub(super) fn reset_shopping_car_scratch(&mut self) -> &[AtomicU32] {
-        resize_atomic_scratch(&mut self.shopping_car_scratch, self.households.len());
-        &self.shopping_car_scratch
-    }
 }
 
 impl std::fmt::Debug for HouseholdSystem {
@@ -910,17 +904,5 @@ impl std::fmt::Debug for HouseholdSystem {
 impl Default for HouseholdSystem {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-fn resize_atomic_scratch(scratch: &mut Vec<AtomicU32>, len: usize) {
-    if scratch.len() > len {
-        scratch.truncate(len);
-    }
-    while scratch.len() < len {
-        scratch.push(AtomicU32::new(0));
-    }
-    for slot in scratch {
-        slot.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }

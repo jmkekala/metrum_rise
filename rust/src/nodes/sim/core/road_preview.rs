@@ -17,7 +17,7 @@ use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
-use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian};
+use crate::simulation::network::graph::{Edge, RegionGraph, RoadMedian, RoadParking};
 use crate::simulation::network::render::RoadChunkMap;
 use crate::simulation::network::road_types::RoadAttributes;
 use crate::simulation::network::render::road::{PreviewChunk, RoadRenderer};
@@ -43,6 +43,8 @@ pub(crate) struct RoadPreviewRequest {
     /// The road tool's median (`ROAD-80`): part of the preview's and the plan's identity; the
     /// stroke's edge carries it and its corridor checks widen by it.
     pub(crate) median: Option<RoadMedian>,
+    /// The road tool's kerbside parking (`PARK-05`), part of the identity like `median`.
+    pub(crate) parking: RoadParking,
     /// The road tool's road-type attributes (`ROAD-101`): part of the preview's and the plan's
     /// identity; the stroke's edge and its pieces carry them.
     pub(crate) attributes: RoadAttributes,
@@ -72,11 +74,12 @@ impl RoadCorridorClearance {
         points: &[Vector3],
         (fwd_lanes, bkw_lanes): (i32, i32),
         median: Option<RoadMedian>,
+        parking: RoadParking,
         attributes: RoadAttributes,
     ) -> Self {
         let lanes = |count: i32| count.clamp(0, i32::from(u8::MAX)) as u8;
         let (fwd, bkw) = (lanes(fwd_lanes), lanes(bkw_lanes));
-        let half_width = Edge::cross_section_width_m(fwd, bkw, median) * 0.5
+        let half_width = Edge::cross_section_width_m(fwd, bkw, median, parking) * 0.5
             + attributes.corridor_side_m(fwd == 0 && bkw == 0);
         let parcels = core
             .zoning
@@ -297,6 +300,7 @@ pub(crate) struct RoadPreview {
 
 impl RoadPreview {
     /// True when this preview was made for exactly this stroke.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn is_for(
         &self,
         points: &[Vector3],
@@ -304,7 +308,7 @@ impl RoadPreview {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
         tunnel: bool,
-        (median, attributes): (Option<RoadMedian>, RoadAttributes),
+        (median, parking, attributes): (Option<RoadMedian>, RoadParking, RoadAttributes),
     ) -> bool {
         let request = self.plan.request();
         request.points == points
@@ -313,6 +317,7 @@ impl RoadPreview {
             && request.snap_to_existing_roads == snap_to_existing_roads
             && request.tunnel == tunnel
             && request.median == median
+            && request.parking == parking
             && request.attributes == attributes
     }
 }

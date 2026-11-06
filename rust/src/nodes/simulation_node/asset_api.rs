@@ -208,6 +208,10 @@ impl SimulationNode {
 
         let mut dict = VarDictionary::new();
         dict.set("asset_id", GString::from(b.asset_id.as_str()));
+        let handle = core.allocator.building_handles.handle(best_idx).to_bits();
+        dict.set("parking_valid_places", core.parking.building_place_count(handle) as i64);
+        let rejected = core.parking.diagnostics.get(&handle).map(Vec::as_slice).unwrap_or_default();
+        dict.set("parking_rejected", PackedStringArray::from_iter(rejected.iter().map(|s| GString::from(s.as_str()))));
         dict.set("building_id", best_idx as i64);
         let asset_display_name = core
             .allocator

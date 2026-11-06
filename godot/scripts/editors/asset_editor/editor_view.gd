@@ -9,6 +9,7 @@ const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
 const SelectionRectOverlay = preload("res://scripts/editors/selection_rect_overlay.gd")
 const PreviewPanel = preload("res://scripts/editors/asset_editor/preview_panel.gd")
 const Spacing = preload("res://scripts/editors/asset_editor/editor_spacing.gd")
+const KeyLabels = preload("res://scripts/ui/key_labels.gd")
 const PickingOverlay = preload("res://scripts/editors/asset_editor/picking_overlay.gd")
 
 var _editor: Node3D
@@ -45,6 +46,7 @@ var _mesh_part_list: ItemList
 var _frontage_lbl: Label  # shows current frontage forward vector
 var _site_anchor_list: ItemList
 var _site_anchor_name_edit: LineEdit
+var _site_anchor_issue_label: Label
 var _site_anchor_vehicle_class_btn: OptionButton
 var _site_anchor_x_spin: SpinBox
 var _site_anchor_y_spin: SpinBox
@@ -167,7 +169,7 @@ func _build_ui() -> void:
 	selection_filter = OptionButton.new()
 	for title in ["Select: all objects", "Select: meshes only", "Select: anchors only", "Select: yards only"]:
 		selection_filter.add_item(title)
-	selection_filter.tooltip_text = "All objects is the default: click a mesh, anchor or yard to open its settings. These optional filters restrict selection only when explicitly chosen.\nClick selects; drag moves; right-click opens actions; R rotates. Alt+click cycles overlaps; Alt+drag orbits. Ctrl+click adds/removes; Shift+drag box-selects. Escape cancels an operation."
+	selection_filter.tooltip_text = "All objects is the default: click a mesh, anchor or yard to open its settings. These optional filters restrict selection only when explicitly chosen.\nClick selects; drag moves; right-click opens actions; R rotates. %s+click cycles overlaps; %s+drag orbits. Ctrl+click adds/removes; Shift+drag box-selects. Escape cancels an operation." % [KeyLabels.alt(), KeyLabels.alt()]
 	selection_filter.item_selected.connect(_editor._selection.set_filter)
 	preview_bar.add_child(selection_filter)
 	_build_welcome(center)

@@ -120,6 +120,12 @@ impl SimCore {
             assert_replica_matches(graph, &self.region_graph);
         }
         let rebuilt = self.transit_network.roadbed.take_rebuilt_owners();
+        let parking_edges = if rebuilt.all {
+            (0..self.region_graph.edge_count()).collect()
+        } else {
+            rebuilt.edges.clone()
+        };
+        self.reconcile_parking_frontages(&parking_edges);
         let terrain_generations = (
             self.heightmap.source_generation(),
             self.heightmap.source_generation(),
@@ -261,6 +267,7 @@ impl RoadToolShared {
     }
 
     /// The latest preview when it was made for exactly this stroke.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn preview_for(
         &self,
         points: &[godot::prelude::Vector3],
@@ -270,6 +277,7 @@ impl RoadToolShared {
         tunnel: bool,
         stroke: (
             Option<crate::simulation::network::graph::RoadMedian>,
+            crate::simulation::network::graph::RoadParking,
             crate::simulation::network::road_types::RoadAttributes,
         ),
     ) -> Option<Arc<RoadPreview>> {

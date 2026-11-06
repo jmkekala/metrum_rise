@@ -13,10 +13,10 @@ pub(super) use geometry::{
 pub(super) use legality::{
     ACCESS_LANE_D_TOLERANCE_M, planned_attach_is_legal, planned_detach_is_legal,
 };
-pub(super) use path::LocalAccessPath;
+pub(crate) use path::{LocalAccessPath, local_access_target_segment};
 pub(super) use path::{
     advance_along_local_access_path, local_access_path, local_access_should_log_step,
-    local_access_target_segment,
+
 };
 pub(super) use timing::{
     direct_frontage_segment_time_s, frontage_time_s, local_access_distance, local_access_time_s,
@@ -34,6 +34,7 @@ mod tests {
             Vector2::new(2.0, 0.0),
             Vector2::new(2.0, 0.0),
             Vector2::new(2.0, 3.0),
+            Vector2::ZERO,
         ];
         for (reverse, steps) in [
             (
@@ -55,7 +56,7 @@ mod tests {
         ] {
             let mut path = LocalAccessPath { points, count: 4 };
             if reverse {
-                path.points.reverse();
+                path.points[..path.count].reverse();
             }
             for (step, expected) in steps {
                 assert_eq!(
@@ -81,6 +82,7 @@ mod tests {
                 Vector2::new(177.24, -47.41),
                 Vector2::new(184.24, -47.41),
                 Vector2::new(182.49, -47.41),
+                Vector2::ZERO,
             ],
             count: 4,
         };
@@ -101,6 +103,7 @@ mod tests {
             points: [
                 Vector2::new(0.0, 0.0),
                 Vector2::new(4.0, 0.0),
+                Vector2::ZERO,
                 Vector2::ZERO,
                 Vector2::ZERO,
             ],

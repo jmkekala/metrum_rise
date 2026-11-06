@@ -34,6 +34,7 @@ pub(crate) fn validate_road_candidate_against_water(
         fwd_lanes,
         bkw_lanes,
         prepared.median,
+        prepared.parking,
         prepared.attributes,
     );
     if water.road_corridor_overlaps_visible_water(prepared_points, half_width_m) {

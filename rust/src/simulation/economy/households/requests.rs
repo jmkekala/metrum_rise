@@ -161,6 +161,7 @@ impl HouseholdSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) -> DestinationFront {
         allocator
             .building_handles
@@ -173,6 +174,7 @@ impl HouseholdSystem {
             topology: &self.destination_topology,
             supplies: household_supply_resource_runtime_id(catalog),
             services: personal_services_resource(catalog),
+            parking,
         };
         self.destinations.take_front(slot / SLOTS_PER_HOUR, &fold)
     }
@@ -202,6 +204,7 @@ impl HouseholdSystem {
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -213,6 +216,7 @@ impl HouseholdSystem {
             topology: &self.destination_topology,
             supplies: household_supply_resource_runtime_id(&catalog),
             services: personal_services_resource(&catalog),
+            parking,
         };
         self.destinations.advance(slot, &fold);
     }

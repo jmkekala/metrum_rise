@@ -12,7 +12,7 @@
 //! junction layout's own answer on the applied graph, not a rule here. Lanes, terrain, dependents
 //! and undo are the transaction's.
 
-use super::graph::{Edge, RegionGraph, RoundaboutRing, SidewalkSides};
+use super::graph::{Edge, RegionGraph, RoadParking, RoundaboutRing, SidewalkSides};
 use super::lanes::pedestrian_junctions::segment_distance_xz;
 use super::lanes::vehicle_junctions::node_whitelists_vehicle_turns;
 use super::roadbed::visual_roadbed_half_width_m;
@@ -826,7 +826,7 @@ fn ring_edge(ring: RoundaboutRing, from: Vector3, to: Vector3, lanes: u8) -> Edg
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR,
         class: EdgeClass::Standard,
-        width: Edge::cross_section_width_m(lanes, 0, None),
+        width: Edge::cross_section_width_m(lanes, 0, None, RoadParking::NONE),
         fwd_lanes: lanes,
         bkw_lanes: 0,
         speed_limit: RING_SPEED_MS,

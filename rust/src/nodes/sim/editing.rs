@@ -702,8 +702,7 @@ impl SimCore {
             }
             return false;
         }
-        self.publish_pending_production_site_removals();
-        crate::nodes::simulation_node::vegetation_api::publish_yards(self);
+        self.publish_pending_building_site_changes();
         if let Some(bounds) = field_bounds {
             self.invalidate_vegetation_over(bounds);
         }
@@ -836,6 +835,10 @@ impl SimCore {
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        self.reconcile_parking_frontages(&affected_edges.iter().copied().collect());
         // Deferred like a commit's (D7, `ROAD-68-G`); the road tool's view shares its graph
         // copy (`ROAD-68-E`).
         let routing_graph = self.schedule_cch_rebuild_of_live_graph();
@@ -1255,6 +1258,7 @@ impl SimCore {
                     // Plan-less callers draw without the tool's tunnel intent or median.
                     tunnel: false,
                     median: None,
+                    parking: crate::simulation::network::graph::RoadParking::NONE,
                     attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 },
             ))
@@ -1301,7 +1305,11 @@ impl SimCore {
                 &points,
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                (None, crate::simulation::network::road_types::RoadAttributes::DEFAULT),
+                (
+                    None,
+                    Default::default(),
+                    crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+                ),
                 &self.heightmap,
                 &self.region_graph,
                 &self.transit_network.roadbed,
@@ -1439,6 +1447,7 @@ impl SimCore {
             fwd_lanes_u8,
             bkw_lanes_u8,
             prepared_input.median,
+            prepared_input.parking,
         );
         let corridor_half_width_m = road_width_m * 0.5
             + prepared_input
@@ -1529,7 +1538,11 @@ impl SimCore {
                 fixed_points,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
-                (prepared_input.median, prepared_input.attributes),
+                (
+                    prepared_input.median,
+                    prepared_input.parking,
+                    prepared_input.attributes,
+                ),
                 prepared_input.class,
                 prepared_input.grade(None),
                 &mut self.zoning,
@@ -2759,6 +2772,10 @@ impl SimCore {
                 new_pos.z
             );
         }
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        self.reconcile_parking_frontages(&adj.into_iter().collect());
     }
 }
 
@@ -2821,6 +2838,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             roundabout: None,
@@ -2872,6 +2890,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             roundabout: None,
@@ -3046,6 +3065,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             roundabout: None,
@@ -3794,6 +3814,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             roundabout: None,
@@ -3852,6 +3873,7 @@ mod tests {
             no_street_lights: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             pocket: None,
             sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
             roundabout: None,

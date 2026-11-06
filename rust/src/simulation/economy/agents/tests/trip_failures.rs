@@ -164,6 +164,7 @@ fn departure_failures_log_in_agent_order_and_fold_past_the_place_limit() {
         // More than `PAR_THRESHOLD`, so the movement pass runs on the Rayon pool.
         for _ in 0..600 {
             let idx = agents.spawn_housed_agent(0, 0.0, 0.0);
+            agents.has_car[idx] = true;
             agents.current_building[idx] = 0;
             agents.planned_target_building[idx] = 1;
         }

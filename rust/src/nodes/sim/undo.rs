@@ -626,6 +626,11 @@ impl SimCore {
             self.publish_network_surface(false, None);
             self.restage_graded_tiles_for_undo(&before, graded);
         }
+        // A cached surface restore can reconcile now. A dirty owner fallback keeps its
+        // existing deferred compile contract; the road-tool publication reconciles its bays.
+        if self.transit_network.roadbed.is_current() {
+            self.reconcile_parking_frontages(&edge_ids.iter().copied().collect());
+        }
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
     }
@@ -869,7 +874,8 @@ impl SimCore {
         // Each carrier returns to its old dense slot with a new handle; the agent it displaces
         // keeps its handle at the end of the store.
         let mut restored_carriers = Vec::with_capacity(undo.removed_carriers.len());
-        for (carrier_idx, carrier) in undo.removed_carriers {
+        for (carrier_idx, mut carrier) in undo.removed_carriers {
+            carrier.parking_trip.prepare_route_buffer(&mut carrier.current_path);
             let current_len = self.agents.agents.len();
             let handle = self
                 .agents
@@ -880,16 +886,18 @@ impl SimCore {
                 self.agents.agents.push(carrier);
                 continue;
             }
-            let moved = self
+            let mut moved = self
                 .agents
                 .agents
                 .get(carrier_idx)
                 .expect("restored carrier slot")
                 .to_owned();
+            moved.parking_trip.prepare_route_buffer(&mut moved.current_path);
             self.agents.agents.push(moved);
             self.agents.agents.replace(carrier_idx, carrier);
         }
-        for (agent_idx, agent) in undo.agents {
+        for (agent_idx, mut agent) in undo.agents {
+            agent.parking_trip.prepare_route_buffer(&mut agent.current_path);
             self.agents.agents.replace(agent_idx, agent);
         }
         // Restored records and the agents they displaced changed slots directly.
@@ -919,6 +927,10 @@ impl SimCore {
         self.allocator.bump_building_ref_revision();
         self.allocator.entrance_ref_revision = self.allocator.entrance_ref_revision.wrapping_add(1);
         self.rebuild_building_entrances_internal();
+        self.allocator
+            .parking_site_changes
+            .push(self.allocator.building_handles.handle(building_idx));
+        self.publish_parking_sites();
         if let Some(bounds) = undo.dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }

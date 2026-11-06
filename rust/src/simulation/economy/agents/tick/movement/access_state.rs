@@ -61,12 +61,20 @@ pub(super) unsafe fn arrive_in_building(
     slices: &MovementSlices,
 ) {
     unsafe {
+        debug_assert!(*slices.tmode.get(i) != crate::simulation::economy::agents::MODE_CAR
+            || (slices.parking_trip.get(i).vehicle.is_none() && *slices.pending_household_size.get(i) == 0),
+            "resident/move-in car leg must end at parking, never a door: agent={i} trip={:?} pending={} activity={} home={} target={building_id}",
+            slices.parking_trip.get(i), *slices.pending_household_size.get(i), *slices.activity.get(i), *slices.home.get(i));
         *slices.pos_x.get_mut(i) = pos.x;
         *slices.pos_y.get_mut(i) = pos.y;
         *slices.cur_b.get_mut(i) = building_id;
         *slices.tgt_b.get_mut(i) = usize::MAX;
         *slices.transit.get_mut(i) = TRANSIT_IN_BUILDING;
 
+        if !slices.parking_trip.get(i).vehicle.is_none() {
+            // Arrival is an event for ordered custody release, including a wholly walking return.
+            slices.parking_trip.get_mut(i).ready = true;
+        }
         let home = *slices.home.get(i);
         let activity = *slices.activity.get(i);
         *slices.activity.get_mut(i) = if building_id == home && activity != ACTIVITY_SHOPPING {

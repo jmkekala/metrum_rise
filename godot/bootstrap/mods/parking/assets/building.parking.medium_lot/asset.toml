@@ -1,0 +1,306 @@
+asset_id = "building.parking.medium_lot"
+display_name = "Parking lot (20 bays)"
+
+[building]
+placement_mode = "explicit"
+service_class = "parking"
+lot_width_cells = 2
+lot_depth_cells = 3
+frontage_forward = [0, 0, 1]
+worker_capacity = 0
+household_capacity = 0
+window_brightness = 0
+
+[[mesh_parts]]
+name = "markings"
+position = [0, 0, 0]
+scale = 1
+[[mesh_parts.lods]]
+file = "medium_lot_markings.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "p_sign"
+position = [9.3, 0, 14.4]
+scale = 1
+[[mesh_parts.lods]]
+file = "p_sign.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_left_1"
+position = [-9.1, 0, -11.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_left_2"
+position = [-9.1, 0, -6.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_left_3"
+position = [-9.1, 0, -1.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_left_4"
+position = [-9.1, 0, 4.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_left_5"
+position = [-9.1, 0, 9.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_right_1"
+position = [9.1, 0, -11.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_right_2"
+position = [9.1, 0, -6.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_right_3"
+position = [9.1, 0, -1.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_right_4"
+position = [9.1, 0, 4.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "heater_post_right_5"
+position = [9.1, 0, 9.0]
+scale = 1
+[[mesh_parts.lods]]
+file = "heating_post.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0, 0, 15.0]
+forward = [0, 0, 1]
+
+[[anchors]]
+type = "driveway"
+position = [0, 0, 15.0]
+forward = [0, 0, -1]
+width_m = 6
+vehicle_class = "car"
+
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-8.5, -15.0], [8.5, -15.0], [8.5, 15.0], [-8.5, 15.0]]
+
+[[anchors]]
+type = "parking"
+name = "left 1"
+position = [-3.5, 0, -12.25]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "left 2"
+position = [-3.5, 0, -9.75]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "left 3"
+position = [-3.5, 0, -7.25]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "left 4"
+position = [-3.5, 0, -4.75]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "left 5"
+position = [-3.5, 0, -2.25]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "left 6"
+position = [-3.5, 0, 0.25]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "left 7"
+position = [-3.5, 0, 2.75]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "left 8"
+position = [-3.5, 0, 5.25]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "left 9"
+position = [-3.5, 0, 7.75]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "left 10"
+position = [-3.5, 0, 10.25]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 1"
+position = [3.5, 0, -12.25]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 2"
+position = [3.5, 0, -9.75]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 3"
+position = [3.5, 0, -7.25]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 4"
+position = [3.5, 0, -4.75]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 5"
+position = [3.5, 0, -2.25]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 6"
+position = [3.5, 0, 0.25]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 7"
+position = [3.5, 0, 2.75]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 8"
+position = [3.5, 0, 5.25]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 9"
+position = [3.5, 0, 7.75]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+name = "right 10"
+position = [3.5, 0, 10.25]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"

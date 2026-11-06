@@ -160,6 +160,16 @@ impl AgentSystem {
         self.check_lane_buckets_match_rebuild(transit_network.lane_system.lanes.len(), n);
     }
 
+    /// Adds a boundary-mutated agent after its new network state is installed. Appended agents
+    /// are already picked up by the next tick. O(entries on its lanes), allocation-free.
+    pub(in crate::simulation::economy::agents) fn join_lane_buckets(&mut self, agent_idx: usize) {
+        if self.lane_bucket_snapshot_valid && agent_idx < self.lane_bucket_snapshot_agent_count {
+            self.add_lane_bucket_agent(agent_idx, agent_idx, self.lane_bucket_snapshot_lane_count);
+            #[cfg(test)]
+            { self.lane_bucket_patched = true; }
+        }
+    }
+
     /// Removes agent `agent_idx`'s entries before a mutator moves it into a building or onto an
     /// access leg, neither of which is in the buckets, so the snapshot stays valid. An agent
     /// appended after the snapshot has none. O(entries on its lanes).

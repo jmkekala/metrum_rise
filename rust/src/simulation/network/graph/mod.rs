@@ -11,6 +11,9 @@ pub mod rebuild;
 pub mod spatial;
 
 pub(crate) use cross_section::MAX_LANES_PER_DIRECTION;
-pub use cross_section::{MedianStyle, RoadMedian, RoadPocket, RoundaboutRing, SidewalkSides};
+pub use cross_section::{
+    MedianStyle, PARKING_LANE_WIDTH_M, RoadMedian, RoadParking, RoadPocket, RoundaboutRing,
+    SidewalkSides,
+};
 pub(crate) use data::RegionGraphUndoDelta;
 pub use data::{Edge, Node, RegionGraph};

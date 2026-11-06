@@ -21,6 +21,14 @@ pub struct AssetAuthoringPolicy {
 
 #[godot_api]
 impl AssetAuthoringPolicy {
+    /// Asset-local parking rejection payload; frontage road checks require a placed building.
+    #[func]
+    pub fn parking_diagnostics_json(&self, params: GString, structures: PackedFloat32Array) -> GString {
+        let data = serde_json::from_str::<Value>(&params.to_string()).unwrap_or(Value::Null);
+        crate::simulation::parking::validation::editor_payload(&data, structures.as_slice())
+            .to_string().as_str().into()
+    }
+
     /// Resolve source-file paths when opening an exported asset or rebasing after publication.
     #[func]
     pub fn colour_sources_json(params: GString, directory: GString) -> GString {

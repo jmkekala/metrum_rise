@@ -194,6 +194,13 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "A median sits between the two directions, not inside one"
 		"layout_median_at_edge":
 			return "A median sits between the two directions"
+		# Kerbside parking (`PARK-05`).
+		"layout_parking_at_kerb":
+			return "A parking lane goes at the kerb, the outermost part of the road"
+		"parking_requires_vehicle_road":
+			return "Only roads with lanes can have parking"
+		"parking_code_out_of_range":
+			return "Unknown parking setting"
 		"layout_unknown_part":
 			return "Unknown road part"
 		"speed_out_of_range":

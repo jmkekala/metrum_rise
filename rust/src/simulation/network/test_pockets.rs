@@ -43,7 +43,7 @@ fn road(fwd: u8, bkw: u8, pocket: Option<RoadPocket>) -> Edge {
     );
     edge.fwd_lanes = fwd;
     edge.bkw_lanes = bkw;
-    edge.width = Edge::cross_section_width_m(fwd, bkw, None);
+    edge.width = Edge::cross_section_width_m(fwd, bkw, None, edge.parking);
     let id = graph.add_edge(edge);
     graph.set_edge_pocket(id, pocket);
     graph.edge(id).clone()
@@ -537,7 +537,7 @@ fn pocket_keeps_opposite_kerb_and_two_through_lanes_aligned() {
     for edge in [0, POCKET_EDGE] {
         let edge = graph.edge_mut(edge);
         edge.median = grass;
-        edge.width = Edge::cross_section_width_m(edge.fwd_lanes, edge.bkw_lanes, grass);
+        edge.width = Edge::cross_section_width_m(edge.fwd_lanes, edge.bkw_lanes, grass, edge.parking);
         assert_eq!(edge.validate_pocket(), Ok(()));
     }
     super::roadbed::fixtures::finalize(&mut graph);
@@ -575,7 +575,7 @@ fn pocket_keeps_opposite_kerb_and_two_through_lanes_aligned() {
 fn divided_road(fwd: u8, bkw: u8, median_m: f32, pocket: Option<RoadPocket>) -> Edge {
     let mut edge = road(fwd, bkw, None);
     edge.median = super::graph::RoadMedian::from_tool(2, median_m).unwrap();
-    edge.width = Edge::cross_section_width_m(fwd, bkw, edge.median);
+    edge.width = Edge::cross_section_width_m(fwd, bkw, edge.median, edge.parking);
     edge.set_pocket(pocket);
     edge
 }
@@ -638,7 +638,7 @@ fn a_left_pocket_narrows_the_median_and_keeps_the_footprint() {
     assert_eq!(narrow.validate_pocket(), Err("pocket_requires_wide_median"));
     let mut painted = road(2, 2, None);
     painted.median = super::graph::RoadMedian::from_tool(1, 2.0).unwrap();
-    painted.width = Edge::cross_section_width_m(2, 2, painted.median);
+    painted.width = Edge::cross_section_width_m(2, 2, painted.median, painted.parking);
     painted.set_pocket(left_at(EdgeEnd::End));
     assert_eq!(
         painted.validate_pocket(),

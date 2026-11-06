@@ -41,6 +41,7 @@ fn draw(core: &mut SimCore, points: Vec<Vector3>, lanes: i32) -> Result<(), Stri
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: Default::default(),
             attributes: RoadAttributes::DEFAULT,
             preview: None,
         },
@@ -369,6 +370,7 @@ fn a_preview_near_a_bare_node_is_what_the_commit_installs() {
         snap_to_existing_roads: true,
         tunnel: false,
         median: None,
+        parking: Default::default(),
         attributes: RoadAttributes::DEFAULT,
     };
     let preview = Arc::new(context.preview_road(request));
@@ -390,6 +392,7 @@ fn a_preview_near_a_bare_node_is_what_the_commit_installs() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                parking: Default::default(),
                 attributes: RoadAttributes::DEFAULT,
                 preview,
             },

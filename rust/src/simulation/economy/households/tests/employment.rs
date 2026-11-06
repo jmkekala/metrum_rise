@@ -8,11 +8,11 @@ use super::*;
 #[test]
 #[ignore = "matched workplace cache publication/lookup timing; excludes setup"]
 fn benchmark_workplace_route_cache_hashing() {
-    use super::super::employment::WorkplaceRouteCache;
+    use super::super::employment::{WorkplaceRouteCache, WorkplaceCommute};
     use std::{collections::HashMap, hash::BuildHasher, hint::black_box, time::Instant};
-    type Entry = ((usize, usize, bool), Option<u16>);
+    type Entry = ((usize, usize, bool), WorkplaceCommute);
     fn sample<S: BuildHasher>(
-        cache: &mut HashMap<(usize, usize, bool), Option<u16>, S>,
+        cache: &mut HashMap<(usize, usize, bool), WorkplaceCommute, S>,
         entries: &[Entry],
     ) -> (f64, f64, u64) {
         cache.clear();
@@ -26,7 +26,7 @@ fn benchmark_workplace_route_cache_hashing() {
         for _ in 0..8 {
             for &(key, _) in entries {
                 let value = cache.get(black_box(&key)).unwrap();
-                checksum += value.map_or(1, |value| u64::from(value) + 2);
+                checksum += value.seconds.map_or(1, |value| u64::from(value) + 2);
             }
         }
         let lookup_ns = begin.elapsed().as_nanos() as f64 / (entries.len() * 8) as f64;
@@ -42,7 +42,7 @@ fn benchmark_workplace_route_cache_hashing() {
                     let value = (home + work) % 7 != 0;
                     (
                         (home, work * 491, home % 2 == 0),
-                        value.then_some(((home * 5 + work) % 65536) as u16),
+                        WorkplaceCommute::legacy(value.then_some(((home * 5 + work) % 65536) as u16)),
                     )
                 })
             })
@@ -54,7 +54,7 @@ fn benchmark_workplace_route_cache_hashing() {
         let fast_capacity = fast.capacity();
         let expected: u64 = entries
             .iter()
-            .map(|&(_, value)| value.map_or(1, |value| u64::from(value) + 2))
+            .map(|&(_, value)| value.seconds.map_or(1, |value| u64::from(value) + 2))
             .sum::<u64>()
             * 8;
         for pair in 0..11 {
@@ -3652,15 +3652,12 @@ fn shopping_car_census_uses_eligible_residents_and_resets_removed_access() {
     assert!(households.households[0].shopping_has_car);
     agents.age_group[0] = AGE_ELDER;
     households.households[0].shopping_has_car = false;
-    households.rebuild_household_shopping_access(&agents);
+    households.recount_every_household(&agents, &allocator);
     assert!(
         households.households[0].shopping_has_car,
-        "the load census must include elders without relying on saved household flags"
+        "the recount must include elders"
     );
     agents.assign_household_id(0, usize::MAX);
-    households.rebuild_household_shopping_access(&agents);
-    assert!(!households.households[0].shopping_has_car);
-    households.households[0].shopping_has_car = true;
     households.recount_every_household(&agents, &allocator);
     assert!(
         !households.households[0].shopping_has_car,
@@ -3742,7 +3739,7 @@ fn workplace_quotes_expire_a_day_of_passes_after_they_were_added() {
         0,
         0,
         0,
-        vec![((0, 1, false), Some(60), 0), ((1, 0, true), None, 3)],
+        vec![((0, 1, false), super::super::employment::WorkplaceCommute::legacy(Some(60)), 0), ((1, 0, true), super::super::employment::WorkplaceCommute::legacy(None), 3)],
         3,
     );
     for _ in 0..20 {

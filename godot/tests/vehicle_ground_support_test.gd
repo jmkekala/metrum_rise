@@ -20,8 +20,8 @@ class RenderSource extends RefCounted:
 	var drawn: Dictionary = {}
 	func get_agent_transforms() -> Dictionary:
 		return {}
-	func get_car_render_data() -> Dictionary:
-		return cars
+	func get_vehicle_frame(_full: bool) -> Dictionary:
+		return {"busy": false, "cars": cars, "parked": {}}
 	func smooth_car_render_data(data: Dictionary, delta: float) -> Dictionary:
 		drawn = simulation.smooth_car_render_data(data, delta)
 		return drawn

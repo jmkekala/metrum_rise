@@ -271,6 +271,7 @@ impl SimCore {
         if adopting {
             report.adoption_ms = adoption_start.elapsed().as_secs_f64() * 1000.0;
         }
+        self.complete_parking_economy_publication();
         let speed = self.time.speed_multiplier;
         if speed <= 0.0 {
             return report;
@@ -305,13 +306,18 @@ impl SimCore {
         let t_agent = Instant::now();
         record_crash_phase_for_core(self, "agent tick");
         run_sim_phase("agent tick", || {
-            self.agents.tick(
+            self.publish_parking_households();
+            self.agents.tick_with_parking(
                 &self.allocator,
                 &mut self.transit_network,
                 &mut self.region_graph,
                 dt,
                 &self.time,
+                &mut self.parking,
             );
+            self.schedule_parking_retries();
+            self.agents.remove_completed_parking_deliveries();
+            self.schedule_stored_parking_arrivals();
         });
         self.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;
         report.agent_ms = self.last_agent_tick_us as f64 / 1000.0;

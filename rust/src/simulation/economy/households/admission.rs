@@ -131,6 +131,7 @@ impl HouseholdSystem {
             ),
         });
         self.handles.register_appended(self.households.len());
+        self.parking_changes.push(self.handles.handle(self.households.len() - 1));
         let ledger = DailyHouseholdLedger {
             budget_before: starting_budget,
             budget_after: starting_budget,

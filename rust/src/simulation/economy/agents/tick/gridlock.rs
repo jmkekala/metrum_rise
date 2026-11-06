@@ -35,6 +35,7 @@ use crate::simulation::economy::agents::data::{AgentSystem, AgentVec};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
+use crate::simulation::parking::ParkingSystem;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -356,6 +357,7 @@ impl AgentSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
         now: u64,
+        parking: Option<&ParkingSystem>,
     ) {
         let lane_count = network.lane_system.lanes.len();
         if !self.lane_bucket_snapshot_valid
@@ -368,7 +370,7 @@ impl AgentSystem {
         self.gridlock.bind(network);
         let check = self.gridlock.report.checks + 1;
         self.find_wait_for_cycles(network, graph, now, check);
-        self.act_on_confirmed_cycles(allocator, network, graph);
+        self.act_on_confirmed_cycles(allocator, network, graph, parking);
         let checker = &mut self.gridlock;
         std::mem::swap(&mut checker.previous, &mut checker.cycles);
         checker.report.checks = check;
@@ -458,6 +460,7 @@ impl AgentSystem {
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
+        parking: Option<&ParkingSystem>,
     ) {
         let lanes = &network.lane_system.lanes;
         self.gridlock.report.saturated = 0;
@@ -483,7 +486,7 @@ impl AgentSystem {
             let mut detoured = false;
             for c in 0..self.gridlock.candidates.len() {
                 let (_, head, lane) = self.gridlock.candidates[c];
-                if self.try_detour(head, lane, allocator, network, graph) {
+                if self.try_detour(head, lane, allocator, network, graph, parking) {
                     detoured = true;
                     break;
                 }
@@ -521,6 +524,7 @@ impl AgentSystem {
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
+        parking: Option<&ParkingSystem>,
     ) -> bool {
         let agents = &self.agents;
         let lanes = &network.lane_system.lanes;
@@ -589,6 +593,10 @@ impl AgentSystem {
                 &self.pathfind_count,
                 None,
                 None,
+                // Keep the claimed driveway endpoint, including a bay away from the door.
+                parking.and_then(|p| {
+                    p.replan_entrance(agents.parking_trip[i], allocator, network, graph)
+                }),
             )
             .ok()
         } else {
@@ -627,6 +635,7 @@ impl AgentSystem {
             path.extend_from_slice(&replan.current_path);
         }
         let agents = &mut self.agents;
+        agents.parking_trip[i].route_replaced(path.len());
         agents.current_path[i] = path;
         agents.walk_lanes[i].clear();
         agents.current_path_index[i] = 0;

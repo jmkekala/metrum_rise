@@ -15,8 +15,9 @@
 //! `{"format": "metrum-road-types", "version": 2, "next_id": 3, "types": [{"id": "custom:1",
 //! "name": "Boulevard", "parts": [{"kind": "sidewalk"}, {"kind": "car_lane", "forward": false},
 //! {"kind": "median", "style": "grass", "width_m": 3.0}, ...], "speed_kmh": 50, "zoning":
-//! true, "street_lights": true}]}`. Part kinds `sidewalk`, `car_lane`, `median`, `footpath`;
-//! median styles `painted`, `grass`, `paving`. A car road without sidewalk parts has none.
+//! true, "street_lights": true}]}`. Part kinds `sidewalk`, `car_lane`, `median`, `footpath`,
+//! `parking` (`PARK-05`); median styles `painted`, `grass`, `paving`. A car road without
+//! sidewalk parts has none.
 //! `speed_kmh` (a walkway's is 0 and ignored) and `zoning` came with version 2: a version 1 entry
 //! reads as 50 km/h with zoning, and the next write stores the file as version 2, its entries as
 //! they were. `street_lights` came later in version 2 (`ROAD-101` RB3e), without a version
@@ -90,6 +91,7 @@ enum StoredPart {
     CarLane { forward: bool },
     Median { style: String, width_m: f32 },
     Footpath,
+    Parking,
 }
 
 const STYLE_KEYS: [(MedianStyle, &str); 3] = [
@@ -112,6 +114,7 @@ impl StoredPart {
                 width_m: median.width_m,
             },
             RoadPart::Footpath => Self::Footpath,
+            RoadPart::Parking => Self::Parking,
         }
     }
 
@@ -128,6 +131,7 @@ impl StoredPart {
                 width_m: *width_m,
             }),
             Self::Footpath => RoadPart::Footpath,
+            Self::Parking => RoadPart::Parking,
         })
     }
 }

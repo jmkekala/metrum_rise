@@ -33,6 +33,7 @@ pub(crate) fn road_edge(start_node: u32, end_node: u32, points: Vec<Vector3>, wi
         .map(|segment| segment[0].distance_to(segment[1]))
         .sum();
     Edge {
+        parking: Default::default(),
         start_node,
         end_node,
         primary_type: TransitType::Road,
@@ -158,7 +159,7 @@ pub(crate) fn divided(mut edge: Edge, fwd: u8, bkw: u8, median: Option<RoadMedia
     edge.fwd_lanes = fwd;
     edge.bkw_lanes = bkw;
     edge.median = median;
-    edge.width = Edge::cross_section_width_m(fwd, bkw, median);
+    edge.width = Edge::cross_section_width_m(fwd, bkw, median, Default::default());
     edge
 }
 
@@ -230,7 +231,7 @@ pub(crate) fn pocket_junction_at(
     let lanes = |mut edge: Edge, fwd: u8, bkw: u8| {
         edge.fwd_lanes = fwd;
         edge.bkw_lanes = bkw;
-        edge.width = Edge::cross_section_width_m(fwd, bkw, None);
+        edge.width = Edge::cross_section_width_m(fwd, bkw, None, edge.parking);
         edge
     };
     let add = |graph: &mut RegionGraph, a: u32, b: u32, fwd: u8, bkw: u8| {
@@ -383,7 +384,7 @@ pub(crate) fn straight_1x1_to_2x2() -> RegionGraph {
         move |mut edge: Edge| {
             edge.fwd_lanes = fwd;
             edge.bkw_lanes = bkw;
-            edge.width = Edge::cross_section_width_m(fwd, bkw, None);
+            edge.width = Edge::cross_section_width_m(fwd, bkw, None, edge.parking);
             edge
         }
     };

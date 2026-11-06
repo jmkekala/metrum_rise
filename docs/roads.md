@@ -11363,10 +11363,14 @@ emptied parcels, never the buildings); Cancel leaves the roads as they are. A zo
 refreshes the no-build overlay, as the "No buildings" checkbox does. Every in-place refusal shows with
 its text, walkway <-> road among them ("A walkway cannot become a road: draw a road in its
 place", "A road cannot become a walkway"); the picker stays enabled on a walkway so that refusal
-shows. It opens at 400 x 500 px (minimum 360 x 460); its round R5b2 Turn pocket section moved to
-the Junction window ([round R5c2](#the-turn-pocket-tool-round-r5b2)). The reason text is `ui/road_reason_text.gd`,
-shared with the road tool's stroke preview, and words the road types' layout, name and library
-keys too. The median style row and width stepper live on as `ui/median_controls.gd` for the
+shows. The type's kerbside parking (`PARK-05`) travels with its lanes and median, and a Parking
+lane row's Left and Right boxes switch one kerb's parking lane on the selected roads in place,
+keeping their lanes and median, with the same check, undo and refusal text (left and right look
+along the direction the road was drawn). It opens at 400 x 540 px (minimum 360 x 500), enlarged
+from upstream's 400 x 500 px (minimum 360 x 460) for the parking row. Its round R5b2 Turn pocket
+section moved to the Junction window ([round R5c2](#the-turn-pocket-tool-round-r5b2)). The
+reason text is `ui/road_reason_text.gd`, shared with the road tool's stroke preview, and words
+the road types' layout, name and library keys too. The median style row and width stepper live on as `ui/median_controls.gd` for the
 road builder's median part.
 
 **Crossing toggle (round R3b1).** The crossing toggle's commit now rebuilds its node's lanes,
@@ -11534,7 +11538,9 @@ controls (Tool mode, Snapping and Structure stay), and the lane and median keys 
 - **Model** (`simulation/network/road_types.rs`, engine-free). A layout is an ordered list of
   parts, left to right looking along the road's forward direction: `Sidewalk` (1.5 m,
   `SIDEWALK_WIDTH`), `CarLane { forward }` (3.5 m), at most one `Median` (style and width in the
-  style's range) and `Footpath` (2 m, the Walkway's only part, valid only alone). One check
+  style's range), `Footpath` (2 m, the Walkway's only part, valid only alone) and `Parking`
+  (2.5 m kerbside parking lane at a kerb: next to a sidewalk, or outermost without them, `PARK-05`,
+  [`traffic.md`](traffic.md#kerbside-parking-lanes-park-05)). One check
   (`check_layout`, `O(parts)`, allocation-free) turns a layout into the edge's cross-section
   (fwd, bkw, median, sidewalks) or a refusal with its key: a sidewalk at each end or none at
   all, none inside (`layout_sidewalks`, round RB3a), backward
@@ -11782,9 +11788,9 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   `ROAD-107`) is the roadbed's 0.75 m shoulder band, drawn as gravel between edge lines, never a
   part sent to Rust. Every change asks `check_road_layout`; an invalid layout is
   tinted red with Rust's reason (`road_reason_text.gd`) under the strip, never auto-sorted.
-- **Parts in.** Five tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
-  median (each median at its style's default width; no footpath tile: the Walkway stays a
-  built-in). Both gestures: click a "+" slot between two parts and then a tile (the tile goes
+- **Parts in.** Six tiles: Backward lane, Forward lane, Painted median, Grass median, Paving
+  median (each median at its style's default width) and Parking lane (`PARK-05`); no footpath
+  tile: the Walkway stays a built-in. Both gestures: click a "+" slot between two parts and then a tile (the tile goes
   there and the next slot is selected; the slot before the right sidewalk is selected at
   first), or drag a tile into the strip (a marker shows the boundary it lands on). A part
   dragged along the strip moves; dragged off it, it is removed.
@@ -13136,7 +13142,8 @@ that fades from near black (linear albedo 0.07) to light grey (0.17) with age, c
 grain and blotches at about 2 and 6 m, sealed lengthwise and transverse cracks, long trench
 patches (bands across the road or one lane, strips along it) each with its own age, small cut
 and hand patches, manhole covers, drain grates in the gutters, grime along the kerb, and a
-crumbling edge where no kerb hides it. Studded-tyre ruts and polished wheel paths appear only on
+crumbling edge where no kerb hides it (past the whole carriageway: parking lanes and a median
+count, `PARK-05`). Studded-tyre ruts and polished wheel paths appear only on
 busy roads: their strength is 0 on a 1 + 1 road at 50 km/h, rising with lanes beyond two and
 speed beyond 55 km/h. Stripes along every lane of a residential street looked wrong against the
 Kuopio reference photographs. The material's `light()` adds a GGX sun specular to the paving

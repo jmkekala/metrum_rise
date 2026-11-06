@@ -253,7 +253,17 @@ loads. The Kuopio fixture is re-recorded in format 113 with
 `record_kuopio_reference_save`: `sqldiff` shows only the version and the new column, 0 on all 70
 edges, and every table's row count is unchanged; `placements.json` is re-pinned.
 
-Save format 114 (`ROAD-94`, round R4a1, 2026-11-04) changes no table: the default junction lane
+On the parking branch, save format 114 (`PARK-01`/`PARK-02`/`PARK-05`, merged with `ROAD-101` on 2026-11-04) is `dev`
+113 + 1 (the parking branch had used 110–114), current-only, with no migration. It adds the
+`parking_state` table (parking ownership, custody, claims, itinerary/recovery state and economy
+endpoint quote stamps, [`traffic.md`](traffic.md#resident-parking-trips-park-02-round-2a)) and
+`network_edges.parking` after `no_street_lights`: the edge's kerbside parking lanes as a bit set
+(bit 0 left, bit 1 right, looking along the edge; 0 without any); a load fails on any other value.
+Each parking lane is included in the stored `width`. The Kuopio fixture is re-recorded in format
+114 with `record_kuopio_reference_save`: every table's row count matches both parents' fixtures,
+the column is 0 on every edge, and `placements.json` is re-pinned.
+
+On upstream, save format 114 (`ROAD-94`, round R4a1, 2026-11-04) changes no table: the default junction lane
 use builds one vehicle connector per allowed lane pair instead of every pair
 ([`roads.md`](roads.md#default-junction-lane-use-road-94)), and a save stores its connectors in
 `saved_lanes`, so a format-113 save would load connectors the rebuild no longer makes. The
@@ -283,6 +293,15 @@ Save format 117 (`ROAD-62`, round R7a, 2026-11-06) adds the table `roundabout_ed
 `centre_x`, `centre_z`, `radius_m`): the circle of each roundabout ring edge, sparse. A load refuses a
 ring edge no roundabout edit could have built. No older save loads. The Kuopio fixture is re-recorded
 in format 117: `sqldiff` shows only the version and the new, empty table.
+
+The merged save format is 116, above both parents. It combines parking ownership, trips and
+quote state with upstream's default lane connectors and turn pockets. After `no_street_lights`,
+`network_edges` stores `pocket_end`, `pocket_roles`, then `parking`. Both parents supported only
+their current version and provided no migrations; 116 retains this policy and rejects older
+versions. The Kuopio fixture is re-recorded in format 116 with `record_kuopio_reference_save`:
+every table's row count matches upstream's format-115 fixture (`saved_lanes` 2,222), plus the
+parking branch's `parking_state` (1 row) and `building_detached_poses` (0 rows); `placements.json`
+is re-pinned.
 
 ## Scheduler
 
@@ -355,7 +374,7 @@ over the lane buckets the frame's agent tick left, with one route query per deto
 one serial O(lanes) pass over a flat `u32` array, O(waiting lanes) walks, O(cars in cycles), no
 allocation in a steady state; measured at 100k in the `TRAFFIC-14` acceptance record.
 `FrameStepReport::gridlock_ms` (part of `minute_ms`) times it. The checker's state between two
-checks is saved (save format 109, [Save bytes](#save-bytes-road-68-k16)).
+checks is saved (save format 110, [Save bytes](#save-bytes-road-68-k16)).
 
 **Implemented in `SIM-02-F`.** `EntityPhase { period }` systems cost `Phase`, the entities of
 one phase, and the schedule rejects any other cost for them. Three hourly ones follow the

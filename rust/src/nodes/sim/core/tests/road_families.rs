@@ -268,6 +268,7 @@ fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
                         // Only the tunnel intent makes a tunnel (`ROAD-61` round R8f).
                         tunnel: class == EdgeClass::Tunnel,
                         median: None,
+                        parking: crate::simulation::network::graph::RoadParking::NONE,
                         attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                         preview: None,
                     },
@@ -324,6 +325,7 @@ fn commit_with(core: &mut SimCore, ends: [Vector2; 2], attributes: RoadAttribute
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes,
             preview: None,
         },

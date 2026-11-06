@@ -101,7 +101,8 @@ pub(super) fn save(
             u64_to_i64(slot)?,
             u64_to_i64(seq)?,
             i64::from(kind),
-            u64_to_i64(a)?,
+            // Event payloads are opaque bits (parking chunks include signed coordinates).
+            a as i64,
         ])?;
     }
     Ok(())
@@ -164,7 +165,7 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
             i64_to_u64(row.get(0)?)?,
             i64_to_u64(row.get(1)?)?,
             i64_to_u16(row.get(2)?)?,
-            i64_to_u64(row.get(3)?)?,
+            row.get::<_, i64>(3)? as u64,
         ));
     }
     if scheduler

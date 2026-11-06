@@ -82,6 +82,7 @@ fn preview_with(
 ) -> RoadPreview {
     let surface_generation = context.view.surface_generation;
     context.preview_road(RoadPreviewRequest {
+        parking: Default::default(),
         surface_generation,
         points: points.to_vec(),
         fwd_lanes: 1,
@@ -110,6 +111,7 @@ fn commit_with(
 ) -> crate::nodes::sim::core::road_commit::RoadCommitOutcome {
     let outcome = core.commit_road(
         RoadCommitRequest {
+            parking: Default::default(),
             points: points.to_vec(),
             fwd_lanes: 1,
             bkw_lanes: 1,
@@ -540,6 +542,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
         }));
         let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
@@ -552,6 +555,7 @@ fn a_widening_continuation_previews_its_committed_chunks() {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
                 preview: Some(Arc::clone(&preview)),
             },
@@ -899,6 +903,7 @@ fn drawn_medians_survive_widening_and_cross_junction_splits() {
                 2,
                 2,
                 median,
+                Default::default(),
                 crate::simulation::network::road_types::RoadAttributes::DEFAULT
             ),
             "style {style}: widened in place"
@@ -932,6 +937,7 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
         ((0, 0), "median_requires_vehicle_road"),
     ] {
         let request = RoadPreviewRequest {
+            parking: Default::default(),
             surface_generation: snapshot.surface_generation,
             points: points.clone(),
             fwd_lanes: fwd,
@@ -944,6 +950,7 @@ fn a_stroke_median_needs_a_road_with_both_directions() {
         assert_eq!(snapshot.validate(&request).1.invalid_reason, reason);
         let outcome = core.commit_road(
             RoadCommitRequest {
+                parking: Default::default(),
                 points: points.clone(),
                 fwd_lanes: fwd,
                 bkw_lanes: bkw,
@@ -1014,6 +1021,7 @@ fn a_painted_median_is_hatched_between_the_lane_groups() {
         let points = stroke(&core, ends);
         let outcome = core.commit_road(
             RoadCommitRequest {
+                parking: Default::default(),
                 points,
                 fwd_lanes: lanes,
                 bkw_lanes: lanes,
@@ -1153,6 +1161,7 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
         snap_to_existing_roads: true,
         tunnel: false,
         median: None,
+        parking: Default::default(),
         attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
     }));
     let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
@@ -1164,6 +1173,7 @@ fn a_movement_selective_approach_paints_its_dividers_solid_before_the_junction()
             snap_to_existing_roads: true,
             tunnel: false,
             median: None,
+            parking: Default::default(),
             attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             preview: Some(Arc::clone(&preview)),
         },

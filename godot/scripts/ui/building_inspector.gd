@@ -208,6 +208,11 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			]
 		)
 
+	_add_section(stats_body, "Parking")
+	_add_row(stats_body, "Valid places", str(info.get("parking_valid_places", 0)))
+	for reason in info.get("parking_rejected", PackedStringArray()):
+		_add_alert(stats_body, reason)
+
 	var is_farm := info.has("field_resource")
 	if zone == "residential" or is_farm:
 		if is_farm:
@@ -595,6 +600,7 @@ func _add_power_consumption_bar(stats_body: VBoxContainer, consumed_units: float
 func _add_alert(stats_body: VBoxContainer, text: String) -> void:
 	var label := Label.new()
 	label.text = "! " + text
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	label.add_theme_color_override("font_color", UIStyle.TEXT_ALERT)
 	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	stats_body.add_child(label)

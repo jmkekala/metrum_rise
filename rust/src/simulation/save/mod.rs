@@ -88,6 +88,7 @@ pub(crate) struct SaveGameView<'a> {
     pub resource_extraction: &'a ResourceExtractionSystem,
     pub agriculture: &'a AgricultureSystem,
     pub agents: &'a AgentSystem,
+    pub parking: &'a crate::simulation::parking::ParkingSystem,
     pub network: &'a TransitNetwork,
     pub treasury: &'a CityTreasury,
     pub service_policy: &'a CityServicePolicy,
@@ -131,6 +132,7 @@ pub(crate) struct LoadedSimulation {
     pub resource_extraction: ResourceExtractionSystem,
     pub agriculture: AgricultureSystem,
     pub agents: AgentSystem,
+    pub parking: crate::simulation::parking::ParkingSystem,
     pub treasury: CityTreasury,
     pub service_policy: CityServicePolicy,
     pub fiscal_policy: CityFiscalPolicy,
@@ -355,6 +357,7 @@ pub(super) struct SnapshotMaps {
 /// Entry point to save the live simulation state to a SQLite database.
 pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadResult<()> {
     view.config.validate()?;
+    view.parking.validate_custody(view.agents,view.households)?;
     validate_time_state(view.time, view.agents.sim_time)?;
     if let Some(camera) = view.camera {
         camera.validate()?;
@@ -477,6 +480,8 @@ fn write_snapshot(
         maps,
     )?;
     network::save_network(tx, view.graph, maps)?;
+    let parking = view.parking.save_json_with_households(|source| source, &view.households.parking_changes)?;
+    tx.execute("INSERT INTO parking_state VALUES (1,?1)", [parking])?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     gridlock::save(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
@@ -794,8 +799,16 @@ pub(crate) fn load_from_sqlite(
     let budget_history = load_budget_history(&conn)?;
     // Household member lists are derived, in canonical member order (`SIM-02-I`).
     agents.rebuild_household_members();
-    households.rebuild_household_shopping_access(&agents);
 
+    let parking_json: String = conn.query_row(
+        "SELECT data FROM parking_state WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut parking = crate::simulation::parking::ParkingSystem::load_json(&parking_json)?;
+    households.parking_changes = std::mem::take(&mut parking.pending_households).into_iter().map(crate::simulation::core::handles::Handle::from_bits).collect();
+    parking.validate_sources(&allocator, &graph)?;
+    parking.validate_custody(&agents,&households)?;
     Ok(LoadedSimulation {
         vegetation,
         vegetation_edits,
@@ -826,6 +839,7 @@ pub(crate) fn load_from_sqlite(
         service_policy,
         fiscal_policy,
         budget_history,
+        parking,
     })
 }
 
@@ -970,7 +984,9 @@ fn build_snapshot_maps(
         .map(|(n, o)| (o, n as u32))
         .collect();
     for b in &allocator.buildings {
-        if !edge_old_to_new.contains_key(&b.edge_idx) {
+        if !edge_old_to_new.contains_key(&b.edge_idx)
+            && !(b.parcel_id == 0 && b.zone_type == crate::simulation::zoning::ZoneType::None)
+        {
             return Err(SaveLoadError::custom("bld edge missing"));
         }
     }

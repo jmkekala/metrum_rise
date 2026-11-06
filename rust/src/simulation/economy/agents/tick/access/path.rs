@@ -15,11 +15,11 @@ use godot::prelude::Vector2;
 
 /// Fixed-size polyline for door-to-lane or lane-to-door access movement.
 #[derive(Clone, Copy)]
-pub(in crate::simulation::economy::agents::tick) struct LocalAccessPath {
+pub(crate) struct LocalAccessPath {
     /// Ordered access points followed by the agent.
-    pub(in crate::simulation::economy::agents::tick) points: [Vector2; 4],
+    pub(crate) points: [Vector2; 5],
     /// Number of valid entries in `points`.
-    pub(in crate::simulation::economy::agents::tick) count: usize,
+    pub(crate) count: usize,
 }
 
 /// Builds a short local access path between a building door and a lane/curb handoff point.
@@ -34,7 +34,7 @@ pub(in crate::simulation::economy::agents::tick) fn local_access_path(
 ) -> Option<LocalAccessPath> {
     let lane_point = local_access_point(mode, entrance, lane_id, lane_d, transit_network)?;
     let mut path = LocalAccessPath {
-        points: [Vector2::ZERO; 4],
+        points: [Vector2::ZERO; 5],
         count: 0,
     };
 
@@ -90,7 +90,7 @@ fn point_on_segment(p: Vector2, a: Vector2, b: Vector2) -> bool {
 }
 
 /// Returns the next segment endpoint index the agent should move toward.
-pub(in crate::simulation::economy::agents::tick) fn local_access_target_segment(
+pub(crate) fn local_access_target_segment(
     current: Vector2,
     path: &LocalAccessPath,
 ) -> Option<usize> {

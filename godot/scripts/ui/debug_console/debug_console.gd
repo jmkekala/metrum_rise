@@ -38,7 +38,7 @@ const READ_BATCH := 512
 const MAX_MODEL_LINES := 4096
 const DUMP_DIR := "user://debug"
 
-const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | dump | clear"
+const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | parking | dump | clear"
 # Visual modes read by shaders as global uniforms; the mode index is the shader's mode number.
 const SHADER_GLOBAL_MODES := {
 	"terrain_visual": "terrain_visual_debug_mode",
@@ -291,6 +291,8 @@ func _run_command(text: String) -> void:
 			_channel_command(words)
 		"visual", "vis":
 			_visual_command(words)
+		"parking", "park":
+			_parking_command()
 		"dump":
 			_dump()
 		"clear":
@@ -344,6 +346,40 @@ func _visual_command(words: PackedStringArray) -> void:
 		_view.set_status("Unknown value '%s'. Usage: visual %s %s" % [words[2], mode, values])
 		return
 	_view.set_status("%s = %s" % [mode, MetrumDebug.visual_mode(mode)])
+
+## Prints parking supply, car custody, live trip phases, why departures drove or walked, and
+## every rejected parking spot with its building and reason.
+func _parking_command() -> void:
+	var sim := _simulation_node()
+	if sim == null or sim.is_asset_editor_mode() or sim.is_world_editor_mode():
+		_view.set_status("Parking info needs a running game.")
+		return
+	var info: Dictionary = sim.get_parking_info()
+	var lines := PackedStringArray([
+		"Parking spots: %d" % int(info.get("places", 0)),
+		"Cars: %d  parked %d  driving %d  stored off-map %d  in use %d  with a reserved spot %d" % [
+			int(info.get("vehicles", 0)), int(info.get("parked", 0)), int(info.get("moving", 0)),
+			int(info.get("stored", 0)), int(info.get("borrowed", 0)), int(info.get("reserved", 0))],
+		"Resident cars inside buildings (must be 0): %d" % int(info.get("resident_cars_in_buildings", 0)),
+	])
+	var phases: Dictionary = info.get("phases", {})
+	var phase_text := PackedStringArray()
+	for phase in phases.keys():
+		if str(phase) != "None":
+			phase_text.append("%s %d" % [phase, int(phases[phase])])
+	lines.append("Trips under way: " + ("none" if phase_text.is_empty() else ", ".join(phase_text)))
+	lines.append("Departure attempts since load:")
+	var departures: Dictionary = info.get("departures", {})
+	for label in departures.keys():
+		if int(departures[label]) > 0:
+			lines.append("  %s: %d" % [label, int(departures[label])])
+	var rejected: PackedStringArray = info.get("diagnostics", PackedStringArray())
+	lines.append("Rejected parking spots: %d" % rejected.size())
+	for issue in rejected:
+		lines.append("  " + issue)
+	var text := "\n".join(lines)
+	_view.set_status(text)
+	MetrumDebug.log("events", text)
 
 func _copy_visible() -> void:
 	var text := PackedStringArray()

@@ -95,6 +95,7 @@ fn write_snapshot(
     save_to_sqlite(
         path,
         SaveGameView {
+            parking: &Default::default(),
             camera: None,
             saved_at_unix: 0,
             config,

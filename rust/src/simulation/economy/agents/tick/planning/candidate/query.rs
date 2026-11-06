@@ -439,6 +439,28 @@ impl TripQueryScratch {
         })
     }
 
+    /// Prepares resident-economy worker storage before its per-request loop. O(graph storage)
+    /// after a topology change, O(1) otherwise; subsequent cost quotes allocate nothing.
+    pub(crate) fn prepare_thread(network: &TransitNetwork, graph: &RegionGraph) {
+        QUERY.with_borrow_mut(|scratch| {
+            scratch.disable_deferred_quotes();
+            scratch.prepare(network, graph);
+        });
+    }
+
+    // A parking quote may contain several legs inside one prepared workplace shard. Unlike
+    // an independent route request, none may discard the shard's deferred shared quotes.
+    pub(in super::super) fn with_shared_quotes<T>(
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        quote: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        QUERY.with_borrow_mut(|scratch| {
+            scratch.prepare(network, graph);
+            quote(scratch)
+        })
+    }
+
     /// Runs a planning callback with `owned` installed as the current thread-local scratch.
     ///
     /// The previous TLS value is restored when the callback returns or unwinds, so nested
@@ -1468,6 +1490,12 @@ mod tests {
             seconds: Some(2.0),
         });
         scratch.mark_dirty_quote(0);
+        TripQueryScratch::with_owned(&mut scratch, || {
+            TripQueryScratch::with_shared_quotes(&network, &graph, |scratch| {
+                assert!(scratch.deferred_shared);
+                assert_eq!(scratch.dirty_quote_slots, [0]);
+            });
+        });
         scratch.publish_quotes(&mut shared);
         assert_eq!(
             shared.get(&key, network_quote_revision(&network)),

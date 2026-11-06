@@ -133,7 +133,7 @@ impl RoadEditPlan {
             &request.points,
             request.fwd_lanes.clamp(0, 255) as u8,
             request.bkw_lanes.clamp(0, 255) as u8,
-            (request.median, request.attributes),
+            (request.median, request.parking, request.attributes),
             terrain,
             graph,
             roadbed,
@@ -199,7 +199,8 @@ impl RoadEditPlan {
         if !validation.is_valid {
             return Some(FailedCheck::Validation(validation.invalid_reason));
         }
-        let width = Edge::cross_section_width_m(fwd, bkw, self.prepared.median);
+        let width =
+            Edge::cross_section_width_m(fwd, bkw, self.prepared.median, self.prepared.parking);
         let half_width_m = width * 0.5 + crate::config::SIDEWALK_WIDTH;
         let parcels = core
             .zoning
@@ -331,6 +332,7 @@ mod tests {
                 snap_to_existing_roads: true,
                 tunnel: false,
                 median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
                 attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
             },
             3,

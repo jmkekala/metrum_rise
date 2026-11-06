@@ -104,6 +104,7 @@ pub(super) unsafe fn handle_in_building(
                 pathfind_count,
                 operational_clock,
                 economy_catalog,
+                slices.parking.map(|parking| (parking, slices.parking_trip.get(i).vehicle)),
             ) {
                 *s_plan_b.get_mut(i) = target_building;
                 *s_plan_act.get_mut(i) = activity;
@@ -126,6 +127,8 @@ pub(super) unsafe fn handle_in_building(
             *s_next_replan_time.get_mut(i) = 0.0;
         } else if sim_time < *s_next_replan_time.get(i) {
             // Cooldown gate blocks replanning this tick.
+        } else if slices.parking.is_some() && *slices.freight_shipment_id.get(i) == u64::MAX && *slices.pending_household_size.get(i) == 0 {
+            // Private departures reserve in the ordered parking transition phase.
         } else if let Some(plan) = plan_building_origin_trip(
             curr_bldg,
             next_bldg,
@@ -158,6 +161,7 @@ pub(super) unsafe fn handle_in_building(
             *s_pos_x.get_mut(i) = origin_entrance.door_pos.x;
             *s_pos_y.get_mut(i) = origin_entrance.door_pos.y;
             *s_transit.get_mut(i) = TRANSIT_ACCESS_EGRESS;
+            slices.parking_trip.get_mut(i).route_replaced(plan.current_path.len());
             *s_path.get_mut(i) = plan.current_path;
             slices.walk_lanes.get_mut(i).clear();
             *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };

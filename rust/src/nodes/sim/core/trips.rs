@@ -33,6 +33,10 @@ use crate::simulation::economy::logistics::ShipmentStatus;
 /// One step of a trip, keyed by the entity that owns it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TripEvent {
+    /// Event-driven parking departure/recovery retry at the agent's actual position.
+    ParkingRetry { agent: AgentHandle },
+    /// Bounded continuation of a local stored-car supply wake cycle.
+    StoredCarArrival { chunk: (i32, i32) },
     /// Loaded shipment `shipment` sends its carrier.
     FreightDispatch { shipment: u64 },
     /// Checks whether shipment `shipment`'s carrier arrived.
@@ -55,6 +59,8 @@ impl TripEvent {
     // Saved kinds 2..=9 follow the construction events in `SimEvent::to_saved`.
     pub(super) fn to_saved(self) -> (u16, u64) {
         match self {
+            Self::ParkingRetry { agent } => (10, agent.to_bits()),
+            Self::StoredCarArrival { chunk: (x, z) } => (11, (u64::from(x as u32) << 32) | u64::from(z as u32)),
             Self::FreightDispatch { shipment } => (2, shipment),
             Self::FreightCheck { shipment } => (3, shipment),
             Self::ShopperDeparture { household } => (4, household.to_bits()),
@@ -68,6 +74,8 @@ impl TripEvent {
 
     pub(super) fn from_saved(kind: u16, a: u64) -> Option<Self> {
         Some(match kind {
+            11 => Self::StoredCarArrival { chunk: ((a >> 32) as u32 as i32, a as u32 as i32) },
+            10 => Self::ParkingRetry { agent: Handle::from_bits(a) },
             2 => Self::FreightDispatch { shipment: a },
             3 => Self::FreightCheck { shipment: a },
             4 => Self::ShopperDeparture {
@@ -218,6 +226,13 @@ impl SimCore {
     ) {
         let next_check = slot + TRIP_CHECK_SLOTS;
         match event {
+            TripEvent::StoredCarArrival { chunk } => self.run_stored_parking_arrivals(chunk, slot),
+            TripEvent::ParkingRetry { agent } => {
+                if let Some(i) = self.agents.resolve_agent(agent) {
+                    self.agents.agents.parking_trip[i].retry_pending = false;
+                    self.agents.agents.next_replan_time[i] = 0.0;
+                }
+            }
             TripEvent::FreightDispatch { shipment } => {
                 if !self.logistics.trip_event_due(shipment, slot) {
                     return;
@@ -288,6 +303,7 @@ impl SimCore {
                     &self.transit_network,
                     &self.region_graph,
                     self.fiscal_policy.household_vat_rate,
+                    Some(&self.parking),
                 );
                 if household_vat != 0.0 {
                     self.collect_fiscal_revenue(FiscalRevenue {
@@ -326,8 +342,14 @@ impl SimCore {
             }
             TripEvent::ArrivalDeparture { carrier } => {
                 if let Some(agent_idx) = self.agents.resolve_agent(carrier)
-                    && self.agents.release_departure(agent_idx)
+                    && self.agents.departure_held(agent_idx)
                 {
+                    if !self.agents.start_parking_move_in(agent_idx, &mut self.parking,
+                        &self.allocator, &self.transit_network, &self.region_graph) {
+                        self.schedule_trip(next_check, TripEvent::ArrivalDeparture { carrier });
+                        return;
+                    }
+                    self.agents.release_departure(agent_idx);
                     crate::debug::work::add(crate::debug::work::Work::ArrivalLaunches, 1);
                     self.schedule_trip(next_check, TripEvent::ArrivalCheck { carrier });
                 }

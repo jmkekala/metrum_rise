@@ -952,6 +952,7 @@ fn assert_continues_identically_after_prepared_reload(
         source.core.step_frame(FRAME_DT_S);
         loaded.core.step_frame(FRAME_DT_S);
         let when = (source.core.time.day_index, source.core.time.minute_of_day);
+        assert_eq!(serde_json::to_value(&source.core.agents.parking_trip).unwrap(), serde_json::to_value(&loaded.core.agents.parking_trip).unwrap(), "parking continuation at {when:?}");
         assert_same_flow_fields(&source.core, &loaded.core, &nodes, when);
         assert_same_demand_queues(&source.core, &loaded.core, &format!("{when:?}"));
         // In the hour's planning slots both games lend the published books, or skip, alike.

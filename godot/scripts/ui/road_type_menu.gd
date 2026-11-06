@@ -168,8 +168,12 @@ static func tool_attributes(type: Dictionary, speeds: Dictionary) -> Array:
 static func _is_walkway(type: Dictionary) -> bool:
 	return int(type.get("fwd_lanes", 0)) + int(type.get("bkw_lanes", 0)) == 0
 
-## "2 + 2 lanes, Grass 3.0 m, 100 km/h, no sidewalks, no street lights, 17.0 m wide" ("sidewalk
-## on the left" or "... right" for a road with one; or "Footpath, 2.0 m wide") from Rust's figures for a `get_road_types` entry, a
+# Kerbside parking (`PARK-05`) by Rust's code: bit 0 the left kerb, bit 1 the right.
+const PARKING_TEXT: Array[String] = ["", ", parking left", ", parking right", ", parking both sides"]
+
+## "2 + 2 lanes, Grass 3.0 m, parking both sides, 100 km/h, no sidewalks, no street lights,
+## 17.0 m wide" ("sidewalk on the left" or "... right" for a road with one; or "Footpath, 2.0 m
+## wide") from Rust's figures for a `get_road_types` entry, a
 ## `check_road_layout` verdict or a road's `get_edge_cross_section`; `with_width` false leaves
 ## the width out. A footpath has no speed.
 static func describe(type: Dictionary, with_width: bool = true) -> String:
@@ -179,6 +183,7 @@ static func describe(type: Dictionary, with_width: bool = true) -> String:
 	var style := int(type.get("median_style", 0))
 	if style > 0 and style < MedianControls.MEDIAN_STYLE_NAMES.size():
 		text += ", %s %.1f m" % [MedianControls.MEDIAN_STYLE_NAMES[style], float(type.get("median_width", 0.0))]
+	text += PARKING_TEXT[int(type.get("parking", 0)) & 3]
 	if fwd + bkw > 0:
 		if int(type.get("speed_kmh", 0)) > 0:
 			text += ", %d km/h" % int(type.get("speed_kmh", 0))

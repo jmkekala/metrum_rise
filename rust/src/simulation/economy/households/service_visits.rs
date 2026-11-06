@@ -24,7 +24,8 @@ use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
 };
-use crate::simulation::economy::agents::tick::{BuildingWalkingAccess, PedestrianReachability};
+use crate::simulation::economy::agents::tick::{
+    ResidentMobility,BuildingWalkingAccess, PedestrianReachability};
 use crate::simulation::economy::agents::{
     ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING,
 };
@@ -120,6 +121,7 @@ impl ServiceVisitIndex<'_> {
         pathfind_count: &AtomicU32,
         candidates: &mut Vec<usize>,
         diagnostics: &mut ServiceVisitDiagnostics,
+        mobility: Option<ResidentMobility<'_>>,
     ) {
         candidates.clear();
         if home_idx >= allocator.buildings.len() {
@@ -154,15 +156,15 @@ impl ServiceVisitIndex<'_> {
                 visits,
                 &mut inspected,
                 diagnostics,
+                mobility,
             );
 
             if has_car {
-                let home_car_components = car_components.building_components(
-                    allocator,
-                    graph,
-                    home_idx,
-                    TransitFlags::CAR,
-                );
+                let home_car_components = if let Some(mobility) = mobility {
+                    mobility.components(home_idx, car_components, allocator, transit_network, graph)
+                } else {
+                    car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR)
+                };
                 self.scan_candidate_bucket(
                     &self.services.car_buckets,
                     home_car_components,
@@ -179,6 +181,7 @@ impl ServiceVisitIndex<'_> {
                     visits,
                     &mut inspected,
                     diagnostics,
+                    mobility,
                 );
             }
         });
@@ -203,6 +206,7 @@ impl ServiceVisitIndex<'_> {
         visits: &mut CandidateVisits,
         inspected: &mut [usize; 2],
         diagnostics: &mut ServiceVisitDiagnostics,
+        mobility: Option<ResidentMobility<'_>>,
     ) {
         buckets.scan_nearest(components, origin_x, origin_y, |event| match event {
             ReachableBucketScanEvent::Item { item_idx } => {
@@ -232,17 +236,14 @@ impl ServiceVisitIndex<'_> {
                 let service_access = self.walking.map(|walking| {
                     prepare_walking_access(service_idx, allocator, transit_network, graph, walking)
                 });
-                if !proven_shopping_walk(self.walking, prepared_home, service_access.as_ref())
-                    && !shopping_route_is_feasible(
-                        home_idx,
-                        service_idx,
-                        has_car,
-                        allocator,
-                        transit_network,
-                        graph,
-                        pathfind_count,
-                    )
-                {
+                let feasible = proven_shopping_walk(self.walking, prepared_home, service_access.as_ref())
+                    || if let Some(mobility) = mobility {
+                        mobility.round_trip(home_idx, service_idx, allocator, transit_network, graph, pathfind_count)
+                    } else {
+                        shopping_route_is_feasible(home_idx, service_idx, has_car, allocator,
+                            transit_network, graph, pathfind_count)
+                    };
+                if !feasible {
                     diagnostics.rejected_unreachable += 1;
                     return true;
                 }
@@ -333,6 +334,7 @@ impl HouseholdSystem {
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) -> usize {
         let whole = SLOTS_PER_HOUR as u32;
         self.visit_credit = (self.visit_credit + VISIBLE_SERVICE_VISITS_PER_HOUR).min(whole);
@@ -340,7 +342,7 @@ impl HouseholdSystem {
             return 0;
         }
         self.visit_credit -= whole;
-        self.serve_visits(slot, 1, agents, allocator, transit_network, graph)
+        self.serve_visits(slot, 1, agents, allocator, transit_network, graph, parking)
     }
 
     /// Takes up to `count` visit requests and sends each household's first member at home to
@@ -349,6 +351,7 @@ impl HouseholdSystem {
     /// taken. Each costs its household's members and at most
     /// `SERVICE_VISIT_ROUTE_SCAN_CANDIDATES` inspected stores and as many passed over because
     /// they closed, after a front built at once if the hour had none.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn serve_visits(
         &mut self,
         slot: u64,
@@ -357,6 +360,7 @@ impl HouseholdSystem {
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) -> usize {
         let mut taken = 0;
         let mut batch = std::mem::take(&mut self.visit_batch);
@@ -371,7 +375,7 @@ impl HouseholdSystem {
             }
         }
         if !batch.is_empty() {
-            self.plan_and_hold_visits(slot, &batch, agents, allocator, transit_network, graph);
+            self.plan_and_hold_visits(slot, &batch, agents, allocator, transit_network, graph, parking);
         }
         self.visit_batch = batch;
         self.visit_queue_stats
@@ -381,6 +385,7 @@ impl HouseholdSystem {
 
     // Plans the visits of `batch`, households in queue order, in parallel, then holds the
     // visitors whose plans still hold, in that order.
+    #[allow(clippy::too_many_arguments)]
     fn plan_and_hold_visits(
         &mut self,
         slot: u64,
@@ -389,6 +394,7 @@ impl HouseholdSystem {
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        parking: Option<&crate::simulation::parking::ParkingSystem>,
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -396,7 +402,7 @@ impl HouseholdSystem {
             return;
         };
         agents.register_appended_household_members();
-        let front = self.destination_front(slot, allocator, transit_network, graph, &catalog);
+        let front = self.destination_front(slot, allocator, transit_network, graph, &catalog, parking);
         let service_index = ServiceVisitIndex {
             services: &front.services,
             catalog: &catalog,
@@ -415,7 +421,10 @@ impl HouseholdSystem {
         let plans: Vec<_> = batch
             .par_iter()
             .map_init(
-                || Vec::with_capacity(SERVICE_VISIT_SEARCH_CANDIDATES),
+                || {
+                    crate::simulation::economy::agents::tick::TripQueryScratch::prepare_thread(transit_network, graph);
+                    Vec::with_capacity(SERVICE_VISIT_SEARCH_CANDIDATES)
+                },
                 |candidates, &household_id| {
                     let mut diagnostics = ServiceVisitDiagnostics::default();
                     let visitor = first_eligible_shopper(
@@ -443,6 +452,7 @@ impl HouseholdSystem {
                             car_components,
                             candidates,
                             &mut diagnostics,
+                            parking,
                         )
                     };
                     (plan, diagnostics)
@@ -494,7 +504,7 @@ impl HouseholdSystem {
         let slot = u64::from(absolute_hour) * SLOTS_PER_HOUR;
         self.queue_every_household_for_test(slot, agents, allocator);
         self.restock_requests.clear();
-        self.serve_visits(slot, usize::MAX, agents, allocator, transit_network, graph);
+        self.serve_visits(slot, usize::MAX, agents, allocator, transit_network, graph, None);
         for visitor in std::mem::take(&mut self.held_visitors) {
             if let Some(agent_idx) = agents.resolve_agent(visitor) {
                 agents.release_departure(agent_idx);
@@ -582,8 +592,10 @@ fn plan_visible_service_visit(
     car_components: &ModeComponentIndex,
     candidates: &mut Vec<usize>,
     diagnostics: &mut ServiceVisitDiagnostics,
+    parking: Option<&crate::simulation::parking::ParkingSystem>,
 ) -> Option<ServiceVisitPlan> {
-    let has_car = agents.has_car[visitor_agent_id];
+    let mobility = parking.map(|parking| ResidentMobility::for_agent(parking, agents, visitor_agent_id));
+    let has_car = mobility.map_or(agents.has_car[visitor_agent_id], |m| m.eligible);
     let home_idx = agents.home_building[visitor_agent_id];
     service_index.fill_route_feasible_candidates(
         home_idx,
@@ -597,6 +609,7 @@ fn plan_visible_service_visit(
         &agents.pathfind_count,
         candidates,
         diagnostics,
+        mobility,
     );
     diagnostics.candidate_count += candidates.len() as u32;
     let Some(&service_building_id) = candidates.first() else {

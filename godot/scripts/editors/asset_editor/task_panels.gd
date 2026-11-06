@@ -128,6 +128,9 @@ func _access(box: Control) -> void:
 	v.anchor_properties = VBoxContainer.new()
 	box.add_child(v.anchor_properties)
 	var body: Control = v.anchor_properties
+	v._site_anchor_issue_label = _label(body, "")
+	v._site_anchor_issue_label.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4))
+	v._site_anchor_issue_label.visible = false
 	v._site_anchor_name_edit = v.text_field(body, "_anchor_name", "Name · authored")
 	v._site_anchor_name_edit.text_changed.connect(e._on_site_anchor_text_changed)
 	v._site_anchor_name_edit.text_changed.connect(func(_text): e._session.capture_geometry("Rename access point"))

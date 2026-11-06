@@ -71,6 +71,7 @@ fn lane(edge_id: usize, node_id: usize, geometry: Vec<Vector3>, next: Option<usi
 fn road_edge(graph: &mut RegionGraph, from: u32, to: u32, a: Vector3, b: Vector3) -> usize {
     let length = a.distance_to(b);
     graph.add_edge(Edge {
+        parking: Default::default(),
         start_node: from,
         end_node: to,
         primary_type: TransitType::Road,
@@ -171,6 +172,7 @@ pub(super) fn ring(spacing_m: f32, waiting: usize, feeder: usize) -> Ring {
         let (a, b) = (Vector3::new(-400.0, 0.0, 0.0), corner(0));
         let source = graph.add_node(a, NodeType::Junction);
         let edge = graph.add_edge(Edge {
+            parking: Default::default(),
             start_node: source,
             end_node: 0,
             primary_type: TransitType::Road,
@@ -437,7 +439,7 @@ fn run_checked(
         }
         let now = ((check + 1) * interval) as u64;
         ring.agents
-            .check_gridlock(&allocator, &ring.network, &ring.graph, now);
+            .check_gridlock(&allocator, &ring.network, &ring.graph, now, None);
         assert_eq!(ring.agents.len(), n, "no car is removed");
         let after = place(&ring.agents);
         moved.push(before.iter().zip(&after).filter(|(a, b)| a != b).count());
@@ -560,3 +562,5 @@ fn traffic14_gridlock_check_continues_across_a_reload() {
     assert!(continuous.reports.last().unwrap().detours >= 1);
     assert_eq!(reloaded, continuous);
 }
+
+mod parking;

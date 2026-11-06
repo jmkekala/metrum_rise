@@ -79,6 +79,15 @@ func _write_model(path: String, level: int) -> void:
 	file.store_buffer(tail)
 
 func _run() -> void:
+	var policy := AssetAuthoringPolicy.new()
+	var parking := {"anchors": [{"anchor_type": "parking", "position": [0, 0, 8],
+		"forward": [0, 0, 1], "width_m": 2.5, "length_m": 5.0}],
+		"site_surfaces": [{"material": "asphalt", "vertices": [[-20, -20], [20, -20], [20, 20], [-20, 20]]}]}
+	var diagnostics: Dictionary = JSON.parse_string(policy.parking_diagnostics_json(JSON.stringify(parking), PackedFloat32Array()))
+	_expect(diagnostics["rejected"][0]["reason"] == "needs a Driveway point, or put the spot's front edge on the street edge pointing into the lot", "parking payload explains missing driveway")
+	parking["anchors"].append({"anchor_type": "driveway", "position": [0, 0, -10], "forward": [0, 0, 1]})
+	diagnostics = JSON.parse_string(policy.parking_diagnostics_json(JSON.stringify(parking), PackedFloat32Array()))
+	_expect(diagnostics["rejected"].is_empty(), "valid parking payload has no rejections")
 	_pack = "editor-preview-test-%d" % OS.get_process_id()
 	_source = ProjectSettings.globalize_path("user://" + _pack + "-source")
 	_output = ProjectSettings.globalize_path("user://mods/" + _pack)

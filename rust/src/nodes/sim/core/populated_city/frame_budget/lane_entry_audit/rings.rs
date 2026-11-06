@@ -471,6 +471,7 @@ fn traffic14_gridlock_check_cost() {
                 &core.transit_network,
                 &core.region_graph,
                 slot,
+                Some(&core.parking),
             )
         });
         samples.push(started.elapsed().as_secs_f64() * 1e3);

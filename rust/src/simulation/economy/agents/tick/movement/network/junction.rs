@@ -397,6 +397,7 @@ pub(super) unsafe fn handle_lane_end(
                     pathfind_count,
                     Some((i, "network-junction")),
                     None,
+                    slices.parking.and_then(|p| p.replan_entrance(*slices.parking_trip.get(i), allocator, transit_network, graph)),
                 ) {
                     Ok(replan) => apply_network_replan(i, replan, slices),
                     Err(failure) => delay_or_recover_after_network_replan_failure(

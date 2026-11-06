@@ -587,7 +587,7 @@ pub(super) unsafe fn walk_to_sidewalk(
         };
         let pos = Vector2::new(*slices.pos_x.get(i), *slices.pos_y.get(i));
         let mut path = LocalAccessPath {
-            points: [Vector2::ZERO; 4],
+            points: [Vector2::ZERO; 5],
             count: 2,
         };
         path.points[0] = pos;
@@ -712,6 +712,7 @@ fn plan_from_lane(
         graph,
         pathfind_count,
         Some((i, "walk-home")),
+        None,
         None,
     )
 }

@@ -3541,3 +3541,8 @@ city-scale performance or a before/after gameplay improvement.
 Implement the editor as a shared Godot-based tool mode with TOML manifests and `.glb` as the canonical asset format. Start implementation from the v1 contract in this document: canonical pack layout, scanner rules, `pack_id` / `asset_id` grammar, per-class `asset.toml` schemas, and the minimum preview-scene interactions required to author each asset class. Export manifest files directly into the pack output folder next to the asset files.
 
 For buildings specifically, plot size is required asset metadata from day one. `3x3` remains only a default preset, not a design limit, and fixed `ZONING_DEPTH` is retired in favor of dynamic per-edge zoning extents. Compatibility metadata, redirect handling, workspaces, cross-pack sharing, signing, and similar ecosystem features stay in the later section until the base importer actually exists.
+
+Parking anchors rejected by the shared Rust parking validator are marked red and labelled
+with the rejection reason next to the anchor. Anchor and surface edits recheck the preview.
+Road-to-driveway connection checks require a placed frontage; inspect the building in game
+for those diagnostics and its valid-place count.

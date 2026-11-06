@@ -62,6 +62,7 @@ impl AgentSystem {
     ) {
         // Safety: index i is unique to this thread via par_iter.
         unsafe {
+            if slices.parking_trip.get(i).ready { return; }
             let s_cur_n = &slices.cur_n;
             let s_tmode = &slices.tmode;
             let s_walk_phase = &slices.walk_phase;

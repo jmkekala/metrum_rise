@@ -60,6 +60,7 @@ func collect(mouse: Vector2, camera: Camera3D, filter: String) -> Array[Dictiona
 				continue
 			var point = plane_hit(begin, end, position.y)
 			var inside := false
+			var area := 0.0
 			if point != null:
 				var forward: Vector3 = editor._anchor_forward(anchor)
 				var side := Vector3(-forward.z, 0, forward.x)
@@ -70,24 +71,31 @@ func collect(mouse: Vector2, camera: Camera3D, filter: String) -> Array[Dictiona
 					length = maxf(0.5, editor._anchor_number(anchor, "length_m", 0.0))
 				elif anchor.get("anchor_type") == "driveway":
 					length = maxf(1.5, width * 1.4)
+				area = width * length
 				inside = length > 0 and absf(rel.dot(side)) <= width * 0.5 and rel.dot(forward) >= 0 and rel.dot(forward) <= length
-			var label_hit := _label_contains("anchor", index, mouse, camera)
-			if inside or label_hit or mouse.distance_to(camera.unproject_position(position)) <= ANCHOR_RADIUS:
+			var near := mouse.distance_to(camera.unproject_position(position)) <= ANCHOR_RADIUS
+			# A name only selects where no shape or handle is under the cursor (see _pick_layer).
+			var label_hit := not inside and not near and _label_contains("anchor", index, mouse, camera)
+			if inside or near or label_hit:
 				var hit_pos: Vector3 = point if inside else _billboard_point(mouse, camera, position)
 				if label_hit:
 					hit_pos = _billboard_point(mouse, camera, editor._preview.site_label("anchor", index).global_position)
 				var hit := _hit("anchor", index, hit_pos, begin)
 				hit["label"] = label_hit
-				if not inside and not label_hit:
+				hit["near"] = near
+				if inside:
+					hit["area"] = area
+				if near:
 					hit["occluded"] = not point_visible(camera, position)
 				hits.append(hit)
 	if filter in ["surface", "all"]:
 		for index in editor._site_surfaces_data.size():
 			var point = plane_hit(begin, end, surface_height(index))
-			var label_hit := _label_contains("surface", index, mouse, camera)
+			var inside: bool = point != null and editor._site_surface_contains_world_xz(index, point)
+			var label_hit := not inside and _label_contains("surface", index, mouse, camera)
 			if label_hit:
 				point = _billboard_point(mouse, camera, editor._preview.site_label("surface", index).global_position)
-			if point != null and (label_hit or editor._site_surface_contains_world_xz(index, point)):
+			if inside or label_hit:
 				var hit := _hit("surface", index, point, begin)
 				hit["label"] = label_hit
 				hits.append(hit)
@@ -137,6 +145,9 @@ func _before(a: Dictionary, b: Dictionary) -> bool:
 		return a_layer < b_layer
 	if a["kind"] == "vertex" and a["screen_distance"] != b["screen_distance"]:
 		return a["screen_distance"] < b["screen_distance"]
+	# Overlapping spots: the smaller footprint is the one the cursor most plausibly means.
+	if a.get("area", 0.0) != b.get("area", 0.0):
+		return a.get("area", 0.0) < b.get("area", 0.0)
 	if a["distance"] != b["distance"]:
 		return a["distance"] < b["distance"]
 	if a["kind"] != b["kind"]:
@@ -145,14 +156,20 @@ func _before(a: Dictionary, b: Dictionary) -> bool:
 		return a["index"] < b["index"]
 	return a.get("vertex", -1) < b.get("vertex", -1)
 
+# Precise targets first: handles and vertices, an anchor's own circle, then anchor shapes.
+# Floating names come next: they are wide and can cover another access point, so a name never
+# wins over an access point the cursor is actually on, but it still beats the yard and the
+# meshes behind it.
 func _pick_layer(hit: Dictionary) -> int:
 	if hit.get("handle", false):
 		return -1
 	if hit["kind"] == "vertex":
 		return 0
-	if hit.get("label", false):
+	if hit.get("near", false):
 		return 1
-	return 2 if hit["kind"] == "anchor" else 3
+	if hit["kind"] == "anchor" and not hit.get("label", false):
+		return 2
+	return 3 if hit.get("label", false) else 4
 
 func _label_contains(kind: String, index: int, mouse: Vector2, camera: Camera3D) -> bool:
 	var label: Label3D = editor._preview.site_label(kind, index)

@@ -4,7 +4,8 @@
 
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{
-    Edge, MedianStyle, RegionGraph, RoadMedian, RoadPocket, RoundaboutRing, SidewalkSides,
+    Edge, MedianStyle, RegionGraph, RoadMedian, RoadParking, RoadPocket, RoundaboutRing,
+    SidewalkSides,
 };
 use crate::simulation::network::roundabouts::validate_ring_edge;
 use crate::simulation::network::validate::{
@@ -48,7 +49,7 @@ pub(super) fn save_network(
 
     // 2. Edges
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks, parking) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
                 continue;
@@ -86,7 +87,8 @@ pub(super) fn save_network(
                 i64::from(edge.no_street_lights),
                 pocket_end,
                 pocket_roles,
-                i64::from(edge.sidewalks.bits())
+                i64::from(edge.sidewalks.bits()),
+                edge.parking.code()
             ])?;
         }
     }
@@ -245,7 +247,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     }
 
     {
-        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks FROM network_edges ORDER BY edge_id")?;
+        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, median_style, median_width, no_street_lights, pocket_end, pocket_roles, sidewalks, parking FROM network_edges ORDER BY edge_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
@@ -264,6 +266,15 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let allowed_types = i64_to_u8(row.get(4)?)?;
             let fwd_lanes = i64_to_u8(row.get(7)?)?;
             let bkw_lanes = i64_to_u8(row.get(8)?)?;
+            let parking = RoadParking::from_code(row.get(22)?)
+                .ok_or("parking_code_out_of_range")
+                .and_then(|parking| {
+                    Edge::validate_parking(allowed_types, fwd_lanes, bkw_lanes, parking)
+                        .map(|()| parking)
+                })
+                .map_err(|reason| {
+                    SaveLoadError::custom(format!("edge {eid} has invalid parking ({reason})"))
+                })?;
             let invalid_median = |reason| {
                 SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
             };
@@ -308,6 +319,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 no_street_lights: row.get::<_, i64>(18)? != 0,
                 vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(15)?)?,
                 median,
+                parking,
                 pocket,
                 sidewalks,
                 roundabout: None,

@@ -21,6 +21,732 @@ Implementation lives mainly in:
 - `rust/src/nodes/sim/render/agents.rs`
 - `godot/scripts/renderers/agents.gd`
 
+## Physical parking foundation (PARK-01)
+
+Round 1 ships building anchors, the standalone lot, deterministic edit towing, persistent parked
+cars, saves and parked chunk rendering on `upstream/dev`. Agent travel is unchanged. Household
+ownership and resident/freight/immigration itineraries belong to `PARK-02`, after
+the shared traffic fixes. The deterministic fleet is created only by the
+explicit `debug_fill_parking()` bridge command; ordinary gameplay does not populate it.
+
+`simulation/parking.rs` owns SoA place/vehicle rows with the existing generational handle tables,
+per-building/anchor source lists and signed, floor-divided 512 m chunks. Each place has one
+occupant or reservation. Cars retain model, one of five colours, occupied/reserved handles and
+a home point. The test fleet supplies that point in this round; resident ownership is later.
+
+| Operation | Cost and boundary |
+| --- | --- |
+| Resolve, reserve, occupy, release | O(1), allocation-free; dirty capacity prepared with supply |
+| Candidate query | O(9 + local candidates × quote cost), allocation-free, no candidate cap |
+| Source reconciliation | O(old log old + new) per anchor source; O(old × new anchors) building dispatch, plus local tow queries |
+| Off-map retry | O(W log W + W × local candidates), W local waiting cars; supply/release events |
+| Parked publication | O(D log D + sum(Pc log Pc) + parked cars × support solve), parallel dirty chunks |
+| Sleeping parked cars | No simulation-tick iteration |
+
+Queries reject straight-line distances over 400 m before quoting, and quoted walks over 400 m.
+Ranking is walking seconds, driving seconds, then stable handle. Foundation towing uses Euclidean
+walking estimates. `PARK-02` must use walking-route time with zebra-aware crossings, locally rebuilt
+per-destination candidate caches and free-flow driving costs through `nearest_with`; retries are
+scheduled events. The demand gate is a journaled counter maintained by placement mutators.
+Dense-area employment must continue to work for carless households.
+
+### Kerbside parking lanes (PARK-05)
+
+A road edge carries `parking: RoadParking { left, right }`, its kerbs looking along the forward
+direction. Each parking lane is `PARKING_LANE_WIDTH_M` (2.5 m) and is part of `edge.width`
+(`Edge::cross_section_width_m`); the traffic lanes keep their widths and
+`Edge::lane_group_offset` moves them half a parking lane off a one-sided parking kerb. Only a
+road with a car lane may park (`parking_requires_vehicle_road`, checked on the stroke and on
+load). Splits copy the setting; no graph operation reverses an edge. Save format 114 stores it as
+`network_edges.parking` (bit 0 left, bit 1 right).
+
+The road builder (`ROAD-101`) has a Parking lane part, allowed only at a kerb (next to a sidewalk, or
+outermost on a road without them; `layout_parking_at_kerb`), so at most one per side; a type's parking reaches the road tool
+through `set_road_tool_parking` and travels with the stroke through preview, commit and the
+refusal report like the median. Road types store it as the `parking` part kind. A clicked
+Parking tile always lands at a kerb: the one on the selected slot's side, the right on a tie, the
+other when that kerb already parks. Picking a part selects the slot on its kerb side, so the pick
+survives the click outside that closes its popup. A dragged tile lands where it is dropped.
+
+On the roadbed the parking lane is part of the carriageway bands: the same ground-level asphalt,
+so kerbs, junction mouths, crossings and the roadbed queries need no new band kind, and the
+reserved `BandKind::Parking` stays unused. The markings set it off: a solid 0.10 m line a parking
+lane's width in from each parking kerb, drawn on every road with parking (an unmarked 1 + 1
+street included), and the lane dividers split only the traffic lanes' share of the carriageway.
+The asphalt shader gets the parking sides and the median's width (half metres) in spare bits of
+the lane-count channels (`road_space_color`), so the parking lane draws as the same asphalt, not
+as the gravel shoulder past the traffic lanes' width, and wheel paths stay in the traffic lanes.
+
+Kerbside bays are places in the shared pool (`parking/kerb.rs`), one `PlaceSource::Kerb { edge,
+right }` per parking lane, saved with the other places. Each is 6 m long (`KERB_BAY_LENGTH_M`)
+and 2.5 m wide, centred half a parking lane in from the carriageway's edge of the span's
+`RoadSection` bands, never `edge.width` or mesh triangles. Bays run end to end, whole bays only,
+centred in each free stretch. A stretch starts 5 m past the span's first section or its start
+crossing strip and ends 5 m before the last section or its end crossing strip, because Finnish
+rules forbid parking within 5 m of a junction or crossing. A building's driveways and its
+street-entered lot bays cut a gap of their half width plus 1 m each side on their own kerb; a
+building without driveway anchors keeps a 3 m drive clear opposite its main entrance, where its
+deliveries and drop-offs pull in, so parked cars never wall off a frontage
+(`KerbBlocker`, indexed per
+building and per edge, derived and rebuilt by the load reconcile). Cars park facing the traffic
+beside them: a two-way road's left kerb faces backward, and a one-way road's lanes serve both
+kerbs. Access is the bay's own side (`SameSideOnly`) when its direction has lanes, both sides
+otherwise, entered from the lane beside the bay's rear along the bay's swept path.
+`SimCore::reconcile_parking_frontages` reconciles the kerbs of every touched edge, and of every
+edge whose blockers a building change moved, after the lots, through `replace_source`: an
+unmoved bay keeps its car, and a removed one tows it. Load validation rejects a kerb place
+whose edge is missing, deleted or has no parking on that side.
+
+Road Properties changes parking in place (`set_edge_cross_section`'s `parking` code, checked by
+`Edge::validate_cross_section` with the other in-place rules): a picked road type brings its
+parking, and the Parking lane row's Left and Right boxes switch one kerb. The edit rebuilds the
+roadbed, and its publication reconciles the kerb's bays like any road edit.
+
+Still to come: bay paint and signs (`PARK-04`). The local `parking-kerbside-ref` branch
+preserves an earlier superseded implementation for reference. Pull-out uses
+`lane_attach_slot_clear` plus `claim_lane_entry` (the `TRAFFIC-11` hold) and pull-in uses
+`try_network_detach`, as for lot bays.
+
+### Anchor lots, edits and rendering
+
+Each fitting `parking` anchor is public supply. Its `position` is the bay's entry edge and the bay
+runs `length_m` along `forward`, as asset validation and the asset editor draw it. Existing
+building transforms, paving, structure footprints and validated frontage driveways are reused. A
+bay whose entry edge lies on the lot's street edge (within 0.6 m) and points into the lot opens
+straight onto the street: the car turns in from the road and needs no `driveway` anchor. Other
+bays use fixed driveway–aisle–bay paths that check full 1.8 × 4.5 m translated rectangles and
+conservative 4.85 m turn envelopes squared to the bay, so a lot on an off-axis road keeps the
+envelope inside its yard. Coverage ignores an uncovered remainder under 0.01 m², the float
+slivers left where the yard abuts the road surface along an off-axis seam. The envelope is required at the driveway and at the aisle
+corner only when the path bends there by more than 30°; through a slighter bend the two
+corridors, each extended 2.25 m past the corner, already cover the car's sweep. Paved support
+allows 5 cm at each bay edge. Rejections carry plain-language reasons naming the failing part
+(the way to the front of the spot, the way into it, or either turn) and its cause (unpaved,
+structure or another bay), with the room that part needs. They are shown in the asset editor,
+which also draws the failing shape for the selected spot and lists each rejected spot as a
+validation issue that blocks export, and in the building inspector. Unsupported layouts
+publish diagnostics and no bay. `loading_bay` anchors are excluded. Bays painted side by side
+may share an edge: the bay-on-bay check uses the same 5 cm inset. Mesh parts no taller than
+0.15 m (`GROUND_DRESSING_MAX_HEIGHT_M`: paint, kerbs) are ground dressing and block neither
+cars nor yard hedges.
+
+The bundled lots follow Finnish practice: 2.5 × 5 m bays at right angles to a central 7 m
+two-way aisle, painted separators, kerb stones at the bay heads, one two-socket engine-heater
+post per pair of bays on the strip behind the kerb, and a P sign at the entrance. The small lot
+(20 × 20 m) holds 12 bays and the larger one (20 × 30 m) 20. Both are explicitly placed sites
+with zero workers/households and no economy profile; their site surfaces render the asphalt.
+
+Coverage retains exact ordered polygon differences, filtering support polygons by AABB before
+any overlay. With S support vertices and K overlapping contours, each footprint costs
+O(S + K overlay cost); no overlap performs no overlay or contour allocation. Bays, swept paths
+and turn envelopes share the filter. Structure checks already use the site-cell index and
+`PolygonFootprint` AABB rejection before exact overlay, with an early exit once blocked.
+For A bays and D driveways the bound is O(A² D + A D (S + L + K overlay cost)), L local
+structure vertices. This is edit/load work and has no dependency on total city buildings.
+
+Road and building edits reconcile affected building sources through existing SimCore publication
+and edit hooks. Splits/frontage changes, road demolition/detachment, asset reload and undo all
+revalidate lots through the existing site journal and site index. Graph, topology,
+road planner and network-save files have no parking diff. Stable handles order towing; removed
+claims are cancelled and occupied places tow to free supply near home, else store cars off-map.
+Supply/release events retry local home chunks, including a newly restored lot. Undo reconciles
+live occupancy without restoring an old fleet snapshot or refusing an edit.
+
+Dirty chunks publish immutable versioned model/colour buffers, stable car IDs and 12-float
+MultiMesh transforms. The existing contact solver grounds dirty instances. Unchanged chunks send
+nothing; exact version/world acknowledgements retain updates through skipped frames. Shared
+`vehicle_resources.gd` keeps moving meshes/materials identical; parked meshes omit lamps/beams.
+The resident moving/parked identity handoff is implemented in round 2a below; external vehicles remain for round 2b.
+
+Save format **110** (upstream 109 + 1, no migration) stores handle generations, building-anchor
+places, cars, occupancy and reservations. Edge rules/lineage are absent. Load validates reciprocal
+custody and building owners, rebuilding source/chunk/waiting/render indices. Detached explicit
+sites retain their rigid pose so losing a driveway road disables supply without breaking saves.
+The pinned Kuopio fixture is re-recorded for the combined parking/gridlock schema.
+
+### PARK-01 acceptance (round 1b, 2026-10-31)
+
+Fresh runs use Rust 1.98.1, upstream Godot 4.7.2, macOS/Apple M2 Pro, the supplied `TMPDIR`,
+`SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk` and `CARGO_INCREMENTAL=0`.
+Production code is `bdf31d2b`; `0e64f778` corrects the bridge fixture's snapped demolition target.
+The benchmark's surface-publication setup correction is test-only. Earlier round-1 acceptance
+was against `road` with kerbside and does not validate this scope.
+
+```sh
+cd rust
+cargo test --lib parking
+cargo test --lib
+cargo clippy --all-targets
+cargo doc --no-deps
+cargo test --release --lib --no-run
+cargo build --release
+```
+
+- Targeted parking: **10 passed, 1 ignored**, both optimized-debug and release. The unchanged
+  `network_undo_falls_back_to_owner_recompile_when_surface_capture_is_dirty` release test passes.
+- Full `cargo test --lib`: **1,858 passed, 180 ignored, 2 failed**, 417.36 s. The failures are
+  `nodes::sim::core::tests::road_reference_probe::reference_junction_products_match_the_probe`
+  and `simulation::network::roadbed::node::tests::probe::roadbed_fixture_products_match_the_probe`.
+  Both independently reproduce on a freshly compiled `upstream/dev` (`727dd7f2`) release control.
+- Clippy: **zero warnings**. Rustdoc: **zero missing-doc warnings**, ten private/unresolved link
+  warnings whose messages exactly match a fresh `upstream/dev` documentation build.
+- The existing ignored `record_kuopio_reference_save` recorder passes; the new fixture has no
+  edge parking sources. Full-suite load/save and continuation tests pass with it.
+- Seven Godot scripts each pass in their own isolated-profile process with zero `ERROR:` or
+  `SCRIPT ERROR:` lines: `parking_test`, `building_asset_reload_test`,
+  `network_tool_chunk_renderer_test`, `road_benchmark_metrics_test`, `road_preview_metrics_test`,
+  `road_junction_preview_test`, `road_preview_stream_test`. The parking bridge compares all 25
+  moving vehicle mesh variants bit-for-bit with the retained pre-extraction source and checks
+  the parked meshes omit lamps/beams. Its first demolition attempt used the unsnapped input
+  coordinate; the corrected test uses the published snapped centre and passes towing/undo.
+
+```sh
+# Unique project identity isolates user://, including on macOS.
+perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ISOLATED_PROJECT" --import
+rm -f godot/bin/libmetrum_rise.dylib
+cp "$RELEASE_LIBRARY" godot/bin/libmetrum_rise.dylib
+perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ISOLATED_PROJECT" --script "res://tests/${TEST}.gd"
+python3 tools/capture_parking.py --headless --output "$ARTIFACTS/capture-setup"
+python3 tools/capture_parking.py
+```
+
+The single windowed capture writes `captures/parking/lot-0900.png`. It was opened and inspected:
+six cars on the asphalt, clear driveway/aisle, no kerbside cars, zero stored cars and no asset
+diagnostics. Headless setup also passes. All captures/logs remain local and uncommitted; the
+player's saves and mods were not changed. Imported metadata churn was removed after the runs.
+
+#### Short PERF-06 sanity pair
+
+One unprofiled release pair, control first, eight Rayon workers, inherited CPU affinity,
+no concurrent build, correctness run or Godot process:
+
+```sh
+RAYON_NUM_THREADS=8 "$TEST_BINARY" simulation::economy::agents::tick::contract::benchmark_agent_tick_contract --exact --ignored --nocapture --test-threads=1
+```
+
+Control `upstream/dev` `727dd7f2`, SHA-256
+`21093e8644ca9693302a151ea7bb6d4ccee4d4aeff721e37c2c68caa40b95073`;
+parking production code `bdf31d2b`, SHA-256
+`ec936ba5d68278698d67900e2fe39f119c1762d2dbba4048e2f332d8cf5d670f`.
+Per-tier work counts match exactly; agent-row work is 3× and lane work stays constant,
+within the 3.6× bound. These single timing samples establish no speedup.
+
+| Mode | Agents | dev, ms | parking, ms |
+| --- | ---: | ---: | ---: |
+| network | 10,000 | 0.483209 | 0.487125 |
+| network | 30,000 | 0.973625 | 0.844292 |
+| access egress | 10,000 | 0.824167 | 0.836167 |
+| access egress | 30,000 | 1.689333 | 1.803084 |
+| access ingress | 10,000 | 0.517625 | 0.380958 |
+| access ingress | 30,000 | 0.532375 | 0.667667 |
+
+#### Populated lot/anchor publication locality
+
+The existing 800 m populated neighbourhood stays fixed; remote buildings, parcels, housed
+agents and 480 m road blocks grow through 100k. Twelve real six-bay lots front a separate fixed
+600 m local road. Setup, road surface publication and initial supply publication are excluded
+from timing. Each tier measures nine repeated frontage reconciliations, nine site-journal
+publications and 108 serial individual `lot_bays` rebuilds. Full bay geometry matches across
+tiers, and bay geometry plus stable handles match after every reconciliation/publication.
+Diagnostics are checked for the measured lots; unsupported anchors on background fixture
+assets remain diagnosed and supply no bays, as required by the validator.
+
+```sh
+cargo test --release --lib --no-run
+METRUM_LOCALITY_TIERS=0,1000,10000,100000 RAYON_NUM_THREADS=8 "$TEST_BINARY" nodes::sim::core::populated_city::commit_locality::benchmark_parking_locality --exact --ignored --nocapture --test-threads=1
+```
+
+Unprofiled, eight workers, inherited CPU affinity, no competing builds/tests/Godot. Production
+code is `bdf31d2b` plus this revision's test-only setup correction; release test SHA-256
+`ccc1a86f4eb4061f50e8fe9e96d12f021126f5ba6a9875a34b920a82790e0d9a`. The final run passes in 5.84 s including setup. Initial harness attempts
+stopped before measurement: the new frontage needed surface publication, and the diagnostic
+assertion needed to cover the twelve measured lots rather than unrelated background content.
+
+| Background | Buildings / parcels | Agents | Roads | Setup, s | Per-lot median, ms | Maximum lot, ms | 12-lot frontage rebuild, ms | 12-lot site publication, ms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 1,276 / 1,264 | 0 | 84 | 0.397 | 0.152916 | 0.222000 | 0.456542 | 0.457625 |
+| 1,000 | 2,276 / 2,264 | 1,000 | 109 | 0.375 | 0.147875 | 0.213250 | 0.450959 | 0.444667 |
+| 10,000 | 11,276 / 11,264 | 10,000 | 334 | 0.714 | 0.142042 | 0.206209 | 0.458541 | 0.426667 |
+| 100,000 | 101,276 / 101,264 | 100,000 | 2,584 | 4.186 | 0.144125 | 0.212458 | 0.497084 | 0.463541 |
+
+All tiers publish the same 72 measured places. Individual six-bay validation stays below
+0.223 ms even at 100k background; twelve-lot publication stays below 0.50 ms. Repeated cost
+follows the fixed neighbourhood, while setup remains separate. No city-wide parking rebuild
+or per-tick parking pass is introduced. Logs and immutable binaries remain under `$ARTIFACTS`.
+
+#### Shared-file formatting audit
+
+Every changed pre-existing source file was checked against `upstream/dev`: no formatting-only
+hunks remain. Rust paths below are relative to `rust/src/`; the populated-city change is an
+appended parking benchmark only. No formatter was run on these shared files.
+
+| Shared file | Result |
+| --- | --- |
+| `godot/scenes/Main.tscn` | Semantic changes only |
+| `godot/scripts/core/mod_pack_config.gd` | Semantic changes only |
+| `godot/scripts/renderers/agents.gd` | Semantic changes only |
+| `nodes/sim/core.rs` | Semantic changes only |
+| `nodes/sim/core/populated_city/commit_locality.rs` | Semantic changes only |
+| `nodes/sim/core/road_tool_context.rs` | Semantic changes only |
+| `nodes/sim/core/state.rs` | Semantic changes only |
+| `nodes/sim/core/tests.rs` | Semantic changes only |
+| `nodes/sim/editing.rs` | Semantic changes only |
+| `nodes/sim/save_load.rs` | Semantic changes only |
+| `nodes/sim/undo.rs` | Semantic changes only |
+| `nodes/sim/world_definition.rs` | Semantic changes only |
+| `nodes/simulation_node.rs` | Semantic changes only |
+| `simulation/buildings/allocator/lifecycle.rs` | Semantic changes only |
+| `simulation/buildings/allocator/mod.rs` | Semantic changes only |
+| `simulation/buildings/allocator/placement.rs` | Semantic changes only |
+| `simulation/buildings/allocator/site/query.rs` | Semantic changes only |
+| `simulation/mod.rs` | Semantic changes only |
+| `simulation/save/mod.rs` | Semantic changes only |
+| `simulation/save/schema.rs` | Semantic changes only |
+| `simulation/save/tests.rs` | Semantic changes only |
+| `simulation/save/tests/cell_zoning.rs` | Semantic changes only |
+| `simulation/save/world.rs` | Semantic changes only |
+
+`simulation/network/graph/data.rs`, `simulation/network/road_edit.rs`,
+`simulation/network/road_edit/validation.rs`, `simulation/network/topology.rs`,
+`simulation/save/network.rs`, `nodes/sim/render/vehicle_ground.rs` and the Godot Road Properties
+script have **zero diff** against `upstream/dev`. No parking hook remains in network-owned files.
+SimCore's road-tool publication, demolition/node edits and undo call
+`reconcile_parking_frontages` to keep lot supply and live cars consistent with compiled frontage.
+
+## Resident parking trips (PARK-02 round 2a)
+
+Pass p06 exposes each rejected anchor and its exact reason in the asset editor and the
+placed building inspector, alongside the building's valid-place count. Both call the same
+Rust bay/support/structure/swept-path validator. The editor validates the asset-local path;
+only the placed inspector can validate the road-to-driveway segment and neighbouring structures.
+
+
+Residents now retain one household vehicle handle through an outing. The zoning registry's
+classification of `Building.zone_profile_runtime_id` determines ownership: low density 100%,
+medium 75%, high 50%. Explicit homes without a zoning profile use low density. The saved mobility
+seed and stable household handle select the ownership bucket deterministically; dense storage
+indices and worker scheduling do not participate. Household removal releases claims and deletes
+the vehicle. Children cannot drive, including in a household with an unused car.
+
+New cars reserve the first free fitting home catchment place before driving in, ordered by walking-route seconds,
+then fixed free-flow bay maneuver time, then place handle. A single destination list cannot
+order equal walks by an origin-dependent road trip; the driveway/bay maneuver is its fixed drive
+tie-break. The complete departure quote separately prices the actual free-flow road route.
+Without a place the car stays off-map and unavailable. Supply/release events wake only nearby
+waiting home chunks. Resident recovery uses the same walking catchments; the explicit foundation
+test fleet retains its original geometric recovery.
+
+Each destination publishes a candidate list from two bounded directed pedestrian-lane searches.
+Connector lengths and zebra links participate; 400 m means `400 / AGENT_WALK_SPEED_MS` seconds.
+Euclidean distance only rejects impossible candidates before the walking search. Existing site
+cells find affected doors after building/place/footpath publication. A new placement is included
+immediately, without rebuilding the economy's lazy vacancy/chunk index. Occupancy never rebuilds
+these lists, and departures never route-query each candidate.
+
+| Operation | Bound / retained storage |
+| --- | --- |
+| Local catchment rebuild | O(local doors × ((local lanes + connectors) log local lanes + local places log local places)); independent doors use Rayon |
+| Destination choice | O(k), first free fitting entry, no route query or allocation |
+| Complete departure quote | O(k + Q), three exact leg quotes after selecting one place |
+| Ordinary movement | O(1) additional phase/access work per agent |
+| Eligibility / ordered resource phase | O(agents + transitions × Q); exclusive resource commits use deterministic dense agent order |
+| Sleeping parked vehicles | No simulation-tick vehicle iteration |
+| Candidate storage at 100k nonempty doors | Approximately 9.6 MB map/header storage + 1.6 MB per mean candidate capacity + 0.4 MB per mean road-component count + 1.6 MB per mean distinct car target count; about 38 MB at 12/2/4 including Arc headers; empty lists omitted |
+
+`quote_parking_trip` proves walk-to-car, drive and walk-to-door before departure, with both swept
+maneuvers included in the drive quote. The walk to the actual car may exceed 400 m; exact
+pedestrian reachability determines that leg. The 400 m bound applies to destination parking.
+Returning home releases custody even if the car remains at a distant bay. The walking tie-break and 180-second
+`CAR_MODE_CHOICE_OVERHEAD_S` remain unchanged. `reserve_trip` acquires exclusive custody and the
+destination in the ordered transition phase. A failed claim walks or waits for a saved timing-wheel
+event. Route-buffer preparation uses the next eligible event slot; unavailable routes use 30
+simulation seconds. No per-agent retry countdown polls for supply.
+
+The itinerary is `WalkToCar → PullOut → Drive → PullIn → WalkToDoor` inside the ordinary
+access/network/access FSM. Pull-out uses `lane_attach_slot_clear` and `claim_lane_entry`, including
+`ACCESS_LANE_ATTACH_PENDING`. Pull-in uses the existing `try_network_detach`. Both use the lot's
+driveway curb, followed by the retained four-point swept path outside the network. No resident
+car-mode leg finishes at a door; arrival asserts this in debug builds. The
+`TRAFFIC-13` last-visit rule and `TRAFFIC-15` lane-end reachability are authoritative and
+now apply to these driving legs through the shared detach function.
+
+Removing a reserved bay cancels its claim. A bounded three-handle reverse link retains disabled
+endpoint geometry only while its borrower needs it; it is excluded from usable supply. Recovery
+walks to the car's actual new place, replans from its actual lane position, or reverses an unfinished
+pull-in to the driveway before choosing replacement supply. It never moves a travelling car by
+towing. The owned-car watchdog requests this ordered recovery rather than teleporting.
+
+A custody publication epoch gates the combined moving/parked bridge frame. When snapshots lag
+a transition, both renderers retain their previous publication. Model and colour persist across
+the switch. Origin occupancy is released after pull-out reaches the network; destination reservation
+becomes occupancy before the last walk. Save version **110** persists ownership, custody, trip phase,
+claims, pending household/release events and endpoint recovery links. Loading rebuilds catchments,
+access endpoints and the route buffers' saved logical preparation budgets; allocator spare capacity
+cannot change a departure. No migration is provided.
+
+Employment, shopping and service visits quote the same physical itinerary as departure. Jobs
+reuse the existing component buckets and shared exact CCH quotes. Publication caches each door's
+union of bay road components, distinct car arrival targets and maximum node slack; hourly searches
+never route-query all its parking candidates. Batch keys distinguish actual household cars. The
+bounded home/work/mode cache stores the chosen source/destination handles and geometry stamp;
+occupancy or a local bay move replaces that value without adding availability-version keys.
+Shopping and service folds share immutable component arrays without per-entry allocation. Their
+walking proofs stay O(1); car fallbacks prove an outward itinerary and a hypothetical return from
+the proposed destination bay, with the departure bay available on return. Accepted shopping-leg
+timeouts use the same complete physical cost. Save version 110 includes these quote stamps and
+rolling destination memberships; the unshipped format changes together, without a migration.
+
+Pass p06 move-ins reserve one free fitting home-catchment place at paced departure, then use
+`Drive → PullIn → WalkToDoor`. With no free place they walk from the border and keep the car
+off-map. Carless households use the same pedestrian arrival. Ownership uses the saved seed and
+stable carrier identity before a household record exists; adoption preserves that decision and
+the original vehicle. Save version 111 adds this in-flight ownership decision, with no migration.
+
+Stored cars never become occupied places at supply publication or load. New lots, vacated bays,
+cancelled reservations and towing queue deduplicated chunk events. Each event considers at most
+eight cars in stable handle order across the nine neighbouring home chunks, continuing at the
+next eligible timing-wheel slot until that finite wake cycle ends. Failed cars sleep until the
+next supply event. Ordered sets reuse the existing home-chunk index; the continuation cursor
+lives in the existing parking chunk, and both cursor and scheduled event survive saves.
+
+Per event the bound is O(8 × (9 log W + k + BQ) + log S): W local waiting cars, k cached home
+candidates, B connected external borders, Q one exact route query, S scheduled events. A car
+selects one cached candidate before trying borders in stable order, reserves before spawning,
+and uses `Drive → PullIn`. The delivery-only carrier retires at the bay through the normal
+agent lifecycle, without entering a building. The household cannot use the car until pull-in
+commits occupancy. Supply release remains O(1), allocation-free. The shared logistics topology
+refresh is unchanged O(nodes + edges) once per revision, prepared before delivery events;
+there is no additional spatial or connectivity index. Save version 111 also stores delivery
+custody and wake cursors; SQLite stores opaque event payloads as signed bit patterns so negative
+chunk coordinates round-trip without numeric overflow.
+
+Only new supply wakes waiting cars: an added or reactivated bay wakes its own chunk, and a
+catchment rebuild wakes the doors whose list of reachable places changed. An unchanged bay or
+catchment wakes nothing, so the full frontage reconcile and catchment rebuild after a load
+schedule no arrivals the uninterrupted game did not. A household's shopping car flag changes
+only at its hourly recount, while car custody changes every tick; save version **112** stores
+the flag instead of rebuilding it from the agents at load. Both keep a loaded game saving the
+same bytes and continuing the same census as the uninterrupted one.
+
+A place's cached driveway access keeps its edge, side, stations and positions. Its lane ids are
+derived live from that edge's current lanes in O(lanes on the edge). A terrain edit or a dense
+undo renumbers every lane while republishing only the places near the edit, so cached lane ids
+would point at other lanes or past the end of the lane table.
+
+Round 2b retains freight and wider watchdog/lifecycle changes. Resident
+household removal and resident edit/watchdog recovery are already included here.
+
+### Traffic integration after round 2a (PARK-02, 2026-11-01)
+
+Merged `upstream/dev` `c2d49902` into parking parent `6531b187`, preserving both histories.
+The five conflicts were the Kuopio SQLite fixture, `agents/data.rs`, `agents/tests.rs`,
+`tick/access.rs` and `save/schema.rs`. Agent state retains both parking retries and the gridlock
+checker; both test modules and both access exports remain. Save version stays **110**, exactly
+`dev` 109 + 1, without migration. An in-memory schema comparison verifies that every table and
+column from both parents remains, including `parking_state` and `gridlock_state`. The existing
+`record_kuopio_reference_save` recorder passes; the pinned version-110 fixture contains both rows.
+
+The shared `try_network_detach` keeps the upstream lane-end reach bound and final-route-visit
+rule unchanged. Gridlock detours now receive the same parking entrance override as ordinary
+network replans, preserving the reservation and driveway station instead of routing to the door.
+Replacement also clamps the saved route preparation budget. Additional work is O(1),
+allocation-free per attempted detour; the existing one route query and route allocation remain.
+No per-tick parked/stored-car pass or new spatial index is added.
+
+Five new integration regressions pass:
+
+- `parking_pull_in_reaches_the_driveway_at_the_lane_end`: the real resident itinerary detaches
+  at the 500 m lane-end driveway and retains its destination claim.
+- `parking_pull_in_waits_for_the_last_destination_edge_visit`: the real itinerary drives the
+  U-turn loop before pulling in on its second visit, at the planned station.
+- `parking_gridlock_excludes_parked_and_stored_cars`: both vehicles stay out of lane buckets,
+  waiting-head stamps and cycle cars across consecutive checks.
+- `parking_gridlock_treats_a_held_pull_out_as_an_entry_wait`: an actually blocked handoff has
+  `ACCESS_LANE_ATTACH_PENDING`, no current lane and no gridlock across consecutive checks.
+  The swept pull-out has completed, so its saved logical phase is `Drive` during this entry wait.
+- `parking_gridlock_detour_keeps_the_reserved_driveway_and_never_teleports`: a confirmed cycle
+  detours the parking-bound head, retaining its borrower and claim, unchanged lane/position bits
+  at replacement, bounded route budget and ordinary movement to occupancy of the reserved bay.
+  Its driveway is 80 m away from the target door, exposing an incorrect door-based replan.
+
+The isolated loop fixture services only the existing zero-delay route-preparation requests at
+its next tick boundary; it does not use a full gameplay constructor or change retry semantics.
+Fresh optimized-debug parking tests: **30 passed, 2 ignored**, 1.16 s; fresh release parking tests:
+**30 passed, 2 ignored**, 0.86 s. Full `cargo test --lib`: **1,885 passed, 186 ignored, 2 failed**,
+359.78 s, the two reference probes compared with plain `dev` below. Fresh
+`cargo clippy --all-targets`: zero warnings. `cargo doc --no-deps`: zero missing-doc diagnostics
+and ten link warnings, also compared below. Builds use Rust 1.98.1, macOS SDK 26.5,
+`CARGO_INCREMENTAL=0`, the supplied `TMPDIR` and eight Rayon workers.
+
+Each of these eleven Godot 4.7.2 scripts passes in its own isolated-profile headless process,
+launched through `perl -e 'alarm 900; exec @ARGV' godot ...`, with zero `ERROR:` or
+`SCRIPT ERROR:` lines: `parking_test`, `agent_inspector_test`, `vehicle_ground_support_test`,
+`building_asset_reload_test`, `network_tool_chunk_renderer_test`, `road_benchmark_metrics_test`,
+`road_preview_metrics_test`, `road_junction_preview_test`, `road_preview_stream_test`,
+`road_rejection_report_test` and `gridlock_notice_test`. The parking resource comparison uses
+`e84b1136^`'s pre-extraction renderer. The gridlock fixture comes from the existing
+`record_gridlock_saturation_fixture` recorder. The isolated import has zero errors. The old
+library is removed before copying the new release library; generated import metadata is removed.
+Logs and immutable release executables remain local under `$ARTIFACTS`.
+
+Fresh plain `upstream/dev` `c2d49902` was built in a detached control worktree with the same
+profiles and environment. Its `cargo test --lib` result is **1,855 passed, 184 ignored, 2 failed**,
+284.80 s. Both builds fail exactly these same probes:
+
+- `nodes::sim::core::tests::road_reference_probe::reference_junction_products_match_the_probe`
+- `simulation::network::roadbed::node::tests::probe::roadbed_fixture_products_match_the_probe`
+
+Plain `dev` also has zero clippy warnings and zero missing-doc diagnostics. Its ten rustdoc
+link-warning messages match the parking build exactly. These are fresh comparisons, not the
+historical round-2a results below; the unrelated probe expectations are unchanged.
+
+The fresh commands in each crate are `cargo test --lib`, `cargo clippy --all-targets` and
+`cargo doc --no-deps`; parking additionally runs `cargo test --lib parking`, the existing ignored
+Kuopio recorder, `cargo build --release` and the release parking tests. Both release test
+executables are built with `cargo test --release --lib --no-run` and retained before switching
+builds. One unprofiled PERF-06 pair runs control first, parking second, serially, with eight Rayon
+workers, inherited CPU affinity and no concurrent build, correctness test or Godot process:
+
+```sh
+RAYON_NUM_THREADS=8 "$TEST_BINARY" simulation::economy::agents::tick::contract::benchmark_agent_tick_contract --exact --ignored --nocapture --test-threads=1
+```
+
+Release test SHA-256: `dev` `5775e886182ae3f0fb3821b778f0ba2273e4065ddf650f573e98ca3068c96426`; parking `17c8fce914d2f2573cf6ea8f0c9813c68040ebe29ab8e9a50c3e6e17257c3476`.
+
+| Mode | Agents | dev, ms | parking, ms |
+| --- | ---: | ---: | ---: |
+| network | 10,000 | 0.767959 | 0.672708 |
+| network | 30,000 | 1.034875 | 1.164667 |
+| access_egress | 10,000 | 0.859042 | 1.016458 |
+| access_egress | 30,000 | 1.865333 | 2.135333 |
+| access_ingress | 10,000 | 0.475750 | 0.516000 |
+| access_ingress | 30,000 | 0.736459 | 0.775750 |
+
+All common work counts match exactly. Agent-row counts grow exactly 3×; frontage lane work stays
+at 16 and the zero-count phases remain zero. The two parking-only eligibility/transition passes
+also grow exactly 3×. Every phase satisfies the 3.6× bound and repeated fixtures have identical
+counts. These six single timing samples are a sanity check and establish no speedup.
+
+Round 2b brief: the shared detach/gridlock dependencies are merged on `feat/parking`; retain the
+last-visit/lane-end rules, held-entry exclusion, reserved driveway override and route-budget clamp.
+Freight/immigration custody, outside-door deliveries and their wider lifecycle/watchdog work remain
+for round 2b. The earlier PERF-03…05 economy counter debt remains open; this short PERF-06 pair
+does not revalidate those whole-economy measurements. Keep the two independently reproduced
+reference-probe failures separate from parking regressions.
+
+### Round 2a verification (2026-11-01)
+
+The control is round 1b `d56e9826`; the final production implementation is `d5d93371`.
+Both release test binaries use the same Cargo profile, the supplied `TMPDIR`, macOS SDK 26.5,
+`CARGO_INCREMENTAL=0`, eight Rayon workers and inherited CPU affinity on the Apple M2 Pro.
+Setup/snapshot generation is separate from timing. Logs, binaries and snapshots remain local
+under `$ARTIFACTS`; images remain uncommitted in `captures/parking/`.
+
+```sh
+export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+export CARGO_INCREMENTAL=0 RAYON_NUM_THREADS=8
+cd rust
+cargo test --lib parking
+cargo test --lib record_kuopio_reference_save -- --ignored --nocapture
+cargo test --lib
+cargo clippy --all-targets
+cargo doc --no-deps
+cargo test --release --lib --no-run
+cargo build --release
+```
+
+- Parking regressions: **25 passed, 2 ignored**, optimized-debug 0.44 s and release 0.37 s.
+  They cover all five legs, one borrower, conservation, failed claims, removed reservations,
+  walk-time/local rebuilds, long walks to the actual car, SQLite save/load at every phase,
+  shared economy quotes and exactly-once handoff rendering.
+- Full suite: **1,873 passed, 181 ignored, 2 failed**, 359.40 s. Only the pre-existing
+  `reference_junction_products_match_the_probe` and `roadbed_fixture_products_match_the_probe`
+  fail. The later lint cleanup changes only an allowance, test type alias and formatting.
+- Fresh clippy after that cleanup: **zero warnings**. Rustdoc: **zero missing-doc warnings**,
+  the same ten pre-existing private/unresolved-link warnings. The separate release deferred
+  quote-publication regression also passes.
+- The existing reference-save recorder passes; the committed fixture is version 110 and
+  includes the final destination/commute-cache schema. No migration is written.
+
+#### Matched agent timing and economy contract
+
+Release test SHA-256: control `ccc1a86f4eb4061f50e8fe9e96d12f021126f5ba6a9875a34b920a82790e0d9a`; parking `0a2721f3762f27c9324301445fdcfecedb2def4ad9ad07cac6d1b1bb9646615c`.
+The 21 pairs alternate control/parking and parking/control; no build, Godot process or other
+correctness test runs during timing. The command in each half is:
+
+```sh
+RAYON_NUM_THREADS=8 "$TEST_BINARY" simulation::economy::agents::tick::contract::benchmark_agent_tick_contract --exact --ignored --nocapture --test-threads=1
+```
+
+| PERF-06 state | Agents | Control median, ms | Parking median, ms | Control IQR, ms | Parking IQR, ms |
+| --- | ---: | ---: | ---: | --- | --- |
+| network | 10000 | 0.516000 | 0.599584 | 0.486750–0.529417 | 0.568250–0.658459 |
+| network | 30000 | 1.050583 | 1.142125 | 0.969333–1.099708 | 1.021958–1.195875 |
+| access_egress | 10000 | 0.774500 | 0.970666 | 0.730167–0.810292 | 0.922458–1.018000 |
+| access_egress | 30000 | 1.681417 | 2.254958 | 1.650167–1.703416 | 2.222625–2.317958 |
+| access_ingress | 10000 | 0.431041 | 0.550125 | 0.394459–0.496083 | 0.523708–0.609250 |
+| access_ingress | 30000 | 0.732458 | 0.871000 | 0.662291–0.774500 | 0.786750–0.972625 |
+
+Every pair repeats the same work counts. All old counters match the control. Two additional
+states, parking eligibility and ordered transition classification, each visit N agent rows;
+they scale exactly 3× from 10k to 30k. All PERF-06 states remain within the 3.6× bound. This
+measures ordinary network/access rows; complete trip quotes are exercised by the economy run.
+
+```sh
+python3 tools/perf_contract.py --binary "$TEST_BINARY" --prepare --artifacts "$ARTIFACTS/after-economy"
+python3 tools/perf_contract.py --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/after-economy"
+```
+
+Both sides freshly prepare/verify healthy and fiscal 10k/30k snapshots outside timing. The
+parking build uses fixture revision v6 and passes exact continuation at all four boundaries.
+The cached complete runner costs **83.00 s → 109.50 s**, including repeated snapshot loads;
+initial generation and compilation are excluded. Complete reports retain all counters and
+setup/load times. Each workload independently keeps its original limits.
+
+| Workload / requested residents | Control hourly, ms | Parking hourly, ms | Control daily, ms | Parking daily, ms |
+| --- | ---: | ---: | ---: | ---: |
+| baseline / 10,000 | 0.930200 | 0.979105 | 0.001500 | 0.001625 |
+| baseline / 30,000 | 3.921435 | 2.849197 | 0.001458 | 0.001834 |
+| fiscal_stress / 10,000 | 6.167288 | 6.207324 | 0.001292 | 0.004333 |
+| fiscal_stress / 30,000 | 26.237354 | 21.876636 | 0.001375 | 0.001791 |
+
+All hourly/daily timing budgets pass (40/10 ms at 10k, 120/30 ms at 30k). Isolated phase
+samples, with loading excluded, are:
+
+| Phase | Control 10k / 30k, ms | Parking 10k / 30k, ms |
+| --- | --- | --- |
+| census | 7.466083 / 23.511334 | 12.314667 / 24.959959 |
+| planning | 1.574209 / 4.503292 | 1.777250 / 3.520208 |
+| execution | 0.290500 / 1.670084 | 0.536750 / 1.119750 |
+| logistics | 0.518750 / 1.784584 | 0.991584 / 2.838416 |
+| lots | 2.195666 / 1.916584 | 2.211209 / 2.632625 |
+| settlement | 4.000459 / 11.752583 | 5.784333 / 13.998708 |
+| routing | 12.894958 / 29.612583 | 13.197125 / 31.372167 |
+
+The 10k census now quotes 16,944 supplier routes against 8,670 in the control, and runs 2,204
+staffing trials against 1,625. These are different physical-mobility/economy states after the
+same deterministic warm-up. Census building counts remain almost identical; the counters
+separate changed work from pure per-row cost.
+
+| Bounded counter | Baseline control 10k → 30k | Baseline parking 10k → 30k | Fiscal control 10k → 30k | Fiscal parking 10k → 30k |
+| --- | ---: | ---: | ---: | ---: |
+| census_buildings | 177,504 → 488,636 | 177,503 → 488,682 | 174,772 → 471,423 | 174,674 → 479,889 |
+| reservation_rows_copied | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 |
+| owner_slots_prepared | 3,816,336 → 12,033,511 | 3,838,516 → 10,873,260 | 3,796,960 → 10,383,845 | 3,796,262 → 10,444,343 |
+| buyer_sites_built | 0 → 379 | 10 → 54 | 716 → 2,774 | 722 → 2,148 |
+| spawn_parcels_scanned | 547,304 → 1,506,788 | 547,304 → 1,506,788 | 547,304 → 1,506,788 | 547,304 → 1,506,788 |
+| staffing_trials | 40,004 → 237,964 | 41,395 → 154,449 | 229,836 → 580,032 | 231,028 → 683,162 |
+| supplier_searches | 13,452 → 68,012 | 14,404 → 63,720 | 0 → 0 | 0 → 0 |
+| supplier_routes | 227,712 → 1,498,647 | 238,866 → 1,152,757 | 0 → 0 | 0 → 0 |
+| job_search_keys | 0 → 17,982 | 132 → 486 | 4,880 → 14,873 | 6,667 → 18,467 |
+| cch_searches | 95,460 → 312,899 | 69,449 → 231,640 | 5,835 → 27,315 | 2,505 → 5,695 |
+
+The unchanged household-normalized counter limit is 3.4305× in the control and 3.4327× in
+parking. The control exits 1 with seven failures. Parking exits 1 with five: baseline buyers,
+staffing trials, supplier searches/routes and job keys. All five categories already fail in
+the control; the two fiscal failures clear. Fiscal churn covers every one of 24 intervals.
+This change does not close the existing PERF-03…05 simulation scaling debt.
+
+#### Dense-district employment
+
+```sh
+METRUM_PERF_CACHE="$ARTIFACTS/after-economy/snapshots" RAYON_NUM_THREADS=8 "$TEST_BINARY" nodes::sim::core::populated_city::contract::parking_employment_reach --exact --ignored --nocapture --test-threads=1
+```
+
+The retained round-1b executable gets the same test-only diagnostic harness with its original
+commute API; parking uses the complete resident itinerary. Both use the 10k district's day-12
+snapshot, a fixed stride of 97 working-age agents, at most 32 workers, and a fixed 900 physical
+second budget. Growth and employment are allowed to change, so the sampled population and
+workplaces are reported rather than treated as identical people.
+
+| Product | Round 1b | Round 2a |
+| --- | ---: | ---: |
+| Residents | 10,671 | 10,673 |
+| Households | 5,310 | 5,307 |
+| Employed | 7,221 | 7,169 |
+| Funded jobs | 13,881 | 13,841 |
+| Sample workers with an available car | 32 / 32 | 17 / 32 |
+| Workplaces | 971 | 967 |
+| Worker/workplace pairs within 900 s | 31,072 / 31,072 | 14,453 / 30,944 |
+
+Employment decreases by **52 (0.72%)**, with 40 fewer funded jobs. Sampled job reach decreases
+from **100% to 46.707%**, or **53.293 percentage points**. This is the measured district impact
+of actual ownership, custody, parking and complete trip costs together, including the different
+warm-up economy; it is not an isolated causal estimate of the density percentages.
+
+#### Candidate locality, engine checks and captures
+
+```sh
+METRUM_LOCALITY_TIERS=0,1000,10000,100000 RAYON_NUM_THREADS=8 "$TEST_BINARY" nodes::sim::core::populated_city::commit_locality::benchmark_parking_locality --exact --ignored --nocapture --test-threads=1
+```
+
+The fixed neighbourhood has twelve lots, 72 places and **828 candidate entries**, identical
+at every background tier. Nine repetitions measure each local operation; setup is excluded.
+The first fixture attempt had inserted its street through the geometry-only helper, leaving
+all twelve doors without lane IDs. `df1cf178` fixes only this ignored fixture to use the normal
+road commit and publish its lane/entrance inputs before timing. Its test executable SHA-256 is
+`8ff315f1b78ffccbeb7535d414394ae60f9e2c6c32e6126d1820f7d285f10413`;
+production code is unchanged from the agent/economy comparison.
+
+| Background buildings / agents | Total buildings / parcels / roads | Setup, s | Twelve lists, ms | Road-source publication, ms | Site publication, ms | Per-lot validation, ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 0 | 1,276 / 1,264 / 84 | 0.739 | 0.753333 | 20.943334 | 19.929333 | 0.148709 |
+| 1,000 | 2,276 / 2,264 / 109 | 0.782 | 0.753333 | 20.726125 | 19.849208 | 0.142542 |
+| 10,000 | 11,276 / 11,264 / 334 | 1.392 | 0.741167 | 20.776250 | 19.754250 | 0.141709 |
+| 100,000 | 101,276 / 101,264 / 2,584 | 9.351 | 0.745666 | 20.620042 | 19.655417 | 0.144333 |
+
+The lists stay at 0.741–0.753 ms and their products match bit-for-bit. Complete road/site
+publication also rebuilds other nearby door catchments and costs about 20 ms, flat with growing
+background; that new local walking work is separate from the 0.142–0.149 ms lot geometry solve.
+Final clippy including the fixture fix again reports zero warnings. The candidate memory
+estimate above excludes temporary bounded-search/publication buffers; pending door handles
+use eight bytes each before vector spare capacity.
+
+```sh
+rm -f godot/bin/libmetrum_rise.dylib
+cp "$RELEASE_LIBRARY" godot/bin/libmetrum_rise.dylib
+perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ISOLATED_PROJECT" --import
+perl -e 'alarm 900; exec @ARGV' godot --headless --path "$ISOLATED_PROJECT" --script "res://tests/${TEST}.gd"
+python3 tools/capture_parking.py --headless --output "$ARTIFACTS/capture-setup"
+python3 tools/capture_parking.py
+```
+
+The latest production library passes each script in its own process under a unique isolated
+profile: `agent_inspector_test`, `building_asset_reload_test`, `parking_test`,
+`network_tool_chunk_renderer_test`, `road_benchmark_metrics_test`, `road_preview_metrics_test`,
+`road_junction_preview_test`, `road_preview_stream_test` and `vehicle_ground_support_test`
+(4,840 poses, minimum clearance 0.02 m). All have zero engine/script errors.
+`simulation_speed_input_test` also passes here, despite its historical failure listing.
+`asset_selection_test` exits 1 for its three known Ctrl+click checks, with zero script errors.
+Generated UID/import-newline changes are removed after proving their exact generated contents.
+The pre-existing screenshot/LFS changes remain untouched.
+
+Two short windowed capture runs use private copies of neukku and kuopio and nearby standalone
+lots. The final ten views are `district`, `slabs`, `houses`, `slab-lot` and `house-lot`, each
+at 09:00 and 18:00 in `captures/parking/`. The explicit capture homes retain their authored
+household capacities and use the documented unprofiled/low-density fallback; they do not run
+an unrelated growth economy. These images were captured with the same physical itinerary
+implementation before the economy-query follow-up; later changes do not alter that fixture.
+
+The inspected lot views show pedestrians between buildings and bays, an arriving orange car,
+a red car pulling out through the house-lot aisle at 18:00, and parked blue/grey/yellow cars.
+No car visibly enters a building. Telemetry reports eight vehicles, 24 places, no stored cars,
+no diagnostics and **zero resident car-mode occupants inside buildings** at both hours. At
+09:00 the trace includes WalkToCar, Drive, PullIn and WalkToDoor; at 18:00 it includes PullOut,
+Drive and WalkToDoor. Native tests cover the complete sequence and each rendering handoff.
+The pictures record discrete visible states; native regressions exercise complete routes.
+
+`TRAFFIC-13` can still detach before a looping route finishes; `TRAFFIC-15` can still prevent
+lane-end detach. Resident PullIn uses that unchanged function, so both remain relevant here;
+no parking-specific bypass is added. Round 2b still moves freight and immigration onto outside
+vehicle custody and delivery walks, with their broader lifecycle/watchdog/edit recovery.
+Resident deletion and resident recovery are already included in round 2a.
+
+The required external diff review remains pending: automatic approval review rejected exporting
+the private diff/plans to the reviewer CLI without user authorization. All runnable implementation,
+checks, captures and measurements above are complete; this review is not reported as passed.
+
+
 ## Current Scope
 
 ### Shared lane occupancy contract (TRAFFIC-02)
@@ -1285,7 +2011,9 @@ the SIM-02 fixed slot `gridlock check`, slot 4 of every game minute
   Each lane waits for at most one lane, so the graph is functional: one walk per waiting lane,
   stamped with the check number and its start lane, finds every cycle once. Inputs are the lane
   buckets the last tick left (`rebuild_lanes` at the tick's end); the check is skipped while the
-  bucket snapshot does not describe the current lanes.
+  bucket snapshot does not describe the current lanes. Parked and stored-off-map vehicles have
+  no lane-bucket entries. A pull-out held by `ACCESS_LANE_ATTACH_PENDING` has no current lane;
+  it is an entry wait and cannot supply a wait-for edge or confirm a cycle by itself.
 - **Confirmation.** A cycle's identity is its lanes, rotated to start at the lowest lane id, plus
   every car on them as (agent handle, lane distance bits) in bucket order. A cycle is confirmed
   when the previous check held one with the same lanes and the same cars at the same distances:
@@ -1300,6 +2028,10 @@ the SIM-02 fixed slot `gridlock check`, slot 4 of every game minute
   edge so turn rules apply. On success the remaining route becomes the junction, the exit's end
   and the planned route, with the planned detach; the car keeps standing and enters on a later
   tick through the normal speed pass and claim. Nothing is moved, despawned or timed out.
+  Parking-bound cars use the existing parking endpoint override to retain the reserved bay's
+  driveway, custody and reservation. Route replacement also clamps the saved preparation budget
+  to the new route's guaranteed storage. This adds O(1) endpoint work per attempted detour,
+  allocation-free; the check's scan/walk bounds and single route query remain unchanged.
   Connector heads never detour. A connector exists only for a turn the node's lane rules allow,
   so a detour never takes a banned turn.
 - **Report.** A confirmed cycle with no such head is genuine saturation: it stays locked and its
@@ -1320,7 +2052,7 @@ the SIM-02 fixed slot `gridlock check`, slot 4 of every game minute
   per-lane arrays (waited-for lane, walk stamps, head stamps) are sized when the lane count or
   `LaneSystem::revision` changes, which also forgets the previous cycles; scratch keeps its
   capacity, so a steady state allocates nothing. A detour allocates its new route.
-- **Save** (save format 109, [`simulation.md`](simulation.md#save-bytes-road-68-k16)). One
+- **Save** (save format 110, [`simulation.md`](simulation.md#save-bytes-road-68-k16)). One
   `gridlock_state` row holds what the next check needs, never the per-lane arrays: the report,
   the stamps of the lanes whose head waited at the last check (lane, head handle, slot first seen
   waiting) and that check's cycles (lanes per cycle; lane and car count per cycle lane; handle
@@ -2259,7 +2991,7 @@ The measured ignored tests are
   (`TRAFFIC-06` plans junction priority, yield and stop control); a roundabout's entries give way
   to the ring ([round R7c](#give-way-on-entry-to-a-roundabout-road-62)), nothing else does
 - lane changes are centerline S-curves, not full swept-body collision geometry
-- parking, driveways, curb queues, and building entrance reservations are not modeled
+- resident parking trips, curb queues and building entrance reservations are not yet modeled; physical supply and parked test cars are described above
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild
   must keep connector lanes and `next_lanes` in sync
 - a border queue of held cars is not shortened by the entry hold: the borders' throughput (one

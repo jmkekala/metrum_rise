@@ -620,31 +620,40 @@ work_score = 0.35 × income_pressure + 0.35 × supply_pressure + 0.20 − 0.10 �
 The commute penalty is commute seconds ÷ 1,800, capped at 1. Switching requires a score of at
 least 0.45; unemployed adults take the best offer regardless.
 
-**Job search.** Each searching home key `(home, has_car)` keeps the 24 best options, ranked by
+**Job search.** Each searching resident key `(home, eligible household car)` keeps the 24 best options, ranked by
 commute penalty, then higher wage, capacity, vacancy and lower building ID. Two exact lower bounds
 keep searches local:
 
 - **Ring stop.** Scanning 512 m chunk rings outward stops once the next ring's bound (the home's
   door-to-network time plus straight-line travel at the top network speed) cannot beat the 24th
-  option.
+  option. Resident parking uses the conservative door-to-door straight-line bound, because its
+  actual bay may use different network nodes than the door.
 - **Per-pair pruning.** Once 24 options are held, a workplace is routed only if one of its trip
   candidates can finish within the 24th option's commute; candidates are routed in bound order.
 
 Ranked options and commute seconds therefore match an exhaustive search; `commute_bounds.rs`
-checks over 10,000 pairs. Commutes include live frontage congestion, so a home's options are not
-reused between hours.
+checks over 10,000 building-end pairs. Resident quotes use the complete parking itinerary,
+including actual custody, the walk to the car, both maneuvers and the walk to the door. Driving
+uses free-flow costs; walking wins the unchanged mode-cost tie. A resident parking quote applies
+its physical-time budget after the exact mode choice. A home's ranked options are not reused
+between hours because availability and funded slots can change.
 
 Two caches serve the search:
 
 - **Route cache:** commute seconds by `(home, work, car)`, cleared on any building, entrance or
-  CCH change. Each quote expires 24 workplace passes (hours) after it was added (`SIM-02-G`).
+  CCH change. Resident values also stamp the actual source bay, first free destination bay and
+  their geometry, replacing the same bounded key when supply or a local bay move changes the
+  itinerary. Each quote expires 24 workplace passes (hours) after it was added (`SIM-02-G`).
 - **Network legs** (`SharedNetworkQuotes`): the road-network part of each commute, shared by
   every worker thread across hours. A car leg uses the cost-only CCH query; a walking leg keeps
   the path for the pedestrian connector check. It is emptied on a CCH or lane change. Loading
   sizes it and prepares the search's per-worker route scratch, so the first search after a load
   prepares nothing (`SIM-02-K` part 5).
 
-Neither cache changes a result.
+Neither cache changes a result. Parking publication shares per-destination bay component unions
+and exact car target contexts with the existing job/store/service bucket indices. Shopping and
+service feasibility use actual borrower availability; a proposed car return starts at the proposed
+destination bay. See [the resident trip contract](traffic.md#resident-parking-trips-park-02-round-2a).
 
 Searches run from the `job requests` queue, queued at each agent's hourly phase and served a
 slot's searches together against the hourly job board (`SIM-02-J`,
@@ -903,6 +912,9 @@ issues in `PERF-03`–`PERF-05` is parked. Existing budgets and counters remain 
 unchanged. A reported budget failure describes measured simulation performance; it does not
 mean the diagnostic suite is unfinished. Earlier implementation notes below retain their
 historical acceptance status.
+
+The round-2a parking change records a matched round-1b control, fresh full contract, agent
+pairs, locality and employment measurements in [PARK-02 acceptance](traffic.md#round-2a-verification-2026-11-01).
 
 Routine commands:
 

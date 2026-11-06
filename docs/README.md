@@ -12,7 +12,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`reference.md`](reference.md) | Stable lookup tables, data formats, memory budgets, and vocabulary. |
 | [`simulation.md`](simulation.md) | Simulation engine contract: game clock, scheduler, entity handles, timed events, snapshot rules, sim-frame budget and simulation tiers (`SIM-02`). |
 | [`entrance_and_exit.md`](entrance_and_exit.md) | Building entrance/exit and trip-planning spec. |
-| [`traffic.md`](traffic.md) | Lane-bound vehicle movement, car following, junction traversal, lane changes, overtaking, and traffic debug. |
+| [`traffic.md`](traffic.md) | Lane-bound vehicle movement, car following, junction traversal, lane changes, overtaking, traffic debug, physical parking supply and persistent parked cars. |
 | [`economy.md`](economy.md) | Current economy specification: money and fiscal policy, households, funding census, labor, production, utilities, freight, bankruptcy, and validation recipes. |
 | [`demand.md`](demand.md) | Current growth specification: household admission and removal, private construction, level changes, failed-site clearance, and growth diagnostics. |
 | [`zoning.md`](zoning.md) | Zoning system spec. |
