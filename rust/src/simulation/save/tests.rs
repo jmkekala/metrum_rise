@@ -2422,7 +2422,7 @@ fn sidewalk_sides_round_trip_through_the_edge_table() {
     assert!(network::load_graph(&conn).is_err());
 }
 
-// Format 116 keeps both branches' independent cross-section fields on the same edge.
+// `PARK-05`, save format 118: parking and a turn pocket are independent fields of one edge.
 #[test]
 fn parking_and_pocket_round_trip_together() {
     use crate::simulation::network::graph::RoadParking;
