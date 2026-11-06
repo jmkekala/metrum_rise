@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Dedicated bulldoze tool for deleting one building, road or vegetation target per click.
+## Dedicated bulldoze tool for deleting one building, road or vegetation target per click. A
+## roundabout goes whole (`ROAD-62`, D15): Rust's target is its whole ring and names it, and the
+## name shows beside the pointer.
 ##
 ## Rust methods called: get_bulldoze_target_at(), bulldoze_at(), intersect_world_surface()
 extends Node3D
@@ -12,8 +14,16 @@ var active: bool = false
 var hover_mesh: MeshInstance3D
 var _target_valid := false
 var _target_world_pos := Vector2.ZERO
+var _hover_label: Label
 
 func _ready() -> void:
+	var canvas := CanvasLayer.new()
+	add_child(canvas)
+	_hover_label = Label.new()
+	_hover_label.visible = false
+	_hover_label.add_theme_color_override("font_shadow_color", Color.BLACK)
+	_hover_label.add_theme_constant_override("shadow_outline_size", 4)
+	canvas.add_child(_hover_label)
 	hover_mesh = MeshInstance3D.new()
 	hover_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	hover_mesh.top_level = true
@@ -51,6 +61,9 @@ func _update_hover() -> void:
 	_target_valid = true
 	hover_mesh.mesh = mesh
 	hover_mesh.visible = true
+	_hover_label.text = str(target.get("label", ""))
+	_hover_label.visible = not _hover_label.text.is_empty()
+	_hover_label.position = get_viewport().get_mouse_position() + Vector2(16, 16)
 
 func _delete_hovered_target() -> void:
 	if not _target_valid:
@@ -63,6 +76,8 @@ func _delete_hovered_target() -> void:
 
 func _clear_hover() -> void:
 	_target_valid = false
+	if _hover_label:
+		_hover_label.visible = false
 	if hover_mesh:
 		hover_mesh.mesh = null
 		hover_mesh.visible = false

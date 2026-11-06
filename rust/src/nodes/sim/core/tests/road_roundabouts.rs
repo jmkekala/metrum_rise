@@ -307,6 +307,67 @@ fn refusals_change_nothing() {
     );
 }
 
+// Arms closer than their mouths, in the tool's words: six 1+1 arms, two of them 30 degrees apart,
+// have 6.9 m of ring between them at 30 m and refuse; at 60 m they have 14.8 m and convert.
+#[test]
+fn six_crowded_arms_refuse_at_30_m_and_fit_at_60_m() {
+    let six = |core: &mut SimCore| {
+        for angle in [0f32, 30.0, 110.0, 180.0, 240.0, 300.0] {
+            let (sin, cos) = angle.to_radians().sin_cos();
+            let far = Vector3::new(cos * 150.0, 0.0, sin * 150.0);
+            assert!(core.add_road_internal(vec![Vector3::ZERO, far], 1, 1).committed);
+        }
+        core.precompute_road_mesh_data();
+        (0..core.region_graph.node_count() as u32)
+            .find(|&node| live_arms(core, node).len() == 6)
+            .expect("the hub")
+    };
+    let mut core = test_core();
+    let node = six(&mut core);
+    assert_eq!(ring_edit(&mut core, junction(node, 30.0)), "roundabout_arms_too_close");
+    assert_eq!(ring_edit(&mut core, junction(node, 60.0)), "");
+}
+
+// A ring over water refuses as a road does; a whitelisted junction and a pocketed arm wait for
+// the player; a road beside the site is in its way.
+#[test]
+fn the_rest_of_the_refusal_list_stands_on_a_city() {
+    use crate::simulation::network::pockets::PocketRequest;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    let (mut core, node) = crossing(1);
+    let arm = live_arms(&core, node)[0];
+    let end = if core.region_graph.edge(arm).start_node == node {
+        EdgeEnd::Start
+    } else {
+        EdgeEnd::End
+    };
+    let pocket = PocketRequest {
+        edge: arm,
+        end,
+        left: false,
+        right: true,
+        body_m: 40.0,
+    };
+    assert!(core.set_road_pocket_internal(pocket));
+    // Its pocket lane makes two lanes in, so the ring would have two.
+    assert_eq!(ring_edit(&mut core, junction(node, 50.0)), "roundabout_arm_has_pocket");
+    assert!(core.undo_action_internal());
+    products(&mut core);
+    let lanes = &core.transit_network.lane_system;
+    let arm_lane = lanes.edge_lanes[&arm]
+        .iter()
+        .copied()
+        .find(|&id| lanes.lanes[id].lane_type == LaneType::Vehicle)
+        .unwrap();
+    let (from, lane) = (arm as i32, lanes.lanes[arm_lane].lane_idx as i32);
+    let other = live_arms(&core, node)[1] as i32;
+    core.set_lane_connection_internal(node, from, lane, other, 0);
+    assert_eq!(
+        ring_edit(&mut core, junction(node, 36.0)),
+        "roundabout_has_lane_restrictions"
+    );
+}
+
 // Lots under the ring and on its island refuse; the same crossing with the house far off
 // converts, the house's cell moves by what the cut took off a start, and undo puts it back.
 #[test]

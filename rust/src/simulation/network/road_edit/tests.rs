@@ -542,7 +542,11 @@ fn the_structure_clearances_share_the_vehicle_envelope() {
 
 // A fixture with a bare ring of `diameter_m` at (128, 128) and its ring nodes.
 fn ring_fixture(diameter_m: f32) -> (Fixture, Vec<u32>) {
-    let mut fixture = Fixture::new(false);
+    ring_fixture_on(diameter_m, false)
+}
+
+fn ring_fixture_on(diameter_m: f32, sloped: bool) -> (Fixture, Vec<u32>) {
+    let mut fixture = Fixture::new(sloped);
     let site = RoundaboutSite::Ground {
         centre: fixture.point(128.0, 128.0),
         lanes: 1,
@@ -573,6 +577,50 @@ impl Fixture {
             .0
             .invalid_reason
     }
+}
+
+// R7a's gap: a ring on a real slope stays on its level plane through the road edit's solve, the
+// terrain taking the difference. Bare, and with arms joined by strokes: every ring point at the
+// centre's height, every arm graded up to it within the road limits, the pieces compiled.
+#[test]
+fn a_ring_on_a_slope_keeps_its_level_plane_through_the_solve() {
+    let (mut fixture, _) = ring_fixture_on(36.0, true);
+    let plane = fixture.point(128.0, 128.0).y;
+    let level = |fixture: &Fixture| {
+        for edge in fixture.graph.edges().iter().filter(|edge| edge.roundabout.is_some()) {
+            for point in edge.geometry.iter().chain(&edge.physical_geometry) {
+                assert!((point.y - plane).abs() < 1e-3, "{} against {plane}", point.y);
+            }
+        }
+    };
+    let finalized = fixture.network.finalize_road_geometry(
+        &mut fixture.graph,
+        Some(&fixture.terrain),
+    );
+    assert!(finalized.dirty_edges.is_empty());
+    level(&fixture);
+    for angle in [0f32, 90.0, 180.0, 270.0] {
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let at = |fixture: &Fixture, r: f32| fixture.point(128.0 + cos * r, 128.0 + sin * r);
+        let join = [at(&fixture, 16.25 + 90.0), at(&fixture, 16.25)];
+        let (_, plan) = fixture.plan(&join);
+        fixture.adopt(&plan);
+        fixture.network.roadbed.compile_dirty(&fixture.graph);
+        assert!(fixture.network.roadbed.failed_nodes().is_empty(), "{angle}");
+        level(&fixture);
+    }
+    // A join far from every bare node splits the ring at its own plane, not the ground's.
+    let (mut fixture, _) = ring_fixture_on(60.0, true);
+    let (sin, cos) = 30f32.to_radians().sin_cos();
+    let at = |fixture: &Fixture, r: f32| fixture.point(128.0 + cos * r, 128.0 + sin * r);
+    let join = [at(&fixture, 28.25 + 90.0), at(&fixture, 28.25)];
+    let (_, plan) = fixture.plan(&join);
+    fixture.adopt(&plan);
+    fixture.network.roadbed.compile_dirty(&fixture.graph);
+    assert!(fixture.network.roadbed.failed_nodes().is_empty());
+    let ring_edges = fixture.graph.edges().iter().filter(|edge| edge.roundabout.is_some());
+    assert_eq!(ring_edges.count(), 4);
+    level(&fixture);
 }
 
 // D9 (`ROAD-62`). Ring nodes stand at 90, 210 and 330 degrees.

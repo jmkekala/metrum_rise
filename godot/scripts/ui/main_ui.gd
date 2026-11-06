@@ -47,6 +47,10 @@ var terrain_sub_menu: HBoxContainer
 # Road items
 ## The Roads menu's road-type row (`ROAD-101`); its "Road builder..." opens `road_builder`.
 var road_type_menu: RoadTypeMenu
+var roundabout_btn: Button
+var roundabout_row: HBoxContainer
+var roundabout_slider: HSlider
+var roundabout_size_label: Label
 ## The road builder window (`ROAD-101`).
 var road_builder: RoadBuilderWindow
 
@@ -258,6 +262,24 @@ func _build_ui():
 		road_tool.tunnel_toggled.connect(func(enabled: bool): tunnel_check.set_pressed_no_signal(enabled))
 	tunnel_row.add_child(tunnel_check)
 	road_options_menu.add_child(tunnel_row)
+
+	# The roundabout tool's size (`ROAD-62`, D12): only while that tool is on.
+	roundabout_row = HBoxContainer.new()
+	roundabout_row.visible = false
+	var diameter_label := Label.new()
+	diameter_label.text = "Diameter"
+	diameter_label.custom_minimum_size.x = 92.0
+	roundabout_row.add_child(diameter_label)
+	roundabout_slider = HSlider.new()
+	roundabout_slider.step = 1.0
+	roundabout_slider.custom_minimum_size.x = 140.0
+	roundabout_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	roundabout_slider.focus_mode = Control.FOCUS_NONE
+	roundabout_slider.tooltip_text = "Between the outside kerbs. [ and ] step by 2 m."
+	roundabout_row.add_child(roundabout_slider)
+	roundabout_size_label = Label.new()
+	roundabout_row.add_child(roundabout_size_label)
+	road_options_menu.add_child(roundabout_row)
 	options_panel.visible = false 
 	# Store reference to toggle it
 	self.set_meta("options_panel", options_panel)
@@ -289,6 +311,15 @@ func _build_ui():
 		road_tool.road_type_changed.connect(road_type_menu.mark)
 	road_type_menu.setup(simulation_node)
 	road_sub_menu.add_child(road_type_menu)
+
+	roundabout_btn = Button.new()
+	roundabout_btn.text = "Roundabout"
+	roundabout_btn.toggle_mode = true
+	roundabout_btn.focus_mode = Control.FOCUS_NONE
+	roundabout_btn.tooltip_text = "O: a ring on empty ground, or in place of a junction."
+	roundabout_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.ROUNDABOUT))
+	road_sub_menu.add_child(roundabout_btn)
+	call_deferred("_connect_roundabout_tool")
 	
 	road_combined_hbox.add_child(options_panel)
 	road_combined_hbox.add_child(sep)
@@ -893,6 +924,30 @@ func _on_industry_main_pressed():
 			_select_industry_asset(str(first_asset.get("asset_id", "")))
 	else:
 		input_manager._cancel_active_tool()
+
+# The input manager adds the roundabout tool deferred, as it does the bulldoze tool.
+func _connect_roundabout_tool() -> void:
+	var tool: Node = input_manager.roundabout_tool
+	tool.active_changed.connect(_on_roundabout_active)
+	tool.size_changed.connect(_on_roundabout_size)
+	roundabout_slider.value_changed.connect(func(value: float): tool.set_diameter(value))
+
+# The Roads menu follows the tool, which O can switch on with the menu closed.
+func _on_roundabout_active(enabled: bool) -> void:
+	roundabout_btn.set_pressed_no_signal(enabled)
+	roundabout_row.visible = enabled
+	if enabled:
+		road_combined_hbox.visible = true
+		get_meta("options_panel").visible = true
+		get_meta("road_sep").visible = true
+
+func _on_roundabout_size(diameter_m: float, min_m: float, max_m: float, lanes: int) -> void:
+	roundabout_slider.set_block_signals(true)
+	roundabout_slider.min_value = min_m
+	roundabout_slider.max_value = max_m
+	roundabout_slider.value = diameter_m
+	roundabout_slider.set_block_signals(false)
+	roundabout_size_label.text = "%.0f m, %d %s" % [diameter_m, lanes, "lane" if lanes == 1 else "lanes"]
 
 # A road type picked in the Roads menu: the Walkway tool for a walkway, else the Road tool
 # (whose activation picks the last type), then the picked type.

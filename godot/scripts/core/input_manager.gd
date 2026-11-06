@@ -3,7 +3,7 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
 ## Routes input events to the active tool node (RoadTool, ZoningTool,
-## MoveTool, SelectTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool,
+## MoveTool, SelectTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool, RoundaboutTool,
 ## VegetationTool, FieldEditTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
@@ -31,6 +31,7 @@ var service_building_tool: Node3D
 var industry_building_tool: Node3D
 var field_edit_tool: Node3D
 var bulldoze_tool: Node3D
+var roundabout_tool: Node3D
 @onready var vegetation_tool = $"../VegetationTool"
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
@@ -40,7 +41,7 @@ var building_inspector: Node
 var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT }
 var current_tool: Tool = Tool.NONE
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
@@ -117,6 +118,15 @@ func _ready():
 		bulldoze_tool = bt
 	else:
 		bulldoze_tool = get_node("../BulldozeTool")
+
+	if not has_node("../RoundaboutTool"):
+		var rt = Node3D.new()
+		rt.name = "RoundaboutTool"
+		rt.set_script(load("res://scripts/tools/roundabout_tool.gd"))
+		get_parent().call_deferred("add_child", rt)
+		roundabout_tool = rt
+	else:
+		roundabout_tool = get_node("../RoundaboutTool")
 
 	if has_node("../BuildingInspector"):
 		building_inspector = get_node("../BuildingInspector")
@@ -277,6 +287,7 @@ func _unhandled_input(event):
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
 			KEY_B: _toggle_tool(Tool.BULLDOZE)
+			KEY_O: _toggle_tool(Tool.ROUNDABOUT)
 			KEY_E:
 				if current_tool == Tool.VEGETATION:
 					vegetation_tool.toggle_mode()
@@ -451,6 +462,9 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 			if vegetation_tool: vegetation_tool.active = enabled
 		Tool.BULLDOZE:
 			if bulldoze_tool: bulldoze_tool.active = enabled
+		Tool.ROUNDABOUT:
+			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
+			if roundabout_tool: roundabout_tool.set_tool_active(enabled)
 		Tool.FIELD_EDIT:
 			if not enabled and field_edit_tool:
 				field_edit_tool.cancel_edit()

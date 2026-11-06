@@ -147,6 +147,26 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Roads cannot go on a roundabout's island"
 		"roundabout_arm_node_taken":
 			return "This point of the roundabout already has a road"
+		"roundabout_arms_too_close":
+			return "Arms need more room. Increase the diameter"
+		"roundabout_overlaps_road":
+			return "Another road occupies this site"
+		"roundabout_requires_three_to_six_arms":
+			return "Choose a junction with three to six roads"
+		"roundabout_requires_ordinary_surface_arms":
+			return "Every road here must be an ordinary surface road"
+		"roundabout_has_lane_restrictions":
+			return "Remove the junction's lane rules first"
+		"roundabout_arm_has_pocket":
+			return "Remove the turn pockets at this junction first"
+		"roundabout_arm_too_short":
+			return "A road here is too short for this diameter"
+		"roundabout_replacement_too_large":
+			return "A junction takes a roundabout of at most 60 m"
+		"invalid_roundabout_junction":
+			return "This junction no longer exists"
+		"invalid_roundabout_dimensions":
+			return "This diameter does not suit this roundabout"
 		"median_requires_both_directions":
 			return "A median needs lanes in both directions"
 		"median_requires_vehicle_road":
