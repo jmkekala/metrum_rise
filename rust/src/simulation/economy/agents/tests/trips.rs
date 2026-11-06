@@ -383,13 +383,12 @@ fn test_planned_departure_populates_exact_trip_plan() {
 fn test_same_edge_car_trip_prefers_direct_frontage_lane_over_endpoint_wrap() {
     let mut g = RegionGraph::new();
     let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-    let n1 = g.add_node(Vector3::new(500.0, 0.0, 0.0), NodeType::Junction);
+    // Long enough that the resident drives along its sidewalked road.
+    let n1 = g.add_node(Vector3::new(5_000.0, 0.0, 0.0), NodeType::Junction);
     g.add_edge(Edge {
-        allowed_types: TransitFlags::CAR,
-        sidewalks: crate::simulation::network::graph::SidewalkSides::NONE,
-        physical_length: 500.0,
-        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
-        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
+        physical_length: 5_000.0,
+        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(5_000.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(5_000.0, 0.0, 0.0)],
         ..create_test_edge(n0, n1)
     });
     g.rebuild_adjacency_list();
@@ -413,13 +412,13 @@ fn test_same_edge_car_trip_prefers_direct_frontage_lane_over_endpoint_wrap() {
     );
 
     let mut home = create_test_building(0, 1);
-    home.center_x = 125.0;
+    home.center_x = 1_250.0;
     home.center_y = -10.0;
     home.facing_dir = Vector2::new(0.0, -1.0);
     home.asset_id = home_asset;
 
     let mut work = create_test_building(0, -1);
-    work.center_x = 375.0;
+    work.center_x = 3_750.0;
     work.center_y = 10.0;
     work.facing_dir = Vector2::new(0.0, 1.0);
     work.asset_id = work_asset;

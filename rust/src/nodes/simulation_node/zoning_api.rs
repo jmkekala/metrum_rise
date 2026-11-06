@@ -87,6 +87,9 @@ impl SimulationNode {
             ExplicitServicePlacementRejection::RoadFrontageUnavailable => {
                 "no nearby road frontage can fit this building"
             }
+            ExplicitServicePlacementRejection::NoSidewalk => {
+                "buildings need a sidewalk on their side of the road"
+            }
             ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing => {
                 "driveway cannot resolve road surface height"
             }
@@ -139,6 +142,9 @@ impl SimulationNode {
             }
             ExplicitServicePlacementRejection::RoadFrontageUnavailable => {
                 "no nearby road frontage can fit this building"
+            }
+            ExplicitServicePlacementRejection::NoSidewalk => {
+                "buildings need a sidewalk on their side of the road"
             }
             ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing => {
                 "driveway cannot resolve road surface height"

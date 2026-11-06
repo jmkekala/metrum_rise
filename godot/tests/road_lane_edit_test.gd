@@ -236,8 +236,11 @@ func _run() -> void:
 	_expect(not dialog.visible and int(section.get("speed_kmh", 0)) == 100 and not bool(section.get("sidewalks", true))
 		and not bool(section.get("zoning", true)) and String(section.get("road_type", "")) == rural, "Apply makes it rural: %s" % section)
 	_expect(overlay.refreshed > refreshed and window._no_build_check.button_pressed, "zoning off refreshes the overlay and the checkbox")
+	_expect(window._no_build_check.disabled, "a road with no sidewalk disables the No buildings box")
 	_expect(_picked_text(window) == "Lane Edit Rural (100 km/h, 24 / m)", "the picker shows the rural type: %s" % _picked_text(window))
 	await _undo("the rural type")
+	window._refresh()
+	_expect(not window._no_build_check.disabled, "sidewalks back: the box works")
 	section = simulation.get_edge_cross_section(edge)
 	_expect(int(section.get("speed_kmh", 0)) == 50 and bool(section.get("sidewalks", false)) and bool(section.get("zoning", false)),
 		"undo restores 50 km/h, sidewalks and zoning: %s" % section)

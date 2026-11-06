@@ -5283,6 +5283,9 @@ fn owa_export_keeps_the_one_day_buffer_for_a_later_local_buyer() {
 #[test]
 fn unreachable_local_input_need_does_not_hold_owa_export() {
     let (mut graph, mut network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    // The buyer stands on a walkway: its door is walked to, no truck reaches it.
+    graph.edge_mut(commercial_edge).primary_type =
+        crate::simulation::network::types::TransitType::Foot;
     graph.edge_mut(commercial_edge).allowed_types = TransitFlags::FOOT;
     graph.edge_mut(commercial_edge).sidewalks =
         crate::simulation::network::graph::SidewalkSides::NONE;

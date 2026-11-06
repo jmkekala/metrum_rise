@@ -421,6 +421,17 @@ impl SimCore {
                 self.undo_stack.push_back(state);
                 return false;
             }
+            // A building placed since may stand on the sidewalk this would take back (`ROAD-109`).
+            if let Some(graph) = &state.trans_graph
+                && graph.restored_sidewalks().any(|(edge, sidewalks)| {
+                    edge < self.region_graph.edge_count()
+                        && !self.region_graph.edge(edge).deleted
+                        && self.door_on_lost_sidewalk(edge, sidewalks).is_some()
+                })
+            {
+                self.undo_stack.push_back(state);
+                return false;
+            }
             let SimulationSnapshot {
                 terrain,
                 water,

@@ -1102,9 +1102,6 @@ mod tests {
                     edge.physical_geometry = edge.geometry.clone();
                     edge.physical_length = 1_000.0;
                     edge.speed_limit = 14.0;
-                    // No sidewalk: the occupants must drive, and only vehicle lanes have gaps.
-                    edge.allowed_types = TransitFlags::CAR;
-                    edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
                     edge.bkw_lanes = 0;
                     graph.add_edge(edge);
                 }
@@ -1123,6 +1120,12 @@ mod tests {
                 }
                 allocator.rebuild_entrance_cache(&graph, &network.lane_system);
                 allocator.rebuild_zone_index();
+                // No walk from these doors: the occupants must drive, and only vehicle lanes
+                // have gaps.
+                for entrance in &mut allocator.entrances {
+                    entrance.foot_lane_fwd = usize::MAX;
+                    entrance.foot_lane_bkw = usize::MAX;
+                }
 
                 let mut agents = AgentSystem::new();
                 for road in 0..roads {
@@ -1224,8 +1227,6 @@ mod tests {
             edge.geometry = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(1_000.0, 0.0, 0.0)];
             edge.physical_geometry = edge.geometry.clone();
             edge.physical_length = 1_000.0;
-            edge.allowed_types = TransitFlags::CAR;
-            edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
             edge.bkw_lanes = 0;
             graph.add_edge(edge);
             graph.rebuild_adjacency_list();

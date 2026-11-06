@@ -45,7 +45,7 @@ impl<M: CellMaps> CellStore<M> {
         // A road's candidates lie within its half-width, the sidewalk and its rear rows.
         let mut chunks = BTreeSet::new();
         for (id, edge) in graph.edges().iter().enumerate() {
-            if edge.no_building_spawn
+            if !edge.zones_any_side()
                 || edge.primary_type != TransitType::Road
                 || !graph.fronts_ground(id)
                 || edge.physical_geometry.len() < 2

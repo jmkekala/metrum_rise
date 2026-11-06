@@ -13,7 +13,7 @@ use super::super::super::slices::{MovementSlices, enter_lane, hold_for_lane_atta
 use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear};
 use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
-use super::{arrive_in_building, reset_invalid_access_plan};
+use super::reset_invalid_access_plan;
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -21,48 +21,6 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::parking::ParkingTripPhase;
 use crate::traffic_log;
 use godot::prelude::*;
-
-// A leg across the building's own lot (`in_lot_candidate`, `PARK-05`, D4): no lane, a straight
-// walk at walking pace from where the walker stands to its bay or door. A bay whose access is
-// gone hands the walker to recovery as if it had arrived. O(1), allocation-free.
-//
-// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
-unsafe fn walk_across_lot(
-    i: usize,
-    delta: f32,
-    sim_time: f32,
-    allocator: &BuildingAllocator,
-    transit_network: &TransitNetwork,
-    graph: &RegionGraph,
-    slices: &MovementSlices,
-) {
-    unsafe {
-        let trip = *slices.parking_trip.get(i);
-        let target = *slices.tgt_b.get(i);
-        let goal = if trip.phase == ParkingTripPhase::WalkToDoor {
-            allocator.entrances.get(target).map(|door| door.door_pos)
-        } else {
-            slices
-                .parking
-                .and_then(|p| p.trip_entrance(trip, false, allocator, transit_network, graph))
-                .map(|bay| bay.door_pos)
-        };
-        let here = Vector2::new(*slices.pos_x.get(i), *slices.pos_y.get(i));
-        let step = AGENT_WALK_SPEED_MS * delta;
-        let next = goal.map_or(here, |goal| here.move_toward(goal, step));
-        *slices.pos_x.get_mut(i) = next.x;
-        *slices.pos_y.get_mut(i) = next.y;
-        if goal.is_some_and(|goal| next != goal) {
-            return;
-        }
-        *slices.speed.get_mut(i) = 0.0;
-        if trip.phase == ParkingTripPhase::WalkToDoor && goal.is_some() {
-            arrive_in_building(i, target, next, sim_time, slices);
-        } else {
-            slices.parking_trip.get_mut(i).ready = true;
-        }
-    }
-}
 
 /// Handles local access movement from a building door to the planned network attachment lane.
 ///
@@ -120,12 +78,6 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             return;
         }
         let trip = *slices.parking_trip.get(i);
-        if *s_plan_attach_lane.get(i) == u32::MAX
-            && matches!(trip.phase, ParkingTripPhase::WalkToCar | ParkingTripPhase::WalkToDoor)
-        {
-            walk_across_lot(i, delta, sim_time, allocator, transit_network, graph, slices);
-            return;
-        }
         // Off a parking leg there is no endpoint to look up: most agents here, every tick.
         let parking_entrance = slices
             .parking

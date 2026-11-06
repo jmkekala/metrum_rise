@@ -70,6 +70,50 @@ pub(in crate::nodes::sim::core) fn farm_fixture_with(
     (core, farm, rectangle(-8.0, back + 1.0, 400.0, 500.0))
 }
 
+// `ROAD-109`: a farm and a mine stand on a side with a sidewalk, in the industry tool's preview and
+// its commit, as a service building does (`explicit_placement_needs_a_sidewalk_on_its_side`).
+#[test]
+fn farms_and_mines_need_a_sidewalk_on_their_side() {
+    use crate::assets::asset::BuildingExtractorData;
+    use crate::simulation::buildings::allocator::ExplicitServicePlacementRejection;
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::road_types::RoadAttributes;
+    let (mut core, farm, _) = farm_fixture();
+    let road = core.allocator.buildings[farm].edge_idx;
+    let farm_id = core.allocator.buildings[farm].asset_id.clone();
+    let mut manifest = core.allocator.registry.get(&farm_id).unwrap().manifest.clone();
+    manifest.asset_id = "mine_test".to_owned();
+    let building = manifest.building.as_mut().unwrap();
+    building.economy_profile = Some("coal_mine_basic".into());
+    building.field = None;
+    building.extractor = Some(BuildingExtractorData {
+        resource: "coal".into(),
+        area_mode: "player_polygon".into(),
+    });
+    core.allocator
+        .registry
+        .register("test", manifest, String::new());
+    // The farm's side keeps its sidewalk; the left, -z on a road running +x, goes.
+    let right = RoadAttributes::new(50, SidewalkSides::RIGHT, true);
+    assert!(core.set_edge_cross_section_internal(road as i32, 1, 1, None, Default::default(), right));
+    core.transit_network
+        .roadbed
+        .compile_dirty(&core.region_graph);
+    for (asset, x) in [(farm_id.as_str(), 150.0), ("test:mine_test", -150.0)] {
+        let preview = core.get_industry_building_placement_preview_internal(asset, x, -8.0);
+        assert_eq!(
+            preview.map_or_else(Some, |preview| preview.rejection),
+            Some(ExplicitServicePlacementRejection::NoSidewalk)
+        );
+        assert_eq!(
+            core.place_industry_building_internal(asset, x, -8.0),
+            Err(ExplicitServicePlacementRejection::NoSidewalk)
+        );
+        core.place_industry_building_internal(asset, x, 8.0)
+            .expect("the sidewalk side builds");
+    }
+}
+
 /// Adds one mixed-age family and assigns its adults to the farm.
 pub(in crate::nodes::sim::core) fn add_farm_household(core: &mut SimCore, farm: usize) -> usize {
     use crate::simulation::economy::agents::{age_group_can_work, household_member_age_group};

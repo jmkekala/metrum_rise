@@ -31,7 +31,7 @@ pub(super) fn has_road_column(
             {
                 let mut end = 0;
                 for link in links.iter().filter(|link| {
-                    link.boundary == boundary && !graph.edge(link.edge).no_building_spawn
+                    link.boundary == boundary && graph.edge(link.edge).zones_side(link.side)
                 }) {
                     if link.start > end {
                         break;

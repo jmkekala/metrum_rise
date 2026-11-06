@@ -168,7 +168,9 @@ fn source_candidates<M: CellMaps>(
         let end = begin + 1.0;
         let mut eligible_end = begin;
         for interval in &intervals {
-            if graph.edge(interval.edge).no_building_spawn || interval.max <= eligible_end {
+            if !graph.edge(interval.edge).zones_side(interval.side)
+                || interval.max <= eligible_end
+            {
                 continue;
             }
             if interval.min > eligible_end + epsilon {
@@ -206,7 +208,7 @@ fn source_candidates<M: CellMaps>(
                     y: xy[1],
                 };
                 let claimed = store.lot(cell).is_some_and(|lot| lot != 0);
-                if (graph.edge(interval.edge).no_building_spawn && !claimed)
+                if (!graph.edge(interval.edge).zones_side(interval.side) && !claimed)
                     || (eligible_end < end - epsilon
                         && !claimed
                         && !store.profile(cell).is_some_and(|p| p != 0))

@@ -327,7 +327,7 @@ impl SimCore {
     /// supply/doors. O(local chunk buildings + local bounded searches), independent of background.
     pub(crate) fn rebuild_parking_candidates_near(&mut self, points: &[[f32; 2]]) {
         self.parking
-            .refresh_retired_access(&self.allocator, &self.transit_network, &self.region_graph);
+            .refresh_retired_access(&self.transit_network, &self.region_graph);
         let mut buildings = Vec::new();
         for &point in points {
             self.allocator.site_cells.visit(

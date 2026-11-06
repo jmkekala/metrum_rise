@@ -3,6 +3,7 @@
 //! Exact road-removal inverses and relationship-index locality without gameplay setup.
 
 use super::*;
+use crate::simulation::network::graph::SidewalkSides;
 
 fn geometry(edge_idx: usize, origin: Vector2) -> ParcelGeometry {
     ParcelGeometry {
@@ -48,7 +49,7 @@ fn assert_indices(store: &ParcelStore) {
             .map(|(i, p)| (i, p.id()))
             .collect();
         let actual: Vec<_> = store
-            .capture_attached_to_edge(edge)
+            .capture_attached_to_edge(edge, SidewalkSides::BOTH)
             .iter()
             .map(|(i, p)| (*i, p.id()))
             .collect();
@@ -115,11 +116,11 @@ fn every_road_removal_subset_restores_dense_order_and_local_indices() {
                 assert!(store.set_occupied_building(id, i));
             }
         }
-        let captured = store.capture_attached_to_edge(7);
+        let captured = store.capture_attached_to_edge(7, SidewalkSides::BOTH);
         assert_eq!(captured.len(), mask.count_ones() as usize);
-        assert_eq!(store.remove_attached_to_edge(7, |_| {}), captured.len());
+        assert_eq!(store.remove_attached_to_edge(7, SidewalkSides::BOTH, |_| {}), captured.len());
         assert_indices(&store);
-        assert!(store.capture_attached_to_edge(7).is_empty());
+        assert!(store.capture_attached_to_edge(7, SidewalkSides::BOTH).is_empty());
         assert!(store.can_restore_removed(ids.len(), &captured));
         store.restore_removed(ids.len(), captured);
         assert_eq!(
@@ -145,12 +146,12 @@ fn attachment_replacement_local_removal_and_bulk_cleanup_keep_query_views() {
         .collect();
     let mut changed = geometry(19, Vector2::new(12000.0, -8000.0));
     assert!(store.replace_geometry(ids[1], changed));
-    assert_eq!(store.capture_attached_to_edge(19)[0].1.id(), ids[1]);
+    assert_eq!(store.capture_attached_to_edge(19, SidewalkSides::BOTH)[0].1.id(), ids[1]);
     assert_indices(&store);
     // A relationship change in the same spatial chunks must update its index too.
     changed.edge_idx = 23;
     assert!(store.replace_geometry(ids[1], changed));
-    assert!(store.capture_attached_to_edge(19).is_empty());
+    assert!(store.capture_attached_to_edge(19, SidewalkSides::BOTH).is_empty());
     assert_indices(&store);
     let removed = store.remove_local(ids[0]).unwrap();
     assert_indices(&store);
@@ -162,8 +163,8 @@ fn attachment_replacement_local_removal_and_bulk_cleanup_keep_query_views() {
     );
     assert_indices(&store);
     store.clear();
-    assert!(store.capture_attached_to_edge(7).is_empty());
-    assert!(store.capture_attached_to_edge(23).is_empty());
+    assert!(store.capture_attached_to_edge(7, SidewalkSides::BOTH).is_empty());
+    assert!(store.capture_attached_to_edge(23, SidewalkSides::BOTH).is_empty());
     store.insert_new(geometry(19, Vector2::ZERO), 1);
     assert_indices(&store);
 }
@@ -188,10 +189,10 @@ fn benchmark_road_parcel_removal_locality() {
         }
         let run = |store: &mut ParcelStore| {
             let before = store.parcels().len();
-            let undo = store.capture_attached_to_edge(7);
+            let undo = store.capture_attached_to_edge(7, SidewalkSides::BOTH);
             assert_eq!(undo.len(), 6);
             assert_eq!(
-                store.remove_attached_to_edge(7, |parcel| {
+                store.remove_attached_to_edge(7, SidewalkSides::BOTH, |parcel| {
                     black_box(parcel.corners());
                 }),
                 6

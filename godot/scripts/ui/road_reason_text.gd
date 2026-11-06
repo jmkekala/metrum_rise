@@ -110,6 +110,8 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "A road cannot become a walkway"
 		"cross_section_unchanged":
 			return "No change"
+		"sidewalk_under_door":
+			return "A building's door is on this sidewalk: remove the building first"
 		"edit_tunnel_width":
 			return "Widen a tunnel by drawing it again"
 		"cross_section_too_wide_for_curve":

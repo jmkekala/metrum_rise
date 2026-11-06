@@ -58,7 +58,8 @@ pub(crate) fn project_buildable_road_point_at(
 
     for edge_idx in nearby_edges {
         let edge = graph.edge(edge_idx);
-        if !graph.takes_buildings(edge_idx)
+        if !edge.zones_any_side()
+            || !graph.fronts_ground(edge_idx)
             || edge.physical_length <= frontage_m
             || edge.physical_geometry.len() < 2
         {
@@ -67,6 +68,10 @@ pub(crate) fn project_buildable_road_point_at(
         let Some(projected) = project_point_to_edge(graph, edge_idx, world_pos) else {
             continue;
         };
+        // A lot stands on a side that zones (`ROAD-109`).
+        if !edge.zones_side(projected.side) {
+            continue;
+        }
         let max_centerline_dist = edge.frontage_half_width_m(projected.side)
             + crate::config::SIDEWALK_WIDTH
             + depth_m

@@ -86,6 +86,87 @@ fn explicit_roadside_site_rejects_missing_surface_without_raw_terrain_fallback()
     assert!(allocator.take_pending_site_dirty_bounds().is_empty());
 }
 
+// `ROAD-109`: a placed building stands on a side with a sidewalk. The preview keeps the pose and
+// says why; the commit refuses the same site and changes nothing. A road with none refuses both
+// sides, and a sidewalk given to the side lets the same site through.
+#[test]
+fn explicit_placement_needs_a_sidewalk_on_its_side() {
+    use crate::simulation::network::graph::SidewalkSides;
+    let config = WorldConfig::default();
+    let mut zoning = ZoningSystem::new(&config);
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+    let mut allocator = BuildingAllocator::new();
+    let asset_id = register_test_power_service_asset(&mut allocator, "base", "building.power.test");
+    network.add_road(
+        &mut graph,
+        vec![Vector3::ZERO, Vector3::new(200.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    let terrain = compiled_flat_test_terrain(&mut network, &graph);
+    let catalog = load_runtime_economy_catalog().expect("catalog");
+    let tuning =
+        crate::simulation::economy::definitions::load_runtime_economy_tuning().expect("tuning");
+    // The left of a road running +x is -z.
+    for (sides, left, right) in [
+        (SidewalkSides::LEFT, true, false),
+        (SidewalkSides::RIGHT, false, true),
+        (SidewalkSides::NONE, false, false),
+    ] {
+        graph.edge_mut(0).set_sidewalks(sides);
+        for (z, allowed) in [(-8.0, left), (8.0, right)] {
+            let point = Vector2::new(170.0, z);
+            let preview = allocator
+                .preview_explicit_service_placement(
+                    &asset_id,
+                    point,
+                    &zoning,
+                    &graph,
+                    &network.roadbed,
+                    &terrain,
+                    &catalog,
+                )
+                .expect("a resolved pose");
+            assert_eq!(preview.valid, allowed, "{sides:?} at z {z}");
+            if !allowed {
+                assert_eq!(preview.rejection, Some(ExplicitServicePlacementRejection::NoSidewalk));
+                let count = allocator.buildings.len();
+                assert_eq!(
+                    allocator.execute_explicit_service_placement(
+                        &asset_id,
+                        point,
+                        &zoning,
+                        &graph,
+                        &network.roadbed,
+                        &terrain,
+                        &catalog,
+                        &tuning,
+                    ),
+                    Err(ExplicitServicePlacementRejection::NoSidewalk)
+                );
+                assert_eq!(allocator.buildings.len(), count, "nothing is built");
+            }
+        }
+    }
+    graph.edge_mut(0).set_sidewalks(SidewalkSides::RIGHT);
+    allocator
+        .execute_explicit_service_placement(
+            &asset_id,
+            Vector2::new(170.0, 8.0),
+            &zoning,
+            &graph,
+            &network.roadbed,
+            &terrain,
+            &catalog,
+            &tuning,
+        )
+        .expect("the sidewalk side builds");
+}
+
 #[test]
 fn explicit_placement_survives_transform_rebuild_on_both_road_sides() {
     let config = WorldConfig::default();

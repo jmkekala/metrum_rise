@@ -156,7 +156,7 @@ impl BuildingAllocator {
                         availability.unusable_lots += 1;
                         return candidates;
                     };
-                    if !graph.takes_buildings(edge_idx)
+                    if !graph.takes_buildings(edge_idx, parcel.side())
                         || edge.physical_length < 0.1
                         || edge.physical_geometry.len() < 2
                     {
@@ -510,7 +510,8 @@ impl BuildingAllocator {
         let edge = graph.edge(edge_idx);
         let side_offset_m = frontage_side_offset_m(edge, parcel.side());
         let zone_cell_m = zoning.config.zone_cell_m;
-        if parcel.occupied_building().is_some() || !graph.takes_buildings(edge_idx) {
+        if parcel.occupied_building().is_some() || !graph.takes_buildings(edge_idx, parcel.side())
+        {
             return None;
         }
 
@@ -659,13 +660,19 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         zoning: &ZoningSystem,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+        // The sidewalk's refusal comes first: a shoulder's own site problems would only hide it.
+        let sidewalk = Self::validate_explicit_frontage_side(&placement, graph);
         // Keep a resolved invalid pose, but avoid apron work when cheap overlap checks reject it.
         let (preferred_height, connections) = self
             .resolve_site_support_connections(&placement, graph, road_surface)
-            .map_err(explicit_rejection_from_site_rejection)?;
+            .map_err(|rejection| {
+                sidewalk
+                    .err()
+                    .unwrap_or_else(|| explicit_rejection_from_site_rejection(rejection))
+            })?;
         placement.support_height_m = preferred_height;
-        let rejection = self
-            .validate_explicit_zoning_reservation(&placement, zoning)
+        let rejection = sidewalk
+            .and_then(|()| self.validate_explicit_zoning_reservation(&placement, zoning))
             .and_then(|()| self.validate_explicit_site_overlap(&placement))
             .err()
             .or_else(|| {
@@ -788,6 +795,7 @@ impl BuildingAllocator {
         tuning: &RuntimeEconomyTuning,
         zoning: &ZoningSystem,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
+        Self::validate_explicit_frontage_side(&placement, graph)?;
         self.validate_explicit_zoning_reservation(&placement, zoning)?;
         self.validate_explicit_site_overlap(&placement)?;
         self.validate_explicit_site_road_overlap(&placement, graph)?;
@@ -806,6 +814,19 @@ impl BuildingAllocator {
             self.buildings[building_idx].support_height_m,
         );
         Ok(building_idx)
+    }
+
+    // Every placed building stands on a side with a sidewalk (`ROAD-109`), through preview and
+    // commit alike. O(1).
+    fn validate_explicit_frontage_side(
+        placement: &ResolvedPlacement,
+        graph: &RegionGraph,
+    ) -> Result<(), ExplicitServicePlacementRejection> {
+        if graph.edge(placement.edge_idx).walked_on_side(placement.side) {
+            Ok(())
+        } else {
+            Err(ExplicitServicePlacementRejection::NoSidewalk)
+        }
     }
 
     fn validate_explicit_zoning_reservation(
@@ -1020,7 +1041,8 @@ impl BuildingAllocator {
             let Some(edge) = graph.get_edge(edge_idx) else {
                 continue;
             };
-            if !graph.takes_buildings(edge_idx)
+            if edge.no_building_spawn
+                || !graph.fronts_ground(edge_idx)
                 || edge.physical_length < width_m.max(1.0)
                 || edge.physical_geometry.len() < 2
             {

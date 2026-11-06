@@ -44,11 +44,11 @@ pub(super) fn column_is_covered(
         |id| {
             let edge = graph.edge(id);
             let plain = supplier.pocket.is_none() && edge.pocket.is_none();
-            if edge.no_building_spawn
-                || edge.primary_type != TransitType::Road
+            if edge.primary_type != TransitType::Road
                 || !graph.fronts_ground(id)
                 || (plain && edge.width != supplier.width)
                 || edge.physical_geometry.len() < 2
+                || !edge.zones_side(side_towards(edge, normal))
             {
                 return;
             }
@@ -80,6 +80,19 @@ pub(super) fn column_is_covered(
         }
     }
     false
+}
+
+// The side of `edge`, in its own forward frame, that `normal` points to: a road continuing this
+// one may run the other way, so its left can be the supplier's right (`ROAD-109`). O(1).
+fn side_towards(edge: &Edge, normal: DVec2) -> i8 {
+    let point = |point: &Vector3| DVec2::new(f64::from(point.x), f64::from(point.z));
+    let geometry = &edge.physical_geometry;
+    let forward = point(&geometry[geometry.len() - 1]) - point(&geometry[0]);
+    if DVec2::new(forward.y, -forward.x).dot(normal) > 0.0 {
+        1
+    } else {
+        -1
+    }
 }
 
 /// Reuses nearby reserved frames when the current curb lies on their exact lattice boundary.
@@ -246,7 +259,7 @@ fn frame_candidates<M: CellMaps>(
                     }
                     let mut eligible_end = f64::from(column);
                     for interval in &intervals[begin..end] {
-                        if graph.edge(interval.edge).no_building_spawn
+                        if !graph.edge(interval.edge).zones_side(interval.side)
                             || interval.max <= eligible_end
                         {
                             continue;
@@ -293,7 +306,7 @@ fn frame_candidates<M: CellMaps>(
                             // A no-build road can supply metadata for retained lot claims until
                             // allocator policy processes them. It grants no new paintable frontage.
                             let claimed = store.lot(key).is_some_and(|lot| lot != 0);
-                            if graph.edge(supplier.edge).no_building_spawn && !claimed {
+                            if !graph.edge(supplier.edge).zones_side(supplier.side) && !claimed {
                                 continue;
                             }
                             if !full_eligible_column

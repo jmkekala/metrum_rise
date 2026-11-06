@@ -449,6 +449,50 @@ fn external_reservations_remove_whole_cells_and_no_build_roads_generate_none() {
     assert!(keys(&store, extent()).is_empty());
 }
 
+// `ROAD-109`: a road side without a sidewalk makes no cells; the left of a road running +x is -z.
+#[test]
+fn a_road_side_without_a_sidewalk_makes_no_cells() {
+    use crate::simulation::network::graph::SidewalkSides;
+    for (sides, left, right) in [
+        (SidewalkSides::BOTH, true, true),
+        (SidewalkSides::LEFT, true, false),
+        (SidewalkSides::RIGHT, false, true),
+        (SidewalkSides::NONE, false, false),
+    ] {
+        let mut graph = RegionGraph::new();
+        let a = node(&mut graph, 0.0, 0.0);
+        let b = node(&mut graph, 120.0, 0.0);
+        let edge = road(&mut graph, a, b);
+        graph.edge_mut(edge).set_sidewalks(sides);
+        let mut store = CellStore::default();
+        store.generate_in_bounds(&graph, &WorldConfig::default(), extent(), |_| false);
+        assert_eq!(store.pick(DVec2::new(35.0, -10.0)).is_some(), left, "{sides:?}");
+        assert_eq!(store.pick(DVec2::new(35.0, 10.0)).is_some(), right, "{sides:?}");
+    }
+}
+
+// `ROAD-109`: a cell across a node needs a sidewalk on both roads, each read in its own frame.
+// The second road is drawn back towards the first, so its left is the first road's right.
+#[test]
+fn a_cell_across_a_node_reads_the_continuing_roads_own_side() {
+    use crate::simulation::network::graph::SidewalkSides;
+    let mut graph = RegionGraph::new();
+    let a = node(&mut graph, 0.0, 0.0);
+    let b = node(&mut graph, 115.0, 0.0);
+    let c = node(&mut graph, 240.0, 0.0);
+    road(&mut graph, a, b);
+    let continuing = road(&mut graph, c, b);
+    graph.edge_mut(continuing).set_sidewalks(SidewalkSides::LEFT);
+    let mut store = CellStore::default();
+    store.generate_in_bounds(&graph, &WorldConfig::default(), extent(), |_| false);
+    assert!(store.pick(DVec2::new(115.0, 10.0)).is_some(), "both roads walk +z");
+    assert!(store.pick(DVec2::new(105.0, -10.0)).is_some(), "the first road walks -z");
+    assert!(
+        store.pick(DVec2::new(115.0, -10.0)).is_none(),
+        "the second road has no sidewalk on -z"
+    );
+}
+
 #[test]
 fn manual_parcels_and_cell_paint_reserve_land_in_both_directions() {
     let mut graph = RegionGraph::new();

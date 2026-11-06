@@ -3173,7 +3173,7 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
             &graph
         ),
         0.0,
-        "car-only frontage cannot serve a family without a car"
+        "a door no walk reaches cannot serve a family without a car"
     );
     let builds = customers.index_builds_for_test();
     families[0].shopping_has_car = true;
@@ -3225,11 +3225,13 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
     // A proposed forward-only door is reachable outward along the shared frontage,
     // but cannot return to the home's forward-only door through the dead-end road.
     graph.edge_mut(0).bkw_lanes = 0;
-    graph.edge_mut(0).allowed_types = TransitFlags::CAR;
-    graph.edge_mut(0).sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    for entrance in &mut allocator.entrances {
+        entrance.foot_lane_fwd = usize::MAX;
+        entrance.foot_lane_bkw = usize::MAX;
+    }
     customers.reset(
         &families, &allocator, &catalog, &tuning, &policy, 0.0, &network, &graph,
     );
@@ -3263,13 +3265,11 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
     );
 }
 
-// `ROAD-107` (D1 per side): a 1 + 1 road with its only sidewalk on the left (side 1), a house on
-// each side. The left house fronts the sidewalk: its door has foot lanes and a walking resident
-// of the left home reaches it. The right house fronts the shoulder: car lanes only, a car-only
-// destination as on a road without sidewalks, so the planner refuses a walk there and a resident
-// with a car reaches it.
+// `ROAD-107` (D1 per side): a 1 + 1 road with its only sidewalk on the left (side 1). The houses
+// front the sidewalk: their doors have foot lanes and a walking resident of one reaches the
+// other. The right side takes no buildings (`ROAD-109`).
 #[test]
-fn a_one_sided_road_is_walked_to_on_its_sidewalk_side_only() {
+fn a_one_sided_road_is_walked_to_on_its_sidewalk_side() {
     use crate::simulation::economy::agents::tick::estimate_building_origin_trip_seconds;
     use crate::simulation::network::graph::SidewalkSides;
     let (mut graph, mut network) = simple_work_graph();
@@ -3288,12 +3288,9 @@ fn a_one_sided_road_is_walked_to_on_its_sidewalk_side_only() {
     };
     allocator.buildings.push(house(0.0, 1));
     allocator.buildings.push(house(100.0, 1));
-    allocator.buildings.push(house(100.0, -1));
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
-    for (index, left) in [(0, true), (1, true), (2, false)] {
-        let entrance = &allocator.entrances[index];
-        let foot = entrance.foot_lane_fwd != usize::MAX && entrance.foot_lane_bkw != usize::MAX;
-        assert_eq!(foot, left, "house {index}: foot lanes on the sidewalk side only");
+    for entrance in &allocator.entrances {
+        assert!(entrance.foot_lane_fwd != usize::MAX && entrance.foot_lane_bkw != usize::MAX);
         assert!(entrance.car_lane_fwd != usize::MAX || entrance.car_lane_bkw != usize::MAX);
     }
     let trip = |target: usize, has_car: bool| {
@@ -3309,8 +3306,6 @@ fn a_one_sided_road_is_walked_to_on_its_sidewalk_side_only() {
         )
     };
     assert!(trip(1, false).is_some(), "a walk along the sidewalk");
-    assert_eq!(trip(2, false), None, "no walk to the shoulder side");
-    assert!(trip(2, true).is_some(), "a car reaches the shoulder side");
 }
 
 #[test]

@@ -202,6 +202,16 @@ impl SidewalkSides {
         u8::from(self.left()) + u8::from(self.right())
     }
 
+    /// The sides this has that `after` does not: the sidewalks a change to `after` removes.
+    pub fn lost_in(self, after: Self) -> Self {
+        Self(self.0 & !after.0)
+    }
+
+    /// Whether the side a building calls `side` (1 left, -1 right) has one.
+    pub fn on_building_side(self, side: i8) -> bool {
+        self.on_lateral(side < 0)
+    }
+
     /// Whether this has a sidewalk on a side `before` does not: that side's band widens from a
     /// shoulder to a sidewalk, even when the road's larger side stays as it was.
     pub fn adds_to(self, before: Self) -> bool {

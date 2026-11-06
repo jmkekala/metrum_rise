@@ -431,18 +431,14 @@ fn lanes_of(core: &SimCore, edge: usize, kind: LaneType) -> Vec<usize> {
 
 // `ROAD-101` (D3): a road type without sidewalks at 80 km/h given in place. The sidewalk lanes go
 // with `FOOT`; the walkers on them stay where they stand (laneless on their road, `TRAFFIC-19`'s
-// case, or on a sidewalk of their own kind nearby), none moved or lost; the house fronting the
-// road gets a car-only entrance; the speed and its routing cost are written; undo restores the
-// lanes, `FOOT`, the speed, the cost and the walking entrance.
+// case, or on a sidewalk of their own kind nearby), none moved or lost; the speed and its routing
+// cost are written; undo restores the lanes, `FOOT`, the speed and the cost.
 #[test]
 fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
     use crate::nodes::sim::render::lane_pose::sample_lane_pose;
     use crate::simulation::economy::agents::MODE_WALK;
     use crate::simulation::network::types::TransitFlags;
     let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
-    let (house, _) = house_fronting(&mut core, side, (12.0, 60.0));
-    let entrance = &core.allocator.entrances[house];
-    assert_ne!(entrance.foot_lane_fwd.min(entrance.foot_lane_bkw), usize::MAX);
     let sidewalks = lanes_of(&core, side, LaneType::Foot);
     let sidewalk_lanes = sidewalks.len();
     assert!(sidewalk_lanes >= 2, "a lane each way on each sidewalk");
@@ -493,10 +489,6 @@ fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
             "walker {walker} on lane {lane}"
         );
     }
-    let entrance = &core.allocator.entrances[house];
-    assert_eq!((entrance.foot_lane_fwd, entrance.foot_lane_bkw), (usize::MAX, usize::MAX));
-    assert_eq!(entrance.curb_pos, entrance.door_pos, "a car-only entrance");
-    assert_ne!(entrance.car_lane_fwd.min(entrance.car_lane_bkw), usize::MAX);
 
     assert!(core.undo_action_internal());
     let road = core.region_graph.edge(side);
@@ -504,15 +496,12 @@ fn sidewalks_removed_in_place_keep_their_walkers_and_undo() {
     assert_eq!(road.speed_limit.to_bits(), before.speed_limit.to_bits());
     assert_eq!(road.base_cost.to_bits(), before.base_cost.to_bits());
     assert_eq!(lanes_of(&core, side, LaneType::Foot).len(), sidewalk_lanes);
-    let entrance = &core.allocator.entrances[house];
-    assert_ne!(entrance.foot_lane_fwd.min(entrance.foot_lane_bkw), usize::MAX);
 }
 
 // `ROAD-107`: one side's sidewalk removed in place and added back. The removed side's foot lanes
 // go and its walkers reattach across the road to the kept sidewalk's lanes, none lost; the kept
-// side's lanes and walkers stay as they are. The house on the
-// removed side gets a car-only entrance, the one on the kept side keeps walking. A lane edit that
-// passes the road's own attributes keeps the one side; undo restores the mask and both entrances.
+// side's lanes and walkers stay as they are, and so does the house there. A lane edit that
+// passes the road's own attributes keeps the one side; undo restores the mask.
 #[test]
 fn one_sidewalk_removed_in_place_keeps_the_other_and_undoes() {
     use crate::nodes::sim::render::lane_pose::sample_lane_pose;
@@ -520,11 +509,9 @@ fn one_sidewalk_removed_in_place_keeps_the_other_and_undoes() {
     use crate::simulation::network::types::TransitFlags;
     let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
     let (east, _) = house_fronting(&mut core, side, (12.0, 60.0));
-    let (west, _) = house_fronting(&mut core, side, (-12.0, 60.0));
     // The kept side is the one the east house's door is on (the side road runs along +z, so
     // which lateral that is comes from the building's own side: 1 left, -1 right).
     let east_side = core.allocator.buildings[east].side;
-    assert_eq!(core.allocator.buildings[west].side, -east_side);
     let (kept, kept_lane, removed_lane) = if east_side > 0 {
         (SidewalkSides::LEFT, 100, -100)
     } else {
@@ -541,7 +528,7 @@ fn one_sidewalk_removed_in_place_keeps_the_other_and_undoes() {
         let entrance = &core.allocator.entrances[house];
         entrance.foot_lane_fwd.min(entrance.foot_lane_bkw) != usize::MAX
     };
-    assert!(walks(&core, east) && walks(&core, west));
+    assert!(walks(&core, east));
     let (start, end) = {
         let road = core.region_graph.edge(side);
         (road.start_node, road.end_node)
@@ -588,10 +575,7 @@ fn one_sidewalk_removed_in_place_keeps_the_other_and_undoes() {
             assert_eq!(a.pos_x[walker].to_bits(), position.0, "walker {walker} kept its place");
         }
     }
-    assert!(walks(&core, east) && !walks(&core, west), "only the kept side walks");
-    let entrance = &core.allocator.entrances[west];
-    assert_eq!(entrance.curb_pos, entrance.door_pos, "a car-only entrance");
-    assert_ne!(entrance.car_lane_fwd.min(entrance.car_lane_bkw), usize::MAX);
+    assert!(walks(&core, east), "the kept side's door still walks");
 
     // A lane edit with the road's own attributes must not turn it two-sided.
     let own = RoadAttributes::of_edge(core.region_graph.edge(side));
@@ -606,14 +590,124 @@ fn one_sidewalk_removed_in_place_keeps_the_other_and_undoes() {
     assert_eq!(road.sidewalk_sides(), SidewalkSides::BOTH);
     assert_eq!(road.allowed_types, two_sided.allowed_types);
     assert_eq!(sidewalk_lanes(&core, removed_lane).len(), 2, "undo brings the lanes back");
-    assert!(walks(&core, east) && walks(&core, west));
+    assert!(walks(&core, east));
 
     // Added back through an edit: the side and its entrance return.
     assert_eq!(edit(&mut core, side, (1, 1, None), one_side), "");
     assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::DEFAULT), "");
     assert_eq!(core.region_graph.edge(side).sidewalk_sides(), SidewalkSides::BOTH);
     assert_eq!(sidewalk_lanes(&core, removed_lane).len(), 2);
-    assert!(walks(&core, east) && walks(&core, west));
+    assert!(walks(&core, east));
+}
+
+// The side code of `building`'s door, and the other one, as sidewalk masks.
+fn door_side_and_other(core: &SimCore, building: usize) -> (SidewalkSides, SidewalkSides) {
+    if core.allocator.buildings[building].side > 0 {
+        (SidewalkSides::LEFT, SidewalkSides::RIGHT)
+    } else {
+        (SidewalkSides::RIGHT, SidewalkSides::LEFT)
+    }
+}
+
+// `ROAD-109`: a sidewalk stays while a building's door is on its side, by any in-place edit: one
+// side off, both off, a road type without sidewalks (zoning off included: the door is the rule,
+// not the demolition). The side without a door comes off freely; a lane edit keeps its sides.
+#[test]
+fn a_sidewalk_under_a_door_is_refused_and_one_without_is_free() {
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let (house, _) = house_fronting(&mut core, side, (12.0, 60.0));
+    let (door, other) = door_side_and_other(&core, house);
+    let refused = "sidewalk_under_door";
+    for attributes in [
+        RoadAttributes::new(50, other, true),
+        RoadAttributes::new(50, SidewalkSides::NONE, true),
+        RoadAttributes::new(80, SidewalkSides::NONE, false),
+    ] {
+        assert_eq!(edit(&mut core, side, (1, 1, None), attributes), refused);
+        assert_eq!(core.region_graph.edge(side).sidewalk_sides(), SidewalkSides::BOTH);
+        assert_eq!(core.allocator.buildings.len(), 1, "nothing is demolished");
+    }
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::new(50, door, true)), "");
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), door);
+    assert_eq!(edit_lanes(&mut core, side, 1, 0), "", "the road's own side is no removal");
+    assert_eq!(
+        edit(&mut core, side, (1, 0, None), RoadAttributes::new(50, other, true)),
+        refused,
+        "swapping the sides takes the door's away"
+    );
+    // The building gone, the same edit goes through.
+    assert!(core.bulldoze_building(house));
+    core.run_building_allocator_maintenance_internal();
+    assert_eq!(edit(&mut core, side, (1, 0, None), RoadAttributes::new(50, other, true)), "");
+}
+
+// `ROAD-109`: an undo is an edit too. A sidewalk added, a building placed on it: the undo that
+// would take the sidewalk back is refused while the door stands, and goes through after it.
+#[test]
+fn undo_keeps_a_sidewalk_a_door_has_come_to() {
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let (probe, _) = house_fronting(&mut core, side, (12.0, 60.0));
+    let (door, other) = door_side_and_other(&core, probe);
+    assert!(core.bulldoze_building(probe));
+    core.run_building_allocator_maintenance_internal();
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::new(50, other, true)), "");
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::DEFAULT), "");
+    let (house, _) = house_fronting(&mut core, side, (12.0, 72.0));
+    let depth = core.undo_stack.len();
+    assert!(!core.undo_action_internal(), "the door keeps its sidewalk");
+    assert_eq!(core.undo_stack.len(), depth, "the record stays");
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), SidewalkSides::BOTH);
+    assert!(core.bulldoze_building(house));
+    core.run_building_allocator_maintenance_internal();
+    // The bulldoze's own record would bring the door back.
+    core.undo_stack.pop_back();
+    assert!(core.undo_action_internal());
+    assert_eq!(core.region_graph.edge(side).sidewalk_sides(), other);
+    assert_ne!(other, door);
+}
+
+// `ROAD-109`: a lost sidewalk takes the empty lots and the cells of its side with it in the same
+// change, leaves the other side's alone and touches no other road's; undo restores the lot.
+#[test]
+fn a_lost_sidewalks_lots_and_cells_go_with_it_and_undo_restores_them() {
+    use crate::simulation::zoning::cells::CellBounds;
+    use glam::DVec2;
+    let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
+    let profile = core
+        .zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    let lot = |core: &mut SimCore, x: f32| {
+        core.zoning
+            .place_or_rezone_default_parcel_at(x, 60.0, profile, &core.region_graph)
+            .unwrap()
+            .raw()
+    };
+    let (east, west) = (lot(&mut core, 15.0), lot(&mut core, -15.0));
+    let east_side = core.zoning.parcel_by_raw_id(east).unwrap().side();
+    let kept = if east_side > 0 { SidewalkSides::LEFT } else { SidewalkSides::RIGHT };
+    let bounds = CellBounds {
+        min: DVec2::new(-200.0, -200.0),
+        max: DVec2::new(200.0, 200.0),
+    };
+    let cells = |core: &mut SimCore| {
+        core.zoning.generate_cells(&core.region_graph, bounds, |_| false);
+        // On the T's side road, past both lots, and along the main road.
+        [(15.0, 85.0), (-15.0, 85.0), (60.0, 15.0), (-60.0, 15.0), (60.0, -15.0)]
+            .map(|(x, z)| core.zoning.cells.pick(DVec2::new(x, z)).is_some())
+    };
+    let before = cells(&mut core);
+    assert_eq!(before, [true; 5]);
+
+    assert_eq!(edit(&mut core, side, (1, 1, None), RoadAttributes::new(50, kept, true)), "");
+    assert!(core.zoning.parcel_by_raw_id(east).is_some(), "the kept side's lot stays");
+    assert!(core.zoning.parcel_by_raw_id(west).is_none(), "the lost side's lot goes");
+    assert_eq!(cells(&mut core), [true, false, true, true, true]);
+
+    assert!(core.undo_action_internal());
+    assert!(core.zoning.parcel_by_raw_id(west).is_some(), "undo brings the lot back");
+    assert_eq!(cells(&mut core), before);
 }
 
 // `ROAD-101` (C): a speed change in place recomputes the road's routing cost, and the routing

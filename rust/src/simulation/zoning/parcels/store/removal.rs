@@ -3,11 +3,16 @@
 //! Road-local parcel removal and exact dense-storage inverse journals.
 
 use super::{ParcelStore, ZoningParcel, removed_with_road};
+use crate::simulation::network::graph::SidewalkSides;
 use rayon::prelude::*;
 
 impl ParcelStore {
     /// Captures removable attachments in original storage order without a city-wide scan.
-    pub(crate) fn capture_attached_to_edge(&self, edge_idx: usize) -> Vec<(usize, ZoningParcel)> {
+    pub(crate) fn capture_attached_to_edge(
+        &self,
+        edge_idx: usize,
+        sides: SidewalkSides,
+    ) -> Vec<(usize, ZoningParcel)> {
         let Some(ids) = self.edge_index.get(&edge_idx) else {
             return Vec::new();
         };
@@ -18,7 +23,8 @@ impl ParcelStore {
                 .filter_map(|id| {
                     let index = self.id_to_index[id];
                     let parcel = &self.parcels[index];
-                    removed_with_road(parcel, edge_idx).then(|| (index, parcel.clone()))
+                    (sides.on_building_side(parcel.side()) && removed_with_road(parcel, edge_idx))
+                        .then(|| (index, parcel.clone()))
                 })
                 .collect()
         });
@@ -30,6 +36,7 @@ impl ParcelStore {
     pub(crate) fn remove_attached_to_edge(
         &mut self,
         edge_idx: usize,
+        sides: SidewalkSides,
         mut removed: impl FnMut(&ZoningParcel),
     ) -> usize {
         let Some(ids) = self.edge_index.get(&edge_idx) else {
@@ -41,7 +48,9 @@ impl ParcelStore {
                 .with_min_len(256)
                 .filter_map(|id| {
                     let index = self.id_to_index[id];
-                    removed_with_road(&self.parcels[index], edge_idx).then_some(index)
+                    let parcel = &self.parcels[index];
+                    (sides.on_building_side(parcel.side()) && removed_with_road(parcel, edge_idx))
+                        .then_some(index)
                 })
                 .collect()
         });

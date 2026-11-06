@@ -99,7 +99,8 @@ pub struct Edge {
     pub deleted: bool,
     /// When `true` the building allocator will not place buildings along this edge.
     /// Set by a road type with zoning off (`ROAD-101`; never from the speed) and
-    /// player-toggleable in the road inspector.
+    /// player-toggleable in the road inspector. A side without a sidewalk takes no buildings
+    /// whatever this says ([`Edge::zones_side`], `ROAD-109`).
     pub no_building_spawn: bool,
     /// When `true` the road has no street lights (`ROAD-59`): set by a road type with street
     /// lights off (`ROAD-101`). Visual only: no simulation system reads it.
@@ -126,6 +127,24 @@ pub struct Edge {
 const _: () = assert!(std::mem::size_of::<Edge>() == 120);
 
 impl Edge {
+    /// Whether a door on `side` (1 left, -1 right) is reached on foot (`ROAD-109`): that side of
+    /// a road has a sidewalk, and a walkway is its own path on both. `O(1)`.
+    pub(crate) fn walked_on_side(&self, side: i8) -> bool {
+        self.primary_type == TransitType::Foot || self.sidewalk_sides().on_building_side(side)
+    }
+
+    /// Whether `side` (1 left, -1 right) of this edge zones (`ROAD-109`): it is walked
+    /// ([`Self::walked_on_side`]) and the road is not closed to buildings. Cells, lots and
+    /// [`RegionGraph::takes_buildings`] all read this. `O(1)`.
+    pub(crate) fn zones_side(&self, side: i8) -> bool {
+        !self.no_building_spawn && self.walked_on_side(side)
+    }
+
+    /// Whether either side zones ([`Self::zones_side`]). `O(1)`.
+    pub(crate) fn zones_any_side(&self) -> bool {
+        self.zones_side(1) || self.zones_side(-1)
+    }
+
     /// Returns permitted traversal modes in one direction of a live edge.
     /// Walking is bidirectional; every other mode requires a lane in that direction.
     #[inline]
@@ -230,6 +249,15 @@ pub(crate) struct RegionGraphUndoDelta {
 }
 
 impl RegionGraphUndoDelta {
+    /// The live roads this inverse keeps, each with the sidewalks it would give them back: what
+    /// an undo must check against the doors on them (`ROAD-109`). O(records).
+    pub(crate) fn restored_sidewalks(&self) -> impl Iterator<Item = (usize, SidewalkSides)> + '_ {
+        self.edges
+            .iter()
+            .filter(|(_, edge)| !edge.deleted)
+            .map(|(id, edge)| (*id, edge.sidewalk_sides()))
+    }
+
     /// Returns every topology ID whose pre-edit record is stored by this inverse.
     pub(crate) fn stored_topology_ids(&self) -> (HashSet<usize>, HashSet<u32>) {
         let edge_ids = self
@@ -301,11 +329,11 @@ impl RegionGraph {
             })
     }
 
-    /// Whether a building may front `edge_idx`: it fronts the ground ([`Self::fronts_ground`])
-    /// and the player has not closed it to buildings. The one rule lots, parcels, explicit
-    /// sites, attachment repair and road-side connections read.
-    pub fn takes_buildings(&self, edge_idx: usize) -> bool {
-        !self.edge(edge_idx).no_building_spawn && self.fronts_ground(edge_idx)
+    /// Whether a building may stand on `side` of `edge_idx` (`ROAD-109`): that side zones
+    /// ([`Edge::zones_side`]) and the road fronts the ground ([`Self::fronts_ground`]). The one
+    /// rule lots, parcels, explicit sites, attachment repair and road-side connections read.
+    pub fn takes_buildings(&self, edge_idx: usize, side: i8) -> bool {
+        self.edge(edge_idx).zones_side(side) && self.fronts_ground(edge_idx)
     }
 
     /// Creates a new, empty road graph.

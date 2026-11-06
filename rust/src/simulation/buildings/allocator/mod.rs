@@ -113,6 +113,8 @@ pub(crate) enum ExplicitServicePlacementRejection {
     FieldProfileUnavailable,
     /// No road frontage near the requested point can accept the building footprint.
     RoadFrontageUnavailable,
+    /// The nearest road frontage is a side without a sidewalk (`ROAD-109`).
+    NoSidewalk,
     /// A driveway anchor could not resolve an adjacent road surface height.
     DrivewayRoadSurfaceMissing,
     /// Multiple driveway anchors required incompatible flat-site heights.
@@ -371,10 +373,6 @@ pub(crate) struct BuildingEntrance {
     pub car_lane_fwd: usize,
     pub car_lane_bkw: usize,
     pub flags: u8,
-    /// The door of the building whose own lot a parking bay's access lies on (`PARK-05`, D4):
-    /// that door and the lot's bays are joined by a walk across the lot, foot lane or none.
-    /// `None` for a door or a kerbside bay.
-    pub lot_door: Option<Vector2>,
 }
 
 impl Default for BuildingEntrance {
@@ -391,7 +389,6 @@ impl Default for BuildingEntrance {
             car_lane_fwd: usize::MAX,
             car_lane_bkw: usize::MAX,
             flags: 0,
-            lot_door: None,
         }
     }
 }

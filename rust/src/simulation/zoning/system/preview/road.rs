@@ -60,9 +60,14 @@ impl ZoningSystem {
         let anchors =
             self.parcels
                 .attached_to_road_span(edge_idx, edge, [0.0, edge.physical_length]);
+        // Only the sides that zone fill (`ROAD-109`).
+        let sides: Vec<i8> = [1, -1]
+            .into_iter()
+            .filter(|&side| edge.zones_side(side))
+            .collect();
         let spans = fill_spans(
             &anchors,
-            &[1, -1],
+            &sides,
             edge.physical_length,
             frontage_m,
             gap_m,
@@ -253,7 +258,8 @@ fn buildable_edge(
         .edges()
         .get(edge_idx)
         .ok_or(ParcelPlacementError::NoRoadAttachment)?;
-    if !graph.takes_buildings(edge_idx)
+    if !edge.zones_any_side()
+        || !graph.fronts_ground(edge_idx)
         || edge.primary_type != crate::simulation::network::types::TransitType::Road
         || edge.physical_geometry.len() < 2
         || !edge.physical_length.is_finite()

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## PARK-01 bridge regression: shared mesh equivalence, lot supply, immutable chunks and towing.
+## PARK-01 bridge regression: shared mesh equivalence, lot supply, immutable chunks and towing;
+## `ROAD-109`: a door keeps its sidewalk and a side without one takes no building, with the reason.
 ## METRUM_PARKING_AGENT_CONTROL optionally points to the pre-extraction agents.gd source.
 extends SceneTree
 
@@ -112,6 +113,14 @@ func _run() -> void:
 		await process_frame
 	info = sim.get_parking_info()
 	_expect(info["vehicles"] == filled and info["stored"] == filled, "restored supply waits for driven arrivals; debug fleet has no external home")
+	# `ROAD-109`: the lot's door keeps its sidewalk, and nothing is placed where there is none.
+	var road: int = sim.get_hovered_edge(0.0, 0.0)
+	var under_door: Dictionary = sim.preview_edge_cross_section(road, 1, 1, 0, 0.0, 0, 50, 2, true, true)
+	_expect(under_door.get("invalid_reason", "") == "sidewalk_under_door", "the door keeps its sidewalk: %s" % under_door)
+	_expect(sim.set_edge_cross_section(road, 1, 1, 0, 0.0, 0, 50, 1, true, true), "the far sidewalk comes off")
+	var shoulder: Dictionary = sim.get_service_building_placement_preview("parking:building.parking.small_lot", 0.0, 30.0)
+	_expect(not shoulder.get("valid", true) and String(shoulder.get("error", "")).contains("sidewalk"), "the preview says why: %s" % shoulder)
+	_expect(sim.place_service_building("parking:building.parking.small_lot", 0.0, 30.0).contains("sidewalk"), "the tool refuses the site")
 	sim.queue_free()
 	await process_frame
 	quit(0 if _failures == 0 else 1)

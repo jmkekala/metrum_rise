@@ -15,11 +15,16 @@
 //! an undo does. `O(closure pieces)` for the check, plus a parallel `O(B / P)` count when zoning
 //! goes off; the commit tail is `O(local lanes + invalidated)` plus the undo's parallel
 //! `O(A / P + B / P)` membership passes over agents and buildings, and when zoning goes off the
-//! "No buildings" checkbox's own maintenance pass.
+//! "No buildings" checkbox's own maintenance pass. A sidewalk stays while a building's door is on
+//! its side (`ROAD-109`): `O(segments + chunks + candidates log candidates)` through the chunk
+//! index, only when the edit removes a side; the side's empty lots go with it, in the same undo.
 
 use super::core::{RoadRejection, SimCore};
 use crate::debug_log;
-use crate::simulation::network::graph::{Edge, RegionGraphUndoDelta, RoadMedian, RoadParking};
+use crate::simulation::buildings::allocator::Building;
+use crate::simulation::network::graph::{
+    Edge, RegionGraphUndoDelta, RoadMedian, RoadParking, SidewalkSides,
+};
 use crate::simulation::network::road_types::cost::{BUILD_COST_PER_M, road_weight};
 use crate::simulation::network::road_types::{RoadAttributes, RoadCrossSection};
 use crate::simulation::network::roadbed::{visual_roadbed_half_width_m, widest_side_band_width_m};
@@ -91,6 +96,11 @@ impl SimCore {
             };
         let edge = edge_id as usize;
         let zoning_off = !self.region_graph.edge(edge).no_building_spawn && !attributes.zoning;
+        let lost = self
+            .region_graph
+            .edge(edge)
+            .sidewalk_sides()
+            .lost_in(attributes.sidewalks);
         let incident = self.live_edges_at(&nodes, edge);
         let changed = self.apply_edge_cross_section(
             edge,
@@ -121,6 +131,13 @@ impl SimCore {
             parcels = Some(self.zoning.capture_parcel_removal_undo(edge))
                 .filter(|parcels| !parcels.is_empty());
             self.zoning.remove_parcels_attached_to_edge(edge);
+            self.allocator.dirty = true;
+        } else if lost.any() {
+            // A side that lost its sidewalk zones no more (`ROAD-109`): no door is left on it,
+            // so what remains there are empty lots. The undo record restores them.
+            parcels = Some(self.zoning.capture_parcel_removal_undo_on_sides(edge, lost))
+                .filter(|parcels| !parcels.is_empty());
+            self.zoning.remove_parcels_attached_to_edge_on_sides(edge, lost);
             self.allocator.dirty = true;
         }
         self.push_network_undo_delta(checkpoint, parcels);
@@ -210,6 +227,9 @@ impl SimCore {
                 ),
             ));
         }
+        if let Some(rejection) = self.door_on_lost_sidewalk(edge, attributes.sidewalks) {
+            return Err(rejection);
+        }
         // The roadbed's larger side, which a tunnel's bore and the corridor checks reach to both
         // sides of it: a sidewalk added on a road's shoulder side leaves that unchanged.
         let widens = Self::roadbed_half_width_m(current, fwd, bkw, median, parking, attributes)
@@ -283,7 +303,7 @@ impl SimCore {
     ) -> CrossSectionVerdict {
         let current = self.region_graph.edge(edge);
         let buildings_removed = if !current.no_building_spawn && !attributes.zoning {
-            self.buildings_fronting(edge)
+            self.buildings_fronting(edge, SidewalkSides::BOTH)
         } else {
             0
         };
@@ -310,13 +330,38 @@ impl SimCore {
         }
     }
 
-    // The buildings whose road is `edge`: those among the buildings of the 512 m chunks within
-    // its reach (`attachment_repair_candidates`, which hold every building fronting it, as the
-    // split's frontage move relies on), or a parallel count over the city while the chunk index
-    // is stale. Test builds check the count against the whole city's.
+    /// Why road `edge` cannot change to the sidewalks `after` (`ROAD-109`): a building's door is
+    /// on a side that would lose its sidewalk. `None` when no side goes, or no door is on it.
+    /// `O(1)` without a lost side, else as [`Self::buildings_fronting`].
+    pub(super) fn door_on_lost_sidewalk(
+        &self,
+        edge: usize,
+        after: SidewalkSides,
+    ) -> Option<RoadRejection> {
+        let lost = self.region_graph.edge(edge).sidewalk_sides().lost_in(after);
+        if !lost.any() {
+            return None;
+        }
+        let doors = self.buildings_fronting(edge, lost);
+        (doors > 0).then(|| {
+            RoadRejection::new(
+                "sidewalk_under_door",
+                format!("{doors} building door(s) on the sidewalk edge {edge} would lose"),
+            )
+        })
+    }
+
+    // The buildings whose road is `edge` on one of `sides` (`SidewalkSides::BOTH` for all): those
+    // among the buildings of the 512 m chunks within its reach (`attachment_repair_candidates`,
+    // which hold every building fronting it, as the split's frontage move relies on), or a
+    // parallel count over the city while the chunk index is stale. Test builds check the count
+    // against the whole city's.
     // `O(segments + chunks + candidates log candidates)`; stale, `O(B / P)`.
-    fn buildings_fronting(&self, edge: usize) -> usize {
+    fn buildings_fronting(&self, edge: usize, sides: SidewalkSides) -> usize {
         let buildings = &self.allocator.buildings;
+        let fronts = |building: &Building| {
+            building.edge_idx == edge && sides.on_building_side(building.side)
+        };
         let Some(candidates) = self.allocator.attachment_repair_candidates(
             &self.region_graph,
             &HashSet::from([edge]),
@@ -325,19 +370,16 @@ impl SimCore {
         ) else {
             // In the shared pool: a Godot call runs outside every Rayon pool.
             return crate::thread_pools::install(|| {
-                buildings
-                    .par_iter()
-                    .filter(|building| building.edge_idx == edge)
-                    .count()
+                buildings.par_iter().filter(|building| fronts(building)).count()
             });
         };
         let count = candidates
             .into_iter()
-            .filter(|&idx| buildings[idx].edge_idx == edge)
+            .filter(|&idx| fronts(&buildings[idx]))
             .count();
         debug_assert_eq!(
             count,
-            buildings.iter().filter(|b| b.edge_idx == edge).count(),
+            buildings.iter().filter(|b| fronts(b)).count(),
             "the chunk candidates hold every building fronting edge {edge}"
         );
         count

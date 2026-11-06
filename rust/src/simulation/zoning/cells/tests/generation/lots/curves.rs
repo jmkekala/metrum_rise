@@ -283,6 +283,27 @@ fn erased_curved_sources_restore_after_empty_cache_eviction() {
     );
 }
 
+// `ROAD-109`: painted cells beside a curve keep their frontage only on the side with a sidewalk.
+#[test]
+fn a_painted_curve_keeps_frontage_on_its_sidewalk_side_only() {
+    let (mut graph, mut zoning) = curved_fixture();
+    graph
+        .edge_mut(0)
+        .set_sidewalks(crate::simulation::network::graph::SidewalkSides::LEFT);
+    zoning.generate_cells(&graph, curve_bounds(DVec2::ZERO), |_| false);
+    let [mut left, mut right] = [0, 0];
+    for (key, _) in zoning.cells.saved_cells() {
+        for link in zoning.cells.frontages(key) {
+            if link.side > 0 {
+                left += 1;
+            } else {
+                right += 1;
+            }
+        }
+    }
+    assert!(left > 0 && right == 0, "{left} left, {right} right");
+}
+
 #[test]
 fn changed_curved_geometry_cannot_inherit_old_source_frontage() {
     let (graph, mut zoning) = curved_fixture();

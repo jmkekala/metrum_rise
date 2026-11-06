@@ -341,7 +341,7 @@ fn assert_joins_mid_span(stroke: &[Vector3], case: &str) -> SimCore {
     assert_eq!(arms.len(), 3, "{case}");
     assert!(!graph.grounded_node(node), "{case}: a junction on a deck");
     assert!(
-        bridges.iter().all(|&edge| !graph.takes_buildings(edge)),
+        bridges.iter().all(|&edge| !graph.takes_buildings(edge, 1)),
         "{case}: a bridge takes no frontage"
     );
     let roadbed = &core.transit_network.roadbed;

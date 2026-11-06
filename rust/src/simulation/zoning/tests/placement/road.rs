@@ -599,6 +599,36 @@ fn road_zoning_hover_and_invalid_input_rejection() {
     assert_eq!(zoning.road_edge_at(-20.0, 0.0, &graph), None);
 }
 
+// `ROAD-109`: a parcel stands on a side with a sidewalk, by click and by road fill alike; the left
+// of a road running +x is -z.
+#[test]
+fn a_parcel_stands_on_a_side_with_a_sidewalk() {
+    use crate::simulation::network::graph::SidewalkSides;
+    let (mut graph, edge) = make_straight_road();
+    let mut zoning = make_zoning();
+    graph.edge_mut(edge).set_sidewalks(SidewalkSides::LEFT);
+    let filled = zoning
+        .preview_parcels_on_road(edge, 20.0, 20.0, 0.0, &graph)
+        .unwrap();
+    assert!(!filled.is_empty() && filled.iter().all(|parcel| parcel.side == 1));
+    assert_eq!(
+        zoning
+            .place_or_rezone_default_parcel_at(0.0, 15.0, 0, &graph)
+            .map(|_| ()),
+        Err(ParcelPlacementError::NoRoadAttachment)
+    );
+    assert!(
+        zoning
+            .place_or_rezone_default_parcel_at(0.0, -15.0, 0, &graph)
+            .is_ok()
+    );
+    graph.edge_mut(edge).set_sidewalks(SidewalkSides::NONE);
+    assert!(matches!(
+        zoning.preview_parcels_on_road(edge, 20.0, 20.0, 0.0, &graph),
+        Err(ParcelPlacementError::NoRoadAttachment)
+    ));
+}
+
 #[test]
 #[ignore = "release locality measurement for road zoning hover and uncached geometry"]
 fn benchmark_road_zoning_locality() {

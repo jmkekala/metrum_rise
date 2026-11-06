@@ -664,9 +664,11 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
                         .rebuild_entrance_cache(&market.graph, &market.network.lane_system);
                 }
                 "topology" => {
-                    market.graph.edge_mut(0).allowed_types = TransitFlags::CAR;
-                    market.graph.edge_mut(0).sidewalks =
-                        crate::simulation::network::graph::SidewalkSides::NONE;
+                    // Every door stands on the left: the right sidewalk's lanes go.
+                    market
+                        .graph
+                        .edge_mut(0)
+                        .set_sidewalks(crate::simulation::network::graph::SidewalkSides::LEFT);
                     market.graph.rebuild_adjacency_list();
                     market.network.lane_system.rebuild(&mut market.graph);
                     market.network.rebuild_cch_and_check(&market.graph);

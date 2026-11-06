@@ -109,7 +109,6 @@ impl ParkingSystem {
     /// No new spatial index or simulation-tick search is introduced.
     pub(crate) fn refresh_retired_access(
         &mut self,
-        allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
@@ -158,15 +157,6 @@ impl ParkingSystem {
             let side = self.places.access[p].side;
             let pos = self.places.position[p];
             let curb = self.places.path[p][0];
-            // Derived, as a save holds no access: a walk across the retired bay's lot stays one.
-            let lot_door = match self.places.source[p] {
-                PlaceSource::Building { building, .. } => allocator
-                    .building_handles
-                    .resolve(Handle::from_bits(building))
-                    .and_then(|host| allocator.entrances.get(host))
-                    .map(|door| door.door_pos),
-                PlaceSource::Kerb { .. } => None,
-            };
             self.places.access[p] = chosen.map_or_else(
                 || crate::simulation::buildings::allocator::BuildingEntrance {
                     side,
@@ -183,7 +173,6 @@ impl ParkingSystem {
                     )
                 },
             );
-            self.places.access[p].lot_door = lot_door;
         }
         dirty.clear();
         self.retired_dirty = dirty;

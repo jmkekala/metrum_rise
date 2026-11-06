@@ -523,6 +523,30 @@ fn no_build_road_cannot_spawn_from_stale_frontage_cache() {
     );
 }
 
+// `ROAD-109`: the paint on a side that lost its sidewalk keeps its cells and spawns nothing; the
+// fixture paints the road's right, as a closed road's test above does.
+#[test]
+fn a_lost_sidewalk_cannot_spawn_from_stale_frontage_cache() {
+    let (mut graph, mut zoning) = painted_road(0.0);
+    graph
+        .edge_mut(0)
+        .set_sidewalks(crate::simulation::network::graph::SidewalkSides::LEFT);
+    assert!(
+        zoning
+            .derive_cell_lots(&graph, extent(), &[size()], |_, _| false)
+            .created
+            .is_empty()
+    );
+    let paint = zoning.cells.saved_cells();
+    zoning.generate_cells(&graph, extent(), |_| false);
+    assert_eq!(zoning.cells.saved_cells(), paint);
+    assert!(
+        paint
+            .iter()
+            .all(|&(key, _)| zoning.cells.frontages(key).is_empty())
+    );
+}
+
 #[test]
 fn widened_source_road_rejects_stale_frontage_even_for_a_millimetre_overlap() {
     let (mut graph, mut zoning) = painted_road(0.35);

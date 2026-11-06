@@ -198,6 +198,9 @@ fn rezoning_fixture() -> (BuildingAllocator, ZoningSystem, RegionGraph) {
     let edge = graph.add_edge(Edge {
         start_node: start,
         end_node: end,
+        allowed_types: crate::simulation::network::types::TransitFlags::CAR
+            | crate::simulation::network::types::TransitFlags::FOOT,
+        sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
         width: 7.0,
         physical_length: 100.0,
         geometry: points.clone(),
@@ -337,6 +340,45 @@ fn cell_partial_erase_uses_redevelopment_grace_and_compatible_repaint_cancels_it
         zoning.parcels.get(lots[1].1).unwrap().occupied_building(),
         Some(0)
     );
+}
+
+// `ROAD-109`: a lot on a side without a sidewalk takes no building, and a building found there
+// (a save from before the rule) goes at the next maintenance, as on a road closed to buildings.
+#[test]
+fn a_side_without_a_sidewalk_takes_no_zoned_building() {
+    use crate::simulation::economy::demand::DemandSpawnAction;
+    use crate::simulation::network::graph::SidewalkSides;
+    let (mut allocator, mut zoning, mut graph) = rezoning_fixture();
+    let profile = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    let free = zoning
+        .place_or_rezone_default_parcel_at(50.0, -20.0, profile, &graph)
+        .unwrap();
+    let action = DemandSpawnAction {
+        parcel_id: free.raw(),
+        asset_id: allocator.buildings[0].asset_id.clone(),
+    };
+    assert!(!allocator.compatibility_expired(0, 1, &zoning, &graph));
+    // The lots stand on the left of a road running +x, at -z.
+    graph.edge_mut(0).set_sidewalks(SidewalkSides::RIGHT);
+    let network = TransitNetwork::new();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+    assert!(matches!(
+        allocator.execute_demand_spawn_action(
+            &action,
+            &mut zoning,
+            &graph,
+            &network.roadbed,
+            &flat_test_terrain(),
+            &catalog,
+            &tuning,
+        ),
+        Err(DemandSpawnPlacementRejection::SlotUnavailable)
+    ));
+    assert!(allocator.compatibility_expired(0, 1, &zoning, &graph));
 }
 
 #[test]

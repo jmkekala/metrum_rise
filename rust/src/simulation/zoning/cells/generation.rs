@@ -426,7 +426,7 @@ fn edge_candidates(
     alignment: Option<[GridFrame; 2]>,
 ) -> Vec<Candidate> {
     let edge = graph.edge(edge_id);
-    if edge.no_building_spawn
+    if !edge.zones_any_side()
         || edge.primary_type != TransitType::Road
         || !graph.fronts_ground(edge_id)
         || edge.physical_geometry.len() < 2
@@ -511,6 +511,10 @@ fn edge_candidates(
         guide.push(end);
         guide.dedup();
         for side in [-1.0, 1.0] {
+            // A side without a sidewalk makes no cells (`ROAD-109`).
+            if !edge.zones_side(side as i8) {
+                continue;
+            }
             let mut group = Vec::with_capacity(super::CELL_GROUP_COLUMNS * CELL_DEPTH);
             let normal = DVec2::new(tangent.y, -tangent.x) * side;
             let mut support = normal.dot(start).max(normal.dot(end)) + half_width;

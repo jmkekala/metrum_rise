@@ -15,6 +15,7 @@ mod validation;
 use super::profiles::{ZoningProfileRegistry, load_builtin_profile_registry};
 use super::{SharedParcelStore, ZoningParcel};
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::network::graph::SidewalkSides;
 use glam::DVec2;
 use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
@@ -99,8 +100,17 @@ impl ZoningSystem {
     }
 
     pub(crate) fn remove_parcels_attached_to_edge(&mut self, edge_idx: usize) -> usize {
+        self.remove_parcels_attached_to_edge_on_sides(edge_idx, SidewalkSides::BOTH)
+    }
+
+    /// [`Self::remove_parcels_attached_to_edge`] for the parcels on `sides` of the road only.
+    pub(crate) fn remove_parcels_attached_to_edge_on_sides(
+        &mut self,
+        edge_idx: usize,
+        sides: SidewalkSides,
+    ) -> usize {
         let cells = &mut self.cells;
-        let removed = self.parcels.remove_attached_to_edge(edge_idx, |parcel| {
+        let removed = self.parcels.remove_attached_to_edge(edge_idx, sides, |parcel| {
             if let Some(lot) = parcel.cell_lot() {
                 cells.release_lot(lot, parcel.id().raw());
             } else {
@@ -171,9 +181,18 @@ impl ZoningSystem {
     }
 
     pub(crate) fn capture_parcel_removal_undo(&self, edge_idx: usize) -> ZoningParcelRemovalUndo {
+        self.capture_parcel_removal_undo_on_sides(edge_idx, SidewalkSides::BOTH)
+    }
+
+    /// [`Self::capture_parcel_removal_undo`] for the parcels on `sides` of the road only.
+    pub(crate) fn capture_parcel_removal_undo_on_sides(
+        &self,
+        edge_idx: usize,
+        sides: SidewalkSides,
+    ) -> ZoningParcelRemovalUndo {
         ZoningParcelRemovalUndo {
             original_parcel_count: self.parcels.parcels().len(),
-            parcels: self.parcels.capture_attached_to_edge(edge_idx),
+            parcels: self.parcels.capture_attached_to_edge(edge_idx, sides),
         }
     }
 

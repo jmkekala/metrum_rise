@@ -10,10 +10,11 @@
 ## or on a side without one a 0.75 m shoulder band, drawn but not a part), the lane split and
 ## widths, the type's attributes ("Left sidewalk" and "Right sidewalk" checkboxes, one per end
 ## and independent, `ROAD-107`, left and right as the road is drawn, a "Speed" stepper on Rust's
-## grid, hidden for a footpath, a "Zoning" checkbox and a "Street lights" checkbox, ticked for a
+## grid, hidden for a footpath, a "Zoning" checkbox, disabled with no sidewalk on either side
+## (`ROAD-109`: the type's value stays), and a "Street lights" checkbox, ticked for a
 ## new type), Rust's verdict under them with the type's cost per metre from Rust and a warning
-## when a road zones with a side or both without a sidewalk (buildings there are reached by car
-## only), and a footer with the name (Rust's
+## when a road zones with a side or both without a sidewalk (nothing is built there),
+## and a footer with the name (Rust's
 ## suggestion until the player types one), Cancel and Create road (Save when editing). A new
 ## type whose speed first reaches Rust's `no_zoning_from_kmh` (80) gets zoning off once, unless
 ## the player set the Zoning checkbox; the type's flag decides from then on. Parts go
@@ -60,8 +61,8 @@ const STATUS_READY := Color(0.55, 0.95, 0.55)
 const STATUS_COST := Color(0.85, 0.85, 0.85)
 ## The warning for a type without sidewalks that zones (design D1), and per side for a type with
 ## one (`ROAD-107`), which `CAR_ONLY_SIDE_WARNING` names.
-const CAR_ONLY_WARNING := "No sidewalks: buildings here are reached by car only"
-const CAR_ONLY_SIDE_WARNING := "No sidewalk on the %s: buildings on that side are reached by car only"
+const NO_SIDEWALK_WARNING := "No sidewalks: nothing is built along this road"
+const NO_SIDEWALK_SIDE_WARNING := "No sidewalk on the %s: nothing is built on that side"
 
 var window: Window
 var library_list: RoadTypeLibraryList
@@ -272,7 +273,7 @@ func _build_attributes() -> Control:
 	zoning_check = CheckBox.new()
 	zoning_check.text = "Zoning"
 	zoning_check.focus_mode = Control.FOCUS_NONE
-	zoning_check.tooltip_text = "Lots and buildings along the road; off for roads nothing is built on"
+	zoning_check.tooltip_text = "Lots and buildings along the road, on a side with a sidewalk; off for roads nothing is built on"
 	UIStyle.set_font_size(zoning_check, 14)
 	zoning_check.toggled.connect(func(on: bool):
 		_zoning_settled = true
@@ -525,6 +526,7 @@ func _layout_changed() -> void:
 	right_sidewalk_check.set_pressed_no_signal(has_sidewalk(false))
 	left_sidewalk_check.disabled = footpath
 	right_sidewalk_check.disabled = footpath
+	zoning_check.disabled = not has_sidewalk(true) and not has_sidewalk(false)
 	speed_row.visible = not footpath
 	strip.selected_part = _popup_index
 	lanes_label.text = "%d + %d" % [int(check.get("fwd_lanes", 0)), int(check.get("bkw_lanes", 0))] if valid else "-"
@@ -554,7 +556,7 @@ func _update_actions() -> void:
 	var name_reason: String = _simulation_node.check_road_type_name(name_edit.text, editing_id)
 	create_button.disabled = not valid or not name_reason.is_empty() or not _library_writable()
 	cost_label.text = RoadTypeMenu.cost_text(check) if valid else ""
-	warning_label.text = _car_only_warning() if valid and zoning and not _is_footpath() else ""
+	warning_label.text = _sidewalk_warning() if valid and zoning and not _is_footpath() else ""
 	if not valid:
 		_status(RoadReasonText.text(check, "This layout cannot be built"), STATUS_REFUSED)
 	elif not _library_writable():
@@ -564,13 +566,13 @@ func _update_actions() -> void:
 	else:
 		_status(RoadTypeMenu.describe(check), STATUS_READY)
 
-# The warning for the side or sides whose buildings no walker reaches, or "".
-func _car_only_warning() -> String:
+# The warning for the side or sides that take no buildings (`ROAD-109`), or "".
+func _sidewalk_warning() -> String:
 	if not has_sidewalk(true) and not has_sidewalk(false):
-		return CAR_ONLY_WARNING
+		return NO_SIDEWALK_WARNING
 	if has_sidewalk(true) and has_sidewalk(false):
 		return ""
-	return CAR_ONLY_SIDE_WARNING % ("right" if has_sidewalk(true) else "left")
+	return NO_SIDEWALK_SIDE_WARNING % ("right" if has_sidewalk(true) else "left")
 
 func _status(text: String, color: Color) -> void:
 	status_label.text = text

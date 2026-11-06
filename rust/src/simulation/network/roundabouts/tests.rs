@@ -103,6 +103,49 @@ fn a_ring_runs_with_the_island_on_the_drivers_left_and_every_arm_enters_and_leav
     }
 }
 
+// `ROAD-109`: a ring's inner side has no sidewalk, so it could not zone even if a ring did
+// (`ROAD-62`: none does), and no cell stands around one.
+#[test]
+fn a_rings_inner_side_never_zones() {
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::zoning::cells::{CellBounds, CellStore};
+    let (mut graph, applied) = bare_ring(50.0, 1, false);
+    for &id in &applied.ring {
+        let mut edge = graph.edge(id).clone();
+        assert!(!edge.zones_side(1) && !edge.zones_side(-1), "a ring never zones");
+        edge.no_building_spawn = false;
+        assert!(!edge.zones_side(1), "the island side has no sidewalk");
+        assert!(edge.zones_side(-1), "the sidewalk side is the rule's side");
+    }
+    let bounds = CellBounds {
+        min: glam::DVec2::splat(-200.0),
+        max: glam::DVec2::splat(200.0),
+    };
+    let cells = |graph: &RegionGraph| {
+        let mut store = CellStore::default();
+        store.generate_in_bounds(graph, &WorldConfig::default(), bounds, |_| false);
+        store
+    };
+    let mut count = 0;
+    cells(&graph).visit_in_bounds(bounds, |_| count += 1);
+    assert_eq!(count, 0);
+    // With the flag cleared the walked side would grow cells and the island still none.
+    for &id in &applied.ring {
+        graph.edge_mut(id).no_building_spawn = false;
+    }
+    let store = cells(&graph);
+    let mut count = 0;
+    store.visit_in_bounds(bounds, |_| count += 1);
+    assert!(count > 0, "the fixture grows cells on the walked side");
+    for step in 0..36 {
+        let angle = f64::from(step) * std::f64::consts::TAU / 36.0;
+        for radius in [0.0, 6.0, 12.0] {
+            let point = glam::DVec2::new(angle.cos(), angle.sin()) * radius;
+            assert!(store.pick(point).is_none(), "a cell on the island at {point}");
+        }
+    }
+}
+
 // The exit is a right turn off the ring under right-hand traffic, so ring-in, arm, ring-out
 // keep the arm on the outside of the circle at every node.
 #[test]

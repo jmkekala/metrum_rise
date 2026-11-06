@@ -150,14 +150,7 @@ impl ParkingSystem {
                             let pos = self.places.position[p];
                             let door_m =
                                 (pos[0] - entrance.door_pos.x).hypot(pos[2] - entrance.door_pos.y);
-                            // A building's own bays are always candidates (D4), however far
-                            // along its lot and with a foot lane or none: a car-only door has
-                            // nothing else.
-                            let own = matches!(
-                                self.places.source[p],
-                                PlaceSource::Building { building, .. } if building == handle.to_bits()
-                            );
-                            if door_m > 400.0 && !own {
+                            if door_m > 400.0 {
                                 continue;
                             }
                             let Some(access) =
@@ -165,16 +158,9 @@ impl ParkingSystem {
                             else {
                                 continue;
                             };
-                            let on_foot = |time: f32| {
-                                if own && !time.is_finite() {
-                                    door_m / AGENT_WALK_SPEED_MS
-                                } else {
-                                    time
-                                }
-                            };
-                            let walk_s = on_foot(reverse.time_at(&access, network, graph));
-                            let from_door_s = on_foot(forward.time_at(&access, network, graph));
-                            if walk_s <= WALK_LIMIT_S || own {
+                            let walk_s = reverse.time_at(&access, network, graph);
+                            let from_door_s = forward.time_at(&access, network, graph);
+                            if walk_s <= WALK_LIMIT_S {
                                 entries.push(ParkingCandidate {
                                     place,
                                     walk_s,
@@ -500,7 +486,6 @@ impl ParkingSystem {
             .building_handles
             .resolve(Handle::from_bits(building))?;
         let mut entrance = allocator.entrances.get(host)?.clone();
-        entrance.lot_door = Some(entrance.door_pos);
         let edge = graph.get_edge(entrance.edge_idx).filter(|e| !e.deleted)?;
         let path = self.places.path[p];
         let curb = Vector2::new(path[0][0], path[0][1]);

@@ -422,7 +422,8 @@ func _run() -> void:
 		"the strip draws 0.75 m shoulders: %s" % _builder.strip.widths_m)
 	_expect(_builder.widths_label.text == "Road 7.0 m\nTotal 8.5 m", "the widths without sidewalks: %s" % _builder.widths_label.text)
 	_expect(_builder.status_label.text == "1 + 1 lanes, 50 km/h, no sidewalks, 8.5 m wide", "the description: %s" % _builder.status_label.text)
-	_expect(_builder.warning_label.text == _builder.CAR_ONLY_WARNING, "no sidewalks with zoning warns: %s" % _builder.warning_label.text)
+	_expect(_builder.warning_label.text == _builder.NO_SIDEWALK_WARNING, "no sidewalks with zoning warns: %s" % _builder.warning_label.text)
+	_expect(_builder.zoning_check.disabled and _builder.zoning, "no sidewalks: the Zoning box is disabled, the type's value kept")
 	_expect(not _builder.strip.is_interior(0) and _builder.strip.is_interior(1), "the shoulders are fixed ends")
 	_builder.speed_box.value = 70
 	_expect(_builder.speed_kmh == 70 and _builder.zoning, "70 km/h keeps zoning")
@@ -433,7 +434,7 @@ func _run() -> void:
 	_builder.speed_box.value = 90
 	_expect(not _builder.zoning, "only once: zoning stays off")
 	_builder.zoning_check.button_pressed = true
-	_expect(_builder.zoning and _builder.warning_label.text == _builder.CAR_ONLY_WARNING, "zoning on again warns")
+	_expect(_builder.zoning and _builder.warning_label.text == _builder.NO_SIDEWALK_WARNING, "zoning on again warns")
 	_builder.zoning_check.button_pressed = false
 	_builder.set_speed(105)
 	_expect(_builder.create_button.disabled and _builder.status_label.text == "Speed between 20 and 120 km/h, in steps of 10",
@@ -499,8 +500,9 @@ func _run() -> void:
 		"Rust reads the left side, the strip draws the shoulder: %s" % _builder.strip.widths_m)
 	_expect(is_equal_approx(float(_builder.check.total_m), 9.25) and _builder.status_label.text.contains("sidewalk on the left")
 		and not _builder.status_label.text.contains("no sidewalks"), "the left-only description: %s" % _builder.status_label.text)
-	_expect(_builder.warning_label.text == "No sidewalk on the right: buildings on that side are reached by car only",
+	_expect(_builder.warning_label.text == "No sidewalk on the right: nothing is built on that side",
 		"the warning names the side: %s" % _builder.warning_label.text)
+	_expect(not _builder.zoning_check.disabled, "one sidewalk: the Zoning box works")
 	_expect(_builder.name_edit.text == "1+1 L" and _builder.cost_label.text == "13.5 / m, upkeep 0.09 / m / day",
 		"one sidewalk's name and cost: %s / %s" % [_builder.name_edit.text, _builder.cost_label.text])
 	_expect(_builder.strip.is_interior(1) and not _builder.strip.is_interior(3), "the ends stay fixed")
@@ -508,11 +510,11 @@ func _run() -> void:
 	_expect(_builder.warning_label.text.is_empty(), "no warning without zoning")
 	_builder.zoning_check.button_pressed = true
 	_builder.left_sidewalk_check.button_pressed = false
-	_expect(_builder.warning_label.text == _builder.CAR_ONLY_WARNING and _builder.parts == [SH, BACK, AHEAD, SH], "neither side: the road's warning")
+	_expect(_builder.warning_label.text == _builder.NO_SIDEWALK_WARNING and _builder.parts == [SH, BACK, AHEAD, SH], "neither side: the road's warning")
 	_builder.right_sidewalk_check.button_pressed = true
 	_expect(_builder.parts == [SH, BACK, AHEAD, SW] and int(_builder.check.sidewalks) == 2
 		and Array(_builder.strip.widths_m) == [0.75, 3.5, 3.5, 1.5] and _builder.status_label.text.contains("sidewalk on the right")
-		and _builder.warning_label.text == "No sidewalk on the left: buildings on that side are reached by car only" and _builder.name_edit.text == "1+1 R",
+		and _builder.warning_label.text == "No sidewalk on the left: nothing is built on that side" and _builder.name_edit.text == "1+1 R",
 		"right only: %s / %s" % [_builder.status_label.text, _builder.warning_label.text])
 	_builder.create_button.pressed.emit()
 	await process_frame

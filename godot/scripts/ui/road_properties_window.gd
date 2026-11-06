@@ -17,8 +17,10 @@
 ## buildings); Cancel leaves the roads as they are. The picker stays enabled on a walkway so the
 ## refusal (walkway <-> road) shows with its text. Kerbside parking (`PARK-05`) has its own Left
 ## and Right toggles, which change only that lane, in place, with the same refusal text. The
-## window opens tall enough for every row. Turn pockets are edited from the Junction window
-## (`junction_window.gd`, `ROAD-95`).
+## window opens tall enough for every row. "No buildings" is disabled on a road with no sidewalk
+## on either side (`ROAD-109`: nothing is built there whatever it says). A type that would take a
+## sidewalk from under a building's door is refused with that reason. Turn pockets are edited
+## from the Junction window (`junction_window.gd`, `ROAD-95`).
 ## Rust methods called: get_road_types(), get_edge_cross_section(), get_edge_class(),
 ## get_no_building_spawn(), get_edge_geometry_3d(), get_height_at().
 extends Node
@@ -210,6 +212,7 @@ func _refresh() -> void:
 
 	_refresh_type()
 	_refresh_parking()
+	_no_build_check.disabled = _selected_edges.all(_has_no_sidewalk)
 	if _selected_edges.size() == 1:
 		var edge_idx := _selected_edges[0]
 		_warning_label.text = ""
@@ -244,6 +247,11 @@ func _refresh() -> void:
 		)
 		for i in range(_class_buttons.size()):
 			_class_buttons[i].set_pressed_no_signal(shared_class and i == first_class)
+
+# Whether `edge_idx` is a car road with no sidewalk on either side. A walkway is its own path.
+func _has_no_sidewalk(edge_idx: int) -> bool:
+	var section: Dictionary = _simulation_node.get_edge_cross_section(edge_idx)
+	return bool(section.get("editable", false)) and int(section.get("sidewalks", 0)) == 0
 
 ## Lists the road types again (after a library edit) while the window shows a road.
 func refresh_types() -> void:

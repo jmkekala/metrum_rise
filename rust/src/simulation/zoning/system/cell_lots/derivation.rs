@@ -606,7 +606,7 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
         let eligible = |link: &&CellRoadFrontage| {
             link.boundary == lot.frontage()
                 && graph.get_edge(link.edge).is_some_and(|edge| {
-                    (occupied || !edge.no_building_spawn)
+                    (occupied || edge.zones_side(link.side))
                         && edge.primary_type == TransitType::Road
                         && graph.fronts_ground(link.edge)
                 })

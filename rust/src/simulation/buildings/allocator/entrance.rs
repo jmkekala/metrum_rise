@@ -245,6 +245,24 @@ impl BuildingAllocator {
         if let Some(old_entrances) = old_entrances.as_deref() {
             log_entrance_cache_rebuild(old_entrances, &self.entrances, &self.buildings);
         }
+        #[cfg(debug_assertions)]
+        self.check_doors_are_walked(graph);
+    }
+
+    // `ROAD-109`, in test builds: every building on a live road stands on a side walked to. A
+    // bulldozed road's buildings are not the rule's case. O(buildings).
+    #[cfg(debug_assertions)]
+    fn check_doors_are_walked(&self, graph: &RegionGraph) {
+        for (index, building) in self.buildings.iter().enumerate() {
+            if let Some(edge) = graph.get_edge(building.edge_idx).filter(|edge| !edge.deleted) {
+                assert!(
+                    edge.walked_on_side(building.side),
+                    "building {index} stands on side {} of edge {}, which has no sidewalk",
+                    building.side,
+                    building.edge_idx
+                );
+            }
+        }
     }
 
     /// [`Self::rebuild_entrance_cache`] for a cache that was current before an edit changed the
@@ -297,6 +315,17 @@ impl BuildingAllocator {
                 panic!(
                     "local entrance update missed building {missed}: {:?} != {:?}",
                     self.entrances[missed], full[missed]
+                );
+            }
+            self.check_doors_are_walked(graph);
+            // A road edit's lanes are real, so its doors have their foot lanes.
+            for &building_idx in changed {
+                let entrance = &self.entrances[building_idx];
+                assert!(
+                    entrance.door_pos == Vector2::ZERO
+                        || graph.get_edge(entrance.edge_idx).is_none_or(|edge| edge.deleted)
+                        || entrance.flags & ENTRANCE_FOOT_VALID != 0,
+                    "building {building_idx}'s door has no foot lane: {entrance:?}"
                 );
             }
         }
