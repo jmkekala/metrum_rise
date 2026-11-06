@@ -38,7 +38,7 @@ pub(crate) use destinations::{
 pub(crate) use electricity::ElectricityProfiles;
 pub(crate) use employment::{WORKPLACE_QUOTE_PASSES, WagePayment};
 pub(crate) use job_board::{JobBoardRoll, SavedJobBoard, SavedJobBoardSweep};
-pub(crate) use metrics::HouseholdEssentials;
+pub(crate) use metrics::{HouseholdEssentials, store_funded_activity};
 pub(crate) use removal::HouseholdExitPolicy;
 pub use replenishment::{
     REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,

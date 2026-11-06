@@ -1231,10 +1231,25 @@ fn funded_private_operation(
             .fold(0.0, f32::max)
     })
     .min(activity_ceiling);
-    let desired = ((physical as f32 * market_activity).ceil() as u32).min(ceiling);
+    // Plans above the sales' own staffing also refill the shelf (`ECON-24`). Every plan at or
+    // below that staffing keeps its activity, so a refill the store cannot fund leaves its
+    // funding as it was.
+    let sales_workers = ((physical as f32 * market_activity).ceil() as u32).min(ceiling);
+    let top_activity =
+        super::households::store_funded_activity(building, profile, market_activity, physical)
+            .min(activity_ceiling);
+    let desired = ((physical as f32 * top_activity).ceil() as u32).min(ceiling);
     if desired == 0 {
         return (0, 0.0);
     }
+    let plan_activity = |workers: u32| {
+        let activity = if workers > sales_workers {
+            top_activity
+        } else {
+            market_activity
+        };
+        activity.min(workers as f32 / physical.max(1) as f32)
+    };
     crate::debug::work::add(crate::debug::work::Work::StaffingOperations, 1);
     // Local quotes value retained stock at their actual supplier prices below. Computing
     // an import valuation here would visit every inventory port without using the result.
@@ -1305,7 +1320,7 @@ fn funded_private_operation(
             prices.truck_payload.to_bits(),
         ],
         exports: export_multiplier.map(f32::to_bits),
-        market_activity: market_activity.to_bits(),
+        market_activity: top_activity.to_bits(),
         desired,
     };
     if let Some(record) = proof.as_mut()
@@ -1328,7 +1343,7 @@ fn funded_private_operation(
             catalog,
             OperationPlan {
                 workers,
-                activity: market_activity.min(workers as f32 / physical.max(1) as f32),
+                activity: plan_activity(workers),
                 area,
             },
             prices,
@@ -1347,7 +1362,7 @@ fn funded_private_operation(
         #[cfg(test)]
         if trace.enabled {
             trace.counts[1] += 1;
-            let activity = market_activity.min(workers as f32 / physical.max(1) as f32);
+            let activity = plan_activity(workers);
             let free_inputs = OperatingCosts::for_plan_with_input_quotes(
                 profile,
                 OperationPlan {
@@ -1367,7 +1382,7 @@ fn funded_private_operation(
                 catalog,
                 OperationPlan {
                     workers,
-                    activity: market_activity.min(workers as f32 / physical.max(1) as f32),
+                    activity: plan_activity(workers),
                     area,
                 },
                 prices,
@@ -1401,9 +1416,17 @@ fn funded_private_operation(
             }
             continue;
         }
-        let activity = market_activity.min(workers as f32 / physical.max(1) as f32);
+        let activity = plan_activity(workers);
         let revenue = sales.revenue(activity);
-        if revenue > costs.total() {
+        // Goods bought to refill a shelf are stock, not a recurring cost: working capital above
+        // carries them, and the same sales must still cover the wages of the staff refilling it.
+        let refill_goods = if activity > market_activity {
+            costs.inputs * f64::from(1.0 - market_activity / activity)
+        } else {
+            0.0
+        };
+        let total = costs.total() - refill_goods;
+        if revenue > total {
             #[cfg(test)]
             if let Some(plan) = &mut trace.import_plan {
                 plan.workers = workers;
@@ -1413,7 +1436,7 @@ fn funded_private_operation(
             if trace.enabled {
                 trace.counts[5] += 1;
             }
-            *headroom = [revenue - costs.total(), capital - costs.working_capital];
+            *headroom = [revenue - total, capital - costs.working_capital];
             if workers == desired
                 && let Some(record) = proof.as_mut()
             {
@@ -1598,6 +1621,55 @@ mod tests {
             expensive
         );
         assert!(expensive.0 > 0);
+    }
+
+    #[test]
+    fn a_refill_the_store_cannot_fund_leaves_its_funding_as_it_was() {
+        use crate::simulation::buildings::allocator::indexed_test_building;
+        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+        use crate::simulation::zoning::ZoneType;
+
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let profile = catalog.profile_for_id("grocery_basic").unwrap();
+        let mut store = indexed_test_building(String::new(), ZoneType::Commercial, 0);
+        store.operating_budget = 100_000.0;
+        let physical = profile.worker_capacity;
+        let prices = OperationPrices {
+            utilities: [0.0; 3],
+            property_tax: 0.0,
+            imports: 1.0,
+            carrier_quote: 0.0,
+            truck_payload: 20_000.0,
+        };
+        let market = vec![[0.0; 2]; catalog.resource_count() + 1];
+        let units = [160.0];
+        let mut headroom = [0.0; 2];
+        let mut fund = |store: &Building| {
+            let operation = funded_private_operation(
+                store,
+                profile,
+                &catalog,
+                physical,
+                prices,
+                &market,
+                None,
+                0.0,
+                None,
+                Some(&units),
+                &mut headroom,
+                physical,
+                1.0,
+                None,
+            );
+            (operation, headroom)
+        };
+        store.resource_inventory = vec![0.0; catalog.resource_count()];
+        store.set_inventory_units(profile.inputs[0].resource_runtime_id, 400.0);
+        let (operation, spare) = fund(&store);
+        assert_eq!(operation.0, 13, "the shelf is bare and the cash is there");
+        // The refill's plan no longer fits the working capital; the sales' plan still does.
+        store.operating_budget -= spare[1] as f32 + 1.0;
+        assert_eq!(fund(&store).0, (12, 0.8));
     }
 
     #[test]
