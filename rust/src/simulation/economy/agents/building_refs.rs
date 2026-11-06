@@ -1211,6 +1211,53 @@ mod tests {
         assert!(one == eight, "worker count changed the lane state");
     }
 
+    // The door-leg panic of `PARK-02`: with no home left an evacuated resident took the shared
+    // border plan, which drives, though its persistent car stays in its bay.
+    #[test]
+    fn a_displaced_resident_with_a_persistent_car_and_no_home_left_walks() {
+        use crate::simulation::core::handles::Handle;
+        for (vehicle, mode) in [(Handle::default(), MODE_CAR), (Handle::from_bits(0), MODE_WALK)] {
+            let mut graph = RegionGraph::new();
+            let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+            let b = graph.add_node(Vector3::new(1_000.0, 0.0, 0.0), NodeType::Border);
+            let mut edge = create_test_edge(a, b);
+            edge.geometry = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(1_000.0, 0.0, 0.0)];
+            edge.physical_geometry = edge.geometry.clone();
+            edge.physical_length = 1_000.0;
+            edge.allowed_types = TransitFlags::CAR;
+            edge.sidewalks = crate::simulation::network::graph::SidewalkSides::NONE;
+            edge.bkw_lanes = 0;
+            graph.add_edge(edge);
+            graph.rebuild_adjacency_list();
+            let mut network = TransitNetwork::new();
+            network.lane_system.rebuild(&mut graph);
+            network.cch_graph = CchGraph::build(&graph);
+            let mut allocator = BuildingAllocator::new();
+            let asset_id = register_residential_test_asset(&mut allocator, "displaced_car");
+            allocator
+                .buildings
+                .push(create_test_building(0, &asset_id, 500.0, 0.5, 0));
+            allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+            allocator.rebuild_zone_index();
+            let mut agents = AgentSystem::new();
+            let resident = agents.spawn_housed_agent(0, 500.0, 0.0);
+            agents.agents.transit[resident] = TRANSIT_IN_BUILDING;
+            agents.agents.current_building[resident] = 0;
+            agents.agents.parking_trip[resident].vehicle = vehicle;
+
+            agents.evacuate_building_for_removal(
+                0,
+                &mut HouseholdSystem::new(),
+                &mut allocator,
+                &network,
+                &graph,
+            );
+
+            assert_eq!(agents.agents.transit[resident], TRANSIT_NETWORK);
+            assert_eq!(agents.agents.transit_mode[resident], mode);
+        }
+    }
+
     #[test]
     fn evict_building_clears_schedule_cache_references() {
         let mut sys = AgentSystem::new();
