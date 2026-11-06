@@ -43,13 +43,15 @@ const CROWN_GROWTH_SPAN_M := 1000.0
 # Past the trees the terrain shader stands in for them by mixing toward one crown albedo by the
 # share of each sight line a random stand of the published crown coverage would stop; see
 # terrain.gdshader. The ratio is a crown's side area over its top area, which is near one for
-# these crowns. The albedo is fitted to the authored trees with calibrated leaves and stand sun:
-# a painted stand 5.2 km away, seen from 450 m and from 1500 m up, at 09:00 and 13:00, rendered
-# as ground at two albedos and as trees drawn to 12 km, solves per channel to
-# (0.160-0.164, 0.219-0.224, 0.061-0.065). The fit before the leaf change, (0.135, 0.18, 0.06),
-# drew the stand 2.5% darker than its trees.
+# these crowns. The albedo is fitted to the Kuopio forests drawn as trees to 12 km, seen 6-8 km
+# away from straight down, 46 degrees and 20 degrees, at 10:00 and 15:00, against the stand-in with
+# this albedo and with a black one, which splits the coverage from the crown brightness. Per
+# channel the drawn crowns come to about half the earlier fit (0.162, 0.222, 0.063), which was
+# taken from one shallow view where the stand-in is a thin fogged band and so drew far forest
+# about 10 levels of 255 brighter than its trees from above. At this albedo forest blocks match
+# the trees within 6 levels both in the benchmark world's forest and at the "More" density.
 const CANOPY_FAR_SIDE_RATIO := 1.0
-const CANOPY_FAR_ALBEDO := Vector3(0.162, 0.222, 0.063)
+const CANOPY_FAR_ALBEDO := Vector3(0.075, 0.117, 0.034)
 # Relative albedo spread between neighbouring far crowns. Drawn trees differ crown to crown
 # where one albedo draws a flat patch.
 const CANOPY_FAR_SPECKLE := 0.8
