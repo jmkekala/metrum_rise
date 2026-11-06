@@ -50,6 +50,7 @@ const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
 const STROKE_SPLITS_POCKET_REASON: &str = "stroke_splits_pocket";
 const ROUNDABOUT_CROSSED_REASON: &str = "roundabout_crossed";
 const ROUNDABOUT_ARM_NODE_TAKEN_REASON: &str = "roundabout_arm_node_taken";
+const ROUNDABOUT_ARMS_TOO_CLOSE_REASON: &str = "roundabout_arms_too_close";
 const PREVIEW_GRADE_CHANGE_REASON: &str = "road_grade_change";
 const PREVIEW_TOO_STEEP_REASON: &str = "road_too_steep";
 // The road tool's warning for a grade above its class's design tier, which it does not refuse.
@@ -808,20 +809,47 @@ fn build_validation_graph(
     // The spans the stroke's ends are snapped onto lie within the end-join tolerance of its
     // points, inside the excerpt's pad.
     let grade = grade.map_joined_spans(|span| copied_edges[&span]);
-    let start_node = validation_graph_endpoint_node(
-        &mut validation_graph,
-        existing_graph,
-        &mut node_map,
-        start_existing,
-        prepared_points[0],
+    // D9 (`ROAD-62`): an end on a ring near a bare node takes that node's place.
+    let half_width_m = preview_candidate_roadbed_half_width_m(
+        prepared_points,
+        edge_class,
+        fwd_lanes,
+        bkw_lanes,
+        median,
+        attributes,
     );
-    let end_node = validation_graph_endpoint_node(
-        &mut validation_graph,
-        existing_graph,
-        &mut node_map,
-        end_existing,
-        *prepared_points.last().unwrap(),
-    );
+    let mut ring_edges = Vec::new();
+    let mut ring_splits = Vec::new();
+    let mut join_end = |graph: &mut RegionGraph, existing, point, taken| {
+        let snapped = !endpoint_snap_enabled || Option::is_some(&existing);
+        let join = (!snapped)
+            .then(|| roundabouts::join_near_bare_node(graph, point, half_width_m, taken))
+            .flatten()?;
+        ring_edges.extend(join.edges);
+        ring_splits.extend(join.splits);
+        Some(join.node)
+    };
+    let start_join = join_end(&mut validation_graph, start_existing, prepared_points[0], None);
+    let last_point = *prepared_points.last().unwrap();
+    let end_join = join_end(&mut validation_graph, end_existing, last_point, start_join);
+    let start_node = start_join.unwrap_or_else(|| {
+        validation_graph_endpoint_node(
+            &mut validation_graph,
+            existing_graph,
+            &mut node_map,
+            start_existing,
+            prepared_points[0],
+        )
+    });
+    let end_node = end_join.unwrap_or_else(|| {
+        validation_graph_endpoint_node(
+            &mut validation_graph,
+            existing_graph,
+            &mut node_map,
+            end_existing,
+            last_point,
+        )
+    });
     if start_node == end_node {
         return Err(PREVIEW_SURFACE_GEOMETRY_REASON);
     }
@@ -855,13 +883,26 @@ fn build_validation_graph(
         );
     validation_graph.edge_mut(new_edge_idx).base_cost = base_cost;
     validation_graph.edge_mut(new_edge_idx).physical_length = physical_length;
-    let (finalized, splits) = process_validation_graph_intersections(
+    let (finalized, stroke_splits) = process_validation_graph_intersections(
         &mut validation_graph,
         new_edge_idx,
         grade,
         terrain,
         portals.as_ref(),
+        &ring_edges,
     )?;
+    // The bare nodes a join inserted split the ring before the stroke's own splits ran.
+    let splits: Vec<PlannedRoadSplit> = ring_splits
+        .into_iter()
+        .map(|(edge_id, halves): (usize, topology::SplitHalves)| PlannedRoadSplit {
+            edge_id,
+            new_edge_id: halves.new_edge_id,
+            far_node: halves.far_node,
+            first_length_m: halves.first_length_m,
+            second_length_m: halves.second_length_m,
+        })
+        .chain(stroke_splits)
+        .collect();
 
     let mut required_edge_ids = validation_graph
         .edges()
@@ -955,6 +996,17 @@ fn candidate_existing_edge_ids(
         push_incident_validation_edges(existing_graph, existing_node, &mut edge_ids);
     }
 
+    // A join may move any bare node of a ring (D9, `ROAD-62`): the excerpt holds the whole ring.
+    let rings: Vec<usize> = edge_ids
+        .iter()
+        .copied()
+        .filter(|&id| !existing_graph.edge(id).deleted)
+        .filter(|&id| existing_graph.edge(id).roundabout.is_some())
+        .collect();
+    for id in rings {
+        let walk = roundabouts::ring_walk(existing_graph, id);
+        edge_ids.extend(walk.iter().flatten().map(|&(_, edge)| edge));
+    }
     edge_ids.sort_unstable();
     edge_ids.dedup();
 
@@ -1007,6 +1059,7 @@ fn process_validation_graph_intersections(
     grade: StrokeGrade,
     terrain: &TerrainSystem,
     portals: Option<&Portals>,
+    moved_ring_edges: &[usize],
 ) -> Result<(FinalizedRoadGeometry, Vec<PlannedRoadSplit>), &'static str> {
     let mut network = TransitNetwork::new();
     let world_config = WorldConfig::default();
@@ -1021,6 +1074,7 @@ fn process_validation_graph_intersections(
     network.bulk_load = true;
     network.recorded_road_splits = Some(Vec::new());
     network.bulk_dirty_edges.insert(new_edge_idx);
+    network.bulk_dirty_edges.extend(moved_ring_edges);
     topology::process_intersections_splitting_at(
         &mut network,
         validation_graph,
@@ -1304,10 +1358,16 @@ fn record_edit_grade(
 fn junction_rejection(graph: &RegionGraph, affected_nodes: &HashSet<u32>) -> Option<&'static str> {
     let mut nodes: Vec<u32> = affected_nodes.iter().copied().collect();
     nodes.sort_unstable();
-    let error = nodes
+    let (node, error) = nodes
         .into_iter()
-        .find_map(|node| check_node(graph, node).err())?;
+        .find_map(|node| check_node(graph, node).err().map(|error| (node, error)))?;
     Some(match error {
+        // Bare nodes make way for a join (D9), so a ring's corner fails on arm against arm.
+        NodeError::Layout(LayoutError::CornerDoesNotFit { .. })
+            if roundabouts::ring_at(graph, node).is_some() =>
+        {
+            ROUNDABOUT_ARMS_TOO_CLOSE_REASON
+        }
         NodeError::Layout(LayoutError::CornerDoesNotFit { .. }) => PREVIEW_JUNCTION_CORNER_REASON,
         NodeError::Layout(LayoutError::CoreNotSimple) | NodeError::Triangulation => {
             PREVIEW_JUNCTION_CORE_REASON

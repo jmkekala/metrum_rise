@@ -130,11 +130,11 @@ fn two_arms_need_their_two_mouths_of_ring_between_them() {
     }
 }
 
-// A pass-through ring node holds a join as an arm would: the ring between them must take the
-// join's two ring mouths, so a stroke within this arc of a bare node is refused unless it snaps to
-// the node (a finding of round R7a, for the tool's review).
+// A pass-through ring node holds a split as an arm would: the ring between them must take the
+// join's two ring mouths. So a stroke's join near a bare node does not split the ring, it takes
+// the node's place (`roundabouts::join_near_bare_node`): this is why, and the arc it must beat.
 #[test]
-fn a_join_near_a_bare_ring_node_needs_the_arc_of_a_mouth() {
+fn a_split_near_a_bare_ring_node_needs_the_arc_of_a_mouth() {
     for (diameter_m, lanes, arm, radius_m, refused_m, fits_m) in [
         (36.0, 1, (1, 1), 16.25f32, 9.0, 10.0),
         (60.0, 1, (1, 1), 28.25, 9.0, 10.0),

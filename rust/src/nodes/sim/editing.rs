@@ -26,7 +26,7 @@ use crate::simulation::network::road_edit::{
 use crate::simulation::network::roadbed::{
     RoadbedDelta, RoadbedRestore, crossing_arm_eligible, visual_roadbed_half_width_m,
 };
-use crate::simulation::network::roundabouts::ring_at;
+use crate::simulation::network::roundabouts::{ring_at, ring_near_stroke};
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -192,6 +192,8 @@ pub(crate) struct BulldozeTarget {
     center: Vector3,
     points: Vec<Vector3>,
     width_m: f32,
+    // What the hover calls the target, when it is more than its kind: a roundabout's ring.
+    label: String,
 }
 
 fn point_segment_distance_sq_xz(pos: Vector2, a: Vector3, b: Vector3) -> (f32, Vector3) {
@@ -503,6 +505,7 @@ impl SimCore {
             center: Vector3::new(plant.x, height(plant.x, plant.z), plant.z),
             points,
             width_m: 0.0,
+            label: String::new(),
         })
     }
 
@@ -557,6 +560,7 @@ impl SimCore {
             ),
             points,
             width_m: 0.0,
+            label: String::new(),
         })
     }
 
@@ -608,8 +612,15 @@ impl SimCore {
                 0.0
             };
         let width_m = edge.width.max(config::LANE_WIDTH) + sidewalk_width * 2.0;
-        let mut points = Vec::with_capacity(edge.physical_geometry.len());
-        for point in &edge.physical_geometry {
+        // A ring goes whole (D15), so the hover shows and names all of it.
+        let (label, outline) = self.ring_hover(edge_idx).unwrap_or_default();
+        let hovered = if outline.is_empty() {
+            &edge.physical_geometry
+        } else {
+            &outline
+        };
+        let mut points = Vec::with_capacity(hovered.len());
+        for point in hovered {
             let y = self
                 .transit_network
                 .roadbed
@@ -637,6 +648,7 @@ impl SimCore {
             ),
             points,
             width_m,
+            label,
         })
     }
 
@@ -718,6 +730,9 @@ impl SimCore {
     fn bulldoze_road_edge(&mut self, edge_idx: usize) -> bool {
         if edge_idx >= self.region_graph.edge_count() || self.region_graph.edge(edge_idx).deleted {
             return false;
+        }
+        if self.region_graph.edge(edge_idx).roundabout.is_some() {
+            return self.bulldoze_ring(edge_idx);
         }
 
         let edge = self.region_graph.edge(edge_idx).clone();
@@ -852,6 +867,7 @@ impl SimCore {
         dict.set("center", target.center);
         dict.set("points", points);
         dict.set("width_m", f64::from(target.width_m));
+        dict.set("label", GString::from(target.label.as_str()));
         dict
     }
 
@@ -1220,8 +1236,11 @@ impl SimCore {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
         // Non-preview callers must also validate final junction geometry, not only the stroke.
+        // A join may move a ring's bare nodes (D9, `ROAD-62`), which only a plan does.
         let fallback_plan = if edit_plan.is_none()
-            && (!self.allocator.field_clearance.is_empty() || self.zoning.cells.has_reservations())
+            && (!self.allocator.field_clearance.is_empty()
+                || self.zoning.cells.has_reservations()
+                || ring_near_stroke(&self.region_graph, &points))
         {
             self.allocator
                 .prepare_building_site_query_index(self.config.zone_cell_m);

@@ -16,7 +16,7 @@ use super::profiles::{ZoningProfileRegistry, load_builtin_profile_registry};
 use super::{SharedParcelStore, ZoningParcel};
 use crate::simulation::core::config::WorldConfig;
 use glam::DVec2;
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -162,6 +162,12 @@ impl ZoningSystem {
             .into_iter()
             .map(|id| id.raw())
             .collect()
+    }
+
+    /// The raw parcel ids touching the disc of `radius_m` at `centre`, ascending.
+    pub(crate) fn parcel_ids_overlapping_disc(&self, centre: Vector2, radius_m: f32) -> Vec<u64> {
+        let ids = self.parcels.ids_overlapping_disc(centre, radius_m);
+        ids.into_iter().map(|id| id.raw()).collect()
     }
 
     pub(crate) fn capture_parcel_removal_undo(&self, edge_idx: usize) -> ZoningParcelRemovalUndo {

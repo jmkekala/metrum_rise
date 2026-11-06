@@ -296,6 +296,11 @@ fn validation_detail(
             "the stroke would end on or cross a roundabout's island (`ROAD-62`, D9)".to_owned(),
             None,
         ),
+        "roundabout_arms_too_close" => (
+            "two arms of a roundabout stand closer than their mouths need (`ROAD-62`, D9)"
+                .to_owned(),
+            None,
+        ),
         "roundabout_arm_node_taken" => (
             "the ring node already has its arm (`ROAD-62`, D9)".to_owned(),
             None,

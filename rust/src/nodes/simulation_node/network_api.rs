@@ -9,6 +9,7 @@ use crate::simulation::network::road_types::RoadAttributes;
 
 mod road_tool;
 mod road_types;
+mod roundabouts;
 
 #[godot_api(secondary)]
 impl SimulationNode {

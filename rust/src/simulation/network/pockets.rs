@@ -13,6 +13,7 @@
 use super::graph::{Edge, RegionGraph, RoadPocket};
 use super::lanes::approach_offers_turns;
 use super::lanes::vehicle_junctions::node_whitelists_vehicle_turns;
+use super::roundabouts::ArmTrim;
 use super::roadbed::{
     CROSSWALK_DEPTH_M, EdgeEnd, LEFT_POCKET_TAPER_M, NOSE_CLEARANCE_M, PocketNarrowing,
     medians_line_up,
@@ -563,8 +564,8 @@ fn join_pair(graph: &mut RegionGraph, pair: &Pair, base: Edge) {
     }
 }
 
-/// The inverse journal of one pocket edit's dependents: the join's and the split's entries in
-/// the order they were applied.
+/// The inverse journal of one pocket edit's dependents, or a roundabout's on its trimmed arms: the
+/// join's, the split's and the trims' entries in the order they were applied.
 pub(crate) struct PocketDependentsUndo {
     entries: Vec<DependentsEntry>,
 }
@@ -574,6 +575,11 @@ enum DependentsEntry {
     Join {
         rows: Vec<(usize, usize, usize, f32)>,
         occupancy: [(usize, Option<EdgeOccupancy>); 2],
+    },
+    Trim {
+        rows: Vec<(usize, usize, usize, f32)>,
+        edge: usize,
+        occupancy: Option<EdgeOccupancy>,
     },
 }
 
@@ -592,6 +598,17 @@ impl PocketDependentsUndo {
                             None => allocator.edge_occupancy.remove(&edge),
                         };
                     }
+                }
+                DependentsEntry::Trim {
+                    rows,
+                    edge,
+                    occupancy,
+                } => {
+                    allocator.restore_split_frontages(&rows);
+                    match occupancy {
+                        Some(cells) => allocator.edge_occupancy.insert(edge, cells),
+                        None => allocator.edge_occupancy.remove(&edge),
+                    };
                 }
             }
         }
@@ -635,6 +652,56 @@ pub(crate) fn migrate_pocket_dependents(
         entries.extend(journal.into_iter().flatten().map(DependentsEntry::Split));
     }
     PocketDependentsUndo { entries }
+}
+
+/// Moves the dependents of arms a roundabout cut (`ROAD-62`), journaled for its undo: an arm that
+/// lost its start drops the whole cells before the cut, as the second half of a split does, and
+/// every building takes its frontage along the shorter arm. The land under the cut carries no
+/// parcel (the plan refused it), so a cell dropped holds no building.
+/// `O(the arms' buildings + occupancy cells)`, plus the chunk candidates' test.
+pub(crate) fn migrate_arm_trims(
+    graph: &RegionGraph,
+    trims: &[ArmTrim],
+    zoning: &crate::simulation::zoning::ZoningSystem,
+    allocator: &mut BuildingAllocator,
+) -> PocketDependentsUndo {
+    let cell_m = zoning.config.zone_cell_m;
+    let entries = trims.iter().map(|trim| {
+        let dropped_m = trim.old_length_m - trim.new_length_m;
+        let dropped = if trim.at_start {
+            (dropped_m / cell_m).floor() as usize
+        } else {
+            0
+        };
+        let mut rows = Vec::new();
+        allocator.migrate_trim_frontages(
+            graph,
+            trim.edge,
+            dropped,
+            trim.new_length_m,
+            cell_m,
+            &mut rows,
+        );
+        let occupancy = allocator.edge_occupancy.get(&trim.edge).cloned();
+        if let Some(cells) = allocator.edge_occupancy.get_mut(&trim.edge) {
+            let kept = if trim.at_start {
+                dropped.min(cells.cells_long)..cells.cells_long
+            } else {
+                0..cells.cells_long.min((trim.new_length_m / cell_m).ceil() as usize)
+            };
+            cells.cells_long = kept.len();
+            cells.left = cells.left[kept.clone()].to_vec();
+            cells.right = cells.right[kept].to_vec();
+        }
+        DependentsEntry::Trim {
+            rows,
+            edge: trim.edge,
+            occupancy,
+        }
+    });
+    PocketDependentsUndo {
+        entries: entries.collect(),
+    }
 }
 
 // `migrate_split_dependents`' inverse: `second`'s buildings front `first` behind its cells

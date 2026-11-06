@@ -269,7 +269,7 @@ impl SimCore {
 
     // The build cost of `edges` in units of `BUILD_COST_PER_M`: each one's road weight times its
     // length (D14). O(edges).
-    fn build_cost_of(&self, edges: &[usize]) -> f64 {
+    pub(super) fn build_cost_of(&self, edges: &[usize]) -> f64 {
         edges
             .iter()
             .map(|&edge| {
@@ -360,7 +360,7 @@ impl SimCore {
 
     // The pocket edit's undo record: the graph checkpoint (whole records; the transition and
     // second edge an add appended drop past the original counts) and the dependents journal.
-    fn push_pocket_undo(
+    pub(super) fn push_pocket_undo(
         &mut self,
         checkpoint: RegionGraphUndoDelta,
         dependents: PocketDependentsUndo,

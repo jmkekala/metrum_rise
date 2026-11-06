@@ -24,8 +24,6 @@ pub(crate) mod cch_adoption;
 pub(crate) mod pockets;
 pub(crate) mod road_edit;
 pub(crate) mod road_types;
-// Its transaction (`nodes::sim`) comes with the roundabout tool, round R7b.
-#[allow(dead_code)]
 pub(crate) mod roundabouts;
 pub mod topology;
 use crate::config;

@@ -1139,6 +1139,44 @@ impl BuildingAllocator {
         moved
     }
 
+    /// The buildings fronting `edge` after a roundabout cut the arm to `length_m` (`ROAD-62`):
+    /// their cells shift down by the `dropped_cells` the cut took off its start and each takes
+    /// its frontage along the shorter arm. `undo` receives each row's previous edge, cell and
+    /// frontage. The rows are found as the split's are: `O(candidates log candidates)`, `O(B)`
+    /// while the chunk index is stale.
+    pub(crate) fn migrate_trim_frontages(
+        &mut self,
+        graph: &RegionGraph,
+        edge: usize,
+        dropped_cells: usize,
+        length_m: f32,
+        cell_m: f32,
+        undo: &mut Vec<(usize, usize, usize, f32)>,
+    ) {
+        let edges = std::collections::HashSet::from([edge]);
+        let fronting: Vec<usize> =
+            match self.attachment_repair_candidates(graph, &edges, [], cell_m) {
+                Some(candidates) => candidates
+                    .into_iter()
+                    .filter(|&idx| self.buildings[idx].edge_idx == edge)
+                    .collect(),
+                None => (0..self.buildings.len())
+                    .filter(|&idx| self.buildings[idx].edge_idx == edge)
+                    .collect(),
+            };
+        for &building_idx in &fronting {
+            let b = &mut self.buildings[building_idx];
+            undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
+            debug_assert!(b.cell_x >= dropped_cells, "the plan refused land under the cut");
+            b.cell_x = b.cell_x.saturating_sub(dropped_cells);
+            let half_cells = b.width_cells as f32 * 0.5;
+            b.frontage_t = (b.cell_x as f32 + half_cells) * cell_m / length_m.max(0.001);
+        }
+        if !fronting.is_empty() {
+            self.record_building_changes(fronting);
+        }
+    }
+
     /// Puts back the rows [`Self::migrate_split_frontages`] moved, from its `undo` entries,
     /// and records them. O(rows).
     pub(crate) fn restore_split_frontages(&mut self, rows: &[(usize, usize, usize, f32)]) {

@@ -22,6 +22,9 @@ use crate::simulation::pathing::cost::CostCalculator;
 use godot::prelude::{Vector2, Vector3};
 use std::f32::consts::TAU;
 
+mod joins;
+pub(crate) use joins::{join_near_bare_node, ring_walk};
+
 /// A ring's speed limit, 20 km/h.
 pub(crate) const RING_SPEED_MS: f32 = 20.0 / 3.6;
 /// The most lanes a ring has.
@@ -43,6 +46,8 @@ const RING_MAX_RADIUS_M: f32 = 40.0;
 const ISLAND_REFUSAL: &str = "roundabout_island";
 // How far beyond the two roadbeds the clearance query looks.
 const CLEARANCE_QUERY_PAD_M: f32 = 24.0;
+// The sides of a refused ring's outline.
+const OUTLINE_SIDES: usize = 64;
 // Knots nearer than this to a cut merge into it.
 const CUT_KNOT_MERGE_M: f32 = 0.01;
 
@@ -131,6 +136,25 @@ impl RoundaboutRing {
     }
 }
 
+/// The circle of a ring of `lanes` lanes and `diameter_m` at `centre` as one closed polyline, the
+/// outline a refused ring shows. `O(1)`: 64 points.
+pub(crate) fn circle_outline(centre: Vector3, diameter_m: f32, lanes: u8) -> Vec<Vector3> {
+    let radius_m = ring_radius_m(diameter_m, lanes);
+    let ring = RoundaboutRing {
+        centre: Vector2::new(centre.x, centre.z),
+        radius_m,
+    };
+    let step = TAU / OUTLINE_SIDES as f32;
+    (0..=OUTLINE_SIDES)
+        .map(|side| ring.at(side as f32 * step, radius_m, centre.y))
+        .collect()
+}
+
+// The centreline radius of a ring between its outside kerbs (D21).
+fn ring_radius_m(diameter_m: f32, lanes: u8) -> f32 {
+    0.5 * (diameter_m - f32::from(lanes) * config::LANE_WIDTH)
+}
+
 /// Where a roundabout goes.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum RoundaboutSite {
@@ -144,6 +168,26 @@ pub(crate) enum RoundaboutSite {
     /// A ring in place of this junction node, at its position and height. Its lanes follow its
     /// arms: two when an arm enters with two or more, else one.
     Junction(u32),
+}
+
+impl RoundaboutSite {
+    /// The ring's lanes here. `O(degree)` at a junction.
+    pub(crate) fn lanes(self, graph: &RegionGraph) -> u8 {
+        match self {
+            Self::Ground { lanes, .. } => lanes,
+            Self::Junction(node) => junction_lanes(graph, node),
+        }
+    }
+
+    /// The diameters a ring takes here, `(min, max)`: [`diameter_range_m`] at its lanes, a
+    /// replacement capped at [`CONVERSION_MAX_DIAMETER_M`]. `O(degree)` at a junction.
+    pub(crate) fn diameter_range_m(self, graph: &RegionGraph) -> (f32, f32) {
+        let (min_m, max_m) = diameter_range_m(self.lanes(graph));
+        match self {
+            Self::Ground { .. } => (min_m, max_m),
+            Self::Junction(_) => (min_m, max_m.min(CONVERSION_MAX_DIAMETER_M)),
+        }
+    }
 }
 
 /// One roundabout edit.
@@ -163,6 +207,21 @@ pub(crate) struct RoundaboutLayout {
     // Per ring node, the arm cut to it and the arm's id. Empty on the ground.
     arms: Vec<(usize, Edge)>,
     old_node: Option<u32>,
+    lanes: u8,
+    circle: RoundaboutRing,
+}
+
+/// How a conversion shortened one arm, for its dependents (`ROAD-62`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ArmTrim {
+    /// The arm, keeping its id.
+    pub(crate) edge: usize,
+    /// Whether the arm lost its start, so that its stations shift.
+    pub(crate) at_start: bool,
+    /// The arm's length before the cut.
+    pub(crate) old_length_m: f32,
+    /// The arm's length after it.
+    pub(crate) new_length_m: f32,
 }
 
 /// The ids a [`RoundaboutLayout::apply`] installed.
@@ -214,7 +273,7 @@ impl RoundaboutLayout {
         }
         let ring = RoundaboutRing {
             centre: Vector2::new(centre.x, centre.z),
-            radius_m: 0.5 * (diameter_m - f32::from(lanes) * config::LANE_WIDTH),
+            radius_m: ring_radius_m(diameter_m, lanes),
         };
         let mut entries: Vec<RingEntry> = match node {
             Some(node) => cut_arms(graph, node, ring, centre.y)?,
@@ -261,6 +320,8 @@ impl RoundaboutLayout {
             ring: ring_edges,
             arms,
             old_node: node,
+            lanes,
+            circle: ring,
         };
         layout.validate_clearance(graph)?;
         Ok(layout)
@@ -298,23 +359,70 @@ impl RoundaboutLayout {
         Ok(())
     }
 
-    /// The ring's edges and the arms as cut, for the corridor guards of the transaction.
-    pub(crate) fn corridors(&self) -> impl Iterator<Item = &Edge> {
-        self.ring.iter().chain(self.arms.iter().map(|(_, arm)| arm))
+    /// The ring's edges, for the corridor guards of the transaction.
+    pub(crate) fn ring_edges(&self) -> &[Edge] {
+        &self.ring
+    }
+
+    /// The ring's lanes.
+    pub(crate) fn lanes(&self) -> u8 {
+        self.lanes
+    }
+
+    /// The ring's circle.
+    pub(crate) fn circle(&self) -> RoundaboutRing {
+        self.circle
+    }
+
+    /// The junction the ring replaces, if any.
+    pub(crate) fn old_node(&self) -> Option<u32> {
+        self.old_node
+    }
+
+    /// The ring's centreline as one closed polyline. `O(ring points)`.
+    pub(crate) fn outline(&self) -> Vec<Vector3> {
+        let mut points: Vec<Vector3> = self
+            .ring
+            .iter()
+            .flat_map(|edge| edge.geometry[..edge.geometry.len() - 1].iter().copied())
+            .collect();
+        points.extend(points.first().copied());
+        points
+    }
+
+    /// Each arm's id with the point it is cut at, in the ring order of their nodes.
+    pub(crate) fn arm_cuts(&self) -> impl Iterator<Item = (usize, Vector3)> + '_ {
+        self.arms.iter().map(|(id, arm)| {
+            let at_start = Some(arm.start_node) == self.old_node;
+            let points = &arm.geometry;
+            (*id, points[if at_start { 0 } else { points.len() - 1 }])
+        })
+    }
+
+    /// What the cuts take off each arm of `graph`, read before [`Self::apply`].
+    pub(crate) fn arm_trims(&self, graph: &RegionGraph) -> Vec<ArmTrim> {
+        let trim = |(id, arm): &(usize, Edge)| ArmTrim {
+            edge: *id,
+            at_start: Some(arm.start_node) == self.old_node,
+            old_length_m: graph.edge(*id).physical_length,
+            new_length_m: arm.physical_length,
+        };
+        self.arms.iter().map(trim).collect()
     }
 
     /// Installs the plan on `graph`, graph records only: the ring nodes and edges, each arm cut
     /// and moved to its ring node under its own id, the old node retired with its crossing
     /// overrides. The caller lays out the ring nodes ([`RoundaboutApplied::nodes`]), solves the
     /// arms' profiles and owns lanes, dependents, terrain and undo. `O(ring points + arm points)`.
-    pub(crate) fn apply(self, graph: &mut RegionGraph) -> RoundaboutApplied {
+    pub(crate) fn apply(&self, graph: &mut RegionGraph) -> RoundaboutApplied {
         let nodes: Vec<u32> = self
             .points
             .iter()
             .map(|&point| graph.add_node(point, NodeType::Junction))
             .collect();
         let mut arms = Vec::with_capacity(self.arms.len());
-        for ((id, mut arm), &node) in self.arms.into_iter().zip(&nodes) {
+        for ((id, arm), &node) in self.arms.iter().zip(&nodes) {
+            let (id, mut arm) = (*id, arm.clone());
             let old = self.old_node.expect("arms replace a junction");
             graph.remove_from_spatial_index(id);
             if arm.start_node == old {
@@ -333,7 +441,8 @@ impl RoundaboutLayout {
             graph.remove_node_from_spatial_index(old, graph.node(old).pos);
         }
         let mut ring = Vec::with_capacity(self.ring.len());
-        for (i, mut edge) in self.ring.into_iter().enumerate() {
+        for (i, edge) in self.ring.iter().enumerate() {
+            let mut edge = edge.clone();
             edge.start_node = nodes[i];
             edge.end_node = nodes[ring_next(i, nodes.len())];
             ring.push(graph.add_edge(edge));
@@ -399,6 +508,23 @@ fn stroke_verdict(
     } else {
         ISLAND_REFUSAL
     })
+}
+
+/// Whether a live ring edge lies within the join tolerance of `points`' bounds, so the stroke may
+/// join a ring. One R-tree visit, `O(log E + edges near)`.
+pub(crate) fn ring_near_stroke(graph: &RegionGraph, points: &[Vector3]) -> bool {
+    let (mut min, mut max) = (points[0], points[0]);
+    for point in points {
+        min = min.coord_min(*point);
+        max = max.coord_max(*point);
+    }
+    let reach = Vector3::new(1.0, 0.0, 1.0) * config::INTERSECTION_TOLERANCE;
+    let mut near = false;
+    graph.visit_edges_near_aabb(min - reach, max + reach, |id| {
+        let edge = graph.edge(id);
+        near |= edge.roundabout.is_some() && !edge.deleted;
+    });
+    near
 }
 
 /// The ring through `node`, if a live ring edge touches it. `O(degree)`.
@@ -559,7 +685,7 @@ fn cut_arms(
         } else {
             arm.end_clip = 0.0;
         }
-        (arm.base_cost, arm.physical_length) = CostCalculator::calculate_costs(&arm);
+        price_edge(&mut arm);
         let angle = (point.z - ring.centre.y).atan2(point.x - ring.centre.x);
         entries.push(RingEntry {
             angle: angle.rem_euclid(TAU),
@@ -685,8 +811,13 @@ fn ring_edge(ring: RoundaboutRing, from: Vector3, to: Vector3, lanes: u8) -> Edg
         ..Edge::default()
     };
     edge.set_sidewalks(ring_sidewalk_side());
-    (edge.base_cost, edge.physical_length) = CostCalculator::calculate_costs(&edge);
+    price_edge(&mut edge);
     edge
+}
+
+// `edge`'s routing cost and length from its geometry.
+fn price_edge(edge: &mut Edge) {
+    (edge.base_cost, edge.physical_length) = CostCalculator::calculate_costs(edge);
 }
 
 #[cfg(test)]

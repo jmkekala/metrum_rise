@@ -603,7 +603,8 @@ fn a_stroke_joins_a_ring_from_outside_and_goes_no_further() {
 
 #[test]
 fn a_stroke_joined_to_a_ring_keeps_the_ring_and_takes_the_point() {
-    for (diameter_m, radius_m) in [(30.0, 13.25), (36.0, 16.25), (60.0, 28.25)] {
+    // At 30 m the join is near a bare node and takes its place; further off it splits the ring.
+    for (diameter_m, radius_m, edges) in [(30.0, 13.25, 3), (36.0, 16.25, 4), (60.0, 28.25, 4)] {
         let (mut fixture, nodes) = ring_fixture(diameter_m);
         // Halfway between two ring nodes, at 30 degrees.
         let (sin, cos) = 30f32.to_radians().sin_cos();
@@ -625,7 +626,7 @@ fn a_stroke_joined_to_a_ring_keeps_the_ring_and_takes_the_point() {
             .iter()
             .filter(|edge| !edge.deleted && edge.roundabout.is_some())
             .count();
-        assert_eq!(ring_edges, 4, "D{diameter_m}: both halves stay on the ring");
+        assert_eq!(ring_edges, edges, "D{diameter_m}: the ring stays whole");
         let joined = fixture
             .graph
             .find_node_within(join[1], 0.1)
@@ -641,10 +642,11 @@ fn a_stroke_joined_to_a_ring_keeps_the_ring_and_takes_the_point() {
             "roundabout_arm_node_taken",
             "D{diameter_m}"
         );
-        let free = [
-            fixture.point(128.0, 218.0),
-            fixture.graph.node(nodes[0]).pos,
-        ];
-        assert_eq!(fixture.verdict(&free), "", "D{diameter_m}");
+        // The spread may have moved it: the stroke comes in along its radius.
+        let free_at = fixture.graph.node(nodes[0]).pos;
+        let (out_x, out_z) = (free_at.x - 128.0, free_at.z - 128.0);
+        let reach = 100.0 / out_x.hypot(out_z);
+        let outside = fixture.point(128.0 + out_x * reach, 128.0 + out_z * reach);
+        assert_eq!(fixture.verdict(&[outside, free_at]), "", "D{diameter_m}");
     }
 }
