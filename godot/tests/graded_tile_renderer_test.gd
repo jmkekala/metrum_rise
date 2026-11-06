@@ -772,7 +772,7 @@ func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool
 	for frame in TIMEOUT_FRAMES:
 		_frame(graded, camera, resident)
 		await process_frame
-		var idle: bool = not graded.has_pending_work()
+		var idle: bool = not graded.has_pending_work() and graded.cell_builds_pending() == 0
 		stable = stable + 1 if idle and graded.installed.size() > 0 else 0
 		if stable >= 3:
 			return true
