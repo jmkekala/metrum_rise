@@ -933,6 +933,13 @@ impl SimCore {
         self.publish_parking_sites();
         if let Some(bounds) = undo.dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
+            // The restored client above records no site change, so the journal's records never
+            // see this ground come back.
+            let (min_x, min_z, max_x, max_z) = bounds;
+            self.invalidate_parked_ground(
+                [[min_x, min_z, max_x, max_z].map(f64::from)],
+                crate::simulation::terrain::graded::GRADED_CHANGE_REACH_M,
+            );
         }
         // The bulldoze took the yard's hedge with it; restoring the building lays it again,
         // skipping whatever of it still stands.

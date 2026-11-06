@@ -80,6 +80,29 @@ impl SimCore {
         })
     }
 
+    /// Replaces a model's support profile, false for a model that does not exist. Its contacts
+    /// decide its pose on every bay, so the parked poses go with it. O(bays), at mesh load.
+    pub(crate) fn set_vehicle_ground_support(
+        &mut self,
+        vehicle: usize,
+        profile: VehicleGroundSupport,
+    ) -> bool {
+        let Some(target) = self.vehicle_ground_support.get_mut(vehicle) else {
+            return false;
+        };
+        *target = profile;
+        self.parking.invalidate_all_ground();
+        true
+    }
+
+    /// The farthest any loaded model's contact lies from its origin, metres. O(models).
+    pub(crate) fn vehicle_contact_reach_m(&self) -> f32 {
+        self.vehicle_ground_support
+            .iter()
+            .map(|support| support.reach_m)
+            .fold(0.0, f32::max)
+    }
+
     /// Exact rigid support reference used near the camera and by non-render inspection/tests.
     pub(crate) fn vehicle_ground_pose_exact(
         &self,

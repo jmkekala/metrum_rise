@@ -17,7 +17,8 @@ use crate::simulation::buildings::allocator::{SiteChange, SiteSnapshot};
 use crate::simulation::network::roadbed::{RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{
-    ALL_LEVELS, Level, SelectScratch, SiteBuffer, SiteSource, TileKey, TileStage,
+    ALL_LEVELS, GRADED_CHANGE_REACH_M, Level, SelectScratch, SiteBuffer, SiteSource, TileKey,
+    TileStage,
     dirty_tiles_for_base_area, dirty_tiles_for_road_changes, dirty_tiles_for_site_changes,
     selection_site_reach_m,
 };
@@ -154,6 +155,9 @@ impl SimCore {
             changes,
         );
         self.terrain_query_index_update_us = started.elapsed().as_micros() as u64;
+        // `pieces` holds every old and new piece, bridges and tunnels too, and a changed segment
+        // lies in one of them.
+        self.invalidate_parked_ground(changes.pieces.iter().copied(), GRADED_CHANGE_REACH_M);
         if !self.graded_edits.enabled {
             return;
         }
@@ -216,6 +220,10 @@ impl SimCore {
             changes,
         );
         self.terrain_query_index_update_us = started.elapsed().as_micros() as u64;
+        self.invalidate_parked_ground(
+            changes.iter().map(|change| change.bounds.map(f64::from)),
+            GRADED_CHANGE_REACH_M,
+        );
         if !self.graded_edits.enabled || changes.is_empty() {
             return;
         }
@@ -242,6 +250,10 @@ impl SimCore {
             &self.allocator,
         );
         self.terrain_query_index_update_us = started.elapsed().as_micros() as u64;
+        // The graded value at a point reads the base only there: the samples' bilinear support
+        // and the rectangle's outward rounding, as `dirty_tiles_for_base_area` selects.
+        let cell_m = f64::from(self.heightmap.cell_size_m());
+        self.invalidate_parked_ground([rect], 2.0 * cell_m + 1.0);
         if self.graded_edits.enabled {
             self.push_graded_edit(GradedEditKind::Base(rect));
         }
@@ -253,6 +265,7 @@ impl SimCore {
         self.terrain_query_index
             .rebuild_all(&self.transit_network.roadbed, &self.allocator);
         self.terrain_query_index_update_us = started.elapsed().as_micros() as u64;
+        self.parking.invalidate_all_ground();
         if self.graded_edits.enabled {
             self.graded_edits.roadbed = Some(self.transit_network.roadbed.clone());
             self.push_graded_edit(GradedEditKind::All);

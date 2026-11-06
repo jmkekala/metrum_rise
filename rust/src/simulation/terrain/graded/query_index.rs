@@ -28,6 +28,10 @@ const WINDOW_PAD_M: f64 = 1.0;
 // the tile rebuild itself still filters every input against the exact complete-tile window.
 const CHANGE_PAD_M: f64 = QUERY_APRON_M + WINDOW_PAD_M + 2.0;
 
+/// How far from a changed road piece or site a graded query's answer can move: the cap and this
+/// index's own pad, the reach of every local rebuild below.
+pub(crate) const GRADED_CHANGE_REACH_M: f64 = CAP_M + CHANGE_PAD_M;
+
 /// Owner references any graded query point in one 64 m tile can need. Road seams and walls are
 /// read from `road_pieces`; coverage keeps its narrower piece list so point preparation retains
 /// each piece's exact triangle-grid candidate order. Sites stay in the allocator's `SiteCells`.
@@ -144,10 +148,10 @@ impl TerrainQueryIndex {
         }
         let mut keys = BTreeSet::new();
         for bounds in roadbed.terrain_query_input_bounds() {
-            push_tiles(grown(bounds, CAP_M + CHANGE_PAD_M), &mut keys);
+            push_tiles(grown(bounds, GRADED_CHANGE_REACH_M), &mut keys);
         }
         for bounds in sites.graded_query_input_bounds() {
-            push_tiles(grown(bounds, CAP_M + CHANGE_PAD_M), &mut keys);
+            push_tiles(grown(bounds, GRADED_CHANGE_REACH_M), &mut keys);
         }
         self.tiles.clear();
         for key in keys {
@@ -170,11 +174,11 @@ impl TerrainQueryIndex {
         }
         let mut keys = BTreeSet::new();
         for &bounds in changes.pieces.iter().chain(&changes.portals) {
-            push_tiles(grown(bounds, CAP_M + CHANGE_PAD_M), &mut keys);
+            push_tiles(grown(bounds, GRADED_CHANGE_REACH_M), &mut keys);
         }
         for &[a, b] in &changes.segments {
             let seam = road_seam(a, b);
-            push_tiles(grown(seam.box_xz(), CAP_M + CHANGE_PAD_M), &mut keys);
+            push_tiles(grown(seam.box_xz(), GRADED_CHANGE_REACH_M), &mut keys);
         }
         self.rebuild_keys(keys, roadbed, sites);
         self.generation = self.generation.wrapping_add(1);
@@ -194,7 +198,7 @@ impl TerrainQueryIndex {
         let mut keys = BTreeSet::new();
         for change in changes {
             push_tiles(
-                grown(change.bounds.map(f64::from), CAP_M + CHANGE_PAD_M),
+                grown(change.bounds.map(f64::from), GRADED_CHANGE_REACH_M),
                 &mut keys,
             );
         }

@@ -247,15 +247,8 @@ impl SimulationNode {
         ) else {
             return false;
         };
-        let mut core = self.lock_core();
-        let Some(target) = usize::try_from(vehicle)
-            .ok()
-            .and_then(|id| core.vehicle_ground_support.get_mut(id))
-        else {
-            return false;
-        };
-        *target = profile;
-        true
+        usize::try_from(vehicle)
+            .is_ok_and(|id| self.lock_core().set_vehicle_ground_support(id, profile))
     }
 
     /// Grounds an interpolated car bucket in Rust. Empty means busy/unprepared: use its already

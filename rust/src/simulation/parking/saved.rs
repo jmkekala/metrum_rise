@@ -218,6 +218,8 @@ impl ParkingSystem {
                 reservation: Handle::from_bits(place.reservation),
                 chunk_slot: chunk.places.len(),
                 source_slot: list.len(),
+                ground: [0.0; 12],
+                ground_model: super::data::GROUND_UNSOLVED,
             });
             if place.active {
                 system.usable_places += 1;

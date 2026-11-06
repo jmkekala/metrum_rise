@@ -262,10 +262,10 @@ func update_swarm(delta: float = 0.0):
 	# snapshot pose and grounds off-lane cars, so they do not step at the simulation tick rate.
 	var parked_renderer: Node = get_node_or_null("../ParkedCars")
 	var full: bool = parked_renderer.needs_full_publication() if parked_renderer != null else false
+	# One snapshot for both, so a car crossing a bay's edge is drawn exactly once. "parked" is
+	# there only when a chunk changed.
 	var vehicle_frame: Dictionary = simulation_node.get_vehicle_frame(full)
-	if vehicle_frame.get("busy", true):
-		return
-	if parked_renderer != null:
+	if parked_renderer != null and vehicle_frame.has("parked"):
 		parked_renderer.apply_publication(vehicle_frame["parked"])
 	var car_buffers: Dictionary = simulation_node.smooth_car_render_data(
 		vehicle_frame["cars"], delta

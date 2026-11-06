@@ -1089,7 +1089,7 @@ if [ $TEST -eq 1 ]; then
         new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
         zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
         junction_debug_overlay_test road_rejection_report_test road_tunnels_test \
-        agent_inspector_test street_lamp_grid_test graded_tile_renderer_test; do
+        agent_inspector_test street_lamp_grid_test graded_tile_renderer_test parking_test; do
         bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
         if [ "$bridge_test_script" = simulation_speed_input_test ]; then

@@ -32,7 +32,7 @@ mod walls;
 
 pub use grade::{CAP_M, INSIDE_REACH_M, TIE_IN_SLOPE, overlap};
 pub use query::{GradedSurface, GroundClass, QueryScratch};
-pub(crate) use query_index::TerrainQueryIndex;
+pub(crate) use query_index::{GRADED_CHANGE_REACH_M, TerrainQueryIndex};
 pub use residency::{
     ATLAS_WIDTH, PatchTilesScratch, WALL_FACE_BYTES, graded_tiles_in_rect, pack_slot, pack_walls,
     seam_channel, slot_side,

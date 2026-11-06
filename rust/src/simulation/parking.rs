@@ -25,7 +25,7 @@ mod tests;
 use crate::simulation::core::handles::{Handle, HandleTable};
 pub(crate) use data::{Bay, ParkingCost, Place, PlaceSource, Vehicle};
 use data::{Chunk, chunk_at};
-pub(crate) use render::ParkedChunk;
+pub(crate) use render::ParkedPublication;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -43,8 +43,12 @@ pub(crate) struct ParkingSystem {
     pub(crate) release_events: Vec<(i32, i32)>,
     retired_dirty: Vec<Handle<Place>>,
     usable_places: usize,
-    pending: std::collections::BTreeMap<(i32, i32), Arc<ParkedChunk>>,
-    published: std::collections::BTreeMap<(i32, i32), Arc<ParkedChunk>>,
+    pending: std::collections::BTreeMap<(i32, i32), render::ParkedUpdate>,
+    published: std::collections::BTreeMap<(i32, i32), Arc<render::ParkedChunk>>,
+    // The renderer's half of the publication; a replaced system starts a new one.
+    publication: ParkedPublication,
+    pending_changed: bool,
+    acknowledged: u64,
     // Only off-map cars are indexed here. Parking release never scans sleeping vehicles.
     pub(crate) diagnostics: std::collections::BTreeMap<u64, Vec<String>>,
     building_sources: HashMap<u64, Vec<PlaceSource>>,
@@ -55,7 +59,6 @@ pub(crate) struct ParkingSystem {
     owners: HashMap<u64, Handle<Vehicle>>,
     mobility_seed: u64,
     pub(crate) pending_households: Vec<u64>,
-    publication_epoch: u64,
     candidates: HashMap<u64, candidates::DestinationCandidates>,
     candidate_revision: u64,
     pending_economy: Vec<u64>,
@@ -99,6 +102,8 @@ impl ParkingSystem {
             reservation: Handle::NONE,
             chunk_slot: chunk.places.len(),
             source_slot: source_list.len(),
+            ground: [0.0; 12],
+            ground_model: data::GROUND_UNSOLVED,
         });
         self.usable_places += 1;
         self.place_handles.register_appended(self.places.len());
@@ -275,7 +280,6 @@ impl ParkingSystem {
     }
 
     fn mark_dirty(&mut self, key: (i32, i32)) {
-        self.publication_epoch = self.publication_epoch.wrapping_add(1);
         let chunk = self.chunks.get_mut(&key).expect("place prepares its chunk");
         if !chunk.dirty {
             chunk.dirty = true;

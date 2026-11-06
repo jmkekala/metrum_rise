@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Thin parking inspector, debug fleet and versioned parked-render bridge.
+//! Thin parking inspector, debug fleet and versioned parked-render bridge. The render path reads
+//! the snapshot only: moving and parked cars come from one custody state, and no call here
+//! takes the core lock for them (`PARK-02`).
 
 use super::*;
 use crate::simulation::core::handles::Handle;
@@ -47,9 +49,7 @@ impl SimulationNode {
     pub fn debug_fill_parking(&mut self) -> i32 {
         let mut core = self.lock_core();
         core.publish_pending_building_site_changes();
-        let count = core.parking.fill_test_fleet();
-        core.build_parked_chunks();
-        count as i32
+        core.parking.fill_test_fleet() as i32
     }
 
     /// Local inspection counts and rejected asset-layout diagnostics; no simulation decisions.
@@ -112,75 +112,51 @@ impl SimulationNode {
         result
     }
 
-    /// Nonblocking O(pending dirty payload); unchanged chunks send nothing. Full reconnects
-    /// explicitly request all chunks. Payloads survive skipped frames until exact-version ack.
+    /// The parked chunks of the current snapshot the renderer has not installed. `full` asks for
+    /// every chunk: a later snapshot lists them, and its payload says `full`. Lock-free.
     #[func]
     pub fn get_parked_car_chunks(&self, full: bool) -> VarDictionary {
-        let mut result = VarDictionary::new();
-        result.set("busy", true);
-        let Some(mut core) = self.try_lock_core() else {
-            return result;
-        };
-        core.build_parked_chunks();
-        let epoch = core.world_epoch;
-        let chunks = core.parking.publications(full);
-        drop(core);
-        pack_parked(epoch, chunks)
+        let snapshot = self.snapshot.read().unwrap();
+        snapshot.parked.offer(full);
+        pack_parked(&snapshot)
     }
 
-    /// Returns moving and parked payloads from the same custody publication. If a newer
-    /// parking transition has overtaken the moving snapshot, both renderers retain their
-    /// previous frame. O(visible cars + dirty parked chunks), nonblocking on the simulation.
+    /// Moving cars and, when something changed, the parked chunks of the same snapshot, so no
+    /// car shows twice or vanishes across a bay handoff. O(visible cars + unseen parked chunks);
+    /// nothing for the parked side when no chunk changed. Never waits for the simulation.
     #[func]
     pub fn get_vehicle_frame(&self, full: bool) -> VarDictionary {
-        let mut result = VarDictionary::new();
-        result.set("busy", true);
         let snapshot = self.snapshot.read().unwrap();
-        let Some(mut core) = self.try_lock_core() else {
-            return result;
-        };
-        if snapshot.parking_epoch != core.parking.publication_epoch()
-            || snapshot.vehicle_world_epoch != core.world_epoch
-        {
-            return result;
-        }
-        core.build_parked_chunks();
-        let chunks = core.parking.publications(full);
-        let epoch = core.world_epoch;
-        drop(core);
+        let mut result = VarDictionary::new();
         result.set(
             "cars",
             crate::nodes::sim::bridge::agents::get_car_render_data(&snapshot),
         );
-        result.set("parked", pack_parked(epoch, chunks));
-        result.set("busy", false);
+        if snapshot.parked.offer(full) {
+            result.set("parked", pack_parked(&snapshot));
+        }
         result
     }
 
-    /// O(log pending chunks); stale world/version acknowledgements cannot discard a newer pose.
+    /// Records that the renderer installed a payload. O(1), lock-free; an answer from a replaced
+    /// world or an older serial changes nothing, so it cannot discard a newer pose.
     #[func]
-    pub fn acknowledge_parked_car_chunk(&mut self, epoch: i64, key: Vector2i, version: i64) {
-        let Some(mut core) = self.try_lock_core() else {
-            return;
-        };
-        if core.world_epoch == epoch as u64 {
-            core.parking.acknowledge((key.x, key.y), version as u64);
+    pub fn acknowledge_parked_cars(&self, epoch: i64, serial: i64) {
+        let snapshot = self.snapshot.read().unwrap();
+        if snapshot.vehicle_world_epoch == epoch as u64 {
+            snapshot.parked.acknowledge(serial as u64);
         }
     }
 }
 
-fn pack_parked(
-    epoch: u64,
-    chunks: Vec<(
-        (i32, i32),
-        std::sync::Arc<crate::simulation::parking::ParkedChunk>,
-    )>,
-) -> VarDictionary {
+fn pack_parked(snapshot: &crate::nodes::sim::core::RenderSnapshot) -> VarDictionary {
     let mut result = VarDictionary::new();
-    result.set("busy", false);
-    result.set("epoch", epoch as i64);
+    result.set("epoch", snapshot.vehicle_world_epoch as i64);
+    result.set("serial", snapshot.parked.serial as i64);
+    result.set("full", snapshot.parked.holds_full());
     let mut updates = VarArray::new();
-    for (key, chunk) in chunks {
+    for parked in snapshot.parked.unseen() {
+        let (key, chunk) = (parked.key, &parked.chunk);
         let mut update = VarDictionary::new();
         update.set("chunk", Vector2i::new(key.0, key.1));
         update.set("version", chunk.version as i64);

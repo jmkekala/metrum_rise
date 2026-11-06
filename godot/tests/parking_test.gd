@@ -73,9 +73,25 @@ func _run() -> void:
 	_expect(sim.place_service_building("parking:building.parking.small_lot", 0.0, -30.0).is_empty(), "standalone lot places")
 	var filled := sim.debug_fill_parking()
 	_expect(filled > 0, "explicit debug fleet fills supply")
-	var full: Dictionary = sim.get_parked_car_chunks(true)
+	# Chunks reach Godot only through a snapshot; a full request is answered by a later one.
+	var full: Dictionary = {}
+	deadline = Time.get_ticks_msec() + 20000
+	while not full.get("full", false) and Time.get_ticks_msec() < deadline:
+		full = sim.get_parked_car_chunks(true)
+		await process_frame
+	_expect(full.get("full", false), "a full request is served without the core lock")
+	var published := 0
 	for update: Dictionary in full.get("chunks", []):
-		sim.acknowledge_parked_car_chunk(full["epoch"], update["chunk"], update["version"])
+		for ids: PackedInt64Array in update["identities"].values():
+			published += ids.size()
+	_expect(published == filled, "the snapshot holds every parked car")
+	var frame: Dictionary = sim.get_vehicle_frame(false)
+	_expect(not frame.has("busy"), "the vehicle frame has no busy state")
+	_expect(frame.has("cars") and frame.has("parked"), "cars and unseen chunks come together")
+	sim.acknowledge_parked_cars(full["epoch"], full["serial"])
+	sim.acknowledge_parked_cars(full["epoch"] + 1, 1 << 40)
+	frame = sim.get_vehicle_frame(false)
+	_expect(frame.has("cars") and not frame.has("parked"), "nothing parked when nothing changed")
 	var unchanged: Dictionary = sim.get_parked_car_chunks(false)
 	_expect(unchanged.get("chunks", []).is_empty(), "unchanged chunks send nothing")
 	# Placement snaps to its frontage; target the published centre, and retry a busy bridge.

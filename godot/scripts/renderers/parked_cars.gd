@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Versioned parked MultiMesh chunks. Rust owns supply, custody, pose and persisted palette.
-## Unchanged chunks perform no upload. Parked resources omit all lamp surfaces and lights.
+## Payloads arrive with the moving cars of the same snapshot (agents.gd); one acknowledgement
+## answers each. Unchanged chunks perform no upload. Parked resources omit all lamps and lights.
 extends Node3D
 
 const SceneLighting := preload("res://scripts/core/scene_lighting.gd")
@@ -21,8 +22,6 @@ func needs_full_publication() -> bool:
 	return _full
 
 func apply_publication(payload: Dictionary) -> void:
-	if payload.get("busy", true):
-		return
 	var epoch: int = payload["epoch"]
 	if epoch != _epoch:
 		for chunk: Node in _chunks.values():
@@ -30,14 +29,15 @@ func apply_publication(payload: Dictionary) -> void:
 		_chunks.clear()
 		_versions.clear()
 		_epoch = epoch
-	_full = false
-	for update: Dictionary in payload.get("chunks", []):
+	if payload["full"]:
+		_full = false
+	for update: Dictionary in payload["chunks"]:
 		var key: Vector2i = update["chunk"]
 		var version: int = update["version"]
 		if _versions.get(key, -1) != version:
 			_install(key, update["buckets"])
 			_versions[key] = version
-		simulation_node.acknowledge_parked_car_chunk(epoch, key, version)
+	simulation_node.acknowledge_parked_cars(epoch, payload["serial"])
 
 func _install(key: Vector2i, buckets: Dictionary) -> void:
 	if _chunks.has(key):

@@ -301,8 +301,9 @@ impl SimCore {
 /// The Godot main thread converts these `Vec<f32>` buffers to `PackedFloat32Array`
 /// when the `#[func]` render getters are called.
 pub struct RenderSnapshot {
-    /// Parking custody revision shared by moving poses and parked chunk publication.
-    pub(crate) parking_epoch: u64,
+    /// Parked chunks of the custody state `car_transforms` was built from: a car entering or
+    /// leaving a bay is in exactly one of them, in every snapshot.
+    pub(crate) parked: crate::simulation::parking::ParkedPublication,
     /// World identity of the coherent vehicle frame.
     pub(crate) vehicle_world_epoch: u64,
     /// Per `pedestrian_type` → flat 12-float `Transform3D` buffer.
@@ -416,7 +417,7 @@ pub struct RenderSnapshot {
 impl Default for RenderSnapshot {
     fn default() -> Self {
         Self {
-            parking_epoch: 0,
+            parked: Default::default(),
             vehicle_world_epoch: 0,
             pedestrian_transforms: HashMap::new(),
             car_transforms: HashMap::new(),
@@ -550,7 +551,7 @@ impl SimCore {
         // Cull, pose and bucket the agents in parallel; instance order stays agent order, the
         // interpolation identity contract (`SIM-02-K`).
         self.build_agent_instances(&mut snapshot);
-        snapshot.parking_epoch = self.parking.publication_epoch();
+        snapshot.parked = self.publish_parked_chunks();
         snapshot.vehicle_world_epoch = self.world_epoch;
 
         let node_positions = self.network_node_positions_snapshot();

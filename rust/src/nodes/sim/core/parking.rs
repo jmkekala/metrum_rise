@@ -4,6 +4,7 @@
 
 use super::SimCore;
 use crate::simulation::parking::kerb::{kerb_bays, kerb_blockers};
+use crate::simulation::parking::ParkedPublication;
 use crate::simulation::parking::lots::lot_bays;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -95,7 +96,6 @@ impl SimCore {
         );
         self.reconcile_kerb_parking(&kerb_edges, &mut points);
         self.rebuild_parking_candidates_near(&points);
-        self.build_parked_chunks();
     }
 
     // Both parking lanes of each edge, against the blockers already published for it. Geometry
@@ -182,28 +182,60 @@ impl SimCore {
         self.rebuild_parking_candidates_near(&points);
         changes.clear();
         self.allocator.parking_site_changes = changes;
-        self.build_parked_chunks();
     }
 }
 
 impl SimCore {
-    /// Ground dirty parked instances once with the existing vehicle-contact solve, O(dirty cars × Q).
+    /// The sim thread's end of a step: answers the renderer, rebuilds dirty parked chunks and
+    /// returns the publication for the snapshot being built, whose moving cars come from the
+    /// same custody state. O(1) and allocation-free when nothing is dirty.
+    pub(crate) fn publish_parked_chunks(&mut self) -> ParkedPublication {
+        self.parking.take_renderer_answers();
+        self.build_parked_chunks();
+        self.parking.publication()
+    }
+
+    /// Rebuilds dirty parked chunks from the cached poses; a place without a pose for its car's
+    /// model takes the existing vehicle-contact solve once. Reads the live ground, so it runs
+    /// where the site index is ready. O(dirty chunks' places + new poses × Q).
     pub(crate) fn build_parked_chunks(&mut self) {
-        let mut parking = std::mem::take(&mut self.parking);
-        parking.build_dirty_chunks_with(|model, pos, heading| {
-            let (s, c) = heading.sin_cos();
-            let (y, basis) = self.vehicle_ground_pose_exact(
-                model,
-                godot::prelude::Vector2::new(pos[0], pos[2]),
-                godot::prelude::Vector3::new(s, 0.0, c),
-            );
-            let [x_axis, y_axis, z_axis] = basis;
-            [
-                x_axis.x, y_axis.x, z_axis.x, pos[0], x_axis.y, y_axis.y, z_axis.y, y, x_axis.z,
-                y_axis.z, z_axis.z, pos[2],
-            ]
-        });
-        self.parking = parking;
+        if !self.parking.has_dirty_chunks() {
+            return;
+        }
+        let built = self
+            .parking
+            .solve_dirty_chunks(|model, pos, heading| self.parked_ground_pose(model, pos, heading));
+        self.parking.install_dirty_chunks(built);
+    }
+
+    // A parked car's row-major instance pose, from the existing vehicle-contact solve.
+    pub(super) fn parked_ground_pose(&self, model: u8, pos: [f32; 3], heading: f32) -> [f32; 12] {
+        let (s, c) = heading.sin_cos();
+        let (y, basis) = self.vehicle_ground_pose_exact(
+            model,
+            godot::prelude::Vector2::new(pos[0], pos[2]),
+            godot::prelude::Vector3::new(s, 0.0, c),
+        );
+        let [x_axis, y_axis, z_axis] = basis;
+        [
+            x_axis.x, y_axis.x, z_axis.x, pos[0], x_axis.y, y_axis.y, z_axis.y, y, x_axis.z,
+            y_axis.z, z_axis.z, pos[2],
+        ]
+    }
+
+    /// Forgets the parked poses within `reach` of each changed rectangle, plus the longest car's
+    /// contacts. The graded edit journal's records call this, for every change of the ground a
+    /// parked car stands on that they see. O(rectangles × their chunks' places).
+    pub(crate) fn invalidate_parked_ground(
+        &mut self,
+        changed: impl IntoIterator<Item = [f64; 4]>,
+        reach: f64,
+    ) {
+        let reach = reach + f64::from(self.vehicle_contact_reach_m());
+        for [min_x, min_z, max_x, max_z] in changed {
+            self.parking
+                .invalidate_ground([min_x - reach, min_z - reach, max_x + reach, max_z + reach]);
+        }
     }
 }
 

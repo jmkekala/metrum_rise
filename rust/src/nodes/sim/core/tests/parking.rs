@@ -8,6 +8,7 @@ use crate::nodes::sim::core::RoadCommitRequest;
 use std::time::Instant;
 
 mod kerb;
+mod poses;
 
 fn core() -> SimCore {
     let mut core = SimCore::new(
@@ -326,6 +327,78 @@ fn parking_resident_save_round_trip_and_handoff_at_every_leg() {
     assert_eq!(seen, [true; 5]);
     assert!(arrived);
     std::fs::remove_file(path).unwrap();
+}
+
+// What Godot does with a snapshot: every chunk it has not installed replaces its old instances,
+// and the moving cars are the snapshot's. Reading one snapshot for both is the whole guarantee:
+// a car entering or leaving a bay is drawn exactly once, on every frame Godot reads, also when
+// it reads only some of the sim's snapshots.
+#[test]
+fn a_car_entering_and_leaving_a_bay_is_drawn_once_in_every_snapshot() {
+    use crate::simulation::parking::ParkingTripPhase;
+    for stride in [1, 3] {
+        let mut c = SimCore::new(
+            WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
+                .with_chunking(128.0, 0.0)
+                .with_terrain_resolution(2.0),
+        );
+        c.treasury.balance = 1_000_000.0;
+        commit(&mut c, (-600.0, 0.0), (600.0, 0.0));
+        let id = register_lot(&mut c);
+        let mut manifest = c.allocator.registry.get(&id).unwrap().manifest.clone();
+        manifest.building.as_mut().unwrap().household_capacity = Some(4);
+        c.allocator
+            .registry
+            .register("parking", manifest, String::new());
+        c.place_service_building_internal(&id, -450.0, -30.0)
+            .unwrap();
+        c.place_service_building_internal(&id, 450.0, -30.0)
+            .unwrap();
+        c.publish_pending_building_site_changes();
+        let eastbound = c.allocator.entrances[0].side == -1;
+        let (home, target) = if eastbound { (0, 1) } else { (1, 0) };
+        let agent = c.debug_add_parking_commuter(home, target).unwrap();
+        c.agents.release_departure(agent);
+        let mut installed = std::collections::BTreeMap::new();
+        let (mut left_bay, mut entered_bay) = (false, false);
+        for frame in 0..20_000 {
+            c.time.speed_multiplier = 1.0;
+            c.step_frame(1.0 / 60.0);
+            let snapshot = c.build_snapshot();
+            let phase = c.agents.parking_trip[agent].phase;
+            left_bay |= phase == ParkingTripPhase::Drive;
+            let parked_again = left_bay && phase == ParkingTripPhase::WalkToDoor;
+            entered_bay |= parked_again;
+            if frame % stride == 0 {
+                for update in snapshot.parked.unseen() {
+                    installed.insert(update.key, update.chunk.clone());
+                }
+                snapshot.parked.acknowledge(snapshot.parked.serial);
+                let moving = snapshot
+                    .car_render_ids
+                    .values()
+                    .map(Vec::len)
+                    .sum::<usize>();
+                let parked = installed
+                    .values()
+                    .map(|chunk| chunk.identities.values().map(Vec::len).sum::<usize>())
+                    .sum::<usize>();
+                assert_eq!(
+                    moving + parked,
+                    1,
+                    "stride {stride} frame {frame} {phase:?}: {moving} moving, {parked} parked"
+                );
+            }
+            if entered_bay
+                && c.agents.current_building[agent] == target
+                && c.agents.transit[agent]
+                    == crate::simulation::economy::agents::TRANSIT_IN_BUILDING
+            {
+                break;
+            }
+        }
+        assert!(left_bay && entered_bay, "stride {stride}");
+    }
 }
 
 #[test]

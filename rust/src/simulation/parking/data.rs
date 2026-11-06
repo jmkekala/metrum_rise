@@ -38,7 +38,14 @@ pub(crate) struct Place {
     pub reservation: Handle<Vehicle>,
     pub chunk_slot: usize,
     pub source_slot: usize,
+    // Derived, never saved: the row-major pose of `ground_model` standing here on the ground as
+    // it is now. A car's contacts belong to its model, so the pose is one model's.
+    pub ground: [f32; 12],
+    pub ground_model: u8,
 }
+
+/// `Place::ground_model` of a place with no valid pose: new, loaded, or its ground moved.
+pub(super) const GROUND_UNSOLVED: u8 = u8::MAX;
 
 /// A persistent car, independent of the resident movement FSM in PARK-01.
 #[derive(StructOfArray)]

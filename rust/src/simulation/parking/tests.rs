@@ -83,24 +83,130 @@ fn save_round_trip_and_chunk_acknowledgements() {
     let key = (-1, 0);
     let first = s.pending[&key].clone();
     s.build_dirty_chunks();
-    assert!(Arc::ptr_eq(&first, &s.pending[&key]));
+    assert!(Arc::ptr_eq(&first.chunk, &s.pending[&key].chunk));
     let json = s.save_json(|s| s).unwrap();
     let mut loaded = ParkingSystem::load_json(&json).unwrap();
     loaded.build_dirty_chunks();
     assert_eq!(loaded.save_json(|s| s).unwrap(), json);
-    assert_eq!(loaded.pending[&key].buckets, first.buckets);
+    assert_eq!(loaded.pending[&key].chunk.buckets, first.chunk.buckets);
     let pos = s.release(s.vehicle_handles.handle(0)).unwrap();
     s.rehouse_near(pos);
     s.build_dirty_chunks();
-    s.acknowledge(key, first.version);
+    // An answer for the older publication keeps the newer chunk; a repeat changes nothing.
+    let published = s.publication();
+    assert!(published.offer(false));
+    assert_eq!(published.unseen().count(), 1);
+    published.acknowledge(first.serial);
+    s.take_renderer_answers();
     assert!(!s.pending.is_empty());
-    let version = s.pending[&key].version;
-    s.acknowledge(key, version);
+    published.acknowledge(published.serial);
+    published.acknowledge(first.serial);
+    assert!(!published.offer(false));
+    assert_eq!(published.unseen().count(), 0);
+    s.take_renderer_answers();
     assert!(s.pending.is_empty());
+    assert!(s.publication().updates.is_empty());
     s.build_dirty_chunks();
     assert!(s.pending.is_empty());
     let broken = json.replace("\"occupant\":0", "\"occupant\":4294967296");
     assert!(ParkingSystem::load_json(&broken).is_err());
+}
+
+#[test]
+fn a_full_request_lists_every_chunk_again_in_a_later_snapshot() {
+    let mut s = ParkingSystem::default();
+    s.add_place(source(0), bay(-512.0, 4.0));
+    s.add_place(source(1), bay(512.0, 4.0));
+    s.fill_test_fleet();
+    s.build_dirty_chunks();
+    let listed = s.publication();
+    listed.acknowledge(listed.serial);
+    s.take_renderer_answers();
+    assert!(s.publication().updates.is_empty());
+    assert!(!s.publication().offer(true), "nothing new, the request is for the next snapshot");
+    s.take_renderer_answers();
+    let full = s.publication();
+    assert!(full.holds_full());
+    assert_eq!(full.unseen().count(), 2);
+    assert!(full.offer(true));
+    s.take_renderer_answers();
+    assert_eq!(s.publication().full_serial, full.full_serial, "served once");
+}
+
+// A rebuild is a copy: only a place with no pose for its car's model reaches the ground solve.
+#[test]
+fn a_chunk_rebuild_solves_no_unchanged_place() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let solves = AtomicUsize::new(0);
+    let solve = |model: u8, position: [f32; 3], _: f32| {
+        solves.fetch_add(1, Ordering::Relaxed);
+        [f32::from(model), position[0], position[2], 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    };
+    let count = |s: &mut ParkingSystem| {
+        solves.store(0, Ordering::Relaxed);
+        s.build_dirty_chunks_with(solve);
+        solves.load(Ordering::Relaxed)
+    };
+    let mut s = ParkingSystem::default();
+    let places: Vec<_> = (0..8).map(|i| s.add_place(source(i), bay(i as f32 * 8.0, 4.0))).collect();
+    s.fill_test_fleet();
+    assert_eq!(count(&mut s), 8, "each parked car solves its new place once");
+    assert_eq!(count(&mut s), 0, "nothing dirty");
+    let free = s.add_place(source(8), bay(100.0, 4.0));
+    let spare = s.add_place(source(9), bay(108.0, 4.0));
+    assert_eq!(count(&mut s), 0, "an empty new bay solves nothing");
+    // A departure dirties the chunk: seven cars stay, and none is solved again.
+    let leaver = s.places.occupant[s.place_handles.resolve(places[0]).unwrap()];
+    s.set_moving(leaver, true);
+    assert_eq!(count(&mut s), 0);
+    s.set_moving(leaver, false);
+    assert_eq!(count(&mut s), 0);
+    // The same model comes back to a bay it stood on; a new bay takes the one solve.
+    s.release(leaver);
+    assert!(s.occupy(leaver, free));
+    assert_eq!(count(&mut s), 1, "only the arrival's new place");
+    s.release(leaver);
+    assert!(s.occupy(leaver, places[0]));
+    assert_eq!(count(&mut s), 0, "its pose is still there");
+    // Another model on the same bay stands differently: one solve, for that place alone.
+    let other = s.places.occupant[s.place_handles.resolve(places[1]).unwrap()];
+    assert_ne!(
+        s.vehicles.model[s.vehicle_handles.resolve(leaver).unwrap()],
+        s.vehicles.model[s.vehicle_handles.resolve(other).unwrap()]
+    );
+    s.release(leaver);
+    assert!(s.occupy(leaver, spare));
+    s.release(other);
+    assert!(s.occupy(other, places[0]));
+    assert_eq!(count(&mut s), 2, "the two arrivals, nothing else in the chunk");
+    assert_eq!(s.pending.len(), 1);
+}
+
+// A moved ground forgets the poses inside it, and only those; the chunk republishes.
+#[test]
+fn invalidated_ground_solves_its_places_again_and_no_others() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let solves = AtomicUsize::new(0);
+    let mut s = ParkingSystem::default();
+    for i in 0..4 {
+        s.add_place(source(i), bay(i as f32 * 100.0, 4.0));
+    }
+    s.fill_test_fleet();
+    let solve = |_: u8, _: [f32; 3], _: f32| {
+        solves.fetch_add(1, Ordering::Relaxed);
+        [0.0; 12]
+    };
+    s.build_dirty_chunks_with(solve);
+    assert_eq!(solves.swap(0, Ordering::Relaxed), 4);
+    s.invalidate_ground([90.0, 0.0, 210.0, 8.0]);
+    assert!(s.has_dirty_chunks(), "a parked car stands there");
+    s.build_dirty_chunks_with(solve);
+    assert_eq!(solves.swap(0, Ordering::Relaxed), 2);
+    s.invalidate_ground([1000.0, 0.0, 1100.0, 8.0]);
+    assert!(!s.has_dirty_chunks(), "no bay there");
+    s.invalidate_all_ground();
+    s.build_dirty_chunks_with(solve);
+    assert_eq!(solves.swap(0, Ordering::Relaxed), 4);
 }
 
 #[test]
