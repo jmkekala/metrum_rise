@@ -1063,8 +1063,9 @@ no widening-side choice.
 
 A roundabout is a ring of one-way road edges around a grass island, built on empty ground or in
 place of a junction. Round R7a (branch `port-r7a-ring`, not landed) is the model, the geometry and
-the lane rule on the graph: there is no tool yet (round R7b adds the transaction, the tool and
-bulldozing the whole ring), and no give-way (round R7c: entering cars do not yet yield to the ring).
+the lane rule on the graph; round R7b (branch `port-r7b-tool`, not landed) the transaction, the tool
+and bulldozing the whole ring. There is no give-way yet (round R7c: entering cars do not yet yield
+to the ring).
 
 **Model.** `Edge::roundabout: Option<RoundaboutRing>` holds the circle (centre on the XZ plane and
 the centreline radius) on every ring edge. A ring edge is one-way in the sense of travel (forward
@@ -1087,7 +1088,8 @@ without them the two ring arms of a node curve away from one point and the islan
 `CornerDoesNotFit`; with them it is `Straight` at 180.00 degrees, and the node is an ordinary
 three-arm junction with two `Concave` 90 degree corners at the full 3.5 m on the approach's sides.
 The ring is level at the centre's height; the profile solve grades the arms. A bare ring on empty
-ground is three pass-through nodes at 90, 210 and 330 degrees (D8), no node piece.
+ground is three pass-through nodes at 90, 210 and 330 degrees (D8), no node piece. Its street lights
+stand on the outer sidewalk, never on the island (D20).
 
 **Conversion.** In place of a junction (`RoundaboutSite::Junction`, degree 3 to 6, at most 60 m so
 everything inside stays within the 30 m lane reattach reach, D14), the centre is the node, each arm is
@@ -1109,8 +1111,8 @@ two ring mouths, with no zebra strip, since the ring arms are one-sided and have
 six equal arms fit at every size, the one-lane floor of 30 m and the two-lane 45 m included. (PLAN-R7
 measured a two-sided ring, whose zebras added 3 m at each mouth: 15-16 m and 21-22 m, six arms
 from 33 m and 50 m. Those floors do not apply to the ring as built.) A pass-through ring node
-counts as an arm for this: a stroke that joins within 10 m (1+1) or 15 m (2+2) of a bare ring node, and
-not onto it, is refused with `junction_corner_does_not_fit`.
+holds a split as an arm would, 10 m (1+1) or 15 m (2+2) of ring; a stroke's join does not split near
+one, it takes the node's place (Joins).
 
 **Lane rule** (D10, `DefaultLaneUse`). At a ring node the entry's one movement is the turn onto the
 ring: a 1+1 arm's lane fans onto both ring lanes (`TRAFFIC-23`), a 2+2 arm's lanes go inner to inner
@@ -1128,14 +1130,60 @@ connector sweep reads as a counter-steer.
 no override anywhere. The approach arm has the default zebra just outside its curb returns. Walkers
 go round on the outer sidewalk and cross each arm on its zebra.
 
-**Joins** (D9, `road_edit/validation.rs`, `roundabouts::stroke_ring_refusal`). A stroke ending on a
-ring edge splits it like any road: `split_edge_graph` re-samples both halves from the circle with
-leads at the new node, which keeps the node's ring arms exactly straight (a split left on a chord
-fails to lay out from 60 m). A stroke ending at a ring node without an arm becomes its arm. Refused:
-running on through the ring (`roundabout_crossed`), ending on the island or running a chord across it
-(`roundabout_island`), a second arm at a ring node (`roundabout_arm_node_taken`). A bridge or tunnel
-passes over or under; its end still may not stand on the island. An end within the 2 m join tolerance
-inside the circle is a join.
+**Joins** (D9, `road_edit/validation.rs`, `roundabouts::stroke_ring_refusal`,
+`roundabouts/joins.rs`). The feature's main workflow is a bare ring with an ordinary crossroads
+drawn onto it. A stroke ending on a ring edge far from every bare node splits it like any road:
+`split_edge_graph` re-samples both halves from the circle with leads at the new node, which keeps
+the node's ring arms exactly straight (a split left on a chord fails to lay out from 60 m). A stroke
+ending at a ring node without an arm becomes its arm. A stroke ending within reach of a bare node,
+`2 x roadbed half width + 7 m` of ring, takes that node's place (`join_near_bare_node`): the node slides
+along the circle to the join and its ring edges are re-sampled with leads, the bare nodes left in the
+two arcs at the join spread evenly along them, and a bare node goes in mid-arc wherever a ring edge
+would turn a half turn or more (D8). The ring node at the join keeps the slid node's id and height,
+so the ring stays on its level plane. All of it happens on the stroke's excerpt, which holds the
+whole ring when the stroke comes near one, so the plan, the preview and the commit are one and the
+undo is the stroke's. A plan-less caller near a ring plans first.
+
+So only arm against arm crowds a ring: `roundabout_arms_too_close`, in the tool's words "Arms need
+more room". Four compass arms join a bare ring in every order at 30, 36, 45 and 50 m; a road of any
+width from 1+1 to 4+4 joins at every 7.5 degrees at 36, 45, 50, 60 and 80 m; six arms in any rotation
+fit at 30 m (1+1) and 45 m (2+2). What still refuses at 30 m on one lane is a road as wide as the ring:
+4+4 anywhere, and 3+3 within the 2 m snap of a bare node, where it arrives oblique.
+
+Refused otherwise: running on through the ring (`roundabout_crossed`), ending on the island or running
+a chord across it (`roundabout_island`), a second arm at a ring node (`roundabout_arm_node_taken`). A
+bridge or tunnel passes over or under; its end still may not stand on the island. An end within the
+2 m join tolerance inside the circle is a join.
+
+**The edit** (`nodes/sim/roundabouts.rs`, the turn pocket's transaction). One `try_graph_edit` over
+the old junction, the arms' far nodes and the ring nodes: `RoundaboutLayout::prepare`, the land
+(visible water under the ring's corridor is `water_requires_bridge`, a parcel on the disc of the ring
+and its sidewalk, the island included, is `parcel_overlap`: a lot there would keep no street), then
+the plan applied, the nodes laid out, the closure compiled and the graph put back. A closure that
+fails is `roundabout_arms_too_close` when a ring node's corner does not fit and
+`roundabout_arm_too_short` otherwise; fields, painted cells and steepened profiles refuse as in any
+closure. The preview is that check, so its verdict is the commit's. The commit applies the plan
+again, moves each trimmed arm's buildings and occupancy (an arm that lost its start drops the whole
+cells before the cut; every building takes its frontage along the shorter arm; journaled in
+`PocketDependentsUndo`), marks the lots, rebuilds lanes, cars and entrances locally, retires the old
+junction's connectors, pushes the check's checkpoint with the journal as its one undo record and
+charges the ring's build cost (the arms give nothing back). A car or walker in the circle reattaches
+to the nearest ring or arm lane within the 30 m reach; a ring on a slope stays on its plane and the
+terrain takes the difference.
+
+**Tool** (`roundabout_tool.gd`, API `get_roundabout_site`, `preview_roundabout`, `place_roundabout`).
+A point within 8 m of a node means that junction; else empty ground, where the road tool's type
+decides the lanes (its lanes per direction, capped at two). The Diameter row moves in 1 m steps and
+`[` `]` in 2 m, both held to the site's range, so 45 and 50 are both reachable; the range caps at 60 m
+over a junction. The diameter is kept per lane count. Rust owns all of this; the tool draws what
+`preview_roundabout` returns, the ring's centreline and each arm's cut as a ribbon, blue, or red with
+the circle and `road_reason_text` when refused (D11 (a)), asked again only when the point (snapped to
+0.5 m), site, size, lanes or a reservation revision changes. The exact mesh preview is `R7e`, after
+the user tries this.
+
+**Bulldoze** (D15, `bulldoze_ring`). A bulldoze target on a ring edge is the whole ring: the hover
+shows it and names it, "Roundabout, 4 arms". The ring edges go in one `try_graph_edit`, the arms stay
+with their ring nodes as road ends on the old ring line, one undo record.
 
 **Fixed.** A ring keeps its section, class, pocket-free state, zoning and node positions:
 `validate_cross_section`, `validate_pocket` and a node move refuse with `roundabout_fixed`, the class
@@ -1143,8 +1191,11 @@ change and the zoning toggle do nothing on a ring edge.
 
 **Bounds.** Plan `O(arm points + ring points + clearance)`, clearance `O(ring log E + ring points x
 nearby points)`, a split `O(points)`, the stroke check `O(log E + edges within 40 m of the stroke + ring
-edges x stroke points)`, all on edits. The lane rule is one `bool` read while connectors are rebuilt.
-Nothing runs per tick.
+edges x stroke points)`, a join `O(ring edges x (degree + points))`, the land `O(ring points + parcels
+in the disc's bounds)`, the edit's check `O(arm points + ring points + closure pieces)`, its commit
+`O(the arms' buildings + occupancy + local lanes)` and the undo's parallel membership passes, the
+bulldoze `O(ring + the arms' closure)`, all on edits. The lane rule is one `bool` read while connectors
+are rebuilt. Nothing runs per tick.
 
 **Timing** (round R7a, 2026-11-06, `$BENCH_BINARY` of `roadbed_benchmark` at the branch against the
 head before the round, C B B C twice, P-cores, 4 workers, medians of 4). No roadbed code changed;

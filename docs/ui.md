@@ -220,7 +220,7 @@ measurements appear only during a placement. See [road interaction](roads.md).
 
 | Button  | Activates |
 |---------|-----------|
-| Roads   | Road sub-menu: the usable road types from Rust (`ROAD-101`, `scripts/ui/road_type_menu.gd`: built-ins Walkway, 2-Lane Road, 4-Lane Road, One-Way 1L, One-Way 2L, then one "Custom roads" drop-down listing the player's custom types, a separator and "Road builder..." (opens the Road Builder window); the active type marked; each type's tooltip gives its layout, speed, "no sidewalks" or "sidewalk on the left" / "right", "no street lights", "No zoning" and Rust's cost); with a left-side options panel: Tool mode (Straight / Spline), Snapping (Snap to zoning grid) and Structure (Tunnel) |
+| Roads   | Road sub-menu: the usable road types from Rust (`ROAD-101`, `scripts/ui/road_type_menu.gd`: built-ins Walkway, 2-Lane Road, 4-Lane Road, One-Way 1L, One-Way 2L, then one "Custom roads" drop-down listing the player's custom types, a separator and "Road builder..." (opens the Road Builder window); the active type marked; each type's tooltip gives its layout, speed, "no sidewalks" or "sidewalk on the left" / "right", "no street lights", "No zoning" and Rust's cost), then the "Roundabout" toggle (key O, `ROAD-62`); with a left-side options panel: Tool mode (Straight / Spline), Snapping (Snap to zoning grid), Structure (Tunnel) and, while the roundabout tool is on, Diameter (a slider in 1 m steps over the range Rust gives for the site, with the size and lanes read-only, "36 m, 1 lane"; `[` `]` step 2 m, held at the ends). O opens the Roads menu when it is closed. The tool's outline is blue when it would build, red with the reason when not; see [`roads.md`](roads.md#roundabouts-road-62) |
 | Zoning  | Zoning sub-menu with one always-visible lower row for Rect / Brush plus Residential / Commercial / Industrial family buttons; the profile row above is collapsed by default and opens only after clicking a family button, which also selects that family's first profile |
 | Services | Service-building asset palette for explicit civic / utility placement |
 | Industry | Explicit resource-extractor asset palette; selecting an extractor temporarily shows the Deposits overlay through building placement and extraction-polygon drawing; placing a mine switches to extraction-polygon drawing with a pale-blue cursor sphere under the mouse and a live filled preview of the current polygon; the first vertex must start within 10 m of the building footprint and becomes a stronger light-blue close marker, edges may not cross, closing only happens by clicking that first vertex again, the committed polygon is still validated against the building link distance, and committed coal pits render as a terrain-shader coal-texture mask |
@@ -230,6 +230,8 @@ measurements appear only during a placement. See [road interaction](roads.md).
 Bulldoze is intentionally separate from the centered construction toolbar: a bottom-right icon
 button activates `BulldozeTool`. Hover asks Rust for exactly one target, prioritizing building
 footprints before road edges; left click deletes one target; right click or Esc exits the tool.
+A ring is one target (`ROAD-62`): the hover shows the whole ring and names it beside the pointer,
+"Roundabout, 4 arms".
 
 Road previews expose full readiness only for the exact current pointer input with a staged
 canonical road/terrain pair. Coarse ribbons, retained older poses and missing resident terrain
@@ -353,6 +355,7 @@ Current WorldEditor shortcuts:
 |------------|--------|
 | R          | Toggle Road tool |
 | X          | Toggle Walkway tool |
+| O          | Toggle Roundabout tool (`[` `]` step its diameter) |
 | Z          | Toggle Zoning tool |
 | M          | Toggle Move tool |
 | V          | Toggle Select tool |

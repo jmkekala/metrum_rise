@@ -937,6 +937,10 @@ func _on_roundabout_active(enabled: bool) -> void:
 	roundabout_btn.set_pressed_no_signal(enabled)
 	roundabout_row.visible = enabled
 	if enabled:
+		terrain_sub_menu.visible = false
+		zoning_combined_hbox.visible = false
+		services_combined_hbox.visible = false
+		industry_combined_hbox.visible = false
 		road_combined_hbox.visible = true
 		get_meta("options_panel").visible = true
 		get_meta("road_sep").visible = true

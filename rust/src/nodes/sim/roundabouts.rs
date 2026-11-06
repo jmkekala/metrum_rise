@@ -73,9 +73,13 @@ impl SimCore {
     pub(crate) fn roundabout_site_at(&self, point: Vector3, type_lanes: u8) -> RoundaboutSiteView {
         let graph = &self.region_graph;
         let node = self.get_closest_node_internal(point, SITE_NODE_REACH_M);
-        let site = match u32::try_from(node) {
-            Ok(node) => RoundaboutSite::Junction(node),
-            Err(_) => RoundaboutSite::Ground {
+        // A node a bulldozed road left without arms is no site, and no obstacle.
+        let node = u32::try_from(node)
+            .ok()
+            .filter(|&node| graph.live_node_connection_count(node) > 0);
+        let site = match node {
+            Some(node) => RoundaboutSite::Junction(node),
+            None => RoundaboutSite::Ground {
                 centre: point,
                 lanes: type_lanes.clamp(1, 2),
             },

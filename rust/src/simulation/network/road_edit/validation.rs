@@ -810,19 +810,24 @@ fn build_validation_graph(
     // points, inside the excerpt's pad.
     let grade = grade.map_joined_spans(|span| copied_edges[&span]);
     // D9 (`ROAD-62`): an end on a ring near a bare node takes that node's place.
-    let half_width_m = preview_candidate_roadbed_half_width_m(
-        prepared_points,
-        edge_class,
-        fwd_lanes,
-        bkw_lanes,
-        median,
-        attributes,
-    );
+    let by_ring = validation_graph.edges().iter().any(|edge| edge.roundabout.is_some());
+    let half_width_m = if by_ring {
+        preview_candidate_roadbed_half_width_m(
+            prepared_points,
+            edge_class,
+            fwd_lanes,
+            bkw_lanes,
+            median,
+            attributes,
+        )
+    } else {
+        0.0
+    };
     let mut ring_edges = Vec::new();
     let mut ring_splits = Vec::new();
-    let mut join_end = |graph: &mut RegionGraph, existing, point, taken| {
-        let snapped = !endpoint_snap_enabled || Option::is_some(&existing);
-        let join = (!snapped)
+    let mut join_end = |graph: &mut RegionGraph, existing: Option<u32>, point, taken| {
+        let joins = by_ring && endpoint_snap_enabled && existing.is_none();
+        let join = joins
             .then(|| roundabouts::join_near_bare_node(graph, point, half_width_m, taken))
             .flatten()?;
         ring_edges.extend(join.edges);
@@ -1000,6 +1005,7 @@ fn candidate_existing_edge_ids(
     let rings: Vec<usize> = edge_ids
         .iter()
         .copied()
+        .filter(|&id| id < existing_graph.edge_count())
         .filter(|&id| !existing_graph.edge(id).deleted)
         .filter(|&id| existing_graph.edge(id).roundabout.is_some())
         .collect();
