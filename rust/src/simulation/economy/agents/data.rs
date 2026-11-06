@@ -7,6 +7,9 @@
 //! [`AgentSystem`] uses a Structure-of-Arrays (SoA) layout provided by the `soa_derive` crate.
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
+// `soa_derive`'s expansion writes `field: field` for every column of `Agent`.
+#![allow(clippy::redundant_field_names)]
+
 use super::household_members::HouseholdMembers;
 use super::inspection::{EndedInspection, InspectedAgent};
 use super::tick::{
