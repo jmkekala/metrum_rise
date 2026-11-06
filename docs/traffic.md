@@ -45,7 +45,7 @@ a home point. The test fleet supplies that point in this round; resident ownersh
 | Candidate query | O(9 + local candidates × quote cost), allocation-free, no candidate cap |
 | Source reconciliation | O(old log old + new) per anchor source; O(old × new anchors) building dispatch, plus local tow queries |
 | Off-map retry | O(W log W + W × local candidates), W local waiting cars; supply/release events |
-| Parked publication | O(D log D + sum(Pc log Pc) + parked cars × support solve), parallel dirty chunks |
+| Parked publication | Per dirty chunk O(Pc + C log C) for Pc places and C parked cars, a copy of cached poses on the sim thread, parallel over chunks; plus one support solve per car on a place with no pose for its model. Nothing when no chunk is dirty |
 | Sleeping parked cars | No simulation-tick iteration |
 
 Queries reject straight-line distances over 400 m before quoting, and quoted walks over 400 m.
@@ -158,9 +158,47 @@ Supply/release events retry local home chunks, including a newly restored lot. U
 live occupancy without restoring an old fleet snapshot or refusing an edit.
 
 Dirty chunks publish immutable versioned model/colour buffers, stable car IDs and 12-float
-MultiMesh transforms. The existing contact solver grounds dirty instances. Unchanged chunks send
-nothing; exact version/world acknowledgements retain updates through skipped frames. Shared
-`vehicle_resources.gd` keeps moving meshes/materials identical; parked meshes omit lamps/beams.
+MultiMesh transforms. Unchanged chunks send nothing. Shared `vehicle_resources.gd` keeps moving
+meshes/materials identical; parked meshes omit lamps/beams.
+
+**The render path (`PARK-02`).** Moving cars and parked chunks reach Godot from one
+`RenderSnapshot`, and the render path takes no core lock for them:
+
+- The sim thread rebuilds dirty chunks while it builds the snapshot, in the same lock as the
+  agent poses (`SimCore::publish_parked_chunks`), and the snapshot lists every chunk Godot has not
+  acknowledged as shared `Arc` buffers. `get_vehicle_frame` reads cars and chunks under one read
+  of that snapshot, so a car crossing a bay's edge is in exactly one of them on every frame Godot
+  draws, including when it skips snapshots: a skipped chunk stays listed. There is no `busy`
+  answer and no epoch to compare; this replaced the branch's `try_lock_core` frame, which froze
+  every moving car whenever the simulation held the lock.
+- Godot answers through atomics, never the lock. `acknowledge_parked_cars(epoch, serial)` says it
+  installed everything up to a publication serial; an answer from a replaced world is dropped and
+  a serial only rises, so a late answer cannot discard a newer chunk. A renderer reconnect sets a
+  flag, and the next snapshot lists every chunk once more. The `parked` key is absent from the
+  frame when nothing changed, and the listed `Arc` vector is rebuilt only when a chunk or an
+  acknowledgement changes it, `O(listed chunks)` pointer copies.
+- One off-lane path still try-locks the core: `smooth_car_render_data` re-grounds interpolated
+  off-lane cars. It is `dev`'s, and failing it draws the snapshot's own validated pose, so the car
+  still updates.
+
+**Parked poses are cached.** Each place keeps one grounded 12-float pose and the model it was
+solved for (`Place::ground`, 49 bytes a bay, 4.9 MB at 100k bays), derived and never saved. A
+pose belongs to a model, because each model has its own contacts, so a car of another model
+arriving at a bay takes one solve, and a rebuild is otherwise a copy: a custody change solves
+nothing for the other cars of its chunk. A full table of the five models would remove that one
+solve per arrival for 241 bytes a bay and five solves per bay at every publication; an arrival
+costs a car no more than one frame of off-lane grounding, so it is not worth that.
+
+A pose goes stale only if the ground under it moves, and a bay is not re-added for that: the
+pose key of `replace_source` holds the bay's own position and heading, not what a neighbouring
+piece, pad or base edit does to the surface its contacts read. So invalidation does not rely on
+reconcile. The four records of the graded edit journal (`record_graded_road_edit`, `_site_edit`,
+`_base_edit`, `_reset`), which every graded ground change passes, forget the poses within the
+change's reach plus the longest car's contacts and dirty the chunks with a car there. Road changes
+cover every piece, bridges and tunnels too; a reset covers a load, a new world and a dense terrain
+undo. Two paths outside the journal call the same invalidation: the undo of a bulldoze, whose
+restored site records no site change, and a new car profile at mesh load. The next snapshot
+solves what was forgotten, so the first publication after a load rebuilds every parked pose.
 The resident moving/parked identity handoff is implemented in round 2a below; external vehicles remain for round 2b.
 
 Save format **110** (upstream 109 + 1, no migration) stores handle generations, building-anchor
@@ -381,9 +419,8 @@ walks to the car's actual new place, replans from its actual lane position, or r
 pull-in to the driveway before choosing replacement supply. It never moves a travelling car by
 towing. The owned-car watchdog requests this ordered recovery rather than teleporting.
 
-A custody publication epoch gates the combined moving/parked bridge frame. When snapshots lag
-a transition, both renderers retain their previous publication. Model and colour persist across
-the switch. Origin occupancy is released after pull-out reaches the network; destination reservation
+Moving and parked cars come from one snapshot (see the render path above), so neither renderer
+can run ahead of a transition. Model and colour persist across the switch. Origin occupancy is released after pull-out reaches the network; destination reservation
 becomes occupancy before the last walk. Save version **110** persists ownership, custody, trip phase,
 claims, pending household/release events and endpoint recovery links. Loading rebuilds catchments,
 access endpoints and the route buffers' saved logical preparation budgets; allocator spare capacity
