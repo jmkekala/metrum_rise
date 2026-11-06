@@ -7,13 +7,14 @@ extends Node3D
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const MODEL_DIR := "res://assets/models/road_signs/"
-# Indexed by Rust RoadSignKind. B1/B5/B6 are assets for later, never placed here.
+# Indexed by Rust RoadSignKind. B1/B6 are assets for later, never placed here. B5-D2 is B5.glb
+# with the D2 disc added under its triangle (`_add_roundabout_disc`).
 const MODELS: Array[String] = [
 	"E1-1", "E1-2", "C32-30", "C32-40", "C32-50", "C32-60", "C32-80",
 	"A1.1", "A1.2", "A2.1", "A2.2",
 	# Descents (A3.2: the car points down the slope), then ascents (A3.1).
 	"A3.2-8", "A3.2-10", "A3.2-12", "A3.2-14", "A3.2-16", "A3.2-18",
-	"A3.1-8", "A3.1-10", "A3.1-12", "A3.1-14", "A3.1-16", "A3.1-18", "A9",
+	"A3.1-8", "A3.1-10", "A3.1-12", "A3.1-14", "A3.1-16", "A3.1-18", "A9", "B5-D2",
 ]
 # GLB contract (validation.json/build.log and export_validation.json): metres, ground-origin
 # pole base, +Y up, +Z is the printed front. One mesh/surface and one embedded atlas material
@@ -76,13 +77,14 @@ static func _ensure_meshes() -> void:
 		return
 	for model_name in MODELS:
 		var mesh: ArrayMesh
-		var scene := load(MODEL_DIR + model_name + ".glb") as PackedScene
+		var source_name: String = "B5" if model_name == "B5-D2" else model_name
+		var scene := load(MODEL_DIR + source_name + ".glb") as PackedScene
 		if scene != null:
 			var model := scene.instantiate()
 			var node := model as MeshInstance3D
 			if node == null:
 				# Godot replaces "." in imported node names (A1.1 becomes A1_1).
-				node = model.find_child(model_name.validate_node_name(), true, false) as MeshInstance3D
+				node = model.find_child(source_name.validate_node_name(), true, false) as MeshInstance3D
 			if node != null:
 				mesh = ArrayMesh.new()
 				# Each GLB has one surface. Bake its node transform into the shared mesh once.
@@ -104,4 +106,55 @@ static func _ensure_meshes() -> void:
 			model.free()
 		if mesh == null:
 			push_error("road_signs: %s.glb lacks its sign mesh" % model_name)
+		if mesh != null and model_name == "B5-D2":
+			_add_roundabout_disc(mesh)
 		_meshes.append(mesh)
+
+# D2 sits below the B5 triangle on the same pole: a blue disc, three white arrows running
+# counterclockwise, on a grey plate that is its back from behind. Code-native geometry on the
+# shared cloud-shadow material, as the atlas signs.
+static func _add_roundabout_disc(mesh: ArrayMesh) -> void:
+	var blue := SurfaceTool.new()
+	var white := SurfaceTool.new()
+	var grey := SurfaceTool.new()
+	blue.begin(Mesh.PRIMITIVE_TRIANGLES)
+	white.begin(Mesh.PRIMITIVE_TRIANGLES)
+	grey.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var origin := Vector3(0, 1.8, 0.012)
+	var back := origin - Vector3(0, 0, 0.004)
+	for step in 48:
+		var a := TAU * float(step) / 48.0
+		var b := TAU * float(step + 1) / 48.0
+		var rim_a := Vector3(cos(a), sin(a), 0) * 0.30
+		var rim_b := Vector3(cos(b), sin(b), 0) * 0.30
+		_sign_triangle(blue, origin, origin + rim_a, origin + rim_b)
+		_sign_triangle(grey, back, back + rim_a, back + rim_b)
+	for arrow in 3:
+		var start := TAU * float(arrow) / 3.0
+		for step in 12:
+			var a := start + float(step) * 1.35 / 12.0
+			var b := start + float(step + 1) * 1.35 / 12.0
+			var p := origin + Vector3(0, 0, 0.004)
+			var v0 := p + Vector3(cos(a), sin(a), 0) * 0.19
+			var v1 := p + Vector3(cos(b), sin(b), 0) * 0.19
+			var v2 := p + Vector3(cos(a), sin(a), 0) * 0.14
+			var v3 := p + Vector3(cos(b), sin(b), 0) * 0.14
+			_sign_triangle(white, v0, v1, v2)
+			_sign_triangle(white, v2, v1, v3)
+		var angle := start + 1.35
+		var tip := origin + Vector3(cos(angle), sin(angle), 0) * 0.165 + Vector3(0, 0, 0.004)
+		var tangent := Vector3(-sin(angle), cos(angle), 0)
+		var radial := Vector3(cos(angle), sin(angle), 0)
+		_sign_triangle(white, tip + tangent * 0.09, tip - radial * 0.075 - tangent * 0.025, tip + radial * 0.075 - tangent * 0.025)
+	for entry: Array in [[blue, Color(0.015, 0.17, 0.55)], [white, Color.WHITE], [grey, Color(0.6, 0.62, 0.63)]]:
+		var material := StandardMaterial3D.new()
+		material.albedo_color = entry[1]
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		material.roughness = 0.65
+		entry[0].set_material(WindowMaterials.create(material, false, 0.0))
+		entry[0].commit(mesh)
+
+static func _sign_triangle(surface: SurfaceTool, a: Vector3, b: Vector3, c: Vector3) -> void:
+	for point: Vector3 in [a, b, c]:
+		surface.set_normal(Vector3(0, 0, 1))
+		surface.add_vertex(point)

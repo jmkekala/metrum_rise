@@ -147,6 +147,8 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Roads cannot go on a roundabout's island"
 		"roundabout_arm_node_taken":
 			return "This point of the roundabout already has a road"
+		"roundabout_neighbour_nodes":
+			return "A road cannot link two neighbouring points of a roundabout"
 		"roundabout_arms_too_close":
 			return "Arms need more room. Increase the diameter"
 		"roundabout_overlaps_road":

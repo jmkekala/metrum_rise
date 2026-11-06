@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Deterministic cosmetic crossing, changed-limit and geometry warning signs.
+//! Deterministic cosmetic crossing, ring entry, changed-limit and geometry warning signs.
 //!
 //! Only degree-two streets touching coverage are visited. Each chain is measured with the road
 //! validator and spaced in three priority passes. Work is O(E + P W + C S + L + N),
@@ -17,6 +17,7 @@ use crate::simulation::network::lanes::CrosswalkMarking;
 use crate::simulation::network::roadbed::{
     ArmKey, BandKind, EdgeEnd, RoadSection, RoadVec2, RoadbedSystem, visual_roadbed_half_width_m,
 };
+use crate::simulation::network::roundabouts::enters_ring;
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::network::validate::{
     RADIUS_WINDOW_HALF_WIDTHS, centreline, design_radius, visit_grades, visit_turning_radii,
@@ -24,7 +25,8 @@ use crate::simulation::network::validate::{
 use godot::prelude::Vector3;
 use std::collections::HashMap;
 
-/// Sign models in the renderer's model order; priority signs are deliberately absent.
+/// Sign models in the renderer's model order. Of the priority signs only a ring entry's stands:
+/// B1, B5 and B6 wait for junction control (`TRAFFIC-06`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum RoadSignKind {
@@ -76,6 +78,8 @@ pub(crate) enum RoadSignKind {
     Ascent18,
     /// A9, uneven road.
     Uneven,
+    /// B5 over D2: give way, and the roundabout's sense of travel, at a ring entry (`ROAD-62`).
+    RoundaboutEntry,
 }
 
 /// Pole-base pose, with yaw rotating the model's +Z front toward approaching traffic.
@@ -94,6 +98,10 @@ const SIGN_GAP_M: f32 = 12.0;
 // A crossing sign stands just before the stripes for its traffic, out of the walking line: half
 // the 2.5 m stripe length plus 0.5 m back from the crossing centre.
 const CROSSING_SIGN_SETBACK_M: f32 = 1.75;
+// A ring entry's B5 + D2 pole stands this far before its mouth, or before the crossing sign where
+// the entry has a zebra, the signs' clearance from any other pole (the fork stood it 2 m before the
+// mouth and lost the crossing sign to the sign gap).
+const RING_ENTRY_POLE_BACK_M: f32 = CLEARANCE_M;
 // A speed sign stands this far past the crossing sign of its junction mouth, never beside it.
 const SPEED_AFTER_CROSSING_M: f32 = 25.0;
 // Finnish practice repeats the limit after a junction on longer streets, so a driver who turned
@@ -1236,7 +1244,30 @@ pub(super) fn place_road_signs(
         .collect();
     // At most one marking per crossable arm of a node; reused across nodes.
     let mut markings = Vec::with_capacity(8);
+    // Ring entries found beside the crossings: (edge, sections, pole station, travel direction).
+    let mut ring_entries: Vec<(usize, &[RoadSection], f32, f32)> = Vec::new();
     for priority in 0..3 {
+        // One pole per entry on the right, whatever else stands there: after every crossing sign,
+        // which the sign gap would otherwise drop, and before the signs that keep clear of it.
+        if priority == 1 {
+            for &(edge_id, sections, s, direction) in &ring_entries {
+                if let Some((sign, placed_s)) = place(
+                    SectionRun::span(sections),
+                    ground,
+                    &poles,
+                    s,
+                    -direction,
+                    direction,
+                    direction,
+                    RoadSignKind::RoundaboutEntry,
+                ) {
+                    if covered.contains(&edge_id) {
+                        signs.push(sign);
+                    }
+                    spacing.insert(&stations[&edge_id], placed_s, direction, direction);
+                }
+            }
+        }
         for (edge_id, sections, approach_sections) in &visible_edges {
             let (edge_id, sections) = (*edge_id, *sections);
             let edge = graph.edge(edge_id);
@@ -1245,6 +1276,8 @@ pub(super) fn place_road_signs(
             let mut starts = [visible[0].s_m + 2.0, visible.last().unwrap().s_m - 2.0];
             let mut speed_starts = starts;
             for node in [edge.start_node, edge.end_node] {
+                // Where the right kerb's last sign before the node stands, on an entry's arm.
+                let mut entry_kerb_s = None;
                 markings.clear();
                 super::crosswalks::for_each_marking(graph, roadbed, node, |marking| {
                     if marking.edge_id == edge_id {
@@ -1279,6 +1312,9 @@ pub(super) fn place_road_signs(
                         if let Some((sign, placed_s)) = place(
                             sections, ground, &poles, sign_s, away, side, direction, kind,
                         ) {
+                            if side == direction && direction != away {
+                                entry_kerb_s = Some(placed_s);
+                            }
                             if side == direction && direction == away {
                                 let slot = usize::from(!at_start);
                                 starts[slot] = if at_start {
@@ -1302,6 +1338,17 @@ pub(super) fn place_road_signs(
                             }
                         }
                     }
+                }
+                if priority == 0 && enters_ring(graph, edge_id, node) {
+                    let (mouth, direction) = if node == edge.end_node {
+                        (visible.last().unwrap().s_m, 1.0)
+                    } else {
+                        (visible[0].s_m, -1.0)
+                    };
+                    let back = direction * RING_ENTRY_POLE_BACK_M;
+                    let s = entry_kerb_s.unwrap_or(mouth) - back;
+                    let s = s.clamp(visible[0].s_m, visible.last().unwrap().s_m);
+                    ring_entries.push((edge_id, sections, s, direction));
                 }
             }
             if priority == 1

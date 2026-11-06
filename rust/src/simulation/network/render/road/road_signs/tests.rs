@@ -1028,3 +1028,130 @@ fn spacing_crosses_reversed_edge_and_loop_seam_but_respects_facing() {
     spacing.insert(&loop_span, 77.0, 1.0, 1.0);
     assert_eq!(spacing.advance(&loop_span, 3.0, 1.0, 1.0), 6.0);
 }
+
+// A ring's graph with its lanes and roadbed, on the flat fixture terrain.
+fn ring_fixture(mut graph: RegionGraph) -> (RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem) {
+    let terrain = TerrainSystem::with_chunking(256, 256, 1.0, 8, 0.0);
+    let mut surface = RoadbedSystem::new(64.0);
+    surface.compile_dirty(&graph);
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+    (graph, lanes, surface, terrain)
+}
+
+fn entry_poles(f: &(RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem)) -> Vec<RoadSign> {
+    let mesh = generate(f);
+    let poles = mesh.road_signs.iter().copied();
+    poles.filter(|s| s.kind == RoadSignKind::RoundaboutEntry).collect()
+}
+
+// `ROAD-62` D18: every arm into a ring has one B5 + D2 pole, on the right of its traffic and facing
+// it, before its crossing sign, which stays: both directions of every zebra keep theirs.
+#[test]
+fn every_ring_entry_has_one_pole_on_the_right_before_its_crossing_sign() {
+    use crate::simulation::network::roadbed::fixtures::converted_ring;
+    for (diameter_m, arms, arm) in [
+        (36.0, 3, (1, 1)),
+        (36.0, 4, (1, 1)),
+        (36.0, 6, (1, 1)),
+        (50.0, 4, (2, 2)),
+        (60.0, 5, (1, 2)),
+    ] {
+        let angles: Vec<_> = (0..arms).map(|i| i as f32 * 360.0 / arms as f32).collect();
+        let (graph, _) = converted_ring(diameter_m, &angles, arm, false).unwrap();
+        let f = ring_fixture(graph);
+        let mesh = generate(&f);
+        let name = format!("D{diameter_m}, {arms} arms of {arm:?}");
+        let on_arm = |sign: &&RoadSign, heading: Vector3| {
+            let (along, across) = (
+                -sign.position.dot(heading),
+                sign.position.x * heading.z - sign.position.z * heading.x,
+            );
+            along > 0.0 && across.abs() < 12.0
+        };
+        let (mut poles, mut crossings) = (0, 0);
+        for angle in &angles {
+            let (sin, cos) = angle.to_radians().sin_cos();
+            // Traffic into the ring heads back along the arm; its right is (-z, x).
+            let heading = Vector3::new(-cos, 0.0, -sin);
+            let right = Vector3::new(-heading.z, 0.0, heading.x);
+            let here: Vec<_> = mesh.road_signs.iter().filter(|s| on_arm(s, heading)).collect();
+            let pole: Vec<_> = here
+                .iter()
+                .filter(|s| s.kind == RoadSignKind::RoundaboutEntry)
+                .collect();
+            assert_eq!(pole.len(), 1, "{name}, arm at {angle}: {here:?}");
+            let pole = **pole[0];
+            let front = Vector3::new(pole.yaw.sin(), 0.0, pole.yaw.cos());
+            assert!(front.dot(heading) < -0.99, "{name}: faces its traffic");
+            assert!(pole.position.dot(right) > 0.0, "{name}: on its traffic's right");
+            let kerb: Vec<_> = here
+                .iter()
+                .filter(|s| crossing(s.kind) && s.position.dot(right) > 0.0)
+                .collect();
+            assert_eq!(kerb.len(), 1, "{name}: the crossing sign stays: {here:?}");
+            let back = (kerb[0].position - pole.position).dot(heading);
+            assert!((1.99..2.1).contains(&back), "{name}: {back} m before the crossing sign");
+            poles += 1;
+            crossings += here.iter().filter(|s| crossing(s.kind)).count();
+        }
+        assert_eq!(entry_poles(&f).len(), poles, "{name}: no pole elsewhere");
+        assert_eq!(crossings, 2 * arms, "{name}: both signs of every zebra");
+    }
+}
+
+// An exit has no pole, nor has a bare ring or a plain junction; a one-way arm into the ring has.
+#[test]
+fn a_pole_marks_only_lanes_into_a_ring() {
+    use crate::simulation::network::roadbed::fixtures::{bare_ring, finalize, join_ring_arm};
+    assert!(entry_poles(&junction()).is_empty(), "a plain junction");
+    let (graph, _) = bare_ring(36.0, 1, false);
+    assert!(entry_poles(&ring_fixture(graph)).is_empty(), "a bare ring");
+    let (mut graph, applied) = bare_ring(50.0, 1, false);
+    let at = |graph: &RegionGraph, index: usize| {
+        let node = graph.node(applied.nodes[index]).pos;
+        node.z.atan2(node.x).to_degrees()
+    };
+    let (out, into) = (at(&graph, 0), at(&graph, 1));
+    join_ring_arm(&mut graph, out, (1, 0), false);
+    let (node, _) = join_ring_arm(&mut graph, into, (0, 1), false);
+    finalize(&mut graph);
+    let at_node = graph.node(node).pos;
+    let f = ring_fixture(graph);
+    assert_eq!(f.2.failed_nodes().len(), 0, "both arms lay out");
+    let poles = entry_poles(&f);
+    assert_eq!(poles.len(), 1, "the arm in, not the arm out: {poles:?}");
+    let along = poles[0].position.dot(at_node.normalized());
+    assert!(along > at_node.length(), "on the arm in: {poles:?}");
+}
+
+// A sidewalk-less arm has no zebra: its pole stands the same way back from the mouth, on the verge.
+#[test]
+fn an_entry_without_a_zebra_keeps_its_pole() {
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::roadbed::fixtures::{bare_ring, finalize, join_ring_arm};
+    let (mut graph, applied) = bare_ring(36.0, 1, false);
+    let node = graph.node(applied.nodes[0]).pos;
+    let angle = node.z.atan2(node.x).to_degrees();
+    let (_, arm) = join_ring_arm(&mut graph, angle, (1, 1), false);
+    graph.edge_mut(arm).set_sidewalks(SidewalkSides::NONE);
+    finalize(&mut graph);
+    let f = ring_fixture(graph);
+    assert_eq!(f.2.failed_nodes().len(), 0, "the arm lays out");
+    let poles = entry_poles(&f);
+    assert_eq!(poles.len(), 1, "{poles:?}");
+    let mouth = &f.2.sections(arm).unwrap()[0];
+    let mouth = Vector3::new(mouth.center_xz.x as f32, 0.0, mouth.center_xz.y as f32);
+    let back = (poles[0].position - mouth).dot(node.normalized());
+    assert!((back - 2.0).abs() < 0.1, "{poles:?}, mouth {mouth:?}");
+    assert!(generate(&f).road_signs.iter().all(|s| !crossing(s.kind)));
+}
+
+// A local rebuild places the pole a whole rebuild places, in every chunk.
+#[test]
+fn ring_entry_poles_match_across_chunk_rebuilds() {
+    use crate::simulation::network::roadbed::fixtures::converted_ring;
+    // Off the axes: `assert_chunk_output` pairs signs by order, and mirrored poles tie on `x`.
+    let (graph, _) = converted_ring(36.0, &[10.0, 105.0, 200.0, 290.0], (1, 1), false).unwrap();
+    assert_chunk_output(&mut ring_fixture(graph));
+}

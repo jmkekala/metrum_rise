@@ -281,13 +281,22 @@ fn both_ends_of_a_stroke_can_join() {
         at(120.0, radius_m),
     ];
     // Every two ring nodes of a bare ring are neighbours, and two roads between the same two
-    // nodes are refused anywhere; nothing changes.
+    // nodes are refused anywhere; nothing changes. The ring's refusal says why, a plain road's
+    // keeps its words.
     let state = graph_state(&core);
     assert_eq!(
         draw(&mut core, around, 1).unwrap_err(),
-        "surface_geometry_invalid"
+        "roundabout_neighbour_nodes"
     );
     assert_eq!(graph_state(&core), state);
+
+    let (a, b) = (Vector3::new(200.0, 0.0, 0.0), Vector3::new(300.0, 0.0, 0.0));
+    draw(&mut core, vec![a, b], 1).unwrap();
+    let doubled = vec![a, Vector3::new(250.0, 0.0, 40.0), b];
+    assert_eq!(
+        draw(&mut core, doubled, 1).unwrap_err(),
+        "surface_geometry_invalid"
+    );
 }
 
 // Joins in any order at any angle leave a sound ring or refuse with a ring's reason, and a refusal

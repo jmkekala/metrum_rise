@@ -51,6 +51,7 @@ const STROKE_SPLITS_POCKET_REASON: &str = "stroke_splits_pocket";
 const ROUNDABOUT_CROSSED_REASON: &str = "roundabout_crossed";
 const ROUNDABOUT_ARM_NODE_TAKEN_REASON: &str = "roundabout_arm_node_taken";
 const ROUNDABOUT_ARMS_TOO_CLOSE_REASON: &str = "roundabout_arms_too_close";
+const ROUNDABOUT_NEIGHBOUR_NODES_REASON: &str = "roundabout_neighbour_nodes";
 const PREVIEW_GRADE_CHANGE_REASON: &str = "road_grade_change";
 const PREVIEW_TOO_STEEP_REASON: &str = "road_too_steep";
 // The road tool's warning for a grade above its class's design tier, which it does not refuse.
@@ -599,10 +600,17 @@ fn validate_against_graph(
         || validation_graph.edge(new_edge_idx).deleted
         || required_edge_ids.is_empty()
     {
-        return (
-            validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
-            None,
-        );
+        // The rule is the graph's; a road doubling a ring edge only gets its own words (D9).
+        let reason = validation_graph
+            .edges()
+            .get(new_edge_idx)
+            .filter(|edge| {
+                roundabouts::ring_neighbours(&validation_graph, edge.start_node, edge.end_node)
+            })
+            .map_or(PREVIEW_SURFACE_GEOMETRY_REASON, |_| {
+                ROUNDABOUT_NEIGHBOUR_NODES_REASON
+            });
+        return (validation.with_invalid_reason(reason), None);
     }
     if stroke_splits_pocket(
         &validation_graph,

@@ -535,6 +535,32 @@ pub(crate) fn ring_at(graph: &RegionGraph, node: u32) -> Option<RoundaboutRing> 
     })
 }
 
+/// Whether road `edge` brings lanes to `node` from outside a ring through the node: a ring entry,
+/// where the road's traffic gives way and the B5 + D2 pole and the triangle row stand. A ring edge
+/// is not one, nor is an arm that only leaves the ring. `O(degree)`.
+pub(crate) fn enters_ring(graph: &RegionGraph, edge: usize, node: u32) -> bool {
+    let road = graph.edge(edge);
+    let lanes = if road.end_node == node {
+        road.fwd_lanes
+    } else {
+        road.bkw_lanes
+    };
+    lanes > 0 && road.roundabout.is_none() && ring_at(graph, graph.get_valid_node(node)).is_some()
+}
+
+/// Whether a ring edge joins nodes `a` and `b`: a road between them would double it, and two roads
+/// between the same two nodes are refused anywhere. `O(degree)`.
+pub(crate) fn ring_neighbours(graph: &RegionGraph, a: u32, b: u32) -> bool {
+    let a = graph.get_valid_node(a);
+    let b = graph.get_valid_node(b);
+    graph.node_adjacency(a).iter().any(|&id| {
+        let edge = graph.edge(id);
+        !edge.deleted
+            && edge.roundabout.is_some()
+            && [edge.start_node, edge.end_node].map(|end| graph.get_valid_node(end)).contains(&b)
+    })
+}
+
 /// Whether ring edge `id` of a loaded graph is one a roundabout edit could have built: one-way
 /// with 1 or 2 lanes in the ring's sense, the ring's speed and sidewalk side, no zoning, median or
 /// pocket, on the surface, a real circle, and with its ring closed at both ends, the same circle

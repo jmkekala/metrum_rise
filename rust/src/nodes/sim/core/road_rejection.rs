@@ -301,6 +301,11 @@ fn validation_detail(
                 .to_owned(),
             None,
         ),
+        "roundabout_neighbour_nodes" => (
+            "the road would join two neighbouring points of a roundabout's ring (`ROAD-62`, D9)"
+                .to_owned(),
+            None,
+        ),
         "roundabout_arm_node_taken" => (
             "the ring node already has its arm (`ROAD-62`, D9)".to_owned(),
             None,
