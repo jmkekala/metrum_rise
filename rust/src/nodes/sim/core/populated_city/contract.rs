@@ -440,7 +440,8 @@ fn parking_employment_reach() {
 }
 
 // `ROAD-101` acceptance (RB3a): `METRUM_PERF_ROAD_REBUILD=car_only` takes the sidewalks off the
-// frozen city's lowest-id road, as a player's road type without sidewalks would, and
+// frozen city's lowest-id road with no door and no parking lane on it (`ROAD-109`, `PARK-05`:
+// those keep their sidewalks), as a player's road type without sidewalks would, and
 // `METRUM_PERF_ROAD_REBUILD=same` rebuilds the same derived state with every road unchanged
 // (the matched control). Either rebuilds lanes, the routing hierarchy and the entrances outside
 // the timed interval and reports the edge and the walking proof; unset, nothing changes.
@@ -450,6 +451,8 @@ fn road_rebuild(core: &mut crate::nodes::sim::core::SimCore) -> serde_json::Valu
     let Ok(mode) = std::env::var("METRUM_PERF_ROAD_REBUILD") else {
         return serde_json::Value::Null;
     };
+    let doors: std::collections::BTreeSet<usize> =
+        core.allocator.buildings.iter().map(|b| b.edge_idx).collect();
     let graph = &mut core.region_graph;
     let edge = (0..graph.edge_count())
         .find(|&id| {
@@ -457,8 +460,10 @@ fn road_rebuild(core: &mut crate::nodes::sim::core::SimCore) -> serde_json::Valu
             !edge.deleted
                 && edge.primary_type == TransitType::Road
                 && edge.allowed_types & TransitFlags::FOOT != 0
+                && edge.parking == crate::simulation::network::graph::RoadParking::NONE
+                && !doors.contains(&id)
         })
-        .expect("a road with sidewalks");
+        .expect("a road with sidewalks and nothing that needs them");
     match mode.as_str() {
         "car_only" => graph
             .edge_mut(edge)

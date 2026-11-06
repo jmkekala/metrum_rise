@@ -304,23 +304,7 @@ fn benchmark_parking_locality() {
         let start = Instant::now();
         let mut core = super::zoned_city_in_world(NEIGHBOURHOOD_SIDE_M, WORLD_M);
         add_background(&mut core, background);
-        let mut manifest = crate::assets::AssetManifest::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
-        )))
-        .unwrap();
-        // The bounds the game imports from the lot's glb files.
-        for part in &mut manifest.mesh_parts {
-            part.imported_bounds = Some(match part.name.as_str() {
-                "markings" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
-                "p_sign" => [[-0.3, 0.0, -0.03], [0.3, 2.6, 0.07]],
-                _ => [[-0.12, 0.0, -0.1], [0.12, 1.36, 0.1]],
-            });
-        }
-        let id = manifest.qualified_id("parking");
-        core.allocator
-            .registry
-            .register("parking", manifest, String::new());
+        let id = super::register_small_lot(&mut core);
         let edge = core.region_graph.edge_count();
         assert!(
             core.commit_road(

@@ -9,6 +9,9 @@
 //! driving in, which is the only step that bypasses the game. The city then runs frame by frame
 //! at maximum speed, so agents move and the trips the economy starts finish as in the game. See
 //! `docs/economy.md#econ-13-economy-tick-baseline`.
+//!
+//! Residents' cars need somewhere to stand (`PARK-02`, F8): the cross streets carry a parking
+//! lane on both kerbs, the trunks none, and small lots stand along the rows between them.
 
 #[cfg(test)]
 pub(super) mod census_churn;
@@ -22,6 +25,8 @@ mod envelope;
 mod frame_budget;
 #[cfg(test)]
 mod load_check;
+#[cfg(test)]
+mod parking_supply;
 #[cfg(test)]
 mod routing_benchmark;
 #[cfg(test)]
@@ -44,6 +49,8 @@ use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
 use crate::simulation::economy::demand::DemandBuildingActionPlan;
+use crate::simulation::network::graph::RoadParking;
+use crate::simulation::network::road_types::RoadAttributes;
 
 use crate::simulation::zoning::ZoneType;
 use crate::simulation::zoning::cells::CellSelectionShape;
@@ -78,6 +85,10 @@ const WARM_UP_DAYS: u32 = 2;
 // One border trunk per this many residents. Imports cross the border on the roads alone, so a
 // single trunk could not supply a 100k city's industry; 10k keeps its one trunk.
 const RESIDENTS_PER_BORDER: f32 = 10_000.0;
+// Small parking lots along each row between two cross streets, on alternating sides.
+const LOTS_PER_ROW_BLOCK: usize = 1;
+// How far off the row's centre line a lot is asked for: nearer its own row than the next.
+const LOT_REQUEST_OFFSET_M: f32 = 15.0;
 
 /// Wall-clock cost of the fixed-slot systems at the start of one hour, as
 /// [`PopulatedCity::advance_hour`] and [`PopulatedCity::advance_hour_through_actions`] step it.
@@ -144,6 +155,7 @@ impl PopulatedCity {
             let (mut core, row_z, half_x) = street_grid_with_crosses(side_m, crosses);
             times.street_grid += started.elapsed();
             let started = Instant::now();
+            add_parking_lots(&mut core, &row_z, half_x);
             paint_districts(&mut core, &row_z, half_x);
             times.zoning += started.elapsed();
             let started = Instant::now();
@@ -292,6 +304,7 @@ fn crosses_for(side_m: f32) -> usize {
 #[cfg(test)]
 pub(super) fn zoned_city(side_m: f32) -> SimCore {
     let (mut core, row_z, half_x) = street_grid(side_m);
+    add_parking_lots(&mut core, &row_z, half_x);
     paint_districts(&mut core, &row_z, half_x);
     fill_lots(&mut core);
     core
@@ -303,9 +316,80 @@ pub(super) fn zoned_city(side_m: f32) -> SimCore {
 fn zoned_city_in_world(side_m: f32, world_m: f32) -> SimCore {
     let (mut core, row_z, half_x) =
         street_grid_in_world(side_m, crosses_for(side_m), Some(world_m));
+    add_parking_lots(&mut core, &row_z, half_x);
     paint_districts(&mut core, &row_z, half_x);
     fill_lots(&mut core);
     core
+}
+
+// The bundled small lot, registered as the game imports it: a lot's surface comes from its
+// meshes' bounds, which only Godot reads. Returns its asset id.
+fn register_small_lot(core: &mut SimCore) -> String {
+    let mut manifest = crate::assets::AssetManifest::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
+    )))
+    .expect("the bundled small lot parses");
+    for part in &mut manifest.mesh_parts {
+        part.imported_bounds = Some(match part.name.as_str() {
+            "markings" => [[-8.65, 0.0, -10.15], [8.65, 0.12, 10.0]],
+            "p_sign" => [[-0.3, 0.0, -0.03], [0.3, 2.6, 0.07]],
+            _ => [[-0.12, 0.0, -0.1], [0.12, 1.36, 0.1]],
+        });
+    }
+    let id = manifest.qualified_id("parking");
+    core.allocator
+        .registry
+        .register("parking", manifest, String::new());
+    id
+}
+
+// A parking lane on both kerbs of every cross street, as a player's road type would have drawn
+// them; the rows run east-west, so a trunk gets none, and a row's back-to-back lots have no depth
+// to give. Runs on the bulk load's edges, before its one finalization lays them out.
+fn add_kerbside_lanes(core: &mut SimCore) {
+    let graph = &mut core.region_graph;
+    for edge in 0..graph.edge_count() {
+        let road = graph.edge(edge);
+        let (start, end) = (graph.node(road.start_node).pos, graph.node(road.end_node).pos);
+        if road.deleted || (start.x - end.x).abs() > 1.0 {
+            continue;
+        }
+        let (fwd, bkw, attributes) = (road.fwd_lanes, road.bkw_lanes, RoadAttributes::of_edge(road));
+        let both = RoadParking {
+            left: true,
+            right: true,
+        };
+        graph.set_edge_cross_section(edge, fwd, bkw, None, both, attributes);
+    }
+}
+
+// Publishes the kerbside bays of the laid-out grid: a bulk load runs no road commit, which would.
+fn publish_kerbside_bays(core: &mut SimCore) {
+    let graph = &core.region_graph;
+    let parked = (0..graph.edge_count())
+        .filter(|&edge| graph.edge(edge).parking != RoadParking::NONE)
+        .collect();
+    core.transit_network.roadbed.compile_dirty(&core.region_graph);
+    core.reconcile_parking_frontages(&parked);
+}
+
+// `LOTS_PER_ROW_BLOCK` small lots along each row of every block, before the rows are zoned, as a
+// player places a lot and zones around it. O(lots) placements.
+fn add_parking_lots(core: &mut SimCore, row_z: &[f32], half_x: f32) {
+    let lot = register_small_lot(core);
+    let blocks = (2.0 * half_x / CROSS_SPACING_M) as usize;
+    for (row, &z) in row_z.iter().enumerate() {
+        for block in 0..blocks {
+            for n in 0..LOTS_PER_ROW_BLOCK {
+                let along = (n as f32 + 0.5) / LOTS_PER_ROW_BLOCK as f32;
+                let x = -half_x + (block as f32 + along) * CROSS_SPACING_M;
+                let side = if (row + block + n).is_multiple_of(2) { 1.0 } else { -1.0 };
+                core.place_service_building_internal(&lot, x, z + side * LOT_REQUEST_OFFSET_M)
+                    .unwrap_or_else(|error| panic!("lot at ({x}, {z}): {error:?}"));
+            }
+        }
+    }
 }
 
 // Zones every row street in the repeating district pattern with the player's brush.
@@ -390,6 +474,7 @@ fn street_grid_in_world(
         };
         add_road(&mut core, (start, z), (end, z), lanes);
     }
+    add_kerbside_lanes(&mut core);
     {
         let core = &mut core;
         core.transit_network
@@ -415,6 +500,7 @@ fn street_grid_in_world(
     // does, not left to the player's first commit (`ROAD-68-D` part 6).
     core.subsume_world_scale_road_changes();
     core.bump_global_terrain_payload_generation();
+    publish_kerbside_bays(&mut core);
     (core, row_z, half_x)
 }
 
