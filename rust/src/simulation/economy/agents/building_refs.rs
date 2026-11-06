@@ -502,16 +502,24 @@ impl AgentSystem {
                         transit_network,
                         graph,
                     );
-                } else if let Some(plan) = border_plan
-                    .get_or_insert_with(|| {
-                        self.best_border_exit_plan_from_building(
-                            building_id,
-                            allocator,
-                            transit_network,
-                            graph,
-                        )
+                } else if let Some(plan) = self.agents.parking_trip[agent_idx]
+                    .vehicle
+                    .is_none()
+                    .then(|| {
+                        // A resident with a persistent car leaves it at its bay here too: the
+                        // shared exit plan drives, and a rehousing on the way ends it at a door.
+                        border_plan
+                            .get_or_insert_with(|| {
+                                self.best_border_exit_plan_from_building(
+                                    building_id,
+                                    allocator,
+                                    transit_network,
+                                    graph,
+                                )
+                            })
+                            .clone()
                     })
-                    .clone()
+                    .flatten()
                 {
                     if !self.start_building_origin_plan_on_network(
                         agent_idx,
