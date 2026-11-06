@@ -22,7 +22,10 @@ fn bare(diameter_m: f32, lanes: u8) -> (SimCore, f32) {
     let mut core = test_core();
     core.benchmark_mode = false;
     core.treasury.balance = 1.0e7;
-    assert_eq!(ring_edit(&mut core, ground(Vector3::ZERO, lanes, diameter_m)), "");
+    assert_eq!(
+        ring_edit(&mut core, ground(Vector3::ZERO, lanes, diameter_m)),
+        ""
+    );
     let radius_m = 0.5 * (diameter_m - f32::from(lanes) * crate::config::LANE_WIDTH);
     (core, radius_m)
 }
@@ -59,7 +62,10 @@ fn assert_ring_sound(core: &mut SimCore) {
     for id in ring_edges(core) {
         let edge = graph.edge(id);
         let ring = edge.roundabout.unwrap();
-        let (a, b) = (graph.node(edge.start_node).pos, graph.node(edge.end_node).pos);
+        let (a, b) = (
+            graph.node(edge.start_node).pos,
+            graph.node(edge.end_node).pos,
+        );
         let angle = |p: Vector3| (p.z - ring.centre.y).atan2(p.x - ring.centre.x);
         let turn = (angle(a) - angle(b)).rem_euclid(std::f32::consts::TAU);
         assert!(turn < std::f32::consts::PI - 1e-3, "edge {id} turns {turn}");
@@ -81,7 +87,12 @@ fn permutations(items: &[f32]) -> Vec<Vec<f32>> {
     }
     let mut all = Vec::new();
     for (i, &first) in items.iter().enumerate() {
-        let rest: Vec<f32> = items.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, &x)| x).collect();
+        let rest: Vec<f32> = items
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, &x)| x)
+            .collect();
         for mut tail in permutations(&rest) {
             tail.insert(0, first);
             all.push(tail);
@@ -122,8 +133,16 @@ fn a_join_near_a_bare_node_slides_it_and_undo_restores_the_ring() {
     let (state, before) = (graph_state(&core), products(&mut core));
     let count = counts(&core);
     draw(&mut core, stroke_at(radius_m, 0.0), 1).unwrap();
-    assert_eq!(ring_edges(&core).len(), 3, "the bare node moved, nothing split");
-    assert_eq!(core.region_graph.node_count(), count.0 + 1, "the stroke's far end");
+    assert_eq!(
+        ring_edges(&core).len(),
+        3,
+        "the bare node moved, nothing split"
+    );
+    assert_eq!(
+        core.region_graph.node_count(),
+        count.0 + 1,
+        "the stroke's far end"
+    );
     assert_ring_sound(&mut core);
     assert!(core.undo_action_internal());
     assert_eq!(graph_state(&core), state);
@@ -173,7 +192,14 @@ fn only_true_crowding_refuses() {
 // a bare node comes in oblique, and 4+4 anywhere.
 #[test]
 fn a_bare_ring_takes_a_road_anywhere() {
-    for (diameter_m, lanes) in [(30.0, 1), (36.0, 1), (60.0, 1), (45.0, 2), (50.0, 2), (80.0, 2)] {
+    for (diameter_m, lanes) in [
+        (30.0, 1),
+        (36.0, 1),
+        (60.0, 1),
+        (45.0, 2),
+        (50.0, 2),
+        (80.0, 2),
+    ] {
         for arm in [1, 2, 3, 4] {
             let mut refused = 0;
             for step in 0..48 {
@@ -230,7 +256,10 @@ fn both_ends_of_a_stroke_can_join() {
     assert_ring_sound(&mut core);
 
     let (mut core, radius_m) = bare(36.0, 1);
-    assert_eq!(ring_edit(&mut core, ground(Vector3::new(150.0, 0.0, 0.0), 1, 36.0)), "");
+    assert_eq!(
+        ring_edit(&mut core, ground(Vector3::new(150.0, 0.0, 0.0), 1, 36.0)),
+        ""
+    );
     let between = vec![
         Vector3::new(radius_m, 0.0, 0.0),
         Vector3::new(150.0 - radius_m, 0.0, 0.0),
@@ -254,7 +283,10 @@ fn both_ends_of_a_stroke_can_join() {
     // Every two ring nodes of a bare ring are neighbours, and two roads between the same two
     // nodes are refused anywhere; nothing changes.
     let state = graph_state(&core);
-    assert_eq!(draw(&mut core, around, 1).unwrap_err(), "surface_geometry_invalid");
+    assert_eq!(
+        draw(&mut core, around, 1).unwrap_err(),
+        "surface_geometry_invalid"
+    );
     assert_eq!(graph_state(&core), state);
 }
 
@@ -267,7 +299,13 @@ fn joins_in_any_sequence_leave_a_sound_ring() {
         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         seed >> 8
     };
-    for (diameter_m, lanes, arm) in [(30.0, 1, 1), (36.0, 1, 1), (60.0, 1, 2), (45.0, 2, 2), (80.0, 2, 1)] {
+    for (diameter_m, lanes, arm) in [
+        (30.0, 1, 1),
+        (36.0, 1, 1),
+        (60.0, 1, 2),
+        (45.0, 2, 2),
+        (80.0, 2, 1),
+    ] {
         for round in 0..6 {
             let (mut core, radius_m) = bare(diameter_m, lanes);
             for _ in 0..7 {
@@ -325,8 +363,15 @@ fn a_preview_near_a_bare_node_is_what_the_commit_installs() {
         attributes: RoadAttributes::DEFAULT,
     };
     let preview = Arc::new(context.preview_road(request));
-    assert!(preview.validation.is_valid, "{}", preview.validation.invalid_reason);
-    let compiled = preview.pieces.as_ref().expect("a valid stroke compiles pieces");
+    assert!(
+        preview.validation.is_valid,
+        "{}",
+        preview.validation.invalid_reason
+    );
+    let compiled = preview
+        .pieces
+        .as_ref()
+        .expect("a valid stroke compiles pieces");
     let commit = |core: &mut SimCore, preview| {
         let outcome = core.commit_road(
             RoadCommitRequest {
@@ -384,9 +429,10 @@ fn the_road_tool_replica_follows_ring_edits_and_undo() {
     follow(&mut core, &mut context, "ground");
     assert!(core.place_roundabout_internal(junction(node, 36.0)));
     follow(&mut core, &mut context, "conversion");
-    let ring = core.region_graph.edges().iter().position(|edge| {
-        edge.roundabout.is_some_and(|ring| ring.centre.x == 0.0) && !edge.deleted
-    });
+    let ring =
+        core.region_graph.edges().iter().position(|edge| {
+            edge.roundabout.is_some_and(|ring| ring.centre.x == 0.0) && !edge.deleted
+        });
     assert!(core.bulldoze_road_edge_for_test(ring.unwrap()));
     follow(&mut core, &mut context, "bulldoze");
     for step in ["undo bulldoze", "undo conversion", "undo ground"] {
@@ -407,7 +453,11 @@ fn a_join_walks_a_ring_beyond_the_excerpts_reach() {
     let edges = ring_edges(&core).len();
     assert_eq!(edges, 7, "three arms and three bare nodes, then a split");
     draw(&mut core, stroke_at(radius_m, 82.0), 1).unwrap();
-    assert_eq!(ring_edges(&core).len(), edges, "the bare node at 90 degrees moved");
+    assert_eq!(
+        ring_edges(&core).len(),
+        edges,
+        "the bare node at 90 degrees moved"
+    );
     assert_ring_sound(&mut core);
 }
 
@@ -416,7 +466,10 @@ fn a_join_walks_a_ring_beyond_the_excerpts_reach() {
 fn a_plan_less_stroke_near_a_ring_takes_the_bare_node_too() {
     let (mut core, radius_m) = bare(36.0, 1);
     core.precompute_road_mesh_data();
-    assert!(core.add_road_internal(stroke_at(radius_m, 0.0), 1, 1).committed);
+    assert!(
+        core.add_road_internal(stroke_at(radius_m, 0.0), 1, 1)
+            .committed
+    );
     assert_eq!(ring_edges(&core).len(), 3);
 }
 
@@ -426,6 +479,10 @@ fn a_plan_less_stroke_near_a_ring_takes_the_bare_node_too() {
 fn a_mid_chord_join_lays_out_at_60_m() {
     let (mut core, radius_m) = bare(60.0, 1);
     draw(&mut core, stroke_at(radius_m, 30.0), 1).unwrap();
-    assert_eq!(ring_edges(&core).len(), 4, "far from both bare nodes: a split");
+    assert_eq!(
+        ring_edges(&core).len(),
+        4,
+        "far from both bare nodes: a split"
+    );
     assert_ring_sound(&mut core);
 }

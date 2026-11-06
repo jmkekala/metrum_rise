@@ -64,9 +64,7 @@ impl SimulationNode {
                 let arms: VarArray = verdict
                     .arms
                     .iter()
-                    .map(|&(edge, cut)| {
-                        vdict! { "edge": edge as i64, "cut": cut }.to_variant()
-                    })
+                    .map(|&(edge, cut)| vdict! { "edge": edge as i64, "cut": cut }.to_variant())
                     .collect();
                 vdict! {
                     "is_valid": true,

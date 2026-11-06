@@ -55,10 +55,12 @@ pub(crate) fn ring_edge_at(graph: &RegionGraph, point: Vector3) -> Option<usize>
     near.sort_unstable();
     near.into_iter().find(|&id| {
         let edge = graph.edge(id);
-        edge.roundabout.filter(|_| !edge.deleted).is_some_and(|ring| {
-            let from_centre = Vector2::new(point.x, point.z).distance_to(ring.centre);
-            (from_centre - ring.radius_m).abs() < config::INTERSECTION_TOLERANCE
-        })
+        edge.roundabout
+            .filter(|_| !edge.deleted)
+            .is_some_and(|ring| {
+                let from_centre = Vector2::new(point.x, point.z).distance_to(ring.centre);
+                (from_centre - ring.radius_m).abs() < config::INTERSECTION_TOLERANCE
+            })
     })
 }
 

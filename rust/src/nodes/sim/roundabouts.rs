@@ -12,6 +12,7 @@
 //! `O(A / P + B / P)` membership passes. Nothing here runs per tick.
 
 use super::core::{RoadRejection, SimCore};
+use crate::config;
 use crate::debug_log;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::pockets::{PocketDependentsUndo, migrate_arm_trims};
@@ -23,7 +24,6 @@ use crate::simulation::network::roundabouts::{
     ArmTrim, RoundaboutApplied, RoundaboutLayout, RoundaboutRequest, RoundaboutSite,
     default_diameter_m, ring_walk,
 };
-use crate::config;
 use godot::prelude::Vector3;
 use std::collections::HashSet;
 
@@ -226,13 +226,10 @@ impl SimCore {
     // street). Painted cells and fields are the closure's. `O(ring points + parcel hits)`.
     fn roundabout_land_refusal(&self, layout: &RoundaboutLayout) -> Option<RoadRejection> {
         for edge in layout.ring_edges() {
-            if self
-                .watermap
-                .road_corridor_overlaps_visible_water(
-                    &edge.geometry,
-                    visual_roadbed_half_width_m(edge),
-                )
-            {
+            if self.watermap.road_corridor_overlaps_visible_water(
+                &edge.geometry,
+                visual_roadbed_half_width_m(edge),
+            ) {
                 return Some(RoadRejection::new(
                     "water_requires_bridge",
                     "the ring would reach visible water",
@@ -242,7 +239,9 @@ impl SimCore {
         let circle = layout.circle();
         let half = 0.5 * f32::from(layout.lanes()) * config::LANE_WIDTH;
         let disc_m = circle.radius_m + half + config::SIDEWALK_WIDTH;
-        let parcels = self.zoning.parcel_ids_overlapping_disc(circle.centre, disc_m);
+        let parcels = self
+            .zoning
+            .parcel_ids_overlapping_disc(circle.centre, disc_m);
         parcels.first().map(|first| {
             RoadRejection::new(
                 "parcel_overlap",
@@ -265,9 +264,7 @@ impl SimCore {
             .collect();
         for (arm, _) in layout.arm_cuts() {
             let edge = graph.edge(arm);
-            nodes.extend(
-                [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node)),
-            );
+            nodes.extend([edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node)));
         }
         let edges = nodes
             .iter()
@@ -287,7 +284,8 @@ impl SimCore {
         nodes: &HashSet<u32>,
     ) -> (RoundaboutApplied, HashSet<usize>) {
         let applied = layout.apply(&mut self.region_graph);
-        self.region_graph.rebuild_intersection_clips_for_nodes(nodes);
+        self.region_graph
+            .rebuild_intersection_clips_for_nodes(nodes);
         let mut changed = HashSet::new();
         self.region_graph.finalize_junction_endpoint_profiles(
             nodes,
@@ -324,7 +322,8 @@ impl SimCore {
             for &id in &ring {
                 core.region_graph.delete_edge_locally(id);
             }
-            core.region_graph.rebuild_intersection_clips_for_nodes(&nodes);
+            core.region_graph
+                .rebuild_intersection_clips_for_nodes(&nodes);
             core.region_graph.finalize_junction_endpoint_profiles(
                 &ring_nodes,
                 Some(&core.heightmap),
@@ -401,12 +400,7 @@ impl SimCore {
     // Moves the buildings and occupancy of the trimmed arms by what the cuts took off them,
     // journaled. `O(the arms' buildings + occupancy cells)`.
     fn migrate_trimmed_arms(&mut self, trims: &[ArmTrim]) -> PocketDependentsUndo {
-        migrate_arm_trims(
-            &self.region_graph,
-            trims,
-            &self.zoning,
-            &mut self.allocator,
-        )
+        migrate_arm_trims(&self.region_graph, trims, &self.zoning, &mut self.allocator)
     }
 }
 
@@ -419,5 +413,9 @@ fn ring_corner_refusal(core: &SimCore, applied: &RoundaboutApplied) -> Option<&'
             Err(NodeError::Layout(LayoutError::CornerDoesNotFit { .. }))
         )
     };
-    applied.nodes.iter().any(corner).then_some("roundabout_arms_too_close")
+    applied
+        .nodes
+        .iter()
+        .any(corner)
+        .then_some("roundabout_arms_too_close")
 }

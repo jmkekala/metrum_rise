@@ -1153,7 +1153,8 @@ fit at 30 m (1+1) and 45 m (2+2). What still refuses at 30 m on one lane is a ro
 Refused otherwise: running on through the ring (`roundabout_crossed`), ending on the island or running
 a chord across it (`roundabout_island`), a second arm at a ring node (`roundabout_arm_node_taken`). A
 bridge or tunnel passes over or under; its end still may not stand on the island. An end within the
-2 m join tolerance inside the circle is a join.
+2 m join tolerance inside the circle is a join. A road between two neighbouring ring nodes is refused
+as two roads between any two nodes are (`surface_geometry_invalid`).
 
 **The edit** (`nodes/sim/roundabouts.rs`, the turn pocket's transaction). One `try_graph_edit` over
 the old junction, the arms' far nodes and the ring nodes: `RoundaboutLayout::prepare`, the land
@@ -1196,6 +1197,14 @@ in the disc's bounds)`, the edit's check `O(arm points + ring points + closure p
 `O(the arms' buildings + occupancy + local lanes)` and the undo's parallel membership passes, the
 bulldoze `O(ring + the arms' closure)`, all on edits. The lane rule is one `bool` read while connectors
 are rebuilt. Nothing runs per tick.
+
+**Locality** (round R7b, 2026-11-06, `populated_roundabout_conversion_scaling` on `$TEST_BINARY`,
+release, 8 workers, informational and not an acceptance timing). The T of the populated harness
+converted to a 36 m ring over background tiers of 0, 1,000, 10,000 and 100,000 buildings (24 to
+600,024 agents, up to 391 remote roads); setup untimed, 100 verdicts, 20 commits each with its undo.
+The local products (ring nodes, spans, lanes) are identical across the tiers. Verdict p50 1.13, 0.87,
+0.59 and 0.87 ms, commit 3.57, 1.47, 3.99 and 1.66 ms, undo 0.59, 0.39, 1.05 and 0.69 ms: flat, and the
+verdict inside the 1-3 ms a pose may take.
 
 **Timing** (round R7a, 2026-11-06, `$BENCH_BINARY` of `roadbed_benchmark` at the branch against the
 head before the round, C B B C twice, P-cores, 4 workers, medians of 4). No roadbed code changed;
