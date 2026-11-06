@@ -192,6 +192,9 @@ class MockRoadCandidateSimulation:
 	func set_road_tool_median(_style: int, _width: float) -> String:
 		return ""
 
+	func set_road_tool_parking(_code: int) -> String:
+		return ""
+
 	func set_road_tool_attributes(_speed_kmh: int, _sidewalks: int, _zoning: bool, _street_lights: bool) -> String:
 		return ""
 
