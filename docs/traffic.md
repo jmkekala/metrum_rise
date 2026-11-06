@@ -45,7 +45,7 @@ a home point. The test fleet supplies that point in this round; resident ownersh
 | Candidate query | O(9 + local candidates × quote cost), allocation-free, no candidate cap |
 | Source reconciliation | O(old log old + new) per anchor source; O(old × new anchors) building dispatch, plus local tow queries |
 | Off-map retry | O(W log W + W × local candidates), W local waiting cars; supply/release events |
-| Parked publication | Per dirty chunk O(Pc + C log C) for Pc places and C parked cars, a copy of cached poses on the sim thread, parallel over chunks; plus one support solve per car on a place with no pose for its model. Nothing when no chunk is dirty |
+| Parked publication | Per dirty chunk O(C log C) for C parked cars, empty bays never visited: a copy of cached poses on the sim thread, parallel over chunks, in reused buffers; plus one support solve per car on a place with no pose for its model. O(1) and no allocation per custody event. Nothing when no chunk is dirty |
 | Sleeping parked cars | No simulation-tick iteration |
 
 Queries reject straight-line distances over 400 m before quoting, and quoted walks over 400 m.
@@ -198,6 +198,23 @@ meshes/materials identical; parked meshes omit lamps/beams.
   flag, and the next snapshot lists every chunk once more. The `parked` key is absent from the
   frame when nothing changed, and the listed `Arc` vector is rebuilt only when a chunk or an
   acknowledgement changes it, `O(listed chunks)` pointer copies.
+- A chunk lists the bays its parked cars stand on (`Chunk::parked`, with `Place::parked_slot`: 12
+  bytes a bay, derived, never saved, rebuilt at load). `occupy`, `release` and `set_moving` keep it
+  in O(1) and allocate nothing, because `add_place` reserves the room. A rebuild reads that list and
+  never an empty bay. It is O(C log C), not O(C), for a sort: the buffer's order is bay handle order
+  within each bucket and the list has none. A sorted set would drop the sort, but allocate on
+  custody events, and those are the hotter path.
+- A steady rebuild allocates nothing on the sim thread. A publication is three flat buffers, and
+  each chunk keeps the one its last publication replaced (`Chunk::spare`). The next rebuild writes
+  into it once nothing else holds it, so a chunk owns at most two: 112 bytes per parked car at the
+  chunk's peak. A snapshot's list is the only other holder, and the snapshot being rebuilt lets go
+  of its list first; update lists take turns the same way, and rebuild slots and the pending list
+  are reused. A buffer grows when its chunk has more cars than ever before, and a chunk's first two
+  rebuilds make its buffers. Packing a chunk for Godot still allocates, on Godot's thread.
+- A chunk's reuse never waits for an answer. Only the newest publication of a chunk is wanted, so
+  one it replaced is free as soon as its last holder lets go, acknowledged or not. Headless, where
+  nothing answers, a chunk is listed once and keeps one spare: list and pool stay bounded by the
+  chunks ever touched, and each dirty frame copies that many pointers.
 - One off-lane path still try-locks the core: `smooth_car_render_data` re-grounds interpolated
   off-lane cars. It is `dev`'s, and failing it draws the snapshot's own validated pose, so the car
   still updates.
