@@ -215,7 +215,7 @@ func _run() -> void:
 	menu.pick(rural)
 	_expect(_tool.road_type_id == rural and _tool.speed_kmh == 80 and not _tool.sidewalks and _tool.zoning and not _tool.street_lights,
 		"the tool draws the rural type's attributes: %d %s %s %s" % [_tool.speed_kmh, _tool.sidewalks, _tool.zoning, _tool.street_lights])
-	_expect(menu.custom_menu.tooltip_text == "1 + 1 lanes, 80 km/h, no sidewalks, no street lights, 8.5 m wide\n19.2 / m, upkeep 0.128 / m / day",
+	_expect(menu.custom_menu.tooltip_text == "1 + 1 lanes, 80 km/h, no sidewalks, no street lights, 8.5 m wide\nNo zoning: nothing is built along it\n19.2 / m, upkeep 0.128 / m / day",
 		"its tooltip: %s" % menu.custom_menu.tooltip_text)
 	var rural_edge := await _draw(z + 100.0)
 	var rural_section: Dictionary = _simulation.get_edge_cross_section(rural_edge)

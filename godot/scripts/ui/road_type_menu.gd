@@ -10,7 +10,7 @@
 ## activates the tool and calls `RoadTool.set_road_type`. `refresh` rebuilds the row from Rust
 ## after a library edit; unusable entries are never listed (the builder lists them). Each type's
 ## tooltip gives its layout, speed, its sidewalk side ("sidewalk on the left", "no sidewalks"),
-## "No zoning" and Rust's cost per metre.
+## "No zoning" (the flag, or no sidewalks), the one building side and Rust's cost per metre.
 ## Rust methods called: get_road_types().
 extends HBoxContainer
 
@@ -225,11 +225,16 @@ static func _decimals(value: float, most: int, least: int) -> String:
 		keep = dot
 	return text.substr(0, keep)
 
-## A type's tooltip: its description, "No zoning" when it builds no lots, and its cost.
+## A type's tooltip: its description, "No zoning" when it builds no lots, by its flag or for want
+## of a sidewalk (`ROAD-109`), the one side a one-sided road builds on, and its cost.
 static func tooltip(type: Dictionary) -> String:
 	var text := describe(type)
-	if not bool(type.get("zoning", true)):
+	var car_road := int(type.get("fwd_lanes", 0)) + int(type.get("bkw_lanes", 0)) > 0
+	var sides := int(type.get("sidewalks", SIDEWALKS_BOTH))
+	if not bool(type.get("zoning", true)) or (car_road and sides == SIDEWALKS_NONE):
 		text += "\nNo zoning: nothing is built along it"
+	elif car_road and sides != SIDEWALKS_BOTH:
+		text += "\nBuildings on the sidewalk side only"
 	return text + "\n" + cost_text(type)
 
 ## A type's line in a picker: "4-Lane Road (50 km/h, 27 / m)", "Walkway (3.75 / m)".

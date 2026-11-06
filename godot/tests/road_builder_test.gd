@@ -533,6 +533,7 @@ func _run() -> void:
 	_expect(_ui.road_type_menu.custom_ids.has(left_id) and _tool.road_type_id == left_id and _tool.sidewalks == 1,
 		"the Roads row lists it and the tool draws it: %s" % _tool.sidewalks)
 	_expect(_ui.road_type_menu.custom_menu.tooltip_text.contains("sidewalk on the left"), "the Roads row's tooltip names the side: %s" % _ui.road_type_menu.custom_menu.tooltip_text)
+	_expect(_ui.road_type_menu.custom_menu.tooltip_text.contains("Buildings on the sidewalk side only"), "the tooltip says where it builds: %s" % _ui.road_type_menu.custom_menu.tooltip_text)
 	var left_road := await _draw(-50.0)
 	var left_section: Dictionary = _simulation.get_edge_cross_section(left_road)
 	_expect(int(left_section.get("sidewalks", -1)) == 1 and String(left_section.get("road_type", "")) == left_id,
