@@ -15,7 +15,8 @@ mod memory;
 // flat ground (`ROAD-99`), or a road climbing from the ground to join that bridge mid-span
 // (`ROAD-99` follow-up B1), or the T's side road with a 3 m kerbed grass median (`ROAD-80`) or
 // with its one sidewalk on the left (`ROAD-107`); or no stroke: the T's side road, drawn, widened
-// in place or given that median in place (`ROAD-80`), or that one side in place.
+// in place or given that median in place (`ROAD-80`), or that one side in place; or a stroke
+// joined to a bare ring south of the T (`ROAD-62` round R7d).
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     Ground,
@@ -31,6 +32,7 @@ enum Measured {
     SideEdit,
     PocketEdit,
     Conversion,
+    RingJoin,
 }
 
 // The median of the divided measurements (`ROAD-80`).
@@ -202,6 +204,19 @@ fn populated_roundabout_conversion_scaling() {
     );
 }
 
+// `ROAD-62` round R7d: a 1 + 1 stroke joined to a bare 36 m ring near none of its nodes.
+#[test]
+#[ignore = "unprofiled ring join locality; run alone with --release --ignored --nocapture"]
+fn populated_ring_join_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::RingJoin,
+    );
+}
+
 // `ROAD-95` round R5a2: a 40 m right turn pocket on the T's side road at the T.
 #[test]
 #[ignore = "unprofiled turn pocket edit locality; run alone with --release --ignored --nocapture"]
@@ -300,6 +315,7 @@ fn measure_populated_road_plan_scaling(
             | Measured::SideEdit
             | Measured::PocketEdit
             | Measured::Conversion
+            | Measured::RingJoin
     );
     if in_place {
         road_terrain_plan::commit_ready(
@@ -523,6 +539,8 @@ fn measure_populated_road_plan_scaling(
                 measure_pocket_edit(&mut core, remote_buildings, background_roads)
             } else if measured == Measured::Conversion {
                 measure_conversion(&mut core, remote_buildings, background_roads)
+            } else if measured == Measured::RingJoin {
+                measure_ring_join(&mut core, remote_buildings, background_roads)
             } else {
                 measure_lane_edit(&mut core, remote_buildings, background_roads, section)
             };
@@ -608,8 +626,9 @@ fn measure_populated_road_plan_scaling(
             | Measured::TypeEdit
             | Measured::SideEdit
             | Measured::PocketEdit
-            | Measured::Conversion => {
-                unreachable!("measured by measure_lane_edit, _pocket_edit or _conversion")
+            | Measured::Conversion
+            | Measured::RingJoin => {
+                unreachable!("measured by measure_lane_edit or its siblings")
             }
         };
         let request = || RoadPreviewRequest {
@@ -1002,6 +1021,149 @@ fn measure_conversion(core: &mut SimCore, remote_buildings: usize, remote_roads:
             "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
             "publish_p50_ms": p50(&mut publishes), "commit_samples": commits.len(),
             "identical_local_products": true,
+        })
+    );
+    products
+}
+
+// `ROAD-62` round R7d: a bare 36 m ring south of the T (per tier, setup, undone at the end) and a
+// 1 + 1 stroke joined to it from the east, 40 degrees from any node, so the join slides one. Times
+// the road tool's pose (the preview context's plan, pieces and payload) and the commit's plan over
+// 100 samples, then 20 commits each followed by its publication and undo; returns the ring and its
+// arm after a commit, which must not depend on the remote city. The context is once per edit.
+fn measure_ring_join(core: &mut SimCore, remote_buildings: usize, remote_roads: usize) -> String {
+    use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+    use crate::simulation::network::road_types::RoadAttributes;
+    use crate::simulation::network::roundabouts::{RoundaboutRequest, RoundaboutSite, ring_walk};
+    // A timing run: the commit's whole-city checks are `O(city)` by design, and this fixture's
+    // detached sites would fail the attachment repair's, which assumes a road built them.
+    crate::debug::work::set_city_checks(false);
+    // A stroke keeps its undo outside benchmark mode, and pays for itself.
+    core.benchmark_mode = false;
+    core.treasury.balance = 1.0e7;
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    let centre = Vector3::new(0.0, 0.0, -200.0);
+    let first_edge = core.region_graph.edge_count();
+    assert!(core.place_roundabout_internal(RoundaboutRequest {
+        site: RoundaboutSite::Ground { centre, lanes: 1 },
+        diameter_m: 36.0,
+    }));
+    let acknowledge = |core: &mut SimCore| {
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+    };
+    core.precompute_road_mesh_data();
+    acknowledge(core);
+    let radius_m = 0.5 * (36.0 - crate::config::LANE_WIDTH);
+    let (sin, cos) = 40.0_f32.to_radians().sin_cos();
+    let at = |r: f32| centre + Vector3::new(cos * r, 0.0, sin * r);
+    let points = vec![at(radius_m + 80.0), at(radius_m)];
+    let local = |core: &SimCore| {
+        let roadbed = &core.transit_network.roadbed;
+        let graph = &core.region_graph;
+        let lanes = &core.transit_network.lane_system;
+        let mut out = String::new();
+        for (at, ring_edge) in ring_walk(graph, first_edge).expect("the ring") {
+            out += &format!("{:?}\n", graph.node(at).pos);
+            if let Some(piece) = roadbed.node_piece(at) {
+                out += &format!("{:?}\n", piece.mesh().positions());
+            }
+            for &edge in graph.node_adjacency(at) {
+                if edge == ring_edge || graph.edge(edge).roundabout.is_none() {
+                    let piece = roadbed.span_piece(edge).expect("a span");
+                    out += &format!("{:?}\n", piece.mesh().positions());
+                    for &id in lanes.edge_lanes.get(&edge).map_or(&[][..], Vec::as_slice) {
+                        out += &format!("{:?}\n", lanes.lanes[id].geometry);
+                    }
+                }
+            }
+        }
+        out
+    };
+    let snapshot_start = Instant::now();
+    let mut context = crate::nodes::sim::core::road_tool_context::RoadPreviewContext::capture(
+        road_tool_snapshot_from_core(core).unwrap(),
+    );
+    let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+    let generation = context.view.surface_generation;
+    let request = || RoadPreviewRequest {
+        surface_generation: generation,
+        points: points.clone(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+        tunnel: false,
+        median: None,
+        attributes: RoadAttributes::DEFAULT,
+    };
+    let p50 = |samples: &mut Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    };
+    let (mut poses, mut plans) = (Vec::new(), Vec::new());
+    for iteration in 0..103 {
+        let start = Instant::now();
+        let preview = context.preview_road(request());
+        let pose_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let validation = &preview.validation;
+        assert!(validation.is_valid, "{}", validation.invalid_reason);
+        assert!(preview.pieces.is_some(), "a valid pose compiles its pieces");
+        let start = Instant::now();
+        let plan = RoadEditPlan::compile(core, request());
+        let plan_ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(plan.status(core), "ready");
+        if iteration >= 3 {
+            poses.push(pose_ms);
+            plans.push(plan_ms);
+        }
+    }
+    let before = local(core);
+    let mut products = String::new();
+    let (mut commits, mut undos, mut publishes) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..20 {
+        let start = Instant::now();
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points: points.clone(),
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                tunnel: false,
+                median: None,
+                attributes: RoadAttributes::DEFAULT,
+                preview: None,
+            },
+            Instant::now(),
+            Default::default(),
+        );
+        commits.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert!(outcome.committed, "{}", outcome.rejection);
+        let start = Instant::now();
+        core.precompute_road_mesh_data();
+        publishes.push(start.elapsed().as_secs_f64() * 1000.0);
+        acknowledge(core);
+        products = local(core);
+        let start = Instant::now();
+        assert!(core.undo_action_internal());
+        undos.push(start.elapsed().as_secs_f64() * 1000.0);
+        core.precompute_road_mesh_data();
+        acknowledge(core);
+        assert_eq!(local(core), before, "undo restores the bare ring");
+    }
+    assert!(core.undo_action_internal(), "the ring goes with the tier");
+    core.precompute_road_mesh_data();
+    acknowledge(core);
+    println!(
+        "RING_JOIN_SCALING {}",
+        serde_json::json!({
+            "remote_buildings": remote_buildings, "remote_roads": remote_roads,
+            "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
+            "rayon_threads": rayon::current_num_threads(),
+            "pose_p50_ms": p50(&mut poses), "plan_p50_ms": p50(&mut plans), "pose_samples": poses.len(),
+            "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
+            "publish_p50_ms": p50(&mut publishes), "commit_samples": commits.len(),
+            "snapshot_once_per_edit_ms": snapshot_ms, "identical_local_products": true,
         })
     );
     products
