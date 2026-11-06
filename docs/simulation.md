@@ -295,7 +295,7 @@ quote stamps ([`traffic.md`](traffic.md#resident-parking-trips-park-02-round-2a)
 `household_destinations.parking_components`. Workplace route caches move to the `WRC3` layout
 (48-byte entries) and scheduler payloads are stored as signed bits. The Kuopio fixture is re-recorded
 in format 118 with `record_kuopio_reference_save`, from neither parent's file: `sqldiff` shows the
-version, the `WRC3` header row, the five new columns and two new tables, `parking` 0 on all 70 edges,
+version, the `WRC3` header row, the four new columns and two new tables, `parking` 0 on all 70 edges,
 every other table's rows unchanged, `parking_state` 1 row, `building_detached_poses` 0 rows;
 `placements.json` is re-pinned.
 

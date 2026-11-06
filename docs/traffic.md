@@ -23,6 +23,11 @@ Implementation lives mainly in:
 
 ## Physical parking foundation (PARK-01)
 
+Status: merged onto branch `port-park-merge` at save format 118, not landed on `dev`. The sections
+down to [Current Scope](#current-scope) are the parking branch's text as it came: its save numbers
+(110-116), macOS logs and timings describe that branch's builds, not this machine or this merge.
+The rewrite with fresh acceptance comes before landing.
+
 Round 1 ships building anchors, the standalone lot, deterministic edit towing, persistent parked
 cars, saves and parked chunk rendering on `upstream/dev`. Agent travel is unchanged. Household
 ownership and resident/freight/immigration itineraries belong to `PARK-02`, after
@@ -57,7 +62,7 @@ direction. Each parking lane is `PARKING_LANE_WIDTH_M` (2.5 m) and is part of `e
 (`Edge::cross_section_width_m`); the traffic lanes keep their widths and
 `Edge::lane_group_offset` moves them half a parking lane off a one-sided parking kerb. Only a
 road with a car lane may park (`parking_requires_vehicle_road`, checked on the stroke and on
-load). Splits copy the setting; no graph operation reverses an edge. Save format 114 stores it as
+load). Splits copy the setting; no graph operation reverses an edge. Save format 118 stores it as
 `network_edges.parking` (bit 0 left, bit 1 right).
 
 The road builder (`ROAD-101`) has a Parking lane part, allowed only at a kerb (next to a sidewalk, or
@@ -2052,7 +2057,7 @@ the SIM-02 fixed slot `gridlock check`, slot 4 of every game minute
   per-lane arrays (waited-for lane, walk stamps, head stamps) are sized when the lane count or
   `LaneSystem::revision` changes, which also forgets the previous cycles; scratch keeps its
   capacity, so a steady state allocates nothing. A detour allocates its new route.
-- **Save** (save format 110, [`simulation.md`](simulation.md#save-bytes-road-68-k16)). One
+- **Save** (save format 109, [`simulation.md`](simulation.md#save-bytes-road-68-k16)). One
   `gridlock_state` row holds what the next check needs, never the per-lane arrays: the report,
   the stamps of the lanes whose head waited at the last check (lane, head handle, slot first seen
   waiting) and that check's cycles (lanes per cycle; lane and car count per cycle lane; handle

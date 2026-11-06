@@ -6,10 +6,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-The parking integration with `ROAD-94`/`ROAD-95` uses save format 116: parking state and
-kerbside lanes coexist with lane-choice routing, turn pockets and lane-transition nodes.
-Both parents' current-only loading policy is retained; see the
-[save contract](simulation.md#save-bytes-road-68-k16). Merge verification is in progress.
+Parking (`PARK-01`, `PARK-02`, `PARK-05`, Veeti's `feat/parking`) is merged onto branch
+`port-park-merge` at save format 118, not landed on `dev`: the review's tick, render and rule fixes
+and the fixture supply are still open, so the rows stay in progress. Parking state and kerbside
+lanes coexist with lane-choice routing, turn pockets, one-sided sidewalks and roundabouts; only
+format 118 loads ([save contract](simulation.md#save-bytes-road-68-k16)). The figures in the next
+paragraph are the branch's own, measured before this merge on its author's machine.
 
 `PARK-01` round 1b ships building anchors, the standalone lot, persistent test
 cars, local towing, saves and parked chunk rendering on `dev`. Kerbside waits for the widening
@@ -67,7 +69,7 @@ ring came from shoppers who could never reach a door at a lane's end and circled
 locked; with that fixed the city built to day 12 has no ring. A gridlock check once a game minute
 now finds rings of waiting cars, sends one car with a free way out on a detour, and shows rings
 with no way out to the player as a notice and a ring round each locked junction; its state is
-saved (save format 110, combined with parking) ([TRAFFIC-14](traffic.md#gridlock-check-traffic-14)). Connector heads that
+saved (save format 109) ([TRAFFIC-14](traffic.md#gridlock-check-traffic-14)). Connector heads that
 wait at a full exit brake to a stop ([TRAFFIC-16](traffic.md#junction-speeds)); that slows
 saturated junctions (30k deliveries -13.5%), and the 100k ring it causes is detoured whenever it
 locks.
