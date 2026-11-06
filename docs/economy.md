@@ -996,7 +996,12 @@ are unchanged. Republished 2026-11-05 for save format 115 with the `ROAD-95` tur
 (branch `r5-land` `a00e8909`, release test binary SHA-256 `2c48a328a25c9f67`,
 `RAYON_NUM_THREADS=8`): `perf_contract_prepare` passes its continuation check and publishes at
 10k, 30k and 100k (25, 99 and 479 s) and `perf_contract_fiscal_prepare` at 10k and 30k (13 and
-40 s). Fixture revision unchanged.
+40 s). Fixture revision unchanged. Republished 2026-11-06 for save format 117 with the `ROAD-107`
+one-sided sidewalks and `ROAD-62` roundabouts landing (branch `r7-land` `b66fe0b5`, release test
+binary SHA-256 `f2844c4154fbf7b2`, `RAYON_NUM_THREADS=8`): `perf_contract_prepare` passes its
+continuation check and publishes at 10k, 30k and 100k (25, 93 and 459 s) and
+`perf_contract_fiscal_prepare` at 10k and 30k (12 and 39 s). The fixture revision moved, because
+it hashes `populated_city.rs`, which gained the test-only `METRUM_PERF_ROUNDABOUTS` knob.
 
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:

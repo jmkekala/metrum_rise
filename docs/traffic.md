@@ -963,7 +963,7 @@ artifact folders stay local):
 
 ### Give-way on entry to a roundabout (`ROAD-62`)
 
-Round R7c (2026-11-06, branch `port-r7c-giveway`, not landed). A car entering a
+Round R7c (2026-11-06, branch `port-r7c-giveway`, landed on `dev` 2026-11-06). A car entering a
 [roundabout](roads.md#roundabouts-road-62) gives way to the ring, without waiting for `TRAFFIC-06`;
 every other junction still has no right of way.
 
@@ -1110,7 +1110,7 @@ about 5% on identical source, not a cost of the field, and it says little about 
 
 ### What a ring carries (`ROAD-62`, round R7c2)
 
-Round R7c2 (2026-11-06, branch `port-r7c2-capacity`, not landed). Fixture `ring_capacity_tests`: no
+Round R7c2 (2026-11-06, branch `port-r7c2-capacity`, landed on `dev` 2026-11-06). Fixture `ring_capacity_tests`: no
 city, four arms, a source on every entry lane that places a car whenever the lane's entry slot is
 clear, a sink near the end of each exit arm. Flows are cars per **simulated minute**, 600 s after a
 120 s warm-up; the median and range of nine starts, because the symmetrical fixture settles into

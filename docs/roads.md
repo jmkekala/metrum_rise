@@ -1062,12 +1062,19 @@ no widening-side choice.
 ### Roundabouts (`ROAD-62`)
 
 A roundabout is a ring of one-way road edges around a grass island, built on empty ground or in
-place of a junction. Round R7a (branch `port-r7a-ring`, not landed) is the model, the geometry and
-the lane rule on the graph; round R7b (branch `port-r7b-tool`, not landed) the transaction, the tool
-and bulldozing the whole ring; round R7c (branch `port-r7c-giveway`, not landed)
+place of a junction. Round R7a (branch `port-r7a-ring`) is the model, the geometry and
+the lane rule on the graph; round R7b (branch `port-r7b-tool`) the transaction, the tool
+and bulldozing the whole ring; round R7c (branch `port-r7c-giveway`)
 [give-way on entry](traffic.md#give-way-on-entry-to-a-roundabout-road-62) and the populated
 acceptance: entering cars yield to the ring without waiting for `TRAFFIC-06`; round R7d (branch
-`port-r7d-entry`, not landed) the entry's sign and paint.
+`port-r7d-entry`) the entry's sign and paint. All landed on `dev` 2026-11-06.
+Landing timing (2026-11-06, control `dev` `167eeea6`, branch `r7-land` `b66fe0b5`, release, P-cores,
+`RAYON_NUM_THREADS=4`, C B B C twice): `benchmark_road_preview_stages` totals 3.09 / 3.15 ms
+(divided T), 2.63 / 2.64 ms (sloped branch) and 3.00 / 2.91 ms (sloped T), vertices identical. One
+stage is slower outside the control's range: the divided T's plan, 0.442 to 0.454 ms, the stage where
+a stroke's ring check is new; not traced. One is faster outside it: the sloped T's graded stage, 1.825 to
+1.761 ms, where no code changed. `RoadChunkRenderer` `chunk_emit_only/1024` 98.5 / 97.0 us, the
+divided and pocket rows also inside the control's range.
 `METRUM_PERF_ROUNDABOUTS=n` (test builds) makes rings of the populated grid's n highest-degree
 junctions through this transaction, before zoning, as `METRUM_PERF_POCKETS` adds pockets.
 
