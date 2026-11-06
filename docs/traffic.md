@@ -517,15 +517,9 @@ walks to the car's actual new place, replans from its actual lane position, or r
 pull-in to the driveway before choosing replacement supply. It never moves a travelling car by
 towing. The owned-car watchdog requests this ordered recovery rather than teleporting.
 
-A door with no foot lane (a car-only building, `ROAD-107` D1) reaches nothing on foot, so its own
-bays are always candidates (D4), at the straight walk across the lot: `BuildingEntrance::lot_door`
-marks a hosted bay's access, `in_lot_candidate` quotes door to bay or bay to bay when no lane
-joins them (O(1), only after the lane quote fails), and the leg has no lanes, which is how
-`walk_across_lot` knows it: at walking pace from where the walker stands, then the usual arrival
-or `ready`. Cost: O(1) more per place in a catchment rebuild, nothing on a door with foot lanes.
-A car-only building without a bay of its own has no catchment: its car stays off the map and its
-residents stay in, retrying every 30 s, the console saying why. That is a city without supply,
-`PARK-03`'s question.
+Every door has foot access (`ROAD-109`: a building stands on a side with a sidewalk), so a
+catchment reaches its bays on foot lanes and no walk leaves them. M4's own-bay rule and walk
+across the lot went with the car-only doors they served.
 
 Moving and parked cars come from one snapshot (see the render path above), so neither renderer
 can run ahead of a transition. Model and colour persist across the switch. Origin occupancy is released after pull-out reaches the network; destination reservation

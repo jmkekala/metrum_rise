@@ -11271,8 +11271,9 @@ carriageway keeps its width, and the parcel corridor is `width / 2` plus the roa
 band (`widest_side_band_width_m`); a side gaining a sidewalk counts as a widening whatever the
 larger side does ([`ROAD-107`](#one-sided-sidewalks-road-107)). Walkers on a removed sidewalk go through the same reattach as cars: the
 nearest sidewalk lane within 30 m, else laneless on their road (`TRAFFIC-19`'s case); none is
-moved or lost. The closure's entrances are rebuilt, so the road's buildings become car-only
-destinations, and the deferred routing rebuild takes the new speed and the walking topology.
+moved or lost. A sidewalk under a building's door stays: the edit is refused
+([`ROAD-109`](zoning.md#8-road-no-build-flag)). The closure's entrances are rebuilt, and the
+deferred routing rebuild takes the new speed and the walking topology.
 Zoning turned off does what the "No buildings" checkbox does: the allocator maintenance
 demolishes the road's buildings at once and its parcels are removed, other roads' buildings keep
 their rezone grace; `buildings_removed` counts them first (every building whose road it is,
@@ -11609,13 +11610,12 @@ independent of zoning; speed per type; costs by type; Road Properties changes al
   a per-road override.
 - **The sidewalk rule.** A car road's layout has a sidewalk at either end, at both or at none
   (`ROAD-107`; both or none until then); at an end without one the roadbed draws its 0.75 m
-  shoulder (`layout_widths` counts it in the total), and a building fronting that side probes
-  the shoulder for its door, so it is a car-only destination. On a road with neither the corridor
-  and parcel checks reach the shoulder. Sidewalks and zoning are independent:
-  a road without sidewalks may zone (a rural road with driveways; every agent owns a car), and
-  the road builder warns "No sidewalks: buildings here are reached by car only". The walking
-  proof checks only the edges walkers cross, so such a road keeps it (round RB3a; open question
-  17's evidence above).
+  shoulder (`layout_widths` counts it in the total). On a road with neither the corridor
+  and parcel checks reach the shoulder. A side without a sidewalk takes no cells and no building
+  ([`ROAD-109`](zoning.md#8-road-no-build-flag), which replaced RB3a's "a road without sidewalks
+  may zone"), and the road builder warns "No sidewalks: nothing is built along this road". The
+  walking proof checks only the edges walkers cross, so such a road keeps it (round RB3a; open
+  question 17's evidence above).
 - **Walkers at a junction with a sidewalk-less arm (design D2 (a)).** That arm gets no zebra, no
   crossing toggle and no corner walk; walkers use the other arms' zebras. A T whose stem has no
   sidewalks cuts the through road's near-side sidewalk: a walker passing the stem crosses both
@@ -11689,10 +11689,9 @@ D1-D5, D22, D23).
   there (RB3a D2 (a)), and a one-sided road keeps its walk network connected along its side.
 - **Crossings (D5).** An arm needs sidewalks on both sides to cross: a one-sided arm has no
   zebra, no toggle (`crossing_arm_eligible`) and no default degree-two crossing.
-- **Buildings and lots (D1 per side).** A building or lot on the sidewalk side fronts the
-  sidewalk and its door has foot lanes; one on the shoulder side fronts the shoulder, its door
-  finds no foot lane, so it is a car-only destination as on a road without sidewalks
-  ([`zoning.md`](zoning.md#8-road-no-build-flag)).
+- **Buildings and lots.** A building or lot on the sidewalk side fronts the sidewalk and its door
+  has foot lanes. The shoulder side takes neither (`ROAD-109`, which replaced D1 per side;
+  [`zoning.md`](zoning.md#8-road-no-build-flag)).
 - **Save format 116**: `network_edges.sidewalks` (0-3); a load refuses a code outside 0-3,
   sidewalks on an edge without cars, and a car road whose mask disagrees with its `FOOT` flag.
   Every road built before is both or none, so every existing product is bitwise unchanged
@@ -11708,15 +11707,17 @@ D1-D5, D22, D23).
   one per end of the strip and independent; an end without one is the shoulder band. The
   description reads "sidewalk on the left" or "... right", both sides go unsaid, and the Roads
   row's tooltip and Road Properties read the same text. A type that zones warns per side: "No
-  sidewalk on the right: buildings on that side are reached by car only" (a type with neither
-  keeps "No sidewalks: buildings here are reached by car only").
+  sidewalk on the right: nothing is built on that side" (a type with neither reads "No sidewalks:
+  nothing is built along this road"), and the Zoning checkbox is disabled with neither
+  (`ROAD-109`).
 - **Road Properties and in-place edits.** `road_type` matches the sides, so a road whose sides no
   type has reads "Custom layout" and keeps them until the player picks a type: the picker is the
   only way to change them, and it sends that type's sides in each selected road's own forward
   frame. A pick adds or removes one side with the rest of the in-place edit: lanes rebuilt
   locally, undo restores the whole edge. Walkers on a removed side reattach within the 30 m
-  reach, which on most roads puts them on the kept sidewalk at the same station; the house on
-  that side becomes a car-only destination. `edit_tunnel_width` and the larger-side comparison
+  reach, which on most roads puts them on the kept sidewalk at the same station. A side with a
+  building's door keeps its sidewalk: the pick is refused (`sidewalk_under_door`, `ROAD-109`).
+  `edit_tunnel_width` and the larger-side comparison
   are unchanged (a tunnel's bore is the larger side, reached to both sides), but any side gaining
   a sidewalk runs the widening checks (`SidewalkSides::adds_to`), since moving from one sidewalk
   to two leaves the larger side alone; they use the stroke's symmetric corridor, so a sidewalk
@@ -11807,9 +11808,10 @@ Opening re-reads the library file and starts a new layout, the 2-Lane Road's.
   Zoning checkbox; an edited type keeps its own. Under
   them Rust's description ("1 + 1 lanes, 100 km/h, no sidewalks, 8.5 m wide"), Rust's cost line
   from `check_road_layout` ("24 / m, upkeep 0.16 / m / day") and, for a type that zones, "No
-  sidewalks: buildings here are reached by car only" without sidewalks, or with one "No sidewalk
-  on the right: buildings on that side are reached by car only". Create and Save send the
-  controls' speed, zoning and street lights: an edited type keeps its own.
+  sidewalks: nothing is built along this road" without sidewalks, or with one "No sidewalk on the
+  right: nothing is built on that side". Create and Save send the
+  controls' speed, zoning and street lights: an edited type keeps its own. Zoning is disabled
+  with no sidewalk on either side, its value kept (`ROAD-109`).
 - **Name and create.** The footer's name field shows Rust's suggested name ("2+2 Grass 3 m")
   until the player types one. Create road (Save when editing) is enabled only when the layout
   passes and `check_road_type_name` accepts the name (empty, over 40 characters, control

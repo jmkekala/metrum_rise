@@ -137,6 +137,7 @@ Single-parcel placement is all-or-nothing.
 - The parcel must not overlap an explicit service-building site reservation.
 - The parcel must not overlap a committed field (`ECON-07`), including when its profile is free/unzoned.
 - Roads with `Edge::no_building_spawn = true` reject parcel attachment.
+- A road side without a sidewalk rejects parcel attachment (`ROAD-109`, [section 8](#8-road-no-build-flag)).
 - Missing compatible initial-level assets do not block zoning, including when installed assets
   have another density, require a later building level or exceed the selected lot dimensions.
   Such parcels retain their selected profile and wait for compatible content before growth.
@@ -386,15 +387,40 @@ path is for invalid saved data only; it must never leave illegal parcel geometry
   type whose speed reaches it gets zoning off once, unless the player set the checkbox. Type
   matching ignores the flag, so the checkbox below stays a per-road override.
 - Player toggle: road properties panel checkbox
-- Roads without sidewalks may zone (the rural road, design D1): their lots derive as on any
-  road and their buildings are car-only destinations, 0.75 m shoulder instead of the sidewalk
-  (the road builder warns "No sidewalks: buildings here are reached by car only")
-- D1 holds per side on a road with one sidewalk (`ROAD-107`): both sides zone; a lot or
-  building on the sidewalk side fronts the sidewalk and is walked to, one on the shoulder side
-  fronts the 0.75 m shoulder (its door probe and grading read that side's band,
-  `side_band_width_m(edge, side)`) and is a car-only destination, its door having no foot lane
-  (the road builder warns "No sidewalk on the right: buildings on that side are reached by car
-  only", naming the side)
+- **A building stands on a side of a road that has a sidewalk (`ROAD-109`, the user, 2026-11-06).**
+  One rule, no per-kind exceptions: later public transport leaves workers walking the end of the
+  route, so every door must be reachable on foot. It replaces RB3a's D1 ("roads without sidewalks
+  may zone") and its per-side form from `ROAD-107`. `Edge::zones_side(side)` is the predicate:
+  `!no_building_spawn` and the side walked (`Edge::walked_on_side`: a sidewalk on that side, or a
+  walkway, which is its own path). `RegionGraph::takes_buildings(edge, side)` adds "fronts the
+  ground". Both O(1).
+  - **Cells and lots.** Every place that read `no_building_spawn` for cells reads `zones_side`:
+    `edge_candidates` per side, `warm_cold_chunks` (either side), `column_is_covered` (the
+    continuing road's own side, since it may run the other way), the curve and pinned candidates,
+    `has_road_column` and `cell_lot_frontage`. A road with no sidewalks makes no cells, a
+    one-sided road zones on its sidewalk side, and a ring never did (`ROAD-62`). A road type's
+    stored `zoning` value stays as it is; the Zoning checkbox is disabled while no side has a
+    sidewalk.
+  - **Parcels and zoned buildings.** Parcels attach only to a side that zones; road fill fills
+    only those sides. `resolve_slot` and the demand candidates read the parcel's side. A building
+    found on a side without a sidewalk (a save from before the rule) goes at the next maintenance
+    through `compatibility_expired`, as on a road closed to buildings.
+  - **Placed buildings.** Service buildings, mines, farms and every other explicit site take the
+    nearest frontage as before and are refused there (`ExplicitServicePlacementRejection::NoSidewalk`,
+    "buildings need a sidewalk on their side of the road") in preview and commit alike, one check
+    in `validate_explicit_frontage_side`, so the player sees why instead of the site jumping to
+    another road. A road with `no_building_spawn` is still skipped in that search.
+  - **Removing a sidewalk.** A road-type change or any in-place edit that would take a sidewalk
+    from a side with a building's door is refused (`sidewalk_under_door`,
+    "A building's door is on this sidewalk: remove the building first"), a zoning-off change
+    included: the door is the rule, not the demolition. An undo that would do the same is refused
+    and stays on the stack. O(segments + chunks + candidates log candidates) through the 512 m
+    chunk index, only when a side goes; a stale index counts in parallel over the city, as
+    `buildings_fronting` always has. The side's empty parcels and lots go in the same change and its undo
+    restores them; its cells follow through `mark_cell_lots_for_roads`, which marks only the
+    edit's own roads. Bulldozing a road keeps its behaviour.
+  - **Test builds** check the rule in `check_doors_are_walked` at every entrance rebuild, and after
+    a road edit that the changed doors have their foot lanes.
 - Persistence: saved on `network_edges`
 - Topology: split edges copy the flag to both children
 - Overlay: zoning tool draws no-build edge guide lines
