@@ -650,9 +650,8 @@ four needs 34.37.
 "Open" means on the home's ranked options below, and a worker looks only when its lock has run out.
 A worker who stays is locked again for 5–9 days, so an adult on a job that cannot carry it sees a
 job only if it is open at that search; unemployed adults search every hour and usually take it
-first. In a full town no job opens and such a family stays where it is: forced onto the 60-wage job
-in `growth_scenario` it runs short all year. The rule keeps a family off that job, it does not swap
-it with a single adult on a better one.
+first. In a full town no job opens and such a family stays where it is. The rule keeps a family off
+that job, it does not swap it with a single adult on a better one.
 
 The test is O(1) per searcher on top of the O(options) scan: no allocation and no route query.
 `HouseholdEssentials` is built once per search batch, O(profile ports²), allocation-free.
