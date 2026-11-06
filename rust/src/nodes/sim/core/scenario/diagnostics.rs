@@ -256,7 +256,15 @@ impl GrowthReport {
             opening_treasury: core.treasury.balance,
             opening_build_cost: core.treasury.lifetime_build_cost,
             opening_business_cash: 0.0,
-            previous_treasury: core.treasury.balance,
+            // The first day's ledger starts at the last close, not at this attachment: a daily
+            // phase can settle in the frame after the close, and its flows are in both.
+            previous_treasury: core.treasury.balance
+                - core.treasury.pending_income_tax
+                - core.treasury.pending_household_vat
+                - core.treasury.pending_business_profit_tax
+                - core.treasury.pending_property_tax
+                + core.households.day_totals.transfers()
+                + f64::from(core.households.day_totals.city_service_wages.total),
             previous_build_cost: core.treasury.lifetime_build_cost,
             unrecorded_opening_build_cost: core.treasury.lifetime_build_cost
                 - core.budget_last_lifetime_build_cost,
