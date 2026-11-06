@@ -9,7 +9,8 @@
 //! nose tips. Before a junction whose approach lanes serve different movements (`ROAD-94`), the
 //! dividers between those lanes are solid over the last `APPROACH_SOLID_LENGTH_M`, where no car
 //! changes lanes, and each of those lanes carries turn arrows for its movements (`ROAD-75`), as
-//! does every lane a junction's turn whitelist lists.
+//! does every lane a junction's turn whitelist lists. A ring entry's lanes end in the give-way
+//! triangle row (`ROAD-62`), just outside the zebra, where its cars stand.
 
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
@@ -30,6 +31,7 @@ use crate::simulation::network::roadbed::{
     BandKind, EdgeEnd, LEFT_POCKET_TAPER_M, NOSE_CLEARANCE_M, PocketNarrowing, RoadSection,
     RoadbedSystem, painted_median_continues,
 };
+use crate::simulation::network::roundabouts::enters_ring;
 use crate::simulation::network::types::TransitType;
 use godot::prelude::{Color, Vector2, Vector3};
 // Traficom, Liite 14 (2023), K0 table: centre line K1 and lane line K2_1 are 1 m dashes with
@@ -54,6 +56,15 @@ const PAINTED_NOSE_LENGTH_M: f32 = 4.0;
 // road type at 40 km/h or less. The built-in 2-Lane Road (50 km/h) has its dashed centre line
 // (the user, 2026-11-05; road types carry their speed since `ROAD-101`).
 const UNMARKED_STREET_MAX_KMH: f32 = 40.0;
+// The give-way line (Traficom, Liite 15, L2): a row of triangles 0.5 m at the base and 0.6 m long,
+// 0.3-0.5 m apart, each pointing at the driver who gives way. Four to a 3.5 m lane at 0.4 m, drawn
+// per lane so a lane line runs between two of them. The row's bases lie this far back from the
+// mouth: the lanes end there, so a car stands at the row, and the zebra's bars start 0.25 m past
+// it.
+const GIVE_WAY_TRIANGLE_BASE_M: f32 = 0.5;
+const GIVE_WAY_TRIANGLE_LENGTH_M: f32 = 0.6;
+const GIVE_WAY_TRIANGLE_GAP_M: f32 = 0.4;
+const GIVE_WAY_ROW_BACK_M: f32 = 0.25;
 
 #[derive(Clone, Copy)]
 struct FinnishLaneLine {
@@ -113,6 +124,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         }
         // Arrows first: a whitelisted single lane carries them too (`ROAD-75`).
         emit_approach_arrows(mesh, graph, edge_idx, sections, marking_s_range);
+        let lines_s_range = emit_give_way_rows(mesh, graph, edge_idx, sections, marking_s_range);
         if total_lanes <= 1 {
             continue;
         }
@@ -125,6 +137,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         let Some(line) = FinnishLaneLine::for_edge(edge) else {
             continue;
         };
+        let marking_s_range = lines_s_range;
         // Each lane group's dashed stations: solid over the last `APPROACH_SOLID_LENGTH_M` before
         // the node it approaches when its lanes must pick their movement there. Forward lanes
         // approach the end node, backward lanes the start node. O(degree) per edge end.
@@ -362,6 +375,72 @@ fn emit_approach_arrows(
                 });
             }
         });
+    }
+}
+
+// The give-way triangle row (`ROAD-62`, D19) across `edge_idx`'s lanes into a ring at either end,
+// at the marking range's end on that side, which is the mouth: a ring node is a junction, so its
+// arms' ranges end there. The entry's zebra lies past it, on the node's piece, and the lanes stop
+// short of the zebra, so the paint is where cars give way. A range too short for the row has none.
+// Returns the range the road's lines take, which end at the row's tips as they would at a stop
+// line: the range itself on every road without a row. O(degree + lanes x triangles x (log sections
+// + bands)) per edge, allocation-free; a road that enters no ring pays the two `enters_ring` tests.
+fn emit_give_way_rows(
+    mesh: &mut NetworkMeshData,
+    graph: &RegionGraph,
+    edge_idx: usize,
+    sections: &[RoadSection],
+    (range_start, range_end): (f32, f32),
+) -> (f32, f32) {
+    let edge = graph.edge(edge_idx);
+    let row_m = GIVE_WAY_ROW_BACK_M + GIVE_WAY_TRIANGLE_LENGTH_M;
+    let mut lines = (range_start, range_end);
+    if range_end - range_start < 2.0 * row_m {
+        return lines;
+    }
+    for (node, direction, range_end, lanes) in [
+        (edge.end_node, 1.0, range_end, edge.fwd_lanes),
+        (edge.start_node, -1.0, range_start, edge.bkw_lanes),
+    ] {
+        if !enters_ring(graph, edge_idx, node) {
+            continue;
+        }
+        let base = range_end - direction * GIVE_WAY_ROW_BACK_M;
+        if direction > 0.0 {
+            lines.1 = range_end - row_m;
+        } else {
+            lines.0 = range_end + row_m;
+        }
+        for rank in 0..lanes as i8 {
+            let lane_idx = if direction > 0.0 { rank } else { -rank - 1 };
+            let lateral = vehicle_lane_offset(edge, lane_idx);
+            // Row coordinates as the arrows': `x` metres to the driver's right, `y` ahead.
+            let point = |(x, y): (f32, f32)| {
+                point_at(sections, base + direction * y, lateral + direction * x)
+            };
+            give_way_row(config::LANE_WIDTH, |triangle| {
+                if let [Some(a), Some(b), Some(c)] = triangle.map(point) {
+                    emit_marking_triangle(mesh, [a, b, c]);
+                }
+            });
+        }
+    }
+    lines
+}
+
+// The triangles of one lane `width` wide, in row coordinates: as many as fit, centred on the lane,
+// bases on `y = 0` and tips towards the driver.
+fn give_way_row(width: f32, mut fill: impl FnMut([(f32, f32); 3])) {
+    let pitch = GIVE_WAY_TRIANGLE_BASE_M + GIVE_WAY_TRIANGLE_GAP_M;
+    let count = ((width + GIVE_WAY_TRIANGLE_GAP_M) / pitch).floor();
+    let half = GIVE_WAY_TRIANGLE_BASE_M * 0.5;
+    for index in 0..count as usize {
+        let x = (index as f32 - (count - 1.0) * 0.5) * pitch;
+        fill([
+            (x - half, 0.0),
+            (x, -GIVE_WAY_TRIANGLE_LENGTH_M),
+            (x + half, 0.0),
+        ]);
     }
 }
 
@@ -677,6 +756,9 @@ fn emit_marking_segment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::network::render::road::RoadRenderer;
+    use crate::simulation::network::roadbed::fixtures::{self, converted_ring};
+    use crate::simulation::terrain::TerrainSystem;
 
     // `ROAD-75` style A: every movement mask's glyph has its fixed triangle count, no degenerate
     // triangle, stays within its 5 m and `max_half_width` of the lane's centre, and is shifted
@@ -725,6 +807,145 @@ mod tests {
                 "mask {mask}: tail at {tail}"
             );
         }
+    }
+
+    // `ROAD-62` D19: a lane's row is four triangles, inside the lane, each pointing at the driver.
+    #[test]
+    fn a_give_way_row_fills_a_lane_with_triangles_pointing_back() {
+        let mut triangles = Vec::new();
+        give_way_row(config::LANE_WIDTH, |triangle| triangles.push(triangle));
+        assert_eq!(triangles.len(), 4);
+        for [a, tip, c] in triangles.iter().copied() {
+            assert!(a.0.abs() < 1.75 && c.0.abs() < 1.75, "inside the lane");
+            assert_eq!((a.1, c.1), (0.0, 0.0), "bases on the row's line");
+            assert_eq!(tip.1, -GIVE_WAY_TRIANGLE_LENGTH_M);
+            assert_eq!(tip.0, (a.0 + c.0) * 0.5);
+        }
+        let (first, last) = (triangles[0][0].0, triangles[3][2].0);
+        assert!((first + last).abs() < 1.0e-5, "centred on the lane");
+    }
+
+    // The give-way triangles of a mesh of `graph`: the marking layer's triangles with the row's
+    // side lengths, which no arrow or line has.
+    fn give_way_triangles(graph: &RegionGraph, roadbed: &RoadbedSystem) -> Vec<[Vector3; 3]> {
+        let terrain = TerrainSystem::with_chunking(256, 256, 1.0, 8, 0.0);
+        let mesh = RoadRenderer.generate_mesh_data_with_surface(graph, &terrain, roadbed);
+        let leg = GIVE_WAY_TRIANGLE_BASE_M.hypot(2.0 * GIVE_WAY_TRIANGLE_LENGTH_M) * 0.5;
+        let near = |a: Vector3, b: Vector3, length: f32| (a.distance_to(b) - length).abs() < 1.0e-3;
+        // Each as `[base, tip, base]`, however the mesh wound it.
+        let (triangles, _) = mesh.marking_vertices.as_chunks::<3>();
+        triangles
+            .iter()
+            .flat_map(|&[a, b, c]| [[a, b, c], [b, c, a], [c, a, b]])
+            .filter(|&[a, tip, c]| {
+                near(a, c, GIVE_WAY_TRIANGLE_BASE_M) && near(a, tip, leg) && near(c, tip, leg)
+            })
+            .collect()
+    }
+
+    fn compiled(graph: &RegionGraph) -> RoadbedSystem {
+        let mut roadbed = RoadbedSystem::new(64.0);
+        roadbed.compile_dirty(graph);
+        roadbed
+    }
+
+    // `ROAD-62` D19: each lane into a ring ends in its four triangles, on the entering half of the
+    // arm, tips towards the driver, 0.25 m before the mouth and clear of the zebra's bars.
+    #[test]
+    fn every_lane_into_a_ring_ends_in_a_triangle_row() {
+        for (diameter_m, arms, (out, into)) in [
+            (36.0, 3, (1, 1)),
+            (36.0, 4, (1, 1)),
+            (50.0, 4, (2, 2)),
+            (60.0, 5, (1, 2)),
+        ] {
+            let angles: Vec<_> = (0..arms).map(|i| i as f32 * 360.0 / arms as f32).collect();
+            let (graph, applied) = converted_ring(diameter_m, &angles, (out, into), false).unwrap();
+            let roadbed = compiled(&graph);
+            let found = give_way_triangles(&graph, &roadbed);
+            let name = format!("D{diameter_m}, {arms} arms of {out} + {into}");
+            assert_eq!(found.len(), 4 * arms * usize::from(into), "{name}");
+            for &arm in &applied.arms {
+                let edge = graph.edge(arm);
+                let ring_at_start = enters_ring(&graph, arm, edge.start_node);
+                let sections = roadbed.sections(arm).unwrap();
+                let mouth = &sections[if ring_at_start { 0 } else { sections.len() - 1 }];
+                let centre = Vector3::new(mouth.center_xz.x as f32, 0.0, mouth.center_xz.y as f32);
+                let outward = centre.normalized();
+                let right = Vector3::new(outward.z, 0.0, -outward.x);
+                let row: Vec<_> = found
+                    .iter()
+                    .filter(|t| {
+                        let from_mouth = t[1] - centre;
+                        from_mouth.dot(outward).abs() < 2.0 && from_mouth.dot(right).abs() < 16.0
+                    })
+                    .collect();
+                assert_eq!(row.len(), 4 * usize::from(into), "{name}: arm {arm}");
+                for &[a, tip, c] in row {
+                    let back = |p: Vector3| (p - centre).dot(outward);
+                    assert!((back(a) - GIVE_WAY_ROW_BACK_M).abs() < 1.0e-3, "{name}");
+                    assert!((back(c) - GIVE_WAY_ROW_BACK_M).abs() < 1.0e-3, "{name}");
+                    let tip_back = GIVE_WAY_ROW_BACK_M + GIVE_WAY_TRIANGLE_LENGTH_M;
+                    assert!((back(tip) - tip_back).abs() < 1.0e-3, "{name}: tip at the driver");
+                    let across = (tip - centre).dot(right);
+                    // The right kerb, then the lanes in; an uneven road's centre is not their edge.
+                    let kerb = f32::from(out + into) * config::LANE_WIDTH * 0.5;
+                    let lanes_in = kerb - f32::from(into) * config::LANE_WIDTH..kerb;
+                    assert!(lanes_in.contains(&across), "{name}: on the lanes in, {across}");
+                }
+            }
+        }
+    }
+
+    // An arm's lines end at the row's tips: nothing but the row is painted between them and the
+    // mouth, across the whole arm.
+    #[test]
+    fn an_arms_lines_stop_at_the_triangle_row() {
+        let angles = [0.0, 90.0, 180.0, 270.0];
+        let (graph, applied) = converted_ring(50.0, &angles, (2, 2), false).unwrap();
+        let roadbed = compiled(&graph);
+        let terrain = TerrainSystem::with_chunking(256, 256, 1.0, 8, 0.0);
+        let mesh = RoadRenderer.generate_mesh_data_with_surface(&graph, &terrain, &roadbed);
+        for &arm in &applied.arms {
+            let edge = graph.edge(arm);
+            let ring_at_start = enters_ring(&graph, arm, edge.start_node);
+            let sections = roadbed.sections(arm).unwrap();
+            let mouth = &sections[if ring_at_start { 0 } else { sections.len() - 1 }];
+            let centre = Vector3::new(mouth.center_xz.x as f32, 0.0, mouth.center_xz.y as f32);
+            let outward = centre.normalized();
+            let right = Vector3::new(outward.z, 0.0, -outward.x);
+            let zone = GIVE_WAY_ROW_BACK_M + GIVE_WAY_TRIANGLE_LENGTH_M - 0.01;
+            let in_zone = mesh.marking_vertices.iter().filter(|&&p| {
+                let from_mouth = p - centre;
+                (-0.5..zone).contains(&from_mouth.dot(outward)) && from_mouth.dot(right).abs() < 8.0
+            });
+            // Two base corners of each of the two lanes' four triangles.
+            assert_eq!(in_zone.count(), 2 * 2 * 4, "arm {arm}");
+        }
+    }
+
+    // A plain junction and a bare ring have no row, nor has an arm that only leaves a ring.
+    #[test]
+    fn only_lanes_into_a_ring_have_a_triangle_row() {
+        let plain = fixtures::t_junction(false);
+        assert!(give_way_triangles(&plain, &compiled(&plain)).is_empty());
+        let (bare, _) = fixtures::bare_ring(36.0, 1, false);
+        assert!(give_way_triangles(&bare, &compiled(&bare)).is_empty());
+        let (mut graph, applied) = fixtures::bare_ring(50.0, 1, false);
+        let angle = |graph: &RegionGraph, index: usize| {
+            let node = graph.node(applied.nodes[index]).pos;
+            node.z.atan2(node.x).to_degrees()
+        };
+        let (out, into) = (angle(&graph, 0), angle(&graph, 1));
+        fixtures::join_ring_arm(&mut graph, out, (1, 0), false);
+        let (node, _) = fixtures::join_ring_arm(&mut graph, into, (0, 1), false);
+        fixtures::finalize(&mut graph);
+        let at = graph.node(node).pos;
+        let roadbed = compiled(&graph);
+        assert_eq!(roadbed.failed_nodes().len(), 0, "both arms lay out");
+        let found = give_way_triangles(&graph, &roadbed);
+        assert_eq!(found.len(), 4, "the arm in, not the arm out");
+        assert!(found.iter().all(|t| t[1].dot(at.normalized()) > at.length()));
     }
 
     // `ROAD-75`: the one arrow glyph (2.5 m either side of its station) stays 1.5 m clear of both
