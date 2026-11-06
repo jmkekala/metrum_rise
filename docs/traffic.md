@@ -961,6 +961,137 @@ artifact folders stay local):
   claim either way. The contract's fixture has no connector and no lane-end detach; the added
   work is one O(1) detach try per road-lane end event.
 
+### Give-way on entry to a roundabout (`ROAD-62`)
+
+Round R7c (2026-11-06, branch `port-r7c-giveway`, not landed). A car entering a
+[roundabout](roads.md#roundabouts-road-62) gives way to the ring, without waiting for `TRAFFIC-06`;
+every other junction still has no right of way.
+
+**Data.** The connector builder gives each connector from an arm onto a ring lane a `RingEntry
+{ circulating, ring_in }`: the connector from the ring lane into the same ring lane (a two-lane
+ring's lanes run 1:1) and the ring lane it leaves. Both sit at the entry's node, so the rebuild that
+replaces one replaces the entry too. The pair lives in a table on `LaneSystem`
+(`LaneSystem::ring_entry(id)`) and `Lane::ring_entry` is a four-byte index into it: two ids on `Lane`
+took every lane from 104 to 112 bytes and cost the 65,536-group transition rows 2-3.5% in L1d
+misses, ring or no ring, where the index fits the struct's padding (the crosswalks' reasoning: few
+lanes need it). Never saved: lanes are rebuilt on load. A retired connector clears its index; the
+table's stale rows go with the next whole rebuild, as tombstoned lanes do. It is the fork's
+`ControlledMovement.yields_to` restricted to ring entries; `TRAFFIC-06` can later fill the same
+shape for priority roads and yield signs.
+
+**Rule** (`ring_entry_blocker`, `tick/traffic/occupancy.rs`). An entry waits while, in last tick's
+lane buckets:
+
+- a car is on the circulating connector;
+- the ring lane's head is arriving: within `CAR_LENGTH + IDM_S_MIN + 20 km/h x IDM_T_HEAD` (5.48 m)
+  of the lane's end and not standing at it;
+- the ring lane's entry slot is blocked ("room ahead": `lane_entry_slot_clear`, the test a connector
+  head makes at its exit, not the box rule the user dropped in round R14C).
+
+`ring_entry_clear` is the same test as a yes or no. It is a pure function of the buckets: `O(log
+bucket)`, no allocation, one read of the lane's index on an ordinary connector. The gap uses the ring's limit,
+not the head's speed: the speed pass writes the speed column while it runs this test, so another
+car's speed is not a stable input.
+
+**Three readers.** The entry claim (`claim_connector_entry`'s candidate filter, so every connector
+entry passes through it), the gridlock check (`entry_state`, which names the lane in the way) and the
+speed pass's lane-end hold, which reads `entry_state` as well: a one-lane arm fans onto both lanes of a
+two-lane ring, so the hold must test the claim's candidates, not the first connector. A car with no
+lane at a ring node takes a road lane directly, as at any node (`first_entry_is_held`): no connector
+is involved and nothing yields. Nothing but a replan after a failure puts a car there.
+
+**Why it adds no lock.** An entry stands only for the ring lane it enters (the third hold, and the
+first when the circulating car itself waits for that slot) or for a moving car (the second hold, and
+the first otherwise). That is the wait a plain junction's connector head has at its exit, moved back
+to the stop line, so a yielding head adds no edge to the wait-for graph that a plain junction lacks. The
+head **standing** at the ring lane's end is excluded for that reason. Round R7c's first build followed
+the plan's text, any head within the gap, and the populated day locked: with rings a block apart, a
+link's head yielded to a ring head that was itself waiting to leave onto the opposite link, and the
+pair of 3 m links, their exit connectors and the two ring lanes formed a cycle around nothing. The
+check confirmed and detoured it 2,749 times in the day with 0 saturation reports, and the city
+delivered 92 loads: a day that met the gate's two numbers and did not run. A standing head waits
+either for the circulating connector or the ring lane's slot, which the rule tests anyway, or for
+its exit, in which case it is not coming.
+
+The ring itself can still fill: a ring locks when every head on it wants to go on and the next lane
+is full, or when its exits back up. Those are ordinary `TRAFFIC-14` cycles of ring lanes and
+circulating connectors, detoured through an exit or reported as usual. Giving way does not prevent
+them, and does not cause them.
+
+**Starvation** is real behaviour and is reported, not gated (the watchdog never moves a car): under
+steady circulation an entry waits, and route search is free flow (`TRAFFIC-17`), so a starved entry
+does not reroute. Crossing movements on the ring itself have no conflict test: the inner lane's exit
+crosses the outer lane as a left turn crosses at any junction today (`TRAFFIC-09`).
+
+Acceptance record (round R7c, 2026-11-06; release test binary of `51d68ccc`,
+`traffic07_lane_entry_audit` one day at 32x, 60-minute samples, `METRUM_PERF_ROUNDABOUTS=8` on the
+10k city and its 4-Lane variant, each against a ring-free run of the same city and binary; the
+knob's rings go through the tool's transaction, and the prepared snapshots pass their continuation
+check; artifact folders stay local):
+
+| 10k day | 1+1, 8 rings | 1+1, no ring | 4-Lane, 8 rings (two-lane) | 4-Lane, no ring |
+| --- | --- | --- | --- | --- |
+| Saturation reports / detours / cycles (peak) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Trip failures, all / with a ring in the cause or at the car | 0 / 0 | 0 / - | 0 / 0 | 0 / - |
+| Freight deliveries | 710 | 1,385 | 965 | 1,863 |
+| Held at nodes, peak / end of day | 104 / 84 | 260 / 260 | 486 / 438 | 163 / 140 |
+| Vehicles on lanes, peak | 2,418 | 2,869 | 3,006 | 3,082 |
+| Missed turns | 0 | 0 | 65 | 10 |
+| Stands at an entry: count, p50 / p95 / max (simulated s) | 1,424, 1.1 / 10.1 / 63.5 | - | 1,193, 1.1 / 12.8 / 68.8 | - |
+
+The gate is the first two rows; the rest are measurements (`TRAFFIC-17`). A game day is 1,440
+simulated seconds. The audit's oracle (`wait_cycles`, which follows a yielding head by its own test)
+agrees: 0 cycles at every sample. 1, 4 and 8 workers give the same 51 report lines and the same hash
+of every car's lane, distance and speed. Three days from the same snapshots: 0 / 0 / 0 and 0 / 0 on
+both cities. `n` swept over 1, 2, 4, 8, 16 and 32 on both cities: 0 saturation reports, 0 detours, 0
+cycles and 0 trip failures in all twelve, the 1+1 city's rings a block apart with 3.3 m links from
+n = 3.
+
+Deliveries roughly halve, and nearly all of it is one ring: the first junction in the knob's order is
+the border trunk's, and that ring alone gives 769 (1+1) and 1,034 (4-Lane); 32 rings give 543 and
+1,003. All border freight takes one path through it (`TRAFFIC-17`), and a plain junction has no
+conflict test to pay for. It does not catch up: over three days the ring-free cities deliver 4,383 and
+4,449 and clear their border queues (1 held car at the end), the 8-ring cities 2,137 and 2,851, with
+66 and 588 held. A single-lane ring at 20 km/h on the only border trunk is a capacity limit of this
+fixture, not a lock.
+
+Most of that is the ring, not the yielding. A measurement build with the rule switched off: 864
+deliveries with the one ring, 605 with eight (710 with give-way), 1,333 on the 4-Lane city (965), and
+the rings then do form cycles the check has to break: 74 and 117 detours on the 1+1 city, with held
+peaks of 376 and 437 against 117 and 104. So give-way costs 11% at the one ring and 28% on the two-lane
+rings, gains 17% across eight one-lane rings, and buys a ring that does not cut itself off.
+
+Tests: `give_way_tests` (the three holds and the standing head; an ordinary connector owes nothing; a
+head that enters only after the circulating car passes, 1 and 4 workers equal; the gridlock check's
+wait-for edge; the fork's drain test, six uneven arms and 36 cars the long way round, on a one-lane
+and a two-lane ring at 60 m, the fork's 70 m being over the conversion cap, 1 and 4 workers equal),
+`roundabouts::tests` (every entry marked on 1+1, 2+2 and fan arms; an incremental rebuild),
+`road_roundabouts` (a load; queues crossing two neighbouring rings both ways, the lock above).
+
+Timing (2026-11-06 06:49, `.run.lock` and the exclusive timing lock, cores `0,2,..,14`, no cargo,
+rustc, godot or restic, load 10.8 falling from the gate runs; control `6e1ebef7`, branch `51d68ccc`;
+`$ARTIFACTS`-local tables): `PERF-06` (`tools/perf_contract.py --agents`, 8 workers, C B B C twice, then
+12 alternating pairs of the test itself): work counts identical in every run, every row's ranges
+overlap; medians of the 12 pairs, control / branch, ms: network 0.327 / 0.326 and 0.798 / 0.778 at
+10k / 30k, egress 0.903 / 0.618 and 1.839 / 2.002, ingress 0.259 / 0.321 and 0.531 / 0.445. Its
+fixture has no connector, so it does not reach this code. `benchmark_lane_transitions` (4 workers, 3
+pairs, transition counts equal in every row), medians at 65,536 groups: clear +0.4%, merge +0.5%,
+turn +1.4%, cruise -3.9%, inside the control's range or touching it; **blocked +1.8% and lateral +4.4%
+outside it**. `benchmark_claim_preparation` checksums equal, 1,048,576 mixed 0.560 / 0.552 / 0.493 /
+0.492 ms (C B C B). `perf_contract_day` on one private set of snapshots prepared by the control
+(the control with the branch's fixture file, whose bytes key the snapshots), 8 workers, C B B C: record and work
+counts identical; hourly 0.86 / 0.90 / 0.87 / 0.85 ms at 10k, 4.34 / 4.33 / 4.38 / 4.26 ms at 30k;
+total 3.04 / 3.05 / 3.05 / 3.02 s and 10.60 / 10.57 / 10.57 / 10.55 s.
+
+The rows outside spread, fixed-iteration `perf stat` of each row alone (the same test-only row filter on
+both sides, C B B C): blocked 3.93 / 3.95 G instructions, 2.15-2.18 / 2.16-2.18 G cycles, overlapping;
+lateral 7.19 / 7.18 G instructions, 1.176 / 1.181 G branches, 35.6 / 35.1 M L1d misses, but 2.95-2.96 /
+3.05-3.07 G cycles. So lateral does no more work and takes 3.5% more cycles: a cycle profile puts
++360 of the +377 samples on `sibling_vehicle_lane_with_idx`, a function this round did not touch,
+which reads `Lane`'s small fields; adding the index moves them by 4 bytes. That is the likely cause
+and it is not proven; the row is left as measured. The whole benchmark runs 92.81 / 92.86 G
+instructions, cycles overlapping (39.97-40.64 / 40.20-40.51 G).
+
 ### Gridlock check (`TRAFFIC-14`)
 
 A deterministic wait-for cycle check (`tick/gridlock.rs`, `AgentSystem::check_gridlock`) runs in
@@ -977,7 +1108,9 @@ the SIM-02 fixed slot `gridlock check`, slot 4 of every game minute
     direct pass-through lane is tested by its entry slot; otherwise the connectors leading there
     (only the shortest ones toward an edge, as the claim keeps them) are tested in successor
     order: the head waits only when every one fails, for the first one's connector. A connector's
-    test is its entry slot alone (`lane_entry_slot_clear`), as the claim's.
+    test is its entry slot (`lane_entry_slot_clear`), as the claim's, and on a ring entry the
+    [give-way test](#give-way-on-entry-to-a-roundabout-road-62) too; a head that yields waits for
+    the lane that test names, the ring's, not for its own connector.
 
   Each lane waits for at most one lane, so the graph is functional: one walk per waiting lane,
   stamped with the check number and its start lane, finds every cycle once. Inputs are the lane
@@ -1953,7 +2086,8 @@ The measured ignored tests are
 - full IDM approach-speed interaction is not implemented because lead-vehicle speed is not tracked
 - overtaking has no driver personality, urgency, emergency behavior, or multi-car prediction
 - there are no traffic lights, stop signs, yield priorities, or priority-road rules yet
-  (`TRAFFIC-06` plans junction priority, yield and stop control, and roundabout entry)
+  (`TRAFFIC-06` plans junction priority, yield and stop control); a roundabout's entries give way
+  to the ring ([round R7c](#give-way-on-entry-to-a-roundabout-road-62)), nothing else does
 - lane changes are centerline S-curves, not full swept-body collision geometry
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild

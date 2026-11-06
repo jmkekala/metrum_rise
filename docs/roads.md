@@ -1064,8 +1064,11 @@ no widening-side choice.
 A roundabout is a ring of one-way road edges around a grass island, built on empty ground or in
 place of a junction. Round R7a (branch `port-r7a-ring`, not landed) is the model, the geometry and
 the lane rule on the graph; round R7b (branch `port-r7b-tool`, not landed) the transaction, the tool
-and bulldozing the whole ring. There is no give-way yet (round R7c: entering cars do not yet yield
-to the ring).
+and bulldozing the whole ring; round R7c (branch `port-r7c-giveway`, not landed)
+[give-way on entry](traffic.md#give-way-on-entry-to-a-roundabout-road-62) and the populated
+acceptance: entering cars yield to the ring without waiting for `TRAFFIC-06`.
+`METRUM_PERF_ROUNDABOUTS=n` (test builds) makes rings of the populated grid's n highest-degree
+junctions through this transaction, before zoning, as `METRUM_PERF_POCKETS` adds pockets.
 
 **Model.** `Edge::roundabout: Option<RoundaboutRing>` holds the circle (centre on the XZ plane and
 the centreline radius) on every ring edge. A ring edge is one-way in the sense of travel (forward
