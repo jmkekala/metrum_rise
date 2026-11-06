@@ -58,7 +58,7 @@ impl Default for ParkingWork {
     }
 }
 
-fn holds_a_lane_phase(trip: &ParkingTrip) -> bool {
+fn on_a_car_leg(trip: &ParkingTrip) -> bool {
     matches!(
         trip.phase,
         ParkingTripPhase::PullOut | ParkingTripPhase::Drive | ParkingTripPhase::PullIn
@@ -160,8 +160,7 @@ impl AgentSystem {
             && parking.available_to(self.agents.parking_trip[i].vehicle, self.handles.handle(i));
     }
 
-    /// Before movement: flags the agents whose reservation is gone, the only parking state
-    /// movement reads that custody changes under it. O(W), W watched agents.
+    /// Before movement: flags the drivers whose reservation is gone. O(W), W watched agents.
     pub(in super::super) fn prepare_parking_movement(
         &mut self,
         parking: &mut ParkingSystem,
@@ -182,7 +181,7 @@ impl AgentSystem {
                 return false;
             };
             let trip = &mut agents.parking_trip[i];
-            if !holds_a_lane_phase(trip) || parking.trip_reserved(trip.vehicle, trip.destination) {
+            if !on_a_car_leg(trip) || parking.trip_reserved(trip.vehicle, trip.destination) {
                 return false;
             }
             // A junction connector is no place to replan from: the flags wait for its end.
@@ -218,7 +217,7 @@ impl AgentSystem {
             });
         for i in 0..self.agents.len() {
             let trip = self.agents.parking_trip[i];
-            if !holds_a_lane_phase(&trip) {
+            if !on_a_car_leg(&trip) {
                 continue;
             }
             let agent = self.handles.handle(i);
@@ -311,7 +310,7 @@ impl AgentSystem {
     fn audit_parking_flags(&self, parking: &ParkingSystem, network: &TransitNetwork) {
         for i in 0..self.agents.len() {
             let trip = self.agents.parking_trip[i];
-            let lost = holds_a_lane_phase(&trip)
+            let lost = on_a_car_leg(&trip)
                 && !parking.trip_reserved(trip.vehicle, trip.destination)
                 && !(trip.phase == ParkingTripPhase::Drive
                     && network
