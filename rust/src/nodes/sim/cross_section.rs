@@ -186,7 +186,7 @@ impl SimCore {
             ));
         }
         current
-            .validate_cross_section(fwd, bkw, median, parking)
+            .validate_cross_section(fwd, bkw, median, parking, attributes.sidewalks)
             .map_err(|reason| {
                 RoadRejection::new(
                     reason,

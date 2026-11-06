@@ -246,7 +246,12 @@ impl RoadParking {
 
     /// Total width the parking lanes add to the carriageway.
     pub fn width_m(self) -> f32 {
-        f32::from(u8::from(self.left) + u8::from(self.right)) * PARKING_LANE_WIDTH_M
+        f32::from(self.count()) * PARKING_LANE_WIDTH_M
+    }
+
+    /// How many kerbs carry a parking lane.
+    pub fn count(self) -> u8 {
+        u8::from(self.left) + u8::from(self.right)
     }
 
     /// How far the traffic lanes' centre sits from the carriageway's: half a parking lane
@@ -376,6 +381,24 @@ impl Edge {
         lanes * config::LANE_WIDTH * 0.5 * side * direction
     }
 
+    /// Whether a pocket lane moves this edge's right (else left) kerb out: its parking lane then
+    /// holds no bays and no line, the pocket's turning lane taking the kerb (`PARK-05`, D5). A
+    /// divided road's left pocket takes the median instead and moves neither. `O(1)`.
+    pub(crate) fn pocket_moves_kerb(&self, right: bool) -> bool {
+        let Some(pocket) = self.pocket else {
+            return false;
+        };
+        let (inner, outer) = pocket.inner_outer();
+        // The approaching lanes' outer kerb: forward lanes are on the right under right-hand
+        // traffic, backward lanes on the left.
+        let outer_on_right = (pocket.end == EdgeEnd::End) != config::DRIVE_ON_LEFT;
+        if right == outer_on_right {
+            outer
+        } else {
+            inner && self.median_pocket_lanes() == 0
+        }
+    }
+
     /// Distance from the centreline to the carriageway's edge on the side a building or lot
     /// fronts: `side` 1 left of the forward direction, -1 right (`Building::side`,
     /// `ZoningParcel::side`). Half the width, moved by [`Self::kerb_shift_m`] on a pocket edge, so
@@ -481,9 +504,8 @@ impl Edge {
         if let Some(median) = self.median.as_mut() {
             median.width_m -= f32::from(narrowed) * config::LANE_WIDTH;
         }
-        self.width = Edge::cross_section_width_m(
-            self.fwd_lanes, self.bkw_lanes, self.median, self.parking,
-        );
+        self.width =
+            Edge::cross_section_width_m(self.fwd_lanes, self.bkw_lanes, self.median, self.parking);
     }
 
     /// The pocket lanes that take the raised median's room (`ROAD-95` round R5b1): the inner
@@ -614,7 +636,8 @@ impl Edge {
     /// `parking` after an in-place edit (`ROAD-80`, `PARK-05`): it must be a live road (a
     /// footpath stays a footpath), keep at least one lane and stay within
     /// [`MAX_LANES_PER_DIRECTION`] per direction; a median must be valid, on a car road, between
-    /// two directions; parking needs a car lane; a ring edge keeps its section
+    /// two directions; parking needs a car lane and a sidewalk on its side; a ring edge keeps
+    /// its section
     /// (`roundabout_fixed`, `ROAD-62`). The error is the stable refusal key.
     pub(crate) fn validate_cross_section(
         &self,
@@ -622,6 +645,7 @@ impl Edge {
         bkw: u8,
         median: Option<RoadMedian>,
         parking: RoadParking,
+        sidewalks: SidewalkSides,
     ) -> Result<(), &'static str> {
         if self.deleted || self.primary_type != TransitType::Road {
             return Err("cross_section_not_road");
@@ -636,7 +660,7 @@ impl Edge {
             return Err("cross_section_cannot_change_transit_mode");
         }
         Self::validate_median(self.allowed_types, fwd, bkw, median)?;
-        Self::validate_parking(self.allowed_types, fwd, bkw, parking)
+        Self::validate_parking(self.allowed_types, fwd, bkw, parking, sidewalks)
     }
 
     /// Gives a car road the sidewalks `sides` (`ROAD-107`) and with them its `FOOT` flag
@@ -715,20 +739,25 @@ impl Edge {
         Ok(())
     }
 
-    /// Whether a road of `allowed_types` with `fwd` + `bkw` lanes may carry `parking`
-    /// (`PARK-05`): kerbside parking needs a car lane to park from. The error is the stable
-    /// refusal key. `O(1)`.
+    /// Whether a road of `allowed_types` with `fwd` + `bkw` lanes and `sidewalks` may carry
+    /// `parking` (`PARK-05`): kerbside parking needs a car lane to park from and, side by side,
+    /// a sidewalk to walk away on (a bay's access is on its own side, D4). The error is the
+    /// stable refusal key. `O(1)`.
     pub(crate) fn validate_parking(
         allowed_types: u8,
         fwd: u8,
         bkw: u8,
         parking: RoadParking,
+        sidewalks: SidewalkSides,
     ) -> Result<(), &'static str> {
         if parking == RoadParking::NONE {
             return Ok(());
         }
         if allowed_types & TransitFlags::CAR == 0 || fwd + bkw == 0 {
             return Err("parking_requires_vehicle_road");
+        }
+        if (parking.left && !sidewalks.left()) || (parking.right && !sidewalks.right()) {
+            return Err("layout_parking_needs_sidewalk");
         }
         Ok(())
     }
@@ -790,7 +819,7 @@ impl RegionGraph {
     ) {
         let edge = self.edge_mut(id);
         debug_assert_eq!(
-            edge.validate_cross_section(fwd, bkw, median, parking),
+            edge.validate_cross_section(fwd, bkw, median, parking, attributes.sidewalks),
             Ok(())
         );
         edge.fwd_lanes = fwd;
@@ -822,15 +851,15 @@ mod tests {
         };
         let median = RoadMedian::from_tool(2, 5.0).unwrap();
         assert_eq!(
-            edge.validate_cross_section(1, 0, median, RoadParking::NONE),
+            edge.validate_cross_section(1, 0, median, RoadParking::NONE, SidewalkSides::BOTH),
             Err("median_requires_both_directions")
         );
         assert_eq!(
-            edge.validate_cross_section(0, 1, median, RoadParking::NONE),
+            edge.validate_cross_section(0, 1, median, RoadParking::NONE, SidewalkSides::BOTH),
             Err("median_requires_both_directions")
         );
         assert!(
-            edge.validate_cross_section(1, 1, median, RoadParking::NONE)
+            edge.validate_cross_section(1, 1, median, RoadParking::NONE, SidewalkSides::BOTH)
                 .is_ok()
         );
         assert_eq!(
@@ -843,7 +872,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            foot.validate_cross_section(0, 0, median, RoadParking::NONE),
+            foot.validate_cross_section(0, 0, median, RoadParking::NONE, SidewalkSides::NONE),
             Err("cross_section_not_road")
         );
         assert!(RoadMedian::from_tool(1, f32::NAN).is_err());
@@ -927,9 +956,78 @@ mod tests {
         edge.parking = both;
         assert_eq!(edge.lane_group_offset(), 0.0);
         for code in 0..4 {
-            assert_eq!(RoadParking::from_code(code).map(RoadParking::code), Some(code));
+            assert_eq!(
+                RoadParking::from_code(code).map(RoadParking::code),
+                Some(code)
+            );
         }
         assert_eq!(RoadParking::from_code(4), None);
+    }
+
+    // D4: a parking lane needs its own side's sidewalk, side by side, after the car-road rule.
+    #[test]
+    fn parking_needs_a_sidewalk_on_its_own_side() {
+        let car = TransitFlags::CAR | TransitFlags::FOOT;
+        let check = |parking, sides| {
+            Edge::validate_parking(car, 1, 1, RoadParking::from_code(parking).unwrap(), sides)
+        };
+        let refused = Err("layout_parking_needs_sidewalk");
+        for (code, sides, verdict) in [
+            (0, SidewalkSides::NONE, Ok(())),
+            (1, SidewalkSides::LEFT, Ok(())),
+            (2, SidewalkSides::RIGHT, Ok(())),
+            (3, SidewalkSides::BOTH, Ok(())),
+            (1, SidewalkSides::RIGHT, refused),
+            (2, SidewalkSides::LEFT, refused),
+            (3, SidewalkSides::LEFT, refused),
+            (3, SidewalkSides::RIGHT, refused),
+            (1, SidewalkSides::NONE, refused),
+        ] {
+            assert_eq!(
+                check(code, sides),
+                verdict,
+                "parking {code}, sides {sides:?}"
+            );
+        }
+        assert_eq!(
+            Edge::validate_parking(
+                TransitFlags::FOOT,
+                0,
+                0,
+                RoadParking::from_code(1).unwrap(),
+                SidewalkSides::NONE
+            ),
+            Err("parking_requires_vehicle_road"),
+        );
+    }
+
+    // D5: which kerb a pocket moves, in the edge's forward frame, at either end.
+    #[test]
+    fn a_pocket_moves_the_kerb_its_lane_lies_towards() {
+        let pocket = |end, left, right, median| Edge {
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            fwd_lanes: 2,
+            bkw_lanes: 1,
+            median,
+            pocket: Some(RoadPocket { end, left, right }),
+            ..Default::default()
+        };
+        let sides = |edge: Edge| (edge.pocket_moves_kerb(false), edge.pocket_moves_kerb(true));
+        assert_eq!(sides(Edge::default()), (false, false));
+        assert_eq!(
+            sides(pocket(EdgeEnd::End, false, true, None)),
+            (false, true)
+        );
+        assert_eq!(
+            sides(pocket(EdgeEnd::Start, false, true, None)),
+            (true, false)
+        );
+        assert_eq!(
+            sides(pocket(EdgeEnd::End, true, false, None)),
+            (true, false)
+        );
+        assert_eq!(sides(pocket(EdgeEnd::End, true, true, None)), (true, true));
     }
 
     #[test]

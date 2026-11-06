@@ -11,8 +11,9 @@
 //! changes lanes, and each of those lanes carries turn arrows for its movements (`ROAD-75`), as
 //! does every lane a junction's turn whitelist lists. A ring entry's lanes end in the give-way
 //! triangle row (`ROAD-62`), just outside the zebra, where its cars stand.
-//! A kerbside parking lane (`PARK-05`) is set off by a solid line; dividers split only
-//! the traffic lanes' share of the carriageway.
+//! A kerbside parking lane (`PARK-05`) is set off by a solid line, ending short of a give-way
+//! row and with its span where the taper to a turn pocket on its side begins (D5); dividers
+//! split only the traffic lanes' share of the carriageway.
 
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
@@ -124,10 +125,10 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         if marking_s_range.1 <= marking_s_range.0 + MIN_SEGMENT_LEN {
             continue;
         }
-        emit_parking_lines(mesh, edge, sections, marking_s_range);
         // Arrows first: a whitelisted single lane carries them too (`ROAD-75`).
         emit_approach_arrows(mesh, graph, edge_idx, sections, marking_s_range);
         let lines_s_range = emit_give_way_rows(mesh, graph, edge_idx, sections, marking_s_range);
+        emit_parking_lines(mesh, edge, sections, lines_s_range);
         if total_lanes <= 1 {
             continue;
         }
@@ -718,12 +719,12 @@ fn emit_parking_lines(
         width_m: FINNISH_LINE_WIDTH_M,
         pattern: MARKING_PATTERN_SOLID,
     };
-    if edge.parking.left {
+    if edge.parking.left && !edge.pocket_moves_kerb(false) {
         emit_lane_marking_sections(mesh, sections, marking_s_range, marking_s_range, line, |section| {
             Some(carriageway_bounds(section)?.0 + PARKING_LANE_WIDTH_M)
         });
     }
-    if edge.parking.right {
+    if edge.parking.right && !edge.pocket_moves_kerb(true) {
         emit_lane_marking_sections(mesh, sections, marking_s_range, marking_s_range, line, |section| {
             Some(carriageway_bounds(section)?.1 - PARKING_LANE_WIDTH_M)
         });
@@ -844,6 +845,29 @@ mod tests {
             right: true,
         };
         assert_eq!(marking_offsets(right), vec![1.2, 1.3, 2.2, 2.3]);
+    }
+
+    // D5: a pocket edge paints a parking line on the kerb the pocket leaves alone and none on the
+    // kerb it moves; the base road paints its own either way, and ends with its span.
+    #[test]
+    fn a_parking_line_gives_way_to_a_pocket_on_its_side() {
+        for (right, line_on_pocket) in [(true, false), (false, true)] {
+            let parking = RoadParking { left: !right, right };
+            let graph = fixtures::with_parking(
+                fixtures::t_right_pocket(),
+                &[(0, parking), (1, parking)],
+            );
+            let roadbed = compiled(&graph);
+            let painted = |edge: usize| {
+                let sections = roadbed.sections(edge).unwrap();
+                let range = (sections[0].s_m, sections[sections.len() - 1].s_m);
+                let mut mesh = NetworkMeshData::default();
+                emit_parking_lines(&mut mesh, graph.edge(edge), sections, range);
+                !mesh.marking_vertices.is_empty()
+            };
+            assert!(painted(0), "the base road's line, right {right}");
+            assert_eq!(painted(1), line_on_pocket, "the pocket edge's line, right {right}");
+        }
     }
 
     // `ROAD-75` style A: every movement mask's glyph has its fixed triangle count, no degenerate
@@ -979,6 +1003,41 @@ mod tests {
                     let lanes_in = kerb - f32::from(into) * config::LANE_WIDTH..kerb;
                     assert!(lanes_in.contains(&across), "{name}: on the lanes in, {across}");
                 }
+            }
+        }
+    }
+
+    // F4: an arm's parking lines end at the row's tips too: past them nothing but the row is
+    // painted, on an arm with a parking lane each side.
+    #[test]
+    fn a_parking_line_stops_short_of_a_ring_entrys_triangle_row() {
+        let parking = RoadParking {
+            left: true,
+            right: true,
+        };
+        let angles = [0.0, 120.0, 240.0];
+        let (graph, applied) =
+            fixtures::converted_ring_parked(45.0, &angles, (1, 1), parking).unwrap();
+        let roadbed = compiled(&graph);
+        let terrain = TerrainSystem::with_chunking(256, 256, 1.0, 8, 0.0);
+        let mesh = RoadRenderer.generate_mesh_data_with_surface(&graph, &terrain, &roadbed);
+        let rows = give_way_triangles(&graph, &roadbed);
+        assert_eq!(rows.len(), 4 * angles.len(), "the lanes keep their rows");
+        let tip_back = GIVE_WAY_ROW_BACK_M + GIVE_WAY_TRIANGLE_LENGTH_M;
+        let in_rows = |p: Vector3| rows.iter().flatten().any(|q| q.distance_to(p) < 1.0e-3);
+        for &arm in &applied.arms {
+            let edge = graph.edge(arm);
+            let sections = roadbed.sections(arm).unwrap();
+            let ring_at_start = enters_ring(&graph, arm, edge.start_node);
+            let mouth = &sections[if ring_at_start { 0 } else { sections.len() - 1 }];
+            let centre = Vector3::new(mouth.center_xz.x as f32, 0.0, mouth.center_xz.y as f32);
+            let outward = centre.normalized();
+            let right = Vector3::new(outward.z, 0.0, -outward.x);
+            let half = 0.5 * edge.width;
+            for &p in &mesh.marking_vertices {
+                let (back, across) = ((p - centre).dot(outward), (p - centre).dot(right));
+                let beside_row = (0.0..tip_back - 1.0e-3).contains(&back) && across.abs() < half;
+                assert!(!beside_row || in_rows(p), "paint at {back} m back, {across} m across");
             }
         }
     }

@@ -33,7 +33,9 @@ pub(crate) struct KerbBlocker {
 
 /// Bays of the left and the right parking lane. O(sections + bays × log sections + bays ×
 /// blockers), at road/site edit boundaries only. Empty for a deleted edge, a side without a
-/// parking lane, or a span too short to hold one bay clear of its ends and crossings.
+/// parking lane, a side whose kerb a turn pocket moves (D5: the whole pocket edge; the taper to
+/// it lies in the transition's node piece, outside every span), or a span too short to hold one
+/// bay clear of its ends and crossings.
 pub(crate) fn kerb_bays(
     edge_idx: usize,
     graph: &RegionGraph,
@@ -64,7 +66,8 @@ pub(crate) fn kerb_bays(
             edge.parking.right
         } else {
             edge.parking.left
-        }) {
+        }) || edge.pocket_moves_kerb(right)
+        {
             continue;
         }
         let mut free = vec![(lo, hi)];
@@ -302,5 +305,132 @@ impl super::ParkingSystem {
                 [pos[0], pos[2]]
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::graph::RoadParking;
+    use crate::simulation::network::lanes::{LaneSystem, LaneType};
+    use crate::simulation::network::roadbed::RoadbedSystem;
+    use crate::simulation::network::roadbed::fixtures::{self, with_parking};
+
+    const BOTH: RoadParking = RoadParking {
+        left: true,
+        right: true,
+    };
+
+    // Half a bay's length and width, a car lane's half width: a bay overlaps a lane when its
+    // centre comes nearer the lane's line than the two half widths.
+    fn lane_clearance_m(bay: &Bay, lanes: &LaneSystem) -> f32 {
+        let centre = Vector2::new(bay.position[0], bay.position[2]);
+        lanes
+            .lanes
+            .iter()
+            .filter(|lane| lane.lane_type == LaneType::Vehicle && lane.edge_id != usize::MAX)
+            .flat_map(|lane| lane.geometry.windows(2))
+            .map(|pair| {
+                let (a, b) = (
+                    Vector2::new(pair[0].x, pair[0].z),
+                    Vector2::new(pair[1].x, pair[1].z),
+                );
+                let along = (b - a).normalized();
+                let t = (centre - a).dot(along).clamp(0.0, a.distance_to(b));
+                centre.distance_to(a + along * t)
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    // D5, on the pocket rows: no bay along a pocket that moves its kerb, on that side alone; the
+    // base road's bays stop short of the taper, which lies in the transition's node piece, on
+    // sections as wide as the rest of the road; and no bay stands on a traffic lane.
+    #[test]
+    fn no_kerb_bay_lies_along_a_pocket_on_its_side() {
+        let rows = [
+            ("t_right_pocket", fixtures::t_right_pocket(), [true, false]),
+            (
+                "one_way_right",
+                fixtures::one_way_right_pocket(),
+                [true, false],
+            ),
+            (
+                "2+1_right",
+                fixtures::two_plus_one_right_pocket(),
+                [true, false],
+            ),
+            (
+                "1x1_left",
+                fixtures::four_way_1x1_left_pocket(),
+                [false, true],
+            ),
+            (
+                "1x1_left_right",
+                fixtures::four_way_1x1_left_right_pocket(),
+                [true, true],
+            ),
+            (
+                "2x2_left_undivided",
+                fixtures::undivided_2x2_left_pocket(),
+                [false, true],
+            ),
+            (
+                "2x2_right",
+                fixtures::four_way_2x2_right_pocket(),
+                [true, false],
+            ),
+            // A divided road's left pocket takes the median: both kerbs stay.
+            (
+                "2x2_left_divided",
+                fixtures::four_way_2x2_left_pocket(),
+                [false, false],
+            ),
+        ];
+        for (name, graph, [right_moves, left_moves]) in rows {
+            let mut graph = with_parking(graph, &[(0, BOTH), (1, BOTH)]);
+            let mut roads = RoadbedSystem::new(64.0);
+            roads.compile_dirty(&graph);
+            let mut lanes = LaneSystem::new();
+            lanes.rebuild(&mut graph);
+            let pocket = graph.edge(1);
+            assert!(pocket.pocket.is_some(), "{name}: edge 1 is the pocket edge");
+            assert_eq!(pocket.pocket_moves_kerb(true), right_moves, "{name}: right");
+            assert_eq!(pocket.pocket_moves_kerb(false), left_moves, "{name}: left");
+            let [left, right] = kerb_bays(1, &graph, &roads, &[]);
+            assert_eq!(right.is_empty(), right_moves, "{name}: right bays");
+            assert_eq!(left.is_empty(), left_moves, "{name}: left bays");
+            let [base_left, base_right] = kerb_bays(0, &graph, &roads, &[]);
+            assert!(
+                !base_left.is_empty() && !base_right.is_empty(),
+                "{name}: base bays"
+            );
+            let sections = roads.sections(0).expect("the base span");
+            let width = |section: &RoadSection| {
+                let mut road = section
+                    .bands
+                    .iter()
+                    .filter(|band| band.kind == BandKind::Carriageway);
+                let first = road.next().map(|band| band.lateral_start_m);
+                let last = road.next_back().map(|band| band.lateral_end_m);
+                last.zip(first).map(|(end, start)| end - start)
+            };
+            let base_width = width(&sections[0]);
+            for section in sections {
+                assert_eq!(
+                    width(section),
+                    base_width,
+                    "{name}: the span holds no taper"
+                );
+            }
+            for bay in [left, right, base_left, base_right].iter().flatten() {
+                let clearance = lane_clearance_m(bay, &lanes);
+                // A lane is 3.5 m wide, a bay 2.5 m: 3 m between their centre lines.
+                assert!(
+                    clearance >= 3.0 - 0.01,
+                    "{name}: bay {:?} {clearance}",
+                    bay.position
+                );
+            }
+        }
     }
 }

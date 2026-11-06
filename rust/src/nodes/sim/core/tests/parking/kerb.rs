@@ -184,3 +184,175 @@ fn a_parking_lane_turned_on_in_place_publishes_its_bays_and_undo_takes_them_away
     );
     assert_eq!(c.parking.counts().0, 0);
 }
+
+// D4 per side, through the two edit paths: a stroke and an in-place change, the side with the
+// sidewalk accepted and the shoulder side refused, and a sidewalk cannot go from under its lane.
+#[test]
+fn parking_needs_a_sidewalk_on_its_own_side_on_a_stroke_and_in_place() {
+    use crate::simulation::network::graph::SidewalkSides;
+    use crate::simulation::network::road_types::RoadAttributes;
+    let left = RoadParking {
+        left: true,
+        right: false,
+    };
+    let right = RoadParking {
+        left: false,
+        right: true,
+    };
+    let attributes = |sidewalks| RoadAttributes {
+        sidewalks,
+        ..RoadAttributes::DEFAULT
+    };
+    let stroke = |core: &mut SimCore, parking, sidewalks, z: f32| {
+        core.precompute_road_mesh_data();
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        core.commit_road(
+            RoadCommitRequest {
+                points: vec![Vector3::new(-120.0, 0.0, z), Vector3::new(120.0, 0.0, z)],
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                preview: None,
+                tunnel: false,
+                median: None,
+                parking,
+                attributes: attributes(sidewalks),
+            },
+            Instant::now(),
+            RoadEditMetrics::default(),
+        )
+    };
+    let (mut c, edge) = kerb_core(RoadParking::NONE);
+    let refused = stroke(&mut c, right, SidewalkSides::LEFT, 80.0);
+    assert!(!refused.committed);
+    assert_eq!(refused.rejection_reason, "layout_parking_needs_sidewalk");
+    assert!(stroke(&mut c, left, SidewalkSides::LEFT, 80.0).committed);
+    let refusal = |c: &mut SimCore, parking, sides| {
+        c.preview_edge_cross_section_internal(edge as i32, 1, 1, None, parking, attributes(sides))
+            .err()
+            .map(|refusal| refusal.reason)
+    };
+    assert_eq!(
+        refusal(&mut c, right, SidewalkSides::LEFT).as_deref(),
+        Some("layout_parking_needs_sidewalk")
+    );
+    assert_eq!(refusal(&mut c, right, SidewalkSides::RIGHT), None);
+    assert!(c.set_edge_cross_section_internal(
+        edge as i32,
+        1,
+        1,
+        None,
+        right,
+        RoadAttributes::DEFAULT
+    ));
+    assert_eq!(
+        refusal(&mut c, right, SidewalkSides::NONE).as_deref(),
+        Some("layout_parking_needs_sidewalk"),
+        "the sidewalk stays while its parking lane does"
+    );
+}
+
+// D3 in the in-place path: the Apply charge of a parking lane is its 0.2 weight over the road.
+#[test]
+fn an_in_place_parking_lane_charges_its_weight() {
+    let (mut c, edge) = kerb_core(RoadParking::NONE);
+    let right = RoadParking {
+        left: false,
+        right: true,
+    };
+    let verdict = c
+        .preview_edge_cross_section_internal(
+            edge as i32,
+            1,
+            1,
+            None,
+            right,
+            crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+        )
+        .unwrap();
+    let length = f64::from(c.region_graph.get_edge(edge).unwrap().physical_length);
+    let expected = 0.2 * crate::simulation::network::road_types::cost::BUILD_COST_PER_M * length;
+    assert!(
+        (verdict.cost_delta - expected).abs() < 1e-6,
+        "{}",
+        verdict.cost_delta
+    );
+}
+
+// D5 through the normal edit path: a pocket added at the end of a street with kerbside bays takes
+// the bays on its side off the pocket edge, tows the car parked there and keeps the far side's.
+#[test]
+fn a_pocket_added_later_takes_the_bays_along_it_and_undo_returns_them() {
+    use crate::simulation::network::pockets::PocketRequest;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    let both = RoadParking {
+        left: true,
+        right: true,
+    };
+    let (mut c, _) = kerb_core(both);
+    commit_with(&mut c, (120.0, -120.0), (120.0, 120.0), RoadParking::NONE);
+    c.finalize_network_render_products();
+    let live = |c: &SimCore| -> Vec<usize> {
+        (0..c.region_graph.edge_count())
+            .filter(|&e| c.region_graph.get_edge(e).is_some_and(|e| !e.deleted))
+            .collect()
+    };
+    let street = live(&c)
+        .into_iter()
+        .find(|&e| c.region_graph.edge(e).parking == both)
+        .expect("the street");
+    let end = c
+        .region_graph
+        .edge(street)
+        .physical_geometry
+        .last()
+        .unwrap()
+        .x
+        > 0.0;
+    let bays_before = c.parking.counts().0;
+    c.parking.fill_test_fleet();
+    let cars = c.parking.counts().1;
+    let end = if end { EdgeEnd::End } else { EdgeEnd::Start };
+    let request = PocketRequest {
+        edge: street,
+        end,
+        left: false,
+        right: true,
+        body_m: 40.0,
+    };
+    if let Err(refusal) = c.preview_road_pocket_internal(request) {
+        panic!("{}: {}", refusal.reason, refusal.detail);
+    }
+    assert!(c.set_road_pocket_internal(request));
+    c.finalize_network_render_products();
+    let pocket = live(&c)
+        .into_iter()
+        .find(|&e| c.region_graph.edge(e).pocket.is_some())
+        .expect("a pocket edge");
+    let edge = c.region_graph.edge(pocket);
+    assert_eq!(
+        edge.parking, both,
+        "the pocket edge keeps the road's section"
+    );
+    let right = edge.pocket_moves_kerb(true);
+    assert_ne!(right, edge.pocket_moves_kerb(false), "one kerb moves");
+    assert!(
+        side(&c, pocket, right).is_empty(),
+        "no bay along the pocket"
+    );
+    assert!(
+        !side(&c, pocket, !right).is_empty(),
+        "the far kerb keeps its own"
+    );
+    let counts = c.parking.counts();
+    assert!(counts.0 < bays_before);
+    assert_eq!(counts.1, cars, "a towed car is kept");
+    assert!(
+        counts.2 > 0,
+        "with every bay taken, the bays' cars wait off the map"
+    );
+    assert!(c.undo_action_internal());
+    c.finalize_network_render_products();
+    assert_eq!(c.parking.counts().0, bays_before);
+}

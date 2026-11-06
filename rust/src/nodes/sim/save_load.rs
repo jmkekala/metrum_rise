@@ -271,7 +271,7 @@ impl SimCore {
         self.agents.parking_retries.reserve(self.agents.len());
         self.prepare_loaded_parking_routes();
         let buildings: Vec<_> = (0..self.allocator.buildings.len()).collect();
-        self.parking.refresh_retired_access(&self.transit_network,&self.region_graph);
+        self.parking.refresh_retired_access(&self.allocator, &self.transit_network, &self.region_graph);
         // Catchments are derived and unsaved: rebuilding them is not new supply, so no
         // waiting car wakes, as none did in the uninterrupted game.
         self.publish_parking_catchments(&buildings);

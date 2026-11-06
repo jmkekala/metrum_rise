@@ -205,6 +205,22 @@ func _run() -> void:
 	await _undo("the parking lane")
 	_expect(int(simulation.get_edge_cross_section(edge).get("parking", -1)) == 0, "undo removes the parking lane")
 
+	# A road with one sidewalk (`ROAD-107`): the box keeps its sidewalk sides, and a side without
+	# a sidewalk refuses the parking lane (D4) with its reason.
+	_expect(simulation.set_edge_cross_section(edge, 1, 1, 0, 0.0, 0, 50, 1, true, true), "the road gets one sidewalk, on the left")
+	window.show_for_edges(selection)
+	var parked_left: Dictionary = tool.set_selected_edge_parking_side(window.PARKING_LEFT, true)
+	section = simulation.get_edge_cross_section(edge)
+	_expect(int(parked_left.get("refused", -1)) == 0 and int(section.get("parking", 0)) == window.PARKING_LEFT, "the sidewalk side parks: %s" % section)
+	_expect(int(section.get("sidewalks", 0)) == 1, "a parking lane keeps the road's one sidewalk: %s" % section)
+	var parked_right: Dictionary = tool.set_selected_edge_parking_side(window.PARKING_RIGHT, true)
+	var refusal: Dictionary = parked_right.get("verdict", {})
+	_expect(int(parked_right.get("refused", 0)) == 1 and String(refusal.get("invalid_reason", "")) == "layout_parking_needs_sidewalk", "the shoulder side is refused: %s" % parked_right)
+	_expect(int(simulation.get_edge_cross_section(edge).get("parking", 0)) == window.PARKING_LEFT, "a refused side changes nothing")
+	await _undo("the one-sided parking lane")
+	await _undo("the one sidewalk")
+	_expect(int(simulation.get_edge_cross_section(edge).get("sidewalks", 0)) == 3, "undo restores both sidewalks")
+
 	# A 100 km/h type without sidewalks or zoning in place: nothing to demolish, applied at once.
 	var rural := String(simulation.create_road_type("Lane Edit Rural", [
 		{"kind": "car_lane", "forward": false}, {"kind": "car_lane", "forward": true}], 100, false, true).get("id", ""))

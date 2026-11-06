@@ -315,6 +315,26 @@ impl GradedSurface<'_> {
         }
     }
 
+    /// What a parked car's contact stands on, from the last [`Self::gather_near`] (`PARK-05`):
+    /// its own level, never a deck overhead. `level` is a structure bay's height, where the road
+    /// piece nearest it answers; with none the car is on the ground, on the road there or the
+    /// graded ground. Where nothing passes over a bay on the ground this is
+    /// [`Self::surface_height_near`].
+    pub fn parked_height_near(
+        &self,
+        x: f64,
+        z: f64,
+        level: Option<f32>,
+        scratch: &mut QueryScratch,
+    ) -> f64 {
+        let (px, pz) = (x as f32, z as f32);
+        let road = level.map_or_else(
+            || self.roadbed.grounded_height_at(px, pz),
+            |level| self.roadbed.height_nearest_at(px, pz, level),
+        );
+        road.map_or_else(|| self.ground_height_near(x, z, scratch), f64::from)
+    }
+
     // The graded ground on the `GL0` triangle under the point of `cell`, from the prepared
     // window.
     fn ground_prepared(&self, cell: &Cell, scratch: &mut QueryScratch) -> f64 {

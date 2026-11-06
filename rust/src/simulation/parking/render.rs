@@ -96,7 +96,7 @@ impl ParkingSystem {
     /// Rebuilds the dirty chunks with row-major flat poses, for tests without a ground.
     #[cfg(test)]
     pub(crate) fn build_dirty_chunks(&mut self) {
-        self.build_dirty_chunks_with(|_, [x, y, z], heading| {
+        self.build_dirty_chunks_with(|_, _, [x, y, z], heading| {
             let (s, c) = heading.sin_cos();
             [c, 0.0, s, x, 0.0, 1.0, 0.0, y, -s, 0.0, c, z]
         });
@@ -106,7 +106,7 @@ impl ParkingSystem {
     #[cfg(test)]
     pub(crate) fn build_dirty_chunks_with(
         &mut self,
-        pose: impl Fn(u8, [f32; 3], f32) -> [f32; 12] + Sync,
+        pose: impl Fn(u8, PlaceSource, [f32; 3], f32) -> [f32; 12] + Sync,
     ) {
         let built = self.solve_dirty_chunks(pose);
         self.install_dirty_chunks(built);
@@ -118,7 +118,7 @@ impl ParkingSystem {
     /// or a car of another model arrived since the last solve. Sorting fixes payload order.
     pub(crate) fn solve_dirty_chunks(
         &self,
-        pose: impl Fn(u8, [f32; 3], f32) -> [f32; 12] + Sync,
+        pose: impl Fn(u8, PlaceSource, [f32; 3], f32) -> [f32; 12] + Sync,
     ) -> Vec<BuiltChunk> {
         crate::thread_pools::install(|| {
             self.dirty
@@ -131,7 +131,7 @@ impl ParkingSystem {
     fn build_chunk(
         &self,
         key: (i32, i32),
-        pose: &(impl Fn(u8, [f32; 3], f32) -> [f32; 12] + Sync),
+        pose: &(impl Fn(u8, PlaceSource, [f32; 3], f32) -> [f32; 12] + Sync),
     ) -> BuiltChunk {
         let chunk = &self.chunks[&key];
         let mut parked: Vec<_> = chunk
@@ -157,7 +157,12 @@ impl ParkingSystem {
             let grounded = if self.places.ground_model[p] == model {
                 self.places.ground[p]
             } else {
-                let solved = pose(model, self.places.position[p], self.places.heading[p]);
+                let solved = pose(
+                    model,
+                    self.places.source[p],
+                    self.places.position[p],
+                    self.places.heading[p],
+                );
                 built.solved.push((p, model, solved));
                 solved
             };
@@ -325,7 +330,7 @@ impl ParkingSystem {
 
     /// Every published parked car: its model, bay position and heading and the pose it shows.
     #[cfg(test)]
-    pub(crate) fn published_poses(&self) -> Vec<(u8, [f32; 3], f32, [f32; 12])> {
+    pub(crate) fn published_poses(&self) -> Vec<(u8, PlaceSource, [f32; 3], f32, [f32; 12])> {
         let mut poses = Vec::new();
         for chunk in self.published.values() {
             for (bucket, ids) in &chunk.identities {
@@ -338,7 +343,8 @@ impl ParkingSystem {
                         .resolve(self.vehicles.place[v])
                         .expect("its bay");
                     let (position, heading) = (self.places.position[p], self.places.heading[p]);
-                    poses.push((self.vehicles.model[v], position, heading, pose));
+                    let source = self.places.source[p];
+                    poses.push((self.vehicles.model[v], source, position, heading, pose));
                 }
             }
         }

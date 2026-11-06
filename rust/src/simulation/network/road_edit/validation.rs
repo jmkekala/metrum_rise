@@ -292,7 +292,8 @@ fn profile_validation(
         return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
     }
     // The stroke's median takes the in-place edit's rule (`ROAD-80`, `ROAD-92`): a car road
-    // with both directions. Kerbside parking needs a car road (`PARK-05`).
+    // with both directions. Kerbside parking needs a car road and its side's sidewalk
+    // (`PARK-05`).
     let allowed_types = if fwd_lanes > 0 || bkw_lanes > 0 {
         TransitFlags::CAR
     } else {
@@ -301,7 +302,13 @@ fn profile_validation(
     if let Err(reason) =
         Edge::validate_median(allowed_types, fwd_lanes, bkw_lanes, prepared_input.median)
             .and_then(|()| {
-                Edge::validate_parking(allowed_types, fwd_lanes, bkw_lanes, prepared_input.parking)
+                Edge::validate_parking(
+                    allowed_types,
+                    fwd_lanes,
+                    bkw_lanes,
+                    prepared_input.parking,
+                    prepared_input.attributes.sidewalks,
+                )
             })
     {
         return validation.with_invalid_reason(reason);

@@ -37,6 +37,11 @@ fn every_layout_refusal_has_its_key_and_part() {
         (&[S, B, S, F, S], "layout_sidewalks", Some(2)),
         (&[S, B, P, F, S], "layout_parking_at_kerb", Some(2)),
         (&[S, P, P, F, S], "layout_parking_at_kerb", Some(2)),
+        // Per side: a parking lane needs its own side's sidewalk (D4).
+        (&[P, B, F], "layout_parking_needs_sidewalk", Some(0)),
+        (&[B, F, P], "layout_parking_needs_sidewalk", Some(2)),
+        (&[P, B, F, S], "layout_parking_needs_sidewalk", Some(0)),
+        (&[S, B, F, P], "layout_parking_needs_sidewalk", Some(3)),
         (&[S, P, S], "layout_no_car_lane", None),
         (&[S, P, P, S], "layout_no_car_lane", None),
         (&[B, S, F], "layout_sidewalks", Some(1)),
@@ -140,14 +145,6 @@ fn valid_layouts_build_their_cross_section() {
         (&[S, P, B, F, P, S], parked(true, true)),
         (&[S, P, B, F, S], parked(true, false)),
         (&[S, B, F, P, S], parked(false, true)),
-        // Without a sidewalk the kerb is the road's edge, side by side (`ROAD-107`).
-        (
-            &[P, B, F],
-            RoadCrossSection {
-                sidewalks: SidewalkSides::NONE,
-                ..parked(true, false)
-            },
-        ),
         (
             &[S, P, B, F],
             RoadCrossSection {

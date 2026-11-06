@@ -905,6 +905,40 @@ pub(super) fn parking_candidate(
     best
 }
 
+/// The straight walk across one building's lot (`PARK-05`, D4), between its door and a bay of
+/// its own or two such bays, for the ends no foot lane joins: a car-only door has nothing else.
+/// Such a leg has no lanes, which is how its movement knows it. O(1), allocation-free.
+pub(super) fn in_lot_candidate(
+    mode: u8,
+    origin: &BuildingEntrance,
+    destination: &BuildingEntrance,
+) -> Option<PlannedTripCandidate> {
+    let lot = |end: &BuildingEntrance| end.lot_door.unwrap_or(end.door_pos);
+    if mode == MODE_CAR
+        || (origin.lot_door.is_none() && destination.lot_door.is_none())
+        || lot(origin) != lot(destination)
+    {
+        return None;
+    }
+    let seconds = origin.door_pos.distance_to(destination.door_pos)
+        / crate::config::AGENT_WALK_SPEED_MS;
+    Some(PlannedTripCandidate {
+        total_cost_s: seconds,
+        mode_choice_cost_s: mode_choice_cost_for(mode, seconds),
+        origin_rank: 0,
+        destination_rank: 0,
+        mode,
+        planned_attach_node: u32::MAX,
+        planned_detach_node: u32::MAX,
+        planned_attach_lane_id: usize::MAX,
+        planned_detach_lane_id: usize::MAX,
+        planned_attach_lane_d: 0.0,
+        planned_detach_lane_d: 0.0,
+        #[cfg(test)]
+        network_path: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

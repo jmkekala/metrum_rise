@@ -44,7 +44,7 @@ impl SimulationNode {
     /// commit and refusal report of the tool: `code` bit 0 the left kerb, bit 1 the right, looking
     /// along the stroke. Returns the empty string when set, else `parking_code_out_of_range`,
     /// keeping the previous setting. Whether the stroke's lanes may carry it is the stroke's
-    /// check (`parking_requires_vehicle_road`).
+    /// check (`parking_requires_vehicle_road`, `layout_parking_needs_sidewalk`).
     #[func]
     pub fn set_road_tool_parking(&mut self, code: i32) -> GString {
         match crate::simulation::network::graph::RoadParking::from_code(code) {
@@ -599,6 +599,7 @@ impl SimulationNode {
         let weight = road_cost::stroke_weight(
             (lanes_u8(fwd_lanes), lanes_u8(bkw_lanes)),
             self.road_tool_median,
+            self.road_tool_parking,
             self.road_tool_attributes,
             class,
         );
@@ -689,12 +690,13 @@ impl SimulationNode {
         dict
     }
 
-    // A previewed stroke's cost weight: its lanes, and the median, attributes and class its
-    // prepared input carries.
+    // A previewed stroke's cost weight: its lanes, and the median, parking, attributes and class
+    // its prepared input carries.
     fn stroke_cost_weight(lanes: (i32, i32), prepared: &PreparedRoadInput) -> f64 {
         road_cost::stroke_weight(
             (lanes_u8(lanes.0), lanes_u8(lanes.1)),
             prepared.median,
+            prepared.parking,
             prepared.attributes,
             prepared.class,
         )

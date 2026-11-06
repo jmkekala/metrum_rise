@@ -8,6 +8,7 @@ use super::super::road_tunnels::{THROUGH_HILL, cone_hill_core};
 use super::*;
 use crate::nodes::sim::render::vehicle_ground::VehicleGroundSupport;
 use crate::simulation::network::graph::RoadParking;
+use crate::simulation::network::types::EdgeClass;
 use crate::simulation::parking::{Bay, PlaceSource};
 use godot::prelude::Vector2;
 
@@ -39,8 +40,8 @@ fn fresh_poses(core: &mut SimCore, stage: &str) -> Vec<Pose> {
     core.parking
         .published_poses()
         .into_iter()
-        .map(|(model, position, heading, pose)| {
-            let fresh = core.parked_ground_pose(model, position, heading);
+        .map(|(model, source, position, heading, pose)| {
+            let fresh = core.parked_ground_pose(model, source, position, heading);
             let bits = pose.map(f32::to_bits);
             assert_eq!(
                 bits,
@@ -88,7 +89,7 @@ fn cached_poses_equal_a_fresh_solve_on_a_slope_and_stay_put_when_only_custody_ch
     let poses = core.parking.published_poses();
     assert_eq!(poses.len(), 3);
     assert!(
-        poses.iter().all(|pose| pose.3[0] == 1234.0),
+        poses.iter().all(|pose| pose.4[0] == 1234.0),
         "a custody rebuild copies, it does not solve"
     );
 }
@@ -155,10 +156,10 @@ fn a_lot_on_graded_ground_refreshes_the_poses_it_moves() {
     assert_eq!(fresh_poses(&mut core, "undo"), after);
 }
 
-// `ROAD-99`: a deck over a street. The solve reads the top exposed surface, so the kerb cars
-// under the bridge take it; the kerb bays themselves stay.
+// `ROAD-99`: a deck over a street. A car stands on its own street, so neither the deck nor its
+// undo moves the kerb cars under the bridge, however the cache is refreshed; the bays stay.
 #[test]
-fn a_bridge_over_kerb_bays_refreshes_their_poses_and_its_undo_restores_them() {
+fn a_bridge_over_kerb_bays_leaves_their_cars_on_the_street_and_its_undo_changes_nothing() {
     let mut core = cone_hill_core(0.0, 0.25);
     core.benchmark_mode = false;
     commit_with(
@@ -194,10 +195,79 @@ fn a_bridge_over_kerb_bays_refreshes_their_poses_and_its_undo_restores_them() {
     core.transit_network.settle_cch();
     assert_eq!(core.parking.counts().0, places, "the bays are not re-added");
     let after = fresh_poses(&mut core, "bridge");
-    assert!(moved(&before, &after) > 0, "the deck is the top surface");
+    assert_eq!(
+        moved(&before, &after),
+        0,
+        "a car stands on its street, not the deck"
+    );
     assert!(core.undo_action_internal());
     core.precompute_road_mesh_data();
     assert_eq!(fresh_poses(&mut core, "undo"), before);
+}
+
+// The bay's own level on both sides of the rule: a car parked on a bridge stands on the deck, and
+// one on a lot under a deck stands on the ground with no road beneath it.
+#[test]
+fn a_car_stands_on_the_level_of_its_own_bay() {
+    let mut core = cone_hill_core(0.0, 0.25);
+    core.benchmark_mode = false;
+    commit_with(&mut core, (-60.0, -80.0), (60.0, -80.0), RoadParking::NONE);
+    // A bay no road owns on the ground the deck will pass over, off its road.
+    add_bay(&mut core, 0, 0.0, 0.0, 0.0);
+    core.parking.fill_test_fleet();
+    let ground = fresh_poses(&mut core, "ground");
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points: vec![Vector3::new(-40.0, 8.0, 0.0), Vector3::new(40.0, 8.0, 0.0)],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            preview: None,
+            tunnel: false,
+            median: None,
+            parking: RoadParking {
+                left: true,
+                right: true,
+            },
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+        },
+        Instant::now(),
+        RoadEditMetrics::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    core.adopt_pending_cell_lots();
+    core.transit_network.settle_cch();
+    assert!(core.parking.counts().0 > 1, "the bridge has its own bays");
+    core.parking.fill_test_fleet();
+    let deck_edge = core
+        .region_graph
+        .edges()
+        .iter()
+        .position(|edge| !edge.deleted && edge.class == EdgeClass::Bridge)
+        .expect("a bridge");
+    core.build_snapshot();
+    let poses = core.parking.published_poses();
+    let mut on_deck = 0;
+    for (model, source, position, heading, pose) in poses {
+        let bits = pose.map(f32::to_bits);
+        assert_eq!(
+            bits,
+            core.parked_ground_pose(model, source, position, heading)
+                .map(f32::to_bits)
+        );
+        match source {
+            PlaceSource::Kerb { edge, .. } if edge as usize == deck_edge => {
+                assert!(
+                    (pose[7] - position[1]).abs() < 0.5,
+                    "a bridge's car on its deck: {} at {position:?}",
+                    pose[7],
+                );
+                on_deck += 1;
+            }
+            _ => assert_eq!(bits, ground[0], "the lot's car stays on the ground"),
+        }
+    }
+    assert!(on_deck > 0, "cars on the deck");
 }
 
 // A tunnel's approach cuts the hill: the ground beside its portal drops with no bay involved.

@@ -433,7 +433,13 @@ fn a_stroke_is_charged_its_road_types_cost() {
         let before = core.treasury.lifetime_build_cost;
         commit_with(&mut core, SIDE.0, attributes);
         let side = core.region_graph.edge(edge_ending_at(&core, SIDE.0[1]));
-        let weight = stroke_weight((1, 1), None, attributes, EdgeClass::Standard);
+        let weight = stroke_weight(
+            (1, 1),
+            None,
+            crate::simulation::network::graph::RoadParking::NONE,
+            attributes,
+            EdgeClass::Standard,
+        );
         assert!((BUILD_COST_PER_M * weight - per_m).abs() < 1e-9);
         assert_eq!(side.cost_weight().to_bits(), weight.to_bits());
         // The charge is the stroke's polyline length at that rate (the edge is clipped at the

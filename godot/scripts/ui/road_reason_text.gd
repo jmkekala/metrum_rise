@@ -197,6 +197,8 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 		# Kerbside parking (`PARK-05`).
 		"layout_parking_at_kerb":
 			return "A parking lane goes at the kerb, the outermost part of the road"
+		"layout_parking_needs_sidewalk":
+			return "A parking lane needs a sidewalk on its side"
 		"parking_requires_vehicle_road":
 			return "Only roads with lanes can have parking"
 		"parking_code_out_of_range":

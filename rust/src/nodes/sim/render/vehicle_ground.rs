@@ -126,6 +126,30 @@ impl SimCore {
         })
     }
 
+    /// [`Self::vehicle_ground_pose_exact`] for a parked car, on its own street or lot however
+    /// many decks pass over it (`PARK-05`): `level` as `GradedSurface::parked_height_near` reads
+    /// it. One gather and the same contacts, so O(contacts) as the exact solve.
+    pub(crate) fn vehicle_parked_pose(
+        &self,
+        vehicle: u8,
+        position: Vector2,
+        heading: Vector3,
+        level: Option<f32>,
+    ) -> (f32, [Vector3; 3]) {
+        let support = self
+            .vehicle_ground_support
+            .get(vehicle as usize)
+            .unwrap_or(&self.vehicle_ground_support[0]);
+        self.with_graded_surface(|surface, scratch| {
+            let (x, z) = (f64::from(position.x), f64::from(position.y));
+            surface.gather_near(x, z, f64::from(support.reach_m) + CONTACT_SLACK_M, scratch);
+            vehicle_support_pose(support, position, heading, |point| {
+                let (x, z) = (f64::from(point.x), f64::from(point.y));
+                surface.parked_height_near(x, z, level, scratch) as f32
+            })
+        })
+    }
+
     /// [`Self::vehicle_ground_pose_exact`] with a per-point surface query at every contact, the
     /// reference the gathered query must reproduce.
     #[cfg(test)]

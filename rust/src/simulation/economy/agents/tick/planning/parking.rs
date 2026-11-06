@@ -4,7 +4,8 @@
 
 use super::super::super::{ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH, MODE_CAR};
 use super::candidate::{
-    PlannedTripCandidate, RouteStart, SharedNetworkQuotes, TripQueryScratch, parking_candidate,
+    PlannedTripCandidate, RouteStart, SharedNetworkQuotes, TripQueryScratch, in_lot_candidate,
+    parking_candidate,
 };
 use super::types::BuiltTripPlan;
 use crate::simulation::buildings::allocator::BuildingEntrance;
@@ -13,6 +14,7 @@ use std::sync::atomic::AtomicU32;
 
 /// Exact endpoint quote. O(Q) route work for four endpoint pairs, independent of parking
 /// candidate count. Drive costs use free-flow weights and fixed swept paths, never live traffic.
+/// A walk no lane can make falls back to the walk across a building's own lot, O(1).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn quote_parking_leg(
     mode: u8,
@@ -35,6 +37,7 @@ pub(crate) fn quote_parking_leg(
         None,
         shared,
     )
+    .or_else(|| in_lot_candidate(mode, origin, destination))
     .map(ParkingLegQuote)
 }
 

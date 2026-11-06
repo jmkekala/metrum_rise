@@ -3,14 +3,15 @@
 //! What a road costs (`ROAD-101`): one per-metre weight in 2-lane-road units, so the built-in
 //! 2-Lane Road at 50 km/h on the ground weighs exactly 1.0, builds for exactly
 //! [`BUILD_COST_PER_M`] and costs exactly [`UPKEEP_PER_M_DAY`] a day (the constants every road
-//! cost before road types). Lanes and medians scale with speed, sidewalks add, a structure
-//! multiplies the whole weight, zoning costs nothing:
+//! cost before road types). Lanes and medians scale with speed, sidewalks and parking lanes add,
+//! a structure multiplies the whole weight, zoning costs nothing:
 //!
 //! ```text
-//! weight = structure x (lanes x 0.4 x f(v) + median x f(v) + sidewalks)
+//! weight = structure x (lanes x 0.4 x f(v) + median x f(v) + sidewalks + parking)
 //!   f(v)      = 1 + (v_kmh - 50) / 50
 //!   median    = painted 0.05; kerbed grass or paving 0.1 + 0.1 x width_m
 //!   sidewalks = 0.1 per side with one (`ROAD-107`, D3): 0.2 both, 0.1 one, 0 none
+//!   parking   = 0.2 per side with a parking lane (`PARK-05`, D3): 0.4 both, 0.2 one, 0 none
 //!   structure = standard 1, bridge 3, tunnel 5
 //!   walkway   = structure x 0.25
 //! ```
@@ -19,7 +20,9 @@
 //! weighted daily upkeep roll all read it. Engine-free; `O(1)`, allocation-free.
 
 use super::{RoadAttributes, RoadCrossSection};
-use crate::simulation::network::graph::{Edge, MedianStyle, RoadMedian, SidewalkSides};
+use crate::simulation::network::graph::{
+    Edge, MedianStyle, RoadMedian, RoadParking, SidewalkSides,
+};
 use crate::simulation::network::types::EdgeClass;
 
 /// Build cost per metre of a weight-1.0 road (the 2-Lane Road at 50 km/h on the ground).
@@ -31,6 +34,8 @@ pub const UPKEEP_PER_M_DAY: f64 = 0.1;
 const LANE_WEIGHT: f64 = 0.4;
 // Each side's sidewalk (`ROAD-107`, D3: half the 0.2 both sides cost before).
 const SIDEWALK_WEIGHT: f64 = 0.1;
+// Each side's parking lane (`PARK-05`, D3): 2.5 m of asphalt, between a sidewalk and a lane.
+const PARKING_WEIGHT: f64 = 0.2;
 // A walkway's footpath, before its structure factor.
 const WALKWAY_WEIGHT: f64 = 0.25;
 // A painted median, whatever its width.
@@ -79,14 +84,17 @@ pub fn road_weight(section: RoadCrossSection, speed_kmh: u16, class: EdgeClass) 
         .map_or(0.0, |median| median_weight(median) * speed);
     // Both sides: 0.1 x 2.0 is bitwise the 0.2 they cost before `ROAD-107`.
     let sidewalks = SIDEWALK_WEIGHT * f64::from(section.sidewalks.count());
-    structure * (lanes + median + sidewalks)
+    // Zero without a parking lane, so such a road's weight stays bit for bit what it was.
+    let parking = PARKING_WEIGHT * f64::from(section.parking.count());
+    structure * (lanes + median + sidewalks + parking)
 }
 
-/// The weight of a stroke of `fwd` + `bkw` lanes, `median` and `attributes`, as its prepared
-/// `class` builds it: the edge [`Edge::cost_weight`] then reads back.
+/// The weight of a stroke of `fwd` + `bkw` lanes, `median`, `parking` and `attributes`, as its
+/// prepared `class` builds it: the edge [`Edge::cost_weight`] then reads back.
 pub fn stroke_weight(
     (fwd, bkw): (u8, u8),
     median: Option<RoadMedian>,
+    parking: RoadParking,
     attributes: RoadAttributes,
     class: EdgeClass,
 ) -> f64 {
@@ -94,8 +102,7 @@ pub fn stroke_weight(
         fwd_lanes: fwd,
         bkw_lanes: bkw,
         median,
-        // A parking lane (`PARK-05`) does not change a road's weight.
-        parking: crate::simulation::network::graph::RoadParking::NONE,
+        parking,
         sidewalks: if fwd + bkw > 0 {
             attributes.sidewalks
         } else {
@@ -120,8 +127,8 @@ pub fn upkeep_per_m_day(weight: f64) -> f64 {
 }
 
 impl Edge {
-    /// This road's per-metre cost weight ([`road_weight`]) from its own lanes, median, sidewalk
-    /// sides, speed limit (whole km/h) and class. `O(1)`.
+    /// This road's per-metre cost weight ([`road_weight`]) from its own lanes, median, parking
+    /// lanes, sidewalk sides, speed limit (whole km/h) and class. `O(1)`.
     pub fn cost_weight(&self) -> f64 {
         road_weight(
             RoadCrossSection::of_edge(self),
@@ -146,7 +153,7 @@ mod tests {
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             median: median.map(|(style, width_m)| RoadMedian { style, width_m }),
-            parking: crate::simulation::network::graph::RoadParking::NONE,
+            parking: RoadParking::NONE,
             sidewalks: SidewalkSides::both_or_none(sidewalks),
         }
     }
@@ -244,17 +251,64 @@ mod tests {
         assert_eq!(weight.to_bits(), 1.0f64.to_bits());
         assert_eq!(build_per_m(weight).to_bits(), 15.0f64.to_bits());
         assert_eq!(upkeep_per_m_day(weight).to_bits(), 0.1f64.to_bits());
-        let stroke = stroke_weight((1, 1), None, RoadAttributes::DEFAULT, EdgeClass::Standard);
+        let stroke = stroke_weight(
+            (1, 1),
+            None,
+            RoadParking::NONE,
+            RoadAttributes::DEFAULT,
+            EdgeClass::Standard,
+        );
         assert_eq!(stroke.to_bits(), 1.0f64.to_bits());
         // A walkway stroke ignores the tool's sidewalks and speed.
         assert_eq!(
             stroke_weight(
                 (0, 0),
                 None,
+                RoadParking::NONE,
                 RoadAttributes::new(120, SidewalkSides::BOTH, true),
                 EdgeClass::Bridge
             ),
             0.75
+        );
+    }
+
+    // D3: a parking lane weighs 0.2 per side, at any speed, inside the structure factor; a road
+    // without one is bit for bit the weight it had. The stroke and the edge agree.
+    #[test]
+    fn a_parking_lane_costs_a_fifth_of_a_road_per_side() {
+        let parked = |left, right| RoadCrossSection {
+            parking: RoadParking { left, right },
+            ..section(1, 1, None, true)
+        };
+        let road = road_weight(parked(false, false), 50, EdgeClass::Standard);
+        assert_eq!(road.to_bits(), 1.0f64.to_bits());
+        for (left, right, sides) in [(true, false, 1.0), (false, true, 1.0), (true, true, 2.0)] {
+            let weight = road_weight(parked(left, right), 50, EdgeClass::Standard);
+            assert!((weight - (road + 0.2 * sides)).abs() < 1e-12);
+        }
+        let fast = road_weight(parked(true, false), 80, EdgeClass::Standard)
+            - road_weight(parked(false, false), 80, EdgeClass::Standard);
+        assert!(
+            (fast - 0.2).abs() < 1e-12,
+            "parking does not scale with speed"
+        );
+        let bridge = road_weight(parked(true, false), 50, EdgeClass::Bridge)
+            - road_weight(parked(false, false), 50, EdgeClass::Bridge);
+        assert!((bridge - 0.6).abs() < 1e-12, "a structure multiplies it");
+        let both = RoadParking {
+            left: true,
+            right: true,
+        };
+        assert_eq!(
+            stroke_weight(
+                (1, 1),
+                None,
+                both,
+                RoadAttributes::DEFAULT,
+                EdgeClass::Standard
+            )
+            .to_bits(),
+            road_weight(parked(true, true), 50, EdgeClass::Standard).to_bits(),
         );
     }
 

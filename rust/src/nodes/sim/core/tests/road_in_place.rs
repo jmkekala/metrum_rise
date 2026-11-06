@@ -1037,7 +1037,7 @@ fn a_ring_edge_refuses_every_in_place_edit() {
     assert_eq!(
         core.region_graph
             .edge(edge)
-            .validate_cross_section(2, 0, None, Default::default()),
+            .validate_cross_section(2, 0, None, Default::default(), Default::default()),
         Err("roundabout_fixed")
     );
     let mut with_pocket = core.region_graph.edge(edge).clone();

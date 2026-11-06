@@ -254,6 +254,365 @@ fn removing_reserved_supply_replans_at_the_actual_position() {
     }
 }
 
+// A bay of building `b`, `dx` metres along the frontage from its door.
+fn add_frontage_bay(
+    parking: &mut ParkingSystem,
+    allocator: &BuildingAllocator,
+    b: usize,
+    anchor: u32,
+    dx: f32,
+) -> crate::simulation::core::handles::Handle<crate::simulation::parking::Place> {
+    let e = &allocator.entrances[b];
+    let pos = e.door_pos + Vector2::new(dx, 0.0);
+    parking.add_place(
+        PlaceSource::Building {
+            building: allocator.building_handles.handle(b).to_bits(),
+            anchor,
+        },
+        Bay {
+            identity: [0, u64::from(anchor)],
+            position: [pos.x, 0.0, pos.y],
+            path: [
+                [e.curb_pos.x + dx - 5.0, e.curb_pos.y],
+                [pos.x, e.curb_pos.y],
+                [pos.x, pos.y + 3.0],
+                [pos.x, pos.y],
+            ],
+            heading: 0.0,
+            width: 2.5,
+            length: 5.0,
+        },
+    )
+}
+
+// B3, the plan's sequence: a borrowed car's source bay goes during the pull-out, then three
+// destination bays one after another, recovery running between them. Each superseded destination
+// must give its reverse link back, or the fourth removal finds all three taken.
+#[test]
+fn a_superseded_destination_gives_its_retired_link_back() {
+    let (mut agents, mut parking, allocator, mut network, mut graph) = fixture();
+    for (anchor, dx) in [(1, 13.0), (2, 21.0), (3, 29.0)] {
+        add_frontage_bay(&mut parking, &allocator, 1, anchor, dx);
+    }
+    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
+    let clock = test_clock(0, 0);
+    macro_rules! tick {
+        () => {
+            agents.tick_with_parking(
+                &allocator,
+                &mut network,
+                &mut graph,
+                0.1,
+                &clock,
+                &mut parking,
+            )
+        };
+    }
+    for _ in 0..8000 {
+        tick!();
+        if agents.parking_trip[0].phase == ParkingTripPhase::PullOut {
+            break;
+        }
+    }
+    assert_eq!(agents.parking_trip[0].phase, ParkingTripPhase::PullOut);
+    let car = agents.parking_trip[0].vehicle;
+    parking.remove_place(agents.parking_trip[0].source);
+    for removal in 0..3 {
+        // The source's removal cancelled the reservation; recovery holds a live bay again.
+        for _ in 0..50 {
+            tick!();
+            if parking.trip_reserved(car, agents.parking_trip[0].destination) {
+                break;
+            }
+        }
+        let destination = agents.parking_trip[0].destination;
+        assert!(parking.trip_reserved(car, destination), "removal {removal}");
+        parking.remove_place(destination);
+        parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
+    }
+    for _ in 0..50 {
+        tick!();
+    }
+    let links = parking.retired_links(car);
+    assert!(links <= 2, "superseded links stayed: {links}");
+    let mut reached = false;
+    for _ in 0..10000 {
+        tick!();
+        if agents.current_building[0] == 1 && agents.transit[0] == TRANSIT_IN_BUILDING {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "recovery stalled: {:?}", agents.parking_trip[0]);
+    assert_eq!(parking.retired_links(car), 0);
+}
+
+// One edit removes a row of bays under a borrowed, still parked car: it is towed through each in
+// turn with no tick between, more bays than a car has links. The bay the walker is heading for
+// must keep its link: it is the oldest one, and without it recovery has no origin.
+#[test]
+fn a_row_of_removed_bays_keeps_the_bay_the_walker_is_heading_for() {
+    let (mut agents, mut parking, allocator, mut network, mut graph) = fixture();
+    let row: Vec<_> = (1..=6)
+        .map(|k| add_frontage_bay(&mut parking, &allocator, 0, k, 5.0 + 8.0 * k as f32))
+        .collect();
+    let last = add_frontage_bay(&mut parking, &allocator, 0, 7, 69.0);
+    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
+    let clock = test_clock(0, 0);
+    for _ in 0..8000 {
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
+        if agents.parking_trip[0].phase == ParkingTripPhase::WalkToCar {
+            break;
+        }
+    }
+    assert_eq!(agents.parking_trip[0].phase, ParkingTripPhase::WalkToCar);
+    let car = agents.parking_trip[0].vehicle;
+    let source = agents.parking_trip[0].source;
+    parking.remove_place(source);
+    for &bay in &row {
+        assert_eq!(parking.vehicle_place(car), Some(bay), "towed along the row");
+        parking.remove_place(bay);
+    }
+    assert_eq!(parking.vehicle_place(car), Some(last));
+    assert!(parking.retired_links(car) <= 3);
+    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
+    let mut reached = false;
+    for _ in 0..12000 {
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
+        if agents.current_building[0] == 1 && agents.transit[0] == TRANSIT_IN_BUILDING {
+            reached = true;
+            break;
+        }
+    }
+    assert!(
+        reached,
+        "the walker never reached its car: {:?}",
+        agents.parking_trip[0]
+    );
+}
+
+// A 500 m road with its only sidewalk on the left: a home on the right, on the shoulder, with no
+// foot lane at its door, and `home_bays` bays of its own; work across the road on the sidewalk,
+// with one bay. One adult with the household's car, parked at home when there is a bay.
+fn car_only_home(
+    home_bays: u32,
+) -> (
+    AgentSystem,
+    ParkingSystem,
+    BuildingAllocator,
+    TransitNetwork,
+    RegionGraph,
+) {
+    use crate::simulation::network::graph::SidewalkSides;
+    let (mut network, mut graph, _, _) = setup_straight_road();
+    graph.edge_mut(0).set_sidewalks(SidewalkSides::LEFT);
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);
+    let mut allocator = BuildingAllocator::new();
+    let home_asset = register_test_asset(&mut allocator, "parking", "home", ZoneClass::Residential);
+    let work_asset = register_test_asset(&mut allocator, "parking", "work", ZoneClass::Commercial);
+    for (x, side, asset, zone) in [
+        (100.0, -1, home_asset, ZoneType::Residential),
+        (300.0, 1, work_asset, ZoneType::Commercial),
+    ] {
+        let mut b = create_test_building(0, side);
+        b.center_x = x;
+        b.center_y = -12.0 * f32::from(side);
+        b.facing_dir = Vector2::new(0.0, f32::from(side));
+        b.asset_id = asset;
+        b.zone_type = zone;
+        allocator.buildings.push(b);
+    }
+    allocator
+        .building_handles
+        .register_appended(allocator.buildings.len());
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    assert_eq!(
+        allocator.entrances[0].foot_lane_fwd,
+        usize::MAX,
+        "a car-only door"
+    );
+    assert_ne!(
+        allocator.entrances[1].foot_lane_fwd,
+        usize::MAX,
+        "a door on the sidewalk"
+    );
+    let mut parking = ParkingSystem::default();
+    for k in 0..home_bays {
+        add_frontage_bay(&mut parking, &allocator, 0, k, 6.0 + 8.0 * k as f32);
+    }
+    add_frontage_bay(&mut parking, &allocator, 1, 0, 6.0);
+    parking.rebuild_candidates(&[0, 1], &allocator, &network, &graph, None);
+    let home = allocator.building_handles.handle(0).to_bits();
+    let car = parking.assign_household(
+        0,
+        crate::simulation::zoning::profiles::ZoneDensity::Low,
+        [100.0, 12.0],
+    );
+    parking.park_new_car(car, home);
+    parking.seed_fixture_car(car, home);
+    let mut agents = AgentSystem::new();
+    let i = agents.spawn_housed_agent(0, 100.0, 12.0);
+    agents.agents.parking_trip[i].vehicle = car;
+    agents.agents.planned_target_building[i] = 1;
+    agents.agents.planned_activity[i] = 1;
+    (agents, parking, allocator, network, graph)
+}
+
+// D4: a door with no foot lane reaches nothing on foot, yet its own bays stay candidates, at the
+// straight walk across the lot; a neighbour's bay on the same shoulder does not.
+#[test]
+fn a_car_only_doors_own_bays_are_its_candidates_at_an_in_lot_walk() {
+    let (_, mut parking, mut allocator, network, graph) = car_only_home(2);
+    let asset = allocator.buildings[0].asset_id.clone();
+    let mut neighbour = create_test_building(0, -1);
+    neighbour.center_x = 130.0;
+    neighbour.center_y = 12.0;
+    neighbour.facing_dir = Vector2::new(0.0, -1.0);
+    neighbour.asset_id = asset;
+    neighbour.zone_type = ZoneType::Residential;
+    allocator.buildings.push(neighbour);
+    allocator
+        .building_handles
+        .register_appended(allocator.buildings.len());
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    add_frontage_bay(&mut parking, &allocator, 2, 0, 6.0);
+    parking.rebuild_candidates(&[0, 1, 2], &allocator, &network, &graph, None);
+    let home = allocator.building_handles.handle(0).to_bits();
+    let products = parking.candidate_products(home);
+    assert_eq!(
+        products.len(),
+        2,
+        "the two own bays and not the neighbour's"
+    );
+    let door = allocator.entrances[0].door_pos;
+    for ((position, walk_s, from_door_s), k) in products.into_iter().zip(0..) {
+        let bay = Vector2::new(f32::from_bits(position[0]), f32::from_bits(position[2]));
+        assert_eq!(bay, door + Vector2::new(6.0 + 8.0 * k as f32, 0.0));
+        let walk = door.distance_to(bay) / crate::config::AGENT_WALK_SPEED_MS;
+        assert_eq!(f32::from_bits(walk_s), walk);
+        assert_eq!(f32::from_bits(from_door_s), walk);
+    }
+}
+
+// F2: a car-only building's resident gets somewhere. It walks across the lot to its car with no
+// lane under it, drives to work, walks from the bay to the door, drives home and walks across
+// the lot again; the economy's quotes offer the same trip.
+#[test]
+fn a_car_only_homes_resident_drives_to_work_and_back_across_its_lot() {
+    use crate::simulation::economy::agents::tick::{
+        ResidentMobility, estimate_parking_trip_seconds,
+    };
+    let (mut agents, mut parking, allocator, mut network, mut graph) = car_only_home(1);
+    let car = agents.parking_trip[0].vehicle;
+    let bay = parking.vehicle_place(car).expect("parked at home");
+    let count = std::sync::atomic::AtomicU32::new(0);
+    assert!(
+        estimate_parking_trip_seconds(
+            0, 1, car, true, &parking, &allocator, &network, &graph, &count
+        )
+        .is_some()
+    );
+    let mobility = ResidentMobility {
+        parking: &parking,
+        car,
+        eligible: true,
+    };
+    assert!(mobility.round_trip(0, 1, &allocator, &network, &graph, &count));
+    let clock = test_clock(0, 0);
+    let mut drive_to = |agents: &mut AgentSystem, parking: &mut ParkingSystem, target: usize| {
+        let mut walked = [false; 2];
+        let mut was_in_lot = false;
+        for _ in 0..30000 {
+            let before = Vector2::new(agents.pos_x[0], agents.pos_y[0]);
+            agents.tick_with_parking(&allocator, &mut network, &mut graph, 0.1, &clock, parking);
+            let phase = agents.parking_trip[0].phase;
+            let in_lot = agents.current_lane_id[0] == usize::MAX
+                && agents.planned_attach_lane_id[0] == u32::MAX
+                && agents.transit_mode[0] == MODE_WALK;
+            walked[0] |= phase == ParkingTripPhase::WalkToCar && in_lot;
+            walked[1] |= phase == ParkingTripPhase::WalkToDoor && in_lot;
+            let in_lot = in_lot
+                && matches!(
+                    phase,
+                    ParkingTripPhase::WalkToCar | ParkingTripPhase::WalkToDoor
+                );
+            if in_lot && was_in_lot {
+                let step = before.distance_to(Vector2::new(agents.pos_x[0], agents.pos_y[0]));
+                assert!(
+                    step <= crate::config::AGENT_WALK_SPEED_MS * 0.1 + 1e-3,
+                    "{step} m in a tick"
+                );
+            }
+            was_in_lot = in_lot;
+            if agents.current_building[0] == target && agents.transit[0] == TRANSIT_IN_BUILDING {
+                assert_eq!(
+                    agents.transit_mode[0], MODE_WALK,
+                    "no car leg ends at a door"
+                );
+                return Some(walked);
+            }
+        }
+        None
+    };
+    let there = drive_to(&mut agents, &mut parking, 1).expect("the resident reaches work");
+    assert_eq!(
+        there,
+        [true, false],
+        "across the lot to the car, along the sidewalk from it"
+    );
+    assert_ne!(parking.vehicle_place(car), Some(bay));
+    agents.agents.planned_target_building[0] = 0;
+    agents.agents.planned_activity[0] = 0;
+    agents.agents.next_replan_time[0] = 0.0;
+    let back = drive_to(&mut agents, &mut parking, 0).expect("the resident gets home");
+    assert!(back[1], "from the car across the lot to the door");
+    assert_eq!(parking.vehicle_place(car), Some(bay), "the car is home");
+}
+
+// What D4 leaves open: a car-only door with no bay of its own has no catchment, so its car stays
+// off the map and its resident stays in, retrying on the 30 s timer, the reason on the console.
+// `PARK-03`'s admission gate is the answer; until then the home just holds them.
+#[test]
+fn a_car_only_home_without_a_bay_holds_its_resident_and_says_why() {
+    let (mut agents, mut parking, allocator, mut network, mut graph) = car_only_home(0);
+    let car = agents.parking_trip[0].vehicle;
+    assert_eq!(parking.vehicle_place(car), None);
+    let clock = test_clock(0, 0);
+    for _ in 0..1000 {
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
+    }
+    assert_eq!(agents.transit[0], TRANSIT_IN_BUILDING);
+    assert_eq!(agents.current_building[0], 0);
+    assert_eq!(parking.vehicle_place(car), None);
+    let outcome = crate::simulation::parking::stats::DepartureOutcome::CarStored;
+    assert!(
+        parking.departures.count(outcome) > 0,
+        "the console names the reason"
+    );
+}
+
 #[test]
 fn towing_before_borrowing_walks_to_the_cars_actual_new_place() {
     let (mut agents, mut parking, allocator, mut network, mut graph) = fixture();
@@ -783,24 +1142,48 @@ fn parking_move_in_without_space_walks_and_keeps_car_off_map() {
 fn run_parking_move_in(full: bool) {
     let (_, mut parking, allocator, mut network, mut graph) = fixture();
     parking.remove_household_car(0);
-    if full { parking.fill_test_fleet(); }
+    if full {
+        parking.fill_test_fleet();
+    }
     let mut agents = AgentSystem::new();
     let border = graph.edge(0).start_node;
     let pos = graph.node(border).pos;
-    let i = agents.spawn_household_arrival_carrier(1, 1,
-        HouseholdAgeComposition { adult_count: 1, ..Default::default() }, border, pos.x, pos.z);
+    let i = agents.spawn_household_arrival_carrier(
+        1,
+        1,
+        HouseholdAgeComposition {
+            adult_count: 1,
+            ..Default::default()
+        },
+        border,
+        pos.x,
+        pos.z,
+    );
     agents.prepare_lane_buckets_for_test(&network);
     assert!(agents.start_parking_move_in(i, &mut parking, &allocator, &network, &graph));
     agents.prepare_lane_buckets_for_test(&network);
     let car = agents.parking_trip[i].vehicle;
     assert!(!car.is_none());
-    assert_eq!(agents.transit_mode[i], if full { MODE_WALK } else { MODE_CAR });
-    assert!(parking.vehicle_place(car).is_none(), "departure cannot create occupancy");
+    assert_eq!(
+        agents.transit_mode[i],
+        if full { MODE_WALK } else { MODE_CAR }
+    );
+    assert!(
+        parking.vehicle_place(car).is_none(),
+        "departure cannot create occupancy"
+    );
     let clock = test_clock(0, 0);
     let mut phases = [false; 3];
     let mut restored = false;
     for _ in 0..15000 {
-        agents.tick_with_parking(&allocator, &mut network, &mut graph, 0.1, &clock, &mut parking);
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
         prepare_requested_routes(&mut agents);
         match agents.parking_trip[i].phase {
             ParkingTripPhase::Drive => phases[0] = true,
@@ -816,7 +1199,10 @@ fn run_parking_move_in(full: bool) {
             restored = true;
         }
         if agents.transit[i] == TRANSIT_IN_BUILDING {
-            assert_eq!(agents.transit_mode[i], MODE_WALK, "move-in car reached a door");
+            assert_eq!(
+                agents.transit_mode[i], MODE_WALK,
+                "move-in car reached a door"
+            );
             break;
         }
     }
@@ -840,15 +1226,28 @@ fn parking_resident_border_recovery_cannot_create_a_car_door_leg() {
     let mut agents = AgentSystem::new();
     let border = graph.edge(0).start_node;
     let pos = graph.node(border).pos;
-    let car = parking.arrival_car(0, crate::simulation::zoning::profiles::ZoneDensity::Low, [455.0, -12.0]);
+    let car = parking.arrival_car(
+        0,
+        crate::simulation::zoning::profiles::ZoneDensity::Low,
+        [455.0, -12.0],
+    );
     parking.store_arrival_car(car, allocator.building_handles.handle(1).to_bits());
     let i = agents.spawn_border_arrival_agent(1, border, pos.x, pos.z);
     agents.agents.parking_trip[i].vehicle = car;
     let clock = test_clock(0, 0);
     for _ in 0..10000 {
-        agents.tick_with_parking(&allocator, &mut network, &mut graph, 0.1, &clock, &mut parking);
+        agents.tick_with_parking(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &clock,
+            &mut parking,
+        );
         assert_eq!(agents.transit_mode[i], MODE_WALK);
-        if agents.transit[i] == TRANSIT_IN_BUILDING { break; }
+        if agents.transit[i] == TRANSIT_IN_BUILDING {
+            break;
+        }
     }
     assert_eq!(agents.current_building[i], 1);
     assert_eq!(agents.transit[i], TRANSIT_IN_BUILDING);

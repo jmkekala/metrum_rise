@@ -7,6 +7,14 @@ use crate::simulation::core::handles::Handle;
 use crate::simulation::economy::agents::tick::planning::quote_parking_leg_from_lane;
 use crate::simulation::economy::agents::{ACCESS_LANE_ATTACH_PENDING, TRANSIT_NETWORK};
 
+// A rewritten itinerary keeps retired geometry only for the endpoints it still names. O(1).
+fn release_superseded_links(parking: &mut ParkingSystem, trip: ParkingTrip) {
+    parking.retain_retired_places(
+        trip.vehicle,
+        [trip.walk_origin, trip.source, trip.destination],
+    );
+}
+
 impl AgentSystem {
     pub(super) fn recover_parking_trip(
         &mut self,
@@ -61,12 +69,12 @@ impl AgentSystem {
                 ) else {
                     return;
                 };
-                parking.forget_retired_place(trip.vehicle, trip.walk_origin);
                 trip.walk_origin = trip.source;
                 trip.source = actual;
                 trip.ready = false;
                 trip.replan_needed = false;
                 self.agents.parking_trip[i] = trip;
+                release_superseded_links(parking, trip);
                 self.apply_parking_leg(i, plan, &origin);
                 return;
             }
@@ -74,8 +82,10 @@ impl AgentSystem {
                 && let Some(candidate) = parking.first_free_candidate(trip.target)
                 && parking.reserve(trip.vehicle, candidate.place)
             {
-                self.agents.parking_trip[i].destination = candidate.place;
-                self.agents.parking_trip[i].replan_needed = false;
+                trip.destination = candidate.place;
+                trip.replan_needed = false;
+                self.agents.parking_trip[i] = trip;
+                release_superseded_links(parking, trip);
                 return;
             }
             // The reservation vanished before driving. Continue on foot from the actual bay.
@@ -112,6 +122,7 @@ impl AgentSystem {
             trip.ready = false;
             trip.replan_needed = false;
             self.agents.parking_trip[i] = trip;
+            release_superseded_links(parking, trip);
             self.apply_parking_leg(i, plan, &origin);
             return;
         }
@@ -129,12 +140,12 @@ impl AgentSystem {
                 return;
             }
             if trip.phase == ParkingTripPhase::PullIn {
-                parking.forget_retired_place(trip.vehicle, trip.source);
                 trip.source = trip.destination;
                 trip.phase = ParkingTripPhase::PullOut;
             }
             trip.destination = candidate.place;
             self.agents.parking_trip[i] = trip;
+            release_superseded_links(parking, trip);
         }
         let destination = if trip.phase == ParkingTripPhase::WalkToDoor {
             allocator.entrances.get(target).cloned()

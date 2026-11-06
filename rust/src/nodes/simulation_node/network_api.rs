@@ -493,6 +493,7 @@ impl SimulationNode {
                         edge.bkw_lanes,
                         edge.median,
                         edge.parking,
+                        edge.sidewalk_sides(),
                     )
                     .is_ok(),
             };

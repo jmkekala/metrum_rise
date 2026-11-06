@@ -266,15 +266,6 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let allowed_types = i64_to_u8(row.get(4)?)?;
             let fwd_lanes = i64_to_u8(row.get(7)?)?;
             let bkw_lanes = i64_to_u8(row.get(8)?)?;
-            let parking = RoadParking::from_code(row.get(22)?)
-                .ok_or("parking_code_out_of_range")
-                .and_then(|parking| {
-                    Edge::validate_parking(allowed_types, fwd_lanes, bkw_lanes, parking)
-                        .map(|()| parking)
-                })
-                .map_err(|reason| {
-                    SaveLoadError::custom(format!("edge {eid} has invalid parking ({reason})"))
-                })?;
             let invalid_median = |reason| {
                 SaveLoadError::custom(format!("edge {eid} has an invalid median ({reason})"))
             };
@@ -294,6 +285,15 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let sidewalks = SidewalkSides::from_bits(row.get(21)?).ok_or_else(|| {
                 SaveLoadError::custom(format!("edge {eid} has an invalid sidewalk code"))
             })?;
+            let parking = RoadParking::from_code(row.get(22)?)
+                .ok_or("parking_code_out_of_range")
+                .and_then(|parking| {
+                    Edge::validate_parking(allowed_types, fwd_lanes, bkw_lanes, parking, sidewalks)
+                        .map(|()| parking)
+                })
+                .map_err(|reason| {
+                    SaveLoadError::custom(format!("edge {eid} has invalid parking ({reason})"))
+                })?;
             if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
             {
                 return Err(SaveLoadError::custom("edge references out-of-range node"));

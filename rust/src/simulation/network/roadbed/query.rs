@@ -325,10 +325,20 @@ impl RoadbedSystem {
     /// the highest. Ties keep the first in piece order. One walk of the point's query cell;
     /// allocation-free.
     pub fn exposed_height_nearest_at(&self, x: f32, z: f32, near_m: f32) -> Option<f32> {
+        self.nearest_height_at(x, z, near_m, false)
+    }
+
+    /// [`Self::exposed_height_nearest_at`] over every piece, a tunnel's among them: the level of
+    /// something that stands on a structure, whichever one it is (`PARK-05`).
+    pub fn height_nearest_at(&self, x: f32, z: f32, near_m: f32) -> Option<f32> {
+        self.nearest_height_at(x, z, near_m, true)
+    }
+
+    fn nearest_height_at(&self, x: f32, z: f32, near_m: f32, buried: bool) -> Option<f32> {
         let point = RoadVec2::new(f64::from(x), f64::from(z));
         let mut best: Option<f32> = None;
         for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
-            if !indexed.buried
+            if (buried || !indexed.buried)
                 && let Some((height_m, _, _)) = surface_at(&indexed.mesh, point, |_| true)
                 && best.is_none_or(|best_m| (height_m - near_m).abs() < (best_m - near_m).abs())
             {

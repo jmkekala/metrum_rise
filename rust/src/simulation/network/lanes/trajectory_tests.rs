@@ -719,6 +719,23 @@ fn fixtures() -> Vec<(String, RegionGraph)> {
             fixtures.push((name.to_string(), graph));
         }
     }
+    // `PARK-05`: pockets on streets with a parking lane, each side and both, on both edges.
+    {
+        use super::super::graph::RoadParking;
+        use super::super::roadbed::fixtures as pockets;
+        for code in 1..=3 {
+            let parking = RoadParking::from_code(code).unwrap();
+            for (name, graph) in [
+                ("t_right_pocket", pockets::t_right_pocket()),
+                ("four_way_1x1_left_right_pocket", pockets::four_way_1x1_left_right_pocket()),
+                ("four_way_2x2_left_pocket", pockets::four_way_2x2_left_pocket()),
+                ("four_way_2x2_right_pocket", pockets::four_way_2x2_right_pocket()),
+            ] {
+                let graph = pockets::with_parking(graph, &[(0, parking), (1, parking)]);
+                fixtures.push((format!("parked{code}_{name}"), graph));
+            }
+        }
+    }
     fixtures.extend(footpath_fixtures(false).into_iter().filter(|(name, _)| {
         name.starts_with("t_beside_arm/") || name.starts_with("through_road/")
     }));
@@ -781,7 +798,10 @@ fn junction_connectors_stay_on_the_carriageway_without_backward_steps_or_kinks()
 // two-lane ring's inner lane leaving across the outer one among them (D10).
 #[test]
 fn ring_connectors_stay_on_the_carriageway_over_the_size_and_arm_matrix() {
-    use super::super::roadbed::fixtures::{bare_ring, converted_ring, join_ring_arm};
+    use super::super::graph::RoadParking;
+    use super::super::roadbed::fixtures::{
+        bare_ring, converted_ring, converted_ring_parked, join_ring_arm,
+    };
     let equal =
         |arms: usize| -> Vec<f32> { (0..arms).map(|i| i as f32 * 360.0 / arms as f32).collect() };
     let mut report = String::new();
@@ -835,6 +855,32 @@ fn ring_connectors_stay_on_the_carriageway_over_the_size_and_arm_matrix() {
                 &nodes,
             );
         }
+    }
+    // `PARK-05`: arms with a parking lane, one-sided lanes shifting their traffic 1.25 m into the
+    // ring's trimmed arm: a junction converted under them, and streets joining a bare ring.
+    for code in 1..=3 {
+        let parking = RoadParking::from_code(code).unwrap();
+        for (diameter_m, arm) in [(36.0, (1, 1)), (45.0, (1, 1)), (60.0, (2, 2))] {
+            for arms in 3..=4 {
+                let (graph, applied) =
+                    converted_ring_parked(diameter_m, &equal(arms), arm, parking).unwrap();
+                let name = format!("parked{code} D{diameter_m} {arm:?} x{arms}");
+                measure(name, graph, &applied.nodes);
+            }
+        }
+        let (mut graph, _) = bare_ring(45.0, 1, false);
+        let nodes: Vec<u32> = [90.0, 210.0, 330.0]
+            .into_iter()
+            .map(|angle| {
+                let (node, arm) = join_ring_arm(&mut graph, angle, (1, 1), false);
+                let edge = graph.edge_mut(arm);
+                edge.width += parking.width_m();
+                edge.parking = parking;
+                node
+            })
+            .collect();
+        finalize(&mut graph);
+        measure(format!("parked{code} joined D45"), graph, &nodes);
     }
     assert!(clean, "ring connector violations:\n{report}");
 }

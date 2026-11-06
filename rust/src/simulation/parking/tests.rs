@@ -138,7 +138,7 @@ fn a_full_request_lists_every_chunk_again_in_a_later_snapshot() {
 fn a_chunk_rebuild_solves_no_unchanged_place() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let solves = AtomicUsize::new(0);
-    let solve = |model: u8, position: [f32; 3], _: f32| {
+    let solve = |model: u8, _: PlaceSource, position: [f32; 3], _: f32| {
         solves.fetch_add(1, Ordering::Relaxed);
         [f32::from(model), position[0], position[2], 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
     };
@@ -192,7 +192,7 @@ fn invalidated_ground_solves_its_places_again_and_no_others() {
         s.add_place(source(i), bay(i as f32 * 100.0, 4.0));
     }
     s.fill_test_fleet();
-    let solve = |_: u8, _: [f32; 3], _: f32| {
+    let solve = |_: u8, _: PlaceSource, _: [f32; 3], _: f32| {
         solves.fetch_add(1, Ordering::Relaxed);
         [0.0; 12]
     };

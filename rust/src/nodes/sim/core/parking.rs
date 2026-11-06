@@ -3,8 +3,9 @@
 //! Local physical parking publication at existing road and site edit boundaries.
 
 use super::SimCore;
+use crate::simulation::network::types::EdgeClass;
 use crate::simulation::parking::kerb::{kerb_bays, kerb_blockers};
-use crate::simulation::parking::ParkedPublication;
+use crate::simulation::parking::{ParkedPublication, PlaceSource};
 use crate::simulation::parking::lots::lot_bays;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -204,17 +205,30 @@ impl SimCore {
         }
         let built = self
             .parking
-            .solve_dirty_chunks(|model, pos, heading| self.parked_ground_pose(model, pos, heading));
+            .solve_dirty_chunks(|model, source, pos, heading| {
+                self.parked_ground_pose(model, source, pos, heading)
+            });
         self.parking.install_dirty_chunks(built);
     }
 
-    // A parked car's row-major instance pose, from the existing vehicle-contact solve.
-    pub(super) fn parked_ground_pose(&self, model: u8, pos: [f32; 3], heading: f32) -> [f32; 12] {
+    // A parked car's row-major instance pose, on its own street or lot. A bay on a bridge or in
+    // a tunnel keeps to its own level; every other bay stands on the ground. O(contacts).
+    pub(super) fn parked_ground_pose(
+        &self,
+        model: u8,
+        source: PlaceSource,
+        pos: [f32; 3],
+        heading: f32,
+    ) -> [f32; 12] {
         let (s, c) = heading.sin_cos();
-        let (y, basis) = self.vehicle_ground_pose_exact(
+        let on_structure = matches!(source, PlaceSource::Kerb { edge, .. }
+            if self.region_graph.get_edge(edge as usize)
+                .is_some_and(|edge| edge.class != EdgeClass::Standard));
+        let (y, basis) = self.vehicle_parked_pose(
             model,
             godot::prelude::Vector2::new(pos[0], pos[2]),
             godot::prelude::Vector3::new(s, 0.0, c),
+            on_structure.then_some(pos[1]),
         );
         let [x_axis, y_axis, z_axis] = basis;
         [
@@ -290,7 +304,7 @@ impl SimCore {
     /// supply/doors. O(local chunk buildings + local bounded searches), independent of background.
     pub(crate) fn rebuild_parking_candidates_near(&mut self, points: &[[f32; 2]]) {
         self.parking
-            .refresh_retired_access(&self.transit_network, &self.region_graph);
+            .refresh_retired_access(&self.allocator, &self.transit_network, &self.region_graph);
         let mut buildings = Vec::new();
         for &point in points {
             self.allocator.site_cells.visit(

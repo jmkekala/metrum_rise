@@ -230,6 +230,8 @@ fn sidewalk_ends(parts: &[RoadPart]) -> (bool, bool) {
 ///   both or at none, `ROAD-107`);
 /// - a parking lane not at a kerb (next to a sidewalk or the road's shoulder end):
 ///   `layout_parking_at_kerb`;
+/// - a parking lane on a side without a sidewalk, side by side (D4: a bay's walking access is on
+///   its own side): `layout_parking_needs_sidewalk`;
 /// - two medians: `layout_two_medians`;
 /// - a backward lane right of a forward one (right-hand traffic): `layout_lane_order`;
 /// - no car lane: `layout_no_car_lane`;
@@ -261,7 +263,13 @@ pub fn check_layout(parts: &[RoadPart]) -> Result<RoadCrossSection, LayoutRefusa
         match *part {
             RoadPart::Sidewalk => return Err(LayoutRefusal::new("layout_sidewalks", at)),
             // Parts run left to right along the forward direction, as the edge's kerbs do.
+            RoadPart::Parking if offset == 0 && !left_end => {
+                return Err(LayoutRefusal::new("layout_parking_needs_sidewalk", at));
+            }
             RoadPart::Parking if offset == 0 => parking.left = true,
+            RoadPart::Parking if offset + 1 == inside.len() && !right_end => {
+                return Err(LayoutRefusal::new("layout_parking_needs_sidewalk", at));
+            }
             RoadPart::Parking if offset + 1 == inside.len() => parking.right = true,
             RoadPart::Parking => return Err(LayoutRefusal::new("layout_parking_at_kerb", at)),
             RoadPart::Median(found) => {

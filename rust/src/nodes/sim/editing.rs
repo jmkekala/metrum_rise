@@ -1507,6 +1507,7 @@ impl SimCore {
         let build_weight = road_cost::stroke_weight(
             (fwd_lanes_u8, bkw_lanes_u8),
             prepared_input.median,
+            prepared_input.parking,
             prepared_input.attributes,
             prepared_input.class,
         );

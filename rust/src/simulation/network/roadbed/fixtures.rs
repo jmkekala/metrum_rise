@@ -11,7 +11,7 @@ use super::{
 };
 use crate::config;
 use crate::simulation::network::graph::{
-    Edge, RegionGraph, RoadMedian, RoadPocket, SidewalkSides,
+    Edge, RegionGraph, RoadMedian, RoadParking, RoadPocket, SidewalkSides,
 };
 use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::roundabouts::{
@@ -254,6 +254,17 @@ pub(crate) fn pocket_junction_at(
             right,
         }),
     );
+    finalize(&mut graph);
+    graph
+}
+
+/// `graph` with kerbside `parking` (`PARK-05`) on `edges`, each widened for it, laid out again.
+pub(crate) fn with_parking(mut graph: RegionGraph, edges: &[(usize, RoadParking)]) -> RegionGraph {
+    for &(id, parking) in edges {
+        let edge = graph.edge_mut(id);
+        edge.width += parking.width_m();
+        edge.parking = parking;
+    }
     finalize(&mut graph);
     graph
 }
@@ -512,6 +523,24 @@ pub(crate) fn converted_ring(
     sloped: bool,
 ) -> Result<(RegionGraph, RoundaboutApplied), &'static str> {
     let (mut graph, hub) = hub_graph(angles_deg, arm, sloped);
+    let site = RoundaboutSite::Junction(hub);
+    let layout = RoundaboutLayout::prepare(&graph, RoundaboutRequest { site, diameter_m })?;
+    let applied = layout.apply(&mut graph);
+    finalize(&mut graph);
+    Ok((graph, applied))
+}
+
+/// [`converted_ring`] with kerbside `parking` (`PARK-05`) on every arm, as a street drawn with it
+/// before the junction became a ring.
+pub(crate) fn converted_ring_parked(
+    diameter_m: f32,
+    angles_deg: &[f32],
+    arm: (u8, u8),
+    parking: RoadParking,
+) -> Result<(RegionGraph, RoundaboutApplied), &'static str> {
+    let (graph, hub) = hub_graph(angles_deg, arm, false);
+    let arms: Vec<_> = (0..angles_deg.len()).map(|id| (id, parking)).collect();
+    let mut graph = with_parking(graph, &arms);
     let site = RoundaboutSite::Junction(hub);
     let layout = RoundaboutLayout::prepare(&graph, RoundaboutRequest { site, diameter_m })?;
     let applied = layout.apply(&mut graph);
