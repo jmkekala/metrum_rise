@@ -64,6 +64,8 @@ pub(in crate::simulation::economy::agents) use lane_nav::{
 };
 pub(crate) use trip_failures::TripFailureLog;
 #[cfg(test)]
+pub(crate) use trip_failures::FailurePlaces;
+#[cfg(test)]
 pub(crate) use trip_failures::probe_tally;
 
 impl AgentSystem {

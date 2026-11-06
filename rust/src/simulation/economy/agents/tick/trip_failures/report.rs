@@ -51,6 +51,75 @@ pub(crate) struct TripFailureLog {
     /// Every line logged, for tests.
     #[cfg(test)]
     pub(crate) lines: Vec<String>,
+    /// Every failure's places, past the flood control, while a test's audit asks for them.
+    #[cfg(test)]
+    pub(crate) kept: Option<Vec<FailurePlaces>>,
+}
+
+/// The nodes, roads and lanes one trip failure names, for a test's audit: its cause's and where
+/// the agent stood. `u32::MAX` and `usize::MAX` fill unused entries.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FailurePlaces {
+    /// The cause's short name.
+    pub(crate) cause: &'static str,
+    /// The nodes the cause names.
+    pub(crate) nodes: [u32; 2],
+    /// The roads the cause names.
+    pub(crate) edges: [usize; 2],
+    /// The lanes the cause names.
+    pub(crate) lanes: [usize; 2],
+    /// The agent's node, road and lane at the failure.
+    pub(crate) agent: (u32, usize, usize),
+}
+
+#[cfg(test)]
+impl FailurePlaces {
+    fn of(failure: &TripFailure) -> Self {
+        const NO_LANE: usize = usize::MAX;
+        let (nodes, edges, lanes) = match failure.cause {
+            FailureCause::NoRoad { node, next_node } => {
+                ([node, next_node], [NO_LANE; 2], [NO_LANE; 2])
+            }
+            FailureCause::NoTurnToEdge {
+                node,
+                from_lane,
+                from_edge,
+                to_edge,
+            } => (
+                [node, u32::MAX],
+                [from_edge, to_edge],
+                [from_lane, NO_LANE],
+            ),
+            FailureCause::NoTurnToLane {
+                node,
+                from_lane,
+                to_lane,
+            } => ([node, u32::MAX], [NO_LANE; 2], [from_lane, to_lane]),
+            FailureCause::NoRoute(replan) => {
+                ([replan.start_node, u32::MAX], [NO_LANE; 2], [NO_LANE; 2])
+            }
+            FailureCause::StaleExit { lane, .. } | FailureCause::StaleEntry { lane, .. } => {
+                ([u32::MAX; 2], [NO_LANE; 2], [lane, NO_LANE])
+            }
+            FailureCause::NoBorderRoute { from, border } => {
+                ([from, border], [NO_LANE; 2], [NO_LANE; 2])
+            }
+            FailureCause::NoImmigrationRoute { border, .. } => {
+                ([border, u32::MAX], [NO_LANE; 2], [NO_LANE; 2])
+            }
+            FailureCause::NoDeparture { .. } | FailureCause::NoPosition | FailureCause::NoPlan => {
+                ([u32::MAX; 2], [NO_LANE; 2], [NO_LANE; 2])
+            }
+        };
+        Self {
+            cause: CAUSE_LABELS[usize::from(cause_index(&failure.cause))],
+            nodes,
+            edges,
+            lanes,
+            agent: (failure.node, failure.edge, failure.lane),
+        }
+    }
 }
 
 impl TripFailureLog {
@@ -125,6 +194,10 @@ impl AgentSystem {
         );
         // Stable: one agent's failures stay in the order its worker found them.
         failures.sort_by_key(|failure| failure.agent);
+        #[cfg(test)]
+        if let Some(kept) = &mut log.kept {
+            kept.extend(failures.iter().map(FailurePlaces::of));
+        }
         let inspected = self.inspected.map(|inspected| inspected.index);
         for failure in &failures {
             let render_id = self.agents.render_id[failure.agent];

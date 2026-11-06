@@ -19,6 +19,8 @@ use godot::prelude::Vector2;
 use std::sync::{Mutex, MutexGuard};
 
 pub(crate) use report::TripFailureLog;
+#[cfg(test)]
+pub(crate) use report::FailurePlaces;
 
 /// What the failing agent is doing in the city.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

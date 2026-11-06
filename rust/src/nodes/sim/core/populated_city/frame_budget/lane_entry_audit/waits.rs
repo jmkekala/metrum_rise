@@ -26,6 +26,8 @@ const MOVING_MS: f32 = 0.5;
 // A stopped car this close behind another counts as queued behind it.
 const QUEUE_REACH_M: f32 = 3.0 * SPACING;
 // A car this close to its lane's end waits to leave it.
+// How close to its end a ring lane's head holds an entry back, a little past the tick's gap.
+const RING_HOLDER_REACH_M: f32 = 6.0;
 const AT_END_M: f32 = 1.0;
 // Waits over this many game minutes get a blocker chain.
 pub(super) const LONG_WAIT_MIN: u64 = 60;
@@ -318,12 +320,28 @@ impl<'a> Occupancy<'a> {
         self.pick_blocker(&candidates, 0.0, "first-lane entry of lane")
     }
 
+    // The car ring entry `lane` gives way to (`ROAD-62`): on the circulating connector, or the head
+    // of the ring lane close enough to its end. An observer of its own: not the tick's test.
+    fn ring_entry_holder(&self, lane: usize) -> Option<usize> {
+        let lanes = &self.core.transit_network.lane_system.lanes;
+        let entry = lanes[lane].ring_entry?;
+        let (circulating, ring_in) = (entry.circulating as usize, entry.ring_in as usize);
+        let head = self.buckets[ring_in].last();
+        self.buckets[circulating]
+            .first()
+            .or(head.filter(|head| lanes[ring_in].length - head.0 < RING_HOLDER_REACH_M))
+            .map(|entry| entry.1)
+    }
+
     // A car waits when every candidate entry has a car in the way; follow the slowest one.
     fn pick_blocker(&self, candidates: &[usize], d: f32, what: &str) -> Step {
         let agents = self.agents();
         let mut best: Option<(usize, usize)> = None;
         for &lane in candidates {
-            let Some(car) = self.in_the_way(lane, d) else {
+            let Some(car) = self
+                .in_the_way(lane, d)
+                .or_else(|| self.ring_entry_holder(lane))
+            else {
                 return Step::Unexplained(format!(
                     "{what} {lane} is clear now (claim lost or not yet processed)"
                 ));

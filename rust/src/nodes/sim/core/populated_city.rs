@@ -404,6 +404,8 @@ fn street_grid_in_world(
     // The grid's lanes, routing and roadbed settle below, with the pockets' pieces.
     #[cfg(test)]
     add_perf_pockets(&mut core);
+    #[cfg(test)]
+    add_perf_roundabouts(&mut core);
     // The fixture admits households outside frames, so it installs the border connections'
     // routing rebuild (D7) now instead of holding its first frames.
     core.transit_network.settle_cch();
@@ -500,6 +502,66 @@ fn add_perf_pockets(core: &mut SimCore) {
     eprintln!(
         "PERF_POCKETS {}",
         serde_json::json!({"placed": placed, "refused": refused})
+    );
+}
+
+// `METRUM_PERF_ROUNDABOUTS=n` (test builds, `ROAD-62` round R7c, D17): once the street grid is
+// built and before it is zoned, as `METRUM_PERF_POCKETS` does, up to n junctions become rings at
+// the default diameter through the tool's own transaction, the highest degree first and in id
+// order. Every junction of the 1+1 city is 1+1; on `METRUM_PERF_ARTERIALS=4lane` each has a 2+2
+// arm, so its rings have two lanes. A junction the transaction refuses is passed over, a block's
+// neighbour of a ring most often. Prints the rings placed, the junctions they replace and the
+// refusals by reason on a `PERF_ROUNDABOUTS` line. Not a contract tier.
+#[cfg(test)]
+fn add_perf_roundabouts(core: &mut SimCore) {
+    use crate::simulation::network::roundabouts::{
+        RoundaboutRequest, RoundaboutSite, default_diameter_m,
+    };
+    use std::collections::BTreeMap;
+
+    let Ok(value) = std::env::var("METRUM_PERF_ROUNDABOUTS") else {
+        return;
+    };
+    let wanted: usize = value
+        .parse()
+        .expect("METRUM_PERF_ROUNDABOUTS must be an integer");
+    let graph = &core.region_graph;
+    let mut junctions: Vec<(usize, u32)> = (0..graph.node_count() as u32)
+        .map(|node| (graph.node_adjacency(node).len(), node))
+        .filter(|&(degree, _)| degree >= 3)
+        .collect();
+    junctions.sort_unstable_by_key(|&(degree, node)| (std::cmp::Reverse(degree), node));
+    let mut placed = Vec::new();
+    let mut refused: BTreeMap<String, u32> = BTreeMap::new();
+    for (_, node) in junctions {
+        if placed.len() == wanted {
+            break;
+        }
+        let site = RoundaboutSite::Junction(node);
+        let diameter_m = default_diameter_m(site.lanes(&core.region_graph));
+        if core.place_roundabout_internal(RoundaboutRequest { site, diameter_m }) {
+            placed.push(node);
+        } else {
+            let reason = core
+                .last_road_rejection
+                .take()
+                .map_or_else(|| "unknown".to_owned(), |rejection| rejection.reason);
+            *refused.entry(reason).or_default() += 1;
+        }
+    }
+    // A load drops the junctions the rings replaced and renumbers the nodes, and the prepared
+    // snapshot's continuation check compares raw ids: the grid goes through a save here, so the
+    // city is built on the ids a load gives it.
+    let path = std::env::temp_dir().join(format!("metrum_rings_{}.sqlite", std::process::id()));
+    let path_text = path.to_str().expect("a temporary path");
+    core.save_game_settled_at(path_text, None, 0)
+        .expect("the street grid saves");
+    core.load_game_internal(path_text)
+        .expect("the street grid loads");
+    let _ = std::fs::remove_file(&path);
+    eprintln!(
+        "PERF_ROUNDABOUTS {}",
+        serde_json::json!({"placed": placed.len(), "junctions": placed, "refused": refused})
     );
 }
 

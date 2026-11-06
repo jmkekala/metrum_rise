@@ -5,6 +5,7 @@
 //! waiting at a node for their first lane and at an attach point for a gap (`TRAFFIC-11`). A
 //! diagnostic of lane entry, not acceptance timing.
 
+mod ring_day;
 mod rings;
 mod waits;
 
@@ -391,6 +392,7 @@ fn traffic07_lane_entry_audit() {
     // Event counts since the audit's start (`ROAD-94`: missed turns, missing connectors, and the
     // deliveries a control compares).
     let work_start = crate::debug::work::snapshot();
+    let mut ring_day = ring_day::RingDay::new(core);
     loop {
         if trace && traced < 400 {
             traced += trace_entries(
@@ -442,5 +444,7 @@ fn traffic07_lane_entry_audit() {
         waits.trace_follow(core, frame);
         frame += 1;
         core.step_frame(FRAME_DT_S);
+        ring_day.after_frame(core);
     }
+    ring_day.report(core);
 }
