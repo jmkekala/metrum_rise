@@ -368,6 +368,28 @@ fn the_rest_of_the_refusal_list_stands_on_a_city() {
     );
 }
 
+// A ring reaching visible water refuses, as a road does.
+#[test]
+fn a_ring_refuses_water_under_it() {
+    // A pond 32-47 m east of the origin.
+    let mut core = test_core();
+    core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 129, 0.0);
+    core.transit_network = TransitNetwork::new_with_surface_chunk_span(64.0);
+    let mut water = WaterSystem::with_chunking(257, 257, 1.0, 129);
+    let mut depth = vec![0.0; 257 * 257];
+    for z in 120..=136 {
+        for x in 160..=175 {
+            depth[x + z * 257] = 2.0;
+        }
+    }
+    water.replace_baseline_depth_from_dense(&depth).unwrap();
+    core.watermap = water;
+    let request = ground(Vector3::new(35.0, 0.0, 0.0), 1, 36.0);
+    assert_eq!(ring_edit(&mut core, request), "water_requires_bridge");
+    let far = ground(Vector3::new(-60.0, 0.0, 0.0), 1, 36.0);
+    assert_eq!(ring_edit(&mut core, far), "");
+}
+
 // Lots under the ring and on its island refuse; the same crossing with the house far off
 // converts, the house's cell moves by what the cut took off a start, and undo puts it back.
 #[test]

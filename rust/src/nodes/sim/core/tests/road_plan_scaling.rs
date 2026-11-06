@@ -30,6 +30,7 @@ enum Measured {
     TypeEdit,
     SideEdit,
     PocketEdit,
+    Conversion,
 }
 
 // The median of the divided measurements (`ROAD-80`).
@@ -188,6 +189,19 @@ fn populated_lane_edit_scaling() {
     );
 }
 
+// `ROAD-62` round R7b: the T converted to a 36 m ring.
+#[test]
+#[ignore = "unprofiled roundabout conversion locality; run alone with --release --ignored --nocapture"]
+fn populated_roundabout_conversion_scaling() {
+    measure_populated_road_plan_scaling(
+        false,
+        false,
+        false,
+        CellScenario::None,
+        Measured::Conversion,
+    );
+}
+
 // `ROAD-95` round R5a2: a 40 m right turn pocket on the T's side road at the T.
 #[test]
 #[ignore = "unprofiled turn pocket edit locality; run alone with --release --ignored --nocapture"]
@@ -285,6 +299,7 @@ fn measure_populated_road_plan_scaling(
             | Measured::TypeEdit
             | Measured::SideEdit
             | Measured::PocketEdit
+            | Measured::Conversion
     );
     if in_place {
         road_terrain_plan::commit_ready(
@@ -506,6 +521,8 @@ fn measure_populated_road_plan_scaling(
             };
             let products = if measured == Measured::PocketEdit {
                 measure_pocket_edit(&mut core, remote_buildings, background_roads)
+            } else if measured == Measured::Conversion {
+                measure_conversion(&mut core, remote_buildings, background_roads)
             } else {
                 measure_lane_edit(&mut core, remote_buildings, background_roads, section)
             };
@@ -590,8 +607,9 @@ fn measure_populated_road_plan_scaling(
             | Measured::MedianEdit
             | Measured::TypeEdit
             | Measured::SideEdit
-            | Measured::PocketEdit => {
-                unreachable!("measured by measure_lane_edit or measure_pocket_edit")
+            | Measured::PocketEdit
+            | Measured::Conversion => {
+                unreachable!("measured by measure_lane_edit, _pocket_edit or _conversion")
             }
         };
         let request = || RoadPreviewRequest {
@@ -874,6 +892,108 @@ fn measure_pocket_edit(core: &mut SimCore, remote_buildings: usize, remote_roads
     }
     println!(
         "POCKET_EDIT_SCALING {}",
+        serde_json::json!({
+            "remote_buildings": remote_buildings, "remote_roads": remote_roads,
+            "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
+            "rayon_threads": rayon::current_num_threads(),
+            "verdict_p50_ms": p50(&mut verdicts), "verdict_samples": verdicts.len(),
+            "commit_p50_ms": p50(&mut commits), "undo_p50_ms": p50(&mut undos),
+            "publish_p50_ms": p50(&mut publishes), "commit_samples": commits.len(),
+            "identical_local_products": true,
+        })
+    );
+    products
+}
+
+// `ROAD-62` round R7b: the conversion's verdict over 100 samples, then 20 commits of the T into a
+// 36 m ring, each followed by its undo. Returns the local products after a commit: the ring's and
+// its arms' spans and lanes and the ring nodes' pieces, by position, which must not depend on the
+// remote city (the ring's ids do, the remote roads moving the next id). The once-per-tier setup
+// is not timed.
+fn measure_conversion(core: &mut SimCore, remote_buildings: usize, remote_roads: usize) -> String {
+    use crate::simulation::network::roundabouts::{RoundaboutRequest, RoundaboutSite, ring_walk};
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    let node = core
+        .region_graph
+        .find_node_within(Vector3::ZERO, 1.0)
+        .expect("the T");
+    let request = RoundaboutRequest {
+        site: RoundaboutSite::Junction(node),
+        diameter_m: 36.0,
+    };
+    // By position around the ring from its first new edge, the arms in order after it.
+    let first_edge = core.region_graph.edge_count();
+    let local = |core: &SimCore| {
+        let roadbed = &core.transit_network.roadbed;
+        let graph = &core.region_graph;
+        let lanes = &core.transit_network.lane_system;
+        let mut out = String::new();
+        for (at, ring_edge) in ring_walk(graph, first_edge).expect("the ring") {
+            out += &format!("{:?}\n", graph.node(at).pos);
+            if let Some(piece) = roadbed.node_piece(at) {
+                out += &format!("{:?}\n", piece.mesh().positions());
+            }
+            for &edge in graph.node_adjacency(at) {
+                let same_ring = edge == ring_edge || graph.edge(edge).roundabout.is_none();
+                if same_ring {
+                    let piece = roadbed.span_piece(edge).expect("a span");
+                    out += &format!("{:?}\n", piece.mesh().positions());
+                    for &id in &lanes.edge_lanes[&edge] {
+                        out += &format!("{:?}\n", lanes.lanes[id].geometry);
+                    }
+                }
+            }
+        }
+        out
+    };
+    let unchanged = |core: &SimCore| {
+        let graph = &core.region_graph;
+        let arms = graph.node_adjacency(node).iter();
+        arms.map(|&edge| format!("{:?}\n", graph.edge(edge).physical_geometry))
+            .collect::<String>()
+    };
+    let p50 = |samples: &mut Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    };
+    let mut verdicts = Vec::new();
+    for iteration in 0..103 {
+        let start = Instant::now();
+        let verdict = core.preview_roundabout_internal(request);
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(verdict.is_ok(), "{verdict:?}");
+        if iteration >= 3 {
+            verdicts.push(ms);
+        }
+    }
+    let (mut commits, mut undos, mut publishes) = (Vec::new(), Vec::new(), Vec::new());
+    let acknowledge = |core: &mut SimCore| {
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+    };
+    core.precompute_road_mesh_data();
+    acknowledge(core);
+    let before = unchanged(core);
+    let mut products = String::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        assert!(core.place_roundabout_internal(request));
+        commits.push(start.elapsed().as_secs_f64() * 1000.0);
+        let start = Instant::now();
+        core.precompute_road_mesh_data();
+        publishes.push(start.elapsed().as_secs_f64() * 1000.0);
+        acknowledge(core);
+        products = local(core);
+        let start = Instant::now();
+        assert!(core.undo_action_internal());
+        undos.push(start.elapsed().as_secs_f64() * 1000.0);
+        core.precompute_road_mesh_data();
+        acknowledge(core);
+        assert_eq!(unchanged(core), before, "undo restores the T");
+    }
+    println!(
+        "ROUNDABOUT_CONVERSION_SCALING {}",
         serde_json::json!({
             "remote_buildings": remote_buildings, "remote_roads": remote_roads,
             "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
