@@ -421,6 +421,16 @@ path is for invalid saved data only; it must never leave illegal parcel geometry
     edit's own roads. Bulldozing a road keeps its behaviour.
   - **Test builds** check the rule in `check_doors_are_walked` at every entrance rebuild, and after
     a road edit that the changed doors have their foot lanes.
+  - **Locality** (2026-11-07, release `$TEST_BINARY`, 8 workers, `nodes::sim::core::tests::
+    road_plan_scaling::<name> --exact --ignored --nocapture --test-threads=1`, unpinned, beside
+    other builds, an informational run with no control). Background 0 / 1,000 / 10,000 / 100,000
+    buildings, the neighbourhood fixed, `identical_local_products` true throughout.
+    `populated_road_side_edit_scaling` (the right sidewalk removed in place, so the door check
+    runs): verdict p50 0.34 / 0.36 / 0.40 / 0.36 ms; commit 0.63 / 0.81 / 1.06 / 1.83 ms, whose rise
+    is the undo's `O(A / P + B / P)` membership passes, as recorded for `ROAD-107`.
+    `populated_road_type_edit_scaling`: verdict 0.28 / 0.35 / 0.33 / 0.45 ms.
+    `populated_one_sided_road_plan_scaling` and `populated_cell_road_plan_scaling` (1,000 / 10,000 /
+    100,000): compile p50 0.42 / 0.35 / 0.38 ms and 0.39 / 0.35 / 0.35 ms.
 - Persistence: saved on `network_edges`
 - Topology: split edges copy the flag to both children
 - Overlay: zoning tool draws no-build edge guide lines
