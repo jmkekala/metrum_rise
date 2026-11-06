@@ -80,6 +80,10 @@ impl ParkedPublication {
     }
 }
 
+// A published car for tests: its model, its bay's source, position and heading, and its pose.
+#[cfg(test)]
+pub(crate) type PublishedPose = (u8, PlaceSource, [f32; 3], f32, [f32; 12]);
+
 // One rebuilt chunk and the poses it had to solve, applied after the parallel build.
 pub(crate) struct BuiltChunk {
     key: (i32, i32),
@@ -330,7 +334,7 @@ impl ParkingSystem {
 
     /// Every published parked car: its model, bay position and heading and the pose it shows.
     #[cfg(test)]
-    pub(crate) fn published_poses(&self) -> Vec<(u8, PlaceSource, [f32; 3], f32, [f32; 12])> {
+    pub(crate) fn published_poses(&self) -> Vec<PublishedPose> {
         let mut poses = Vec::new();
         for chunk in self.published.values() {
             for (bucket, ids) in &chunk.identities {
