@@ -6,6 +6,16 @@ use super::super::super::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};
 use super::super::claims::LaneClaimContext;
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
 use crate::simulation::economy::agents::determinism::stable_index;
+use crate::simulation::network::lanes::Lane;
+use crate::simulation::network::roundabouts::RING_SPEED_MS;
+
+// How far from its end a ring lane's head must be for an entry to go: the lane-change gap's
+// separation at the ring's speed. The head's own speed cannot be read here: the speed pass writes
+// the speed column while it runs this test, so only the buckets are a stable input (D16).
+const RING_ENTRY_HEAD_GAP_M: f32 = CAR_LENGTH + IDM_S_MIN + RING_SPEED_MS * IDM_T_HEAD;
+// A ring lane's head this close to the end stands there: movement places a waiting head exactly at
+// the end, and a head free to go would have left in the step that reached it.
+const RING_HEAD_STANDING_M: f32 = 0.05;
 
 /// Outcome of trying to reserve a connector lane entry for this tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +77,47 @@ pub(in crate::simulation::economy::agents::tick) fn lane_entry_slot_clear(
         .unwrap_or(false)
 }
 
+/// The lane an entry onto a roundabout ring gives way to now, `None` when `connector` is free to
+/// go or is no ring entry (`ROAD-62`): a car on the circulating connector, a ring lane head
+/// arriving within [`RING_ENTRY_HEAD_GAP_M`] of the node, or a blocked entry slot on the ring lane
+/// itself ("room ahead", the slot test a connector's exit makes, not the box rule). A head already
+/// standing at the end holds nothing back: if it waits for the ring, the circulating connector or
+/// the ring lane's slot is what it waits for, and those are tested; if it waits for its exit, it
+/// is not coming. So an entry only ever stands for the ring lane it enters or for a moving car,
+/// and giving way adds no wait a plain junction lacks. A pure function of last tick's buckets, like
+/// the claims'. `O(log bucket)`, no allocation.
+pub(in crate::simulation::economy::agents::tick) fn ring_entry_blocker(
+    connector: usize,
+    lanes: &[Lane],
+    lane_buckets: &[Vec<(f32, usize)>],
+) -> Option<usize> {
+    let lane = lanes.get(connector)?;
+    let entry = lane.ring_entry?;
+    let (circulating, ring_in) = (entry.circulating as usize, entry.ring_in as usize);
+    if !lane_buckets[circulating].is_empty() {
+        return Some(circulating);
+    }
+    if let Some(&(head_d, _)) = lane_buckets[ring_in].last() {
+        let to_end_m = lanes[ring_in].length - head_d;
+        if to_end_m <= RING_ENTRY_HEAD_GAP_M && to_end_m > RING_HEAD_STANDING_M {
+            return Some(ring_in);
+        }
+    }
+    let ring_out = *lane.next_lanes.first()?;
+    (!lane_entry_slot_clear(ring_out, lane_buckets)).then_some(ring_out)
+}
+
+/// Whether a car may take `connector` as far as give-way on a roundabout ring goes: the one test
+/// the speed pass's lane-end hold, the entry claim and the gridlock check share.
+#[inline(always)]
+pub(in crate::simulation::economy::agents::tick) fn ring_entry_clear(
+    connector: usize,
+    lanes: &[Lane],
+    lane_buckets: &[Vec<(f32, usize)>],
+) -> bool {
+    ring_entry_blocker(connector, lanes, lane_buckets).is_none()
+}
+
 /// Returns whether a target lane has a speed-scaled safe gap at the current distance.
 pub(in crate::simulation::economy::agents::tick) fn lane_change_gap_clear(
     bucket: &[(f32, usize)],
@@ -100,6 +151,7 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
     candidate_connectors: &mut Vec<usize>,
     any_routing_valid: bool,
     choice_seed: u64,
+    lanes: &[Lane],
     lane_buckets: &[Vec<(f32, usize)>],
     lane_claims: &LaneClaimContext<'_>,
 ) -> ConnectorEntry {
@@ -111,7 +163,10 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
         };
     }
 
-    candidate_connectors.retain(|&lane_id| lane_entry_slot_clear(lane_id, lane_buckets));
+    candidate_connectors.retain(|&lane_id| {
+        lane_entry_slot_clear(lane_id, lane_buckets)
+            && ring_entry_clear(lane_id, lanes, lane_buckets)
+    });
     if candidate_connectors.is_empty() {
         return ConnectorEntry::Occupied;
     }

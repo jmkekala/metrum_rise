@@ -472,6 +472,7 @@ impl LaneSystem {
                 lane.geometry = Vec::new();
                 lane.cum_dist = Vec::new();
                 lane.next_lanes.clear();
+                lane.ring_entry = None;
             }
         }
         true

@@ -510,3 +510,170 @@ fn bulldozing_a_ring_piece_removes_the_ring_and_leaves_the_arms_as_road_ends() {
     assert_eq!(graph_state(&core), state);
     assert_eq!(products(&mut core), before);
 }
+
+// Give-way is rebuilt with the lanes on a load, never saved (`ROAD-62`, round R7c): each entry
+// again names a circulating connector into its own ring lane.
+#[test]
+fn a_rings_give_way_returns_with_the_lanes_on_a_load() {
+    let entries = |core: &SimCore| {
+        let lanes = &core.transit_network.lane_system.lanes;
+        let mut found: Vec<(usize, usize)> = lanes
+            .iter()
+            .filter_map(|lane| {
+                let entry = lane.ring_entry?;
+                let target = lane.next_lanes[0];
+                let circulating = &lanes[entry.circulating as usize];
+                assert_eq!(circulating.next_lanes[0], target);
+                assert_eq!(circulating.node_id, lane.node_id);
+                Some((lanes[target].edge_id, lanes[entry.ring_in as usize].edge_id))
+            })
+            .collect();
+        found.sort_unstable();
+        found
+    };
+    let (mut core, node) = crossing(1);
+    assert_eq!(ring_edit(&mut core, junction(node, 36.0)), "");
+    let before = entries(&core);
+    assert_eq!(before.len(), 4);
+    let path = temp_save_path("road_ring_give_way");
+    core.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    let mut loaded = test_core();
+    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(entries(&loaded), before);
+}
+
+// Two rings a block apart and cars queued to cross both ways, as `METRUM_PERF_ROUNDABOUTS` builds
+// on the street grid: a link of about 3 m between the rings, whose head enters one ring while the
+// other ring's head waits to leave onto the opposite link. An entry that gave way to a head
+// standing at its exit locked this pair for good (`ROAD-62`, round R7c).
+fn crossing_pair_state(workers: usize) -> Vec<(usize, u32, u32)> {
+    let mut core = test_core();
+    core.treasury.balance = 1.0e7;
+    for points in [
+        vec![Vector3::new(-300.0, 0.0, 0.0), Vector3::new(300.0, 0.0, 0.0)],
+        vec![Vector3::new(-25.0, 0.0, -150.0), Vector3::new(-25.0, 0.0, 150.0)],
+        vec![Vector3::new(25.0, 0.0, -150.0), Vector3::new(25.0, 0.0, 150.0)],
+    ] {
+        assert!(core.add_road_internal(points, 1, 1).committed);
+    }
+    core.precompute_road_mesh_data();
+    let at = |core: &SimCore, x: f32| {
+        (0..core.region_graph.node_count() as u32)
+            .find(|&node| {
+                live_arms(core, node).len() == 4
+                    && (core.region_graph.node(node).pos.x - x).abs() < 1.0
+            })
+            .expect("a crossing")
+    };
+    for x in [-25.0, 25.0] {
+        let node = at(&core, x);
+        assert_eq!(ring_edit(&mut core, junction(node, 36.0)), "");
+    }
+    // The node path between two nodes over the one-way graph, breadth first.
+    let route = |core: &SimCore, from: u32, to: u32| {
+        let graph = &core.region_graph;
+        let mut came_from = vec![u32::MAX; graph.node_count()];
+        let mut queue = std::collections::VecDeque::from([from]);
+        came_from[from as usize] = from;
+        while let Some(node) = queue.pop_front() {
+            for &id in graph.node_adjacency(node) {
+                let edge = graph.edge(id);
+                let next = if edge.start_node == node && edge.fwd_lanes > 0 {
+                    edge.end_node
+                } else if edge.end_node == node && edge.bkw_lanes > 0 {
+                    edge.start_node
+                } else {
+                    continue;
+                };
+                if !edge.deleted && came_from[next as usize] == u32::MAX {
+                    came_from[next as usize] = node;
+                    queue.push_back(next);
+                }
+            }
+        }
+        let mut path = vec![to];
+        while *path.last().unwrap() != from {
+            path.push(came_from[*path.last().unwrap() as usize]);
+        }
+        path.reverse();
+        path
+    };
+    let end_at = |core: &SimCore, x: f32| {
+        (0..core.region_graph.node_count() as u32)
+            .find(|&node| (core.region_graph.node(node).pos.x - x).abs() < 1.0)
+            .expect("a road end")
+    };
+    let (west, east) = (end_at(&core, -300.0), end_at(&core, 300.0));
+    let mut targets = Vec::new();
+    for (from, to) in [(west, east), (east, west)] {
+        let path = route(&core, from, to);
+        let edge = core
+            .region_graph
+            .get_edge_between_nodes(path[0], path[1])
+            .unwrap();
+        let forward = core.region_graph.edge(edge).start_node == from;
+        let lanes = &core.transit_network.lane_system;
+        let lane = lanes.edge_lanes[&edge]
+            .iter()
+            .copied()
+            .find(|&id| lanes.lanes[id].lane_type == LaneType::Vehicle && lanes.lanes[id].is_fwd == forward)
+            .unwrap();
+        let length = lanes.lanes[lane].length;
+        let last = core
+            .region_graph
+            .get_edge_between_nodes(path[path.len() - 2], to)
+            .unwrap();
+        for queue in 0..24 {
+            let id = core.agents.spawn_debug_car(
+                path.clone(),
+                lanes,
+                lane,
+                godot::prelude::Vector2::ZERO,
+            );
+            core.agents.agents.current_node[id] = from;
+            core.agents.agents.lane_distance[id] = length - 2.0 - queue as f32 * 6.0;
+            targets.push((id, last));
+        }
+    }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .unwrap()
+        .install(|| {
+            let mut crossed = vec![false; targets.len()];
+            for _ in 0..12_000 {
+                core.agents.tick(
+                    &core.allocator,
+                    &mut core.transit_network,
+                    &mut core.region_graph,
+                    0.1,
+                    &core.time,
+                );
+                for (k, &(id, last)) in targets.iter().enumerate() {
+                    crossed[k] |= core.agents.agents.current_edge[id] == last;
+                }
+                if crossed.iter().all(|&crossed| crossed) {
+                    break;
+                }
+            }
+            let left = crossed.iter().filter(|&&crossed| !crossed).count();
+            assert_eq!(left, 0, "cars still between the rings");
+        });
+    let agents = &core.agents.agents;
+    (0..agents.len())
+        .map(|i| {
+            (
+                agents.current_lane_id[i],
+                agents.lane_distance[i].to_bits(),
+                agents.speed[i].to_bits(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn queues_crossing_two_neighbouring_rings_both_ways_get_through() {
+    assert_eq!(crossing_pair_state(1), crossing_pair_state(4));
+}

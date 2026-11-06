@@ -132,6 +132,20 @@ pub struct Lane {
     /// different movements (a car picks its lane before the node, `ROAD-94`), else 0. Written by
     /// the connector builder on every rebuild, cleared on retired lanes, never saved.
     pub solid_zone_m: f32,
+    /// What this connector gives way to when it enters a roundabout ring (`ROAD-62`): set by the
+    /// connector builder on a connector from an arm onto a ring lane, `None` on every other lane.
+    /// Lanes are rebuilt on load, so it is never saved; a retired connector clears it.
+    pub ring_entry: Option<RingEntry>,
+}
+
+/// The two lanes an entry onto a roundabout ring gives way to (`ROAD-62`), both at the entry's
+/// node: the shape `TRAFFIC-06` can later fill for priority roads and yield signs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RingEntry {
+    /// The circulating connector into the same ring lane as the entry.
+    pub circulating: u32,
+    /// The ring lane that connector leaves.
+    pub ring_in: u32,
 }
 
 impl Default for Lane {
@@ -149,6 +163,7 @@ impl Default for Lane {
             next_lanes: LaneSuccessors::default(),
             node_id: usize::MAX,
             solid_zone_m: 0.0,
+            ring_entry: None,
         }
     }
 }

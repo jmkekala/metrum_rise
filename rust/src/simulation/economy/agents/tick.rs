@@ -7,6 +7,8 @@ mod claims;
 #[cfg(test)]
 mod contract;
 mod frontage;
+#[cfg(test)]
+mod give_way_tests;
 mod gridlock;
 mod lane_buckets;
 mod lane_nav;

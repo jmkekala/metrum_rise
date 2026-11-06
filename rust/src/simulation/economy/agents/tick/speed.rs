@@ -3,6 +3,7 @@
 //! IDM speed update phase for live vehicle traffic.
 
 use super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+use super::gridlock::ring_approach_clear;
 use super::lane_nav::planned_next_connector;
 use super::runtime::dispatch_agents;
 use super::slices::RawSlice;
@@ -125,7 +126,17 @@ impl AgentSystem {
                                     .lanes
                                     .get(connector_id)
                                     .map(|connector| {
-                                        if lane_entry_slot_clear(connector_id, buckets) {
+                                        let open = if connector.ring_entry.is_some() {
+                                            ring_approach_clear(
+                                                lid,
+                                                connector_id,
+                                                transit_network,
+                                                buckets,
+                                            )
+                                        } else {
+                                            lane_entry_slot_clear(connector_id, buckets)
+                                        };
+                                        if open {
                                             connector_turn_speed(connector)
                                         } else {
                                             0.0

@@ -550,6 +550,7 @@ fn append_pedestrian_connection(
         next_lanes: LaneSuccessors::one(end.out_id),
         node_id,
         solid_zone_m: 0.0,
+        ring_entry: None,
     });
     if let Some(crosswalk) = crosswalk {
         crosswalks.insert(connection_id, crosswalk);
@@ -688,6 +689,7 @@ fn append_stationary_pedestrian_connection(
         next_lanes: LaneSuccessors::one(mouth.out_id),
         node_id,
         solid_zone_m: 0.0,
+        ring_entry: None,
     });
     node_lanes.entry(node_id).or_default().push(connection_id);
     lanes[mouth.in_id].next_lanes.push(connection_id);

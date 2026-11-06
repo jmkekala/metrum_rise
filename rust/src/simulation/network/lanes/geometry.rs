@@ -226,6 +226,7 @@ pub fn build_one_lane(
         node_id: usize::MAX,
         // The connector builder sets it at the lane's far node.
         solid_zone_m: 0.0,
+        ring_entry: None,
     });
     lane_map.insert((edge_idx, is_fwd, lane_idx), new_lane_id);
     edge_lane_indices.push(new_lane_id);

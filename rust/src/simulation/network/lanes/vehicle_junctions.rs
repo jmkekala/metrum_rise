@@ -14,7 +14,7 @@ use super::super::roadbed::{ArmKey, Corner, EdgeEnd, MouthFrame, RoadVec2};
 use super::geometry::build_cum_dist;
 use super::lane_use::DefaultLaneUse;
 use super::rebuild::vehicle_lane_offset;
-use super::{APPROACH_SOLID_LENGTH_M, Lane, LaneSuccessors, LaneType};
+use super::{APPROACH_SOLID_LENGTH_M, Lane, LaneSuccessors, LaneType, RingEntry};
 use godot::prelude::*;
 use std::collections::HashMap;
 
@@ -253,9 +253,52 @@ pub(crate) fn build_vehicle_connections_at_node(
                 next_lanes: LaneSuccessors::one(out_lid),
                 node_id,
                 solid_zone_m: 0.0,
+                ring_entry: None,
             });
             node_lanes.entry(node_id).or_default().push(conn_id);
             lanes[in_lane_id].next_lanes.push(conn_id);
+        }
+    }
+
+    mark_ring_entries(lanes, graph, &inbound);
+}
+
+// Writes `Lane::ring_entry` on the connectors from an arm onto a ring lane at this node: each
+// gives way to the circulating connector into the same ring lane and the ring lane it leaves
+// (`ROAD-62`). A ring lane's next lanes at a ring node are connectors, as an arm makes the node a
+// junction; a whitelist that drops the circulating movement leaves its entries with nothing to
+// give way to. `O(inbound x connectors)`, a node without a ring returns at once.
+fn mark_ring_entries(
+    lanes: &mut [Lane],
+    graph: &RegionGraph,
+    inbound: &[(usize, i8, usize, VehicleLaneEnd)],
+) {
+    let on_ring = |edge: usize| graph.edge(edge).roundabout.is_some();
+    let ring_ins = || inbound.iter().filter(|lane| on_ring(lane.0));
+    if ring_ins().next().is_none() {
+        return;
+    }
+    // The ring lane `connector` leads to, if it is a connector and leads to one.
+    let ring_lane_of = |lanes: &[Lane], connector: usize| {
+        let lane = &lanes[connector];
+        let target = *lane.next_lanes.first()?;
+        (lane.edge_id == usize::MAX && on_ring(lanes[target].edge_id)).then_some(target)
+    };
+    for &(_, _, entry_lane, _) in inbound.iter().filter(|lane| !on_ring(lane.0)) {
+        for slot in 0..lanes[entry_lane].next_lanes.len() {
+            let connector = lanes[entry_lane].next_lanes[slot];
+            let Some(ring_out) = ring_lane_of(lanes, connector) else {
+                continue;
+            };
+            lanes[connector].ring_entry = ring_ins().find_map(|&(_, _, ring_in, _)| {
+                let successors = lanes[ring_in].next_lanes.iter().copied();
+                let mut circulating =
+                    successors.filter(|&next| ring_lane_of(lanes, next) == Some(ring_out));
+                circulating.next().map(|circulating| RingEntry {
+                    circulating: circulating as u32,
+                    ring_in: ring_in as u32,
+                })
+            });
         }
     }
 }

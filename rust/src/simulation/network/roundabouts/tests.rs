@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::simulation::network::lanes::{LaneSystem, LaneType};
+use std::collections::HashSet;
 use crate::simulation::network::roadbed::fixtures::{
     bare_ring, connect, converted_ring, finalize, hub_graph, join_ring_arm, point, road_edge,
 };
@@ -743,4 +744,71 @@ fn a_ring_edge_loads_only_as_built() {
         verdict(|edge| edge.roundabout.as_mut().unwrap().radius_m = 20.0),
         Err("ring_edge_not_closed")
     );
+}
+
+// Every connector from an arm onto a ring lane gives way to the circulating connector into the
+// same ring lane; nothing else does. `(arm lanes)` 1+1 on a one-lane ring, 1+1 fanned onto a
+// two-lane ring, 2+2 on a two-lane ring.
+fn assert_ring_entries(graph: &RegionGraph, lanes: &LaneSystem, nodes: &[u32]) {
+    let on_ring = |edge: usize| edge != usize::MAX && graph.edge(edge).roundabout.is_some();
+    let all = &lanes.lanes;
+    let mut seen = 0;
+    for &id in lanes.edge_lanes.values().flatten() {
+        let lane = &all[id];
+        let entries_ring = !on_ring(lane.edge_id) && lane.lane_type == LaneType::Vehicle;
+        for &connector in lane.next_lanes.iter().filter(|_| entries_ring) {
+            let target = all[connector].next_lanes[0];
+            let Some(entry) = all[connector].ring_entry else {
+                assert!(!on_ring(all[target].edge_id), "lane {id} enters unmarked");
+                continue;
+            };
+            seen += 1;
+            assert!(nodes.contains(&(all[connector].node_id as u32)));
+            let (circulating, ring_in) = (entry.circulating as usize, entry.ring_in as usize);
+            assert!(on_ring(all[target].edge_id));
+            assert!(on_ring(all[ring_in].edge_id));
+            assert_eq!(all[circulating].next_lanes[0], target);
+            assert!(all[ring_in].next_lanes.contains(&circulating));
+            assert_eq!(all[circulating].node_id, all[connector].node_id);
+            assert_eq!(all[circulating].ring_entry, None);
+        }
+    }
+    assert!(seen > 0);
+    for lane in all.iter() {
+        assert!(lane.edge_id == usize::MAX || lane.ring_entry.is_none());
+    }
+}
+
+#[test]
+fn an_arms_connectors_onto_a_ring_give_way_to_the_ring() {
+    for (diameter_m, arm) in [(36.0, (1, 1)), (45.0, (2, 2))] {
+        let (mut graph, applied) = converted_ring(diameter_m, &equal(4), arm, false).unwrap();
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        assert_ring_entries(&graph, &lanes, &applied.nodes);
+    }
+    // A one-lane arm joined to a two-lane ring fans onto both ring lanes.
+    let (mut graph, applied) = bare_ring(50.0, 2, false);
+    let (node, _) = join_ring_arm(&mut graph, 40.0, (1, 1), false);
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+    assert_ring_entries(&graph, &lanes, &[node]);
+    assert_eq!(applied.nodes.len(), 3);
+}
+
+#[test]
+fn give_way_survives_an_incremental_rebuild_and_retires_with_its_connectors() {
+    let (mut graph, applied) = converted_ring(36.0, &equal(4), (1, 1), false).unwrap();
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+    let old: Vec<usize> = (0..lanes.lanes.len())
+        .filter(|&id| lanes.lanes[id].ring_entry.is_some())
+        .collect();
+    assert_eq!(old.len(), 4);
+    lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([applied.arms[0]]));
+    assert_ring_entries(&graph, &lanes, &applied.nodes);
+    let live = (0..lanes.lanes.len()).filter(|&id| lanes.lanes[id].ring_entry.is_some());
+    assert_eq!(live.count(), 4);
+    // The arm's rebuild retired its node's connectors and every ring node next to it.
+    assert!(old.iter().any(|&id| lanes.lanes[id].ring_entry.is_none()));
 }
