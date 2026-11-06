@@ -329,7 +329,8 @@ impl ParkingSystem {
         let mut poses = Vec::new();
         for chunk in self.published.values() {
             for (bucket, ids) in &chunk.identities {
-                for (&id, pose) in ids.iter().zip(chunk.buckets[bucket].chunks_exact(12)) {
+                let poses_of_bucket = chunk.buckets[bucket].as_chunks::<12>().0;
+                for (&id, &pose) in ids.iter().zip(poses_of_bucket) {
                     let car = Handle::from_bits(id & !(1_u64 << 62));
                     let v = self.vehicle_handles.resolve(car).expect("published car");
                     let p = self
@@ -337,12 +338,7 @@ impl ParkingSystem {
                         .resolve(self.vehicles.place[v])
                         .expect("its bay");
                     let (position, heading) = (self.places.position[p], self.places.heading[p]);
-                    poses.push((
-                        self.vehicles.model[v],
-                        position,
-                        heading,
-                        pose.try_into().unwrap(),
-                    ));
+                    poses.push((self.vehicles.model[v], position, heading, pose));
                 }
             }
         }
