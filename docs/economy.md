@@ -1922,12 +1922,74 @@ The cities hold no footpath and their walking proof holds. Commands and results 
 
 #### Parking contract acceptance (`PARK-02`)
 
-Round M5a's session writes here: `perf_contract_day` at 10k and 30k with counters against a `dev`
-control of the same boot, on the fixture with kerbside supply, and the shift of the economic
-figures with each moved metric attributed: employed, deliveries, out-of-stock over the last 14
-days, bankruptcies, the car's share of commutes and of shopping trips, adult home minutes. The
-agent tick, locality and employment reach are in
+Round M7c's session, 2026-11-07, one boot, `port-park-merge` tree `7858eede` against `dev`
+`139c9563`, exclusive locks, P-cores, 8 workers, runs `dev`, final, final, `dev`:
+
+```bash
+METRUM_PERF_RESIDENTS=30000 METRUM_PERF_CACHE="$ARTIFACTS" RAYON_NUM_THREADS=8 \
+  taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY" \
+  nodes::sim::core::populated_city::contract::perf_contract_day --exact --ignored --nocapture --test-threads=1
+```
+
+| `perf_contract_day` | `dev` | Final | Budget |
+| --- | --- | --- | --- |
+| 10k hourly / daily, ms | 0.95, 0.91 / 0.00 | 0.98, 1.01 / 0.00 | 40 / 10 |
+| 30k hourly / daily, ms | 4.49, 4.58 / 0.00 | 3.63, 3.59 / 0.00 | 120 / 30 |
+| Load, 10k / 30k, s | 1.6 / 4.4 | 2.9 / 7.3 | |
+
+The agent tick, locality and employment reach are in
 [parking acceptance](traffic.md#parking-acceptance-park-01-park-02-park-05).
+
+**The shift, stopped at numbers.** `tools/sim02_gate.py envelope determinism --bursts
+departures,settlements` passes with the recorded envelope untouched: 0 violations, 23 notes against
+`dev`'s 13, determinism null. Whether a metric's new level is accepted is the user's call, metric by
+metric, and the envelope is not re-recorded. 14 days, baseline workload, a read-only shift probe in
+the binary. Column M5a is the first tree with the fixture's supply; M6c adds the door catchments,
+prepared answers and the wrapped departure; final adds `PARK-08`, `TRAFFIC-29` and the 10k grid.
+
+| 10k | `dev` | M5a | M6c | Final |
+| --- | --- | --- | --- | --- |
+| Residents / employed, day 14 | 10,664 / 7,166 | 10,089 / 6,737 | 10,089 / 6,731 | 11,398 / 7,723 |
+| Deliveries a day | 1,274 | 1,204 | 1,206 | 1,389 |
+| Commutes / shopping by car | 90.0 / 96.5% | 41.6 / 62.2% | 41.4 / 61.9% | 41.4 / 70.2% |
+| Adult home minutes, median | 807 | 570 | 570 | 577 |
+| Out of stock, 14-day mean / day 14 | 595.5 / 179 | 318.7 / 89 | 321.3 / 89 | 764.4 / 132 |
+| Bankruptcies | 6 | 0 | 1 | 7 |
+
+| 30k | `dev` | M5a | M6c | Final |
+| --- | --- | --- | --- | --- |
+| Residents / employed, day 14 | 30,111 / 16,018 | 31,179 / 20,396 | 31,184 / 20,374 | 31,184 / 20,381 |
+| Deliveries a day | 2,501 | 3,702 | 3,697 | 3,701 |
+| Commutes / shopping by car | 89.8 / 94.3% | 40.8 / 61.5% | 40.4 / 61.3% | 40.8 / 63.5% |
+| Adult home minutes, median | 669 | 542 | 539 | 539 |
+| Out of stock, 14-day mean / day 14 | 3,878 / 5,088 | 1,700 / 1,044 | 1,710 / 1,069 | 1,611 / 745 |
+| Bankruptcies | 500 | 62 | 68 | 50 |
+
+60 days at 10k, last 14 days, `dev` against final: out of stock 128.8 against **180.6** (reference
+`dev` 128.8, M5a's smaller city 129.2), 2.4 against 3.2% of households; commutes by car 90.2 against
+40.6%, shopping 96.3 against 67.8%; employment rate 0.677 against 0.681; deliveries 1,427 against
+1,554 a day; adult home minutes 806 against 563; bankruptcies over the 60 days 300 against 345.
+Saturation, detours, lanes over capacity and stacked cars read 0 on both. **Trip failures read 1 on
+final, 0 on `dev`:** see [parking acceptance](traffic.md#parking-acceptance-park-01-park-02-park-05).
+
+**Who moved what since M5a.** 10k: the grid one block wider (fixture revision 7), so a
+bigger city with room. Out of stock is a start-up wave that decays in every column: day 5 reads 2,727
+against 1,034 in M6c and 1,984 on `dev`, and follows the households admitted in the first days, 685,
+0 and 305. By day 14 it reads 132. 30k has the same grid: M6c moves nothing past noise, and the rest
+is `TRAFFIC-29`, by the column between: shopping by car +2.2 points, bankruptcies 68 to 50, out of stock
+at day 14 1,069 to 745, by reading because a shopper's return keeps what its leg planned and a driver whose
+trip is taken goes home. Rounds M6a and M6b are byte-equal on these products by their own proofs. The 10k
+share of shopping by car, +8 points, is the wider city's and was not separated.
+
+**100k stays at 50,000 households, and that is the fixture.** The first batch admits exactly
+`residents / 2` and houses 100,325, so the fixture stops there; everything after is demand, and
+demand admits only for net open jobs. Every tier settles at 2.6 job slots a household whatever it
+starts from: 2.59, 2.59, 2.60 at 10k, 30k, 100k, and on `dev` 2.62, 2.64, 2.61. Round M5a's lots took 7.7%
+of the 100k grid, 70,208 buildings against 76,109 and 129,954 jobs against 141,723, so the 50,000
+start already sits at 2.60: net open jobs read 0 from the first record, against 231 falling to 0 over
+three days on `dev`, and 16 of 16 applicants fail the income check with no job to take. Homes never
+limit it: 4.3% stand empty. It is a merge effect, through the
+fixture's smaller grid, not a behaviour: employment is 67,685 of 100,325, a rate of 0.675.
 
 ### `ECON-13` economy tick baseline
 

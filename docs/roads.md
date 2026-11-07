@@ -10853,9 +10853,31 @@ next measured.
 
 ### Parking commit acceptance (`PARK-02`)
 
-Round M5a's session writes here the commit breakdown on the K22 saved cities with parking: the
-door catchment rebuild, the frontage reconcile and the kerb bays against the stage budgets, and the
-populated locality check with kerbside bays.
+Round M7c's session, 2026-11-07, one boot, `port-park-merge` tree `7858eede` against `dev`
+`139c9563`, exclusive locks, P-cores, 8 workers, runs `dev`, final, final, `dev`, three commits a
+city, each city prepared by its own binary:
+
+```bash
+METRUM_COMMIT_TIERS=0,10000,30000,100000 RAYON_NUM_THREADS=8 METRUM_PERF_CACHE="$ARTIFACTS" \
+  taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY" \
+  nodes::sim::core::populated_city::routing_benchmark::benchmark_populated_commit_breakdown \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+| Tier | `dev` commit, ms, by sample | Final | Adoption latency, first sample, `dev` / final |
+| --- | --- | --- | --- |
+| 0 | 8.6, 9.0 / 5.9, 5.1 / 5.0, 4.9 | 8.8, 9.3 / 5.8, 5.7 / 5.1, 5.2 | 1 / 3 |
+| 10k | 13.9, 16.0 / 7.3, 8.0 / 4.4, 4.7 | 13.7, 13.3 / 6.8, 6.7 / 4.7, 5.7 | 22 / 60 |
+| 30k | 14.2, 13.3 / 7.7, 7.7 / 5.2, 5.3 | 12.1, 12.6 / 7.1, 6.8 / 4.7, 4.7 | 44 / 83 |
+| 100k | 15.1, 15.4 / 8.3, 8.4 / 7.0, 7.1 | 15.6, 15.1 / 8.3, 8.5 / 8.3, 7.7 | 303 / 339 |
+
+Every commit is inside 16.7 ms and level with `dev`. The door catchments and the frontage reconcile
+of a commit left the commit for the frame after it, which D7 holds, so they read in the adoption
+latency: 36 to 39 ms more at the first sample at 10k, 30k and 100k. No gate names that latency.
+
+`benchmark_parking_locality`, tiers 0, 1,000, 10,000 and 100,000, background growing, neighbourhood
+fixed: candidate rebuild 0.40, 0.35, 0.45, 0.46 ms, road rebuild 3.8, 3.6, 4.0, 3.9 ms, per lot
+0.25 ms, 72 bays, products identical at every tier. Cost follows the neighbourhood.
 
 ### Baseline (`ROAD-67-A`, legacy compiler)
 

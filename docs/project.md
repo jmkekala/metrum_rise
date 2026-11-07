@@ -7,8 +7,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 ## Snapshot
 
 Parking (`PARK-01`, `PARK-02`, `PARK-05`, Veeti's `feat/parking`) is merged onto branch
-`port-park-merge` at save format 118, not landed on `dev`: the fixture supply and the landing gates
-are still open. A household's car now stands in a kerbside or lot bay, and a resident walks to it,
+`port-park-merge` at save format 118, not landed on `dev`: round M7c's final session reads a
+`PERF-07` miss at 30k 32× and at 100k 1× and the user decides what lands. A household's car now stands in a kerbside or lot bay, and a resident walks to it,
 drives, parks and walks on, with the economy quoting the same trip; freight keeps its door-to-door
 path until round 2b. The parking tick visits candidates from events, not every agent, parked cars
 reach Godot through the render snapshot from cached poses, and a building stands on a road side
@@ -1470,6 +1470,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `PARK-02` round M7c (branch `port-park-merge`, 2026-11-07, not landed, no code): the final timing session on the combined tree. `PERF-06`, `perf_contract_day`, the K22 commit and the locality check pass against `dev`; job reach within 900 s reads 82.6%. `PERF-07` misses: 30k 1× is one frame of 8.0 to 8.5 ms, under 8 with walkers' pose out; 30k 32× keeps 2 or 3 building-change frames a run up to 9.51 ms with pose out, which blocks by the user's rule; 100k 1× fails as `dev` does (`PERF-09`) with four times the frames over 8 ms. The envelope gate passes, not re-recorded, 23 notes. New rows `PARK-09`, `PARK-10`, `PERF-16`, `CODE-19`, `CODE-20`, `TRAFFIC-30`; the four acceptance headings are filled.
 - `TRAFFIC-29` round M7b (branch `port-park-merge`, 2026-11-07, not landed): a driver whose trip is taken on the way turns at its lane end for its home, with its car, or parks and walks; one with no home goes on to where it was going. An agent on its access path finishes the leg, and a load repairs only rows with invalid saved references, so the orphan repair and its four guards are gone. The 10k fixture is one block wider through its own fallback, a grid left under 2% spare homes, fixture revision 7 ([recovery](traffic.md#recovery-park-02)).
 - `PARK-08` round M7a (branch `port-park-merge`, 2026-11-07, not landed): rounds M6a, M6b and M6c combined on one branch. A load leaves an agent on a parking leg to its recovery: the orphan repair took a car waiting at a lane end for a timed retry for an orphan, in the slot the retry fired, and sent it home. The 100k fixture prepares again ([recovery](traffic.md#recovery-park-02)). Found `TRAFFIC-29`: a driver whose job ends on the way never arrives, on `dev` too.
 - `PARK-02` round M6a (branch `port-park-merge`, 2026-11-07, not landed): door catchments no longer stall the sim thread. A rebuild derives each bay's walking and economy ends once and runs its searches on a compact foot-lane graph; a site edit updates only the doors a changed bay enters or leaves; a road commit leaves its parking to the frame after it, whose routing hold reads nothing in between. Moving it also fixes a merge bug: the rebuild ran before the commit's entrance update, leaving lists a load would not rebuild ([`traffic.md`](traffic.md#door-catchments-park-02)).

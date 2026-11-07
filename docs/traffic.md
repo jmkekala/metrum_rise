@@ -2634,16 +2634,47 @@ Current known bounded scans:
 
 ### Parking acceptance (`PARK-01`, `PARK-02`, `PARK-05`)
 
-Round M5a's session on the final tree, against a `dev` control of the same boot, measures these
-and writes them here: `PERF-06` idle fixtures and a populated peak with the phase's real candidate
-count; `benchmark_parking_locality` with kerbside bays in the fixture, neighbourhood fixed and
-background growing; `parking_employment_reach` within 900 s on the fixture with kerbside supply;
-the parked rebuild's share of the sim frame; determinism across 1, 4 and 8 workers at each speed
-and reload continuation; the correctness counts (saturation, trip failures, lanes over capacity,
-stacked cars) read beside detours, deliveries and the departure reasons. The frame budget and the
-100k load are in [`simulation.md`](simulation.md#parking-frame-and-load-acceptance-park-02), the
-economy contract in [`economy.md`](economy.md#parking-contract-acceptance-park-02) and the commit
-breakdown in [`roads.md`](roads.md#parking-commit-acceptance-park-02).
+Round M7c's session, 2026-11-07, one boot, `port-park-merge` tree `7858eede` (`ed154d57` adds docs
+only), against `dev` `139c9563`, on the fixture with kerbside supply: exclusive locks, P-cores, 8
+workers, no Godot, no build, a browser open. The frame budget and the 100k load are in
+[`simulation.md`](simulation.md#parking-frame-and-load-acceptance-park-02), the economy contract in
+[`economy.md`](economy.md#parking-contract-acceptance-park-02) and the commit breakdown and
+`benchmark_parking_locality` in [`roads.md`](roads.md#parking-commit-acceptance-park-02).
+
+`PERF-06`, idle fixtures, `dev`, final, final, `dev`, 60 samples a slot, 120 a side, the command
+below: every final median is inside `dev`'s quartiles.
+
+| State | Agents | `dev` q1 / median / q3 | Final median |
+| --- | ---: | --- | --- |
+| network | 10,000 | 0.270 / 0.368 / 0.537 | 0.383 |
+| network | 30,000 | 0.601 / 0.762 / 1.105 | 0.803 |
+| access_egress | 10,000 | 0.520 / 0.655 / 0.909 | 0.719 |
+| access_egress | 30,000 | 1.350 / 1.620 / 2.241 | 1.812 |
+| access_ingress | 10,000 | 0.205 / 0.264 / 0.362 | 0.252 |
+| access_ingress | 30,000 | 0.334 / 0.428 / 0.577 | 0.462 |
+
+The populated peak of the phase: 73 candidates a tick, 194 at most, at 30k 32×; 6.4 and 57 at 100k
+1×. The parked rebuild's share is 5.1% of frame time at 30k 32×, 0.9% at 100k 1×.
+
+`parking_employment_reach`, 10k, within 900 s: **82.6%**, 28,134 of 34,048 pairs, against 46.7% with
+no kerbside supply; 24 of 32 sampled workers had an available car.
+
+**Correctness**, `tools/sim02_gate.py envelope determinism --bursts departures,settlements`, 14
+days, the shift probe in the binary: saturation, detours, trip failures, lanes over capacity and
+stacked cars read **0** at 10k and 30k, with deliveries alive at 1,389 and 3,701 a day. 0 violations
+in every workload, including fiscal stress and arrivals. Departures at 10k / 30k: drove 43.7 / 41.4%,
+walking quicker 35.8 / 33.1, car away 15.9 / 16.0, "no drive route" 4.5 / 5.9, destination full 0.2 /
+3.6, stored 0, no parking within 400 m 0.
+
+60 days at 10k, the same counts: 0 on `dev`; on final 0 but for **one trip failure**, on day 59
+(`TRAFFIC-30`): a resident on its `Drive` leg reached node 24 at the end of road 24-65 with a route
+that starts `65, 64, 63`, so it had driven the road the other way from its route. `NoRoad`, one in the
+whole run, reproduced twice. Whether this tree brought it is not shown: round M5a's 60 days read 0,
+on a different grid.
+
+**Determinism.** The same gate, 10k at 8 workers: repeat, 1 and 3 workers and reload all null. At 1,
+4 and 8 workers at each speed, round M7b's product probe on this tree: identical across workers. The
+two speeds differ by design.
 
 Measured earlier, round M2, before the fixture supply, on the idle `PERF-06` fixtures (2026-11-06,
 `port-park-merge`, release test binaries, 8 workers, P-cores, nothing else running): the parking

@@ -1252,10 +1252,74 @@ determinism checks and `./run.sh --test` are not timing runs and may share the m
 
 ### Parking frame and load acceptance (`PARK-02`)
 
-Round M5a's session writes here, against a `dev` control of the same boot on the fixture with
-kerbside supply: `PERF-07` at 30k at 1x and 32x and 100k at 1x, the parked rebuild's share on the
-sim thread and the departure quotes' cost (D11); the 100k 32x frame, reported only (`PERF-08`); the
-100k `load_check` with the JSON columns' share (`PARK-06`) and the catchment publication named.
+Round M7c's session, 2026-11-07, one boot, `port-park-merge` tree `7858eede` (`ed154d57` adds docs
+only) against `dev` `139c9563`, both release test binaries. Exclusive locks, `taskset -c
+0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, sessions 15:07-15:29, 15:30-15:44, 15:44-16:26 and
+16:26-16:47, no Godot, no build, a browser open. Runs in the order `dev`, final, final, `dev`, the
+unmodified gate:
+
+```bash
+python3 tools/sim02_gate.py perf07 --perf07-tiers 30000 --perf07-speeds 1,32 \
+  --binary "$TEST_BINARY" --artifacts "$ARTIFACTS" --cpus 0,2,4,6,8,10,12,14
+```
+
+| Row | `dev`, two runs | Final, two runs | Gate |
+| --- | --- | --- | --- |
+| 30k 1×: unpreempted / p99.9 / preempted less wait, ms | 4.15, 4.04 / 3.41, 3.26 / 3.25, 3.35 | **8.45, 8.10** / 4.33, 4.39 / 4.14, 4.87 | **Fail** |
+| 30k 32×: same | 7.16, 6.89 / 6.86, 6.80 / 4.99, 6.43 | **10.64, 9.98** / **9.03, 8.46** / 6.77, 7.34 | **Fail** |
+| 30k 32×: frames over 8 ms, unpreempted + preempted | 0 + 0 | 7 + 0, 6 + 1 | |
+| 100k 1×: unpreempted / p99.9 / preempted less wait | **17.42, 18.15** / **11.11, 11.45** / **15.47, 13.37** | **12.57, 12.74** / **11.16, 11.28** / **13.18, 13.17** | **Fail on both** (`PERF-09`) |
+| 100k 1×: frames over 8 ms, unpreempted; p99; mean | 2,688, 2,297; 8.74, 8.70; 6.72, 6.78 | 8,710, 9,932; 9.80, 9.66; 7.14, 7.14 | |
+| 100k 32×, reported (`PERF-08`): max / p99 / mean / over 16.7 ms | 26.4, 27.6 / 22.43, 22.19 / 13.49, 13.45 / 324, 330 | 29.0, 28.6 / 22.75, 22.72 / 15.60, 15.60 / 676, 696 | Reported |
+
+**Attribution, per frame.** The user's rule of 2026-11-07: a miss from `RENDER-27`/`RENDER-28`, so
+from walkers' pose, does not block this merge. Per-frame timer builds of both trees ran the same day
+at the same frame index; a frame's share is its `pose` stage less `dev`'s at that index, and the
+frame's total is read from a build with no timers in the frame.
+
+| Reading | Frames over 8 ms, unpreempted | Pose, final / `dev` | Still over 8 ms with the share out |
+| --- | --- | --- | --- |
+| 30k 1×, one run | 1 (22:04, 8.03 ms) | 1.25 / 0.16 | **0** (6.94 ms). Passes by the rule |
+| 30k 32×, six runs | 4 to 7 a run, 32 in all | 0.40 to 1.38 of share | **2 or 3 a run, 16 in all, up to 9.51 ms** |
+| 100k 1×, one run | 8,745 | 1.35 / 0.51 mean | **1,703**, mean 9.11 ms; `dev` itself has 1,685 over 8 ms |
+
+With the share out, 30k 32× reads 8.47 to 9.51 ms unpreempted and 7.98 to 9.27 ms p99.9 over the six
+runs. The frames left are all building changes in minute 4 of the hour (`REMOVAL_WINDOW_START`):
+00:04, 17:04, 21:04 and 22:04. Frame 22:04 at 32×, against `dev` at the same minute: slot 4.4 against
+3.0 ms, of it the site's publication in `timed events` 4.3 against 0.5; agent 2.6 against 1.8;
+snapshot 2.9 against 1.0, pose 1.3 of it. A building's removal costs 2.9 to 3.7 ms in its own slot
+against 1.1 to 1.6 on `dev`. No census frame is among them: the census's own slot peaks at 2.2 ms and
+its hours are flat this day. At 100k 1× the frames left sit in the shift hours, 05:xx, 06:xx, 13:xx,
+and what is added there is movement, 4.55 ms against 3.16, not pose.
+
+A site's door publication at 30k (timers, a quiet run, 22 in a day): 1.44 ms mean, 3.16 at most, about
+1,070 doors looked at and 167 edited; the whole publication 2.0 ms mean. It is most of the 3.6 ms of
+a spawn in that frame. The rest of that frame is the same frame's agent tick and snapshot.
+
+**Parking on the sim thread (timers build, day means).**
+
+| Row | 30k 32× | 30k 1× | 100k 1× |
+| --- | --- | --- | --- |
+| Parked rebuild, mean / max ms | 0.23 / 1.35 | 0.02 / 0.94 | 0.07 / 4.08 |
+| Commit + prepared answers (D11), mean ms | 0.24 + 0.18 | 0.03 + 0.03 | 0.12 + 0.11 |
+| Their share of frame time | 9.4% | 2.6% | 3.1% |
+| Candidates a tick, mean / peak | 73 / 194 | 2.3 / 26 | 6.4 / 57 |
+
+**Movement pass** (`ROAD-94`; round M7b changed the lane end). 30k 32× mean agent tick 1.97 ms, p99
+2.90; round M6c, an earlier session, 1.96 and 3.04. 1× 1.16 against 1.15. Movement 1.26 ms on the
+timers build against M6c's 1.20 and this session's `dev` 0.86: the lane end did not move it. What it
+pays over `dev` is walkers.
+
+**Midnight (`PERF-15`).** First frame 7.4 to 7.9 ms at 32× in six runs, past midnight at most 7.31,
+at 1× frame 1 3.43 ms. The burst stays gone.
+
+**100k load.** `load_s` 25.40, 25.44 s against `dev`'s 17.20, 17.20 (`METRUM_PERF07_MINUTES=1`).
+The file is 305 MB, of it the JSON columns 94 MB (`parking_state` 64, `agents.parking_trip` 29), 0.3%
+of a load's cycles in both trees (`PARK-06`). Cycles of a load under `perf`, one run a side, 185 G
+against 100 G: cell generation 103 G against 64 G and its checks against the lots
+(`warm_loaded_cells`, `cell_footprint_overlaps_explicit_sites`, `lot_candidate_indices_for_bounds`)
+28 G against 4 G, so three quarters of the growth is the fixture's explicit lots (`PERF-16`). The
+catchment publication is 14 G, 17% of the growth, near the 0.73 s round M6a timed.
 
 ## GPU compute
 
