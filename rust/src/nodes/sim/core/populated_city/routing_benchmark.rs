@@ -1541,8 +1541,8 @@ fn graded_site_removal(
         return None;
     }
     let building_idx = core.allocator.buildings.len() / 2;
+    // The removal publishes its own site change: the next publication replaces the record.
     assert!(core.bulldoze_building(building_idx), "the building is removed");
-    core.publish_pending_building_site_changes();
     prepare_graded_sites(core);
     let changes = core.last_site_terrain_changes.clone();
     assert!(!changes.is_empty(), "the removal records its site");

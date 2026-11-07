@@ -3,18 +3,19 @@
 //! Published per-door walking catchments, over the existing directed pedestrian lanes.
 
 use super::*;
-use crate::config::AGENT_WALK_SPEED_MS;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::economy::accessibility::ModeComponentIndex;
 use crate::simulation::economy::agents::{MODE_CAR, tick::BuildingTripEnds};
 use crate::simulation::network::types::TransitFlags;
-use crate::simulation::network::{TransitNetwork, graph::RegionGraph, lanes::LaneType};
+use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use godot::prelude::Vector2;
 use rayon::prelude::*;
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
 
-const WALK_LIMIT_S: f32 = 400.0 / AGENT_WALK_SPEED_MS;
+mod table;
+mod walk;
+
+use table::finish_economy_ends;
+use walk::WALK_LIMIT_S;
 
 /// One 16-byte per-destination entry, without a retained route. At 100k nonempty doors,
 /// candidate and economy metadata use about 9.6 MB of map/header storage, plus 1.6 MB per mean
@@ -74,45 +75,36 @@ impl ParkingSystem {
         graph: &RegionGraph,
         car_components: Option<&ModeComponentIndex>,
     ) -> Vec<[f32; 2]> {
-        let mut places = Vec::new();
-        for &b in buildings {
-            let Some(door) = allocator.entrances.get(b) else {
-                continue;
-            };
-            let (cx, cz) = chunk_at([door.door_pos.x, door.door_pos.y]);
-            for z in cz - 1..=cz + 1 {
-                for x in cx - 1..=cx + 1 {
-                    if let Some(chunk) = self.chunks.get(&(x, z)) {
-                        places.extend_from_slice(&chunk.places);
-                    }
-                }
-            }
+        let mut door_chunks = Vec::new();
+        let mut bounds = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+        for door in buildings.iter().filter_map(|&b| allocator.entrances.get(b)) {
+            let door = door.door_pos;
+            door_chunks.push(chunk_at([door.x, door.y]));
+            bounds = [
+                bounds[0].min(door.x),
+                bounds[1].min(door.y),
+                bounds[2].max(door.x),
+                bounds[3].max(door.y),
+            ];
         }
-        places.sort_unstable();
-        places.dedup();
-        for place in places {
-            if self
-                .place_handles
-                .resolve(place)
-                .is_none_or(|p| !self.places.active[p])
-            {
-                continue;
-            }
-            let access = self
-                .derive_place_entrance(place, allocator, network, graph)
-                .unwrap_or_default();
-            if let Some(p) = self.place_handles.resolve(place) {
-                if let Some(edge) = graph.get_edge(access.edge_idx) {
-                    let point = BuildingAllocator::sample_pos_on_edge(
-                        graph,
-                        access.edge_idx,
-                        access.entrance_s_m / edge.physical_length,
-                    );
-                    self.places.road_point[p] = [point.x, point.y];
-                }
-                self.places.access[p] = access;
-            }
-        }
+        door_chunks.sort_unstable();
+        door_chunks.dedup();
+        let mut chunks: Vec<_> = door_chunks
+            .iter()
+            .flat_map(|&(x, z)| (z - 1..=z + 1).flat_map(move |z| (x - 1..=x + 1).map(move |x| (x, z))))
+            .filter(|key| self.chunks.contains_key(key))
+            .collect();
+        chunks.sort_unstable();
+        chunks.dedup();
+        self.refresh_chunk_access(&chunks, allocator, network, graph);
+        // A metre past the door's reach covers the rounding of the bounds themselves.
+        let reach = [
+            bounds[0] - 401.0,
+            bounds[1] - 401.0,
+            bounds[2] + 401.0,
+            bounds[3] + 401.0,
+        ];
+        let table = self.place_table(&chunks, reach, network, graph, car_components);
         let built: Vec<_> = buildings
             .par_iter()
             .filter_map(|&b| {
@@ -121,74 +113,16 @@ impl ParkingSystem {
                 if handle.is_none() {
                     return None;
                 }
+                let centre = &allocator.buildings[b];
+                let list = table.door_candidates(
+                    entrance,
+                    [centre.center_x, centre.center_y],
+                    car_components.is_some(),
+                    network,
+                    graph,
+                );
                 let door = [entrance.door_pos.x, entrance.door_pos.y];
-                let (cx, cz) = chunk_at(door);
-                if !(cz - 1..=cz + 1).any(|z| {
-                    (cx - 1..=cx + 1).any(|x| {
-                        self.chunks
-                            .get(&(x, z))
-                            .is_some_and(|c| !c.places.is_empty())
-                    })
-                }) {
-                    return Some((handle.to_bits(), door, DestinationCandidates::default()));
-                }
-                let forward = WalkField::build(entrance, false, network, graph);
-                let reverse = WalkField::build(entrance, true, network, graph);
-                let mut entries = Vec::new();
-                for z in cz - 1..=cz + 1 {
-                    for x in cx - 1..=cx + 1 {
-                        let Some(chunk) = self.chunks.get(&(x, z)) else {
-                            continue;
-                        };
-                        for &place in &chunk.places {
-                            let Some(p) = self.place_handles.resolve(place) else {
-                                continue;
-                            };
-                            if !self.places.active[p] {
-                                continue;
-                            }
-                            let pos = self.places.position[p];
-                            let door_m =
-                                (pos[0] - entrance.door_pos.x).hypot(pos[2] - entrance.door_pos.y);
-                            if door_m > 400.0 {
-                                continue;
-                            }
-                            let Some(access) =
-                                self.place_entrance(place, allocator, network, graph)
-                            else {
-                                continue;
-                            };
-                            let walk_s = reverse.time_at(&access, network, graph);
-                            let from_door_s = forward.time_at(&access, network, graph);
-                            if walk_s <= WALK_LIMIT_S {
-                                entries.push(ParkingCandidate {
-                                    place,
-                                    walk_s,
-                                    from_door_s,
-                                });
-                            }
-                        }
-                    }
-                }
-                // Drive tie-break is the fixed, free-flow driveway-to-bay time, never live traffic.
-                entries.sort_unstable_by(|a, b| {
-                    a.walk_s
-                        .total_cmp(&b.walk_s)
-                        .then(
-                            self.maneuver_seconds(a.place)
-                                .total_cmp(&self.maneuver_seconds(b.place)),
-                        )
-                        .then(a.place.cmp(&b.place))
-                });
-                let economy =
-                    car_components.map_or_else(ParkingEconomyEnds::default, |components| {
-                        self.build_economy_ends(&entries, b, allocator, network, graph, components)
-                    });
-                Some((
-                    handle.to_bits(),
-                    door,
-                    DestinationCandidates { entries, economy },
-                ))
+                Some((handle.to_bits(), door, list))
             })
             .collect();
         if !built.is_empty() {
@@ -218,6 +152,46 @@ impl ParkingSystem {
             }
         }
         changed
+    }
+
+    // Publishes the access of every bay in `chunks`, from the current doors and roads. Derived in
+    // parallel, written in the caller's order. O(bays there).
+    fn refresh_chunk_access(
+        &mut self,
+        chunks: &[(i32, i32)],
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        let this = &*self;
+        let derived: Vec<_> = chunks
+            .par_iter()
+            .flat_map_iter(|key| this.chunks.get(key).map_or(&[][..], |c| &c.places))
+            .filter_map(|&place| {
+                let p = this.place_handles.resolve(place)?;
+                if !this.places.active[p] {
+                    return None;
+                }
+                let access = this
+                    .derive_place_entrance(place, allocator, network, graph)
+                    .unwrap_or_default();
+                let point = graph.get_edge(access.edge_idx).map(|edge| {
+                    let point = BuildingAllocator::sample_pos_on_edge(
+                        graph,
+                        access.edge_idx,
+                        access.entrance_s_m / edge.physical_length,
+                    );
+                    [point.x, point.y]
+                });
+                Some((p, access, point))
+            })
+            .collect();
+        for (p, access, point) in derived {
+            if let Some(point) = point {
+                self.places.road_point[p] = point;
+            }
+            self.places.access[p] = access;
+        }
     }
 
     /// O(1), version of published catchments and their economy reachability metadata.
@@ -287,8 +261,7 @@ impl ParkingSystem {
         let mut components = Vec::new();
         let mut targets = Vec::new();
         for candidate in entries {
-            let Some(access) = self.place_entrance(candidate.place, allocator, network, graph)
-            else {
+            let Some(access) = self.live_access(candidate.place, network, graph) else {
                 continue;
             };
             components.extend_from_slice(
@@ -303,20 +276,7 @@ impl ParkingSystem {
                     .flatten(),
             );
         }
-        components.sort_unstable();
-        components.dedup();
-        targets.sort_unstable();
-        targets.dedup();
-        let node_slack_m = targets
-            .iter()
-            .filter_map(|&(node, _)| graph.nodes().get(node as usize))
-            .map(|node| (node.pos.x - centre.center_x).hypot(node.pos.z - centre.center_y))
-            .fold(0.0, f32::max);
-        ParkingEconomyEnds {
-            components: components.into(),
-            targets: targets.into_boxed_slice(),
-            node_slack_m,
-        }
+        finish_economy_ends(components, targets, [centre.center_x, centre.center_y], graph)
     }
 
     /// Edit-time locality oracle, comparing geometry/time rather than handles remapped by setup.
@@ -456,6 +416,15 @@ impl ParkingSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Option<BuildingEntrance> {
+        self.live_access(place, network, graph)
+    }
+
+    fn live_access(
+        &self,
+        place: Handle<Place>,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<BuildingEntrance> {
         let p = self.place_handles.resolve(place)?;
         let access = &self.places.access[p];
         if access.edge_idx == usize::MAX {
@@ -516,179 +485,6 @@ impl ParkingSystem {
                     .sum::<f32>()
                     / crate::config::AGENT_DRIVEWAY_SPEED_MS
             })
-    }
-}
-
-// Sparse edit-time labels avoid a city-sized initialization for every local catchment.
-struct WalkField {
-    costs: HashMap<usize, f32>,
-    seeds: [(usize, f32); 2],
-    local_s: f32,
-    reverse: bool,
-}
-
-impl WalkField {
-    fn build(
-        door: &BuildingEntrance,
-        reverse: bool,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) -> Self {
-        let local_s = door.door_pos.distance_to(door.curb_pos) / AGENT_WALK_SPEED_MS;
-        let seeds = foot_positions(door, network, graph);
-        let mut field = Self {
-            costs: HashMap::new(),
-            seeds,
-            local_s,
-            reverse,
-        };
-        let mut heap = BinaryHeap::new();
-        for (id, d) in seeds {
-            let Some(lane) = network.lane_system.lanes.get(id) else {
-                continue;
-            };
-            let cost = local_s + if reverse { d } else { lane.length - d } / AGENT_WALK_SPEED_MS;
-            visit_adjacent(id, reverse, network, graph, |next| {
-                relax(&mut field.costs, &mut heap, next, cost)
-            });
-        }
-        while let Some(Reverse((bits, id))) = heap.pop() {
-            let cost = f32::from_bits(bits);
-            if field.costs.get(&id) != Some(&cost) {
-                continue;
-            }
-            let lane = &network.lane_system.lanes[id];
-            let next_cost = cost + lane.length / AGENT_WALK_SPEED_MS;
-            if next_cost > WALK_LIMIT_S {
-                continue;
-            }
-            visit_adjacent(id, reverse, network, graph, |next| {
-                relax(&mut field.costs, &mut heap, next, next_cost)
-            });
-        }
-        field
-    }
-
-    fn time_at(
-        &self,
-        target: &BuildingEntrance,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) -> f32 {
-        let local_s = target.door_pos.distance_to(target.curb_pos) / AGENT_WALK_SPEED_MS;
-        let mut best = f32::INFINITY;
-        for (id, d) in foot_positions(target, network, graph) {
-            let Some(lane) = network.lane_system.lanes.get(id) else {
-                continue;
-            };
-            if let Some(&cost) = self.costs.get(&id) {
-                best = best.min(
-                    cost + if self.reverse { lane.length - d } else { d } / AGENT_WALK_SPEED_MS
-                        + local_s,
-                );
-            }
-            for (seed, start) in self.seeds {
-                let along = if self.reverse { start - d } else { d - start };
-                if seed == id && along >= 0.0 {
-                    best = best.min(self.local_s + along / AGENT_WALK_SPEED_MS + local_s);
-                }
-            }
-        }
-        best
-    }
-}
-
-fn relax(
-    costs: &mut HashMap<usize, f32>,
-    heap: &mut BinaryHeap<Reverse<(u32, usize)>>,
-    id: usize,
-    cost: f32,
-) {
-    if cost.is_finite() && cost <= WALK_LIMIT_S && costs.get(&id).is_none_or(|&old| cost < old) {
-        costs.insert(id, cost);
-        heap.push(Reverse((cost.to_bits(), id)));
-    }
-}
-
-fn foot_positions(
-    entrance: &BuildingEntrance,
-    network: &TransitNetwork,
-    graph: &RegionGraph,
-) -> [(usize, f32); 2] {
-    let point = graph.get_edge(entrance.edge_idx).map(|e| {
-        BuildingAllocator::sample_pos_on_edge(
-            graph,
-            entrance.edge_idx,
-            entrance.entrance_s_m / e.physical_length,
-        )
-    });
-    [entrance.foot_lane_fwd, entrance.foot_lane_bkw].map(|id| {
-        let d = point
-            .zip(network.lane_system.lanes.get(id))
-            .map_or(0.0, |(p, l)| {
-                BuildingAllocator::project_point_to_polyline_s(&l.geometry, p)
-            });
-        (id, d)
-    })
-}
-
-fn visit_adjacent(
-    id: usize,
-    reverse: bool,
-    network: &TransitNetwork,
-    graph: &RegionGraph,
-    mut visit: impl FnMut(usize),
-) {
-    let lanes = &network.lane_system.lanes;
-    let valid = |i: usize| {
-        lanes.get(i).is_some_and(|l| {
-            l.lane_type == LaneType::Foot
-                && (l.edge_id == usize::MAX
-                    || graph.get_edge(l.edge_id).is_some_and(|e| !e.deleted))
-        })
-    };
-    if !valid(id) {
-        return;
-    }
-    if !reverse {
-        for &next in &lanes[id].next_lanes {
-            if valid(next) {
-                visit(next);
-            }
-        }
-        return;
-    }
-    let lane = &lanes[id];
-    let node = if lane.edge_id == usize::MAX {
-        lane.node_id as u32
-    } else {
-        let Some(edge) = graph.get_edge(lane.edge_id) else {
-            return;
-        };
-        if lane.is_fwd {
-            edge.start_node
-        } else {
-            edge.end_node
-        }
-    };
-    // Existing per-node and per-edge lane indices enumerate only this junction's predecessors.
-    if let Some(connections) = network.lane_system.node_lanes.get(&(node as usize)) {
-        for &candidate in connections {
-            if valid(candidate) && lanes[candidate].next_lanes.contains(&id) {
-                visit(candidate);
-            }
-        }
-    }
-    if (node as usize) < graph.node_adjacency_count() {
-        for &edge in graph.node_adjacency(node) {
-            if let Some(roads) = network.lane_system.edge_lanes.get(&edge) {
-                for &candidate in roads {
-                    if valid(candidate) && lanes[candidate].next_lanes.contains(&id) {
-                        visit(candidate);
-                    }
-                }
-            }
-        }
     }
 }
 
