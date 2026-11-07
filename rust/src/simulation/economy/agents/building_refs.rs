@@ -6,7 +6,8 @@ use super::data::AgentSystem;
 use super::tick::{BuiltTripPlan, plan_building_origin_trip, plan_building_to_border_trip};
 use super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACTIVITY_HOME, ACTIVITY_SHOPPING, MODE_WALK,
-    TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK, age_group_can_work,
+    TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
+    age_group_can_work,
 };
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::economy::households::HouseholdSystem;
@@ -156,13 +157,18 @@ impl AgentSystem {
             self.clear_route_and_lane_state(agent_idx);
         } else {
             let mut needs_replan = false;
+            let on_access = self.on_access_path(agent_idx);
             if old_home_live && self.agents.target_building[agent_idx] == old_home {
-                self.agents.target_building[agent_idx] = new_home;
-                needs_replan = true;
+                if on_access {
+                    self.agents.planned_target_building[agent_idx] = new_home;
+                } else {
+                    self.agents.target_building[agent_idx] = new_home;
+                    needs_replan = true;
+                }
             }
             if old_home_live && self.agents.planned_target_building[agent_idx] == old_home {
                 self.agents.planned_target_building[agent_idx] = new_home;
-                needs_replan = true;
+                needs_replan = !on_access;
             }
             let current = self.agents.current_building[agent_idx];
             let target = self.agents.target_building[agent_idx];
@@ -220,7 +226,8 @@ impl AgentSystem {
             self.clear_route_and_lane_state(agent_idx);
         } else {
             let mut needs_replan = false;
-            if self.agents.target_building[agent_idx] == old_home {
+            let on_access = self.on_access_path(agent_idx);
+            if self.agents.target_building[agent_idx] == old_home && !on_access {
                 self.agents.target_building[agent_idx] = usize::MAX;
                 needs_replan = true;
             }
@@ -231,7 +238,7 @@ impl AgentSystem {
                 if self.agents.activity[agent_idx] == ACTIVITY_SHOPPING {
                     self.agents.activity[agent_idx] = ACTIVITY_HOME;
                 }
-                needs_replan = true;
+                needs_replan = !on_access;
             }
             if needs_replan {
                 self.clear_access_plan_and_path(agent_idx);
@@ -243,6 +250,16 @@ impl AgentSystem {
             // home and is reported (`TRAFFIC-19`).
             self.note_waiting_for_home(agent_idx);
         }
+    }
+
+    // An agent on its access path keeps the trip it is on (`TRAFFIC-29`): off the road it has no
+    // lane to plan from, and a pull-in or a walk to a door ends at its own bay or door. Once
+    // inside, the ordinary schedule sends it on. O(1).
+    fn on_access_path(&self, agent_idx: usize) -> bool {
+        matches!(
+            self.agents.transit[agent_idx],
+            TRANSIT_ACCESS_EGRESS | TRANSIT_ACCESS_INGRESS
+        )
     }
 
     /// Assigns or clears an agent's workplace and invalidates derived work-trip caches.
@@ -268,8 +285,10 @@ impl AgentSystem {
                 let mut needs_replan = false;
                 // A farm can also be home: changing jobs must preserve a trip home from shopping.
                 let work_is_home = old_work == self.agents.home_building[agent_idx];
+                let on_access = self.on_access_path(agent_idx);
                 if self.agents.target_building[agent_idx] == old_work
                     && (!work_is_home || self.agents.activity[agent_idx] == 1)
+                    && !on_access
                 {
                     self.agents.target_building[agent_idx] = usize::MAX;
                     needs_replan = true;
@@ -278,7 +297,7 @@ impl AgentSystem {
                     && (!work_is_home || self.agents.planned_activity[agent_idx] == 1)
                 {
                     self.agents.planned_target_building[agent_idx] = usize::MAX;
-                    needs_replan = true;
+                    needs_replan = !on_access;
                 }
                 if needs_replan {
                     self.clear_access_plan_and_path(agent_idx);
@@ -831,7 +850,7 @@ mod tests {
         Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass,
     };
     use crate::simulation::buildings::allocator::Building;
-    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_ACCESS_EGRESS};
+    use crate::simulation::economy::agents::MODE_CAR;
     use crate::simulation::economy::definitions::{
         load_runtime_economy_catalog, load_runtime_economy_tuning,
     };

@@ -352,6 +352,7 @@ fn work_since(start: &[u64; crate::debug::work::WORK_COUNT]) -> serde_json::Valu
         "missed_turns": delta(Work::MissedTurns),
         "missing_connections": delta(Work::MissingConnections),
         "walkers_home_after_cancel": delta(Work::WalkersHomeAfterCancel),
+        "drivers_home_after_cancel": delta(Work::DriversHomeAfterCancel),
     })
 }
 

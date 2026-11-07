@@ -210,6 +210,7 @@ impl AgentSystem {
             crate::simulation::core::handles::Handle::from_bits(trip.target),
         );
         let Some(target) = target else {
+            self.recover_parking_trip(i, parking, allocator, network, graph);
             return;
         };
         let Some(next) = trip.phase.next_transition() else {

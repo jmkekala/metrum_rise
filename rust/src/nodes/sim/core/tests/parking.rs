@@ -11,6 +11,7 @@ mod catchments;
 mod kerb;
 mod poses;
 mod published;
+mod taken_trips;
 
 fn core() -> SimCore {
     let mut core = SimCore::new(
@@ -447,96 +448,6 @@ fn parking_home_demolition_cannot_start_a_door_to_door_car_leg() {
         c.agents.transit_mode[agent],
         crate::simulation::economy::agents::MODE_WALK
     );
-}
-
-// A driver whose job and destination go on the way stops at its lane end with no lane, path or
-// plan, and its ordered recovery waits on a timed retry (`PARK-08`). In the slot that retry fires
-// `next_replan_time` is back at 0, so the row reads as an orphan's, and a load at that moment
-// must leave it as the running game does.
-#[test]
-fn a_car_awaiting_recovery_at_a_lane_end_loads_as_it_stands() {
-    use crate::simulation::parking::ParkingTripPhase;
-    let mut c = SimCore::new(
-        WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
-            .with_chunking(128.0, 0.0)
-            .with_terrain_resolution(2.0),
-    );
-    c.treasury.balance = 1_000_000.0;
-    commit(&mut c, (-600.0, 0.0), (600.0, 0.0));
-    let id = register_lot(&mut c);
-    let mut manifest = c.allocator.registry.get(&id).unwrap().manifest.clone();
-    manifest.building.as_mut().unwrap().household_capacity = Some(4);
-    c.allocator
-        .registry
-        .register("parking", manifest, String::new());
-    c.place_service_building_internal(&id, -450.0, -30.0)
-        .unwrap();
-    c.place_service_building_internal(&id, 450.0, -30.0)
-        .unwrap();
-    c.publish_pending_building_site_changes();
-    let (home, target) = if c.allocator.entrances[0].side == -1 {
-        (0, 1)
-    } else {
-        (1, 0)
-    };
-    let agent = c.debug_add_parking_commuter(home, target).unwrap();
-    c.agents.assign_work_building(agent, target, 0);
-    c.agents.release_departure(agent);
-    let tick = |c: &mut SimCore| {
-        crate::thread_pools::install(|| {
-            c.agents.tick_with_parking(
-                &c.allocator,
-                &mut c.transit_network,
-                &mut c.region_graph,
-                0.1,
-                &c.time,
-                &mut c.parking,
-            )
-        });
-        c.schedule_parking_retries();
-    };
-    for _ in 0..12000 {
-        tick(&mut c);
-        if c.agents.parking_trip[agent].phase == ParkingTripPhase::Drive
-            && c.agents.current_lane_id[agent] != usize::MAX
-        {
-            break;
-        }
-    }
-    assert_eq!(c.agents.target_building[agent], target);
-    c.agents.assign_work_building(agent, usize::MAX, 0);
-    for _ in 0..12000 {
-        tick(&mut c);
-        if c.agents.current_lane_id[agent] == usize::MAX {
-            break;
-        }
-    }
-    assert_eq!(c.agents.current_lane_id[agent], usize::MAX);
-    assert!(c.bulldoze_building(target));
-    while !c.agents.parking_trip[agent].retry_pending {
-        tick(&mut c);
-    }
-    while c.agents.parking_trip[agent].retry_pending {
-        c.run_slots_through_for_test(c.time.absolute_slot() + 1);
-    }
-    let row = |c: &SimCore| {
-        let a = &c.agents;
-        (
-            (a.transit[agent], a.current_lane_id[agent], a.current_node[agent]),
-            (a.target_building[agent], a.current_path_index[agent]),
-            (a.speed[agent].to_bits(), a.next_replan_time[agent].to_bits()),
-            serde_json::to_value(a.parking_trip[agent]).unwrap(),
-        )
-    };
-    let before = row(&c);
-    assert_eq!(before.1, (usize::MAX, 1));
-    assert_eq!(before.2.1, 0, "the retry has fired: no retry time left on the row");
-    let path = temp_save_path("parking-recovery-at-lane-end");
-    c.save_game_settled_at(path.to_str().unwrap(), None, 0)
-        .unwrap();
-    c.load_game_internal(path.to_str().unwrap()).unwrap();
-    std::fs::remove_file(path).unwrap();
-    assert_eq!(row(&c), before);
 }
 
 // The economy reads `has_car` between ticks, so a custody change shows there from the next tick

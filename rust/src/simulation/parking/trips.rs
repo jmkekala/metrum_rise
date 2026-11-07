@@ -312,6 +312,14 @@ impl ParkingSystem {
         self.rehouse_near(self.vehicles.home[v]);
     }
 
+    /// Takes a car its driver left with nowhere to go off the map, where the ordinary stored
+    /// arrival brings it back. Does nothing for one in a bay. O(log W), rare event.
+    pub(crate) fn store_left_car(&mut self, car: Handle<Vehicle>) {
+        if let Some(v) = self.vehicle_handles.resolve(car) {
+            self.park_new_car(car, self.vehicles.home_building[v]);
+        }
+    }
+
     /// Explicit fixture genesis only: places a car without simulating its historical arrival.
     /// O(k + log W); ordinary household publication never calls this helper.
     pub(crate) fn seed_fixture_car(&mut self, car: Handle<Vehicle>, home: u64) {

@@ -132,6 +132,40 @@ impl Block {
         idx
     }
 
+    // The vehicle lane of `edge` running forward or backward.
+    fn car_lane(&self, edge: usize, fwd: bool) -> usize {
+        self.network.lane_system.edge_lanes[&edge]
+            .iter()
+            .copied()
+            .find(|&lane| {
+                let value = &self.network.lane_system.lanes[lane];
+                value.lane_type == LaneType::Vehicle && value.is_fwd == fwd
+            })
+            .unwrap()
+    }
+
+    // A driver on road 1, its route still to be planned, and car lanes for the two doors.
+    fn driver(&mut self, agents: &mut AgentSystem, target: usize) -> usize {
+        for (building, edge) in [(0, 0), (1, 2)] {
+            self.allocator.entrances[building].car_lane_fwd = self.car_lane(edge, true);
+            self.allocator.entrances[building].car_lane_bkw = self.car_lane(edge, false);
+        }
+        let lane = self.car_lane(1, true);
+        let idx = agents.spawn_border_arrival_agent(usize::MAX, 1, 0.0, 0.0);
+        agents.home_building[idx] = 0;
+        agents.transit[idx] = TRANSIT_NETWORK;
+        agents.transit_mode[idx] = MODE_CAR;
+        agents.current_node[idx] = 1;
+        agents.current_edge[idx] = 1;
+        agents.current_lane_id[idx] = lane;
+        agents.lane_distance[idx] = 10.0;
+        agents.target_building[idx] = target;
+        let pos = BuildingAllocator::sample_pos_on_lane(&self.network.lane_system.lanes[lane], 10.0);
+        agents.pos_x[idx] = pos.x;
+        agents.pos_y[idx] = pos.y;
+        idx
+    }
+
     fn tick(&mut self, agents: &mut AgentSystem) {
         agents.tick(
             &self.allocator,
@@ -875,6 +909,68 @@ fn a_walker_whose_job_ends_on_the_way_walks_home_from_its_lane_end_and_frees_the
         "{:#?}",
         agents.trip_failures.lines
     );
+}
+
+// `TRAFFIC-29`, off a parking leg: a driver whose job ends on the way drives on to the end of its
+// lane, turns for home from there and drives in, with no record since no trip failed.
+#[test]
+fn a_driver_whose_job_ends_on_the_way_drives_home_from_its_lane_end() {
+    let mut block = Block::new(false, false);
+    let mut agents = AgentSystem::new();
+    let idx = block.driver(&mut agents, 1);
+    agents.work_building[idx] = 1;
+    agents.activity[idx] = ACTIVITY_WORK;
+    block.tick(&mut agents);
+    assert!(agents.access_flags[idx] & ACCESS_PLAN_VALID != 0, "it plans the drive");
+    agents.assign_work_building(idx, usize::MAX, 0);
+    assert_eq!(agents.target_building[idx], usize::MAX);
+    for _ in 0..600 {
+        block.tick(&mut agents);
+        if agents.target_building[idx] == 0 {
+            break;
+        }
+    }
+    assert_eq!(agents.target_building[idx], 0, "it turns for home");
+    assert_eq!(agents.activity[idx], ACTIVITY_HOME);
+    for _ in 0..3_000 {
+        block.tick(&mut agents);
+        if at_home(&agents, idx) {
+            break;
+        }
+    }
+    assert!(at_home(&agents, idx), "it drives home");
+    assert!(
+        agents.trip_failures.lines.is_empty(),
+        "{:#?}",
+        agents.trip_failures.lines
+    );
+}
+
+// With no home it stands off the lane, out of the way, until its household's next one gives it a
+// destination; it drives there from where it stands.
+#[test]
+fn a_driver_with_no_home_whose_job_ends_on_the_way_stands_off_the_lane_until_rehoused() {
+    let mut block = Block::new(false, false);
+    let mut agents = AgentSystem::new();
+    let idx = block.driver(&mut agents, 1);
+    agents.home_building[idx] = usize::MAX;
+    agents.work_building[idx] = 1;
+    agents.activity[idx] = ACTIVITY_WORK;
+    block.tick(&mut agents);
+    agents.assign_work_building(idx, usize::MAX, 0);
+    for _ in 0..600 {
+        block.tick(&mut agents);
+    }
+    assert_eq!(agents.current_lane_id[idx], usize::MAX);
+    assert_eq!(agents.target_building[idx], usize::MAX);
+    agents.relocate_household_member_home(idx, usize::MAX, 0, false);
+    for _ in 0..3_000 {
+        block.tick(&mut agents);
+        if at_home(&agents, idx) {
+            break;
+        }
+    }
+    assert!(at_home(&agents, idx), "it drives to its new home");
 }
 
 // `TRAFFIC-24`: a walker with no home whose job ends on the way keeps waiting at the end of its

@@ -59,6 +59,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
 
         let b_id = *s_tgt_b.get(i);
         if b_id == usize::MAX || b_id >= allocator.buildings.len() {
+            // The building went under a parking leg: its recovery owns the car and the bay.
+            if slices.parking_trip.get(i).phase != crate::simulation::parking::ParkingTripPhase::None {
+                let trip = slices.parking_trip.get_mut(i);
+                trip.ready = true;
+                trip.replan_needed = true;
+                *slices.speed.get_mut(i) = 0.0;
+                return;
+            }
             let pos = Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
             reset_invalid_access_plan(i, usize::MAX, pos, 0.0, slices);
             return;

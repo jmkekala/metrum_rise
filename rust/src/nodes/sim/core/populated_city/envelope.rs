@@ -675,6 +675,7 @@ fn sim02_envelope() {
             serde_json::json!({
                 "residents":residents, "workload":workload, "day":record.day,
                 "walkers_home_after_cancel":delta(Work::WalkersHomeAfterCancel),
+                "drivers_home_after_cancel":delta(Work::DriversHomeAfterCancel),
             })
         );
         day_work = work;

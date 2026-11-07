@@ -115,11 +115,14 @@ pub(crate) enum Work {
     /// Walkers with no destination and a home, their trip taken from them on the way, that
     /// set off home from the end of their lane (`TRAFFIC-24`).
     WalkersHomeAfterCancel,
+    /// Drivers with their trip taken from them on the way that turned for home, or for the
+    /// building they were going to with no home, from the end of their lane (`TRAFFIC-29`).
+    DriversHomeAfterCancel,
 }
 
 /// Number of [`Work`] counters.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const WORK_COUNT: usize = Work::WalkersHomeAfterCancel as usize + 1;
+pub(crate) const WORK_COUNT: usize = Work::DriversHomeAfterCancel as usize + 1;
 
 #[cfg(test)]
 static COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
@@ -270,6 +273,7 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "missed_turns",
     "missing_connections",
     "walkers_home_after_cancel",
+    "drivers_home_after_cancel",
 ];
 
 /// Hashes a value's `Debug` rendering without building the string. Test-only exact state

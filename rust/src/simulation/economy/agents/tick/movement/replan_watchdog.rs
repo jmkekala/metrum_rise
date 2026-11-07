@@ -50,6 +50,21 @@ pub(super) unsafe fn has_recoverable_network_trip(i: usize, slices: &MovementSli
     }
 }
 
+/// Whether network actor `i` has had its trip taken from it (`TRAFFIC-29`): no destination, and
+/// no freight, move-in or immigration errand that owns its route. O(1).
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[inline(always)]
+pub(super) unsafe fn network_trip_taken(i: usize, slices: &MovementSlices) -> bool {
+    unsafe {
+        *slices.tgt_b.get(i) == usize::MAX
+            && *slices.freight_target_border_node.get(i) == u32::MAX
+            && *slices.pending_household_size.get(i) == 0
+            && *slices.freight_shipment_id.get(i) == u64::MAX
+            && *slices.transit.get(i) != TRANSIT_IMMIGRATING
+    }
+}
+
 /// Records one failed live network replan and recovers the agent once the watchdog threshold is hit.
 /// `reason` names the call site on `traffic`; `cause` is what the `events` log reports. A walker
 /// is never recovered here: it plans again from where it stands, walks home or is stranded

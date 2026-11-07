@@ -20,6 +20,7 @@ use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_fa
 use super::super::super::walk_lanes::WalkFrom;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, has_recoverable_network_trip,
+    network_trip_taken,
 };
 use super::apply_network_replan;
 use super::replan::replan_after_missed_turn;
@@ -334,6 +335,14 @@ pub(super) unsafe fn handle_lane_end(
                     slices,
                 );
             }
+            return LaneEndAction::Break;
+        }
+        // A car whose trip was taken on the way has no plan to go on with (`TRAFFIC-29`).
+        if !access_plan_valid
+            && network_trip_taken(i, slices)
+            && super::walk_home::car_trip_taken(i, lane.length, sim_time, allocator, slices)
+        {
+            *remaining_dist = 0.0;
             return LaneEndAction::Break;
         }
         s_path.get_mut(i).clear();

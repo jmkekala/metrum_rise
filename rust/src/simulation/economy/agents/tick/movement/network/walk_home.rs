@@ -25,7 +25,8 @@
 //! A walker whose trip is taken from it on the way (its job ends, its destination is removed)
 //! reaches the end of its lane with no plan and no destination. With a home it walks home from
 //! there ([`head_home_without_trip`], `TRAFFIC-24`); with none it waits there for its household's
-//! next home.
+//! next home. A driver in that case turns at the end of its lane ([`car_trip_taken`],
+//! `TRAFFIC-29`).
 
 use super::super::super::super::{
     ACCESS_PLAN_VALID, ACCESS_WALK_STRANDED, ACCESS_WALK_TO_SIDEWALK, ACTIVITY_HOME, MODE_WALK,
@@ -45,6 +46,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::lanes::geometry::agent_lane_position;
+use crate::simulation::parking::ParkingTripPhase;
 use godot::prelude::Vector2;
 use std::sync::atomic::AtomicU32;
 
@@ -172,6 +174,42 @@ pub(super) unsafe fn head_home_without_trip(
                 strand(i, sim_time, slices);
             }
         }
+    }
+}
+
+/// Car `i` stands at the end of its road lane, `length` metres long, with no plan and its trip
+/// taken from it on the way (`TRAFFIC-29`). On a parking leg its bay and route belong to the
+/// ordered phase, so it keeps the lane and asks the leg's recovery, which plans from here in the
+/// commit of this same tick. Off one it turns for home: the replan gate plans from the node it
+/// reached, as for any car with a destination and no plan. With no home it stands off the lane
+/// for its household's next one. Returns whether the car keeps the lane. O(1), then one route
+/// query in the recovery or the gate.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+pub(super) unsafe fn car_trip_taken(
+    i: usize,
+    length: f32,
+    sim_time: f32,
+    allocator: &BuildingAllocator,
+    slices: &MovementSlices,
+) -> bool {
+    unsafe {
+        if slices.parking_trip.get(i).phase != ParkingTripPhase::None {
+            let trip = slices.parking_trip.get_mut(i);
+            trip.ready = true;
+            trip.replan_needed = true;
+            *slices.lane_d.get_mut(i) = length;
+            // The cursor a load accepts for a car with no route.
+            *slices.path_idx.get_mut(i) = 0;
+            *slices.speed.get_mut(i) = 0.0;
+            return true;
+        }
+        let home = *slices.home.get(i);
+        if home < allocator.buildings.len() {
+            crate::debug::work::add(crate::debug::work::Work::DriversHomeAfterCancel, 1);
+            head_home(i, home, sim_time, slices);
+        }
+        false
     }
 }
 
