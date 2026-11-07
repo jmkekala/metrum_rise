@@ -91,7 +91,9 @@ stays there and replans from the node whatever its mode, as the running game doe
 that rebuilds the junction lane a walker is crossing leaves it at the node with no edge (found in
 `SIM-02-I` part 3, when loading sent such walkers straight into their destination). Delayed
 retries retain their backoff; agents without a usable destination or pending retry still
-receive orphan repair.
+receive orphan repair. An agent on a parking leg never does: the leg's
+[recovery](#recovery-park-02) owns it, and in the slot a timed retry fires its row shows no retry
+time or failures, as an orphan's does (`PARK-08`).
 
 Version 57 saves recover sidewalk direction from the saved road/node and connector identity from
 the saved junction, outgoing route and authoritative position (including the pedestrian offset).
@@ -2272,6 +2274,12 @@ replans from its actual lane position, or reverses an unfinished pull-in to the 
 choosing replacement supply. It never moves a travelling car by towing. A failed replan on a
 parking leg asks for this ordered recovery, so the stuck-agent watchdog does not teleport the car
 (`TRAFFIC-20`). A displaced resident with a persistent car and no home left walks.
+
+Recovery replans from a lane, so a car with none waits. That is a driver whose job ended on the
+way: `assign_work_building` clears its destination, exit and route, and the car stops at its lane
+end with no lane, path or plan (`TRAFFIC-29`). If its bay then goes, recovery asks again every 30
+game minutes. A load leaves such a car as it stands, as the running game does, at any point of
+that wait (`PARK-08`).
 
 ### Economy quotes (`PARK-02`)
 
