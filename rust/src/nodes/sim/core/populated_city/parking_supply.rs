@@ -10,7 +10,7 @@ use crate::simulation::parking::PlaceSource;
 #[test]
 fn the_fixture_parks_on_its_cross_streets_and_in_lots_along_its_rows() {
     let side_m = 2.0 * CROSS_SPACING_M;
-    let core = zoned_city(side_m);
+    let mut core = zoned_city(side_m);
     let graph = &core.region_graph;
     let (mut cross, mut rows) = (0, 0);
     for id in (0..graph.edge_count()).filter(|&id| !graph.edge(id).deleted) {
@@ -53,4 +53,11 @@ fn the_fixture_parks_on_its_cross_streets_and_in_lots_along_its_rows() {
             building.center_y
         );
     }
+    // The supply survives a save: the wider cross streets' curb frames among it.
+    let path = std::env::temp_dir().join(format!("metrum_supply_{}.sqlite", std::process::id()));
+    let path_text = path.to_str().expect("a temporary path");
+    core.save_game_settled_at(path_text, None, 0).expect("the fixture saves");
+    core.load_game_internal(path_text).expect("the fixture loads");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(core.parking.counts().0, bays);
 }

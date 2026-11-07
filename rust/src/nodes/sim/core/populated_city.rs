@@ -367,9 +367,10 @@ fn register_small_lot(core: &mut SimCore) -> String {
 
 // A parking lane on both kerbs of every cross street, as a player's road type would have drawn
 // them; the rows run east-west, so a trunk gets none, and a row's back-to-back lots have no depth
-// to give. Runs on the bulk load's edges, before its one finalization lays them out.
-fn add_kerbside_lanes(core: &mut SimCore) {
+// to give. Runs on the bulk load's edges, before its one finalization lays them out; returns them.
+fn add_kerbside_lanes(core: &mut SimCore) -> Vec<usize> {
     let graph = &mut core.region_graph;
+    let mut parked = Vec::new();
     for edge in 0..graph.edge_count() {
         let road = graph.edge(edge);
         let (start, end) = (graph.node(road.start_node).pos, graph.node(road.end_node).pos);
@@ -382,17 +383,15 @@ fn add_kerbside_lanes(core: &mut SimCore) {
             right: true,
         };
         graph.set_edge_cross_section(edge, fwd, bkw, None, both, attributes);
+        parked.push(edge);
     }
+    parked
 }
 
 // Publishes the kerbside bays of the laid-out grid: a bulk load runs no road commit, which would.
-fn publish_kerbside_bays(core: &mut SimCore) {
-    let graph = &core.region_graph;
-    let parked = (0..graph.edge_count())
-        .filter(|&edge| graph.edge(edge).parking != RoadParking::NONE)
-        .collect();
+fn publish_kerbside_bays(core: &mut SimCore, parked: Vec<usize>) {
     core.transit_network.roadbed.compile_dirty(&core.region_graph);
-    core.reconcile_parking_frontages(&parked);
+    core.reconcile_parking_frontages(&parked.into_iter().collect());
 }
 
 // A small lot at the middle of every `ROW_BLOCKS_PER_LOT`th row block, on alternating sides,
@@ -495,11 +494,14 @@ fn street_grid_in_world(
         };
         add_road(&mut core, (start, z), (end, z), lanes);
     }
-    add_kerbside_lanes(&mut core);
+    let parked = add_kerbside_lanes(&mut core);
     {
         let core = &mut core;
         core.transit_network
             .finalize_bulk_load(&mut core.region_graph, &mut core.allocator);
+        // Their width is in the curb frames' source, as an in-place edit refreshes it.
+        core.zoning
+            .mark_cell_lots_for_roads(&core.region_graph, parked.iter().copied());
     }
     for (k, &row) in trunk_rows.iter().enumerate() {
         let (x, z) = (if k % 2 == 0 { -edge_x } else { edge_x }, row_z[row]);
@@ -521,7 +523,7 @@ fn street_grid_in_world(
     // does, not left to the player's first commit (`ROAD-68-D` part 6).
     core.subsume_world_scale_road_changes();
     core.bump_global_terrain_payload_generation();
-    publish_kerbside_bays(&mut core);
+    publish_kerbside_bays(&mut core, parked);
     (core, row_z, half_x)
 }
 
