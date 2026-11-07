@@ -243,6 +243,7 @@ impl ParkingSystem {
         car_components: Option<&ModeComponentIndex>,
     ) {
         use crate::simulation::buildings::allocator::BuildingEntranceKey;
+        assert!(self.retired_dirty.is_empty(), "retired access waits for its refresh");
         let (chunks, reach) = self.door_neighbourhood(doors, allocator);
         let in_reach = |pos: [f32; 3]| {
             doors.iter().filter_map(|&b| allocator.entrances.get(b)).any(|door| {

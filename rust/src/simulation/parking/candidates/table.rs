@@ -27,8 +27,7 @@ const DOOR_REACH_OUT_SQ: f32 = 400.5 * 400.5;
 #[inline]
 pub(super) fn within_door_reach(dx: f32, dz: f32) -> bool {
     let squared = dx * dx + dz * dz;
-    squared < DOOR_REACH_SURE_SQ
-        || (squared <= DOOR_REACH_OUT_SQ && dx.hypot(dz) <= DOOR_REACH_M)
+    squared < DOOR_REACH_SURE_SQ || (squared <= DOOR_REACH_OUT_SQ && dx.hypot(dz) <= DOOR_REACH_M)
 }
 
 /// What a door reads of one bay to place it in its list.
@@ -83,7 +82,10 @@ impl EconomyRow {
 
     /// Whether this row gives every end of `other`. O(1).
     pub(super) fn covers(&self, other: &Self) -> bool {
-        other.components().iter().all(|c| self.components().contains(c))
+        other
+            .components()
+            .iter()
+            .all(|c| self.components().contains(c))
             && other.targets().all(|t| self.targets().any(|own| own == t))
     }
 }
@@ -312,9 +314,9 @@ impl PlaceTable {
     ) -> DestinationCandidates {
         let door = [entrance.door_pos.x, entrance.door_pos.y];
         let (cx, cz) = chunk_at(door);
-        if !(cz - 1..=cz + 1)
-            .any(|z| (cx - 1..=cx + 1).any(|x| self.chunks.get(&(x, z)).is_some_and(|r| !r.is_empty())))
-        {
+        if !(cz - 1..=cz + 1).any(|z| {
+            (cx - 1..=cx + 1).any(|x| self.chunks.get(&(x, z)).is_some_and(|r| !r.is_empty()))
+        }) {
             return DestinationCandidates::default();
         }
         SCRATCH.with_borrow_mut(|scratch| {

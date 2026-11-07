@@ -82,6 +82,7 @@ impl ParkingSystem {
     /// actually enters or leaves, parallel by door. The caller needs current routing: without it
     /// the economy ends wait for the adoption and the full rebuild owns that bookkeeping.
     /// Returns the doors whose list of places changed.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish_place_changes(
         &mut self,
         own: &[usize],
@@ -95,7 +96,8 @@ impl ParkingSystem {
         crate::thread_pools::install(|| {
             self.follow_host_doors(hosts, allocator, network, graph);
             let mut changed = self.changed_places(allocator, network, graph, components);
-            let mut doors = self.rebuild_doors(own, false, allocator, network, graph, Some(components));
+            let mut doors =
+                self.rebuild_doors(own, false, allocator, network, graph, Some(components));
             let reach = changed_reach(&mut changed, network, graph);
             let this = &*self;
             let mut edits: Vec<_> = near
@@ -115,7 +117,12 @@ impl ParkingSystem {
                     .candidates
                     .get(&edit.handle)
                     .map_or(&[][..], |c| &c.entries[..]);
-                if !list.entries.iter().map(|e| e.place).eq(old.iter().map(|e| e.place)) {
+                if !list
+                    .entries
+                    .iter()
+                    .map(|e| e.place)
+                    .eq(old.iter().map(|e| e.place))
+                {
                     doors.push(edit.door);
                 }
                 if list.entries.is_empty() {
@@ -205,6 +212,7 @@ impl ParkingSystem {
 
     // One door's list with the changed bays taken out and their new rows merged in, or `None`
     // when none of them concerns it.
+    #[allow(clippy::too_many_arguments)]
     fn door_edit(
         &self,
         building: usize,
@@ -327,7 +335,9 @@ impl ParkingSystem {
                 .resolve(entry.place)
                 .filter(|&p| self.places.access[p].edge_idx == edge)
                 .and_then(|_| self.live_access(entry.place, network, graph))
-                .is_some_and(|access| EconomyRow::at(&access, components, network, graph).covers(row))
+                .is_some_and(|access| {
+                    EconomyRow::at(&access, components, network, graph).covers(row)
+                })
         })
     }
 
@@ -353,15 +363,18 @@ impl ParkingSystem {
         let foot = FootGraph::default();
         let table = self.place_table(foot, &chunks, bounds, network, graph, Some(components));
         let index = table.place_index();
-        edits.par_iter_mut().filter(|edit| edit.whole_economy).for_each(|edit| {
-            let centre = &allocator.buildings[edit.building];
-            edit.list.economy = table.economy_of(
-                &edit.list.entries,
-                &index,
-                [centre.center_x, centre.center_y],
-                graph,
-            );
-        });
+        edits
+            .par_iter_mut()
+            .filter(|edit| edit.whole_economy)
+            .for_each(|edit| {
+                let centre = &allocator.buildings[edit.building];
+                edit.list.economy = table.economy_of(
+                    &edit.list.entries,
+                    &index,
+                    [centre.center_x, centre.center_y],
+                    graph,
+                );
+            });
     }
 }
 
@@ -397,8 +410,12 @@ impl ParkingEconomyEnds {
         graph: &RegionGraph,
     ) -> Self {
         let held = rows.clone().all(|row| {
-            row.components().iter().all(|c| self.components.binary_search(c).is_ok())
-                && row.targets().all(|t| self.targets.binary_search(&t).is_ok())
+            row.components()
+                .iter()
+                .all(|c| self.components.binary_search(c).is_ok())
+                && row
+                    .targets()
+                    .all(|t| self.targets.binary_search(&t).is_ok())
         });
         if held {
             return Self {

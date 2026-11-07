@@ -59,14 +59,20 @@ impl Default for FootEnds {
 impl FootEnds {
     /// The pedestrian lanes this entrance meets. O(1).
     pub(super) fn lanes(&self) -> impl Iterator<Item = usize> + '_ {
-        self.ends.iter().map(|end| end.lane).filter(|&lane| lane != usize::MAX)
+        self.ends
+            .iter()
+            .map(|end| end.lane)
+            .filter(|&lane| lane != usize::MAX)
     }
 
     /// These ends on `foot`'s lane numbers. A lane outside it is out of every search's reach, so
     /// the end drops out as if the lane were missing. O(1) expected.
     pub(super) fn on(mut self, foot: &FootGraph) -> Self {
         for end in &mut self.ends {
-            end.lane = foot.ids.get(&end.lane).map_or(usize::MAX, |&id| id as usize);
+            end.lane = foot
+                .ids
+                .get(&end.lane)
+                .map_or(usize::MAX, |&id| id as usize);
         }
         self
     }
@@ -174,7 +180,9 @@ fn flood(
             labels.labels[seed] = (labels.stamp, 0.0);
         }
         for &seed in seeds {
-            visit_adjacent(seed, reverse, network, graph, |next| labels.relax(next, 0.0));
+            visit_adjacent(seed, reverse, network, graph, |next| {
+                labels.relax(next, 0.0)
+            });
         }
         let mut reached = seeds.to_vec();
         while let Some((lane, cost)) = labels.settle() {
@@ -379,8 +387,8 @@ impl WalkField {
                         end.along_m - seed.along_m
                     };
                     if seed.lane == end.lane && along >= 0.0 {
-                        best = best
-                            .min(door.local_s + along / AGENT_WALK_SPEED_MS + target.local_s);
+                        best =
+                            best.min(door.local_s + along / AGENT_WALK_SPEED_MS + target.local_s);
                     }
                 }
             }
