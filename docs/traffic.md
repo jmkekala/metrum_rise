@@ -1880,8 +1880,8 @@ A resident's car is a persistent thing: it stands in a bay, a trip walks to it, 
 walks on, and it stays where it was left. `PARK-01` is the supply and the parked cars, `PARK-05`
 the kerbside lanes, `PARK-02` the resident trips and what the economy quotes for them. Freight
 still drives door to door (`PARK-02` round 2b, [below](#freight-and-round-2b)). The work is
-Veeti's `feat/parking` branch with five fix rounds, on branch `port-park-merge` at save format 118,
-not landed on `dev`; [acceptance](#parking-acceptance-park-01-park-02-park-05) is under the
+Veeti's `feat/parking` branch with its fix rounds, landed on `dev` on 2026-11-07 at save format 118;
+[acceptance](#parking-acceptance-park-01-park-02-park-05) is under the
 performance contract. Implementation: `simulation/parking.rs` and `simulation/parking/`,
 `economy/agents/tick/parking.rs` and `tick/parking/`, `tick/planning/parking.rs`,
 `nodes/sim/core/parking.rs`, `godot/scripts/renderers/parked_cars.gd`.
@@ -2639,46 +2639,51 @@ Current known bounded scans:
 
 ### Parking acceptance (`PARK-01`, `PARK-02`, `PARK-05`)
 
-Round M7c's session, 2026-11-07, one boot, `port-park-merge` tree `7858eede` (`ed154d57` adds docs
-only), against `dev` `139c9563`, on the fixture with kerbside supply: exclusive locks, P-cores, 8
-workers, no Godot, no build, a browser open. The frame budget and the 100k load are in
+The landing's session, 2026-11-07 19:22-20:03, one boot, `port-park-merge` tree `c9dda717` (`324d6dde`
+and later add docs only), on the fixture with kerbside supply: exclusive locks, P-cores, 8 workers, no
+Godot, no build, a browser open. `dev` was not run (the user: no commits since this work began): its
+figures are round M7c's samples from the same boot, same binary, SHA-256 `139c9563`, not a same-session
+control. The frame budget and the 100k load are in
 [`simulation.md`](simulation.md#parking-frame-and-load-acceptance-park-02), the economy contract in
 [`economy.md`](economy.md#parking-contract-acceptance-park-02) and the commit breakdown and
 `benchmark_parking_locality` in [`roads.md`](roads.md#parking-commit-acceptance-park-02).
 
-`PERF-06`, idle fixtures, `dev`, final, final, `dev`, 60 samples a slot, 120 a side, the command
-below: every final median is inside `dev`'s quartiles.
+`PERF-06`, idle fixtures, two slots of 60 samples, 120 a side, the command below: no final median is
+above `dev`'s third quartile. Five sit inside `dev`'s quartiles and network at 30k below them. Every
+median reads under round M7c's for the same work counts, by 9 to 31%, which is why this table is no
+evidence of a gain: with no control in the session the machine cannot be told from the code.
 
-| State | Agents | `dev` q1 / median / q3 | Final median |
-| --- | ---: | --- | --- |
-| network | 10,000 | 0.270 / 0.368 / 0.537 | 0.383 |
-| network | 30,000 | 0.601 / 0.762 / 1.105 | 0.803 |
-| access_egress | 10,000 | 0.520 / 0.655 / 0.909 | 0.719 |
-| access_egress | 30,000 | 1.350 / 1.620 / 2.241 | 1.812 |
-| access_ingress | 10,000 | 0.205 / 0.264 / 0.362 | 0.252 |
-| access_ingress | 30,000 | 0.334 / 0.428 / 0.577 | 0.462 |
+| State | Agents | `dev` q1 / median / q3 (M7c's) | M7c's tree median | Final median |
+| --- | ---: | --- | --- | --- |
+| network | 10,000 | 0.270 / 0.368 / 0.537 | 0.383 | 0.281 |
+| network | 30,000 | 0.601 / 0.762 / 1.105 | 0.803 | 0.555 |
+| access_egress | 10,000 | 0.520 / 0.655 / 0.909 | 0.719 | 0.613 |
+| access_egress | 30,000 | 1.350 / 1.620 / 2.241 | 1.812 | 1.648 |
+| access_ingress | 10,000 | 0.205 / 0.264 / 0.362 | 0.252 | 0.220 |
+| access_ingress | 30,000 | 0.334 / 0.428 / 0.577 | 0.462 | 0.389 |
 
 The populated peak of the phase: 73 candidates a tick, 194 at most, at 30k 32×; 6.4 and 57 at 100k
-1×. The parked rebuild's share is 5.1% of frame time at 30k 32×, 0.9% at 100k 1×.
+1× (round M7c). The parked rebuild's share is 5.1% of frame time at 30k 32×, 0.9% at 100k 1× (M7c).
 
-`parking_employment_reach`, 10k, within 900 s: **82.6%**, 28,134 of 34,048 pairs, against 46.7% with
+Round M7c's reading, not rerun: `parking_employment_reach`, 10k, within 900 s: **82.6%**, 28,134 of 34,048 pairs, against 46.7% with
 no kerbside supply; 24 of 32 sampled workers had an available car.
 
 **Correctness**, `tools/sim02_gate.py envelope determinism --bursts departures,settlements`, 14
-days, the shift probe in the binary: saturation, detours, trip failures, lanes over capacity and
+days, the shift probe in the binary, rerun on the final tree: saturation, detours, trip failures, lanes over capacity and
 stacked cars read **0** at 10k and 30k, with deliveries alive at 1,389 and 3,701 a day. 0 violations
 in every workload, including fiscal stress and arrivals. Departures at 10k / 30k: drove 43.7 / 41.4%,
 walking quicker 35.8 / 33.1, car away 15.9 / 16.0, "no drive route" 4.5 / 5.9, destination full 0.2 /
-3.6, stored 0, no parking within 400 m 0.
+3.6, stored 0, no parking within 400 m 0. Every day and lane record equals round M7c's byte for
+byte. Connector sweeps on the Kuopio map and the fresh 100k city: 352 and 24,834 connectors, 0 failing.
 
-60 days at 10k, the same counts: 0 on `dev`, and **0 on final** since round M8 (tree `c9dda717`, the
-same probe, 8 workers), with 1,554 deliveries a day over the last 14. Round M7c read one trip failure
+60 days at 10k, the same counts: 0 on `dev`, and **0 on final** in round M8's run (tree `c9dda717`,
+the same probe, 8 workers), with 1,554 deliveries a day over the last 14. Round M7c read one trip failure
 on day 59 (`TRAFFIC-30`): a car replanned on a connector from the junction, then drove the connector's
 road to a far end its route never named. The fix moves no day of the record before it.
 
-**Determinism.** The same gate, 10k at 8 workers: repeat, 1 and 3 workers and reload all null. At 1,
-4 and 8 workers at each speed, round M7b's product probe on this tree: identical across workers. The
-two speeds differ by design.
+**Determinism.** The same gate, 10k at 8 workers: repeat, 1 and 3 workers and reload all null, rerun on the final tree. Round M7b's product probe at 1, 4 and 8 workers at each
+speed on its tree, and round M8's at 1 and 8 on the final tree: identical across workers. The two speeds
+differ by design.
 
 Measured earlier, round M2, before the fixture supply, on the idle `PERF-06` fixtures (2026-11-06,
 `port-park-merge`, release test binaries, 8 workers, P-cores, nothing else running): the parking

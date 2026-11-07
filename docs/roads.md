@@ -10853,9 +10853,10 @@ next measured.
 
 ### Parking commit acceptance (`PARK-02`)
 
-Round M7c's session, 2026-11-07, one boot, `port-park-merge` tree `7858eede` against `dev`
-`139c9563`, exclusive locks, P-cores, 8 workers, runs `dev`, final, final, `dev`, three commits a
-city, each city prepared by its own binary:
+The landing's session, 2026-11-07 19:22-20:03, one boot, `port-park-merge` tree `c9dda717`, exclusive
+locks, P-cores, 8 workers, two runs, three commits a city, each city prepared by its own binary.
+`dev` was not run (the user: no commits since this work began): its column is round M7c's runs from
+the same boot, same binary, SHA-256 `139c9563`, not a same-session control:
 
 ```bash
 METRUM_COMMIT_TIERS=0,10000,30000,100000 RAYON_NUM_THREADS=8 METRUM_PERF_CACHE="$ARTIFACTS" \
@@ -10866,16 +10867,16 @@ METRUM_COMMIT_TIERS=0,10000,30000,100000 RAYON_NUM_THREADS=8 METRUM_PERF_CACHE="
 
 | Tier | `dev` commit, ms, by sample | Final | Adoption latency, first sample, `dev` / final |
 | --- | --- | --- | --- |
-| 0 | 8.6, 9.0 / 5.9, 5.1 / 5.0, 4.9 | 8.8, 9.3 / 5.8, 5.7 / 5.1, 5.2 | 1 / 3 |
-| 10k | 13.9, 16.0 / 7.3, 8.0 / 4.4, 4.7 | 13.7, 13.3 / 6.8, 6.7 / 4.7, 5.7 | 22 / 60 |
-| 30k | 14.2, 13.3 / 7.7, 7.7 / 5.2, 5.3 | 12.1, 12.6 / 7.1, 6.8 / 4.7, 4.7 | 44 / 83 |
-| 100k | 15.1, 15.4 / 8.3, 8.4 / 7.0, 7.1 | 15.6, 15.1 / 8.3, 8.5 / 8.3, 7.7 | 303 / 339 |
+| 0 | 8.6, 9.0 / 5.9, 5.1 / 5.0, 4.9 | 9.5, 9.5 / 5.3, 5.4 / 4.9, 5.5 | 1 / 3, 2 |
+| 10k | 13.9, 16.0 / 7.3, 8.0 / 4.4, 4.7 | 15.0, 14.3 / 6.8, 7.4 / 5.0, 5.3 | 22 / 63, 60 |
+| 30k | 14.2, 13.3 / 7.7, 7.7 / 5.2, 5.3 | 13.0, 12.9 / 7.3, 7.3 / 4.8, 4.6 | 44 / 106, 84 |
+| 100k | 15.1, 15.4 / 8.3, 8.4 / 7.0, 7.1 | 15.8, 15.9 / 8.6, 8.7 / 8.1, 7.4 | 303 / 327, 339 |
 
 Every commit is inside 16.7 ms and level with `dev`. The door catchments and the frontage reconcile
 of a commit left the commit for the frame after it, which D7 holds, so they read in the adoption
-latency: 36 to 39 ms more at the first sample at 10k, 30k and 100k. No gate names that latency.
+latency: 24 to 62 ms more at the first sample at 10k, 30k and 100k. No gate names that latency.
 
-`benchmark_parking_locality`, tiers 0, 1,000, 10,000 and 100,000, background growing, neighbourhood
+Round M7c's reading, not rerun: `benchmark_parking_locality`, tiers 0, 1,000, 10,000 and 100,000, background growing, neighbourhood
 fixed: candidate rebuild 0.40, 0.35, 0.45, 0.46 ms, road rebuild 3.8, 3.6, 4.0, 3.9 ms, per lot
 0.25 ms, 72 bays, products identical at every tier. Cost follows the neighbourhood.
 

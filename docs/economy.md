@@ -1922,8 +1922,10 @@ The cities hold no footpath and their walking proof holds. Commands and results 
 
 #### Parking contract acceptance (`PARK-02`)
 
-Round M7c's session, 2026-11-07, one boot, `port-park-merge` tree `7858eede` against `dev`
-`139c9563`, exclusive locks, P-cores, 8 workers, runs `dev`, final, final, `dev`:
+The landing's session, 2026-11-07 19:22-20:03, one boot, `port-park-merge` tree `c9dda717`, exclusive
+locks, P-cores, 8 workers, two runs. `dev` was not run (the user: no commits since this work began):
+its column is round M7c's runs from the same boot, same binary, SHA-256 `139c9563`, not a same-session
+control.
 
 ```bash
 METRUM_PERF_RESIDENTS=30000 METRUM_PERF_CACHE="$ARTIFACTS" RAYON_NUM_THREADS=8 \
@@ -1933,18 +1935,19 @@ METRUM_PERF_RESIDENTS=30000 METRUM_PERF_CACHE="$ARTIFACTS" RAYON_NUM_THREADS=8 \
 
 | `perf_contract_day` | `dev` | Final | Budget |
 | --- | --- | --- | --- |
-| 10k hourly / daily, ms | 0.95, 0.91 / 0.00 | 0.98, 1.01 / 0.00 | 40 / 10 |
-| 30k hourly / daily, ms | 4.49, 4.58 / 0.00 | 3.63, 3.59 / 0.00 | 120 / 30 |
-| Load, 10k / 30k, s | 1.6 / 4.4 | 2.9 / 7.3 | |
+| 10k hourly / daily, ms | 0.95, 0.91 / 0.00 | 0.98, 1.02 / 0.00 | 40 / 10 |
+| 30k hourly / daily, ms | 4.49, 4.58 / 0.00 | 3.45, 3.52 / 0.00 | 120 / 30 |
+| Load, 10k / 30k, s | 1.6 / 4.4 | 2.8 / 7.2 | |
 
 The agent tick, locality and employment reach are in
 [parking acceptance](traffic.md#parking-acceptance-park-01-park-02-park-05).
 
-**The shift, stopped at numbers.** `tools/sim02_gate.py envelope determinism --bursts
-departures,settlements` passes with the recorded envelope untouched: 0 violations, 23 notes against
-`dev`'s 13, determinism null. Whether a metric's new level is accepted is the user's call, metric by
-metric, and the envelope is not re-recorded. 14 days, baseline workload, a read-only shift probe in
-the binary. Column M5a is the first tree with the fixture's supply; M6c adds the door catchments,
+**The shift.** `tools/sim02_gate.py envelope determinism --bursts departures,settlements`, rerun on
+the final tree, passes against the envelope recorded before parking: 0 violations, 23 notes against
+`dev`'s 13, determinism null. Every day and lane record of the 14 days, in all five workloads, is
+byte-identical to round M7c's tree, so `PARK-10` and `TRAFFIC-30` move nothing here. `dev`'s column
+is M7c's: its binary has not changed. 14 days, baseline workload, a read-only shift probe in the
+binary. Column M5a is the first tree with the fixture's supply; M6c adds the door catchments,
 prepared answers and the wrapped departure; final adds `PARK-08`, `TRAFFIC-29` and the 10k grid.
 
 | 10k | `dev` | M5a | M6c | Final |
@@ -1965,12 +1968,12 @@ prepared answers and the wrapped departure; final adds `PARK-08`, `TRAFFIC-29` a
 | Out of stock, 14-day mean / day 14 | 3,878 / 5,088 | 1,700 / 1,044 | 1,710 / 1,069 | 1,611 / 745 |
 | Bankruptcies | 500 | 62 | 68 | 50 |
 
-60 days at 10k, last 14 days, `dev` against final: out of stock 128.8 against **180.6** (reference
-`dev` 128.8, M5a's smaller city 129.2), 2.4 against 3.2% of households; commutes by car 90.2 against
+60 days at 10k, last 14 days, `dev` against final (round M8's run on tree `c9dda717`): out of stock
+128.8 against **181.4** (M7c's tree 180.6, M5a's smaller city 129.2), 2.4 against 3.2% of households; commutes by car 90.2 against
 40.6%, shopping 96.3 against 67.8%; employment rate 0.677 against 0.681; deliveries 1,427 against
 1,554 a day; adult home minutes 806 against 563; bankruptcies over the 60 days 300 against 345.
-Saturation, detours, lanes over capacity and stacked cars read 0 on both. **Trip failures read 1 on
-final, 0 on `dev`:** see [parking acceptance](traffic.md#parking-acceptance-park-01-park-02-park-05).
+Saturation, detours, trip failures, lanes over capacity and stacked cars read 0 on both; see
+[parking acceptance](traffic.md#parking-acceptance-park-01-park-02-park-05).
 
 **Who moved what since M5a.** 10k: the grid one block wider (fixture revision 7), so a
 bigger city with room. Out of stock is a start-up wave that decays in every column: day 5 reads 2,727

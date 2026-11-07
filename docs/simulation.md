@@ -284,7 +284,7 @@ Save format 117 (`ROAD-62`, round R7a, 2026-11-06) adds the table `roundabout_ed
 ring edge no roundabout edit could have built. No older save loads. The Kuopio fixture is re-recorded
 in format 117: `sqldiff` shows only the version and the new, empty table.
 
-Save format 118 (`PARK-01`, `PARK-02`, `PARK-05`, branch `port-park-merge`, 2026-11-06, not landed)
+Save format 118 (`PARK-01`, `PARK-02`, `PARK-05`, landed on `dev` 2026-11-07)
 adds parking on top of 117 in one step, with no migration; no older save loads. `network_edges` gains `parking` after `sidewalks`: the edge's kerbside parking lanes
 as a bit set (bit 0 left, bit 1 right, looking along the edge; 0 without any; each lane is included
 in the stored `width`), and a load fails on any other value. New tables: `parking_state`, one
@@ -1252,76 +1252,87 @@ determinism checks and `./run.sh --test` are not timing runs and may share the m
 
 ### Parking frame and load acceptance (`PARK-02`)
 
-Round M7c's session, 2026-11-07, one boot, `port-park-merge` tree `7858eede` (`ed154d57` adds docs
-only) against `dev` `139c9563`, both release test binaries. Exclusive locks, `taskset -c
-0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, sessions 15:07-15:29, 15:30-15:44, 15:44-16:26 and
-16:26-16:47, no Godot, no build, a browser open. Runs in the order `dev`, final, final, `dev`, the
-unmodified gate:
+The landing's session, 2026-11-07 19:22-20:03, one boot, `port-park-merge` tree `c9dda717`
+(`324d6dde` and later add docs only), release test binary SHA-256 `b629b932789054dd`. Exclusive
+locks, `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, no Godot, no build, a browser open,
+each row run twice, the unmodified gate:
 
 ```bash
 python3 tools/sim02_gate.py perf07 --perf07-tiers 30000 --perf07-speeds 1,32 \
   --binary "$TEST_BINARY" --artifacts "$ARTIFACTS" --cpus 0,2,4,6,8,10,12,14
 ```
 
-| Row | `dev`, two runs | Final, two runs | Gate |
-| --- | --- | --- | --- |
-| 30k 1×: unpreempted / p99.9 / preempted less wait, ms | 4.15, 4.04 / 3.41, 3.26 / 3.25, 3.35 | **8.45, 8.10** / 4.33, 4.39 / 4.14, 4.87 | **Fail** |
-| 30k 32×: same | 7.16, 6.89 / 6.86, 6.80 / 4.99, 6.43 | **10.64, 9.98** / **9.03, 8.46** / 6.77, 7.34 | **Fail** |
-| 30k 32×: frames over 8 ms, unpreempted + preempted | 0 + 0 | 7 + 0, 6 + 1 | |
-| 100k 1×: unpreempted / p99.9 / preempted less wait | **17.42, 18.15** / **11.11, 11.45** / **15.47, 13.37** | **12.57, 12.74** / **11.16, 11.28** / **13.18, 13.17** | **Fail on both** (`PERF-09`) |
-| 100k 1×: frames over 8 ms, unpreempted; p99; mean | 2,688, 2,297; 8.74, 8.70; 6.72, 6.78 | 8,710, 9,932; 9.80, 9.66; 7.14, 7.14 | |
-| 100k 32×, reported (`PERF-08`): max / p99 / mean / over 16.7 ms | 26.4, 27.6 / 22.43, 22.19 / 13.49, 13.45 / 324, 330 | 29.0, 28.6 / 22.75, 22.72 / 15.60, 15.60 / 676, 696 | Reported |
+**`dev` was not run in this session (the user, 2026-11-07).** `dev` has no commits since this work
+began, so its column is round M7c's runs from the same boot, same binary, SHA-256 `139c9563`, from
+15:07 to 16:47 the same day. It is not a same-session control: a gap smaller than the run spread may be
+the machine. M7c's column is `port-park-merge` tree `7858eede` in those sessions.
+
+| Row | `dev`, two runs (M7c's) | M7c's tree, two runs | Final, two runs | Gate |
+| --- | --- | --- | --- | --- |
+| 30k 1×: unpreempted / p99.9 / preempted less wait, ms | 4.15, 4.04 / 3.41, 3.26 / 3.25, 3.35 | 8.45, 8.10 / 4.33, 4.39 / 4.14, 4.87 | 7.78, 7.52 / 4.38, 4.46 / 4.72, 6.03 | **Pass** |
+| 30k 32×: same | 7.16, 6.89 / 6.86, 6.80 / 4.99, 6.43 | 10.64, 9.98 / 9.03, 8.46 / 6.77, 7.34 | **9.91, 9.74** / **9.30, 8.44** / 7.72, 5.97 | **Fail** |
+| 30k 32×: frames over 8 ms, unpreempted + preempted | 0 + 0 | 7 + 0, 6 + 1 | 5 + 4, 6 + 0 | |
+| 100k 1×: unpreempted / p99.9 / preempted less wait | **17.42, 18.15** / **11.11, 11.45** / **15.47, 13.37** | 12.57, 12.74 / 11.16, 11.28 / 13.18, 13.17 | **12.14, 12.18** / **10.36, 10.42** / **12.58, 10.59** | **Fail on both** (`PERF-09`) |
+| 100k 1×: frames over 8 ms, unpreempted; p99; mean | 2,688, 2,297; 8.74, 8.70; 6.72, 6.78 | 8,710, 9,932; 9.80, 9.66; 7.14, 7.14 | 8,581, 9,207; 9.28, 9.27; 7.00, 7.05 | |
+| 100k 32×, reported (`PERF-08`), M7c's, not rerun: max / p99 / mean / over 16.7 ms | 26.4, 27.6 / 22.43, 22.19 / 13.49, 13.45 / 324, 330 | 29.0, 28.6 / 22.75, 22.72 / 15.60, 15.60 / 676, 696 | | Reported |
+
+Every row is within the spread [above](#frame-budget-perf-07) of M7c's, 25% on the maximum and 10% on
+the p99. Round M8's two fixes moved nothing.
 
 **Attribution, per frame.** The user's rule of 2026-11-07: a miss from `RENDER-27`/`RENDER-28`, so
-from walkers' pose, does not block this merge. Per-frame timer builds of both trees ran the same day
-at the same frame index; a frame's share is its `pose` stage less `dev`'s at that index, and the
-frame's total is read from a build with no timers in the frame.
+from walkers' pose, does not block this merge. A per-frame timer build of the final tree ran in this
+session and `dev`'s timer build in round M7c's; a frame's share is its `pose` stage less `dev`'s at
+the same frame index, and the frame's total is read from a build with no timers in the frame.
 
-| Reading | Frames over 8 ms, unpreempted | Pose, final / `dev` | Still over 8 ms with the share out |
+| Reading | Frames over 8 ms, unpreempted | Pose | Still over 8 ms with the share out |
 | --- | --- | --- | --- |
-| 30k 1×, one run | 1 (22:04, 8.03 ms) | 1.25 / 0.16 | **0** (6.94 ms). Passes by the rule |
-| 30k 32×, six runs | 4 to 7 a run, 32 in all | 0.40 to 1.38 of share | **2 or 3 a run, 16 in all, up to 9.51 ms** |
-| 100k 1×, one run | 8,745 | 1.35 / 0.51 mean | **1,703**, mean 9.11 ms; `dev` itself has 1,685 over 8 ms |
+| 30k 1×, one run | **0**, worst 7.86 ms | | **0** (6.69 ms). Passes without the rule |
+| 30k 32×, six runs | 4 to 9 a run, 38 in all | 0.28 to 1.18 of share | **2 to 4 a run, 16 in all, up to 9.33 ms** |
+| 100k 1×, one run, M7c's, not rerun | 8,745 | 1.35 / 0.51 mean, final / `dev` | **1,703**, mean 9.11 ms; `dev` itself has 1,685 over 8 ms |
 
-With the share out, 30k 32× reads 8.47 to 9.51 ms unpreempted and 7.98 to 9.27 ms p99.9 over the six
-runs. The frames left are all building changes in minute 4 of the hour (`REMOVAL_WINDOW_START`):
-00:04, 17:04, 21:04 and 22:04. Frame 22:04 at 32×, against `dev` at the same minute: slot 4.4 against
-3.0 ms, of it the site's publication in `timed events` 4.3 against 0.5; agent 2.6 against 1.8;
-snapshot 2.9 against 1.0, pose 1.3 of it. A building's removal costs 2.9 to 3.7 ms in its own slot
-against 1.1 to 1.6 on `dev`. No census frame is among them: the census's own slot peaks at 2.2 ms and
-its hours are flat this day. At 100k 1× the frames left sit in the shift hours, 05:xx, 06:xx, 13:xx,
-and what is added there is movement, 4.55 ms against 3.16, not pose.
+With the share out, 30k 32× reads 8.59 to 9.33 ms unpreempted and 7.95 to 8.69 ms p99.9 over the six
+runs. The frames left are all building changes in minute 4 of the hour (`REMOVAL_WINDOW_START`): a
+site's spawn at 00:04, 13:04, 17:04 and 22:04, a removal at 08:04 and 21:04. Round M7c read four of
+these; 08:04 and 13:04 are the same frames, over by 0.08 and 0.32 ms in one run each. Frame 22:04 at
+32×, against `dev` at the same minute: slot 4.3 against 3.0 ms, of it the site's publication in `timed
+events` 4.5 against 0.5; agent 2.5 against 1.8; snapshot 2.8 against 1.0, pose 1.3 of it. A building's
+removal costs 2.9 to 3.8 ms in its own slot against 1.1 to 1.6 on `dev`. No census frame is among them:
+the census's own slot peaked at 2.2 ms in M7c's day. At 100k 1× (M7c's timers) the frames left sit in the
+shift hours, 05:xx, 06:xx, 13:xx, and what is added there is movement, 4.55 ms against 3.16, not pose.
 
 A site's door publication at 30k (timers, a quiet run, 22 in a day): 1.44 ms mean, 3.16 at most, about
 1,070 doors looked at and 167 edited; the whole publication 2.0 ms mean. It is most of the 3.6 ms of
 a spawn in that frame. The rest of that frame is the same frame's agent tick and snapshot.
 
-**The accepted exception (the user, 2026-11-07).** `PARK-02` lands with `PERF-07` missed at 30k 32×: 2 or
-3 building-change frames a run in minute 4 of the hour, up to 9.51 ms with walkers' pose out, nothing
-over 16.7 ms. The exception covers what was measured here and no more. `PERF-17` revisits the door
-publication in those frames. `tools/sim02_gate.py` does not change. 100k 1× stays with `PERF-09`, as
-parking's cost: max better than `dev`, p99.9 equal, 3.7 times the frames over 8 ms, from walkers'
-movement. Round M8's two fixes (`PARK-10`, `TRAFFIC-30`) were not timed in their round; the landing's
-one session reads them.
+**The accepted exception (the user, 2026-11-07).** `PARK-02` landed with `PERF-07` missed at 30k 32×:
+building-change frames in minute 4 of the hour, nothing over 16.7 ms. The user accepted round M7c's
+measure, 2 or 3 such frames a run, up to 9.51 ms with walkers' pose out, with the 25% run spread on it,
+so a limit of 11.9 ms. The landing's six runs read 2 to 4 a run, up to 9.33 ms. The exception covers
+what was measured here and no more. `PERF-17` revisits the door publication in those frames.
+`tools/sim02_gate.py` does not change: the gate fails at 30k 32×. 100k 1× stays with `PERF-09`, as
+parking's cost: max better than `dev`, p99.9 lower, 3.2 to 4 times the frames over 8 ms, from walkers'
+movement.
 
-**Parking on the sim thread (timers build, day means).**
+**Parking on the sim thread (timers build, day means; 30k this session, 100k round M7c's).**
 
 | Row | 30k 32× | 30k 1× | 100k 1× |
 | --- | --- | --- | --- |
-| Parked rebuild, mean / max ms | 0.23 / 1.35 | 0.02 / 0.94 | 0.07 / 4.08 |
+| Parked rebuild, mean / max ms | 0.23 / 1.96 | 0.02 / 0.90 | 0.07 / 4.08 |
 | Commit + prepared answers (D11), mean ms | 0.24 + 0.18 | 0.03 + 0.03 | 0.12 + 0.11 |
-| Their share of frame time | 9.4% | 2.6% | 3.1% |
+| Their share of frame time | 9.2% | 2.6% | 3.1% |
 | Candidates a tick, mean / peak | 73 / 194 | 2.3 / 26 | 6.4 / 57 |
 
-**Movement pass** (`ROAD-94`; round M7b changed the lane end). 30k 32× mean agent tick 1.97 ms, p99
-2.90; round M6c, an earlier session, 1.96 and 3.04. 1× 1.16 against 1.15. Movement 1.26 ms on the
-timers build against M6c's 1.20 and this session's `dev` 0.86: the lane end did not move it. What it
-pays over `dev` is walkers.
+**Movement pass** (`ROAD-94`; round M7b changed the lane end). 30k 32× mean agent tick 1.96 ms, p99
+2.85; round M6c, an earlier session, 1.96 and 3.04. 1× 1.18 against 1.15. Movement 1.30 ms on the
+timers build against M6c's 1.20 and `dev`'s 0.86 in round M7c's session: the lane end did not move it.
+What it pays over `dev` is walkers.
 
-**Midnight (`PERF-15`).** First frame 7.4 to 7.9 ms at 32× in six runs, past midnight at most 7.31,
-at 1× frame 1 3.43 ms. The burst stays gone.
+**Midnight (`PERF-15`).** First frame 7.3 to 7.9 ms at 32× in six runs, past midnight before minute
+4 at most 8.20 (one frame at 00:03, one run, 7.71 with the pose share out; round M7c 7.30), at 1× frame 1
+3.79 ms. The burst stays gone.
 
-**100k load.** `load_s` 25.40, 25.44 s against `dev`'s 17.20, 17.20 (`METRUM_PERF07_MINUTES=1`).
+**100k load.** `load_s` 25.40, 25.43 s, from the 1× gate's own runs, against `dev`'s 17.20, 17.20
+(round M7c, `METRUM_PERF07_MINUTES=1`).
 The file is 305 MB, of it the JSON columns 94 MB (`parking_state` 64, `agents.parking_trip` 29), 0.3%
 of a load's cycles in both trees (`PARK-06`). Cycles of a load under `perf`, one run a side, 185 G
 against 100 G: cell generation 103 G against 64 G and its checks against the lots

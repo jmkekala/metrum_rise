@@ -6,9 +6,9 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-Parking (`PARK-01`, `PARK-02`, `PARK-05`, Veeti's `feat/parking`) is merged onto branch
-`port-park-merge` at save format 118, not landed on `dev`: the user accepted, on 2026-11-07, its
-`PERF-07` miss at 30k 32× (`PERF-17`); 100k 1× stays with `PERF-09`. A household's car now stands in a kerbside or lot bay, and a resident walks to it,
+Parking (`PARK-01`, `PARK-02`, `PARK-05`, Veeti's `feat/parking`) landed on `dev` on 2026-11-07 at
+save format 118. The user accepted its `PERF-07` miss at 30k 32× (`PERF-17`): the gate fails there, on
+building-change frames up to 9.33 ms with walkers' pose out; 100k 1× stays with `PERF-09`. A household's car now stands in a kerbside or lot bay, and a resident walks to it,
 drives, parks and walks on, with the economy quoting the same trip; freight keeps its door-to-door
 path until round 2b. The parking tick visits candidates from events, not every agent, parked cars
 reach Godot through the render snapshot from cached poses, and a building stands on a road side
@@ -97,7 +97,7 @@ A road can have its sidewalk on one side only: the road builder has Left and Rig
 checkboxes and Road Properties changes a built road's sides
 ([ROAD-107](roads.md#one-sided-sidewalks-road-107)). A building stands on a side with a sidewalk:
 a side without one makes no zoning cells, takes no placed building, and a sidewalk under a door
-cannot be removed ([ROAD-109](zoning.md#8-road-no-build-flag), on the parking branch). The Roundabout tool (`O`) builds a ring on
+cannot be removed ([ROAD-109](zoning.md#8-road-no-build-flag)). The Roundabout tool (`O`) builds a ring on
 empty ground or in place of a junction of 3 to 6 arms: one lane 30-60 m, two lanes 45-80 m,
 one-way, 20 km/h, no zoning, a sidewalk on the outer side, one undo step, and bulldozing a ring
 piece removes the whole ring. Roads join a bare ring from outside. Entering cars give way to the
@@ -1470,6 +1470,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `PARK-01`, `PARK-02`, `PARK-05`, `ROAD-109` landed on `dev` (2026-11-07, save format 118), with `ECON-23`, `PARK-08`, `PARK-10`, `PERF-15`, `TRAFFIC-29` and `TRAFFIC-30`, the rounds below marked not landed. The landing's one timing session ran the branch only: `dev`'s figures are round M7c's from the same boot and binary, as `dev` had no commits since the work began. 30k 1× passes `PERF-07`; 30k 32× misses on 2 to 4 building-change frames a run, up to 9.33 ms with walkers' pose out, inside the exception the user accepted (`PERF-17`); 100k 1× reads 12.2 ms against `dev`'s 18.2 with 3.2 to 4 times the frames over 8 ms (`PERF-09`). `perf_contract_day`, `PERF-06` and the K22 commit, at most 15.9 ms, hold. The envelope gate passes, its 14 days byte-identical to round M7c's tree, and the Kuopio and 100k connector sweeps read 0 failing ([simulation.md](simulation.md#parking-frame-and-load-acceptance-park-02)).
 - `PARK-10`, `TRAFFIC-30` round M8 (branch `port-park-merge`, 2026-11-07, not landed): undoing a road commit keeps its bays and its kerb cars. The undo reattaches the buildings a split moved before it reads their parking, and a stored car no border reaches is towed into a free bay, so a city with no border gets its cars back ([edits and towing](traffic.md#edits-and-towing-park-01-park-05)). A car whose plan is cleared on a junction connector replans from the end of the road the connector leads onto, not from the junction, and 60 days at 10k read 0 trip failures. The user accepted `PERF-07`'s miss at 30k 32× for this merge (`PERF-17`); `PERF-15` is done; 100k 1× stays with `PERF-09` ([acceptance](simulation.md#parking-frame-and-load-acceptance-park-02)). Not timed in this round: the landing's session reads it.
 - `PARK-02` round M7c (branch `port-park-merge`, 2026-11-07, not landed, no code): the final timing session on the combined tree. `PERF-06`, `perf_contract_day`, the K22 commit and the locality check pass against `dev`; job reach within 900 s reads 82.6%. `PERF-07` misses: 30k 1× is one frame of 8.0 to 8.5 ms, under 8 with walkers' pose out; 30k 32× keeps 2 or 3 building-change frames a run up to 9.51 ms with pose out, which blocks by the user's rule; 100k 1× fails as `dev` does (`PERF-09`) with four times the frames over 8 ms. The envelope gate passes, not re-recorded, 23 notes. New rows `PARK-09`, `PARK-10`, `PERF-16`, `CODE-19`, `CODE-20`, `TRAFFIC-30`; the four acceptance headings are filled.
 - `TRAFFIC-29` round M7b (branch `port-park-merge`, 2026-11-07, not landed): a driver whose trip is taken on the way turns at its lane end for its home, with its car, or parks and walks; one with no home goes on to where it was going. An agent on its access path finishes the leg, and a load repairs only rows with invalid saved references, so the orphan repair and its four guards are gone. The 10k fixture is one block wider through its own fallback, a grid left under 2% spare homes, fixture revision 7 ([recovery](traffic.md#recovery-park-02)).
