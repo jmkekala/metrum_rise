@@ -986,6 +986,14 @@ hourly `GrowthDayRecord`, placement/removal counts and the checked agent movemen
 through the next daily boundary. Fiscal generation also enforces 24/24 active intervals before
 publishing its cache. Snapshots are local build products and are not committed.
 
+**Parking supply (`PARK-02`).** The fixture's cross streets carry a parking lane on both kerbs,
+the rows and border trunks none, and a small lot stands on every other row block in a
+checkerboard, placed before the rows are zoned. A row has no depth to give: its back-to-back lots
+fill the 50 m between streets. Each household's car starts parked near its home, like the household
+placed at home: without that, a city admitted at once queues every car at the border, days of a
+road's capacity (14,576 cars at 30k). A car with no free bay near home stays stored and arrives as
+in the game. `parking_supply.rs` holds the fixture to this; `commit_locality.rs` inherits it.
+
 Fixture revisions hash the fixture source and algorithm marker, bootstrap JSON/TOML
 manifests, `economy/profiles.toml`, and `demand/growth_profiles.toml`. Relative paths and
 contents participate, so changed tuning or renamed assets cannot silently reuse a city
