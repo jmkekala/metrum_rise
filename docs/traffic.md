@@ -1634,7 +1634,9 @@ re-derived onto `dev`'s lane-end handling.
   that connector keeps the car and its path at the lane end. Right after that entry, the lane-end
   handler replans from the end of the road it entered (`replan.rs` `replan_after_missed_turn`:
   `plan_network_replan` with the car's access flags, or `plan_border_network_replan` for
-  freight). **Lane-aware (`TRAFFIC-23` (b)):** the onward road is the first successor (stable
+  freight). A car whose plan is cleared on a connector starts from that same place, the end of the
+  road the connector leads onto (`replan_start`, `TRAFFIC-30`): from the junction its route could
+  leave by a road the connector does not reach. **Lane-aware (`TRAFFIC-23` (b)):** the onward road is the first successor (stable
   order) whose lane can host a turn preparation (`lane_hosts_turn_preparation`: one lane, or the
   18 m change and the end buffers fit before its solid zone from its start, more than 38.25 m on
   a flagged two-lane lane), else the first that is not the wanted one (S2); when the road the car
@@ -2029,7 +2031,9 @@ reload and undo all pass through this and the site journal. Removing a bay never
 claims on it are cancelled and a car in it is towed to free supply near home, else stored off-map.
 A resident's car is towed by its home door's catchment, the debug fleet's by the geometric
 `nearest` (straight line, walking speed). Stable handles order the towing. Undo reconciles live
-occupancy; it restores no fleet snapshot. Load validation rejects a kerb place whose edge is
+occupancy; it restores no fleet snapshot. Before it reads any parking it runs the commit's attachment
+repair over the restored edges and the buildings that fronted the edges it removes, as a split left
+them on an edge that no longer exists (`PARK-10`). Load validation rejects a kerb place whose edge is
 missing, deleted or has no parking on that side, and a lot place whose building is gone. A
 detached explicit site retains its rigid pose (`building_detached_poses`), so losing a driveway
 road disables its supply without breaking a save.
@@ -2114,7 +2118,8 @@ a car or not.
 
 A new car reserves the first free fitting place of its home door's catchment before it drives in.
 With no place it stays off-map and unavailable, and supply and release events wake only nearby
-waiting home chunks. A resident keeps the vehicle handle through an outing: `reserve_trip` takes
+waiting home chunks. A woken car drives in from a border; with no border that reaches its home it is
+towed into the free bay (`PARK-10`). A resident keeps the vehicle handle through an outing: `reserve_trip` takes
 exclusive custody and the destination together, in the ordered phase. Returning home releases
 custody even if the car stays at a distant bay.
 
@@ -2666,11 +2671,10 @@ in every workload, including fiscal stress and arrivals. Departures at 10k / 30k
 walking quicker 35.8 / 33.1, car away 15.9 / 16.0, "no drive route" 4.5 / 5.9, destination full 0.2 /
 3.6, stored 0, no parking within 400 m 0.
 
-60 days at 10k, the same counts: 0 on `dev`; on final 0 but for **one trip failure**, on day 59
-(`TRAFFIC-30`): a resident on its `Drive` leg reached node 24 at the end of road 24-65 with a route
-that starts `65, 64, 63`, so it had driven the road the other way from its route. `NoRoad`, one in the
-whole run, reproduced twice. Whether this tree brought it is not shown: round M5a's 60 days read 0,
-on a different grid.
+60 days at 10k, the same counts: 0 on `dev`, and **0 on final** since round M8 (tree `c9dda717`, the
+same probe, 8 workers), with 1,554 deliveries a day over the last 14. Round M7c read one trip failure
+on day 59 (`TRAFFIC-30`): a car replanned on a connector from the junction, then drove the connector's
+road to a far end its route never named. The fix moves no day of the record before it.
 
 **Determinism.** The same gate, 10k at 8 workers: repeat, 1 and 3 workers and reload all null. At 1,
 4 and 8 workers at each speed, round M7b's product probe on this tree: identical across workers. The

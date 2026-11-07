@@ -1296,6 +1296,14 @@ A site's door publication at 30k (timers, a quiet run, 22 in a day): 1.44 ms mea
 1,070 doors looked at and 167 edited; the whole publication 2.0 ms mean. It is most of the 3.6 ms of
 a spawn in that frame. The rest of that frame is the same frame's agent tick and snapshot.
 
+**The accepted exception (the user, 2026-11-07).** `PARK-02` lands with `PERF-07` missed at 30k 32×: 2 or
+3 building-change frames a run in minute 4 of the hour, up to 9.51 ms with walkers' pose out, nothing
+over 16.7 ms. The exception covers what was measured here and no more. `PERF-17` revisits the door
+publication in those frames. `tools/sim02_gate.py` does not change. 100k 1× stays with `PERF-09`, as
+parking's cost: max better than `dev`, p99.9 equal, 3.7 times the frames over 8 ms, from walkers'
+movement. Round M8's two fixes (`PARK-10`, `TRAFFIC-30`) were not timed in their round; the landing's
+one session reads them.
+
 **Parking on the sim thread (timers build, day means).**
 
 | Row | 30k 32× | 30k 1× | 100k 1× |
