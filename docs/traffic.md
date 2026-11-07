@@ -90,10 +90,11 @@ even when retry time and failure count are zero. An agent in network transit at 
 stays there and replans from the node whatever its mode, as the running game does: a road edit
 that rebuilds the junction lane a walker is crossing leaves it at the node with no edge (found in
 `SIM-02-I` part 3, when loading sent such walkers straight into their destination). Delayed
-retries retain their backoff; agents without a usable destination or pending retry still
-receive orphan repair. An agent on a parking leg never does: the leg's
-[recovery](#recovery-park-02) owns it, and in the slot a timed retry fires its row shows no retry
-time or failures, as an orphan's does (`PARK-08`).
+retries retain their backoff. A load repairs only a row whose saved references it could not
+restore: that agent goes on towards its home. A row the running game keeps loads as it stands,
+however little it holds, so a loaded game cannot differ from the one that kept running
+(`TRAFFIC-29`; the repair of bare rows had grown a guard for each state the game keeps, the last
+`PARK-08`, a car in the slot a timed retry fires).
 
 Version 57 saves recover sidewalk direction from the saved road/node and connector identity from
 the saved junction, outgoing route and authoritative position (including the pedestrian offset).
@@ -2275,11 +2276,35 @@ choosing replacement supply. It never moves a travelling car by towing. A failed
 parking leg asks for this ordered recovery, so the stuck-agent watchdog does not teleport the car
 (`TRAFFIC-20`). A displaced resident with a persistent car and no home left walks.
 
-Recovery replans from a lane, so a car with none waits. That is a driver whose job ended on the
-way: `assign_work_building` clears its destination, exit and route, and the car stops at its lane
-end with no lane, path or plan (`TRAFFIC-29`). If its bay then goes, recovery asks again every 30
-game minutes. A load leaves such a car as it stands, as the running game does, at any point of
-that wait (`PARK-08`).
+Recovery replans from a lane, so a car with none waits for a retry.
+
+A trip can be taken from a driver on the way (`TRAFFIC-29`, the car's case of `TRAFFIC-24`): its
+job ends (`assign_work_building`), its household loses or changes its home, or the building goes.
+One rule covers them, read at the point the driver next needs the trip, so no caller that clears a
+target has to know it:
+
+- **On the road** the car drives on to the end of its lane, keeps the lane and asks this recovery
+  (`walk_home::car_trip_taken`), which runs in the same tick's commit. The trip turns to the
+  destination the agent holds, a demolition's move home; else its home; else, with no home, the
+  building it was going to, which still shelters it until the household's next home. A car still
+  on the road moves its reservation to the first free bay there, and with none free keeps the bay
+  it booked, parks there and walks. With no bay at all it waits on its lane for the 30 game
+  minute retry. No trip failed, so there is no record. Off a parking leg, in a city with no
+  parking system, the car sets off for home through the replan gate from the node it reached, and
+  with no home stands off the lane for its next one, as a walker waits.
+- **On an access path** the trip stays (`on_access_path`): a pull-in ends in its own bay and a walk
+  at its own door, where a replan has no lane to start from. Inside, the ordinary schedule sends
+  the agent on, home from a job that ended. A move to a new home waits for that door the same way.
+- **With nothing left**, no destination, no home and the building gone, the itinerary ends
+  (`settle_without_car`): the car stays in its bay, or from the road goes off the map until a bay
+  takes it, and the driver settles for the household's next home, as an evicted resident does. A
+  stored car whose household has since moved waits for its old home's supply: a stored car's home
+  is not updated on a move.
+
+A recovery whose building has gone reaches the same choice, at any leg: it used to ask again every
+30 game minutes for good, with the car standing on its lane. The cost is O(1) at the lane end and
+one route query in the commit, plus O(k) for the bay; nothing scans or polls, and a car with no
+bay costs one O(k) look per retry.
 
 ### Economy quotes (`PARK-02`)
 

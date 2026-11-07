@@ -1940,8 +1940,9 @@ deferred.
 
 - **Fixture:** `PopulatedCity::build(residents)` (`nodes/sim/core/populated_city.rs`):
   - a square grid with streets every 50 m and cross streets every 400 m, its width floored to
-    whole blocks; a tier that grid cannot house is built one block wider (`ROAD-68-K24`:
-    1,300 and 13,000 residents; every other tier is unchanged);
+    whole blocks; a tier that grid cannot house (`ROAD-68-K24`: 1,300 and 13,000 residents, 30,000
+    since `PARK-02`), or houses with under 2% of its homes to spare, so that the city cannot grow
+    (`PARK-02`: 10,000 residents), is built one block wider;
   - zoning in eight-row repeats of six residential, one commercial and one industrial row;
   - every lot built through the demand spawn executor;
   - households admitted through demand admission, with carriers placed at home;
