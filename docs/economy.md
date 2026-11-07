@@ -177,7 +177,12 @@ Work and freight timing are authored as minute windows in
 
 Workers hold stable offsets inside their windows. Departure is
 `target_arrival − estimated_travel − reliability_buffer`; the estimate is cached and refreshed
-every `travel_estimate_refresh_minutes` (360), never re-queried per frame. A cached departure leaves
+every `travel_estimate_refresh_minutes` (360), never re-queried per frame. A commute longer than
+the morning leaves on the evening before, at the true minute (`PERF-15`). The target is today's
+arrival until its window ends, then tomorrow's, so a true minute is today or already past: a
+worker past it leaves at once, and a worker with an estimate of a day or more always does. A
+departure that fits the morning is unchanged, and no rule moves a departure to spread a crowd. A
+cached departure leaves
 at its seed's slot of its minute, `floor(frac(seed/φ) × 16)` of the minute's 16 slots, so the
 agents due in one minute plan over the minute instead of all in its first frame; the day's last
 minute keeps slot 0. Rush hour emerges from overlapping windows.

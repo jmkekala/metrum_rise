@@ -308,60 +308,6 @@ impl AgentSystem {
         answers
     }
 
-    /// Prices at load the trips of the departures due within a game minute, so that the first
-    /// commits find their network legs as a running game's do. A shift's commuters can all leave
-    /// on one minute, and a load cold on that minute pays for every leg at once. Changes no
-    /// result: the legs are exact and the answers are dropped. O(agents) to find them, then
-    /// O(k + Q) each, spread over the workers.
-    pub(crate) fn warm_parking_quotes(
-        &mut self,
-        time: &crate::simulation::core::time::TimeSystem,
-        parking: &ParkingSystem,
-        allocator: &BuildingAllocator,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) {
-        let a = &self.agents;
-        let due: Vec<_> = (0..a.len())
-            .into_par_iter()
-            .filter(|&i| {
-                a.next_departure_day[i] == time.day_index
-                    && a.next_departure_minute[i] <= time.minute_of_day + 1
-                    && a.next_departure_origin_building[i] == a.current_building[i]
-                    && a.next_departure_target_building[i] != usize::MAX
-            })
-            .collect();
-        let quotes = std::mem::take(&mut self.parking_work.quotes);
-        let mut shards = std::mem::take(&mut self.movement_query_shards);
-        let this = &*self;
-        let next = AtomicUsize::new(0);
-        shards.par_iter_mut().for_each(|scratch| {
-            let mut routes = Vec::new();
-            TripQueryScratch::with_owned(scratch, || {
-                while let Some(&i) = due.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let (current, target) = (
-                        this.agents.current_building[i],
-                        this.agents.next_departure_target_building[i],
-                    );
-                    routes.clear();
-                    this.prepare_departure(
-                        i,
-                        current,
-                        target,
-                        &quotes,
-                        parking,
-                        allocator,
-                        network,
-                        graph,
-                        &mut routes,
-                    );
-                }
-            });
-        });
-        self.movement_query_shards = shards;
-        self.parking_work.quotes = quotes;
-    }
-
     // Candidate `i`'s expected questions, answered. `None` for a visit that routes nothing, as
     // most bay releases and arrivals do. O(k + Q), a pure read.
     #[allow(clippy::too_many_arguments)]

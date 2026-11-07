@@ -2195,6 +2195,11 @@ waits for a saved timing-wheel event: route-buffer preparation takes the next el
 an unavailable route 30 simulation seconds, converted through `seconds_per_minute`, so the slots
 are the same at every speed. No per-agent countdown polls for supply.
 
+A commute estimate quotes this whole itinerary, so on the compressed clock it can run to game
+hours, past the time between midnight and the shift. Such a worker leaves the evening before at
+the true minute, or at once if it has gone by ([`economy.md`](economy.md#schedules-and-departures);
+`PERF-15`). The departure used to stop at 00:00, and every one of them left together.
+
 Pull-out uses `lane_attach_slot_clear` and `claim_lane_entry` (the `TRAFFIC-11` hold), including
 `ACCESS_LANE_ATTACH_PENDING`. Pull-in uses the shared `try_network_detach`, so the `TRAFFIC-13`
 last-visit rule and the `TRAFFIC-15` lane-end reach apply to these legs too. Both use the place's
@@ -2241,8 +2246,7 @@ Network legs repeat: a commuter asks the same question every day. The phase keep
 `SharedNetworkQuotes` from tick to tick, the striped cache the job search uses, emptied by a new
 network revision. Every worker's quotes read it and fill it, and so do the economy's resident quotes
 and the movement pass's commute estimates. A leg's seconds are a pure function of its key, so which
-worker priced it first changes nothing. A load prices the trips of the departures due within a game
-minute into it, so the first commits find what a running game's would.
+worker priced it first changes nothing.
 
 Custody reaches agents the other way, through two event lists `ParkingSystem` fills at each custody
 write. A borrower whose reservation ended joins a watch that sets `ready` and `replan_needed` before

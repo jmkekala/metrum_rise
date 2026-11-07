@@ -283,16 +283,6 @@ impl SimCore {
         self.complete_parking_economy_publication();
         self.agents
             .prepare_loaded_tick(&self.allocator, &self.transit_network);
-        // And the network legs of the departures due at once (`PARK-02`).
-        crate::thread_pools::install(|| {
-            self.agents.warm_parking_quotes(
-                &self.time,
-                &self.parking,
-                &self.allocator,
-                &self.transit_network,
-                &self.region_graph,
-            );
-        });
         // And the stranded walkers' set and report, from their saved bits (`ROAD-74`).
         self.agents
             .rebuild_stranded_walkers(&self.transit_network, &self.region_graph);
