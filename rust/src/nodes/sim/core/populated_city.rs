@@ -91,6 +91,9 @@ const RESIDENTS_PER_BORDER: f32 = 10_000.0;
 const ROW_BLOCKS_PER_LOT: usize = 2;
 // How far off the row's centre line a lot is asked for: nearer its own row than the next.
 const LOT_REQUEST_OFFSET_M: f32 = 15.0;
+// The homes a grid must keep empty after admission, or it is built one block wider: a full city
+// takes no more households and reads smaller than its tier (10k kept 1.1% and 100k keeps 4.3%).
+const MIN_SPARE_HOMES: f32 = 0.02;
 
 /// Wall-clock cost of the fixed-slot systems at the start of one hour, as
 /// [`PopulatedCity::advance_hour`] and [`PopulatedCity::advance_hour_through_actions`] step it.
@@ -138,15 +141,16 @@ impl PopulatedCity {
     ///
     /// The grid floors its width to whole cross-street blocks. Where that loses more area than
     /// the side's headroom keeps, so the floored grid cannot house `residents` (1,300 and 13,000
-    /// residents, `ROAD-68-K24`), the city is built once more one block wider, covering its side;
-    /// a tier the floored grid houses is built exactly as before. Panics if the wider grid holds
-    /// too few homes as well, which means the sizing constants no longer match the bootstrap pack.
+    /// residents, `ROAD-68-K24`) or keeps too few homes spare to grow (10,000), the city is built
+    /// once more one block wider, covering its side; a tier the floored grid houses with room is
+    /// built exactly as before. Panics if the wider grid holds too few homes as well, which means
+    /// the sizing constants no longer match the bootstrap pack.
     pub fn build(residents: u32) -> Self {
         Self::build_timed(residents).0
     }
 
     /// [`Self::build`], also returning the wall-clock cost of each phase, summed over both
-    /// grids when the floored one could not house `residents`.
+    /// grids when the floored one was not wide enough.
     pub fn build_timed(residents: u32) -> (Self, PopulatedCityBuildTimes) {
         let side_m = side_m_for(residents);
         let floored = crosses_for(side_m);
@@ -171,7 +175,7 @@ impl PopulatedCity {
             let started = Instant::now();
             housed = city.admit_households(residents);
             times.admission += started.elapsed();
-            if housed < residents {
+            if housed < residents || (crosses == floored && city.spare_homes() < MIN_SPARE_HOMES) {
                 continue;
             }
             let started = Instant::now();
@@ -292,6 +296,13 @@ impl PopulatedCity {
                 return housed;
             }
         }
+    }
+
+    // The share of the city's homes still empty. O(1) over the day's diagnostics.
+    fn spare_homes(&self) -> f32 {
+        let city = self.core.daily_city_flow_diagnostics();
+        let vacant = city.vacant_household_slots as f32;
+        vacant / (vacant + city.active_households as f32)
     }
 
     // Cars arrive with their households, already parked near home: as the carriers skip the drive
