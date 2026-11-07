@@ -2210,7 +2210,8 @@ station; replacement also clamps the saved route budget, O(1) and no allocation 
 
 The ordered resource phase, O(C log C + W + T × Q) for C candidates, W lost reservations watched
 and T transitions, has no pass over the population; exclusive resource commits use ascending agent
-order. It visits candidates only (`tick/parking/candidates.rs`). An agent is due in it, with no
+order, and the routing runs ahead of them on every worker, below. It visits candidates only
+(`tick/parking/candidates.rs`). An agent is due in it, with no
 retry pending, when it is `ready`, when a departure is due, when it is inside on its `WalkToDoor`
 leg, or when it drives with its old bay still held. The movement pass finds all four as it runs:
 each agent's step ends in one check on the row it has just used, so a site that sets `ready` needs
@@ -2219,6 +2220,29 @@ commit that could not finish. The notes go into the running shard's scratch, are
 and the phase walks them in ascending agent order, so 1 and 8 workers commit the same way. The
 timing wheel's retry wakes its agent for the next commit, and a bay a replan kept from being
 released carries to the next tick. The lists are reused and are never saved.
+
+The walk stays serial because a visit can take or free a bay the next visit wants, but nearly all
+of a visit's cost is routing, and routing reads nothing the commit writes: lanes, the hierarchy and
+the entrances are fixed, an agent's row changes only in its own visit, and a live bay keeps its
+access and its geometry, since the commit only removes bays already retired. So before walking each
+block of candidates, every worker pulls candidates off one counter and answers the legs each visit
+is expected to ask about (`tick/parking/prepared.rs`): a departure's walk, its car trip between the
+car's bay and the first free bay as the block starts, a transition's next leg, and the route of the
+leg the visit should start. The answers go into per-worker lists that keep their storage. That pass
+decides nothing. The walk then runs as it always did, forms each question from the live state and
+takes an answer only if it answers that question: a departure reads its bays itself, and when an
+earlier visit of the block took or freed one it quotes the trip again on the spot. A departure that
+turns out to walk after all finds no route for that leg and asks for one. So the answers change no
+outcome at any worker count; a wrong expectation costs only time, and an answer pass over a block
+of 96 costs about 0.1 ms beyond its routing. Debug test builds ask the router again for every answer
+taken and compare the bits.
+
+Network legs repeat: a commuter asks the same question every day. The phase keeps them in one
+`SharedNetworkQuotes` from tick to tick, the striped cache the job search uses, emptied by a new
+network revision. Every worker's quotes read it and fill it, and so do the economy's resident quotes
+and the movement pass's commute estimates. A leg's seconds are a pure function of its key, so which
+worker priced it first changes nothing. A load prices the trips of the departures due within a game
+minute into it, so the first commits find what a running game's would.
 
 Custody reaches agents the other way, through two event lists `ParkingSystem` fills at each custody
 write. A borrower whose reservation ended joins a watch that sets `ready` and `replan_needed` before
