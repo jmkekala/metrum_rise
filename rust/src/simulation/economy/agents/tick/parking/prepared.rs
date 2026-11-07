@@ -496,14 +496,16 @@ mod tests {
         let visit = PreparedVisit {
             leg: Some((on_foot(1), None)),
             trip: Some(((bay(1), bay(2)), None)),
-            route: None,
+            route: Some((on_foot(1), Some((1, 2)))),
         };
         let quotes = SharedNetworkQuotes::default();
         let known = KnownVisit {
             visit: Some(&visit),
-            routes: &[],
+            routes: &[7, 8, 9],
             quotes: &quotes,
         };
+        assert_eq!(known.route(on_foot(1)), Some(Some(&[8, 9][..])));
+        assert_eq!(known.route(on_foot(2)), None);
         assert!(asked(|asked| {
             known.leg_or(on_foot(2), |_| {
                 asked.set(true);
