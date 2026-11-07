@@ -7,7 +7,9 @@ use super::super::super::super::{
     ACCESS_WALK_STRANDED, MODE_CAR, MODE_WALK, TRANSIT_IMMIGRATING, TRANSIT_NETWORK,
 };
 use super::super::super::access::planned_detach_is_legal;
-use super::super::super::lane_nav::{lane_hosts_turn_preparation, lane_terminal_node};
+use super::super::super::lane_nav::{
+    lane_hosts_turn_preparation, lane_terminal_node, road_lane_ahead,
+};
 use super::super::super::planning::{
     BuiltNetworkReplan, BuiltTripPlan, plan_border_arrival, plan_border_network_replan,
     plan_immigration_trip, plan_network_replan,
@@ -268,18 +270,10 @@ pub(super) unsafe fn replan_after_missed_turn(
         {
             return;
         }
-        // The road lane the car is on, or the one its connector leads onto.
-        let lanes = &transit_network.lane_system.lanes;
-        let mut lane_id = *slices.lane_id.get(i);
-        let Some(mut lane) = lanes.get(lane_id) else {
+        let Some(lane_id) = road_lane_ahead(*slices.lane_id.get(i), transit_network) else {
             return;
         };
-        if lane.edge_id == usize::MAX {
-            let Some(&road) = lane.next_lanes.first() else {
-                return;
-            };
-            (lane_id, lane) = (road, &lanes[road]);
-        }
+        let lane = &transit_network.lane_system.lanes[lane_id];
         let Some(node) = lane_terminal_node(lane_id, transit_network, graph) else {
             return;
         };
@@ -541,16 +535,17 @@ unsafe fn replan_start(
         let current_lane_id = *s_lane_id.get(i);
         let current_node = *s_cur_n.get(i);
         let current_edge = *s_cur_e.get(i);
-        let lane_valid = current_lane_id != usize::MAX
-            && current_lane_id < transit_network.lane_system.lanes.len();
-        if lane_valid {
-            let lane_edge = transit_network.lane_system.lanes[current_lane_id].edge_id;
-            if lane_edge != usize::MAX
-                && let Some(start_node) =
-                    lane_terminal_node(current_lane_id, transit_network, graph)
-            {
-                return Some((start_node, lane_edge));
-            }
+        // A car on a connector has one way out, so its route starts past the road that connector
+        // leads onto. From the junction itself a route can leave by any road (`TRAFFIC-30`).
+        let road_lane = if *slices.tmode.get(i) == MODE_CAR {
+            road_lane_ahead(current_lane_id, transit_network)
+        } else {
+            Some(current_lane_id)
+        };
+        if let Some(lane) = road_lane
+            && let Some(start_node) = lane_terminal_node(lane, transit_network, graph)
+        {
+            return Some((start_node, transit_network.lane_system.lanes[lane].edge_id));
         }
         (current_node != u32::MAX).then_some((current_node, current_edge))
     }
@@ -669,5 +664,42 @@ mod tests {
         let start = unsafe { replan_start(agent_idx, &transit_network, &graph, &slices) };
 
         assert_eq!(start, Some((node, usize::MAX)));
+    }
+
+    // `TRAFFIC-30`: a car whose plan is cleared on a connector replans past the road the
+    // connector leads onto. From the junction its route could leave by another road, and the car
+    // would drive this one to a far end that route never names.
+    #[test]
+    fn replan_start_takes_a_car_on_a_connector_to_the_end_of_its_road() {
+        use crate::simulation::network::roadbed::fixtures::{connect, point};
+        let mut graph = RegionGraph::new();
+        let junction = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
+        let far = graph.add_node(point(100.0, 0.0, false), NodeType::Junction);
+        let edge = connect(&mut graph, junction, far, 7.0, false);
+        let mut transit_network = TransitNetwork::new();
+        let lanes = &mut transit_network.lane_system.lanes;
+        lanes.push(Lane {
+            edge_id: edge,
+            is_fwd: true,
+            ..Lane::default()
+        });
+        lanes.push(Lane {
+            edge_id: usize::MAX,
+            node_id: junction as usize,
+            next_lanes: vec![0].into(),
+            ..Lane::default()
+        });
+
+        let mut agents = AgentSystem::new();
+        let agent_idx = agents.spawn_border_arrival_agent(usize::MAX, junction, 0.0, 0.0);
+        agents.agents.transit_mode[agent_idx] = MODE_CAR;
+        agents.agents.current_node[agent_idx] = junction;
+        agents.agents.current_edge[agent_idx] = usize::MAX;
+        agents.agents.current_lane_id[agent_idx] = 1;
+
+        let slices = MovementSlices::new(&mut agents.agents);
+        let start = unsafe { replan_start(agent_idx, &transit_network, &graph, &slices) };
+
+        assert_eq!(start, Some((far, edge)));
     }
 }

@@ -60,6 +60,16 @@ pub(super) fn lane_terminal_node(
     })
 }
 
+/// The road lane `lane_id` is, or the one its junction connector leads onto. O(1).
+pub(super) fn road_lane_ahead(lane_id: usize, transit_network: &TransitNetwork) -> Option<usize> {
+    let lane = transit_network.lane_system.lanes.get(lane_id)?;
+    if lane.edge_id == usize::MAX {
+        lane.next_lanes.first().copied()
+    } else {
+        Some(lane_id)
+    }
+}
+
 pub(super) fn connector_targets_edge(
     conn_lane_id: usize,
     target_edge_id: usize,
