@@ -2134,12 +2134,47 @@ place's cached driveway access keeps its edge, side, stations and positions; its
 derived live from that edge's lanes in O(lanes on the edge), because a terrain edit or a dense undo
 renumbers every lane while republishing only the places near the edit.
 
+**The invariant.** A load rebuilds every list, so a live list equals what a rebuild from scratch
+gives, bit for bit, every time the simulation reads it. Test builds audit it after each
+publication (`audit_candidates`): the doors the edit reached, sampled, and a sample of every other
+door, with each reachable bay's access. A lane's label is the least left-to-right float sum over
+every path to it, which depends on neither the settling order nor the search stopping once the
+lanes it was asked about have settled.
+
+**Rebuilding a door.** A rebuild derives what does not depend on the door once: each bay's foot
+ends, driveway time and economy ends go into a table grouped by chunk, and the foot lanes in reach
+of the rebuild's doors into a compact graph (`FootGraph`) with successors and predecessors read
+once, so the searches never scan a junction for predecessors. A door then pays for its two searches
+and the bays of its nine chunks. Its labels live in per-worker stamped arrays, so no door pays for
+the size of the city.
+
+**A site edit** leaves the lanes alone, so it rebuilds only the changed buildings' own doors. Any
+other door can only gain or lose the changed bays, which `replace_source` and `remove_place`
+journal: added, removed, reactivated, or on a new path, and the bays that follow a host's door to
+another side of the road. The rest of its list keeps its bits. The doors within a changed bay's
+straight-line reach take one test against a single search from all the changed bays, and those in
+reach run their own searches, cut short once the bays' lanes have settled. Economy ends gain the
+new bays' ends; a door that lost a bay keeps its ends if another bay on that edge still gives them,
+since a target names its frontage edge, and otherwise reads them off its whole list from one table
+of the neighbourhood.
+
+**A road commit** changes the foot lanes, so every door in reach is rebuilt, around 2,000 near a
+long edge. Its supply and doors wait for the frame after it, which its routing hold leaves empty
+([`roads.md`](roads.md) D7): no simulation phase runs in between, so none reads a stale list, and
+the doors see the entrances that frame adopts. That order is the fix for a merge bug as well: the
+rebuild used to run inside the commit, against entrances the lot adoption had not updated yet, and
+left lists a rebuild from scratch disagreed with until the next edit nearby. A publication or a
+save before that frame reconciles the edges first. A road bulldoze and an undo still publish
+inline; a stale routing hierarchy leaves the economy ends to the adoption as before.
+
 | Operation | Bound / retained storage |
 | --- | --- |
-| Local catchment rebuild | O(local doors × ((local lanes + connectors) log local lanes + local places log local places)), at most nine supply chunks per door; independent doors use Rayon |
+| Catchment rebuild (a road edit, a load) | O(local lanes log local lanes + local adjacency + local bays × trip ends + local doors × (reached lanes log reached lanes + bays of nine chunks + reached bays log reached bays)); the table, the adjacency and the doors use Rayon, the two floods run side by side |
+| Site edit | O(own doors' rebuild + bays of the hosts + doors within 512 m × changed bays + R × (searches cut at the changed bays' lanes + list length)), R the doors a changed bay enters or leaves; parallel by door |
+| Commit stage | O(edges): the edge ids are kept for the next frame |
 | Destination choice | O(k), first free fitting entry, no route query or allocation |
 | Complete departure quote | O(k + Q), three exact leg quotes after selecting one place |
-| Candidate storage at 100k nonempty doors | Approximately 9.6 MB map and header storage + 1.6 MB per mean candidate capacity + 0.4 MB per mean road-component count + 1.6 MB per mean distinct car target count; about 38 MB at 12/2/4 including `Arc` headers; empty lists omitted |
+| Candidate storage at 100k nonempty doors | Approximately 9.6 MB map and header storage + 1.6 MB per mean candidate capacity + 0.4 MB per mean road-component count + 1.6 MB per mean distinct car target count; empty lists omitted. The kerbside fixture's mean is 433 entries a door, about 148 MB at its 30k tier's 21,415 doors |
 
 ### The itinerary (`PARK-02`)
 
