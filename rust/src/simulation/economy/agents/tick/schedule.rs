@@ -187,8 +187,7 @@ pub(super) fn maybe_schedule_work_trip(
     let shift_index = (schedule_seed % work_profile.arrival_windows.len() as u32) as usize;
     let arrival_window = &work_profile.arrival_windows[shift_index];
     let arrival_minute = stable_minute_in_window(work_profile, arrival_window, schedule_seed);
-    let arrival_departure_minute = arrival_minute
-        .saturating_sub(commute_minutes.saturating_add(work_profile.reliability_buffer_minutes));
+    let commute_lead = commute_minutes.saturating_add(work_profile.reliability_buffer_minutes);
     let departure_window = &work_profile.departure_windows[shift_index];
     let departure_minute = stable_minute_in_window(
         work_profile,
@@ -196,28 +195,25 @@ pub(super) fn maybe_schedule_work_trip(
         schedule_seed.rotate_left(11),
     );
 
-    let (target_building, activity, scheduled_minute, window_end_minute) =
+    let (target_building, activity, departure_day, scheduled_minute) =
         if current_building == home_building {
-            (
-                work_building,
-                1,
-                arrival_departure_minute,
+            let (day, minute) = commute_departure(
+                time.day_index,
+                time.minute_of_day,
+                arrival_minute,
+                commute_lead,
                 arrival_window.end_minute,
-            )
+            );
+            (work_building, 1, day, minute)
         } else {
-            (
-                home_building,
-                0,
+            let day = next_departure_day_for_minute(
+                time.day_index,
+                time.minute_of_day,
                 departure_minute,
                 departure_window.end_minute,
-            )
+            );
+            (home_building, 0, day, departure_minute)
         };
-    let departure_day = next_departure_day_for_minute(
-        time.day_index,
-        time.minute_of_day,
-        scheduled_minute,
-        window_end_minute,
-    );
     *cache.next_departure_day = departure_day;
     *cache.next_departure_minute = scheduled_minute;
     *cache.next_departure_origin_building = current_building;
@@ -359,6 +355,34 @@ fn next_departure_day_for_minute(
         day_index
     } else {
         day_index.saturating_add(1)
+    }
+}
+
+// The day and minute a worker at home leaves to reach `arrival_minute`, `lead` minutes of commute
+// and buffer ahead of it. A lead longer than the morning wraps: the true minute is the evening
+// before the arrival. The arrival is today's until its window ends, then tomorrow's, so a wrapped
+// minute is today or already past, never later. A past one is held as today's first minute, which
+// the clock has reached, so the worker leaves now and not a day or a shift late.
+fn commute_departure(
+    day_index: u32,
+    minute_of_day: u16,
+    arrival_minute: u16,
+    lead: u16,
+    window_end_minute: u16,
+) -> (u32, u16) {
+    if lead <= arrival_minute {
+        let minute = arrival_minute - lead;
+        let day =
+            next_departure_day_for_minute(day_index, minute_of_day, minute, window_end_minute);
+        return (day, minute);
+    }
+    let arrival_day =
+        next_departure_day_for_minute(day_index, minute_of_day, arrival_minute, window_end_minute);
+    let before_midnight = lead - arrival_minute;
+    if arrival_day > day_index && before_midnight <= MINUTES_PER_DAY {
+        (day_index, MINUTES_PER_DAY - before_midnight)
+    } else {
+        (day_index, 0)
     }
 }
 
@@ -587,6 +611,192 @@ mod tests {
             });
         }
         assert_eq!(pathfind_count.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    // One shift, arrival at minute 480 and home time at 1,020, ten minutes of buffer.
+    fn one_shift_clock() -> OperationalClockRuntimeTuning {
+        let mut clock = crate::simulation::economy::definitions::load_runtime_economy_tuning()
+            .unwrap()
+            .operational_clock
+            .clone();
+        clock.work_profiles = vec![WorkTimingProfile {
+            id: "test_shift".to_owned(),
+            arrival_windows: vec![MinuteWindow {
+                start_minute: 480,
+                end_minute: 481,
+            }],
+            departure_windows: vec![MinuteWindow {
+                start_minute: 1_020,
+                end_minute: 1_021,
+            }],
+            reliability_buffer_minutes: 10,
+        }];
+        clock
+    }
+
+    // Asks the schedule of a worker with a known estimate at home (building 0) or at work (1).
+    fn ask_schedule(
+        cache: &mut ScheduleCacheMut<'_>,
+        clock: &OperationalClockRuntimeTuning,
+        at: u32,
+        (day, minute): (u32, u16),
+    ) -> Option<(usize, u8)> {
+        let catalog =
+            crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
+        let pathfind_count = AtomicU32::new(0);
+        let time = test_clock(day, minute);
+        let trip = maybe_schedule_work_trip(
+            at as usize,
+            at as u8,
+            0,
+            1,
+            false,
+            0,
+            cache,
+            0.0,
+            &time,
+            &BuildingAllocator::new(),
+            &TransitNetwork::new(),
+            &RegionGraph::new(),
+            &pathfind_count,
+            clock,
+            &catalog,
+            None,
+        );
+        assert_eq!(pathfind_count.load(std::sync::atomic::Ordering::Relaxed), 0);
+        trip
+    }
+
+    fn with_estimate(commute: u16, run: impl FnOnce(&mut ScheduleCacheMut<'_>)) {
+        with_schedule_cache(|cache| {
+            *cache.cached_commute_minutes = commute;
+            *cache.next_commute_refresh_time = f32::MAX;
+            run(cache);
+        });
+    }
+
+    #[test]
+    fn a_departure_that_fits_the_morning_keeps_its_day_and_minute() {
+        for minute_of_day in (0..MINUTES_PER_DAY).step_by(7) {
+            for (arrival, end) in [(330, 390), (480, 540), (810, 870), (1_290, 1_350)] {
+                for lead in (1..=arrival).step_by(11).chain([arrival]) {
+                    let minute = arrival - lead;
+                    // The rule as it stood before wrapped departures, written out.
+                    let day = if minute_of_day < minute || minute_of_day < end {
+                        7
+                    } else {
+                        8
+                    };
+                    assert_eq!(
+                        commute_departure(7, minute_of_day, arrival, lead, end),
+                        (day, minute),
+                        "at {minute_of_day}, arrival {arrival}, lead {lead}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_commute_longer_than_the_morning_leaves_the_evening_before() {
+        let clock = one_shift_clock();
+        // 590 + 10 minutes ahead of 480 is minute 1,320 of the day before.
+        with_estimate(590, |cache| {
+            assert_eq!(ask_schedule(cache, &clock, 0, (3, 1_000)), None);
+            assert_eq!(*cache.next_departure_day, 3);
+            assert_eq!(*cache.next_departure_minute, 1_320);
+            assert_eq!(*cache.cached_commute_minutes, 590);
+            assert_eq!(ask_schedule(cache, &clock, 0, (3, 1_319)), None);
+            assert_eq!(ask_schedule(cache, &clock, 0, (3, 1_321)), Some((1, 1)));
+        });
+        // A worker who reaches home after the true minute leaves now, that evening.
+        with_estimate(590, |cache| {
+            assert_eq!(ask_schedule(cache, &clock, 0, (3, 1_400)), Some((1, 1)));
+        });
+        // Or after midnight on the arrival day, up to the end of its window. Never that evening,
+        // 23 hours late.
+        for minute in [0, 1, 300, 480] {
+            with_estimate(590, |cache| {
+                assert_eq!(ask_schedule(cache, &clock, 0, (4, minute)), Some((1, 1)));
+                assert_eq!(*cache.next_departure_day, 4);
+                assert_eq!(*cache.next_departure_minute, 0, "at {minute}");
+            });
+        }
+        // The arrival's window has ended: the next arrival's true minute is tonight's.
+        with_estimate(590, |cache| {
+            assert_eq!(ask_schedule(cache, &clock, 0, (4, 600)), None);
+            assert_eq!(*cache.next_departure_day, 4);
+            assert_eq!(*cache.next_departure_minute, 1_320);
+        });
+    }
+
+    #[test]
+    fn a_wrapped_departure_a_frame_carries_past_midnight_still_leaves() {
+        let clock = one_shift_clock();
+        with_estimate(590, |cache| {
+            assert_eq!(ask_schedule(cache, &clock, 0, (3, 1_000)), None);
+            assert_eq!(ask_schedule(cache, &clock, 0, (4, 0)), Some((1, 1)));
+            assert_eq!(*cache.next_departure_day, 4);
+        });
+    }
+
+    #[test]
+    fn an_estimate_of_a_day_or_more_leaves_now() {
+        let clock = one_shift_clock();
+        // 480 ahead of the arrival is midnight, 1,440 more the midnight before that.
+        for commute in [1_910, 1_911, 3_000, u16::MAX] {
+            for (day, minute) in [(0, 1_000), (3, 1_000), (3, 200)] {
+                with_estimate(commute, |cache| {
+                    assert_eq!(
+                        ask_schedule(cache, &clock, 0, (day, minute)),
+                        Some((1, 1)),
+                        "commute {commute}, day {day}, minute {minute}"
+                    );
+                    assert_eq!(*cache.next_departure_day, day);
+                    assert_eq!(*cache.next_departure_minute, 0);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn a_worker_who_reaches_work_the_evening_before_stays_for_the_shift() {
+        let clock = one_shift_clock();
+        with_estimate(590, |cache| {
+            assert_eq!(ask_schedule(cache, &clock, 1, (3, 1_400)), None);
+            assert_eq!(*cache.next_departure_day, 4);
+            assert_eq!(*cache.next_departure_minute, 1_020);
+            assert_eq!(*cache.next_departure_target_building, 0);
+        });
+    }
+
+    #[test]
+    fn every_worker_at_home_leaves_by_the_true_minute_or_at_once() {
+        let clock = one_shift_clock();
+        for commute in (1..2_200).step_by(23) {
+            let lead = i64::from(commute) + 10;
+            for start in (0..MINUTES_PER_DAY).step_by(17) {
+                let day = 5_i64;
+                let now = day * 1_440 + i64::from(start);
+                // The first arrival whose window is still open, and its true minute.
+                let arrival_day = if start < 481 { day } else { day + 1 };
+                let due = (arrival_day * 1_440 + 480 - lead).max(now);
+                with_estimate(commute, |cache| {
+                    let mut left = None;
+                    for clock_minute in now..now + 2 * 1_440 {
+                        let at = (
+                            (clock_minute / 1_440) as u32,
+                            (clock_minute % 1_440) as u16,
+                        );
+                        if ask_schedule(cache, &clock, 0, at).is_some() {
+                            left = Some(clock_minute);
+                            break;
+                        }
+                    }
+                    assert_eq!(left, Some(due), "commute {commute}, start {start}");
+                });
+            }
+        }
     }
 
     #[test]
