@@ -209,6 +209,12 @@ impl SimCore {
             .prepare_routes(&self.transit_network, &self.region_graph);
         self.households
             .prepare_job_search_scratch(&self.transit_network, &self.region_graph);
+        // The slots' parallel plans run on each worker's own scratch: unprepared, the first plan
+        // to land on a worker costs its slot about 3 ms at 30k (`PARK-02`).
+        let (network, graph) = (&self.transit_network, &self.region_graph);
+        crate::thread_pools::install(|| {
+            rayon::broadcast(|_| TripQueryScratch::prepare_thread(network, graph));
+        });
     }
 
     /// Advances the simulation by one frame of `frame_dt_s` real seconds at the current speed.

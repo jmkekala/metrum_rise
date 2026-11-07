@@ -104,7 +104,7 @@ pub(super) unsafe fn handle_in_building(
                 pathfind_count,
                 operational_clock,
                 economy_catalog,
-                slices.parking.map(|parking| (parking, slices.parking_trip.get(i).vehicle)),
+                slices.parking.map(|parking| (parking, slices.parking_trip.get(i).vehicle, slices.parking_quotes)),
             ) {
                 *s_plan_b.get_mut(i) = target_building;
                 *s_plan_act.get_mut(i) = activity;

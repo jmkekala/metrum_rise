@@ -6,7 +6,9 @@ mod candidate;
 mod immigration;
 mod network;
 mod parking;
-pub(crate) use parking::{quote_parking_leg, quote_parking_leg_from_lane, quote_parking_trip, estimate_parking_trip_seconds, estimate_parking_trip_seconds_within, ParkingLegQuote, ResidentMobility};
+pub(crate) use parking::{parking_trip_bays, quote_parking_between_places, quote_parking_leg, quote_parking_leg_from_lane, estimate_parking_trip_seconds, estimate_parking_trip_seconds_within, ParkingLegQuote, ParkingQuote, ParkingTripBays, ResidentMobility};
+#[cfg(test)]
+pub(crate) use parking::quote_parking_trip;
 mod reachability;
 mod trip;
 mod types;

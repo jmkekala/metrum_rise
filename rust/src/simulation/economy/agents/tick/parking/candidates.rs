@@ -40,9 +40,16 @@ pub(crate) struct ParkingWork {
     watch: Vec<AgentHandle>,
     // Agent rows changed without events; the next tick rebuilds what they imply.
     rebuild: bool,
+    // The route answers of a commit (`prepared.rs`).
+    pub(super) answers: super::prepared::ParkingAnswers,
+    // Network legs kept from tick to tick for those answers, emptied by a new network revision.
+    pub(in super::super) quotes: super::super::SharedNetworkQuotes,
     // Rows the last commit walked, for tests of the bound.
     #[cfg(test)]
     pub(in crate::simulation::economy::agents) last_candidates: usize,
+    // Leaves every question to the walk, the reference of the answers' tests.
+    #[cfg(test)]
+    pub(in crate::simulation::economy::agents) answers_off: bool,
 }
 
 impl Default for ParkingWork {
@@ -52,8 +59,12 @@ impl Default for ParkingWork {
             wakes: Vec::new(),
             watch: Vec::new(),
             rebuild: true,
+            answers: Default::default(),
+            quotes: Default::default(),
             #[cfg(test)]
             last_candidates: 0,
+            #[cfg(test)]
+            answers_off: false,
         }
     }
 }

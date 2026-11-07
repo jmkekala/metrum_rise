@@ -20,6 +20,8 @@ mod parking;
 mod ring_capacity_tests;
 pub(crate) use access::LocalAccessPath as ParkingAccessPath;
 pub(crate) use parking::ParkingWork;
+#[cfg(test)]
+pub(in crate::simulation::economy::agents) use parking::{AnswerCounts, take_answer_counts};
 pub(crate) use planning::quote_parking_leg;
 #[cfg(test)]
 pub(crate) use planning::quote_parking_trip;

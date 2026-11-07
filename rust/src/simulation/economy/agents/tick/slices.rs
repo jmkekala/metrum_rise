@@ -91,6 +91,7 @@ impl<T> RawSlice<T> {
 /// Disjoint SoA slices used by `process_agent_movement` for parallel data access.
 pub(crate) struct MovementSlices<'a> {
     pub(super) parking: Option<&'a crate::simulation::parking::ParkingSystem>,
+    pub(super) parking_quotes: Option<&'a super::SharedNetworkQuotes>,
     pub(super) parking_trip: RawSlice<crate::simulation::parking::ParkingTrip>,
     pub(super) home: RawSlice<usize>,
     pub(super) work: RawSlice<usize>,
@@ -154,6 +155,7 @@ impl<'a> MovementSlices<'a> {
     pub(super) fn new(agents: &mut AgentVec) -> Self {
         Self {
             parking: None,
+            parking_quotes: None,
             parking_trip: RawSlice::new(&mut agents.parking_trip),
             home: RawSlice::new(&mut agents.home_building),
             work: RawSlice::new(&mut agents.work_building),

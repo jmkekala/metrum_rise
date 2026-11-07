@@ -90,7 +90,7 @@ pub(super) fn maybe_schedule_work_trip(
     pathfind_count: &AtomicU32,
     operational_clock: &OperationalClockRuntimeTuning,
     economy_catalog: &RuntimeEconomyCatalog,
-    parking: Option<(&crate::simulation::parking::ParkingSystem, crate::simulation::core::handles::Handle<crate::simulation::parking::Vehicle>)>,
+    parking: Option<(&crate::simulation::parking::ParkingSystem, crate::simulation::core::handles::Handle<crate::simulation::parking::Vehicle>, Option<&super::SharedNetworkQuotes>)>,
 ) -> Option<(usize, u8)> {
     // Shopping owns the agent through pickup and delivery acknowledgement, including
     // visits to the worker's own workplace and a return that reached home between hours.
@@ -175,8 +175,8 @@ pub(super) fn maybe_schedule_work_trip(
     }
 
     if (*cache.cached_commute_minutes == 0 || sim_time >= *cache.next_commute_refresh_time)
-        && let Some(estimate) = if let Some((parking, car)) = parking {
-            super::planning::estimate_parking_trip_seconds(home_building, work_building, car, has_car, parking, allocator, transit_network, graph, pathfind_count)
+        && let Some(estimate) = if let Some((parking, car, quotes)) = parking {
+            super::planning::estimate_parking_trip_seconds(home_building, work_building, car, has_car, parking, allocator, transit_network, graph, pathfind_count, quotes)
         } else {
             estimate_building_origin_trip_seconds(home_building, work_building, has_car, allocator, transit_network, graph, pathfind_count, None)
         }

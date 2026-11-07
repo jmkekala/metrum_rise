@@ -859,11 +859,13 @@ pub(super) fn parking_candidate(
     shared: Option<&SharedNetworkQuotes>,
 ) -> Option<PlannedTripCandidate> {
     let mut best = None;
-    for (from, to) in NODE_RANK_PAIRS {
-        let Some(mut a) = TripEnd::new(mode, from, origin, true, network, graph) else { continue; };
-        let Some(mut b) = TripEnd::new(mode, to, destination, false, network, graph) else { continue; };
-        if mode == MODE_CAR {
-            for (end, departing, seconds) in [(&mut a, true, maneuver_s[0]), (&mut b, false, maneuver_s[1])] {
+    // Each end's two ranks serve two pairs: project them once.
+    let mut origins = NODE_RANKS.map(|rank| TripEnd::new(mode, rank, origin, true, network, graph));
+    let mut destinations =
+        NODE_RANKS.map(|rank| TripEnd::new(mode, rank, destination, false, network, graph));
+    if mode == MODE_CAR {
+        for (ends, departing, seconds) in [(&mut origins, true, maneuver_s[0]), (&mut destinations, false, maneuver_s[1])] {
+            for end in ends.iter_mut().flatten() {
                 let lane = &network.lane_system.lanes[end.lane_id];
                 let distance = if departing { lane.length - end.lane_d } else { end.lane_d };
                 end.frontage_time_s = Some(distance.max(0.0) / graph.edge(lane.edge_id).speed_limit);
@@ -872,6 +874,10 @@ pub(super) fn parking_candidate(
                 end.local_time_s = seconds + point.distance_to(entrance.curb_pos) / crate::config::AGENT_DRIVEWAY_SPEED_MS;
             }
         }
+    }
+    for (from, to) in NODE_RANK_PAIRS {
+        let Some(mut a) = origins[usize::from(from)] else { continue; };
+        let Some(b) = destinations[usize::from(to)] else { continue; };
         if let Some((lane_id,distance)) = origin_lane {
             if a.lane_id != lane_id { continue; }
             a.lane_d = distance;

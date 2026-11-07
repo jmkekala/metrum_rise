@@ -589,6 +589,7 @@ fn resident_estimate_uses_the_complete_departure_quote_without_claiming() {
         &network,
         &graph,
         &agents.pathfind_count,
+        None,
     )
     .unwrap();
     assert_eq!(estimate, quote.seconds.ceil() as u16);
@@ -625,6 +626,7 @@ fn resident_estimate_uses_the_complete_departure_quote_without_claiming() {
         &network,
         &graph,
         &agents.pathfind_count,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -637,7 +639,8 @@ fn resident_estimate_uses_the_complete_departure_quote_without_claiming() {
             &allocator,
             &network,
             &graph,
-            &agents.pathfind_count
+            &agents.pathfind_count,
+            None,
         ),
         Some(walk)
     );

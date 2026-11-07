@@ -64,6 +64,7 @@ impl AgentSystem {
                     &quote,
                     target,
                     self.agents.activity[i],
+                    None,
                     network,
                     graph,
                 ) else {
@@ -111,6 +112,7 @@ impl AgentSystem {
                 &quote,
                 target,
                 self.agents.activity[i],
+                None,
                 network,
                 graph,
             ) else {
@@ -183,6 +185,7 @@ impl AgentSystem {
                 &quote,
                 target,
                 self.agents.activity[i],
+                None,
                 network,
                 graph,
             ) else {
@@ -237,6 +240,7 @@ impl AgentSystem {
                 &quote,
                 target,
                 self.agents.activity[i],
+                None,
                 network,
                 graph,
             ) else {

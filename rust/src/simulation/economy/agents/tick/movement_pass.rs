@@ -36,6 +36,7 @@ impl AgentSystem {
             });
         self.movement_serial_query
             .prepare_routes(transit_network, graph);
+        self.parking_work.quotes.sync(transit_network);
     }
 
     /// Dispatches the parallel per-agent movement state machine.
@@ -61,6 +62,7 @@ impl AgentSystem {
 
         let mut slices = MovementSlices::new(&mut self.agents);
         slices.parking = parking;
+        slices.parking_quotes = Some(&self.parking_work.quotes);
         slices.failures = FailureSink::new(std::mem::take(&mut self.trip_failures.buffer));
 
         let lane_buckets = &self.lane_buckets;
