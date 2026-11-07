@@ -31,6 +31,17 @@ fn commit_with(
     b: (f32, f32),
     parking: crate::simulation::network::graph::RoadParking,
 ) {
+    commit_before_its_frame(core, a, b, parking);
+    core.publish_deferred_parking_frontages();
+}
+
+// The commit alone: the frame after it publishes its parking.
+fn commit_before_its_frame(
+    core: &mut SimCore,
+    a: (f32, f32),
+    b: (f32, f32),
+    parking: crate::simulation::network::graph::RoadParking,
+) {
     core.precompute_road_mesh_data();
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);

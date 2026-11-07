@@ -126,7 +126,7 @@ impl SimCore {
             rebuilt.edges.clone()
         };
         if copy_graph {
-            self.reconcile_parking_frontages_deferred(&parking_edges);
+            self.defer_parking_frontages(&parking_edges);
         } else {
             self.reconcile_parking_frontages(&parking_edges);
         }

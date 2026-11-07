@@ -85,31 +85,31 @@ fn a_door_loses_the_ends_of_the_last_bays_on_a_street() {
 fn a_road_commit_leaves_its_doors_to_the_frame_that_adopts_it() {
     let (mut c, _) = street_with_lot();
     let revision = c.parking.candidate_revision();
-    commit_with(&mut c, (-120.0, 60.0), (120.0, 60.0), BOTH);
-    assert!(c.parking.catchments_deferred());
+    commit_before_its_frame(&mut c, (-120.0, 60.0), (120.0, 60.0), BOTH);
+    assert!(c.parking.frontages_deferred());
     assert_eq!(c.parking.candidate_revision(), revision);
     settle(&mut c);
-    assert!(!c.parking.catchments_deferred());
+    assert!(!c.parking.frontages_deferred());
     c.audit_every_parking_catchment();
 }
 
 #[test]
 fn a_site_edit_in_the_hold_publishes_the_road_edit_first() {
     let (mut c, id) = street_with_lot();
-    commit_with(&mut c, (-120.0, 60.0), (120.0, 60.0), BOTH);
+    commit_before_its_frame(&mut c, (-120.0, 60.0), (120.0, 60.0), BOTH);
     c.place_service_building_internal(&id, 60.0, -30.0).unwrap();
     c.publish_pending_building_site_changes();
-    assert!(!c.parking.catchments_deferred());
+    assert!(!c.parking.frontages_deferred());
     c.audit_every_parking_catchment();
 }
 
 #[test]
 fn a_save_in_the_hold_publishes_the_road_edit_first() {
     let (mut c, _) = street_with_lot();
-    commit_with(&mut c, (-120.0, 60.0), (120.0, 60.0), BOTH);
+    commit_before_its_frame(&mut c, (-120.0, 60.0), (120.0, 60.0), BOTH);
     let path = std::env::temp_dir().join(format!("catchments_{}.sqlite", std::process::id()));
     c.save_game_settled(path.to_str().unwrap(), None).unwrap();
     std::fs::remove_file(path).unwrap();
-    assert!(!c.parking.catchments_deferred());
+    assert!(!c.parking.frontages_deferred());
     c.audit_every_parking_catchment();
 }

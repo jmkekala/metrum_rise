@@ -43,7 +43,7 @@ impl SimCore {
         self.publish_road_tool_view();
         self.publish_pending_building_site_changes();
         self.transit_network.settle_cch();
-        self.publish_deferred_parking_catchments();
+        self.publish_deferred_parking_frontages();
         self.complete_parking_economy_publication();
         self.save_game_at(path, camera, saved_at_unix)
     }
@@ -69,8 +69,8 @@ impl SimCore {
             "a save during a routing hold installs the rebuild first (save_game_settled)"
         );
         debug_assert!(
-            !self.parking.catchments_deferred(),
-            "a save publishes a road edit's catchments first (save_game_settled)"
+            !self.parking.frontages_deferred(),
+            "a save publishes a commit's parking first (save_game_settled)"
         );
         let path = PathBuf::from(path);
         let events = self.aligned_events();

@@ -4,7 +4,7 @@
 //! derived once and read by each door it reaches.
 
 use super::super::*;
-use super::walk::{FootEnds, WALK_LIMIT_S, WalkField};
+use super::walk::{FootEnds, FootGraph, WALK_LIMIT_S, WalkField};
 use super::{DestinationCandidates, ParkingCandidate, ParkingEconomyEnds};
 use crate::simulation::buildings::allocator::BuildingEntrance;
 use crate::simulation::economy::accessibility::ModeComponentIndex;
@@ -34,7 +34,7 @@ pub(super) fn within_door_reach(dx: f32, dz: f32) -> bool {
 /// What a door reads of one bay to place it in its list.
 pub(super) struct FootRow {
     pub position: [f32; 2],
-    foot: FootEnds,
+    pub foot: FootEnds,
     maneuver_s: f32,
 }
 
@@ -91,6 +91,7 @@ impl EconomyRow {
 /// Rows of every usable bay in a set of chunks, grouped by chunk so a door walks nine contiguous
 /// runs. Positions sit apart from the rows: most bays a door looks at are out of its reach.
 pub(super) struct PlaceTable {
+    foot: FootGraph,
     chunks: HashMap<(i32, i32), Range<usize>>,
     positions: Vec<[f32; 2]>,
     rows: Vec<PlaceRow>,
@@ -113,10 +114,12 @@ thread_local! {
 }
 
 impl ParkingSystem {
-    /// Rows of the bays in `chunks` that lie inside `bounds` (`[min_x, min_z, max_x, max_z]`).
-    /// O(bays there + rows × (lane projection + trip ends)), parallel by chunk.
+    /// Rows of the bays in `chunks` that lie inside `bounds` (`[min_x, min_z, max_x, max_z]`),
+    /// for searches on `foot`. O(bays there + rows × (lane projection + trip ends)), parallel by
+    /// chunk.
     pub(super) fn place_table(
         &self,
+        foot: FootGraph,
         chunks: &[(i32, i32)],
         bounds: [f32; 4],
         network: &TransitNetwork,
@@ -125,10 +128,11 @@ impl ParkingSystem {
     ) -> PlaceTable {
         let parts: Vec<_> = chunks
             .par_iter()
-            .map(|&key| self.chunk_rows(key, bounds, network, graph, car_components))
+            .map(|&key| self.chunk_rows(key, bounds, &foot, network, graph, car_components))
             .collect();
         let total = parts.iter().map(|part| part.1.len()).sum();
         let mut table = PlaceTable {
+            foot,
             chunks: HashMap::with_capacity(parts.len()),
             positions: Vec::with_capacity(total),
             rows: Vec::with_capacity(total),
@@ -153,6 +157,7 @@ impl ParkingSystem {
         &self,
         key: (i32, i32),
         bounds: [f32; 4],
+        foot: &FootGraph,
         network: &TransitNetwork,
         graph: &RegionGraph,
         car_components: Option<&ModeComponentIndex>,
@@ -187,7 +192,11 @@ impl ParkingSystem {
             positions.push([x, z]);
             rows.push(PlaceRow {
                 place,
-                foot: FootEnds::of(&access, network, graph),
+                foot: if foot.is_empty() {
+                    FootEnds::default()
+                } else {
+                    FootEnds::of(&access, network, graph).on(foot)
+                },
                 maneuver_s: self.maneuver_seconds(place),
                 economy: id,
             });
@@ -219,23 +228,18 @@ impl ParkingSystem {
 /// bays' lanes have settled, and the outward one runs only for bays in reach. O(searches + bays
 /// log bays), allocating only the result.
 pub(super) fn door_rows<'a>(
-    entrance: &BuildingEntrance,
+    door: FootEnds,
     bays: impl Iterator<Item = (Handle<Place>, &'a FootRow)> + Clone,
-    network: &TransitNetwork,
-    graph: &RegionGraph,
+    foot: &FootGraph,
 ) -> Vec<ParkingCandidate> {
-    if bays.clone().next().is_none() {
-        return Vec::new();
-    }
     SCRATCH.with_borrow_mut(|scratch| {
         let DoorScratch { fields, lanes, .. } = scratch;
         let [forward, reverse] = fields;
-        let foot = FootEnds::of(entrance, network, graph);
         lanes.clear();
         lanes.extend(bays.clone().flat_map(|(_, row)| row.foot.lanes()));
         lanes.sort_unstable();
         lanes.dedup();
-        reverse.search_to(foot, true, lanes, network, graph);
+        reverse.search_to(&[door], true, lanes, foot);
         let mut found: Vec<_> = bays
             .filter_map(|(place, row)| {
                 let walk_s = reverse.time_at(&row.foot);
@@ -249,7 +253,7 @@ pub(super) fn door_rows<'a>(
         lanes.extend(found.iter().flat_map(|(_, row, _)| row.foot.lanes()));
         lanes.sort_unstable();
         lanes.dedup();
-        forward.search_to(foot, false, lanes, network, graph);
+        forward.search_to(&[door], false, lanes, foot);
         found.sort_unstable_by(|a, b| {
             a.2.total_cmp(&b.2)
                 .then(a.1.maneuver_s.total_cmp(&b.1.maneuver_s))
@@ -315,10 +319,10 @@ impl PlaceTable {
         }
         SCRATCH.with_borrow_mut(|scratch| {
             let DoorScratch { fields, found, .. } = scratch;
-            let foot = FootEnds::of(entrance, network, graph);
+            let door_ends = FootEnds::of(entrance, network, graph).on(&self.foot);
             let [forward, reverse] = fields;
-            forward.search(foot, false, network, graph);
-            reverse.search(foot, true, network, graph);
+            forward.search(&[door_ends], false, &self.foot);
+            reverse.search(&[door_ends], true, &self.foot);
             found.clear();
             for z in cz - 1..=cz + 1 {
                 for x in cx - 1..=cx + 1 {

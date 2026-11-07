@@ -5,8 +5,6 @@
 use super::*;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::economy::accessibility::ModeComponentIndex;
-use crate::simulation::economy::agents::{MODE_CAR, tick::BuildingTripEnds};
-use crate::simulation::network::types::TransitFlags;
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use godot::prelude::Vector2;
 use rayon::prelude::*;
@@ -15,7 +13,6 @@ mod table;
 mod update;
 mod walk;
 
-use table::finish_economy_ends;
 pub(super) use update::PlaceChange;
 use walk::WALK_LIMIT_S;
 
@@ -126,7 +123,8 @@ impl ParkingSystem {
             reach
         };
         self.refresh_chunk_access(&chunks, refreshed, allocator, network, graph);
-        let table = self.place_table(&chunks, reach, network, graph, car_components);
+        let foot = door_foot_graph(buildings, allocator, network, graph);
+        let table = self.place_table(foot, &chunks, reach, network, graph, car_components);
         let built: Vec<_> = buildings
             .par_iter()
             .filter_map(|&b| {
@@ -265,7 +263,8 @@ impl ParkingSystem {
             }
         }
         let economy = car_components.filter(|_| self.pending_economy.is_empty());
-        let table = self.place_table(&chunks, reach, network, graph, economy);
+        let foot = door_foot_graph(doors, allocator, network, graph);
+        let table = self.place_table(foot, &chunks, reach, network, graph, economy);
         let bits = |list: &[ParkingCandidate]| -> Vec<_> {
             list.iter()
                 .map(|c| (c.place, c.walk_s.to_bits(), c.from_door_s.to_bits()))
@@ -302,19 +301,19 @@ impl ParkingSystem {
         }
     }
 
-    /// Leaves the doors round `points` to the frame that adopts a road edit. O(points).
-    pub(crate) fn defer_catchments(&mut self, points: Vec<[f32; 2]>) {
-        self.pending_points.extend(points);
+    /// Leaves `edges` to the frame after a road commit. O(edges log pending).
+    pub(crate) fn defer_frontages(&mut self, edges: &std::collections::BTreeSet<usize>) {
+        self.pending_frontages.extend(edges);
     }
 
-    /// Whether a road edit's doors still wait for their rebuild. O(1).
-    pub(crate) fn catchments_deferred(&self) -> bool {
-        !self.pending_points.is_empty()
+    /// Whether a road commit's edges still wait for their publication. O(1).
+    pub(crate) fn frontages_deferred(&self) -> bool {
+        !self.pending_frontages.is_empty()
     }
 
-    /// The points of the road edits waiting for their rebuild, leaving none. O(1).
-    pub(crate) fn take_deferred_catchments(&mut self) -> Vec<[f32; 2]> {
-        std::mem::take(&mut self.pending_points)
+    /// The edges waiting for their publication, leaving none. O(1).
+    pub(crate) fn take_deferred_frontages(&mut self) -> std::collections::BTreeSet<usize> {
+        std::mem::take(&mut self.pending_frontages)
     }
 
     /// O(1), version of published catchments and their economy reachability metadata.
@@ -332,8 +331,9 @@ impl ParkingSystem {
         !self.pending_economy.is_empty()
     }
 
-    /// Completes only pending doors after CCH adoption. O(sum(local candidates log candidates));
-    /// no walking search or city-wide candidate scan. The caller supplies the existing car index.
+    /// Completes only pending doors after CCH adoption, from one table of their neighbourhood.
+    /// O(bays around them + their entries); no walking search or city-wide candidate scan. The
+    /// caller supplies the existing car index.
     pub(crate) fn refresh_economy_metadata(
         &mut self,
         allocator: &BuildingAllocator,
@@ -344,7 +344,15 @@ impl ParkingSystem {
         let mut pending = std::mem::take(&mut self.pending_economy);
         pending.sort_unstable();
         pending.dedup();
+        let doors: Vec<_> = pending
+            .iter()
+            .filter_map(|&b| allocator.building_handles.resolve(Handle::from_bits(b)))
+            .collect();
         let built: Vec<_> = crate::thread_pools::install(|| {
+            let (chunks, reach) = self.door_neighbourhood(&doors, allocator);
+            let foot = walk::FootGraph::default();
+            let table = self.place_table(foot, &chunks, reach, network, graph, Some(components));
+            let index = table.place_index();
             pending
                 .par_iter()
                 .filter_map(|&building| {
@@ -352,10 +360,9 @@ impl ParkingSystem {
                         .building_handles
                         .resolve(Handle::from_bits(building))?;
                     let entries = &self.candidates.get(&building)?.entries;
-                    Some((
-                        building,
-                        self.build_economy_ends(entries, b, allocator, network, graph, components),
-                    ))
+                    let centre = &allocator.buildings[b];
+                    let centre = [centre.center_x, centre.center_y];
+                    Some((building, table.economy_of(entries, &index, centre, graph)))
                 })
                 .collect()
         });
@@ -369,37 +376,6 @@ impl ParkingSystem {
         }
         pending.clear();
         self.pending_economy = pending;
-    }
-
-    fn build_economy_ends(
-        &self,
-        entries: &[ParkingCandidate],
-        building: usize,
-        allocator: &BuildingAllocator,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-        car_components: &ModeComponentIndex,
-    ) -> ParkingEconomyEnds {
-        let centre = &allocator.buildings[building];
-        let mut components = Vec::new();
-        let mut targets = Vec::new();
-        for candidate in entries {
-            let Some(access) = self.live_access(candidate.place, network, graph) else {
-                continue;
-            };
-            components.extend_from_slice(
-                car_components
-                    .entrance_components(&access, graph, TransitFlags::CAR)
-                    .as_slice(),
-            );
-            targets.extend(
-                BuildingTripEnds::at_entrance(&access, false, network, graph)
-                    .network_targets(MODE_CAR)
-                    .into_iter()
-                    .flatten(),
-            );
-        }
-        finish_economy_ends(components, targets, [centre.center_x, centre.center_y], graph)
     }
 
     /// Edit-time locality oracle, comparing geometry/time rather than handles remapped by setup.
@@ -609,6 +585,22 @@ impl ParkingSystem {
                     / crate::config::AGENT_DRIVEWAY_SPEED_MS
             })
     }
+}
+
+// The lanes every search from these doors can touch. O(lanes in their reach).
+fn door_foot_graph(
+    buildings: &[usize],
+    allocator: &BuildingAllocator,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> walk::FootGraph {
+    let seeds = buildings
+        .iter()
+        .filter_map(|&b| allocator.entrances.get(b))
+        .flat_map(|door| [door.foot_lane_fwd, door.foot_lane_bkw])
+        .filter(|&lane| lane < network.lane_system.lanes.len())
+        .collect();
+    walk::FootGraph::around(seeds, network, graph)
 }
 
 fn road_point_of(access: &BuildingEntrance, graph: &RegionGraph) -> Option<[f32; 2]> {

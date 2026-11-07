@@ -10,6 +10,7 @@
 
 use super::super::*;
 use super::table::{EconomyRow, FootRow, finish_economy_ends, within_door_reach};
+use super::walk::{FootEnds, FootGraph, WALK_LIMIT_S, WalkField};
 use super::{DestinationCandidates, ParkingCandidate, ParkingEconomyEnds};
 use crate::simulation::buildings::allocator::{
     BuildingAllocator, BuildingEntrance, BuildingEntranceKey,
@@ -38,6 +39,16 @@ struct ChangedPlace {
     // Its rows now, when it is usable supply.
     row: Option<FootRow>,
     economy: EconomyRow,
+}
+
+// Far past the rounding between a walk summed from one end and the same walk from the other.
+const ESTIMATE_MARGIN_S: f32 = 0.25;
+
+// The usable changed bays' side of the doors' searches: the lanes round them, and one search from
+// all of them at once, which tells the doors it cannot reach from those it must measure.
+struct ChangedReach {
+    foot: FootGraph,
+    from_bays: WalkField,
 }
 
 // One door's new list; `whole_economy` when its ends must be read off every entry.
@@ -83,13 +94,16 @@ impl ParkingSystem {
     ) -> Vec<[f32; 2]> {
         crate::thread_pools::install(|| {
             self.follow_host_doors(hosts, allocator, network, graph);
-            let changed = self.changed_places(allocator, network, graph, components);
+            let mut changed = self.changed_places(allocator, network, graph, components);
             let mut doors = self.rebuild_doors(own, false, allocator, network, graph, Some(components));
+            let reach = changed_reach(&mut changed, network, graph);
             let this = &*self;
             let mut edits: Vec<_> = near
                 .par_iter()
                 .filter(|b| own.binary_search(b).is_err())
-                .filter_map(|&b| this.door_edit(b, &changed, allocator, network, graph, components))
+                .filter_map(|&b| {
+                    this.door_edit(b, &changed, &reach, allocator, network, graph, components)
+                })
                 .collect();
             this.finish_whole_economy(&mut edits, allocator, network, graph, components);
             if !near.is_empty() {
@@ -195,6 +209,7 @@ impl ParkingSystem {
         &self,
         building: usize,
         changed: &[ChangedPlace],
+        reach: &ChangedReach,
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
@@ -215,17 +230,20 @@ impl ParkingSystem {
         let entries = old.map_or(&[][..], |c| &c.entries[..]);
         let lost = |place| changed.binary_search_by_key(&place, |c: &ChangedPlace| c.place);
         let gone = entries.iter().filter(|e| lost(e.place).is_ok()).count();
-        let found = super::table::door_rows(
-            entrance,
-            changed.iter().filter_map(|c| {
-                c.row
-                    .as_ref()
-                    .filter(|row| in_reach(row.position))
-                    .map(|row| (c.place, row))
-            }),
-            network,
-            graph,
-        );
+        let bays = changed.iter().filter_map(|c| {
+            c.row
+                .as_ref()
+                .filter(|row| in_reach(row.position))
+                .map(|row| (c.place, row))
+        });
+        let ends = FootEnds::of(entrance, network, graph).on(&reach.foot);
+        let found = if bays.clone().next().is_some()
+            && reach.from_bays.time_at(&ends) <= WALK_LIMIT_S + ESTIMATE_MARGIN_S
+        {
+            super::table::door_rows(ends, bays, &reach.foot)
+        } else {
+            Vec::new()
+        };
         if gone == 0 && found.is_empty() {
             return None;
         }
@@ -246,11 +264,16 @@ impl ParkingSystem {
         let centre = [centre.center_x, centre.center_y];
         let empty = ParkingEconomyEnds::default();
         let ends = old.map_or(&empty, |c| &c.economy);
-        let whole_economy = entries.iter().any(|e| {
-            lost(e.place).is_ok_and(|i| {
-                let bay = &changed[i];
-                !self.still_ends(&bay.lost, bay.lost_edge, &merged, network, graph, components)
-            })
+        // Bays of one edit share an edge and its ends, so each pair is proved once.
+        let mut proved: Vec<(&EconomyRow, usize)> = Vec::new();
+        let whole_economy = entries.iter().filter_map(|e| lost(e.place).ok()).any(|i| {
+            let bay = &changed[i];
+            let pair = (&bay.lost, bay.lost_edge);
+            if proved.contains(&pair) {
+                return false;
+            }
+            proved.push(pair);
+            !self.still_ends(pair.0, pair.1, &merged, network, graph, components)
         });
         let economy = if whole_economy {
             ParkingEconomyEnds::default()
@@ -327,7 +350,8 @@ impl ParkingSystem {
             return;
         }
         let (chunks, bounds) = self.door_neighbourhood(&doors, allocator);
-        let table = self.place_table(&chunks, bounds, network, graph, Some(components));
+        let foot = FootGraph::default();
+        let table = self.place_table(foot, &chunks, bounds, network, graph, Some(components));
         let index = table.place_index();
         edits.par_iter_mut().filter(|edit| edit.whole_economy).for_each(|edit| {
             let centre = &allocator.buildings[edit.building];
@@ -339,6 +363,29 @@ impl ParkingSystem {
             );
         });
     }
+}
+
+// Puts the usable changed bays on the lanes round them and searches from all of them. O(lanes in
+// reach of them).
+fn changed_reach(
+    changed: &mut [ChangedPlace],
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> ChangedReach {
+    let lanes = changed
+        .iter()
+        .flat_map(|c| c.row.iter())
+        .flat_map(|row| row.foot.lanes())
+        .collect();
+    let foot = FootGraph::around(lanes, network, graph);
+    let mut seeds = Vec::with_capacity(changed.len());
+    for row in changed.iter_mut().filter_map(|c| c.row.as_mut()) {
+        row.foot = row.foot.on(&foot);
+        seeds.push(row.foot);
+    }
+    let mut from_bays = WalkField::default();
+    from_bays.search(&seeds, false, &foot);
+    ChangedReach { foot, from_bays }
 }
 
 impl ParkingEconomyEnds {

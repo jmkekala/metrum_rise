@@ -73,9 +73,9 @@ pub(crate) struct ParkingSystem {
     pending_economy: Vec<u64>,
     // Bays changed since the last publication; derived, never saved.
     place_changes: Vec<candidates::PlaceChange>,
-    // Edit points a road edit left to the frame that adopts it, which rebuilds the doors round
-    // them before anything reads a list; derived, never saved.
-    pending_points: Vec<[f32; 2]>,
+    // Road edges a commit left to the frame after it, which reconciles them before anything
+    // reads supply or a list; derived, never saved.
+    pending_frontages: std::collections::BTreeSet<usize>,
     // Inspection-only departure outcomes since load; never saved or read by decisions.
     pub(crate) departures: stats::DepartureStats,
     // Cars whose custody changed since the last agent tick, and the borrowers whose reservation

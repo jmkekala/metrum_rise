@@ -237,6 +237,7 @@ fn a_car_stands_on_the_level_of_its_own_bay() {
     assert!(outcome.committed, "{}", outcome.rejection);
     core.adopt_pending_cell_lots();
     core.transit_network.settle_cch();
+    core.publish_deferred_parking_frontages();
     assert!(core.parking.counts().0 > 1, "the bridge has its own bays");
     core.parking.fill_test_fleet();
     let deck_edge = core

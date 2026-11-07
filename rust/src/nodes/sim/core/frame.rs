@@ -257,6 +257,9 @@ impl SimCore {
         adoption_start: Instant,
     ) -> FrameStepReport {
         let mut report = FrameStepReport::default();
+        // A commit's parking first: it needs the entrances the adoption above updated, and the
+        // hold leaves nothing else for this frame to do.
+        self.publish_deferred_parking_frontages();
         // Sites placed by tools since the last frame; demand places its own during slots.
         self.schedule_construction_completions();
         // D7 (`ROAD-68-G`): until a routing rebuild is adopted every phase of the frame would
@@ -271,7 +274,6 @@ impl SimCore {
         if adopting {
             report.adoption_ms = adoption_start.elapsed().as_secs_f64() * 1000.0;
         }
-        self.publish_deferred_parking_catchments();
         self.complete_parking_economy_publication();
         let speed = self.time.speed_multiplier;
         if speed <= 0.0 {

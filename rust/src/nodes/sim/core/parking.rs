@@ -17,20 +17,24 @@ impl SimCore {
         if edges.is_empty() {
             return;
         }
-        let points = self.reconcile_parking_supply(edges);
+        let mut edges = edges.clone();
+        edges.extend(self.parking.take_deferred_frontages());
+        let points = self.reconcile_parking_supply(&edges);
         self.rebuild_parking_candidates_near(&points);
     }
 
-    /// [`Self::reconcile_parking_frontages`] for an edit whose routing the frame holds for
-    /// (`docs/roads.md` D7): the bays now, the doors round them at the frame that adopts it. No
-    /// simulation phase runs before that frame, so no phase reads a list in between, and the
-    /// rebuild still sees the entrances the hold's first frame updates. A save, and any
-    /// publication before that frame, rebuilds them first.
-    pub(crate) fn reconcile_parking_frontages_deferred(&mut self, edges: &BTreeSet<usize>) {
-        if !edges.is_empty() {
-            let points = self.reconcile_parking_supply(edges);
-            self.parking.defer_catchments(points);
-        }
+    /// [`Self::reconcile_parking_frontages`] left to the next frame, for a commit: its routing
+    /// hold (`docs/roads.md` D7) means no simulation phase runs before that frame. So no phase
+    /// reads supply or a list in between, and the doors see the entrances that frame adopts.
+    /// A save, and any publication before that frame, reconciles them first. O(edges).
+    pub(crate) fn defer_parking_frontages(&mut self, edges: &BTreeSet<usize>) {
+        self.parking.defer_frontages(edges);
+    }
+
+    /// Publishes the edges a commit deferred. O(1) without one.
+    pub(crate) fn publish_deferred_parking_frontages(&mut self) {
+        let edges = self.parking.take_deferred_frontages();
+        self.reconcile_parking_frontages(&edges);
     }
 
     // The supply of `edges` and the buildings along them; the points doors must follow.
@@ -157,6 +161,7 @@ impl SimCore {
             self.allocator.parking_site_changes = changes;
             return;
         }
+        self.publish_deferred_parking_frontages();
         changes.sort_unstable();
         changes.dedup();
         let lots: Vec<_> = crate::thread_pools::install(|| {
@@ -207,10 +212,10 @@ impl SimCore {
     }
 
     // A site edit's doors: the changed buildings' own, and those the changed bays can reach,
-    // which `points` covers. A deferred road edit or stale routing takes the full rebuild, which
-    // owns both. O(`publish_place_changes`).
+    // which `points` covers. Stale routing takes the full rebuild, which owns the wait for it.
+    // O(`publish_place_changes`).
     fn publish_site_catchments(&mut self, hosts: &[u64], points: &[[f32; 2]]) {
-        if self.parking.catchments_deferred() || !self.transit_network.cch_current() {
+        if !self.transit_network.cch_current() {
             self.rebuild_parking_candidates_near(points);
             return;
         }
@@ -246,9 +251,6 @@ impl SimCore {
     #[cfg(all(test, debug_assertions))]
     fn audit_parking_catchments(&mut self, near: &[usize]) {
         const SAMPLE: usize = 12;
-        if self.parking.catchments_deferred() {
-            return;
-        }
         let every = |doors: usize| doors.div_ceil(SAMPLE).max(1);
         let mut doors: Vec<_> = near.iter().copied().step_by(every(near.len())).collect();
         doors.extend((0..self.allocator.buildings.len()).step_by(every(self.allocator.buildings.len())));
@@ -272,13 +274,15 @@ impl SimCore {
                 .refresh(&self.transit_network, &self.region_graph);
             self.households.destination_topology.car()
         });
-        self.parking.audit_candidates(
-            doors,
-            &self.allocator,
-            &self.transit_network,
-            &self.region_graph,
-            components,
-        );
+        crate::thread_pools::install(|| {
+            self.parking.audit_candidates(
+                doors,
+                &self.allocator,
+                &self.transit_network,
+                &self.region_graph,
+                components,
+            );
+        });
     }
 }
 
@@ -420,14 +424,11 @@ impl SimCore {
     }
 
     /// Rebuilds only door catchments through the maintained site-cell index around changed
-    /// supply/doors, the deferred edit's among them. O(local chunk buildings + local bounded
-    /// searches), independent of background.
+    /// supply/doors. O(local chunk buildings + local bounded searches), independent of background.
     pub(crate) fn rebuild_parking_candidates_near(&mut self, points: &[[f32; 2]]) {
         self.parking
             .refresh_retired_access(&self.transit_network, &self.region_graph);
-        let mut all = self.parking.take_deferred_catchments();
-        all.extend_from_slice(points);
-        let buildings = self.doors_near(&all);
+        let buildings = self.doors_near(points);
         // Only homes whose reachable places changed have new supply; added bays woke their
         // own chunks in `replace_source`.
         for door in self.publish_parking_catchments(&buildings) {
@@ -435,13 +436,6 @@ impl SimCore {
         }
         #[cfg(all(test, debug_assertions))]
         self.audit_parking_catchments(&buildings);
-    }
-
-    /// Publishes the catchments a road edit deferred to the frame adopting it. O(1) without one.
-    pub(crate) fn publish_deferred_parking_catchments(&mut self) {
-        if self.parking.catchments_deferred() {
-            self.rebuild_parking_candidates_near(&[]);
-        }
     }
 
     // Sorted doors within 512 m of a point: the buildings round each occupied chunk, then each
