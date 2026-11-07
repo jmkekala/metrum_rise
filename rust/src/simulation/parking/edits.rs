@@ -14,6 +14,7 @@ impl ParkingSystem {
         let car = self.places.occupant[p];
         let reservation = self.places.reservation[p];
         if self.places.active[p] {
+            self.journal_place(handle);
             self.places.active[p] = false;
             self.usable_places -= 1;
             let retiring_car = if !reservation.is_none() {
@@ -92,12 +93,17 @@ impl ParkingSystem {
                     self.places.active[p] = true;
                     self.usable_places += 1;
                 }
+                // A bay's path gives its access and the driveway time doors sort it by.
+                if reactivated || self.places.path[p] != bay.path {
+                    self.journal_place(h);
+                }
                 self.places.width[p] = bay.width;
                 self.places.length[p] = bay.length;
                 self.places.path[p] = bay.path;
                 reactivated
             } else {
-                self.add_place(source, *bay);
+                let place = self.add_place(source, *bay);
+                self.journal_place(place);
                 true
             };
             if added {

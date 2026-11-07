@@ -3,12 +3,13 @@
 //! Local physical parking publication at existing road and site edit boundaries.
 
 use super::SimCore;
+use crate::simulation::core::handles::Handle;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::parking::kerb::{kerb_bays, kerb_blockers};
 use crate::simulation::parking::{ParkedPublication, PlaceSource};
 use crate::simulation::parking::lots::lot_bays;
 use rayon::prelude::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 impl SimCore {
     /// O(affected edges' geometry + local candidates × lot validation), never a city-wide supply rebuild.
@@ -16,6 +17,24 @@ impl SimCore {
         if edges.is_empty() {
             return;
         }
+        let points = self.reconcile_parking_supply(edges);
+        self.rebuild_parking_candidates_near(&points);
+    }
+
+    /// [`Self::reconcile_parking_frontages`] for an edit whose routing the frame holds for
+    /// (`docs/roads.md` D7): the bays now, the doors round them at the frame that adopts it. No
+    /// simulation phase runs before that frame, so no phase reads a list in between, and the
+    /// rebuild still sees the entrances the hold's first frame updates. A save, and any
+    /// publication before that frame, rebuilds them first.
+    pub(crate) fn reconcile_parking_frontages_deferred(&mut self, edges: &BTreeSet<usize>) {
+        if !edges.is_empty() {
+            let points = self.reconcile_parking_supply(edges);
+            self.parking.defer_catchments(points);
+        }
+    }
+
+    // The supply of `edges` and the buildings along them; the points doors must follow.
+    fn reconcile_parking_supply(&mut self, edges: &BTreeSet<usize>) -> Vec<[f32; 2]> {
         if self.allocator.building_sites.len() != self.allocator.buildings.len() {
             self.allocator
                 .rebuild_building_site_clients(self.zoning.config.zone_cell_m);
@@ -96,7 +115,7 @@ impl SimCore {
                 }),
         );
         self.reconcile_kerb_parking(&kerb_edges, &mut points);
-        self.rebuild_parking_candidates_near(&points);
+        points
     }
 
     // Both parking lanes of each edge, against the blockers already published for it. Geometry
@@ -159,8 +178,10 @@ impl SimCore {
                 .collect()
         });
         let mut points = Vec::new();
+        let mut hosts = Vec::with_capacity(lots.len());
         let mut kerb_edges = BTreeSet::new();
         for (handle, bays, issues, blockers) in lots {
+            hosts.push(handle.to_bits());
             self.parking
                 .set_kerb_blockers(handle.to_bits(), blockers, &mut kerb_edges);
             points.extend(self.parking.source_points(handle.to_bits()));
@@ -180,9 +201,84 @@ impl SimCore {
             }
         }
         self.reconcile_kerb_parking(&kerb_edges, &mut points);
-        self.rebuild_parking_candidates_near(&points);
+        self.publish_site_catchments(&hosts, &points);
         changes.clear();
         self.allocator.parking_site_changes = changes;
+    }
+
+    // A site edit's doors: the changed buildings' own, and those the changed bays can reach,
+    // which `points` covers. A deferred road edit or stale routing takes the full rebuild, which
+    // owns both. O(`publish_place_changes`).
+    fn publish_site_catchments(&mut self, hosts: &[u64], points: &[[f32; 2]]) {
+        if self.parking.catchments_deferred() || !self.transit_network.cch_current() {
+            self.rebuild_parking_candidates_near(points);
+            return;
+        }
+        self.parking
+            .refresh_retired_access(&self.transit_network, &self.region_graph);
+        let near = self.doors_near(points);
+        let mut own: Vec<_> = hosts
+            .iter()
+            .filter_map(|&host| self.allocator.building_handles.resolve(Handle::from_bits(host)))
+            .collect();
+        own.sort_unstable();
+        self.households
+            .destination_topology
+            .refresh(&self.transit_network, &self.region_graph);
+        let doors = self.parking.publish_place_changes(
+            &own,
+            hosts,
+            &near,
+            &self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+            self.households.destination_topology.car(),
+        );
+        for door in doors {
+            self.parking.rehouse_near(door);
+        }
+        #[cfg(all(test, debug_assertions))]
+        self.audit_parking_catchments(&near);
+    }
+
+    // Test builds: the doors an edit reached, sampled, and a sample of every other door, against
+    // a rebuild from scratch. Beyond the neighbourhood is where rebuilding too little shows.
+    #[cfg(all(test, debug_assertions))]
+    fn audit_parking_catchments(&mut self, near: &[usize]) {
+        const SAMPLE: usize = 12;
+        if self.parking.catchments_deferred() {
+            return;
+        }
+        let every = |doors: usize| doors.div_ceil(SAMPLE).max(1);
+        let mut doors: Vec<_> = near.iter().copied().step_by(every(near.len())).collect();
+        doors.extend((0..self.allocator.buildings.len()).step_by(every(self.allocator.buildings.len())));
+        doors.sort_unstable();
+        doors.dedup();
+        self.audit_parking_doors(&doors);
+    }
+
+    /// Test builds: every door's list against a rebuild from scratch. O(doors × their search).
+    #[cfg(test)]
+    pub(crate) fn audit_every_parking_catchment(&mut self) {
+        let doors: Vec<_> = (0..self.allocator.buildings.len()).collect();
+        self.audit_parking_doors(&doors);
+    }
+
+    #[cfg(test)]
+    fn audit_parking_doors(&mut self, doors: &[usize]) {
+        let components = self.transit_network.cch_current().then(|| {
+            self.households
+                .destination_topology
+                .refresh(&self.transit_network, &self.region_graph);
+            self.households.destination_topology.car()
+        });
+        self.parking.audit_candidates(
+            doors,
+            &self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+            components,
+        );
     }
 }
 
@@ -324,35 +420,76 @@ impl SimCore {
     }
 
     /// Rebuilds only door catchments through the maintained site-cell index around changed
-    /// supply/doors. O(local chunk buildings + local bounded searches), independent of background.
+    /// supply/doors, the deferred edit's among them. O(local chunk buildings + local bounded
+    /// searches), independent of background.
     pub(crate) fn rebuild_parking_candidates_near(&mut self, points: &[[f32; 2]]) {
         self.parking
             .refresh_retired_access(&self.transit_network, &self.region_graph);
-        let mut buildings = Vec::new();
-        for &point in points {
-            self.allocator.site_cells.visit(
-                [
-                    point[0] - 512.0,
-                    point[1] - 512.0,
-                    point[0] + 512.0,
-                    point[1] + 512.0,
-                ],
-                |b| {
-                    if self.allocator.entrances.get(b).is_some_and(|e| {
-                        (e.door_pos.x - point[0]).hypot(e.door_pos.y - point[1]) <= 512.0
-                    }) {
-                        buildings.push(b);
-                    }
-                },
-            );
-        }
-        buildings.sort_unstable();
-        buildings.dedup();
+        let mut all = self.parking.take_deferred_catchments();
+        all.extend_from_slice(points);
+        let buildings = self.doors_near(&all);
         // Only homes whose reachable places changed have new supply; added bays woke their
         // own chunks in `replace_source`.
         for door in self.publish_parking_catchments(&buildings) {
             self.parking.rehouse_near(door);
         }
+        #[cfg(all(test, debug_assertions))]
+        self.audit_parking_catchments(&buildings);
+    }
+
+    /// Publishes the catchments a road edit deferred to the frame adopting it. O(1) without one.
+    pub(crate) fn publish_deferred_parking_catchments(&mut self) {
+        if self.parking.catchments_deferred() {
+            self.rebuild_parking_candidates_near(&[]);
+        }
+    }
+
+    // Sorted doors within 512 m of a point: the buildings round each occupied chunk, then each
+    // door against the points of the chunks it touches. O(points + local doors × local points in
+    // the worst case, usually the first), parallel by door, independent of the rest of the city.
+    fn doors_near(&self, points: &[[f32; 2]]) -> Vec<usize> {
+        const REACH_M: f32 = 512.0;
+        let chunk = |[x, z]: [f32; 2]| ((x / REACH_M).floor() as i32, (z / REACH_M).floor() as i32);
+        let mut cells: HashMap<(i32, i32), Vec<[f32; 2]>> = HashMap::new();
+        for &point in points {
+            cells.entry(chunk(point)).or_default().push(point);
+        }
+        let mut buildings = Vec::new();
+        for &(x, z) in cells.keys() {
+            let (min_x, min_z) = (x as f32 * REACH_M, z as f32 * REACH_M);
+            self.allocator.site_cells.visit(
+                [
+                    min_x - REACH_M,
+                    min_z - REACH_M,
+                    min_x + 2.0 * REACH_M,
+                    min_z + 2.0 * REACH_M,
+                ],
+                |b| buildings.push(b),
+            );
+        }
+        buildings.sort_unstable();
+        buildings.dedup();
+        crate::thread_pools::install(|| {
+            buildings
+                .into_par_iter()
+                .filter(|&b| {
+                    let Some(door) = self.allocator.entrances.get(b) else {
+                        return false;
+                    };
+                    let door = [door.door_pos.x, door.door_pos.y];
+                    let (x, z) = chunk(door);
+                    (z - 1..=z + 1).any(|z| {
+                        (x - 1..=x + 1).any(|x| {
+                            cells.get(&(x, z)).is_some_and(|points| {
+                                points.iter().any(|point| {
+                                    (door[0] - point[0]).hypot(door[1] - point[1]) <= REACH_M
+                                })
+                            })
+                        })
+                    })
+                })
+                .collect()
+        })
     }
 }
 

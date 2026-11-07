@@ -12,9 +12,11 @@ use godot::prelude::Vector2;
 use rayon::prelude::*;
 
 mod table;
+mod update;
 mod walk;
 
 use table::finish_economy_ends;
+pub(super) use update::PlaceChange;
 use walk::WALK_LIMIT_S;
 
 /// One 16-byte per-destination entry, without a retained route. At 100k nonempty doors,
@@ -63,18 +65,17 @@ impl ParkingSystem {
         car_components: Option<&ModeComponentIndex>,
     ) -> Vec<[f32; 2]> {
         crate::thread_pools::install(|| {
-            self.rebuild_candidates_in_pool(buildings, allocator, network, graph, car_components)
+            self.place_changes.clear();
+            self.rebuild_doors(buildings, true, allocator, network, graph, car_components)
         })
     }
 
-    fn rebuild_candidates_in_pool(
-        &mut self,
+    // The chunks a set of doors can reach and the bounds of that reach.
+    fn door_neighbourhood(
+        &self,
         buildings: &[usize],
         allocator: &BuildingAllocator,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-        car_components: Option<&ModeComponentIndex>,
-    ) -> Vec<[f32; 2]> {
+    ) -> (Vec<(i32, i32)>, [f32; 4]) {
         let mut door_chunks = Vec::new();
         let mut bounds = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
         for door in buildings.iter().filter_map(|&b| allocator.entrances.get(b)) {
@@ -96,7 +97,6 @@ impl ParkingSystem {
             .collect();
         chunks.sort_unstable();
         chunks.dedup();
-        self.refresh_chunk_access(&chunks, allocator, network, graph);
         // A metre past the door's reach covers the rounding of the bounds themselves.
         let reach = [
             bounds[0] - 401.0,
@@ -104,6 +104,28 @@ impl ParkingSystem {
             bounds[2] + 401.0,
             bounds[3] + 401.0,
         ];
+        (chunks, reach)
+    }
+
+    // Rebuilds whole lists, with the access of the bays around the doors: all of them in their
+    // chunks for a road edit, whose lanes moved; those in reach for a site edit, where only a bay
+    // no door has reached yet can be out of date.
+    fn rebuild_doors(
+        &mut self,
+        buildings: &[usize],
+        whole_chunks: bool,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        car_components: Option<&ModeComponentIndex>,
+    ) -> Vec<[f32; 2]> {
+        let (chunks, reach) = self.door_neighbourhood(buildings, allocator);
+        let refreshed = if whole_chunks {
+            [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::INFINITY]
+        } else {
+            reach
+        };
+        self.refresh_chunk_access(&chunks, refreshed, allocator, network, graph);
         let table = self.place_table(&chunks, reach, network, graph, car_components);
         let built: Vec<_> = buildings
             .par_iter()
@@ -154,11 +176,32 @@ impl ParkingSystem {
         changed
     }
 
-    // Publishes the access of every bay in `chunks`, from the current doors and roads. Derived in
-    // parallel, written in the caller's order. O(bays there).
+    // Publishes one bay's access, from the current doors and roads. O(its host's entrance).
+    fn refresh_place_access(
+        &mut self,
+        place: Handle<Place>,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        let Some(p) = self.place_handles.resolve(place).filter(|&p| self.places.active[p]) else {
+            return;
+        };
+        let access = self
+            .derive_place_entrance(place, allocator, network, graph)
+            .unwrap_or_default();
+        if let Some(point) = road_point_of(&access, graph) {
+            self.places.road_point[p] = point;
+        }
+        self.places.access[p] = access;
+    }
+
+    // Publishes the access of the bays in `chunks` inside `bounds`, from the current doors and
+    // roads. Derived in parallel, written in the caller's order. O(bays there).
     fn refresh_chunk_access(
         &mut self,
         chunks: &[(i32, i32)],
+        bounds: [f32; 4],
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
@@ -169,20 +212,15 @@ impl ParkingSystem {
             .flat_map_iter(|key| this.chunks.get(key).map_or(&[][..], |c| &c.places))
             .filter_map(|&place| {
                 let p = this.place_handles.resolve(place)?;
-                if !this.places.active[p] {
+                let [x, _, z] = this.places.position[p];
+                let inside = x >= bounds[0] && z >= bounds[1] && x <= bounds[2] && z <= bounds[3];
+                if !this.places.active[p] || !inside {
                     return None;
                 }
                 let access = this
                     .derive_place_entrance(place, allocator, network, graph)
                     .unwrap_or_default();
-                let point = graph.get_edge(access.edge_idx).map(|edge| {
-                    let point = BuildingAllocator::sample_pos_on_edge(
-                        graph,
-                        access.edge_idx,
-                        access.entrance_s_m / edge.physical_length,
-                    );
-                    [point.x, point.y]
-                });
+                let point = road_point_of(&access, graph);
                 Some((p, access, point))
             })
             .collect();
@@ -192,6 +230,91 @@ impl ParkingSystem {
             }
             self.places.access[p] = access;
         }
+    }
+
+    /// Test builds: panics unless the live lists of `doors` and the access of every bay they
+    /// reach are what a rebuild from scratch gives, bit for bit, as a load's would be. Economy
+    /// ends are read only when `car_components` is given and none waits for the adoption.
+    #[cfg(test)]
+    pub(crate) fn audit_candidates(
+        &self,
+        doors: &[usize],
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        car_components: Option<&ModeComponentIndex>,
+    ) {
+        use crate::simulation::buildings::allocator::BuildingEntranceKey;
+        let (chunks, reach) = self.door_neighbourhood(doors, allocator);
+        let in_reach = |pos: [f32; 3]| {
+            doors.iter().filter_map(|&b| allocator.entrances.get(b)).any(|door| {
+                table::within_door_reach(pos[0] - door.door_pos.x, pos[2] - door.door_pos.y)
+            })
+        };
+        for place in chunks.iter().flat_map(|key| &self.chunks[key].places) {
+            let p = self.place_handles.resolve(*place).expect("indexed bay");
+            if self.places.active[p] && in_reach(self.places.position[p]) {
+                let access = self
+                    .derive_place_entrance(*place, allocator, network, graph)
+                    .unwrap_or_default();
+                assert_eq!(
+                    BuildingEntranceKey::new(&self.places.access[p]),
+                    BuildingEntranceKey::new(&access),
+                    "bay {place:?} keeps a stale access",
+                );
+            }
+        }
+        let economy = car_components.filter(|_| self.pending_economy.is_empty());
+        let table = self.place_table(&chunks, reach, network, graph, economy);
+        let bits = |list: &[ParkingCandidate]| -> Vec<_> {
+            list.iter()
+                .map(|c| (c.place, c.walk_s.to_bits(), c.from_door_s.to_bits()))
+                .collect()
+        };
+        for &b in doors {
+            let Some(entrance) = allocator.entrances.get(b) else {
+                continue;
+            };
+            let handle = allocator.building_handles.handle(b).to_bits();
+            let centre = &allocator.buildings[b];
+            let scratch = table.door_candidates(
+                entrance,
+                [centre.center_x, centre.center_y],
+                economy.is_some(),
+                network,
+                graph,
+            );
+            let live = self.candidates.get(&handle);
+            assert_eq!(
+                live.map_or(Vec::new(), |c| bits(&c.entries)),
+                bits(&scratch.entries),
+                "the door of building {b} keeps a stale list",
+            );
+            if let Some(live) = live.filter(|_| economy.is_some()) {
+                assert_eq!(live.economy.components, scratch.economy.components, "door {b}");
+                assert_eq!(live.economy.targets, scratch.economy.targets, "door {b}");
+                assert_eq!(
+                    live.economy.node_slack_m.to_bits(),
+                    scratch.economy.node_slack_m.to_bits(),
+                    "door {b}",
+                );
+            }
+        }
+    }
+
+    /// Leaves the doors round `points` to the frame that adopts a road edit. O(points).
+    pub(crate) fn defer_catchments(&mut self, points: Vec<[f32; 2]>) {
+        self.pending_points.extend(points);
+    }
+
+    /// Whether a road edit's doors still wait for their rebuild. O(1).
+    pub(crate) fn catchments_deferred(&self) -> bool {
+        !self.pending_points.is_empty()
+    }
+
+    /// The points of the road edits waiting for their rebuild, leaving none. O(1).
+    pub(crate) fn take_deferred_catchments(&mut self) -> Vec<[f32; 2]> {
+        std::mem::take(&mut self.pending_points)
     }
 
     /// O(1), version of published catchments and their economy reachability metadata.
@@ -486,6 +609,17 @@ impl ParkingSystem {
                     / crate::config::AGENT_DRIVEWAY_SPEED_MS
             })
     }
+}
+
+fn road_point_of(access: &BuildingEntrance, graph: &RegionGraph) -> Option<[f32; 2]> {
+    graph.get_edge(access.edge_idx).map(|edge| {
+        let point = BuildingAllocator::sample_pos_on_edge(
+            graph,
+            access.edge_idx,
+            access.entrance_s_m / edge.physical_length,
+        );
+        [point.x, point.y]
+    })
 }
 
 impl ParkingSystem {

@@ -6,7 +6,7 @@
 use super::super::*;
 use super::walk::{FootEnds, WALK_LIMIT_S, WalkField};
 use super::{DestinationCandidates, ParkingCandidate, ParkingEconomyEnds};
-use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
+use crate::simulation::buildings::allocator::BuildingEntrance;
 use crate::simulation::economy::accessibility::ModeComponentIndex;
 use crate::simulation::economy::agents::{MODE_CAR, tick::BuildingTripEnds};
 use crate::simulation::network::types::TransitFlags;
@@ -25,10 +25,17 @@ const DOOR_REACH_SURE_SQ: f32 = 399.5 * 399.5;
 const DOOR_REACH_OUT_SQ: f32 = 400.5 * 400.5;
 
 #[inline]
-fn within_door_reach(dx: f32, dz: f32) -> bool {
+pub(super) fn within_door_reach(dx: f32, dz: f32) -> bool {
     let squared = dx * dx + dz * dz;
     squared < DOOR_REACH_SURE_SQ
         || (squared <= DOOR_REACH_OUT_SQ && dx.hypot(dz) <= DOOR_REACH_M)
+}
+
+/// What a door reads of one bay to place it in its list.
+pub(super) struct FootRow {
+    pub position: [f32; 2],
+    foot: FootEnds,
+    maneuver_s: f32,
 }
 
 struct PlaceRow {
@@ -38,11 +45,47 @@ struct PlaceRow {
     economy: u32,
 }
 
-// The component labels and target pairs bays can share, one row per distinct pair in a chunk.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct EconomyRow {
+/// The component labels and target pairs one bay gives its doors; bays share them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) struct EconomyRow {
     components: ([u32; 2], usize),
     targets: [Option<(u32, usize)>; 2],
+}
+
+impl EconomyRow {
+    /// The ends of `access`, which holds the current lanes. O(trip ends).
+    pub(super) fn at(
+        access: &BuildingEntrance,
+        components: &ModeComponentIndex,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Self {
+        Self {
+            components: components
+                .entrance_components(access, graph, TransitFlags::CAR)
+                .raw_parts(),
+            targets: BuildingTripEnds::at_entrance(access, false, network, graph)
+                .network_targets(MODE_CAR),
+        }
+    }
+
+    pub(super) fn components(&self) -> &[u32] {
+        &self.components.0[..self.components.1]
+    }
+
+    pub(super) fn targets(&self) -> impl Iterator<Item = (u32, usize)> + '_ {
+        self.targets.iter().copied().flatten()
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.components.1 == 0 && self.targets().next().is_none()
+    }
+
+    /// Whether this row gives every end of `other`. O(1).
+    pub(super) fn covers(&self, other: &Self) -> bool {
+        other.components().iter().all(|c| self.components().contains(c))
+            && other.targets().all(|t| self.targets().any(|own| own == t))
+    }
 }
 
 /// Rows of every usable bay in a set of chunks, grouped by chunk so a door walks nine contiguous
@@ -59,6 +102,7 @@ pub(super) struct PlaceTable {
 struct DoorScratch {
     fields: [WalkField; 2],
     found: Vec<(ParkingCandidate, f32, u32)>,
+    lanes: Vec<usize>,
     economy_seen: Vec<u32>,
     economy_stamp: u32,
     economy_ids: Vec<u32>,
@@ -134,7 +178,7 @@ impl ParkingSystem {
                 continue;
             };
             let id = car_components.map_or(0, |components| {
-                let row = economy_row(&access, components, network, graph);
+                let row = EconomyRow::at(&access, components, network, graph);
                 *interned.entry(row).or_insert_with(|| {
                     economy.push(row);
                     economy.len() as u32 - 1
@@ -150,24 +194,107 @@ impl ParkingSystem {
         }
         (positions, rows, economy)
     }
-}
 
-fn economy_row(
-    access: &BuildingEntrance,
-    components: &ModeComponentIndex,
-    network: &TransitNetwork,
-    graph: &RegionGraph,
-) -> EconomyRow {
-    EconomyRow {
-        components: components
-            .entrance_components(access, graph, TransitFlags::CAR)
-            .raw_parts(),
-        targets: BuildingTripEnds::at_entrance(access, false, network, graph)
-            .network_targets(MODE_CAR),
+    /// One bay's row for doors that read it alone. O(lane projection).
+    pub(super) fn foot_row(
+        &self,
+        place: Handle<Place>,
+        access: &BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> FootRow {
+        let position = self.place_handles.resolve(place).map_or([0.0; 2], |p| {
+            let [x, _, z] = self.places.position[p];
+            [x, z]
+        });
+        FootRow {
+            position,
+            foot: FootEnds::of(access, network, graph),
+            maneuver_s: self.maneuver_seconds(place),
+        }
     }
 }
 
+/// The candidates among `bays` for one door, sorted as its list is. The searches stop once the
+/// bays' lanes have settled, and the outward one runs only for bays in reach. O(searches + bays
+/// log bays), allocating only the result.
+pub(super) fn door_rows<'a>(
+    entrance: &BuildingEntrance,
+    bays: impl Iterator<Item = (Handle<Place>, &'a FootRow)> + Clone,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Vec<ParkingCandidate> {
+    if bays.clone().next().is_none() {
+        return Vec::new();
+    }
+    SCRATCH.with_borrow_mut(|scratch| {
+        let DoorScratch { fields, lanes, .. } = scratch;
+        let [forward, reverse] = fields;
+        let foot = FootEnds::of(entrance, network, graph);
+        lanes.clear();
+        lanes.extend(bays.clone().flat_map(|(_, row)| row.foot.lanes()));
+        lanes.sort_unstable();
+        lanes.dedup();
+        reverse.search_to(foot, true, lanes, network, graph);
+        let mut found: Vec<_> = bays
+            .filter_map(|(place, row)| {
+                let walk_s = reverse.time_at(&row.foot);
+                (walk_s <= WALK_LIMIT_S).then_some((place, row, walk_s))
+            })
+            .collect();
+        if found.is_empty() {
+            return Vec::new();
+        }
+        lanes.clear();
+        lanes.extend(found.iter().flat_map(|(_, row, _)| row.foot.lanes()));
+        lanes.sort_unstable();
+        lanes.dedup();
+        forward.search_to(foot, false, lanes, network, graph);
+        found.sort_unstable_by(|a, b| {
+            a.2.total_cmp(&b.2)
+                .then(a.1.maneuver_s.total_cmp(&b.1.maneuver_s))
+                .then(a.0.cmp(&b.0))
+        });
+        found
+            .into_iter()
+            .map(|(place, row, walk_s)| ParkingCandidate {
+                place,
+                walk_s,
+                from_door_s: forward.time_at(&row.foot),
+            })
+            .collect()
+    })
+}
+
 impl PlaceTable {
+    /// Each row's place, for reading an existing list against the table. O(rows).
+    pub(super) fn place_index(&self) -> HashMap<Handle<Place>, u32> {
+        self.rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| (row.place, i as u32))
+            .collect()
+    }
+
+    /// The ends of an existing list. O(entries + distinct ends log them).
+    pub(super) fn economy_of(
+        &self,
+        entries: &[ParkingCandidate],
+        index: &HashMap<Handle<Place>, u32>,
+        centre: [f32; 2],
+        graph: &RegionGraph,
+    ) -> ParkingEconomyEnds {
+        SCRATCH.with_borrow_mut(|scratch| {
+            scratch.found.clear();
+            scratch.found.extend(
+                entries
+                    .iter()
+                    .filter_map(|entry| index.get(&entry.place).map(|&i| (*entry, 0.0, i))),
+            );
+            self.economy_ends(scratch, centre, graph)
+        })
+    }
+
     /// One door's catchment, sorted by walking time, then the fixed free-flow driveway-to-bay
     /// time (never live traffic), then the place. O(walk searches + bays in nine chunks +
     /// reached bays log them); the rows did the rest once for every door.

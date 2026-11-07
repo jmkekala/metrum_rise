@@ -271,6 +271,7 @@ impl SimCore {
         if adopting {
             report.adoption_ms = adoption_start.elapsed().as_secs_f64() * 1000.0;
         }
+        self.publish_deferred_parking_catchments();
         self.complete_parking_economy_publication();
         let speed = self.time.speed_multiplier;
         if speed <= 0.0 {

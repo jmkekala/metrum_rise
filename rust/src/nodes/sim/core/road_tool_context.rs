@@ -125,7 +125,11 @@ impl SimCore {
         } else {
             rebuilt.edges.clone()
         };
-        self.reconcile_parking_frontages(&parking_edges);
+        if copy_graph {
+            self.reconcile_parking_frontages_deferred(&parking_edges);
+        } else {
+            self.reconcile_parking_frontages(&parking_edges);
+        }
         let terrain_generations = (
             self.heightmap.source_generation(),
             self.heightmap.source_generation(),

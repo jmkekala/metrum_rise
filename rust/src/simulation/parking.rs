@@ -71,6 +71,11 @@ pub(crate) struct ParkingSystem {
     candidates: HashMap<u64, candidates::DestinationCandidates>,
     candidate_revision: u64,
     pending_economy: Vec<u64>,
+    // Bays changed since the last publication; derived, never saved.
+    place_changes: Vec<candidates::PlaceChange>,
+    // Edit points a road edit left to the frame that adopts it, which rebuilds the doors round
+    // them before anything reads a list; derived, never saved.
+    pending_points: Vec<[f32; 2]>,
     // Inspection-only departure outcomes since load; never saved or read by decisions.
     pub(crate) departures: stats::DepartureStats,
     // Cars whose custody changed since the last agent tick, and the borrowers whose reservation

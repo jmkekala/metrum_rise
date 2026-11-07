@@ -35,6 +35,11 @@ pub(super) struct FootEnds {
 }
 
 impl FootEnds {
+    /// The pedestrian lanes this entrance meets. O(1).
+    pub(super) fn lanes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.ends.iter().map(|end| end.lane).filter(|&lane| lane != usize::MAX)
+    }
+
     /// O(log edge samples + lane geometry), allocation-free.
     pub(super) fn of(
         entrance: &BuildingEntrance,
@@ -128,6 +133,20 @@ impl WalkField {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
+        self.search_to(door, reverse, &[], network, graph);
+    }
+
+    /// [`Self::search`], stopping once every lane of `wanted` (sorted, not empty) has settled.
+    /// Only those lanes' labels may be read after that.
+    pub(super) fn search_to(
+        &mut self,
+        door: FootEnds,
+        reverse: bool,
+        wanted: &[usize],
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        let mut unsettled = wanted.len();
         self.begin(door, reverse, network.lane_system.lanes.len());
         for end in door.ends {
             if end.lane == usize::MAX {
@@ -147,6 +166,14 @@ impl WalkField {
             let cost = f32::from_bits(bits);
             if self.label(id) != Some(cost) {
                 continue;
+            }
+            // A lane settles once: a label is pushed only when it improves, and an earlier
+            // entry of the same lane then no longer matches it.
+            if wanted.binary_search(&id).is_ok() {
+                unsettled -= 1;
+                if unsettled == 0 {
+                    return;
+                }
             }
             let next_cost = cost + network.lane_system.lanes[id].length / AGENT_WALK_SPEED_MS;
             if next_cost > WALK_LIMIT_S {

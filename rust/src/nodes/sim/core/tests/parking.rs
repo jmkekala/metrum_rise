@@ -7,6 +7,7 @@ use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::core::RoadCommitRequest;
 use std::time::Instant;
 
+mod catchments;
 mod kerb;
 mod poses;
 mod published;
