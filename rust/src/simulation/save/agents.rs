@@ -15,6 +15,7 @@ use crate::simulation::economy::agents::{
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::parking::ParkingTripPhase;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
 
@@ -588,13 +589,22 @@ fn preserve_loaded_network_retry_state(
         && (agents.next_replan_time[i] > 0.0 || agents.network_replan_failures[i] > 0)
 }
 
+// An agent on a parking leg belongs to the ordered recovery (`tick/parking/recovery.rs`), whatever
+// its row says: in the slot a timed retry fires it has no lane, path, plan, retry time or failures,
+// as an orphan has, and the running game repairs nothing there (`PARK-08`).
+fn loaded_on_parking_leg(agents: &AgentSystem, i: usize) -> bool {
+    agents.parking_trip[i].phase != ParkingTripPhase::None
+}
+
 fn repair_orphaned_loaded_network_agent(
     agents: &mut AgentSystem,
     i: usize,
     graph: &RegionGraph,
     allocator: &BuildingAllocator,
 ) {
-    if !matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION) {
+    if !matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+        || loaded_on_parking_leg(agents, i)
+    {
         return;
     }
     if agents.current_lane_id[i] != usize::MAX
