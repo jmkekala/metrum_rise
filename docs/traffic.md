@@ -2155,8 +2155,9 @@ another side of the road. The rest of its list keeps its bits. The doors within 
 straight-line reach take one test against a single search from all the changed bays, and those in
 reach run their own searches, cut short once the bays' lanes have settled. Economy ends gain the
 new bays' ends; a door that lost a bay keeps its ends if another bay on that edge still gives them,
-since a target names its frontage edge, and otherwise reads them off its whole list from one table
-of the neighbourhood.
+since a target names its frontage edge, and otherwise reads them off its whole list, each bay's ends
+derived once across all such doors. The changed buildings' own doors and the others run side by
+side.
 
 **A road commit** changes the foot lanes, so every door in reach is rebuilt, around 2,000 near a
 long edge. Its supply and doors wait for the frame after it, which its routing hold leaves empty
