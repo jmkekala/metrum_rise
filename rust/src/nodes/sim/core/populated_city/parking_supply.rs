@@ -3,7 +3,7 @@
 //! The populated fixture's parking supply (`PARK-02`, F8): kerbside lanes on the cross streets,
 //! none on the rows or the trunk, small lots along the rows, and every door with bays to walk to.
 
-use super::{CROSS_SPACING_M, LOTS_PER_ROW_BLOCK, zoned_city};
+use super::{CROSS_SPACING_M, ROW_BLOCKS_PER_LOT, zoned_city};
 use crate::simulation::network::graph::{RoadParking, SidewalkSides};
 use crate::simulation::parking::PlaceSource;
 
@@ -39,10 +39,8 @@ fn the_fixture_parks_on_its_cross_streets_and_in_lots_along_its_rows() {
         assert!(issues.is_none(), "{issues:?}");
     }
     let small_lots = lots.len();
-    assert_eq!(
-        small_lots,
-        LOTS_PER_ROW_BLOCK * 2 * (side_m / 50.0 + 1.0).floor() as usize
-    );
+    let row_blocks = 2 * (side_m / 50.0 + 1.0).floor() as usize;
+    assert_eq!(small_lots, row_blocks.div_ceil(ROW_BLOCKS_PER_LOT));
     let bays = core.parking.counts().0;
     assert!(bays >= kerb + 12 * small_lots, "{bays} bays, {kerb} at the kerb, {small_lots} lots");
     for (index, building) in core.allocator.buildings.iter().enumerate() {

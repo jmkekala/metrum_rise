@@ -11,7 +11,8 @@
 //! `docs/economy.md#econ-13-economy-tick-baseline`.
 //!
 //! Residents' cars need somewhere to stand (`PARK-02`, F8): the cross streets carry a parking
-//! lane on both kerbs, the trunks none, and small lots stand along the rows between them.
+//! lane on both kerbs, the trunks none, and small lots stand along the rows between them. Each
+//! car starts parked near its home, like its household placed at home.
 
 #[cfg(test)]
 pub(super) mod census_churn;
@@ -85,8 +86,9 @@ const WARM_UP_DAYS: u32 = 2;
 // One border trunk per this many residents. Imports cross the border on the roads alone, so a
 // single trunk could not supply a 100k city's industry; 10k keeps its one trunk.
 const RESIDENTS_PER_BORDER: f32 = 10_000.0;
-// Small parking lots along each row between two cross streets, on alternating sides.
-const LOTS_PER_ROW_BLOCK: usize = 1;
+// One small lot stands along every this many row blocks, a checkerboard of the grid: lots take
+// homes, and the floored grid must still house its tier (30k has about 2% to spare).
+const ROW_BLOCKS_PER_LOT: usize = 2;
 // How far off the row's centre line a lot is asked for: nearer its own row than the next.
 const LOT_REQUEST_OFFSET_M: f32 = 15.0;
 
@@ -271,6 +273,7 @@ impl PopulatedCity {
             // Carriers arrive at once instead of driving in from the border, and move in. One
             // that a swap-remove moved into the lane snapshot leaves it first (`ROAD-68-K24`).
             core.agents.held_arrivals.clear();
+            let first_new = core.households.households.len();
             for i in 0..core.agents.len() {
                 if core.agents.pending_household_size[i] > 0 {
                     core.agents.place_arrival_carrier_at_home(i);
@@ -282,10 +285,28 @@ impl PopulatedCity {
                 }
             }
             self.core.publish_parking_households();
+            self.park_new_cars(first_new);
             self.advance_hour();
             let housed = self.core.daily_city_flow_diagnostics().resident_agents;
             if housed >= residents || launched == 0 {
                 return housed;
+            }
+        }
+    }
+
+    // Cars arrive with their households, already parked near home: as the carriers skip the drive
+    // in, their cars skip the queue at the border, which would take days at a road's capacity for
+    // a whole city admitted at once. A car with no free bay near home stays stored and arrives
+    // as in the game. O(new households × local candidates).
+    fn park_new_cars(&mut self, first_new: usize) {
+        let core = &mut self.core;
+        let new = core.households.households.iter().enumerate().skip(first_new);
+        for (id, household) in new {
+            let owner = core.households.handles.handle(id).to_bits();
+            let car = core.parking.household_car(owner);
+            if !car.is_none() && core.parking.vehicle_place(car).is_none() {
+                let home = core.allocator.building_handles.handle(household.home_building_id);
+                core.parking.seed_fixture_car(car, home.to_bits());
             }
         }
     }
@@ -374,20 +395,20 @@ fn publish_kerbside_bays(core: &mut SimCore) {
     core.reconcile_parking_frontages(&parked);
 }
 
-// `LOTS_PER_ROW_BLOCK` small lots along each row of every block, before the rows are zoned, as a
-// player places a lot and zones around it. O(lots) placements.
+// A small lot at the middle of every `ROW_BLOCKS_PER_LOT`th row block, on alternating sides,
+// before the rows are zoned, as a player places a lot and zones around it. O(lots) placements.
 fn add_parking_lots(core: &mut SimCore, row_z: &[f32], half_x: f32) {
     let lot = register_small_lot(core);
     let blocks = (2.0 * half_x / CROSS_SPACING_M) as usize;
     for (row, &z) in row_z.iter().enumerate() {
         for block in 0..blocks {
-            for n in 0..LOTS_PER_ROW_BLOCK {
-                let along = (n as f32 + 0.5) / LOTS_PER_ROW_BLOCK as f32;
-                let x = -half_x + (block as f32 + along) * CROSS_SPACING_M;
-                let side = if (row + block + n).is_multiple_of(2) { 1.0 } else { -1.0 };
-                core.place_service_building_internal(&lot, x, z + side * LOT_REQUEST_OFFSET_M)
-                    .unwrap_or_else(|error| panic!("lot at ({x}, {z}): {error:?}"));
+            if !(row + block).is_multiple_of(ROW_BLOCKS_PER_LOT) {
+                continue;
             }
+            let x = -half_x + (block as f32 + 0.5) * CROSS_SPACING_M;
+            let side = if (row / 2).is_multiple_of(2) { 1.0 } else { -1.0 };
+            core.place_service_building_internal(&lot, x, z + side * LOT_REQUEST_OFFSET_M)
+                .unwrap_or_else(|error| panic!("lot at ({x}, {z}): {error:?}"));
         }
     }
 }
