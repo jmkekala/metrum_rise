@@ -473,13 +473,12 @@ pub(super) fn validate_loaded_agents(
         {
             clear = true;
         }
-        if !agents.next_replan_time[i].is_finite() {
-            clear_agent_access_plan(agents, i);
-        }
-        if !agents.planned_attach_lane_d[i].is_finite() || agents.planned_attach_lane_d[i] < 0.0 {
-            clear_agent_access_plan(agents, i);
-        }
-        if !agents.planned_detach_lane_d[i].is_finite() || agents.planned_detach_lane_d[i] < 0.0 {
+        let mut invalid_plan = !agents.next_replan_time[i].is_finite()
+            || !agents.planned_attach_lane_d[i].is_finite()
+            || agents.planned_attach_lane_d[i] < 0.0
+            || !agents.planned_detach_lane_d[i].is_finite()
+            || agents.planned_detach_lane_d[i] < 0.0;
+        if invalid_plan {
             clear_agent_access_plan(agents, i);
         }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
@@ -527,6 +526,7 @@ pub(super) fn validate_loaded_agents(
                 || (agents.access_flags[i] & ACCESS_WALK_TO_SIDEWALK) != 0
             {
                 clear_agent_access_plan(agents, i);
+                invalid_plan = true;
             }
         }
         if agents.lane_distance[i] < 0.0 || !agents.lane_distance[i].is_finite() {
@@ -541,7 +541,9 @@ pub(super) fn validate_loaded_agents(
         if clear {
             clear_agent_travel_state(agents, i);
         }
-        repair_orphaned_loaded_network_agent(agents, i, graph, allocator);
+        if clear || invalid_plan {
+            send_invalid_row_home(agents, i, graph, allocator);
+        }
     }
     Ok(())
 }
@@ -589,38 +591,22 @@ fn preserve_loaded_network_retry_state(
         && (agents.next_replan_time[i] > 0.0 || agents.network_replan_failures[i] > 0)
 }
 
-// An agent on a parking leg belongs to the ordered recovery (`tick/parking/recovery.rs`), whatever
-// its row says: in the slot a timed retry fires it has no lane, path, plan, retry time or failures,
-// as an orphan has, and the running game repairs nothing there (`PARK-08`).
-fn loaded_on_parking_leg(agents: &AgentSystem, i: usize) -> bool {
-    agents.parking_trip[i].phase != ParkingTripPhase::None
-}
-
-fn repair_orphaned_loaded_network_agent(
+// A network row the save could not restore, its travel state dropped, goes on towards its home.
+// Only a row with invalid saved references comes here: a load repairs no state the running game
+// keeps, which would make a loaded game differ from the one that kept running (`TRAFFIC-29`).
+fn send_invalid_row_home(
     agents: &mut AgentSystem,
     i: usize,
     graph: &RegionGraph,
     allocator: &BuildingAllocator,
 ) {
     if !matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
-        || loaded_on_parking_leg(agents, i)
-    {
-        return;
-    }
-    if agents.current_lane_id[i] != usize::MAX
+        || agents.current_lane_id[i] != usize::MAX
         || !agents.current_path[i].is_empty()
         || agents.access_flags[i] & ACCESS_PLAN_VALID != 0
         || agents.agents.pending_lane_attach(i).is_some()
         || agents.agents.sidewalk_walk(i).is_some()
     {
-        return;
-    }
-    if preserve_loaded_network_retry_state(agents, i, graph)
-        || (loaded_empty_network_path_has_replan_context(agents, i, graph)
-            && agents.target_building[i] < allocator.buildings.len())
-    {
-        // Demolition can leave a valid destination awaiting its first immediate replan.
-        // It has no backoff or failures yet, but its pending target and cursor are live state.
         return;
     }
 

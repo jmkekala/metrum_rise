@@ -539,9 +539,15 @@ fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     assert_eq!(agents.next_replan_time[i], 0.0);
     assert_eq!(agents.network_replan_failures[i], 0);
 
-    // A legacy orphan with neither a destination nor a pending retry still gets home repair.
+    // A row the running game keeps loads as it stands, whatever it lacks (`TRAFFIC-29`).
     agents.target_building[i] = usize::MAX;
     agents.planned_target_building[i] = usize::MAX;
+    validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert_eq!(agents.current_path_index[i], 1);
+    assert_eq!(agents.target_building[i], usize::MAX);
+
+    // A destination the save cannot restore is what a load repairs: the agent goes home.
+    agents.target_building[i] = 99;
     validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
     assert_eq!(agents.current_path_index[i], 0);
     assert_eq!(agents.target_building[i], 0);
