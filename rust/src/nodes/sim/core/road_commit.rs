@@ -383,7 +383,7 @@ impl SimCore {
         crate::thread_pools::install(|| {
             let cache_current = self.entrance_cache_current();
             let lots = self.prepare_cell_lots_internal();
-            self.repair_commit_entrances(dirty, cache_current, &lots);
+            self.repair_commit_entrances(dirty, cache_current, &lots, &[]);
         });
     }
 }

@@ -167,6 +167,20 @@ impl ParkingSystem {
         true
     }
 
+    /// Sets a stored car down in a free bay, in O(log W), for one no border can drive in.
+    pub(crate) fn tow_stored_car(&mut self, car: Handle<Vehicle>, place: Handle<Place>) -> bool {
+        let Some(v) = self.vehicle_handles.resolve(car) else {
+            return false;
+        };
+        if self.vehicles.moving[v] || !self.occupy(car, place) {
+            return false;
+        }
+        if let Some(waiting) = self.stored.get_mut(&chunk_at(self.vehicles.home[v])) {
+            waiting.remove(&car);
+        }
+        true
+    }
+
     /// The household a live car belongs to, as its handle's bits; `u64::MAX` for one still on
     /// its way in. O(1).
     pub(crate) fn vehicle_owner(&self, car: Handle<Vehicle>) -> Option<u64> {
@@ -323,15 +337,9 @@ impl ParkingSystem {
     /// Explicit fixture genesis only: places a car without simulating its historical arrival.
     /// O(k + log W); ordinary household publication never calls this helper.
     pub(crate) fn seed_fixture_car(&mut self, car: Handle<Vehicle>, home: u64) {
-        let Some(candidate) = self.first_free_candidate(home) else {
-            return;
-        };
-        if let Some(v) = self.vehicle_handles.resolve(car)
-            && let Some(waiting) = self.stored.get_mut(&chunk_at(self.vehicles.home[v]))
-        {
-            waiting.remove(&car);
+        if let Some(candidate) = self.first_free_candidate(home) {
+            self.tow_stored_car(car, candidate.place);
         }
-        self.occupy(car, candidate.place);
     }
 }
 

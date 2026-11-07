@@ -185,6 +185,88 @@ fn a_parking_lane_turned_on_in_place_publishes_its_bays_and_undo_takes_them_away
     assert_eq!(c.parking.counts().0, 0);
 }
 
+// `PARK-10`: a stroke splits the road beside a home with no lot of its own and the undo takes the
+// split back, through the undo command's two calls. The buildings return to the restored road
+// before their parking is read, so a lot in reach keeps its bays and takes the car at once; with
+// none the car waits off the map and, with no border to drive in from, is towed to a free bay.
+#[test]
+fn an_undone_road_commit_keeps_its_bays_and_its_kerb_cars_stand_or_come_back() {
+    for with_lot in [true, false] {
+        let mut c = SimCore::new(
+            WorldConfig::new(1024.0, 1024.0, 16.0, 10.0)
+                .with_chunking(128.0, 0.0)
+                .with_terrain_resolution(2.0),
+        );
+        c.treasury.balance = 10_000_000.0;
+        let both = RoadParking {
+            left: true,
+            right: true,
+        };
+        commit_with(&mut c, (-300.0, 0.0), (300.0, 0.0), both);
+        let toml = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../godot/bootstrap/mods/parking/assets/building.parking.small_lot/asset.toml"
+        ))
+        .replace("building.parking.small_lot", "building.parking.kerb_test_home")
+        .split("\n[[")
+        .filter(|block| !block.starts_with("anchors]]") || block.contains("type = \"entrance\""))
+        .collect::<Vec<_>>()
+        .join("\n[[");
+        let home_id = register_lot_toml(&mut c, &toml);
+        let mut manifest = c.allocator.registry.get(&home_id).unwrap().manifest.clone();
+        manifest.building.as_mut().unwrap().household_capacity = Some(2);
+        c.allocator.registry.register("parking", manifest, String::new());
+        let home = c.place_service_building_internal(&home_id, 150.0, -30.0).unwrap();
+        c.publish_pending_building_site_changes();
+        let agent = c.debug_add_parking_commuter(home, home).unwrap();
+        let car = c.agents.parking_trip[agent].vehicle;
+        let kerb = c.parking.vehicle_place(car).unwrap();
+        assert!(
+            c.parking.source_bays(PlaceSource::Kerb { edge: 0, right: true }).iter()
+                .chain(&c.parking.source_bays(PlaceSource::Kerb { edge: 0, right: false }))
+                .any(|&(bay, _)| bay == kerb.to_bits()),
+            "the fixture's car stands at the kerb"
+        );
+        if with_lot {
+            let lot = register_lot(&mut c);
+            c.place_service_building_internal(&lot, 210.0, -30.0).unwrap();
+            c.publish_pending_building_site_changes();
+        }
+        let bays = c.parking.counts().0;
+        c.time.speed_multiplier = 8.0;
+        let run = |c: &mut SimCore| {
+            for _ in 0..240 {
+                c.step_frame(1.0 / 60.0);
+            }
+        };
+        commit(&mut c, (40.0, 0.0), (40.0, 200.0));
+        run(&mut c);
+        assert!(c.parking.vehicle_place(car).is_some(), "with_lot={with_lot}: after the commit");
+
+        assert!(c.undo_action_internal());
+        if with_lot {
+            assert_eq!(c.parking.counts().0, bays, "the undo keeps the lot");
+            assert_eq!(c.parking.counts().2, 0, "the car moved straight to a bay in reach");
+        }
+        c.finalize_network_render_products();
+        assert_eq!(c.allocator.buildings[home].edge_idx, 0, "with_lot={with_lot}");
+        assert_eq!(c.parking.counts().0, bays, "with_lot={with_lot}");
+        assert!(c.parking.first_free_candidate(
+            c.allocator.building_handles.handle(home).to_bits()
+        ).is_some());
+        run(&mut c);
+        assert!(c.parking.vehicle_place(car).is_some(), "with_lot={with_lot}: after the undo");
+        assert_eq!(c.parking.counts().2, 0, "with_lot={with_lot}");
+
+        let before = c.parking.save_json(|s| s).unwrap();
+        let path = temp_save_path("parking-undone-commit");
+        c.save_game_settled_at(path.to_str().unwrap(), None, 0).unwrap();
+        c.load_game_internal(path.to_str().unwrap()).unwrap();
+        assert_eq!(c.parking.save_json(|s| s).unwrap(), before);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 // D4 per side, through the two edit paths: a stroke and an in-place change, the side with the
 // sidewalk accepted and the shoulder side refused, and a sidewalk cannot go from under its lane.
 #[test]

@@ -154,6 +154,8 @@ impl AgentSystem {
 
     /// Creates a delivery-only carrier at a border, O(k + BQ) at a scheduled event boundary.
     /// Tries connected borders in stable order; the reserved car stays unavailable until pull-in.
+    /// With none that reaches its home the car is towed into the free bay. Returns whether it left
+    /// the waiting list.
     pub(crate) fn start_stored_car_arrival(
         &mut self,
         car: crate::simulation::core::handles::Handle<crate::simulation::parking::Vehicle>,
@@ -195,7 +197,8 @@ impl AgentSystem {
             self.agents.journey_start_time[i] = self.sim_time;
             return true;
         }
-        false
+        // No border reaches the door, so nothing can drive it in: a tow sets it down (`PARK-10`).
+        parking.tow_stored_car(car, candidate.place)
     }
 
     /// Retires only completed delivery carriers through the normal lifecycle helpers.

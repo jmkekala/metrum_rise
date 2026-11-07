@@ -208,7 +208,7 @@ impl SimCore {
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
         self.transit_network.bulk_dirty_edges.clear();
-        self.reset_local_network_render_state(&edge_ids, &node_ids, restore, None);
+        self.reset_local_network_render_state(&edge_ids, &node_ids, restore, None, None);
         self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
     }
 
@@ -444,6 +444,7 @@ impl SimCore {
             let restored_dense_terrain = terrain.is_some();
             let mut sync_trans_graph = false;
             let mut restored_topology_scope = None;
+            let mut fronting = Vec::new();
 
             if let Some(t_data) = terrain {
                 self.heightmap
@@ -466,6 +467,16 @@ impl SimCore {
                 if let Some((edge_ids, _)) = &restored_topology_scope {
                     self.zoning
                         .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
+                    // Read while the edges the restore takes away still have their geometry.
+                    fronting = self
+                        .allocator
+                        .attachment_repair_candidates(
+                            &self.region_graph,
+                            edge_ids,
+                            [],
+                            self.config.zone_cell_m,
+                        )
+                        .unwrap_or_default();
                 }
                 // `O(delta records * log edges)`; the same records as the full restore.
                 self.region_graph.restore_undo_delta_local(&tr_graph);
@@ -532,6 +543,7 @@ impl SimCore {
                         &node_ids,
                         roadbed.as_ref(),
                         graded,
+                        Some(&fronting),
                     );
                 }
             }
@@ -615,13 +627,15 @@ impl SimCore {
     // when nothing rebuilt them since (`ROAD-68-E`), so it holds the pre-edit pieces themselves;
     // otherwise it rebuilds the restored owners' pieces from the restored graph. With the edit's
     // graded record the restored roadbed is published now and the graded tiles staged from the
-    // kept ones (`TERRAIN-07-E`).
+    // kept ones (`TERRAIN-07-E`). `fronting` is an undo's: the buildings that fronted the edges
+    // it restored. A staged rollback has none, its journal having put them back already.
     fn reset_local_network_render_state(
         &mut self,
         edge_ids: &HashSet<usize>,
         node_ids: &HashSet<u32>,
         restore: Option<&crate::simulation::network::roadbed::RoadbedRestore>,
         graded: Option<crate::nodes::sim::core::GradedUndo>,
+        fronting: Option<&[usize]>,
     ) {
         let before = graded
             .as_ref()
@@ -640,6 +654,13 @@ impl SimCore {
         // A cached surface restore can reconcile now. A dirty owner fallback keeps its
         // existing deferred compile contract; the road-tool publication reconciles its bays.
         if self.transit_network.roadbed.is_current() {
+            // Buildings first: a split moved them onto an edge the restore took away, and their
+            // lots, kerb blockers and door lists are read from that attachment (`PARK-10`).
+            if let Some(fronting) = fronting {
+                let cache_current = self.entrance_cache_current();
+                let lots = self.prepare_cell_lots_internal();
+                self.repair_commit_entrances(edge_ids, cache_current, &lots, fronting);
+            }
             self.reconcile_parking_frontages(&edge_ids.iter().copied().collect());
         }
         self.terrain_dirty = true;
