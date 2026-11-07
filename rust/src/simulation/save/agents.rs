@@ -15,7 +15,6 @@ use crate::simulation::economy::agents::{
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::parking::ParkingTripPhase;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
 

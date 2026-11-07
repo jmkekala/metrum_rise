@@ -353,6 +353,28 @@ fn a_driver_evicted_on_its_way_home_parks_there_and_goes_in() {
     assert!(t.c.parking.vehicle_place(t.car()).is_some());
 }
 
+// A household moving on a driver's pull-in: the leg ends in its bay, the driver goes in at the old
+// door and leaves for the new home from there.
+#[test]
+fn a_move_during_a_pull_in_waits_for_the_door() {
+    let mut t = Commute::new();
+    let (home, work) = (t.home, t.work);
+    t.on_the_road();
+    t.inside(work);
+    assert!(t.c.agents.request_parking_fixture_trip(t.agent, home));
+    t.c.agents.release_departure(t.agent);
+    t.tick_until("pulled in", |c, i| {
+        c.agents.parking_trip[i].phase == ParkingTripPhase::PullIn
+            && c.agents.transit[i] == TRANSIT_ACCESS_INGRESS
+    });
+    t.c.agents.relocate_household_member_home(t.agent, home, work, true);
+    assert_eq!(t.c.agents.target_building[t.agent], home);
+    assert_eq!(t.c.agents.planned_target_building[t.agent], work);
+    t.inside(home);
+    t.tick_until("left for the new home", |c, i| c.agents.target_building[i] == work);
+    t.inside(work);
+}
+
 // No destination, no home and nothing left of where it was going: the car goes off the map, the
 // driver settles for its household's next home, and rehousing takes it there on foot.
 #[test]

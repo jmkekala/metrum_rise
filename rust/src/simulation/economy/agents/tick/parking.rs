@@ -396,8 +396,7 @@ impl AgentSystem {
                     replan_needed: false,
                     walk_origin: crate::simulation::core::handles::Handle::NONE,
                 };
-                self.agents.journey_start_time[i] = self.sim_time;
-                self.apply_parking_leg(i, plan, origin);
+                self.set_off_on_parking_leg(i, plan, origin);
                 return;
             }
             self.agents.current_path[i] = plan.current_path;
@@ -420,11 +419,19 @@ impl AgentSystem {
                 graph,
             )
         {
-            self.agents.journey_start_time[i] = self.sim_time;
-            self.apply_parking_leg(i, plan, origin);
+            self.set_off_on_parking_leg(i, plan, origin);
         } else if !self.agents.parking_trip[i].retry_pending {
             self.queue_parking_retry(i, 30);
         }
+    }
+
+    // The trip starts: the plan it was made from is spent. A later leg keeps what a move to a new
+    // home planned meanwhile for after the trip.
+    fn set_off_on_parking_leg(&mut self, i: usize, plan: BuiltTripPlan, origin: &BuildingEntrance) {
+        self.agents.journey_start_time[i] = self.sim_time;
+        self.agents.planned_target_building[i] = usize::MAX;
+        self.agents.planned_activity[i] = 0;
+        self.apply_parking_leg(i, plan, origin);
     }
 
     fn queue_parking_retry(&mut self, i: usize, seconds: u16) {
@@ -459,8 +466,6 @@ impl AgentSystem {
         a.current_path[i] = plan.current_path;
         a.walk_lanes[i].clear();
         a.current_path_index[i] = usize::from(a.current_path[i].len() >= 2);
-        a.planned_target_building[i] = usize::MAX;
-        a.planned_activity[i] = 0;
         a.next_departure_day[i] = u32::MAX;
         a.next_departure_minute[i] = 0;
         a.next_departure_origin_building[i] = usize::MAX;
