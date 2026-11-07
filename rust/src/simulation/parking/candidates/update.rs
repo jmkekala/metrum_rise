@@ -96,18 +96,46 @@ impl ParkingSystem {
         crate::thread_pools::install(|| {
             self.follow_host_doors(hosts, allocator, network, graph);
             let mut changed = self.changed_places(allocator, network, graph, components);
-            let mut doors =
-                self.rebuild_doors(own, false, allocator, network, graph, Some(components));
-            let reach = changed_reach(&mut changed, network, graph);
+            let (chunks, bounds) = self.door_neighbourhood(own, allocator);
+            self.refresh_chunk_access(&chunks, bounds, allocator, network, graph);
+            // The changed buildings' own doors and every other door touch different lists, and
+            // neither stage fills the pool alone: one door's table is a few chunks of work.
             let this = &*self;
-            let mut edits: Vec<_> = near
-                .par_iter()
-                .filter(|b| own.binary_search(b).is_err())
-                .filter_map(|&b| {
-                    this.door_edit(b, &changed, &reach, allocator, network, graph, components)
+            let (mut built, mut edits) = rayon::join(
+                || {
+                    let foot = super::door_foot_graph(own, allocator, network, graph);
+                    let table = this.place_table(foot, &chunks, bounds, network, graph, None);
+                    this.door_lists(own, &table, false, allocator, network, graph)
+                },
+                || {
+                    let reach = changed_reach(&mut changed, network, graph);
+                    near.par_iter()
+                        .filter(|b| own.binary_search(b).is_err())
+                        .filter_map(|&b| {
+                            this.door_edit(
+                                b, &changed, &reach, allocator, network, graph, components,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                },
+            );
+            let mut lists: Vec<_> = built
+                .iter_mut()
+                .filter_map(|(handle, _, list)| {
+                    let b = allocator
+                        .building_handles
+                        .resolve(Handle::from_bits(*handle))?;
+                    Some((b, list))
                 })
+                .chain(
+                    edits
+                        .iter_mut()
+                        .filter(|edit| edit.whole_economy)
+                        .map(|edit| (edit.building, &mut edit.list)),
+                )
                 .collect();
-            this.finish_whole_economy(&mut edits, allocator, network, graph, components);
+            this.read_list_ends(&mut lists, allocator, network, graph, components);
+            let mut doors = self.publish_door_lists(built, false);
             if !near.is_empty() {
                 self.candidate_revision = self.candidate_revision.wrapping_add(1);
             }
@@ -341,40 +369,46 @@ impl ParkingSystem {
         })
     }
 
-    // Reads the economy ends of the doors that lost the last bay of an end, from one table of
-    // their neighbourhood. O(bays around them + their entries), nothing without such a door.
-    fn finish_whole_economy(
+    // Reads each list's ends off its bays, each bay's ends once however many lists share it.
+    // O(entries log entries + distinct bays × trip ends), parallel, nothing without a list.
+    fn read_list_ends(
         &self,
-        edits: &mut [DoorEdit],
+        lists: &mut [(usize, &mut DestinationCandidates)],
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
         components: &ModeComponentIndex,
     ) {
-        let doors: Vec<_> = edits
+        let mut places: Vec<_> = lists
             .iter()
-            .filter(|edit| edit.whole_economy)
-            .map(|edit| edit.building)
+            .flat_map(|(_, list)| &list.entries)
+            .map(|entry| entry.place)
             .collect();
-        if doors.is_empty() {
-            return;
-        }
-        let (chunks, bounds) = self.door_neighbourhood(&doors, allocator);
-        let foot = FootGraph::default();
-        let table = self.place_table(foot, &chunks, bounds, network, graph, Some(components));
-        let index = table.place_index();
-        edits
-            .par_iter_mut()
-            .filter(|edit| edit.whole_economy)
-            .for_each(|edit| {
-                let centre = &allocator.buildings[edit.building];
-                edit.list.economy = table.economy_of(
-                    &edit.list.entries,
-                    &index,
-                    [centre.center_x, centre.center_y],
-                    graph,
-                );
-            });
+        places.par_sort_unstable();
+        places.dedup();
+        let rows: Vec<_> = places
+            .par_iter()
+            .with_min_len(32)
+            .map(|&place| {
+                self.live_access(place, network, graph)
+                    .map_or_else(EconomyRow::default, |access| {
+                        EconomyRow::at(&access, components, network, graph)
+                    })
+            })
+            .collect();
+        lists.par_iter_mut().for_each(|(building, list)| {
+            let mut labels = Vec::new();
+            let mut targets = Vec::new();
+            for entry in &list.entries {
+                if let Ok(i) = places.binary_search(&entry.place) {
+                    labels.extend_from_slice(rows[i].components());
+                    targets.extend(rows[i].targets());
+                }
+            }
+            let centre = &allocator.buildings[*building];
+            list.economy =
+                finish_economy_ends(labels, targets, [centre.center_x, centre.center_y], graph);
+        });
     }
 }
 

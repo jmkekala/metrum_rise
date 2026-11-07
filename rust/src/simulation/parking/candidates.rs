@@ -63,7 +63,7 @@ impl ParkingSystem {
     ) -> Vec<[f32; 2]> {
         crate::thread_pools::install(|| {
             self.place_changes.clear();
-            self.rebuild_doors(buildings, true, allocator, network, graph, car_components)
+            self.rebuild_doors(buildings, allocator, network, graph, car_components)
         })
     }
 
@@ -105,27 +105,42 @@ impl ParkingSystem {
     }
 
     // Rebuilds whole lists, with the access of the bays around the doors: all of them in their
-    // chunks for a road edit, whose lanes moved; those in reach for a site edit, where only a bay
-    // no door has reached yet can be out of date.
+    // chunks, as a road edit needs, whose lanes moved.
     fn rebuild_doors(
         &mut self,
         buildings: &[usize],
-        whole_chunks: bool,
         allocator: &BuildingAllocator,
         network: &TransitNetwork,
         graph: &RegionGraph,
         car_components: Option<&ModeComponentIndex>,
     ) -> Vec<[f32; 2]> {
         let (chunks, reach) = self.door_neighbourhood(buildings, allocator);
-        let refreshed = if whole_chunks {
-            [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::INFINITY]
-        } else {
-            reach
-        };
-        self.refresh_chunk_access(&chunks, refreshed, allocator, network, graph);
+        let everywhere = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::INFINITY];
+        self.refresh_chunk_access(&chunks, everywhere, allocator, network, graph);
         let foot = door_foot_graph(buildings, allocator, network, graph);
         let table = self.place_table(foot, &chunks, reach, network, graph, car_components);
-        let built: Vec<_> = buildings
+        let built = self.door_lists(
+            buildings,
+            &table,
+            car_components.is_some(),
+            allocator,
+            network,
+            graph,
+        );
+        self.publish_door_lists(built, car_components.is_none())
+    }
+
+    // Each door's list off the table. Parallel by door.
+    fn door_lists(
+        &self,
+        buildings: &[usize],
+        table: &table::PlaceTable,
+        with_economy: bool,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Vec<(u64, [f32; 2], DestinationCandidates)> {
+        buildings
             .par_iter()
             .filter_map(|&b| {
                 let entrance = allocator.entrances.get(b)?;
@@ -137,20 +152,29 @@ impl ParkingSystem {
                 let list = table.door_candidates(
                     entrance,
                     [centre.center_x, centre.center_y],
-                    car_components.is_some(),
+                    with_economy,
                     network,
                     graph,
                 );
                 let door = [entrance.door_pos.x, entrance.door_pos.y];
                 Some((handle.to_bits(), door, list))
             })
-            .collect();
+            .collect()
+    }
+
+    // Installs whole lists; `economy_waits` queues their ends for the routing adoption. Returns
+    // the doors whose list of places changed.
+    fn publish_door_lists(
+        &mut self,
+        built: Vec<(u64, [f32; 2], DestinationCandidates)>,
+        economy_waits: bool,
+    ) -> Vec<[f32; 2]> {
         if !built.is_empty() {
             self.candidate_revision = self.candidate_revision.wrapping_add(1);
         }
         let mut changed = Vec::new();
         for (handle, door, entries) in built {
-            if !entries.entries.is_empty() && car_components.is_none() {
+            if !entries.entries.is_empty() && economy_waits {
                 self.pending_economy.push(handle);
             }
             let old = self
@@ -205,9 +229,14 @@ impl ParkingSystem {
         graph: &RegionGraph,
     ) {
         let this = &*self;
-        let derived: Vec<_> = chunks
+        let places: Vec<_> = chunks
+            .iter()
+            .flat_map(|key| this.chunks.get(key).map_or(&[][..], |c| &c.places))
+            .copied()
+            .collect();
+        let derived: Vec<_> = places
             .par_iter()
-            .flat_map_iter(|key| this.chunks.get(key).map_or(&[][..], |c| &c.places))
+            .with_min_len(64)
             .filter_map(|&place| {
                 let p = this.place_handles.resolve(place)?;
                 let [x, _, z] = this.places.position[p];

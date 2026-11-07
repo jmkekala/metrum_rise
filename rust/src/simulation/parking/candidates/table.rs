@@ -16,6 +16,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 
+// Bays per parallel task of a table.
+const ROWS_PER_TASK: usize = 128;
+
 // Straight-line reach of a door; the walking limit then decides.
 const DOOR_REACH_M: f32 = 400.0;
 
@@ -128,19 +131,29 @@ impl ParkingSystem {
         graph: &RegionGraph,
         car_components: Option<&ModeComponentIndex>,
     ) -> PlaceTable {
-        let parts: Vec<_> = chunks
+        // A door's own chunk holds most of its bays, so a chunk is too coarse a piece of work.
+        let pieces: Vec<_> = chunks
+            .iter()
+            .flat_map(|&key| {
+                let places = self.chunks.get(&key).map_or(&[][..], |c| &c.places);
+                places.chunks(ROWS_PER_TASK).map(move |piece| (key, piece))
+            })
+            .collect();
+        let parts: Vec<_> = pieces
             .par_iter()
-            .map(|&key| self.chunk_rows(key, bounds, &foot, network, graph, car_components))
+            .map(|&(_, places)| {
+                self.place_rows(places, bounds, &foot, network, graph, car_components)
+            })
             .collect();
         let total = parts.iter().map(|part| part.1.len()).sum();
         let mut table = PlaceTable {
             foot,
-            chunks: HashMap::with_capacity(parts.len()),
+            chunks: HashMap::with_capacity(chunks.len()),
             positions: Vec::with_capacity(total),
             rows: Vec::with_capacity(total),
             economy: Vec::new(),
         };
-        for (key, (positions, rows, economy)) in chunks.iter().zip(parts) {
+        for ((key, _), (positions, rows, economy)) in pieces.iter().zip(parts) {
             let first = table.rows.len();
             let offset = table.economy.len() as u32;
             table.positions.extend(positions);
@@ -149,15 +162,16 @@ impl ParkingSystem {
                 row
             }));
             table.economy.extend(economy);
-            table.chunks.insert(*key, first..table.rows.len());
+            let range = table.chunks.entry(*key).or_insert(first..first);
+            range.end = table.rows.len();
         }
         table
     }
 
     #[allow(clippy::type_complexity)]
-    fn chunk_rows(
+    fn place_rows(
         &self,
-        key: (i32, i32),
+        places: &[Handle<Place>],
         bounds: [f32; 4],
         foot: &FootGraph,
         network: &TransitNetwork,
@@ -168,7 +182,7 @@ impl ParkingSystem {
         let mut rows = Vec::new();
         let mut economy = Vec::new();
         let mut interned = HashMap::new();
-        for &place in self.chunks.get(&key).map_or(&[][..], |c| &c.places) {
+        for &place in places {
             let Some(p) = self.place_handles.resolve(place) else {
                 continue;
             };

@@ -438,9 +438,9 @@ impl SimCore {
         self.audit_parking_catchments(&buildings);
     }
 
-    // Sorted doors within 512 m of a point: the buildings round each occupied chunk, then each
-    // door against the points of the chunks it touches. O(points + local doors × local points in
-    // the worst case, usually the first), parallel by door, independent of the rest of the city.
+    // Sorted doors within 512 m of a point: the buildings round each occupied chunk's points, then
+    // each door against the points of the chunks it touches. O(points + local doors × local points
+    // in the worst case, usually the first), parallel by door, independent of the rest of the city.
     fn doors_near(&self, points: &[[f32; 2]]) -> Vec<usize> {
         const REACH_M: f32 = 512.0;
         let chunk = |[x, z]: [f32; 2]| ((x / REACH_M).floor() as i32, (z / REACH_M).floor() as i32);
@@ -449,14 +449,17 @@ impl SimCore {
             cells.entry(chunk(point)).or_default().push(point);
         }
         let mut buildings = Vec::new();
-        for &(x, z) in cells.keys() {
-            let (min_x, min_z) = (x as f32 * REACH_M, z as f32 * REACH_M);
+        for points in cells.values() {
+            let mut bounds = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+            for &[x, z] in points {
+                bounds = [bounds[0].min(x), bounds[1].min(z), bounds[2].max(x), bounds[3].max(z)];
+            }
             self.allocator.site_cells.visit(
                 [
-                    min_x - REACH_M,
-                    min_z - REACH_M,
-                    min_x + 2.0 * REACH_M,
-                    min_z + 2.0 * REACH_M,
+                    bounds[0] - REACH_M,
+                    bounds[1] - REACH_M,
+                    bounds[2] + REACH_M,
+                    bounds[3] + REACH_M,
                 ],
                 |b| buildings.push(b),
             );
