@@ -274,13 +274,17 @@ first, then keeps one finite budget for the batch:
 - one home electricity allowance per household;
 - the treasury coverage of transfers.
 
-**Offers.** The batch tries at most `max(16, 4 × capacity)` deterministic offers. Each varies
-family composition, size and home from an applicant seed that advances with simulation hours, so
-one refused family never blocks the stream. Housing need walks the same offers (`DEM-02-C`).
-The [workforce calendar](#workforce-calendar) does not: it credits each free place with the
-applicant of the place's ordinal, not the family admission will offer it, so the families that
-arrive can bring fewer adults or more members than the calendar promised (`ECON-28`). For each
-physically launchable offer:
+**Offers.** The batch tries at most `max(16, 4 × capacity)` deterministic offers, walking the
+vacancies from an applicant seed that advances with simulation hours. A vacancy is offered first
+the family the [workforce calendar](#workforce-calendar) credited its first free place with: the
+applicant of the place's ordinal in its home (`households::applicant_offer`). Only if that family is
+refused is the same vacancy's next offer the hour's applicant, at the seed plus the offer's
+position, so one refused family never blocks the stream; each is one of the batch's offers. The
+families that arrive therefore bring the adults and members projects claimed from their places
+(`ECON-28`: offering only the hour's applicant left the town of
+`many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital` one adult short in 7
+of 35 warm-ups). Housing need samples the hour's applicants of the same vacancies for its count
+of homes (`DEM-02-C`). For each physically launchable offer:
 
 - Employed adults are `min(adults, remaining job-equivalents)`.
 - Recurring income is employed adults × net wage, plus pension and child support scaled by
@@ -311,8 +315,9 @@ part 5). Families still in the queue count
 as pending arrivals. Its approved adult, elder and child composition travels with the carrier,
 survives arrival reordering and save/load, and materializes when the carrier reaches its home.
 Pending adults count as labor supply in the next forecast; each hour recounts them from the carriers
-still on their way. A carrier that reaches its home is not taken off the count until that recount,
-so until then its family's adults count twice, as pending and as housed unemployed (`ECON-28`).
+still on their way. A carrier that reaches its home takes its family off the count at once, so its
+adults and transfer claims never count twice, as pending and as housed (`ECON-28`; before, a pass
+between the arrival and the recount funded a four-worker entrant on five counted adults for three).
 
 The **empty-town bootstrap** offers the first home when the city has a border and no households.
 
@@ -420,18 +425,44 @@ Claims are made in this order:
 A future place supplies the adults of its applicant (`households::applicant_offer`), keyed by
 the building's stable applicant seed (the queued spawn's id, kept once placed, or a city
 counter's value for other buildings), by parcel ID while only proposed, and by place ordinal; an
-elder applicant supplies none (`DEM-02-C`). That applicant is a forecast: admission offers the
-place the family of the hour it decides ([offers](#household-admission)), so a project can claim
-workers that never arrive (`ECON-28`). Arrivals also shop: each
+elder applicant supplies none (`DEM-02-C`). Admission offers each vacancy that family first
+([offers](#household-admission), `ECON-28`). Arrivals also shop: each
 hour's arrival adults are reduced by `ceil(members × store labor per resident)`. Store labor per
 resident is the authored consumption rate of each resource households buy from stores, times the
 fewest workers per daily unit among the stores selling it (`workforce::resident_store_labor`).
 Individual future homes take whole store workers from a running total in matching order. Ready places are also counted
-by those adults. The charge covers future places only: an admitted family's adults count as
-available at once, but its shopping reaches the open jobs a pass reads only once a census funds
-the store job and the store's next hourly phase raises its activity floor (the snapshot caps a
-store's funded jobs by its floor-scaled crew; hiring does not). A pass in between charges that
-store labor nowhere (`ECON-28`).
+by those adults.
+
+**Unfunded shoppers (`ECON-28`).** Admission takes a family off the free places, and its adults
+count as available at once, but its shopping reaches the stores' funded jobs only once a census
+counts its adults' wages. Until then the calendar keeps charging its store labor: the store jobs
+`ceil(unfunded shoppers × store labor per resident)` join the incumbents' open jobs at hour 0 and
+claim workers first. The unfunded shoppers (`snapshot::unfunded_shoppers`) are:
+
+- the members of pending arrivals (queued and on their way);
+- the members of the households after the published census's copy, the families that arrived
+  since; and
+- the residents the published census records as unfunded among its copy's housed families with
+  an adult whose wage it does not count: one without a job, or all of them while the family has
+  counted no wage since a hire (its members and employed adults change at once, its wages at
+  its hourly phase). Each counts `members - min(members, budget / basket)` from the census's
+  own consumer budget walk (`customers::ConsumerBudgets`, `hiring::UnfundedShoppers`).
+
+The census, not a household flag, decides when a family is funded, so no state is saved: the
+record is derived with every census, including the one a load recomputes. Without per-family
+state a census cannot tell an admitted family it copied before its adults found work from an
+established family whose adult lost a job, so both are charged; either's shopping needs store
+workers once a project employs that adult. A fully employed family whose wages fall short of its
+basket is not charged: no hire would fund it. The cost is O(1) per household in the census's
+existing budget walk and O(households after the copy) per snapshot, one or two hours of
+arrivals: no household leaves between a census's publication and the hour's planning slots. A
+departure in the hour's removal window can move such a family below the copy's count, leaving it
+uncharged for the construction epochs after it until the next publication.
+
+The snapshot reads a store's funded jobs with the activity floor its census implies, as the
+store's next hourly phase will cache it (`commercial_activity_floor` of the copied
+`funded_activity`), not the cached floor: hiring reads the funded jobs at once, so a pass between
+a census and the store's phase no longer misses the job the census just funded (`ECON-28`).
 "Unreserved ready homes", which non-worker arrivals and residential
 downgrades may use, are the places left after claimed workers fill single-adult places first.
 That keeps as many homes reserved as the claims could need. A downgrade retires the

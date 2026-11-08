@@ -586,6 +586,12 @@ answer to "how much of this operation can run":
   length (`ECON-13-C`).
 - **City services:** they use their explicit fiscal funding limit. Unfinished and inactive
   private employers advertise no live jobs.
+- **Unfunded shoppers (`ECON-28`):** the households its copy holds and, from the same budget walk,
+  the residents of housed families with an adult whose wage it does not count (no job, or hired
+  since the family last counted its wages) whose basket the family's budget leaves unfunded. The
+  [workforce calendar](demand.md#workforce-calendar) charges their store labor, and that of
+  every family that arrived after the copy, until a census funds them. O(1) per household,
+  derived with each census and never saved.
 
 Hiring, daily payroll, worker shedding, store output, construction viability and household
 admission all read this census. Each census copies every building's funded jobs onto it
@@ -942,8 +948,11 @@ Both two-year and producer-town tests also assert the `DEM-02-C` vacancy bound.
 
 The library suite adds scarce-labor expansion, recovery and two reload-continuation cases.
 Recovery warms the starter town up for 30 days, as it stops changing after its 10th day but for
-cash, so its report changed with `CODE-21` `T2` (2026-11-08); expansion keeps 365, as at 30 and
-45 days one entrant ended below its 95% staffing bound (90.3%, 75.4%).
+cash, so its report changed with `CODE-21` `T2` (2026-11-08); expansion keeps 365. At 30 and 45
+days one entrant ended below its 95% staffing bound (90.3%, 75.4%): the workforce calendar's
+accounting gaps, fixed in `ECON-28` round `E2`, after which every warm-up from 10 to 200 days
+ends with all entrants at 99.7% or more. Two of them (115 and 140 days) stop instead on a parking
+assertion at the expansion's road commit (`PARK-11`), so the warm-up shortens once that is fixed.
 `METRUM_GROWTH_{REPORT,LONG_REPORT,EXPANSION_REPORT,RECOVERY_REPORT}` and `METRUM_PRODUCER_TOWN_REPORT` write reports, and the
 saved-town replay (`diagnose_saved_city_growth`, ignored) uses `METRUM_DIAG_{SAVE,MODS,REPORT,DAYS}`
 with a copied save and read-only mods. Economic changes that must not alter behavior compare

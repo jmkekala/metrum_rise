@@ -2038,6 +2038,10 @@ missing, deleted or has no parking on that side, and a lot place whose building 
 detached explicit site retains its rigid pose (`building_detached_poses`), so losing a driveway
 road disables its supply without breaking a save.
 
+Known gap (`PARK-11`): a road edit that clears the access plan of a car pulling into its bay can
+land the car's driver at the door, which debug builds stop on; the parking leg should go to its
+recovery instead.
+
 ### Parked-car rendering (`PARK-01`, `PARK-02`)
 
 Dirty chunks publish immutable versioned model and colour buffers, stable car IDs and 12-float
