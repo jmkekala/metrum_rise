@@ -573,3 +573,10 @@ impl ConsumerBudgets {
         self.releasing_owner = None;
     }
 }
+
+#[cfg(test)]
+crate::exact_hash_fields! {
+    Category { resource, units_per_resident, budget_share }
+    Funds { units, gross_spending }
+    Receipt { slot, acquired, next }
+}

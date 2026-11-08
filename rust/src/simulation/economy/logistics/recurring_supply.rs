@@ -1722,3 +1722,9 @@ fn production_activity(
         .min(funded)
         .clamp(0.0, 1.0)
 }
+
+#[cfg(test)]
+crate::exact_hash_fields! {
+    Claim { source, resource, slot, previous, units, owner, next_from_owner, next_from_source,
+        previous_from_source, unit_price, carrier_quote }
+}

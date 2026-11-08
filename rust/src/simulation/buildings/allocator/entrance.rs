@@ -1490,6 +1490,11 @@ fn best_vehicle_lane(lanes: &LaneSystem, edge_idx: usize, is_fwd: bool) -> usize
 }
 
 #[cfg(test)]
+crate::exact_hash_fields! {
+    BuildingEntranceKey { edge, side, frontage, geometry, lanes, flags }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::simulation::network::graph::{Edge, MedianStyle, RoadMedian};

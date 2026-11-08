@@ -293,12 +293,12 @@ pub(crate) fn debug_hash(value: &(impl std::fmt::Debug + ?Sized)) -> u64 {
     sink.0.finish()
 }
 
-/// Named per-field [`debug_hash`]es, so a failed comparison names the differing field.
+/// Named per-field [`exact_hash`]es, so a failed comparison names the differing field.
 #[cfg(test)]
 #[macro_export]
-macro_rules! debug_fingerprint {
+macro_rules! exact_fingerprint {
     ($($name:literal => $value:expr),* $(,)?) => {
-        vec![$(($name, $crate::debug::work::debug_hash(&$value))),*]
+        vec![$(($name, $crate::debug::work::exact_hash(&$value))),*]
     };
 }
 
@@ -380,4 +380,155 @@ pub(crate) mod phases {
                 .collect(),
         )
     }
+}
+
+/// A value's exact contents for test-only rollback fingerprints ([`exact_fingerprint!`]): the
+/// fields its derived `Debug` prints, in the same order, each fed to the hasher directly. Floats
+/// go by their bits, so equal hashes follow equal bits as with [`debug_hash`], without its
+/// float-to-text conversion per value. Lengths and `Option` tags are hashed, so a moved value
+/// changes the hash as its moved `Debug` text did.
+#[cfg(test)]
+pub(crate) trait ExactHash {
+    /// Feeds this value's contents to `state` in `Debug` order.
+    fn exact_hash(&self, state: &mut ExactHasher);
+}
+
+/// Fixed-seed foldhash: deterministic across processes, unlike `RandomState`.
+#[cfg(test)]
+pub(crate) type ExactHasher = foldhash::quality::FoldHasher<'static>;
+
+/// One value's [`ExactHash`] under a fixed seed.
+#[cfg(test)]
+pub(crate) fn exact_hash(value: &(impl ExactHash + ?Sized)) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut state = foldhash::quality::FixedState::with_seed(0).build_hasher();
+    value.exact_hash(&mut state);
+    state.finish()
+}
+
+/// Implements [`ExactHash`] for a struct from its fields, in declaration order. The pattern
+/// names every field, so a field added to the struct and not listed here fails to compile.
+#[cfg(test)]
+#[macro_export]
+macro_rules! exact_hash_fields {
+    ($($ty:ident { $($field:ident),* $(,)? })*) => {$(
+        impl $crate::debug::work::ExactHash for $ty {
+            fn exact_hash(&self, state: &mut $crate::debug::work::ExactHasher) {
+                let Self { $($field),* } = self;
+                $($crate::debug::work::ExactHash::exact_hash($field, state);)*
+            }
+        }
+    )*};
+}
+
+#[cfg(test)]
+mod exact_hash_impls {
+    use super::{ExactHash, ExactHasher};
+    use std::hash::Hasher;
+
+    macro_rules! integers {
+        ($($ty:ty => $write:ident),*) => {$(
+            impl ExactHash for $ty {
+                fn exact_hash(&self, state: &mut ExactHasher) {
+                    state.$write(*self);
+                }
+            }
+        )*};
+    }
+    integers!(u8 => write_u8, u16 => write_u16, u32 => write_u32, u64 => write_u64,
+        usize => write_usize, i8 => write_i8, i32 => write_i32, i64 => write_i64);
+
+    impl ExactHash for bool {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            state.write_u8(u8::from(*self));
+        }
+    }
+
+    impl ExactHash for f32 {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            state.write_u32(self.to_bits());
+        }
+    }
+
+    impl ExactHash for f64 {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            state.write_u64(self.to_bits());
+        }
+    }
+
+    impl ExactHash for std::num::NonZeroUsize {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            state.write_usize(self.get());
+        }
+    }
+
+    impl ExactHash for godot::prelude::Vector2 {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            self.x.exact_hash(state);
+            self.y.exact_hash(state);
+        }
+    }
+
+    impl<T: ExactHash> ExactHash for [T] {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            state.write_usize(self.len());
+            for value in self {
+                value.exact_hash(state);
+            }
+        }
+    }
+
+    impl<T: ExactHash, const N: usize> ExactHash for [T; N] {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            self.as_slice().exact_hash(state);
+        }
+    }
+
+    impl<T: ExactHash> ExactHash for Vec<T> {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            self.as_slice().exact_hash(state);
+        }
+    }
+
+    impl<T: ExactHash> ExactHash for Option<T> {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            match self {
+                None => state.write_u8(0),
+                Some(value) => {
+                    state.write_u8(1);
+                    value.exact_hash(state);
+                }
+            }
+        }
+    }
+
+    impl<T: ExactHash> ExactHash for std::ops::Range<T> {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            self.start.exact_hash(state);
+            self.end.exact_hash(state);
+        }
+    }
+
+    impl<K: ExactHash, V: ExactHash> ExactHash for std::collections::BTreeMap<K, V> {
+        fn exact_hash(&self, state: &mut ExactHasher) {
+            state.write_usize(self.len());
+            for (key, value) in self {
+                key.exact_hash(state);
+                value.exact_hash(state);
+            }
+        }
+    }
+
+    macro_rules! tuples {
+        ($(($($name:ident),+)),*) => {$(
+            impl<$($name: ExactHash),+> ExactHash for ($($name,)+) {
+                #[allow(non_snake_case)]
+                fn exact_hash(&self, state: &mut ExactHasher) {
+                    let ($($name,)+) = self;
+                    $($name.exact_hash(state);)+
+                }
+            }
+        )*};
+    }
+    tuples!((A, B), (A, B, C), (A, B, C, D), (A, B, C, D, E));
 }

@@ -373,3 +373,8 @@ impl SupplierCandidateIndex {
         }
     }
 }
+
+#[cfg(test)]
+crate::exact_hash_fields! {
+    SupplierCandidateIndex { by_resource }
+}

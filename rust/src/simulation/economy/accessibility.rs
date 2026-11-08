@@ -1212,6 +1212,17 @@ fn unite(i: usize, j: usize, parent: &mut [usize]) {
 }
 
 #[cfg(test)]
+crate::exact_hash_fields! {
+    ModeComponentIndex { component_by_node }
+    BuildingModeComponents { components, count }
+    ReachableBucketIndex { by_component, components, buckets, available }
+    ReachableReservation { bucket, position }
+    ComponentBuckets { by_chunk, min_chunk, max_chunk, available, counted, counted_units,
+        units_dirty, query_counts, query_mask }
+    BucketItems { component, items, available, leaves, bounds, query_masks }
+}
+
+#[cfg(test)]
 mod reservation_tests {
     use super::*;
 

@@ -1293,7 +1293,7 @@ impl BusinessMarket {
         );
         let live = market.indices.live_ports;
         let b = &market.budgets;
-        crate::debug_fingerprint!("accounts" => b.accounts, "buyer_accounts" => b.buyer_accounts,
+        crate::exact_fingerprint!("accounts" => b.accounts, "buyer_accounts" => b.buyer_accounts,
             "buyer_tails" => b.buyer_tails, "finance" => b.finance, "committed" => b.committed,
             "owners" => b.owners, "free_receipt" => b.free_receipt, "staged_slots" => b.staged_slots,
             "finance_staged" => b.finance_staged, "access" => market.access, "profiles" => market.profiles,
@@ -1553,4 +1553,9 @@ fn sync_account(
             available,
         );
     }
+}
+
+#[cfg(test)]
+crate::exact_hash_fields! {
+    Access { chunk, components }
 }

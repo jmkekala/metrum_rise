@@ -733,6 +733,14 @@ impl BusinessBudgets {
 }
 
 #[cfg(test)]
+crate::exact_hash_fields! {
+    Account { buyer, resource, units, goods, carrier, stock_exposure, batch, goods_multiplier,
+        next_buyer, first_receipt }
+    Receipt { account, units, margin, capital, goods, quote, input_origin, next, seller, previous,
+        next_account, previous_account }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

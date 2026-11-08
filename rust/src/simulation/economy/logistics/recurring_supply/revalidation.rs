@@ -245,7 +245,7 @@ impl RecurringSupply {
     /// planner's projected sources and quote scratch are excluded.
     #[cfg(test)]
     pub(crate) fn live_fingerprint_for_test(&self) -> Vec<(&'static str, u64)> {
-        crate::debug_fingerprint!("offsets" => self.offsets, "active" => self.active, "revision" => self.revision,
+        crate::exact_fingerprint!("offsets" => self.offsets, "active" => self.active, "revision" => self.revision,
             "remaining" => self.remaining, "production" => self.production, "committed" => self.committed,
             "owner_receipts" => self.owner_receipts, "owner_tails" => self.owner_tails,
             "source_receipts" => self.source_receipts, "free_receipt" => self.free_receipt,

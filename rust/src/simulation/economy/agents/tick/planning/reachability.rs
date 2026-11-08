@@ -220,3 +220,8 @@ impl PedestrianReachability {
             .unwrap_or(usize::MAX)
     }
 }
+
+#[cfg(test)]
+crate::exact_hash_fields! {
+    PedestrianReachability { groups, cyclic, outgoing, visited, visit, pending }
+}

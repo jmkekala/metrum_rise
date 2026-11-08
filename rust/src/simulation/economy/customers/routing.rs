@@ -1341,7 +1341,7 @@ impl ConsumerMarket {
     #[cfg(test)]
     pub(crate) fn live_fingerprint_for_test(&self) -> Vec<(&'static str, u64)> {
         let b = &self.budgets;
-        crate::debug_fingerprint!("categories" => b.categories, "previous_categories" => b.previous_categories,
+        crate::exact_fingerprint!("categories" => b.categories, "previous_categories" => b.previous_categories,
             "category_by_resource" => b.category_by_resource, "households" => b.households, "funds" => b.funds,
             "staged_slots" => b.staged_slots, "committed" => b.committed, "owners" => b.owners,
             "free_receipt" => b.free_receipt, "affordable_residents" => b.affordable_residents.to_bits(),
@@ -1434,4 +1434,10 @@ fn shares_walk_group(
                 group == target && from_nodes[origin] != to_nodes[destination]
             })
     })
+}
+
+#[cfg(test)]
+crate::exact_hash_fields! {
+    Access { home, has_car, can_shop, chunk, components, reservations, walk_origins,
+        walk_destinations, walk_nodes }
 }

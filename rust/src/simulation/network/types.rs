@@ -92,3 +92,10 @@ pub enum VehicleFrontageAccess {
     #[default]
     BothSides,
 }
+
+#[cfg(test)]
+impl crate::debug::work::ExactHash for VehicleFrontageAccess {
+    fn exact_hash(&self, state: &mut crate::debug::work::ExactHasher) {
+        std::hash::Hasher::write_u8(state, *self as u8);
+    }
+}
