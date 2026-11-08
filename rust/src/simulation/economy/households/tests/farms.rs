@@ -154,6 +154,31 @@ fn incoming_households_keep_their_approved_members_when_arrivals_reverse() {
 }
 
 #[test]
+fn materialized_family_leaves_the_pending_count_at_once() {
+    // ECON-28: until the next hourly recount the family counted twice, its adults as pending
+    // and as housed unemployed, and the workforce calendar offered them twice.
+    let allocator = farm_allocator();
+    let mut agents = AgentSystem::new();
+    let staying = crate::simulation::economy::agents::household_age_composition(0, 17, 6);
+    let arriving = crate::simulation::economy::agents::household_age_composition(0, 18, 3);
+    agents.spawn_household_arrival_carrier(0, 6, staying, 0, 0.0, 0.0);
+    let carrier = agents.spawn_household_arrival_carrier(0, 3, arriving, 0, 0.0, 0.0);
+    let mut households = HouseholdSystem::new();
+    households.record_pending_arrival(staying);
+    households.record_pending_arrival(arriving);
+    agents.current_building[carrier] = 0;
+    agents.transit[carrier] = TRANSIT_IN_BUILDING;
+    assert!(households.materialize_arrival_carrier(carrier, &mut agents, &allocator));
+    let mut only_staying = HouseholdSystem::new();
+    only_staying.record_pending_arrival(staying);
+    assert_eq!(households.pending_arrivals, only_staying.pending_arrivals);
+    // The recount agrees.
+    agents.rebuild_arrival_carriers();
+    households.recount_pending_arrivals(&mut agents);
+    assert_eq!(households.pending_arrivals, only_staying.pending_arrivals);
+}
+
+#[test]
 fn farm_carrier_materializes_one_normal_household_once() {
     let mut allocator = farm_allocator();
     let mut households = HouseholdSystem::new();

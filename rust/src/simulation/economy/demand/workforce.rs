@@ -316,7 +316,6 @@ impl WorkforceReservations {
         for (places, &sum) in self.ready_places.iter().zip(&scan.ready) {
             places.store(sum, Ordering::Relaxed);
         }
-        self.store_labor_per_resident = resident_store_labor(catalog);
         self.home_store_labor = 0.0;
         self.committed.reset(hours);
         self.optional.reset(hours);
@@ -376,6 +375,15 @@ impl WorkforceReservations {
             }
         }
         self.jobs_by_hour[0].fetch_add(snapshot.open_job_slots, Ordering::Relaxed);
+        self.store_labor_per_resident = resident_store_labor(catalog);
+        // The store jobs the shopping of residents no census funds yet will open: admitted
+        // families' and those of adults without a counted wage (`ECON-28`). They claim workers
+        // first, with the incumbents' open jobs, as future arrivals' shopping is charged at
+        // their places.
+        self.jobs_by_hour[0].fetch_add(
+            (snapshot.unfunded_shoppers * self.store_labor_per_resident).ceil() as u32,
+            Ordering::Relaxed,
+        );
         for (hour, homes) in self.homes_by_hour.iter().enumerate() {
             let members = self.members_by_hour[hour].load(Ordering::Relaxed);
             let store_workers = (f64::from(members) * self.store_labor_per_resident).ceil() as u32;

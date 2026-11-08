@@ -65,9 +65,20 @@ pub(crate) struct ConsumerBudgets {
     free_receipt: usize,
     releasing_owner: Option<usize>,
     affordable_residents: f64,
+    // Residents of housed families with a wageless adult whose basket these budgets do not pay
+    // for: the shopping that adult's wage will fund (`ECON-28`).
+    unfunded_wageless_residents: f64,
     revalidation: revalidation::Revalidation,
     #[cfg(test)]
     discard_receipt_estimate: bool,
+}
+
+// Whether a family has an adult whose wage its budget does not count: one without a job, or
+// all of them when no wage is counted (hired since the family last counted its wages at its
+// hourly phase, or unpaid). Its basket's unfunded part is shopping a wage will fund. O(1).
+fn has_wageless_adult(household: &Household) -> bool {
+    household.adult_count > household.employed_adults
+        || (household.adult_count > 0 && household.gross_daily_wages <= 0.0)
 }
 
 impl ConsumerBudgets {
@@ -83,6 +94,7 @@ impl ConsumerBudgets {
         self.owners.clear();
         self.releasing_owner = None;
         self.affordable_residents = 0.0;
+        self.unfunded_wageless_residents = 0.0;
     }
 
     /// Prepares actual recurring family budgets in O(households * consumer categories +
@@ -189,6 +201,7 @@ impl ConsumerBudgets {
                 });
         self.households.resize(households, (0, 0.0));
         self.affordable_residents = 0.0;
+        self.unfunded_wageless_residents = 0.0;
         BudgetWalk {
             unchanged,
             next_household: 0,
@@ -232,11 +245,15 @@ impl ConsumerBudgets {
                 *unchanged &= previous.0 == members && previous.1.to_bits() == spending.to_bits();
                 self.households[index] = (members, spending);
                 *next_household = index + 1;
-                self.affordable_residents += if gross_basket > 0.0 {
+                let affordable = if gross_basket > 0.0 {
                     (spending / gross_basket).min(f64::from(members))
                 } else {
                     f64::from(members)
                 };
+                self.affordable_residents += affordable;
+                if has_wageless_adult(&households[index]) {
+                    self.unfunded_wageless_residents += f64::from(members) - affordable;
+                }
             },
         );
     }
@@ -356,6 +373,7 @@ impl ConsumerBudgets {
         self.free_receipt = source.free_receipt;
         self.releasing_owner = None;
         self.affordable_residents = source.affordable_residents;
+        self.unfunded_wageless_residents = source.unfunded_wageless_residents;
         crate::debug::work::add(
             crate::debug::work::Work::ReservationRowsCopied,
             (self.households.len()
@@ -494,6 +512,12 @@ impl ConsumerBudgets {
     #[cfg(test)]
     pub(crate) fn affordable_residents(&self) -> f64 {
         self.affordable_residents
+    }
+
+    /// Residents of housed families with a wageless adult whose basket the budgets do not pay
+    /// for, from the same walk (`ECON-28`). O(1).
+    pub(crate) fn unfunded_wageless_residents(&self) -> f64 {
+        self.unfunded_wageless_residents
     }
 
     fn slot(&self, household: usize, resource: u16) -> Option<usize> {

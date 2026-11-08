@@ -298,6 +298,58 @@ fn the_planned_workforce_follows_a_hire_after_the_sweep() {
     );
 }
 
+// ECON-28: the workforce capped a store's funded jobs by the activity floor its hourly phase
+// caches, so a pass between a census and that phase missed the store job the census just
+// funded, which hiring filled at once.
+#[test]
+fn a_store_job_the_census_funded_counts_before_the_store_phase() {
+    let mut allocator = BuildingAllocator::new();
+    let shop = register_test_asset(&mut allocator, "phase_shop", ZoneType::Commercial);
+    let mut store = building(ZoneType::Commercial, 0.0, 0, 12, shop);
+    // The store's last phase cached 12 of the grocery's 15 jobs; the census since funds 13.
+    store.commercial_activity_floor_scale = 0.75;
+    store.funded_activity = 0.85;
+    store.funded_job_capacity = 13;
+    allocator.buildings.push(store);
+    let mut households = HouseholdSystem::new();
+    households.job_funding.capacities = vec![13];
+    households.job_funding.set_activity(0, 0.85);
+    households
+        .job_funding
+        .see_operating_for_test(&allocator.buildings);
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = CityFiscalPolicy::from_runtime_tuning(tuning.as_ref());
+    let mut live = WorkforceView::default();
+    live.count_live(
+        &allocator,
+        &households,
+        &catalog,
+        &tuning,
+        policy.income_tax_rate,
+    );
+    let graph = graph_with_connected_border();
+    let mut borders = Vec::new();
+    collect_connected_border_nodes(&graph, &mut borders);
+    let snapshot = DailyDemandSnapshot::compose(
+        &Default::default(),
+        &live,
+        &households,
+        connected_road_border_count(&graph, &borders),
+        &catalog,
+        &tuning,
+        &policy,
+        TREASURY,
+    );
+    assert_eq!(snapshot.physical_worker_capacity, 13);
+    assert_eq!(snapshot.open_job_slots, 1);
+    // A snapshot of the census's own book counts it alike.
+    let config = load_builtin_demand_config().unwrap();
+    let whole =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, TREASURY);
+    assert_eq!(whole.open_job_slots, 1);
+}
+
 fn composed(
     front: &SnapshotBuffer,
     households: &HouseholdSystem,

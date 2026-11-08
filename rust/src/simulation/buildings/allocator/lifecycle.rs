@@ -530,6 +530,8 @@ impl BuildingAllocator {
         // reserves income nor prevents another home/family from being considered.
         let attempt_limit = applicant_offer_limit(households_to_spawn);
         let mut cursor = next_household_id;
+        // Whether the vacancy at the cursor refused its calendar family this batch.
+        let mut place_refused = false;
         for attempt in 0..attempt_limit {
             if launched == households_to_spawn {
                 break;
@@ -541,7 +543,16 @@ impl BuildingAllocator {
             let position = cursor % vacancies.len();
             let home_idx = vacancies[position];
             cursor = position + 1;
-            let household_seed = next_household_id.saturating_add(attempt);
+            // A vacancy is offered first the applicant the workforce calendar credited its
+            // first free place with, so the families that arrive bring the adults and members
+            // projects claimed (`ECON-28`). Once that family is refused, the next offer brings
+            // the hour's applicant. Each offer is one of the batch's attempts.
+            let calendar_family = !std::mem::take(&mut place_refused);
+            let household_seed = if calendar_family {
+                self.buildings[home_idx].occupancy as usize
+            } else {
+                next_household_id.saturating_add(attempt)
+            };
             let Some((household_size, composition)) = applicant_offer(
                 self.flat_size_m2(home_idx),
                 self.applicant_seed(home_idx),
@@ -566,6 +577,11 @@ impl BuildingAllocator {
                 continue;
             };
             if !claim_income(composition, household_size, self.buildings[home_idx].level) {
+                if calendar_family {
+                    // The same vacancy is offered the hour's applicant next.
+                    place_refused = true;
+                    cursor = position;
+                }
                 continue;
             }
             // One household consumes 1 slot of household_capacity regardless of size.

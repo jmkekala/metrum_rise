@@ -515,6 +515,7 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         pension_daily_benefit_per_elder: 30.0,
         child_support_daily_benefit_per_child: 10.0,
         existing_unemployed_member_count: 0,
+        unfunded_shoppers: 0.0,
         existing_child_count: 0,
         existing_elder_count: 0,
         open_job_slots: 2,
@@ -1484,6 +1485,63 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
 }
 
 #[test]
+fn admitted_families_store_labour_is_charged_until_a_census_funds_it() {
+    // ECON-28: admission takes a family off the calendar's free places, whose store labour the
+    // calendar charges, but its shopping reaches the stores' funded jobs only once a census
+    // funds it. Uncharged in between, projects claimed the workers the store then hired.
+    use crate::simulation::economy::hiring::UnfundedShoppers;
+    let mut households = HouseholdSystem::new();
+    households.record_pending_arrival(
+        crate::simulation::economy::agents::HouseholdAgeComposition {
+            adult_count: 2,
+            child_count: 3,
+            elder_count: 1,
+        },
+    );
+    households.households.extend([
+        housed_household(0, 4, 0.0, 1.0),
+        housed_household(0, 5, 0.0, 1.0),
+    ]);
+    // Without a census record only the pending family is charged.
+    assert_eq!(super::snapshot::unfunded_shoppers(&households), 6.0);
+    // The census copied the first household and left seven residents of wageless adults'
+    // families unfunded; the second arrived after its copy.
+    households
+        .job_funding
+        .set_unfunded_shoppers_for_test(UnfundedShoppers {
+            copied_households: 1,
+            wageless_residents: 7.0,
+        });
+    assert_eq!(super::snapshot::unfunded_shoppers(&households), 18.0);
+
+    let demand = DemandSystem::new();
+    let mut snapshot = vacant_admission_snapshot();
+    snapshot.open_job_slots = 0;
+    snapshot.existing_unemployed_member_count = 20;
+    let available = |snapshot: &DailyDemandSnapshot| {
+        let mut workforce = super::workforce::WorkforceReservations::default();
+        workforce.reset(
+            &BuildingAllocator::new(),
+            &demand.runtime_catalog,
+            &demand.runtime_tuning,
+            snapshot,
+            &[],
+            demand.next_construction_start_hour,
+            None,
+            |_| true,
+        );
+        workforce.reserve_existing();
+        workforce.available(12)
+    };
+    assert_eq!(available(&snapshot), 20);
+    snapshot.unfunded_shoppers = 18.0;
+    let store_jobs =
+        (18.0 * super::workforce::resident_store_labor(&demand.runtime_catalog)).ceil() as u32;
+    assert!(store_jobs > 0);
+    assert_eq!(available(&snapshot), 20 - store_jobs);
+}
+
+#[test]
 fn queued_shop_reserves_customers_but_never_admission_wages() {
     let mut allocator = BuildingAllocator::new();
     let shop = register_test_asset(&mut allocator, "queued_shop", ZoneType::Commercial);
@@ -1960,6 +2018,9 @@ fn runtime_snapshot_counts_cached_explicit_work_area_jobs_when_commercial_floor_
     let mut households = HouseholdSystem::new();
     // This snapshot fixture supplies the already evaluated employment funding result.
     households.job_funding.capacities = vec![0, 2];
+    // The census that funded the farm's jobs accepted its full activity, which the snapshot
+    // reads as the farm's next hourly phase caches it (`ECON-28`).
+    households.job_funding.set_activity(1, 1.0);
     households.households.push(housed_household(
         0,
         farm_profile.worker_capacity as u16,
@@ -2007,6 +2068,8 @@ fn farm_snapshot_counts_one_home_alongside_area_scaled_jobs() {
     let mut households = HouseholdSystem::new();
     // This snapshot fixture supplies the already evaluated employment funding result.
     households.job_funding.capacities = vec![3];
+    // Its census accepted the farm's full activity (`ECON-28`).
+    households.job_funding.set_activity(0, 1.0);
     let config = load_builtin_demand_config().unwrap();
     let snapshot =
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);

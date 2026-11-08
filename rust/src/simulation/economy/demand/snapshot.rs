@@ -42,11 +42,10 @@ pub(in crate::simulation::economy::demand) enum FundedJobs<'a> {
     Published,
 }
 use crate::simulation::economy::households::{
-    HouseholdEssentials,
-    CommercialActivitySums, CommercialActivityTerms, Household, HouseholdSystem,
-    active_worker_capacity_for_profile_with_floor_scale, affordable_consumer_residents,
-    commercial_activity_sums_for_city, household_is_housed, household_reserve_days,
-    output_area_scale_for_building,
+    CommercialActivitySums, CommercialActivityTerms, Household, HouseholdEssentials,
+    HouseholdSystem, active_worker_capacity_for_profile_with_floor_scale,
+    affordable_consumer_residents, commercial_activity_floor, commercial_activity_sums_for_city,
+    household_is_housed, household_reserve_days, output_area_scale_for_building,
 };
 use crate::simulation::economy::logistics::collect_connected_border_nodes;
 use crate::simulation::economy::reduction::ordered_fold;
@@ -239,6 +238,9 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) pension_daily_benefit_per_elder: f32,
     pub(super) child_support_daily_benefit_per_child: f32,
     pub(super) existing_unemployed_member_count: u32,
+    /// Residents whose shopping no store is staffed for yet, as the published census left them
+    /// ([`unfunded_shoppers`]); the workforce calendar charges their store labour (`ECON-28`).
+    pub(super) unfunded_shoppers: f64,
     pub(super) existing_child_count: u32,
     pub(super) existing_elder_count: u32,
     pub(super) open_job_slots: u32,
@@ -318,12 +320,22 @@ impl JobTotals {
         // workers early lets another project reserve them while their employer still
         // reserves its customers (e.g. before the daily bankruptcy/layoff boundary).
         let filled_workers = building.worker_count;
+        // Stores and explicit work areas staff to their census activity, which each building's
+        // hourly phase caches as its activity floor. Read it from the census the funded jobs
+        // come from instead, as that phase will cache it: hiring reads the funded jobs at once,
+        // so a pass between a census and the phase must not hide a new store job (`ECON-28`).
+        let activity = match funded {
+            FundedJobs::Census(job_funding) => {
+                job_funding.activities().get(idx).copied().unwrap_or(0.0)
+            }
+            FundedJobs::Published => building.funded_activity,
+        };
+        let floor_scale = commercial_activity_floor(catalog, building, activity);
         let physical_worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
             catalog,
             building,
             profile,
-            // Stores and explicit work areas cache their activity; a store's is its census.
-            building.commercial_activity_floor_scale,
+            floor_scale,
         );
         let funded_worker_capacity = physical_worker_capacity.min(match funded {
             FundedJobs::Census(job_funding) => {
@@ -671,6 +683,7 @@ impl DailyDemandSnapshot {
         let existing_unemployed_member_count = workforce
             .housed_unemployed
             .saturating_add(households.pending_arrivals.adults);
+        let unfunded_shoppers = unfunded_shoppers(households);
 
         let vacant_household_slots = total_household_slots.saturating_sub(occupied_household_slots);
         let live_child_count = household_accumulator
@@ -789,6 +802,7 @@ impl DailyDemandSnapshot {
             pension_daily_benefit_per_elder: fiscal_policy.pension_per_elder_per_day,
             child_support_daily_benefit_per_child: fiscal_policy.child_support_per_child_per_day,
             existing_unemployed_member_count,
+            unfunded_shoppers,
             existing_child_count: live_child_count,
             existing_elder_count: live_elder_count,
             open_job_slots,
@@ -801,6 +815,35 @@ impl DailyDemandSnapshot {
             output_absorption,
         }
     }
+}
+
+/// Residents whose shopping no store is staffed for yet (`ECON-28`): the members of pending
+/// arrivals, of the families that arrived after the published census's copy, and the census's
+/// own unfunded residents of families with an adult whose wage it does not count. Admission
+/// takes a family off the workforce calendar's free places, whose store labour the calendar
+/// charges, and its shopping reaches the stores' funded jobs only once a census counts its
+/// adults' wages. A book no census filled leaves only the pending arrivals. No household leaves between
+/// a census's publication and the hour's planning slots, so the households after the copy are
+/// the families that arrived since, one or two hours of arrivals; a departure in the hour's
+/// removal window that moves one of them below the copy's count leaves it uncharged for the
+/// construction epochs after it. O(households after the copy).
+pub(super) fn unfunded_shoppers(households: &HouseholdSystem) -> f64 {
+    let pending = &households.pending_arrivals;
+    let pending_members = pending.adults + pending.elders + pending.children;
+    let census = households
+        .job_funding
+        .unfunded_shoppers()
+        .map_or(0.0, |census| {
+            let arrived: u32 = households
+                .households
+                .get(census.copied_households..)
+                .unwrap_or_default()
+                .iter()
+                .map(|household| u32::from(household.member_count))
+                .sum();
+            census.wageless_residents + f64::from(arrived)
+        });
+    f64::from(pending_members) + census
 }
 
 /// Connected borders among `borders` (as [`collect_connected_border_nodes`] lists them) that

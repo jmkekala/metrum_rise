@@ -1374,6 +1374,11 @@ impl JobFunding {
         progress.retained_customers = self
             .customers
             .begin_refresh_finish(&mut progress.customers, &refresh_inputs(ctx));
+        // The budgets have walked every copied household (`ECON-28`).
+        self.unfunded_shoppers = Some(super::UnfundedShoppers {
+            copied_households: ctx.households.len(),
+            wageless_residents: self.customers.unfunded_wageless_residents(),
+        });
         // A refresh that reset the book ends the recorded quotes' validity now, not at setup:
         // a census restarted before setup refreshes again, finds its inputs unchanged and
         // would otherwise replay the previous census's quotes against the reset book.

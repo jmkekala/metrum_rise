@@ -76,6 +76,23 @@ impl HouseholdSystem {
         self.pending_arrivals.children += u32::from(composition.child_count);
     }
 
+    // Takes a materialized family off the pending count, as the next recount, which no longer
+    // finds its carrier, would. Saturating: a carrier spawned without an admission (test
+    // drivers) was never counted. O(1).
+    fn record_materialized_arrival(&mut self, composition: HouseholdAgeComposition) {
+        let pending = &mut self.pending_arrivals;
+        pending.households = pending.households.saturating_sub(1);
+        pending.adults = pending
+            .adults
+            .saturating_sub(u32::from(composition.adult_count));
+        pending.elders = pending
+            .elders
+            .saturating_sub(u32::from(composition.elder_count));
+        pending.children = pending
+            .children
+            .saturating_sub(u32::from(composition.child_count));
+    }
+
     pub(crate) fn admit_immigrant_household(
         &mut self,
         catalog: &RuntimeEconomyCatalog,
@@ -192,6 +209,9 @@ impl HouseholdSystem {
         let composition = agents.pending_household_composition(agent_idx);
         let household_id =
             self.admit_immigrant_household(&catalog, &tuning, home, pending_size, composition);
+        // The family is a resident now: leaving the pending count at once, not at the next
+        // hourly recount, keeps its adults and transfer claims from counting twice (`ECON-28`).
+        self.record_materialized_arrival(composition);
         let home_door = allocator
             .entrances
             .get(home)

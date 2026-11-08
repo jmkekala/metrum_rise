@@ -1171,8 +1171,11 @@ pub(crate) fn applicant_offer_limit(arrivals: usize) -> usize {
 ///
 /// `home_seed` is the home's building index (the index it will have once placed while it is
 /// queued, `queued_home_seed`; a proposed home's parcel id before it is queued) and
-/// `household_seed` the offer's position in the applicant stream. Admission, housing need and
-/// the workforce calendar read the same stream. `None` where the flat fits no household. O(1).
+/// `household_seed` the applicant's position. The workforce calendar credits each free place
+/// with the applicant at the place's ordinal in its home, and admission offers a vacancy that
+/// applicant first (`ECON-28`); a refused one is followed by the applicant at the hour's
+/// position in the applicant stream, which housing need samples. `None` where the flat fits no
+/// household. O(1).
 pub(crate) fn applicant_offer(
     flat_size_m2: f32,
     home_seed: usize,

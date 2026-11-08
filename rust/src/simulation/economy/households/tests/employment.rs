@@ -2869,6 +2869,48 @@ fn consumer_market_reserves_transfers_once_and_excludes_temporary_income() {
 }
 
 #[test]
+fn census_budgets_record_the_shopping_wageless_adults_will_fund() {
+    // ECON-28: a family whose adults earn no counted wage buys nothing a store is staffed for.
+    // The census records the residents their wages will fund, and the workforce calendar
+    // charges their store labour.
+    use crate::simulation::economy::customers::ConsumerBudgets;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
+    let mut allocator = BuildingAllocator::new();
+    let home = register_test_asset(
+        &mut allocator,
+        "test",
+        "wageless_home",
+        ZoneClass::Residential,
+    );
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::Residential, &home, 0.0));
+    let wages = |mut family: Household, employed: u16, wages: f32| {
+        family.employed_adults = employed;
+        family.gross_daily_wages = wages;
+        family
+    };
+    let families = [
+        // Two adults without a job: neither's basket is funded.
+        make_household(0, 2, 0.0, 0.0),
+        // A couple one wage funds: the other adult's job adds nothing.
+        wages(make_household(0, 2, 0.0, 0.0), 1, 300.0),
+        // A funded single worker.
+        wages(make_household(0, 1, 0.0, 0.0), 1, 100.0),
+        // A family of three hired since it last counted its wages.
+        wages(make_household(0, 3, 0.0, 0.0), 3, 0.0),
+        // Unhoused: no budget.
+        make_household(usize::MAX, 3, 0.0, 0.0),
+    ];
+    let mut customers = ConsumerBudgets::default();
+    customers.reset(&families, &allocator, &catalog, &tuning, &policy, 100_000.0);
+    assert_eq!(customers.affordable_residents(), 3.0);
+    assert_eq!(customers.unfunded_wageless_residents(), 5.0);
+}
+
+#[test]
 fn consumer_reservations_keep_family_money_quantities_and_exact_rollback_separate() {
     use crate::simulation::economy::customers::ConsumerBudgets;
     let catalog = load_runtime_economy_catalog().unwrap();
