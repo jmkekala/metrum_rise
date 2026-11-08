@@ -457,12 +457,22 @@ basket is not charged: no hire would fund it. The cost is O(1) per household in 
 existing budget walk and O(households after the copy) per snapshot, one or two hours of
 arrivals: no household leaves between a census's publication and the hour's planning slots. A
 departure in the hour's removal window can move such a family below the copy's count, leaving it
-uncharged for the construction epochs after it until the next publication.
+uncharged for the construction epochs after it until the next publication. The charge is rounded
+up to whole workers in each pass on its own, apart from the arrivals' running total and blind to
+the incumbent stores' rounding slack, so a few unfunded shoppers cost a whole worker: in the
+producer town the founding burst's 16 pending members (1.41 store workers) were charged 2 on
+day 2, a 4-worker entrant waited, and the town settles at 73 households where it reaches 82
+without the charge, every funded job staffed either way (round `E3`; a planning conservatism,
+open for the user).
 
 The snapshot reads a store's funded jobs with the activity floor its census implies, as the
 store's next hourly phase will cache it (`commercial_activity_floor` of the copied
 `funded_activity`), not the cached floor: hiring reads the funded jobs at once, so a pass between
 a census and the store's phase no longer misses the job the census just funded (`ECON-28`).
+A store's [refill crew](economy.md#funding-census-econ-17) (`ECON-24`) is one of those funded
+jobs: it follows the store's sales, so the snapshot reads it in the store's active crew
+(`sales_store_crew`) and a new store's plan counts it, and the calendar charges it like any other
+job. It never opens with the shelf, so no job appears that the calendar did not see.
 "Unreserved ready homes", which non-worker arrivals and residential
 downgrades may use, are the places left after claimed workers fill single-adult places first.
 That keeps as many homes reserved as the claims could need. A downgrade retires the

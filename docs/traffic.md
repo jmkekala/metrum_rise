@@ -2038,9 +2038,17 @@ missing, deleted or has no parking on that side, and a lot place whose building 
 detached explicit site retains its rigid pose (`building_detached_poses`), so losing a driveway
 road disables its supply without breaking a save.
 
-Known gap (`PARK-11`): a road edit that clears the access plan of a car pulling into its bay can
-land the car's driver at the door, which debug builds stop on; the parking leg should go to its
-recovery instead.
+A road edit whose lanes touch an agent's route clears its access plan
+(`clear_route_plan_after_road_edit`), including an agent already on its access path. Access
+ingress then ends the leg where it was going (`PARK-11`, fixed on `econ-28` in round `E3`,
+2026-11-09): a pull-in in its
+bay and a walk to the car at the car, both marked `ready` exactly as a leg that reaches its end,
+so the parking phase occupies the bay and plans the next leg from there; only a leg that ends at
+a door, a walk to the door or a trip without parking, arrives at it. Before, every agent without
+a plan arrived at its target's door: a driver pulling into its bay went in with the car still on
+the driveway, which debug builds stop on ("resident/move-in car leg must end at parking, never a
+door") and release builds skip, seating the driver at the door with its leg still a pull-in.
+Latent on `dev` too: `a_road_edit_under_a_pull_in_ends_it_in_its_bay` fails on `6d09be0c`.
 
 ### Parked-car rendering (`PARK-01`, `PARK-02`)
 

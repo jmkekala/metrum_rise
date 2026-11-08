@@ -566,6 +566,24 @@ answer to "how much of this operation can run":
   (`operation.rs`). Owner equity is capital, never sales.
 - **Activities:** accepted recipe activity, as a share of full output. Sales-scaled stores,
   service stores, farms and mines produce, restock and staff to it.
+- **Refill crew (`ECON-24`):** a sales-scaled store (`store` kind in a commercial zone; of the
+  shipped profiles only `grocery_basic`) staffs the smallest whole crew whose staffed output
+  exceeds its sales (`sales_store_crew`), at the same activity. That is its sales rounded up to
+  whole workers, except where they land exactly on a whole crew: there the census funds one more
+  worker. Staffed to its sales alone, such a store holds its shelf where it is and never
+  recovers from a dip (round M1b: 12 of 15 grocery workers made exactly the 160 units a day of
+  160 residents, and the shelf sat near 16 against a target of 480). The extra worker refills the
+  shelf at the full staffed rate and, once the shelf holds its target, the store produces its
+  sales. It is an ordinary funded job: the census funds it only while the plan with it pays (every
+  smaller plan keeps the same activity, so a store that cannot pay it keeps the crew its sales
+  need), it opens and closes with the sales, never with the shelf, and the
+  [workforce calendar](demand.md#workforce-calendar) and new-store plans read it like any other
+  job. The refill goods are stock, not a recurring cost: the plan buys inputs for its sales. O(1)
+  per store. A crew a fraction of a worker above its sales still refills, in proportion to that
+  fraction (one resident short of a whole crew of the shipped grocery: 1 unit a day).
+  Round M1c's rule (one worker above the sales between the reorder line and the stock target)
+  opened and closed that job with the shelf; its worker's family then lost its wage, and the
+  calendar never charged the job, so the scarce-labour expansion ended one adult short.
 - **Customers:** each store, in stable building order, claims its output from the nearest
   reachable households with exact directed shopping access (`reserve_consumer_outputs` →
   `ConsumerMarket::claim_reachable`, `customers/routing.rs`), with no distance bound, from
@@ -724,10 +742,11 @@ throughput = base_rate × staffing_factor × input_factor × output_headroom_fac
 - There is no utility factor. Missing utilities cost money through the
   [`OWA`](#utility-service-layer) fallback; they do not throttle production.
 - **Census activity bounds staffing and output.** A store or service store without census
-  activity produces nothing and holds no paid staff. Groceries refill their shelf at full staffed
-  rate up to `stock_target_days` of funded sales, then produce at their census share, so rounding
-  up to whole workers creates no surplus. Farms and mines staff to the exports and local buyers
-  they can finance.
+  activity produces nothing and holds no paid staff. Groceries staff their
+  [refill crew](#funding-census-econ-17), refill their shelf at full staffed rate up to
+  `stock_target_days` of funded sales, then produce at their census share, so the crew's whole
+  workers create no surplus. Farms and mines staff to the exports and local buyers they can
+  finance.
 
 Hourly production is O(buildings) with Rayon; area production follows the indexed site list.
 Input stock targets hold at least two minimum batches; reorder thresholds keep at least one.
@@ -951,8 +970,11 @@ Recovery warms the starter town up for 30 days, as it stops changing after its 1
 cash, so its report changed with `CODE-21` `T2` (2026-11-08); expansion keeps 365. At 30 and 45
 days one entrant ended below its 95% staffing bound (90.3%, 75.4%): the workforce calendar's
 accounting gaps, fixed in `ECON-28` round `E2`, after which every warm-up from 10 to 200 days
-ends with all entrants at 99.7% or more. Two of them (115 and 140 days) stop instead on a parking
-assertion at the expansion's road commit (`PARK-11`), so the warm-up shortens once that is fixed.
+ends with all entrants at 99.7% or more. Two of them (115 and 140 days) stopped instead on a
+parking assertion at the expansion's road commit (`PARK-11`); with that fixed and the
+[refill crew](#funding-census-econ-17) (`ECON-24`, round `E3`), 10-200 days by 5 and 21-40 days
+by 1 all pass (worst entrant 99.74%). The warm-up shortens to 30 days once every test passes on
+that branch (`ECON-28`).
 `METRUM_GROWTH_{REPORT,LONG_REPORT,EXPANSION_REPORT,RECOVERY_REPORT}` and `METRUM_PRODUCER_TOWN_REPORT` write reports, and the
 saved-town replay (`diagnose_saved_city_growth`, ignored) uses `METRUM_DIAG_{SAVE,MODS,REPORT,DAYS}`
 with a copied save and read-only mods. Economic changes that must not alter behavior compare
