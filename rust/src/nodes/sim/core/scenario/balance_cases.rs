@@ -2054,47 +2054,56 @@ fn production_area_construction_charges_only_successful_added_area() {
     }
 }
 
+// The 100 ha start distinguishes a mechanized farm from a labor-intensive mine: one test per
+// producer, so a parallel runner runs them side by side.
 #[test]
-fn hundred_hectare_start_distinguishes_mechanized_farm_from_labor_intensive_mine() {
-    for mine in [false, true] {
-        let mut scenario = GrowthScenario::starter_town_in_world(4096.0);
-        place_producer(&mut scenario, mine, 100.0, -1900.0);
-        let report = scenario.run_diagnosed_days(90);
-        verify_accounting(&report);
-        let profile = if mine {
-            "coal_mine_basic"
-        } else {
-            "grain_farm_basic"
-        };
-        let all = report.business_cash_flow(profile, usize::MAX);
-        if mine {
-            assert!(all.operating_cash_change < 0.0, "{report}");
-            let firm = report
-                .business_outcomes()
-                .find(|firm| firm.profile_id == profile)
-                .unwrap();
-            assert!(
-                firm.ending_cash < firm.opening_cash,
-                "mine must spend its owner's capital: {firm:?}"
-            );
-            assert!(
-                firm.staffed_worker_hours < firm.capacity_worker_hours,
-                "unprofitable full staffing must not be advertised against startup equity: {firm:?}"
-            );
-            // Withdrawing unfunded jobs can extend the owner's cash runway. Losses and
-            // zero subsequent equity, rather than an arbitrary 90-day failure, prove no rescue.
-        } else {
-            assert!(all.operating_cash_change > 0.0, "{report}");
-            assert_eq!(
-                all.bankruptcies, 0,
-                "six-worker farm must trade sustainably: {report}"
-            );
-        }
+fn hundred_hectare_start_keeps_a_mechanized_farm_profitable() {
+    hundred_hectare_start(false);
+}
+
+#[test]
+fn hundred_hectare_start_runs_a_labor_intensive_mine_on_owner_capital() {
+    hundred_hectare_start(true);
+}
+
+fn hundred_hectare_start(mine: bool) {
+    let mut scenario = GrowthScenario::starter_town_in_world(4096.0);
+    place_producer(&mut scenario, mine, 100.0, -1900.0);
+    let report = scenario.run_diagnosed_days(90);
+    verify_accounting(&report);
+    let profile = if mine {
+        "coal_mine_basic"
+    } else {
+        "grain_farm_basic"
+    };
+    let all = report.business_cash_flow(profile, usize::MAX);
+    if mine {
+        assert!(all.operating_cash_change < 0.0, "{report}");
+        let firm = report
+            .business_outcomes()
+            .find(|firm| firm.profile_id == profile)
+            .unwrap();
+        assert!(
+            firm.ending_cash < firm.opening_cash,
+            "mine must spend its owner's capital: {firm:?}"
+        );
+        assert!(
+            firm.staffed_worker_hours < firm.capacity_worker_hours,
+            "unprofitable full staffing must not be advertised against startup equity: {firm:?}"
+        );
+        // Withdrawing unfunded jobs can extend the owner's cash runway. Losses and
+        // zero subsequent equity, rather than an arbitrary 90-day failure, prove no rescue.
+    } else {
+        assert!(all.operating_cash_change > 0.0, "{report}");
         assert_eq!(
-            all.startup_cash, 0.0,
-            "no fresh equity after the run begins"
+            all.bankruptcies, 0,
+            "six-worker farm must trade sustainably: {report}"
         );
     }
+    assert_eq!(
+        all.startup_cash, 0.0,
+        "no fresh equity after the run begins"
+    );
 }
 
 #[test]
@@ -2112,38 +2121,46 @@ fn explicit_producers_are_observed_across_growth_and_building_remaps() {
     );
 }
 
+// One test per producer, so a parallel runner runs them side by side.
 #[test]
-fn starter_producers_restock_and_pay_workers_from_sales() {
-    for mine in [false, true] {
-        let mut scenario = GrowthScenario::starter_town();
-        place_producer(&mut scenario, mine, if mine { 1.0 } else { 4.0 }, -900.0);
-        let profile = if mine {
-            "coal_mine_basic"
-        } else {
-            "grain_farm_basic"
-        };
-        let report = scenario.run_diagnosed_days(180);
-        verify_accounting(&report);
-        let all = report.business_cash_flow(profile, usize::MAX);
-        let recent = report.business_cash_flow(profile, 90);
-        assert_eq!(all.bankruptcies, 0, "{report}");
-        assert_eq!(
-            all.startup_cash, 0.0,
-            "opening capital is already accounted for"
-        );
-        assert!(
-            recent.operating_cash_change > 0.0 && recent.payroll > 0.0,
-            "{report}"
-        );
-        assert!(
-            recent.input_purchases > 0.0,
-            "opening machinery must not be the only delivery: {report}"
-        );
-        assert!(
-            (all.sales - all.local_sales - all.export_sales).abs() < 0.1,
-            "{report}"
-        );
-    }
+fn starter_farm_restocks_and_pays_workers_from_sales() {
+    starter_producer_restocks_and_pays_workers_from_sales(false);
+}
+
+#[test]
+fn starter_mine_restocks_and_pays_workers_from_sales() {
+    starter_producer_restocks_and_pays_workers_from_sales(true);
+}
+
+fn starter_producer_restocks_and_pays_workers_from_sales(mine: bool) {
+    let mut scenario = GrowthScenario::starter_town();
+    place_producer(&mut scenario, mine, if mine { 1.0 } else { 4.0 }, -900.0);
+    let profile = if mine {
+        "coal_mine_basic"
+    } else {
+        "grain_farm_basic"
+    };
+    let report = scenario.run_diagnosed_days(180);
+    verify_accounting(&report);
+    let all = report.business_cash_flow(profile, usize::MAX);
+    let recent = report.business_cash_flow(profile, 90);
+    assert_eq!(all.bankruptcies, 0, "{report}");
+    assert_eq!(
+        all.startup_cash, 0.0,
+        "opening capital is already accounted for"
+    );
+    assert!(
+        recent.operating_cash_change > 0.0 && recent.payroll > 0.0,
+        "{report}"
+    );
+    assert!(
+        recent.input_purchases > 0.0,
+        "opening machinery must not be the only delivery: {report}"
+    );
+    assert!(
+        (all.sales - all.local_sales - all.export_sales).abs() < 0.1,
+        "{report}"
+    );
 }
 
 #[test]
