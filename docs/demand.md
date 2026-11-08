@@ -276,8 +276,11 @@ first, then keeps one finite budget for the batch:
 
 **Offers.** The batch tries at most `max(16, 4 × capacity)` deterministic offers. Each varies
 family composition, size and home from an applicant seed that advances with simulation hours, so
-one refused family never blocks the stream. Housing need and the workforce calendar read the
-same applicant stream (`DEM-02-C`). For each physically launchable offer:
+one refused family never blocks the stream. Housing need walks the same offers (`DEM-02-C`).
+The [workforce calendar](#workforce-calendar) does not: it credits each free place with the
+applicant of the place's ordinal, not the family admission will offer it, so the families that
+arrive can bring fewer adults or more members than the calendar promised (`ECON-28`). For each
+physically launchable offer:
 
 - Employed adults are `min(adults, remaining job-equivalents)`.
 - Recurring income is employed adults × net wage, plus pension and child support scaled by
@@ -308,7 +311,8 @@ part 5). Families still in the queue count
 as pending arrivals. Its approved adult, elder and child composition travels with the carrier,
 survives arrival reordering and save/load, and materializes when the carrier reaches its home.
 Pending adults count as labor supply in the next forecast; each hour recounts them from the carriers
-still on their way.
+still on their way. A carrier that reaches its home is not taken off the count until that recount,
+so until then its family's adults count twice, as pending and as housed unemployed (`ECON-28`).
 
 The **empty-town bootstrap** offers the first home when the city has a border and no households.
 
@@ -413,15 +417,22 @@ Claims are made in this order:
 2. Constructing and queued projects claim next.
 3. New proposals claim last.
 
-A future place supplies the adults of the applicant the shared stream offers it
-(`households::applicant_offer`), keyed by the building's stable applicant seed (the queued
-spawn's id, kept once placed, or a city counter's value for other buildings), by parcel ID while
-only proposed, and by place ordinal; an elder applicant supplies none (`DEM-02-C`). Arrivals also shop: each
+A future place supplies the adults of its applicant (`households::applicant_offer`), keyed by
+the building's stable applicant seed (the queued spawn's id, kept once placed, or a city
+counter's value for other buildings), by parcel ID while only proposed, and by place ordinal; an
+elder applicant supplies none (`DEM-02-C`). That applicant is a forecast: admission offers the
+place the family of the hour it decides ([offers](#household-admission)), so a project can claim
+workers that never arrive (`ECON-28`). Arrivals also shop: each
 hour's arrival adults are reduced by `ceil(members × store labor per resident)`. Store labor per
 resident is the authored consumption rate of each resource households buy from stores, times the
 fewest workers per daily unit among the stores selling it (`workforce::resident_store_labor`).
 Individual future homes take whole store workers from a running total in matching order. Ready places are also counted
-by those adults. "Unreserved ready homes", which non-worker arrivals and residential
+by those adults. The charge covers future places only: an admitted family's adults count as
+available at once, but its shopping reaches the open jobs a pass reads only once a census funds
+the store job and the store's next hourly phase raises its activity floor (the snapshot caps a
+store's funded jobs by its floor-scaled crew; hiring does not). A pass in between charges that
+store labor nowhere (`ECON-28`).
+"Unreserved ready homes", which non-worker arrivals and residential
 downgrades may use, are the places left after claimed workers fill single-adult places first.
 That keeps as many homes reserved as the claims could need. A downgrade retires the
 calendar workers of the places it removes. Counting adults costs O(free places) in a parallel
