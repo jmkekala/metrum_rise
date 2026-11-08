@@ -9,7 +9,7 @@ use super::definitions::{
 };
 use super::fiscal::{CityFiscalPolicy, daily_property_tax};
 use super::households::{
-    Household, local_utility_service_costs, output_area_scale_for_building,
+    Household, local_utility_service_costs, operation_crew, output_area_scale_for_building,
     physical_worker_capacity_for_profile, service_funded_worker_capacity,
 };
 use super::logistics::{
@@ -1260,7 +1260,10 @@ fn funded_private_operation(
             .fold(0.0, f32::max)
     })
     .min(activity_ceiling);
-    let desired = ((physical as f32 * market_activity).ceil() as u32).min(ceiling);
+    // A sales-scaled store's crew includes its refill worker when its sales land exactly on a
+    // whole crew (`ECON-24`); every smaller plan keeps the same activity, so a store that cannot
+    // pay that worker keeps the crew its sales alone need.
+    let desired = operation_crew(building, profile, physical, market_activity).min(ceiling);
     if desired == 0 {
         return (0, 0.0);
     }

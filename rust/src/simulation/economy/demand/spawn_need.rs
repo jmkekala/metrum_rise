@@ -224,7 +224,7 @@ impl OutputAbsorptionContext {
             .filter(|port| port.units_per_day > EPSILON)
             .map(|port| share(port.resource_runtime_id, port.units_per_day).clamp(0.0, 1.0))
             .fold(0.0, f32::max);
-        (profile.worker_capacity as f32 * scale).ceil() as u32
+        project_crew(profile, scale)
     }
 
     pub(super) fn empty(resource_count: usize) -> Self {
@@ -440,6 +440,16 @@ pub(super) fn project_covers_operation(
         .is_some_and(|costs| supply.fund(profile, prices, costs, capital))
 }
 
+// A planned operation's crew at `activity`, as its census will fund it: a sales store's
+// includes its refill worker (`ECON-24`), any other rounds its activity up. O(1).
+fn project_crew(profile: &EconomyProfileRuntime, activity: f32) -> u32 {
+    if profile.kind == EconomyProfileRuntimeKind::Store {
+        crate::simulation::economy::households::sales_store_crew(profile.worker_capacity, activity)
+    } else {
+        (profile.worker_capacity as f32 * activity).ceil() as u32
+    }
+}
+
 fn project_operation_costs(
     profile: &EconomyProfileRuntime,
     catalog: &RuntimeEconomyCatalog,
@@ -466,7 +476,7 @@ fn project_operation_costs(
     };
     if let Some(customers) = supply.customers(profile, share, prices, exports) {
         let activity = customers.activity * share;
-        let workers = (profile.worker_capacity as f32 * activity).ceil() as u32;
+        let workers = project_crew(profile, activity);
         let workers = workers.max(minimum_workers).min(crew_cap);
         let plan = OperationPlan {
             workers,

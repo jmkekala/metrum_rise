@@ -3994,3 +3994,81 @@ fn a_second_adult_counts_the_first_adults_wage() {
     market.households.households[0].gross_daily_wages = 90.0;
     assert_eq!(market.search(), CARRY_NEAR);
 }
+
+// One grocery whose 160 customers' sales need exactly 12 of its 15 workers, importing from a
+// border, at `stock` units on its shelf; its census's funded jobs and activity, and the store.
+fn exact_store_census(stock: f32) -> (u32, f32, Building) {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    let mut allocator = BuildingAllocator::new();
+    let shop = register_test_asset(&mut allocator, "test", "crew_shop", ZoneClass::Commercial);
+    let home = register_test_asset(&mut allocator, "test", "crew_home", ZoneClass::Residential);
+    let profile = catalog.profile_for_id("grocery_basic").unwrap();
+    let mut store = make_building(60.0, ZoneType::Commercial, &shop, 0.0);
+    store.operating_budget = 100_000.0;
+    store.set_inventory_units(profile.outputs[0].resource_runtime_id, stock);
+    store.set_inventory_units(profile.inputs[0].resource_runtime_id, 400.0);
+    allocator.buildings.push(store);
+    allocator
+        .buildings
+        .push(make_building(80.0, ZoneType::Residential, &home, 0.0));
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut customer = make_household(1, 160, 100.0, 1.0);
+    customer.gross_daily_wages = 100_000.0;
+    let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+    funding.refresh(
+        &allocator,
+        &[customer],
+        &mut ShipmentSystem::new(),
+        &network,
+        &graph,
+        &catalog,
+        &tuning,
+        &policy,
+        &[],
+        100_000.0,
+        420,
+    );
+    let store = allocator.buildings.swap_remove(0);
+    (funding.capacities[0], funding.activities()[0], store)
+}
+
+#[test]
+fn a_store_whose_sales_land_on_a_whole_crew_funds_its_refill_worker() {
+    // ECON-24: 12 of the grocery's 15 workers make exactly the 160 units a day its customers
+    // buy, so staffed to its sales alone its shelf never recovers from a dip. The census funds
+    // one worker above them at the same activity.
+    use crate::simulation::economy::households::metrics::{
+        building_operation_factors_with_floor_scale, sales_store_crew,
+    };
+    assert_eq!(sales_store_crew(15, 0.8), 13);
+    assert_eq!(sales_store_crew(15, 159.0 / 200.0), 12, "rounded-up sales keep their crew");
+    assert_eq!(sales_store_crew(15, 1.0), 15);
+    assert_eq!(sales_store_crew(15, 0.0), 0);
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let profile = catalog.profile_for_id("grocery_basic").unwrap();
+    // Three days of 160 units a day, 480, is the shelf's target.
+    let (funded, activity, mut store) = exact_store_census(16.0);
+    assert_eq!((funded, activity), (13, 0.8));
+    store.worker_count = funded;
+    let factors = |store: &Building| {
+        building_operation_factors_with_floor_scale(&catalog, store, profile, activity)
+    };
+    assert_eq!(factors(&store).active_worker_capacity, 13, "the refill worker is staffed");
+    assert_eq!(
+        factors(&store).output_capacity_factor,
+        13.0 / 15.0,
+        "below its target the crew refills the shelf at the full staffed rate"
+    );
+    store.set_inventory_units(profile.outputs[0].resource_runtime_id, 500.0);
+    assert_eq!(factors(&store).output_capacity_factor, 0.8, "above it, it makes the sales");
+    assert_eq!(
+        exact_store_census(500.0).0,
+        13,
+        "a full shelf keeps the crew: no job opens and closes with the shelf"
+    );
+}

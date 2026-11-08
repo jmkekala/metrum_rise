@@ -684,10 +684,41 @@ pub(crate) fn active_worker_capacity_for_profile_with_floor_scale(
     if !is_sales_scaled_commercial_store(building, profile) {
         return worker_capacity;
     }
-    let scaled_capacity = (worker_capacity as f32
-        * commercial_activity_scale_with_floor(catalog, building, profile, floor_scale))
-    .ceil() as u32;
-    scaled_capacity.clamp(1, worker_capacity)
+    sales_store_crew(
+        worker_capacity,
+        commercial_activity_scale_with_floor(catalog, building, profile, floor_scale),
+    )
+    .clamp(1, worker_capacity)
+}
+
+/// Whole workers a sales-scaled store staffs at census `activity` of its `capacity` jobs
+/// (`ECON-24`): the smallest crew whose staffed output exceeds its sales, capped by `capacity`;
+/// none without sales. Staffed to its sales alone, a store holds its shelf where it is, so one
+/// whose whole workers land exactly on its sales never recovers from a dip. Its refill crew,
+/// the one worker above them, refills the shelf at the full staffed rate, and once the shelf
+/// holds its target the store produces at its sales. The same as rounding the sales up to whole
+/// workers unless they land exactly on a whole crew, so it is a funded job like any other: the
+/// census funds it while it pays, and planning reads it with the rest. O(1).
+pub(crate) fn sales_store_crew(capacity: u32, activity: f32) -> u32 {
+    if activity <= 0.0 {
+        return 0;
+    }
+    ((capacity as f32 * activity).floor() as u32 + 1).min(capacity)
+}
+
+/// Whole workers an operation of `physical` jobs staffs at census `activity`: a sales-scaled
+/// store's crew ([`sales_store_crew`]), any other operation's activity rounded up. O(1).
+pub(crate) fn operation_crew(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    physical: u32,
+    activity: f32,
+) -> u32 {
+    if is_sales_scaled_commercial_store(building, profile) {
+        sales_store_crew(physical, activity)
+    } else {
+        (physical as f32 * activity).ceil() as u32
+    }
 }
 
 /// Returns one output port's daily rate after explicit work-area scaling.
@@ -833,9 +864,10 @@ pub(crate) fn building_operation_factors(
     )
 }
 
-// A store's funded staff, rounded up to whole workers, may refill its shelf above its funded
-// sales until it holds `stock_target_days` of them; bulk pantry purchases otherwise find it
-// sold out. It opens no job and stays within the authored output buffer. O(output ports).
+// A store's funded crew, whole workers above its funded sales (`sales_store_crew`), refills its
+// shelf above those sales until it holds `stock_target_days` of them; bulk pantry purchases
+// otherwise find it sold out. It opens no job and stays within the authored output buffer.
+// O(output ports).
 fn shelf_below_target(
     building: &Building,
     profile: &EconomyProfileRuntime,

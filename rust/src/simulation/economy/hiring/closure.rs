@@ -1030,7 +1030,12 @@ impl JobFunding {
                     financed[1] + capital_change - freight_change,
                 ];
                 if !exports && demand_activity < self.activities[index] {
-                    *ceiling = (*ceiling).min((physical as f32 * demand_activity).ceil() as u32);
+                    *ceiling = (*ceiling).min(operation_crew(
+                        building,
+                        profile,
+                        physical,
+                        demand_activity,
+                    ));
                     *activity_ceiling = (*activity_ceiling).min(demand_activity);
                 }
                 if !(headroom[0] > 0.0 && headroom[1] >= 0.0) {

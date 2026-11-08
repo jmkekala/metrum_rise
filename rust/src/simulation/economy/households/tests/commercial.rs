@@ -99,11 +99,14 @@ fn grocery_activity_follows_its_own_census_not_city_shortage() {
     assert_eq!(busy.active_worker_capacity, profile.worker_capacity);
     assert_eq!(busy.throughput_factor, 1.0);
     let quiet = building_operation_factors(&catalog, &allocator.buildings[2], profile);
-    assert_eq!(
-        quiet.active_worker_capacity,
-        (profile.worker_capacity as f32 * 0.2).ceil() as u32
+    // Its census crew: at 0.2 three whole workers would land exactly on its sales, so it staffs
+    // the refill worker too, and its empty shelf refills at the full staffed rate (`ECON-24`).
+    let crew = crate::simulation::economy::households::metrics::sales_store_crew(
+        profile.worker_capacity,
+        0.2,
     );
-    assert!((quiet.throughput_factor - 0.2).abs() < 1e-6);
+    assert_eq!(quiet.active_worker_capacity, crew);
+    assert!((quiet.throughput_factor - crew as f32 / profile.worker_capacity as f32).abs() < 1e-6);
 }
 
 #[test]
