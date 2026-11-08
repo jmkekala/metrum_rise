@@ -9,7 +9,9 @@
 #                        side: the Rust suite under cargo-nextest with RAYON_NUM_THREADS=2
 #                        (lib, integration and doc tests; settings in rust/.config/nextest.toml)
 #                        and two chains of headless and rendered Godot regressions, each in its
-#                        own throwaway profile. Each stage logs to logs/test/<time>/<stage>.log;
+#                        own throwaway profile; a Godot test that hits a SCRIPT ERROR or runs
+#                        past 300 s is stopped and fails its chain by name (docs/debug.md, Godot
+#                        Test Guard). Each stage logs to logs/test/<time>/<stage>.log;
 #                        a summary gives every stage's result and wall time, and a failed
 #                        stage's log tail. Exits non-zero if any stage failed. Needs cargo-nextest.
 #   --test-quick         Library tests without the slow scenarios (nextest profile `quick`); no
@@ -350,7 +352,7 @@ run_rendered_godot_test() {
     shift 2
     if command -v gamescope >/dev/null 2>&1; then
         status_file=$(mktemp "$asset_test_profile/rendered-test.XXXXXX") || return 1
-        env -u WAYLAND_DISPLAY -u DISPLAY timeout 600 gamescope --backend headless \
+        run_guarded_godot_test env -u WAYLAND_DISPLAY -u DISPLAY gamescope --backend headless \
             -W "$width" -H "$height" -- sh -c '"$@"; echo $? > "$0"' "$status_file" godot "$@"
         status=$(cat "$status_file" 2>/dev/null)
         rm -f "$status_file"
@@ -359,7 +361,7 @@ run_rendered_godot_test() {
         return 1
     fi
     if [ -n "${DISPLAY:-}" ]; then
-        godot "$@"
+        run_guarded_godot_test godot "$@"
         return $?
     fi
     echo "Rendered Godot tests need gamescope or a display: $*" >&2
@@ -378,20 +380,94 @@ require_cargo_nextest() {
     fi
 }
 
+# Godot keeps running after a GDScript error: a test whose coroutine dies on one never quits, and
+# its chain would hang (`CODE-20`). So every Godot test of the gate runs under this guard. It
+# passes the test's output through, stops the test (and gamescope's children) at its first
+# `SCRIPT ERROR:` line or once it has run GODOT_TEST_LIMIT_S seconds, about four times the
+# slowest test's time in a gate, and names the test when it fails. Usage:
+# run_guarded_godot_test <command...>, the command holding the test's `res://tests/<name>.gd`.
+GODOT_TEST_LIMIT_S=300
+run_guarded_godot_test() {
+    python3 - "$GODOT_TEST_LIMIT_S" "$@" <<'PY'
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+
+limit_s = int(sys.argv[1])
+command = sys.argv[2:]
+name = next((arg[len("res://tests/"):-len(".gd")] for arg in command
+             if arg.startswith("res://tests/") and arg.endswith(".gd")), " ".join(command))
+script_error = re.compile(rb"^(\x1b\[[0-9;]*m)*SCRIPT ERROR:")
+# Its own session, so a stop reaches every process the command started.
+child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, start_new_session=True)
+stopped = []
+
+def signal_group(signum):
+    try:
+        os.killpg(child.pid, signum)
+    except ProcessLookupError:
+        pass
+
+# Ends the test: TERM, then KILL if it is still there 5 s later.
+def stop(reason):
+    if stopped:
+        return
+    stopped.append(reason)
+    signal_group(signal.SIGTERM)
+    killer = threading.Timer(5.0, signal_group, (signal.SIGKILL,))
+    killer.daemon = True
+    killer.start()
+
+def interrupted(signum, _frame):
+    signal_group(signum)
+    sys.exit(128 + signum)
+
+signal.signal(signal.SIGINT, interrupted)
+signal.signal(signal.SIGTERM, interrupted)
+
+def pass_through():
+    for line in child.stdout:
+        sys.stdout.buffer.write(line)
+        sys.stdout.buffer.flush()
+        if script_error.match(line):
+            stop("hit a SCRIPT ERROR, after which Godot keeps running")
+
+reader = threading.Thread(target=pass_through, daemon=True)
+reader.start()
+try:
+    status = child.wait(timeout=limit_s)
+except subprocess.TimeoutExpired:
+    stop("was still running after {} s".format(limit_s))
+    status = child.wait()
+reader.join(timeout=5.0)
+if stopped:
+    print("Godot test {} FAILED: it {}; stopped it.".format(name, stopped[0]), flush=True)
+    sys.exit(1)
+if status != 0:
+    print("Godot test {} FAILED with exit status {}.".format(name, status), flush=True)
+sys.exit(status if status >= 0 else 128 - status)
+PY
+}
+
 # One headless bridge regression. simulation_speed_input_test probes inputs that previously
-# stalled the simulation thread, so it runs under a timeout.
+# stalled the simulation thread, so it runs under its own 15 s timeout instead of the guard.
 run_godot_bridge_test() {
     local bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/$1.gd")
     if [ "$1" = simulation_speed_input_test ]; then
-        run_with_test_timeout "${bridge_test_command[@]}"
-        return
+        run_with_test_timeout "${bridge_test_command[@]}" && return 0
+        echo "Godot test $1 FAILED (status $?; 124 is its 15 s timeout)."
+        return 1
     fi
-    "${bridge_test_command[@]}"
+    run_guarded_godot_test "${bridge_test_command[@]}"
 }
 
 # An asset-editor regression. Its log must carry no engine or script error, besides its status.
 run_godot_asset_test() {
-    if ! godot --headless --path "$asset_test_project" --script "res://tests/$1.gd" \
+    if ! run_guarded_godot_test godot --headless --path "$asset_test_project" --script "res://tests/$1.gd" \
         --log-file "$asset_test_profile/$1.log" -- --asset-editor; then
         return 1
     fi
@@ -409,13 +485,14 @@ run_rust_fixture_generator() {
 
 # vehicle_ground_support_test (about 50 s) and enough bridge tests, by their times in a full
 # run, that both chains end together. The rendered tests and fixture generators stay in the
-# main chain, and so does everything before road_roundabouts_test: started earlier, inside the
-# Rust stage's first burst of short tests, it failed 2 of 6 gates (`CODE-20`).
+# main chain. Any other test may move: a test waits on the condition it needs, not on frames,
+# so where it falls beside the Rust stage does not matter (`CODE-20`).
 godot_vehicle_chain() {
     local script
     for script in \
-        vehicle_ground_support_test road_builder_test road_junction_preview_test \
-        road_preview_stream_test zoning_reference_test road_tunnels_test agent_inspector_test; do
+        vehicle_ground_support_test road_turn_lanes_test road_walkway_preset_test road_types_test \
+        road_builder_test road_junction_preview_test road_preview_stream_test \
+        zoning_reference_test road_tunnels_test agent_inspector_test; do
         run_godot_bridge_test "$script" || return 1
     done
 }
@@ -426,7 +503,7 @@ godot_main_chain() {
     for script in \
         economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
-        selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_lanes_test road_turn_arrows_test road_walkway_preset_test road_types_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
+        selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
@@ -439,16 +516,19 @@ godot_main_chain() {
     # The locked ring city the gridlock notice test loads (`TRAFFIC-14`), written by Rust.
     export METRUM_GRIDLOCK_FIXTURE="$asset_test_profile/gridlock-ring.sqlite"
     run_rust_fixture_generator record_gridlock_saturation_fixture || return 1
-    godot --headless --path "$asset_test_project" --script res://tests/gridlock_notice_test.gd || return 1
+    run_guarded_godot_test godot --headless --path "$asset_test_project" \
+        --script res://tests/gridlock_notice_test.gd || return 1
     # The stranded block city the stranded-walker notice test loads (`ROAD-74`), written by Rust.
     export METRUM_STRANDED_FIXTURE="$asset_test_profile/stranded-block.sqlite"
     run_rust_fixture_generator record_stranded_walkers_fixture || return 1
-    godot --headless --path "$asset_test_project" --script res://tests/stranded_notice_test.gd || return 1
+    run_guarded_godot_test godot --headless --path "$asset_test_project" \
+        --script res://tests/stranded_notice_test.gd || return 1
     export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"
     run_rust_fixture_generator generate_building_lod_fixtures || return 1
     # Intentional bad-tier import exercises fallback and emits an expected importer error.
     # The test's exit status owns its assertions; ordinary asset tests below forbid errors.
-    godot --headless --path "$asset_test_project" --script res://tests/building_lod_test.gd \
+    run_guarded_godot_test godot --headless --path "$asset_test_project" \
+        --script res://tests/building_lod_test.gd \
         --log-file "$asset_test_profile/building_lod_test.log" -- --asset-editor || return 1
     for script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_editor_preview_test asset_colour_schemes_test asset_pack_export_test pack_import_test pack_actions_test; do
         run_godot_asset_test "$script" || return 1

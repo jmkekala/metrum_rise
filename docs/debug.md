@@ -3,8 +3,8 @@
 This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-09`): the debug channels,
 the runtime visual modes, the junction connector overlay and stall detector, road rejection
 reports and their replay, the agent inspector, trip failure lines, the log format, the shared log, the always-on `events` channel, the Godot
-bridge, the in-game console, crash and hang diagnostics, how the extension's threads stop before
-Godot unloads it, and the `run.sh` launch flags.
+bridge, the in-game console, crash and hang diagnostics, the guard on the gate's Godot tests, how
+the extension's threads stop before Godot unloads it, and the `run.sh` launch flags.
 
 ## Overview
 
@@ -607,6 +607,35 @@ Each stage has a corresponding `entered`, `validated`, `compiled`, `completed` o
 marker. Therefore the last unmatched start marker names the stalled stage; a later marker proves
 the preceding stage returned. `add road transaction started` is emitted before the existing
 `add road internal` mutation marker.
+
+## Godot Test Guard
+
+Godot does not exit on a GDScript error: the coroutine that hit it ends, the scene tree keeps
+running, and a test that never reaches `quit()` would hold its chain forever. So
+`./run.sh --test` runs every Godot test of its chains under `run_guarded_godot_test`
+(`CODE-20`); only `simulation_speed_input_test` keeps its own 15 s timeout instead. The guard
+passes the test's output through and stops the test, and any gamescope process it started, at
+its first `SCRIPT ERROR:` line or once it has run `GODOT_TEST_LIMIT_S` (300 s, about four times
+the slowest test in a loaded gate). The chain then fails with
+`Godot test <name> FAILED: it hit a SCRIPT ERROR ...` or `... was still running after 300 s`; a
+test that exits non-zero is named the same way.
+
+The gate runs the Godot chains beside the Rust suite, so every test runs on a loaded machine.
+A Godot test must hold there:
+
+- Wait on the condition the next step needs (the render generation, the commit's
+  acknowledgement, a result in a poll) under a deadline that fails with a clear `_expect`, never
+  on a fixed number of frames or a fixed time.
+- Bridge calls made every frame take the core lock only when it is free:
+  `intersect_world_surface`, `intersect_terrain`, `get_bulldoze_target_at`, `bulldoze_at` and
+  `poll_graded_tile_results` among them. While the simulation thread holds the core (a tick or
+  an edit) they answer at once, with `null`, `busy` or nothing done. That is common just after a
+  test's own edit, and under load the core can stay held for long runs of frames: in round `F1`
+  a junction preview run saw 210 busy polls in a row over 20 s. So a test that needs the answer
+  does not poll for it. It passes `wait` (the last argument of `intersect_world_surface`,
+  `get_bulldoze_target_at`, `bulldoze_at` and `poll_graded_tile_results`), and the call waits
+  for the core. The game's one-shot input does the same: the select tool's click waits; its
+  hover does not.
 
 ## Shutdown
 
