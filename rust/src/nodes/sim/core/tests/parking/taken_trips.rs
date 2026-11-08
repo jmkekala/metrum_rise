@@ -429,3 +429,36 @@ fn a_job_ending_on_an_access_leg_lets_the_leg_finish() {
         assert_eq!(t.c.parking.borrowed_by(t.car()), None, "{phase:?}");
     }
 }
+
+// A road edit under a car pulling into its bay drops the car's access plan (`PARK-11`): the
+// pull-in still ends in its bay, never at the door, and the driver walks in from there.
+#[test]
+fn a_road_edit_under_a_pull_in_ends_it_in_its_bay() {
+    let mut t = Commute::new();
+    t.tick_until("pulled in", |c, i| {
+        c.agents.parking_trip[i].phase == ParkingTripPhase::PullIn
+            && c.agents.transit[i] == TRANSIT_ACCESS_INGRESS
+    });
+    // A side road joins the commute's road before the workplace and splits the edge the car
+    // left for its bay.
+    commit(&mut t.c, (300.0, 0.0), (300.0, 300.0));
+    let agent = t.agent;
+    assert_eq!(
+        t.c.agents.access_flags[agent] & ACCESS_PLAN_VALID,
+        0,
+        "the edit drops the plan"
+    );
+    assert_eq!(t.c.agents.transit[agent], TRANSIT_ACCESS_INGRESS);
+    t.tick_until("walked from the bay", |c, i| {
+        assert!(
+            c.agents.transit[i] != TRANSIT_IN_BUILDING
+                || c.agents.parking_trip[i].phase != ParkingTripPhase::PullIn,
+            "the driver went in at the door with its car on the driveway"
+        );
+        c.agents.parking_trip[i].phase == ParkingTripPhase::WalkToDoor
+    });
+    let work = t.work;
+    t.inside(work);
+    assert_eq!(t.c.agents.transit_mode[agent], MODE_WALK);
+    assert!(t.c.parking.vehicle_place(t.car()).is_some(), "it parked");
+}

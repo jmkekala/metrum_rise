@@ -74,6 +74,19 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         let plan_valid =
             (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0 && b_id < allocator.entrances.len();
         if !plan_valid {
+            // A road edit drops the access plan of an agent already on its access path
+            // (`PARK-11`). A walk to the car or a pull-in ends where it was going, as one that
+            // reaches its end below does, and the parking phase plans the next leg from the bay;
+            // only a leg that ends at a door arrives there.
+            if matches!(
+                slices.parking_trip.get(i).phase,
+                crate::simulation::parking::ParkingTripPhase::WalkToCar
+                    | crate::simulation::parking::ParkingTripPhase::PullIn
+            ) {
+                slices.parking_trip.get_mut(i).ready = true;
+                *s_speed.get_mut(i) = 0.0;
+                return;
+            }
             let ingress_target = allocator
                 .entrances
                 .get(b_id)
