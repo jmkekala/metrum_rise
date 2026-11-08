@@ -616,7 +616,8 @@ running, and a test that never reaches `quit()` would hold its chain forever. So
 (`CODE-20`); only `simulation_speed_input_test` keeps its own 15 s timeout instead. The guard
 passes the test's output through and stops the test, and any gamescope process it started, at
 its first `SCRIPT ERROR:` line or once it has run `GODOT_TEST_LIMIT_S` (300 s, about four times
-the slowest test in a loaded gate). The chain then fails with
+the slowest test's time in a gate: `vehicle_ground_support_test` takes about 70 s, and 158 s
+beside 24 busy loops). The chain then fails with
 `Godot test <name> FAILED: it hit a SCRIPT ERROR ...` or `... was still running after 300 s`; a
 test that exits non-zero is named the same way.
 
@@ -636,6 +637,11 @@ A Godot test must hold there:
   `get_bulldoze_target_at`, `bulldoze_at` and `poll_graded_tile_results`), and the call waits
   for the core. The game's one-shot input does the same: the select tool's click waits; its
   hover does not.
+- Work that finishes on another thread can finish before the first frame under load, so a test
+  may close what it opened in the same frame. A deferred call that takes a node must accept a
+  freed one: an untyped parameter checked with `is_instance_valid`, or the call deferred on the
+  node itself, which Godot drops with the node. A typed parameter refuses the freed instance
+  with an engine error, which fails the asset tests' log check (`pack_dialogs.gd`, round `F1`).
 
 ## Shutdown
 
