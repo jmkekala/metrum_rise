@@ -409,13 +409,13 @@ run_rust_fixture_generator() {
 
 # vehicle_ground_support_test (about 50 s) and enough bridge tests, by their times in a full
 # run, that both chains end together. The rendered tests and fixture generators stay in the
-# main chain.
+# main chain, and so does everything before road_roundabouts_test: started earlier, inside the
+# Rust stage's first burst of short tests, it failed 2 of 6 gates (`CODE-20`).
 godot_vehicle_chain() {
     local script
     for script in \
-        vehicle_ground_support_test road_turn_lanes_test road_walkway_preset_test road_types_test \
-        road_builder_test road_junction_preview_test road_preview_stream_test \
-        zoning_reference_test road_tunnels_test agent_inspector_test; do
+        vehicle_ground_support_test road_builder_test road_junction_preview_test \
+        road_preview_stream_test zoning_reference_test road_tunnels_test agent_inspector_test; do
         run_godot_bridge_test "$script" || return 1
     done
 }
@@ -426,7 +426,7 @@ godot_main_chain() {
     for script in \
         economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
-        selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
+        selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_lanes_test road_turn_arrows_test road_walkway_preset_test road_types_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
