@@ -407,10 +407,17 @@ run_rust_fixture_generator() {
     (cd "$PROJECT_ROOT/rust" && "$lib_test_binary" "$1" --ignored)
 }
 
-# vehicle_ground_support_test takes 150-210 s, about as long as every other Godot test together,
-# so it has a chain of its own.
+# vehicle_ground_support_test (about 50 s) and enough bridge tests, by their times in a full
+# run, that both chains end together. The rendered tests and fixture generators stay in the
+# main chain.
 godot_vehicle_chain() {
-    run_godot_bridge_test vehicle_ground_support_test
+    local script
+    for script in \
+        vehicle_ground_support_test road_turn_lanes_test road_walkway_preset_test road_types_test \
+        road_builder_test road_junction_preview_test road_preview_stream_test \
+        zoning_reference_test road_tunnels_test agent_inspector_test; do
+        run_godot_bridge_test "$script" || return 1
+    done
 }
 
 # Every other Godot regression. Each fixture generator runs just before the test that reads it.
@@ -419,14 +426,14 @@ godot_main_chain() {
     for script in \
         economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
-        selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_lanes_test road_turn_arrows_test road_walkway_preset_test road_types_test road_pocket_test road_roundabouts_test road_builder_test road_mixed_junction_test ui_settings_test \
+        selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
-        road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
+        vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
-        zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
-        junction_debug_overlay_test road_rejection_report_test road_tunnels_test \
-        agent_inspector_test street_lamp_grid_test graded_tile_renderer_test parking_test; do
+        zoning_road_tool_test zoning_cells_tool_test debug_console_test \
+        junction_debug_overlay_test road_rejection_report_test \
+        street_lamp_grid_test graded_tile_renderer_test parking_test; do
         run_godot_bridge_test "$script" || return 1
     done
     # The locked ring city the gridlock notice test loads (`TRAFFIC-14`), written by Rust.

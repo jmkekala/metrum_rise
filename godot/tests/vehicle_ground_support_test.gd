@@ -77,7 +77,9 @@ func _run() -> void:
 		for surface in range(int(mesh.get_meta("vehicle_body_surfaces", mesh.get_surface_count()))):
 			var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
 			for point in vertices:
-				if point.y <= 0.0001:
+				# A corner repeats once per triangle using it (32 points, 8 distinct per model):
+				# a repeat only repeats the same clearance check, each a native height query.
+				if point.y <= 0.0001 and not contacts.has(point):
 					contacts.append(point)
 		_expect(not contacts.is_empty(), "vehicle must have bottom contacts")
 		contacts_by_model.append(contacts)
