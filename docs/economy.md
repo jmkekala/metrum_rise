@@ -941,6 +941,9 @@ It then runs frame by frame at 32×. `rust/tests/growth_scenario.rs`:
 Both two-year and producer-town tests also assert the `DEM-02-C` vacancy bound.
 
 The library suite adds scarce-labor expansion, recovery and two reload-continuation cases.
+Recovery warms the starter town up for 30 days, as it stops changing after its 10th day but for
+cash, so its report changed with `CODE-21` `T2` (2026-11-08); expansion keeps 365, as at 30 and
+45 days one entrant ended below its 95% staffing bound (90.3%, 75.4%).
 `METRUM_GROWTH_{REPORT,LONG_REPORT,EXPANSION_REPORT,RECOVERY_REPORT}` and `METRUM_PRODUCER_TOWN_REPORT` write reports, and the
 saved-town replay (`diagnose_saved_city_growth`, ignored) uses `METRUM_DIAG_{SAVE,MODS,REPORT,DAYS}`
 with a copied save and read-only mods. Economic changes that must not alter behavior compare

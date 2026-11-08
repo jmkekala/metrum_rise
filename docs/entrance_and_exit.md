@@ -2774,7 +2774,9 @@ on mirrored uphill/downhill transitions, entry/exit, busy-core fallback and owne
 requires up to 0.4236 m origin lift above its centre surface, so it cannot pass with the earlier
 centre-only solve. The rendered run also checks actual MultiMesh transform readback. The test
 is included in `./run.sh --test`; headless mode checks cached uploaded poses, not dummy-renderer
-GPU readback. These are geometric regressions, not an exact replay of the screenshot's trip.
+GPU readback. Each model's contacts are its 8 distinct bottom corners; its 32 triangle corners
+repeat them, and checking each once cut the headless run from 150 s to 47 s (`CODE-21`). These
+are geometric regressions, not an exact replay of the screenshot's trip.
 
 Matched unprofiled snapshot comparison uses the same 76-position mixed-access workload above, Rust
 1.98.1, 24 Rayon workers and base `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9` plus working-tree

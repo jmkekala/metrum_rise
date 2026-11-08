@@ -466,7 +466,8 @@ census's copy join the lent business book as buyers: their input ports are laid 
 census's live ports and the live port index is rebuilt with them for the pass; the census's own
 index returns with the rollback. There is no planner census: under the slot clock the published
 census is current (test builds assert it, and `planner_censuses` counts any pass that would not
-be). Test builds compare full book fingerprints after every slot.
+be). Test builds compare full book fingerprints after every slot: every field a book's `Debug`
+prints, in order, hashed from its contents with floats by their bits (`ExactHash`, `CODE-21`).
 
 After the actions slot queues the hour's spawns, it opens one construction epoch on the same
 published books, under the same journal: the planner's snapshot (rolling front, live workforce,
