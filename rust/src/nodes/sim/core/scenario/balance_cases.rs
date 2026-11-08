@@ -203,24 +203,7 @@ fn assert_growth_continues_after_reload(mut source: GrowthScenario) {
         source.core.transit_network.frontage_delay_elapsed_s,
         loaded.core.transit_network.frontage_delay_elapsed_s,
     );
-    let queued = |scenario: &GrowthScenario| -> Vec<_> {
-        scenario
-            .core
-            .pending_demand_spawns
-            .iter()
-            .map(|pending| {
-                (
-                    pending.due_minute,
-                    pending.zone_type,
-                    pending.action.parcel_id,
-                    pending.action.asset_id.clone(),
-                    pending.planned_day_index,
-                    pending.planned_minute_of_day,
-                )
-            })
-            .collect()
-    };
-    assert_eq!(queued(&source), queued(&loaded));
+    assert_same_queued_spawns(&source, &loaded);
     let target_day = source.core.time.day_index + 30;
     while source.core.time.day_index < target_day {
         source.core.step_frame(FRAME_DT_S);
@@ -240,7 +223,7 @@ fn assert_growth_continues_after_reload(mut source: GrowthScenario) {
         source_record.treasury = 0.0;
         loaded_record.treasury = 0.0;
         assert_eq!(source_record, loaded_record);
-        assert_eq!(queued(&source), queued(&loaded));
+        assert_same_queued_spawns(&source, &loaded);
         assert_eq!(
             source.core.households.households.len(),
             loaded.core.households.households.len()
@@ -283,6 +266,32 @@ fn assert_growth_continues_after_reload(mut source: GrowthScenario) {
         }
     }
     std::fs::remove_file(path).unwrap();
+}
+
+// The queued spawns' compared keys, borrowed: the lockstep compares them every frame.
+fn queued_spawns(
+    scenario: &GrowthScenario,
+) -> impl Iterator<Item = (u64, ZoneType, u64, &str, u32, u16)> {
+    scenario.core.pending_demand_spawns.iter().map(|pending| {
+        (
+            pending.due_minute,
+            pending.zone_type,
+            pending.action.parcel_id,
+            pending.action.asset_id.as_str(),
+            pending.planned_day_index,
+            pending.planned_minute_of_day,
+        )
+    })
+}
+
+// Compares without collecting; only a difference collects both lists for the message.
+fn assert_same_queued_spawns(source: &GrowthScenario, loaded: &GrowthScenario) {
+    if !queued_spawns(source).eq(queued_spawns(loaded)) {
+        assert_eq!(
+            queued_spawns(source).collect::<Vec<_>>(),
+            queued_spawns(loaded).collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]

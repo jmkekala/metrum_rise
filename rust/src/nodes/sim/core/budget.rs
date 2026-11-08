@@ -20,7 +20,6 @@ use crate::simulation::economy::households::{
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::ZoneType;
-use rayon::prelude::*;
 
 /// Starter build cost per service-building lot cell, deducted from the city treasury at placement.
 pub(crate) const SERVICE_BUILD_COST_PER_LOT_CELL: f64 = 2_500.0;
@@ -903,23 +902,7 @@ impl SimCore {
     pub(super) fn daily_city_flow_diagnostics(&self) -> DailyCityFlowDiagnostics {
         let mut diagnostics = DailyCityFlowDiagnostics::default();
         let catalog = self.demand.runtime_catalog();
-        let mut service_funding_by_building = vec![1.0; self.allocator.buildings.len()];
         let city_funding = self.service_policy.electricity_funding;
-        service_funding_by_building
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(idx, value)| {
-                let building = &self.allocator.buildings[idx];
-                let Some(profile) =
-                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                else {
-                    return;
-                };
-                if profile.utility_service.as_deref() == Some("power") {
-                    *value =
-                        effective_service_funding(building.service_funding_override, city_funding);
-                }
-            });
 
         for (building_idx, building) in self.allocator.buildings.iter().enumerate() {
             let household_capacity = self.allocator.household_capacity(building_idx);
@@ -975,11 +958,16 @@ impl SimCore {
                 profile,
                 building.commercial_activity_floor_scale,
             );
+            // Only a power producer reads its funding, from its own override or the city's;
+            // computed here, as the one building it is, without a per-call vector.
             let active_worker_capacity = service_funded_worker_capacity(
                 active_worker_capacity,
                 profile,
-                building_idx,
-                &service_funding_by_building,
+                0,
+                &[effective_service_funding(
+                    building.service_funding_override,
+                    city_funding,
+                )],
             );
             let active_worker_capacity = active_budget_backed_worker_capacity(
                 self.allocator.is_city_service_building(building),
