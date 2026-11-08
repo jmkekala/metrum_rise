@@ -32,7 +32,8 @@ Use unmodified upstream Godot. Do not maintain a project-specific engine fork or
 ```bash
 ./run.sh              # Debug build, deploys .so, launches Godot
 ./run.sh --headless   # Headless mode
-./run.sh --test       # Rust suite plus headless Godot bridge regressions
+./run.sh --test       # Full gate: one build, then Rust (nextest) and Godot stages side by side
+./run.sh --test-quick # Lib tests minus slow scenarios, no Godot; for iterating, never a gate
 ./run.sh --benchmark-road-chunks  # Deterministic Rust/Godot road chunk benchmark
 ./run.sh --benchmark-road-chunk-upload  # Godot half without prior Criterion load
 cd rust && cargo build --release   # Release build

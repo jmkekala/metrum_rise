@@ -1,0 +1,33 @@
+# cargo-nextest settings for `./run.sh --test` (profile `default`) and `./run.sh --test-quick`
+# (profile `quick`). Plain `cargo test` ignores this file and runs the same tests.
+
+[profile.default]
+# A retry would hide a flaky test: every failure fails the run.
+retries = 0
+# Run every test after a failure, so one run reports all of them.
+fail-fast = false
+# One line per test with its time, so later cost questions are answered from the stage log.
+status-level = "pass"
+# The end of the log repeats the failed and the slow tests.
+final-status-level = "slow"
+# Mark a test SLOW after 30 s, without ending it. A test that is SLOW in a full run belongs in
+# the quick profile's skip list below.
+slow-timeout = { period = "30s" }
+
+[profile.quick]
+# `./run.sh --test-quick`: an iteration aid, never a gate. It skips the scenario tests that run
+# over about 30 s in a full `./run.sh --test` (the SLOW lines at the end of its Rust stage log).
+# Add a test here when it crosses that line; remove it when it no longer does. Exact names, so a
+# renamed test fails loudly by running again instead of being skipped silently.
+default-filter = """
+not (
+    test(=nodes::sim::core::scenario::balance_cases::many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital)
+    | test(=nodes::sim::core::scenario::balance_cases::bankrupt_grocery_is_cleared_and_replaced_without_rezoning)
+    | test(=nodes::sim::core::scenario::balance_cases::starter_producers_restock_and_pay_workers_from_sales)
+    | test(=nodes::sim::core::scenario::balance_cases::hundred_hectare_start_distinguishes_mechanized_farm_from_labor_intensive_mine)
+    | test(=nodes::sim::core::scenario::balance_cases::busy_city_continues_identically_after_save_load)
+    | test(=nodes::sim::core::scenario::balance_cases::queued_growth_continues_identically_after_save_load)
+)
+"""
+# Only failures and slow tests on the terminal while iterating.
+status-level = "slow"

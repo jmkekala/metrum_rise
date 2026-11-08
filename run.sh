@@ -4,7 +4,17 @@
 # Verification:
 #   --perf-contract [--diff BASE | --phase PHASE | --agents | --prepare]
 #                        Run short saved-city/agent release performance contracts
-#   --test               Run the Rust suite and headless Godot bridge regressions
+#   --test               The full gate. Serial: Python unit tests, `cargo check --benches`, the
+#                        dev library Godot loads, the test build. Then three stages side by
+#                        side: the Rust suite under cargo-nextest with RAYON_NUM_THREADS=2
+#                        (lib, integration and doc tests; settings in rust/.config/nextest.toml)
+#                        and two chains of headless and rendered Godot regressions, each in its
+#                        own throwaway profile. Each stage logs to logs/test/<time>/<stage>.log;
+#                        a summary gives every stage's result and wall time, and a failed
+#                        stage's log tail. Exits non-zero if any stage failed. Needs cargo-nextest.
+#   --test-quick         Library tests without the slow scenarios (nextest profile `quick`); no
+#                        integration tests, Godot, dev library build or bench check. An
+#                        iteration aid, never a gate: run --test before landing.
 #   --benchmark-road-chunks
 #                        Run deterministic Rust generation and Godot upload benchmarks
 #   --benchmark-road-chunk-upload
@@ -112,6 +122,7 @@ case "$(uname -s)" in
 esac
 RELEASE=0
 TEST=0
+TEST_QUICK=0
 ROAD_CHUNK_BENCHMARK=0
 ROAD_CHUNK_UPLOAD_BENCHMARK=0
 ROAD_REPLAY_DUMP=""
@@ -355,6 +366,197 @@ run_rendered_godot_test() {
     return 1
 }
 
+# --test and --test-quick run the Rust tests under cargo-nextest, with no libtest fallback. Plain
+# `cargo test` still runs every test; no test depends on nextest.
+require_cargo_nextest() {
+    require_command cargo || return 1
+    if ! cargo nextest --version >/dev/null 2>&1; then
+        echo "Error: --test and --test-quick need cargo-nextest. Install it with the system package" >&2
+        echo "manager (pacman -S cargo-nextest, brew install cargo-nextest) or" >&2
+        echo "cargo install --locked cargo-nextest." >&2
+        return 1
+    fi
+}
+
+# One headless bridge regression. simulation_speed_input_test probes inputs that previously
+# stalled the simulation thread, so it runs under a timeout.
+run_godot_bridge_test() {
+    local bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/$1.gd")
+    if [ "$1" = simulation_speed_input_test ]; then
+        run_with_test_timeout "${bridge_test_command[@]}"
+        return
+    fi
+    "${bridge_test_command[@]}"
+}
+
+# An asset-editor regression. Its log must carry no engine or script error, besides its status.
+run_godot_asset_test() {
+    if ! godot --headless --path "$asset_test_project" --script "res://tests/$1.gd" \
+        --log-file "$asset_test_profile/$1.log" -- --asset-editor; then
+        return 1
+    fi
+    if grep -Eq '^(ERROR:|SCRIPT ERROR:)' "$asset_test_profile/$1.log"; then
+        echo "Asset regression reported an engine/script error: $1"
+        return 1
+    fi
+}
+
+# Writes a Godot test's fixture with an ignored Rust test, run straight from the library test
+# binary built before the stages start, so no stage runs cargo beside the Rust stage.
+run_rust_fixture_generator() {
+    (cd "$PROJECT_ROOT/rust" && "$lib_test_binary" "$1" --ignored)
+}
+
+# vehicle_ground_support_test takes 150-210 s, about as long as every other Godot test together,
+# so it has a chain of its own.
+godot_vehicle_chain() {
+    run_godot_bridge_test vehicle_ground_support_test
+}
+
+# Every other Godot regression. Each fixture generator runs just before the test that reads it.
+godot_main_chain() {
+    local script
+    for script in \
+        economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
+        environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
+        selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_lanes_test road_turn_arrows_test road_walkway_preset_test road_types_test road_pocket_test road_roundabouts_test road_builder_test road_mixed_junction_test ui_settings_test \
+        network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
+        road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
+        vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
+        new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
+        zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
+        junction_debug_overlay_test road_rejection_report_test road_tunnels_test \
+        agent_inspector_test street_lamp_grid_test graded_tile_renderer_test parking_test; do
+        run_godot_bridge_test "$script" || return 1
+    done
+    # The locked ring city the gridlock notice test loads (`TRAFFIC-14`), written by Rust.
+    export METRUM_GRIDLOCK_FIXTURE="$asset_test_profile/gridlock-ring.sqlite"
+    run_rust_fixture_generator record_gridlock_saturation_fixture || return 1
+    godot --headless --path "$asset_test_project" --script res://tests/gridlock_notice_test.gd || return 1
+    # The stranded block city the stranded-walker notice test loads (`ROAD-74`), written by Rust.
+    export METRUM_STRANDED_FIXTURE="$asset_test_profile/stranded-block.sqlite"
+    run_rust_fixture_generator record_stranded_walkers_fixture || return 1
+    godot --headless --path "$asset_test_project" --script res://tests/stranded_notice_test.gd || return 1
+    export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"
+    run_rust_fixture_generator generate_building_lod_fixtures || return 1
+    # Intentional bad-tier import exercises fallback and emits an expected importer error.
+    # The test's exit status owns its assertions; ordinary asset tests below forbid errors.
+    godot --headless --path "$asset_test_project" --script res://tests/building_lod_test.gd \
+        --log-file "$asset_test_profile/building_lod_test.log" -- --asset-editor || return 1
+    for script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_editor_preview_test asset_colour_schemes_test asset_pack_export_test pack_import_test pack_actions_test; do
+        run_godot_asset_test "$script" || return 1
+    done
+    if [ "$METRUM_PLATFORM" != "linux" ]; then
+        echo "Rendered Godot tests skipped on macOS: the gamescope path is Linux-only and a direct macOS renderer path is not yet validated."
+        return 0
+    fi
+    # Rendered tests: the terrain shaders and the debug-view shader globals on the compatibility
+    # renderer, the vegetation comparisons, the terrain variants on tangent-less cell meshes, the
+    # graded cells' instance data under FSR 2 (TERRAIN-10) and the plot and paving lighting
+    # (RENDER-13) on Forward+, which the compatibility backend does not draw. They all stay in this
+    # chain, so only one gamescope runs at a time.
+    for script in terrain_overlay_shader_test graded_cells_shader_test debug_visual_modes_test; do
+        echo "Running rendered $script..."
+        run_rendered_godot_test 128 128 --path "$asset_test_project" --display-driver x11 \
+            --rendering-method gl_compatibility --audio-driver Dummy --resolution 128x128 \
+            --script "res://tests/${script}.gd" || return 1
+    done
+    for script in vegetation_level_match_test vegetation_wind_gate_test terrain_tangent_test \
+        graded_tile_renderer_test; do
+        echo "Running rendered $script..."
+        run_rendered_godot_test 640 480 --path "$asset_test_project" --audio-driver Dummy \
+            --resolution 640x480 --script "res://tests/${script}.gd" || return 1
+    done
+    for script in plot_material_lighting_test plot_dawn_lighting_test; do
+        echo "Running rendered $script..."
+        run_rendered_godot_test 640 480 --path "$asset_test_project" --audio-driver Dummy \
+            --resolution 640x480 --script "res://tests/${script}.gd" -- --asset-editor || return 1
+    done
+}
+
+# Runs a Godot chain in a throwaway profile of its own. A chain stops at its first failure. A
+# passed chain's profile is deleted; a failed chain's is kept for its fixtures and logs.
+run_godot_chain() {
+    local status
+    create_isolated_godot_profile || return 1
+    echo "Godot regression fixtures and logs: $asset_test_profile"
+    if [ "$METRUM_PLATFORM" = "darwin" ]; then
+        echo "macOS fixtures: ~/Library/Application Support/Godot/app_userdata/$godot_test_profile_name"
+    fi
+    cd "$GODOT_DIR" || return 1
+    "$1"
+    status=$?
+    if [ $status -eq 0 ]; then
+        rm -rf "$asset_test_profile"
+    else
+        echo "Godot chain failed; its profile is kept: $asset_test_profile"
+    fi
+    return $status
+}
+
+# Every library and integration test under nextest, then the doc tests, which nextest does not
+# run. Two Rayon workers per test process: at the default size the small test towns spend most
+# of a frame in pool overhead, and no result depends on the pool size.
+run_rust_test_stage() {
+    local status=0
+    cd "$PROJECT_ROOT/rust" || return 1
+    export RAYON_NUM_THREADS=2
+    cargo nextest run || status=1
+    cargo test --doc || status=1
+    return $status
+}
+
+# Starts a test stage in the background. Its output goes to <name>.log in $test_log_dir, its exit
+# status and wall seconds to <name>.result when it ends.
+start_test_stage() {
+    local name="$1"
+    shift
+    (
+        stage_start=$(date +%s)
+        "$@" > "$test_log_dir/$name.log" 2>&1 < /dev/null
+        stage_status=$?
+        echo "$stage_status $(($(date +%s) - stage_start))" > "$test_log_dir/$name.result"
+        exit $stage_status
+    ) &
+    test_stage_pids+=("$!")
+    test_stage_names+=("$name")
+}
+
+format_seconds() {
+    printf '%dm%02ds' $(($1 / 60)) $(($1 % 60))
+}
+
+# Prints each stage's result and wall time, then each failed stage's log and its tail. Fails if a
+# stage failed or left no result.
+report_test_stages() {
+    local stages_seconds="$1" name status seconds failed=()
+    echo
+    echo "Test stages (logs in $test_log_dir):"
+    for name in "${test_stage_names[@]}"; do
+        status=""
+        seconds=0
+        read -r status seconds 2>/dev/null < "$test_log_dir/$name.result"
+        if [ "$status" = 0 ]; then
+            printf '  %-14s PASS  %s\n' "$name" "$(format_seconds "$seconds")"
+        else
+            printf '  %-14s FAIL  %s  (status %s)\n' "$name" "$(format_seconds "${seconds:-0}")" "${status:-none}"
+            failed+=("$name")
+        fi
+    done
+    for name in "${failed[@]}"; do
+        echo
+        echo "--- $name failed; last 40 lines of $test_log_dir/$name.log ---"
+        tail -n 40 "$test_log_dir/$name.log"
+    done
+    echo
+    if [ ${#failed[@]} -eq 0 ]; then
+        echo "Tests PASSED: stages $(format_seconds "$stages_seconds"), overall $(format_seconds "$SECONDS")."
+        return 0
+    fi
+    echo "Tests FAILED (${failed[*]}): stages $(format_seconds "$stages_seconds"), overall $(format_seconds "$SECONDS")."
+    return 1
+}
+
 godot_import_metadata_has_missing_outputs() {
     local import_file="$1"
     local dest
@@ -442,6 +644,8 @@ while [ $i -le $# ]; do
         RELEASE=1
     elif [ "$arg" = "--test" ]; then
         TEST=1
+    elif [ "$arg" = "--test-quick" ]; then
+        TEST_QUICK=1
     elif [ "$arg" = "--benchmark-road-chunks" ]; then
         ROAD_CHUNK_BENCHMARK=1
         RELEASE=1
@@ -607,6 +811,25 @@ done
 if [ "$GAMEPLAY_ROAD_GPU_PROFILE" -eq 1 ] && [ "$GAMEPLAY_ROAD_PROFILE_MODE" != "windowed" ]; then
     echo "Error: --gpu-profile requires a windowed gameplay road workload (for example --benchmark-gameplay-roads)." >&2
     exit 2
+fi
+
+if [ $TEST -eq 1 ] || [ $TEST_QUICK -eq 1 ]; then
+    if [ $TEST -eq 1 ] && [ $TEST_QUICK -eq 1 ]; then
+        echo "Error: --test and --test-quick exclude each other." >&2
+        exit 2
+    fi
+    if ! require_cargo_nextest; then
+        exit 2
+    fi
+fi
+
+# Quick mode builds and runs only the library tests: no dev library, bench check or Godot.
+if [ $TEST_QUICK -eq 1 ]; then
+    echo "Quick tests: library tests without the slow scenarios of the nextest profile 'quick'."
+    echo "An iteration aid, never a gate: run ./run.sh --test before landing."
+    cd "$PROJECT_ROOT/rust" || exit 1
+    RAYON_NUM_THREADS=2 cargo nextest run --profile quick --lib
+    exit $?
 fi
 
 case "$VISUAL_DEBUG_MODE" in
@@ -1067,112 +1290,40 @@ if [ $TEST -eq 1 ]; then
     if ! cargo check --benches; then
         exit 1
     fi
-    echo "Running Rust tests..."
-    if ! cargo test; then
-        echo "Rust tests failed!"
+    # Every build happens here, one at a time: two crate builds at once need too much memory.
+    # Listing the test binaries builds them all.
+    echo "Building Rust tests..."
+    if ! test_binaries_json="$(cargo nextest list --list-type binaries-only --message-format json)"; then
+        echo "Rust test build failed!"
         exit 1
     fi
-    echo "Running Godot bridge tests..."
-    cd ../godot
-    create_isolated_godot_profile || exit 1
-    echo "Godot regression fixtures and logs: $asset_test_profile"
-    if [ "$METRUM_PLATFORM" = "darwin" ]; then
-        echo "macOS fixtures: ~/Library/Application Support/Godot/app_userdata/$godot_test_profile_name"
+    if ! lib_test_binary="$(printf '%s' "$test_binaries_json" | python3 -c \
+        'import json, sys; print(json.load(sys.stdin)["rust-binaries"]["metrum_rise"]["binary-path"])')" || \
+        [ ! -x "$lib_test_binary" ]; then
+        echo "Error: could not find the library test binary in cargo-nextest's list." >&2
+        exit 1
     fi
-    for bridge_test_script in \
-        economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
-        environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
-        vehicle_ground_support_test selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_lanes_test road_turn_arrows_test road_walkway_preset_test road_types_test road_pocket_test road_roundabouts_test road_builder_test road_mixed_junction_test ui_settings_test \
-        network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
-        road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
-        vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
-        new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
-        zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
-        junction_debug_overlay_test road_rejection_report_test road_tunnels_test \
-        agent_inspector_test street_lamp_grid_test graded_tile_renderer_test parking_test; do
-        bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/${bridge_test_script}.gd")
-        # This regression probes inputs that previously stalled the simulation thread.
-        if [ "$bridge_test_script" = simulation_speed_input_test ]; then
-            if ! run_with_test_timeout "${bridge_test_command[@]}"; then
-                exit 1
-            fi
-            continue
-        fi
-        if ! "${bridge_test_command[@]}"; then
-            exit 1
-        fi
+    test_log_dir="$PROJECT_ROOT/logs/test/$(date +%Y%m%d-%H%M%S)-$$"
+    if ! mkdir -p "$test_log_dir"; then
+        echo "Error: could not create $test_log_dir." >&2
+        exit 1
+    fi
+    echo "Running the Rust tests and two Godot chains side by side; logs in $test_log_dir"
+    # Background stages ignore SIGINT in a script, so an interrupt stops them explicitly.
+    trap 'trap - INT TERM; echo "Interrupted: stopping the test stages." >&2; kill -TERM 0' INT TERM
+    test_stage_pids=()
+    test_stage_names=()
+    stages_start=$(date +%s)
+    start_test_stage rust run_rust_test_stage
+    start_test_stage godot-main run_godot_chain godot_main_chain
+    start_test_stage godot-vehicle run_godot_chain godot_vehicle_chain
+    # Every stage runs to its end, whatever the others do; the report reads their result files.
+    for test_stage_pid in "${test_stage_pids[@]}"; do
+        wait "$test_stage_pid"
     done
-    # The locked ring city the gridlock notice test loads (`TRAFFIC-14`), written by Rust.
-    export METRUM_GRIDLOCK_FIXTURE="$asset_test_profile/gridlock-ring.sqlite"
-    if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib record_gridlock_saturation_fixture -- --ignored); then
-        exit 1
-    fi
-    if ! godot --headless --path "$asset_test_project" --script res://tests/gridlock_notice_test.gd; then
-        exit 1
-    fi
-    # The stranded block city the stranded-walker notice test loads (`ROAD-74`), written by Rust.
-    export METRUM_STRANDED_FIXTURE="$asset_test_profile/stranded-block.sqlite"
-    if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib record_stranded_walkers_fixture -- --ignored); then
-        exit 1
-    fi
-    if ! godot --headless --path "$asset_test_project" --script res://tests/stranded_notice_test.gd; then
-        exit 1
-    fi
-    export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"
-    if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib generate_building_lod_fixtures -- --ignored); then
-        exit 1
-    fi
-    # Intentional bad-tier import exercises fallback and emits an expected importer error.
-    # The test's exit status owns its assertions; ordinary asset tests below forbid errors.
-    if ! XDG_DATA_HOME="$asset_test_profile/data" XDG_CONFIG_HOME="$asset_test_profile/config" \
-        godot --headless --path "$asset_test_project" --script res://tests/building_lod_test.gd \
-        --log-file "$asset_test_profile/building_lod_test.log" -- --asset-editor; then
-        exit 1
-    fi
-    for asset_test_script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_editor_preview_test asset_colour_schemes_test asset_pack_export_test pack_import_test pack_actions_test; do
-        if ! XDG_DATA_HOME="$asset_test_profile/data" XDG_CONFIG_HOME="$asset_test_profile/config" \
-            godot --headless --path "$asset_test_project" --script "res://tests/${asset_test_script}.gd" \
-            --log-file "$asset_test_profile/${asset_test_script}.log" -- --asset-editor; then
-            exit 1
-        fi
-        if grep -Eq '^(ERROR:|SCRIPT ERROR:)' "$asset_test_profile/${asset_test_script}.log"; then
-            echo "Asset regression reported an engine/script error: $asset_test_script"
-            exit 1
-        fi
-    done
-    # Rendered tests: the terrain shaders and the debug-view shader globals on the compatibility
-    # renderer, the vegetation comparisons, the terrain variants on tangent-less cell meshes, the
-    # graded cells' instance data under FSR 2 (TERRAIN-10) and the plot and paving lighting
-    # (RENDER-13) on Forward+, which the compatibility backend does not draw.
-    if [ "$METRUM_PLATFORM" = "linux" ]; then
-        for rendered_test_script in terrain_overlay_shader_test graded_cells_shader_test \
-            debug_visual_modes_test; do
-            echo "Running rendered $rendered_test_script..."
-            if ! run_rendered_godot_test 128 128 --path "$asset_test_project" --display-driver x11 \
-                --rendering-method gl_compatibility --audio-driver Dummy --resolution 128x128 \
-                --script "res://tests/${rendered_test_script}.gd"; then
-                exit 1
-            fi
-        done
-        for rendered_test_script in vegetation_level_match_test vegetation_wind_gate_test \
-            terrain_tangent_test graded_tile_renderer_test; do
-            echo "Running rendered $rendered_test_script..."
-            if ! run_rendered_godot_test 640 480 --path "$asset_test_project" --audio-driver Dummy \
-                --resolution 640x480 --script "res://tests/${rendered_test_script}.gd"; then
-                exit 1
-            fi
-        done
-        for rendered_test_script in plot_material_lighting_test plot_dawn_lighting_test; do
-            echo "Running rendered $rendered_test_script..."
-            if ! run_rendered_godot_test 640 480 --path "$asset_test_project" --audio-driver Dummy \
-                --resolution 640x480 --script "res://tests/${rendered_test_script}.gd" -- --asset-editor; then
-                exit 1
-            fi
-        done
-    else
-        echo "Rendered Godot tests skipped on macOS: the gamescope path is Linux-only and a direct macOS renderer path is not yet validated."
-    fi
-    exit 0
+    trap - INT TERM
+    report_test_stages $(($(date +%s) - stages_start))
+    exit $?
 fi
 
 echo "Launching Metrum Rise..."
