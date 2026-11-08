@@ -91,7 +91,8 @@ fn replay_saved_city_without_impossible_turns() {
 #[test]
 fn bankrupt_grocery_is_cleared_and_replaced_without_rezoning() {
     let mut scenario = GrowthScenario::starter_town();
-    scenario.run_days(365);
+    // The starter town stops changing after its 10th day but for cash; 30 days leave margin.
+    scenario.run_days(30);
     let catalog = scenario.core.demand.runtime_catalog();
     let grocery_profile = catalog.profile_for_id("grocery_basic").unwrap().runtime_id;
     let failed = scenario
