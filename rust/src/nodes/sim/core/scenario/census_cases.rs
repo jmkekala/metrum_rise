@@ -422,11 +422,19 @@ fn route_scratch_prepared_at_load_runs_as_cold_scratch_does() {
         )
     };
     let end = warm.core.time.absolute_slot() + 3 * SLOTS_PER_HOUR;
-    while warm.core.time.absolute_slot() < end {
-        warm.core.step_frame(FRAME_DT_S);
-        cold.core.step_frame(FRAME_DT_S);
-        assert_eq!(fingerprint(&warm.core), fingerprint(&cold.core));
-    }
+    // The games step on a pool of their own, sized as the shared one (`CODE-22`). The worker
+    // running a frame holds the slots' route scratch in its thread-local slot, and while it
+    // waits inside the frame it runs whatever it steals: in a `cargo test` process, where every
+    // test shares the pool, another test's job, which prepares that scratch for its own network.
+    // No result changes, but the last assertion reads the scratch.
+    let pool = rayon::ThreadPoolBuilder::new().build().unwrap();
+    pool.install(|| {
+        while warm.core.time.absolute_slot() < end {
+            warm.core.step_frame(FRAME_DT_S);
+            cold.core.step_frame(FRAME_DT_S);
+            assert_eq!(fingerprint(&warm.core), fingerprint(&cold.core));
+        }
+    });
     // The cold game's slots priced and planned trips on the scratch they prepared.
     let core = &cold.core;
     assert!(

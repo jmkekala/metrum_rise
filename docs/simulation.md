@@ -3540,7 +3540,11 @@ on a fresh `$ARTIFACTS` directory.
   of the determinism check runs on the prepared scratch, against the continuous game whose
   scratch was prepared lazily. A new test loads one save twice, discards one game's slot and
   job-search scratch, and compares both games every frame for three hours
-  (`route_scratch_prepared_at_load_runs_as_cold_scratch_does`).
+  (`route_scratch_prepared_at_load_runs_as_cold_scratch_does`). It steps them on a Rayon pool
+  of its own (`CODE-22`): in a `cargo test` process every test shares the pool, and the frame's
+  thread, waiting inside a slot, can steal another test's job, which prepares the installed slot
+  scratch for that test's network. No result changes, but the test's last assertion reads that
+  scratch. In the game one simulation owns the pool.
 - **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
   --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day), in one
   session with the second commit's binary as the control, both on copies of the same prepared
