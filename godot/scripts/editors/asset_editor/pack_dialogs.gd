@@ -206,7 +206,9 @@ func _show(dialog: ConfirmationDialog) -> void:
 
 # Wrapping labels report one character per line until laid out at the dialog width, which
 # leaves the window far taller than its content; shrink once the text has its width.
-func _fit(dialog: ConfirmationDialog) -> void:
+# Untyped: `_show`'s deferred call can arrive after the dialog was freed (closed in the same
+# frame), and a typed parameter refuses a freed instance with an engine error before the check.
+func _fit(dialog) -> void:
 	if not is_instance_valid(dialog): return
 	dialog.reset_size()
 	dialog.move_to_center()

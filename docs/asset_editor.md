@@ -330,6 +330,7 @@ Export dialog:
 - Writes into a chosen folder (default: the system Documents folder, then the last one used). When the archive name already exists there, the first Export press says so and a second press replaces it.
 - Offers a patch, minor or major version bump (default: none). A bump rewrites `pack.toml` atomically before the archive is built.
 - After export, shows the archive's SHA-256 with a copy action, so the creator can publish it through a separate channel.
+- The dialog fits its height to its wrapped text once laid out, by a deferred call. A dialog closed in the frame it opened is skipped there; until round `F1` (`CODE-20`) the call's typed argument refused the freed dialog with an engine error, which failed `asset_pack_export_test` under load (2 of 60 runs) when the inspection finished before its first frame.
 
 Pack settings:
 
