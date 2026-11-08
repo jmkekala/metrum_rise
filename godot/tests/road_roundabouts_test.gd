@@ -79,9 +79,14 @@ func _click(tool: Node, what: String) -> void:
 	_expect(await _await_generation(generation), "%s publishes" % what)
 	await process_frame
 
+# What the bulldoze tool's hover names at `point`. The hover's own query answers `busy` while
+# the simulation thread holds the core, as it often does just after an edit and for long runs of
+# frames under load; this one waits for the core (`CODE-20`).
+func _target_at(point: Vector3) -> Dictionary:
+	return simulation.get_bulldoze_target_at(point.x, point.z, true)
+
 func _ring_edge_at(point: Vector3) -> int:
-	var target: Dictionary = simulation.get_bulldoze_target_at(point.x, point.z)
-	return int(target.get("id", -1))
+	return int(_target_at(point).get("id", -1))
 
 func _run() -> void:
 	var scene := Node3D.new()
@@ -127,10 +132,10 @@ func _ground_ring(tool: Node) -> void:
 	_expect(ring[0] == ring[ring.size() - 1], "the outline closes")
 	await _click(tool, "the ring")
 	var on_ring := _ground(300.0 + R36_M, 300.0)
-	var target: Dictionary = simulation.get_bulldoze_target_at(on_ring.x, on_ring.z)
+	var target: Dictionary = _target_at(on_ring)
 	_expect(target.get("label", "") == "Roundabout, 0 arms", "the hover names it: %s" % target)
 	await _undo("the ring")
-	target = simulation.get_bulldoze_target_at(on_ring.x, on_ring.z)
+	target = _target_at(on_ring)
 	_expect(target.get("kind", "") != "road", "undo takes the ring away: %s" % target)
 
 func _sizes_and_refusals(tool: Node, road: Node) -> void:
@@ -194,10 +199,11 @@ func _conversion_and_bulldoze(tool: Node) -> void:
 	for arm: Dictionary in arms:
 		var node: int = simulation.get_closest_node(arm.cut, 1.0)
 		_expect(not simulation.has_crosswalk(node, ring_edge), "no zebra on the ring")
-	var target: Dictionary = simulation.get_bulldoze_target_at(on_ring.x, on_ring.z)
+	var target: Dictionary = _target_at(on_ring)
 	_expect(target.get("label", "") == "Roundabout, 4 arms", "the hover: %s" % target)
 	var generation := simulation.get_network_render_generation()
-	var queued: Dictionary = simulation.bulldoze_at(on_ring.x, on_ring.z)
+	# A click: it waits for the core instead of answering `busy`.
+	var queued: Dictionary = simulation.bulldoze_at(on_ring.x, on_ring.z, true)
 	_expect(bool(queued.get("queued", false)), "the bulldoze queues: %s" % queued)
 	_expect(await _await_generation(generation), "the removal publishes")
 	await process_frame
@@ -222,7 +228,7 @@ func _crossroads_on_a_bare_ring(tool: Node) -> void:
 		var node: int = simulation.get_closest_node(_ground(join.x, join.y), 1.0)
 		_expect(node >= 0 and simulation.get_node_connection_count(node) == 3, "the stroke joined at %s" % join)
 	var on_ring := _ground(centre.x + R36_M * sqrt(0.5), centre.y + R36_M * sqrt(0.5))
-	var target: Dictionary = simulation.get_bulldoze_target_at(on_ring.x, on_ring.z)
+	var target: Dictionary = _target_at(on_ring)
 	_expect(target.get("label", "") == "Roundabout, 4 arms", "a crossroads on a bare ring: %s" % target)
 
 func _finish(scene: Node) -> void:

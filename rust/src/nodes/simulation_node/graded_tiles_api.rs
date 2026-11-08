@@ -605,10 +605,17 @@ impl SimulationNode {
     /// slot layer `texels` and of the row atlas run `rows` (whole layers), packed as `pack_slot`
     /// documents, and the wall faces'
     /// bytes `walls`, packed as `pack_walls` documents), and `failed` (per
-    /// failure its kind, keys, `token`, `reason` and `retry`). The rest stays queued.
+    /// failure its kind, keys, `token`, `reason` and `retry`). The rest stays queued. The edits
+    /// come from the core's journal, which the first poll that reaches the core starts; a poll
+    /// does not wait for the core unless `wait` (`CODE-20`): a test that needs the journal
+    /// started, or the core's edits taken, by this poll passes it.
     #[func]
-    pub fn poll_graded_tile_results(&mut self, max_tiles: i32) -> VarDictionary {
-        self.spawn_graded_edit_selection();
+    pub fn poll_graded_tile_results(
+        &mut self,
+        max_tiles: i32,
+        #[opt(default = false)] wait: bool,
+    ) -> VarDictionary {
+        self.spawn_graded_edit_selection(wait);
         let mut jobs = self.graded_jobs.lock().unwrap();
         let mut edits = VarArray::new();
         for result in std::mem::take(&mut jobs.edits) {
@@ -713,14 +720,16 @@ impl SimulationNode {
 }
 
 impl SimulationNode {
-    // Takes the core's graded edit journal (starting it on the first call) without waiting for
-    // the core, and selects the edits' dirty tiles on a payload worker.
-    fn spawn_graded_edit_selection(&self) {
+    // Takes the core's graded edit journal (starting it on the first call), waiting for the
+    // core only when `wait`, and selects the edits' dirty tiles on a payload worker. A selection
+    // in flight means an earlier call took edits, so the journal is on.
+    fn spawn_graded_edit_selection(&self, wait: bool) {
         if self.graded_jobs.lock().unwrap().selecting {
             return;
         }
-        let Some(edits) =
-            Self::try_lock_shared_core(&self.core).map(|mut core| core.take_graded_edits())
+        let Some(edits) = self
+            .lock_core_if(wait)
+            .map(|mut core| core.take_graded_edits())
         else {
             return;
         };

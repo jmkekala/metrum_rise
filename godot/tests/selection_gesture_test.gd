@@ -12,7 +12,7 @@ class SimulationStub extends Node3D:
 	var rays := 0
 	var self_loop := false
 	var commands: Array = []
-	func intersect_world_surface(_origin: Vector3, _direction: Vector3) -> Variant:
+	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait := false) -> Variant:
 		rays += 1
 		return hit
 	func get_closest_node(_point: Vector3, _radius: float) -> int:

@@ -11117,7 +11117,10 @@ crossings and its legacy migration.
   changes, changed chunks, the road tool's view), so the junction redraws in the same frame;
   until the user's play-test of round R6 it marked none and the old paint stayed drawn
   (`a_toggle_and_its_undo_publish_the_chunks_a_full_emission_draws`,
-  `godot/tests/crosswalk_toggle_test.gd` on the real bridge). Crossing edits do not appear in the road-attempt replay, which records strokes.
+  `godot/tests/crosswalk_toggle_test.gd` on the real bridge). The click finds its point with the
+  world raycast that waits for the core (`intersect_world_surface`'s `wait`); the per-frame one
+  answers `null` while the simulation thread holds the core, and a click in a tick deselected the
+  junction as if it hit nothing (`CODE-20`, found under load). Crossing edits do not appear in the road-attempt replay, which records strokes.
   Cost: one node closure compile per hovered toggle and per click, bounded by the node's
   neighbourhood (its arms, their spans and far-end pieces).
 - **Remaps.** Overrides are keyed by edge per node. A split moves the far end's override onto

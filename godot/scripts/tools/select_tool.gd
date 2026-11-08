@@ -114,7 +114,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cancel_gesture()
 			_mouse_pressed = true
 			_last_click_screen_pos = event.position
-			var pos = _world_position(event.position)
+			var pos = _world_position(event.position, true)
 			
 			# If we have a node selected, check if we clicked a UI control (lane sphere or crosswalk)
 			if selected_node != -1:
@@ -163,7 +163,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				
 		else:
 			if not _drag_source.is_empty():
-				var target_lane = _get_hovered_lane_sphere(_world_position(event.position))
+				var target_lane = _get_hovered_lane_sphere(_world_position(event.position, true))
 				if target_lane != null:
 					if target_lane.is_incoming and target_lane.edge_id == _drag_source.edge_id and target_lane.lane_id == _drag_source.lane_id:
 						simulation_node.clear_lane_source(selected_node, _drag_source.edge_id, _drag_source.lane_id)
@@ -347,10 +347,13 @@ func _update_crosswalk_hover() -> void:
 		var preview: Dictionary = _preview_crosswalk(c) if c == hovered else {}
 		c.label_inst.text = _crosswalk_label(c.has_cw, preview)
 
-func _world_position(screen_position: Vector2):
+# The world point under a screen position, null for none. A click's query waits while the
+# simulation thread holds the core; the per-frame one answers null then, and a click would
+# deselect as if it hit nothing (`CODE-20`).
+func _world_position(screen_position: Vector2, click := false):
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return null
-	return simulation_node.intersect_world_surface(camera.project_ray_origin(screen_position), camera.project_ray_normal(screen_position))
+	return simulation_node.intersect_world_surface(camera.project_ray_origin(screen_position), camera.project_ray_normal(screen_position), click)
 
 func _get_hovered_lane_sphere(pos):
 	if pos == null: return null

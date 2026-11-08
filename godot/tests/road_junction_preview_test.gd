@@ -279,8 +279,9 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 		catch_up += 1
 	_expect(tool._graded_pending == 0, "%s: the preview's graded tiles converge" % label)
 	var shown: Dictionary = tool.terrain_node.graded_tiles.shown.duplicate()
-	# The first poll starts the graded edit journal, which carries the commit's tiles.
-	simulation.poll_graded_tile_results(0)
+	# The first poll that reaches the core starts the graded edit journal, which carries the
+	# commit's tiles; this one waits for the core (`CODE-20`).
+	simulation.poll_graded_tile_results(0, true)
 	var generation := simulation.get_network_render_generation()
 	_expect(tool._commit_segment(points[-1]), "the click must queue the previewed stroke")
 	var epoch: int = tool._graded_commit_epoch
@@ -361,7 +362,7 @@ func _check_graded_tiles(shown: Dictionary, epoch: int, label: String) -> void:
 func _graded_staged(epoch: int, label: String) -> Dictionary:
 	var deadline := Time.get_ticks_msec() + 20000
 	while Time.get_ticks_msec() < deadline:
-		var result: Dictionary = simulation.poll_graded_tile_results(0)
+		var result: Dictionary = simulation.poll_graded_tile_results(0, true)
 		for edit: Dictionary in result.get("edits", []):
 			if int(edit.get("preview_epoch", -1)) != epoch:
 				continue

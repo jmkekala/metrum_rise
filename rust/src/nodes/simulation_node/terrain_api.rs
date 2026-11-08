@@ -706,19 +706,22 @@ impl SimulationNode {
     /// Raycasts against the visible world surface: the nearer of the road's hit and the
     /// graded ground's, never ground a road covers (`TERRAIN-07-D`).
     ///
-    /// Uses `try_lock` for the same reason as `intersect_terrain`.
+    /// Uses `try_lock` for the same reason as `intersect_terrain`, unless `wait`: one-shot input
+    /// such as a click waits while the simulation thread holds the core (a tick or an edit), so
+    /// a click during a tick is never taken for a click on nothing (`CODE-20`).
     #[func]
-    pub fn intersect_world_surface(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
-        match self.try_lock_core() {
-            Some(mut core) => {
-                let cell_m = core.config.zone_cell_m;
-                core.allocator.prepare_building_site_query_index(cell_m);
-                match core.intersect_world_surface_internal(ray_origin, ray_dir) {
-                Some(p) => p.to_variant(),
-                None => Variant::nil(),
-                }
-            }
-            None => Variant::nil(),
-        }
+    pub fn intersect_world_surface(
+        &self,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+        #[opt(default = false)] wait: bool,
+    ) -> Variant {
+        let Some(mut core) = self.lock_core_if(wait) else {
+            return Variant::nil();
+        };
+        let cell_m = core.config.zone_cell_m;
+        core.allocator.prepare_building_site_query_index(cell_m);
+        core.intersect_world_surface_internal(ray_origin, ray_dir)
+            .map_or_else(Variant::nil, |p| p.to_variant())
     }
 }

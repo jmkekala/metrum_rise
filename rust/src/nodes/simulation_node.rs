@@ -277,6 +277,21 @@ impl SimulationNode {
         Self::try_lock_shared_core(&self.core)
     }
 
+    /// [`Self::lock_core`] when `wait`, else [`Self::try_lock_core`]: a per-frame query that
+    /// one-shot callers (a click, a test reading the answer) ask to wait for the core
+    /// (`CODE-20`). Under load the simulation thread can hold the core for long runs of frames.
+    #[inline]
+    fn lock_core_if(
+        &self,
+        wait: bool,
+    ) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
+        if wait {
+            Some(self.lock_core())
+        } else {
+            self.try_lock_core()
+        }
+    }
+
     fn try_lock_shared_core(core: &Mutex<SimCore>) -> Option<std::sync::MutexGuard<'_, SimCore>> {
         match core.try_lock() {
             Ok(g) => Some(g),

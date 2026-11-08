@@ -745,29 +745,46 @@ impl SimulationNode {
         removed
     }
 
-    /// Returns the deterministic bulldoze target under one world-space point.
+    /// Returns the deterministic bulldoze target under one world-space point. A per-frame hover
+    /// query: unless `wait`, while the simulation thread holds the core (a tick or an edit) it
+    /// answers at once with `busy` set and no target, and the hover asks again next frame
+    /// (`CODE-20`).
     #[func]
-    pub fn get_bulldoze_target_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
-        match self.try_lock_core() {
+    pub fn get_bulldoze_target_at(
+        &self,
+        world_x: f32,
+        world_z: f32,
+        #[opt(default = false)] wait: bool,
+    ) -> VarDictionary {
+        match self.lock_core_if(wait) {
             Some(mut core) => core.get_bulldoze_target_at_internal(world_x, world_z),
             None => {
                 let mut dict = VarDictionary::new();
                 dict.set("valid", false);
                 dict.set("deleted", false);
+                dict.set("busy", true);
                 dict
             }
         }
     }
 
-    /// Queues one building or road deletion on the simulation thread.
+    /// Queues one building or road deletion on the simulation thread. Unless `wait`, while the
+    /// simulation thread holds the core it queues nothing and answers `busy` (reason
+    /// `simulation busy`).
     #[func]
-    pub fn bulldoze_at(&mut self, world_x: f32, world_z: f32) -> VarDictionary {
+    pub fn bulldoze_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        #[opt(default = false)] wait: bool,
+    ) -> VarDictionary {
         let prepared = {
-            let Some(mut core) = self.try_lock_core() else {
+            let Some(mut core) = self.lock_core_if(wait) else {
                 let mut payload = VarDictionary::new();
                 payload.set("valid", false);
                 payload.set("deleted", false);
                 payload.set("queued", false);
+                payload.set("busy", true);
                 payload.set("reason", GString::from("simulation busy"));
                 return payload;
             };
