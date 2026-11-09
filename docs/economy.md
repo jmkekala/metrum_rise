@@ -1121,7 +1121,8 @@ at 30k (0.89 against 0.72-0.75). The control exits 1 on four parked work-scaling
 (`buyer_sites_built`, `supplier_searches`, `supplier_routes`, `job_search_keys`), the branch on
 the same four plus `staffing_trials`: 43,774 at 10k and 178,647 at 30k (4.08×, limit 3.28×)
 against the control's 62,293 and 191,429 (3.07×). The branch's 10k day places no building, so
-the denominator drops while the 30k count falls too.
+the denominator drops while the 30k count falls too. The user accepted this on 2026-11-09 as a measurement effect of
+the smaller 10k denominator, not a work regression; the 3.28× limit itself is unchanged.
 
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:
