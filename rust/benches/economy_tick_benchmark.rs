@@ -10,15 +10,15 @@
 //! benchmark samples the calendar close of ten consecutive days. Settlement itself runs at each
 //! entity's daily phase in every slot (`SIM-02-G`). The city cannot drift far from its built
 //! state during a run. Criterion warns that the target time is too short; that is intended.
-//! Only the 10k tier runs by default. The 100k and 1M builds take minutes in release and hours
-//! in a debug `cargo test --all-targets`, so they run only on request:
-//! `ECONOMY_TICK_TIERS=10k,100k,1m cargo bench --bench economy_tick_benchmark`.
+//! Only the 10k tier runs by default. The 1M build takes minutes in release and hours in a debug
+//! `cargo test --all-targets`, so it runs only on request:
+//! `ECONOMY_TICK_TIERS=10k,1m cargo bench --bench economy_tick_benchmark`.
 
 use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
 use metrum_rise::nodes::sim::core::PopulatedCity;
 use std::time::{Duration, Instant};
 
-const TIERS: [(&str, u32); 3] = [("10k", 10_000), ("100k", 100_000), ("1m", 1_000_000)];
+const TIERS: [(&str, u32); 2] = [("10k", 10_000), ("1m", 1_000_000)];
 const DEFAULT_TIERS: &str = "10k";
 const DEMAND_PASS_HOURS_PER_DAY: usize = 23;
 const SETTLEMENT_DAYS: usize = 10;
@@ -44,7 +44,7 @@ fn selected_tiers() -> Vec<(&'static str, u32)> {
             *TIERS
                 .iter()
                 .find(|(name, _)| *name == label)
-                .unwrap_or_else(|| panic!("unknown tier {label:?}; expected 10k, 100k or 1m"))
+                .unwrap_or_else(|| panic!("unknown tier {label:?}; expected 10k or 1m"))
         })
         .collect()
 }

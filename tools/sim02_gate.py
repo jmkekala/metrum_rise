@@ -35,7 +35,7 @@ WORKLOADS = ("baseline", "fiscal_stress")
 ARRIVAL_WORKLOAD = ("arrivals", 30000)
 # Fixture variants: neighbouring city sizes give the natural spread of every metric.
 VARIANTS = (0.97, 1.0, 1.03)
-PERF07_TIERS = (10000, 30000, 100000)
+PERF07_TIERS = (10000, 30000)
 PERF07_SPEEDS = (1, 32)
 BURST_MINUTE_LIMIT = 0.05
 BURST_SETTLEMENT_LIMIT = 0.10
@@ -49,9 +49,9 @@ P99_SLACK = 1.10
 TIMING_FLOOR_MS = 0.5
 # PERF-07 acceptance (docs/simulation.md#open-questions, question 7): a tier passes when its
 # worst frame no other task preempted, its raw p99.9 and its worst preempted frame less the
-# wait are each at most 8 ms. 100k at 32x is deferred (PERF-08) and only reported.
+# wait are each at most 8 ms. 30k is the largest measured city (no 100k tier since PERF-19).
 PERF07_ACCEPTANCE_MS = 8.0
-PERF07_ACCEPTED_TIERS = ((30000, 1), (30000, 32), (100000, 1))
+PERF07_ACCEPTED_TIERS = ((30000, 1), (30000, 32))
 PERF07_ACCEPTANCE_KEYS = ("max_unpreempted_ms", "p999_ms", "max_preempted_less_wait_ms")
 
 

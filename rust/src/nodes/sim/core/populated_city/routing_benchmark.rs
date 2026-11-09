@@ -741,7 +741,7 @@ fn profile_populated_boundaries(midnight: bool) {
 
     let residents = std::env::var("METRUM_CCH_BENCH_RESIDENTS")
         .map(|value| value.parse().unwrap())
-        .unwrap_or(100_000);
+        .unwrap_or(30_000);
     let mut city = PopulatedCity::build(residents);
     crate::debug::init();
     // Debug channels stay quiet outside the sampled boundary frames.
@@ -882,7 +882,7 @@ fn profile_populated_boundaries(midnight: bool) {
 }
 
 #[test]
-#[ignore = "release populated work-count attribution; compares 10k/100k growth"]
+#[ignore = "release populated work-count attribution; compares 10k/30k growth"]
 fn benchmark_populated_work_counts() {
     use crate::debug::work::{WORK_COUNT, WORK_NAMES, snapshot};
 

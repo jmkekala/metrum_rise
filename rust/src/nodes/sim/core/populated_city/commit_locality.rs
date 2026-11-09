@@ -2,7 +2,7 @@
 
 //! Commit locality on a populated map (`ROAD-68-G` part 8, `docs/roads.md` "Targets",
 //! Locality): the edited neighbourhood is held fixed while remote roads, buildings, parcels and
-//! agents grow from 0 to 100k, and the commit's local products must stay bitwise identical while
+//! agents grow from 0 to 30k, and the commit's local products must stay bitwise identical while
 //! its stages stay flat.
 //!
 //! The neighbourhood is the zoned 800 m street grid with every lot built and its trunk running
@@ -54,7 +54,7 @@ fn benchmark_commit_locality() {
                 .map(|t| t.trim().parse().unwrap())
                 .collect()
         })
-        .unwrap_or_else(|_| vec![0, 1_000, 10_000, 100_000]);
+        .unwrap_or_else(|_| vec![0, 1_000, 10_000, 30_000]);
     let mut reference = None;
     for background in tiers {
         let started = Instant::now();

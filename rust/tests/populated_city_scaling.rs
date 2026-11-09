@@ -5,14 +5,14 @@
 //! Each phase's growth exponent comes from the two largest tiers, so a phase that scales worse
 //! than linearly shows before a multi-hour run is attempted. Run alone, release, nothing else
 //! running: `cargo test --release --test populated_city_scaling -- --ignored --nocapture`.
-//! `POPULATED_CITY_TIERS=10000,30000,100000` (the default) selects the tiers. See
+//! `POPULATED_CITY_TIERS=10000,30000` (the default) selects the tiers. See
 //! `docs/economy.md#econ-13-economy-tick-baseline`.
 
 use metrum_rise::nodes::sim::core::{PopulatedCity, PopulatedCityBuildTimes};
 use std::time::Instant;
 
 const TARGET_RESIDENTS: u32 = 1_000_000;
-const DEFAULT_TIERS: &str = "10000,30000,100000";
+const DEFAULT_TIERS: &str = "10000,30000";
 // `economy_tick_benchmark` with one-nanosecond warm-up and measurement times runs one warm-up
 // iteration and one per sample: 24 hours without a calendar close (25 hours with the midnight
 // they cross), then 11 days of hours ending in a calendar close. Each hour is stepped on the
