@@ -659,7 +659,10 @@ rule for game code (`CODE-25`):
   `get_closest_network_point`, `get_bulldoze_target_at`, `bulldoze_at`,
   `poll_graded_tile_results`), or calls one that always waits. It resolves the pointer itself
   instead of reading the last hover, which may be older. The road tool's cursor, preview and
-  commit read the road tool's published view and need no core.
+  commit read the road tool's published view and need no core. Its one-shot stroke checks
+  (`validate_road_candidate_with_snap`, `validate_road_candidate_for_commit_with_snap`) always
+  wait for the core for the corridor's parcel and field clearance (`ROAD-102`); a call that
+  answers "not valid" must name the reason, never stand for "busy".
 - **A waiting call gets the core when the frame or edit in progress ends.** `std`'s mutex is not
   fair: once frames overran their 16.7 ms interval and ran back to back, the simulation thread
   took the core again 40-80 µs after freeing it and won the race against a waiting call frame

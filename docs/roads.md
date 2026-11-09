@@ -1798,6 +1798,17 @@ generation, the roadbed generation and the source and visual terrain generations
 generation and the delta's dirty marks decide whether pieces install, so no per-edge or per-node
 generation was added.
 
+One-shot stroke checks (`ROAD-102`): `validate_road_candidate_with_snap` (the hover checks on the
+published view: profile, endpoints, water) and `validate_road_candidate_for_commit_with_snap`
+(the exact plan on the view) are not the road tool's hover, which is `preview_road`; tests, the
+road benchmark's fixture search and the debug console's attempt replay call them once. A valid
+stroke's corridor is then checked against the live parcels and field reservations
+(`RoadCorridorClearance`), which the view does not copy, so both wait for the core
+([`debug.md` "Busy Core"](debug.md#busy-core)). Before `ROAD-102` they took it only when free
+and otherwise answered `is_pending` (not valid, no reason), which the walkway test and the
+benchmark's fixture search read as a refusal without a reason. A stroke that is not valid now
+always names its reason.
+
 Stage 3 and the terrain half of 4 (round 3): the patches and tiles whose terrain the preview's
 pieces change are the commit's (`road_terrain_tiles` over the preview roadbed's
 `take_terrain_changes`, the function the commit's stamps use; round 4: tiles near changed chain
