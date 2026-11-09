@@ -42,6 +42,12 @@ opt-level = 1
 # Line tables only: backtraces keep files and lines, without full variable info, which cost
 # compile time and 22-25 GB per test build (2026-10-26). Release builds keep `debug = 1`.
 debug = "line-tables-only"
+# No ThinLTO across the test build's codegen units (on by default at opt-level 1). It took 41-69 s
+# of the 66-104 s a test build needed after a one-line edit, because an edit spread through the
+# imports to 22-43 of 256 units; without it one unit is rebuilt and the build takes about 13 s,
+# peaking at 4.7 instead of 11.6 GB (compile round K0, `CODE-27`, 2026-11-09). The cost: test code
+# runs 15-20% slower without the cross-unit inlining. Floating-point results do not change.
+lto = "off"
 debug-assertions = true
 overflow-checks = true
 
