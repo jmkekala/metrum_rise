@@ -597,3 +597,127 @@ fn benchmark_parking_locality() {
         );
     }
 }
+
+// The road tool's hover on the same neighbourhood (`ZONE-09`, round RZ3): each demolishing
+// stroke and one stroke along the rears of a block's lots, previewed `HOVERS` times on the road
+// tool's context, its end moved a quarter metre each time as a pointer moves. A hover is
+// `preview_road` alone (no core). Its products (validity, reason and what it takes) must not
+// depend on the tier, its cost must stay flat (`PREVIEW_LOCALITY`).
+const HOVERS: usize = 40;
+
+#[test]
+#[ignore = "release ZONE-09 hover preview locality; builds each tier outside timing"]
+fn benchmark_preview_locality() {
+    use crate::nodes::sim::core::road_preview::RoadPreviewRequest;
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    super::contract::timing_mode();
+    let tiers: Vec<usize> = std::env::var("METRUM_LOCALITY_TIERS")
+        .map(|value| {
+            value
+                .split(',')
+                .map(|t| t.trim().parse().unwrap())
+                .collect()
+        })
+        .unwrap_or_else(|_| vec![0, 10_000, 30_000]);
+    let mut reference = None;
+    for background in tiers {
+        let mut core = super::zoned_city_in_world(NEIGHBOURHOOD_SIDE_M, WORLD_M);
+        add_background(&mut core, background);
+        core.precompute_road_mesh_data();
+        core.refresh_road_terrain_inputs();
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let view = crate::nodes::sim::core::road_tool_snapshot_from_core(&core)
+            .expect("the fixture roadbed is current");
+        let mut context = RoadPreviewContext::capture(view);
+        preview_land(&mut core, &mut context);
+        let half_z =
+            (NEIGHBOURHOOD_SIDE_M / super::ROW_SPACING_M).floor() * super::ROW_SPACING_M * 0.5;
+        let ground = |x: f32, z: f32| Vector3::new(x, core.heightmap.sample_height_world(x, z), z);
+        let mut strokes: Vec<(String, [Vector3; 2])> = DEMOLITIONS
+            .iter()
+            .enumerate()
+            .map(|(stroke, &(x, row))| {
+                let z = row as f32 * super::ROW_SPACING_M - half_z;
+                (
+                    format!("demolition{stroke}"),
+                    [ground(x, z), ground(x + DEMOLITION_RUN_M, z + super::ROW_SPACING_M)],
+                )
+            })
+            .collect();
+        // Along the rears of the lots between row streets 2 and 3, west of the block's parking
+        // lot and clear of the cross street at x = -400.
+        let rear_z = 2.5 * super::ROW_SPACING_M - half_z;
+        strokes.push(("rears".into(), [ground(-380.0, rear_z), ground(-230.0, rear_z)]));
+        let mut products = Vec::new();
+        for (name, stroke) in &strokes {
+            let mut total = Vec::with_capacity(HOVERS);
+            let mut roadbed = Vec::with_capacity(HOVERS);
+            let mut product = serde_json::Value::Null;
+            for hover in 0..HOVERS {
+                let mut points = stroke.to_vec();
+                points[1].x += hover as f32 * 0.25;
+                let request = RoadPreviewRequest {
+                    surface_generation: context.view.surface_generation,
+                    points,
+                    fwd_lanes: 1,
+                    bkw_lanes: 1,
+                    snap_to_existing_roads: true,
+                    tunnel: false,
+                    median: None,
+                    parking: crate::simulation::network::graph::RoadParking::NONE,
+                    attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+                };
+                let start = Instant::now();
+                let preview = context.preview_road(request);
+                total.push(start.elapsed().as_secs_f64() * 1e3);
+                roadbed.push(preview.times.roadbed_ms);
+                if hover == 0 {
+                    product = preview_product(&preview);
+                }
+            }
+            let stats = |samples: &mut Vec<f64>| {
+                samples.sort_by(f64::total_cmp);
+                let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
+                serde_json::json!({"p50": at(0.5), "p95": at(0.95), "max": at(1.0)})
+            };
+            eprintln!(
+                "PREVIEW_LOCALITY {}",
+                serde_json::json!({"background": background, "stroke": name,
+                    "buildings": core.allocator.buildings.len(),
+                    "parcels": core.zoning.parcels().len(),
+                    "hovers": HOVERS, "preview_ms": stats(&mut total),
+                    "roadbed_ms": stats(&mut roadbed), "product": product})
+            );
+            products.push(product);
+        }
+        match &reference {
+            None => reference = Some(products),
+            Some(reference) => assert_eq!(
+                &products, reference,
+                "a remote background of {background} changed the previews' products"
+            ),
+        }
+    }
+}
+
+// The land the road tool's preview takes, as the simulation publishes it.
+fn preview_land(
+    core: &mut SimCore,
+    context: &mut crate::nodes::sim::core::road_tool_context::RoadPreviewContext,
+) {
+    context.land = core.current_road_tool_land();
+}
+
+// What a hover shows: its verdict and what it takes (lots by id, which the neighbourhood's
+// strokes keep across tiers).
+fn preview_product(
+    preview: &crate::nodes::sim::core::road_preview::RoadPreview,
+) -> serde_json::Value {
+    let take = preview.pieces.as_ref().map(|pieces| &pieces.take);
+    serde_json::json!({"valid": preview.validation.is_valid,
+        "reason": preview.validation.invalid_reason,
+        "cells": take.map_or(0, |take| take.cells.len()),
+        "lots": take.map(|take| take.lots.clone()),
+        "buildings": take.map_or(0, |take| take.buildings.len())})
+}
