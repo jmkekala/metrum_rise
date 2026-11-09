@@ -1494,17 +1494,27 @@ Refresh: cell, parcel/occupancy revisions and the world-reset epoch; height chan
 the mask. A cell revision stamps every chunk the cell crosses. Polling is `O(visible chunks)`, at
 most two committed chunks rebuild per frame, and a rebuild costs the indexed local query plus
 `O(C log C + T + B)` (C rectangles, T = 65,536 texels, B their clipped texel-AABB area), built
-after the simulation lock is released. Paint-only changes upload the rows (32 KiB), not the mask.
-The preview builds its own layers for the affected visible chunks in the same update.
+after the simulation lock is released. Paint-only changes upload the rows layer, not the mask:
+256 × row height × 16 bytes, 32 KiB at the fixtures' row height 8 and 512 KiB at the 30k city's
+128 (round `Z1`). The preview builds a mask for every chunk its selection touches, also after the
+lock is released, and the renderer uploads the visible ones in the same update.
 
 Cost per ground fragment: hidden, one coherent branch and no texture reads; shown, five fetches
 for a single-candidate texel (lookup, index, frame, extent, colour), more on candidate lists
-(at most four candidates in the fixtures).
+(at most four candidates in the fixtures). The switch is on only while zoning is shown and a
+layer is resident: before the first layer the sampler globals are unset, and Godot binds its
+4 × 4 × 1 white array texture there, which the chunk table would read as layer 1 (round `Z1`).
+The two global samplers count against the Compatibility renderer's 16 fragment samplers
+(`TERRAIN-16`): declared after the preprocessor, terrain 25 → 27, graded terrain (and its behind
+pass) 27 → 29, grass 17 → 19, site ground 8 → 10, lot paving (`site_surface`) 9 → 11, roads 9.
 
 Memory: 320 KiB per GPU layer for a 300-cell roadside chunk, 768 KiB for a dense 2,500-cell one
 (the row height is shared by the pool, so one dense chunk raises every layer). Residency follows
 the visible chunks, not the world: a 20 km world with 10 % of its 1,600 chunks zoned at roadside
-density would be 80 MiB only if every one were resident at once.
+density would be 80 MiB only if every one were resident at once. In the saved 30k city (round
+`Z1`, overview pose) 64 visible chunks held 51 masks at row height 128: 48 MiB of layers. The
+renderer also keeps every resident payload (mask and rows) in GDScript to rebuild the arrays when
+the pool grows; each growth uploads every layer again (154 MiB uploaded while that view settled).
 
 Measured (unprofiled release, M2 Pro, Metal, 1440 × 960): mask build p50 0.42 ms (300 cells) and
 1.33 ms (2,500 cells); a 60-cell preview 1.42 ms; one-cell paint update p95 1.2–1.3 ms with
@@ -1512,6 +1522,31 @@ Measured (unprofiled release, M2 Pro, Metal, 1440 × 960): mask build p50 0.42 m
 `tests/zoning_ground_capture.gd` (its own blank world): hidden 10.85 → 10.84 ms, shown
 10.91 → 11.35 ms against the previous overlay. Metal reports no GPU timestamps, so GPU time is
 not measured.
+
+Measured again in round `Z1` (2026-11-09, `ZONE-08`; RX 7900 XTX, Godot 4.7.2 Forward+ on Vulkan
+with GPU timestamps, unprofiled release libraries, eight P-cores, gamescope's headless backend
+uncapped with `-r 1000 --immediate-flips`; control `dev` `d40d99c9`'s overlay, alternated C B B C):
+
+- Mask build (`zoning_mask_resolution_measurement`, 2 m texels, p50 of three runs): 300 cells
+  0.31 ms, 2,500 cells 1.18-1.19 ms, 900 rotated 0.94 ms, one cell 0.21-0.24 ms (the fixed
+  65,536-texel floor).
+- Saved 30k city, simulation paused, 1920 × 1080, 64 visible chunks. From the show request until
+  every visible chunk is current, the cell renderer's `_process` took at most 7.5-7.7 ms a frame at
+  the overview pose (900 m) and 2.3-2.5 ms at 300 m, against 35.7-36.2 and 19.3-19.4 ms for the
+  overlay meshes; the view settled in 267-301 frames against 424-848. Shown and settled, polling
+  costs 120-157 µs a frame (overlay 109-148 µs), hidden 7-12 µs on both.
+- GPU at the overview pose (three runs a side, 600 frames a phase): zoning hidden 10.41-10.70 ms
+  p50 against 10.31-10.52 (+1.0-2.0%, mean of frames +1.9%), shown 10.63-10.69 against
+  10.48-10.56 for the overlay; at 300 m level (9.34-9.39 against 9.31-9.37). Frame time is
+  level (the main thread bounds it).
+- Preview, Rust export plus renderer upload, p50: one cell 0.50-0.54 + 0.21 ms (overlay mesh
+  0.01 + 0.01 ms), a 20 m brush over 9 cells and 4 chunks 1.04-1.17 + 0.27-0.33 ms (0.11 + 0.01),
+  a 143-cell marquee 0.40-0.56 + 0.21-0.33 ms (2.62 + 0.07), a 74-cell fill 0.52-0.55 + 0.20-0.23
+  ms (1.37 + 0.04). A preview that grows the layer pool uploaded for 9.1-9.6 ms.
+- `zoning_overlay_benchmark.gd` passes every budget: one-cell edit update p95 0.44-0.53 ms with
+  0-128 remote roads, settle p95 1.6 ms, viewport GPU p95 0.32 ms.
+- The capture world (`zoning_ground_capture.gd`'s): frame p50 1.38-1.45 ms and GPU p50
+  0.99-1.01 ms hidden and shown, against 1.37-1.44 and 0.98-1.01 ms.
 
 ### Loaded reservations and boundary precision
 
@@ -3641,4 +3676,3 @@ A pocket moves its widened curb's lattice 3.5 m out, and the cross road keeps it
 not re-phased), so a quadrant a pocket widens into holds two lattices again, which meet in the
 usual stepped seam. Crossings that are not square (the user's, 90.45 degrees) had that seam
 before.
-
