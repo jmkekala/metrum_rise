@@ -2,9 +2,9 @@
  "bands": {
   "baseline-10000": {
    "bankruptcies_per_1k_buildings_day": {
-    "base": 0.061207002081038075,
-    "high": 0.5682221312593806,
-    "low": -0.5
+    "base": 0.01748771488029659,
+    "high": 0.5174877148802965,
+    "low": -0.4895096825629944
    },
    "buildings_per_target": {
     "base": 0.8169,
@@ -12,9 +12,9 @@
     "low": 0.644488144329897
    },
    "deliveries_per_1k_buildings_day": {
-    "base": 170.03305178112373,
-    "high": 181.3903644801178,
-    "low": 162.37276657685067
+    "base": 170.91618138257874,
+    "high": 180.94460802292664,
+    "low": 160.3950956383304
    },
    "departures_per_household": {
     "base": 0.0,
@@ -22,44 +22,44 @@
     "low": -0.005
    },
    "employment_rate": {
-    "base": 0.6844721748278487,
-    "high": 0.6981616183244057,
-    "low": 0.657763343421381
+    "base": 0.6809001526831119,
+    "high": 0.6945843938709205,
+    "low": 0.6656531225217627
    },
    "final_employment_rate": {
-    "base": 0.6775750131602035,
-    "high": 0.6911265134234076,
-    "low": 0.6579012866547339
+    "base": 0.6761946133796699,
+    "high": 0.6940554941748674,
+    "low": 0.6542418344135346
    },
    "final_households_per_target": {
-    "base": 0.5685,
-    "high": 0.596770618556701,
-    "low": 0.4836881443298969
+    "base": 0.5703,
+    "high": 0.6014809278350516,
+    "low": 0.47675721649484537
    },
    "households_per_target": {
-    "base": 0.5678857142857143,
-    "high": 0.5958491899852725,
-    "low": 0.4839952871870397
+    "base": 0.5697357142857143,
+    "high": 0.600634499263623,
+    "low": 0.4770393593519882
    },
    "jobs_per_target": {
-    "base": 1.4741142857142857,
-    "high": 1.5586972017673049,
-    "low": 1.2203655375552283
+    "base": 1.475442857142857,
+    "high": 1.5607636966126655,
+    "low": 1.2194803387334314
    },
    "net_income_per_resident_day": {
-    "base": 11.413209898476435,
-    "high": 11.913209898476435,
-    "low": 10.453994891073757
+    "base": 11.254076803651666,
+    "high": 11.903924247261703,
+    "low": 10.580089552672627
    },
    "out_of_stock_rate": {
-    "base": 0.13453660480613594,
-    "high": 0.1767267461165324,
-    "low": 0.035312744294508376
+    "base": 0.13063048114792217,
+    "high": 0.1734007869711053,
+    "low": 0.03413243119210519
    },
    "residents_per_target": {
-    "base": 1.1386,
-    "high": 1.1909412371134023,
-    "low": 0.9815762886597937
+    "base": 1.1498357142857143,
+    "high": 1.2166607879234168,
+    "low": 0.9493604933726068
    },
    "trip_failures_per_1k_residents_day": {
     "base": 0.0,
@@ -72,26 +72,26 @@
     "low": -0.002
    },
    "vacancy_rate": {
-    "base": 0.06775258080841678,
-    "high": 0.11650511218302886,
-    "low": -0.01467072003630832
+    "base": 0.06428410469547534,
+    "high": 0.12139167394224716,
+    "low": -0.0055542099664063135
    }
   },
   "baseline-30000": {
    "bankruptcies_per_1k_buildings_day": {
-    "base": 0.16676855122426748,
-    "high": 0.7399939329215626,
-    "low": -0.3816455995833925
+    "base": 0.21012763319396274,
+    "high": 0.7367063841836525,
+    "low": -0.4053151988962197
    },
    "buildings_per_target": {
-    "base": 0.7138595238095238,
-    "high": 0.7401534791359843,
-    "low": 0.6888573448913545
+    "base": 0.7138571428571429,
+    "high": 0.7401509769268533,
+    "low": 0.6888550809061488
    },
    "deliveries_per_1k_buildings_day": {
-    "base": 172.82668342795662,
-    "high": 176.28321709651576,
-    "low": 165.3066966626303
+    "base": 173.1507940335815,
+    "high": 176.61380991425312,
+    "low": 166.57915792572348
    },
    "departures_per_household": {
     "base": 0.0,
@@ -99,44 +99,44 @@
     "low": -0.005
    },
    "employment_rate": {
-    "base": 0.6715602248846025,
-    "high": 0.6908132727252363,
-    "low": 0.6524294364403077
+    "base": 0.6700902495189658,
+    "high": 0.6889537322725454,
+    "low": 0.6544374353496824
    },
    "final_employment_rate": {
-    "base": 0.6535723447922012,
-    "high": 0.6756625590519691,
-    "low": 0.6324535263358748
+    "base": 0.6536850519584333,
+    "high": 0.6771495494763022,
+    "low": 0.6344880469025665
    },
    "final_households_per_target": {
-    "base": 0.5209666666666667,
-    "high": 0.531386,
-    "low": 0.5019174364261169
+    "base": 0.5196,
+    "high": 0.5299919999999999,
+    "low": 0.49964036245954696
    },
    "households_per_target": {
-    "base": 0.5208619047619047,
-    "high": 0.5312791428571428,
-    "low": 0.5018900765832106
+    "base": 0.5194785714285715,
+    "high": 0.5298681428571429,
+    "low": 0.4996127401756819
    },
    "jobs_per_target": {
-    "base": 1.3522,
-    "high": 1.4008338870888564,
-    "low": 1.3108247008784095
+    "base": 1.351647619047619,
+    "high": 1.4009750240549828,
+    "low": 1.3109420822931113
    },
    "net_income_per_resident_day": {
-    "base": 10.742631379863246,
-    "high": 11.681685038832525,
-    "low": 9.971571530411051
+    "base": 10.70630841340002,
+    "high": 11.659647466553796,
+    "low": 10.054609421624972
    },
    "out_of_stock_rate": {
-    "base": 0.10310844609575595,
-    "high": 0.11172360069983679,
-    "low": 0.07726298228351343
+    "base": 0.09850254326332396,
+    "high": 0.10350254326332396,
+    "low": 0.08498300577035707
    },
    "residents_per_target": {
-    "base": 1.0392714285714286,
-    "high": 1.0600568571428572,
-    "low": 1.0022091713303878
+    "base": 1.042252380952381,
+    "high": 1.0630974285714285,
+    "low": 1.001096699953768
    },
    "trip_failures_per_1k_residents_day": {
     "base": 0.0,
@@ -144,31 +144,31 @@
     "low": -0.5
    },
    "unhoused_rate": {
-    "base": 0.0,
-    "high": 0.002,
+    "base": 4.594363634692959e-06,
+    "high": 0.002004594363634693,
     "low": -0.002
    },
    "vacancy_rate": {
-    "base": 0.007858143244601002,
-    "high": 0.06637292944252401,
-    "low": -0.011646785488039999
+    "base": 0.010569582446311716,
+    "high": 0.06818353672979201,
+    "low": -0.008635068981515047
    }
   },
   "fiscal_stress-10000": {
    "bankruptcies_per_1k_buildings_day": {
-    "base": 15.362915094844674,
-    "high": 15.862915094844674,
-    "low": 14.246811345482728
+    "base": 15.261065655769736,
+    "high": 15.761065655769736,
+    "low": 14.205445691875493
    },
    "buildings_per_target": {
-    "base": 0.7571928571428571,
-    "high": 0.8083850147275404,
-    "low": 0.6036163843888069
+    "base": 0.7575142857142857,
+    "high": 0.8088450662739322,
+    "low": 0.6035219440353461
    },
    "deliveries_per_1k_buildings_day": {
-    "base": 10.158541896536548,
-    "high": 11.158541896536548,
-    "low": 8.510888834198928
+    "base": 10.123458570236183,
+    "high": 11.123458570236183,
+    "low": 8.18966334597308
    },
    "departures_per_household": {
     "base": 0.0,
@@ -176,44 +176,44 @@
     "low": -0.005
    },
    "employment_rate": {
-    "base": 0.07971859626263299,
-    "high": 0.08163164649131048,
-    "low": 0.07794492733067003
+    "base": 0.0807838888847352,
+    "high": 0.08335907004095394,
+    "low": 0.07916821110704049
    },
    "final_employment_rate": {
-    "base": 0.01181697023545091,
-    "high": 0.012949555741363073,
-    "low": 0.011439441733480188
+    "base": 0.013199577613516367,
+    "high": 0.013716747831091985,
+    "low": 0.011648066960789516
    },
    "final_households_per_target": {
-    "base": 0.5609,
-    "high": 0.5855768041237113,
-    "low": 0.486869587628866
+    "base": 0.5633,
+    "high": 0.5909809278350515,
+    "low": 0.4802572164948454
    },
    "households_per_target": {
-    "base": 0.5608357142857143,
-    "high": 0.5854803755522828,
-    "low": 0.4869017304860088
+    "base": 0.5631428571428572,
+    "high": 0.5907452135493373,
+    "low": 0.4803357879234168
    },
    "jobs_per_target": {
-    "base": 1.0649714285714287,
-    "high": 1.1185055121037506,
-    "low": 0.9241505926762659
+    "base": 1.0694285714285714,
+    "high": 1.1182477801449877,
+    "low": 0.9249237885525545
    },
    "net_income_per_resident_day": {
-    "base": 24.924002477713923,
-    "high": 25.424002477713923,
-    "low": 23.897311843854997
+    "base": 24.724822545215176,
+    "high": 25.697712395080238,
+    "low": 24.224822545215176
    },
    "out_of_stock_rate": {
-    "base": 0.8100374398288465,
-    "high": 0.8470077384897485,
-    "low": 0.710869591862892
+    "base": 0.8052293880449393,
+    "high": 0.8424854688577919,
+    "low": 0.7089363629424223
    },
    "residents_per_target": {
-    "base": 1.12535,
-    "high": 1.1714270618556704,
-    "low": 0.9871188144329895
+    "base": 1.1360785714285713,
+    "high": 1.1960250736377023,
+    "low": 0.9562390648011783
    },
    "trip_failures_per_1k_residents_day": {
     "base": 0.0,
@@ -226,26 +226,26 @@
     "low": -0.002
    },
    "vacancy_rate": {
-    "base": 0.08148555210103296,
-    "high": 0.13018803947487476,
-    "low": -0.018137380886358224
+    "base": 0.07688998169700036,
+    "high": 0.13517385372175078,
+    "low": -0.01014826989290752
    }
   },
   "fiscal_stress-30000": {
    "bankruptcies_per_1k_buildings_day": {
-    "base": 15.307576946286618,
-    "high": 15.807576946286618,
-    "low": 14.35834314214587
+    "base": 15.430456415691982,
+    "high": 15.930456415691982,
+    "low": 14.444313521889612
    },
    "buildings_per_target": {
-    "base": 0.6636,
-    "high": 0.6901227609229258,
-    "low": 0.6424723365695794
+    "base": 0.6628309523809525,
+    "high": 0.6889807231222386,
+    "low": 0.6420716287563569
    },
    "deliveries_per_1k_buildings_day": {
-    "base": 10.486043990758183,
-    "high": 11.865201826794696,
-    "low": 9.486043990758183
+    "base": 10.119248650974596,
+    "high": 11.700914601971048,
+    "low": 9.119248650974596
    },
    "departures_per_household": {
     "base": 0.0,
@@ -253,44 +253,44 @@
     "low": -0.005
    },
    "employment_rate": {
-    "base": 0.08448400606478156,
-    "high": 0.08816279071434692,
-    "low": 0.08037698614084789
+    "base": 0.08085994605629422,
+    "high": 0.08277230589145025,
+    "low": 0.0788593840280368
    },
    "final_employment_rate": {
-    "base": 0.012952368708619913,
-    "high": 0.013882599657122692,
-    "low": 0.012367029865987967
+    "base": 0.01347103726986978,
+    "high": 0.014104355942844357,
+    "low": 0.011571081250946046
    },
    "final_households_per_target": {
-    "base": 0.5197,
-    "high": 0.5300940000000001,
-    "low": 0.501392941580756
+    "base": 0.518,
+    "high": 0.52836,
+    "low": 0.4991545631067961
    },
    "households_per_target": {
-    "base": 0.5196809523809524,
-    "high": 0.5300745714285714,
-    "low": 0.501393322533137
+    "base": 0.5179952380952381,
+    "high": 0.5283551428571428,
+    "low": 0.49915465834489137
    },
    "jobs_per_target": {
-    "base": 1.0075142857142858,
-    "high": 1.051986319096711,
-    "low": 0.9873640000000001
+    "base": 1.002604761904762,
+    "high": 1.0468414914089346,
+    "low": 0.9825526666666667
    },
    "net_income_per_resident_day": {
-    "base": 25.721482733151,
-    "high": 27.99453661214524,
-    "low": 24.96379810681959
+    "base": 25.52683680694785,
+    "high": 27.7866444377346,
+    "low": 24.773567596685595
    },
    "out_of_stock_rate": {
-    "base": 0.76555613586593,
-    "high": 0.7808672585832486,
-    "low": 0.728101410495792
+    "base": 0.761137157565729,
+    "high": 0.7763599007170435,
+    "low": 0.7307395717881202
    },
    "residents_per_target": {
-    "base": 1.037095238095238,
-    "high": 1.057837142857143,
-    "low": 1.0010794010800195
+    "base": 1.0392571428571429,
+    "high": 1.0600422857142857,
+    "low": 1.000121006010171
    },
    "trip_failures_per_1k_residents_day": {
     "base": 0.0,
@@ -303,9 +303,9 @@
     "low": -0.002
    },
    "vacancy_rate": {
-    "base": 0.010198565231839294,
-    "high": 0.06681369663607795,
-    "low": -0.008673145236240253
+    "base": 0.013513637757427177,
+    "high": 0.06864694962734293,
+    "low": -0.0048641328658780725
    }
   }
  },
@@ -317,15 +317,15 @@
      "worst_minute_share": null
     },
     "freight": {
-     "qualifying_days": 14,
-     "worst_minute_share": 0.03389830508474576
+     "qualifying_days": 13,
+     "worst_minute_share": 0.04081632653061224
     },
     "shopping": {
      "qualifying_days": 14,
-     "worst_minute_share": 0.04054054054054054
+     "worst_minute_share": 0.03508771929824561
     }
    },
-   "worst_settlement_hour_share": 0.06691989721818792
+   "worst_settlement_hour_share": 0.06697871391953639
   },
   "baseline-30000": {
    "kinds": {
@@ -335,14 +335,14 @@
     },
     "freight": {
      "qualifying_days": 14,
-     "worst_minute_share": 0.031746031746031744
+     "worst_minute_share": 0.03278688524590164
     },
     "shopping": {
      "qualifying_days": 14,
-     "worst_minute_share": 0.024390243902439025
+     "worst_minute_share": 0.024489795918367346
     }
    },
-   "worst_settlement_hour_share": 0.07895352646604577
+   "worst_settlement_hour_share": 0.06933991363355953
   },
   "fiscal_stress-10000": {
    "kinds": {
@@ -352,14 +352,14 @@
     },
     "freight": {
      "qualifying_days": 1,
-     "worst_minute_share": 0.031746031746031744
+     "worst_minute_share": 0.02857142857142857
     },
     "shopping": {
-     "qualifying_days": 1,
-     "worst_minute_share": 0.03636363636363636
+     "qualifying_days": 7,
+     "worst_minute_share": 0.03508771929824561
     }
    },
-   "worst_settlement_hour_share": 0.06683057666517657
+   "worst_settlement_hour_share": 0.0668303023541225
   },
   "fiscal_stress-30000": {
    "kinds": {
@@ -369,90 +369,87 @@
     },
     "freight": {
      "qualifying_days": 3,
-     "worst_minute_share": 0.03508771929824561
+     "worst_minute_share": 0.03278688524590164
     },
     "shopping": {
      "qualifying_days": 14,
-     "worst_minute_share": 0.043478260869565216
+     "worst_minute_share": 0.04878048780487805
     }
    },
-   "worst_settlement_hour_share": 0.07895352646604577
+   "worst_settlement_hour_share": 0.06933991363355953
   }
  },
  "fingerprints": {
   "baseline-10000": [
-   18399661305902447692,
-   324454854989707249,
-   17819086395345093808,
-   18432695410011401551,
-   12469678251527328083,
-   3521191221511367018,
-   2435199340002976515,
-   8986544497082793821,
-   18228329615216567367,
-   13751248162115520288,
-   2166811600988009859,
-   15731142357927733407,
-   780564720558739679,
-   3302176034314337121
+   13676327947217661536,
+   11311530549278166348,
+   929965428390111449,
+   12169129881153006041,
+   18334753817434868989,
+   6482192098836600489,
+   8851480481897405884,
+   1845405345177560415,
+   6550686393719914486,
+   3626301322720183426,
+   17635554500618173466,
+   13890065965813329948,
+   10740141602662256908,
+   12531986876819836667
   ],
   "baseline-30000": [
-   15872515031923652063,
-   856067480543057967,
-   2281670433516908772,
-   17278025178352448052,
-   8106158096671156351,
-   14048339071531168610,
-   11693835165114810678,
-   1513877718228711010,
-   9645472202335786335,
-   17873867635010174681,
-   9397139196728407550,
-   1353819401613268532,
-   16619008817335719168,
-   12745401124066453320
+   3171289617796885858,
+   5811286315871865938,
+   13368462815870310039,
+   386817627964026256,
+   14126739079259046814,
+   17928854814506217027,
+   15922060064278064997,
+   3341367249040930078,
+   8205565113497168650,
+   15704411887115302157,
+   15612161525153436437,
+   5579036852105007785,
+   2035748250280727702,
+   9719584369625352138
   ],
   "fiscal_stress-10000": [
-   5568745734059790727,
-   13680445549625814591,
-   5408240896482861444,
-   173593938797577784,
-   14719991727064859321,
-   384964629339615823,
-   11762310093186926130,
-   12927291001252699062,
-   9736306375018047796,
-   11547053597558087580,
-   10279544018947511790,
-   9084762559587437290,
-   5822734256335893977,
-   11376134265927870078
+   5849839785435343584,
+   14829350006009026881,
+   8563429866393336907,
+   15509394914305083893,
+   14472599960721665093,
+   7639723151207239270,
+   805199791597199082,
+   12960477653765604864,
+   3702660220549062780,
+   14550135084977141366,
+   15292437902220515612,
+   3965728292610205238,
+   2178136241067842465,
+   12826367124261829220
   ],
   "fiscal_stress-30000": [
-   12598356031331137886,
-   984951105807244316,
-   816349234648465587,
-   3631803104543301602,
-   8108469467376590717,
-   15849409090789061212,
-   51552441706664845,
-   3795515496706218878,
-   1788640329348470664,
-   6981948863289685606,
-   11609692822082982874,
-   11955997074044690411,
-   8143222969370649687,
-   3047129145436040301
+   17254280940217388825,
+   5105420363837816696,
+   15272481634501732101,
+   8074598597711838511,
+   16472177487024662819,
+   17907803279361590536,
+   28330010622617624,
+   7332984013083867538,
+   3344634077002435282,
+   7393908268879832803,
+   9351444938223860457,
+   11555591138023000316,
+   8988938966121554034,
+   4597886675594514579
   ]
  },
  "identity": {
-  "binary_sha256": "b629b932789054dd27ebf527cdb432c55bbb7df35b8efc0f3957945119b6968d",
+  "binary_sha256": "989b2db93fc6a2a5c5571c4d5afec1bf8dc9e5601f849f67891d2e55b23eb72d",
   "command": [
    "tools/sim02_gate.py",
    "record-baseline",
-   "envelope",
-   "--bursts",
-   "departures,settlements",
    "--binary",
    "$TEST_BINARY",
    "--artifacts",
@@ -484,345 +481,345 @@
    22,
    23
   ],
-  "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "git_head": "f17149a6c1e27ce49a42cc3ba1361256bde3af1a",
-  "workers": "8"
+  "diff_sha256": "f082e0ac51fac7d50bec9aa8a379c06881c9d0b10d8b53c1add5e3540e6dad65",
+  "git_head": "a812c4598af27a2c8f40a2e2ad8e2947d451bf46",
+  "workers": "6"
  },
  "metrics": {
   "baseline-10000": {
-   "bankruptcies_per_1k_buildings_day": 0.061207002081038075,
+   "bankruptcies_per_1k_buildings_day": 0.01748771488029659,
    "buildings_per_target": 0.8169,
-   "deliveries_per_1k_buildings_day": 170.03305178112373,
+   "deliveries_per_1k_buildings_day": 170.91618138257874,
    "departures_per_household": 0.0,
-   "employment_rate": 0.6844721748278487,
-   "final_employment_rate": 0.6775750131602035,
-   "final_households_per_target": 0.5685,
-   "households_per_target": 0.5678857142857143,
-   "jobs_per_target": 1.4741142857142857,
-   "net_income_per_resident_day": 11.413209898476435,
-   "out_of_stock_rate": 0.13453660480613594,
-   "residents_per_target": 1.1386,
+   "employment_rate": 0.6809001526831119,
+   "final_employment_rate": 0.6761946133796699,
+   "final_households_per_target": 0.5703,
+   "households_per_target": 0.5697357142857143,
+   "jobs_per_target": 1.475442857142857,
+   "net_income_per_resident_day": 11.254076803651666,
+   "out_of_stock_rate": 0.13063048114792217,
+   "residents_per_target": 1.1498357142857143,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.06775258080841678
+   "vacancy_rate": 0.06428410469547534
   },
   "baseline-10300": {
-   "bankruptcies_per_1k_buildings_day": 0.06822213125938055,
+   "bankruptcies_per_1k_buildings_day": 0.017055532814845138,
    "buildings_per_target": 0.8132038834951456,
-   "deliveries_per_1k_buildings_day": 167.12716605266746,
+   "deliveries_per_1k_buildings_day": 165.53247373447945,
    "departures_per_household": 0.0,
-   "employment_rate": 0.6804968957870254,
-   "final_employment_rate": 0.6767580659112533,
-   "final_households_per_target": 0.5620388349514563,
-   "households_per_target": 0.5615395284327324,
-   "jobs_per_target": 1.4588765603328708,
-   "net_income_per_resident_day": 11.136389966130752,
-   "out_of_stock_rate": 0.1413732456610264,
-   "residents_per_target": 1.1214632454923719,
+   "employment_rate": 0.6792711255754249,
+   "final_employment_rate": 0.667765726681128,
+   "final_households_per_target": 0.5589320388349515,
+   "households_per_target": 0.5585644937586685,
+   "jobs_per_target": 1.4600416088765602,
+   "net_income_per_resident_day": 11.080089552672627,
+   "out_of_stock_rate": 0.13858369802635528,
+   "residents_per_target": 1.1182316227461857,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.08371115412819456
+   "vacancy_rate": 0.0896552029650838
   },
   "baseline-29100": {
-   "bankruptcies_per_1k_buildings_day": 0.1183544004166075,
-   "buildings_per_target": 0.7258762886597938,
-   "deliveries_per_1k_buildings_day": 168.76323033118942,
+   "bankruptcies_per_1k_buildings_day": 0.09468480110378032,
+   "buildings_per_target": 0.7258738340697104,
+   "deliveries_per_1k_buildings_day": 170.0421738063951,
    "departures_per_household": 0.0,
-   "employment_rate": 0.6773820682275442,
-   "final_employment_rate": 0.6625911121561251,
-   "final_households_per_target": 0.5123367697594502,
-   "households_per_target": 0.5123073146784487,
-   "jobs_per_target": 1.3737898870888563,
-   "net_income_per_resident_day": 11.181685038832525,
-   "out_of_stock_rate": 0.08587813688759427,
-   "residents_per_target": 1.0229945999018164,
+   "employment_rate": 0.6755519272821661,
+   "final_employment_rate": 0.6640758484371335,
+   "final_households_per_target": 0.5113058419243987,
+   "households_per_target": 0.5112763868433972,
+   "jobs_per_target": 1.3739420716740303,
+   "net_income_per_resident_day": 11.159647466553796,
+   "out_of_stock_rate": 0.08998300577035707,
+   "residents_per_target": 1.0256823760432008,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.046868000709883006
+   "vacancy_rate": 0.048978885301965244
   },
   "baseline-30000": {
-   "bankruptcies_per_1k_buildings_day": 0.16676855122426748,
-   "buildings_per_target": 0.7138595238095238,
-   "deliveries_per_1k_buildings_day": 172.82668342795662,
+   "bankruptcies_per_1k_buildings_day": 0.21012763319396274,
+   "buildings_per_target": 0.7138571428571429,
+   "deliveries_per_1k_buildings_day": 173.1507940335815,
    "departures_per_household": 0.0,
-   "employment_rate": 0.6715602248846025,
-   "final_employment_rate": 0.6535723447922012,
-   "final_households_per_target": 0.5209666666666667,
-   "households_per_target": 0.5208619047619047,
-   "jobs_per_target": 1.3522,
-   "net_income_per_resident_day": 10.742631379863246,
-   "out_of_stock_rate": 0.10310844609575595,
-   "residents_per_target": 1.0392714285714286,
+   "employment_rate": 0.6700902495189658,
+   "final_employment_rate": 0.6536850519584333,
+   "final_households_per_target": 0.5196,
+   "households_per_target": 0.5194785714285715,
+   "jobs_per_target": 1.351647619047619,
+   "net_income_per_resident_day": 10.70630841340002,
+   "out_of_stock_rate": 0.09850254326332396,
+   "residents_per_target": 1.042252380952381,
    "trip_failures_per_1k_residents_day": 0.0,
-   "unhoused_rate": 0.0,
-   "vacancy_rate": 0.007858143244601002
+   "unhoused_rate": 4.594363634692959e-06,
+   "vacancy_rate": 0.010569582446311716
   },
   "baseline-30900": {
-   "bankruptcies_per_1k_buildings_day": 0.23999393292156251,
-   "buildings_per_target": 0.703134535367545,
-   "deliveries_per_1k_buildings_day": 171.78554302176616,
+   "bankruptcies_per_1k_buildings_day": 0.23670638418365247,
+   "buildings_per_target": 0.7031322237632917,
+   "deliveries_per_1k_buildings_day": 171.80592730686388,
    "departures_per_household": 0.0,
-   "employment_rate": 0.6658606409379998,
-   "final_employment_rate": 0.6455249732317189,
-   "final_households_per_target": 0.5142718446601942,
-   "households_per_target": 0.514204808136847,
-   "jobs_per_target": 1.3378687008784096,
-   "net_income_per_resident_day": 10.471571530411051,
-   "out_of_stock_rate": 0.09901081234809923,
-   "residents_per_target": 1.0275034674063799,
+   "employment_rate": 0.6678392403400617,
+   "final_employment_rate": 0.6475617479417353,
+   "final_households_per_target": 0.510032362459547,
+   "households_per_target": 0.5100023116042534,
+   "jobs_per_target": 1.3379750346740638,
+   "net_income_per_resident_day": 10.554609421624972,
+   "out_of_stock_rate": 0.09051395939086294,
+   "residents_per_target": 1.0219417475728156,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.010546583358202282
+   "vacancy_rate": 0.018891649044147273
   },
   "baseline-9700": {
-   "bankruptcies_per_1k_buildings_day": 0.0,
+   "bankruptcies_per_1k_buildings_day": 0.010490317437005642,
    "buildings_per_target": 0.701958762886598,
-   "deliveries_per_1k_buildings_day": 176.63596500430103,
+   "deliveries_per_1k_buildings_day": 175.80722992677758,
    "departures_per_household": 0.0,
-   "employment_rate": 0.671452786917938,
-   "final_employment_rate": 0.671452786917938,
-   "final_households_per_target": 0.5119587628865979,
-   "households_per_target": 0.5119587628865979,
-   "jobs_per_target": 1.3049484536082474,
-   "net_income_per_resident_day": 10.953994891073757,
-   "out_of_stock_rate": 0.07066624475001439,
-   "residents_per_target": 1.0339175257731958,
+   "employment_rate": 0.6809663908172583,
+   "final_employment_rate": 0.680531601907274,
+   "final_households_per_target": 0.5079381443298969,
+   "households_per_target": 0.5079381443298969,
+   "jobs_per_target": 1.30480117820324,
+   "net_income_per_resident_day": 11.403924247261703,
+   "out_of_stock_rate": 0.06894952013685522,
+   "residents_per_target": 1.0161855670103093,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.018123238018525976
+   "vacancy_rate": 0.026182261010757053
   },
   "fiscal_stress-10000": {
-   "bankruptcies_per_1k_buildings_day": 15.362915094844674,
-   "buildings_per_target": 0.7571928571428571,
-   "deliveries_per_1k_buildings_day": 10.158541896536548,
+   "bankruptcies_per_1k_buildings_day": 15.261065655769736,
+   "buildings_per_target": 0.7575142857142857,
+   "deliveries_per_1k_buildings_day": 10.123458570236183,
    "departures_per_household": 0.0,
-   "employment_rate": 0.07971859626263299,
-   "final_employment_rate": 0.01181697023545091,
-   "final_households_per_target": 0.5609,
-   "households_per_target": 0.5608357142857143,
-   "jobs_per_target": 1.0649714285714287,
-   "net_income_per_resident_day": 24.924002477713923,
-   "out_of_stock_rate": 0.8100374398288465,
-   "residents_per_target": 1.12535,
+   "employment_rate": 0.0807838888847352,
+   "final_employment_rate": 0.013199577613516367,
+   "final_households_per_target": 0.5633,
+   "households_per_target": 0.5631428571428572,
+   "jobs_per_target": 1.0694285714285714,
+   "net_income_per_resident_day": 24.724822545215176,
+   "out_of_stock_rate": 0.8052293880449393,
+   "residents_per_target": 1.1360785714285713,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.08148555210103296
+   "vacancy_rate": 0.07688998169700036
   },
   "fiscal_stress-10300": {
-   "bankruptcies_per_1k_buildings_day": 14.746811345482728,
-   "buildings_per_target": 0.7567198335644937,
-   "deliveries_per_1k_buildings_day": 9.768097356265503,
+   "bankruptcies_per_1k_buildings_day": 14.705445691875493,
+   "buildings_per_target": 0.7568238557558946,
+   "deliveries_per_1k_buildings_day": 9.301642628589889,
    "departures_per_household": 0.0,
-   "employment_rate": 0.08003727456605782,
-   "final_employment_rate": 0.012572027239392353,
-   "final_households_per_target": 0.5568932038834952,
-   "households_per_target": 0.5568307905686547,
+   "employment_rate": 0.08174339226325923,
+   "final_employment_rate": 0.012165237178365132,
+   "final_households_per_target": 0.5539805825242718,
+   "households_per_target": 0.5539805825242718,
    "jobs_per_target": 1.0699167822468794,
-   "net_income_per_resident_day": 24.916266075351015,
-   "out_of_stock_rate": 0.8129732018330345,
-   "residents_per_target": 1.1119209431345354,
+   "net_income_per_resident_day": 24.892758496456114,
+   "out_of_stock_rate": 0.8090981923789495,
+   "residents_per_target": 1.1093203883495146,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.09310668438456651
+   "vacancy_rate": 0.09884332281808621
   },
   "fiscal_stress-29100": {
-   "bankruptcies_per_1k_buildings_day": 14.85834314214587,
-   "buildings_per_target": 0.6768507609229258,
-   "deliveries_per_1k_buildings_day": 10.865201826794696,
+   "bankruptcies_per_1k_buildings_day": 15.035904119886869,
+   "buildings_per_target": 0.6757241040746195,
+   "deliveries_per_1k_buildings_day": 10.355508733534633,
    "departures_per_household": 0.0,
-   "employment_rate": 0.08621633957097216,
-   "final_employment_rate": 0.012745922313771649,
-   "final_households_per_target": 0.511786941580756,
-   "households_per_target": 0.511786941580756,
-   "jobs_per_target": 1.0318360333824252,
-   "net_income_per_resident_day": 27.236851985813825,
-   "out_of_stock_rate": 0.7434125332131106,
-   "residents_per_target": 1.0218213058419243,
+   "employment_rate": 0.08115510697032437,
+   "final_employment_rate": 0.012949543746645196,
+   "final_households_per_target": 0.5106529209621993,
+   "households_per_target": 0.5106529209621993,
+   "jobs_per_target": 1.0267893961708394,
+   "net_income_per_resident_day": 27.03337522747235,
+   "out_of_stock_rate": 0.7459623149394348,
+   "residents_per_target": 1.0243298969072165,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.04794198616799839
+   "vacancy_rate": 0.05026917900403768
   },
   "fiscal_stress-30000": {
-   "bankruptcies_per_1k_buildings_day": 15.307576946286618,
-   "buildings_per_target": 0.6636,
-   "deliveries_per_1k_buildings_day": 10.486043990758183,
+   "bankruptcies_per_1k_buildings_day": 15.430456415691982,
+   "buildings_per_target": 0.6628309523809525,
+   "deliveries_per_1k_buildings_day": 10.119248650974596,
    "departures_per_household": 0.0,
-   "employment_rate": 0.08448400606478156,
-   "final_employment_rate": 0.012952368708619913,
-   "final_households_per_target": 0.5197,
-   "households_per_target": 0.5196809523809524,
-   "jobs_per_target": 1.0075142857142858,
-   "net_income_per_resident_day": 25.721482733151,
-   "out_of_stock_rate": 0.76555613586593,
-   "residents_per_target": 1.037095238095238,
+   "employment_rate": 0.08085994605629422,
+   "final_employment_rate": 0.01347103726986978,
+   "final_households_per_target": 0.518,
+   "households_per_target": 0.5179952380952381,
+   "jobs_per_target": 1.002604761904762,
+   "net_income_per_resident_day": 25.52683680694785,
+   "out_of_stock_rate": 0.761137157565729,
+   "residents_per_target": 1.0392571428571429,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.010198565231839294
+   "vacancy_rate": 0.013513637757427177
   },
   "fiscal_stress-30900": {
-   "bankruptcies_per_1k_buildings_day": 14.887052615841116,
-   "buildings_per_target": 0.6557443365695793,
-   "deliveries_per_1k_buildings_day": 10.730263018376931,
+   "bankruptcies_per_1k_buildings_day": 14.944313521889612,
+   "buildings_per_target": 0.655328247803976,
+   "deliveries_per_1k_buildings_day": 10.700914601971048,
    "departures_per_household": 0.0,
-   "employment_rate": 0.08232343728422264,
-   "final_employment_rate": 0.013503707209339012,
-   "final_households_per_target": 0.5133333333333333,
-   "households_per_target": 0.5133263985205733,
-   "jobs_per_target": 1.0104761904761905,
-   "net_income_per_resident_day": 25.8461747736413,
-   "out_of_stock_rate": 0.7550615126898067,
-   "residents_per_target": 1.0257165973185391,
+   "employment_rate": 0.08047658294916268,
+   "final_employment_rate": 0.012204399923920623,
+   "final_households_per_target": 0.5095145631067961,
+   "households_per_target": 0.5095145631067961,
+   "jobs_per_target": 1.0069533055940822,
+   "net_income_per_resident_day": 25.97438815754908,
+   "out_of_stock_rate": 0.7537020905923344,
+   "residents_per_target": 1.020906148867314,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.012293697820360095
+   "vacancy_rate": 0.019880589430894307
   },
   "fiscal_stress-9700": {
-   "bankruptcies_per_1k_buildings_day": 14.892739562064383,
-   "buildings_per_target": 0.6548085419734904,
-   "deliveries_per_1k_buildings_day": 9.510888834198928,
+   "bankruptcies_per_1k_buildings_day": 14.903857078286247,
+   "buildings_per_target": 0.6548527245949927,
+   "deliveries_per_1k_buildings_day": 9.18966334597308,
    "departures_per_household": 0.0,
-   "employment_rate": 0.0795392992559227,
-   "final_employment_rate": 0.01237277988425464,
-   "final_households_per_target": 0.5115463917525773,
-   "households_per_target": 0.5115463917525773,
-   "jobs_per_target": 0.972739322533137,
-   "net_income_per_resident_day": 24.397311843854997,
-   "out_of_stock_rate": 0.7449041285196062,
-   "residents_per_target": 1.0331958762886597,
+   "employment_rate": 0.08079827243873101,
+   "final_employment_rate": 0.012478441716546617,
+   "final_households_per_target": 0.5079381443298969,
+   "households_per_target": 0.5079381443298969,
+   "jobs_per_target": 0.9732547864506628,
+   "net_income_per_resident_day": 25.197712395080238,
+   "out_of_stock_rate": 0.7423236394212648,
+   "residents_per_target": 1.0161855670103093,
    "trip_failures_per_1k_residents_day": 0.0,
    "unhoused_rate": 0.0,
-   "vacancy_rate": 0.01894397420395002
+   "vacancy_rate": 0.026182261010757053
   }
  },
  "summaries": {
   "baseline-10000": {
-   "build_s": 23.833690191,
+   "build_s": 24.703920163,
    "days": 14,
-   "max_hour_money_residual": 0.022401154041290283,
-   "record": "GrowthDayRecord { day: 17, households: 5685, residents: 11398, employed: 7723, jobs: 14720, buildings: 8169, treasury: 10001778642.373638, vacant_homes: 381, vacancy_reserve: 569, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.017501354217529297,
+   "record": "GrowthDayRecord { day: 17, households: 5703, residents: 11510, employed: 7783, jobs: 14758, buildings: 8169, treasury: 10001769143.12152, vacant_homes: 363, vacancy_reserve: 571, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 10000,
-   "total_s": 88.356155667,
+   "total_s": 89.08683852,
    "violation_examples": [],
    "violations": {},
    "workload": "baseline"
   },
   "baseline-10300": {
-   "build_s": 29.977165531,
+   "build_s": 24.163322861,
    "days": 14,
-   "max_hour_money_residual": 0.018700122833251953,
-   "record": "GrowthDayRecord { day: 17, households: 5789, residents: 11561, employed: 7824, jobs: 15026, buildings: 8376, treasury: 10001750929.345123, vacant_homes: 481, vacancy_reserve: 579, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.01741945743560791,
+   "record": "GrowthDayRecord { day: 17, households: 5757, residents: 11525, employed: 7696, jobs: 15038, buildings: 8376, treasury: 10001749640.77947, vacant_homes: 513, vacancy_reserve: 576, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 10300,
-   "total_s": 95.240451424,
+   "total_s": 89.769312234,
    "violation_examples": [],
    "violations": {},
    "workload": "baseline"
   },
   "baseline-29100": {
-   "build_s": 108.931755336,
+   "build_s": 111.329109883,
    "days": 14,
-   "max_hour_money_residual": 0.03407910466194153,
-   "record": "GrowthDayRecord { day: 17, households: 14909, residents: 29771, employed: 19726, jobs: 39824, buildings: 21123, treasury: 10004569505.527515, vacant_homes: 698, vacancy_reserve: 1491, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.04108971357345581,
+   "record": "GrowthDayRecord { day: 17, households: 14879, residents: 29849, employed: 19822, jobs: 39916, buildings: 21123, treasury: 10004535100.065372, vacant_homes: 728, vacancy_reserve: 1488, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 29100,
-   "total_s": 342.650075163,
+   "total_s": 344.896383814,
    "violation_examples": [],
    "violations": {},
    "workload": "baseline"
   },
   "baseline-30000": {
-   "build_s": 114.343002617,
+   "build_s": 115.998020648,
    "days": 14,
-   "max_hour_money_residual": 0.04786497354507446,
-   "record": "GrowthDayRecord { day: 17, households: 15629, residents: 31184, employed: 20381, jobs: 40545, buildings: 21416, treasury: 10004575349.316963, vacant_homes: 121, vacancy_reserve: 1563, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.032981306314468384,
+   "record": "GrowthDayRecord { day: 17, households: 15588, residents: 31275, employed: 20444, jobs: 40463, buildings: 21415, treasury: 10004547011.296482, vacant_homes: 162, vacancy_reserve: 1559, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 30000,
-   "total_s": 356.940607489,
+   "total_s": 357.910053326,
    "violation_examples": [],
    "violations": {},
    "workload": "baseline"
   },
   "baseline-30900": {
-   "build_s": 114.694864193,
+   "build_s": 116.231062457,
    "days": 14,
-   "max_hour_money_residual": 0.031341731548309326,
-   "record": "GrowthDayRecord { day: 17, households: 15891, residents: 31754, employed: 20498, jobs: 41203, buildings: 21727, treasury: 10004513025.797867, vacant_homes: 166, vacancy_reserve: 1590, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.039921343326568604,
+   "record": "GrowthDayRecord { day: 17, households: 15760, residents: 31580, employed: 20450, jobs: 41211, buildings: 21726, treasury: 10004522298.054737, vacant_homes: 297, vacancy_reserve: 1576, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 30900,
-   "total_s": 359.397329191,
+   "total_s": 356.582229278,
    "violation_examples": [],
    "violations": {},
    "workload": "baseline"
   },
   "baseline-9700": {
-   "build_s": 17.203545132,
+   "build_s": 17.238639522,
    "days": 14,
-   "max_hour_money_residual": 0.019399285316467285,
-   "record": "GrowthDayRecord { day: 17, households: 4966, residents: 10029, employed: 6734, jobs: 12658, buildings: 6809, treasury: 10001485670.556185, vacant_homes: 90, vacancy_reserve: 497, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.01896655559539795,
+   "record": "GrowthDayRecord { day: 17, households: 4927, residents: 9857, employed: 6708, jobs: 12658, buildings: 6809, treasury: 10001527932.288307, vacant_homes: 129, vacancy_reserve: 493, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 9700,
-   "total_s": 70.761309952,
+   "total_s": 69.831238495,
    "violation_examples": [],
    "violations": {},
    "workload": "baseline"
   },
   "fiscal_stress-10000": {
-   "build_s": 23.087138999,
+   "build_s": 23.577814587,
    "days": 14,
-   "max_hour_money_residual": 0.004937648773193359,
-   "record": "GrowthDayRecord { day: 17, households: 5609, residents: 11255, employed: 133, jobs: 5006, buildings: 6718, treasury: 10003884512.59529, vacant_homes: 457, vacancy_reserve: 561, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.006287693977355957,
+   "record": "GrowthDayRecord { day: 17, households: 5633, residents: 11364, employed: 150, jobs: 5096, buildings: 6728, treasury: 10003887778.188879, vacant_homes: 433, vacancy_reserve: 564, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 10000,
-   "total_s": 55.638939507,
+   "total_s": 56.303706277,
    "violation_examples": [],
    "violations": {},
    "workload": "fiscal_stress"
   },
   "fiscal_stress-10300": {
-   "build_s": 28.142106549,
+   "build_s": 23.108585648,
    "days": 14,
-   "max_hour_money_residual": 0.005364060401916504,
-   "record": "GrowthDayRecord { day: 17, households: 5736, residents: 11454, employed: 144, jobs: 5336, buildings: 6946, treasury: 10003943780.648333, vacant_homes: 534, vacancy_reserve: 574, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.007410705089569092,
+   "record": "GrowthDayRecord { day: 17, households: 5706, residents: 11426, employed: 139, jobs: 5376, buildings: 6949, treasury: 10003944329.363026, vacant_homes: 564, vacancy_reserve: 571, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 10300,
-   "total_s": 62.086310754,
+   "total_s": 56.645464924,
    "violation_examples": [],
    "violations": {},
    "workload": "fiscal_stress"
   },
   "fiscal_stress-29100": {
-   "build_s": 106.565464225,
+   "build_s": 108.778531762,
    "days": 14,
-   "max_hour_money_residual": 0.011360585689544678,
-   "record": "GrowthDayRecord { day: 17, households: 14893, residents: 29735, employed: 379, jobs: 15658, buildings: 17473, treasury: 10011247591.360538, vacant_homes: 714, vacancy_reserve: 1490, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.015730977058410645,
+   "record": "GrowthDayRecord { day: 17, households: 14860, residents: 29808, employed: 386, jobs: 15248, buildings: 17462, treasury: 10011153121.001953, vacant_homes: 747, vacancy_reserve: 1486, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 29100,
-   "total_s": 200.356549464,
+   "total_s": 202.974423859,
    "violation_examples": [],
    "violations": {},
    "workload": "fiscal_stress"
   },
   "fiscal_stress-30000": {
-   "build_s": 102.515468951,
+   "build_s": 106.485716985,
    "days": 14,
-   "max_hour_money_residual": 0.015580832958221436,
-   "record": "GrowthDayRecord { day: 17, households: 15591, residents: 31114, employed: 403, jobs: 15297, buildings: 17629, treasury: 10011089208.830177, vacant_homes: 159, vacancy_reserve: 1560, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.015043959021568298,
+   "record": "GrowthDayRecord { day: 17, households: 15540, residents: 31178, employed: 420, jobs: 14991, buildings: 17604, treasury: 10011001945.320045, vacant_homes: 210, vacancy_reserve: 1554, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 30000,
-   "total_s": 179.580427405,
+   "total_s": 181.258078095,
    "violation_examples": [],
    "violations": {},
    "workload": "fiscal_stress"
   },
   "fiscal_stress-30900": {
-   "build_s": 86.801122183,
+   "build_s": 84.946828924,
    "days": 14,
-   "max_hour_money_residual": 0.015327483415603638,
-   "record": "GrowthDayRecord { day: 17, households: 15862, residents: 31695, employed: 428, jobs: 16113, buildings: 18008, treasury: 10011326603.687853, vacant_homes: 195, vacancy_reserve: 1587, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.015644967555999756,
+   "record": "GrowthDayRecord { day: 17, households: 15744, residents: 31546, employed: 385, jobs: 15971, buildings: 17988, treasury: 10011327482.335304, vacant_homes: 313, vacancy_reserve: 1575, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 30900,
-   "total_s": 144.786244869,
+   "total_s": 142.728321941,
    "violation_examples": [],
    "violations": {},
    "workload": "fiscal_stress"
   },
   "fiscal_stress-9700": {
-   "build_s": 17.289382063,
+   "build_s": 17.067693631,
    "days": 14,
-   "max_hour_money_residual": 0.007201015949249268,
-   "record": "GrowthDayRecord { day: 17, households: 4962, residents: 10022, employed: 124, jobs: 4662, buildings: 5644, treasury: 10003370801.979696, vacant_homes: 94, vacancy_reserve: 497, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
+   "max_hour_money_residual": 0.007068336009979248,
+   "record": "GrowthDayRecord { day: 17, households: 4927, residents: 9857, employed: 123, jobs: 4652, buildings: 5644, treasury: 10003431447.46513, vacant_homes: 129, vacancy_reserve: 493, unhoused_households: 0, net_open_jobs: 0, departures: 0 }",
    "residents": 9700,
-   "total_s": 44.543999033,
+   "total_s": 43.155224671,
    "violation_examples": [],
    "violations": {},
    "workload": "fiscal_stress"
