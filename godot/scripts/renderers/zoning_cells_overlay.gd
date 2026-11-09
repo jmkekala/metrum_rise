@@ -36,7 +36,9 @@ func _process(_delta: float) -> void:
 	if visible != _reported_visible:
 		_reported_visible = visible
 		simulation_node.set_zoning_cell_overlay_visible(visible)
-	RenderingServer.global_shader_parameter_set("zoning_mask_enabled", visible)
+	# Until a layer is resident the sampler globals are unset, and Godot binds its 4 x 4 white
+	# array there: the lookup would name layer 1 and the shader fetch past the texture.
+	RenderingServer.global_shader_parameter_set("zoning_mask_enabled", visible and _masks.has_layers())
 	if not visible:
 		return
 	var keys := _visible_chunks()

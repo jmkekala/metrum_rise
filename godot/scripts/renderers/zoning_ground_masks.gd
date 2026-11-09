@@ -134,5 +134,8 @@ func _reallocate(layers: int, height: int) -> void:
 	upload_bytes += resident_bytes()
 	uploads += 1
 
+func has_layers() -> bool:
+	return _masks != null
+
 func resident_bytes() -> int:
 	return _capacity * (SIDE * SIDE * 4 + SIDE * _row_height * 16)
