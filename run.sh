@@ -4,6 +4,9 @@
 # Verification:
 #   --perf-contract [--diff BASE | --phase PHASE | --agents | --prepare]
 #                        Run short saved-city/agent release performance contracts
+#   --timing --level R|F|L --control BIN --branch BIN --base REV --artifacts DIR
+#                        A round's timing session (tools/timing_session.py; docs/simulation.md,
+#                        timing levels): prepares snapshots, then times the level's rows
 #   --test               The full gate. Serial: Python unit tests, `cargo check --bench '*'`, the
 #                        test build. Godot loads the test build's own library (test profile:
 #                        opt-level 1, debug assertions), so the gate builds the crate once; with
@@ -109,6 +112,10 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ "${1:-}" = "--perf-contract" ]; then
     shift
     exec python3 "$PROJECT_ROOT/tools/perf_contract.py" "$@"
+fi
+if [ "${1:-}" = "--timing" ]; then
+    shift
+    exec python3 "$PROJECT_ROOT/tools/timing_session.py" "$@"
 fi
 GODOT_DIR="$PROJECT_ROOT/godot"
 case "$(uname -s)" in
@@ -597,6 +604,9 @@ build_gate_targets() {
         return 1
     fi
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_benchmark_report.py; then
+        return 1
+    fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_timing_session.py; then
         return 1
     fi
     echo "Checking benchmark targets for API drift..."
