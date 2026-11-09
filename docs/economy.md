@@ -966,15 +966,16 @@ It then runs frame by frame at 32×. `rust/tests/growth_scenario.rs`:
 Both two-year and producer-town tests also assert the `DEM-02-C` vacancy bound.
 
 The library suite adds scarce-labor expansion, recovery and two reload-continuation cases.
-Recovery warms the starter town up for 30 days, as it stops changing after its 10th day but for
-cash, so its report changed with `CODE-21` `T2` (2026-11-08); expansion keeps 365. At 30 and 45
-days one entrant ended below its 95% staffing bound (90.3%, 75.4%): the workforce calendar's
-accounting gaps, fixed in `ECON-28` round `E2`, after which every warm-up from 10 to 200 days
-ends with all entrants at 99.7% or more. Two of them (115 and 140 days) stopped instead on a
-parking assertion at the expansion's road commit (`PARK-11`); with that fixed and the
-[refill crew](#funding-census-econ-17) (`ECON-24`, round `E3`), 10-200 days by 5 and 21-40 days
-by 1 all pass (worst entrant 99.74%). The warm-up shortens to 30 days once every test passes on
-that branch (`ECON-28`).
+Recovery and expansion warm the starter town up for 30 days, as it stops changing after its 10th
+day but for cash; recovery's report changed with `CODE-21` `T2` (2026-11-08). Expansion kept 365
+days until `ECON-28`: at 30 and 45 days one entrant ended below its 95% staffing bound (90.3%,
+75.4%), the workforce calendar's accounting gaps, fixed in `ECON-28` round `E2`, after which
+every warm-up from 10 to 200 days ends with all entrants at 99.7% or more. Two of them (115 and
+140 days) stopped instead on a parking assertion at the expansion's road commit (`PARK-11`);
+with that fixed and the [refill crew](#funding-census-econ-17) (`ECON-24`, round `E3`), 10-200
+days by 5 and 21-40 days by 1 all pass (worst entrant 99.74%). Round `E4` shortened it to 30
+days; the committed test with its warm-up swept over 21-40 days by 1 passes all 20 (worst
+entrant 99.74%).
 The 100 ha start places a mechanized farm or a labour-intensive coal mine (500 jobs) west of the
 town in a 4 km world and runs 90 days: the farm must trade at a profit, the mine must lose money
 on its owner's capital without fresh equity or advertising full staffing it cannot fund. The

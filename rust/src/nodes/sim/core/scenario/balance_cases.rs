@@ -301,7 +301,8 @@ fn many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital() 
     use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 
     let mut scenario = GrowthScenario::starter_town();
-    scenario.run_days(365);
+    // The starter town stops changing after its 10th day but for cash; 30 days leave margin.
+    scenario.run_days(30);
     let before = scenario.record();
     assert!(before.residents > 20 && before.employed > 0);
     let core = &mut scenario.core;
