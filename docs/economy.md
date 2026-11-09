@@ -1016,6 +1016,11 @@ separately from cached runtime; `--binary "$TEST_BINARY"` skips compilation. Use
 inspect selection without running, and `--prepare --keep-baseline` to prepare snapshots and
 retain the first baseline executable (it deliberately refuses to overwrite an existing one).
 
+In a round's timing session the contract runs as rows of `./run.sh --timing`
+([timing levels](simulation.md#timing-levels-and-the-session-runner-perf-19)): prepared before
+the locks; at every landing the branch runs `--diff` and the full days, and the control's rows
+come from the session cache (a merge times both).
+
 Every economy change keeps these checks. They replace `ECON-13` (closed 2026-10-12), whose
 100k runs took hours. The contract uses saved cities, deterministic work counts and one run per
 tier, so a full check takes minutes. The 100k and 1M tiers are deferred.
@@ -1031,7 +1036,10 @@ churn is still reported. Bankruptcy reduces employment, so fiscal results cannot
 for baseline performance acceptance.
 
 Each snapshot records its save-format and fixture revisions, tier and boundary; the runner
-regenerates it when these change. Generation must show that loading preserves every subsequent
+regenerates it when these change. The file name carries the first 16 hex digits of the revision
+(`populated_city_<residents>_<revision>.sqlite`, `fiscal_stress_<residents>_<revision>.sqlite`,
+since `PERF-19`) and the prepare reports print the whole key, so builds with different keys share
+one cache directory without overwriting each other's cities. Generation must show that loading preserves every subsequent
 hourly `GrowthDayRecord`, placement/removal counts and the checked agent movement/schedule state
 through the next daily boundary. Fiscal generation also enforces 24/24 active intervals before
 publishing its cache. Snapshots are local build products and are not committed.

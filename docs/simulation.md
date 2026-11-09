@@ -1140,10 +1140,11 @@ moves its entities between the tiers' phase buckets.
 - **Workload:** the populated-city fixture used by `benchmark_populated_hour_boundaries` and
   `benchmark_populated_midnight_boundaries`, extended to record every frame of the day, at 10k,
   30k and 100k residents, at 1× and 32×.
-- **Acceptance (decided 2026-10-22):** at 30k at 1× and 32× and at 100k at 1×, the worst frame no
-  other task preempted (`max_unpreempted_ms`), the raw p99.9 and the worst preempted frame less
-  its wait (`max_preempted_less_wait_ms`) are each at most 8 ms. `tools/sim02_gate.py perf07`
-  checks it and fails a run that misses it or lacks the scheduler statistics. 100k at 32× is
+- **Acceptance (decided 2026-10-22; timing has no 100k tier since 2026-11-09):** at 30k at 1× and
+  32×, the worst frame no other task preempted (`max_unpreempted_ms`), the raw p99.9 and the worst
+  preempted frame less its wait (`max_preempted_less_wait_ms`) are each at most 8 ms.
+  `tools/sim02_gate.py perf07` checks it and fails a run that misses it or lacks the scheduler
+  statistics. 100k at 32× is
   reported but not required: it is deferred to `PERF-08`.
 - **Target (as first set):** max ≤ 8 ms at 30k and 100k, at both speeds. 32× at 100k is the binding
   case: one
@@ -1258,6 +1259,110 @@ the efficiency cores at the lowest CPU and I/O priority (`taskset -c 16-23 nice 
 and their p99 by 14% and 28%. A 100k 1× run that overlapped another build read 15% slower per
 frame. Builds and tests therefore never run during `PERF-07` or `PERF-01`; the envelope,
 determinism checks and `./run.sh --test` are not timing runs and may share the machine.
+
+### Timing levels and the session runner (`PERF-19`)
+
+A round times at one of three levels (decided 2026-11-09). Timing has no 100k tier: the
+acceptance is 30k at 1× and 32×. The R and F rows are comparisons against a control, printed
+apart from acceptance. A whole 1× day is the cost (about 3.4 min at 30k against 20 s for a 32×
+day), so the levels differ in how many whole days they run.
+
+| Level | When | Rows |
+| --- | --- | --- |
+| R | slot-only and edit-only diffs (path rule below), every round with a speed claim or risk | the change's own benchmarks, 3 alternated rounds a side; `PERF-07` 30k 32× C B B C with the component comparison; K22 30k C B when an edit path changed |
+| F | any per-frame or unlisted path | R plus one 30k 1× B day; the control's 1× day comes from the cache under the calibration below, else it is timed; a second B day only when the first is within 5% of a limit or differs from the control beyond the one-run tolerance |
+| L | landing; merge (`--merge`) | 30k 32× C B B C and 1× B B (the acceptance); K22 30k and the economy contract `--diff` with full days, branch only, the control's rows from the cache. A merge times the control afresh: 30k 1× C B B C, K22 and contract C B |
+
+Diagnostics come from the acceptance run's own records (its 12 worst frames with their component
+split), not from extra attribution days. **Known exceptions:** an acceptance miss the user
+accepted on `dev` (today `PERF-17`, 30k 32×) is reported as "known exception" with its id, starts
+no second day and does not fail the session; its comparison against the control still runs. A
+second day near a limit means within 5% of it on either side; a clear miss gets none.
+
+**Path rule** (from `git diff --name-only <base>`; the runner prints its level beside the
+brief's and warns on a mismatch). R suffices when every changed source path is slot or edit
+work: `simulation/economy/{demand,households,logistics,hiring,customers,fiscal}`,
+`simulation/zoning`, `nodes/sim/core/{schedule,entity_phases,entity_days,demand_requests,household_requests}`,
+the edit paths `nodes/sim/{editing,undo,road_tool,road_pockets,roundabouts,zoning}`,
+`nodes/sim/core/{road_*,graded_*}` and `simulation/network/roadbed` (these add the K22 rows), and
+`simulation/save` (compare `load_s`; a `SAVE_VERSION` bump re-keys every snapshot). Per-frame
+paths are F: `nodes/sim/core/{frame,thread,snapshot,parking,lot_adoption,turnstile,trips,budget}`,
+`nodes/sim/render`, `simulation/economy/agents`, `simulation/network`, `simulation/pathing`,
+`simulation/parking`, `simulation/core/{time,scheduler}`, `simulation/buildings`,
+`thread_pools.rs`, `debug`, `lib.rs`, Cargo and toolchain files. Any other source path fails
+closed to F; docs, tools, tests and Godot need no timing. The rule cannot see a codegen change in
+an R path that also runs per frame; R's component comparison is the net for it.
+
+**Prepare before the locks.** The runner generates or verifies every snapshot each binary needs
+(baseline, fiscal and K22 commit cities) before the timed phase, then runs the prepares again: a
+second generation means two binaries overwrite one file, and the session stops. The timed phase
+never generates: a `PERF-07` row runs `perf07_frame_budget` alone, which only loads, after
+checking that its snapshot is the prepared file (same inode, size and key); a K22 or contract row
+that reports a generation fails. Since `PERF-19` every fixture's file name carries its revision
+(`populated_city_<residents>_<revision>.sqlite`), and the prepare reports print it, so binaries
+with different keys share one cache directory. Older builds use the unkeyed name and need their
+own cache when their keys differ.
+
+**Comparison.** For each tier and speed the runner compares the branch's mean against the
+control's on `mean_ms`, `p99_ms`, `p999_ms`, `max_unpreempted_ms`, the mean agent, snapshot, slot
+and pathing components and `load_s`, with the tolerance 2σ·√(1/n_ctl + 1/n_br) from the
+same-binary spread (σ per run: mean 0.7%, p99 1.7%, p99.9 4%, worst unpreempted frame 3%,
+components 1.25%, `load_s` 3.5%; at C B B C that is 1.4%, 3.4%, 8% and 6%). A run with more than
+twice the preempted frames of the quietest run of its group marks the group noisy: tolerances
+double and `--rerun <label>` times that row again. Raw maxima and over-8 counts are reported
+only.
+
+**Control reuse.** Every timed row is cached under a key of the binary's SHA-256, the snapshot
+key, benchmark, tier, speed, workers, CPU set, the measurement's `METRUM_*` variables, boot id,
+kernel release, CPU governor and EPP, and the hash of `sim02_gate.py`; the cache keeps one
+directory per boot and deletes the others. A control's 1× day (and its K22 and contract rows) is
+reused only when this session's first control 32× run is within 3% on the mean, 6% on p99 and 15%
+on p99.9 of the mean of the cached 32× rows, with preempted frames within 2× of theirs; otherwise
+the control's 1× day is timed and its cached rows are replaced (at L the K22 and contract control
+rows are cache-only and are skipped instead). Same-binary drift between two sessions of one boot
+reached +5% on the mean, so a cached day without this check is not evidence. A tier's cached 1× and 32× rows
+always come from one session. Rows recorded in a local no-cache window are not cached.
+
+**Running it.** The timed phase pins with `--cpus` (one thread per performance core on a hybrid
+CPU; skipped with a note where the OS has no affinity call), sets `RAYON_NUM_THREADS=8` and
+`METRUM_DEBUG=0`, unsets the display, refuses a binary whose SHA-256 changed since the plan, and
+holds each row while `godot`, `cargo` or `rustc` runs or a local quiet window would overlap it.
+Machine-specific settings (the CPU list, more busy processes, quiet and no-cache windows, and the
+lock commands wrapped around the prepare and timed phases) live in an untracked
+`timing-session.json` in the main checkout's Cargo target directory, or `$METRUM_TIMING_SETTINGS`.
+
+```bash
+./run.sh --timing --level R --control <the control's $TEST_BINARY> --branch "$TEST_BINARY" --base dev \
+    --bench 'simulation::zoning::cells::tests::generation::lots::benchmark_cell_lot_derivation_locality;RAYON_NUM_THREADS=1;cpus=one' \
+    --artifacts "$ARTIFACTS"
+./run.sh --timing --level F ... --dry-run   # print the classification and the rows only
+./run.sh --timing --level L ...             # a landing; add --merge for a merge
+./run.sh --timing --artifacts "$ARTIFACTS" --rerun p07-3-br   # time one noisy row again
+```
+
+The session directory keeps today's layout: `p07-<n>-<side>/` with `perf07-<tier>-<speed>x.log`,
+`prepare-<tier>.log` and `report.json` (as `sim02_gate.py`'s), `bench-*`, `k22-*` and `contract-*`
+logs, `precheck.txt`, `postcheck.txt`, `binaries.sha256`, `plan.txt`, `session.json` and
+`summary.txt` with the row table, the calibration line ("reused from <session> <time>") and the
+comparison tables. Exit status 1 means a failed or refused row, 2 a branch acceptance miss that
+is not a known exception, 3 a comparison worse beyond tolerance (read the noisy flag first).
+
+**Measured** (`PERF-19`, 2026-11-09, one boot, eight workers pinned to the performance cores, the
+desktop in use). *Same numbers:* round `CODE-28`'s follow-up timing replayed with its two release
+test binaries rebuilt bit-identical (same SHA-256): every metric's mean of the runner's runs lies
+within the largest same-session pairwise spread of one binary (mean 4.5%, p99 5.9-7.6%, p99.9
+10-14%) of the round's own four runs a side and speed, except one branch 32× p99.9 run (10.1 ms
+against 7.97-8.99; the third-worst frame of 2,700); the 30k 1× means differ by +2.4%
+(control) and +1.4% (branch) with 42% and 10% more preempted frames. A landing-form session on
+`dev` read 30k 1× means 2.21-2.23 ms against 2.30-2.34 ms in the parking landing's session
+(`PARK-02`, another build and boot), 32× 4.36-4.50 against 4.59-4.61 ms. *Row walls:* 30k 32×
+day 20 s, 30k 1× day 200-206 s, K22 at 30k 11 s, economy contract 113 s a side, the
+`CODE-28` micro-benchmarks 17 s a side and round (14 s of it building a 10k city). *Sessions:* R
+3.4 min; F 10.0-10.2 min when the control's day is timed, about 6.7 min when it is reused; L
+13.6 min with the control's day timed (measured), about 10 min with it cached, a merge about 19 min
+(from the row walls). The parking landing's session took 42 min and the merge's final timing
+100 min. Prepare runs before the locks, concurrently per tier and fixture: none when the snapshots are cached,
+about 6-8 min for a new fixture key at 10k and 30k.
 
 ### Parking frame and load acceptance (`PARK-02`)
 
