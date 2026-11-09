@@ -15,7 +15,9 @@ class CellSimulationStub extends Node3D:
 		return false
 	func get_node_pos(_node: int) -> Vector3:
 		return hit
-	func intersect_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
+	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait := false) -> Vector3:
+		return hit
+	func hover_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
 		return hit
 	func get_zoning_cell_dependencies() -> PackedInt64Array:
 		return PackedInt64Array([revision])

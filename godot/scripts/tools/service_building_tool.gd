@@ -3,7 +3,8 @@
 ## Explicit service-building placement tool with Rust-authored frontage snapping and validation.
 ##
 ## Rust methods called: get_service_building_placement_preview(),
-##   place_service_building(), get_world_surface_height(), intersect_world_surface()
+##   place_service_building(), get_world_surface_height(), intersect_world_surface(),
+##   hover_world_surface()
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
@@ -80,7 +81,7 @@ func select_asset(asset_id: String) -> void:
 func _commit_at_mouse() -> void:
 	if selected_asset_id.is_empty():
 		return
-	var wp = _mouse_world_pos()
+	var wp = _mouse_world_pos(true)
 	if wp == null:
 		return
 	var error: String = simulation_node.place_service_building(selected_asset_id, wp.x, wp.y)
@@ -99,6 +100,9 @@ func _update_preview() -> void:
 		_clear_preview_cache()
 		return
 	var wp = _mouse_world_pos()
+	# The simulation thread holds the core: keep the last preview.
+	if wp is bool:
+		return
 	if wp == null:
 		_hide_preview_visuals()
 		return
@@ -322,14 +326,17 @@ func _build_preview_mesh(corners: PackedVector3Array, is_valid: bool) -> Mesh:
 	im.surface_end()
 	return im
 
-func _mouse_world_pos() -> Variant:
+# The ground point under the pointer, null for none. A click's query waits for the core
+# (`CODE-25`); the preview's answers false while the simulation thread holds it.
+func _mouse_world_pos(click := false) -> Variant:
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if camera == null:
 		return null
 	var ray_origin = camera.project_ray_origin(mouse_pos)
 	var ray_dir = camera.project_ray_normal(mouse_pos)
-	var hit = simulation_node.intersect_world_surface(ray_origin, ray_dir)
-	if hit == null:
-		return null
+	var hit = (simulation_node.intersect_world_surface(ray_origin, ray_dir, true) if click
+		else simulation_node.hover_world_surface(ray_origin, ray_dir))
+	if hit == null or hit is bool:
+		return hit
 	return Vector2(hit.x, hit.z)

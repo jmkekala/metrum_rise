@@ -22,7 +22,9 @@ class SimulationStub extends Node3D:
 		return [{"runtime_id": 1}, {"runtime_id": 2}]
 	func get_zoning_site_dependencies() -> PackedInt64Array:
 		return PackedInt64Array([revision])
-	func intersect_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
+	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait := false) -> Vector3:
+		return hit
+	func hover_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
 		return hit
 	func get_zoning_road_at(_x: float, _z: float) -> int:
 		return edge

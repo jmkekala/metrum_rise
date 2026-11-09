@@ -2,9 +2,12 @@
 
 ## Dedicated bulldoze tool for deleting one building, road or vegetation target per click. A
 ## roundabout goes whole (`ROAD-62`, D15): Rust's target is its whole ring and names it, and the
-## name shows beside the pointer.
+## name shows beside the pointer. The hover keeps its last target while the simulation thread
+## holds the core; the click finds what is under the pointer itself and waits for the core, so
+## it is never dropped (`CODE-25`).
 ##
-## Rust methods called: get_bulldoze_target_at(), bulldoze_at(), intersect_world_surface()
+## Rust methods called: get_bulldoze_target_at(), bulldoze_at(), hover_world_surface(),
+## intersect_world_surface()
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
@@ -12,8 +15,6 @@ extends Node3D
 var active: bool = false
 
 var hover_mesh: MeshInstance3D
-var _target_valid := false
-var _target_world_pos := Vector2.ZERO
 var _hover_label: Label
 
 func _ready() -> void:
@@ -41,16 +42,20 @@ func _unhandled_input(event) -> void:
 	if not active:
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		_delete_hovered_target()
+		_delete_at_pointer()
 		get_viewport().set_input_as_handled()
 
 func _update_hover() -> void:
 	var wp = _mouse_world_pos()
+	# The simulation thread holds the core: keep the last hover.
+	if wp is bool:
+		return
 	if wp == null:
 		_clear_hover()
 		return
-	_target_world_pos = wp
 	var target: Dictionary = simulation_node.get_bulldoze_target_at(wp.x, wp.y)
+	if bool(target.get("busy", false)):
+		return
 	if not bool(target.get("valid", false)):
 		_clear_hover()
 		return
@@ -58,24 +63,21 @@ func _update_hover() -> void:
 	if mesh == null:
 		_clear_hover()
 		return
-	_target_valid = true
 	hover_mesh.mesh = mesh
 	hover_mesh.visible = true
 	_hover_label.text = str(target.get("label", ""))
 	_hover_label.visible = not _hover_label.text.is_empty()
 	_hover_label.position = get_viewport().get_mouse_position() + Vector2(16, 16)
 
-func _delete_hovered_target() -> void:
-	if not _target_valid:
-		return
-	var result: Dictionary = simulation_node.bulldoze_at(_target_world_pos.x, _target_world_pos.y)
-	if not bool(result.get("queued", false)):
-		_clear_hover()
-		return
+# Deletes what is under the pointer at the click, not the last hover's target, which may be
+# older while the simulation thread holds the core; both queries wait for the core.
+func _delete_at_pointer() -> void:
+	var wp = _mouse_world_pos(true)
+	if wp != null:
+		simulation_node.bulldoze_at(wp.x, wp.y, true)
 	_clear_hover()
 
 func _clear_hover() -> void:
-	_target_valid = false
 	if _hover_label:
 		_hover_label.visible = false
 	if hover_mesh:
@@ -174,14 +176,17 @@ func _make_hover_material() -> StandardMaterial3D:
 	mat.render_priority = 8
 	return mat
 
-func _mouse_world_pos() -> Variant:
+# The ground point under the pointer, null for none. The click's query waits for the core; the
+# hover's answers false while the simulation thread holds it.
+func _mouse_world_pos(click := false) -> Variant:
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if camera == null:
 		return null
 	var ray_origin = camera.project_ray_origin(mouse_pos)
 	var ray_dir = camera.project_ray_normal(mouse_pos)
-	var hit = simulation_node.intersect_world_surface(ray_origin, ray_dir)
-	if hit == null:
-		return null
+	var hit = (simulation_node.intersect_world_surface(ray_origin, ray_dir, true) if click
+		else simulation_node.hover_world_surface(ray_origin, ray_dir))
+	if hit == null or hit is bool:
+		return hit
 	return Vector2(hit.x, hit.z)

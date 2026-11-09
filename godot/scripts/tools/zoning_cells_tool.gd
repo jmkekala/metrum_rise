@@ -60,7 +60,7 @@ func handle_input(event: InputEvent) -> void:
 	if not _active:
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		var point = controller._mouse_world_pos()
+		var point = controller._mouse_world_pos(true)
 		if point != null:
 			cancel()
 			_settings = _current_settings()
@@ -137,7 +137,7 @@ func _same_authoring_dependencies(a: PackedInt64Array, b: PackedInt64Array) -> b
 	return true
 
 func _finish() -> void:
-	var point = controller._mouse_world_pos()
+	var point = controller._mouse_world_pos(true)
 	if point == null:
 		cancel()
 		return

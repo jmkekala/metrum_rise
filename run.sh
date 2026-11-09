@@ -492,7 +492,7 @@ godot_vehicle_chain() {
     for script in \
         vehicle_ground_support_test road_turn_lanes_test road_walkway_preset_test road_types_test \
         road_builder_test road_junction_preview_test road_preview_stream_test \
-        zoning_reference_test road_tunnels_test agent_inspector_test; do
+        zoning_reference_test road_tunnels_test agent_inspector_test core_busy_input_test; do
         run_godot_bridge_test "$script" || return 1
     done
 }

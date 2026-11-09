@@ -13,20 +13,21 @@ const ANGLE_SNAP_TOLERANCE_DEG: f32 = 4.0;
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Returns the closest network point (node/edge) within range.
+    /// Returns the closest network point (node/edge) within range, or `null` for none.
     ///
-    /// Uses `try_lock` for the same reason as `intersect_terrain` — called every
-    /// frame while the road tool is active; must not stall on the sim mutex.
-    /// Returns `null` when contended; GDScript handles null from this call already.
+    /// A per-frame query like `intersect_terrain`: `null` too while the sim thread holds the
+    /// core, unless `wait` (a click), which waits for it.
     #[func]
-    pub fn get_closest_network_point(&self, world_pos: Vector3, max_dist: f32) -> Variant {
-        match self.try_lock_core() {
-            Some(core) => match core.get_closest_network_point_internal(world_pos, max_dist) {
-                Some(p) => p.to_variant(),
-                None => Variant::nil(),
-            },
-            None => Variant::nil(),
-        }
+    pub fn get_closest_network_point(
+        &self,
+        world_pos: Vector3,
+        max_dist: f32,
+        #[opt(default = false)] wait: bool,
+    ) -> Variant {
+        self.lock_core_if(wait).map_or_else(Variant::nil, |core| {
+            core.get_closest_network_point_internal(world_pos, max_dist)
+                .map_or_else(Variant::nil, |p| p.to_variant())
+        })
     }
 
     /// Resolves the road-tool cursor position in one non-blocking Rust query.

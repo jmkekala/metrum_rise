@@ -36,7 +36,9 @@ class SimulationStub extends Node3D:
 		return true
 	func get_world_surface_height(_point: Vector2) -> float:
 		return 0.0
-	func intersect_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
+	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait := false) -> Vector3:
+		return hit
+	func hover_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
 		return hit
 	func get_building_info_at(x: float, _z: float) -> Dictionary:
 		# Two houses: one centred at the origin and one 100 m east.

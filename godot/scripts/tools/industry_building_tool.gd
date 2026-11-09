@@ -4,7 +4,7 @@
 ##
 ## Rust methods called: get_industry_building_placement_preview(),
 ##   place_industry_building(), commit_extractor_polygon(), commit_field_polygon(),
-##   get_world_surface_height(), intersect_world_surface()
+##   get_world_surface_height(), intersect_world_surface(), hover_world_surface()
 extends Node3D
 
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
@@ -54,6 +54,8 @@ var _pending_building_footprint: PackedVector2Array = PackedVector2Array()
 var _pending_area_kind: String = "extractor"
 var _pending_polygon_link_distance_m: float = POLYGON_LINK_DISTANCE_M
 var _polygon_points: Array[Vector2] = []
+# The pointer's last ground point, kept while the simulation thread holds the core (`CODE-25`).
+var _pointer_point: Variant = null
 var _notification_layer: CanvasLayer
 var _notification_panel: PanelContainer
 var _notification_label: Label
@@ -213,7 +215,7 @@ func select_asset(asset_id: String) -> void:
 func _commit_building_at_mouse() -> void:
 	if selected_asset_id.is_empty():
 		return
-	var wp = _mouse_world_pos()
+	var wp = _mouse_world_pos(true)
 	if wp == null:
 		return
 	var result: Dictionary = simulation_node.place_industry_building(selected_asset_id, wp.x, wp.y)
@@ -245,7 +247,7 @@ func _commit_building_at_mouse() -> void:
 	_clear_preview_cache()
 
 func _add_polygon_point_at_mouse() -> void:
-	var wp = _mouse_world_pos()
+	var wp = _mouse_world_pos(true)
 	if wp == null:
 		return
 	if _polygon_points.is_empty() and not _first_polygon_point_is_near_building(wp):
@@ -558,21 +560,24 @@ func _build_preview_mesh(corners: PackedVector3Array, is_valid: bool) -> Mesh:
 func _update_polygon_mesh() -> void:
 	if not polygon_mesh:
 		return
-	if _price_label:
-		_price_label.hide()
 	var point_count := _polygon_points.size()
 	_update_first_polygon_marker(point_count)
 	if point_count == 0:
+		_price_label.hide()
 		polygon_mesh.visible = false
 		polygon_mesh.mesh = null
 		return
 	var preview_points := _current_polygon_preview_points()
 	if preview_points.size() < 2:
+		_price_label.hide()
 		polygon_mesh.visible = false
 		polygon_mesh.mesh = null
 		return
 	var preview_invalid := _preview_current_click_invalid()
-	if preview_points.size() >= 3:
+	if preview_points.size() < 3:
+		_price_label.hide()
+	else:
+		# A pending quote (the simulation thread holds the core) keeps the label as it was.
 		var quote: Dictionary = simulation_node.get_industry_area_quote(_pending_building_id, PackedVector2Array(preview_points))
 		if bool(quote.get("ok", false)):
 			_price_label.text = "Area %.2f ha: setup %s; utilities %s/day if imported" % [
@@ -832,17 +837,21 @@ func _point_on_segment_2d(point: Vector2, start: Vector2, end: Vector2) -> bool:
 		and point.y <= max(start.y, end.y) + POLYGON_SEGMENT_EPS
 	)
 
-func _mouse_world_pos() -> Variant:
+# The ground point under the pointer, null for none. A click's query waits for the core; the
+# previews' query keeps the last point while the simulation thread holds it (`CODE-25`).
+func _mouse_world_pos(click := false) -> Variant:
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if camera == null:
 		return null
 	var ray_origin = camera.project_ray_origin(mouse_pos)
 	var ray_dir = camera.project_ray_normal(mouse_pos)
-	var hit = simulation_node.intersect_world_surface(ray_origin, ray_dir)
-	if hit == null:
-		return null
-	return Vector2(hit.x, hit.z)
+	var hit = (simulation_node.intersect_world_surface(ray_origin, ray_dir, true) if click
+		else simulation_node.hover_world_surface(ray_origin, ray_dir))
+	if hit is bool:
+		return _pointer_point
+	_pointer_point = null if hit == null else Vector2(hit.x, hit.z)
+	return _pointer_point
 
 func _create_tool_notification() -> void:
 	_notification_layer = CanvasLayer.new()

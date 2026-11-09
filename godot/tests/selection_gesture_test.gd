@@ -15,6 +15,9 @@ class SimulationStub extends Node3D:
 	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait := false) -> Variant:
 		rays += 1
 		return hit
+	func hover_world_surface(_origin: Vector3, _direction: Vector3) -> Variant:
+		rays += 1
+		return hit
 	func get_closest_node(_point: Vector3, _radius: float) -> int:
 		return 7 if hit.x < 40.0 else -1
 	func get_hovered_edge(x: float, _z: float) -> int:

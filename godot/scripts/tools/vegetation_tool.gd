@@ -2,7 +2,8 @@
 
 ## Player vegetation input and ground-ring preview; all placement decisions stay in Rust.
 ## Rust methods called: add_vegetation_at(), remove_vegetation_at(), paint_vegetation(),
-## plant_vegetation_line(), snap_vegetation_line_end(), intersect_world_surface().
+## plant_vegetation_line(), snap_vegetation_line_end(), intersect_world_surface(),
+## hover_world_surface().
 extends Node3D
 
 enum Mode { PLANT, REMOVE }
@@ -222,7 +223,11 @@ func _process(delta: float) -> void:
 		var probe = _mouse_world_pos()
 		if probe == null:
 			return
-		_last_hit = probe
+		# While the simulation thread holds the core the ring keeps its last ground position.
+		if probe is Vector3:
+			_last_hit = probe
+		elif _last_hit == Vector3.INF:
+			return
 	var hit := _last_hit
 	var line := is_line_option()
 	# A hedge end lands on a hedge it is drawn near, so the cursor shows it there.
@@ -274,7 +279,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				return
 			_stroke += 1
 			if is_line_option():
-				var start = _mouse_world_pos()
+				var start = _mouse_world_pos(true)
 				if start != null:
 					_line_start = _line_end(start)
 					get_viewport().set_input_as_handled()
@@ -282,10 +287,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_painting = mode == Mode.REMOVE or radius > MIN_RADIUS_M
 			_last_stamp = Vector2.INF
 			_hold_left = HOLD_REPEAT_S
-			if _stamp():
+			if _stamp(true):
 				get_viewport().set_input_as_handled()
 		elif _line_start != Vector3.INF:
-			var end = _mouse_world_pos()
+			var end = _mouse_world_pos(true)
 			if end != null:
 				apply_line(Vector2(_line_start.x, _line_start.z), Vector2(end.x, end.z), _stroke)
 			_line_start = Vector3.INF
@@ -391,10 +396,11 @@ func step_radius(direction: int) -> void:
 	)
 
 # Applies one stamp at the cursor. Returns whether the surface was hit at all, since a click on
-# sky must not be swallowed from the camera.
-func _stamp() -> bool:
-	var hit = _mouse_world_pos()
-	if hit == null:
+# sky must not be swallowed from the camera. A click's stamp waits for the core; a held drag's
+# stamps skip the frames the simulation thread holds it.
+func _stamp(click := false) -> bool:
+	var hit = _mouse_world_pos(click)
+	if not (hit is Vector3):
 		return false
 	var pos := Vector2(hit.x, hit.z)
 	if _painting:
@@ -452,11 +458,15 @@ func _ring_stroke_m(hit: Vector3, ring_radius: float) -> float:
 	var upper := maxf(RING_STROKE_MIN_M, ring_radius * RING_STROKE_MAX_RATIO)
 	return clampf(RING_STROKE_PX * metres_per_px, RING_STROKE_MIN_M, upper)
 
-func _mouse_world_pos() -> Variant:
+# The ground point under the pointer, null for none. A click's query waits for the core
+# (`CODE-25`); the others answer false while the simulation thread holds it.
+func _mouse_world_pos(click := false) -> Variant:
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
 		return null
 	var mouse := get_viewport().get_mouse_position()
-	return simulation_node.intersect_world_surface(
-		camera.project_ray_origin(mouse), camera.project_ray_normal(mouse)
-	)
+	var origin := camera.project_ray_origin(mouse)
+	var direction := camera.project_ray_normal(mouse)
+	if click:
+		return simulation_node.intersect_world_surface(origin, direction, true)
+	return simulation_node.hover_world_surface(origin, direction)

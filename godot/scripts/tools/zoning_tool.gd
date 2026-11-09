@@ -7,7 +7,8 @@
 ##   get_zoning_road_at(), get_zoning_road_preview_packed(), apply_zoning_road_at(),
 ##   apply_zoning_parcel_drag(), get_zoning_parcel_profile_runtime_id_at(),
 ##   get_zoning_parcel_rezone_drag_preview_packed(),
-##   apply_zoning_parcel_rezone_drag(), get_zoning_site_dependencies(), intersect_world_surface()
+##   apply_zoning_parcel_rezone_drag(), get_zoning_site_dependencies(), intersect_world_surface(),
+##   hover_world_surface()
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
@@ -46,6 +47,8 @@ var _last_valid_drag_preview_mesh: Mesh = null
 var _last_valid_drag_preview_kind: int = -1
 var _last_valid_drag_preview_start: Vector2 = Vector2.ZERO
 var _last_valid_drag_preview_end: Vector2 = Vector2.ZERO
+# The pointer's last ground point, kept while the simulation thread holds the core (`CODE-25`).
+var _pointer_point: Variant = null
 
 const DRAG_THRESHOLD_M: float = 4.0
 const PREVIEW_REFRESH_DISTANCE_M: float = 1.0
@@ -159,7 +162,7 @@ func set_cell_workflow(enabled: bool) -> void:
 		current_profile_runtime_id = int(profiles[0].get("runtime_id", 0))
 
 func _begin_drag() -> void:
-	drag_start_world = _mouse_world_pos()
+	drag_start_world = _mouse_world_pos(true)
 	dragging = drag_start_world != null
 	drag_mode = DRAG_MODE_NONE
 	# A press on a road is one complete zoning action; its release cannot start a parcel drag.
@@ -184,7 +187,7 @@ func _finish_drag() -> void:
 	if not dragging:
 		return
 	var start = drag_start_world
-	var end = _mouse_world_pos()
+	var end = _mouse_world_pos(true)
 	var mode = drag_mode
 	dragging = false
 	drag_start_world = null
@@ -484,14 +487,19 @@ func _build_packed_parcels_mesh(payload: Dictionary, include_fill: bool) -> Mesh
 	im.surface_end()
 	return im
 
-func _mouse_world_pos() -> Variant:
+# The ground point under the pointer, null for none; the cell tool asks through it too. A
+# click's query (a press or a release) waits for the core; the previews' query keeps the last
+# point while the simulation thread holds it (`CODE-25`).
+func _mouse_world_pos(click := false) -> Variant:
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if camera == null:
 		return null
 	var ray_origin = camera.project_ray_origin(mouse_pos)
 	var ray_dir = camera.project_ray_normal(mouse_pos)
-	var hit = simulation_node.intersect_world_surface(ray_origin, ray_dir)
-	if hit == null:
-		return null
-	return Vector2(hit.x, hit.z)
+	var hit = (simulation_node.intersect_world_surface(ray_origin, ray_dir, true) if click
+		else simulation_node.hover_world_surface(ray_origin, ray_dir))
+	if hit is bool:
+		return _pointer_point
+	_pointer_point = null if hit == null else Vector2(hit.x, hit.z)
+	return _pointer_point

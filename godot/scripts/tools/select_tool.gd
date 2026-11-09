@@ -342,18 +342,27 @@ func _preview_crosswalk(toggle: Dictionary) -> Dictionary:
 func _update_crosswalk_hover() -> void:
 	if crosswalk_toggles.is_empty():
 		return
-	var hovered = _get_hovered_cw_toggle(_world_position(get_viewport().get_mouse_position()))
+	var pos = _world_position(get_viewport().get_mouse_position())
+	# The simulation thread holds the core: the labels keep the last hover.
+	if pos is bool:
+		return
+	var hovered = _get_hovered_cw_toggle(pos)
 	for c in crosswalk_toggles:
 		var preview: Dictionary = _preview_crosswalk(c) if c == hovered else {}
 		c.label_inst.text = _crosswalk_label(c.has_cw, preview)
 
 # The world point under a screen position, null for none. A click's query waits while the
-# simulation thread holds the core; the per-frame one answers null then, and a click would
-# deselect as if it hit nothing (`CODE-20`).
+# simulation thread holds the core, else a click would deselect as if it hit nothing
+# (`CODE-20`); the per-frame one answers false then, and its hover keeps its last answer
+# (`CODE-25`).
 func _world_position(screen_position: Vector2, click := false):
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return null
-	return simulation_node.intersect_world_surface(camera.project_ray_origin(screen_position), camera.project_ray_normal(screen_position), click)
+	var origin = camera.project_ray_origin(screen_position)
+	var direction = camera.project_ray_normal(screen_position)
+	if click:
+		return simulation_node.intersect_world_surface(origin, direction, true)
+	return simulation_node.hover_world_surface(origin, direction)
 
 func _get_hovered_lane_sphere(pos):
 	if pos == null: return null
@@ -381,6 +390,9 @@ func _get_hovered_cw_toggle(pos):
 
 func _update_drag_line():
 	var pos = _world_position(get_viewport().get_mouse_position())
+	# The simulation thread holds the core: the line keeps its last end.
+	if pos is bool:
+		return
 	if pos == null:
 		drag_line_mesh.mesh = null
 		return
@@ -471,6 +483,8 @@ func _is_connected(edge_idx: int) -> bool:
 
 func _hovered_edge() -> int:
 	var pos = _world_position(get_viewport().get_mouse_position())
+	# The simulation thread holds the core: the last hovered edge stays.
+	if pos is bool: return _last_hovered
 	if pos == null: return -1
 	return simulation_node.get_hovered_edge(pos.x, pos.z)
 

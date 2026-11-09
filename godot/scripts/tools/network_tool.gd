@@ -4,7 +4,7 @@
 ##
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
 ##   get_road_mesh_data(full_snapshot), get_network_nodes(), get_node_pos(), get_world_surface_height(),
-##   intersect_world_surface(),
+##   intersect_world_surface(), hover_world_surface(),
 ##   get_road_tool_cursor_pos(), get_road_surface_debug_data()
 ## Owns the shared preview mesh, blueprint spline, and node snapping MultiMesh.
 ## Subclasses override _handle_input() and _commit() for their specific editing behaviour.
@@ -226,7 +226,9 @@ func _update_blueprint_visuals():
 		blueprint_mat.emission = Color(0.5, 0.0, 0.0)
 
 
-func get_terrain_interaction():
+# The world point under the pointer, null for none. A click passes `click` and waits for the
+# core (`CODE-25`); a `hover` query answers false while the simulation thread holds it.
+func get_terrain_interaction(click := false, hover := false):
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return null
@@ -235,11 +237,16 @@ func get_terrain_interaction():
 	var ray_dir = camera.project_ray_normal(mouse_pos)
 	
 	# Combined world-surface raycast: compiled roadbed where owned, otherwise visual terrain.
-	return simulation_node.intersect_world_surface(ray_origin, ray_dir)
+	if hover:
+		return simulation_node.hover_world_surface(ray_origin, ray_dir)
+	return simulation_node.intersect_world_surface(ray_origin, ray_dir, click)
 
 func get_world_mouse_pos() -> Vector3:
-	var pos_variant = get_terrain_interaction()
-	if pos_variant == null: 
+	var pos_variant = get_terrain_interaction(false, true)
+	# The simulation thread holds the core: the cursor keeps its last position.
+	if pos_variant is bool and _has_last_world_mouse_pos:
+		return _last_world_mouse_pos
+	if pos_variant == null or pos_variant is bool:
 		is_valid = false
 		return Vector3.ZERO
 	

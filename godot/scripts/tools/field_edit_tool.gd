@@ -111,9 +111,10 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		_mouse_dirty = true
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
-		# Receive release even over UI, so a drag cannot get stuck behind a window.
+		# Receive release even over UI, so a drag cannot get stuck behind a window. The release
+		# point waits for the core, so the vertex lands where it was let go (`CODE-25`).
 		_mouse_dirty = true
-		_update_drag()
+		_update_drag(true)
 		_release_drag()
 		get_viewport().set_input_as_handled()
 
@@ -133,13 +134,15 @@ func _process(_delta: float) -> void:
 			world_height = 2.0 * camera.global_position.distance_to(handle.global_position) * tan(deg_to_rad(camera.fov * 0.5))
 		handle.scale = Vector3.ONE * maxf(world_height * 6.0 / viewport_height, 0.1)
 
-func _update_drag() -> void:
+# Moves the dragged vertex to the pointer. A frame's update skips while the simulation thread
+# holds the core; the release's waits for it.
+func _update_drag(release := false) -> void:
 	_mouse_dirty = false
 	var camera := get_viewport().get_camera_3d()
 	if camera == null or _dragged < 0:
 		return
 	var mouse := get_viewport().get_mouse_position()
-	var hit = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse), camera.project_ray_normal(mouse))
+	var hit = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse), camera.project_ray_normal(mouse), release)
 	if hit == null:
 		return
 	var point := Vector2(hit.x, hit.z)

@@ -776,7 +776,7 @@ func _apply_sculpt(delta: float) -> void:
 	_live_sculpt_visual_pending = true
 
 func _begin_sculpt_stroke() -> void:
-	var intersection = _terrain_intersection_under_cursor()
+	var intersection = _terrain_intersection_under_cursor(true)
 	if intersection == null:
 		_end_sculpt_stroke()
 		return
@@ -863,20 +863,21 @@ func _process_resource_stroke(delta: float) -> void:
 	_flush_resource_overlay(false)
 
 func _begin_resource_stroke(erase_override: bool) -> void:
-	var intersection = _terrain_intersection_under_cursor()
+	var intersection = _terrain_intersection_under_cursor(true)
 	if intersection == null:
 		_end_resource_stroke()
 		return
 	_resource_stroke_active = true
-	_apply_resource_tool(erase_override)
+	_apply_resource_tool(erase_override, true)
 	_flush_resource_overlay(false)
 
 func _end_resource_stroke() -> void:
 	_flush_resource_overlay(true)
 	_resource_stroke_active = false
 
-func _apply_resource_tool(erase_override: bool) -> void:
-	var intersection = _terrain_intersection_under_cursor()
+# One stamp of the resource brush; the stroke's first, a click's, waits for the core.
+func _apply_resource_tool(erase_override: bool, click := false) -> void:
+	var intersection = _terrain_intersection_under_cursor(click)
 	if intersection == null:
 		return
 
@@ -912,7 +913,7 @@ func _on_resource_control_changed(_value: float) -> void:
 	_release_resource_field_focus()
 
 func _apply_water_tool(remove_mode: bool) -> void:
-	var intersection = _terrain_intersection_under_cursor()
+	var intersection = _terrain_intersection_under_cursor(true)
 	if intersection == null:
 		return
 
@@ -945,7 +946,10 @@ func _apply_water_tool(remove_mode: bool) -> void:
 				var preview_state: Dictionary = sim.begin_world_open_water_fill_preview(world_pos, surface_elevation)
 				_consume_lake_fill_preview_state(preview_state, true)
 
-func _terrain_intersection_under_cursor():
+# The terrain point under the pointer, null for none. A click (a stroke's start, a water fill,
+# a slope anchor) waits for the core (`CODE-25`); a `hover` query answers false while the
+# simulation thread holds it, and the strokes' per-frame queries answer null then.
+func _terrain_intersection_under_cursor(click := false, hover := false):
 	var camera := get_viewport().get_camera_3d()
 	if not camera:
 		return null
@@ -953,7 +957,9 @@ func _terrain_intersection_under_cursor():
 	var mouse_pos := get_viewport().get_mouse_position()
 	var ray_origin := camera.project_ray_origin(mouse_pos)
 	var ray_dir := camera.project_ray_normal(mouse_pos)
-	return sim.intersect_terrain(ray_origin, ray_dir)
+	if hover:
+		return sim.hover_terrain(ray_origin, ray_dir)
+	return sim.intersect_terrain(ray_origin, ray_dir, click)
 
 func _is_sculpt_tool(tool: Tool) -> bool:
 	return (
@@ -1375,7 +1381,7 @@ func _slope_profile_ready() -> bool:
 	return _slope_has_start and _slope_has_end
 
 func _capture_slope_anchor() -> void:
-	var intersection = _terrain_intersection_under_cursor()
+	var intersection = _terrain_intersection_under_cursor(true)
 	if intersection == null:
 		return
 
@@ -1499,7 +1505,10 @@ func _update_brush_preview() -> void:
 	if _active_tool == Tool.SLOPE and not _slope_profile_ready():
 		_brush_preview.visible = false
 		return
-	var intersection = _terrain_intersection_under_cursor()
+	var intersection = _terrain_intersection_under_cursor(false, true)
+	# The simulation thread holds the core: the brush keeps its last position.
+	if intersection is bool:
+		return
 	if intersection == null:
 		_brush_preview.visible = false
 		return

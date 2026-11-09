@@ -68,15 +68,16 @@ func _input(event):
 		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 			cancel_move()
 
+# The click's queries wait for the core, so a click during a frame is not lost (`CODE-25`).
 func _handle_left_click():
-	var pos_variant = get_terrain_interaction()
+	var pos_variant = get_terrain_interaction(true)
 	if pos_variant == null: return
 	var pos: Vector3 = pos_variant
 	
 	match current_state:
 		State.IDLE:
 			# Look for a node near the mouse to select
-			var closest_pos = simulation_node.get_closest_network_point(pos, 5.0)
+			var closest_pos = simulation_node.get_closest_network_point(pos, 5.0, true)
 			if closest_pos != null:
 				selected_node_id = simulation_node.get_closest_node(closest_pos, 5.0)
 				if selected_node_id != -1:
@@ -85,7 +86,7 @@ func _handle_left_click():
 					
 		State.SELECTED:
 			# Re-click to drag
-			var closest_pos = simulation_node.get_closest_network_point(pos, 5.0)
+			var closest_pos = simulation_node.get_closest_network_point(pos, 5.0, true)
 			if closest_pos != null:
 				var clicked_id = simulation_node.get_closest_node(closest_pos, 5.0)
 				if clicked_id == selected_node_id:

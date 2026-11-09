@@ -687,28 +687,37 @@ impl SimulationNode {
         core.get_world_surface_height_internal(pos)
     }
 
-    /// Raycasts against the terrain heightmap.
+    /// Raycasts against the terrain heightmap: the hit, or `null` for none.
     ///
-    /// Uses `try_lock` so this never stalls the Godot main thread if the sim thread
-    /// is currently holding the mutex (e.g. during `add_road_internal`). Returns
-    /// `null` when contended; GDScript already handles null from this call gracefully.
+    /// Per-frame callers use it without `wait`: it never stalls the Godot main thread while the
+    /// sim thread holds the core (a frame or an edit) and answers `null` then. One-shot input
+    /// (a click, a stroke's start) passes `wait` and waits for the core, so it is never taken
+    /// for a click on nothing (`CODE-20`, `CODE-25`).
     #[func]
-    pub fn intersect_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
-        match self.try_lock_core() {
-            Some(core) => match core.intersect_terrain_internal(ray_origin, ray_dir) {
-                Some(p) => p.to_variant(),
-                None => Variant::nil(),
-            },
-            None => Variant::nil(),
-        }
+    pub fn intersect_terrain(
+        &self,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+        #[opt(default = false)] wait: bool,
+    ) -> Variant {
+        self.lock_core_if(wait).map_or_else(Variant::nil, |core| {
+            Self::terrain_hit(&core, ray_origin, ray_dir)
+        })
+    }
+
+    /// [`Self::intersect_terrain`] for a hover: `false` while the sim thread holds the core,
+    /// so the hover keeps its last answer instead of clearing (`CODE-25`).
+    #[func]
+    pub fn hover_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
+        self.try_lock_core().map_or_else(
+            || false.to_variant(),
+            |core| Self::terrain_hit(&core, ray_origin, ray_dir),
+        )
     }
 
     /// Raycasts against the visible world surface: the nearer of the road's hit and the
-    /// graded ground's, never ground a road covers (`TERRAIN-07-D`).
-    ///
-    /// Uses `try_lock` for the same reason as `intersect_terrain`, unless `wait`: one-shot input
-    /// such as a click waits while the simulation thread holds the core (a tick or an edit), so
-    /// a click during a tick is never taken for a click on nothing (`CODE-20`).
+    /// graded ground's, never ground a road covers (`TERRAIN-07-D`). The hit, or `null` for
+    /// none; `wait` as for [`Self::intersect_terrain`].
     #[func]
     pub fn intersect_world_surface(
         &self,
@@ -716,9 +725,32 @@ impl SimulationNode {
         ray_dir: Vector3,
         #[opt(default = false)] wait: bool,
     ) -> Variant {
-        let Some(mut core) = self.lock_core_if(wait) else {
-            return Variant::nil();
-        };
+        self.lock_core_if(wait)
+            .map_or_else(Variant::nil, |mut core| {
+                Self::world_surface_hit(&mut core, ray_origin, ray_dir)
+            })
+    }
+
+    /// [`Self::intersect_world_surface`] for a hover: `false` while the sim thread holds the
+    /// core, so the hover keeps its last answer instead of clearing (`CODE-25`).
+    #[func]
+    pub fn hover_world_surface(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
+        self.try_lock_core().map_or_else(
+            || false.to_variant(),
+            |mut core| Self::world_surface_hit(&mut core, ray_origin, ray_dir),
+        )
+    }
+}
+
+impl SimulationNode {
+    // The terrain hit as a `Vector3`, or `null` for none.
+    fn terrain_hit(core: &SimCore, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
+        core.intersect_terrain_internal(ray_origin, ray_dir)
+            .map_or_else(Variant::nil, |p| p.to_variant())
+    }
+
+    // The visible world surface's hit as a `Vector3`, or `null` for none.
+    fn world_surface_hit(core: &mut SimCore, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
         let cell_m = core.config.zone_cell_m;
         core.allocator.prepare_building_site_query_index(cell_m);
         core.intersect_world_surface_internal(ray_origin, ray_dir)
