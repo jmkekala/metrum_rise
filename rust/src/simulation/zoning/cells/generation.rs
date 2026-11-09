@@ -74,14 +74,8 @@ impl<M: CellMaps> CellStore<M> {
         bounds: CellBounds,
         blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
     ) -> CellGeneration {
-        if !bounds.is_valid() {
-            return CellGeneration::default();
-        }
-        // Godot's main thread previews and paints cells outside any pool (CODE-17).
-        crate::thread_pools::install(|| {
-            self.generate_in_pool(graph, config, bounds, &blocked, false)
-        })
-        .expect("generation that may register frames publishes")
+        self.generate(graph, config, bounds, &blocked, false)
+            .expect("generation that may register frames publishes")
     }
 
     /// Generates as [`Self::generate_in_bounds`] does only if every accepted cell lies on a grid
@@ -95,11 +89,26 @@ impl<M: CellMaps> CellStore<M> {
         bounds: CellBounds,
         blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
     ) -> Option<CellGeneration> {
+        self.generate(graph, config, bounds, &blocked, true)
+    }
+
+    // The one compiled copy of the pipeline behind both entry points (`CODE-28`): `blocked` is a
+    // trait object, so a caller's closure costs one indirect call per candidate footprint
+    // instead of its own instance of the whole parallel pipeline.
+    fn generate(
+        &mut self,
+        graph: &RegionGraph,
+        config: &WorldConfig,
+        bounds: CellBounds,
+        blocked: &(dyn Fn(&[DVec2; 4]) -> bool + Sync),
+        known_frames_only: bool,
+    ) -> Option<CellGeneration> {
         if !bounds.is_valid() {
             return Some(CellGeneration::default());
         }
+        // Godot's main thread previews and paints cells outside any pool (CODE-17).
         crate::thread_pools::install(|| {
-            self.generate_in_pool(graph, config, bounds, &blocked, true)
+            self.generate_in_pool(graph, config, bounds, blocked, known_frames_only)
         })
     }
 
@@ -108,7 +117,7 @@ impl<M: CellMaps> CellStore<M> {
         graph: &RegionGraph,
         config: &WorldConfig,
         bounds: CellBounds,
-        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+        blocked: &(dyn Fn(&[DVec2; 4]) -> bool + Sync),
         known_frames_only: bool,
     ) -> Option<CellGeneration> {
         let mut phase = crate::debug::Channel::EconomyPhases
