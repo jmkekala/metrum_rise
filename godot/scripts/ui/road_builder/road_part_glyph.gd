@@ -24,7 +24,7 @@ const SHOULDER_FILL := Color(0.42, 0.40, 0.36)
 const MARKING := Color(0.92, 0.92, 0.88)
 const KERB := Color(0.78, 0.77, 0.74)
 const INK := Color(0.95, 0.95, 0.95)
-const SIGN_BLUE := Color(0.05, 0.22, 0.62)
+const SIGN_BLUE := Color8(0, 94, 184)  # Väylä sign blue #005EB8
 
 ## The part's name for tiles, tooltips and the popup.
 static func part_name(part: Dictionary) -> String:

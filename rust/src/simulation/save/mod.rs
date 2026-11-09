@@ -480,7 +480,25 @@ fn write_snapshot(
         maps,
     )?;
     network::save_network(tx, view.graph, maps)?;
-    let parking = view.parking.save_json_with_households(|source| source, &view.households.parking_changes)?;
+    // Kerb bays name live edges, and the save renumbers edges past the deleted ones. A retired
+    // bay can outlive its deleted edge for its borrower; it takes a placeholder edge that no
+    // saved edge has, and load validation skips inactive bays.
+    use crate::simulation::parking::PlaceSource;
+    let kerb_edge = |edge: u32| {
+        maps.edge_old_to_new
+            .get(&(edge as usize))
+            .map_or(u32::MAX, |&saved| saved as u32)
+    };
+    let parking = view.parking.save_json_with_households(
+        |source| match source {
+            PlaceSource::Kerb { edge, right } => PlaceSource::Kerb {
+                edge: kerb_edge(edge),
+                right,
+            },
+            building => building,
+        },
+        &view.households.parking_changes,
+    )?;
     tx.execute("INSERT INTO parking_state VALUES (1,?1)", [parking])?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     gridlock::save(tx, view.agents, view.graph, view.network, maps)?;

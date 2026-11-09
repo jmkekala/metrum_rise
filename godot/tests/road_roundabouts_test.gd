@@ -59,10 +59,11 @@ func _undo(what: String) -> void:
 	_expect(await _await_generation(generation), "%s: undo publishes" % what)
 	await process_frame
 
-func _key(tool: Node, keycode: Key) -> void:
+# The size keys go by position, whatever the layout prints on them, so only the physical code is set.
+func _key(tool: Node, physical: Key) -> void:
 	var event := InputEventKey.new()
 	event.pressed = true
-	event.keycode = keycode
+	event.physical_keycode = physical
 	tool._unhandled_input(event)
 
 # The tool at (x, z), as if the pointer moved there and the frame ran.

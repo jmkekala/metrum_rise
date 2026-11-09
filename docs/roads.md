@@ -1185,7 +1185,8 @@ bare ring node and a plain junction have neither sign nor paint. Both come from 
 pieces alone, through the emitters every road uses, so a stroke's preview paints the commit's row (a
 preview's overlay carries no signs), and a bulldozed ring takes them with it: its arms recompile as
 road ends.
-- **Pole.** One B5 over D2 per entry, on its traffic's right, facing it ([road signs](#road-signs-road-60)).
+- **Pole.** One B5 over D2 per entry, on its traffic's right, facing it; with a zebra, under that
+  traffic's E1-1 on one pole ([road signs](#road-signs-road-60)).
 - **Triangle row.** The give-way line (Traficom, Liite 15, L2), four triangles to a lane, 0.5 m at the
   base and 0.6 m long, 0.4 m apart, tips at the driver (`markings.rs`, `emit_give_way_rows`, one more
   use of the arrows' draped triangle). It lies on the arm's span with its bases 0.25 m before the mouth,
@@ -13737,11 +13738,17 @@ cosmetic: traffic ignores them.
   They make the game honest about the roads placement still accepts: the hill in
   `traffic-signs.sqlite` gets 16 % and 18 % signs (`warning-sign-steep-after.png`).
 - **Ring entries (B5 over D2, `ROAD-62`, D18).** One pole per entry, on the right of its traffic
-  and facing it, 2 m before the crossing sign, or before the mouth where the entry has no zebra, and
-  away from street lights as any sign. It is placed after every crossing sign and outside the gap
-  below, so it never drops one (the fork stood it first, 2 m from the mouth, and the gap lost the
-  zebra's sign); later signs keep clear of it. D2 is not an asset: the renderer adds the fork's
-  blue disc with its three white arrows to B5's mesh, with a grey plate behind it, as model `B5-D2`.
+  and facing it. Where the entry has a zebra, B5 + D2 hang under that traffic's crossing sign, one
+  E1-1 over B5 over D2 pole at the crossing, as Finnish roundabouts sign it (kind
+  `RoundaboutEntryCrossing`, model `E1-B5-D2`). The zebra's other sign stays on its own pole. Where
+  there is no zebra, or the sign gap left the crossing sign out, a B5 + D2 pole stands 2 m before the
+  mouth or that crossing sign, away from street lights as any sign. That pole is placed after every
+  crossing sign and outside the gap below, so it never drops one (the fork stood it first, 2 m from
+  the mouth, and the gap lost the zebra's sign); later signs keep clear of either pole. D2 is not an
+  asset: the renderer adds a disc in the atlas signs' blue (#005EB8) and finish, in a 15 mm white
+  rim with its three white arrows, 5 cm below B5's triangle tip, with a grey plate behind it, as
+  model `B5-D2`; `E1-B5-D2` adds E1-1's plate 6 cm above the
+  triangle on the same pole.
 - Signs facing the same way on the same side keep 12 m apart along the street, in priority
   crossing, ring entry, speed, warning; a lower sign moves on, away from the junction, or is left out.
 - Poles stand 0.5 m behind the kerb face on the sidewalk (measured from the face; it was

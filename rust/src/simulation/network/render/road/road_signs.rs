@@ -80,6 +80,9 @@ pub(crate) enum RoadSignKind {
     Uneven,
     /// B5 over D2: give way, and the roundabout's sense of travel, at a ring entry (`ROAD-62`).
     RoundaboutEntry,
+    /// E1-1 over B5 over D2: a ring entry with a zebra carries its crossing sign on the entry's
+    /// pole, as Finnish roundabouts do (`ROAD-62`).
+    RoundaboutEntryCrossing,
 }
 
 /// Pole-base pose, with yaw rotating the model's +Z front toward approaching traffic.
@@ -98,9 +101,9 @@ const SIGN_GAP_M: f32 = 12.0;
 // A crossing sign stands just before the stripes for its traffic, out of the walking line: half
 // the 2.5 m stripe length plus 0.5 m back from the crossing centre.
 const CROSSING_SIGN_SETBACK_M: f32 = 1.75;
-// A ring entry's B5 + D2 pole stands this far before its mouth, or before the crossing sign where
-// the entry has a zebra, the signs' clearance from any other pole (the fork stood it 2 m before the
-// mouth and lost the crossing sign to the sign gap).
+// A ring entry's B5 + D2 pole stands this far before its mouth, the signs' clearance from any other
+// pole. Where the entry has a zebra, its traffic's right-hand crossing sign carries B5 + D2 instead,
+// one pole as Finnish roundabouts have it; this pole stands only where that sign was left out.
 const RING_ENTRY_POLE_BACK_M: f32 = CLEARANCE_M;
 // A speed sign stands this far past the crossing sign of its junction mouth, never beside it.
 const SPEED_AFTER_CROSSING_M: f32 = 25.0;
@@ -1278,6 +1281,10 @@ pub(super) fn place_road_signs(
             for node in [edge.start_node, edge.end_node] {
                 // Where the right kerb's last sign before the node stands, on an entry's arm.
                 let mut entry_kerb_s = None;
+                // Only the first pass publishes crossing signs, so only it needs the ring test.
+                let enters = priority == 0 && enters_ring(graph, edge_id, node);
+                // Whether the entry's own crossing sign, carrying B5 + D2, was published.
+                let mut entry_combined = false;
                 markings.clear();
                 super::crosswalks::for_each_marking(graph, roadbed, node, |marking| {
                     if marking.edge_id == edge_id {
@@ -1301,7 +1308,9 @@ pub(super) fn place_road_signs(
                         } else {
                             continue;
                         };
-                        let kind = if side == direction {
+                        let kind = if side == direction && direction != away && enters {
+                            RoadSignKind::RoundaboutEntryCrossing
+                        } else if side == direction {
                             RoadSignKind::CrossingRight
                         } else {
                             RoadSignKind::CrossingLeft
@@ -1335,11 +1344,12 @@ pub(super) fn place_road_signs(
                                     signs.push(sign);
                                 }
                                 spacing.insert(span, placed_s, side, direction);
+                                entry_combined |= kind == RoadSignKind::RoundaboutEntryCrossing;
                             }
                         }
                     }
                 }
-                if priority == 0 && enters_ring(graph, edge_id, node) {
+                if enters && !entry_combined {
                     let (mouth, direction) = if node == edge.end_node {
                         (visible.last().unwrap().s_m, 1.0)
                     } else {

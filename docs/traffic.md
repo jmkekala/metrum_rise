@@ -1956,7 +1956,9 @@ spans, by the median's width in half metres, with red, blue and alpha untouched 
 asphalt (zero alpha) unchanged. The R8 probe holds no median, so it does not see this.
 
 Kerbside bays are places in the shared pool (`parking/kerb.rs`), one `PlaceSource::Kerb { edge,
-right }` per parking lane, saved with the other places. Each is 6 m long (`KERB_BAY_LENGTH_M`)
+right }` per parking lane, saved with the other places. The save drops deleted edges and
+renumbers the rest, and a kerb place's edge is renumbered with them; a retired place whose edge
+was deleted saves a placeholder edge, which load validation skips with the inactive place. Each is 6 m long (`KERB_BAY_LENGTH_M`)
 and 2.5 m wide, centred half a parking lane in from the carriageway's edge of the span's
 `RoadSection` bands, never `edge.width` or mesh triangles. Bays run end to end, whole bays only,
 centred in each free stretch. A stretch starts 5 m past the span's first section or its start
@@ -2004,6 +2006,12 @@ same Rust validator: the editor draws the failing shape for the selected spot an
 rejected spot as a validation issue that blocks export, working from the asset alone; only the
 placed inspector can check the road-to-driveway segment and neighbouring structures, and it shows
 the building's valid-place count.
+
+Cars reach every bay from the building's frontage edge, so a frontage without cars (a walkway)
+publishes no bay, and the inspector says that parking needs a road cars can drive on. A parking
+lot (`service_class = "parking"`) is refused on such a frontage in its placement preview and
+commit (`NoCarAccess`), with the same words; another building with a few bays may still stand on a
+walkway, its bays unused. The check reads the frontage edge's car flag, O(1).
 
 The bundled `parking` pack follows Finnish practice: 2.5 × 5 m bays at right angles to a central
 7 m two-way aisle, painted separators, kerb stones at the bay heads, one two-socket engine-heater

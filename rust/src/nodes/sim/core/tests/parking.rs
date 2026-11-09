@@ -163,6 +163,65 @@ fn parking_lot_is_public_neutral_and_round_trips_with_cars() {
     std::fs::remove_file(path).unwrap();
 }
 
+// A lot fronting a walkway has no way in for its cars: placement refuses it with the reason,
+// preview and commit alike. A placed lot whose street loses its cars publishes no bay and says why.
+#[test]
+fn parking_lot_needs_a_frontage_cars_can_use() {
+    use crate::simulation::buildings::allocator::ExplicitServicePlacementRejection;
+    use crate::simulation::network::types::TransitFlags;
+    let mut c = core();
+    core_commit_walkway(&mut c, (-120.0, 80.0), (120.0, 80.0));
+    let id = register_lot(&mut c);
+    let preview = c
+        .get_service_building_placement_preview_internal(&id, 0.0, 110.0)
+        .expect("a resolved pose");
+    assert_eq!(
+        preview.rejection,
+        Some(ExplicitServicePlacementRejection::NoCarAccess)
+    );
+    let count = c.allocator.buildings.len();
+    assert_eq!(
+        c.place_service_building_internal(&id, 0.0, 110.0),
+        Err(ExplicitServicePlacementRejection::NoCarAccess)
+    );
+    assert_eq!(c.allocator.buildings.len(), count, "nothing is built");
+
+    let index = c.place_service_building_internal(&id, 0.0, -30.0).unwrap();
+    c.publish_pending_building_site_changes();
+    let edge = c.allocator.buildings[index].edge_idx;
+    c.region_graph.edge_mut(edge).allowed_types &= !TransitFlags::CAR;
+    let (bays, issues) = crate::simulation::parking::lots::lot_bays(
+        &c.allocator,
+        index,
+        &c.region_graph,
+        &c.transit_network.roadbed,
+    );
+    assert!(bays.is_empty(), "{bays:?}");
+    assert!(issues[0].ends_with("not a walkway"), "{issues:?}");
+}
+
+fn core_commit_walkway(core: &mut SimCore, a: (f32, f32), b: (f32, f32)) {
+    core.precompute_road_mesh_data();
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points: vec![Vector3::new(a.0, 0.0, a.1), Vector3::new(b.0, 0.0, b.1)],
+            fwd_lanes: 0,
+            bkw_lanes: 0,
+            snap_to_existing_roads: true,
+            preview: None,
+            tunnel: false,
+            median: None,
+            parking: crate::simulation::network::graph::RoadParking::NONE,
+            attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+        },
+        Instant::now(),
+        RoadEditMetrics::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    core.adopt_pending_cell_lots();
+    core.publish_deferred_parking_frontages();
+}
+
 #[test]
 fn parking_invalid_anchor_sweep_reports_diagnostic_and_tows_on_reload() {
     let mut c = core();

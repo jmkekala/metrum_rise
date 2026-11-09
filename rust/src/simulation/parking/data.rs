@@ -15,7 +15,8 @@ use soa_derive::StructOfArray;
 pub(crate) enum PlaceSource {
     /// Stable building handle and the anchor's manifest index, independent of dense row swaps.
     Building { building: u64, anchor: u32 },
-    /// One parking lane of a road edge (`PARK-05`); edges are tombstoned, never renumbered.
+    /// One parking lane of a road edge (`PARK-05`). Live edges are tombstoned, never renumbered;
+    /// a save renumbers them past the deleted ones and maps this edge with them.
     Kerb { edge: u32, right: bool },
 }
 

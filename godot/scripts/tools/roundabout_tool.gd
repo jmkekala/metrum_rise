@@ -2,7 +2,8 @@
 
 ## The roundabout tool (`ROAD-62`, D11-D14): the Roads menu's "Roundabout" button or O activates
 ## it; a click builds a ring in place of the junction under the pointer, or a bare ring on empty
-## ground. `[` and `]` step the diameter by 2 m, the Roads options panel's Diameter slider by 1 m,
+## ground. The two keys right of P (`[` and `]` on a US layout, Å and ¨ on a Nordic one) step the
+## diameter by 2 m, the Roads options panel's Diameter slider by 1 m,
 ## both held to the range Rust gives for the site. Rust owns the site, the ring's lanes, the
 ## verdict and the transaction: this script draws the ring outline and arm cuts `preview_roundabout`
 ## returns, blue when it would build, red with `road_reason_text` when not, and sends the click.
@@ -21,8 +22,12 @@ signal size_changed(diameter_m: float, min_m: float, max_m: float, lanes: int)
 
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
-## What `[` and `]` move the diameter by (D12).
+const KeyLabels := preload("res://scripts/ui/key_labels.gd")
+## What the size keys move the diameter by (D12).
 const KEY_STEP_M := 2.0
+# The size keys go by position, the two right of P, so every layout has them unshifted; the hint
+# names them as the player's layout prints them.
+static var _size_keys_hint := ""
 # The overlay's ribbon, above the road surface.
 const OUTLINE_WIDTH_M := 0.8
 const OUTLINE_LIFT_M := 0.6
@@ -80,7 +85,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not active:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
-		match event.keycode:
+		match event.physical_keycode:
 			KEY_BRACKETLEFT: _step_diameter(-KEY_STEP_M)
 			KEY_BRACKETRIGHT: _step_diameter(KEY_STEP_M)
 			_: return
@@ -137,7 +142,15 @@ func _text(diameter: float) -> String:
 	var demolish := int(_preview.get("demolish_count", 0))
 	if demolish > 0:
 		text += "  demolishes %d building%s" % [demolish, "" if demolish == 1 else "s"]
-	return text + "\nClick to %s · [ / ] size" % action
+	return text + "\nClick to %s · %s size" % [action, _size_keys()]
+
+# "[ / ]" on a US layout, "Å / ¨" on a Nordic one; read once, as the layout rarely changes mid-game.
+static func _size_keys() -> String:
+	if _size_keys_hint.is_empty():
+		_size_keys_hint = "%s / %s" % [
+			KeyLabels.physical(KEY_BRACKETLEFT), KeyLabels.physical(KEY_BRACKETRIGHT)
+		]
+	return _size_keys_hint
 
 # The click re-reads the verdict at the pointer: never commit a pose that was not shown. The
 # pointer is the click's own, waited for, not the last frame's, which is older while the

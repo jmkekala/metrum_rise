@@ -155,6 +155,36 @@ fn kerbside_bays_keep_their_cars_through_a_save_and_go_with_their_road() {
     std::fs::remove_file(path).unwrap();
 }
 
+// A save drops deleted edges and renumbers the rest, so a kerb bay's edge is renumbered with them;
+// a bay that kept its live number named a missing edge, and the save would not load.
+#[test]
+fn kerbside_bays_follow_their_road_when_a_save_renumbers_it() {
+    let (mut c, gone) = kerb_core(RoadParking::NONE);
+    assert!(c.bulldoze_road_edge_for_test(gone));
+    let right = RoadParking {
+        left: false,
+        right: true,
+    };
+    commit_with(&mut c, (-120.0, 60.0), (120.0, 60.0), right);
+    let edge = (0..c.region_graph.edge_count())
+        .find(|&e| c.region_graph.get_edge(e).is_some_and(|e| !e.deleted))
+        .unwrap();
+    assert!(edge > gone, "the road with bays is numbered past the deleted one");
+    let bays = side(&c, edge, true);
+    assert!(!bays.is_empty());
+    let path = temp_save_path("parking-kerb-renumbered");
+    c.save_game_settled_at(path.to_str().unwrap(), None, 0)
+        .unwrap();
+    c.load_game_internal(path.to_str().unwrap()).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let saved = (0..c.region_graph.edge_count())
+        .find(|&e| c.region_graph.get_edge(e).is_some_and(|e| !e.deleted))
+        .unwrap();
+    assert_eq!(saved, 0);
+    assert_eq!(side(&c, saved, true), bays);
+    assert_eq!(c.parking.counts().0, bays.len());
+}
+
 #[test]
 fn a_parking_lane_turned_on_in_place_publishes_its_bays_and_undo_takes_them_away() {
     let (mut c, edge) = kerb_core(RoadParking::NONE);

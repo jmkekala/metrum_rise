@@ -12,6 +12,7 @@ use crate::assets::asset::validation::ZONE_CELL_M;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_local_xz_basis};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::RoadbedSystem;
+use crate::simulation::network::types::TransitFlags;
 use godot::prelude::Vector2;
 
 /// One place per valid parking anchor, at asset/edit boundaries only. For A bays, D driveways,
@@ -35,6 +36,16 @@ pub(crate) fn lot_bays(
     let anchors = &asset.manifest.anchors;
     if !anchors.iter().any(|a| a.anchor_type == AnchorType::Parking) {
         return (Vec::new(), Vec::new());
+    }
+    // Cars reach every bay from the frontage edge; a walkway carries none. Placement refuses a
+    // parking lot there; this covers any other building with bays on a walkway, a lot whose
+    // street became one, and saves from before the refusal.
+    if graph
+        .get_edge(building.edge_idx)
+        .is_some_and(|edge| edge.allowed_types & TransitFlags::CAR == 0)
+    {
+        let reason = "parking needs a road cars can drive on, not a walkway";
+        return (Vec::new(), vec![format!("{}: {reason}", building.asset_id)]);
     }
     let frontage = asset.manifest.building_frontage_forward();
     let local_outward = Vector2::new(frontage[0], frontage[2]).normalized();

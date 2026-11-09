@@ -115,6 +115,8 @@ pub(crate) enum ExplicitServicePlacementRejection {
     RoadFrontageUnavailable,
     /// The nearest road frontage is a side without a sidewalk (`ROAD-109`).
     NoSidewalk,
+    /// The asset is a parking lot, but the nearest frontage carries no cars (a walkway).
+    NoCarAccess,
     /// A driveway anchor could not resolve an adjacent road surface height.
     DrivewayRoadSurfaceMissing,
     /// Multiple driveway anchors required incompatible flat-site heights.

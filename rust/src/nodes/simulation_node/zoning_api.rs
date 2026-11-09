@@ -92,6 +92,9 @@ impl SimulationNode {
             ExplicitServicePlacementRejection::NoSidewalk => {
                 "buildings need a sidewalk on their side of the road"
             }
+            ExplicitServicePlacementRejection::NoCarAccess => {
+                "parking needs a road cars can drive on, not a walkway"
+            }
             ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing => {
                 "driveway cannot resolve road surface height"
             }
@@ -150,6 +153,9 @@ impl SimulationNode {
             }
             ExplicitServicePlacementRejection::NoSidewalk => {
                 "buildings need a sidewalk on their side of the road"
+            }
+            ExplicitServicePlacementRejection::NoCarAccess => {
+                "parking needs a road cars can drive on, not a walkway"
             }
             ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing => {
                 "driveway cannot resolve road surface height"

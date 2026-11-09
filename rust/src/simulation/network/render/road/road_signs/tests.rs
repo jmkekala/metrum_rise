@@ -102,7 +102,17 @@ fn generate(
 fn crossing(kind: RoadSignKind) -> bool {
     matches!(
         kind,
-        RoadSignKind::CrossingRight | RoadSignKind::CrossingLeft
+        RoadSignKind::CrossingRight
+            | RoadSignKind::CrossingLeft
+            | RoadSignKind::RoundaboutEntryCrossing
+    )
+}
+
+// A ring entry's B5 + D2, on its own pole or under the entry's crossing sign.
+fn ring_entry(kind: RoadSignKind) -> bool {
+    matches!(
+        kind,
+        RoadSignKind::RoundaboutEntry | RoadSignKind::RoundaboutEntryCrossing
     )
 }
 
@@ -1042,13 +1052,14 @@ fn ring_fixture(mut graph: RegionGraph) -> (RegionGraph, LaneSystem, RoadbedSyst
 fn entry_poles(f: &(RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem)) -> Vec<RoadSign> {
     let mesh = generate(f);
     let poles = mesh.road_signs.iter().copied();
-    poles.filter(|s| s.kind == RoadSignKind::RoundaboutEntry).collect()
+    poles.filter(|s| ring_entry(s.kind)).collect()
 }
 
-// `ROAD-62` D18: every arm into a ring has one B5 + D2 pole, on the right of its traffic and facing
-// it, before its crossing sign, which stays: both directions of every zebra keep theirs.
+// `ROAD-62` D18: every arm into a ring has one B5 + D2, on the right of its traffic and facing it.
+// Where the arm has a zebra, B5 + D2 hangs under that traffic's crossing sign on one pole, as on a
+// Finnish roundabout, and no second pole stands; the zebra's other sign stays.
 #[test]
-fn every_ring_entry_has_one_pole_on_the_right_before_its_crossing_sign() {
+fn every_ring_entry_carries_b5_d2_under_its_crossing_sign() {
     use crate::simulation::network::roadbed::fixtures::converted_ring;
     for (diameter_m, arms, arm) in [
         (36.0, 3, (1, 1)),
@@ -1076,12 +1087,10 @@ fn every_ring_entry_has_one_pole_on_the_right_before_its_crossing_sign() {
             let heading = Vector3::new(-cos, 0.0, -sin);
             let right = Vector3::new(-heading.z, 0.0, heading.x);
             let here: Vec<_> = mesh.road_signs.iter().filter(|s| on_arm(s, heading)).collect();
-            let pole: Vec<_> = here
-                .iter()
-                .filter(|s| s.kind == RoadSignKind::RoundaboutEntry)
-                .collect();
+            let pole: Vec<_> = here.iter().filter(|s| ring_entry(s.kind)).collect();
             assert_eq!(pole.len(), 1, "{name}, arm at {angle}: {here:?}");
             let pole = **pole[0];
+            assert_eq!(pole.kind, RoadSignKind::RoundaboutEntryCrossing, "{name}: one pole");
             let front = Vector3::new(pole.yaw.sin(), 0.0, pole.yaw.cos());
             assert!(front.dot(heading) < -0.99, "{name}: faces its traffic");
             assert!(pole.position.dot(right) > 0.0, "{name}: on its traffic's right");
@@ -1089,9 +1098,7 @@ fn every_ring_entry_has_one_pole_on_the_right_before_its_crossing_sign() {
                 .iter()
                 .filter(|s| crossing(s.kind) && s.position.dot(right) > 0.0)
                 .collect();
-            assert_eq!(kerb.len(), 1, "{name}: the crossing sign stays: {here:?}");
-            let back = (kerb[0].position - pole.position).dot(heading);
-            assert!((1.99..2.1).contains(&back), "{name}: {back} m before the crossing sign");
+            assert_eq!(kerb, [&&pole], "{name}: no separate crossing sign: {here:?}");
             poles += 1;
             crossings += here.iter().filter(|s| crossing(s.kind)).count();
         }
@@ -1144,6 +1151,7 @@ fn an_entry_without_a_zebra_keeps_its_pole() {
     let mouth = Vector3::new(mouth.center_xz.x as f32, 0.0, mouth.center_xz.y as f32);
     let back = (poles[0].position - mouth).dot(node.normalized());
     assert!((back - 2.0).abs() < 0.1, "{poles:?}, mouth {mouth:?}");
+    assert_eq!(poles[0].kind, RoadSignKind::RoundaboutEntry, "B5 + D2 on its own pole");
     assert!(generate(&f).road_signs.iter().all(|s| !crossing(s.kind)));
 }
 

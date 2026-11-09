@@ -15,7 +15,12 @@ PAINT = (0.92, 0.92, 0.88, 1.0)
 KERB = (0.55, 0.55, 0.53, 1.0)
 POST = (0.62, 0.64, 0.66, 1.0)
 POST_HEAD = (0.30, 0.32, 0.34, 1.0)
-SIGN_BLUE = (0.05, 0.22, 0.62, 1.0)
+# Blender colours are linear. The sign takes the road-sign atlas's values (godot/assets/models/
+# road_signs): Väylä's sign blue #005EB8, the pole grey #9A9FA0, and its finish.
+SIGN_BLUE = (0.0, 0.112, 0.479, 1.0)
+SIGN_POLE = (0.323, 0.347, 0.352, 1.0)
+SIGN_ROUGHNESS = 0.46
+SIGN_METALLIC = 0.18
 WHITE = (1.0, 1.0, 1.0, 1.0)
 
 
@@ -115,9 +120,9 @@ def rounded_panel(name, mat, width, height, radius, y_front, depth, centre_up):
 def p_sign(path):
     # Finnish parking sign (E1): white-bordered rounded blue square with a white P, on a pole.
     reset()
-    steel = material("pole", POST, 0.5, 0.6)
-    blue = material("sign_blue", SIGN_BLUE, 0.4)
-    white = material("sign_white", WHITE, 0.3)
+    steel = material("pole", SIGN_POLE, SIGN_ROUGHNESS, SIGN_METALLIC)
+    blue = material("sign_blue", SIGN_BLUE, SIGN_ROUGHNESS, SIGN_METALLIC)
+    white = material("sign_white", WHITE, SIGN_ROUGHNESS, SIGN_METALLIC)
     box("pole", steel, -0.03, 0.03, 0.0, 2.6, -0.03, 0.03)
     up = 2.3
     rounded_panel("plate", white, 0.62, 0.62, 0.05, 0.06, 0.02, up)
