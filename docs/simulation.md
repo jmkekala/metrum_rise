@@ -1684,7 +1684,14 @@ RAYON_NUM_THREADS=8 python3 tools/sim02_gate.py envelope determinism perf07 \
   deliveries, households with an empty pantry, trip failures, building placements and
   removals, recorded outside-world money flows, burst shares and a semantic fingerprint. The
   baseline, its tolerance bands, fingerprints and burst shares are in
-  `tools/sim02_envelope_baseline.json`.
+  `tools/sim02_envelope_baseline.json`. Re-recorded with parking (`PARK-02`, `e0a75231`, the
+  user accepted the shift 2026-11-07) and with `ECON-28` round `E4` (2026-11-09, for the user's
+  review): admission's calendar families, their store-labour charge and the refill crew
+  (`ECON-24`) move the cities by fractions of a percent (residents per target +1.0% at 10k,
+  empty-pantry rate -2.9% at 10k and -4.5% at 30k, net income per resident -0.3% to -1.4%), and
+  one band missed: fiscal-stress 10k final employment 1.32% against [1.14%, 1.29%], more
+  working adults in the taxed-out city. Against the new bands the gate reads 0 notes on the
+  same binary.
 - **Tolerance bands.** Variants at 0.97×, 1.00× and 1.03× of each tier's residents. Metrics are
   normalised per resident, household or building. A band is the variant range widened by half
   the range, by at least 2% of the base value, and by an absolute floor for rare counts. Trip

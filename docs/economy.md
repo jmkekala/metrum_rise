@@ -1106,6 +1106,22 @@ binary SHA-256 `f2844c4154fbf7b2`, `RAYON_NUM_THREADS=8`): `perf_contract_prepar
 continuation check and publishes at 10k, 30k and 100k (25, 93 and 459 s) and
 `perf_contract_fiscal_prepare` at 10k and 30k (12 and 39 s). The fixture revision moved, because
 it hashes `populated_city.rs`, which gained the test-only `METRUM_PERF_ROUNDABOUTS` knob.
+Prepared 2026-11-09 for fixture revision v8 with `ECON-28` (round `E4`, branch `econ-28` on `dev`
+`e7787837`, release test binary SHA-256 `989b2db93fc6a2a5`, `RAYON_NUM_THREADS=8`), whose
+admission, store-labour charge and refill crew (`ECON-24`) change every generated city:
+`perf_contract_prepare` passes its continuation check at 10k, 30k and 100k (generation 43, 154
+and 564 s) and `perf_contract_fiscal_prepare` at 10k and 30k (16 and 42 s). They replace the
+published snapshots when the branch lands.
+The contract on them ran in one session against an `e7787837` control (2026-11-09, P-cores,
+`RAYON_NUM_THREADS=8`, control and branch alternating, two runs each; the control on the
+published snapshots): every prepare reused its snapshot. Day hourly 0.87-0.89 ms at 10k and
+3.28-3.30 at 30k (control 0.90 and 3.29-3.36), fiscal 6.44-6.50 and 13.24-13.38 (control
+7.03-7.08 and 15.85-15.93); the isolated phases match the control within 0.2 ms except execution
+at 30k (0.89 against 0.72-0.75). The control exits 1 on four parked work-scaling limits
+(`buyer_sites_built`, `supplier_searches`, `supplier_routes`, `job_search_keys`), the branch on
+the same four plus `staffing_trials`: 43,774 at 10k and 178,647 at 30k (4.08×, limit 3.28×)
+against the control's 62,293 and 191,429 (3.07×). The branch's 10k day places no building, so
+the denominator drops while the 30k count falls too.
 
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:
