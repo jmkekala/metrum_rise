@@ -256,14 +256,15 @@ fn integer_point(point: DVec2) -> [i64; 2] {
 // x86-64-v2 rounds to integers in one instruction only toward zero, nearest-even or the
 // infinities. `value - trunc` is exact, zeros keep `trunc`'s sign, NaN and infinities pass
 // through. Every corner and overlap test of cell generation rounds eight coordinates.
+// The half step is a select, not a branch: whether a coordinate's fraction reaches the half
+// follows the data, so a branch on it mispredicted often (`CODE-28`: the curve refresh
+// benchmark ran a quarter faster without it). A zero step takes `value`'s sign, which
+// `trunc` kept, so adding it leaves `whole` bit for bit, its zero's sign included.
 #[inline]
 fn round_half_away(value: f64) -> f64 {
     let whole = value.trunc();
-    if (value - whole).abs() >= 0.5 {
-        whole + value.signum()
-    } else {
-        whole
-    }
+    let step = if (value - whole).abs() >= 0.5 { 1.0_f64 } else { 0.0 };
+    whole + step.copysign(value)
 }
 
 /// Tests convex interiors exactly on the canonical coordinate grid. Boundary contact is legal.
