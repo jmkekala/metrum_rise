@@ -31,6 +31,7 @@ mod snapshot;
 mod state;
 mod thread;
 mod trips;
+mod turnstile;
 mod water_preview;
 
 pub(crate) use budget::CityServicePolicy;
@@ -64,6 +65,7 @@ pub(crate) use snapshot::{
 };
 pub(crate) use state::PendingDemandSpawnAction;
 pub(crate) use thread::run_sim_thread;
+pub(crate) use turnstile::CoreTurnstile;
 pub(crate) use water_preview::{
     AuthoredWaterPatchFillDebug, WorldLakeFillPreview, WorldLakeFillPreviewStatus,
     WorldWaterFillKind,

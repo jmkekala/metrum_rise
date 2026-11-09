@@ -114,8 +114,9 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, RoadToolQuerySnapshot,
-    RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, run_sim_thread,
+    CoreTurnstile, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest,
+    RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
+    run_sim_thread,
 };
 #[cfg(test)]
 use crate::nodes::sim::core::road_tool_snapshot_from_core;
@@ -186,6 +187,8 @@ const CHEAT_MONEY_GRANT_AMOUNT: f64 = 1_000_000.0;
 pub struct SimulationNode {
     /// All simulation state — ticked by the background thread.
     pub(crate) core: Arc<Mutex<SimCore>>,
+    /// Puts a call that waits for the core ahead of the sim thread's next frame (`CODE-25`).
+    pub(crate) core_turnstile: Arc<CoreTurnstile>,
     /// Latest pre-computed rendering data from the sim thread.
     pub(crate) snapshot: Arc<RwLock<RenderSnapshot>>,
     /// Background sim thread handle.
@@ -257,14 +260,23 @@ pub struct SimulationNode {
 impl SimulationNode {
     // ── Lifecycle ──
 
-    /// Acquires the sim-core mutex.
+    /// Acquires the sim-core mutex: at once when it is free, else when the sim thread's frame
+    /// or edit in progress ends, ahead of its next one (`CODE-25`, [`CoreTurnstile`]).
     ///
     /// Poisoning is an authoritative simulation failure: callers must not expose
     /// potentially partial state after a failed phase.
     #[inline]
     fn lock_core(&self) -> std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore> {
-        self.core
-            .lock()
+        Self::wait_for_shared_core(&self.core_turnstile, &self.core)
+    }
+
+    /// [`Self::lock_core`] for a caller that holds its own reference to the core.
+    fn wait_for_shared_core<'a>(
+        turnstile: &CoreTurnstile,
+        core: &'a Mutex<SimCore>,
+    ) -> std::sync::MutexGuard<'a, SimCore> {
+        turnstile
+            .wait_for(core)
             .expect("simulation core lock poisoned by a failed authoritative phase")
     }
 
@@ -336,10 +348,11 @@ impl SimulationNode {
     fn start_sim_thread(&mut self) {
         if let Some(rx) = self.cmd_rx.take() {
             let core = Arc::clone(&self.core);
+            let turnstile = Arc::clone(&self.core_turnstile);
             let snap = Arc::clone(&self.snapshot);
             let road_query = Arc::clone(&self.road_tool);
             self.sim_thread = Some(std::thread::spawn(move || {
-                run_sim_thread(core, snap, road_query, rx);
+                run_sim_thread(core, turnstile, snap, road_query, rx);
             }));
         }
     }
@@ -449,6 +462,7 @@ impl INode3D for SimulationNode {
 
         Self {
             core: core_arc,
+            core_turnstile: Default::default(),
             snapshot,
             sim_thread: None,
             cmd_tx,

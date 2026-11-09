@@ -14,6 +14,7 @@ use super::road_preview::RoadPreview;
 use super::road_tool_context::{RoadToolPublication, RoadToolShared};
 use super::snapshot::RenderSnapshot;
 use super::state::SimCore;
+use super::turnstile::CoreTurnstile;
 use crate::debug::{CrashCommand, CrashSimSnapshot};
 use crate::nodes::sim::editing::BulldozeTarget;
 
@@ -78,6 +79,14 @@ pub(crate) enum SimCommand {
         /// Immutable target token captured while the cursor still referenced the object.
         target: BulldozeTarget,
     },
+    /// Test hook (`CODE-25`): hold the core, as a long frame would, until another thread waits
+    /// for it or `longest` has passed.
+    HoldCore {
+        /// The longest hold.
+        longest: Duration,
+        /// Signalled once the core is held.
+        held: std::sync::mpsc::SyncSender<()>,
+    },
     /// End the thread after the commands queued before this one; the node joins it next.
     Stop,
 }
@@ -108,9 +117,11 @@ fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
 /// Movement runs at ~60 Hz; queued edits wake the thread independently of that cadence.
 /// Movement ticks and structural edits own the core mutex while they execute. Render-facing APIs consume
 /// immutable snapshots or use nonblocking acquisition, and snapshot publication occurs
-/// after releasing the core mutex.
+/// after releasing the core mutex. Every acquisition passes `turnstile`, so a thread already
+/// waiting for the core gets it before the next frame or edit (`CODE-25`).
 pub(crate) fn run_sim_thread(
     core: Arc<Mutex<SimCore>>,
+    turnstile: Arc<CoreTurnstile>,
     snapshot: Arc<RwLock<RenderSnapshot>>,
     road_tool: Arc<RoadToolShared>,
     cmd_rx: std::sync::mpsc::Receiver<SimCommand>,
@@ -178,7 +189,9 @@ pub(crate) fn run_sim_thread(
                 }) => {
                     commands_processed += 1;
                     {
-                        let mut core = core.lock().expect("simulation core lock poisoned");
+                        let mut core = turnstile
+                            .take(&core)
+                            .expect("simulation core lock poisoned");
                         record_crash_phase_for_core(&core, "cell chunk preparation");
                         run_sim_phase("cell chunk preparation", || {
                             core.prepare_requested_cell_chunk(chunk, world_generation);
@@ -190,7 +203,9 @@ pub(crate) fn run_sim_thread(
                     commands_processed += 1;
                     undo_commands += 1;
                     let road_snapshot = {
-                        let mut core = core.lock().expect("simulation core lock poisoned");
+                        let mut core = turnstile
+                            .take(&core)
+                            .expect("simulation core lock poisoned");
                         record_crash_command_for_core(&core, CrashCommand::Undo);
                         record_crash_phase_for_core(&core, "undo command");
                         let generation_before = core.road_tool_surface_generation;
@@ -211,7 +226,9 @@ pub(crate) fn run_sim_thread(
                     commands_processed += 1;
                     bulldoze_commands += 1;
                     let road_snapshot = {
-                        let mut core = core.lock().expect("simulation core lock poisoned");
+                        let mut core = turnstile
+                            .take(&core)
+                            .expect("simulation core lock poisoned");
                         record_crash_command_for_core(&core, CrashCommand::Bulldoze);
                         record_crash_phase_for_core(&core, "bulldoze command");
                         let road_deleted = core
@@ -226,6 +243,17 @@ pub(crate) fn run_sim_thread(
                     };
                     if let Some(query_snapshot) = road_snapshot {
                         road_tool.publish(query_snapshot);
+                    }
+                }
+                Ok(SimCommand::HoldCore { longest, held }) => {
+                    commands_processed += 1;
+                    let start = Instant::now();
+                    let _core = turnstile
+                        .take(&core)
+                        .expect("simulation core lock poisoned");
+                    let _ = held.try_send(());
+                    while !turnstile.has_waiter() && start.elapsed() < longest {
+                        std::thread::sleep(Duration::from_millis(1));
                     }
                 }
                 Ok(SimCommand::AddRoad {
@@ -253,7 +281,9 @@ pub(crate) fn run_sim_thread(
                     let lock_wait_start = Instant::now();
                     let road_lock_wait_ms;
                     let outcome = {
-                        let mut c = core.lock().expect("simulation core lock poisoned");
+                        let mut c = turnstile
+                            .take(&core)
+                            .expect("simulation core lock poisoned");
                         road_lock_wait_ms = lock_wait_start.elapsed().as_secs_f64() * 1000.0;
                         edit_metrics.lock_wait_ms = road_lock_wait_ms;
                         record_crash_command_for_core(
@@ -369,7 +399,9 @@ pub(crate) fn run_sim_thread(
         // Tick and build snapshot inside one lock acquisition.
         let new_snapshot = {
             let lock_wait_start = Instant::now();
-            let mut core = core.lock().expect("simulation core lock poisoned");
+            let mut core = turnstile
+                .take(&core)
+                .expect("simulation core lock poisoned");
             lock_wait_ms = lock_wait_start.elapsed().as_secs_f64() * 1000.0;
             let lock_held_start = Instant::now();
             if let Some(speed) = pending_speed.take() {

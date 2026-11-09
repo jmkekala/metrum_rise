@@ -40,6 +40,20 @@ impl SimulationNode {
         true
     }
 
+    /// Test hook (`CODE-25`): the simulation thread holds the core, as a long frame would,
+    /// until a call waits for it or `max_ms` passes. Returns once the core is held (true), or
+    /// false if the simulation thread did not take it within `max_ms`. Tests use it to show
+    /// that one-shot input waits for the core while per-frame queries answer busy.
+    #[func]
+    pub fn debug_hold_core(&self, max_ms: i32) -> bool {
+        let longest = std::time::Duration::from_millis(max_ms.max(0) as u64);
+        let (held, on_hold) = std::sync::mpsc::sync_channel(1);
+        self.cmd_tx
+            .send(SimCommand::HoldCore { longest, held })
+            .is_ok()
+            && on_hold.recv_timeout(longest).is_ok()
+    }
+
     // ── Simulation ──
 
     /// Returns the ascending supported speed steps, including pause and the maximum multiplier.

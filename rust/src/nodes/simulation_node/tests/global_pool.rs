@@ -365,7 +365,7 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
     let sim_thread = {
         let (core, snapshot) = (Arc::clone(&core), Arc::clone(&snapshot));
         std::thread::spawn(move || {
-            run_sim_thread(core, snapshot, query, command_rx);
+            run_sim_thread(core, Default::default(), snapshot, query, command_rx);
         })
     };
     // A job that panics aborts this process, which fails the parent test.

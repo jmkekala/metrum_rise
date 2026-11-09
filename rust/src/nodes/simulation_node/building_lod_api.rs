@@ -13,8 +13,8 @@ impl SimulationNode {
     /// are presentation-local and valid only for the accompanying catalog generation.
     #[func]
     pub fn get_building_lod_catalog(&mut self) -> VarDictionary {
-        let shared = Arc::clone(&self.core);
-        let core = shared.lock().expect("simulation core lock poisoned");
+        let (shared, turnstile) = (Arc::clone(&self.core), Arc::clone(&self.core_turnstile));
+        let core = Self::wait_for_shared_core(&turnstile, &shared);
         self.building_lods.load_catalog(&core.allocator.registry);
         let mut parts = VarArray::new();
         for (id, part) in self.building_lods.catalog.iter().enumerate() {
@@ -84,8 +84,8 @@ impl SimulationNode {
             self.building_lods.parts[id] = Part::new(bounds, &available).unwrap();
             self.building_lods.parts[id].cull_bounds = cull_bounds;
         }
-        let shared = Arc::clone(&self.core);
-        let core = shared.lock().expect("simulation core lock poisoned");
+        let (shared, turnstile) = (Arc::clone(&self.core), Arc::clone(&self.core_turnstile));
+        let core = Self::wait_for_shared_core(&turnstile, &shared);
         self.building_lods
             .refresh_geometry_margins(&core.allocator.registry);
         self.building_lods.invalidate_world();

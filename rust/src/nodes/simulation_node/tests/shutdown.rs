@@ -23,6 +23,7 @@ fn stopping_the_workers_leaves_the_last_core_reference_to_the_caller() {
         std::thread::spawn(move || {
             run_sim_thread(
                 core,
+                Default::default(),
                 Arc::new(RwLock::new(RenderSnapshot::default())),
                 query,
                 command_rx,
