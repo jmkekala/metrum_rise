@@ -854,6 +854,109 @@ fn benchmark_cell_lot_derivation_locality() {
     }
 }
 
+// `ZONE-09` (PLAN-RZ section 5, test 8): a lot plan handing a road stroke's erased paint on to the
+// new cells of a new road, its neighbourhood fixed while remote roads, lots and cells grow as in
+// `benchmark_cell_lot_derivation_locality`. Each sample plans the new road's region on a copy
+// made outside timing, with the erased cells and without (the control); the inherited cells and
+// the plan's lots must not change with the background.
+#[test]
+#[ignore = "matched release timing of a lot plan with paint inheritance, excluding setup"]
+fn benchmark_cell_inheritance_locality() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    let mut reference = None;
+    for remote in [0_usize, 1_024, 10_000] {
+        let (mut graph, mut zoning) = painted_road(0.35);
+        let grid = zoning
+            .cells
+            .register_frame(GridFrame::new(DVec2::ZERO, DVec2::X, 10.0).unwrap());
+        for index in 0..remote {
+            let x = 200 + (index % 128) as i32 * 6;
+            let y = 200 + (index / 128) as i32 * 6;
+            let a = node(&mut graph, x as f32 * 10.0, y as f32 * 10.0 - 20.0);
+            let b = node(&mut graph, x as f32 * 10.0 + 30.0, y as f32 * 10.0 - 20.0);
+            let edge = road(&mut graph, a, b);
+            let lot = CellLot::new(CellKey { grid, x, y }, 2, 3, CellFrontage::MinY).unwrap();
+            for key in lot.cells() {
+                assert!(zoning.cells.insert(key));
+                zoning.cells.set_profile(key, 1);
+            }
+            zoning
+                .install_prevalidated_cell_lot(lot, edge, 1, 0.5, 1)
+                .unwrap();
+        }
+        // The new road, west of the painted one, and its region, invalidated as a commit marks
+        // it; its frame read from a generation on a copy.
+        let a = node(&mut graph, -250.0, -200.0);
+        let b = node(&mut graph, -130.0, -200.0);
+        road(&mut graph, a, b);
+        let region = CellBounds {
+            min: DVec2::new(-300.0, -300.0),
+            max: DVec2::new(-80.0, -100.0),
+        };
+        zoning.cells.invalidate_generated_cells(region);
+        let mut probe = zoning.clone();
+        probe.generate_cells(&graph, region, |_| false);
+        let key = probe.cells.pick(DVec2::new(-195.0, -188.0)).unwrap();
+        let frame = probe.cells.frame(key.grid).unwrap();
+        drop(probe);
+        // Two rows of six erased cells 3 m along the road from its lattice: seven columns of two
+        // rows inherit, deep enough for 3 x 2 lots.
+        let shifted = frame.moved(0, 3.0);
+        let s = zoning.cells.register_frame(shifted);
+        let mut sources: Vec<_> = (0..2)
+            .flat_map(|row| {
+                (0..6).map(move |column| {
+                    let point = frame.world(f64::from(key.x + column) + 0.35, f64::from(key.y + row) + 0.5);
+                    let local = shifted.local(point).floor();
+                    (CellKey { grid: s, x: local.x as i32, y: local.y as i32 }, 1)
+                })
+            })
+            .collect();
+        sources.sort_unstable();
+        let plan = |zoning: &mut ZoningSystem, inherit: bool| {
+            let paint = inherit.then(|| crate::simulation::zoning::RoadPaint {
+                erase: 1,
+                cells: sources.clone(),
+            });
+            let start = Instant::now();
+            let mut planner = zoning.cell_lot_planner().inheriting(paint);
+            let report = planner.plan_region(&graph, region, &[size()], &|_| false);
+            let inherited = planner.take_inherited();
+            black_box(planner.finish());
+            (start.elapsed().as_secs_f64() * 1e6, report.created.len(), inherited)
+        };
+        let mut inherit_us = Vec::new();
+        let mut control_us = Vec::new();
+        let mut products = None;
+        for _ in 0..21 {
+            let mut copy = zoning.clone();
+            let (us, created, inherited) = plan(&mut copy, true);
+            inherit_us.push(us);
+            let mut copy = zoning.clone();
+            control_us.push(plan(&mut copy, false).0);
+            let inherited = inherited.expect("the new road's cells inherit").cells;
+            let product = (created, format!("{inherited:?}"));
+            assert!(products.as_ref().is_none_or(|previous| *previous == product));
+            products = Some(product);
+        }
+        let (created, inherited) = products.unwrap();
+        match &reference {
+            None => reference = Some((created, inherited.clone())),
+            Some(reference) => assert_eq!(reference, &(created, inherited.clone())),
+        }
+        inherit_us.sort_unstable_by(f64::total_cmp);
+        control_us.sort_unstable_by(f64::total_cmp);
+        println!(
+            "INHERITANCE_LOCALITY remote_roads={remote} remote_lots={remote} remote_cells={} inherited={} lots_created={created} plan_inherit_us={:.1} plan_control_us={:.1}",
+            remote * 6,
+            inherited.matches("CellKey").count(),
+            inherit_us[10],
+            control_us[10]
+        );
+    }
+}
+
 #[test]
 #[ignore = "matched release timing of retained painted frontage after a split, excluding setup"]
 fn benchmark_cell_split_frontage_locality() {
