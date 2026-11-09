@@ -112,6 +112,8 @@ var tile_tokens: Dictionary = {}
 # until every tile of the batch has one, then install in the same frame.
 var _edit_batch: Dictionary = {}
 var _edit_staged: Dictionary = {}
+# A staged tile invalidated before its first install still has a level to rebake.
+var _edit_levels: Dictionary = {}
 # Results polled after the frame's install budget ran out, in arrival order, as [kind, result]:
 # the next frame takes them first (Rust hands a result over once).
 var _deferred: Array[Array] = []
@@ -644,13 +646,13 @@ func _free_copies(tile: Vector2i, entry: Dictionary, is_preview: bool) -> void:
 
 # Block `block`'s page at level `code` cannot place a copy of `layers` atlas layers: it moves to a
 # larger page (docs/terrain.md "Growth"), sized for its listed tiles now and at least twice the
-# dimension that ran out, which its tiles fill by rebakes while its sets keep binding their page.
+# dimension that ran out. The published bytes and allocator layout move together.
 # Returns false where no larger page can be made (the level's cap and the layer limit, or the
 # budget). O(the block's tiles).
-func _grow(code: int, block: Vector2i, layers: int) -> bool:
+func _grow(code: int, block: Vector2i, layers: int, allocation: Dictionary = {}) -> bool:
 	var target := int(_block_target[code].get(block, -1))
 	var from_id := target if target >= 0 else int(_block_page[code].get(block, -1))
-	var from: Dictionary = page_store.by_id.get(from_id, {})
+	var from: Dictionary = allocation if int(allocation.get("id", -1)) == from_id else page_store.by_id.get(from_id, {})
 	if from.is_empty():
 		return false
 	var slots := int(from["slots"])
@@ -664,9 +666,8 @@ func _grow(code: int, block: Vector2i, layers: int) -> bool:
 	return _move_block(code, block, Vector2i(maxi(size.x, slots), maxi(size.y, atlas)))
 
 # Starts block `block`'s move at level `code` to a new page of `size` (slots, atlas layers): it
-# becomes the block's target (a target that ran out too is dropped), and the tiles the block's
-# page holds are asked again for their copies there. Returns false where the budget refuses the
-# page. O(the block's tiles).
+# becomes the block's target (a target that ran out too is dropped), preserving all installed
+# and preview copies. Returns false where the budget refuses the page. O(page capacity).
 func _move_block(code: int, block: Vector2i, size: Vector2i) -> bool:
 	var target := int(_block_target[code].get(block, -1))
 	var page_id := page_store.create(code, block, size.x, size.y)
@@ -685,11 +686,18 @@ func _move_block(code: int, block: Vector2i, size: Vector2i) -> bool:
 	_block_target[code][block] = page_id
 	counters["page_growths"] += 1
 	MetrumDebug.log("terrain", "graded level %d block %s grows to %d slots, %d layers" % [code, str(block), size.x, size.y])
-	# Its tiles are asked again for the target's copies (nothing is kept on the CPU).
+	# Copy what is actually published, including previews and unlisted commit tiles. Rebaking
+	# current inputs can need a larger run in the full old page and deadlock the migration.
 	var bound: Dictionary = page_store.by_id.get(int(_block_page[code].get(block, -1)), {})
 	if not bound.is_empty():
-		for tile: Vector2i in (bound["tiles"] as Dictionary).keys():
-			_wanted[tile] = true
+		var moved: Dictionary = page_store.by_id[page_id]
+		page_store.copy_page(bound, moved)
+		for tile: Vector2i in bound["tiles"]:
+			installed[tile]["copies"][page_id] = installed[tile]["copies"][int(bound["id"])]
+			moved["tiles"][tile] = true
+		for tile: Vector2i in bound["previews"]:
+			preview[tile]["copies"][page_id] = preview[tile]["copies"][int(bound["id"])]
+			moved["previews"][tile] = true
 	_growth_dirty[Vector3i(code, block.x, block.y)] = true
 	return true
 
@@ -893,6 +901,7 @@ func clear() -> void:
 	tile_tokens.clear()
 	_edit_batch.clear()
 	_edit_staged.clear()
+	_edit_levels.clear()
 	_deferred.clear()
 	patch_lists.clear()
 	patch_lists_requested.clear()
@@ -1176,6 +1185,8 @@ func _show_preview_tile(tile: Dictionary) -> void:
 	var before := _shown(key)
 	var copies := _place_copies(key, code, tile, current["copies"] if same_level else {}, false, true)
 	if _place_failed:
+		if not current.is_empty():
+			current["adoptable"] = false
 		# The preview's lag (T27 (d)): a page that is full draws the tile once a later pose finds
 		# room (its block grows meanwhile). A page that cannot grow (its cap or the budget) is the
 		# level's pool exhausted, as the install path records it (_exhaust).
@@ -1356,6 +1367,7 @@ func _failed(failure: Dictionary) -> void:
 			# without it (_draw_state).
 			_edit_batch.erase(tile)
 			_edit_staged.erase(tile)
+			_edit_levels.erase(tile)
 			for patch_key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
 				_dirty_shown[patch_key] = true
 		_wanted[tile] = true
@@ -1399,7 +1411,7 @@ func _drop_variant_wait(key: Vector2i) -> void:
 	if int(requested.get(request_key, -1)) == int(tile["token"]):
 		requested.erase(request_key)
 
-func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> void:
+func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary, reserved: Variant = null) -> void:
 	var code := int(tile["level"])
 	var step := int(tile["step"])
 	var token := int(tile["token"])
@@ -1411,7 +1423,18 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	# A rebake of the installed level, step and token (asked again for a page that lacks its copy)
 	# leaves the copies it already has unwritten; a GL3 step change rewrites them.
 	var fresh := same_level and int(current["step"]) == step and int(current["token"]) == token
-	var copies := _place_copies(key, code, tile, held, fresh, false)
+	var copies: Dictionary
+	if reserved == null:
+		copies = _place_copies(key, code, tile, held, fresh, false)
+	else:
+		copies = reserved
+		_place_failed = false
+		for page_id: int in copies:
+			if not (fresh and copies[page_id] == held.get(page_id, GradedPages.NO_COPY)):
+				page_store.write_copy(page_store.by_id[page_id], copies[page_id], tile)
+		for page_id: int in held:
+			if not copies.has(page_id):
+				_free_copy(key, page_id, held[page_id], false)
 	if _place_failed:
 		# The tile stays as it was: waiting for its block's larger page (_wait_for_growth), or
 		# recorded (_exhausted) until a slot of the level frees.
@@ -1472,13 +1495,30 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 	if waiting:
 		counters["variant_waits"] += 1
 		return 0
-	for key: Vector2i in _edit_staged.keys():
-		if not _adopt_preview(key, _edit_staged[key]):
-			_upload(key, _edit_staged[key], resident_patches)
+	# Adoption changes ownership only: the same preview slots remain drawn. Free the replaced
+	# installed copies before planning the batch's allocations, without changing visible data.
+	for key: Vector2i in _edit_staged:
+		_adopt_preview(key, _edit_staged[key])
+	var reservation := _reserve_edit_copies()
+	if reservation.is_empty():
+		return 0
+	# Every allocation fits before any published texture is overwritten. Register all incoming
+	# holders before uploads free old-level copies, so no page needed later in the batch retires.
+	for page_id: int in reservation["pages"]:
+		var page: Dictionary = page_store.by_id[page_id]
+		page["free"] = reservation["pages"][page_id]["free"]
+		page["runs"] = reservation["pages"][page_id]["runs"]
+	for key: Vector2i in reservation["tiles"]:
+		for page_id: int in reservation["tiles"][key]:
+			var page: Dictionary = page_store.by_id[page_id]
+			page["tiles"][key] = true
+	for key: Vector2i in _edit_staged:
+		_upload(key, _edit_staged[key], resident_patches, reservation["tiles"][key])
 	last_edit_batch = _edit_staged.keys()
 	var count := _edit_staged.size()
 	_edit_batch.clear()
 	_edit_staged.clear()
+	_edit_levels.clear()
 	_edit_serial_batched = _edit_serial_taken
 	# The committed tiles replace the preview's in the same frame.
 	if _edit_release >= 0:
@@ -1489,13 +1529,52 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 		_edit_release = -1
 	return count
 
+# Plan all slot/run allocations on scratch allocator state. Failure starts a page move and
+# keeps the complete edit staged; it must not acknowledge an upload that never happened.
+# O(batch copies + free runs of the touched pages), independent of world size; idle does none.
+func _reserve_edit_copies() -> Dictionary:
+	var pages := {}
+	var tiles := {}
+	for key: Vector2i in _edit_staged:
+		var tile: Dictionary = _edit_staged[key]
+		var code := int(tile["level"])
+		var current: Dictionary = installed.get(key, {})
+		var held: Dictionary = current["copies"] if int(current.get("level", -1)) == code else {}
+		var layers := (tile["rows"] as PackedByteArray).size() / GradedPages.ATLAS_LAYER_BYTES
+		var copies := {}
+		for pair: Array in _copy_pages(key, code):
+			var page_id := int(pair[0])
+			if page_id < 0:
+				return {}
+			if not pages.has(page_id):
+				var plan: Dictionary = page_store.by_id[page_id].duplicate()
+				plan["free"] = plan["free"].duplicate()
+				plan["runs"] = plan["runs"].duplicate()
+				pages[page_id] = plan
+			var plan: Dictionary = pages[page_id]
+			var before: Vector3i = held.get(page_id, GradedPages.NO_COPY)
+			if not GradedPages.can_place(plan, before, layers):
+				var target := int(_block_target[code].get(pair[1], -1))
+				if target < 0 or target == page_id:
+					if not _grow(code, pair[1], layers, plan):
+						# Preserve the existing explicit pool-exhaustion contract at the device/budget
+						# cap. Only a recorded refusal may leave the batch without an upload.
+						_exhaust(key, code, "%d,%d,%d,%d" % [key.x, key.y, code, int(tile["step"])], int(tile["token"]))
+						_edit_batch.erase(key)
+						_edit_staged.erase(key)
+						_edit_levels.erase(key)
+				return {}
+			copies[page_id] = GradedPages.place(plan, before, layers)
+		tiles[key] = copies
+	return {"pages": pages, "tiles": tiles}
+
 # A committed tile that is the very payload the preview shows (Rust's `adopted`, the preview tile
 # of the commit's epoch at the same level) takes over the preview's slot as the installed tile
 # (`TERRAIN-07-E` round 6): nothing is uploaded and nothing drawn changes, so neither its instance
 # nor its walls are rewritten. Returns whether it did. O(1).
 func _adopt_preview(key: Vector2i, tile: Dictionary) -> bool:
 	var shown: Dictionary = preview.get(key, {})
-	if (not bool(tile.get("adopted", false)) or shown.is_empty()
+	if (not bool(tile.get("adopted", false)) or shown.is_empty() or not bool(shown.get("adoptable", true))
 			or int(shown["token"]) != int(tile["preview_epoch"])
 			or int(shown["level"]) != int(tile["level"]) or int(shown["step"]) != int(tile["step"])):
 		return false
@@ -1525,6 +1604,9 @@ func _apply_edit(edit: Dictionary) -> void:
 	var serial := int(edit["serial"])
 	_edit_serial_taken = serial
 	if bool(edit["all"]):
+		for tile: Vector2i in _edit_batch.keys():
+			if not installed.has(tile):
+				_dirty_tile(tile, serial)
 		for tile: Vector2i in installed.keys():
 			_dirty_tile(tile, serial)
 		for request_key: String in requested.keys() + refused.keys():
@@ -1541,7 +1623,7 @@ func _apply_edit(edit: Dictionary) -> void:
 			var held := not current.is_empty() and int(current["level"]) == code and int(current["step"]) == step
 			var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, code, step]
 			# A refused tile is held too: the edit may have changed what refused it.
-			if held or requested.has(request_key) or refused.has(request_key):
+			if held or _edit_batch.has(tile) or requested.has(request_key) or refused.has(request_key):
 				_dirty_tile(tile, serial)
 	# A commit's or undo's own tiles (TERRAIN-07-E): bitwise the rebakes of the edit's inputs, so
 	# they install with the batch instead of rebaking. A tile neither held nor wanted installs
@@ -1572,9 +1654,13 @@ func _dirty_tile(tile: Vector2i, serial: int) -> void:
 		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
 		requested.erase(request_key)
 		refused.erase(request_key)
+	if _edit_staged.has(tile):
+		var staged: Dictionary = _edit_staged[tile]
+		_edit_levels[tile] = Vector2i(int(staged["level"]), int(staged["step"]))
 	_edit_staged.erase(tile)
-	if installed.has(tile):
+	if installed.has(tile) or _edit_batch.has(tile):
 		_edit_batch[tile] = token
+		_wanted[tile] = true
 	if _desired.has(tile):
 		_desired[tile]["token"] = token
 		_wanted[tile] = true
@@ -1660,6 +1746,17 @@ func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 			_patch_steps[key] = step
 	if not resident_patches.has(key):
 		_lists_wanted.erase(key)
+		# Commit-only tiles have no list reference to drop. Evict them when the last patch
+		# meeting them leaves, using this patch's bounded tile rectangle rather than a world scan.
+		var rect := Rect2(world_min + Vector2(key) * patch_span_m, Vector2.ONE * patch_span_m)
+		for tile: Vector2i in _patch_tiles(rect):
+			if not installed.has(tile) or _desired.has(tile):
+				continue
+			var retained := false
+			for neighbour: Vector2i in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
+				retained = retained or resident_patches.has(neighbour)
+			if not retained:
+				_undesire(tile)
 		return
 	_lists_wanted[key] = true
 	# From residency on, the patch draws what _draw_state says: nothing until its list arrives.
@@ -1734,7 +1831,8 @@ func _desire(tile: Vector2i) -> void:
 # A tile no resident patch lists any more: its slot is freed and its requests, token and
 # refusals dropped (only held tiles keep a token).
 func _undesire(tile: Vector2i) -> void:
-	_unbucket(tile, int(_desired[tile]["bucket"]))
+	if _desired.has(tile):
+		_unbucket(tile, int(_desired[tile]["bucket"]))
 	_desired.erase(tile)
 	_wanted.erase(tile)
 	if _growth_waits.has(tile):
@@ -1751,6 +1849,7 @@ func _undesire(tile: Vector2i) -> void:
 			_walls_changed(tile)
 	_edit_batch.erase(tile)
 	_edit_staged.erase(tile)
+	_edit_levels.erase(tile)
 	_exhausted.erase(tile)
 	for level: Vector2i in LEVEL_STEPS:
 		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
@@ -1877,8 +1976,14 @@ func _request_tiles() -> void:
 	for tile: Vector2i in _wanted.keys():
 		var want: Dictionary = _desired.get(tile, {})
 		if want.is_empty():
-			_wanted.erase(tile)
-			continue
+			# A committed apron tile can be installed without ever appearing in a patch list.
+			# It still needs invalidation while resident; otherwise its edit batch never finishes.
+			var held: Dictionary = installed.get(tile, {})
+			if held.is_empty() and not _edit_levels.has(tile):
+				_wanted.erase(tile)
+				continue
+			var held_level: Vector2i = _edit_levels[tile] if held.is_empty() else Vector2i(int(held["level"]), int(held["step"]))
+			want = {"level": held_level, "token": int(tile_tokens.get(tile, 0))}
 		var level: Vector2i = want["level"]
 		var token := int(want["token"])
 		var current: Dictionary = installed.get(tile, {})

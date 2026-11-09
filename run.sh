@@ -520,7 +520,7 @@ godot_main_chain() {
         new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
         zoning_road_tool_test zoning_cells_tool_test debug_console_test \
         junction_debug_overlay_test road_rejection_report_test \
-        street_lamp_grid_test graded_tile_renderer_test parking_test; do
+        street_lamp_grid_test graded_tile_renderer_test graded_page_publication_test road_render_publication_test parking_test; do
         run_godot_bridge_test "$script" || return 1
     done
     # The locked ring city the gridlock notice test loads (`TRAFFIC-14`), written by Rust.
@@ -577,7 +577,7 @@ godot_main_chain() {
             --script "res://tests/${script}.gd" || return 1
     done
     for script in vegetation_level_match_test vegetation_wind_gate_test terrain_tangent_test \
-        graded_tile_renderer_test; do
+        graded_tile_renderer_test graded_page_publication_test road_render_publication_test; do
         echo "Running rendered $script..."
         run_rendered_godot_test 640 480 --path "$asset_test_project" --audio-driver Dummy \
             --resolution 640x480 --script "res://tests/${script}.gd" || return 1

@@ -259,9 +259,6 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 				continue
 			_expect(graded._move_block(code, block, Vector2i(int(page["slots"]) * 2, int(page["layers"]))), "level %d block %s starts its move" % [code, block])
 			moving[Vector3i(code, block.x, block.y)] = int(graded._block_target[code][block])
-			# The new page hands out other slot numbers than the old (its slot 0 held back), so an
-			# instance left naming its old slot shows.
-			(graded.page_store.by_id[graded._block_target[code][block]]["free"] as Array).pop_back()
 			# Until the move, a copy of the block's tiles goes into both pages: its sets keep
 			# showing every installed tile from the page they bind.
 			for tile: Vector2i in (page["tiles"] as Dictionary).keys():
@@ -282,10 +279,6 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 	for key: Vector2i in resident.keys():
 		_check_cells(graded, key, resident)
 	_expect(_partial == 0 and _violations == 0, "no frame of the moves draws a partial set (%d) or a PlaneMesh over listed tiles (%d)" % [_partial, _violations])
-	# The slots held back go back to their pages.
-	for page_id: int in moving.values():
-		if graded.page_store.by_id.has(page_id):
-			(graded.page_store.by_id[page_id]["free"] as Array).append(0)
 
 # A tile changing `GL3` step with the camera (2 to 5 km, then 4) keeps its token and level code but
 # not its lattice: every one is rebaked and rewritten into its copies (round 8: a rebake of the

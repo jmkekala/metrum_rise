@@ -26,6 +26,92 @@ const FREE_PAGES_KEPT := 4
 # No copy in a page: Vector3i(slot, first atlas layer, layers) with no slot.
 const NO_COPY := Vector3i(-1, 0, 0)
 
+# Godot's ImageTextureLayered arrays lack CAN_COPY_TO, so their growth cannot preserve GPU
+# contents without a readback. These arrays keep the same TextureLayered shader interface and
+# add that usage bit. All device work stays on the rendering thread, in submission order.
+# Queued calls retain their owner until execution, including when a world resets meanwhile.
+class CopyableArray extends Texture2DArrayRD:
+	func create(width: int, height: int, count: int) -> void:
+		RenderingServer.call_on_render_thread(_create.bind(width, height, count, self))
+
+	func _create(width: int, height: int, count: int, _owner: RefCounted) -> void:
+		var device := RenderingServer.get_rendering_device()
+		var format := RDTextureFormat.new()
+		format.texture_type = RenderingDevice.TEXTURE_TYPE_2D_ARRAY
+		format.format = RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT
+		format.width = width
+		format.height = height
+		format.array_layers = count
+		format.usage_bits = (RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
+			| RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT
+			| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT
+			| RenderingDevice.TEXTURE_USAGE_CAN_COPY_TO_BIT)
+		var handle := device.texture_create(format, RDTextureView.new())
+		device.texture_clear(handle, Color(0, 0, 0, 0), 0, 1, 0, count)
+		texture_rd_rid = handle
+
+	func update_layer(image: Image, layer: int) -> void:
+		# Packed bytes are copy-on-write. Queue their snapshot, never the mutable pooled Image.
+		RenderingServer.call_on_render_thread(_update.bind(image.get_data(), layer, self))
+
+	func _update(data: PackedByteArray, layer: int, _owner: RefCounted) -> void:
+		RenderingServer.get_rendering_device().texture_update(texture_rd_rid, layer, data)
+
+	func copy_from(source: TextureLayered) -> void:
+		RenderingServer.call_on_render_thread(_copy.bind(source, self))
+
+	func _copy(source: TextureLayered, _owner: RefCounted) -> void:
+		var device := RenderingServer.get_rendering_device()
+		var from := RenderingServer.texture_get_rd_texture(source.get_rid())
+		var size := Vector3(source.get_width(), source.get_height(), 1)
+		for layer in source.get_layers():
+			device.texture_copy(from, texture_rd_rid, Vector3.ZERO, Vector3.ZERO, size, 0, 0, layer, layer)
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_PREDELETE and texture_rd_rid.is_valid():
+			# TextureLayeredRD owns its RenderingServer wrapper, not the device texture.
+			RenderingServer.call_on_render_thread(_free.bind(texture_rd_rid))
+
+	static func _free(handle: RID) -> void:
+		RenderingServer.get_rendering_device().free_rid(handle)
+
+static func _array(zero: Image, count: int) -> TextureLayered:
+	# Texture2DArrayRD requires at least two layers; one-layer test pools use the regular array.
+	if count > 1 and RenderingServer.get_rendering_device() != null:
+		var texture := CopyableArray.new()
+		texture.create(zero.get_width(), zero.get_height(), count)
+		return texture
+	var images: Array[Image] = []
+	images.resize(count)
+	images.fill(zero)
+	var texture := Texture2DArray.new()
+	texture.create_from_images(images)
+	return texture
+
+static func _copy_array(source: TextureLayered, target: TextureLayered) -> void:
+	if target is CopyableArray:
+		target.copy_from(source)
+	elif DisplayServer.get_name() != "headless":
+		# Compatibility has no RenderingDevice. Growth alone reads back its bounded old page;
+		# ordinary uploads and idle frames never do. The dummy renderer stores no texels.
+		for layer in source.get_layers():
+			target.update_layer(source.get_layer_data(layer), layer)
+
+# Preserve the page's published contents and allocation layout before rebinding its materials.
+# No rebake is involved: edits, unlisted commit tiles and previews all keep their exact bytes.
+# O(source slots + source atlas layers), with device-to-device copies on Forward+/Mobile.
+func copy_page(source: Dictionary, target: Dictionary) -> void:
+	_copy_array(source["texels"], target["texels"])
+	_copy_array(source["atlas"], target["atlas"])
+	var free: Array[int] = []
+	for slot in range(int(target["slots"]) - 1, int(source["slots"]) - 1, -1):
+		free.append(slot)
+	free.append_array(source["free"])
+	target["free"] = free
+	target["runs"] = (source["runs"] as Array[Vector2i]).duplicate()
+	if int(target["layers"]) > int(source["layers"]):
+		_free_run(target, int(source["layers"]), int(target["layers"]) - int(source["layers"]))
+
 # The renderer's counters (the same Dictionary): textures, images and pages created, uploads.
 var counters: Dictionary = {}
 # Per level code: the slot layer's side, the pooled upload Images, the zero layers new pages start
@@ -90,17 +176,8 @@ func create(code: int, block: Vector2i, slots: int, layers: int) -> int:
 			pass
 		if bytes + page_bytes > GRADED_PAGE_BUDGET_MB * 1048576:
 			return -1
-		# Every layer starts from one shared zero image.
-		var texel_layers: Array[Image] = []
-		texel_layers.resize(slots)
-		texel_layers.fill(level["zero_texels"])
-		var atlas_layers: Array[Image] = []
-		atlas_layers.resize(layers)
-		atlas_layers.fill(level["zero_atlas"])
-		var texels := Texture2DArray.new()
-		texels.create_from_images(texel_layers)
-		var atlas := Texture2DArray.new()
-		atlas.create_from_images(atlas_layers)
+		var texels := _array(level["zero_texels"], slots)
+		var atlas := _array(level["zero_atlas"], layers)
 		counters["textures_created"] += 2
 		counters["pages_created"] += 1
 		page = {"id": _next_id, "code": code, "slots": slots, "layers": layers, "texels": texels, "atlas": atlas, "bytes": page_bytes}
@@ -218,7 +295,7 @@ func write_copy(page: Dictionary, copy: Vector3i, tile: Dictionary) -> void:
 	var header := image.get_pixel(0, side)
 	header.r = float(copy.y)
 	image.set_pixel(0, side, header)
-	(page["texels"] as Texture2DArray).update_layer(image, copy.x)
+	page["texels"].update_layer(image, copy.x)
 	var rows: PackedByteArray = tile["rows"]
 	var count := rows.size() / ATLAS_LAYER_BYTES
 	if count > 0:
@@ -227,7 +304,7 @@ func write_copy(page: Dictionary, copy: Vector3i, tile: Dictionary) -> void:
 		var layer: Image = level["atlas_image"]
 		for index in count:
 			layer.blit_rect(run, Rect2i(0, index, ATLAS_WIDTH, 1), Vector2i.ZERO)
-			(page["atlas"] as Texture2DArray).update_layer(layer, copy.y + index)
+			page["atlas"].update_layer(layer, copy.y + index)
 	counters["upload_ms_max"] = max(float(counters["upload_ms_max"]), float(Time.get_ticks_usec() - upload_start_us) / 1000.0)
 	counters["uploads"] += 1
 	counters["upload_bytes"] += (tile["texels"] as PackedByteArray).size() + rows.size()

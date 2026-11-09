@@ -3609,13 +3609,14 @@ nothing smaller than a layer is ever allocated, and no CPU copy of an uploaded l
 - **Growth.** A placement that finds its page full (slots or layers: the block's lists grew, or
   its tiles' rows average more than three layers) moves the block to a larger page: a new page
   sized for the block's listed tiles now, and at least twice the dimension that ran out, becomes
-  the block's target; every tile the block holds at that level is asked again (a rebake: nothing
-  is kept on the CPU) and installs into the target too; the block's sets keep binding the old
-  page, which keeps taking every copy (a tile it cannot take waits for the move), so the sets
-  show every installed tile meanwhile, until the target holds a copy of every tile the block
-  holds there; then the sets bind the target in that frame (their instances rewritten with the
-  target's slots) and the old page is freed. The tile that found the page full stays as it was
-  until then. (Round 8's first build put a moving block's new copies in the target only, and its
+  the block's target, and the old page's published texels, atlas rows and allocator layout are
+  copied into it on the device (`copy_page`: installed and preview copies keep their slots and
+  runs; the page arrays are `Texture2DArrayRD`s with copy usage). The sets bind the target in
+  that frame and the old page is freed. The tile that found the page full is placed in the
+  target. (Until `TERRAIN-21` the move asked every tile again for a rebake into the target while
+  the old page kept taking every copy: a tile whose rows grew could neither fit the full old page
+  nor complete the move, so the move never finished, and its edit batch was acknowledged without
+  the upload, leaving a new road over the ground of an older edit until a reload.) (Round 8's first build put a moving block's new copies in the target only, and its
   sets drew those tiles as base cells until the move: the 100k pans showed up to 5 patches a
   frame unready in view.)
 - **When memory runs out.** Pages are created and grown within a budget of graded page bytes
@@ -3640,7 +3641,7 @@ nothing smaller than a layer is ever allocated, and no CPU copy of an uploaded l
 - **Complexity.** Install `O(pages wanting the tile (at most 4) x the page's free runs)`; evict
   `O(copies x free runs)`; a cell's lookup `O(1)` (its patch's block page, the tile's copy by
   page); a page's creation `O(the block's tiles)` to count its listed tiles; a block's growth
-  `O(its tiles)` rebakes, spread over frames by the request budget. No city scans; no per-frame
+  `O(page capacity)` device copies, no rebake. No city scans; no per-frame
   allocation (one upload image per level and layer shape, free pages pooled).
 
 **Memory bounds.** The spike's 10-25 GB for a dense 20 km city came from storing every tile at
@@ -4123,12 +4124,15 @@ km.
   ([T53](#terrain-07-open-questions) (a)) once its listed tiles show there and every installed
   tile meeting the patch is copied there, so the two halves of a tile across a block border never
   differ (a border tile's second copy may arrive frames after the first).
-- **Uploads.** `Texture2DArray.update_layer` per dirty slot layer and per atlas layer of its run
+- **Uploads.** `update_layer` (on the rendering thread for the `Texture2DArrayRD` pages) per dirty slot layer and per atlas layer of its run
   (as the `TERRAIN-06` mask pages are written), from pooled `Image`s per level, rewritten in
   place; one result uploads into each page holding the tile. No texture, material or mesh is
   created per edit. A tile rebaked at its installed level is rewritten into its own slots before
   the frame draws, so its instances stay and an edit needs no free slot (`TERRAIN-07-D` round 3),
-  only a longer run when its rows outgrow it.
+  only a longer run when its rows outgrow it. An edit batch plans every copy it needs on scratch
+  allocator state before writing any (`_reserve_edit_copies`); a page that cannot take one starts
+  its move and the whole batch stays staged, so a batch is never acknowledged without its upload
+  (`TERRAIN-21`).
 - **Tokens.** A tile's token is the serial of the last edit that dirtied it while Godot held it
   (installed or in flight); a bake arriving with another token is dropped. Edits reach Godot
   through the residency poll with their dirty tiles per level (`TERRAIN-07-D` item 5).
