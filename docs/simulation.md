@@ -1128,6 +1128,15 @@ moves its entities between the tiers' phase buckets.
 - **Metric:** core-mutex hold time per sim frame (`lock_held_ms` in the sim thread), including
   movement, slot work and snapshot build. Reported as max, p99, p99.9, and the count of frames
   over 8 ms and over 16.7 ms, across one full game day.
+- **Who gets the core between frames** (`CODE-25`). The sim thread takes the core through a
+  turnstile (`CoreTurnstile`) for every frame and every edit; a thread that waits for the core
+  (Godot's main thread in a click or any blocking bridge call) holds the turnstile while it
+  waits, so the sim thread cannot take the core again ahead of it and the wait ends with the
+  frame in progress. A frame that overruns its 16.7 ms interval is followed at once by the next
+  (no catch-up and no gap), so per-frame `try_lock` queries find the core busy until frames fit
+  again; hovers keep their last answer meanwhile ([Busy Core](debug.md#busy-core)). The turnstile
+  costs one uncontended mutex per acquisition, before `lock_held_ms` starts;
+  `perf07_frame_budget` steps the core on its own thread and never runs the sim thread's loop.
 - **Workload:** the populated-city fixture used by `benchmark_populated_hour_boundaries` and
   `benchmark_populated_midnight_boundaries`, extended to record every frame of the day, at 10k,
   30k and 100k residents, at 1× and 32×.

@@ -627,21 +627,57 @@ A Godot test must hold there:
 - Wait on the condition the next step needs (the render generation, the commit's
   acknowledgement, a result in a poll) under a deadline that fails with a clear `_expect`, never
   on a fixed number of frames or a fixed time.
-- Bridge calls made every frame take the core lock only when it is free:
-  `intersect_world_surface`, `intersect_terrain`, `get_bulldoze_target_at`, `bulldoze_at` and
-  `poll_graded_tile_results` among them. While the simulation thread holds the core (a tick or
-  an edit) they answer at once, with `null`, `busy` or nothing done. That is common just after a
-  test's own edit, and under load the core can stay held for long runs of frames: in round `F1`
-  a junction preview run saw 210 busy polls in a row over 20 s. So a test that needs the answer
-  does not poll for it. It passes `wait` (the last argument of `intersect_world_surface`,
-  `get_bulldoze_target_at`, `bulldoze_at` and `poll_graded_tile_results`), and the call waits
-  for the core. The game's one-shot input does the same: the select tool's click waits; its
-  hover does not.
+- Bridge calls made every frame take the core lock only when it is free (see
+  [Busy Core](#busy-core)). While the simulation thread holds the core (a frame or an edit) they
+  answer at once, with `null`, `false`, `busy` or nothing done. That is common just after a
+  test's own edit, and a long frame or edit holds the core across many test frames. So a test
+  that needs the answer does not poll for it: it passes `wait` as the game's one-shot input
+  does, and the call waits for the core. `debug_hold_core` makes the simulation thread hold the
+  core until a call waits for it, for tests of exactly that (`core_busy_input_test`).
 - Work that finishes on another thread can finish before the first frame under load, so a test
   may close what it opened in the same frame. A deferred call that takes a node must accept a
   freed one: an untyped parameter checked with `is_instance_valid`, or the call deferred on the
   node itself, which Godot drops with the node. A typed parameter refuses the freed instance
   with an engine error, which fails the asset tests' log check (`pack_dialogs.gd`, round `F1`).
+
+## Busy Core
+
+The simulation thread holds the core (`SimCore`'s mutex) for every frame and every edit. The
+rule for game code (`CODE-25`):
+
+- **Per-frame queries never wait.** Renderers and hovers ask through `try_lock` and, while the
+  core is held, get `null`, `false`, `busy`, `pending` or an empty answer at once, and ask again
+  next frame.
+- **Hovers keep their last answer.** A hover asks `hover_world_surface` or `hover_terrain`,
+  which answer `false` while the core is held, and keeps that frame's outline, ring, ghost,
+  label or cursor as it was; `null` still means nothing under the pointer. The bulldoze hover
+  keeps its target on `get_bulldoze_target_at`'s `busy` too, the industry area label on a
+  `pending` quote. The industry and zoning tools return the pointer's last point from their
+  pointer helper.
+- **One-shot input waits.** A click, a release, a stroke's start or a commit passes `wait` to
+  the per-frame query it reads (`intersect_world_surface`, `intersect_terrain`,
+  `get_closest_network_point`, `get_bulldoze_target_at`, `bulldoze_at`,
+  `poll_graded_tile_results`), or calls one that always waits. It resolves the pointer itself
+  instead of reading the last hover, which may be older. The road tool's cursor, preview and
+  commit read the road tool's published view and need no core.
+- **A waiting call gets the core when the frame or edit in progress ends.** `std`'s mutex is not
+  fair: once frames overran their 16.7 ms interval and ran back to back, the simulation thread
+  took the core again 40-80 µs after freeing it and won the race against a waiting call frame
+  after frame. A waiting call now holds a turnstile while it waits (`CoreTurnstile`), and the
+  simulation thread passes the turnstile before every acquisition.
+
+Measured in round `C25` (debug library, headless, a paused or running 512 m world with two
+roads, a probe printing every frame's hold, two 15 s runs a case): the paused frame holds the
+core 0.95 ms on an idle machine and 1.1-1.5 ms on average beside 24 or 32 busy loops (p99 7-9 ms,
+at most 18.5 ms), most of it the simulation thread waiting for the shared pool's workers to get a
+CPU for the frame's two pool entries. The main thread's per-frame query finds the core free
+92-95% of the time, busy at most 3 polls in a row, before and after the turnstile. Round `F1`'s
+"210 busy polls in a row over 20 s" were 210 of some 2,000 polls: its probe printed only the
+busy ones. Frames that overrun run back to back: with a synthetic 20 ms frame the core is held
+99.6% of the time and the per-frame query finds it busy 98% (90% beside 24 busy loops). A
+waiting query then waited up to 604 ms on an idle machine and 266 ms beside the loops; with the
+turnstile at most 19 and 28 ms, one frame. Per-frame queries cannot find the core free in that
+state without slowing the simulation, which is why hovers keep their answer.
 
 ## Shutdown
 
