@@ -533,6 +533,12 @@ godot_main_chain() {
     run_rust_fixture_generator record_stranded_walkers_fixture || return 1
     run_guarded_godot_test godot --headless --path "$asset_test_project" \
         --script res://tests/stranded_notice_test.gd || return 1
+    # The street with one house on its cell lot the road demolition test strokes (`ZONE-09`),
+    # written by Rust with the stroke beside it.
+    export METRUM_ROAD_DEMOLITION_FIXTURE="$asset_test_profile/road-demolition.sqlite"
+    run_rust_fixture_generator record_road_demolition_fixture || return 1
+    run_guarded_godot_test godot --headless --path "$asset_test_project" \
+        --script res://tests/road_tool_demolition_test.gd || return 1
     export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"
     run_rust_fixture_generator generate_building_lod_fixtures || return 1
     # Intentional bad-tier import exercises fallback and emits an expected importer error.

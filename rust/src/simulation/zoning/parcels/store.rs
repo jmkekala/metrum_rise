@@ -98,6 +98,29 @@ impl ParcelStore {
         self.chunk_revisions.get(&chunk).copied().unwrap_or(0)
     }
 
+    /// Every 512 m parcel chunk with a revision ([`Self::chunk_revision`], at least 1), in no
+    /// order: a chunk's revision changes with any parcel in it, and a chunk the store no longer
+    /// lists after [`Self::clear`] has none.
+    pub(crate) fn chunk_revisions(&self) -> impl Iterator<Item = ((i32, i32), u64)> + '_ {
+        self.chunk_revisions
+            .iter()
+            .map(|(&chunk, &revision)| (chunk, revision))
+    }
+
+    /// The revision every chunk revision change advances. O(1).
+    pub(crate) fn overlay_revision(&self) -> u64 {
+        self.overlay_revision
+    }
+
+    /// The parcels the chunk index lists in `chunk`: every parcel whose bounds meet it.
+    pub(crate) fn chunk_parcels(&self, chunk: (i32, i32)) -> impl Iterator<Item = &ZoningParcel> {
+        self.chunk_index
+            .get(&chunk)
+            .into_iter()
+            .flatten()
+            .filter_map(|&id| self.get(id))
+    }
+
     fn mark_overlay_bounds(&mut self, min: Vector2, max: Vector2) {
         mark_chunk_revisions(
             &mut self.chunk_revisions,

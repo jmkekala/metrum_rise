@@ -50,6 +50,10 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Water crossing requires a bridge"
 		"field_overlap":
 			return "Road overlaps a farm field"
+		"extraction_area_overlap":
+			return "Road overlaps a mine's extraction area"
+		"plotted_building_overlap":
+			return "Road overlaps a placed building's lot"
 		"zoning_cell_overlap":
 			return "Road overlaps painted zoning cells"
 		"surface_geometry_invalid":

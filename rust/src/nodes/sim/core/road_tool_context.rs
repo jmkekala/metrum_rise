@@ -14,12 +14,15 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use super::road_preview::{RoadPreview, RoadToolQuerySnapshot, road_tool_snapshot_from_core};
 use super::road_terrain_inputs::RoadTerrainInputs;
+use super::road_tool_land::RoadToolLand;
 use super::state::SimCore;
 use crate::simulation::network::graph::{RegionGraph, RegionGraphUndoDelta};
 
 /// What the simulation last published to the road tool, and when.
 #[derive(Default)]
 pub(crate) struct RoadToolPublisher {
+    /// The land the hover preview takes (`ZONE-09`), published apart from the view.
+    pub(crate) land: super::road_tool_land::RoadToolLandPublisher,
     sequence: u64,
     published: Option<PublishedView>,
     // An immutable copy of the live graph an editor already made for its routing rebuild,
@@ -207,7 +210,6 @@ impl SimCore {
                     road_mesh_generation: self.road_mesh_lane_generation,
                     road_mesh_surface_generation: self.cached_road_mesh_generation,
                     terrain_inputs,
-                    fields: Arc::clone(&self.allocator.field_clearance),
                     cells,
                     surface_generation: self.road_tool_surface_generation,
                 };
@@ -247,6 +249,9 @@ impl SimCore {
 pub(crate) struct RoadToolShared {
     pub(crate) view: RwLock<RoadToolQuerySnapshot>,
     pub(crate) context: Mutex<RoadPreviewContext>,
+    // The latest land (`ZONE-09`), which the simulation thread publishes after any frame that
+    // changed it; held only to swap or share one `Arc`, so neither side waits on a preview.
+    land: Mutex<Arc<RoadToolLand>>,
 }
 
 impl RoadToolShared {
@@ -256,6 +261,7 @@ impl RoadToolShared {
         Self {
             context: Mutex::new(RoadPreviewContext::capture(view.clone())),
             view: RwLock::new(view),
+            land: Mutex::default(),
         }
     }
 
@@ -267,7 +273,26 @@ impl RoadToolShared {
         Self {
             context: Mutex::new(context),
             view: RwLock::new(publication.view),
+            land: Mutex::default(),
         }
+    }
+
+    /// Takes a newer land; an older one, published out of order, is dropped. O(1) under the
+    /// slot's lock; the replaced land is freed after it.
+    pub(crate) fn publish_land(&self, land: Arc<RoadToolLand>) {
+        let mut slot = self.land.lock().expect("road tool land lock poisoned");
+        let replaced = if land.sequence() > slot.sequence() {
+            std::mem::replace(&mut *slot, land)
+        } else {
+            land
+        };
+        drop(slot);
+        drop(replaced);
+    }
+
+    /// The latest land. O(1).
+    pub(crate) fn land(&self) -> Arc<RoadToolLand> {
+        Arc::clone(&self.land.lock().expect("road tool land lock poisoned"))
     }
 
     /// The latest preview when it was made for exactly this stroke.
@@ -368,6 +393,8 @@ pub(crate) struct RoadPreviewContext {
     // inputs equal the pose's. The shown tiles are kept across publications: inputs, not the
     // view's generation, decide reuse.
     pub(crate) graded: crate::nodes::sim::core::GradedPreview,
+    /// The land the preview takes (`ZONE-09`): [`RoadToolShared::land`] at the pose.
+    pub(crate) land: Arc<RoadToolLand>,
 }
 
 impl RoadPreviewContext {
@@ -381,6 +408,7 @@ impl RoadPreviewContext {
             last_preview: None,
             roadbed_scratch: Default::default(),
             graded: Default::default(),
+            land: Default::default(),
         }
     }
 

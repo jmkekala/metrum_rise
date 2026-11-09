@@ -33,7 +33,7 @@ use godot::prelude::*;
 use std::collections::HashSet;
 use std::time::Instant;
 
-const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
+pub(crate) const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
 const BULLDOZE_ROAD_PICK_RADIUS_M: f32 = 24.0;
 const BULLDOZE_ROAD_PICK_MARGIN_M: f32 = 0.75;
 const ROAD_UNDO_TOPOLOGY_MARGIN_M: f32 = 40.0;

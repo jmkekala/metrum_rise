@@ -17,7 +17,7 @@ pub(crate) use store::{PlannedParcelChange, PlannedParcels};
 pub use types::{ParcelGeometry, ParcelId, ParcelPlacementError, ZoningParcel};
 
 pub(crate) use geometry::{
-    chunks_for_aabb, geometries_overlap, geometry_for_parcel, geometry_from_attachment,
+    chunk_key, chunks_for_aabb, geometries_overlap, geometry_for_parcel, geometry_from_attachment,
     geometry_inside_world, geometry_overlaps_road,
 };
 pub(crate) use placement::{

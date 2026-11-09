@@ -172,6 +172,17 @@ impl SimulationNode {
             prepared_points,
             (fwd_lanes, bkw_lanes),
             prepared.class,
+            RoadPreviewRequest {
+                surface_generation,
+                points: points.to_vec(),
+                fwd_lanes,
+                bkw_lanes,
+                snap_to_existing_roads,
+                tunnel: self.road_tool_tunnel,
+                median: self.road_tool_median,
+                parking: self.road_tool_parking,
+                attributes: self.road_tool_attributes,
+            },
         );
         let mut dict = result.to::<VarDictionary>();
         dict.set(
@@ -252,6 +263,17 @@ impl SimulationNode {
                 &prepared_points,
                 (fwd_lanes, bkw_lanes),
                 class,
+                RoadPreviewRequest {
+                    surface_generation,
+                    points,
+                    fwd_lanes,
+                    bkw_lanes,
+                    snap_to_existing_roads,
+                    tunnel: self.road_tool_tunnel,
+                    median: self.road_tool_median,
+                    parking: self.road_tool_parking,
+                    attributes: self.road_tool_attributes,
+                },
             )
             .to::<VarDictionary>();
         dict.set(
@@ -333,12 +355,22 @@ impl SimulationNode {
     ) -> VarDictionary {
         let mut graded_tiles = Vec::new();
         let mut graded_removed = Vec::new();
-        let (preview, span_m, origin, view_terrain, graded_epoch, road_mesh_generation) = {
+        let land = self.road_tool.land();
+        let (
+            preview,
+            span_m,
+            origin,
+            view_terrain,
+            graded_epoch,
+            road_mesh_generation,
+            demolish_lots,
+        ) = {
             let mut context = self
                 .road_tool
                 .context
                 .lock()
                 .expect("road tool context lock poisoned");
+            context.land = land;
             let surface_generation = context.view.surface_generation;
             let preview = Arc::new(context.preview_road(RoadPreviewRequest {
                 surface_generation,
@@ -355,6 +387,11 @@ impl SimulationNode {
             context
                 .graded
                 .take_shown_changes(&mut graded_tiles, &mut graded_removed);
+            let demolish_lots = preview
+                .pieces
+                .as_ref()
+                .map(|pieces| Self::demolish_lot_outlines(&context, &pieces.take))
+                .unwrap_or_default();
             let roadbed = &context.view.roadbed;
             let (origin_x, origin_z) = roadbed.chunk_origin_m();
             (
@@ -364,6 +401,7 @@ impl SimulationNode {
                 Arc::clone(&context.view.terrain),
                 context.graded.epoch(),
                 context.view.road_mesh_surface_generation,
+                demolish_lots,
             )
         };
         let prepared = preview.plan.prepared();
@@ -441,7 +479,43 @@ impl SimulationNode {
         );
         dict.set("has_pieces", preview.pieces.is_some());
         dict.set("changed_chunks", chunks);
+        // What the stroke takes (`ZONE-09`): the buildings it demolishes and the outlines of
+        // the lots it removes, four corners each.
+        let demolish_count = preview
+            .pieces
+            .as_ref()
+            .map_or(0, |pieces| pieces.take.buildings.len());
+        dict.set("demolish_count", demolish_count as i64);
+        dict.set("demolish_lots", demolish_lots);
         dict
+    }
+
+    // The outlines of the lots a preview's take removes: four corners per lot, front-left,
+    // front-right, rear-right, rear-left, on the view's graded ground a little above it, as the
+    // bulldoze highlight lies. A lot the land does not hold (published a frame apart from the
+    // cells) has none. O(lots * ground queries).
+    fn demolish_lot_outlines(
+        context: &crate::nodes::sim::core::RoadPreviewContext,
+        take: &crate::nodes::sim::core::RoadLandTake<u64>,
+    ) -> PackedVector3Array {
+        let mut outlines = PackedVector3Array::new();
+        context.view.with_graded_surface(|surface, scratch| {
+            for (&lot, &at) in take.lots.iter().zip(&take.lot_points) {
+                let Some(corners) = context.land.lot_corners(lot, at) else {
+                    continue;
+                };
+                for corner in corners {
+                    let ground =
+                        surface.ground_height_at(f64::from(corner.x), f64::from(corner.y), scratch);
+                    outlines.push(Vector3::new(
+                        corner.x,
+                        ground as f32 + crate::nodes::sim::editing::BULLDOZE_HIGHLIGHT_Y_OFFSET_M,
+                        corner.y,
+                    ));
+                }
+            }
+        });
+        outlines
     }
 
     /// One frame of the road preview's graded terrain without a new pose (`TERRAIN-07-E`,
@@ -590,12 +664,16 @@ impl SimulationNode {
         i64::try_from(query.surface_generation).unwrap_or(i64::MAX)
     }
 
+    // The validation as a dictionary; a valid stroke's corridor and pieces are checked once,
+    // waiting for the core (`ROAD-102`). `request` is the stroke as the road tool would preview
+    // it.
     fn road_candidate_validation_to_variant(
         &self,
         validation: &RoadPreviewValidation,
         prepared_points: &[Vector3],
         lanes: (i32, i32),
         class: EdgeClass,
+        request: RoadPreviewRequest,
     ) -> Variant {
         let (fwd_lanes, bkw_lanes) = lanes;
         let weight = road_cost::stroke_weight(
@@ -613,14 +691,39 @@ impl SimulationNode {
             // search, the debug replay), so the check waits for the core: with `try_lock` it
             // answered "pending" (not valid, no reason) while the simulation held the core, which
             // its callers read as a refusal without a reason (`ROAD-102`).
-            let clearance = RoadCorridorClearance::evaluate(
-                &self.lock_core(),
-                prepared_points,
-                lanes,
+            // Plotted land is judged on the stroke's pieces, compiled on the road tool's context
+            // as its preview compiles them, so a bridge's deck refuses nothing its commit
+            // accepts (`ZONE-09` decisions D2, D8). The context is locked before the core, as
+            // everywhere (the simulation publishes to it without the core).
+            let stroke = (
                 self.road_tool_median,
                 self.road_tool_parking,
                 self.road_tool_attributes,
             );
+            let evaluate = |pieces: Option<crate::nodes::sim::core::StrokePieces<'_>>| {
+                RoadCorridorClearance::evaluate(
+                    &self.lock_core(),
+                    prepared_points,
+                    lanes,
+                    stroke,
+                    pieces,
+                )
+            };
+            let mut context = self
+                .road_tool
+                .context
+                .lock()
+                .expect("road tool context lock poisoned");
+            let plan = crate::nodes::sim::core::RoadEditPlan::compile_from(
+                &context.view.terrain,
+                &context.replica,
+                &context.view.roadbed,
+                request,
+            );
+            let clearance = context
+                .with_plan_pieces(&plan, |pieces| evaluate(Some(pieces)))
+                .unwrap_or_else(|| evaluate(None));
+            drop(context);
             Self::apply_corridor_clearance(&mut dict, &clearance);
         }
         dict.to_variant()

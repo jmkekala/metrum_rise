@@ -359,15 +359,18 @@ impl SimulationNode {
 
     /// Rebuilds the render snapshot immediately from the current core state.
     fn refresh_snapshot_from_core(&self) {
-        let (snapshot, road_tool_publication) = {
+        let (snapshot, road_tool_publication, road_tool_land) = {
             let mut core = self.lock_core();
             let snapshot = core.build_snapshot();
             let road_tool_publication = core.publish_road_tool_view();
-            (snapshot, road_tool_publication)
+            (snapshot, road_tool_publication, core.refresh_road_tool_land())
         };
         *self.snapshot.write().unwrap() = snapshot;
         if let Some(publication) = road_tool_publication {
             self.road_tool.publish(publication);
+        }
+        if let Some(land) = road_tool_land {
+            self.road_tool.publish_land(land);
         }
     }
 }

@@ -395,6 +395,7 @@ pub(crate) fn run_sim_thread(
         let pathfind_count: u32;
         let crash_frame_summary: Option<CrashSimSnapshot>;
         let adopted_view;
+        let road_tool_land;
 
         // Tick and build snapshot inside one lock acquisition.
         let new_snapshot = {
@@ -439,6 +440,9 @@ pub(crate) fn run_sim_thread(
                 adoption_completion = core.transit_network.cch_adoption_completion();
             }
             adopted_view = core.take_adopted_road_tool_view();
+            // The land the road tool's hover preview takes, when the frame or an edit changed
+            // it (`ZONE-09`).
+            road_tool_land = core.refresh_road_tool_land();
 
             // Edits and ticks publish with their shown cell chunks already regenerated.
             let cell_prepare_start = Instant::now();
@@ -467,6 +471,9 @@ pub(crate) fn run_sim_thread(
         // newer view published since supersedes it.
         if let Some(publication) = adopted_view {
             road_tool.publish(publication);
+        }
+        if let Some(land) = road_tool_land {
+            road_tool.publish_land(land);
         }
 
         // Write snapshot — outside the sim lock so render reads are non-blocking.

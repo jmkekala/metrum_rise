@@ -474,9 +474,8 @@ fn the_one_shot_corridor_check_finds_plotted_land() {
             core,
             &[Vector3::new(x, 0.0, 90.0), Vector3::new(x, 0.0, 0.0)],
             (1, 1),
+            (None, RoadParking::NONE, RoadAttributes::DEFAULT),
             None,
-            RoadParking::NONE,
-            RoadAttributes::DEFAULT,
         )
     };
     let lot = core.allocator.building_sites[farm].lot_footprint_world;
@@ -752,3 +751,5 @@ fn a_bridge_deck_over_a_field_is_no_field_overlap() {
     core.allocator.field_clearance_mut().set(owner, &field);
     assert_eq!(commit(&mut core, &bridge_at(100.0)), "");
 }
+
+mod preview;

@@ -25,6 +25,9 @@
 ## X picks the Walkway. `set_lanes` and `set_median` stay the two low-level setters
 ## (benchmarks, probes and the debug replay write them). Rust stays the guard: the stroke's
 ## check refuses a median its lanes cannot carry (a one-way road or a walkway).
+## A stroke over zoned land takes it (`ZONE-09`): the preview outlines the lots Rust says the
+## stroke removes (`demolish_lots`) with the bulldoze tool's highlight and the HUD names the
+## buildings it demolishes (`demolish_count`); plotted land refuses with its reason.
 ## Rust methods called: set_road_tool_tunnel(), set_road_tool_median(), set_road_tool_parking(),
 ## set_road_tool_attributes(), get_road_types(),
 ## preview_road(), advance_road_preview_terrain(),
@@ -41,6 +44,7 @@ extends "res://scripts/tools/network_tool.gd"
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 const RoadTypeMenu := preload("res://scripts/ui/road_type_menu.gd")
+const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 # Early, so the preview of this frame's pointer is staged before the frame renders.
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
 
@@ -131,6 +135,8 @@ var _commit_validation: Dictionary = {}
 var _commit_border_check: Array = []
 var _last_zoning_snap_enabled: bool = false
 var _road_preview_material: ShaderMaterial
+# The outlines of the lots the previewed stroke removes (`ZONE-09`), made on first use.
+var _demolish_mesh: MeshInstance3D = null
 # The latest pose's graded tiles still to stage (`TERRAIN-07-E`, T27 (d)): each frame without a
 # new pose stages the next share until none is left.
 var _graded_pending := 0
@@ -491,12 +497,29 @@ func _show_preview(points: PackedVector3Array) -> void:
 			shown = _preview_display.show(self, _preview, sequence)
 		if not shown:
 			_preview_display.clear()
+		_show_demolition(_preview)
 		_preview_drawn_sequence = sequence
 		if preview_metrics != null:
 			_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
 			_preview_metric_row["graded_install_ms"] = graded_ms
 			preview_metrics.installed(sequence)
 	_update_preview_measurement_label(_preview.get("prepared_points", points), _preview)
+
+# Outlines the lots a valid stroke removes (`ZONE-09`), four corners each, as the bulldoze tool
+# outlines what it removes; anything else clears them.
+func _show_demolition(preview: Dictionary) -> void:
+	var lots: PackedVector3Array = preview.get("demolish_lots", PackedVector3Array())
+	var mesh: Mesh = HighlightMesh.polygons(lots, 4) if bool(preview.get("is_valid", false)) else null
+	if mesh == null:
+		if _demolish_mesh != null:
+			_demolish_mesh.mesh = null
+			_demolish_mesh.visible = false
+		return
+	if _demolish_mesh == null:
+		_demolish_mesh = HighlightMesh.instance()
+		add_child(_demolish_mesh)
+	_demolish_mesh.mesh = mesh
+	_demolish_mesh.visible = true
 
 # The terrain renderer's graded tiles, or null without one (tests without terrain).
 func _graded_renderer():
@@ -524,6 +547,7 @@ func _release_graded_preview() -> void:
 
 func _clear_preview_visual() -> void:
 	_preview_display.clear()
+	_show_demolition({})
 	_release_graded_preview()
 	_preview_drawn_sequence = 0
 	if blueprint_mesh:
@@ -701,6 +725,9 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 			build_cost,
 			snap_str,
 		]
+		var demolish := int(preview.get("demolish_count", 0))
+		if demolish > 0:
+			_info_label.text += "  demolishes %d building%s" % [demolish, "" if demolish == 1 else "s"]
 		# A grade above the design tier is shown, not refused (ROAD-68 question 37).
 		if String(preview.get("warning_reason", "")) == "road_steep":
 			_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))

@@ -284,7 +284,10 @@ fn preview_validation(
     core.precompute_road_mesh_data();
     core.refresh_road_terrain_inputs();
     let view = road_tool_snapshot_from_core(core).expect("current roadbed");
-    RoadPreviewContext::capture(view)
+    let mut context = RoadPreviewContext::capture(view);
+    // The land the road tool's preview takes, as the simulation publishes it (`ZONE-09`).
+    context.land = core.current_road_tool_land();
+    context
         .preview_road(RoadPreviewRequest {
             surface_generation: core.road_tool_surface_generation,
             points: points.to_vec(),

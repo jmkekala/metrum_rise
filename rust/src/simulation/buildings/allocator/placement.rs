@@ -32,7 +32,7 @@ use crate::simulation::work_area::{
 use crate::simulation::zoning::{ParcelGeometry, ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::geometry::frontage_side_offset_m;
 use super::site::building_site_support_tie_in_is_valid;
@@ -1228,6 +1228,7 @@ impl BuildingAllocator {
                     let site = self.building_sites.get(building_idx)?;
                     let center = Vector3::new(building.center_x, 0.0, building.center_y);
                     Some(ExplicitSite {
+                        building: building_idx,
                         chunk: RegionGraph::get_chunk_coords(center),
                         lot_bounds: site.lot_bounds(),
                         lot: site.lot_footprint_world,
@@ -1237,10 +1238,39 @@ impl BuildingAllocator {
         } else {
             Vec::new()
         };
+        let mut by_chunk: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+        for (position, site) in (0_u32..).zip(&sites) {
+            by_chunk.entry(site.chunk).or_default().push(position);
+        }
         ExplicitSiteSnapshot {
             sites,
+            by_chunk,
             max_lot_radius_cells: self.max_lot_radius_cells,
         }
+    }
+
+    /// Whether `snapshot` still holds this allocator's explicit cell sites: the same buildings,
+    /// lots and largest lot radius. Call it with the site query index prepared. O(explicit
+    /// sites), allocation-free.
+    pub(crate) fn explicit_site_snapshot_is_current(
+        &self,
+        snapshot: &ExplicitSiteSnapshot,
+    ) -> bool {
+        debug_assert!(self.building_site_query_index_ready());
+        let sites: &[usize] = if self.has_explicit_cell_sites() {
+            &self.explicit_cell_sites
+        } else {
+            &[]
+        };
+        sites.len() == snapshot.sites.len()
+            && (sites.is_empty() || snapshot.max_lot_radius_cells == self.max_lot_radius_cells)
+            && sites.iter().zip(&snapshot.sites).all(|(&building_idx, site)| {
+                site.building == building_idx
+                    && self
+                        .building_sites
+                        .get(building_idx)
+                        .is_some_and(|live| live.lot_footprint_world == site.lot)
+            })
     }
 
     fn zoning_footprint_overlaps_explicit_site(
@@ -2411,6 +2441,7 @@ fn lot_candidate_chunks(
 // One explicit cell site's lot, keyed by its building's index chunk.
 #[derive(Clone, Debug)]
 struct ExplicitSite {
+    building: usize,
     chunk: (i32, i32),
     lot_bounds: (f32, f32, f32, f32),
     lot: [Vector2; 4],
@@ -2424,6 +2455,8 @@ struct ExplicitSite {
 pub(crate) struct ExplicitSiteSnapshot {
     // Empty when the allocator held no explicit site; in building order.
     sites: Vec<ExplicitSite>,
+    // Each building chunk's sites, as positions in `sites`, ascending.
+    by_chunk: HashMap<(i32, i32), Vec<u32>>,
     max_lot_radius_cells: f32,
 }
 
@@ -2431,6 +2464,47 @@ impl ExplicitSiteSnapshot {
     /// [`BuildingAllocator::has_explicit_cell_sites`] at the snapshot.
     pub(crate) fn any(&self) -> bool {
         !self.sites.is_empty()
+    }
+
+    /// [`BuildingAllocator::first_explicit_site_lot`] at the snapshot (prepared index): the
+    /// lowest-index site of the candidate chunks whose lot bounds meet `min`..`max` and whose lot
+    /// passes `test`. O(sites in the chunks the bounds touch, widened by the largest lot).
+    pub(crate) fn first_lot(
+        &self,
+        min: Vector2,
+        max: Vector2,
+        zone_cell_m: f32,
+        mut test: impl FnMut(&[Vector2; 4]) -> bool,
+    ) -> Option<usize> {
+        if self.sites.is_empty() {
+            return None;
+        }
+        let [min_x, min_z, max_x, max_z] = lot_candidate_chunks(
+            (min.x, min.y, max.x, max.y),
+            self.max_lot_radius_cells,
+            zone_cell_m,
+        );
+        let mut first = None;
+        for x in min_x..=max_x {
+            for z in min_z..=max_z {
+                for &position in self.by_chunk.get(&(x, z)).into_iter().flatten() {
+                    let site = &self.sites[position as usize];
+                    let (site_min_x, site_min_z, site_max_x, site_max_z) = site.lot_bounds;
+                    if first.is_some_and(|first| first < site.building)
+                        || site_min_x > max.x
+                        || site_max_x < min.x
+                        || site_min_z > max.y
+                        || site_max_z < min.y
+                    {
+                        continue;
+                    }
+                    if test(&site.lot) {
+                        first = Some(site.building);
+                    }
+                }
+            }
+        }
+        first
     }
 
     /// [`BuildingAllocator::cell_footprint_overlaps_explicit_site`] at the snapshot.

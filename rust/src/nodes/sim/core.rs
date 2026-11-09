@@ -25,6 +25,7 @@ mod road_preview;
 mod road_rejection;
 mod road_terrain_inputs;
 mod road_tool_context;
+mod road_tool_land;
 mod scenario;
 mod schedule;
 mod snapshot;
@@ -55,10 +56,10 @@ pub(crate) use budget::{
     SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    RoadCorridorClearance, RoadPreviewRequest, RoadToolQuerySnapshot,
+    RoadCorridorClearance, RoadPreviewRequest, RoadToolQuerySnapshot, StrokePieces,
 };
 pub(crate) use road_terrain_inputs::RoadTerrainInputsLog;
-pub(crate) use road_tool_context::{RoadToolPublisher, RoadToolShared};
+pub(crate) use road_tool_context::{RoadPreviewContext, RoadToolPublisher, RoadToolShared};
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,
     WaterRuntimeSnapshot, access_phase_target,
