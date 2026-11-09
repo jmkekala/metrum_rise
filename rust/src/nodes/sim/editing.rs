@@ -190,7 +190,9 @@ impl SimCore {
         if take.cells.is_empty() && take.lots.is_empty() {
             return None;
         }
-        self.demolish_for_road(&take.buildings);
+        let start = Instant::now();
+        let [removals_ms, sites_ms] = self.demolish_for_road(&take.buildings);
+        let lots_start = Instant::now();
         if !take.lots.is_empty() {
             self.zoning.remove_parcels_under_road(&take.lots);
             // Pending spawns resolve their parcel when they start, so a spawn queued for a
@@ -203,40 +205,53 @@ impl SimCore {
             .filter(|&&(_, profile)| profile != 0)
             .map(|&(key, _)| key)
             .collect::<Vec<_>>();
+        let erase_start = Instant::now();
+        let erased = (!painted.is_empty())
+            .then(|| self.zoning.erase_cells_under_road(painted))
+            .flatten();
         debug_log!(
             "road",
-            "road_commit_land buildings={} lots={} cells={} painted={}",
+            "road_commit_land buildings={} lots={} cells={} painted={} removals_ms={:.3} sites_ms={:.3} lots_ms={:.3} erase_ms={:.3} total_ms={:.3}",
             take.buildings.len(),
             take.lots.len(),
             take.cells.len(),
-            painted.len()
+            erased.as_ref().map_or(0, |undo| undo.erased().len()),
+            removals_ms,
+            sites_ms,
+            (erase_start - lots_start).as_secs_f64() * 1000.0,
+            erase_start.elapsed().as_secs_f64() * 1000.0,
+            start.elapsed().as_secs_f64() * 1000.0
         );
-        if painted.is_empty() {
-            return None;
-        }
-        self.zoning.erase_cells_under_road(painted)
+        erased
     }
 
     // Demolishes `buildings` (descending indices) through the building lifecycle, as the
-    // bulldoze does but without undo records (a road undo does not restore them): each is
-    // evacuated, then removed with its agents, households, shipments, electricity and parcel
-    // occupancy. In descending order no swap-remove moves a building still to be removed, so one
-    // parallel scan for the agents naming any of them or of the buildings their swap-removes
-    // move (the last `buildings.len()` indices) serves the batch; it is repeated only after a
-    // removal renumbered agents. Then the site changes are published once (graded terrain,
-    // parking, production sites, yards) and the sites' terrain and lot regions are marked.
-    // The commit rebuilds the entrances. O(A/p) per scan plus the removals' own remaps.
-    fn demolish_for_road(&mut self, buildings: &[usize]) {
+    // bulldoze does but without undo records (a road undo does not restore them): every one is
+    // evacuated first, its households rehoused outside the batch while the zone index that finds
+    // their homes is current, then each is removed with its agents, households, shipments,
+    // electricity and parcel occupancy. In descending order no swap-remove moves a building
+    // still to be removed, so one parallel scan for the agents naming any of them or of the
+    // buildings their swap-removes move (the last `buildings.len()` indices) serves the batch,
+    // and one for the households; each is repeated only after a removal renumbered its store
+    // (no removal renumbers households). Then the site changes are published once (graded
+    // terrain, parking, production sites, yards) and the sites' terrain and lot regions are
+    // marked. The commit rebuilds the entrances. O(A/p + H/p) per batch plus the removals' own
+    // remaps. Returns the removals' and the site publication's times in ms, for the commit's
+    // log.
+    fn demolish_for_road(&mut self, buildings: &[usize]) -> [f64; 2] {
         if buildings.is_empty() {
-            return;
+            return [0.0; 2];
         }
+        let start = Instant::now();
         debug_assert!(buildings.windows(2).all(|pair| pair[0] > pair[1]));
         let mut candidates = Vec::new();
-        let mut scanned_agents = None;
+        let mut households_among = Vec::new();
+        let mut scanned = None;
         let mut site_bounds = Vec::with_capacity(buildings.len());
         let mut field_bounds = Vec::new();
         for (position, &building_idx) in buildings.iter().enumerate() {
-            if scanned_agents != Some(self.agents.agents.len()) {
+            let stores = (self.agents.agents.len(), self.households.households.len());
+            if scanned != Some(stores) {
                 let remaining = &buildings[position..];
                 let count = self.allocator.buildings.len();
                 let mut named: Vec<usize> = remaining
@@ -247,21 +262,24 @@ impl SimCore {
                 named.sort_unstable();
                 named.dedup();
                 candidates = self.agents.agents_referencing_any_building(&named);
-                scanned_agents = Some(self.agents.agents.len());
+                households_among = self.households.households_referencing_any_building(&named);
+                if scanned.is_none() {
+                    self.agents.evacuate_buildings_among(
+                        buildings,
+                        &candidates,
+                        &mut self.households,
+                        &mut self.allocator,
+                        &self.transit_network,
+                        &self.region_graph,
+                    );
+                }
+                scanned = Some(stores);
             }
             site_bounds.extend(self.allocator.site_dirty_bounds(building_idx));
             field_bounds.extend(
                 self.agriculture
                     .site_for_building(building_idx)
                     .and_then(|site| polygon_world_bounds(&site.polygon_world)),
-            );
-            self.agents.evacuate_building_among(
-                building_idx,
-                &candidates,
-                &mut self.households,
-                &mut self.allocator,
-                &self.transit_network,
-                &self.region_graph,
             );
             let removed = self.allocator.remove_building_for_road(
                 building_idx,
@@ -271,9 +289,11 @@ impl SimCore {
                 &mut self.logistics,
                 &mut self.treasury.balance,
                 &candidates,
+                &households_among,
             );
             debug_assert!(removed, "a lot's occupant is a building");
         }
+        let sites_start = Instant::now();
         self.publish_pending_building_site_changes();
         for bounds in field_bounds {
             self.invalidate_vegetation_over(bounds);
@@ -283,6 +303,10 @@ impl SimCore {
         }
         self.transit_network.flow_fields.mark_all_dirty();
         self.terrain_dirty = true;
+        [
+            (sites_start - start).as_secs_f64() * 1000.0,
+            sites_start.elapsed().as_secs_f64() * 1000.0,
+        ]
     }
 }
 

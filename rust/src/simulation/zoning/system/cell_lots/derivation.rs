@@ -5,12 +5,13 @@
 
 use super::{CellLotQueue, ZoningSystem};
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::zoning::system::cell_editing::RoadPaint;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitType;
 use crate::simulation::zoning::cells::{
     CELL_DEPTH, CELL_FRONTAGE_UNITS, CellBounds, CellGeneration, CellKey, CellLot, CellLotSize,
     CellMaps, CellRoadFrontage, CellStore, GridFrame, LiveMaps, SharedMaps,
-    overlaps_road_corridors,
+    convex_overlap_area, overlaps_road_corridors,
 };
 use crate::simulation::zoning::parcels::{PlannedParcelChange, PlannedParcels};
 use crate::simulation::zoning::{
@@ -33,6 +34,9 @@ pub(crate) struct CellLotGeneration {
     pub(crate) retired: Vec<ParcelId>,
     /// Existing lots whose road reference changed while their footprint and claims stayed fixed.
     pub(crate) reattached: Vec<ParcelId>,
+    /// The new cells that inherited a road stroke's erased paint (`ZONE-09`), for the stroke's
+    /// undo record: the whole plan's, set when it ends ([`CellLotPlanner::take_inherited`]).
+    pub(crate) inherited: Option<RoadPaint>,
 }
 
 /// One cell-lot plan in progress: cell generation and lot derivation over a cell store and a
@@ -49,6 +53,20 @@ pub(crate) struct CellLotPlanner<'a, M: CellMaps = LiveMaps> {
     parcels: PlannedParcels<'a>,
     // Times the plan advanced the zoning overlay revision.
     overlay_bumps: u64,
+    // A road stroke's erased paint the plan hands on to its new cells (`ZONE-09`).
+    inheritance: Option<Inheritance>,
+}
+
+// The paint a road stroke erased, which its commit's plan hands on to the new cells along the
+// road (`ZONE-09`, PLAN-RZ 2.4), and what the plan handed on so far.
+struct Inheritance {
+    erase: u64,
+    // The erased cells, sorted by key, with their paint and footprints.
+    sources: Vec<(CellKey, u16, [DVec2; 4])>,
+    // The cells standing over the sources' bounds when the plan began, sorted: none is new.
+    before: Vec<CellKey>,
+    // The cells painted so far, with their paint.
+    inherited: Vec<(CellKey, u16)>,
 }
 
 /// A finished plan's parcel changes, for [`ZoningSystem::install_cell_lot_plan`].
@@ -68,6 +86,8 @@ pub(crate) struct DeferredCellLots {
     parcels: Arc<ParcelStore>,
     regions: Vec<CellBounds>,
     sizes: Vec<CellLotSize>,
+    // The paint the commit's stroke erased, for the plan's new cells (`ZONE-09`).
+    inherit: Option<RoadPaint>,
 }
 
 /// A deferred plan's products, for [`ZoningSystem::adopt_planned_cell_lots`].
@@ -97,6 +117,7 @@ impl ZoningSystem {
             queue: &mut self.cell_lot_queue,
             parcels: PlannedParcels::new(&self.parcels),
             overlay_bumps: 0,
+            inheritance: None,
         }
     }
 
@@ -108,10 +129,11 @@ impl ZoningSystem {
     }
 
     /// A deferred plan of `regions`, taken from the lot queue, on `cells`, a copy of the live
-    /// cell store as it is now, and the parcel store as it is now, with the cached asset sizes.
+    /// cell store as it is now, and the parcel store as it is now, with the cached asset sizes;
+    /// it takes the paint the commit's stroke erased, which its new cells inherit (`ZONE-09`).
     /// `O(1)`.
     pub(crate) fn defer_cell_lots(
-        &self,
+        &mut self,
         cells: CellStore<SharedMaps>,
         regions: Vec<CellBounds>,
         sizes: Vec<CellLotSize>,
@@ -123,6 +145,7 @@ impl ZoningSystem {
             parcels: self.parcels.share(),
             regions,
             sizes,
+            inherit: self.take_road_paint_sources(),
         }
     }
 
@@ -159,6 +182,7 @@ impl ZoningSystem {
             queue: &mut queue,
             parcels: PlannedParcels::new(&self.parcels),
             overlay_bumps: 0,
+            inheritance: None,
         };
         planner.prepare_generated_cells(
             graph,
@@ -204,11 +228,14 @@ impl DeferredCellLots {
             queue: &mut queue,
             parcels: PlannedParcels::new(&self.parcels),
             overlay_bumps: 0,
-        };
+            inheritance: None,
+        }
+        .inheriting(self.inherit);
         let mut report = CellLotGeneration::default();
         for &bounds in &self.regions {
             report.absorb(planner.plan_region(graph, bounds, &self.sizes, &blocked));
         }
+        report.inherited = planner.take_inherited();
         let plan = planner.finish();
         drop(self.parcels);
         PlannedCellLots {
@@ -250,6 +277,7 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
             bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
             blocked,
         );
+        self.inherit_paint();
         let generation_ms = phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let phase = phase.map(|_| std::time::Instant::now());
         let report = self.derive_cell_lots(graph, bounds, sizes, |corners, _| blocked(corners));
@@ -264,6 +292,108 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
             report.reattached.len()
         );
         report
+    }
+
+    /// Hands `paint`, the paint a road stroke erased (`ZONE-09`, PLAN-RZ 2.4), on to the cells
+    /// this plan generates over it: after each region's generation, every new cell (absent when
+    /// the plan began), unpainted and unclaimed, takes the paint of the erased cell its footprint
+    /// overlaps most by area, ties to the lowest erased key; a cell over no erased cell stays
+    /// unpainted. The region's lot derivation follows, so inherited paint gets lots in the same
+    /// plan. [`Self::take_inherited`] gives the cells painted. Call before the first region.
+    /// O(erased cells + cells over them).
+    pub(crate) fn inheriting(mut self, paint: Option<RoadPaint>) -> Self {
+        let Some(paint) = paint else {
+            return self;
+        };
+        let sources: Vec<_> = paint
+            .cells
+            .iter()
+            .filter_map(|&(key, profile)| {
+                let frame = self.cells.frame(key.grid)?;
+                Some((key, profile, frame.corners(key.x, key.y)))
+            })
+            .collect();
+        let mut before = Vec::new();
+        for (_, _, corners) in &sources {
+            self.cells
+                .visit_in_bounds(CellBounds::from_points(*corners), |key| before.push(key));
+        }
+        before.sort_unstable();
+        before.dedup();
+        self.inheritance = Some(Inheritance {
+            erase: paint.erase,
+            sources,
+            before,
+            inherited: Vec::new(),
+        });
+        self
+    }
+
+    /// The paint this plan handed on ([`Self::inheriting`]): the cells it painted with their
+    /// paint, sorted by key, named by the stroke's erase; `None` without inheritance or when no
+    /// cell inherited.
+    pub(crate) fn take_inherited(&mut self) -> Option<RoadPaint> {
+        let inheritance = self.inheritance.take()?;
+        let mut cells = inheritance.inherited;
+        cells.sort_unstable();
+        (!cells.is_empty()).then_some(RoadPaint {
+            erase: inheritance.erase,
+            cells,
+        })
+    }
+
+    // Paints the new cells over the erased ones as [`Self::inheriting`] says, after a region's
+    // generation; a cell decided before is painted or stays unpainted, so deciding again changes
+    // nothing. O(erased cells * cells over each) plus the paint writes.
+    fn inherit_paint(&mut self) {
+        let Some(inheritance) = self.inheritance.as_mut() else {
+            return;
+        };
+        let cells = &*self.cells;
+        // (new cell, erased cell, its paint, shared area), the erased cells in key order.
+        let mut overlaps = Vec::new();
+        for &(source, profile, corners) in &inheritance.sources {
+            cells.visit_in_bounds(CellBounds::from_points(corners), |key| {
+                if inheritance.before.binary_search(&key).is_ok()
+                    || cells.profile(key) != Some(0)
+                    || cells.lot(key) != Some(0)
+                {
+                    return;
+                }
+                let Some(frame) = cells.frame(key.grid) else {
+                    return;
+                };
+                let area = convex_overlap_area(&frame.corners(key.x, key.y), &corners);
+                if area > 0.0 {
+                    overlaps.push((key, source, profile, area));
+                }
+            });
+        }
+        if overlaps.is_empty() {
+            return;
+        }
+        // Stable, so each cell's erased cells stay in key order and the first largest area is
+        // the lowest key's.
+        overlaps.sort_by_key(|&(key, ..)| key);
+        let mut chosen: Vec<(u16, CellKey)> = overlaps
+            .chunk_by(|a, b| a.0 == b.0)
+            .map(|group| {
+                let best = group
+                    .iter()
+                    .fold(group[0], |best, &next| if next.3 > best.3 { next } else { best });
+                (best.2, best.0)
+            })
+            .collect();
+        chosen.sort_unstable();
+        for run in chosen.chunk_by(|a, b| a.0 == b.0) {
+            let keys: Vec<_> = run.iter().map(|&(_, key)| key).collect();
+            let painted = self.cells.paint_free_cells(&keys, run[0].0);
+            debug_assert!(painted, "new cells are unpainted and unclaimed");
+        }
+        inheritance
+            .inherited
+            .extend(chosen.iter().map(|&(profile, key)| (key, profile)));
+        self.overlay_bumps += 1;
     }
 
     /// Ends the plan, leaving its parcel changes for the installer.
@@ -395,6 +525,7 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
             created: Vec::new(),
             retired,
             reattached,
+            inherited: None,
         };
         // Claims depend on earlier proposals, so publication is deliberately ordered. It adds
         // only within this bounded neighborhood; there is no removal/repacking cascade.

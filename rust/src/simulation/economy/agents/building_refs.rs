@@ -421,6 +421,7 @@ impl AgentSystem {
         self.evacuate_referencing(
             building_id,
             referencing,
+            &[building_id],
             households,
             allocator,
             transit_network,
@@ -448,6 +449,7 @@ impl AgentSystem {
         self.evacuate_referencing(
             building_id,
             referencing,
+            &[building_id],
             households,
             allocator,
             transit_network,
@@ -455,11 +457,46 @@ impl AgentSystem {
         );
     }
 
-    // Evacuates the ascending `referencing` agents, every agent that names `building_id`.
+    /// [`Self::evacuate_building_among`] for each of a batch of removals' `buildings`
+    /// (`ZONE-09`'s road demolition), all before the first is removed: each household moves to
+    /// a home outside the batch, so the zone index that finds the homes stays current through
+    /// the batch instead of being rebuilt after each removal's swap-remove (`O(B)` each).
+    /// `candidates` are [`Self::agents_referencing_any_building`]'s over the batch.
+    /// O(candidates) per building plus the evacuees' trips.
+    pub(crate) fn evacuate_buildings_among(
+        &mut self,
+        buildings: &[usize],
+        candidates: &[usize],
+        households: &mut HouseholdSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        for &building_id in buildings {
+            if building_id >= allocator.buildings.len() {
+                continue;
+            }
+            let referencing = self.referencing_among(building_id, candidates);
+            self.evacuate_referencing(
+                building_id,
+                referencing,
+                buildings,
+                households,
+                allocator,
+                transit_network,
+                graph,
+            );
+        }
+    }
+
+    // Evacuates the ascending `referencing` agents, every agent that names `building_id`, and
+    // rehouses its households in homes outside `excluded`, which holds `building_id`.
+    #[allow(clippy::too_many_arguments)]
     fn evacuate_referencing(
         &mut self,
         building_id: usize,
         referencing: Vec<usize>,
+        excluded: &[usize],
         households: &mut HouseholdSystem,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
@@ -477,7 +514,7 @@ impl AgentSystem {
             {
                 continue;
             }
-            let target_home = Self::claim_available_home_except(allocator, building_id);
+            let target_home = Self::claim_available_home_except(allocator, excluded);
             if let Some(home_idx) = target_home {
                 let household = &mut households.households[household_id];
                 household.home_building_id = home_idx;
@@ -812,9 +849,10 @@ impl AgentSystem {
         }
     }
 
+    // Claims the first vacant home outside `excluded`, the buildings being removed.
     fn claim_available_home_except(
         allocator: &mut BuildingAllocator,
-        excluded_building: usize,
+        excluded: &[usize],
     ) -> Option<usize> {
         let residential_slot = baseline_private_zone_slot(ZoneType::Residential)?;
         // A stale index is rebuilt by its first reader, wherever that is (`SIM-02`).
@@ -824,7 +862,7 @@ impl AgentSystem {
         let building_idx = allocator.vacancy_index[residential_slot]
             .iter()
             .copied()
-            .find(|&idx| idx != excluded_building && idx < allocator.buildings.len())?;
+            .find(|&idx| !excluded.contains(&idx) && idx < allocator.buildings.len())?;
         allocator.claim_vacancy(building_idx);
         Some(building_idx)
     }
@@ -1044,7 +1082,7 @@ mod tests {
         allocator.vacancy_index[0] = vec![1];
         allocator.dirty_index = true;
         assert_eq!(
-            AgentSystem::claim_available_home_except(&mut allocator, usize::MAX),
+            AgentSystem::claim_available_home_except(&mut allocator, &[]),
             Some(0)
         );
         assert!(!allocator.dirty_index);
@@ -1074,7 +1112,7 @@ mod tests {
         allocator.rebuild_zone_index();
 
         assert_eq!(
-            AgentSystem::claim_available_home_except(&mut allocator, 0),
+            AgentSystem::claim_available_home_except(&mut allocator, &[0]),
             Some(1),
             "forced relocation must not claim the building being removed"
         );

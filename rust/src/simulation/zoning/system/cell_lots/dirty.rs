@@ -254,8 +254,10 @@ impl ZoningSystem {
     /// Drains local work for paint and retained occupied claims, including completely erased lots:
     /// every pending region at once, in coordinate order, for editing paths that must publish
     /// their lots before returning.
+    /// A road stroke's erased paint keeps them while no reservation is left: its plan's new
+    /// cells may inherit it (`ZONE-09`).
     pub(crate) fn take_dirty_cell_lot_regions(&mut self) -> Vec<CellBounds> {
-        if !self.cells.has_reservations() {
+        if !self.cells.has_reservations() && self.road_paint_sources.is_none() {
             self.cell_lot_queue.clear();
             return Vec::new();
         }

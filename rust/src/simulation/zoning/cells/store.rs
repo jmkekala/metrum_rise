@@ -706,6 +706,25 @@ impl<M: CellMaps> CellStore<M> {
         self.mark_cell_chunk_changed(key);
     }
 
+    /// Paints `keys`, valid cells that are unpainted and unclaimed, with `profile` in one batch,
+    /// on either map kind: a lot plan handing a road stroke's erased paint on to its new cells
+    /// (`ZONE-09`). False, with nothing written, when a key is no such cell or `profile` is zero.
+    /// O(keys).
+    pub(crate) fn paint_free_cells(&mut self, keys: &[CellKey], profile: u16) -> bool {
+        if profile == 0
+            || !keys
+                .iter()
+                .all(|&key| self.profile(key) == Some(0) && self.lot(key) == Some(0))
+        {
+            return false;
+        }
+        for &key in keys {
+            self.set_profile(key, profile);
+        }
+        self.bump_revision();
+        true
+    }
+
     /// Invalidates outstanding selections after an authoritative batch of cell mutations.
     pub(super) fn bump_revision(&mut self) {
         self.revision = self.revision.wrapping_add(1);
@@ -863,10 +882,20 @@ impl<M: CellMaps> CellStore<M> {
 
     /// Queries only paint/lot reservations; generated empty cells deliberately do not block land.
     pub(crate) fn overlaps_reserved(&self, polygon: &[DVec2]) -> bool {
+        self.overlaps_reserved_except(polygon, |_| false)
+    }
+
+    /// [`Self::overlaps_reserved`] without the reserved cells `skip` names: those an edit is
+    /// about to release (`ZONE-09`'s road undo, the inherited cells).
+    pub(crate) fn overlaps_reserved_except(
+        &self,
+        polygon: &[DVec2],
+        skip: impl Fn(CellKey) -> bool,
+    ) -> bool {
         let bounds = CellBounds::from_points(polygon.iter().copied());
         let mut overlaps = false;
-        self.visit_reserved_footprints_in_bounds(bounds, |_, corners| {
-            if !overlaps {
+        self.visit_reserved_footprints_in_bounds(bounds, |key, corners| {
+            if !overlaps && !skip(key) {
                 overlaps = super::geometry::interiors_overlap(&corners, polygon);
             }
         });

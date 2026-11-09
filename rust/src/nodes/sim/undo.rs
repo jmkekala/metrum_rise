@@ -502,9 +502,13 @@ impl SimCore {
             if let Some(zoning) = zoning {
                 self.zoning.restore_parcel_removal_undo(zoning);
             }
-            // Lots re-derive from the restored paint (D6); the demolished buildings stay gone.
-            if let Some(cells) = cells {
-                self.zoning.restore_cell_paint_undo(cells);
+            // The paint the new cells inherited goes, with its empty lots; lots re-derive from the
+            // restored paint (D6); the demolished buildings stay gone.
+            if let Some(cells) = cells
+                && self.zoning.restore_cell_paint_undo(cells) > 0
+            {
+                // Pending spawns resolve their parcel when they start; ids are never reused.
+                self.allocator.dirty = true;
             }
             if let Some(runtime) = runtime {
                 match runtime {

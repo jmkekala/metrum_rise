@@ -16,7 +16,9 @@ mod sources;
 mod store;
 
 pub(crate) use generation::{CellGeneration, overlaps_road_corridors};
-pub(crate) use geometry::{CellBounds, GridFrame, interiors_overlap, road_contact_interior};
+pub(crate) use geometry::{
+    CellBounds, GridFrame, convex_overlap_area, interiors_overlap, road_contact_interior,
+};
 pub(crate) use lots::{CellFrontage, CellLot};
 pub(crate) use selection::{CellEdit, CellSelection, CellSelectionShape};
 pub(crate) use snapping::RoadGridSnap;

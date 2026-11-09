@@ -16,6 +16,13 @@
 //! Ids of everything the commits create follow the background's in every store, so the local
 //! products are compared without them: parcels, buildings and their attachments by geometry,
 //! each attached road by its end points.
+//!
+//! After the branches, three strokes take built land of the neighbourhood (`ZONE-09`, round RZ2):
+//! each a new diagonal street between two row streets, demolishing the buildings on the lots of
+//! its block (the block is zoned whole, so no new cell inherits). Every home is housed first: each
+//! background resident gets a household and each of the neighbourhood's homes, which the grid
+//! builds empty, a resident with one, so the removal evacuates its homes and its agent and
+//! household scans meet a background that grows with the tier (`LOCALITY_DEMOLITION`).
 
 use std::time::Instant;
 
@@ -42,6 +49,11 @@ const BLOCKS_PER_ROW: usize = 9;
 const SITES_PER_STREET: usize = 40;
 const SITE_SPACING_M: f32 = 12.0;
 const SITE_SETBACK_M: f32 = 10.0;
+// The demolishing strokes: from x on the row street `row` to x + `DEMOLITION_RUN_M` on the next,
+// clear of the cross streets (x = -400, 0, 400) and of the parking lots at the row blocks'
+// middles. Diagonal, so their cells would lie on a frame of their own.
+const DEMOLITIONS: [(f32, usize); 3] = [(-100.0, 1), (-300.0, 3), (100.0, 5)];
+const DEMOLITION_RUN_M: f32 = 30.0;
 
 #[test]
 #[ignore = "release ROAD-68-G commit locality; builds each tier's neighbourhood and background outside timing"]
@@ -72,7 +84,9 @@ fn benchmark_commit_locality() {
         );
         let samples =
             super::routing_benchmark::profile_commits(background as u32, &mut core, false);
-        let products = local_products(&mut core, &samples);
+        let demolitions = profile_demolitions(&mut core, background);
+        let mut products = local_products(&mut core, &samples);
+        products["demolitions"] = demolitions;
         eprintln!(
             "LOCALITY_PRODUCTS {}",
             serde_json::json!({"background": background, "products": products})
@@ -188,6 +202,147 @@ fn add_background(core: &mut SimCore, count: usize) {
     core.fit_lanes_to_road_surface();
     core.subsume_world_scale_road_changes();
     core.bump_global_terrain_payload_generation();
+}
+
+// The demolishing strokes (`DEMOLITIONS`), committed and adopted without a frame between, so the
+// background's households never act: per stroke its stages, the removal's scans timed alone on
+// the same city and its take. Returns the takes, the products every tier must equal.
+fn profile_demolitions(core: &mut SimCore, background: usize) -> serde_json::Value {
+    use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
+    use crate::nodes::sim::core::RoadCommitRequest;
+    house_residents(core);
+    let half_z = (NEIGHBOURHOOD_SIDE_M / super::ROW_SPACING_M).floor() * super::ROW_SPACING_M * 0.5;
+    let median_ms = |run: &mut dyn FnMut()| {
+        let mut samples: Vec<f64> = (0..9)
+            .map(|_| {
+                let start = Instant::now();
+                run();
+                start.elapsed().as_secs_f64() * 1e3
+            })
+            .collect();
+        samples.sort_by(f64::total_cmp);
+        samples[4]
+    };
+    let mut takes = Vec::new();
+    for (stroke, &(x, row)) in DEMOLITIONS.iter().enumerate() {
+        let z = row as f32 * super::ROW_SPACING_M - half_z;
+        let points = [(x, z), (x + DEMOLITION_RUN_M, z + super::ROW_SPACING_M)]
+            .map(|(x, z)| Vector3::new(x, core.heightmap.sample_height_world(x, z), z));
+        // The removal's scans alone, on the city as the commit finds it.
+        let last = core.allocator.buildings.len() - 1;
+        let agent_scan_ms = median_ms(&mut || {
+            std::hint::black_box(core.agents.agents_referencing_any_building(&[0, last]));
+        });
+        let household_scan_ms = median_ms(&mut || {
+            std::hint::black_box(core.households.households_referencing_buildings(0, last));
+        });
+        let mut allocator = core.allocator.clone();
+        let zone_index_ms = median_ms(&mut || allocator.rebuild_zone_index());
+        drop(allocator);
+        let (buildings, households, agents) = (
+            core.allocator.buildings.len(),
+            core.households.households.len(),
+            core.agents.len(),
+        );
+        let terrain = core.terrain_dirty_patch_states();
+        core.acknowledge_terrain_render_patches(&terrain);
+        let start = Instant::now();
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points: points.to_vec(),
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                tunnel: false,
+                median: None,
+                parking: crate::simulation::network::graph::RoadParking::NONE,
+                attributes: crate::simulation::network::road_types::RoadAttributes::DEFAULT,
+                preview: None,
+            },
+            start,
+            RoadEditMetrics::default(),
+        );
+        let commit_ms = start.elapsed().as_secs_f64() * 1e3;
+        assert!(
+            outcome.committed,
+            "demolition {stroke} rejected: {}",
+            outcome.rejection_reason
+        );
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+        let start = Instant::now();
+        let lots = core.adopt_pending_cell_lots();
+        let adoption_ms = start.elapsed().as_secs_f64() * 1e3;
+        let demolished = buildings - core.allocator.buildings.len();
+        let (erased, inherited) = core
+            .undo_stack
+            .back()
+            .and_then(|record| record.cells.as_ref())
+            .map_or((0, 0), |cells| (cells.erased().len(), cells.inherited().len()));
+        let m = &core.last_road_edit_metrics;
+        eprintln!(
+            "LOCALITY_DEMOLITION {}",
+            serde_json::json!({"background": background, "stroke": stroke,
+                "buildings": buildings, "households": households, "agents": agents,
+                "demolished": demolished, "erased_cells": erased, "inherited_cells": inherited,
+                "commit_ms": commit_ms, "core_work_ms": m.core_work_ms,
+                "surface_ms": m.surface_ms, "surface_overlap_ms": m.surface_overlap_ms,
+                "surface_land_ms": m.surface_land_ms, "buildings_ms": m.buildings_ms,
+                "lots_spawn_ms": m.lots_spawn_ms, "adoption_ms": adoption_ms,
+                "lots_install_ms": lots.install_ms,
+                "agent_scan_ms": agent_scan_ms, "household_scan_ms": household_scan_ms,
+                "zone_index_rebuild_ms": zone_index_ms})
+        );
+        // The block is zoned whole, so its painted cells keep the new street's frame off the
+        // land its erased cells leave (rule 5: new cells fill free land only); its plan still
+        // hands their paint on, to no cell.
+        assert!(demolished >= 2, "demolition {stroke} takes built lots: {demolished}");
+        takes.push(serde_json::json!({"demolished": demolished, "erased_cells": erased,
+            "inherited_cells": inherited}));
+    }
+    serde_json::Value::Array(takes)
+}
+
+// A household of one in every home, admitted as an immigrant household, outside timing: each
+// background resident gets one, and each empty home of the neighbourhood a resident with one.
+fn house_residents(core: &mut SimCore) {
+    use crate::simulation::economy::agents::household_age_composition;
+    let catalog = crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
+    let tuning = crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+    for home in 0..core.allocator.buildings.len() {
+        let building = &core.allocator.buildings[home];
+        if building.center_x >= STREET_WEST_X
+            || building.zone_type != ZoneType::Residential
+            || building.occupancy != 0
+            || core.allocator.household_capacity(home) == 0
+        {
+            continue;
+        }
+        let (x, z) = (building.center_x, building.center_y);
+        let composition = household_age_composition(home, core.households.households.len(), 1);
+        let household =
+            core.households
+                .admit_immigrant_household(&catalog, &tuning, home, 1, composition);
+        core.allocator.claim_vacancy(home);
+        let agent = core.agents.spawn_housed_agent(home, x, z);
+        core.agents.assign_household_id(agent, household);
+    }
+    for agent in 0..core.agents.len() {
+        let home = core.agents.agents.home_building[agent];
+        if core.agents.agents.household_id[agent] != usize::MAX
+            || core
+                .allocator
+                .buildings
+                .get(home)
+                .is_none_or(|building| building.center_x < STREET_WEST_X)
+        {
+            continue;
+        }
+        let composition = household_age_composition(home, core.households.households.len(), 1);
+        let household =
+            core.households
+                .admit_immigrant_household(&catalog, &tuning, home, 1, composition);
+        core.agents.assign_household_id(agent, household);
+    }
 }
 
 // The commits' products in the neighbourhood, without ids: each sample's published chunks and

@@ -602,6 +602,31 @@ impl HouseholdSystem {
         })
     }
 
+    /// Households whose home or reserved store is one of `buildings` (ascending, unique),
+    /// ascending, in one scan on the pool: the candidates of a batch of removals (`ZONE-09`'s
+    /// road demolition), which name every household the batch's invalidations and remaps change
+    /// when `buildings` holds the removed buildings and every building their swap-removes move,
+    /// as [`crate::simulation::economy::agents::AgentSystem::agents_referencing_any_building`]
+    /// finds the agents. O(H/p * log buildings).
+    pub(crate) fn households_referencing_any_building(&self, buildings: &[usize]) -> Vec<usize> {
+        debug_assert!(buildings.is_sorted());
+        crate::thread_pools::install(|| {
+            self.households
+                .par_iter()
+                .enumerate()
+                .filter(|(_, household)| {
+                    [
+                        household.home_building_id,
+                        household.reserved_store_building_id,
+                    ]
+                    .iter()
+                    .any(|building| buildings.binary_search(building).is_ok())
+                })
+                .map(|(household_id, _)| household_id)
+                .collect()
+        })
+    }
+
     /// [`Self::remap_building_indices`] for one swap-remove moving building `old` to `new`,
     /// whose household loop visits the ascending `candidates` alone: every household naming
     /// `old` must be among them, as [`Self::households_referencing_buildings`] found them

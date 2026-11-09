@@ -646,6 +646,158 @@ fn a_plan_on_the_views_persistent_copy_equals_the_live_plan_and_the_copy_follows
     assert_eq!(view.state_digest(), zoning.cells.state_digest());
 }
 
+// `ZONE-09` (PLAN-RZ 2.4): a road on land a stroke took. Its frontage cell `(x, y)` on the road's
+// frame, the road's frame and a plan of `bounds` handing `sources` (erased cells and their paint)
+// on to the new cells, on a zoning that has `before` already generated or not. Returns the zoning
+// after the plan's installation and the paint handed on.
+fn inherit_along_a_road(
+    sources: impl FnOnce(&mut ZoningSystem, GridFrame, i32, i32) -> Vec<(CellKey, u16)>,
+    generated_before: bool,
+) -> (ZoningSystem, Option<crate::simulation::zoning::RoadPaint>) {
+    let mut graph = RegionGraph::new();
+    let a = node(&mut graph, 0.0, 0.0);
+    let b = node(&mut graph, 120.0, 0.0);
+    road(&mut graph, a, b);
+    // Where the road's cells fall, read from a generation on a copy.
+    let mut probe = ZoningSystem::new(&WorldConfig::default());
+    probe.generate_cells(&graph, extent(), |_| false);
+    let key = probe.cells.pick(DVec2::new(55.0, 12.0)).unwrap();
+    let frame = probe.cells.frame(key.grid).unwrap();
+    assert_eq!(frame.axes().0, DVec2::X);
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    if generated_before {
+        zoning.generate_cells(&graph, extent(), |_| false);
+    }
+    let paint = crate::simulation::zoning::RoadPaint {
+        erase: 7,
+        cells: sources(&mut zoning, frame, key.x, key.y),
+    };
+    let mut planner = zoning.cell_lot_planner().inheriting(Some(paint));
+    planner.plan_region(&graph, extent(), &[size()], &|_| false);
+    let inherited = planner.take_inherited();
+    let plan = planner.finish();
+    zoning.install_cell_lot_plan(plan);
+    (zoning, inherited)
+}
+
+// The road frame's cell `(x, y)` in `zoning`, by its centre.
+fn road_cell(zoning: &ZoningSystem, frame: GridFrame, x: i32, y: i32) -> CellKey {
+    let key = zoning
+        .cells
+        .pick(frame.world(f64::from(x) + 0.5, f64::from(y) + 0.5))
+        .unwrap();
+    assert_eq!(zoning.cells.frame(key.grid), Some(frame));
+    assert_eq!((key.x, key.y), (x, y));
+    key
+}
+
+// The cell of `frame` (registered as `grid`) holding the point `along` cells along and half a
+// cell into row `y` of the road's frame `road`.
+fn cell_at(frame: GridFrame, grid: u64, road: GridFrame, along: f64, y: i32) -> CellKey {
+    let local = frame.local(road.world(along, f64::from(y) + 0.5)).floor();
+    CellKey {
+        grid,
+        x: local.x as i32,
+        y: local.y as i32,
+    }
+}
+
+// Rule 5: each new cell takes the paint of the erased cell it overlaps most; a tie goes to the
+// lowest erased key; a new cell over no erased cell stays unpainted; lots derive on inherited
+// paint in the same plan.
+#[test]
+fn new_frontage_cells_inherit_the_most_overlapped_removed_paint() {
+    // Road cells by lattice coordinates, with the paint each must inherit.
+    let mut expected = Vec::new();
+    let (zoning, inherited) = inherit_along_a_road(
+        |zoning, road, x, y| {
+            let (x, yf) = (f64::from(x), y);
+            // Erased cells 3 m along the road from its lattice: cell `x` overlaps the one 3 m
+            // into it by 70 m² (profile 2) and the one before by 30 m² (profile 1); cell `x - 1`
+            // takes the one before, cell `x + 1` the one into `x`, by 70 and 30 m².
+            let shifted = road.moved(0, 3.0);
+            let s = zoning.cells.register_frame(shifted);
+            // Two zones meeting half way along cell `x + 5`, 5 m off the lattice: it overlaps
+            // both by 50 m², and the lower key's paint (profile 2) wins; `x + 4` and `x + 6`
+            // take the one each overlaps.
+            let halved = road.moved(0, 5.0);
+            let h = zoning.cells.register_frame(halved);
+            let first = cell_at(halved, h, road, x + 4.55, yf);
+            let second = cell_at(halved, h, road, x + 5.55, yf);
+            assert!(first < second);
+            let (x0, y0) = (x as i32, y);
+            expected = vec![
+                ((x0 - 1, y0), 1),
+                ((x0, y0), 2),
+                ((x0 + 1, y0), 2),
+                ((x0 + 4, y0), 2),
+                ((x0 + 5, y0), 2),
+                ((x0 + 6, y0), 1),
+            ];
+            let mut sources = vec![
+                (cell_at(shifted, s, road, x - 0.65, yf), 1),
+                (cell_at(shifted, s, road, x + 0.35, yf), 2),
+                (first, 2),
+                (second, 1),
+                // Far from the road, where no cell is generated.
+                (cell_at(shifted, s, road, x, yf + 40), 1),
+            ];
+            // Across the road, two rows of three erased cells 1 m off the lattice: four columns
+            // of two rows inherit (the fourth by 10 m²), deep enough for a 3 x 2 lot.
+            let across = road.local(DVec2::new(55.0, -12.0)).floor();
+            let (ax, ay) = (across.x as i32, across.y as i32);
+            let nudged = road.moved(0, 1.0);
+            let n = zoning.cells.register_frame(nudged);
+            for row in [ay, ay - 1] {
+                for column in ax - 1..=ax + 1 {
+                    sources.push((cell_at(nudged, n, road, f64::from(column) + 0.15, row), 1));
+                }
+                expected.extend((ax - 1..=ax + 2).map(|column| ((column, row), 1)));
+            }
+            sources.sort_unstable();
+            sources
+        },
+        false,
+    );
+    let inherited = inherited.expect("new cells inherited paint");
+    assert_eq!(inherited.erase, 7);
+    let key = zoning.cells.pick(DVec2::new(55.0, 12.0)).unwrap();
+    let frame = zoning.cells.frame(key.grid).unwrap();
+    let mut want: Vec<_> = expected
+        .iter()
+        .map(|&((x, y), profile)| (road_cell(&zoning, frame, x, y), profile))
+        .collect();
+    want.sort_unstable();
+    assert_eq!(inherited.cells, want);
+    // Every other cell stays unpainted.
+    let painted: Vec<_> = keys(&zoning.cells, extent())
+        .into_iter()
+        .filter_map(|key| Some((key, zoning.cells.profile(key).filter(|&p| p != 0)?)))
+        .collect();
+    assert_eq!(painted, want);
+    // The two inherited rows across the road hold a 3 x 2 lot, derived in the same plan.
+    let claimed = want
+        .iter()
+        .filter(|&&(key, _)| zoning.cells.lot(key).is_some_and(|lot| lot != 0))
+        .count();
+    assert_eq!(claimed, 6);
+}
+
+// Rule 5's first half: only cells the plan generates inherit. Cells standing when the plan began
+// keep their paint, here none, even over erased land.
+#[test]
+fn cells_standing_before_the_plan_do_not_inherit() {
+    let (zoning, inherited) = inherit_along_a_road(
+        |zoning, frame, x, y| {
+            let shifted = zoning.cells.register_frame(frame.moved(0, 3.0));
+            vec![(CellKey { grid: shifted, x, y }, 2)]
+        },
+        true,
+    );
+    assert!(inherited.is_none());
+    assert!(!zoning.cells.has_paint());
+}
+
 #[test]
 #[ignore = "matched release timing of local lot derivation and retirement, excluding setup"]
 fn benchmark_cell_lot_derivation_locality() {

@@ -166,10 +166,10 @@ impl SimCore {
         // The entrance cache's state before the plan, as the commit read it.
         let cache_current = self.entrance_cache_current();
         let lap = std::time::Instant::now();
-        let lots = self.zoning.adopt_planned_cell_lots(planned);
+        let mut lots = self.zoning.adopt_planned_cell_lots(planned);
         let plan_install_ms = lap.elapsed().as_secs_f64() * 1000.0;
         let lap = std::time::Instant::now();
-        self.attach_regenerated_cell_lots(&lots);
+        self.attach_regenerated_cell_lots(&mut lots);
         let reattach_ms = lap.elapsed().as_secs_f64() * 1000.0;
         let lap = std::time::Instant::now();
         crate::thread_pools::install(|| {

@@ -282,22 +282,27 @@ impl SimCore {
         let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
         let blocked = |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
-        let mut planner = self.zoning.cell_lot_planner();
+        // A road stroke's erased paint goes to the new cells of the plan that drains its regions
+        // (`ZONE-09`): the commit's own, when it plans its lots at once.
+        let inherit = self.zoning.take_road_paint_sources();
+        let mut planner = self.zoning.cell_lot_planner().inheriting(inherit);
         let mut region = Some(first);
         while let Some(bounds) = region {
             result.absorb(planner.plan_region(&self.region_graph, bounds, &sizes, &blocked));
             region = next(&mut planner);
         }
+        result.inherited = planner.take_inherited();
         let plan = planner.finish();
         self.zoning.install_cell_lot_plan(plan);
         self.zoning.cell_lot_sizes = Some(sizes);
-        self.attach_regenerated_cell_lots(&result);
+        self.attach_regenerated_cell_lots(&mut result);
         result
     }
 
     // Reattaches the occupants of the lots a plan reattached and marks the allocator dirty when
-    // the plan created or retired lots: the end of every installed lot plan.
-    pub(super) fn attach_regenerated_cell_lots(&mut self, result: &CellLotGeneration) {
+    // the plan created or retired lots, and keeps the paint its new cells inherited in the road
+    // stroke's undo record: the end of every installed lot plan.
+    pub(super) fn attach_regenerated_cell_lots(&mut self, result: &mut CellLotGeneration) {
         self.allocator.sync_cell_lot_attachments(
             &result.reattached,
             &self.region_graph,
@@ -305,6 +310,23 @@ impl SimCore {
         );
         if !result.created.is_empty() || !result.retired.is_empty() {
             self.allocator.dirty = true;
+        }
+        if let Some(inherited) = result.inherited.take() {
+            self.record_inherited_paint(inherited);
+        }
+    }
+
+    // Keeps the paint a commit's lot plan gave the new cells along its road (`ZONE-09`) in the
+    // stroke's undo record, so undo erases it again. Every edit adopts a commit's lots before
+    // it records its own undo, so the stroke's record is the top one; a stroke without a record
+    // (the benchmark mode drops it) keeps nothing, as `record_inherited` finds another erase.
+    fn record_inherited_paint(&mut self, inherited: crate::simulation::zoning::RoadPaint) {
+        if let Some(cells) = self
+            .undo_stack
+            .back_mut()
+            .and_then(|record| record.cells.as_mut())
+        {
+            cells.record_inherited(inherited);
         }
     }
 

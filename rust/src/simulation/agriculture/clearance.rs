@@ -340,11 +340,12 @@ impl FieldClearanceIndex {
     /// question 1): the fields in the chunks the piece's bounds touch, then each field against
     /// the piece's top triangles in the field's bounds, through the piece's query grid
     /// ([`PieceMesh::any_top_triangle_in_bounds`]). O(fields in the touched chunks * triangles in
-    /// their grid cells); one chunk lookup per touched chunk when no field lies there. A buried
-    /// piece, a tunnel's bore, lies in the hill under the fields and overlaps none (`ROAD-61`
-    /// round R8h).
+    /// their grid cells); one chunk lookup per touched chunk when no field lies there. Only a
+    /// piece on the ground ([`PieceMesh::grounded`]) overlaps: a buried piece, a tunnel's bore,
+    /// lies in the hill under the fields (`ROAD-61` round R8h), a bridge's deck above them
+    /// (`ZONE-09`, decision D2).
     pub(crate) fn overlaps_road_piece(&self, mesh: &PieceMesh) -> bool {
-        if self.footprints.is_empty() || mesh.buried() {
+        if self.footprints.is_empty() || !mesh.grounded() {
             return false;
         }
         let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();

@@ -427,6 +427,15 @@ impl PieceMesh {
         !self.lining.triangles.is_empty()
     }
 
+    /// Whether the piece stands on the ground: it hangs skirts (`TERRAIN-07-B`), a standard span
+    /// or a node piece where a standard edge meets, a bridge's approach and mouth among them. A
+    /// bridge's deck and a node piece where only structures meet stand above the ground, a
+    /// buried piece lies under it: neither covers the land beneath, which keeps its fields,
+    /// sites, lots and cells (`ZONE-09`, decision D2). `O(1)`.
+    pub fn grounded(&self) -> bool {
+        self.strips == Some(StripKind::Skirt)
+    }
+
     /// The length of a lined span's bore between its end rows' stations, metres; `None` for an
     /// unlined piece or a lined node piece, whose lining runs along no rows.
     pub fn lining_bore_m(&self) -> Option<f64> {

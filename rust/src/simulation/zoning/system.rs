@@ -21,7 +21,7 @@ use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-pub(crate) use cell_editing::{CellPaintUndo, CellZoningEdit};
+pub(crate) use cell_editing::{CellPaintUndo, CellZoningEdit, RoadPaint};
 pub(crate) use cell_lots::{
     CellLotGeneration, CellLotPlanner, CellLotRemovalUndo, PlannedCellLots,
 };
@@ -41,6 +41,8 @@ pub struct ZoningSystem {
     cell_external_revision: u64,
     /// Cached compatible footprints, invalidated by the asset registry's explicit refresh hook.
     pub(crate) cell_lot_sizes: Option<Vec<super::cells::CellLotSize>>,
+    // The paint a road stroke erased, until its commit's lot plan takes it (`ZONE-09`).
+    road_paint_sources: Option<RoadPaint>,
     /// World configuration used for parcel bounds validation.
     pub config: WorldConfig,
     overlay_revision: u64,
@@ -78,6 +80,7 @@ impl ZoningSystem {
             cell_lot_queue: Default::default(),
             cell_external_revision: 0,
             cell_lot_sizes: None,
+            road_paint_sources: None,
             config: *config,
             overlay_revision: 0,
             overlay_occupancy_revision: 0,
@@ -95,6 +98,7 @@ impl ZoningSystem {
         self.cell_lot_queue.clear();
         self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
         self.cell_lot_sizes = None;
+        self.road_paint_sources = None;
         if had_parcels {
             self.bump_overlay_revision();
         }
@@ -164,10 +168,11 @@ impl ZoningSystem {
     }
 
     /// Removes the parcels `raw_ids` (ascending) a road stroke takes (`ZONE-09`), after their
-    /// buildings were demolished: a cell lot releases its claim and keeps its cells' paint, an
-    /// authored parcel invalidates the generated cells around it, as
-    /// [`Self::remove_parcels_by_raw_ids`] does, but each record is removed locally instead of
-    /// rebuilding the parcel indices. Returns how many were removed. O(ids * their chunks).
+    /// buildings were demolished, or the empty lots on the cells its undo gives back: a cell lot
+    /// releases its claim and keeps its cells' paint, an authored parcel invalidates the
+    /// generated cells around it, as [`Self::remove_parcels_by_raw_ids`] does, but each record
+    /// is removed locally instead of rebuilding the parcel indices. Returns how many were
+    /// removed. O(ids * their chunks).
     pub(crate) fn remove_parcels_under_road(&mut self, raw_ids: &[u64]) -> usize {
         let mut removed = 0;
         for &raw in raw_ids {

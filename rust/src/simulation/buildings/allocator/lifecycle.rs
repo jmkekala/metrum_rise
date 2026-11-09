@@ -894,6 +894,7 @@ impl BuildingAllocator {
             logistics,
             treasury_balance,
             Some(&candidates),
+            None,
         )
     }
 
@@ -2011,7 +2012,8 @@ impl BuildingAllocator {
     // agents `AgentSystem::agents_referencing_buildings` found naming either before anything
     // else changed agents' references; eviction and the agent remap then visit them alone,
     // unless a cancelled shipment removed a carrier meanwhile (the remap then scans every
-    // agent).
+    // agent). The households are then `households_among`, found as the agents were, or found
+    // here by `HouseholdSystem::households_referencing_buildings`.
     #[allow(clippy::too_many_arguments)]
     fn remove_building_at_index(
         &mut self,
@@ -2022,6 +2024,7 @@ impl BuildingAllocator {
         logistics: &mut ShipmentSystem,
         treasury_balance: &mut f64,
         candidates: Option<&[usize]>,
+        households_among: Option<&[usize]>,
     ) -> bool {
         let Some((parcel_id, zone_type)) = self
             .buildings
@@ -2039,14 +2042,21 @@ impl BuildingAllocator {
         let last_idx = self.buildings.len().saturating_sub(1);
         // The households naming either building, found as the agents were: the invalidation
         // and the remap below change no other household.
-        let household_candidates =
-            candidates.map(|_| households.households_referencing_buildings(building_idx, last_idx));
+        let scanned;
+        let household_candidates = match (candidates, households_among) {
+            (Some(_), Some(among)) => Some(among),
+            (Some(_), None) => {
+                scanned = households.households_referencing_buildings(building_idx, last_idx);
+                Some(scanned.as_slice())
+            }
+            (None, _) => None,
+        };
         match candidates {
             Some(candidates) => agents.evict_building_among(building_idx, candidates),
             None => agents.evict_building(building_idx),
         }
         let agent_count = agents.agents.len();
-        match &household_candidates {
+        match household_candidates {
             Some(candidates) => {
                 households.invalidate_building_among(building_idx, candidates, self)
             }
@@ -2077,7 +2087,7 @@ impl BuildingAllocator {
                 }
                 _ => agents.remap_building_indices(&mapping),
             }
-            match &household_candidates {
+            match household_candidates {
                 Some(candidates) => {
                     households.remap_building_among(last_idx, building_idx, candidates)
                 }
@@ -2117,9 +2127,11 @@ impl BuildingAllocator {
 
     /// Removes one building a road stroke takes (`ZONE-09`) through the lifecycle hooks of
     /// [`Self::remove_building_for_bulldoze`], with `candidates` from
-    /// [`AgentSystem::agents_referencing_any_building`] over the batch, taken after any change
-    /// that renumbered agents, so eviction and the agent remap visit those alone. The caller
-    /// evacuated the building first. O(candidates) plus the removal's other remaps.
+    /// [`AgentSystem::agents_referencing_any_building`] and `households_among` from
+    /// [`HouseholdSystem::households_referencing_any_building`] over the batch, each taken after
+    /// any change that renumbered its store, so eviction, invalidation and the remaps visit
+    /// those alone. The caller evacuated the building first. O(candidates) plus the removal's
+    /// other remaps.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn remove_building_for_road(
         &mut self,
@@ -2130,6 +2142,7 @@ impl BuildingAllocator {
         logistics: &mut ShipmentSystem,
         treasury_balance: &mut f64,
         candidates: &[usize],
+        households_among: &[usize],
     ) -> bool {
         self.remove_building_at_index(
             building_idx,
@@ -2139,6 +2152,7 @@ impl BuildingAllocator {
             logistics,
             treasury_balance,
             Some(candidates),
+            Some(households_among),
         )
     }
 
@@ -2159,6 +2173,7 @@ impl BuildingAllocator {
             households,
             logistics,
             treasury_balance,
+            None,
             None,
         )
     }

@@ -288,6 +288,54 @@ pub(crate) fn interiors_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
     mapped_interiors_overlap(a, b, integer_point)
 }
 
+/// The area in square metres two counterclockwise convex quadrilaterals share, zero unless
+/// their interiors overlap ([`interiors_overlap`]): `b` clipped to each edge of `a`
+/// (Sutherland-Hodgman), then the clip's shoelace area, all relative to `a`'s first corner, so
+/// city coordinates cost no precision. A fixed sequence of `f64` operations, so equal inputs
+/// give bitwise equal areas. `O(1)`, without allocation.
+pub(crate) fn convex_overlap_area(a: &[DVec2; 4], b: &[DVec2; 4]) -> f64 {
+    if !interiors_overlap(a, b) {
+        return 0.0;
+    }
+    // Each clip adds at most one vertex per input vertex: 4 * 2^4 bounds the last.
+    const CAPACITY: usize = 64;
+    let origin = a[0];
+    let mut polygon = [DVec2::ZERO; CAPACITY];
+    let mut clipped = [DVec2::ZERO; CAPACITY];
+    for (target, &point) in polygon.iter_mut().zip(b) {
+        *target = point - origin;
+    }
+    let mut len = 4;
+    for index in 0..4 {
+        let start = a[index] - origin;
+        let edge = a[(index + 1) % 4] - origin - start;
+        // Positive on the edge's left, the inside of a counterclockwise polygon.
+        let side = |point: DVec2| edge.perp_dot(point - start);
+        let mut count = 0;
+        for current in 0..len {
+            let (p, q) = (polygon[(current + len - 1) % len], polygon[current]);
+            let (sp, sq) = (side(p), side(q));
+            if (sp >= 0.0) != (sq >= 0.0) {
+                clipped[count] = p + (q - p) * (sp / (sp - sq));
+                count += 1;
+            }
+            if sq >= 0.0 {
+                clipped[count] = q;
+                count += 1;
+            }
+        }
+        std::mem::swap(&mut polygon, &mut clipped);
+        len = count;
+        if len < 3 {
+            return 0.0;
+        }
+    }
+    let twice: f64 = (0..len)
+        .map(|index| polygon[index].perp_dot(polygon[(index + 1) % len]))
+        .sum();
+    (twice * 0.5).max(0.0)
+}
+
 fn mapped_interiors_overlap<T: Copy>(a: &[T], b: &[T], convert: impl Fn(T) -> [i64; 2]) -> bool {
     for polygon in [a, b] {
         let area: i128 = (0..polygon.len())

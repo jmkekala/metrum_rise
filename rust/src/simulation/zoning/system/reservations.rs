@@ -10,10 +10,11 @@ use crate::simulation::zoning::cells::{
 };
 use glam::DVec2;
 
-// Whether a piece's top triangles overlap a polygon with positive area. A buried piece's top lies
-// in the hill under the cells (`ROAD-61` round R8h) and covers none.
+// Whether a piece's top triangles overlap a polygon with positive area. Only a piece on the
+// ground covers land: a buried piece's top lies in the hill under the cells (`ROAD-61` round
+// R8h), a bridge's deck above them (`ZONE-09`, decision D2), and neither covers any.
 fn piece_covers(mesh: &PieceMesh, polygon: &PolygonFootprint) -> bool {
-    if mesh.buried() {
+    if !mesh.grounded() {
         return false;
     }
     let bounds = [polygon.min.x, polygon.min.y, polygon.max.x, polygon.max.y].map(f64::from);

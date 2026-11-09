@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Roads over zoned land (`ZONE-09`, round RZ1): a road stroke takes the zoned land its pieces
-//! newly cover, demolishing the buildings on the lots it crosses, removing those lots and erasing
-//! the covered cells' paint; a plotted reservation (a placed building's lot, a field, an
-//! extraction area) refuses it and changes nothing. Undo gives the road and the erased paint
-//! back, not the buildings, and is refused whole while the paint's land is taken.
+//! Roads over zoned land (`ZONE-09`, rounds RZ1 and RZ2): a road stroke takes the zoned land its
+//! pieces newly cover, demolishing the buildings on the lots it crosses, removing those lots and
+//! erasing the covered cells' paint, which the new cells along the road inherit; a plotted
+//! reservation (a placed building's lot, a field, an extraction area) refuses it and changes
+//! nothing; a bridge's deck takes no land. Undo gives the road and the erased paint back and takes
+//! the inherited paint away, not the buildings, and is refused whole while the paint's land is
+//! taken.
 
 use super::fields::farm_fixture;
 use super::road_pockets::buildings::{grow, register_houses};
@@ -12,12 +14,19 @@ use super::road_terrain_plan::commit_ready;
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::simulation::agriculture::PolygonFootprint;
-use crate::simulation::zoning::cells::{CellBounds, CellKey, road_contact_interior};
+use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
+use crate::simulation::zoning::cells::{
+    CellBounds, CellKey, CellSelection, convex_overlap_area, road_contact_interior,
+};
 use glam::DVec2;
 use godot::prelude::Vector2;
 
 // The side street the strokes draw: from the south into the street's middle, a T.
 const SIDE: [Vector3; 2] = [Vector3::new(0.0, 0.0, -70.0), Vector3::new(0.0, 0.0, 0.0)];
+
+// A side street drawn diagonally into the street's middle from the south-west: its cells lie on
+// a frame of their own, so its new frontage cells overlap the land of the cells it erases.
+const DIAGONAL: [Vector3; 2] = [Vector3::new(-50.0, 0.0, -70.0), Vector3::new(0.0, 0.0, 0.0)];
 
 // The area the tests compare cells in: the side street and the lots along the street.
 const AREA: CellBounds = CellBounds {
@@ -424,21 +433,30 @@ fn an_extraction_area_refuses_the_road() {
 }
 
 // The commit's products are a function of its inputs: the same stroke on two cities built alike
-// takes the same land, bit for bit, and its lot plan derives the same lots.
+// takes the same land, bit for bit, and its lot plan derives the same lots and hands on the same
+// paint; the deferred plan's products equal those of the plan made in the commit.
 #[test]
 fn a_demolishing_commit_is_deterministic() {
-    let digest = || {
+    type Record = Option<(Paint, Paint)>;
+    let run = |stroke: &[Vector3], in_commit: bool| {
         let (mut core, _) = street_with_houses();
-        assert_eq!(commit(&mut core, &SIDE), "");
+        core.cell_lot_hooks.in_commit = in_commit;
+        assert_eq!(commit(&mut core, stroke), "");
         let committed = (core.zoning.cells.state_digest(), land_state(&core));
         core.adopt_pending_cell_lots();
-        (
-            committed,
-            core.zoning.cells.state_digest(),
-            land_state(&core),
-        )
+        let record: Record = core
+            .undo_stack
+            .back()
+            .and_then(|record| record.cells.as_ref())
+            .map(|cells| (cells.erased().to_vec(), cells.inherited().to_vec()));
+        let adopted = (core.zoning.cells.state_digest(), land_state(&core), record);
+        (committed, adopted)
     };
-    assert_eq!(digest(), digest());
+    for stroke in [&SIDE[..], &DIAGONAL[..]] {
+        let first = run(stroke, false);
+        assert_eq!(run(stroke, false), first);
+        assert_eq!(run(stroke, true).1, first.1, "in-commit plan");
+    }
 }
 
 // Decision D8: the one-shot stroke checks (`ROAD-102`) find a placed building's lot and an
@@ -474,4 +492,263 @@ fn the_one_shot_corridor_check_finds_plotted_land() {
     ];
     core.allocator.extraction_clearance_mut().set(farm, &area);
     assert!(clearance(&core, x + 160.0).extraction_overlap);
+}
+
+// A cell's footprint.
+fn corners(core: &SimCore, key: CellKey) -> [DVec2; 4] {
+    core.zoning
+        .cells
+        .frame(key.grid)
+        .unwrap()
+        .corners(key.x, key.y)
+}
+
+// Cells with their paint.
+type Paint = Vec<(CellKey, u16)>;
+
+// Commits the diagonal side street and adopts its lots; returns the cells it erased and those its
+// lot plan painted, as the stroke's undo record keeps them.
+fn commit_diagonal(core: &mut SimCore) -> (Paint, Paint) {
+    assert_eq!(commit(core, &DIAGONAL), "");
+    assert!(core.adopt_pending_cell_lots().adopted);
+    let record = core
+        .undo_stack
+        .back()
+        .and_then(|record| record.cells.as_ref())
+        .expect("the record keeps the erased paint");
+    (record.erased().to_vec(), record.inherited().to_vec())
+}
+
+// Rule 5: the new frontage cells along a stroke fill the land its erased cells leave, each taking
+// the paint of the erased cell it overlaps most (ties to the lowest key); no new cell over erased
+// land stays unpainted; the inherited paint gets lots in the commit's own lot plan.
+#[test]
+fn new_cells_along_a_stroke_inherit_the_erased_paint() {
+    let (mut core, _) = street_with_houses();
+    let (erased, inherited) = commit_diagonal(&mut core);
+    assert!(!erased.is_empty());
+    assert!(!inherited.is_empty(), "the side street's cells inherit");
+    for &(key, profile) in &inherited {
+        assert_eq!(core.zoning.cells.profile(key), Some(profile), "{key:?}");
+        let footprint = corners(&core, key);
+        // The oracle: the largest shared area, the lowest key among equals.
+        let (mut best, mut best_area) = (None, 0.0);
+        for &(source, paint) in &erased {
+            let area = convex_overlap_area(&footprint, &corners(&core, source));
+            if area > best_area {
+                (best, best_area) = (Some(paint), area);
+            }
+        }
+        assert_eq!(best, Some(profile), "{key:?}");
+        assert_ne!(key.grid, erased[0].0.grid, "a new frame's cell");
+    }
+    // Every cell standing over erased land is painted: none is left unpainted.
+    let mut unpainted = Vec::new();
+    core.zoning.cells.visit_in_bounds(AREA, |key| {
+        if core.zoning.cells.profile(key) == Some(0)
+            && erased
+                .iter()
+                .any(|&(source, _)| convex_overlap_area(&corners(&core, key), &corners(&core, source)) > 0.0)
+        {
+            unpainted.push(key);
+        }
+    });
+    assert!(unpainted.is_empty(), "{unpainted:?}");
+    assert_references_consistent(&core);
+}
+
+// Rule 8, the inherited half: undo takes the inherited paint and its empty lots away and gives
+// the erased paint back, so the land's paint is as before the stroke.
+#[test]
+fn undo_takes_the_inherited_paint_and_its_lots_away() {
+    let (mut core, _) = street_with_houses();
+    let painted_before = painted(&core);
+    let (_, inherited) = commit_diagonal(&mut core);
+    assert!(!inherited.is_empty());
+    assert!(core.undo_action_internal());
+    assert_eq!(painted(&core), painted_before);
+    for (key, _) in inherited {
+        assert!(core.zoning.cells.profile(key).is_none_or(|p| p == 0));
+        assert!(core.zoning.cells.lot(key).is_none_or(|lot| lot == 0));
+    }
+    core.prepare_cell_lots_internal();
+    assert_references_consistent(&core);
+    for (key, _) in painted(&core) {
+        assert_ne!(core.zoning.cells.lot(key), Some(0), "{key:?} has a lot again");
+    }
+}
+
+// Decision D5 over another grid's cells: a house grown on the inherited cells holds land the
+// erased cells would take back, so the road's undo is refused whole and changes nothing; once the
+// house is gone (here outside the undo history), the undo runs and the erased paint is back.
+#[test]
+fn undo_is_refused_while_a_new_building_stands_on_restored_land() {
+    let (mut core, _) = street_with_houses();
+    let undo_depth = core.undo_stack.len();
+    let (erased, inherited) = commit_diagonal(&mut core);
+    // The inherited front row is one cell deep; the row behind it is zoned (outside the undo
+    // history), and a lot derives over both.
+    let path: Vec<_> = inherited
+        .iter()
+        .map(|&(key, _)| {
+            let c = corners(&core, key);
+            (c[0] + c[2]) * 0.5
+        })
+        .collect();
+    let brush = crate::simulation::zoning::cells::CellSelectionShape::Brush { radius_m: 15.0 };
+    let selection = core.zoning.cells.select(brush, &path);
+    assert!(core.zoning.paint_cells(&selection, 1, |_| false).is_some());
+    core.prepare_cell_lots_internal();
+    let lot = inherited
+        .iter()
+        .find_map(|&(key, _)| core.zoning.cells.lot(key).filter(|&lot| lot != 0))
+        .expect("an inherited lot");
+    let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
+        &core.zoning,
+        &core.region_graph,
+        core.demand.runtime_catalog(),
+        &[],
+        BuildingSiteEnvironment {
+            road_surface: &core.transit_network.roadbed,
+            terrain: &core.heightmap,
+        },
+    );
+    let action = candidates
+        .residential
+        .iter()
+        .map(|candidate| &candidate.action)
+        .find(|action| action.parcel_id == lot)
+        .expect("a house fits the inherited lot")
+        .clone();
+    let house = core
+        .allocator
+        .execute_demand_spawn_action(
+            &action,
+            &mut core.zoning,
+            &core.region_graph,
+            &core.transit_network.roadbed,
+            &core.heightmap,
+            core.demand.runtime_catalog(),
+            core.demand.runtime_tuning(),
+        )
+        .expect("the house grows");
+    core.rebuild_building_entrances_internal();
+    let state = land_state(&core);
+    assert!(!core.undo_action_internal(), "the undo is refused");
+    assert_eq!(land_state(&core), state, "a refused undo changes nothing");
+    assert_eq!(core.undo_stack.len(), undo_depth + 1, "the record stays");
+    let core = &mut core;
+    assert!(core.allocator.remove_building_for_bulldoze(
+        house,
+        &mut core.zoning,
+        &mut core.agents,
+        &mut core.households,
+        &mut core.logistics,
+        &mut core.treasury.balance,
+    ));
+    core.publish_pending_building_site_changes();
+    assert!(core.undo_action_internal());
+    for (key, profile) in erased {
+        assert_eq!(core.zoning.cells.profile(key), Some(profile), "{key:?}");
+    }
+}
+
+// Decision D5: an inherited cell whose paint changed outside the undo history (another zone) is
+// another grid's paint over the restored land: the undo is refused whole and changes nothing,
+// and runs once the inherited paint is back.
+#[test]
+fn undo_is_refused_while_another_grids_paint_covers_restored_land() {
+    let (mut core, _) = street_with_houses();
+    let painted_before = painted(&core);
+    let (_, inherited) = commit_diagonal(&mut core);
+    let (key, profile) = inherited[0];
+    let repaint = |core: &mut SimCore, profile: u16| {
+        let selection = CellSelection {
+            revision: core.zoning.cells.revision(),
+            cells: vec![key],
+        };
+        assert!(core.zoning.paint_cells(&selection, profile, |_| false).is_some());
+    };
+    repaint(&mut core, profile + 1);
+    let state = land_state(&core);
+    assert!(!core.undo_action_internal(), "the undo is refused");
+    assert_eq!(land_state(&core), state, "a refused undo changes nothing");
+    repaint(&mut core, profile);
+    assert!(core.undo_action_internal());
+    assert_eq!(painted(&core), painted_before);
+}
+
+// Rule 5 when the stroke erases the last paint in the world: no reservation is left, yet the
+// commit's lot plan still runs and its new cells inherit the paint.
+#[test]
+fn new_cells_inherit_the_last_paint_in_the_world() {
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    core.treasury.balance = 1.0e9;
+    commit_ready(
+        &mut core,
+        vec![
+            Vector3::new(-150.0, 0.0, 0.0),
+            Vector3::new(150.0, 0.0, 0.0),
+        ],
+    );
+    // A few cells where the diagonal side street crosses the street's first rows, and nothing
+    // else painted.
+    let brush = crate::simulation::zoning::cells::CellSelectionShape::Brush { radius_m: 6.0 };
+    let preview = core.preview_cell_selection_internal(brush, &[DVec2::new(-21.0, -29.0)]);
+    assert!(core.apply_cell_selection_internal(&preview, 1));
+    core.prepare_cell_lots_internal();
+    let painted_before = painted(&core);
+    assert!(!painted_before.is_empty());
+    let (erased, inherited) = commit_diagonal(&mut core);
+    assert_eq!(erased, painted_before, "the stroke erases every painted cell");
+    assert!(!inherited.is_empty(), "the new cells inherit the paint");
+    assert_eq!(painted(&core), inherited);
+}
+
+// A free bridge 6 m over the flat ground, north to south across the houses' lots at `x`.
+fn bridge_at(x: f32) -> [Vector3; 2] {
+    [Vector3::new(x, 6.0, -70.0), Vector3::new(x, 6.0, -12.0)]
+}
+
+// The land a bridge must leave as it was: paint and claims, parcels and their occupants,
+// buildings, agents and households.
+fn land(core: &SimCore) -> Vec<u64> {
+    land_state(core)[..6].to_vec()
+}
+
+// Decision D2: a bridge's deck takes no land: a deck over built lots leaves their paint, lots,
+// houses and families as they were, before and after its lot plan.
+#[test]
+fn a_bridge_deck_covers_no_cell() {
+    use crate::simulation::network::types::EdgeClass;
+    let (mut core, houses) = street_with_houses();
+    let x = core.allocator.buildings[houses[houses.len() / 2]].center_x;
+    let before = land(&core);
+    assert_eq!(commit(&mut core, &bridge_at(x)), "");
+    assert!(
+        core.region_graph
+            .edges()
+            .iter()
+            .any(|edge| !edge.deleted && edge.class == EdgeClass::Bridge),
+        "the stroke is a bridge"
+    );
+    assert_eq!(land(&core), before);
+    core.adopt_pending_cell_lots();
+    assert_eq!(land(&core), before);
+}
+
+// Decision D2: a bridge's deck over a farm field is no field overlap.
+#[test]
+fn a_bridge_deck_over_a_field_is_no_field_overlap() {
+    let (mut core, _) = street_with_houses();
+    let owner = core.allocator.buildings.len();
+    let field = [
+        Vector2::new(80.0, -60.0),
+        Vector2::new(120.0, -60.0),
+        Vector2::new(120.0, -20.0),
+        Vector2::new(80.0, -20.0),
+    ];
+    core.allocator.field_clearance_mut().set(owner, &field);
+    assert_eq!(commit(&mut core, &bridge_at(100.0)), "");
 }

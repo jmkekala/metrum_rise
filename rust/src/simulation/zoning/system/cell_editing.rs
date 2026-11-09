@@ -39,11 +39,13 @@ impl CellZoningEdit {
 
 /// The paint a road stroke erased from the cells its pieces newly cover (`ZONE-09`), kept in its
 /// undo record: the erase as one cell edit, whose inverse also re-inserts the cells that
-/// regeneration dropped under the road since. Lots are not kept; undo re-derives them from the
-/// restored paint.
+/// regeneration dropped under the road since, and the paint the commit's lot plan gave the new
+/// cells along the road (PLAN-RZ 2.4), which undo erases again first. Lots are not kept; undo
+/// re-derives them from the restored paint.
 #[derive(Clone, Debug)]
 pub(crate) struct CellPaintUndo {
     erased: CellEdit,
+    inherited: Vec<(CellKey, u16)>,
 }
 
 impl CellPaintUndo {
@@ -51,6 +53,36 @@ impl CellPaintUndo {
     pub(crate) fn erased(&self) -> &[(CellKey, u16)] {
         &self.erased.previous
     }
+
+    /// The new cells that inherited the erased paint and the paint each took, sorted by key.
+    pub(crate) fn inherited(&self) -> &[(CellKey, u16)] {
+        &self.inherited
+    }
+
+    /// Adds the paint the stroke's lot plan gave the new cells along its road, when `paint`
+    /// is that plan's: it names this record's erase. False, and nothing kept, for another
+    /// stroke's (a stroke whose record the benchmark mode dropped). O(cells).
+    pub(crate) fn record_inherited(&mut self, paint: RoadPaint) -> bool {
+        if paint.erase != self.erased.revision {
+            return false;
+        }
+        debug_assert!(self.inherited.is_empty(), "one lot plan per stroke");
+        self.inherited = paint.cells;
+        true
+    }
+}
+
+/// Cell paint of one road stroke's land (`ZONE-09`): `erase` names the stroke's erase (the cell
+/// revision it left), `cells` holds cell keys with their paint, sorted by key. As the erase's
+/// sources, the painted cells the stroke erased, which the commit's lot plan hands on to the new
+/// cells along the road (PLAN-RZ 2.4, [`super::CellLotPlanner::inheriting`]); as that plan's
+/// product, the new cells it painted, for the stroke's undo record.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RoadPaint {
+    /// The cell revision the stroke's erase left.
+    pub(crate) erase: u64,
+    /// Cells and their paint, sorted by key.
+    pub(crate) cells: Vec<(CellKey, u16)>,
 }
 
 impl ZoningSystem {
@@ -283,8 +315,9 @@ impl ZoningSystem {
     /// Erases the paint of `keys`, valid cells a committed road stroke newly covers (`ZONE-09`),
     /// after the commit removed their lots: the cells stay until the deferred lot plan's
     /// regeneration drops them, as the road's pieces block them. Queues their regions for lot
-    /// derivation. Returns the erase for the stroke's undo record, or `None` when no cell was
-    /// painted. O(keys).
+    /// derivation and leaves the erased paint to the commit's lot plan, whose new cells along
+    /// the road inherit it ([`Self::take_road_paint_sources`]). Returns the erase for the
+    /// stroke's undo record, or `None` when no cell was painted. O(keys).
     pub(crate) fn erase_cells_under_road(&mut self, keys: Vec<CellKey>) -> Option<CellPaintUndo> {
         let selection = CellSelection {
             revision: self.cells.revision(),
@@ -296,41 +329,103 @@ impl ZoningSystem {
         }
         self.mark_cell_keys_dirty(erased.previous.iter().map(|&(key, _)| key));
         self.bump_overlay_revision();
-        Some(CellPaintUndo { erased })
+        debug_assert!(self.road_paint_sources.is_none(), "a commit's plan took them");
+        self.road_paint_sources = Some(RoadPaint {
+            erase: erased.revision,
+            cells: erased.previous.clone(),
+        });
+        Some(CellPaintUndo {
+            erased,
+            inherited: Vec::new(),
+        })
+    }
+
+    /// The paint the last road stroke erased, for its commit's lot plan to hand on to the new
+    /// cells along the road (PLAN-RZ 2.4): the plan that drains the stroke's lot regions takes
+    /// it. `O(1)`.
+    pub(crate) fn take_road_paint_sources(&mut self) -> Option<RoadPaint> {
+        self.road_paint_sources.take()
     }
 
     /// Whether the road undo can give every erased cell its paint back now (`ZONE-09`, decision
-    /// D5: otherwise the whole undo is refused): each cell still stands unpainted and unclaimed,
-    /// or, dropped since, its footprint meets no reserved cell; and no authored parcel or
-    /// `blocked` (fields, explicit sites) holds its land. Roads are the caller's: the undo takes
-    /// away the stroke that covers these cells. O(erased cells * local candidates).
+    /// D5: otherwise the whole undo is refused). Every inherited cell must still carry the paint
+    /// it inherited, claimed by no lot or by an empty one: undo erases that paint and removes
+    /// those lots first. Then each erased cell must still stand unpainted and unclaimed or,
+    /// dropped since, meet no reserved cell but the inherited ones; and no authored parcel or
+    /// `blocked` (fields, explicit sites) may hold its land. A building on inherited cells
+    /// therefore refuses the undo, the erased cells under it being taken. Roads are the
+    /// caller's: the undo takes away the stroke that covers these cells.
+    /// O((erased + inherited cells) * local candidates).
     pub(crate) fn can_restore_cell_paint_undo(
         &self,
         undo: &CellPaintUndo,
         blocked: impl Fn(&[DVec2; 4]) -> bool,
     ) -> bool {
-        undo.erased().iter().all(|&(key, profile)| {
-            self.validate_profile_id(profile).is_ok()
-                && self.cells.frame(key.grid).is_some_and(|frame| {
-                    let corners = frame.corners(key.x, key.y);
-                    let free = match self.cells.profile(key) {
-                        Some(0) => self.cells.lot(key) == Some(0),
-                        Some(_) => false,
-                        None => !self.cells.overlaps_reserved(&corners),
-                    };
-                    free && !overlaps_parcels(&self.parcels, &corners) && !blocked(&corners)
+        let inherited = undo.inherited();
+        let inherited_free = inherited.iter().all(|&(key, profile)| {
+            self.cells.profile(key) == Some(profile)
+                && self.cells.lot(key).is_some_and(|lot| {
+                    lot == 0
+                        || self
+                            .parcel_by_raw_id(lot)
+                            .is_some_and(ZoningParcel::is_available)
                 })
-        })
+        });
+        let is_inherited = |key: CellKey| {
+            inherited
+                .binary_search_by_key(&key, |&(inherited, _)| inherited)
+                .is_ok()
+        };
+        inherited_free
+            && undo.erased().iter().all(|&(key, profile)| {
+                self.validate_profile_id(profile).is_ok()
+                    && self.cells.frame(key.grid).is_some_and(|frame| {
+                        let corners = frame.corners(key.x, key.y);
+                        let free = match self.cells.profile(key) {
+                            Some(0) => self.cells.lot(key) == Some(0),
+                            Some(_) => false,
+                            None => !self.cells.overlaps_reserved_except(&corners, is_inherited),
+                        };
+                        free && !overlaps_parcels(&self.parcels, &corners) && !blocked(&corners)
+                    })
+            })
     }
 
-    /// Restores the erased paint after [`Self::can_restore_cell_paint_undo`] held: cells the
-    /// regeneration dropped are inserted again, replacing unpainted competitors, and the regions
-    /// are queued so lots derive from the paint (decision D6). O(erased cells).
-    pub(crate) fn restore_cell_paint_undo(&mut self, undo: CellPaintUndo) {
+    /// Restores the erased paint after [`Self::can_restore_cell_paint_undo`] held: the empty
+    /// lots on inherited cells are removed and the inherited paint erased, then the cells the
+    /// regeneration dropped are inserted again, replacing unpainted competitors, and both sets'
+    /// regions are queued so lots derive from the paint (decision D6). Returns how many lots it
+    /// removed. O(erased + inherited cells).
+    pub(crate) fn restore_cell_paint_undo(&mut self, undo: CellPaintUndo) -> usize {
+        let mut lots: Vec<u64> = undo
+            .inherited
+            .iter()
+            .filter_map(|&(key, _)| self.cells.lot(key).filter(|&lot| lot != 0))
+            .collect();
+        lots.sort_unstable();
+        lots.dedup();
+        let removed = self.remove_parcels_under_road(&lots);
+        if !undo.inherited.is_empty() {
+            let selection = CellSelection {
+                revision: self.cells.revision(),
+                cells: undo.inherited.iter().map(|&(key, _)| key).collect(),
+            };
+            let erased = self.cells.paint(&selection, 0);
+            debug_assert!(
+                erased.is_some_and(|edit| edit.previous == undo.inherited),
+                "checked by can_restore_cell_paint_undo"
+            );
+        }
         let restored = self.cells.restore_paint_values(&undo.erased);
         debug_assert!(restored, "checked by can_restore_cell_paint_undo");
-        self.mark_cell_keys_dirty(undo.erased().iter().map(|&(key, _)| key));
+        self.mark_cell_keys_dirty(
+            undo.erased()
+                .iter()
+                .chain(&undo.inherited)
+                .map(|&(key, _)| key),
+        );
         self.bump_overlay_revision();
+        removed
     }
 
     /// Rejects a manual parcel wherever full cell paint or occupied coverage reserves its land.
