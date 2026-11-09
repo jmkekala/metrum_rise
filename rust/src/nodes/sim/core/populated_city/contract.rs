@@ -56,7 +56,8 @@ fn perf_contract_prepare() {
     let elapsed = snapshot::ensure_snapshot(residents(), &cache_dir());
     eprintln!(
         "PERF_PREPARE {}",
-        serde_json::json!({"residents":residents(),"generation_s":elapsed.map(|value| value.as_secs_f64())})
+        serde_json::json!({"residents":residents(),"generation_s":elapsed.map(|value| value.as_secs_f64()),
+            "key":snapshot::fixture_revision()})
     );
 }
 
@@ -67,7 +68,8 @@ fn perf_contract_fiscal_prepare() {
     let elapsed = snapshot::ensure_fiscal_snapshot(residents(), &cache_dir());
     eprintln!(
         "PERF_FISCAL_PREPARE {}",
-        serde_json::json!({"residents":residents(),"generation_s":elapsed.map(|value| value.as_secs_f64())})
+        serde_json::json!({"residents":residents(),"generation_s":elapsed.map(|value| value.as_secs_f64()),
+            "key":snapshot::fixture_revision()})
     );
 }
 
