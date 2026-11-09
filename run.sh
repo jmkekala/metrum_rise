@@ -4,8 +4,11 @@
 # Verification:
 #   --perf-contract [--diff BASE | --phase PHASE | --agents | --prepare]
 #                        Run short saved-city/agent release performance contracts
-#   --test               The full gate. Serial: Python unit tests, `cargo check --benches`, the
-#                        dev library Godot loads, the test build. Then three stages side by
+#   --test               The full gate. Serial: Python unit tests, `cargo check --bench '*'`, the
+#                        test build. Godot loads the test build's own library (test profile:
+#                        opt-level 1, debug assertions), so the gate builds the crate once; with
+#                        --release it builds and loads the release library. A later plain
+#                        ./run.sh rebuilds the dev library once. Then three stages side by
 #                        side: the Rust suite under cargo-nextest with RAYON_NUM_THREADS=2
 #                        (lib, integration and doc tests; settings in rust/.config/nextest.toml)
 #                        and two chains of headless and rendered Godot regressions, each in its
@@ -579,6 +582,59 @@ run_godot_chain() {
         echo "Godot chain failed; its profile is kept: $asset_test_profile"
     fi
     return $status
+}
+
+# The gate's serial part, in rust/: the Python unit tests, the bench check, then the test build.
+# Every build happens here, one at a time: two crate builds at once need too much memory. Sets
+# lib_test_binary (the library's unit tests, for the fixture generators) and gate_library: the
+# test profile's own cdylib, which the Godot stages load. A dev `cargo build` here would rebuild
+# the crate twice per gate: the dev and test-profile cdylibs share one output, and each build
+# finds the other's profile there (`CODE-27`). Cargo leaves that cdylib in target/debug/deps
+# without copying it to target/debug, so its path comes from cargo's build messages.
+build_gate_targets() {
+    local test_build_json
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_terrain_replay.py; then
+        return 1
+    fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_benchmark_report.py; then
+        return 1
+    fi
+    echo "Checking benchmark targets for API drift..."
+    # `--bench '*'`, not `--benches`: the latter also checks the library as a bench harness,
+    # which the test build compiles anyway.
+    if ! cargo check --bench '*'; then
+        return 1
+    fi
+    # Listing the test binaries builds them all. Cargo's own JSON messages come first on stdout,
+    # one per line, then nextest's list.
+    echo "Building Rust tests..."
+    if ! test_build_json="$(cargo nextest list --list-type binaries-only --message-format json \
+        --cargo-message-format json-render-diagnostics)"; then
+        echo "Rust test build failed!"
+        return 1
+    fi
+    if ! lib_test_binary="$(printf '%s\n' "$test_build_json" | python3 -c \
+        'import json, sys; print(json.loads(sys.stdin.readlines()[-1])["rust-binaries"]["metrum_rise"]["binary-path"])')" || \
+        [ ! -x "$lib_test_binary" ]; then
+        echo "Error: could not find the library test binary in cargo-nextest's list." >&2
+        return 1
+    fi
+    if ! gate_library="$(printf '%s\n' "$test_build_json" | python3 -c '
+import json, sys
+suffix = "." + sys.argv[1]
+paths = set()
+for line in sys.stdin:
+    message = json.loads(line)
+    target = message.get("target", {})
+    if message.get("reason") == "compiler-artifact" and target.get("name") == "metrum_rise" \
+            and "cdylib" in target.get("kind", []) and not message["profile"]["test"]:
+        paths.update(path for path in message["filenames"] if path.endswith(suffix))
+if len(paths) != 1:
+    sys.exit("expected one metrum_rise cdylib in the test build, found {}".format(sorted(paths)))
+print(paths.pop())' "$METRUM_LIBRARY_SUFFIX")" || [ ! -f "$gate_library" ]; then
+        echo "Error: could not find the test build's GDExtension library in cargo's build messages." >&2
+        return 1
+    fi
 }
 
 # Every library and integration test under nextest, then the doc tests, which nextest does not
@@ -1173,18 +1229,25 @@ if [ $TERRAIN_VISUAL_DEBUG -eq 1 ]; then
     echo "    lighting    Sun-facing strength, cascade bands, and water specular mask"
 fi
 
-echo "Building Rust library..."
 cd "$PROJECT_ROOT/rust"
 if ! require_command cargo; then
     exit 2
 fi
-if [ $RELEASE -eq 1 ]; then
+if [ $TEST -eq 1 ] && ! build_gate_targets; then
+    exit 1
+fi
+if [ $TEST -eq 1 ] && [ $RELEASE -eq 0 ]; then
+    # The gate's Godot stages load the library the test build just made.
+    LIB="$gate_library"
+elif [ $RELEASE -eq 1 ]; then
+    echo "Building Rust library..."
     if ! cargo build --release; then
         echo "Rust build failed!"
         exit 1
     fi
     LIB="target/release/libmetrum_rise.$METRUM_LIBRARY_SUFFIX"
 else
+    echo "Building Rust library..."
     if ! cargo build; then
         echo "Rust build failed!"
         exit 1
@@ -1367,29 +1430,7 @@ if [ -n "$ROAD_REPLAY_DUMP" ]; then
 fi
 
 if [ $TEST -eq 1 ]; then
-    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_terrain_replay.py; then
-        exit 1
-    fi
-    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_benchmark_report.py; then
-        exit 1
-    fi
-    echo "Checking benchmark targets for API drift..."
-    if ! cargo check --benches; then
-        exit 1
-    fi
-    # Every build happens here, one at a time: two crate builds at once need too much memory.
-    # Listing the test binaries builds them all.
-    echo "Building Rust tests..."
-    if ! test_binaries_json="$(cargo nextest list --list-type binaries-only --message-format json)"; then
-        echo "Rust test build failed!"
-        exit 1
-    fi
-    if ! lib_test_binary="$(printf '%s' "$test_binaries_json" | python3 -c \
-        'import json, sys; print(json.load(sys.stdin)["rust-binaries"]["metrum_rise"]["binary-path"])')" || \
-        [ ! -x "$lib_test_binary" ]; then
-        echo "Error: could not find the library test binary in cargo-nextest's list." >&2
-        exit 1
-    fi
+    # build_gate_targets built everything before the library was deployed.
     test_log_dir="$PROJECT_ROOT/logs/test/$(date +%Y%m%d-%H%M%S)-$$"
     if ! mkdir -p "$test_log_dir"; then
         echo "Error: could not create $test_log_dir." >&2
