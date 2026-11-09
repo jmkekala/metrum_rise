@@ -10931,7 +10931,8 @@ These apply in road-and-terrain mode on the reference machine and settings, to `
 - **Commit.** Click → committed generation acknowledged in under 16.7 ms, with no frame that shows
   neither the preview nor the committed road.
 - **Locality.** With the edited neighbourhood held fixed, grow remote buildings, parcels, agents
-  and roads from 0 to 100k. Local products stay bitwise identical and per-pose timings stay flat.
+  and roads from 0 to 30k (100k until the user removed that tier on 2026-11-09). Local products
+  stay bitwise identical and per-pose timings stay flat.
   Context refresh is reported separately.
 - **Separate tracks.** A miss attributed to the CPU-bound render frame (`RENDER-27`, for example
   vegetation patch installs), to agent draw distance (`RENDER-28`) or to a region seen for the
@@ -10970,7 +10971,7 @@ METRUM_GAMEPLAY_BENCHMARK_RUN_ID=<fresh-run-id> \
 For the cross fixtures, set the cases to `flat_cross,sloped_cross` and use a fresh run ID. For
 the Wayland report, run Godot with `--display-driver wayland` (as `$ARTIFACTS/road68/h2`'s
 `display-pacing.sh` variant W does). The populated row: `populated_t,populated_branch` with
-`METRUM_GAMEPLAY_BENCHMARK_SAVE_PATH` set to the commit breakdown's saved 100k city (its
+`METRUM_GAMEPLAY_BENCHMARK_SAVE_PATH` set to the commit breakdown's saved 30k city (its
 simulation at `METRUM_GAMEPLAY_PREVIEW_SPEED`, default 1x).
 
 **Commit breakdown** (`benchmark_populated_commit_breakdown`, [`ROAD-68-G`](#road-68-g--commit-consequences-inside-one-frame);
@@ -10980,20 +10981,22 @@ cities before the session, as a heavy run (`.run.lock` and the shared timing loc
 exclusive one), then time the breakdown under both locks:
 
 ```bash
-# Once per binary, before the session: build, check and save the cities (about 4.5 min).
-METRUM_PERF_CACHE="$ARTIFACTS/snapshots" METRUM_COMMIT_TIERS=10000,30000,100000 \
+# Once per binary, before the session: build, check and save the cities (minutes).
+METRUM_PERF_CACHE="$ARTIFACTS/snapshots" METRUM_COMMIT_TIERS=10000,30000 \
   RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" \
   nodes::sim::core::populated_city::routing_benchmark::benchmark_populated_commit_prepare \
   --exact --ignored --nocapture
 # In the session:
-METRUM_PERF_CACHE="$ARTIFACTS/snapshots" METRUM_COMMIT_TIERS=0,10000,30000,100000 \
+METRUM_PERF_CACHE="$ARTIFACTS/snapshots" METRUM_COMMIT_TIERS=0,10000,30000 \
   RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" \
   nodes::sim::core::populated_city::routing_benchmark::benchmark_populated_commit_breakdown \
   --exact --ignored --nocapture
 ```
 
+No tier above 30k is measured since 2026-11-09; the 100k rows of earlier records are history.
+
 - `COMMIT_FIXTURE` names each tier's source: `loaded`; `generated`, when no snapshot matched
-  the binary's key and the run built, checked and saved one first (minutes at 100k, so prepare
+  the binary's key and the run built, checked and saved one first (minutes at 30k, so prepare
   first); or `built`, for tier 0 and with `METRUM_COMMIT_CITIES=built`, which builds every city
   in the run as before `ROAD-68-K22`. `COMMIT_SETUP` times the untimed setup's phases.
 - Since `ROAD-68-K24` the breakdown, like its prepare test, runs without the test build's
@@ -11022,7 +11025,7 @@ neighbourhood; the breakdown's three branches off its trunk are the edits
 (`profile_commits`, with its `COMMIT_BREAKDOWN` lines). East of it, beyond every lot region
 and terrain patch the branches touch, each tier adds straight two-lane 480 m block streets fronted
 by one-cell sites, each with a parcel and one housed agent (`METRUM_LOCALITY_TIERS`, default 0, 1,000,
-10,000 and 100,000 sites). Each tier builds afresh outside timing (`LOCALITY_SETUP`, then the
+10,000 and 30,000 sites; 100,000 until 2026-11-09). Each tier builds afresh outside timing (`LOCALITY_SETUP`, then the
 breakdown's `COMMIT_SETUP`). The test asserts that `LOCALITY_PRODUCTS` equal tier 0's: each
 sample's republished chunks and graded tiles, and the neighbourhood's cell claims, generated
 cells, parcels and buildings, compared by geometry because everything the commits create takes

@@ -8,7 +8,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 Parking (`PARK-01`, `PARK-02`, `PARK-05`, Veeti's `feat/parking`) landed on `dev` on 2026-11-07 at
 save format 118. The user accepted its `PERF-07` miss at 30k 32× (`PERF-17`): the gate fails there, on
-building-change frames up to 9.33 ms with walkers' pose out; 100k 1× stays with `PERF-09`. A household's car now stands in a kerbside or lot bay, and a resident walks to it,
+building-change frames up to 9.33 ms with walkers' pose out. Since 2026-11-09 no test, benchmark or tool measures a 100k city (the user; `PERF-08` closed, `PERF-09` not measured): 30k is the largest measured city, and the game's ≥1M target is unchanged. A household's car now stands in a kerbside or lot bay, and a resident walks to it,
 drives, parks and walks on, with the economy quoting the same trip; freight keeps its door-to-door
 path until round 2b. The parking tick visits candidates from events, not every agent, parked cars
 reach Godot through the render snapshot from cached poses, and a building stands on a road side

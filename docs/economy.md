@@ -1023,7 +1023,9 @@ come from the session cache (a merge times both).
 
 Every economy change keeps these checks. They replace `ECON-13` (closed 2026-10-12), whose
 100k runs took hours. The contract uses saved cities, deterministic work counts and one run per
-tier, so a full check takes minutes. The 100k and 1M tiers are deferred.
+tier, so a full check takes minutes. No 100k tier is measured (removed by the user on
+2026-11-09, [`simulation.md`](simulation.md#decisions-2026-11-09)); the 1M tier is deferred. The
+100k figures below are history.
 
 **Fixtures.** Two separate `PopulatedCity` workloads at 10k and 30k residents use the ordinary
 save format. The day-12 baseline retains the original census, staffing and search workload.
@@ -2054,7 +2056,8 @@ at day 14 1,069 to 745, by reading because a shopper's return keeps what its leg
 trip is taken goes home. Rounds M6a and M6b are byte-equal on these products by their own proofs. The 10k
 share of shopping by car, +8 points, is the wider city's and was not separated.
 
-**100k stays at 50,000 households, and that is the fixture.** The first batch admits exactly
+**100k stays at 50,000 households, and that is the fixture** (history: no 100k tier is measured
+since 2026-11-09). The first batch admits exactly
 `residents / 2` and houses 100,325, so the fixture stops there; everything after is demand, and
 demand admits only for net open jobs. Every tier settles at 2.6 job slots a household whatever it
 starts from: 2.59, 2.59, 2.60 at 10k, 30k, 100k, and on `dev` 2.62, 2.64, 2.61. Round M5a's lots took 7.7%
@@ -2086,7 +2089,8 @@ deferred.
 - **Benchmark:** `rust/benches/economy_tick_benchmark.rs`. Each `operational_hour` sample is one
   of 23 demand hours, timed through the hour's fixed slots to its actions slot; each
   `daily_settlement` sample is one of ten days, timed through the calendar close. Since 2026-10-15 only
-  the 10k tier runs by default; `ECONOMY_TICK_TIERS=10k,100k,1m` requests the larger ones.
+  the 10k tier runs by default; `ECONOMY_TICK_TIERS=10k,1m` requests the 1M one (the 100k tier
+  was removed on 2026-11-09).
 - **Recipe:** run `cargo bench --bench economy_tick_benchmark -- /10k` with
   `RAYON_NUM_THREADS=8` and `taskset -c 0,2,4,6,8,10,12,14`. Alternate builds over four runs each,
   check that `GrowthDayRecord`s are identical, and compare run means with an exact permutation

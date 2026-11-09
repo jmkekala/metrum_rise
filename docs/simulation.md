@@ -52,7 +52,8 @@ its site preparation).
 Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-07`), no code.
 Part 7 (acceptance) is done: `PERF-07` reports the frames another task preempted and accepts on
 the frames that were not (open question 7, decided 2026-10-22); 30k at both speeds and 100k at 1×
-pass. 100k at 32× is deferred to `PERF-08` (open question 6, decided 2026-10-22).
+pass. 100k at 32× is deferred to `PERF-08` (open question 6, decided 2026-10-22). Since
+2026-11-09 no 100k tier is measured ([Decisions (2026-11-09)](#decisions-2026-11-09)).
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
@@ -115,7 +116,16 @@ even at 32×. The cost problem is the peak, not the total, at today's sizes.
   [Open questions](#open-questions), question 7.
 - **100k at 32× is deferred.** The decision is taken when players' cities start to approach 100k
   agents; until then it is tracked as `PERF-08` and `PERF-07` does not require it. See
-  [Open questions](#open-questions), question 6.
+  [Open questions](#open-questions), question 6. Superseded on 2026-11-09 (below).
+
+### Decisions (2026-11-09)
+
+- **No 100k tier.** The user removed the 100k city tier from every test, benchmark, fixture,
+  runner option and tool. The largest measured city is 30k: `PERF-07`'s acceptance, the
+  [economy contract](economy.md#performance-contract-perf-01perf-05), the K22 commit cities and
+  the populated-map locality checks stop at 30k. `PERF-08` is closed (no longer measured) and
+  `PERF-09` is not measured. The game's ≥1M population target is unchanged; 100k results in this
+  document are history.
 
 ## Time model
 
@@ -1138,15 +1148,15 @@ moves its entities between the tiers' phase buckets.
   costs one uncontended mutex per acquisition, before `lock_held_ms` starts;
   `perf07_frame_budget` steps the core on its own thread and never runs the sim thread's loop.
 - **Workload:** the populated-city fixture used by `benchmark_populated_hour_boundaries` and
-  `benchmark_populated_midnight_boundaries`, extended to record every frame of the day, at 10k,
-  30k and 100k residents, at 1× and 32×.
-- **Acceptance (decided 2026-10-22; timing has no 100k tier since 2026-11-09):** at 30k at 1× and
+  `benchmark_populated_midnight_boundaries`, extended to record every frame of the day, at 10k
+  and 30k residents, at 1× and 32× (100k as well until 2026-11-09).
+- **Acceptance (decided 2026-10-22; no 100k tier since 2026-11-09):** at 30k at 1× and
   32×, the worst frame no other task preempted (`max_unpreempted_ms`), the raw p99.9 and the worst
   preempted frame less its wait (`max_preempted_less_wait_ms`) are each at most 8 ms.
   `tools/sim02_gate.py perf07` checks it and fails a run that misses it or lacks the scheduler
-  statistics. 100k at 32× is
-  reported but not required: it is deferred to `PERF-08`.
-- **Target (as first set):** max ≤ 8 ms at 30k and 100k, at both speeds. 32× at 100k is the binding
+  statistics. 30k is the largest measured city
+  ([Decisions (2026-11-09)](#decisions-2026-11-09)).
+- **Target (as first set, history):** max ≤ 8 ms at 30k and 100k, at both speeds. 32× at 100k was the binding
   case: one
   complete 100k candidate run in `economy.md` averaged about 161 ms per hour and 328 ms per daily
   tick, about 4.2 s of CPU per game day, or about 1.6 ms per frame at 32× once spread.
@@ -1197,7 +1207,8 @@ moves its entities between the tiers' phase buckets.
   run, also kept in the report (`perf07_table`). The gate's "no worse" limits stay on the raw
   maximum and p99. The threshold and the overhead are measured in the part 7 results.
 
-- **Open regression (`PERF-09`, attributed 2026-10-28).** 100k 1× no longer meets the
+- **`PERF-09`, not measured (history, attributed 2026-10-28).** No 100k tier is measured since
+  2026-11-09, so nothing gates this regression; the record stays as history. 100k 1× no longer met the
   acceptance on `road`: on `d456913e` a full day measures a 6.32 ms mean frame (agent tick 5.04,
   slot work 0.18, snapshot 1.02 ms) and a 19.5 ms worst unpreempted frame (minute 0 after load,
   13.1 ms of hourly work), against 4.12 ms (3.10, 0.23, 0.73) and 14.5 ms on `93bfaf61`, the
@@ -1214,7 +1225,7 @@ moves its entities between the tiers' phase buckets.
   profile, IDM speeds, connector lookups and turn speeds, lane claims, access egress paths and the
   snapshot's car poses grow. This is a heavier workload caused by a correct fix, not a `ROAD-68`
   or `TERRAIN-07` regression; the populated-city fixture changes (`ROAD-68-K22`, `K24`) leave
-  the 100k city unchanged. The acceptance stands: the car workload must fit 8 ms.
+  the 100k city unchanged. The acceptance then stood: the car workload had to fit 8 ms.
 
 **Pre-refactor baseline** (2026-10-15, `SIM-02-A` release `$TEST_BINARY`,
 `RAYON_NUM_THREADS=8`, one run each on an i9-12900K). Milliseconds; "boundary" frames ran an
@@ -5790,7 +5801,8 @@ today, so it too needs (a) or (b).
 **Decided by the user (2026-10-22): deferred.** The option is chosen when players have built
 cities that start to approach 100k agents. Until then the target is tracked as `PERF-08`, outside
 `SIM-02`; `PERF-07`'s acceptance covers 30k at both speeds and 100k at 1×, and the gate keeps
-reporting 100k at 32× so the gap stays visible.
+reporting 100k at 32× so the gap stays visible. **Superseded (2026-11-09):** no 100k tier is
+measured; `PERF-08` is closed ([Decisions (2026-11-09)](#decisions-2026-11-09)).
 
 7. **`PERF-07` under preemption** (`SIM-02-K` part 7). The benchmark's eight pinned CPUs are
    shared with the rest of the machine, and another task keeps a pool worker or the frame's own
@@ -5820,8 +5832,8 @@ reporting 100k at 32× so the gap stays visible.
    does not depend on the threshold's exact value. (b) only if a raw maximum must be quoted.
 
    **Decided by the user (2026-10-22): (a).** `tools/sim02_gate.py perf07` checks it for 30k at
-   1× and 32× and 100k at 1×, and fails a run that misses it or lacks the scheduler statistics
-   (see [Frame budget](#frame-budget-perf-07)).
+   1× and 32× (and checked 100k at 1× until the tier's removal on 2026-11-09), and fails a run
+   that misses it or lacks the scheduler statistics (see [Frame budget](#frame-budget-perf-07)).
 
 ### Decided while unattended
 
