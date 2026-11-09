@@ -104,6 +104,15 @@ impl GrowthScenario {
     }
 
     fn starter_town_in_world(world_size_m: f32) -> Self {
+        Self::starter_town_with_residential_streets(world_size_m, 2)
+    }
+
+    // The starter town with residential paint on its first `residential_streets` cross streets
+    // (west, then centre; at most 2): one street houses half the families in the same streets.
+    fn starter_town_with_residential_streets(
+        world_size_m: f32,
+        residential_streets: usize,
+    ) -> Self {
         let mut core = SimCore::new(WorldConfig::new(world_size_m, world_size_m, 40.0, 10.0));
         core.precompute_road_mesh_data();
         install_bootstrap_assets(&mut core);
@@ -125,7 +134,10 @@ impl GrowthScenario {
 
         let [residential_west, residential_center, industrial_east] =
             CROSS_STREET_X_M.map(f64::from);
-        for x in [residential_west, residential_center] {
+        for x in [residential_west, residential_center]
+            .into_iter()
+            .take(residential_streets)
+        {
             paint_cross_street(&mut core, x, ZoneType::Residential);
         }
         paint_cross_street(&mut core, industrial_east, ZoneType::Industrial);

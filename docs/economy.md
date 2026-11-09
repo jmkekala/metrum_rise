@@ -975,6 +975,16 @@ parking assertion at the expansion's road commit (`PARK-11`); with that fixed an
 [refill crew](#funding-census-econ-17) (`ECON-24`, round `E3`), 10-200 days by 5 and 21-40 days
 by 1 all pass (worst entrant 99.74%). The warm-up shortens to 30 days once every test passes on
 that branch (`ECON-28`).
+The 100 ha start places a mechanized farm or a labour-intensive coal mine (500 jobs) west of the
+town in a 4 km world and runs 90 days: the farm must trade at a profit, the mine must lose money
+on its owner's capital without fresh equity or advertising full staffing it cannot fund. The
+farm keeps the starter town; the mine's town has residential paint on the west cross street
+only (44 homes). With both streets the mine broke even near 128 working adults and the town's
+84 homes brought 113-132 by their applicants' draw, so the expected loss was a coin toss on the
+seed (3 of 24 shifted seeds profited, the case's own seed too once `ECON-28` admitted the
+calendar's families). Over 25 applicant seeds the one-street town brings 57-72 adults and the
+mine loses 237,064-305,201 over the 90 days on `ECON-28`'s branch (`dev`: 375,533-492,962, three
+seeds bankrupt by day 90), so the case tests a labour-starved mine, not a draw (round `E4`).
 `METRUM_GROWTH_{REPORT,LONG_REPORT,EXPANSION_REPORT,RECOVERY_REPORT}` and `METRUM_PRODUCER_TOWN_REPORT` write reports, and the
 saved-town replay (`diagnose_saved_city_growth`, ignored) uses `METRUM_DIAG_{SAVE,MODS,REPORT,DAYS}`
 with a copied save and read-only mods. Economic changes that must not alter behavior compare

@@ -2077,7 +2077,14 @@ fn hundred_hectare_start_runs_a_labor_intensive_mine_on_owner_capital() {
 }
 
 fn hundred_hectare_start(mine: bool) {
-    let mut scenario = GrowthScenario::starter_town_in_world(4096.0);
+    // The mine's 500 jobs need far more labour than a starter town has, but the town's two
+    // residential streets bring 113-132 working adults by their applicants' draw, and the mine
+    // breaks even near 128 (`ECON-28` round E3). One residential street, 44 homes, keeps its
+    // labour scarce in every draw (57-72 adults over 25 applicant seeds, round E4); the farm's
+    // six jobs keep the whole town.
+    let residential_streets = if mine { 1 } else { 2 };
+    let mut scenario =
+        GrowthScenario::starter_town_with_residential_streets(4096.0, residential_streets);
     place_producer(&mut scenario, mine, 100.0, -1900.0);
     let report = scenario.run_diagnosed_days(90);
     verify_accounting(&report);
