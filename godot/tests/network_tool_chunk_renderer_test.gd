@@ -797,19 +797,6 @@ func _await_road_commit(simulation: SimulationNode, request: int) -> Dictionary:
 	_expect(false, "native road completion must finish")
 	return {}
 
-# Hover validation never waits for the simulation lock: while the sim thread holds it, the
-# answer is pending (`is_pending`, not valid), and the road tool asks again next frame.
-func _await_hover_validation(simulation: SimulationNode, points: PackedVector3Array) -> Dictionary:
-	var deadline := Time.get_ticks_msec() + 10000
-	var hover: Dictionary = {}
-	while Time.get_ticks_msec() < deadline:
-		hover = simulation.validate_road_candidate_with_snap(points, 1, 1, false)
-		if not hover.get("is_pending", false):
-			return hover
-		await process_frame
-	_expect(false, "hover validation must stop pending")
-	return hover
-
 func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	var tool := RoadToolScript.new()
 	tool.name = "RoadTool"
@@ -838,7 +825,8 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 		for chunk in chunks:
 			_expect(chunk.get("road_mesh_payload_validated", false), "preview overlays are sealed as committed chunks are")
 			_expect(chunk.get("hidden") is PackedInt32Array and chunk.get("hidden_positions") is PackedVector3Array, "every preview chunk names the resident runs it replaces")
-	var hover: Dictionary = await _await_hover_validation(simulation, points)
+	# The check waits for the core for its corridor clearance, so it never answers pending.
+	var hover: Dictionary = simulation.validate_road_candidate_with_snap(points, 1, 1, false)
 	_expect(hover.get("is_valid", false), "hover validation keeps its prepared profile: %s" % hover.get("invalid_reason", ""))
 	tool.fwd_lanes = 2
 	tool.bkw_lanes = 1

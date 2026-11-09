@@ -9,7 +9,7 @@
 ## road network; for older attempts the network has changed since, so their result only hints.
 extends RefCounted
 
-# Frames to wait for a busy validation or a queued commit before giving up on one attempt.
+# Frames to wait for a queued commit before giving up on one attempt.
 const POLL_FRAMES := 1800
 
 ## Reads a dump or a captured stdout log: `attempts` (one dictionary per `road_attempt` line, in
@@ -55,14 +55,9 @@ static func replay_attempt(simulation: Node, tree: SceneTree, attempt: Dictionar
 		bool(attempt.get("zoning", true)), bool(attempt.get("street_lights", true)))
 	if points.size() < 2:
 		return {"by": "tool", "reason": "too_short"}
-	var validation: Dictionary = {}
-	for frame in POLL_FRAMES:
-		var result: Variant = simulation.validate_road_candidate_for_commit_with_snap(points, fwd, bkw, snap)
-		validation = result if result is Dictionary else {}
-		# Pending means the core was busy for the parcel check; ask again next frame.
-		if not validation.get("is_pending", false):
-			break
-		await tree.process_frame
+	# The check waits for the core for its parcel clearance, so it always answers (`ROAD-102`).
+	var checked: Variant = simulation.validate_road_candidate_for_commit_with_snap(points, fwd, bkw, snap)
+	var validation: Dictionary = checked if checked is Dictionary else {}
 	if not validation.get("is_valid", false):
 		return {"by": "tool", "reason": String(validation.get("invalid_reason", "validation_unavailable"))}
 	var request: int = simulation.add_road_with_snap(points, fwd, bkw, snap)

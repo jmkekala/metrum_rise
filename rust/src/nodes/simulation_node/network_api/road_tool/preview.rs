@@ -103,10 +103,7 @@ impl SimulationNode {
         styles
     }
 
-    /// Returns cheap synchronous hover feedback for a road-tool candidate.
-    ///
-    /// Returns prepared points and validation; the road tool's display comes from
-    /// [`Self::preview_road`].
+    /// [`Self::validate_road_candidate_with_snap`] with snapping to existing roads.
     #[func]
     pub fn validate_road_candidate(
         &self,
@@ -117,7 +114,11 @@ impl SimulationNode {
         self.validate_road_candidate_with_snap(points, fwd_lanes, bkw_lanes, true)
     }
 
-    /// Returns cheap synchronous hover feedback with optional existing-road snapping.
+    /// Checks a road-tool stroke once: the hover checks (profile, endpoints, water) on the road
+    /// tool's published view, then a valid stroke's corridor against the live parcels and field
+    /// reservations, waiting for the core for that (`ROAD-102`). Returns the prepared points and
+    /// the validation; a stroke that is not valid always names its `invalid_reason`. The road
+    /// tool's own hover is [`Self::preview_road`], which takes no core.
     #[func]
     pub fn validate_road_candidate_with_snap(
         &self,
@@ -181,7 +182,8 @@ impl SimulationNode {
     }
 
     /// Validates a road-tool candidate against the committed graph's local edit plan, including
-    /// the `ROAD-54` junction and curve limits, with optional snapping.
+    /// the `ROAD-54` junction and curve limits, with optional snapping; a valid stroke's corridor
+    /// clearance waits for the core as [`Self::validate_road_candidate_with_snap`]'s does.
     #[func]
     pub fn validate_road_candidate_for_commit_with_snap(
         &self,
@@ -603,40 +605,16 @@ impl SimulationNode {
             self.road_tool_attributes,
             class,
         );
-        let dict = self
-            .road_candidate_dictionary_with_parcel_clearance(
-                validation,
-                prepared_points,
-                lanes,
-                weight,
-            )
-            .unwrap_or_else(|| {
-                let mut pending = Self::road_candidate_validation_to_dictionary(
-                    validation,
-                    prepared_points,
-                    weight,
-                );
-                pending.set("is_valid", false);
-                pending.set("is_pending", true);
-                pending
-            });
-        dict.to_variant()
-    }
-
-    fn road_candidate_dictionary_with_parcel_clearance(
-        &self,
-        validation: &RoadPreviewValidation,
-        prepared_points: &[Vector3],
-        lanes: (i32, i32),
-        weight: f64,
-    ) -> Option<VarDictionary> {
         let mut dict =
             Self::road_candidate_validation_to_dictionary(validation, prepared_points, weight);
         if validation.is_valid {
-            // Query the existing parcel chunk index locally. Never copy city-wide zoning into
-            // a preview snapshot or wait on the simulation lock from the mouse-hover path.
+            // Query the existing parcel chunk index locally; never copy city-wide zoning into a
+            // preview snapshot. Every caller asks once (tests, the road benchmark's fixture
+            // search, the debug replay), so the check waits for the core: with `try_lock` it
+            // answered "pending" (not valid, no reason) while the simulation held the core, which
+            // its callers read as a refusal without a reason (`ROAD-102`).
             let clearance = RoadCorridorClearance::evaluate(
-                &*self.try_lock_core()?,
+                &self.lock_core(),
                 prepared_points,
                 lanes,
                 self.road_tool_median,
@@ -645,7 +623,7 @@ impl SimulationNode {
             );
             Self::apply_corridor_clearance(&mut dict, &clearance);
         }
-        Some(dict)
+        dict.to_variant()
     }
 
     fn apply_corridor_clearance(dict: &mut VarDictionary, clearance: &RoadCorridorClearance) {

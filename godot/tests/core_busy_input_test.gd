@@ -4,7 +4,8 @@
 ## hover keeps its target while its own query answers busy, and its click waits for the core and
 ## deletes the road under the pointer. `debug_hold_core` makes the simulation thread hold the
 ## core, as a long frame would, until a call waits for it, so the hover is checked while the core
-## is held and the click's wait is what ends the hold.
+## is held and the click's wait is what ends the hold. The road tool's one-shot stroke checks
+## answer with the core held too (`ROAD-102`).
 extends SceneTree
 
 const BulldozeTool := preload("res://scripts/tools/bulldoze_tool.gd")
@@ -82,6 +83,14 @@ func _run() -> void:
 	var after: Dictionary = simulation.get_bulldoze_target_at(point.x, point.z, true)
 	_expect(after.get("kind", "") != "road", "no road is left under the pointer: %s" % after)
 	_expect(not tool.hover_mesh.visible, "the click clears the hover")
+
+	# The one-shot stroke checks wait for the core for their corridor clearance (`ROAD-102`):
+	# with it held they still answer, never "pending" without a reason.
+	var stroke := PackedVector3Array([_ground(point.x - 60.0, point.z + 40.0), _ground(point.x + 60.0, point.z + 40.0)])
+	for check in ["validate_road_candidate_with_snap", "validate_road_candidate_for_commit_with_snap"]:
+		_expect(simulation.debug_hold_core(20000), "the simulation thread holds the core for %s" % check)
+		var answer: Dictionary = simulation.call(check, stroke, 1, 1, true)
+		_expect(bool(answer.get("is_valid", false)) and not answer.has("is_pending"), "%s waits for the core: %s" % [check, answer])
 	tool.active = false
 	_finish(scene)
 
