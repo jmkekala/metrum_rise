@@ -309,12 +309,25 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
         sizes: &[CellLotSize],
         blocked: impl Fn(&[DVec2; 4], u16) -> bool + Sync,
     ) -> CellLotGeneration {
+        self.derive(graph, bounds, sizes, &blocked)
+    }
+
+    // The one compiled copy of the derivation pipeline per map kind (`CODE-28`): `blocked` is a
+    // trait object, so a caller's closure costs one indirect call per tested footprint instead
+    // of its own instance of the parallel refresh and proposal passes.
+    fn derive(
+        &mut self,
+        graph: &RegionGraph,
+        bounds: CellBounds,
+        sizes: &[CellLotSize],
+        blocked: &(dyn Fn(&[DVec2; 4], u16) -> bool + Sync),
+    ) -> CellLotGeneration {
         if !bounds.is_valid() {
             return CellLotGeneration::default();
         }
         // Godot's main thread derives lots after its zoning edits, outside any pool (CODE-17).
         crate::thread_pools::install(|| {
-            self.derive_cell_lots_in_pool(graph, bounds, sizes, &blocked)
+            self.derive_cell_lots_in_pool(graph, bounds, sizes, blocked)
         })
     }
 
@@ -323,7 +336,7 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
         graph: &RegionGraph,
         bounds: CellBounds,
         sizes: &[CellLotSize],
-        blocked: impl Fn(&[DVec2; 4], u16) -> bool + Sync,
+        blocked: &(dyn Fn(&[DVec2; 4], u16) -> bool + Sync),
     ) -> CellLotGeneration {
         let cell_m = f64::from(self.config.zone_cell_m);
         let mut sizes: Vec<_> = sizes
@@ -340,8 +353,7 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
             .collect();
         sizes.sort_unstable();
         sizes.dedup();
-        let (retired, reattached) =
-            self.refresh_existing_cell_lots(graph, bounds, &sizes, &blocked);
+        let (retired, reattached) = self.refresh_existing_cell_lots(graph, bounds, &sizes, blocked);
         let Some(reach) = sizes.iter().map(|s| s.width.max(u16::from(s.depth))).max() else {
             return CellLotGeneration {
                 retired,
@@ -363,7 +375,7 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
             });
         let mut proposals: Vec<_> = seeds
             .par_iter()
-            .flat_map_iter(|&seed| self.cell_lot_proposals(seed, graph, bounds, &sizes, &blocked))
+            .flat_map_iter(|&seed| self.cell_lot_proposals(seed, graph, bounds, &sizes, blocked))
             .collect();
         proposals.sort_unstable_by_key(|p| {
             (
@@ -405,7 +417,7 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
         graph: &RegionGraph,
         bounds: CellBounds,
         sizes: &[CellLotSize],
-        blocked: &(impl Fn(&[DVec2; 4], u16) -> bool + Sync),
+        blocked: &(dyn Fn(&[DVec2; 4], u16) -> bool + Sync),
     ) -> (Vec<ParcelId>, Vec<ParcelId>) {
         let mut candidates = Vec::new();
         self.parcels.visit_in_bounds(
@@ -523,7 +535,7 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
         graph: &RegionGraph,
         bounds: CellBounds,
         sizes: &[CellLotSize],
-        blocked: &(impl Fn(&[DVec2; 4], u16) -> bool + Sync),
+        blocked: &(dyn Fn(&[DVec2; 4], u16) -> bool + Sync),
     ) -> Vec<Proposal> {
         let Some(frame) = self.cells.frame(seed.grid) else {
             return Vec::new();
