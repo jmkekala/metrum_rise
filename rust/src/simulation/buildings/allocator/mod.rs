@@ -466,6 +466,11 @@ pub struct BuildingAllocator {
     /// with the road tool's view in `O(1)` (`ROAD-68-E`), so writers go through
     /// [`Self::field_clearance_mut`].
     pub(crate) field_clearance: std::sync::Arc<FieldClearanceIndex>,
+    /// Derived extraction-area polygons, kept by ResourceExtractionSystem as the fields are by
+    /// AgricultureSystem, in the same index type: a road stroke refuses land they cover
+    /// (`ZONE-09`, `extraction_area_overlap`). Unlike fields they block no cell or placement.
+    /// Writers go through [`Self::extraction_clearance_mut`].
+    pub(crate) extraction_clearance: std::sync::Arc<FieldClearanceIndex>,
     /// Ordered swap removals awaiting production-site owner remapping in SimCore.
     pub(crate) pending_production_site_removals: Vec<(usize, usize)>,
     /// Slot in progress on the simulation clock, set by SimCore; construction deadlines count
@@ -858,11 +863,23 @@ impl BuildingAllocator {
         std::sync::Arc::make_mut(&mut self.field_clearance)
     }
 
-    // A swap removal's field update: drops the removed building's field and rebinds the moved
-    // last building's, copying a shared index only when either holds a field.
+    /// The extraction-area polygons for writing, copied first while shared, as
+    /// [`Self::field_clearance_mut`].
+    pub(crate) fn extraction_clearance_mut(&mut self) -> &mut FieldClearanceIndex {
+        std::sync::Arc::make_mut(&mut self.extraction_clearance)
+    }
+
+    // A swap removal's field and extraction-area update: drops the removed building's polygon
+    // and rebinds the moved last building's, copying a shared index only when either holds one.
     fn remap_field_clearance(&mut self, removed: usize, last: usize) {
         if self.field_clearance.has_field(removed) || self.field_clearance.has_field(last) {
             self.field_clearance_mut().remove_and_remap(removed, last);
+        }
+        if self.extraction_clearance.has_field(removed)
+            || self.extraction_clearance.has_field(last)
+        {
+            self.extraction_clearance_mut()
+                .remove_and_remap(removed, last);
         }
     }
 
@@ -899,6 +916,7 @@ impl BuildingAllocator {
             max_building_support_m: f32::NEG_INFINITY,
             max_building_support_count: 0,
             field_clearance: Default::default(),
+            extraction_clearance: Default::default(),
             pending_production_site_removals: Vec::new(),
             now_slot: 0,
             next_applicant_seed: 0,
@@ -1158,6 +1176,7 @@ impl BuildingAllocator {
         self.buildings.clear();
         self.building_handles.clear();
         self.field_clearance_mut().clear();
+        self.extraction_clearance_mut().clear();
         self.pending_production_site_removals.clear();
         self.pending_construction.clear();
         self.removal_requests.clear();

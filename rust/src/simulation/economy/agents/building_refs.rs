@@ -45,6 +45,26 @@ impl AgentSystem {
         })
     }
 
+    /// Agents any of whose building references name one of `buildings` (ascending, unique),
+    /// ascending, in one scan on the pool: the candidates of a batch of removals (`ZONE-09`'s
+    /// road demolition), which name every agent the batch's evacuations, evictions and remaps
+    /// change when `buildings` holds the removed buildings and every building their
+    /// swap-removes move. O(A/p * log buildings).
+    pub(crate) fn agents_referencing_any_building(&self, buildings: &[usize]) -> Vec<usize> {
+        debug_assert!(buildings.is_sorted());
+        let agents = &self.agents;
+        crate::thread_pools::install(|| {
+            (0..agents.len())
+                .into_par_iter()
+                .filter(|&i| {
+                    self.building_columns()
+                        .iter()
+                        .any(|column| buildings.binary_search(&column[i]).is_ok())
+                })
+                .collect()
+        })
+    }
+
     // The agent columns that hold building indices, as `remap_building_indices` remaps them.
     pub(super) fn building_columns(&self) -> [&Vec<usize>; 8] {
         let agents = &self.agents;

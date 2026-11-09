@@ -1250,31 +1250,40 @@ impl BuildingAllocator {
         zone_cell_m: f32,
         overlaps: impl Fn(&[Vector2; 4]) -> bool,
     ) -> bool {
+        self.first_explicit_site_lot(min, max, zone_cell_m, overlaps)
+            .is_some()
+    }
+
+    /// The lowest-index explicit cell site (a plotted building: no parcel, no zone) whose lot
+    /// bounds meet `min`..`max` and whose lot passes `test` (`ZONE-09`: a road piece over it).
+    /// Read with the site query index prepared, else every site is a candidate. O(sites in the
+    /// chunks the bounds touch, widened by the largest lot).
+    pub(crate) fn first_explicit_site_lot(
+        &self,
+        min: Vector2,
+        max: Vector2,
+        zone_cell_m: f32,
+        mut test: impl FnMut(&[Vector2; 4]) -> bool,
+    ) -> Option<usize> {
         if !self.has_explicit_cell_sites() {
-            return false;
+            return None;
         }
         let candidate_indices =
             self.lot_candidate_indices_for_bounds((min.x, min.y, max.x, max.y), zone_cell_m, None);
-        for building_idx in candidate_indices {
-            let Some(building) = self.buildings.get(building_idx) else {
-                continue;
+        candidate_indices.into_iter().find(|&building_idx| {
+            let (Some(building), Some(site)) = (
+                self.buildings.get(building_idx),
+                self.building_sites.get(building_idx),
+            ) else {
+                return false;
             };
             if building.parcel_id != 0 || building.zone_type != ZoneType::None {
-                continue;
+                return false;
             }
-            let Some(site) = self.building_sites.get(building_idx) else {
-                continue;
-            };
             let (site_min_x, site_min_z, site_max_x, site_max_z) = site.lot_bounds();
-            if site_min_x > max.x || site_max_x < min.x || site_min_z > max.y || site_max_z < min.y
-            {
-                continue;
-            }
-            if overlaps(&site.lot_footprint_world) {
-                return true;
-            }
-        }
-        false
+            !(site_min_x > max.x || site_max_x < min.x || site_min_z > max.y || site_max_z < min.y)
+                && test(&site.lot_footprint_world)
+        })
     }
 
     fn placement_overlaps_existing_flat_support(&self, placement: &ResolvedPlacement) -> bool {

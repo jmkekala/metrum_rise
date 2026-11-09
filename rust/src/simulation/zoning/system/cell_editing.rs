@@ -37,6 +37,22 @@ impl CellZoningEdit {
     }
 }
 
+/// The paint a road stroke erased from the cells its pieces newly cover (`ZONE-09`), kept in its
+/// undo record: the erase as one cell edit, whose inverse also re-inserts the cells that
+/// regeneration dropped under the road since. Lots are not kept; undo re-derives them from the
+/// restored paint.
+#[derive(Clone, Debug)]
+pub(crate) struct CellPaintUndo {
+    erased: CellEdit,
+}
+
+impl CellPaintUndo {
+    /// The erased cells and the paint each had, sorted by key.
+    pub(crate) fn erased(&self) -> &[(CellKey, u16)] {
+        &self.erased.previous
+    }
+}
+
 impl ZoningSystem {
     /// Suppresses newly reserved manual land on the next local generated-cell query.
     pub(super) fn invalidate_cell_geometry_for_parcel(&mut self, geometry: &ParcelGeometry) {
@@ -262,6 +278,59 @@ impl ZoningSystem {
             self.bump_overlay_revision();
         }
         true
+    }
+
+    /// Erases the paint of `keys`, valid cells a committed road stroke newly covers (`ZONE-09`),
+    /// after the commit removed their lots: the cells stay until the deferred lot plan's
+    /// regeneration drops them, as the road's pieces block them. Queues their regions for lot
+    /// derivation. Returns the erase for the stroke's undo record, or `None` when no cell was
+    /// painted. O(keys).
+    pub(crate) fn erase_cells_under_road(&mut self, keys: Vec<CellKey>) -> Option<CellPaintUndo> {
+        let selection = CellSelection {
+            revision: self.cells.revision(),
+            cells: keys,
+        };
+        let erased = self.cells.paint(&selection, 0)?;
+        if erased.previous.is_empty() {
+            return None;
+        }
+        self.mark_cell_keys_dirty(erased.previous.iter().map(|&(key, _)| key));
+        self.bump_overlay_revision();
+        Some(CellPaintUndo { erased })
+    }
+
+    /// Whether the road undo can give every erased cell its paint back now (`ZONE-09`, decision
+    /// D5: otherwise the whole undo is refused): each cell still stands unpainted and unclaimed,
+    /// or, dropped since, its footprint meets no reserved cell; and no authored parcel or
+    /// `blocked` (fields, explicit sites) holds its land. Roads are the caller's: the undo takes
+    /// away the stroke that covers these cells. O(erased cells * local candidates).
+    pub(crate) fn can_restore_cell_paint_undo(
+        &self,
+        undo: &CellPaintUndo,
+        blocked: impl Fn(&[DVec2; 4]) -> bool,
+    ) -> bool {
+        undo.erased().iter().all(|&(key, profile)| {
+            self.validate_profile_id(profile).is_ok()
+                && self.cells.frame(key.grid).is_some_and(|frame| {
+                    let corners = frame.corners(key.x, key.y);
+                    let free = match self.cells.profile(key) {
+                        Some(0) => self.cells.lot(key) == Some(0),
+                        Some(_) => false,
+                        None => !self.cells.overlaps_reserved(&corners),
+                    };
+                    free && !overlaps_parcels(&self.parcels, &corners) && !blocked(&corners)
+                })
+        })
+    }
+
+    /// Restores the erased paint after [`Self::can_restore_cell_paint_undo`] held: cells the
+    /// regeneration dropped are inserted again, replacing unpainted competitors, and the regions
+    /// are queued so lots derive from the paint (decision D6). O(erased cells).
+    pub(crate) fn restore_cell_paint_undo(&mut self, undo: CellPaintUndo) {
+        let restored = self.cells.restore_paint_values(&undo.erased);
+        debug_assert!(restored, "checked by can_restore_cell_paint_undo");
+        self.mark_cell_keys_dirty(undo.erased().iter().map(|&(key, _)| key));
+        self.bump_overlay_revision();
     }
 
     /// Rejects a manual parcel wherever full cell paint or occupied coverage reserves its land.

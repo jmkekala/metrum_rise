@@ -1357,6 +1357,7 @@ pub(super) fn profile_commits(
             "zoning_ms": m.zoning_ms, "add_ms": m.add_ms, "surface_ms": m.surface_ms,
             "surface_roadbed_ms": m.surface_roadbed_ms,
             "surface_overlap_ms": m.surface_overlap_ms,
+            "surface_land_ms": m.surface_land_ms,
             "surface_graded_ms": m.surface_graded_ms, "graded_select_ms": m.graded_select_ms,
             "graded_bake_ms": m.graded_bake_ms,
             "graded_adopted": m.graded_adopted, "graded_baked": m.graded_baked,

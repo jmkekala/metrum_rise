@@ -21,10 +21,11 @@ use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-pub(crate) use cell_editing::CellZoningEdit;
+pub(crate) use cell_editing::{CellPaintUndo, CellZoningEdit};
 pub(crate) use cell_lots::{
     CellLotGeneration, CellLotPlanner, CellLotRemovalUndo, PlannedCellLots,
 };
+pub(crate) use reservations::road_piece_newly_covers;
 
 /// Road-aligned parcel zoning system.
 #[derive(Clone)]
@@ -155,6 +156,44 @@ impl ZoningSystem {
                 );
             }
         });
+        if removed > 0 {
+            self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
+            self.bump_overlay_revision();
+        }
+        removed
+    }
+
+    /// Removes the parcels `raw_ids` (ascending) a road stroke takes (`ZONE-09`), after their
+    /// buildings were demolished: a cell lot releases its claim and keeps its cells' paint, an
+    /// authored parcel invalidates the generated cells around it, as
+    /// [`Self::remove_parcels_by_raw_ids`] does, but each record is removed locally instead of
+    /// rebuilding the parcel indices. Returns how many were removed. O(ids * their chunks).
+    pub(crate) fn remove_parcels_under_road(&mut self, raw_ids: &[u64]) -> usize {
+        let mut removed = 0;
+        for &raw in raw_ids {
+            let id = crate::simulation::zoning::ParcelId::from_raw(raw);
+            let Some(parcel) = self.parcels.get(id) else {
+                continue;
+            };
+            debug_assert!(parcel.is_available(), "its building was demolished first");
+            match parcel.cell_lot() {
+                Some(lot) => {
+                    self.cells.release_lot(lot, raw);
+                }
+                None => {
+                    let bounds = super::cells::CellBounds::from_points(
+                        parcel
+                            .corners()
+                            .map(|p| DVec2::new(f64::from(p.x), f64::from(p.y))),
+                    );
+                    self.cells.invalidate_generated_cells(bounds.expanded(
+                        (super::cells::CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m),
+                    ));
+                }
+            }
+            self.parcels.remove_local(id);
+            removed += 1;
+        }
         if removed > 0 {
             self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
             self.bump_overlay_revision();

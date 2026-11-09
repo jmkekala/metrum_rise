@@ -21,7 +21,7 @@ const BOTH: (bool, bool) = (true, true);
 
 // The Kuopio buildability fixture's houses (2 x 2 cell lots, an entrance anchor), as the
 // growth-path tests register them.
-fn register_houses(core: &mut SimCore) {
+pub(in crate::nodes::sim::core::tests) fn register_houses(core: &mut SimCore) {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../benchmarks/fixtures/kuopio-terrain/residential-buildability.json"
@@ -60,7 +60,12 @@ fn curb(edge: &Edge, point: Vector2) -> (f32, f32) {
 // Paints the frontage row along `edge`'s curb on the side `sign` (+1 the positive lateral side)
 // over `xs` (world x; the arms run west to east), prepares the lots and grows a house on each one
 // that fronts that curb. Returns the buildings grown, in growth order.
-fn grow(core: &mut SimCore, edge: usize, sign: f32, xs: [f32; 2]) -> Vec<usize> {
+pub(in crate::nodes::sim::core::tests) fn grow(
+    core: &mut SimCore,
+    edge: usize,
+    sign: f32,
+    xs: [f32; 2],
+) -> Vec<usize> {
     let road = core.region_graph.edge(edge).clone();
     let probe = Vector2::new(xs[0], sign * 10.0);
     let (_, outer) = curb(&road, probe);

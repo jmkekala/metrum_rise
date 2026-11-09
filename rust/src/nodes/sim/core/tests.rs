@@ -26,6 +26,7 @@ mod road_roundabouts;
 mod road_preview;
 mod road_terrain_plan;
 mod road_over_tunnels;
+mod road_over_zoning;
 mod surface_over_tunnels;
 mod road_tunnels;
 mod stranded_fixture;

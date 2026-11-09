@@ -30,6 +30,7 @@ impl SimCore {
             water: None,
             trans_graph: None,
             zoning: None,
+            cells: None,
             runtime: Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)),
         });
     }
@@ -83,6 +84,7 @@ impl SimCore {
                 None
             },
             zoning: None,
+            cells: None,
             runtime: if inc_runtime {
                 Some(SimulationRuntimeSnapshot::PendingDemandSpawns(
                     self.pending_demand_spawns.clone(),
@@ -139,6 +141,7 @@ impl SimCore {
             water: None,
             trans_graph: Some(graph),
             zoning,
+            cells: None,
             runtime: None,
         });
     }
@@ -170,6 +173,7 @@ impl SimCore {
             water: None,
             trans_graph: None,
             zoning: None,
+            cells: None,
             runtime: Some(SimulationRuntimeSnapshot::VegetationEdit(journal)),
         });
     }
@@ -234,6 +238,7 @@ impl SimCore {
             water: None,
             trans_graph: None,
             zoning: None,
+            cells: None,
             runtime: Some(SimulationRuntimeSnapshot::BuildingRemoval(Box::new(
                 runtime,
             ))),
@@ -421,6 +426,13 @@ impl SimCore {
                 self.undo_stack.push_back(state);
                 return false;
             }
+            // The paint a road stroke erased comes back only onto free land (`ZONE-09`, D5).
+            if let Some(cells) = &state.cells
+                && !self.can_restore_road_cell_paint(cells)
+            {
+                self.undo_stack.push_back(state);
+                return false;
+            }
             // A building placed since may stand on the sidewalk this would take back (`ROAD-109`).
             if let Some(graph) = &state.trans_graph
                 && graph.restored_sidewalks().any(|(edge, sidewalks)| {
@@ -439,6 +451,7 @@ impl SimCore {
                 roadbed,
                 graded,
                 zoning,
+                cells,
                 runtime,
             } = state;
             let restored_dense_terrain = terrain.is_some();
@@ -488,6 +501,10 @@ impl SimCore {
             }
             if let Some(zoning) = zoning {
                 self.zoning.restore_parcel_removal_undo(zoning);
+            }
+            // Lots re-derive from the restored paint (D6); the demolished buildings stay gone.
+            if let Some(cells) = cells {
+                self.zoning.restore_cell_paint_undo(cells);
             }
             if let Some(runtime) = runtime {
                 match runtime {
@@ -880,6 +897,7 @@ impl SimCore {
                 building_idx,
                 last_idx,
                 undo.extractor_sites,
+                &mut self.allocator,
             );
         // Only the removed field changes land coverage. The swap-moved field keeps its
         // polygon, so restoring its owner index must not invalidate distant cells or plants.

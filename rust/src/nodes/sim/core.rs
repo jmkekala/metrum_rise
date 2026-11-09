@@ -40,7 +40,7 @@ pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTime
 pub(crate) use graded_edits::{GradedEdit, GradedEditJournal, GradedEditSelection, GradedInstallTiles};
 pub(crate) use graded_stage::{GradedPose, GradedPreview, GradedUndo};
 pub(crate) use road_commit::RoadCommitAck;
-pub(crate) use road_edit_plan::{ReservedOverlap, RoadEditPlan};
+pub(crate) use road_edit_plan::{ReservedOverlap, RoadEditPlan, RoadLandTake};
 pub(crate) use road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
 pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,

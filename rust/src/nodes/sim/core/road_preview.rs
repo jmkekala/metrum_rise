@@ -50,15 +50,21 @@ pub(crate) struct RoadPreviewRequest {
     pub(crate) attributes: RoadAttributes,
 }
 
-/// Corridor clearance of a stroke against live parcels and field reservations.
+/// Corridor clearance of a stroke against live parcels and plotted reservations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RoadCorridorClearance {
-    /// Parcels the corridor overlaps; any overlap refuses the stroke (`parcel_overlap`).
+    /// Parcels the corridor overlaps: informational, since a stroke takes zoned land
+    /// (`ZONE-09`, decision D8).
     pub(crate) overlapping_parcels: usize,
     /// Lowest overlapping parcel id, present when any parcel overlaps.
     pub(crate) first_overlapping_parcel: Option<u64>,
     /// Whether the corridor overlaps a committed field reservation (`field_overlap`).
     pub(crate) field_overlap: bool,
+    /// Whether the corridor overlaps a mine's extraction area (`extraction_area_overlap`).
+    pub(crate) extraction_overlap: bool,
+    /// Whether the corridor overlaps the lot of an explicitly placed building
+    /// (`plotted_building_overlap`).
+    pub(crate) plotted_overlap: bool,
     /// Zoning overlay revision the parcel query read.
     pub(crate) zoning_revision: u64,
     /// Agriculture field revision the field query read.
@@ -66,9 +72,11 @@ pub(crate) struct RoadCorridorClearance {
 }
 
 impl RoadCorridorClearance {
-    /// Queries the parcel chunk index and the field reservations along the corridor that the
-    /// lanes, the `median` and the sidewalks (or a road without them its shoulders,
-    /// `attributes`) cover. O(corridor segments × parcels and fields in the touched chunks).
+    /// Queries the parcel chunk index, the field and extraction-area reservations and the
+    /// explicit sites along the corridor that the lanes, the `median` and the sidewalks (or a
+    /// road without them its shoulders, `attributes`) cover. O(corridor segments × parcels,
+    /// polygons and sites in the touched chunks); every site is a candidate while the site
+    /// query index is stale.
     pub(crate) fn evaluate(
         core: &SimCore,
         points: &[Vector3],
@@ -91,10 +99,38 @@ impl RoadCorridorClearance {
                 .allocator
                 .field_clearance
                 .overlaps_road_corridor(points, half_width),
+            extraction_overlap: core
+                .allocator
+                .extraction_clearance
+                .overlaps_road_corridor(points, half_width),
+            plotted_overlap: corridor_overlaps_explicit_site(core, points, half_width),
             zoning_revision: core.zoning.overlay_revision(),
             field_revision: core.agriculture.visual_revision(),
         }
     }
+}
+
+// Whether a segment of the corridor of `half_width` along `points` overlaps an explicit site's
+// lot.
+fn corridor_overlaps_explicit_site(core: &SimCore, points: &[Vector3], half_width: f32) -> bool {
+    use crate::simulation::agriculture::PolygonFootprint;
+    use godot::prelude::Vector2;
+    points.windows(2).any(|pair| {
+        let start = Vector2::new(pair[0].x, pair[0].z);
+        let end = Vector2::new(pair[1].x, pair[1].z);
+        let delta = end - start;
+        if delta.length_squared() <= f32::EPSILON {
+            return false;
+        }
+        let normal = Vector2::new(delta.y, -delta.x).normalized() * half_width;
+        let quad = [start - normal, end - normal, end + normal, start + normal];
+        let corridor = PolygonFootprint::new(&quad);
+        core.allocator
+            .first_explicit_site_lot(corridor.min, corridor.max, core.config.zone_cell_m, |lot| {
+                corridor.overlaps(&PolygonFootprint::new(lot))
+            })
+            .is_some()
+    })
 }
 
 /// Immutable road-tool inputs from one published simulation generation.

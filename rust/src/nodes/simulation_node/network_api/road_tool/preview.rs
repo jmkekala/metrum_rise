@@ -626,10 +626,19 @@ impl SimulationNode {
         dict.to_variant()
     }
 
+    // Plotted reservations refuse the stroke; parcels are reported only, since the commit
+    // takes zoned land (`ZONE-09`, decision D8).
     fn apply_corridor_clearance(dict: &mut VarDictionary, clearance: &RoadCorridorClearance) {
-        if clearance.field_overlap {
+        let refusal = [
+            (clearance.field_overlap, "field_overlap"),
+            (clearance.extraction_overlap, "extraction_area_overlap"),
+            (clearance.plotted_overlap, "plotted_building_overlap"),
+        ]
+        .into_iter()
+        .find_map(|(overlap, reason)| overlap.then_some(reason));
+        if let Some(reason) = refusal {
             dict.set("is_valid", false);
-            dict.set("invalid_reason", "field_overlap");
+            dict.set("invalid_reason", reason);
         }
         dict.set(
             "zoning_revision",
@@ -637,8 +646,6 @@ impl SimulationNode {
         );
         dict.set("field_revision", clearance.field_revision as i64);
         if let Some(first) = clearance.first_overlapping_parcel {
-            dict.set("is_valid", false);
-            dict.set("invalid_reason", "parcel_overlap");
             dict.set(
                 "overlapping_parcel_count",
                 clearance.overlapping_parcels as i64,

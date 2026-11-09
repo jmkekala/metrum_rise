@@ -10,7 +10,7 @@ use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::zoning::cells::{
     CellBounds, CellLotSize, CellSelection, CellSelectionShape, CellStore, road_contact_interior,
 };
-use crate::simulation::zoning::{CellLotGeneration, CellLotPlanner, CellZoningEdit};
+use crate::simulation::zoning::{CellLotGeneration, CellLotPlanner, CellPaintUndo, CellZoningEdit};
 use glam::DVec2;
 
 /// One immutable selection plus all authoring dependencies observed by its preview.
@@ -217,6 +217,18 @@ impl SimCore {
         true
     }
 
+    /// Whether a road undo can give back the paint its stroke erased (`ZONE-09`, D5): the cells'
+    /// land is free of reserved cells, authored parcels, fields and explicit sites. The stroke
+    /// being undone covers that land, so roads are not tested. Prepares the site query index.
+    pub(crate) fn can_restore_road_cell_paint(&mut self, undo: &CellPaintUndo) -> bool {
+        let cell_m = self.config.zone_cell_m;
+        self.allocator.prepare_building_site_query_index(cell_m);
+        let allocator = &self.allocator;
+        self.zoning.can_restore_cell_paint_undo(undo, |corners| {
+            footprint_blocked_by_sites(&allocator.field_clearance, allocator, cell_m, corners)
+        })
+    }
+
     /// Rebuilds every queued painted neighborhood at once and installs asset-sized lots for
     /// demand, for editing paths that must publish their lots before returning. With no
     /// authoring/catalog changes this is an allocation-free constant-time check.
@@ -354,6 +366,20 @@ pub(super) fn footprint_blocked(
     cell_m: f32,
     corners: &[DVec2; 4],
 ) -> bool {
+    if footprint_blocked_by_sites(fields, sites, cell_m, corners) {
+        return true;
+    }
+    let points = road_contact_interior(corners).map(|p| [p.x, p.y]);
+    PolygonFootprint::from_precise_slice(&points).overlaps_exposed_roads(roads)
+}
+
+// The field and explicit-site half of `footprint_blocked`.
+fn footprint_blocked_by_sites(
+    fields: &FieldClearanceIndex,
+    sites: &impl ExplicitCellSites,
+    cell_m: f32,
+    corners: &[DVec2; 4],
+) -> bool {
     // Keep the same canonical corners used by reciprocal placement and save validation.
     // Narrowing to f32 here can hide small intersections at large world coordinates.
     if !fields.is_empty() || sites.any() {
@@ -363,8 +389,7 @@ pub(super) fn footprint_blocked(
             return true;
         }
     }
-    let points = road_contact_interior(corners).map(|p| [p.x, p.y]);
-    PolygonFootprint::from_precise_slice(&points).overlaps_exposed_roads(roads)
+    false
 }
 
 #[cfg(test)]

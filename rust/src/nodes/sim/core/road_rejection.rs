@@ -316,6 +316,16 @@ fn validation_detail(
             None,
         ),
         "field_overlap" => ("the road corridor overlaps a farm field".to_owned(), None),
+        "extraction_area_overlap" => (
+            "the road corridor overlaps a mine's extraction area".to_owned(),
+            None,
+        ),
+        "plotted_building_overlap" => (
+            "the road corridor overlaps the lot of a placed building (a service, farm, mine or \
+             plant); zoned lots are taken, placed buildings are not"
+                .to_owned(),
+            None,
+        ),
         "parcel_overlap" => ("the road corridor overlaps zoned parcels".to_owned(), None),
         "validation_unavailable" => (
             "the road check had no result for this stroke yet".to_owned(),

@@ -5,7 +5,7 @@
 use super::road_preview::RoadPreviewRequest;
 use super::{RoadRejection, SimCore};
 use crate::simulation::agriculture::FieldClearanceIndex;
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
     PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
 };
@@ -13,9 +13,11 @@ use crate::simulation::network::roadbed::{PieceMesh, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::{
     ZoningSystem,
-    cells::{CellMaps, CellStore},
+    cells::{CellKey, CellMaps, CellStore},
+    road_piece_newly_covers,
 };
-use godot::prelude::Vector3;
+use glam::DVec2;
+use godot::prelude::{Vector2, Vector3};
 
 /// Immutable preparation and solved local graph delta against pinned road/source revisions.
 ///
@@ -32,16 +34,11 @@ pub(crate) struct RoadEditPlan {
     topology: Option<RoadTopologyPlan>,
 }
 
-// Which live-state check refused a plan; no allocation, since readiness checks poll it.
-#[derive(Clone, Copy)]
-enum FailedCheck {
-    Validation(&'static str),
-    Parcels { count: usize, first: u64 },
-}
-
 /// A committed field or painted zoning cell under an edit's road pieces (`ROAD-68` open
 /// question 1). The pieces are the ones the edit publishes, so junction corners and terminal
-/// caps count as well as the spans.
+/// caps count as well as the spans. Node moves refuse on it (`ZONE-10`), and the road tool's
+/// hover preview shows it; a stroke's commit judges its pieces by [`RoadLandTake`] instead
+/// (`ZONE-09`), which the preview is to follow (round RZ3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReservedOverlap {
     /// A committed field reservation (`field_overlap`).
@@ -108,6 +105,176 @@ impl ReservedOverlap {
     }
 }
 
+/// A plotted reservation under a road stroke's new pieces (`ZONE-09`): it refuses the stroke,
+/// where zoned land is taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlottedOverlap {
+    /// A committed farm field (`field_overlap`).
+    Field,
+    /// A mine's extraction area (`extraction_area_overlap`).
+    ExtractionArea,
+    /// The lot of an explicitly placed building, by index (`plotted_building_overlap`).
+    Building(usize),
+}
+
+impl PlottedOverlap {
+    /// The reason the commit reports for this overlap.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::Field => "field_overlap",
+            Self::ExtractionArea => "extraction_area_overlap",
+            Self::Building(_) => "plotted_building_overlap",
+        }
+    }
+
+    /// The commit's report of this overlap; a building is named by its asset.
+    pub(crate) fn rejection(self, core: &SimCore) -> RoadRejection {
+        let detail = match self {
+            Self::Field => "the road or its junctions overlap a farm field".to_owned(),
+            Self::ExtractionArea => {
+                "the road or its junctions overlap a mine's extraction area".to_owned()
+            }
+            Self::Building(index) => format!(
+                "the road or its junctions overlap the lot of the placed building {}",
+                core.allocator
+                    .buildings
+                    .get(index)
+                    .map_or("?", |building| building.asset_id.as_str())
+            ),
+        };
+        RoadRejection::new(self.reason(), detail)
+    }
+}
+
+/// What a road stroke's new pieces take of the land under them (`ZONE-09`): a plotted
+/// reservation refuses the stroke; zoned land is taken, its lots removed with the buildings on
+/// them and the paint of its covered cells erased. Only land the edit newly covers counts, as
+/// for [`ReservedOverlap`]: a field or extraction area when a new piece overlaps one and no
+/// replaced piece overlapped any, a cell, lot or parcel when a new piece covers its road-contact
+/// interior and no replaced piece did ([`road_piece_newly_covers`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RoadLandTake {
+    /// The first plotted reservation, pieces in order and each piece's field, then extraction
+    /// area, then explicit site; the other fields are empty when it is set.
+    pub(crate) plotted: Option<PlottedOverlap>,
+    /// The reserved cells the pieces newly cover, sorted by key, with their paint (zero for an
+    /// occupied lot's grace claim).
+    pub(crate) cells: Vec<(CellKey, u16)>,
+    /// The parcels the stroke removes, raw ids ascending: the lots claiming those cells and the
+    /// authored parcels (`ZONE-01`) the pieces newly cover (decision D1).
+    pub(crate) lots: Vec<u64>,
+    /// The buildings standing on those parcels, descending, the order in which their
+    /// swap-removes leave the indices still to remove valid.
+    pub(crate) buildings: Vec<usize>,
+}
+
+impl RoadLandTake {
+    /// The take of `pieces`, the pieces the edit installs, over `before`, the pieces it replaces,
+    /// against the live core: the fields, extraction areas and explicit sites (read with the site
+    /// query index prepared), cells and parcels. O(pieces * reservations in their bounds * top
+    /// triangles) plus a hash lookup per covered cell and lot; a piece with nothing reserved in
+    /// its bounds costs one bounds query per index.
+    pub(crate) fn in_core(core: &SimCore, pieces: &[&PieceMesh], before: &[&PieceMesh]) -> Self {
+        let plotted = Self::first_plotted(core, pieces, before);
+        if plotted.is_some() {
+            return Self {
+                plotted,
+                ..Self::default()
+            };
+        }
+        let zoning = &core.zoning;
+        let keys = ZoningSystem::reserved_cells_newly_covered_by_road_pieces(
+            &zoning.cells,
+            pieces.iter().copied(),
+            before,
+        );
+        let mut lots = Vec::new();
+        let cells = keys
+            .into_iter()
+            .map(|key| {
+                if let Some(lot) = zoning.cells.lot(key).filter(|&lot| lot != 0) {
+                    lots.push(lot);
+                }
+                (key, zoning.cells.profile(key).unwrap_or(0))
+            })
+            .collect();
+        if zoning.parcels.has_authored_parcels() {
+            for &mesh in pieces {
+                let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
+                zoning.parcels.visit_in_bounds(
+                    outward(min_x, min_z, f32::next_down),
+                    outward(max_x, max_z, f32::next_up),
+                    |parcel| {
+                        let corners = parcel
+                            .corners()
+                            .map(|p| DVec2::new(f64::from(p.x), f64::from(p.y)));
+                        if parcel.cell_lot().is_none()
+                            && road_piece_newly_covers(mesh, before, &corners)
+                        {
+                            lots.push(parcel.id().raw());
+                        }
+                    },
+                );
+            }
+        }
+        lots.sort_unstable();
+        lots.dedup();
+        let mut buildings: Vec<usize> = lots
+            .iter()
+            .filter_map(|&raw| zoning.parcel_by_raw_id(raw)?.occupied_building())
+            .collect();
+        buildings.sort_unstable_by(|a, b| b.cmp(a));
+        buildings.dedup();
+        Self {
+            plotted: None,
+            cells,
+            lots,
+            buildings,
+        }
+    }
+
+    // The first plotted reservation a piece newly covers, pieces in order.
+    fn first_plotted(
+        core: &SimCore,
+        pieces: &[&PieceMesh],
+        before: &[&PieceMesh],
+    ) -> Option<PlottedOverlap> {
+        let allocator = &core.allocator;
+        let (fields, extraction) = (&allocator.field_clearance, &allocator.extraction_clearance);
+        let fields_before = before.iter().any(|mesh| fields.overlaps_road_piece(mesh));
+        let extraction_before = before
+            .iter()
+            .any(|mesh| extraction.overlaps_road_piece(mesh));
+        let cell_m = core.config.zone_cell_m;
+        pieces.iter().find_map(|&mesh| {
+            if !fields_before && fields.overlaps_road_piece(mesh) {
+                return Some(PlottedOverlap::Field);
+            }
+            if !extraction_before && extraction.overlaps_road_piece(mesh) {
+                return Some(PlottedOverlap::ExtractionArea);
+            }
+            let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
+            allocator
+                .first_explicit_site_lot(
+                    outward(min_x, min_z, f32::next_down),
+                    outward(max_x, max_z, f32::next_up),
+                    cell_m,
+                    |lot| {
+                        let corners = lot.map(|p| DVec2::new(f64::from(p.x), f64::from(p.y)));
+                        road_piece_newly_covers(mesh, before, &corners)
+                    },
+                )
+                .map(PlottedOverlap::Building)
+        })
+    }
+}
+
+// A world point rounded to f32 away from a query box's interior by `step` (`next_down` for its
+// minimum, `next_up` for its maximum), so the f32 box contains the f64 one.
+fn outward(x: f64, z: f64, step: fn(f32) -> f32) -> Vector2 {
+    Vector2::new(step(x as f32), step(z as f32))
+}
+
 impl RoadEditPlan {
     /// Builds the local road solution from borrowed live inputs without cloning the city.
     pub(crate) fn compile(core: &SimCore, request: RoadPreviewRequest) -> Self {
@@ -159,10 +326,10 @@ impl RoadEditPlan {
         &self.prepared
     }
 
-    /// Readiness against the live core. Local water and parcel queries repeat under the commit
-    /// lock, so changes in these independent systems cannot authorize an obsolete result. Fields
-    /// and painted cells are tested against the pieces the commit installs ([`ReservedOverlap`],
-    /// `ROAD-68` open question 1), which a plan alone does not have.
+    /// Readiness against the live core. The local water query repeats under the commit lock, so
+    /// a change in that independent system cannot authorize an obsolete result. Fields,
+    /// extraction areas, plotted sites, parcels and painted cells are judged on the pieces the
+    /// commit installs ([`RoadLandTake`], `ZONE-09`), which a plan alone does not have.
     pub(crate) fn status(&self, core: &SimCore) -> &'static str {
         if !self.validation.is_valid {
             return "invalid";
@@ -185,8 +352,8 @@ impl RoadEditPlan {
         "ready"
     }
 
-    // The first live-state check that refuses this road: water or parcels.
-    fn failed_check(&self, core: &SimCore) -> Option<FailedCheck> {
+    // The live-state check that refuses this road: water, the reason it names.
+    fn failed_check(&self, core: &SimCore) -> Option<&'static str> {
         let fwd = self.request.fwd_lanes.clamp(0, 255) as u8;
         let bkw = self.request.bkw_lanes.clamp(0, 255) as u8;
         let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
@@ -196,19 +363,7 @@ impl RoadEditPlan {
             &core.watermap,
             self.validation.clone(),
         );
-        if !validation.is_valid {
-            return Some(FailedCheck::Validation(validation.invalid_reason));
-        }
-        let width =
-            Edge::cross_section_width_m(fwd, bkw, self.prepared.median, self.prepared.parking);
-        let half_width_m = width * 0.5 + crate::config::SIDEWALK_WIDTH;
-        let parcels = core
-            .zoning
-            .parcel_ids_overlapping_road_corridor(&self.prepared.points, half_width_m);
-        parcels.first().map(|&first| FailedCheck::Parcels {
-            count: parcels.len(),
-            first,
-        })
+        (!validation.is_valid).then_some(validation.invalid_reason)
     }
 
     /// Explains why this plan cannot be committed: the failed check when one failed, otherwise
@@ -221,17 +376,9 @@ impl RoadEditPlan {
         }
         let status = self.status(core);
         if status == "invalid"
-            && let Some(check) = self.failed_check(core)
+            && let Some(reason) = self.failed_check(core)
         {
-            return match check {
-                FailedCheck::Validation(reason) => {
-                    RoadRejection::from_validation(reason, validation, prepared)
-                }
-                FailedCheck::Parcels { count, first } => {
-                    RoadRejection::from_validation("parcel_overlap", validation, prepared)
-                        .with_note(format!("{count} parcels, first {first}"))
-                }
-            };
+            return RoadRejection::from_validation(reason, validation, prepared);
         }
         let (reason, detail) = match status {
             "stale" => (

@@ -265,6 +265,8 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) graded: Option<super::GradedUndo>,
     /// Parcels removed by one road bulldoze.
     pub(crate) zoning: Option<ZoningParcelRemovalUndo>,
+    /// The cell paint a road stroke erased under its pieces (`ZONE-09`); undo restores it.
+    pub(crate) cells: Option<crate::simulation::zoning::CellPaintUndo>,
     /// Building/economy runtime state.
     pub(crate) runtime: Option<SimulationRuntimeSnapshot>,
 }

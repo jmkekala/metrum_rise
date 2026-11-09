@@ -215,8 +215,11 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
     assert!(core.undo_stack.is_empty());
 }
 
+// A parcel in a ready plan's corridor keeps the plan ready (`ZONE-09`): the player's commit
+// takes it (decision D1). A caller that adds the road unstaged, which takes no land, is still
+// refused by the parcel, with the graph unchanged.
 #[test]
-fn new_parcel_rejects_ready_plan_without_consuming_it() {
+fn new_parcel_keeps_a_ready_plan_and_the_stroke_takes_it() {
     let mut core = test_core();
     core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 129, 0.0);
     core.transit_network = TransitNetwork::new_with_surface_chunk_span(64.0);
@@ -236,17 +239,18 @@ fn new_parcel_rejects_ready_plan_without_consuming_it() {
         .zoning
         .place_or_rezone_default_parcel_at(0.0, -20.0, profile, &core.region_graph)
         .unwrap();
-    assert_eq!(plan.status(&core), "invalid");
+    assert_eq!(plan.status(&core), "ready");
     let before = core.region_graph.edge_count();
     assert!(
         !core
-            .add_road_internal_with_snap_and_validation(points, 1, 1, true, Some(&plan))
+            .add_road_internal_with_snap_and_validation(points.clone(), 1, 1, true, Some(&plan))
             .committed
     );
     assert_eq!(core.region_graph.edge_count(), before);
-    core.zoning
-        .remove_parcels_by_raw_ids(&std::collections::HashSet::from([parcel.raw()]));
-    assert_eq!(plan.status(&core), "ready");
+    assert!(core.zoning.parcel_by_raw_id(parcel.raw()).is_some());
+    assert_eq!(commit_stroke(&mut core, &points), "");
+    assert!(core.region_graph.edge_count() > before);
+    assert!(core.zoning.parcel_by_raw_id(parcel.raw()).is_none());
 }
 
 // Commits one stroke through the player's path and returns its rejection reason, empty when
@@ -531,11 +535,14 @@ fn a_field_in_a_junction_corner_refuses_the_road() {
     assert_reservation_refuses(&mut core, &side, "field_overlap");
 }
 
+// Painted cells keep a ready plan ready (`ZONE-09`): the commit erases the paint of the cells its
+// pieces cover, and undo paints them again.
 #[test]
-fn painted_cells_reject_a_ready_road_plan_and_erase_restores_readiness() {
+fn painted_cells_keep_a_ready_road_plan_and_the_stroke_erases_them() {
     use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
     use glam::DVec2;
     let mut core = test_core();
+    core.benchmark_mode = false;
     commit_ready(
         &mut core,
         vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
@@ -554,12 +561,19 @@ fn painted_cells_reject_a_ready_road_plan_and_erase_restores_readiness() {
     let point = DVec2::new(0.0, -25.0);
     let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
     assert!(!selection.cells.is_empty());
-    core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
-    assert_reservation_refuses(&mut core, &points, "zoning_cell_overlap");
-    let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
-    core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
-    assert_eq!(preview_refusal(&mut core, &points), "");
+    let painted = core.zoning.paint_cells(&selection, 1, |_| false).unwrap().paint;
+    assert_eq!(plan.status(&core), "ready");
     assert_eq!(commit_stroke(&mut core, &points), "");
+    for &(key, _) in &painted.previous {
+        assert!(
+            core.zoning.cells.profile(key).is_none_or(|profile| profile == 0),
+            "{key:?} is erased"
+        );
+    }
+    assert!(core.undo_action_internal());
+    for &(key, _) in &painted.previous {
+        assert_eq!(core.zoning.cells.profile(key), Some(1), "{key:?} is painted again");
+    }
 }
 
 #[test]

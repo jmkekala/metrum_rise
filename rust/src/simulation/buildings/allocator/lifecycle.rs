@@ -2115,6 +2115,33 @@ impl BuildingAllocator {
         true
     }
 
+    /// Removes one building a road stroke takes (`ZONE-09`) through the lifecycle hooks of
+    /// [`Self::remove_building_for_bulldoze`], with `candidates` from
+    /// [`AgentSystem::agents_referencing_any_building`] over the batch, taken after any change
+    /// that renumbered agents, so eviction and the agent remap visit those alone. The caller
+    /// evacuated the building first. O(candidates) plus the removal's other remaps.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn remove_building_for_road(
+        &mut self,
+        building_idx: usize,
+        zoning: &mut ZoningSystem,
+        agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
+        logistics: &mut ShipmentSystem,
+        treasury_balance: &mut f64,
+        candidates: &[usize],
+    ) -> bool {
+        self.remove_building_at_index(
+            building_idx,
+            zoning,
+            agents,
+            households,
+            logistics,
+            treasury_balance,
+            Some(candidates),
+        )
+    }
+
     /// Removes one building through the normal lifecycle hooks used by demand redevelopment.
     pub(crate) fn remove_building_for_bulldoze(
         &mut self,

@@ -372,6 +372,7 @@ impl SimCore {
             water: None,
             trans_graph: Some(checkpoint),
             zoning: None,
+            cells: None,
             runtime: Some(SimulationRuntimeSnapshot::RoadDependents(dependents)),
         });
     }

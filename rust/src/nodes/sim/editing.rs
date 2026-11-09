@@ -5,7 +5,7 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    RoadEditPlan, RoadRejection, ReservedOverlap,
+    RoadEditPlan, RoadLandTake, RoadRejection, ReservedOverlap,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
@@ -91,12 +91,16 @@ impl SimCore {
     }
 
     /// As [`Self::validate_staged_road_render`], installing a preview's pieces when they still
-    /// apply (`ROAD-68-E`). The installed pieces must not overlap fields or painted cells
-    /// (`ROAD-68` open question 1), and every node piece must build. No terrain failure rejects
-    /// the road (`TERRAIN-07-E`): an accepted edit stages its graded tiles, adopting the
-    /// preview's `graded` tiles whose inputs equal the committed ones. The undo record keeps
-    /// what the install replaced. True when the edit is accepted. `metrics` receives the
-    /// sub-stages' times (`surface_roadbed_ms`, `surface_overlap_ms`, `surface_graded_ms`).
+    /// apply (`ROAD-68-E`). The installed pieces must not newly cover a plotted reservation (a
+    /// field, an extraction area or an explicit building's lot), and every node piece must build;
+    /// either refusal rolls the staged edit back with nothing else changed. Then the zoned land
+    /// the pieces newly cover is taken (`ZONE-09`, [`RoadLandTake`]): the buildings on its lots
+    /// are demolished, the lots removed and the covered cells' paint erased, none of which can
+    /// refuse. No terrain failure rejects the road (`TERRAIN-07-E`): an accepted edit stages its
+    /// graded tiles, adopting the preview's `graded` tiles whose inputs equal the committed ones.
+    /// The undo record keeps what the install replaced and the erased paint. True when the edit
+    /// is accepted. `metrics` receives the sub-stages' times (`surface_roadbed_ms`,
+    /// `surface_overlap_ms`, `surface_land_ms`, `surface_graded_ms`).
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
         delta: Option<&RoadbedDelta>,
@@ -109,14 +113,17 @@ impl SimCore {
         let (_, restore, _) = self.publish_network_surface(false, delta);
         metrics.surface_roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         let overlap_start = Instant::now();
+        // The explicit sites are queried through the site index.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
         let roadbed = &self.transit_network.roadbed;
         let before: Vec<_> = restore.replaced_pieces().collect();
-        let overlap =
-            ReservedOverlap::first_in_core(self, roadbed.installed_pieces(&restore), &before);
+        let installed: Vec<_> = roadbed.installed_pieces(&restore).collect();
+        let take = RoadLandTake::in_core(self, &installed, &before);
         metrics.surface_overlap_ms = overlap_start.elapsed().as_secs_f64() * 1000.0;
-        if let Some(overlap) = overlap {
+        if let Some(overlap) = take.plotted {
             self.rollback_staged_road_edit(Some(&restore));
-            let rejection = overlap.rejection();
+            let rejection = overlap.rejection(self);
             self.last_road_timing = format!("rejected={}", rejection.reason);
             debug_log!(
                 "road",
@@ -147,6 +154,10 @@ impl SimCore {
             );
             return false;
         }
+        // Nothing below refuses the edit.
+        let land_start = Instant::now();
+        let erased_paint = self.take_land_for_road(take);
+        metrics.surface_land_ms = land_start.elapsed().as_secs_f64() * 1000.0;
         let graded_start = Instant::now();
         let graded = self.stage_committed_graded_tiles(roadbed_before, graded);
         metrics.surface_graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
@@ -160,9 +171,118 @@ impl SimCore {
         {
             record.roadbed = Some(restore);
             record.graded = graded;
+            record.cells = erased_paint;
         }
         self.accept_staged_road_edit();
         true
+    }
+
+    // Takes the zoned land of an accepted stroke (`ZONE-09`): demolishes the buildings on the
+    // lots it covers, removes those lots and the authored parcels it covers, then erases the
+    // covered cells' paint, whose inverse it returns for the undo record. Lot regions around
+    // the removed lots and cells are queued for the commit's lot plan. O(the take's buildings,
+    // lots and cells) plus one parallel agent scan per batch (`demolish_for_road`).
+    fn take_land_for_road(
+        &mut self,
+        take: RoadLandTake,
+    ) -> Option<crate::simulation::zoning::CellPaintUndo> {
+        debug_assert!(take.plotted.is_none());
+        if take.cells.is_empty() && take.lots.is_empty() {
+            return None;
+        }
+        self.demolish_for_road(&take.buildings);
+        if !take.lots.is_empty() {
+            self.zoning.remove_parcels_under_road(&take.lots);
+            // Pending spawns resolve their parcel when they start, so a spawn queued for a
+            // removed lot is refused there (its door changed); ids are never reused.
+            self.allocator.dirty = true;
+        }
+        let painted = take
+            .cells
+            .iter()
+            .filter(|&&(_, profile)| profile != 0)
+            .map(|&(key, _)| key)
+            .collect::<Vec<_>>();
+        debug_log!(
+            "road",
+            "road_commit_land buildings={} lots={} cells={} painted={}",
+            take.buildings.len(),
+            take.lots.len(),
+            take.cells.len(),
+            painted.len()
+        );
+        if painted.is_empty() {
+            return None;
+        }
+        self.zoning.erase_cells_under_road(painted)
+    }
+
+    // Demolishes `buildings` (descending indices) through the building lifecycle, as the
+    // bulldoze does but without undo records (a road undo does not restore them): each is
+    // evacuated, then removed with its agents, households, shipments, electricity and parcel
+    // occupancy. In descending order no swap-remove moves a building still to be removed, so one
+    // parallel scan for the agents naming any of them or of the buildings their swap-removes
+    // move (the last `buildings.len()` indices) serves the batch; it is repeated only after a
+    // removal renumbered agents. Then the site changes are published once (graded terrain,
+    // parking, production sites, yards) and the sites' terrain and lot regions are marked.
+    // The commit rebuilds the entrances. O(A/p) per scan plus the removals' own remaps.
+    fn demolish_for_road(&mut self, buildings: &[usize]) {
+        if buildings.is_empty() {
+            return;
+        }
+        debug_assert!(buildings.windows(2).all(|pair| pair[0] > pair[1]));
+        let mut candidates = Vec::new();
+        let mut scanned_agents = None;
+        let mut site_bounds = Vec::with_capacity(buildings.len());
+        let mut field_bounds = Vec::new();
+        for (position, &building_idx) in buildings.iter().enumerate() {
+            if scanned_agents != Some(self.agents.agents.len()) {
+                let remaining = &buildings[position..];
+                let count = self.allocator.buildings.len();
+                let mut named: Vec<usize> = remaining
+                    .iter()
+                    .copied()
+                    .chain(count.saturating_sub(remaining.len())..count)
+                    .collect();
+                named.sort_unstable();
+                named.dedup();
+                candidates = self.agents.agents_referencing_any_building(&named);
+                scanned_agents = Some(self.agents.agents.len());
+            }
+            site_bounds.extend(self.allocator.site_dirty_bounds(building_idx));
+            field_bounds.extend(
+                self.agriculture
+                    .site_for_building(building_idx)
+                    .and_then(|site| polygon_world_bounds(&site.polygon_world)),
+            );
+            self.agents.evacuate_building_among(
+                building_idx,
+                &candidates,
+                &mut self.households,
+                &mut self.allocator,
+                &self.transit_network,
+                &self.region_graph,
+            );
+            let removed = self.allocator.remove_building_for_road(
+                building_idx,
+                &mut self.zoning,
+                &mut self.agents,
+                &mut self.households,
+                &mut self.logistics,
+                &mut self.treasury.balance,
+                &candidates,
+            );
+            debug_assert!(removed, "a lot's occupant is a building");
+        }
+        self.publish_pending_building_site_changes();
+        for bounds in field_bounds {
+            self.invalidate_vegetation_over(bounds);
+        }
+        for bounds in site_bounds {
+            self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
+        self.transit_network.flow_fields.mark_all_dirty();
+        self.terrain_dirty = true;
     }
 }
 
@@ -1441,8 +1561,9 @@ impl SimCore {
             return RoadAddOutcome::rejected();
         }
 
-        // Fields and painted cells are tested against the pieces the edit installs, in
-        // `validate_staged_road_render_installing` (`ROAD-68` open question 1).
+        // A staged edit's pieces take the land under them, or a plotted reservation refuses
+        // them, in `validate_staged_road_render_installing` (`ZONE-09`). An unstaged caller
+        // (bulk setup) never takes land, so parcels in its corridor still refuse it.
         let road_width_m = crate::simulation::network::graph::Edge::cross_section_width_m(
             fwd_lanes_u8,
             bkw_lanes_u8,
@@ -1453,9 +1574,12 @@ impl SimCore {
             + prepared_input
                 .attributes
                 .corridor_side_m(fwd_lanes_u8 == 0 && bkw_lanes_u8 == 0);
-        let overlapping_parcels = self
-            .zoning
-            .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m);
+        let overlapping_parcels = if self.transit_network.road_edit_is_staged() {
+            Vec::new()
+        } else {
+            self.zoning
+                .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m)
+        };
         if !overlapping_parcels.is_empty() {
             debug_log!(
                 "road",

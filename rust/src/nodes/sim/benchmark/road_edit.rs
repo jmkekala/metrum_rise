@@ -29,6 +29,8 @@ pub(crate) struct RoadEditMetrics {
     // adopted tile (round 3), and how many tiles were adopted from the preview and baked.
     pub(crate) surface_roadbed_ms: f64,
     pub(crate) surface_overlap_ms: f64,
+    // Taking the zoned land the pieces cover: demolition, lot and cell removal (`ZONE-09`).
+    pub(crate) surface_land_ms: f64,
     pub(crate) surface_graded_ms: f64,
     pub(crate) graded_select_ms: f64,
     pub(crate) graded_bake_ms: f64,
@@ -71,6 +73,7 @@ impl RoadEditMetrics {
             surface_ms,
             surface_roadbed_ms,
             surface_overlap_ms,
+            surface_land_ms,
             surface_graded_ms,
             graded_select_ms,
             graded_bake_ms,

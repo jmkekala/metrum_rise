@@ -141,13 +141,21 @@ impl ResourceExtractionSystem {
         }
     }
 
-    /// Restores extractor sites affected by undoing one swap-remove building deletion.
+    /// Restores extractor sites affected by undoing one swap-remove building deletion, and their
+    /// polygons in the allocator's extraction-area index.
     pub(crate) fn restore_sites_after_building_removal_undo(
         &mut self,
         restored_building_idx: usize,
         last_building_idx_before_remove: usize,
         restored_sites: Vec<ExtractorSite>,
+        allocator: &mut BuildingAllocator,
     ) {
+        let index = allocator.extraction_clearance_mut();
+        index.set(restored_building_idx, &[]);
+        index.set(last_building_idx_before_remove, &[]);
+        for site in &restored_sites {
+            index.set(site.building_idx, &site.polygon_world);
+        }
         self.sites.retain(|site| {
             site.building_idx != restored_building_idx
                 && site.building_idx != last_building_idx_before_remove
@@ -219,6 +227,9 @@ impl ResourceExtractionSystem {
             extracted_units,
         };
         let area_scale = site.productive_area_scale();
+        allocator
+            .extraction_clearance_mut()
+            .set(building_idx, &site.polygon_world);
         match position {
             Ok(idx) => self.sites[idx] = site,
             Err(idx) => self.sites.insert(idx, site),
@@ -239,9 +250,14 @@ impl ResourceExtractionSystem {
         })
     }
 
-    /// Rebuilds cached productive area from committed sites; depleted deposits have no capacity.
+    /// Rebuilds cached productive area and the allocator's extraction-area index from committed
+    /// sites; depleted deposits have no capacity.
     pub(crate) fn apply_work_area_scales(&self, allocator: &mut BuildingAllocator) {
+        allocator.extraction_clearance_mut().clear();
         for site in &self.sites {
+            allocator
+                .extraction_clearance_mut()
+                .set(site.building_idx, &site.polygon_world);
             allocator.set_work_area_scale(site.building_idx, site.productive_area_scale());
         }
     }
@@ -628,7 +644,12 @@ mod tests {
                     .filter(|site| site.building_idx == removed || site.building_idx == 5)
                     .cloned()
                     .collect();
-                mines.restore_sites_after_building_removal_undo(removed, 5, restored);
+                mines.restore_sites_after_building_removal_undo(
+                    removed,
+                    5,
+                    restored,
+                    &mut BuildingAllocator::new(),
+                );
                 let reloaded = ResourceExtractionSystem::from_sites(original.clone());
                 assert_eq!(
                     mines
@@ -768,6 +789,24 @@ mod tests {
                 "edits cannot regrant startup funds"
             );
         }
+        // `ZONE-09`: the allocator indexes the committed area, a load rebuilds the index from
+        // the sites, and the undo of the building's removal puts it back.
+        let probe = [
+            Vector2::new(10.0, -1.0),
+            Vector2::new(12.0, -1.0),
+            Vector2::new(12.0, 1.0),
+            Vector2::new(10.0, 1.0),
+        ];
+        assert!(allocator.extraction_clearance.overlaps_polygon(&probe));
+        allocator.extraction_clearance_mut().clear();
+        extraction.apply_work_area_scales(&mut allocator);
+        assert!(allocator.extraction_clearance.overlaps_polygon(&probe));
+        let site = extraction.site_for_building(0).unwrap().clone();
+        allocator.extraction_clearance_mut().remove_and_remap(0, 0);
+        extraction.remove_building_after_swap_remove(0, 0);
+        assert!(!allocator.extraction_clearance.overlaps_polygon(&probe));
+        extraction.restore_sites_after_building_removal_undo(0, 0, vec![site], &mut allocator);
+        assert!(allocator.extraction_clearance.overlaps_polygon(&probe));
     }
 
     #[test]
