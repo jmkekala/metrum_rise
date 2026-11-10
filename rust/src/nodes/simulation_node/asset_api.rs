@@ -121,8 +121,7 @@ impl SimulationNode {
         );
         if known_site_revision != site_revision as i64 {
             // The debug probes read the graded surface, which reads the site index.
-            let cell_m = core.config.zone_cell_m;
-            core.allocator.prepare_building_site_query_index(cell_m);
+            core.prepare_site_queries();
             frame.set(
                 "site_mesh_data",
                 core.get_building_site_mesh_data_internal().to_variant(),
@@ -153,7 +152,11 @@ impl SimulationNode {
         use crate::simulation::zoning::ZoneType;
 
         let mut core = self.lock_core();
-        let Some(best_idx) = core.allocator.nearest_building_idx_at(world_x, world_z) else {
+        let cell_m = core.config.zone_cell_m;
+        let Some(best_idx) = core
+            .allocator
+            .nearest_building_idx_at(world_x, world_z, cell_m)
+        else {
             return VarDictionary::new();
         };
 

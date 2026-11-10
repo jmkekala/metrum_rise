@@ -12,14 +12,14 @@ use std::path::{Path, PathBuf};
 // Any fixed header time: only its equality across the saves matters.
 const SAVED_AT_UNIX: i64 = 1_761_436_800;
 
-fn save(core: &mut SimCore, path: &Path) {
+pub(super) fn save(core: &mut SimCore, path: &Path) {
     core.save_game_settled_at(path.to_str().unwrap(), None, SAVED_AT_UNIX)
         .unwrap();
 }
 
 // The tables whose rows, in storage order, differ between two saves: what a byte difference
 // comes from.
-fn differing_tables(first: &Path, second: &Path) -> Vec<String> {
+pub(super) fn differing_tables(first: &Path, second: &Path) -> Vec<String> {
     let rows = |path: &Path| {
         let connection = rusqlite::Connection::open(path).unwrap();
         let tables: Vec<String> = connection

@@ -173,15 +173,20 @@ pub(crate) struct SavedVacancyOrder {
 
 impl BuildingAllocator {
     /// Finds the nearest building centre strictly within the inspector's 30 m pick radius.
-    /// Ties prefer the lowest building index. Clean queries visit at most four 512 m chunks
-    /// without allocating; a stale allocator index is rebuilt before searching.
-    pub(crate) fn nearest_building_idx_at(&mut self, world_x: f32, world_z: f32) -> Option<usize> {
+    /// Ties prefer the lowest building index. Queries visit at most four 512 m chunks without
+    /// allocating; a stale index readies only its chunk lists first
+    /// ([`Self::prepare_site_query_chunks`]), so a pick never moves the simulation's order
+    /// (`ALLOC-05`).
+    pub(crate) fn nearest_building_idx_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        zone_cell_m: f32,
+    ) -> Option<usize> {
         if !world_x.is_finite() || !world_z.is_finite() {
             return None;
         }
-        if self.dirty_index {
-            self.rebuild_zone_index();
-        }
+        self.prepare_site_query_chunks(zone_cell_m);
         let radius = 30.0;
         let min_chunk =
             RegionGraph::get_chunk_coords(Vector3::new(world_x - radius, 0.0, world_z - radius));
@@ -251,10 +256,11 @@ impl BuildingAllocator {
 
     /// Readies the site queries' part of the zone index (the chunk lists, the chunk bounds,
     /// the maxima and the explicit sites) for a query asked outside the simulation's order: a
-    /// tool's hover (`ZONE-11`). Unlike [`Self::prepare_building_site_query_index`] it leaves
-    /// the zone, vacancy and admission lists and the stale flag as they are, so their next
-    /// reader still rebuilds them where it would have, and the simulation's order does not
-    /// depend on whether or when a hover ran; the site part is a function of the buildings
+    /// tool's hover (`ZONE-11`), a renderer, pointer, overlay or inspector (`ALLOC-05`). Unlike
+    /// [`Self::prepare_building_site_query_index`] it leaves the zone, vacancy and admission
+    /// lists and the stale flag as they are, so their next reader still rebuilds them where it
+    /// would have, and the simulation's order does not depend on whether or when a hover ran;
+    /// the site part is a function of the buildings
     /// alone, which every later rebuild derives again. The site clients are rebuilt when out of
     /// step, as the full preparation would (derived, unordered). O(1) when the site queries
     /// are ready, else O(B/p + chunks) plus an O(B) fill, once until the index is next marked

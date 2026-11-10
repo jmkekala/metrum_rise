@@ -52,31 +52,37 @@ fn nearest_building_pick_preserves_radius_ties_and_index_refresh() {
         // The lower ID lies in the later-visited chunk; broken/unfinished buildings are pickable.
         allocator.buildings[0].broken = true;
         allocator.buildings[0].set_construction_hours_left(1);
-        assert_eq!(allocator.nearest_building_idx_at(boundary, 0.0), Some(0));
         assert_eq!(
-            allocator.nearest_building_idx_at(boundary + 31.0, 0.0),
+            allocator.nearest_building_idx_at(boundary, 0.0, 10.0),
+            Some(0)
+        );
+        assert_eq!(
+            allocator.nearest_building_idx_at(boundary + 31.0, 0.0, 10.0),
             None
         );
         assert_eq!(
-            allocator.nearest_building_idx_at(boundary + 30.5, 0.0),
+            allocator.nearest_building_idx_at(boundary + 30.5, 0.0, 10.0),
             Some(0)
         );
 
         allocator.buildings.swap_remove(0);
-        allocator.dirty_index = true;
-        assert_eq!(allocator.nearest_building_idx_at(boundary, 0.0), Some(0));
-        allocator.buildings[0].center_x = boundary + 512.0;
-        allocator.dirty_index = true;
-        assert_eq!(allocator.nearest_building_idx_at(boundary, 0.0), None);
+        allocator.mark_index_stale();
         assert_eq!(
-            allocator.nearest_building_idx_at(boundary + 512.0, 0.0),
+            allocator.nearest_building_idx_at(boundary, 0.0, 10.0),
+            Some(0)
+        );
+        allocator.buildings[0].center_x = boundary + 512.0;
+        allocator.mark_index_stale();
+        assert_eq!(allocator.nearest_building_idx_at(boundary, 0.0, 10.0), None);
+        assert_eq!(
+            allocator.nearest_building_idx_at(boundary + 512.0, 0.0, 10.0),
             Some(0)
         );
 
-        allocator.dirty_index = true;
+        allocator.mark_index_stale();
         for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(allocator.nearest_building_idx_at(invalid, 0.0), None);
-            assert_eq!(allocator.nearest_building_idx_at(0.0, invalid), None);
+            assert_eq!(allocator.nearest_building_idx_at(invalid, 0.0, 10.0), None);
+            assert_eq!(allocator.nearest_building_idx_at(0.0, invalid, 10.0), None);
         }
         assert!(
             allocator.dirty_index,
@@ -106,19 +112,23 @@ fn benchmark_building_pick_locality() {
         }
         // Measure clean local queries separately from cold index construction.
         allocator.rebuild_zone_index();
-        assert_eq!(allocator.nearest_building_idx_at(512.0, 0.0), Some(4));
+        assert_eq!(allocator.nearest_building_idx_at(512.0, 0.0, 10.0), Some(4));
         let mut samples = Vec::new();
         for sample in 0..14 {
             let start = Instant::now();
             for _ in 0..2_000 {
-                black_box(allocator.nearest_building_idx_at(black_box(512.0), black_box(0.0)));
+                black_box(allocator.nearest_building_idx_at(
+                    black_box(512.0),
+                    black_box(0.0),
+                    10.0,
+                ));
             }
             if sample >= 3 {
                 samples.push(start.elapsed().as_secs_f64() * 1e9 / 2_000.0);
             }
         }
         samples.sort_by(f64::total_cmp);
-        assert_eq!(allocator.nearest_building_idx_at(512.0, 0.0), Some(4));
+        assert_eq!(allocator.nearest_building_idx_at(512.0, 0.0, 10.0), Some(4));
         eprintln!(
             "building_pick: local=32 background={background} median_ns={:.3}",
             samples[samples.len() / 2]

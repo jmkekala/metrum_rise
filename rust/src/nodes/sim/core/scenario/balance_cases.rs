@@ -548,7 +548,7 @@ fn coal_power_balance_matrix() {
             let plant = scenario
                 .core
                 .allocator
-                .nearest_building_idx_at(x, z)
+                .nearest_building_idx_at(x, z, 10.0)
                 .unwrap();
             assert_eq!(
                 scenario.core.allocator.buildings[plant].asset_id,
@@ -1928,7 +1928,7 @@ fn electricity_save_continuation_preserves_bills_and_removed_meters() {
         let plant = source
             .core
             .allocator
-            .nearest_building_idx_at(-700.0, 8.0)
+            .nearest_building_idx_at(-700.0, 8.0, 10.0)
             .unwrap_or(plant);
         assert_eq!(source.core.allocator.buildings[plant].worker_count, 1);
         assert!(source.core.allocator.buildings[plant].daily_power_service_units > 0.0);

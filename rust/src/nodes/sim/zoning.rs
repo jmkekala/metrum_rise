@@ -70,9 +70,10 @@ impl SimCore {
         }
         // A commit's deferred lots first: generation writes the cells they plan.
         self.adopt_pending_cell_lots();
-        // Site-index repair and cell generation are parallel: shared pool (CODE-17).
+        // Site-index repair and cell generation are parallel: shared pool (CODE-17). The
+        // overlay asks outside the simulation's order: only the site part is readied.
         crate::thread_pools::install(|| {
-            self.prepare_cell_site_queries();
+            self.prepare_site_and_road_reads();
             if let Some(bounds) = self.zoning.cells.chunk_generation_bounds(chunk) {
                 let allocator = &self.allocator;
                 let roads = &self.transit_network.roadbed;
@@ -108,10 +109,22 @@ impl SimCore {
         );
     }
 
-    /// Prepares shared local queries without modifying paint, terrain or building ownership.
+    /// Prepares shared local queries without modifying paint, terrain or building ownership,
+    /// for the simulation's own readers: edits, lot plans and loading. A stale zone index is
+    /// rebuilt whole.
     pub(super) fn prepare_cell_site_queries(&mut self) {
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+    }
+
+    /// [`Self::prepare_cell_site_queries`] for a reader outside the simulation's order: the
+    /// cell overlay's chunks, a cell gesture's or a parcel's preview. Only the site part of a
+    /// stale zone index is readied ([`Self::prepare_site_queries`], `ALLOC-05`).
+    pub(crate) fn prepare_site_and_road_reads(&mut self) {
+        self.prepare_site_queries();
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
@@ -141,7 +154,7 @@ impl SimCore {
         path: &[DVec2],
     ) -> CellToolPreview {
         self.adopt_pending_cell_lots();
-        self.prepare_cell_site_queries();
+        self.prepare_site_and_road_reads();
         let allocator = &self.allocator;
         let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;

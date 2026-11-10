@@ -429,15 +429,55 @@ to their next reader, so a hover changes no simulation order; every stale mark a
 swap-remove clears the flag. Cost: O(1) when ready, else O(B/p + chunks) plus an O(B) fill once per
 stale episode, not per hover (0.07 / 0.10 / 0.19 ms at 0 / 10k / 30k background in
 `benchmark_preview_locality`'s `lot_stale` row; a prepared hover 0.06-0.10 ms). The field
-editor's check and the industry area quote use the same refresh. The Godot-facing per-frame
-queries that still rebuild the whole index when stale are `ALLOC-05`.
+editor's check and the industry area quote use the same refresh.
+
+**Only the simulation rebuilds the order** (`ALLOC-05`). The order-carrying lists (zone, vacancy,
+admission order) of a stale index are rebuilt by the simulation's own readers, where they read
+them: its steps (the frame's start, admission, rehousing, spawns, level changes, planning), the
+player's edits and loading (`prepare_building_site_query_index`, `rebuild_zone_index`). Every
+reader outside that order readies only the site part, through `SimCore::prepare_site_queries`
+(with the roadbed compile: `prepare_site_and_road_reads`): the render snapshot the simulation
+thread builds after every frame and edit (never in a headless run), the pointer's
+`hover_world_surface`, `intersect_world_surface` and `get_world_surface_height`,
+`try_get_building_site_frame`, the graded tiles' inputs, the vegetation, water and parcel-overlay
+queries, the agent inspector, the building LOD view, the bulldoze hover, the cell overlay's chunks
+(requested and stale), the cell gesture and parcel previews, and the building pick below.
+`building_site_query_index_ready()` accepts the site part, which is all a site query reads
+(`graded_site_snapshot`, the vehicle ground solve, the cell mask request, `has_explicit_cell_sites`,
+the explicit-site snapshot); an edit's graded stage prepares the whole index without asking it, so
+whether its rebuild runs never depends on a query. A building-removal undo, which writes the
+building store directly, marks the index stale, so a site part readied since the removal is not
+read. Cost: a reader on a current index pays O(1) as before. In the game the render snapshot's
+whole rebuild after an edit that leaves the index stale became the site refresh, O(B/p + B), and
+the simulation's next reader rebuilds the index where a headless run does, O(B/p + B): one more
+chunk fill and parallel derivation per stale episode, not per frame (in the starter town's three
+days every stale episode began with an edit; its frames ended with the index current). Reusing a current site part in that rebuild was tried and dropped: it holds only while
+every write to the building store marks the index stale, which the undo above did not, and
+nothing enforces it.
+
+On `dev` `da5ede14` these readers rebuilt the whole index, so after an edit that left the index
+stale the lists, their positions and the stale flag differed from a headless game's until the next
+frame's start. No day diverged: the frame's start rebuilds a stale index before any order-sensitive
+work, and the edits between frames that read the order rebuild it first, so a query's earlier
+rebuild gave the same lists. The order between frames still depended on Godot, and nothing kept
+the next order-sensitive change from landing in that gap. `query_cases.rs` holds the evidence:
+`godot_queries_leave_the_days_and_their_records` plays the starter town twice in lockstep for three
+days with the same edits every other game hour (a parking lot west of the town, the first occupied
+home bulldozed), asks Godot's queries of one after every frame and edit, and compares the order
+lists after each, the products at each day's close (the day record, every building and household)
+and a save after an edit that leaves the index stale; on `da5ede14` it fails at the first edit
+(frame 58 of 7,258) with the products and the save equal.
+`each_godot_reader_leaves_a_stale_index_to_its_next_reader` pins the lists, positions, admission
+order and stale flag across each reader on an index whose rebuild would reorder them.
 
 Inspector and service-funding picks share `nearest_building_idx_at()`. It searches building
 centres strictly within 30 m, preferring the lowest building index on an exact distance tie.
 Non-finite points return no hit. A clean query examines at most four existing 512 m chunks,
 uses constant auxiliary storage and costs O(buildings in those chunks); it does not allocate or
-sort a candidate list. Dirty indices are rebuilt once before querying using the existing
-allocator maintenance path. Broken and unfinished placed buildings remain inspectable.
+sort a candidate list. A stale index readies only its site part first
+(`prepare_site_query_chunks`, `ALLOC-05`), so a pick, which the inspector asks outside the
+simulation's order, never moves the order. Broken and unfinished placed buildings remain
+inspectable.
 Household detail aggregation is a separate bridge path and remains under audit.
 
 `AUDIT-01-B1` locality validation runs the ignored release test

@@ -542,7 +542,11 @@ impl SimCore {
         if !is_electricity_service(service_id) || !funding.is_finite() {
             return false;
         }
-        let Some(building_idx) = self.allocator.nearest_building_idx_at(world_x, world_z) else {
+        let cell_m = self.config.zone_cell_m;
+        let Some(building_idx) = self
+            .allocator
+            .nearest_building_idx_at(world_x, world_z, cell_m)
+        else {
             return false;
         };
         if !self.building_provides_service(building_idx, "power") {

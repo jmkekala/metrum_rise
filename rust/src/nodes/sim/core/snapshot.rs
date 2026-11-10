@@ -497,8 +497,7 @@ impl SimCore {
         full_pose: &mut RenderSnapshot,
     ) -> (std::time::Duration, std::time::Duration) {
         crate::thread_pools::install(|| {
-            self.allocator
-                .prepare_building_site_query_index(self.config.zone_cell_m);
+            self.prepare_site_queries();
             for snapshot in [&mut *culled, &mut *full_pose] {
                 snapshot
                     .pedestrian_transforms
@@ -534,9 +533,10 @@ impl SimCore {
     }
 
     fn build_snapshot_in_pool(&mut self, mut snapshot: RenderSnapshot) -> RenderSnapshot {
-        // Repair derived site/index state once, never via a full-store fallback per agent.
-        self.allocator
-            .prepare_building_site_query_index(self.config.zone_cell_m);
+        // Repair derived site/index state once, never via a full-store fallback per agent. The
+        // snapshot is built outside the simulation's order (after every frame and edit in the
+        // game, never headless): only the site part of a stale index (`ALLOC-05`).
+        self.prepare_site_queries();
         for buffer in snapshot.pedestrian_transforms.values_mut() {
             buffer.clear();
         }

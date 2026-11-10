@@ -25,9 +25,22 @@ impl SimCore {
         self.heightmap.sample_height_world(pos.x, pos.y) * HEIGHT_SCALE
     }
 
+    /// Readies the building site queries for a reader outside the simulation's order: a Godot
+    /// renderer, hover, pointer, overlay or inspector, the render snapshot (`ALLOC-05`). Only
+    /// the site part of a stale zone index is readied
+    /// ([`BuildingAllocator::prepare_site_query_chunks`]); its order-carrying lists wait for
+    /// their next reader, so whether and when Godot asked never moves the simulation's order.
+    /// O(1) when ready, else O(B/p) plus an O(B) chunk fill once a stale episode.
+    ///
+    /// [`BuildingAllocator::prepare_site_query_chunks`]: crate::simulation::buildings::allocator::BuildingAllocator::prepare_site_query_chunks
+    pub(crate) fn prepare_site_queries(&mut self) {
+        self.allocator
+            .prepare_site_query_chunks(self.config.zone_cell_m);
+    }
+
     /// The graded surface (`TERRAIN-07`) over the heightmap, the roadbed and the building sites:
     /// the read API of every surface consumer. The site index must be ready
-    /// (`BuildingAllocator::prepare_building_site_query_index`) while it is queried.
+    /// ([`Self::prepare_site_queries`] outside the simulation's order) while it is queried.
     pub(crate) fn graded_surface(&self) -> GradedSurface<'_> {
         GradedSurface {
             terrain: &self.heightmap,

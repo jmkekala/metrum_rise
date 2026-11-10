@@ -120,9 +120,8 @@ impl SimulationNode {
             result.set("reload", true);
             return result;
         }
-        if core.allocator.dirty_index {
-            core.allocator.rebuild_zone_index();
-        }
+        // The view reads the chunk lists and their bounds: the index's site part (`ALLOC-05`).
+        core.prepare_site_queries();
         let view = View {
             world_to_clip: Mat4::from_cols_array_2d(
                 &world_to_clip.cols.map(|c| [c.x, c.y, c.z, c.w]),

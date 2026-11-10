@@ -631,7 +631,8 @@ impl SimCore {
         world_x: f32,
         world_z: f32,
     ) -> VarDictionary {
-        self.prepare_bulldoze_target_indices();
+        // A hover readies only the site part of a stale zone index (`ALLOC-05`).
+        self.prepare_site_queries();
         self.resolve_bulldoze_target(world_x, world_z)
             .map(|target| self.bulldoze_target_dict(&target, false))
             .unwrap_or_else(Self::empty_bulldoze_target_dict)

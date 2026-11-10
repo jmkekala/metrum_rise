@@ -680,6 +680,15 @@ rule for game code (`CODE-25`):
   drag step (`move_network_node_step`) and its release (`commit_network_node_move`) wait for the
   core, as the move tool's calls did before. `core_busy_input_test` holds the core through a ring hover and a building hover:
   both answer at once.
+- **Godot's readers never rebuild the simulation's order** (`ALLOC-05`). Every per-frame query,
+  hover, overlay and inspector, and the render snapshot the simulation thread builds after every
+  frame and edit, readies only the site part of a stale building index
+  (`SimCore::prepare_site_queries`); the zone, vacancy and admission lists wait for the
+  simulation's own next reader. So whether and when Godot asked never changes what the city
+  does or what it records between frames, and a game matches a headless run of the same inputs
+  frame by frame. A new Godot-facing reader of the sites calls `prepare_site_queries`, never
+  `prepare_building_site_query_index`, which is for the simulation's steps, edits and loading
+  ([`building_allocator.md`](building_allocator.md#indices-and-vacancy-rules)).
 - **A waiting call gets the core when the frame or edit in progress ends.** `std`'s mutex is not
   fair: once frames overran their 16.7 ms interval and ran back to back, the simulation thread
   took the core again 40-80 µs after freeing it and won the race against a waiting call frame

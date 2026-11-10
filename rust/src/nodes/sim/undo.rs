@@ -868,6 +868,9 @@ impl SimCore {
                 *target = building;
             }
         }
+        // The store changed under the zone index: a site part a query readied since the
+        // removal (`ALLOC-05`) is stale too until the rebuild below.
+        self.allocator.mark_index_stale();
 
         if building_idx < undo.original_site_count {
             let last_site_idx = undo.original_site_count - 1;

@@ -522,12 +522,11 @@ impl GradedUndo {
 }
 
 impl SimCore {
-    // The sites the graded bakes read, with the 512 m site index current.
+    // The sites the graded bakes read, with the 512 m site index current. An edit's step: a
+    // stale index is rebuilt whole whether or not a query readied its site part (`ALLOC-05`).
     fn prepare_graded_sites(&mut self) {
-        if !self.allocator.building_site_query_index_ready() {
-            self.allocator
-                .prepare_building_site_query_index(self.config.zone_cell_m);
-        }
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
     }
 
     // Stages the dirty tiles of the last roadbed install from `before` (`last_road_terrain_

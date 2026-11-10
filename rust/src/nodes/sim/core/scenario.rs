@@ -21,6 +21,8 @@ mod census_cases;
 #[cfg(test)]
 mod graded_cases;
 #[cfg(test)]
+mod query_cases;
+#[cfg(test)]
 mod save_cases;
 mod diagnostics;
 pub use diagnostics::{GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthReport};

@@ -682,8 +682,7 @@ impl SimulationNode {
     pub fn get_world_surface_height(&self, pos: Vector2) -> f32 {
         // The graded surface reads the site index.
         let mut core = self.lock_core();
-        let cell_m = core.config.zone_cell_m;
-        core.allocator.prepare_building_site_query_index(cell_m);
+        core.prepare_site_queries();
         core.get_world_surface_height_internal(pos)
     }
 
@@ -751,8 +750,7 @@ impl SimulationNode {
 
     // The visible world surface's hit as a `Vector3`, or `null` for none.
     fn world_surface_hit(core: &mut SimCore, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
-        let cell_m = core.config.zone_cell_m;
-        core.allocator.prepare_building_site_query_index(cell_m);
+        core.prepare_site_queries();
         core.intersect_world_surface_internal(ray_origin, ray_dir)
             .map_or_else(Variant::nil, |p| p.to_variant())
     }

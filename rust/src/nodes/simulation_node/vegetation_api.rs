@@ -103,7 +103,7 @@ impl SimulationNode {
         {
             return VarDictionary::new();
         }
-        prepare_sites(&mut core);
+        core.prepare_site_queries();
         let origin = Vector2::new(
             key.x as f32 * layout.span - layout.half_w,
             key.y as f32 * layout.span - layout.half_h,
@@ -122,7 +122,7 @@ impl SimulationNode {
             return VarDictionary::new();
         }
         let mut core = self.lock_core();
-        prepare_sites(&mut core);
+        core.prepare_site_queries();
         let margin = STAND_RADIUS_TEXELS as f32 * land_cover::TEXEL_M;
         land_cover::Coverage::build(&core, origin - Vector2::splat(margin), span + 2.0 * margin)
             .stand_grid(STAND_RADIUS_TEXELS)
@@ -174,9 +174,7 @@ impl SimulationNode {
             return PackedFloat32Array::new();
         }
         let mut core = self.lock_core();
-        let zone_cell_m = core.zoning.config.zone_cell_m;
-        core.allocator
-            .prepare_building_site_query_index(zone_cell_m);
+        core.prepare_site_queries();
         let core = &*core;
         let generator = core.vegetation;
         let mut packed: Vec<f32> = Vec::new();
@@ -263,7 +261,7 @@ impl SimulationNode {
         }
         // The runs stand on the graded surface, which reads the site index.
         let mut core = self.lock_core();
-        prepare_sites(&mut core);
+        core.prepare_site_queries();
         PackedFloat32Array::from(hedge_runs::hedge_runs(&core, origin, span).as_slice())
     }
 
@@ -313,6 +311,8 @@ impl PatchLayout {
     }
 }
 
+// The site index for the vegetation edits and the yards' publication, the simulation's own
+// readers; the vegetation queries Godot asks ready only its site part (`ALLOC-05`).
 fn prepare_sites(core: &mut SimCore) {
     core.allocator
         .prepare_building_site_query_index(core.zoning.config.zone_cell_m);

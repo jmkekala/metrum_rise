@@ -869,7 +869,8 @@ impl SimulationNode {
         depth_cells: i32,
     ) -> VarDictionary {
         let mut core = self.lock_core();
-        prepare_zoning_site_queries(&mut core);
+        // A preview readies only the site part of a stale zone index (`ALLOC-05`).
+        core.prepare_site_and_road_reads();
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return VarDictionary::new();
         };
@@ -936,7 +937,8 @@ impl SimulationNode {
         gap_m: f32,
     ) -> VarArray {
         let mut core = self.lock_core();
-        prepare_zoning_site_queries(&mut core);
+        // A preview readies only the site part of a stale zone index (`ALLOC-05`).
+        core.prepare_site_and_road_reads();
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return VarArray::new();
         };
@@ -981,7 +983,8 @@ impl SimulationNode {
         gap_m: f32,
     ) -> VarDictionary {
         let mut core = self.lock_core();
-        prepare_zoning_site_queries(&mut core);
+        // A preview readies only the site part of a stale zone index (`ALLOC-05`).
+        core.prepare_site_and_road_reads();
         let (Ok(edge_idx), Ok(runtime_id)) = (
             usize::try_from(edge_idx),
             u16::try_from(target_profile_runtime_id),
@@ -1075,7 +1078,8 @@ impl SimulationNode {
         gap_m: f32,
     ) -> VarDictionary {
         let mut core = self.lock_core();
-        prepare_zoning_site_queries(&mut core);
+        // A preview readies only the site part of a stale zone index (`ALLOC-05`).
+        core.prepare_site_and_road_reads();
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return VarDictionary::new();
         };
@@ -1113,7 +1117,8 @@ impl SimulationNode {
         target_profile_runtime_id: i32,
     ) -> VarDictionary {
         let mut core = self.lock_core();
-        prepare_zoning_site_queries(&mut core);
+        // A preview readies only the site part of a stale zone index (`ALLOC-05`).
+        core.prepare_site_and_road_reads();
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return VarDictionary::new();
         };
@@ -1298,8 +1303,7 @@ impl SimulationNode {
             return dict;
         };
         // The corners stand on the graded surface, which reads the site index.
-        let cell_m = core.config.zone_cell_m;
-        core.allocator.prepare_building_site_query_index(cell_m);
+        core.prepare_site_queries();
         let revision = core.zoning.overlay_revision();
         let occupancy_revision = core.zoning.overlay_occupancy_revision();
         let parcel_count = core.zoning.parcels().len();

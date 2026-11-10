@@ -62,8 +62,7 @@ impl SimulationNode {
             return drawn;
         };
         // Positions stand on the graded surface, which reads the site index.
-        let cell_m = core.config.zone_cell_m;
-        core.allocator.prepare_building_site_query_index(cell_m);
+        core.prepare_site_queries();
         let id = u64::try_from(render_id).unwrap_or(u64::MAX);
         let Some(idx) = core.agents.inspected_agent_index(id) else {
             let reason = core
@@ -95,8 +94,7 @@ impl SimulationNode {
             return VarDictionary::new();
         };
         // The markers stand on the graded surface, which reads the site index.
-        let cell_m = core.config.zone_cell_m;
-        core.allocator.prepare_building_site_query_index(cell_m);
+        core.prepare_site_queries();
         let Some(idx) = u64::try_from(render_id)
             .ok()
             .and_then(|id| core.agents.inspected_agent_index(id))

@@ -376,8 +376,7 @@ impl SimulationNode {
                 return stats;
             };
             // A missed mesh's dropped cells read the sites (`docs/terrain.md` T32 (a)).
-            let cell_m = core.config.zone_cell_m;
-            core.allocator.prepare_building_site_query_index(cell_m);
+            core.prepare_site_queries();
             let mut jobs = self.lock_water_patch_mesh_jobs();
             let mut requested_key_lookup = HashSet::new();
             for (patch_x, patch_z, lod_step) in requests {

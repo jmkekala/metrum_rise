@@ -435,15 +435,21 @@ impl BuildingAllocator {
             && !self.building_chunks.is_empty()
     }
 
-    /// Whether bounded site queries can run without rebuilding or scanning the building store.
-    /// Preview workers must defer unprepared inputs to normal allocator/terrain maintenance.
+    /// Whether bounded site queries can run without rebuilding or scanning the building store:
+    /// the site clients are current and so is the index's site part, with the whole index or
+    /// readied alone ([`Self::prepare_site_query_chunks`], `ALLOC-05`), which is all a site
+    /// query reads. Preview workers must defer unprepared inputs to normal allocator/terrain
+    /// maintenance. O(1).
     pub(crate) fn building_site_query_index_ready(&self) -> bool {
         self.building_sites.len() == self.buildings.len()
-            && (self.buildings.is_empty()
-                || (!self.dirty_index && !self.building_chunks.is_empty()))
+            && (self.buildings.is_empty() || self.site_chunks_ready())
     }
 
-    /// Rebuilds the derived site clients and shared building index when a site query needs them.
+    /// Rebuilds the derived site clients and the whole zone index when stale, for the
+    /// simulation's own readers: its steps, the player's edits and loading. The rebuild resets
+    /// the vacancy lists to building order, so a reader outside the simulation's order (a
+    /// renderer, hover, pointer, overlay or inspector) readies only the site part instead
+    /// ([`Self::prepare_site_query_chunks`], `ALLOC-05`).
     pub(crate) fn prepare_building_site_query_index(&mut self, zone_cell_m: f32) {
         if self.building_sites.len() != self.buildings.len() {
             self.rebuild_building_site_clients(zone_cell_m);
