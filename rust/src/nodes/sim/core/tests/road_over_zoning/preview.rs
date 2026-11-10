@@ -17,7 +17,7 @@ use crate::simulation::network::road_types::RoadAttributes;
 
 // The road tool's context as the simulation publishes it: the view, and the land it takes
 // (the site query index prepared, as frames leave it before the land refreshes its sites).
-fn tool_context(core: &mut SimCore) -> RoadPreviewContext {
+pub(super) fn tool_context(core: &mut SimCore) -> RoadPreviewContext {
     core.precompute_road_mesh_data();
     core.refresh_road_terrain_inputs();
     core.allocator
@@ -75,7 +75,7 @@ fn commit_take(
 }
 
 // The commit's buildings by their handles, as the preview names them, descending.
-fn handles(core: &SimCore, buildings: &[usize]) -> Vec<u64> {
+pub(super) fn handles(core: &SimCore, buildings: &[usize]) -> Vec<u64> {
     let mut handles: Vec<u64> = buildings
         .iter()
         .map(|&index| core.allocator.building_handles.handle(index).to_bits())

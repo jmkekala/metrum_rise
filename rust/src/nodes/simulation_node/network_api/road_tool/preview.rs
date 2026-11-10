@@ -490,32 +490,14 @@ impl SimulationNode {
         dict
     }
 
-    // The outlines of the lots a preview's take removes: four corners per lot, front-left,
-    // front-right, rear-right, rear-left, on the view's graded ground a little above it, as the
-    // bulldoze highlight lies. A lot the land does not hold (published a frame apart from the
-    // cells) has none. O(lots * ground queries).
+    // The outlines of the lots a preview's take removes, on the view's graded ground
+    // ([`lot_outlines`]). A lot the land does not hold (published a frame apart from the cells)
+    // has none.
     fn demolish_lot_outlines(
         context: &crate::nodes::sim::core::RoadPreviewContext,
         take: &crate::nodes::sim::core::RoadLandTake<u64>,
     ) -> PackedVector3Array {
-        let mut outlines = PackedVector3Array::new();
-        context.view.with_graded_surface(|surface, scratch| {
-            for (&lot, &at) in take.lots.iter().zip(&take.lot_points) {
-                let Some(corners) = context.land.lot_corners(lot, at) else {
-                    continue;
-                };
-                for corner in corners {
-                    let ground =
-                        surface.ground_height_at(f64::from(corner.x), f64::from(corner.y), scratch);
-                    outlines.push(Vector3::new(
-                        corner.x,
-                        ground as f32 + crate::nodes::sim::editing::BULLDOZE_HIGHLIGHT_Y_OFFSET_M,
-                        corner.y,
-                    ));
-                }
-            }
-        });
-        outlines
+        view_lot_outlines(context, take)
     }
 
     /// One frame of the road preview's graded terrain without a new pose (`TERRAIN-07-E`,
@@ -921,4 +903,55 @@ impl SimulationNode {
         dict.set("required_clearance_m", validation.required_clearance_m);
         dict
     }
+}
+
+// The outlines of the lots a take removes (`ZONE-09`, `ZONE-10`), one packer for every verdict
+// that shows them: four corners per lot, front-left, front-right, rear-right, rear-left, on
+// `surface`'s graded ground a little above it, as the bulldoze highlight lies. `corners` finds
+// a lot by its id and a point inside it; a lot it does not find has none. O(lots * ground
+// queries).
+fn lot_outlines<B>(
+    surface: &crate::simulation::terrain::graded::GradedSurface<'_>,
+    scratch: &mut crate::simulation::terrain::graded::QueryScratch,
+    take: &crate::nodes::sim::core::RoadLandTake<B>,
+    corners: impl Fn(u64, glam::DVec2) -> Option<[Vector2; 4]>,
+) -> PackedVector3Array {
+    let mut outlines = PackedVector3Array::new();
+    for (&lot, &at) in take.lots.iter().zip(&take.lot_points) {
+        let Some(corners) = corners(lot, at) else {
+            continue;
+        };
+        for corner in corners {
+            let ground = surface.ground_height_at(f64::from(corner.x), f64::from(corner.y), scratch);
+            outlines.push(Vector3::new(
+                corner.x,
+                ground as f32 + crate::nodes::sim::editing::BULLDOZE_HIGHLIGHT_Y_OFFSET_M,
+                corner.y,
+            ));
+        }
+    }
+    outlines
+}
+
+/// [`lot_outlines`] on the road tool's context: the view's graded ground and the published land's
+/// parcels. No core lock.
+pub(crate) fn view_lot_outlines<B>(
+    context: &crate::nodes::sim::core::RoadPreviewContext,
+    take: &crate::nodes::sim::core::RoadLandTake<B>,
+) -> PackedVector3Array {
+    context.view.with_graded_surface(|surface, scratch| {
+        lot_outlines(surface, scratch, take, |lot, at| context.land.lot_corners(lot, at))
+    })
+}
+
+/// [`lot_outlines`] on the live core, before the take: its graded ground and its parcels.
+pub(crate) fn core_lot_outlines(
+    core: &SimCore,
+    take: &crate::nodes::sim::core::RoadLandTake,
+) -> PackedVector3Array {
+    core.with_graded_surface(|surface, scratch| {
+        lot_outlines(surface, scratch, take, |lot, _| {
+            Some(core.zoning.parcel_by_raw_id(lot)?.corners())
+        })
+    })
 }

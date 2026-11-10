@@ -737,8 +737,12 @@ fn benchmark_parking_locality() {
 // The road tool's hover on the same neighbourhood (`ZONE-09`, round RZ3): each demolishing
 // stroke and one stroke along the rears of a block's lots, previewed `HOVERS` times on the road
 // tool's context, its end moved a quarter metre each time as a pointer moves. A hover is
-// `preview_road` alone (no core). Its products (validity, reason and what it takes) must not
-// depend on the tier, its cost must stay flat (`PREVIEW_LOCALITY`).
+// `preview_road` alone (no core). Then the roundabout tool's hover (`ZONE-10`, round RZ10b): a
+// ring of the default diameter in place of the crossing at (0, 350) (the commit benchmark's
+// ring), tried `HOVERS` times on the context's edit site as the pointer moves a tenth of a
+// metre at a time within the junction's reach, as `preview_roundabout` does. Their products (validity, reason
+// and what they take) must not depend on the tier, their cost must stay flat
+// (`PREVIEW_LOCALITY`).
 const HOVERS: usize = 40;
 
 #[test]
@@ -827,6 +831,7 @@ fn benchmark_preview_locality() {
             );
             products.push(product);
         }
+        products.push(ring_hover_product(&mut context, &core, background));
         match &reference {
             None => reference = Some(products),
             Some(reference) => assert_eq!(
@@ -835,6 +840,56 @@ fn benchmark_preview_locality() {
             ),
         }
     }
+}
+
+// The roundabout tool's hover at the crossing (0, 350), `HOVERS` times on the context with the
+// pointer a tenth of a metre further each time, timed as `preview_roundabout` runs it (the site
+// lookup and the edit site's try, no core). Returns what it shows: validity, reason and take.
+fn ring_hover_product(
+    context: &mut crate::nodes::sim::core::road_tool_context::RoadPreviewContext,
+    core: &SimCore,
+    background: usize,
+) -> serde_json::Value {
+    use crate::nodes::sim::roundabouts::roundabout_site_at;
+    use crate::simulation::network::roundabouts::RoundaboutRequest;
+    let centre = Vector3::new(0.0, core.heightmap.sample_height_world(0.0, 350.0), 350.0);
+    let mut total = Vec::with_capacity(HOVERS);
+    let mut product = serde_json::Value::Null;
+    for hover in 0..HOVERS {
+        let point = centre + Vector3::new(hover as f32 * 0.1, 0.0, 0.0);
+        let start = Instant::now();
+        let view = roundabout_site_at(&context.replica, point, 1);
+        let request = RoundaboutRequest {
+            site: view.site,
+            diameter_m: view.default_diameter_m,
+        };
+        let verdict = context
+            .road_edit_site()
+            .try_roundabout_edit(request)
+            .map(|tried| tried.verdict());
+        total.push(start.elapsed().as_secs_f64() * 1e3);
+        if hover == 0 {
+            product = match &verdict {
+                Ok(verdict) => serde_json::json!({"valid": true, "reason": null,
+                    "cells": verdict.take.cells.len(), "lots": verdict.take.lots,
+                    "buildings": verdict.take.buildings.len()}),
+                Err(rejection) => serde_json::json!({"valid": false,
+                    "reason": rejection.reason, "cells": 0, "lots": null, "buildings": 0}),
+            };
+        }
+    }
+    total.sort_by(f64::total_cmp);
+    let at = |q: f64| total[((total.len() - 1) as f64 * q).round() as usize];
+    eprintln!(
+        "PREVIEW_LOCALITY {}",
+        serde_json::json!({"background": background, "stroke": "ring",
+            "buildings": core.allocator.buildings.len(),
+            "parcels": core.zoning.parcels().len(), "hovers": HOVERS,
+            "preview_ms": {"p50": at(0.5), "p95": at(0.95), "max": at(1.0)},
+            "product": product})
+    );
+    assert_eq!(product["valid"], true, "the ring hover is valid: {product}");
+    product
 }
 
 // The land the road tool's preview takes, as the simulation publishes it.

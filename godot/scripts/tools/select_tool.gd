@@ -10,8 +10,12 @@
 ## A junction click also opens the Junction window (`junction_window.gd`) beside the click: its
 ## Turn pockets rows (`ROAD-95`, round R5c2) edit each incoming road's pocket, and this tool draws
 ## the highlighted row's road from the junction over the requested length and redraws the
-## junction's lanes after an edit or an undo.
+## junction's lanes after an edit or an undo. The lots a widening or a pocket would take
+## (`ZONE-10`, Rust's `demolish_lots` in each verdict) are outlined with the bulldoze highlight
+## while that verdict is shown.
 extends Node3D
+
+const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var main_ui = $"../MainUI"
@@ -46,6 +50,8 @@ var _highlight_tween: Tween = null
 # drawn with the selection highlight's material in its own colour.
 var _pocket_end_mi: MeshInstance3D = null
 const POCKET_END_COLOR := Color(0.2, 0.9, 1.0, 0.3)
+# The lots the shown verdict takes (`ZONE-10`), in the bulldoze highlight.
+var _demolish_mi: MeshInstance3D = null
 
 # Node Selection
 var selected_node: int = -1
@@ -505,20 +511,36 @@ func set_selected_edge_class(class_int: int) -> void:
 ## and a road type's `speed_kmh`, `sidewalks` (Rust's side code in each road's own forward
 ## direction, `ROAD-107`), `zoning` and `street_lights` (`ROAD-101`) in place: the first refusal
 ## (`invalid_reason`, `detail`), else `is_valid` with the selection's totals of Rust's
-## `buildings_removed` and `cost_delta`, and `demolition_permanent` when any road's is. Each road
-## is checked as it stands, as Apply commits them one by one.
+## `buildings_removed` and `cost_delta`, and `demolition_permanent` when any road's is, and the
+## lots the widenings take (`demolish_lots`), which this tool outlines. Each road is checked as it
+## stands, as Apply commits them one by one.
 func preview_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, median_width: float, parking: int,
 		speed_kmh: int, sidewalks: int, zoning: bool, street_lights: bool) -> Dictionary:
-	var total := {"is_valid": true, "buildings_removed": 0, "cost_delta": 0.0, "demolition_permanent": false}
+	var total := {"is_valid": true, "buildings_removed": 0, "cost_delta": 0.0, "demolition_permanent": false,
+		"demolish_lots": PackedVector3Array()}
 	for idx in selected_edges:
 		var verdict: Dictionary = simulation_node.preview_edge_cross_section(idx, fwd, bkw, median_style, median_width,
 			parking, speed_kmh, sidewalks, zoning, street_lights)
 		if not bool(verdict.get("is_valid", false)):
+			show_demolition(PackedVector3Array())
 			return verdict
 		total.buildings_removed += int(verdict.get("buildings_removed", 0))
 		total.cost_delta += float(verdict.get("cost_delta", 0.0))
 		total.demolition_permanent = total.demolition_permanent or bool(verdict.get("demolition_permanent", false))
+		total.demolish_lots.append_array(verdict.get("demolish_lots", PackedVector3Array()))
+	show_demolition(total.demolish_lots)
 	return total
+
+## Outlines `lots` (four corners each, as Rust packs them) with the bulldoze highlight; an empty
+## array hides it.
+func show_demolition(lots: PackedVector3Array) -> void:
+	var mesh: Mesh = HighlightMesh.polygons(lots, 4)
+	if mesh != null and _demolish_mi == null:
+		_demolish_mi = HighlightMesh.instance()
+		add_child(_demolish_mi)
+	if _demolish_mi != null:
+		_demolish_mi.mesh = mesh
+		_demolish_mi.visible = mesh != null
 
 ## Gives every selected road Rust accepts `fwd` + `bkw` lanes, the median, `parking` and the
 ## type's attributes, each with its undo record, and returns how many were refused. The edits
@@ -530,6 +552,7 @@ func set_selected_edge_cross_section(fwd: int, bkw: int, median_style: int, medi
 		if not simulation_node.set_edge_cross_section(idx, fwd, bkw, median_style, median_width, parking, speed_kmh,
 				sidewalks, zoning, street_lights):
 			refused += 1
+	show_demolition(PackedVector3Array())
 	_rebuild_highlight()
 	if not zoning:
 		_refresh_no_build_overlay()
@@ -599,6 +622,7 @@ func _rebuild_highlight() -> void:
 		_highlight_tween.tween_property(mat, "emission", Color(1.0, 1.0, 1.0), 0.5)
 
 func _clear_highlight() -> void:
+	show_demolition(PackedVector3Array())
 	if _highlight_tween:
 		_highlight_tween.kill()
 		_highlight_tween = null
@@ -665,7 +689,8 @@ func show_pocket_end(info: Dictionary, length_m: float) -> void:
 	im.surface_end()
 	_pocket_end_mi.mesh = im
 
-## Removes that highlight.
+## Removes that highlight, and the outline of the lots its verdict takes.
 func clear_pocket_end() -> void:
+	show_demolition(PackedVector3Array())
 	if _pocket_end_mi:
 		_pocket_end_mi.mesh = null

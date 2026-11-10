@@ -54,10 +54,9 @@ static func text(preview: Dictionary, fallback: String = "Road cannot be placed"
 			return "Road overlaps a mine's extraction area"
 		"plotted_building_overlap":
 			return "Road overlaps a placed building's lot"
-		"zoning_cell_overlap":
-			return "Road overlaps painted zoning cells"
 		"pending_demolition":
-			return "Moving here takes zoned land and demolishes what stands on it"
+			var count := int(preview.get("demolish_count", 0))
+			return "Release to demolish %d building%s" % [count, "" if count == 1 else "s"]
 		"surface_geometry_invalid":
 			return "Road surface compilation failed"
 		"terrain_clip_missing_outer_boundary_owner":

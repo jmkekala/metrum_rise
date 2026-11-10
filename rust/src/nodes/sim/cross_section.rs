@@ -37,7 +37,7 @@ use std::collections::HashSet;
 
 /// What an accepted in-place edit does beyond the road itself (`ROAD-101`), for the Road
 /// Properties window's confirmation and its Apply label.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CrossSectionVerdict {
     /// Buildings the edit demolishes: those fronting the road that a change to zoning off
     /// demolishes (as the "No buildings" checkbox does), and those on the lots a widening newly
@@ -51,6 +51,9 @@ pub(crate) struct CrossSectionVerdict {
     /// What Apply charges: the new road type's build cost over the road's length less the
     /// current one's, floored at 0 (a cheaper type refunds nothing; `DESIGN-RB3` D10).
     pub(crate) cost_delta: f64,
+    /// The zoned land the widening's pieces newly cover (`ZONE-10`): the lots the window
+    /// outlines.
+    pub(crate) take: RoadLandTake,
 }
 
 impl SimCore {
@@ -356,6 +359,7 @@ impl SimCore {
             buildings_removed,
             demolition_permanent: buildings_removed > 0,
             cost_delta,
+            take: take.clone(),
         }
     }
 

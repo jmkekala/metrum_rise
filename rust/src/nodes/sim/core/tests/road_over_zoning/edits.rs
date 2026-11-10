@@ -6,10 +6,16 @@
 //! cells' paint; the reverse edit takes nothing; plotted land (a field, an extraction area, a
 //! placed building's lot) refuses each of them with nothing changed. Their undo gives the road and
 //! the paint back, not the buildings, and is refused whole while the paint's land is held. A drag
-//! step of the node move does not take land: it is refused as pending (decision D-move).
+//! step of the node move does not take land: it is refused as pending (decision D-move). Each
+//! verdict (the roundabout hover on the road tool's context, the windows', the pending drag step)
+//! shows what its commit takes (round RZ10b), and the other graph edits take land by the same
+//! rule (a bridge brought to the ground).
 
+use super::preview::{handles, tool_context};
 use super::*;
+use crate::nodes::sim::core::RoadLandTake;
 use crate::nodes::sim::core::tests::road_crosswalks::arm_towards;
+use crate::nodes::sim::editing::NodeMoveStep;
 use crate::simulation::network::graph::RoadParking;
 use crate::simulation::network::pockets::PocketRequest;
 use crate::simulation::network::road_types::RoadAttributes;
@@ -553,4 +559,223 @@ fn in_place_edits_that_take_land_are_deterministic() {
         };
         assert_eq!(run(), run(), "{edit:?}");
     }
+}
+
+
+// The take's buildings named by their handles, descending, as the road tool's view names them.
+fn take_handles(core: &SimCore, take: &RoadLandTake) -> Vec<u64> {
+    handles(core, &take.buildings)
+}
+
+// The handles of the buildings that stand.
+fn standing(core: &SimCore) -> std::collections::BTreeSet<u64> {
+    (0..core.allocator.buildings.len())
+        .map(|index| core.allocator.building_handles.handle(index).to_bits())
+        .collect()
+}
+
+// Asserts that the commit just made demolished exactly `expected` (handles, descending) of the
+// buildings `before` held, and erased the paint of `cells`' painted ones.
+fn assert_commit_took(
+    core: &SimCore,
+    before: &std::collections::BTreeSet<u64>,
+    expected: &[u64],
+    cells: &[(CellKey, u16)],
+    edit: &str,
+) {
+    let mut gone: Vec<u64> = before.difference(&standing(core)).copied().collect();
+    gone.reverse();
+    assert_eq!(gone, expected, "{edit}: the commit demolishes what its verdict showed");
+    let painted: Vec<(CellKey, u16)> = cells.iter().copied().filter(|&(_, p)| p != 0).collect();
+    let erased = record_paint(core).map(|(erased, _)| erased).unwrap_or_default();
+    assert_eq!(erased, painted, "{edit}: the commit erases the verdict's painted cells");
+}
+
+// Test 6 (`ZONE-10`, round RZ10b): each edit with a verdict shows what its commit takes. The
+// roundabout tool's hover, on the road tool's context without the core, takes the same cells,
+// lots, lot points and buildings (by handle) as the core's check, and its outlines are the lots'
+// own corners; the Road Properties window's widening verdict, the Junction window's pocket
+// verdict and the move tool's pending drag step carry the take; each commit (the click, Apply,
+// the release) then demolishes exactly those buildings and erases exactly those cells.
+#[test]
+fn each_edit_verdict_shows_what_its_commit_takes() {
+    // The ring: the hover on the context, then the click.
+    let (mut core, node) = t_with_houses();
+    let mut context = tool_context(&mut core);
+    let view = context
+        .road_edit_site()
+        .try_roundabout_edit(ring(node))
+        .expect("the hover accepts the ring")
+        .verdict();
+    let live = core
+        .preview_roundabout_internal(ring(node))
+        .expect("the core accepts it");
+    assert!(!live.take.buildings.is_empty(), "the ring takes houses");
+    assert_eq!(view.cost, live.cost);
+    assert_eq!(view.ring, live.ring);
+    assert_eq!(view.arms, live.arms);
+    assert_eq!(view.take.plotted, live.take.plotted);
+    assert_eq!(view.take.cells, live.take.cells, "covered cells");
+    assert_eq!(view.take.lots, live.take.lots, "removed lots");
+    assert_eq!(view.take.lot_points, live.take.lot_points, "lot points");
+    assert_eq!(view.take.buildings, take_handles(&core, &live.take), "demolished buildings");
+    for (&lot, &at) in view.take.lots.iter().zip(&view.take.lot_points) {
+        let parcel = core.zoning.parcel_by_raw_id(lot).expect("a taken lot is a parcel");
+        assert_eq!(context.land.lot_corners(lot, at), Some(parcel.corners()), "lot {lot}'s outline");
+    }
+    let before = standing(&core);
+    assert!(core.place_roundabout_internal(ring(node)));
+    assert_commit_took(&core, &before, &view.take.buildings, &view.take.cells, "ring");
+
+    // The widening: the window's verdict, then Apply.
+    let (mut core, node) = t_with_houses();
+    let west = west_arm(&core, node);
+    let attributes = RoadAttributes::of_edge(core.region_graph.edge(west));
+    let verdict = core
+        .preview_edge_cross_section_internal(west as i32, 2, 2, None, RoadParking::NONE, attributes)
+        .expect("the widening is accepted");
+    assert!(!verdict.take.buildings.is_empty());
+    let expected = take_handles(&core, &verdict.take);
+    let before = standing(&core);
+    assert!(widen(&mut core, west, 2));
+    assert_commit_took(&core, &before, &expected, &verdict.take.cells, "widening");
+
+    // The pocket: the window's verdict, then Apply.
+    let (mut core, node) = t_with_houses();
+    let verdict = core
+        .preview_road_pocket_internal(pocket(&core, node, true))
+        .expect("the pocket is accepted");
+    assert!(!verdict.take.buildings.is_empty());
+    let expected = take_handles(&core, &verdict.take);
+    let before = standing(&core);
+    assert!(core.set_road_pocket_internal(pocket(&core, node, true)));
+    assert_commit_took(&core, &before, &expected, &verdict.take.cells, "pocket");
+
+    // The move: the pending drag step, then the release.
+    let (mut core, node) = t_with_houses();
+    let to = Vector3::new(0.0, 0.0, -6.0);
+    let NodeMoveStep::Pending(take) = core.move_network_node_step_internal(node as i32, to) else {
+        panic!("the drag step is pending");
+    };
+    let expected = take_handles(&core, &take);
+    let before = standing(&core);
+    assert!(core.move_network_node_taking_land_internal(node as i32, to));
+    assert_commit_took(&core, &before, &expected, &take.cells, "move");
+}
+
+// The bridge edge of a free bridge drawn over the houses' lots at `x` (`bridge_at`).
+fn bridge_over_houses(core: &mut SimCore, x: f32) -> usize {
+    use crate::simulation::network::types::EdgeClass;
+    assert_eq!(commit(core, &super::bridge_at(x)), "");
+    core.adopt_pending_cell_lots();
+    (0..core.region_graph.edge_count())
+        .find(|&edge| {
+            let edge = core.region_graph.edge(edge);
+            !edge.deleted && edge.class == EdgeClass::Bridge
+        })
+        .expect("the stroke is a bridge")
+}
+
+// The other graph-only edits take land by the same rule (`ZONE-10`, round RZ10b): a bridge over
+// built lots takes none of them (decision D2), but the class change that brings its deck to the
+// ground newly covers them, so it demolishes their houses and erases the covered paint into its
+// own undo record, which gives the paint back, not the houses.
+#[test]
+fn a_bridge_brought_to_the_ground_takes_the_lots_under_it() {
+    use crate::simulation::network::types::EdgeClass;
+    let (mut core, houses) = street_with_houses();
+    let x = core.allocator.buildings[houses[houses.len() / 2]].center_x;
+    let bridge = bridge_over_houses(&mut core, x);
+    let painted_before = painted(&core);
+    let (buildings, depth) = (core.allocator.buildings.len(), core.undo_stack.len());
+    core.set_edge_class_internal(bridge as i32, 0);
+    assert_eq!(
+        core.region_graph.edge(bridge).class,
+        EdgeClass::Standard,
+        "{:?}",
+        core.last_road_rejection
+    );
+    assert_eq!(core.undo_stack.len(), depth + 1);
+    assert!(core.allocator.buildings.len() < buildings, "the road on the ground demolishes houses");
+    let (erased, _) = record_paint(&core).expect("the class change erases the covered paint");
+    assert!(!erased.is_empty());
+    for &(key, _) in &erased {
+        assert!(under_road(&core, key), "{key:?}: only covered cells are erased");
+    }
+    assert_eq!(reserved_under_road(&core), Vec::new());
+    assert_references_consistent(&core);
+    let remaining = core.allocator.buildings.len();
+    assert!(core.undo_action_internal());
+    assert_eq!(core.region_graph.edge(bridge).class, EdgeClass::Bridge);
+    assert_eq!(painted(&core), painted_before, "undo gives the paint back");
+    assert_eq!(core.allocator.buildings.len(), remaining, "not the houses");
+}
+
+// A plotted reservation refuses the other edits as it refuses the four (`ZONE-10`): a field
+// under the bridge refuses the class change that would bring the deck down on it, with nothing
+// changed.
+#[test]
+fn a_field_refuses_a_bridge_brought_to_the_ground() {
+    use crate::simulation::network::types::EdgeClass;
+    let (mut core, houses) = street_with_houses();
+    let x = core.allocator.buildings[houses[houses.len() / 2]].center_x;
+    let bridge = bridge_over_houses(&mut core, x);
+    let owner = core.allocator.buildings.len();
+    let field = [
+        Vector2::new(x - 1.0, -40.0),
+        Vector2::new(x + 1.0, -40.0),
+        Vector2::new(x + 1.0, -38.0),
+        Vector2::new(x - 1.0, -38.0),
+    ];
+    core.allocator.field_clearance_mut().set(owner, &field);
+    let state = (land_state(&core), graph_digest(&core));
+    core.set_edge_class_internal(bridge as i32, 0);
+    assert_eq!(core.region_graph.edge(bridge).class, EdgeClass::Bridge);
+    let reason = core.last_road_rejection.take().map(|r| r.reason);
+    assert_eq!(reason.as_deref(), Some("field_overlap"));
+    assert_eq!((land_state(&core), graph_digest(&core)), state);
+}
+
+// The Godot road edit demolition test's fixture (`godot/tests/road_edit_demolition_test.gd`,
+// PLAN-RZ 10.5 test 9): the T with houses, saved to `METRUM_ROAD_EDIT_DEMOLITION_FIXTURE`, and
+// beside it, in `<save>.json`, the junction, a point on its west arm and the move's target in
+// the houses' block, by position (a save compacts the ids). The ring, the widening and the move
+// each take houses here.
+#[test]
+#[ignore = "writes the Godot road edit demolition test's fixture"]
+fn record_road_edit_demolition_fixture() {
+    let path = std::env::var("METRUM_ROAD_EDIT_DEMOLITION_FIXTURE")
+        .expect("METRUM_ROAD_EDIT_DEMOLITION_FIXTURE: path of the fixture save to write");
+    let (mut core, node) = t_with_houses();
+    let ring_take = core.preview_roundabout_internal(ring(node)).expect("the ring").take;
+    let west = west_arm(&core, node);
+    let attributes = RoadAttributes::of_edge(core.region_graph.edge(west));
+    let widening = core
+        .preview_edge_cross_section_internal(west as i32, 2, 2, None, RoadParking::NONE, attributes)
+        .expect("the widening");
+    let to = Vector3::new(0.0, 0.0, -6.0);
+    let NodeMoveStep::Pending(move_take) = core.move_network_node_step_internal(node as i32, to)
+    else {
+        panic!("the move is pending");
+    };
+    assert!(
+        !ring_take.buildings.is_empty()
+            && widening.buildings_removed > 0
+            && !move_take.buildings.is_empty(),
+        "each edit takes houses"
+    );
+    let junction = core.region_graph.node(node).pos;
+    core.save_game_settled_at(&path, None, 0).unwrap();
+    let spec = serde_json::json!({
+        "junction": [junction.x, junction.y, junction.z],
+        "west_point": [-60.0, 0.0, 0.0],
+        "move_to": [to.x, to.y, to.z],
+        "ring_diameter_m": ring(node).diameter_m,
+    });
+    std::fs::write(format!("{path}.json"), spec.to_string()).unwrap();
+    eprintln!(
+        "ROAD_EDIT_DEMOLITION_FIXTURE {}",
+        serde_json::json!({"path": path, "ring": ring_take.buildings.len(),
+            "widening": widening.buildings_removed, "move": move_take.buildings.len()})
+    );
 }

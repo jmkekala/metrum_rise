@@ -6,6 +6,9 @@
 ## both held to the range Rust gives for the site. Rust owns the site, the ring's lanes, the
 ## verdict and the transaction: this script draws the ring outline and arm cuts `preview_roundabout`
 ## returns, blue when it would build, red with `road_reason_text` when not, and sends the click.
+## The lots the ring and its island would take (`ZONE-10`) are outlined with the bulldoze
+## highlight and the label names the buildings it demolishes. The hover's queries read the road
+## tool's context, never waiting for the simulation (`CODE-25`); the click asks again.
 ## Rust methods called: get_roundabout_site(), preview_roundabout(), place_roundabout(),
 ## get_road_tool_surface_generation(), get_zoning_overlay_revision(),
 ## get_agriculture_field_overlay_revision().
@@ -17,6 +20,7 @@ signal active_changed(enabled: bool)
 signal size_changed(diameter_m: float, min_m: float, max_m: float, lanes: int)
 
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
+const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 ## What `[` and `]` move the diameter by (D12).
 const KEY_STEP_M := 2.0
 # The overlay's ribbon, above the road surface.
@@ -32,6 +36,7 @@ var _preview: Dictionary = {}
 var _key: Array = []
 var _point := Vector3.ZERO
 var _label: Label
+var _demolish_mesh: MeshInstance3D
 
 func _ready() -> void:
 	super._ready()
@@ -43,6 +48,8 @@ func _ready() -> void:
 	_label.add_theme_color_override("font_shadow_color", Color.BLACK)
 	_label.add_theme_constant_override("shadow_outline_size", 4)
 	canvas.add_child(_label)
+	_demolish_mesh = HighlightMesh.instance()
+	add_child(_demolish_mesh)
 
 ## Switches the tool on or off.
 func set_tool_active(enabled: bool) -> void:
@@ -126,7 +133,11 @@ func _text(diameter: float) -> String:
 	if not is_valid:
 		return text + "\n" + RoadReasonText.text(_preview, "The roundabout cannot be placed here")
 	var action := "replace the junction" if int(_site.get("node", -1)) >= 0 else "place"
-	return text + " · %.0f\nClick to %s · [ / ] size" % [float(_preview.get("cost", 0.0)), action]
+	text += " · %.0f" % float(_preview.get("cost", 0.0))
+	var demolish := int(_preview.get("demolish_count", 0))
+	if demolish > 0:
+		text += "  demolishes %d building%s" % [demolish, "" if demolish == 1 else "s"]
+	return text + "\nClick to %s · [ / ] size" % action
 
 # The click re-reads the verdict at the pointer: never commit a pose that was not shown. The
 # pointer is the click's own, waited for, not the last frame's, which is older while the
@@ -151,9 +162,18 @@ func _clear() -> void:
 	_preview = {}
 	if blueprint_mesh != null:
 		blueprint_mesh.mesh = null
+	_show_demolition()
+
+# The lots the valid ring takes, four corners each, in the bulldoze highlight.
+func _show_demolition() -> void:
+	var lots: PackedVector3Array = _preview.get("demolish_lots", PackedVector3Array())
+	var mesh: Mesh = HighlightMesh.polygons(lots, 4) if is_valid else null
+	_demolish_mesh.mesh = mesh
+	_demolish_mesh.visible = mesh != null
 
 # The ring line and each arm's cut as one ribbon mesh in the blueprint material.
 func _show_outline() -> void:
+	_show_demolition()
 	var vertices := PackedVector3Array()
 	var ring: PackedVector3Array = _preview.get("ring", PackedVector3Array())
 	for i in range(ring.size() - 1):

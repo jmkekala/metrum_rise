@@ -377,10 +377,58 @@ impl SimulationNode {
         self.lock_core().get_node_connection_count_internal(node_id)
     }
 
-    /// Repositions a network node, returning false when reservations reject the move.
+    /// Repositions a network node, returning false when the move is refused or would take
+    /// zoned land (see [`Self::move_network_node_step`]).
     #[func]
     pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) -> bool {
         let moved = self.lock_core().move_network_node_internal(node_id, pos);
+        if moved {
+            self.refresh_snapshot_from_core();
+        }
+        moved
+    }
+
+    /// One drag step of the move tool (`ZONE-10`, decision D-move): `moved` when the node moved
+    /// with its undo record; else `pending` when its roads would take zoned land, with
+    /// `demolish_count` (the buildings on it) and `demolish_lots` (four corners per lot, as the
+    /// road preview's), nothing changed, for [`Self::commit_network_node_move`] at the release;
+    /// else refused, with `invalid_reason` and `detail` when Rust named one. Waits for the core.
+    #[func]
+    pub fn move_network_node_step(&mut self, node_id: i32, pos: Vector3) -> VarDictionary {
+        use crate::nodes::sim::editing::NodeMoveStep;
+        let mut core = self.lock_core();
+        core.last_road_rejection = None;
+        let step = core.move_network_node_step_internal(node_id, pos);
+        let mut dict = vdict! {
+            "moved": matches!(step, NodeMoveStep::Moved),
+            "pending": matches!(step, NodeMoveStep::Pending(_)),
+        };
+        if let NodeMoveStep::Pending(take) = &step {
+            dict.set("demolish_count", take.buildings.len() as i64);
+            dict.set("demolish_lots", road_tool::core_lot_outlines(&core, take));
+        }
+        if !matches!(step, NodeMoveStep::Moved)
+            && let Some(rejection) = core.last_road_rejection.as_ref()
+        {
+            dict.set("invalid_reason", rejection.reason.clone());
+            dict.set("detail", rejection.detail.clone());
+        }
+        drop(core);
+        if matches!(step, NodeMoveStep::Moved) {
+            self.refresh_snapshot_from_core();
+        }
+        dict
+    }
+
+    /// The move tool's release of a pending step (`ZONE-10`, decision D-move): moves the node to
+    /// `pos` in one transaction that takes the zoned land its roads newly cover (the buildings
+    /// on it demolished, the covered cells' paint erased into the move's undo record). Returns
+    /// whether it moved; plotted land still refuses it.
+    #[func]
+    pub fn commit_network_node_move(&mut self, node_id: i32, pos: Vector3) -> bool {
+        let moved = self
+            .lock_core()
+            .move_network_node_taking_land_internal(node_id, pos);
         if moved {
             self.refresh_snapshot_from_core();
         }
@@ -522,10 +570,13 @@ impl SimulationNode {
     /// [`Self::set_road_tool_attributes`]), `zoning` and `street_lights` in place (`ROAD-80`,
     /// `ROAD-101`; pass the road's own values from
     /// [`Self::get_edge_cross_section`] for what stays), without applying it: `is_valid`; when
-    /// valid `buildings_removed` (the buildings on the road that zoning off demolishes, for a
-    /// confirmation), `demolition_permanent` (true with any `buildings_removed`: undo restores
-    /// the road and its empty parcels, never the buildings) and `cost_delta` (what Apply charges: the build-cost difference over the
-    /// road's length, never negative); when refused `invalid_reason` (stable key) and `detail`.
+    /// valid `buildings_removed` (the buildings on the road that zoning off demolishes and those
+    /// on the lots a widening takes, `ZONE-10`, for a confirmation), `demolition_permanent`
+    /// (true with any `buildings_removed`: undo restores the road and its empty parcels, never
+    /// the buildings), `cost_delta` (what Apply charges: the build-cost difference over the
+    /// road's length, never negative), `demolish_count` and `demolish_lots` (the widening's land
+    /// take: its buildings, and four corners per lot as the road preview's); when refused
+    /// `invalid_reason` (stable key) and `detail`.
     /// The same check as [`Self::set_edge_cross_section`].
     #[func]
     #[allow(clippy::too_many_arguments)]
@@ -543,9 +594,10 @@ impl SimulationNode {
         street_lights: bool,
     ) -> VarDictionary {
         let attributes = (speed_kmh, sidewalks, zoning, street_lights);
+        let mut core = self.lock_core();
         let verdict = cross_section_spec(median_style, median_width, parking, attributes)
             .and_then(|(median, parking, attributes)| {
-                self.lock_core().preview_edge_cross_section_internal(
+                core.preview_edge_cross_section_internal(
                     edge_id,
                     lanes_u8(fwd),
                     lanes_u8(bkw),
@@ -560,6 +612,8 @@ impl SimulationNode {
                 "buildings_removed": verdict.buildings_removed as i64,
                 "demolition_permanent": verdict.demolition_permanent,
                 "cost_delta": verdict.cost_delta,
+                "demolish_count": verdict.take.buildings.len() as i64,
+                "demolish_lots": road_tool::core_lot_outlines(&core, &verdict.take),
             },
             Err(rejection) => vdict! {
                 "is_valid": false,
@@ -696,8 +750,10 @@ impl SimulationNode {
     /// The commit's verdict on a turn pocket at end `end` (0 start, 1 end) of road `edge_id`
     /// with lanes on the drivers' `left` and `right` and a `length_m` body from the junction
     /// (20-300 m by 10; both off removes the pocket) (`ROAD-95`), without applying it:
-    /// `is_valid`; when valid `cost_delta` (what Apply charges, never negative); when refused
-    /// `invalid_reason` (stable key) and `detail`. The same check as [`Self::set_road_pocket`]
+    /// `is_valid`; when valid `cost_delta` (what Apply charges, never negative),
+    /// `demolish_count` and `demolish_lots` (the zoned land the pocket takes, `ZONE-10`: its
+    /// buildings, and four corners per lot); when refused `invalid_reason` (stable key) and
+    /// `detail`. The same check as [`Self::set_road_pocket`]
     /// (D11: no geometry preview).
     #[func]
     pub fn preview_road_pocket(
@@ -715,10 +771,13 @@ impl SimulationNode {
                 "detail": format!("edge {edge_id} is not a road"),
             };
         };
-        match self.lock_core().preview_road_pocket_internal(request) {
+        let mut core = self.lock_core();
+        match core.preview_road_pocket_internal(request) {
             Ok(verdict) => vdict! {
                 "is_valid": true,
                 "cost_delta": verdict.cost_delta,
+                "demolish_count": verdict.take.buildings.len() as i64,
+                "demolish_lots": road_tool::core_lot_outlines(&core, &verdict.take),
             },
             Err(rejection) => vdict! {
                 "is_valid": false,

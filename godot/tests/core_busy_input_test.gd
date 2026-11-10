@@ -5,7 +5,8 @@
 ## deletes the road under the pointer. `debug_hold_core` makes the simulation thread hold the
 ## core, as a long frame would, until a call waits for it, so the hover is checked while the core
 ## is held and the click's wait is what ends the hold. The road tool's one-shot stroke checks
-## answer with the core held too (`ROAD-102`).
+## answer with the core held too (`ROAD-102`), and the roundabout tool's hover answers without
+## the core (`ZONE-10`).
 extends SceneTree
 
 const BulldozeTool := preload("res://scripts/tools/bulldoze_tool.gd")
@@ -91,6 +92,19 @@ func _run() -> void:
 		_expect(simulation.debug_hold_core(20000), "the simulation thread holds the core for %s" % check)
 		var answer: Dictionary = simulation.call(check, stroke, 1, 1, true)
 		_expect(bool(answer.get("is_valid", false)) and not answer.has("is_pending"), "%s waits for the core: %s" % [check, answer])
+
+	# The roundabout tool's hover reads the road tool's context (`ZONE-10`, round RZ10b): with the
+	# core held it answers the ring at once, and the core is still held after it.
+	var centre := _ground(point.x, point.z - 60.0)
+	_expect(simulation.debug_hold_core(20000), "the simulation thread holds the core for the ring hover")
+	var site: Dictionary = simulation.get_roundabout_site(centre, 1)
+	var ring: Dictionary = simulation.preview_roundabout(centre, float(site.get("default_diameter_m", 36.0)), 1)
+	_expect(int(site.get("node", 0)) == -1 and int(site.get("lanes", 0)) == 1, "the ring site on empty ground: %s" % site)
+	_expect(bool(ring.get("is_valid", false)) and ring.get("ring", PackedVector3Array()).size() > 8, "the ring hover answers: %s" % ring)
+	_expect(int(ring.get("demolish_count", -1)) == 0, "a ring on empty ground demolishes nothing")
+	_expect(bool(simulation.get_bulldoze_target_at(centre.x, centre.z).get("busy", false)), "the ring hover left the core held")
+	# A waiting call ends the hold.
+	simulation.get_bulldoze_target_at(centre.x, centre.z, true)
 	tool.active = false
 	_finish(scene)
 

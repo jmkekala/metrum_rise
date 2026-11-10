@@ -48,15 +48,18 @@ pub(crate) struct RoundaboutSiteView {
     pub(crate) default_diameter_m: f32,
 }
 
-/// What an accepted roundabout edit builds, for the tool's overlay and label.
+/// What an accepted roundabout edit builds and takes, for the tool's overlay and label; `B`
+/// names the buildings as the site's land does ([`RoadLandSource::Building`]).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct RoundaboutVerdict {
+pub(crate) struct RoundaboutVerdict<B = usize> {
     /// What the commit charges: the ring's build cost. The arms give back nothing.
     pub(crate) cost: f64,
     /// The ring's centreline as one closed polyline.
     pub(crate) ring: Vec<Vector3>,
     /// Each arm's id with the point it is cut at.
     pub(crate) arms: Vec<(usize, Vector3)>,
+    /// The zoned land the ring and its island take (`ZONE-10`): its buildings and lots.
+    pub(crate) take: RoadLandTake<B>,
 }
 
 // One tried edit: its undo checkpoint, the land it takes, the plan, the closure and the verdict.
@@ -66,36 +69,54 @@ pub(crate) struct TriedRoundabout<B = usize> {
     layout: RoundaboutLayout,
     edges: HashSet<usize>,
     nodes: HashSet<u32>,
-    verdict: RoundaboutVerdict,
+    verdict: RoundaboutVerdict<B>,
+}
+
+impl<B> TriedRoundabout<B> {
+    /// The verdict of the tried edit.
+    pub(crate) fn verdict(self) -> RoundaboutVerdict<B> {
+        self.verdict
+    }
+}
+
+/// What the roundabout tool reads at `point` on `graph` for a road type of `type_lanes` lanes
+/// per direction: a junction within reach decides the ring's lanes by its arms, empty ground by
+/// the type, capped at two. The live core's graph or the road tool's replica. `O(log N +
+/// degree)`.
+pub(crate) fn roundabout_site_at(
+    graph: &RegionGraph,
+    point: Vector3,
+    type_lanes: u8,
+) -> RoundaboutSiteView {
+    let node = crate::simulation::network::interaction::get_closest_node_xz(
+        graph,
+        point,
+        SITE_NODE_REACH_M,
+    );
+    // A node a bulldozed road left without arms is no site, and no obstacle.
+    let node = node.filter(|&node| graph.live_node_connection_count(node) > 0);
+    let site = match node {
+        Some(node) => RoundaboutSite::Junction(node),
+        None => RoundaboutSite::Ground {
+            centre: point,
+            lanes: type_lanes.clamp(1, 2),
+        },
+    };
+    let lanes = site.lanes(graph);
+    let (min_diameter_m, max_diameter_m) = site.diameter_range_m(graph);
+    RoundaboutSiteView {
+        site,
+        lanes,
+        min_diameter_m,
+        max_diameter_m,
+        default_diameter_m: default_diameter_m(lanes).clamp(min_diameter_m, max_diameter_m),
+    }
 }
 
 impl SimCore {
-    /// What the roundabout tool reads at `point` for a road type of `type_lanes` lanes per
-    /// direction: a junction within reach decides the ring's lanes by its arms, empty ground by
-    /// the type, capped at two. `O(log N + degree)`.
+    /// What the roundabout tool reads at `point` on the live graph ([`roundabout_site_at`]).
     pub(crate) fn roundabout_site_at(&self, point: Vector3, type_lanes: u8) -> RoundaboutSiteView {
-        let graph = &self.region_graph;
-        let node = self.get_closest_node_internal(point, SITE_NODE_REACH_M);
-        // A node a bulldozed road left without arms is no site, and no obstacle.
-        let node = u32::try_from(node)
-            .ok()
-            .filter(|&node| graph.live_node_connection_count(node) > 0);
-        let site = match node {
-            Some(node) => RoundaboutSite::Junction(node),
-            None => RoundaboutSite::Ground {
-                centre: point,
-                lanes: type_lanes.clamp(1, 2),
-            },
-        };
-        let lanes = site.lanes(graph);
-        let (min_diameter_m, max_diameter_m) = site.diameter_range_m(graph);
-        RoundaboutSiteView {
-            site,
-            lanes,
-            min_diameter_m,
-            max_diameter_m,
-            default_diameter_m: default_diameter_m(lanes).clamp(min_diameter_m, max_diameter_m),
-        }
+        roundabout_site_at(&self.region_graph, point, type_lanes)
     }
 
     /// Builds the roundabout `request` asks for, with an undo record (`ROAD-62`). The ring takes
@@ -182,7 +203,9 @@ impl SimCore {
 
     /// The commit's verdict on `request` now ([`Self::place_roundabout_internal`]): the
     /// [`RoundaboutVerdict`] when it would build it, else why it would refuse it. The commit's own
-    /// check, run on the graph and put back (D11). `O(arm points + ring points + closure pieces)`.
+    /// check, run on the live graph and put back (D11); the tool's hover runs it on the road
+    /// tool's context instead. Tests compare the two. `O(arm points + ring points + closure pieces)`.
+    #[cfg(test)]
     pub(crate) fn preview_roundabout_internal(
         &mut self,
         request: RoundaboutRequest,
@@ -194,13 +217,16 @@ impl SimCore {
     }
 
     /// Removes the whole ring through `edge` with one undo record (D15): every ring edge goes and
-    /// the arms stay, each ending at its ring node on the ring's old line as a road end. A
-    /// refused removal changes nothing and leaves its reason in `last_road_rejection`.
+    /// the arms stay, each ending at its ring node on the ring's old line as a road end, taking
+    /// the zoned land their new ends newly cover (`ZONE-10`). A refused removal changes nothing and leaves its reason in `last_road_rejection`.
     /// `O(ring + the arms' closure)`, plus the undo's membership passes.
     pub(super) fn bulldoze_ring(&mut self, edge: usize) -> bool {
         let Some(walk) = ring_walk(&self.region_graph, edge) else {
             return false;
         };
+        // The take reads the explicit sites through the site index (`ZONE-10`).
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
         let ring_nodes: HashSet<u32> = walk.iter().map(|&(node, _)| node).collect();
         let ring: Vec<usize> = walk.iter().map(|&(_, edge)| edge).collect();
         let graph = &self.region_graph;
@@ -231,8 +257,8 @@ impl SimCore {
                 );
                 changed
             });
-        let checkpoint = match tried.and_then(TriedGraphEdit::keeping_zoned_land) {
-            Ok(checkpoint) => checkpoint,
+        let TriedGraphEdit { checkpoint, take } = match tried {
+            Ok(tried) => tried,
             Err(rejection) => {
                 debug_log!(
                     "road",
@@ -244,7 +270,6 @@ impl SimCore {
                 return false;
             }
         };
-        self.push_network_undo_delta(checkpoint, None, None);
         let mut changed = HashSet::new();
         for &id in &ring {
             self.region_graph.delete_edge_locally(id);
@@ -257,6 +282,10 @@ impl SimCore {
             &mut changed,
         );
         debug_assert!(changed.is_subset(&edges));
+        // The zoned land the arms' new ends newly cover (`ZONE-10`), before the lanes rebuild.
+        let erased = self.take_land_for_edit(take);
+        let erased_paint = erased.is_some();
+        self.push_network_undo_delta(checkpoint, None, erased);
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, edges.iter().copied());
         self.transit_network
@@ -278,6 +307,9 @@ impl SimCore {
         self.transit_network.flow_fields.mark_all_dirty();
         self.mark_local_network_render_dirty();
         self.terrain_dirty = true;
+        if erased_paint {
+            self.plan_lots_after_erase();
+        }
         true
     }
 
@@ -349,6 +381,7 @@ impl<L: RoadLandSource> RoadEditSite<'_, L> {
             cost,
             ring: layout.outline(),
             arms: layout.arm_cuts().collect(),
+            take: take.clone(),
         };
         Ok(TriedRoundabout {
             checkpoint,

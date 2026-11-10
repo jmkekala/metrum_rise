@@ -36,12 +36,15 @@ use crate::simulation::network::validate::{
 use godot::prelude::Vector3;
 use std::collections::HashSet;
 
-/// What an accepted pocket edit charges, for the Road Properties window's Apply label.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// What an accepted pocket edit charges and takes, for the Junction window's Apply label and
+/// highlight.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PocketVerdict {
     /// The build cost of the pair after the edit less before it, floored at 0 (D14: the
     /// in-place rule, never refunded).
     pub(crate) cost_delta: f64,
+    /// The zoned land the pocket takes (`ZONE-10`): its buildings and lots.
+    pub(crate) take: RoadLandTake,
 }
 
 /// How far out along an arm the Junction window reads the direction it comes from (round R5c2).
@@ -278,13 +281,14 @@ impl SimCore {
         let TriedGraphEdit { checkpoint, take } = tried?;
         Ok(TriedPocket {
             checkpoint,
+            verdict: PocketVerdict {
+                cost_delta: (cost_after - cost_before).max(0.0) * BUILD_COST_PER_M,
+                take: take.clone(),
+            },
             take,
             plan,
             edges,
             nodes,
-            verdict: PocketVerdict {
-                cost_delta: (cost_after - cost_before).max(0.0) * BUILD_COST_PER_M,
-            },
         })
     }
 

@@ -8,8 +8,10 @@
 ## (clockwise from north). Each row's Left / Right / Length ask Rust's verdict on that road end
 ## (no geometry preview, D11) and its Apply commits it ("Apply (+N)", Ctrl+Z undoes). The
 ## hovered row's road, else the last changed one's, is highlighted from the junction over the
-## requested length. After an edit or an undo (a new render generation) the window reads the
-## arms again and keeps each unapplied request whose arm is still there. A lane transition
+## requested length; the lots a verdict's pocket would take (`ZONE-10`) are outlined with the
+## bulldoze highlight and its row names the buildings it demolishes. After an edit or an undo
+## (a new render generation) the window reads the arms again and keeps each unapplied request
+## whose arm is still there. A lane transition
 ## node or a node without car roads shows no Turn pockets section, only why.
 ## Rust methods called: get_junction_pockets(), preview_road_pocket(),
 ## get_network_render_generation(); through the select tool set_road_pocket().
@@ -200,6 +202,11 @@ func _ask_verdict(index: int) -> void:
 	var cost := roundi(float(verdict.get("cost_delta", 0.0)))
 	var accepted := "Removes the turn pocket" if not request[0] and not request[1] \
 		else JunctionPocketRow.describe(request[0], request[1], request[2])
+	var demolish := int(verdict.get("demolish_count", 0))
+	if demolish > 0:
+		accepted += ", demolishes %d building%s" % [demolish, "" if demolish == 1 else "s"]
+	if _select_tool:
+		_select_tool.show_demolition(verdict.get("demolish_lots", PackedVector3Array()))
 	row.show_verdict(verdict, accepted, "Apply (+%s)" % UIStyle.thousands(cost) if cost > 0 else "Apply")
 
 func _on_row_apply(index: int) -> void:
