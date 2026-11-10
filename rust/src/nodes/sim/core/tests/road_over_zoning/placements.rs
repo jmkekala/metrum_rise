@@ -875,6 +875,31 @@ fn a_refused_hover_shows_the_commits_refusal() {
     assert_eq!(refused_state(&core), state);
 }
 
+// `PARK-01` with `ZONE-11`: a parking lot over the houses on a street that carries no cars is
+// refused for its frontage before its land is judged, so its hover shows no take and its commit
+// takes nothing (the same lot on the car street takes the houses: `Placement::Service`).
+#[test]
+fn a_lot_refused_for_a_car_free_frontage_takes_no_land() {
+    use crate::simulation::network::types::TransitFlags;
+    let (mut core, houses, assets) = street();
+    let edge = core.allocator.buildings[houses[0]].edge_idx;
+    core.region_graph.edge_mut(edge).allowed_types &= !TransitFlags::CAR;
+    let state = refused_state(&core);
+    let hover = core
+        .get_service_building_placement_preview_internal(&assets.lot, 0.0, -30.0)
+        .unwrap();
+    assert_eq!(
+        hover.preview.rejection,
+        Some(ExplicitServicePlacementRejection::NoCarAccess)
+    );
+    assert!(hover.take.is_empty());
+    assert_eq!(
+        core.place_service_building_internal(&assets.lot, 0.0, -30.0),
+        Err(ExplicitServicePlacementRejection::NoCarAccess)
+    );
+    assert_eq!(refused_state(&core), state);
+}
+
 // Round RZ11b, hover locality: a hover on a stale site index readies only the index's site part
 // (`prepare_site_query_chunks`), so the site queries read the chunk lists, while the lists that
 // carry the simulation's order (zone, vacancy, admission) and the stale flag stay for the
