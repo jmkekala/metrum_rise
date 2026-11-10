@@ -3618,7 +3618,18 @@ nothing smaller than a layer is ever allocated, and no CPU copy of an uploaded l
   nor complete the move, so the move never finished, and its edit batch was acknowledged without
   the upload, leaving a new road over the ground of an older edit until a reload.) (Round 8's first build put a moving block's new copies in the target only, and its
   sets drew those tiles as base cells until the move: the 100k pans showed up to 5 patches a
-  frame unready in view.)
+  frame unready in view.) Compatibility has no `RenderingDevice`: its pages stay
+  `Texture2DArray`s and a move reads the old page's layers back on the CPU (`_copy_array`). On
+  Godot 4.7.2 that readback does not return the uploaded bytes: an `RGBAF` layer reads back as
+  layer 0, clamped to 0-1 and quantised to 8 bits (round `VM` probe, radeonsi), so a move under
+  Compatibility leaves the moved block's tiles drawing wrong data until each is rebaked
+  (`TERRAIN-22`). Measured in round `VM` (2026-11-10, RX 7900 XTX, Vulkan Forward+, debug
+  library, the publication test's 500 m world after 48 seeded strokes, 1280 x 720, frames paced
+  at 60 Hz): a forced move of the GL2 block (64 to 128 slots, 192 layers, 55 tiles, 50 MB of
+  pages) costs 0.87-0.89 ms in the move call (page creation, clear and device copy) and its
+  frame's terrain `_process` 5.5-6.1 ms, the switch rewriting the block's sets; idle frames before
+  and after 0.63-0.68 ms p50, GPU 0.60-0.61 ms throughout. `dev`'s move call took 0.57 ms, then
+  10 frames of rebakes at about 2 ms and a 6.6 ms switch frame.
 - **When memory runs out.** Pages are created and grown within a budget of graded page bytes
   (texel and atlas layers of every page, `GRADED_PAGE_BUDGET_MB`), not a page count. A page the
   budget refuses, or a full page already at `T(B)` slots or `L` layers (the device's limit), leaves

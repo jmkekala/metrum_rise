@@ -1958,7 +1958,14 @@ asphalt (zero alpha) unchanged. The R8 probe holds no median, so it does not see
 Kerbside bays are places in the shared pool (`parking/kerb.rs`), one `PlaceSource::Kerb { edge,
 right }` per parking lane, saved with the other places. The save drops deleted edges and
 renumbers the rest, and a kerb place's edge is renumbered with them; a retired place whose edge
-was deleted saves a placeholder edge, which load validation skips with the inactive place. Each is 6 m long (`KERB_BAY_LENGTH_M`)
+was deleted saves a placeholder edge, which load validation skips with the inactive place. A save
+written before this fix (round `VM`, 2026-11-10) by a city with an active kerb bay on a road
+numbered past a deleted one names a later road: load refuses it with "parking place has a
+missing source" (an error, not a panic) unless that road has a parking lane on the same side, and
+the renumbering is a shift, so the last such bay names a missing road or one without such a lane
+unless a later road has the lane but no active bay (a lane too short for one), in which case the
+bays load under the wrong roads. The format did not change; a city whose kerb bays all stand on
+roads numbered before every deletion saved correctly. Each is 6 m long (`KERB_BAY_LENGTH_M`)
 and 2.5 m wide, centred half a parking lane in from the carriageway's edge of the span's
 `RoadSection` bands, never `edge.width` or mesh triangles. Bays run end to end, whole bays only,
 centred in each free stretch. A stretch starts 5 m past the span's first section or its start

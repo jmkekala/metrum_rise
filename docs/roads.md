@@ -1225,7 +1225,8 @@ terrain takes the difference.
 **Tool** (`roundabout_tool.gd`, API `get_roundabout_site`, `preview_roundabout`, `place_roundabout`).
 A point within 8 m of a node means that junction; else empty ground, where the road tool's type
 decides the lanes (its lanes per direction, capped at two). The Diameter row moves in 1 m steps and
-`[` `]` in 2 m, both held to the site's range, so 45 and 50 are both reachable; the range caps at 60 m
+the two keys right of P in 2 m (matched by position: `[` `]` on a US layout, Å ¨ on a Nordic one,
+and the hint names them as the layout prints them, `KeyLabels.physical()`), both held to the site's range, so 45 and 50 are both reachable; the range caps at 60 m
 over a junction. The diameter is kept per lane count. Rust owns all of this; the tool draws what
 `preview_roundabout` returns, the ring's centreline and each arm's cut as a ribbon, blue, or red with
 the circle and `road_reason_text` when refused (D11 (a)), asked again only when the point (snapped to
