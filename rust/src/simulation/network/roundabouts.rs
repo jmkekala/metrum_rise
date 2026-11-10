@@ -18,6 +18,7 @@ use super::lanes::vehicle_junctions::node_whitelists_vehicle_turns;
 use super::roadbed::visual_roadbed_half_width_m;
 use super::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use crate::config;
+use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::pathing::cost::CostCalculator;
 use godot::prelude::{Vector2, Vector3};
 use std::f32::consts::TAU;
@@ -46,7 +47,7 @@ const RING_MAX_RADIUS_M: f32 = 40.0;
 const ISLAND_REFUSAL: &str = "roundabout_island";
 // How far beyond the two roadbeds the clearance query looks.
 const CLEARANCE_QUERY_PAD_M: f32 = 24.0;
-// The sides of a refused ring's outline.
+// The sides of a refused ring's outline and of the ring's land (`island_footprint`).
 const OUTLINE_SIDES: usize = 64;
 // Knots nearer than this to a cut merge into it.
 const CUT_KNOT_MERGE_M: f32 = 0.01;
@@ -364,14 +365,20 @@ impl RoundaboutLayout {
         &self.ring
     }
 
-    /// The ring's lanes.
-    pub(crate) fn lanes(&self) -> u8 {
-        self.lanes
-    }
-
-    /// The ring's circle.
-    pub(crate) fn circle(&self) -> RoundaboutRing {
-        self.circle
+    /// The land the ring takes as a whole (`ZONE-10`, decision D-ring): the disc out to the edge
+    /// of its outer sidewalk, the island included, as an `OUTLINE_SIDES`-gon inscribed in that
+    /// circle. The zoned land on it is taken by the rules that take the land under the ring's
+    /// pieces, so no lot is left inside the island with an arm stub for its street. `O(1)`: 64
+    /// points.
+    pub(crate) fn island_footprint(&self) -> PolygonFootprint<'static> {
+        let half_m = 0.5 * f32::from(self.lanes) * config::LANE_WIDTH;
+        let radius_m = f64::from(self.circle.radius_m + half_m + config::SIDEWALK_WIDTH);
+        let centre = [self.circle.centre.x, self.circle.centre.y].map(f64::from);
+        PolygonFootprint::from_precise_points((0..OUTLINE_SIDES).map(|side| {
+            let angle = std::f64::consts::TAU * side as f64 / OUTLINE_SIDES as f64;
+            let (sin, cos) = angle.sin_cos();
+            [centre[0] + cos * radius_m, centre[1] + sin * radius_m]
+        }))
     }
 
     /// The junction the ring replaces, if any.

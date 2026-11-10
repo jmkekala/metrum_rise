@@ -41,6 +41,22 @@ pub(crate) fn road_piece_newly_covers(
     piece_covers(mesh, &footprint) && !before.iter().any(|old| piece_covers(old, &footprint))
 }
 
+/// [`road_piece_newly_covers`] for land an edit takes beyond its pieces (`ZONE-10`, a
+/// roundabout's island): `footprint` overlaps the four-cornered footprint's road-contact interior
+/// with positive area and no piece in `before` covers it. O(`footprint` vertices + top triangles
+/// of `before` in the footprint's bounds).
+pub(crate) fn footprint_newly_covers(
+    footprint: &PolygonFootprint,
+    before: &[&PieceMesh],
+    corners: &[DVec2; 4],
+) -> bool {
+    let interior = road_contact_interior(corners).map(|p| [p.x, p.y]);
+    footprint.overlaps_precise_points(&interior) && {
+        let interior = PolygonFootprint::from_precise_slice(&interior);
+        !before.iter().any(|old| piece_covers(old, &interior))
+    }
+}
+
 impl ZoningSystem {
     /// Tests arbitrary (including concave) field/site footprints against both zoning workflows.
     pub(crate) fn overlaps_reservation(&self, footprint: &PolygonFootprint) -> bool {
@@ -53,8 +69,9 @@ impl ZoningSystem {
     }
 
     /// Tests a proposed road corridor against painted cells and occupied grace claims locally.
-    /// Edits test the pieces they install instead ([`Self::cells_newly_covered_by_road_piece`]); tests
-    /// use the corridor to show what the pieces reach beyond it.
+    /// Edits test the pieces they install instead
+    /// ([`Self::reserved_cells_newly_covered_by_road_pieces`]); tests use the corridor to show
+    /// what the pieces reach beyond it.
     #[cfg(test)]
     pub(crate) fn cells_overlap_road_corridor(
         &self,
@@ -85,32 +102,16 @@ impl ZoningSystem {
         self.cells_overlap_road_points(points.iter().map(|p| [p.x, p.z]))
     }
 
-    /// Whether the top surface of one road piece covers a reserved cell of `cells` that none of
-    /// `before` covered (`ROAD-68` open question 1): each candidate cell in the piece's bounds
-    /// against its top triangles, then against the pieces the edit replaces. Cells are laid out
-    /// against the straight road corridors, so cells beside an existing junction corner or road
-    /// end may already lie under it; an edit is refused only for land it newly covers. Cells that
-    /// only touch the road along their frontage are not covered. The commit passes the live
-    /// store and the road tool's preview the view's persistent copy of it, so both decide alike
-    /// (open question 25). O(candidate cells * top triangles of the piece and of `before`), one
-    /// bounds query when no cell is reserved near the piece.
-    pub(crate) fn cells_newly_covered_by_road_piece<M: CellMaps>(
-        cells: &CellStore<M>,
-        mesh: &PieceMesh,
-        before: &[&PieceMesh],
-    ) -> bool {
-        if !cells.has_reservations() {
-            return false;
-        }
-        Self::reserved_cells_overlap(cells, piece_bounds(mesh), false, |corners| {
-            road_piece_newly_covers(mesh, before, &corners)
-        })
-    }
-
-    /// Every reserved cell of `cells` that one of `pieces` newly covers, by the rule of
-    /// [`Self::cells_newly_covered_by_road_piece`], sorted by key and without repeats: the cells
-    /// a road stroke takes (`ZONE-09`). O(pieces * candidate cells * top triangles), one bounds
-    /// query per piece when no cell is reserved near it.
+    /// Every reserved cell of `cells` that one of `pieces` newly covers, sorted by key and
+    /// without repeats: the cells a road edit takes (`ZONE-09`, `ZONE-10`). Each candidate cell
+    /// in a piece's bounds is tested against its top triangles, then against the pieces the edit
+    /// replaces ([`road_piece_newly_covers`]). Cells are laid out against the straight road
+    /// corridors, so cells beside an existing junction corner or road end may already lie under
+    /// it; only land the edit newly covers is taken. Cells that only touch the road along their
+    /// frontage are not covered. The commit passes the live store and the road tool's preview
+    /// the view's persistent copy of it, so both decide alike (`ROAD-68` open question 25).
+    /// O(pieces * candidate cells * top triangles), one bounds query per piece when no cell is
+    /// reserved near it.
     pub(crate) fn reserved_cells_newly_covered_by_road_pieces<'a, M: CellMaps>(
         cells: &CellStore<M>,
         pieces: impl IntoIterator<Item = &'a PieceMesh>,

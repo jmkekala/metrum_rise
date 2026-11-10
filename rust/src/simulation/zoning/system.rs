@@ -17,7 +17,7 @@ use super::{SharedParcelStore, ZoningParcel};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::SidewalkSides;
 use glam::DVec2;
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::Vector3;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub(crate) use cell_editing::{CellPaintUndo, CellZoningEdit, RoadPaint};
 pub(crate) use cell_lots::{
     CellLotGeneration, CellLotPlanner, CellLotRemovalUndo, PlannedCellLots,
 };
-pub(crate) use reservations::road_piece_newly_covers;
+pub(crate) use reservations::{footprint_newly_covers, road_piece_newly_covers};
 
 /// Road-aligned parcel zoning system.
 #[derive(Clone)]
@@ -65,6 +65,12 @@ pub(crate) struct ZoningParcelRemovalUndo {
 impl ZoningParcelRemovalUndo {
     pub(crate) fn is_empty(&self) -> bool {
         self.parcels.is_empty()
+    }
+
+    /// The raw ids of the parcels the undo restores, in capture order.
+    #[cfg(test)]
+    pub(crate) fn parcel_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.parcels.iter().map(|(_, parcel)| parcel.id().raw())
     }
 }
 
@@ -216,12 +222,6 @@ impl ZoningSystem {
             .into_iter()
             .map(|id| id.raw())
             .collect()
-    }
-
-    /// The raw parcel ids touching the disc of `radius_m` at `centre`, ascending.
-    pub(crate) fn parcel_ids_overlapping_disc(&self, centre: Vector2, radius_m: f32) -> Vec<u64> {
-        let ids = self.parcels.ids_overlapping_disc(centre, radius_m);
-        ids.into_iter().map(|id| id.raw()).collect()
     }
 
     pub(crate) fn capture_parcel_removal_undo(&self, edge_idx: usize) -> ZoningParcelRemovalUndo {

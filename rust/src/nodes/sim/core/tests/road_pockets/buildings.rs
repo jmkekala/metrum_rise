@@ -323,7 +323,7 @@ fn buildings_on_a_plain_road_keep_their_products() {
 // The pocket edit's dependents migration (R5a2) moves the buildings fronting the pair: houses on
 // the curb a pocket does not widen keep that curb when an add moves them onto the pocket edge, a
 // resize moves more, a removal joins them back, and each undo restores them bit for bit. A pocket
-// that would widen into a house's lot is refused (`parcel_overlap`).
+// that widens into houses' lots takes them (`ZONE-10`): the houses are demolished.
 #[test]
 fn the_pocket_edit_keeps_the_buildings_it_moves_on_their_curb() {
     for lanes in [1, 2] {
@@ -389,12 +389,17 @@ fn the_pocket_edit_keeps_the_buildings_it_moves_on_their_curb() {
                 );
             }
             assert_eq!(states, vec![original]);
-            // A house on the curb the pocket would widen: the corridor refuses it.
+            // Houses on the curb the pocket widens: the pocket takes their lots.
             assert!(!grow(&mut core, west, widened, [-55.0, -25.0]).is_empty());
+            let buildings = core.allocator.buildings.len();
             assert_eq!(
                 pocket_edit(&mut core, request(west, end, roles, 60.0)),
-                "parcel_overlap",
-                "{label}: a lot on the widened curb"
+                "",
+                "{label}: lots on the widened curb"
+            );
+            assert!(
+                core.allocator.buildings.len() < buildings,
+                "{label}: the houses on the widened curb are demolished"
             );
         }
     }

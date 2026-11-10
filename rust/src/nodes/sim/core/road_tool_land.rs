@@ -97,7 +97,7 @@ impl ViewLand<'_> {
     /// The land the view's pieces take: [`RoadLandTake::of`] on this source. Buildings are
     /// named by their handles.
     pub(crate) fn take(&self, pieces: &[&PieceMesh], before: &[&PieceMesh]) -> RoadLandTake<u64> {
-        RoadLandTake::of(self, pieces, before)
+        RoadLandTake::of(self, pieces, before, &[])
     }
 }
 

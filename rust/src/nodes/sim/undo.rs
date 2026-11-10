@@ -9,7 +9,7 @@ use crate::nodes::sim::core::{
 use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::lanes::LaneSystem;
-use crate::simulation::zoning::ZoningParcelRemovalUndo;
+use crate::simulation::zoning::{CellPaintUndo, ZoningParcelRemovalUndo};
 use godot::prelude::Vector3;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -100,7 +100,7 @@ impl SimCore {
         let graph = self
             .region_graph
             .capture_undo_for_polyline(points, margin_m);
-        self.push_network_undo_delta(graph, None);
+        self.push_network_undo_delta(graph, None, None);
     }
 
     /// Captures a known local graph mutation set plus its incident junction ring.
@@ -112,7 +112,7 @@ impl SimCore {
         let graph = self
             .region_graph
             .capture_undo_for_local_topology(edge_ids, node_ids);
-        self.push_network_undo_delta(graph, None);
+        self.push_network_undo_delta(graph, None, None);
     }
 
     /// Captures a local road-removal inverse plus only parcels attached to that road.
@@ -126,13 +126,16 @@ impl SimCore {
             .region_graph
             .capture_undo_for_local_topology(edge_ids, node_ids);
         let zoning = self.zoning.capture_parcel_removal_undo(removed_edge_idx);
-        self.push_network_undo_delta(graph, (!zoning.is_empty()).then_some(zoning));
+        self.push_network_undo_delta(graph, (!zoning.is_empty()).then_some(zoning), None);
     }
 
+    /// Pushes a graph edit's undo record: its local graph checkpoint, the parcels it removed and
+    /// the paint its land take erased (`ZONE-10`).
     pub(crate) fn push_network_undo_delta(
         &mut self,
         graph: RegionGraphUndoDelta,
         zoning: Option<ZoningParcelRemovalUndo>,
+        cells: Option<CellPaintUndo>,
     ) {
         self.push_undo_snapshot(SimulationSnapshot {
             roadbed: None,
@@ -141,7 +144,7 @@ impl SimCore {
             water: None,
             trans_graph: Some(graph),
             zoning,
-            cells: None,
+            cells,
             runtime: None,
         });
     }

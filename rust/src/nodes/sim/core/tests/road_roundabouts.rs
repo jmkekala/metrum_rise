@@ -418,8 +418,9 @@ fn a_ring_refuses_water_under_it() {
     assert_eq!(ring_edit(&mut core, far), "");
 }
 
-// Lots under the ring and on its island refuse; the same crossing with the house far off
-// converts, the house's cell moves by what the cut took off a start, and undo puts it back.
+// The crossing with a house far off converts, the house's cell moves by what the cut took off a
+// start, and undo puts it back; a house on a lot under the ring is demolished with its lot
+// (`ZONE-10`), which no cut then moves.
 #[test]
 fn a_trimmed_arms_dependents_move_and_return() {
     let (mut core, node) = crossing(1);
@@ -468,15 +469,18 @@ fn a_trimmed_arms_dependents_move_and_return() {
     assert!(core.undo_action_internal());
     assert_eq!(row(&core), original);
 
-    // A house on the corner lot is on the ring's land.
+    // A house on the corner lot is on the ring's land: taken with its lot.
     let (mut core, node) = crossing(1);
     let arm = core
         .region_graph
         .find_node_within(Vector3::new(150.0, 0.0, 0.0), 1.0)
         .map(|end| live_arms(&core, end)[0])
         .unwrap();
-    house_fronting(&mut core, arm, (20.0, -12.0));
-    assert_eq!(ring_edit(&mut core, junction(node, 60.0)), "parcel_overlap");
+    let (_, parcel) = house_fronting(&mut core, arm, (20.0, -12.0));
+    let buildings = core.allocator.buildings.len();
+    assert_eq!(ring_edit(&mut core, junction(node, 60.0)), "");
+    assert!(core.zoning.parcel_by_raw_id(parcel).is_none(), "the lot is taken");
+    assert_eq!(core.allocator.buildings.len(), buildings - 1, "its house is demolished");
 }
 
 // D15: a ring goes whole. Its arms stay, ending on the ring's old line; one undo brings it back.

@@ -1192,7 +1192,6 @@ impl BuildingAllocator {
         for &building_idx in &fronting {
             let b = &mut self.buildings[building_idx];
             undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
-            debug_assert!(b.cell_x >= dropped_cells, "the plan refused land under the cut");
             b.cell_x = b.cell_x.saturating_sub(dropped_cells);
             let half_cells = b.width_cells as f32 * 0.5;
             b.frontage_t = (b.cell_x as f32 + half_cells) * cell_m / length_m.max(0.001);

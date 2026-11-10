@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Roads over zoned land (`ZONE-09`, rounds RZ1 and RZ2): a road stroke takes the zoned land its
+//! Roads over zoned land (`ZONE-09`, rounds RZ1 and RZ2; the in-place edits, `ZONE-10`, in
+//! `edits`): a road stroke takes the zoned land its
 //! pieces newly cover, demolishing the buildings on the lots it crosses, removing those lots and
 //! erasing the covered cells' paint, which the new cells along the road inherit; a plotted
 //! reservation (a placed building's lot, a field, an extraction area) refuses it and changes
@@ -752,4 +753,5 @@ fn a_bridge_deck_over_a_field_is_no_field_overlap() {
     assert_eq!(commit(&mut core, &bridge_at(100.0)), "");
 }
 
+mod edits;
 mod preview;

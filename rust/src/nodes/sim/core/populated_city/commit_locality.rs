@@ -23,6 +23,12 @@
 //! background resident gets a household and each of the neighbourhood's homes, which the grid
 //! builds empty, a resident with one, so the removal evacuates its homes and its agent and
 //! household scans meet a background that grows with the tier (`LOCALITY_DEMOLITION`).
+//!
+//! Then the four in-place edits take built land of the neighbourhood (`ZONE-10`, round RZ10a):
+//! a row street widened from 1+1 to 2+2 (its front rows), a 40 m right pocket at a cross-street
+//! junction, a one-lane ring replacing a crossing (its island's lots too) and a T's junction
+//! moved 6 m into a block, each with its publication, as the Road Properties window, the Junction
+//! window, the roundabout tool and the move tool's release commit them (`LOCALITY_IN_PLACE`).
 
 use std::time::Instant;
 
@@ -85,8 +91,10 @@ fn benchmark_commit_locality() {
         let samples =
             super::routing_benchmark::profile_commits(background as u32, &mut core, false);
         let demolitions = profile_demolitions(&mut core, background);
+        let in_place = profile_in_place_edits(&mut core, background);
         let mut products = local_products(&mut core, &samples);
         products["demolitions"] = demolitions;
+        products["in_place_edits"] = in_place;
         eprintln!(
             "LOCALITY_PRODUCTS {}",
             serde_json::json!({"background": background, "products": products})
@@ -298,6 +306,128 @@ fn profile_demolitions(core: &mut SimCore, background: usize) -> serde_json::Val
         assert!(demolished >= 2, "demolition {stroke} takes built lots: {demolished}");
         takes.push(serde_json::json!({"demolished": demolished, "erased_cells": erased,
             "inherited_cells": inherited}));
+    }
+    serde_json::Value::Array(takes)
+}
+
+// The in-place edits of `ZONE-10` on the neighbourhood, after the demolitions: each committed
+// through its own transaction and published, with the edit's and the publication's wall time,
+// the buildings it demolished and the paint its record erased and its new cells inherited.
+// Clear of the demolitions' rows, the trunk and the row blocks' parking lots. Returns the takes,
+// the products every tier must equal.
+fn profile_in_place_edits(core: &mut SimCore, background: usize) -> serde_json::Value {
+    use crate::simulation::network::graph::RoadParking;
+    use crate::simulation::network::pockets::PocketRequest;
+    use crate::simulation::network::road_types::RoadAttributes;
+    use crate::simulation::network::roadbed::EdgeEnd;
+    use crate::simulation::network::roundabouts::{
+        RoundaboutRequest, RoundaboutSite, default_diameter_m,
+    };
+    let node_at = |core: &SimCore, x: f32, z: f32| {
+        let y = core.heightmap.sample_height_world(x, z);
+        core.region_graph
+            .find_node_within(Vector3::new(x, y, z), 1.0)
+            .unwrap_or_else(|| panic!("a junction at ({x}, {z})"))
+    };
+    // The live edge between two nodes and its end at `to`.
+    let edge_between = |core: &SimCore, from: u32, to: u32| {
+        let graph = &core.region_graph;
+        graph
+            .node_adjacency(to)
+            .iter()
+            .copied()
+            .filter(|&edge| !graph.edge(edge).deleted)
+            .find_map(|edge| {
+                let record = graph.edge(edge);
+                let (start, end) = (
+                    graph.get_valid_node(record.start_node),
+                    graph.get_valid_node(record.end_node),
+                );
+                (start == from && end == to)
+                    .then_some((edge, EdgeEnd::End))
+                    .or((start == to && end == from).then_some((edge, EdgeEnd::Start)))
+            })
+            .expect("a street between the nodes")
+    };
+    let mut takes = Vec::new();
+    for name in ["widening", "pocket", "ring", "move"] {
+        let (buildings, households, agents) = (
+            core.allocator.buildings.len(),
+            core.households.households.len(),
+            core.agents.len(),
+        );
+        let depth = core.undo_stack.len();
+        let terrain = core.terrain_dirty_patch_states();
+        core.acknowledge_terrain_render_patches(&terrain);
+        let start = Instant::now();
+        let applied = match name {
+            // Row 11's west block.
+            "widening" => {
+                let (west, east) = (node_at(core, -400.0, 150.0), node_at(core, 0.0, 150.0));
+                let (edge, _) = edge_between(core, west, east);
+                let attributes = RoadAttributes::of_edge(core.region_graph.edge(edge));
+                core.set_edge_cross_section_internal(
+                    edge as i32,
+                    2,
+                    2,
+                    None,
+                    RoadParking::NONE,
+                    attributes,
+                )
+            }
+            // Row 13's west block into the crossing at x = 0.
+            "pocket" => {
+                let (west, junction) = (node_at(core, -400.0, 250.0), node_at(core, 0.0, 250.0));
+                let (edge, end) = edge_between(core, west, junction);
+                core.set_road_pocket_internal(PocketRequest {
+                    edge,
+                    end,
+                    left: false,
+                    right: true,
+                    body_m: 40.0,
+                })
+            }
+            "ring" => {
+                let site = RoundaboutSite::Junction(node_at(core, 0.0, 350.0));
+                core.place_roundabout_internal(RoundaboutRequest {
+                    site,
+                    diameter_m: default_diameter_m(site.lanes(&core.region_graph)),
+                })
+            }
+            // Row 14's west T, into the block to its north-east.
+            _ => {
+                let node = node_at(core, -400.0, 300.0);
+                let to = Vector3::new(-394.0, core.heightmap.sample_height_world(-394.0, 306.0), 306.0);
+                core.move_network_node_taking_land_internal(node as i32, to)
+            }
+        };
+        let edit_ms = start.elapsed().as_secs_f64() * 1e3;
+        assert!(
+            applied,
+            "the {name} is refused: {:?}",
+            core.last_road_rejection.take()
+        );
+        let start = Instant::now();
+        core.finalize_network_render_products();
+        let publish_ms = start.elapsed().as_secs_f64() * 1e3;
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+        assert_eq!(core.undo_stack.len(), depth + 1, "the {name} has one undo record");
+        let demolished = buildings - core.allocator.buildings.len();
+        let (erased, inherited) = core
+            .undo_stack
+            .back()
+            .and_then(|record| record.cells.as_ref())
+            .map_or((0, 0), |cells| (cells.erased().len(), cells.inherited().len()));
+        eprintln!(
+            "LOCALITY_IN_PLACE {}",
+            serde_json::json!({"background": background, "edit": name,
+                "buildings": buildings, "households": households, "agents": agents,
+                "demolished": demolished, "erased_cells": erased, "inherited_cells": inherited,
+                "edit_ms": edit_ms, "publish_ms": publish_ms})
+        );
+        assert!(demolished >= 1, "the {name} takes built lots: {demolished}");
+        takes.push(serde_json::json!({"edit": name, "demolished": demolished,
+            "erased_cells": erased, "inherited_cells": inherited}));
     }
     serde_json::Value::Array(takes)
 }

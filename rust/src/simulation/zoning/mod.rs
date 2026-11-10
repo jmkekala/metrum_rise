@@ -27,7 +27,8 @@ pub use profiles::{
 pub use system::ZoningSystem;
 pub(crate) use system::{
     CellLotGeneration, CellLotPlanner, CellLotRemovalUndo, CellPaintUndo, CellZoningEdit,
-    PlannedCellLots, RoadPaint, ZoningParcelRemovalUndo, road_piece_newly_covers,
+    PlannedCellLots, RoadPaint, ZoningParcelRemovalUndo, footprint_newly_covers,
+    road_piece_newly_covers,
 };
 pub use zone_type::ZoneType;
 

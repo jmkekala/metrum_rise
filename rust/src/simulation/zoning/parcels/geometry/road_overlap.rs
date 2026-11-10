@@ -72,33 +72,3 @@ pub(crate) fn geometry_overlaps_road_corridor_segment(
         [geometry.tangent, geometry.normal, tangent, normal],
     )
 }
-
-// Whether a parcel touches the disc of `radius_m` at `centre`: the nearest point of its rectangle
-// lies within the radius (the centre itself when it stands in the parcel), for a roundabout's
-// land (`ROAD-62`). O(1).
-pub(crate) fn geometry_overlaps_disc(
-    geometry: &ParcelGeometry,
-    centre: Vector2,
-    radius_m: f32,
-) -> bool {
-    let corners = &geometry.corners;
-    let cross = |a: Vector2, b: Vector2| {
-        let (edge, to_centre) = (b - a, centre - a);
-        edge.x * to_centre.y - edge.y * to_centre.x
-    };
-    let turns = (0..4).map(|i| cross(corners[i], corners[(i + 1) % 4]));
-    let (mut any_left, mut any_right) = (false, false);
-    for turn in turns {
-        any_left |= turn > 0.0;
-        any_right |= turn < 0.0;
-    }
-    if !(any_left && any_right) {
-        return true;
-    }
-    (0..4).any(|i| {
-        let (a, b) = (corners[i], corners[(i + 1) % 4]);
-        let edge = b - a;
-        let along = (centre - a).dot(edge) / edge.length_squared().max(OVERLAP_EPSILON_M);
-        (a + edge * along.clamp(0.0, 1.0)).distance_to(centre) < radius_m
-    })
-}

@@ -193,8 +193,9 @@ fn narrow_road_marks_match_marking_the_whole_refreshed_ring() {
         commit(core, (-H - 36.0, 0.0), (-H - 36.0, -70.0))
     });
     // Painted grid junctions moved 1 m, an edge T and an interior crossing, would carry their
-    // roads onto painted lots, so both moves are refused (`ROAD-68` open question 2) and leave
-    // every product, and the undo history, as it was.
+    // roads onto painted lots, so both drag steps are refused as pending the land they would take
+    // (`ROAD-68` open question 2, `ZONE-10` decision D-move) and leave every product, and the undo
+    // history, as it was.
     for (name, at, to) in [
         ("grid node move", (H, 150.0), (H + 1.0, 150.0)),
         ("interior node move", (0.0, -250.0), (1.0, -250.0)),
@@ -205,7 +206,7 @@ fn narrow_road_marks_match_marking_the_whole_refreshed_ring() {
             let target = point(core, to.0, to.1);
             assert!(!core.move_network_node_internal(node as i32, target), "{name}");
             let reason = core.last_road_rejection.take().map(|rejection| rejection.reason);
-            assert_eq!(reason.as_deref(), Some("zoning_cell_overlap"), "{name}");
+            assert_eq!(reason.as_deref(), Some("pending_demolition"), "{name}");
         }
         let after = cores.each_mut().map(|core| (products(core), core.undo_stack.len()));
         assert_eq!(before, after, "{name}: a refused move changes nothing");

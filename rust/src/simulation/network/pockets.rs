@@ -656,8 +656,9 @@ pub(crate) fn migrate_pocket_dependents(
 
 /// Moves the dependents of arms a roundabout cut (`ROAD-62`), journaled for its undo: an arm that
 /// lost its start drops the whole cells before the cut, as the second half of a split does, and
-/// every building takes its frontage along the shorter arm. The land under the cut carries no
-/// parcel (the plan refused it), so a cell dropped holds no building.
+/// every building takes its frontage along the shorter arm. The edit took the land under the
+/// ring and its island first (`ZONE-10`, decision D-ring), demolishing the buildings on it, so a
+/// cell dropped holds no building.
 /// `O(the arms' buildings + occupancy cells)`, plus the chunk candidates' test.
 pub(crate) fn migrate_arm_trims(
     graph: &RegionGraph,
@@ -673,6 +674,18 @@ pub(crate) fn migrate_arm_trims(
         } else {
             0
         };
+        // The land a cut drops lies on the ring's disc, whose zoned land the edit took first:
+        // no building fronts the dropped part of an arm. A cell lot's building keeps no cell
+        // index (`cell_x` 0), so its frontage station is read. Debug builds only: O(B).
+        debug_assert!(
+            !trim.at_start
+                || allocator.buildings.iter().all(|building| {
+                    building.edge_idx != trim.edge
+                        || building.frontage_t * trim.old_length_m >= dropped_m
+                }),
+            "a building fronts the cut of arm {}",
+            trim.edge
+        );
         let mut rows = Vec::new();
         allocator.migrate_trim_frontages(
             graph,
@@ -689,6 +702,7 @@ pub(crate) fn migrate_arm_trims(
             } else {
                 0..cells.cells_long.min((trim.new_length_m / cell_m).ceil() as usize)
             };
+
             cells.cells_long = kept.len();
             cells.left = cells.left[kept.clone()].to_vec();
             cells.right = cells.right[kept].to_vec();

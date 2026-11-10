@@ -3,19 +3,24 @@
 //! The turn pocket edit (`ROAD-95`, PLAN-R5 2.5) on the cross-section edit's transaction shape
 //! (`ROAD-80`, `ROAD-74`): the plan ([`PocketPlan`]) is applied to the graph, the junction, the
 //! transition and the base road's far node are laid out again, their closure is compiled into a
-//! scratch roadbed (fields, painted cells, steepened profiles, node pieces) and the graph is put
-//! back; a pocket that widens the road is also checked against water, parcels and the curve
-//! radius on its carriageway's own axis (D17: the offset polyline, exact on both sides). The
-//! preview is that check, so the verdict is the commit's (D11). The commit applies the plan
-//! again, moves the pair's buildings and occupancy (journaled), rebuilds lanes, cars and
-//! entrances locally and pushes the check's checkpoint with the dependents journal as its undo
-//! record. The check is `O(edge points + closure pieces)`; the commit adds `O(the pair's
+//! scratch roadbed (plotted land, the zoned land it takes, steepened profiles, node pieces) and
+//! the graph is put back; a pocket that widens the road is also checked against water and the
+//! curve radius on its carriageway's own axis (D17: the offset polyline, exact on both sides).
+//! The preview is that check, so the verdict is the commit's (D11). The commit applies the plan
+//! again, takes the zoned land the pocket newly covers (`ZONE-10`), moves the surviving
+//! buildings and occupancy of the pair (journaled), rebuilds lanes, cars and entrances locally
+//! and pushes the check's checkpoint with the dependents journal and the erased paint as its
+//! undo record. The check is `O(edge points + closure pieces)`; the commit adds `O(the pair's
 //! buildings + occupancy + local lanes)` and the undo's parallel `O(A / P + B / P)` membership
 //! passes. Nothing here runs per tick.
 
-use super::core::{RoadRejection, SimCore, SimulationRuntimeSnapshot, SimulationSnapshot};
+use super::core::{
+    RoadLandTake, RoadRejection, SimCore, SimulationRuntimeSnapshot, SimulationSnapshot,
+};
+use super::editing::TriedGraphEdit;
 use crate::debug_log;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
+use crate::simulation::zoning::CellPaintUndo;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::pockets::{
     PocketApplied, PocketDependentsUndo, PocketEndView, PocketPlan, PocketRequest, PocketState,
@@ -59,9 +64,11 @@ pub(crate) struct JunctionPocketArm {
     pub(crate) base: (RoadCrossSection, u16, bool),
 }
 
-// One tried edit: its undo checkpoint, the plan, the nodes laid out and the verdict.
+// One tried edit: its undo checkpoint, the land it takes, the plan, the nodes laid out and the
+// verdict.
 struct TriedPocket {
     checkpoint: RegionGraphUndoDelta,
+    take: RoadLandTake,
     plan: PocketPlan,
     edges: HashSet<usize>,
     nodes: HashSet<u32>,
@@ -125,7 +132,8 @@ impl SimCore {
     }
 
     /// Gives a road end the turn pocket `request` asks for, resizes or changes its pocket, or
-    /// removes it (both roles off), with an undo record (`ROAD-95`). Returns whether it was
+    /// removes it (both roles off), with an undo record (`ROAD-95`). A pocket takes the zoned
+    /// land its pieces newly cover as a road stroke does (`ZONE-10`). Returns whether it was
     /// applied; a refused edit ([`Self::preview_road_pocket_internal`]) changes nothing and
     /// leaves its reason in `last_road_rejection`. The caller publishes the rebuilt pieces
     /// ([`Self::finalize_network_render_products`]), as after a crossing toggle. The verdict's
@@ -133,6 +141,9 @@ impl SimCore {
     pub(crate) fn set_road_pocket_internal(&mut self, request: PocketRequest) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
+        // The take reads the explicit sites through the site index, as a stroke's commit does.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
         let tried = match self.try_pocket_edit(request) {
             Ok(tried) => tried,
             Err(rejection) => {
@@ -149,12 +160,17 @@ impl SimCore {
         };
         let TriedPocket {
             checkpoint,
+            take,
             plan,
             edges,
             nodes,
             verdict,
         } = tried;
         let (applied, changed) = self.apply_pocket_plan(&plan, &nodes);
+        // The land the pocket covers, before the dependents move (its journal then holds only
+        // the buildings that stay) and before the lanes rebuild (`ZONE-10`).
+        let erased = self.take_land_for_edit(take);
+        let erased_paint = erased.is_some();
         let affected: HashSet<usize> = edges
             .into_iter()
             .chain(changed.iter().copied())
@@ -178,13 +194,16 @@ impl SimCore {
         // as an undo restores them. Godot's main thread runs this edit, and the passes are
         // parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| self.restore_lanes_locally(&affected, &nodes));
-        self.push_pocket_undo(checkpoint, dependents);
+        self.push_pocket_undo(checkpoint, dependents, erased);
         if !self.benchmark_mode && verdict.cost_delta > 0.0 {
             self.treasury.deduct_build_cost(verdict.cost_delta);
         }
         // Deferred like a commit's (D7, `ROAD-68-G`).
         self.schedule_cch_rebuild_of_live_graph();
         self.mark_local_network_render_dirty();
+        if erased_paint {
+            self.plan_lots_after_erase();
+        }
         true
     }
 
@@ -201,9 +220,9 @@ impl SimCore {
 
     // The edit's check: the plan's cheap refusals, then the graph edit, whose closure must
     // compile (a junction corner that no longer fits beside the wider arm is
-    // `pocket_road_too_short`, PLAN-R5 risk 3), keep clear of reserved land and steepen no
-    // profile; a widening pocket's corridor must also keep clear of water and parcels and fit
-    // its curves.
+    // `pocket_road_too_short`, PLAN-R5 risk 3), keep clear of plotted land and steepen no
+    // profile; a widening pocket's corridor must also keep clear of water and fit its curves.
+    // The zoned land it newly covers is its take (`ZONE-10`).
     fn try_pocket_edit(&mut self, request: PocketRequest) -> Result<TriedPocket, RoadRejection> {
         let plan = PocketPlan::prepare(&self.region_graph, request)
             .map_err(|reason| RoadRejection::new(reason, format!("{request:?}")))?;
@@ -233,7 +252,7 @@ impl SimCore {
         let widens = plan.pocket().is_some();
         let mut corridor = None;
         let mut cost_after = 0.0;
-        let tried = self.try_graph_edit(&edges, &nodes, |core| {
+        let tried = self.try_graph_edit(&edges, &nodes, &[], |core| {
             let (applied, changed) = core.apply_pocket_plan(&plan, &nodes);
             let pieces: Vec<usize> = applied
                 .edges()
@@ -255,9 +274,10 @@ impl SimCore {
         if let Some(rejection) = corridor {
             return Err(rejection);
         }
-        let checkpoint = tried?;
+        let TriedGraphEdit { checkpoint, take } = tried?;
         Ok(TriedPocket {
             checkpoint,
+            take,
             plan,
             edges,
             nodes,
@@ -306,9 +326,9 @@ impl SimCore {
     }
 
     // Why pocket edge `edge_idx` (applied on the graph) cannot stay, read on its carriageway's
-    // axis (D17), whose half-width is exact on both sides: a standard road over water, a parcel
-    // inside its corridor, or a curve tighter than the illegal radius at its width. The far side
-    // keeps the base road's line, so a parcel there stays legal. O(points + parcel hits).
+    // axis (D17), whose half-width is exact on both sides: a standard road over water, or a
+    // curve tighter than the illegal radius at its width. The land its pieces newly cover is the
+    // closure's take (`ZONE-10`). O(points).
     fn pocket_corridor_refusal(&self, edge_idx: usize) -> Option<RoadRejection> {
         let edge = self.region_graph.edge(edge_idx);
         let axis = edge.carriageway_axis(centreline(edge));
@@ -321,18 +341,6 @@ impl SimCore {
             return Some(RoadRejection::new(
                 "water_requires_bridge",
                 format!("pocket edge {edge_idx} would reach visible water"),
-            ));
-        }
-        let parcels = self
-            .zoning
-            .parcel_ids_overlapping_road_corridor(&axis, half_width_m);
-        if let Some(first) = parcels.first() {
-            return Some(RoadRejection::new(
-                "parcel_overlap",
-                format!(
-                    "pocket edge {edge_idx} would overlap {} parcel(s), first {first}",
-                    parcels.len()
-                ),
             ));
         }
         let mut violations = Vec::new();
@@ -359,11 +367,13 @@ impl SimCore {
     }
 
     // The pocket edit's undo record: the graph checkpoint (whole records; the transition and
-    // second edge an add appended drop past the original counts) and the dependents journal.
+    // second edge an add appended drop past the original counts), the dependents journal and the
+    // paint the land take erased (`ZONE-10`).
     pub(super) fn push_pocket_undo(
         &mut self,
         checkpoint: RegionGraphUndoDelta,
         dependents: PocketDependentsUndo,
+        cells: Option<CellPaintUndo>,
     ) {
         self.push_undo_snapshot(SimulationSnapshot {
             roadbed: None,
@@ -372,7 +382,7 @@ impl SimCore {
             water: None,
             trans_graph: Some(checkpoint),
             zoning: None,
-            cells: None,
+            cells,
             runtime: Some(SimulationRuntimeSnapshot::RoadDependents(dependents)),
         });
     }

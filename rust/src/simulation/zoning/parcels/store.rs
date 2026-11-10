@@ -10,7 +10,7 @@ mod tests;
 pub(crate) use planned::{PlannedParcelChange, PlannedParcels};
 
 use super::geometry::{
-    chunk_key, chunks_for_aabb, geometry_for_parcel, geometry_overlaps_disc,
+    chunk_key, chunks_for_aabb, geometry_for_parcel,
     geometry_overlaps_road_corridor_segment,
     point_inside_parcel, rectangles_overlap_geometry, segment_touches_parcel,
 };
@@ -404,20 +404,6 @@ impl ParcelStore {
         let mut overlapped = HashSet::new();
         self.collect_ids_overlapping_corridor(points, half_width_m, &mut tested, &mut overlapped);
         let mut ids: Vec<_> = overlapped.into_iter().collect();
-        ids.sort_unstable();
-        ids
-    }
-
-    /// The parcels touching the disc of `radius_m` at `centre`, ascending: a roundabout's land
-    /// (`ROAD-62`). O(parcels in the disc's bounds).
-    pub(crate) fn ids_overlapping_disc(&self, centre: Vector2, radius_m: f32) -> Vec<ParcelId> {
-        let reach = Vector2::new(radius_m, radius_m);
-        let mut ids = Vec::new();
-        self.visit_in_bounds(centre - reach, centre + reach, |parcel| {
-            if geometry_overlaps_disc(&geometry_for_parcel(parcel), centre, radius_m) {
-                ids.push(parcel.id());
-            }
-        });
         ids.sort_unstable();
         ids
     }

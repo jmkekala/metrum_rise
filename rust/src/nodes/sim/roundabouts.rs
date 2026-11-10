@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The roundabout edit (`ROAD-62`) on the turn pocket's transaction shape (`ROAD-95`): the plan
-//! ([`RoundaboutLayout`]) is checked against water and parcels, applied to the graph, the ring
-//! nodes and the arms' far nodes are laid out, their closure is compiled into a scratch roadbed
-//! (fields, painted cells, steepened profiles, node pieces) and the graph is put back. The preview
-//! is that check, so the verdict is the commit's (D11). The commit applies the plan again, moves
-//! the trimmed arms' buildings and occupancy (journaled), rebuilds lanes, cars and entrances
-//! locally, pushes the check's checkpoint with the dependents journal as its undo record and
-//! charges the ring's build cost. The check is `O(arm points + ring points + closure pieces)`; the
+//! ([`RoundaboutLayout`]) is checked against water, applied to the graph, the ring nodes and the
+//! arms' far nodes are laid out, their closure is compiled into a scratch roadbed (plotted land
+//! under the pieces or the island, the zoned land they take, steepened profiles, node pieces) and
+//! the graph is put back. The preview is that check, so the verdict is the commit's (D11). The
+//! commit applies the plan again, takes the zoned land under the ring and its island
+//! (`ZONE-10`), moves the trimmed arms' surviving buildings and occupancy (journaled), rebuilds
+//! lanes, cars and entrances locally, pushes the check's checkpoint with the dependents journal
+//! and the erased paint as its undo record and charges the ring's build cost. The check is `O(arm points + ring points + closure pieces)`; the
 //! commit adds `O(the arms' buildings + occupancy + local lanes)` and the undo's parallel
 //! `O(A / P + B / P)` membership passes. Nothing here runs per tick.
 
-use super::core::{RoadRejection, SimCore};
-use crate::config;
+use super::core::{RoadLandTake, RoadRejection, SimCore};
+use super::editing::TriedGraphEdit;
 use crate::debug_log;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::pockets::{PocketDependentsUndo, migrate_arm_trims};
@@ -57,9 +58,10 @@ pub(crate) struct RoundaboutVerdict {
     pub(crate) arms: Vec<(usize, Vector3)>,
 }
 
-// One tried edit: its undo checkpoint, the plan, the closure and the verdict.
+// One tried edit: its undo checkpoint, the land it takes, the plan, the closure and the verdict.
 struct TriedRoundabout {
     checkpoint: RegionGraphUndoDelta,
+    take: RoadLandTake,
     layout: RoundaboutLayout,
     edges: HashSet<usize>,
     nodes: HashSet<u32>,
@@ -95,14 +97,19 @@ impl SimCore {
         }
     }
 
-    /// Builds the roundabout `request` asks for, with an undo record (`ROAD-62`). Returns whether
-    /// it was applied; a refused edit ([`Self::preview_roundabout_internal`]) changes nothing and
+    /// Builds the roundabout `request` asks for, with an undo record (`ROAD-62`). The ring takes
+    /// the zoned land its pieces and its island newly cover as a road stroke does (`ZONE-10`,
+    /// decision D-ring): a lot inside the island would keep no street. Returns whether it was
+    /// applied; a refused edit ([`Self::preview_roundabout_internal`]) changes nothing and
     /// leaves its reason in `last_road_rejection`. The caller publishes the rebuilt pieces
     /// ([`Self::finalize_network_render_products`]), as after a pocket edit. The ring's build
     /// cost is charged outside `benchmark_mode`.
     pub(crate) fn place_roundabout_internal(&mut self, request: RoundaboutRequest) -> bool {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
+        // The take reads the explicit sites through the site index, as a stroke's commit does.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
         let tried = match self.try_roundabout_edit(request) {
             Ok(tried) => tried,
             Err(rejection) => {
@@ -119,6 +126,7 @@ impl SimCore {
         };
         let TriedRoundabout {
             checkpoint,
+            take,
             layout,
             edges,
             nodes,
@@ -126,6 +134,10 @@ impl SimCore {
         } = tried;
         let trims = layout.arm_trims(&self.region_graph);
         let (applied, changed) = self.apply_roundabout_layout(&layout, &nodes);
+        // The land under the ring and its island, before the trimmed arms' dependents move (no
+        // building is left on the land a cut drops) and before the lanes rebuild (`ZONE-10`).
+        let erased = self.take_land_for_edit(take);
+        let erased_paint = erased.is_some();
         let affected: HashSet<usize> = edges
             .into_iter()
             .chain(changed)
@@ -150,7 +162,7 @@ impl SimCore {
                 lanes.retire_node_lanes([old as usize]);
             }
         });
-        self.push_pocket_undo(checkpoint, dependents);
+        self.push_pocket_undo(checkpoint, dependents, erased);
         if !self.benchmark_mode && verdict.cost > 0.0 {
             self.treasury.deduct_build_cost(verdict.cost);
         }
@@ -159,6 +171,9 @@ impl SimCore {
         self.transit_network.flow_fields.mark_all_dirty();
         self.mark_local_network_render_dirty();
         self.terrain_dirty = true;
+        if erased_paint {
+            self.plan_lots_after_erase();
+        }
         true
     }
 
@@ -173,23 +188,24 @@ impl SimCore {
         self.try_roundabout_edit(request).map(|tried| tried.verdict)
     }
 
-    // The edit's check: the plan's refusals, the land under the ring, then the graph edit, whose
+    // The edit's check: the plan's refusals, water under the ring, then the graph edit, whose
     // closure must compile (arms closer than their mouths are `roundabout_arms_too_close`, any
-    // other node that fails has too short an approach), keep clear of reserved land and steepen
-    // no profile.
+    // other node that fails has too short an approach), keep its pieces and its island clear of
+    // plotted land and steepen no profile; the zoned land they newly cover is its take.
     fn try_roundabout_edit(
         &mut self,
         request: RoundaboutRequest,
     ) -> Result<TriedRoundabout, RoadRejection> {
         let layout = RoundaboutLayout::prepare(&self.region_graph, request)
             .map_err(|reason| RoadRejection::new(reason, format!("{request:?}")))?;
-        if let Some(rejection) = self.roundabout_land_refusal(&layout) {
+        if let Some(rejection) = self.roundabout_water_refusal(&layout) {
             return Err(rejection);
         }
         let (edges, nodes) = self.roundabout_closure(&layout);
         let mut crowded = None;
         let mut cost = 0.0;
-        let tried = self.try_graph_edit(&edges, &nodes, |core| {
+        let island = [layout.island_footprint()];
+        let tried = self.try_graph_edit(&edges, &nodes, &island, |core| {
             let (applied, changed) = core.apply_roundabout_layout(&layout, &nodes);
             cost = core.build_cost_of(&applied.ring) * BUILD_COST_PER_M;
             crowded = ring_corner_refusal(core, &applied);
@@ -199,7 +215,7 @@ impl SimCore {
                 .chain(applied.arms)
                 .collect()
         });
-        let checkpoint = tried.map_err(|rejection| {
+        let TriedGraphEdit { checkpoint, take } = tried.map_err(|rejection| {
             if rejection.reason == "node_piece_failed" {
                 let reason = crowded.unwrap_or("roundabout_arm_too_short");
                 RoadRejection::new(reason, rejection.detail)
@@ -214,6 +230,7 @@ impl SimCore {
         };
         Ok(TriedRoundabout {
             checkpoint,
+            take,
             layout,
             edges,
             nodes,
@@ -221,10 +238,9 @@ impl SimCore {
         })
     }
 
-    // Why the ring cannot stand on its land: water under its corridor, or a parcel on the disc
-    // it takes, the island included (the road it would front is gone: a lot there would keep no
-    // street). Painted cells and fields are the closure's. `O(ring points + parcel hits)`.
-    fn roundabout_land_refusal(&self, layout: &RoundaboutLayout) -> Option<RoadRejection> {
+    // Why the ring cannot stand where it is planned: water under its corridor. The land under
+    // its pieces and its island is the closure's take (`ZONE-10`). `O(ring points)`.
+    fn roundabout_water_refusal(&self, layout: &RoundaboutLayout) -> Option<RoadRejection> {
         for edge in layout.ring_edges() {
             if self.watermap.road_corridor_overlaps_visible_water(
                 &edge.geometry,
@@ -236,21 +252,7 @@ impl SimCore {
                 ));
             }
         }
-        let circle = layout.circle();
-        let half = 0.5 * f32::from(layout.lanes()) * config::LANE_WIDTH;
-        let disc_m = circle.radius_m + half + config::SIDEWALK_WIDTH;
-        let parcels = self
-            .zoning
-            .parcel_ids_overlapping_disc(circle.centre, disc_m);
-        parcels.first().map(|first| {
-            RoadRejection::new(
-                "parcel_overlap",
-                format!(
-                    "the ring would overlap {} parcel(s), first {first}",
-                    parcels.len()
-                ),
-            )
-        })
+        None
     }
 
     // The closure of the edit: the old junction, the arms' far nodes and every arm of them, and
@@ -330,12 +332,12 @@ impl SimCore {
                 changed,
             );
         };
-        let tried = self.try_graph_edit(&edges, &nodes, |core| {
+        let tried = self.try_graph_edit(&edges, &nodes, &[], |core| {
             let mut changed = HashSet::new();
             removal(core, &mut changed);
             changed
         });
-        let checkpoint = match tried {
+        let checkpoint = match tried.and_then(TriedGraphEdit::keeping_zoned_land) {
             Ok(checkpoint) => checkpoint,
             Err(rejection) => {
                 debug_log!(
@@ -348,7 +350,7 @@ impl SimCore {
                 return false;
             }
         };
-        self.push_network_undo_delta(checkpoint, None);
+        self.push_network_undo_delta(checkpoint, None, None);
         let mut changed = HashSet::new();
         removal(self, &mut changed);
         debug_assert!(changed.is_subset(&edges));

@@ -237,10 +237,11 @@ fn lane_edits_are_refused_with_a_reason() {
     assert_eq!(edit_lanes(&mut core, west, 1, 0), "");
 }
 
-// `ROAD-80` (3): a widening reaches a parcel fronting the road, or painted cells beside it, or
-// water beside it, or turns too tightly for its new width: refused, nothing changed.
+// `ROAD-80` (3), `ZONE-10`: a widening takes a parcel fronting the road and the paint of cells
+// beside it that its pieces newly cover, as a stroke does; water beside it, or a curve too tight
+// for its new width, refuses it with nothing changed.
 #[test]
-fn a_widening_keeps_clear_of_parcels_cells_water_and_tight_curves() {
+fn a_widening_takes_parcels_and_cells_and_keeps_clear_of_water_and_tight_curves() {
     use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
     use glam::DVec2;
     // A parcel east of the side road.
@@ -250,10 +251,13 @@ fn a_widening_keeps_clear_of_parcels_cells_water_and_tight_curves() {
         .profiles
         .default_runtime_id_for_zone_type(ZoneType::Residential)
         .unwrap();
-    core.zoning
+    let parcel = core
+        .zoning
         .place_or_rezone_default_parcel_at(12.0, 60.0, residential, &core.region_graph)
-        .expect("a parcel fronting the side road");
-    assert_eq!(edit_lanes(&mut core, side, 3, 3), "parcel_overlap");
+        .expect("a parcel fronting the side road")
+        .raw();
+    assert_eq!(edit_lanes(&mut core, side, 3, 3), "");
+    assert!(core.zoning.parcel_by_raw_id(parcel).is_none(), "the widening takes the parcel");
 
     // Painted cells east of the side road.
     let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
@@ -271,7 +275,12 @@ fn a_widening_keeps_clear_of_parcels_cells_water_and_tight_curves() {
         .select(CellSelectionShape::Cell, &[DVec2::new(9.0, 60.0)]);
     assert!(!selection.cells.is_empty());
     core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
-    assert_eq!(edit_lanes(&mut core, side, 3, 3), "zoning_cell_overlap");
+    assert_eq!(edit_lanes(&mut core, side, 3, 3), "");
+    let erased = core.undo_stack.back().and_then(|record| record.cells.as_ref());
+    assert!(
+        erased.is_some_and(|cells| cells.erased() == [(selection.cells[0], 1)]),
+        "the widening erases the covered cell's paint into its undo record"
+    );
 
     // A pond 7-12 m east of the side road's centreline, 40-60 m up it.
     let mut core = test_core();
@@ -814,11 +823,11 @@ fn zoning_off_in_place_removes_the_roads_parcels_and_buildings() {
     assert!(!core.region_graph.edge(west).no_building_spawn);
 }
 
-// `ROAD-101` (A.4): adding sidewalks widens the roadbed though not the carriageway, so the
-// widening checks run on the roadbed half-width: a parcel inside the 1.5 m sidewalk band, clear
-// of the 0.75 m shoulder, refuses it; removing them is a narrowing and never checked.
+// `ROAD-101` (A.4), `ZONE-10`: adding sidewalks widens the roadbed though not the carriageway: a
+// parcel inside the 1.5 m sidewalk band, clear of the 0.75 m shoulder, is taken by the sidewalk's
+// pieces; removing them is a narrowing and takes nothing.
 #[test]
-fn sidewalks_added_next_to_a_parcel_are_refused() {
+fn sidewalks_added_next_to_a_parcel_take_it() {
     use crate::simulation::zoning::ParcelGeometry;
     let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
     let shoulders = RoadAttributes::new(50, SidewalkSides::NONE, true);
@@ -832,7 +841,7 @@ fn sidewalks_added_next_to_a_parcel_are_refused() {
         .profiles
         .default_runtime_id_for_zone_type(ZoneType::Residential)
         .unwrap();
-    core.zoning.parcels.insert_new(
+    let parcel = core.zoning.parcels.insert_new(
         ParcelGeometry {
             edge_idx: side,
             side: 1,
@@ -851,21 +860,24 @@ fn sidewalks_added_next_to_a_parcel_are_refused() {
     );
     assert_eq!(
         edit(&mut core, side, (1, 1, None), RoadAttributes::DEFAULT),
-        "parcel_overlap"
+        ""
     );
+    assert!(core.zoning.parcel_by_raw_id(parcel.raw()).is_none(), "the sidewalks take it");
+    let parcels = core.zoning.parcels.parcels().len();
     assert_eq!(
         edit(&mut core, side, (1, 1, None), RoadAttributes::new(70, SidewalkSides::NONE, true)),
         ""
     );
+    assert_eq!(core.zoning.parcels.parcels().len(), parcels, "a narrowing takes nothing");
 }
 
-// `ROAD-107`: a sidewalk added on a road's shoulder side leaves the roadbed's larger side alone
-// but still widens that side, so the widening checks run: a parcel inside it refuses both the
-// second sidewalk and moving the one sidewalk over. Taking the sidewalk off is never checked. The
-// corridor is the stroke's, reached to both sides of the road, so a sidewalk added opposite the
-// parcel on a road with none is refused too (D4).
+// `ROAD-107`, `ZONE-10`: a sidewalk added on a road's shoulder side leaves the roadbed's larger
+// side alone but still widens that side, so its pieces take a parcel inside it, both for the
+// second sidewalk and for moving the one sidewalk over. The land is judged on the pieces, not on
+// the stroke's corridor reached to both sides: a sidewalk added opposite the parcel takes
+// nothing. Taking the sidewalk off is a narrowing and takes nothing.
 #[test]
-fn a_sidewalk_added_on_the_shoulder_side_is_checked_against_parcels() {
+fn a_sidewalk_added_on_the_shoulder_side_takes_the_parcels_beside_it() {
     use crate::simulation::zoning::ParcelGeometry;
     let (mut core, _, side, _) = t_junction_with_side(test_core(), 1, 1);
     // The side road runs along +z: its right (positive lateral) side is east or west.
@@ -887,39 +899,45 @@ fn a_sidewalk_added_on_the_shoulder_side_is_checked_against_parcels() {
         .unwrap();
     let corners = [at(0.0, 0.0), at(0.0, size), at(size, size), at(size, 0.0)];
     let (min_x, max_x) = (x0.min(x0 + right_x * size), x0.max(x0 + right_x * size));
-    core.zoning.parcels.insert_new(
-        ParcelGeometry {
-            edge_idx: side,
-            side: -1,
-            frontage_center_t: 0.6,
-            frontage_m: size,
-            depth_m: size,
-            front_center: at(0.0, size * 0.5),
-            center: at(size * 0.5, size * 0.5),
-            tangent: godot::prelude::Vector2::new(0.0, 1.0),
-            normal: godot::prelude::Vector2::new(right_x, 0.0),
-            corners,
-            aabb_min: godot::prelude::Vector2::new(min_x, z0),
-            aabb_max: godot::prelude::Vector2::new(max_x, z0 + size),
-        },
-        profile,
-    );
+    let insert = |core: &mut SimCore| {
+        core.zoning.parcels.insert_new(
+            ParcelGeometry {
+                edge_idx: side,
+                side: -1,
+                frontage_center_t: 0.6,
+                frontage_m: size,
+                depth_m: size,
+                front_center: at(0.0, size * 0.5),
+                center: at(size * 0.5, size * 0.5),
+                tangent: godot::prelude::Vector2::new(0.0, 1.0),
+                normal: godot::prelude::Vector2::new(right_x, 0.0),
+                corners,
+                aabb_min: godot::prelude::Vector2::new(min_x, z0),
+                aabb_max: godot::prelude::Vector2::new(max_x, z0 + size),
+            },
+            profile,
+        )
+        .raw()
+    };
+    let parcel = insert(&mut core);
     let sides = |sides| RoadAttributes::new(50, sides, true);
     assert_eq!(
         edit(&mut core, side, (1, 1, None), sides(SidewalkSides::LEFT)),
-        "parcel_overlap",
-        "the stroke's symmetric corridor"
+        "",
+        "a sidewalk opposite the parcel"
     );
-    // A left sidewalk beside the parcel, as a state the corridor check would not have let in,
-    // set directly: the larger side is already the sidewalk's.
-    core.region_graph
-        .edge_mut(side)
-        .set_sidewalks(SidewalkSides::LEFT);
+    assert!(core.zoning.parcel_by_raw_id(parcel).is_some(), "the far side takes nothing");
+    // From the left sidewalk, whose side is already the larger one, both a second sidewalk and
+    // the one moved over widen the parcel's side.
+    let mut parcel = Some(parcel);
     for gained in [SidewalkSides::BOTH, SidewalkSides::RIGHT] {
+        let id = parcel.take().unwrap_or_else(|| insert(&mut core));
+        assert_eq!(edit(&mut core, side, (1, 1, None), sides(gained)), "", "{gained:?}");
+        assert!(core.zoning.parcel_by_raw_id(id).is_none(), "{gained:?} takes the parcel");
+        assert!(core.undo_action_internal(), "{gained:?}");
         assert_eq!(
-            edit(&mut core, side, (1, 1, None), sides(gained)),
-            "parcel_overlap",
-            "{gained:?}"
+            core.region_graph.edge(side).sidewalk_sides(),
+            SidewalkSides::LEFT
         );
     }
     assert_eq!(edit(&mut core, side, (1, 1, None), sides(SidewalkSides::NONE)), "");

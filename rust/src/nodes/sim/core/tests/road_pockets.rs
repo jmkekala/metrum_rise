@@ -949,11 +949,11 @@ fn bulldozing_a_pocket_pair_resets_its_transition() {
     );
 }
 
-// D17: the pocket's corridor is its carriageway's, read on its own axis: a parcel 2 m beyond the
-// base road's sidewalk on the pocket side is refused, one as close on the far side is not.
+// D17: the pocket widens its carriageway on one side only: it takes a parcel 2 m beyond the base
+// road's sidewalk on the pocket side (`ZONE-10`), and leaves one as close on the far side.
 #[test]
 fn the_pocket_corridor_is_asymmetric() {
-    for (z, expected) in [(10.5, "parcel_overlap"), (-10.5, "")] {
+    for (z, taken) in [(10.5, true), (-10.5, false)] {
         let (mut core, node) = crossing(true);
         let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
         let residential = core
@@ -961,14 +961,17 @@ fn the_pocket_corridor_is_asymmetric() {
             .profiles
             .default_runtime_id_for_zone_type(ZoneType::Residential)
             .unwrap();
-        core.zoning
+        let parcel = core
+            .zoning
             .place_or_rezone_default_parcel_at(-40.0, z, residential, &core.region_graph)
-            .expect("a parcel fronting the west arm");
+            .expect("a parcel fronting the west arm")
+            .raw();
         assert_eq!(
             pocket_edit(&mut core, request(west, end, (false, true), 60.0)),
-            expected,
+            "",
             "parcel at z {z}"
         );
+        assert_eq!(core.zoning.parcel_by_raw_id(parcel).is_none(), taken, "parcel at z {z}");
     }
 }
 
@@ -977,8 +980,8 @@ fn the_pocket_corridor_is_asymmetric() {
 // oncoming side; the transition is laid out (a node piece) and no node fails; it costs what a
 // right pocket of the same length costs (D14). Preview is commit for the add, a resize, a right
 // pocket added beside it and the removal, which gives the base road back; undo restores the
-// pair. The corridor is checked on the widened side (D17): a parcel on the left of the approach
-// refuses a left pocket, one on the right does not. A junction with turn rules still refuses.
+// pair. The pocket widens one side (D17): a left pocket takes a parcel on the left of the
+// approach (`ZONE-10`), not one on the right. A junction with turn rules still refuses.
 #[test]
 fn a_left_pocket_on_an_undivided_road_widens_its_oncoming_side_through_the_edit() {
     for west_to_east in [true, false] {
@@ -1062,7 +1065,7 @@ fn a_left_pocket_on_an_undivided_road_widens_its_oncoming_side_through_the_edit(
         assert_eq!((restored.pocket.left, restored.pocket.right), (true, false));
         assert!((restored.body_m - 90.0).abs() < 1e-3);
     }
-    for (z, expected) in [(-10.5, "parcel_overlap"), (10.5, "")] {
+    for (z, taken) in [(-10.5, true), (10.5, false)] {
         let (mut core, node) = crossing(true);
         let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));
         let residential = core
@@ -1070,14 +1073,17 @@ fn a_left_pocket_on_an_undivided_road_widens_its_oncoming_side_through_the_edit(
             .profiles
             .default_runtime_id_for_zone_type(ZoneType::Residential)
             .unwrap();
-        core.zoning
+        let parcel = core
+            .zoning
             .place_or_rezone_default_parcel_at(-40.0, z, residential, &core.region_graph)
-            .expect("a parcel fronting the west arm");
+            .expect("a parcel fronting the west arm")
+            .raw();
         assert_eq!(
             pocket_edit(&mut core, request(west, end, (true, false), 60.0)),
-            expected,
+            "",
             "parcel at z {z}"
         );
+        assert_eq!(core.zoning.parcel_by_raw_id(parcel).is_none(), taken, "parcel at z {z}");
     }
     let (mut core, node) = crossing(true);
     let (west, end) = arm_end(&core, node, Vector3::new(-150.0, 0.0, 0.0));

@@ -4,7 +4,7 @@
 
 use super::road_preview::RoadPreviewRequest;
 use super::{RoadRejection, SimCore};
-use crate::simulation::agriculture::FieldClearanceIndex;
+use crate::simulation::agriculture::{FieldClearanceIndex, PolygonFootprint};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
     PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
@@ -13,8 +13,8 @@ use crate::simulation::network::roadbed::{PieceMesh, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::{
     ZoningSystem,
-    cells::{CellKey, CellMaps, CellStore},
-    road_piece_newly_covers,
+    cells::{CellBounds, CellKey, CellMaps, CellStore},
+    footprint_newly_covers, road_piece_newly_covers,
 };
 use glam::DVec2;
 use godot::prelude::{Vector2, Vector3};
@@ -34,77 +34,8 @@ pub(crate) struct RoadEditPlan {
     topology: Option<RoadTopologyPlan>,
 }
 
-/// A committed field or painted zoning cell under an edit's road pieces (`ROAD-68` open
-/// question 1). The pieces are the ones the edit publishes, so junction corners and terminal
-/// caps count as well as the spans. Node moves refuse on it (`ZONE-10`); a stroke's commit and
-/// the road tool's hover preview judge its pieces by [`RoadLandTake`] instead (`ZONE-09`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReservedOverlap {
-    /// A committed field reservation (`field_overlap`).
-    Field,
-    /// Painted zoning cells or their occupied grace claims (`zoning_cell_overlap`).
-    CellZoning,
-}
-
-impl ReservedOverlap {
-    /// The first reservation the edit's new pieces newly cover, piece by piece in order, fields
-    /// before cells; `before` are the pieces the edit replaces. A painted cell is refused when a
-    /// new piece covers it and no replaced piece did ([`ZoningSystem::cells_newly_covered_by_road_piece`]);
-    /// fields when a new piece overlaps one and no replaced piece overlapped any.
-    /// O(pieces * reservations in their bounds * top triangles); a piece with no reservation in
-    /// its bounds costs one bounds query each.
-    pub(crate) fn first<'a, M: CellMaps>(
-        fields: &FieldClearanceIndex,
-        cells: &CellStore<M>,
-        pieces: impl IntoIterator<Item = &'a PieceMesh>,
-        before: &[&PieceMesh],
-    ) -> Option<Self> {
-        let fields_before = before.iter().any(|mesh| fields.overlaps_road_piece(mesh));
-        pieces.into_iter().find_map(|mesh| {
-            if !fields_before && fields.overlaps_road_piece(mesh) {
-                Some(Self::Field)
-            } else if ZoningSystem::cells_newly_covered_by_road_piece(cells, mesh, before) {
-                Some(Self::CellZoning)
-            } else {
-                None
-            }
-        })
-    }
-
-    /// [`Self::first`] against the live core's fields and cells, as the commit checks.
-    pub(crate) fn first_in_core<'a>(
-        core: &SimCore,
-        pieces: impl IntoIterator<Item = &'a PieceMesh>,
-        before: &[&PieceMesh],
-    ) -> Option<Self> {
-        Self::first(
-            &core.allocator.field_clearance,
-            &core.zoning.cells,
-            pieces,
-            before,
-        )
-    }
-
-    /// The reason the commit reports and the preview shows for this overlap.
-    pub(crate) fn reason(self) -> &'static str {
-        match self {
-            Self::Field => "field_overlap",
-            Self::CellZoning => "zoning_cell_overlap",
-        }
-    }
-
-    /// The commit's report of this overlap.
-    pub(crate) fn rejection(self) -> RoadRejection {
-        let detail = match self {
-            Self::Field => "the road or its junctions overlap a farm field",
-            Self::CellZoning => "the road or its junctions overlap painted zoning cells",
-        };
-        RoadRejection::new(self.reason(), detail)
-    }
-}
-
-/// A plotted reservation under a road stroke's new pieces (`ZONE-09`): it refuses the stroke,
-/// where zoned land is taken.
+/// A plotted reservation under a road edit's new pieces (`ZONE-09`, `ZONE-10`): it refuses the
+/// stroke or the in-place edit, where zoned land is taken.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlottedOverlap {
     /// A committed farm field (`field_overlap`).
@@ -232,22 +163,25 @@ impl RoadLandSource for CoreLand<'_> {
     }
 }
 
-/// What a road stroke's new pieces take of the land under them (`ZONE-09`): a plotted
-/// reservation refuses the stroke; zoned land is taken, its lots removed with the buildings on
-/// them and the paint of its covered cells erased. Only land the edit newly covers counts, as
-/// for [`ReservedOverlap`]: a field or extraction area when a new piece overlaps one and no
-/// replaced piece overlapped any, a cell, lot or parcel when a new piece covers its road-contact
-/// interior and no replaced piece did ([`road_piece_newly_covers`]). `B` names the buildings as
-/// the source does ([`RoadLandSource::Building`]).
+/// What a road edit's new pieces take of the land under them (`ZONE-09`; the in-place edits,
+/// `ZONE-10`): a plotted reservation refuses the edit; zoned land is taken, its lots removed with
+/// the buildings on them and the paint of its covered cells erased. Only land the edit newly
+/// covers counts: a field or extraction area when a new piece overlaps one and no replaced piece
+/// overlapped any, a cell, lot or parcel when a new piece covers its road-contact interior and no
+/// replaced piece did ([`road_piece_newly_covers`]). An edit may take land beyond its pieces by
+/// the same rules, as extra footprints (a roundabout's island, decision D-ring:
+/// [`footprint_newly_covers`]). `B` names the buildings as the source does
+/// ([`RoadLandSource::Building`]).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoadLandTake<B = usize> {
     /// The first plotted reservation, pieces in order and each piece's field, then extraction
-    /// area, then explicit site; the other fields are empty when it is set.
+    /// area, then explicit site, then the extra footprints in order; the other fields are empty
+    /// when it is set.
     pub(crate) plotted: Option<PlottedOverlap>,
     /// The reserved cells the pieces newly cover, sorted by key, with their paint (zero for an
     /// occupied lot's grace claim).
     pub(crate) cells: Vec<(CellKey, u16)>,
-    /// The parcels the stroke removes, raw ids ascending: the lots claiming those cells and the
+    /// The parcels the edit removes, raw ids ascending: the lots claiming those cells and the
     /// authored parcels (`ZONE-01`) the pieces newly cover (decision D1).
     pub(crate) lots: Vec<u64>,
     /// A point inside each of `lots`, in the same order: the road tool's view finds a parcel by
@@ -270,24 +204,83 @@ impl<B> Default for RoadLandTake<B> {
     }
 }
 
+impl<B> RoadLandTake<B> {
+    /// Whether the edit takes no zoned land: no cell, lot or parcel.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cells.is_empty() && self.lots.is_empty()
+    }
+}
+
 impl RoadLandTake {
-    /// [`Self::of`] against the live core, as the commit takes it.
+    /// [`Self::of`] against the live core, as the commit takes it, with no extra footprint.
     pub(crate) fn in_core(core: &SimCore, pieces: &[&PieceMesh], before: &[&PieceMesh]) -> Self {
-        Self::of(&CoreLand(core), pieces, before)
+        Self::of(&CoreLand(core), pieces, before, &[])
+    }
+}
+
+// What newly covers land in a take: a piece the edit installs, or an extra footprint.
+#[derive(Clone, Copy)]
+enum Cover<'a> {
+    Piece(&'a PieceMesh),
+    Footprint(&'a PolygonFootprint<'static>),
+}
+
+impl Cover<'_> {
+    // World XZ bounds `[min_x, min_z, max_x, max_z]`.
+    fn bounds_xz(self) -> [f64; 4] {
+        match self {
+            Self::Piece(mesh) => mesh.bounds_xz(),
+            Self::Footprint(footprint) => {
+                [footprint.min.x, footprint.min.y, footprint.max.x, footprint.max.y].map(f64::from)
+            }
+        }
+    }
+
+    // Whether it newly covers a four-cornered footprint, `before` being the replaced pieces.
+    fn newly_covers(self, before: &[&PieceMesh], corners: &[DVec2; 4]) -> bool {
+        match self {
+            Self::Piece(mesh) => road_piece_newly_covers(mesh, before, corners),
+            Self::Footprint(footprint) => footprint_newly_covers(footprint, before, corners),
+        }
+    }
+
+    // Whether it overlaps a polygon of `index` (fields or extraction areas).
+    fn overlaps(self, index: &FieldClearanceIndex) -> bool {
+        match self {
+            Self::Piece(mesh) => index.overlaps_road_piece(mesh),
+            Self::Footprint(footprint) => index.overlaps(footprint, None),
+        }
+    }
+
+    // The f32 query box that contains these bounds.
+    fn query_box(self) -> (Vector2, Vector2) {
+        let [min_x, min_z, max_x, max_z] = self.bounds_xz();
+        (
+            outward(min_x, min_z, f32::next_down),
+            outward(max_x, max_z, f32::next_up),
+        )
     }
 }
 
 impl<B: Copy + Ord> RoadLandTake<B> {
-    /// The take of `pieces`, the pieces the edit installs, over `before`, the pieces it replaces,
-    /// against `land`: the fields, extraction areas and explicit sites, cells and parcels.
-    /// O(pieces * reservations in their bounds * top triangles) plus a lookup per covered cell
-    /// and lot; a piece with nothing reserved in its bounds costs one bounds query per index.
+    /// The take of `pieces`, the pieces the edit installs, and of `extra`, land it takes beyond
+    /// them, over `before`, the pieces it replaces, against `land`: the fields, extraction areas
+    /// and explicit sites, cells and parcels. O((pieces + extra) * reservations in their
+    /// bounds * top triangles) plus a lookup per covered cell and lot; a piece with nothing
+    /// reserved in its bounds costs one bounds query per index.
     pub(crate) fn of<S: RoadLandSource<Building = B>>(
         land: &S,
         pieces: &[&PieceMesh],
         before: &[&PieceMesh],
+        extra: &[PolygonFootprint<'static>],
     ) -> Self {
-        let plotted = Self::first_plotted(land, pieces, before);
+        let covers = || {
+            pieces
+                .iter()
+                .map(|&mesh| Cover::Piece(mesh))
+                .chain(extra.iter().map(Cover::Footprint))
+        };
+        let plotted = Self::first_plotted(land, covers(), before);
         if plotted.is_some() {
             return Self {
                 plotted,
@@ -295,11 +288,27 @@ impl<B: Copy + Ord> RoadLandTake<B> {
             };
         }
         let cells_store = land.cells();
-        let keys = ZoningSystem::reserved_cells_newly_covered_by_road_pieces(
+        let mut keys = ZoningSystem::reserved_cells_newly_covered_by_road_pieces(
             cells_store,
             pieces.iter().copied(),
             before,
         );
+        if !extra.is_empty() && cells_store.has_reservations() {
+            for cover in extra.iter().map(Cover::Footprint) {
+                let [min_x, min_z, max_x, max_z] = cover.bounds_xz();
+                let bounds = CellBounds {
+                    min: DVec2::new(min_x, min_z),
+                    max: DVec2::new(max_x, max_z),
+                };
+                cells_store.visit_reserved_footprints_in_bounds(bounds, |key, corners| {
+                    if cover.newly_covers(before, &corners) {
+                        keys.push(key);
+                    }
+                });
+            }
+            keys.sort_unstable();
+            keys.dedup();
+        }
         let mut lots = Vec::new();
         let cells = keys
             .into_iter()
@@ -312,18 +321,14 @@ impl<B: Copy + Ord> RoadLandTake<B> {
                 (key, cells_store.profile(key).unwrap_or(0))
             })
             .collect();
-        for &mesh in pieces {
-            let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
-            land.visit_authored_parcels(
-                outward(min_x, min_z, f32::next_down),
-                outward(max_x, max_z, f32::next_up),
-                |id, corners| {
-                    let corners = corners.map(|p| DVec2::new(f64::from(p.x), f64::from(p.y)));
-                    if road_piece_newly_covers(mesh, before, &corners) {
-                        lots.push((id, centroid(&corners)));
-                    }
-                },
-            );
+        for cover in covers() {
+            let (min, max) = cover.query_box();
+            land.visit_authored_parcels(min, max, |id, corners| {
+                let corners = corners.map(|p| DVec2::new(f64::from(p.x), f64::from(p.y)));
+                if cover.newly_covers(before, &corners) {
+                    lots.push((id, centroid(&corners)));
+                }
+            });
         }
         // One point per lot, the first in cell order, so the products do not depend on the
         // order the pieces visit them in.
@@ -345,10 +350,10 @@ impl<B: Copy + Ord> RoadLandTake<B> {
         }
     }
 
-    // The first plotted reservation a piece newly covers, pieces in order.
-    fn first_plotted<S: RoadLandSource>(
+    // The first plotted reservation a cover newly covers, covers in order.
+    fn first_plotted<'a, S: RoadLandSource>(
         land: &S,
-        pieces: &[&PieceMesh],
+        mut covers: impl Iterator<Item = Cover<'a>>,
         before: &[&PieceMesh],
     ) -> Option<PlottedOverlap> {
         let (fields, extraction) = (land.fields(), land.extraction());
@@ -356,22 +361,18 @@ impl<B: Copy + Ord> RoadLandTake<B> {
         let extraction_before = before
             .iter()
             .any(|mesh| extraction.overlaps_road_piece(mesh));
-        pieces.iter().find_map(|&mesh| {
-            if !fields_before && fields.overlaps_road_piece(mesh) {
+        covers.find_map(|cover| {
+            if !fields_before && cover.overlaps(fields) {
                 return Some(PlottedOverlap::Field);
             }
-            if !extraction_before && extraction.overlaps_road_piece(mesh) {
+            if !extraction_before && cover.overlaps(extraction) {
                 return Some(PlottedOverlap::ExtractionArea);
             }
-            let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
-            land.first_explicit_site_lot(
-                outward(min_x, min_z, f32::next_down),
-                outward(max_x, max_z, f32::next_up),
-                |lot| {
-                    let corners = lot.map(|p| DVec2::new(f64::from(p.x), f64::from(p.y)));
-                    road_piece_newly_covers(mesh, before, &corners)
-                },
-            )
+            let (min, max) = cover.query_box();
+            land.first_explicit_site_lot(min, max, |lot| {
+                let corners = lot.map(|p| DVec2::new(f64::from(p.x), f64::from(p.y)));
+                cover.newly_covers(before, &corners)
+            })
             .map(PlottedOverlap::Building)
         })
     }
@@ -384,7 +385,11 @@ pub(crate) fn first_plotted_overlap<S: RoadLandSource>(
     pieces: &[&PieceMesh],
     before: &[&PieceMesh],
 ) -> Option<PlottedOverlap> {
-    RoadLandTake::<S::Building>::first_plotted(land, pieces, before)
+    RoadLandTake::<S::Building>::first_plotted(
+        land,
+        pieces.iter().map(|&mesh| Cover::Piece(mesh)),
+        before,
+    )
 }
 
 // The mean of a quad's corners: a point inside a convex lot or cell.
