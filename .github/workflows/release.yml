@@ -214,7 +214,20 @@ jobs:
         with:
           name: bootstrap
           path: in
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends wine wine64
+      # Ubuntu's own Wine 9.0 crashes starting Godot 4.7; WineHQ's packages, pinned, do not.
+      - env:
+          WINE_VERSION: "11.0.0.0~noble-1"
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo mkdir -pm755 /etc/apt/keyrings
+          curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/winehq-archive.key
+          sudo curl -fsSL -o /etc/apt/sources.list.d/winehq-noble.sources \
+            https://dl.winehq.org/wine-builds/ubuntu/dists/noble/winehq-noble.sources
+          sudo apt-get update
+          sudo apt-get install -y --install-recommends "winehq-stable=$WINE_VERSION" \
+            "wine-stable=$WINE_VERSION" "wine-stable-amd64=$WINE_VERSION" "wine-stable-i386:i386=$WINE_VERSION"
+          wine --version
       - run: |
           mkdir game
           unzip -q in/MetrumRise-windows-x86_64.zip -d game

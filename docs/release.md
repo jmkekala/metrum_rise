@@ -33,7 +33,7 @@ releases by hand.
 | `lib-windows` | Ubuntu 24.04 | `metrum_rise.dll`, cross-built with MinGW (`x86_64-pc-windows-gnu`) |
 | `lib-macos` | macOS 15 | `libmetrum_rise.dylib`, arm64 and x86_64 merged with `lipo`, macOS 11 minimum |
 | `export` | Ubuntu 24.04 | pinned official Godot editor and templates (`tools/ci/install_godot.sh`, checked against Godot's SHA512 sums), import, the three exports, packages with `.sha256` files |
-| `smoke-linux`, `smoke-windows` | Ubuntu 24.04 | `tools/ci/smoke.sh` on the unpacked packages; Windows runs under Wine |
+| `smoke-linux`, `smoke-windows` | Ubuntu 24.04 | `tools/ci/smoke.sh` on the unpacked packages; Windows runs under WineHQ's Wine 11.0, pinned (Ubuntu's Wine 9.0 crashes starting Godot 4.7) |
 | `publish` | Ubuntu 24.04 | `main` only: a GitHub Release with the packages and notes, published only when complete |
 
 - Rust is pinned to the version developers use (`RUST_VERSION`), Godot to `GODOT_VERSION`.
