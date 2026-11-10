@@ -118,5 +118,8 @@ static func _copy_file_if_missing(source_path: String, target_path: String) -> v
 static func _target_exists(path: String) -> bool:
 	return FileAccess.file_exists(path) or DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(path))
 
+# `.import` sidecars are project import state, not pack content: exports never ship them, and a
+# copied sidecar makes glTF loading resolve the pack's textures through the import system
+# instead of reading the files (TOOLS-15).
 static func _should_seed_entry(entry: String) -> bool:
-	return entry != "." and entry != ".." and not entry.begins_with(".")
+	return entry != "." and entry != ".." and not entry.begins_with(".") and not entry.ends_with(".import")
