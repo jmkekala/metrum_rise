@@ -55,6 +55,17 @@ func _resources() -> void:
 	control.free()
 	current.free()
 
+# The lot's placement preview at (0, z). A hover answers `pending` while the simulation thread holds
+# the core (`CODE-25`, since `ZONE-11` round RZ11b), as it may just after an edit: ask again.
+func _placement_preview(sim: SimulationNode, z: float) -> Dictionary:
+	var preview: Dictionary = {"pending": true}
+	var deadline := Time.get_ticks_msec() + 20000
+	while bool(preview.get("pending", false)) and Time.get_ticks_msec() < deadline:
+		preview = sim.get_service_building_placement_preview("parking:building.parking.small_lot", 0.0, z)
+		if bool(preview.get("pending", false)):
+			await process_frame
+	return preview
+
 func _run() -> void:
 	_resources()
 	var sim := SimulationNode.new()
@@ -69,8 +80,8 @@ func _run() -> void:
 	_expect(sim.get_parking_info()["places"] == 0, "roads alone create no parking")
 	var warnings := sim.load_asset_packs(ProjectSettings.globalize_path("res://bootstrap/mods"), PackedStringArray(["parking"]))
 	_expect(warnings.is_empty(), "lot pack loads: " + warnings)
-	var preview: Dictionary = sim.get_service_building_placement_preview("parking:building.parking.small_lot", 0.0, -30.0)
-	_expect(preview.get("valid", false), "lot preview is valid")
+	var preview := await _placement_preview(sim, -30.0)
+	_expect(preview.get("valid", false), "lot preview is valid: %s" % preview)
 	_expect(sim.place_service_building("parking:building.parking.small_lot", 0.0, -30.0).is_empty(), "standalone lot places")
 	var filled := sim.debug_fill_parking()
 	_expect(filled > 0, "explicit debug fleet fills supply")
@@ -118,7 +129,7 @@ func _run() -> void:
 	var under_door: Dictionary = sim.preview_edge_cross_section(road, 1, 1, 0, 0.0, 0, 50, 2, true, true)
 	_expect(under_door.get("invalid_reason", "") == "sidewalk_under_door", "the door keeps its sidewalk: %s" % under_door)
 	_expect(sim.set_edge_cross_section(road, 1, 1, 0, 0.0, 0, 50, 1, true, true), "the far sidewalk comes off")
-	var shoulder: Dictionary = sim.get_service_building_placement_preview("parking:building.parking.small_lot", 0.0, 30.0)
+	var shoulder := await _placement_preview(sim, 30.0)
 	_expect(not shoulder.get("valid", true) and String(shoulder.get("error", "")).contains("sidewalk"), "the preview says why: %s" % shoulder)
 	_expect(sim.place_service_building("parking:building.parking.small_lot", 0.0, 30.0).contains("sidewalk"), "the tool refuses the site")
 	sim.queue_free()
