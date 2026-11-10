@@ -1210,8 +1210,14 @@ the plan applied, the nodes laid out, the closure compiled and the graph put bac
 fails is `roundabout_arms_too_close` when a ring node's corner does not fit and
 `roundabout_arm_too_short` otherwise; fields, painted cells and steepened profiles refuse as in any
 closure. Since `ZONE-10` the parcel disc is gone: the ring's pieces and its island (a 64-gon at
-radius plus half the ring plus the sidewalk) take the zoned land they newly cover, the island's
-cells are erased but not blocked (`ZONE-13`), and only plotted land refuses
+radius plus half the ring plus the sidewalk) take the zoned land they newly cover, and only
+plotted land refuses. No cell stands on the island afterwards: its side of the ring has no
+sidewalk, so no road column proposes cells there, and the ring's regeneration drops the
+crossroads' old cells, painted ones released with the ring's region (`ZONE-14`; round RL1 listed
+every accepted cell over the island for rings of 30-60 m over a crossroads painted and unpainted,
+with the release and without: none; `ZONE-13` closed by the
+test `a_ring_over_a_zoned_crossroads_leaves_no_cell_on_its_island`, through undo, the ring again
+and a save and load)
 ([land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)). The preview is that check, so its verdict is the commit's. The commit applies the plan
 again, moves each trimmed arm's buildings and occupancy (an arm that lost its start drops the whole
 cells before the cut; every building takes its frontage along the shorter arm; journaled in
@@ -1908,7 +1914,8 @@ nothing: a save loads as saved or not at all (save compatibility is not required
 ### Land taken by road edits (`ZONE-09`, `ZONE-10`)
 
 Built 2026-11-09/10 on branch `roads-over-zoning`, waiting for the user's in-game test. The rules
-(what is taken, what refuses, inheritance, undo) are zoning's:
+(what is taken, what refuses, the release and re-lay of the painted land each edit regenerates
+(`ZONE-14`), inheritance, undo) are zoning's:
 [roads, road edits and placements over zoned land](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11).
 This section is the road side. It supersedes [open questions 1 and 2](#road-68-open-questions)
 and the refusals `parcel_overlap` and `zoning_cell_overlap` wherever this document names them for
@@ -1921,11 +1928,12 @@ pieces and take no land.
   hit refuses with `field_overlap`, `extraction_area_overlap` or `plotted_building_overlap`.
 - **The stroke.** `validate_staged_road_render_installing` installs the pieces, computes the take,
   rolls back on a plotted hit (then on a failed node piece, as before), takes the land
-  (`take_land_for_edit`: demolition, lot and parcel removal, paint erase), stages the graded tiles
+  (`take_land_for_edit`: demolition, lot and parcel removal, the release of the free paint its
+  marks' envelopes hold, one paint erase), stages the graded tiles
   and accepts; the undo record gains `cells` (`CellPaintUndo`). Plan readiness
   (`RoadEditPlan::failed_check`) tests water only, and the commit's parcel corridor refusal stays
   only for unstaged adds. The land stage is logged on the `road` channel (`road_commit_land`
-  with `removals_ms sites_ms lots_ms erase_ms`) and reported as `surface_land_ms` in
+  with `removals_ms sites_ms lots_ms release_ms erase_ms`) and reported as `surface_land_ms` in
   `RoadEditMetrics`.
 - **The shared edit site.** Every graph edit (widening and class change, turn pocket, roundabout,
   crossing toggle, road and ring removal) tries itself on `RoadEditSite<'a, L:
@@ -1941,7 +1949,8 @@ pieces and take no land.
 - **Where each edit takes:** a widening after `apply_edge_cross_section`, a pocket before
   `migrate_pocket_dependents`, a ring (and its island disc) before `migrate_trimmed_arms`, a class
   change, crossing toggle or removal after its apply and before
-  lanes (a removal before its parcel capture). Each records `cells` in its own undo record and,
+  lanes (a removal before its parcel capture), each marking its lot regions before it takes, as
+  its release follows those marks (`ZONE-14`). Each records `cells` in its own undo record and,
   when it erased paint, plans its lots before returning. The widening's and the pocket's corridor
   checks (`widened_corridor_refusal`, `pocket_corridor_refusal`) lost their parcel branch and keep
   water and the illegal curve radius; the ring's parcel disc is gone (`roundabout_water_refusal`

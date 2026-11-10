@@ -28,6 +28,12 @@ fields and mine areas still refuse, and every tool outlines what it would demoli
 `roads-over-zoning`, level L timing level with `dev`, waiting for the user's in-game test;
 `ZONE-09`-`ZONE-11`, [zoning](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
 
+Painted land re-lays itself around a road, a road edit or a placement as unpainted land does: a
+diagonal through a zoned block leaves no slivers, gaps or cells without a street, a removed road no
+orphaned paint, no cell stands on a ring's island, and undo gives the old cells and paint back
+exactly (branch `zone-relay-2`, rounds RL1 and RL2, not landed; `ZONE-14`, `ZONE-13` closed,
+[zoning](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
+
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
 Vulkan/MoltenVK and Linux Vulkan, without slowing streaming or setup

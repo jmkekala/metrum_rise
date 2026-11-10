@@ -1003,8 +1003,9 @@ released. These checks use current local indices before restoration mutates simu
 ### Roads, road edits and placements over zoned land (`ZONE-09`, `ZONE-10`, `ZONE-11`)
 
 Built 2026-11-09/10 on branch `roads-over-zoning` (rounds RZ1-RZ3, RZ10a-b, RZ11a-b), waiting
-for the user's in-game test ([`roadmap.md`](roadmap.md)). Before, a road stroke over zoned land
-was refused (`parcel_overlap` from its corridor, `zoning_cell_overlap` from its pieces), so were
+for the user's in-game test ([`roadmap.md`](roadmap.md)); painted land re-lays around every such
+edit since `ZONE-14` (rounds RL1 and RL2, branch `zone-relay-2`, 2026-11-10). Before, a road
+stroke over zoned land was refused (`parcel_overlap` from its corridor, `zoning_cell_overlap` from its pieces), so were
 widenings, turn pockets, roundabouts and node moves, and an explicit placement's lot refused
 painted cells and every building site by an axis-aligned box test; an extraction area tested
 nothing. The sections above and below that describe those refusals record the state before this
@@ -1027,7 +1028,7 @@ the night delegation, for review):
    or resized) takes the zoned land it **newly** covers: every lot one of the covered cells belongs
    to is removed with the building on it (a claim is atomic), every authored parcel it covers is
    removed (decision D1), and the covered cells lose their paint. A lot's uncovered cells stay
-   painted and free.
+   painted and free (and are re-laid by rule 5).
 2. Plotted land refuses the edit or placement before anything is written, with the reasons below.
 3. "Newly covered": a cell, lot or parcel when a new piece covers its road-contact interior and no
    piece the edit replaces did (`road_piece_newly_covers`, `simulation/zoning/system/reservations.rs`);
@@ -1037,9 +1038,14 @@ the night delegation, for review):
 4. No cap on what one edit takes (D7), and no confirmation for strokes, ring clicks, move releases
    or placements (D-dialog, D-dialog-11): the hover shows the outlines and the count first. Road
    Properties keeps its "Apply removes N building(s)" question, which now counts the take too.
-5. New frontage cells fill free land only, and inherit the erased paint (below).
+5. Painted land re-lays itself as unpainted land does (`ZONE-14`, the user's direction of
+   2026-11-10; this replaces `ZONE-09`'s "new frontage cells fill free land only"): the edit also
+   releases the free paint (no lot, or an empty one) of the land it regenerates, its lot plan lays
+   that land's cells as on unpainted land, and every cell over the old paint takes the paint it
+   overlaps most. An occupied lot stays pinned with its cells; paint left without a road column
+   (behind a new lot, along a removed road) is gone. Details under "Paint inheritance" below.
 6. Undo of a road edit gives the road and the paint back, never the buildings. Explicit placements
-   have no undo, so the paint they erase is final (D-undo (a); `ZONE-12`).
+   have no undo, so the paint they erase or release is final (D-undo (a); `ZONE-12`).
 
 **One take** (`RoadLandTake`, `nodes/sim/core/road_edit_plan.rs`). `RoadLandTake::of(land,
 pieces, before, extra, owner)` over a `RoadLandSource` serves the commit and the preview with one
@@ -1064,8 +1070,12 @@ transaction has passed, so nothing after it refuses:
   "Removal Lifecycle"](building_allocator.md#removal-lifecycle)): no undo record, one agent and
   one household scan per batch, every home of the batch evacuated before the first removal;
 - lot and authored-parcel removal by id (`ZoningSystem::remove_parcels_under_road`, local per id);
-- the paint erase (`ZoningSystem::erase_cells_under_road` -> `CellPaintUndo`), whose lot regions
-  join the edit's.
+- the release (`ZoningSystem::release_painted_cells`, `ZONE-14`): the free painted cells of the
+  edit's regeneration region, their empty lots removed whole;
+- one paint erase of the covered and the released cells (`ZoningSystem::erase_cells_under_road`
+  -> `CellPaintUndo`), whose lot regions join the edit's; every erased cell's strip and conflict
+  halo is marked, as any erase marks it (round RL1: a released cell no road proposes again frees
+  land up to its halo, beyond the edit's own envelopes).
 
 Where each transaction takes: a stroke in `validate_staged_road_render_installing`, after the
 install (a plotted hit or a failed node piece rolls the staged edit back first) and before graded
@@ -1086,27 +1096,57 @@ queued for a removed lot is refused when it starts (its door changed; lot ids ar
 and queued removals, level changes and admissions resolve their building by handle and skip a
 demolished one.
 
-**Paint inheritance** (strokes and graph edits). The erased painted cells stay in
-`ZoningSystem::road_paint_sources` until the plan that drains the edit's lot regions takes them;
-after each region's generation every new, unpainted, unclaimed cell takes the paint of the erased
-cell it overlaps most by exact area (`cells::convex_overlap_area`), ties to the lowest erased
-`CellKey`, and lots derive after in the same plan. Cells standing when the plan began never
-inherit. The inherited cells join the edit's undo record (`CellPaintUndo::record_inherited`). In
-practice inheritance paints the new road's front row: a new 10 m cell over an erased cell's
-remainder usually meets still-painted neighbours, which are pinned, so in a fully zoned block no
-new cell arises; houses need two-deep lots, so inherited paint gets lots where two rows inherit or
-the player paints behind it. A stroke that erased the last paint in the world still plans its
-regions. A placement's own lot or polygon blocks the land it took, so nothing inherits there.
+**Paint inheritance and the re-lay** (`ZONE-14`, PLAN-RL; rounds RL1 and RL2). The region an
+edit releases is the region it regenerates, by the same arithmetic: the envelopes its cell-lot
+marks invalidate (`mark_cell_lots_for_road_edit`, `mark_cell_lots_for_roads` and
+`mark_cell_lots_dirty` return them: per changed or realigned road its rows, half width, kerb and
+sidewalk plus six cells, widened by seven), the 12-cell halo of every covered cell and the 7-cell
+halo of every authored parcel the take removes (`ZoningSystem::authored_parcel_halos`). Every
+in-place edit marks before it takes; the stroke carries its marks' envelopes in
+`RoadAddOutcome.regeneration`. Per path: a stroke, widening, pocket, ring, ring removal and road
+removal release their marks' envelopes; a crossing toggle the covered cells' halos only (it moves
+no frontage); a class change onto the ground releases, one off the ground releases nothing beyond
+the covered halos, so a bridge or tunnel and back keeps the street's paint and its lots return
+with the ground class (decision D-class, round RL1). The explicit placements follow the same rule
+(D-placements (a), round RL2): an explicit building's lot the covered cells' halos (the lot and 7
+cells lie within them for any lot up to five cells across; the site's publication marks the lot
+again after the take), a field or extraction area the envelopes of its old and new polygons'
+marks, made before the take; a placement that takes no zoned land releases nothing, so paint cut
+off behind a lot or field on unpainted land stays as it was. A cell is free when painted and
+claimed by no lot or by an empty one; an occupied lot and a grace claim stay pinned with their
+lot, and the neighbours re-lay around them as around claimed land. The erased painted cells stay
+in `ZoningSystem::road_paint_sources` until the plan that drains the edit's lot regions takes
+them; after each region's generation every unpainted, unclaimed cell over an erased cell, not one
+the edit's pieces cover (`RoadPaint.covered`: those never inherit) and in chunks whose generation
+is current (`CellStore::generation_current`: a later region could still drop it), takes the paint
+of the erased cell it overlaps most by exact area (`cells::convex_overlap_area`), ties to the
+lowest erased `CellKey`; lots derive after in the same plan. A released cell regenerated in place
+overlaps itself wholly and takes its own paint back; a new road's cells over released land take
+the paint they overlap most, so a cell across a zone boundary takes the larger share and the
+boundary moves by under half a cell (D-mixed (a)); released land where no cell regenerates (no
+road column) keeps no paint, the erase standing in the record (D-removal (a): a removed road or a
+narrowing leaves no orphaned paint). In a block painted whole the new road's rows therefore arise
+exactly as on unpainted land, painted from the block. The inherited cells, survivors included,
+join the edit's undo record (`CellPaintUndo::record_inherited`); a placement has none. A stroke's
+plan is deferred to the next frame (the release happened on the live store before the view was
+published, and the ground mask polls busy while the plan is pending, D-mask (a)); an in-place edit
+or a field or area that erased paint plans at once, an explicit building in its entrance rebuild.
+The hover shows the take, not the re-lay (D-preview (a)).
 
-**Undo and its refusals** (D5, D6). The road edit's record carries `cells: CellPaintUndo {erased,
-inherited}`. The undo is refused whole, and stays on the stack, unless every inherited cell still
-carries its inherited paint with no lot or an empty one, and every erased cell is either unpainted
-and unclaimed or absent with no reserved overlap (inherited cells excepted:
+**Undo and its refusals** (D5, D6, D5 extended). The road edit's record carries `cells:
+CellPaintUndo {erased, inherited}`: the covered and released cells with their paint, and the plan's
+inherited paint (a key may be in both). The undo is refused whole, and stays on the stack, unless
+every inherited cell still carries its inherited paint with no lot or an empty one, and every
+erased cell is either unpainted and unclaimed, standing with its inherited paint (a released cell
+re-laid in place), or absent with no reserved overlap (inherited cells excepted:
 `CellStore::overlaps_reserved_except`), with no authored parcel, field, extraction area or
-explicit site over it (`can_restore_road_cell_paint`, `nodes/sim/zoning.rs`). Replay restores the
-road, removes the empty lots on inherited cells, erases the inherited paint, restores the erased
+explicit site over it (`can_restore_road_cell_paint`, `nodes/sim/zoning.rs`). Since the whole
+region re-lays, a house grown anywhere on it, or a placement on it, refuses the edit's undo, not
+only one on the new road's front row (D5-ext (a)); undo is atomic like every undo. Replay
+restores the road, removes the empty lots on inherited cells, erases the inherited paint, restores the erased
 paint (re-inserting cells regeneration dropped) and queues the lot regions: lots re-derive from the
-paint, not by id; buildings are not restored.
+paint, not by id; buildings are not restored. The old cells then stand with their old paint and
+pin the regeneration, so the layout is the pre-edit one.
 
 **Extraction areas block** (D-extraction-blocks (a), D-extraction-rules (a)). Areas block cells
 and parcels as fields do (`footprint_blocked` reads the extraction index live, in the deferred
@@ -1142,9 +1182,9 @@ pointer re-previews on the next pointer move or publication.
 | "building lot overlaps a placed building's lot / a farm field / a mine's extraction area" | an explicit building's lot |
 | "field overlaps another field / a mine's extraction area / a placed building's lot / a building site / a road" | a field; an area reads "extraction area overlaps a farm field / another mine's extraction area / ..." |
 
-**Known limits.** Cells on a ring's island are erased but not blocked, so they stay as unpainted
-cells there (`ZONE-13`). A demolishing commit scans every
-agent once (`PERF-20`); the lot plan's cost grows with the city (`PERF-21`); an explicit
+**Known limits.** A demolishing commit scans every
+agent once (`PERF-20`); the lot plan's cost grows with the city (`PERF-21`), and since `ZONE-14`
+an edit's plan re-lays the whole region it regenerates (the cost below); an explicit
 placement's tail does too (`PERF-22`); Godot-facing per-frame queries still rebuild a stale zone
 index whole (`ALLOC-05`).
 
@@ -1183,6 +1223,60 @@ at L for the landing:
 
 Raw maxima are reported only (1× 7.23 against 8.22 ms, 32× 10.65 against 8.90 ms). The mean
 pathing component reads +75% / +18% on 0.2-1.4 µs, under the comparison's floor. Session exit 0.
+
+**Re-lay evidence and cost** (`ZONE-14`, rounds RL1 and RL2, 2026-11-10, fresh in each round,
+boot `978f0c18`). Tests in `nodes/sim/core/tests/road_over_zoning/relay.rs` (PLAN-RL tests 1-9:
+the screenshot's diagonal through a block painted whole lays exactly the cells of the same stroke
+on the unpainted street, each painted one carrying the paint it overlaps most and none over old
+paint unpainted; occupied lots pinned; exact undo; D5 extended; road removal; mixed zones; the
+ring's island through undo, the ring again and a save and load; a 1.4 km stroke over several plan
+regions; a parking lot into a painted block equal to its unpainted twin; a placement over
+unpainted land releasing nothing; a lot on re-laid land refusing the stroke's undo; an authored
+parcel's halo; determinism of a stroke and of a stroke then a placement) and in `fields.rs` (a
+field's release follows its polygon's marks; the explicit site and field test under the re-lay
+rule); fourteen planted faults (eight in RL1, six in RL2), each failing at least one test. Locality
+(`benchmark_commit_locality`, release, background 0 / 10k / 30k, eight workers on the
+performance cores, two runs a side against `dev` `da5ede14`): products bitwise equal across the
+tiers. The release itself takes 0.5-0.7 ms per stroke and 1.7-1.9 ms for the widening, flat. The
+cost moved into the lot plan, which now re-lays the region: a stroke's next-frame adoption is
+28-41 ms against `dev`'s 12-30 ms, the in-place edits plan a block at once (the widening
+55-72 ms against 45-56 ms; the narrowing and the pocket's removal 30-44 ms against 2-3 ms, their
+publication 16-27 ms against `dev`'s 29-50 ms, which planned the same regions there), the
+placements that take land 3-8 ms more. The adoption's split (round RL2, the `economy_phases`
+channel's `cell_lot_detail`, 0 and 30k): waiting for the deferred plan is all but 0.5 ms of it;
+of the plan, generation 20-32 ms, inheritance 3-8 ms, derivation 0.8-1.6 ms over 8-12 regions;
+install, reattachment, repair and the view's publication 0.4-0.8 ms together. Inheritance first
+took 6-16 ms: each region's pass revisited every erased cell; a pass now runs only when a chunk's
+generation completed or a lot released its claim since the last (`CellStore::eligibility_epoch`;
+products unchanged, every tier). The generation is the re-lay itself, bounded by the reserved and
+generated cells of the regenerated envelopes: the edit's marks plus the 12-cell halo of every
+erased cell (round RL1's deviation, which a narrow-marks test requires); marking the covered
+cells' halos alone would save 8-14 ms of it (a probe build, products wrong) and is not an option.
+The growth with the city (about +5-9 ms from 0 to 30k) is the plan's `PERF-21`.
+
+**Landing timing** (level L in merge form, round RL2, 2026-11-10 12:19-12:39, boot `978f0c18`, one
+session, fresh; cumulative since `dev` `da5ede14`, the last L-verified `dev`: `ALLOC-05`, the
+`veeti-fixes` merge, `ROAD-111`, `TERRAIN-22`, RL1 and RL2). Control: `da5ede14`'s release library
+test binary built in a temporary worktree (SHA-256 `86f9ce90`), so no cached control rows existed
+and the merge form timed every control row in the session; branch: `zone-relay-2` `30146dce`
+(SHA-256 `decb5dbd`). Eight workers pinned to the performance cores, the runner's locks, no build,
+Godot or backup during the timed phase:
+
+```bash
+./run.sh --timing --level L --merge --base da5ede14 --control "$ARTIFACTS/ctl" \
+    --branch "$TEST_BINARY" --artifacts "$ARTIFACTS/sess-l"
+```
+
+| Row | Control | Branch | Verdict |
+| --- | --- | --- | --- |
+| 30k 1× acceptance (worst unpreempted / p99.9 / preempted less wait, ms) | 6.03 / 4.09 / 4.05 and 6.54 / 4.11 / 6.18 | 6.31 / 4.10 / 4.84 and 6.00 / 4.19 / 5.41 | **pass** all four days |
+| 30k 1× comparison (mean, p99, p99.9, worst unpreempted; components) | 2.177, 3.667, 4.097, 6.289 ms | +0.4%, +0.4%, +1.1%, -2.1% (tolerances 1.4%, 3.4%, 8%, 6%); agent -0.2%, snapshot +1.1%, slot +1.5%, `load_s` -0.3% | level |
+| 30k 32× C B B C acceptance | 8.36 / 8.12 / 6.59 and 8.07 / 8.06 / 6.53 | 8.22 / 7.88 / 5.48 and 8.13 / 7.96 / 6.42 | known exception `PERF-17`, both sides |
+| 30k 32× comparison (one branch row noisy, tolerances doubled) | mean 4.332, p99 6.902, p99.9 8.087 ms | +0.5%, -0.1%, -2.1%; components within ±0.7% | level |
+| K22 30k commit (one run each) | 6.59 ms | 7.02 ms; commit products bitwise equal (hash `ca024f164af8d266`) | reported (RL1's session read 6.72 against 7.06) |
+| Economy contract `--diff da5ede14` (C B) | status `failed` on the five parked work-count limits | the same five failures; every work record identical to the control's (wall-clock fields dropped) | no change |
+
+The pathing component reads -4% / -9% on 0.4-1.4 µs, under the comparison's floor. Session exit 0.
 
 ### Tool contract
 
