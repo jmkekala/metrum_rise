@@ -1,0 +1,251 @@
+name: Release
+
+# Release builds come only from `main` (docs/release.md). `ci/release` is a temporary test
+# trigger: it builds, exports and smoke-tests but never publishes. Remove it before landing.
+on:
+  push:
+    branches: [main, ci/release]
+    paths-ignore: ["**.md", "docs/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # A newer test push replaces the running one; a main run is never cut off while publishing.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  RUST_VERSION: "1.99.1"
+  GODOT_VERSION: "4.7.2"
+  CARGO_TERM_COLOR: never
+  # Shipped libraries carry no debug info: smaller downloads and less memory on the runners.
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/ci
+      - id: version
+        run: tools/ci/version.sh >> "$GITHUB_OUTPUT"
+
+  lib-linux:
+    # The oldest supported Ubuntu image, so the library also runs on distributions with older glibc.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ github.job }}-${{ hashFiles('rust/Cargo.lock') }}
+      - run: rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
+      - run: cargo build --release --locked
+        working-directory: rust
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lib-linux
+          path: rust/target/release/libmetrum_rise.so
+          if-no-files-found: error
+          retention-days: 3
+
+  lib-windows:
+    # Cross-built with MinGW, the path the first export trial tested (TOOLS-15).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ github.job }}-${{ hashFiles('rust/Cargo.lock') }}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target x86_64-pc-windows-gnu
+          rustup default "$RUST_VERSION"
+      - run: cargo build --release --locked --target x86_64-pc-windows-gnu
+        working-directory: rust
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lib-windows
+          path: rust/target/x86_64-pc-windows-gnu/release/metrum_rise.dll
+          if-no-files-found: error
+          retention-days: 3
+
+  lib-macos:
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ github.job }}-${{ hashFiles('rust/Cargo.lock') }}
+      - run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup default "$RUST_VERSION"
+      # One universal library for Apple silicon and Intel Macs.
+      - run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          lipo -create -output libmetrum_rise.dylib \
+            target/aarch64-apple-darwin/release/libmetrum_rise.dylib \
+            target/x86_64-apple-darwin/release/libmetrum_rise.dylib
+          lipo -info libmetrum_rise.dylib
+        working-directory: rust
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lib-macos
+          path: rust/libmetrum_rise.dylib
+          if-no-files-found: error
+          retention-days: 3
+
+  export:
+    needs: [version, lib-linux, lib-windows, lib-macos]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: lib-*
+          merge-multiple: true
+          path: godot/bin
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/godot-dist
+          key: godot-${{ env.GODOT_VERSION }}
+      - run: tools/ci/install_godot.sh "$GODOT_VERSION" ~/godot-dist
+      # The game shows this version; it is set for the build only, never committed.
+      - run: |
+          if grep -q '^config/version=' godot/project.godot; then
+            sed -i "s|^config/version=.*|config/version=\"$VERSION\"|" godot/project.godot
+          else
+            sed -i "/^config\/name=/a config/version=\"$VERSION\"" godot/project.godot
+          fi
+          grep '^config/version=' godot/project.godot
+      # Godot exits 0 even when an import or export logs errors, so its output is checked here.
+      - run: |
+          godot_checked() {
+            ~/godot-dist/godot --headless --path godot "$@" 2>&1 | tee godot.log
+            if grep -E '^(ERROR|SCRIPT ERROR)' godot.log; then
+              echo "::error::Godot logged errors: $*"
+              return 1
+            fi
+          }
+          godot_checked --import
+          mkdir -p build/linux/MetrumRise build/windows/MetrumRise build/macos
+          godot_checked --export-release "Linux" "$PWD/build/linux/MetrumRise/MetrumRise.x86_64"
+          godot_checked --export-release "Windows Desktop" "$PWD/build/windows/MetrumRise/MetrumRise.exe"
+          godot_checked --export-release "macOS" "$PWD/build/macos/MetrumRise.zip"
+          ls -la build/*/ build/*/MetrumRise/
+      - run: |
+          mkdir dist
+          tar -C build/linux -czf dist/MetrumRise-linux-x86_64.tar.gz MetrumRise
+          (cd build/windows && zip -qr ../../dist/MetrumRise-windows-x86_64.zip MetrumRise)
+          cp build/macos/MetrumRise.zip dist/MetrumRise-macos-universal.zip
+          (cd dist && for file in *; do sha256sum "$file" > "$file.sha256"; done)
+          # What first-run setup must install; the smoke tests compare against it.
+          (cd godot/bootstrap && find mods worlds -type f ! -name '*.import' ! -name '.keep' -print0 \
+            | LC_ALL=C sort -z | xargs -0 sha256sum) > bootstrap.sha256
+          ls -la dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bootstrap
+          path: bootstrap.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke-linux:
+    needs: export
+    runs-on: ubuntu-24.04
+    steps:
+      # Only the test scripts: the game must start without the build checkout's files (TOOLS-15).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: in
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bootstrap
+          path: in
+      - run: |
+          mkdir game
+          tar -C game -xzf in/MetrumRise-linux-x86_64.tar.gz
+          tools/ci/smoke.sh linux game/MetrumRise in/bootstrap.sha256
+
+  smoke-windows:
+    needs: export
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: in
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bootstrap
+          path: in
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends wine wine64
+      - run: |
+          mkdir game
+          unzip -q in/MetrumRise-windows-x86_64.zip -d game
+          tools/ci/smoke.sh windows game/MetrumRise in/bootstrap.sha256
+
+  publish:
+    if: github.ref == 'refs/heads/main'
+    needs: [version, smoke-linux, smoke-windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Full history and tags: the notes compare save and world formats with the last release.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: dist
+      - run: tools/ci/release_notes.sh "$VERSION" > notes.md && cat notes.md
+      # A re-run of a released commit replaces its files; a new release appears only when complete.
+      - run: |
+          tag="v$VERSION"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --draft --target "$GITHUB_SHA" \
+              --title "Metrum Rise $VERSION" --notes-file notes.md
+            gh release edit "$tag" --draft=false --latest
+          fi

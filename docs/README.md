@@ -23,6 +23,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`earthworks.md`](earthworks.md) | Shared engineered-ground / cut-fill / local terrain-override contract for roads and terrain pads; building construction lifecycle is owned by `economy.md` / `demand.md`. |
 | [`terrain.md`](terrain.md) | Terrain source ingest, chunked terrain runtime, large-world terrain ownership, and the graded terrain surface around roads and sites (`TERRAIN-07`). |
 | [`ui.md`](ui.md) | UI paradigm, surface ownership, style conventions, and migration plan. |
+| [`release.md`](release.md) | Release builds: the GitHub Actions workflow, versions, packages, exported-game rules and the smoke test (`TOOLS-16`). |
 | [`debug.md`](debug.md) | Debug channels, log format, shared log, events, the `MetrumDebug` bridge, the in-game debug console, and `run.sh` debug flags (`DEBUG-01`). |
 
 ## Working Rules

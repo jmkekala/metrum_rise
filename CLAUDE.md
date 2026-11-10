@@ -42,6 +42,8 @@ cd rust && cargo bench             # Criterion benchmarks
 
 The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles this automatically.
 
+Player builds come only from GitHub Actions on pushes to `main` ([`docs/release.md`](docs/release.md)); never build or publish releases by hand.
+
 ## Performance Philosophy
 
 **This project is performance-first.** The 1M-agent scale target is non-negotiable and must be kept in mind for every decision, including small ones. Correctness without acceptable performance is not a done state.
