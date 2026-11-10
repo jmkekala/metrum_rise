@@ -1,10 +1,10 @@
 name: Release
 
-# Release builds come only from `main` (docs/release.md). `ci/release` is a temporary test
-# trigger: it builds, exports and smoke-tests but never publishes. Remove it before landing.
+# Release builds come only from `main` (docs/release.md). To try a workflow change, add a test
+# branch here temporarily: it builds and smoke-tests, and publish runs on `main` only.
 on:
   push:
-    branches: [main, ci/release]
+    branches: [main]
     paths-ignore: ["**.md", "docs/**"]
 
 permissions:

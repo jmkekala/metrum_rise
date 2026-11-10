@@ -8,8 +8,9 @@ releases by hand.
 
 - Every push to `main` that changes more than Markdown or `docs/` builds and publishes a
   release. `dev` and every other branch never do: `dev` changes constantly and is for developers.
-- `ci/release` is the workflow's temporary test branch. It builds, exports and smoke-tests, and
-  never publishes. Its trigger is removed before the workflow lands.
+- To try a workflow change, add a test branch to the trigger temporarily and push it: it builds,
+  exports and smoke-tests, and never publishes (`publish` runs on `main` only). Remove the
+  trigger before the change lands. The workflow was tested this way on `ci/release`.
 - A failed run can be repeated from the Actions page ("Re-run jobs"); a re-run of a released
   commit keeps its version and replaces the files.
 
