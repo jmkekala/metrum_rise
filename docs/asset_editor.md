@@ -203,6 +203,8 @@ Shipped design:
 - V1 canonical mod install location: `user://mods/`
 - Release bootstrap content may be bundled under `res://bootstrap/mods/`; startup copies each
   missing top-level pack into `user://mods/` and never merges into an existing user pack.
+  Every bundled `.glb` and `.png` imports as `keep` (`TOOLS-15`): export otherwise packs only
+  the imported form, and the copy would install `.import` stubs instead of the files.
 - Fresh profiles seed `user://active_packs.cfg` with the bundled `kenney` pack enabled. Once the
   player saves pack selection, even an empty enabled list is preserved as intentional.
 

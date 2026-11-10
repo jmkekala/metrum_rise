@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! TOML file IO for authored economy profiles.
+//! The shipped authored economy profiles.
 
-use serde::Deserialize;
-use std::path::Path;
+use super::schema::ProfilesFile;
 
-pub(super) const PROFILES_FILE: &str = "profiles.toml";
+// Compiled in: a shipped game has no repository checkout to read `economy/profiles.toml` from.
+const PROFILES_TOML: &str = include_str!("../../../../../economy/profiles.toml");
 
-pub(super) fn parse_toml_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|err| format!("could not read '{}': {err}", path.display()))?;
-    toml::from_str(&content).map_err(|err| format!("could not parse '{}': {err}", path.display()))
+pub(super) fn parse_shipped_profiles() -> Result<ProfilesFile, String> {
+    toml::from_str(PROFILES_TOML)
+        .map_err(|err| format!("could not parse 'economy/profiles.toml': {err}"))
 }

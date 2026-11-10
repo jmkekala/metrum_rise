@@ -126,6 +126,7 @@ These are the stable, high-level sharp edges worth remembering. Keep detailed su
 - The hourly demand pass plans directly on the live customer, business and input books and rolls them back through per-book pass journals. Every new mutation of those books must call the existing `journal_*` hooks; test builds fingerprint the live books after each pass.
 - Keep benchmarks and isolated tests away from full gameplay constructors unless you are explicitly measuring that end-to-end path. Setup helpers can trigger zoning work, cache rebuilds, path planning, or other expensive side effects that hide the cost you meant to measure.
 - When touching routing or entrance/exit behavior, update both the authoritative state and the derived caches/plans that consume it. If a value is derived, make the rebuild path explicit rather than relying on accidental later repair.
+- Exported games have neither the repository nor raw `res://` files (`TOOLS-15`). Runtime Rust embeds shipped data with `include_str!`; `env!("CARGO_MANIFEST_DIR")` paths are for tests and benchmarks only. A file that scripts read raw (`GLTFDocument.append_from_file`, `Image.load_from_file`, `FileAccess`) must import as `keep`.
 
 ### Godot / GDScript
 

@@ -511,10 +511,7 @@ mod tests {
     use super::*;
 
     fn shipped_profiles() -> super::super::schema::ProfilesFile {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../economy")
-            .join(super::super::io::PROFILES_FILE);
-        super::super::io::parse_toml_file(&path).unwrap()
+        super::super::io::parse_shipped_profiles().unwrap()
     }
 
     #[test]

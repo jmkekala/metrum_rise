@@ -5,10 +5,10 @@
 use super::types::{EPSILON, UseTuningF32};
 use crate::simulation::economy::households::HouseholdExitPolicy;
 use serde::Deserialize;
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-const GROWTH_PROFILES_FILE: &str = "demand/growth_profiles.toml";
+// Compiled in: a shipped game has no repository checkout to read the tuning file from.
+const GROWTH_PROFILES_TOML: &str = include_str!("../../../../../demand/growth_profiles.toml");
 #[derive(Clone, Debug)]
 pub(super) struct HouseholdActionConfig {
     pub(super) move_in_benefit_treasury_coverage_days: f32,
@@ -67,25 +67,16 @@ struct AuthoredUseTuningF32 {
 static BUILTIN_CONFIG: OnceLock<Result<Arc<DemandConfig>, String>> = OnceLock::new();
 
 pub(super) fn load_builtin_demand_config() -> Result<Arc<DemandConfig>, String> {
-    match BUILTIN_CONFIG.get_or_init(load_config_from_disk) {
+    match BUILTIN_CONFIG.get_or_init(load_config) {
         Ok(config) => Ok(Arc::clone(config)),
         Err(err) => Err(err.clone()),
     }
 }
 
-fn load_config_from_disk() -> Result<Arc<DemandConfig>, String> {
-    let path = repo_relative_path(GROWTH_PROFILES_FILE);
-    let content = std::fs::read_to_string(&path)
-        .map_err(|err| format!("could not read '{}': {err}", path.display()))?;
-    let authored: AuthoredDemandConfig = toml::from_str(&content)
-        .map_err(|err| format!("could not parse '{}': {err}", path.display()))?;
+fn load_config() -> Result<Arc<DemandConfig>, String> {
+    let authored: AuthoredDemandConfig = toml::from_str(GROWTH_PROFILES_TOML)
+        .map_err(|err| format!("could not parse 'demand/growth_profiles.toml': {err}"))?;
     compile_config(authored).map(Arc::new)
-}
-
-fn repo_relative_path(relative: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join(relative)
 }
 
 fn compile_config(authored: AuthoredDemandConfig) -> Result<DemandConfig, String> {

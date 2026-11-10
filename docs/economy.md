@@ -193,7 +193,9 @@ minute keeps slot 0. Rush hour emerges from overlapping windows.
 
 `economy/profiles.toml` holds resources, economy profiles and `runtime_tuning`. It is loaded once
 by `load_runtime_economy_catalog`, which validates and compiles it into the runtime catalog
-(`definitions.rs`). Demand pacing lives separately in `demand/growth_profiles.toml`.
+(`definitions.rs`). Demand pacing lives separately in `demand/growth_profiles.toml`. Both files,
+like `zoning/profiles.toml`, are compiled into the library (`TOOLS-15`): a shipped game has no
+repository to read them from, and editing one rebuilds the crate.
 
 Validation rejects non-finite or negative rates, wages, prices and stock settings, duplicate IDs,
 invalid quantity units, freight batches on non-physical resources, oversized batches, and

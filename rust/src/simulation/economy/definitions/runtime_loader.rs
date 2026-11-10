@@ -2,12 +2,12 @@
 
 //! Cached loading of shipped runtime economy tuning and catalog data.
 
-use super::io::{PROFILES_FILE, parse_toml_file};
+use super::io::parse_shipped_profiles;
 use super::runtime::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use super::runtime_compile::compile_runtime_catalog;
+#[cfg(test)]
 use super::schema::ProfilesFile;
 use super::validation::validate_runtime_tuning;
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 struct RuntimeDefinitions {
@@ -40,18 +40,14 @@ pub(crate) fn load_runtime_economy_catalog() -> Result<Arc<RuntimeEconomyCatalog
 }
 
 fn runtime_definitions() -> Result<&'static RuntimeDefinitions, String> {
-    match BUILTIN_RUNTIME.get_or_init(load_runtime_definitions_from_disk) {
+    match BUILTIN_RUNTIME.get_or_init(load_runtime_definitions) {
         Ok(definitions) => Ok(definitions),
         Err(err) => Err(err.clone()),
     }
 }
 
-fn load_runtime_definitions_from_disk() -> Result<RuntimeDefinitions, String> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("economy")
-        .join(PROFILES_FILE);
-    let profiles: ProfilesFile = parse_toml_file(&path)?;
+fn load_runtime_definitions() -> Result<RuntimeDefinitions, String> {
+    let profiles = parse_shipped_profiles()?;
     validate_runtime_tuning(&profiles.runtime_tuning)?;
     let catalog = compile_runtime_catalog(
         &profiles.profiles,

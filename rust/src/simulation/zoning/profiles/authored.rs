@@ -3,9 +3,9 @@
 //! Authored zoning-profile TOML loading.
 
 use serde::Deserialize;
-use std::path::PathBuf;
 
-const PROFILES_FILE: &str = "zoning/profiles.toml";
+// Compiled in: a shipped game has no repository checkout to read `zoning/profiles.toml` from.
+const PROFILES_TOML: &str = include_str!("../../../../../zoning/profiles.toml");
 
 #[derive(Deserialize)]
 struct ProfilesFile {
@@ -33,16 +33,7 @@ pub(super) struct AuthoredZoneProfileUi {
 }
 
 pub(super) fn load_authored_zone_profiles() -> Result<Vec<AuthoredZoneProfile>, String> {
-    let profiles_path = repo_relative_path(PROFILES_FILE);
-    let content = std::fs::read_to_string(&profiles_path)
-        .map_err(|err| format!("could not read '{}': {err}", profiles_path.display()))?;
-    let authored: ProfilesFile = toml::from_str(&content)
-        .map_err(|err| format!("could not parse '{}': {err}", profiles_path.display()))?;
+    let authored: ProfilesFile = toml::from_str(PROFILES_TOML)
+        .map_err(|err| format!("could not parse 'zoning/profiles.toml': {err}"))?;
     Ok(authored.profiles)
-}
-
-fn repo_relative_path(relative: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join(relative)
 }
