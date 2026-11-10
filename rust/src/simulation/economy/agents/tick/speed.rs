@@ -67,6 +67,10 @@ impl AgentSystem {
                 }
 
                 let lid = *s_lane_idm.get(i);
+                if lid >= transit_network.lane_system.lanes.len() {
+                    stand_without_lane(i, &s_speed_idm, &s_overtake_blocked_idm);
+                    return;
+                }
                 let my_d = *s_lane_d_idm.get(i);
                 let eid = *s_cur_e_idm.get(i);
 
@@ -209,6 +213,21 @@ impl AgentSystem {
     }
 }
 
+// A car in the network with no lane does not move: it stands at a node (dropped off a connector
+// by a road edit, or past the end of its path), waits for its attach slot
+// (`ACCESS_LANE_ATTACH_PENDING`), is frozen for its parking recovery, or is off the network. Its
+// speed is 0 until it enters a lane, which seeds the speed it drives on with (`TRAFFIC-33`).
+// Before, the pass accelerated it towards the road's limit while it stood. O(1).
+//
+// Safety: `i` must be unique to the current worker for both slices.
+#[inline(always)]
+unsafe fn stand_without_lane(i: usize, speed: &RawSlice<f32>, overtake_blocked: &RawSlice<f32>) {
+    unsafe {
+        *speed.get_mut(i) = 0.0;
+        *overtake_blocked.get_mut(i) = 0.0;
+    }
+}
+
 #[inline(always)]
 fn junction_brake_lookahead_m(speed: f32) -> f32 {
     const JUNCTION_LOOKAHEAD_MARGIN_M: f32 = 20.0;
@@ -332,6 +351,34 @@ mod tests {
                     } else {
                         reference = Some(state);
                     }
+                }
+            }
+        }
+    }
+
+    // `TRAFFIC-33`: a car in the network with no lane stands at speed 0, one starting from rest
+    // and one with a stale speed alike, whether or not other cars are on lanes. Before, the pass
+    // accelerated it towards the road's limit (the user's dump: 13.89 m/s in a junction).
+    #[test]
+    fn a_car_with_no_lane_stands_at_speed_zero() {
+        for others_on_lanes in [true, false] {
+            let (mut agents, network, graph, _) = speed_fixture(4, "road", false);
+            let lane_less = if others_on_lanes { 0..2 } else { 0..4 };
+            for i in lane_less.clone() {
+                agents.current_lane_id[i] = usize::MAX;
+                agents.speed[i] = if i == 0 { 0.0 } else { 9.0 };
+            }
+            agents.invalidate_lane_bucket_snapshot();
+            let (_, live) = agents.prepare_lane_buckets_for_tick(&network, 4);
+            for _ in 0..6 {
+                agents.update_idm_speeds(0.1, &network, &graph, 4, live);
+            }
+            for i in 0..4 {
+                if lane_less.contains(&i) {
+                    assert_eq!(agents.speed[i], 0.0, "lane-less car {i}");
+                    assert_eq!(agents.overtake_blocked_time_s[i], 0.0);
+                } else {
+                    assert!(agents.speed[i] > 0.0, "car {i} on its lane drives");
                 }
             }
         }

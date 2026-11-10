@@ -181,6 +181,9 @@ pub struct GrowthReport {
     stranded_members: String,
     // Shortage lines of the household windows closed since the last calendar close.
     stranded_today: String,
+    // Private wages paid between the last calendar close and the attachment: daily phases that
+    // settled in the frame after the close. Counted in the first day's paid wages only.
+    unobserved_payroll: f64,
 }
 
 /// Per-firm results over the observed run, retained after bankruptcy and removal.
@@ -271,6 +274,7 @@ impl GrowthReport {
             support_days: core.demand.runtime_tuning().unemployment_max_days,
             stranded_members: String::new(),
             stranded_today: String::new(),
+            unobserved_payroll: core.households.day_totals.private_payroll,
         };
         report.sample_businesses(core, Sample::Boundary);
         report.opening_business_cash = report.businesses.values().map(|b| b.cash).sum();
@@ -1012,7 +1016,7 @@ impl EconomyObserver for GrowthReport {
         self.sample_businesses(core, Sample::Boundary);
         let last_day = &core.households.last_day_totals;
         assert!(
-            (self.current.payroll - last_day.private_payroll).abs() < 0.1
+            (self.current.payroll + self.unobserved_payroll - last_day.private_payroll).abs() < 0.1
                 && (self
                     .current
                     .businesses
@@ -1024,6 +1028,7 @@ impl EconomyObserver for GrowthReport {
                     < 0.1,
             "private payroll observer must reconcile actual paid wages"
         );
+        self.unobserved_payroll = 0.0;
         self.stranded_members = std::mem::take(&mut self.stranded_today);
         for agent in 0..core.agents.len() {
             if core
