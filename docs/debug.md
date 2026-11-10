@@ -516,6 +516,23 @@ after the third failure: `sent home to building B at (x, y)`, `sent to border no
 `no border node to send it to`. Road edits clear the routes they touch, so junction lines point
 at lane or connector data that disagrees with the road graph.
 
+A car on a parking leg is never handed to the watchdog: its failure goes to the leg's recovery in
+the same tick's commit, and its line says what the recovery did (`TRAFFIC-32`): `drops its route
+and replans`, `its parking leg plans again in 30 s`, or, for a drive cut off from its bay
+([`TRAFFIC-34`](traffic.md#recovery-park-02)), `parks in the nearest free bay it can reach by road,
+at (x, z), and walks on`, `gives up and drives home to building B`, or `no free bay in reach and
+no way home: stops at the end of lane L, plans home again in 5 s`. A parked driver with no walk
+from its bay logs `no walk from its parking bay to building B` with `gives up and drives home to
+building H` or `no way home either: stays parked in its bay, plans the drive home again in 5 s`.
+The movement pass records it with the placeholder `its parking leg's recovery plans again`, which
+the commit replaces; a failure the recovery finds itself is recorded there. One line per failure:
+the retries on the backoff record nothing. The `TRAFFIC-31` dump's car, its booked bay's road cut
+off from every other road after the load:
+
+```text
+trip failed: agent 125 [row 125], resident, car, at node 7, to building 90 (industrial): no route from node 7 to building 90: no lane by the door from node 32; no road path from node 7 to node 19; gives up and drives home to building 121
+```
+
 Flood control keeps the 4096-line log readable when a road edit strands many agents:
 
 - An agent that repeats the same failure at the same place within a simulated minute of the

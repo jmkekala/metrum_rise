@@ -219,6 +219,18 @@ independent because the shared lane snapshot contains distances and the current 
 no other agent's speed. The duplicate speed array and its final serial copy are removed. Non-car
 and inactive agents retain their current speed while their existing traffic-timer rules run.
 
+A car in the network with no lane does not move, so its speed is 0 until it enters a lane
+(`TRAFFIC-33`, 2026-11-10): one standing at a node (dropped off a connector by a road edit, or past
+the end of its path), held for its attach slot (`ACCESS_LANE_ATTACH_PENDING`), frozen for its
+parking leg's recovery, or off the network. Before, the pass took it for a car with a free road
+and accelerated it towards the road's limit while it stood (the `TRAFFIC-31` dump's car read
+13.89 m/s in the junction). Nothing drew or moved it by that speed: poses come from the lane, lane
+buckets and the gridlock check hold only cars on lanes, and an attach or a lane entry sets the
+speed itself. What changes is the speed a car enters its first lane with: a lane entry from a node
+seeds the road's limit only when the car stands at 0, as it now always does, where it kept the
+speed the pass had built up meanwhile. The inspector and the traffic labels show 0. O(1) per
+agent in the existing pass, one branch.
+
 If a car is approaching a blocked connector or a required lane change whose target gap is blocked,
 the speed pass computes a braking speed for the remaining distance. This makes the car slow before
 the conflict instead of teleporting or stopping only at the exact handoff point.
@@ -610,7 +622,9 @@ crossings).
   teleport, no crossing of its own, and the watchdog's move home does not apply. Cost: one route
   query per stranded walker per retry (at most one every 2 min once settled), O(1) per stranded
   walker and tick in between. A walker without a home keeps trying its destination on the same
-  backoff.
+  backoff. A driver who parked and finds no walk from its bay does not start this walk: it drives
+  home, or stays in its bay on the same backoff ([recovery](#recovery-park-02), `TRAFFIC-34`); a
+  car cut off from its bay waits at a lane's end on it too.
 - **No teleport for walkers (`TRAFFIC-19`, 2026-11-02).** The stuck-agent watchdog
   (`movement/replan_watchdog.rs`, a move home or to a border node after three failed replans)
   never moves a walker. Every site that hands it a failed replan sends a walker to
@@ -2308,7 +2322,10 @@ is heading for. Removal never panics on a full set. Recovery walks to the car's 
 replans from its actual lane position, or reverses an unfinished pull-in to the driveway before
 choosing replacement supply. It never moves a travelling car by towing. A failed replan on a
 parking leg asks for this ordered recovery, so the stuck-agent watchdog does not teleport the car
-(`TRAFFIC-20`). A displaced resident with a persistent car and no home left walks.
+(`TRAFFIC-20`). The failure is recorded on `events` like any other trip failure, once, with what
+the recovery then does (`TRAFFIC-32`, 2026-11-10: the movement pass records it with a placeholder
+outcome and the same tick's commit fills in replans, a retry, or the cut-off rule's outcome below;
+before, a parking leg's failure wrote no line). A displaced resident with a persistent car and no home left walks.
 
 Recovery replans from a lane, or, for a car on its drive standing at a node with none, from that
 node (`TRAFFIC-31`). A road edit that clears a car's route while it crosses a junction drops it off
@@ -2318,9 +2335,60 @@ bay as the movement pass's replan gate plans any car at a node (`replan_start`,
 `plan_network_replan` with the bay's entrance), and the movement pass then enters the route's first
 road lane from the node. Before, a car frozen there for recovery (its replan from the node failed
 or its booking went) waited for a lane nothing gave it: every 30 game minute retry found none, and
-it stood in the junction for good, in no lane bucket, so traffic drove past it. With no route the
-car waits for the retry and plans from the node again. Any other car with no lane to plan from
-waits for its retry. The check is O(1) in the commit's visit of the car, plus one route query.
+it stood in the junction for good, in no lane bucket, so traffic drove past it. A car on its drive
+that finds no route from its lane plans again from the lane's end node, as the replan gate plans a
+car on a lane. With no route from either, the cut-off rule below decides. Any other car with no
+lane to plan from waits for its retry. The check is O(1) in the commit's visit of the car, plus
+one route query.
+
+**A drive cut off from its bay: park nearby, walk on (`TRAFFIC-34`, the user's decision of
+2026-11-10).** Before, a car whose replan found no road route to its booked bay stood where it was
+(in the junction, for `TRAFFIC-31`'s car) until a 30 game minute retry found the bay again.
+Recovery (`drive_cut_off`) now releases the booking and:
+
+- **(a)** drives to the first free bay of its destination's catchment, in the catchment's own
+  order (walking seconds, manoeuvre, handle), that it can reach by road from where it stands,
+  books it and parks there; the driver walks on to the destination by the walker rules. Its old bay
+  takes part in the order once released, unless it is the one the failed plan was for.
+- **(b)** with none, gives the trip up and drives home: the first free bay of home's catchment it
+  can reach, as (a), the trip turned home as a trip taken on the way turns (`parking_trip_target`).
+- **(c)** with home cut off too, books the first free bay of the trip's end again (home, or with no
+  home its destination; its old bay when none is free, so the lost-booking watch leaves it alone),
+  drops its route and drives to the end of a road lane, where it stands: the lane it is on, or
+  held for, or, at a node, the vehicle road lane out of the node whose start is nearest the car
+  (ties by lane id), which it enters as a held car enters its attach lane (`hold_for_lane_attach`,
+  so it waits for a clear slot and is drawn on the lane's start from then; the `TRAFFIC-34` test
+  car moves at most 3.6 m in a tick). The lane's end freezes it for its leg's recovery, as a car
+  whose trip was taken (`car_trip_taken`). Its retry runs on the stranded walkers' backoff, 5 s,
+  30 s, then every 2 min (`walk_home::retry_after_s`; the step in `network_replan_failures`, the
+  wait in the parking retry wheel), and is the recovery again from the lane's end, by these same
+  rules: with the road home back it drives home. While it waits out the backoff with no plan
+  (`waits_out_cut_off`) no replan gate plans it, and a load keeps its step (`loaded_cut_off_backoff`,
+  as the running game keeps it). A node with no road out leaves it standing there.
+
+It never stands in a junction while a road leads out and is never moved. The search asks the
+router once per distinct exit lane (an exit lane the router has found unreachable from this start,
+`cch_no_path`, is not asked again, which depends only on the start and that lane, so it skips
+nothing reachable), O(k + R × Q) for k catchment entries and R exit lanes tried, once per failure
+and per backoff step; O(1) per standing car and tick in between, no city scan. Each failure writes
+one `events` record with what it did (`TRAFFIC-32`): `parks in the nearest free bay it can reach by
+road, at (x, z), and walks on`, `gives up and drives home to building B`, or `no free bay in reach
+and no way home: stops at the end of lane L, plans home again in 5 s`; a retry records nothing.
+The rule needs a road route to fail, so it never runs where none failed: freight and border
+carriers, which have no parking leg, keep `TRAFFIC-20`; a move-in's delivery car is a parking leg
+and takes (a) or (c) to its new home's catchment.
+
+**No walk on from the bay (the user's rule of 2026-11-10).** A driver whose pull-in ends in its bay
+and who finds no walk from there to its destination (`walk_cut_off`, at the pull-in's next leg)
+takes the car again and drives home: the first free bay of home, as a trip home books one, the car
+parked in its bay and pulled out from it. With home cut off by road too, with home the place it
+could not walk to, or with no home, the car stays in its bay, off the road, and that leg is planned
+again on the walkers' backoff (5 s, 30 s, then every 2 min): the walk on if it is back, else the
+drive home. One record (`no walk from its parking bay to building B`, then `gives up and drives
+home to building H` or `stays parked in its bay, plans the drive home again in 5 s`), none per
+retry. This replaces the walker rule's walk home or stranding for a driver who came by car; a walk
+cut on the way, after the driver left the bay, still follows the walker rules. Cost: one car leg
+quote per failure and per backoff step.
 
 A trip can be taken from a driver on the way (`TRAFFIC-29`, the car's case of `TRAFFIC-24`): its
 job ends (`assign_work_building`), its household loses or changes its home, or the building goes.
