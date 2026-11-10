@@ -3548,7 +3548,8 @@ is kept; a tile that becomes resident again is baked again.
 `Texture2DArray`s, its slot layers (one per tile) and its row atlas (whole layers per tile's
 rows), and every draw of a level binds the one page its patch's block uses. Godot uploads a
 texture a whole layer at a time (`update_layer`; no sub-rectangle update in either renderer), so
-nothing smaller than a layer is ever allocated, and no CPU copy of an uploaded layer is kept.
+nothing smaller than a layer is ever allocated. Only the Compatibility renderer keeps a CPU copy
+of the uploaded layers, for growth (below, `TERRAIN-22`).
 
 - **Layer limit `L`.** The device's array depth: `RenderingDevice.limit_get(LIMIT_MAX_TEXTURE_ARRAY_LAYERS)`
   (2,048 on this machine's AMD driver), 256 without a `RenderingDevice` (the Compatibility
@@ -3619,11 +3620,28 @@ nothing smaller than a layer is ever allocated, and no CPU copy of an uploaded l
   the upload, leaving a new road over the ground of an older edit until a reload.) (Round 8's first build put a moving block's new copies in the target only, and its
   sets drew those tiles as base cells until the move: the 100k pans showed up to 5 patches a
   frame unready in view.) Compatibility has no `RenderingDevice`: its pages stay
-  `Texture2DArray`s and a move reads the old page's layers back on the CPU (`_copy_array`). On
-  Godot 4.7.2 that readback does not return the uploaded bytes: an `RGBAF` layer reads back as
-  layer 0, clamped to 0-1 and quantised to 8 bits (round `VM` probe, radeonsi), so a move under
-  Compatibility leaves the moved block's tiles drawing wrong data until each is rebaked
-  (`TERRAIN-22`). Measured in round `VM` (2026-11-10, RX 7900 XTX, Vulkan Forward+, debug
+  `Texture2DArray`s, and on Godot 4.7.2 their readback (`get_layer_data`) does not return the
+  uploaded bytes: an `RGBAF` layer reads back as layer 0, clamped to 0-1 and quantised to 8 bits
+  (round `VM` probe, radeonsi; Forward+ reads back exactly). Until `TERRAIN-22` a Compatibility
+  move copied that readback, so the moved block's tiles drew wrong data until each was rebaked.
+  Now, on Compatibility only, each page keeps the bytes last uploaded to each of its slot and atlas
+  layers (`texel_bytes`, `atlas_bytes`, shared with the upload's pooled `Image`, so a texel upload
+  costs no extra copy and an atlas layer one 4 KiB copy), and a move uploads the old page's
+  written layers into the new page from them: exact, no rebake, no readback, O(written bytes).
+  The copy follows every upload (`write_copy`: installs, edits, previews), a move's target takes
+  the source's bytes, and a page released to the pool drops its copy; evictions and freed runs
+  keep the layers as the GPU does (never drawn, overwritten by the next copy placed there). Its
+  memory is the written layers of the pages in use, at most their page bytes, and none on
+  Forward+/Mobile or headless (`mirror_bytes`). Round `T22` (2026-11-10, RX 7900 XTX radeonsi,
+  Compatibility, debug library, the publication test's 500 m world after 48 seeded strokes, two
+  runs): 4.9 MB of CPU copy beside 38.4 MB of pages; a forced GL2 move (64 slots, 192 layers, 55
+  tiles) took 1.7-9.0 ms in the move call against `dev`'s readback 13.6-13.8 ms (wrong bytes);
+  idle frames vary more between runs than between the two scripts. `graded_page_growth_test.gd`
+  draws a moved page's layers into an `RGBA8` viewport, each channel's float bits as four bytes,
+  and compares them with the uploaded bytes (16 failures on `dev`'s pages script under
+  Compatibility, 0 after; 0 on Forward+ either way); the gate runs it rendered under Compatibility.
+  The publication tests' byte checks read the CPU copy on Compatibility (`layer_data`) and pass
+  there. Measured in round `VM` (2026-11-10, RX 7900 XTX, Vulkan Forward+, debug
   library, the publication test's 500 m world after 48 seeded strokes, 1280 x 720, frames paced
   at 60 Hz): a forced move of the GL2 block (64 to 128 slots, 192 layers, 55 tiles, 50 MB of
   pages) costs 0.87-0.89 ms in the move call (page creation, clear and device copy) and its

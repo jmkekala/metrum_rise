@@ -20,7 +20,7 @@ Zoning cells, parcels and the painting preview are now drawn into the ground sur
 meshes are gone ([ground mask](zoning.md#ground-mask-rendering)). Veeti's branch came in as one
 squashed commit in round `Z1` with two fixes, verified on the RX 7900 XTX (`ZONE-08`).
 
-Veeti's road-render and signs/parking fixes are merged on branch `veeti-fixes` (round `VM`, not landed): a graded page grows by device copy, so committed roads no longer drop out (`TERRAIN-21`; Compatibility's readback copy is still wrong, `TERRAIN-22`), a ring entry's crossing sign carries B5 + D2 (`ROAD-62`), parking lots refuse walkways (`PARK-01`) and kerb bays save with renumbered roads (`PARK-05`).
+Veeti's road-render and signs/parking fixes are merged on branch `veeti-fixes` (round `VM`, not landed): a graded page grows by device copy, so committed roads no longer drop out (`TERRAIN-21`; on Compatibility the move copies a CPU copy of the uploaded layers since round `T22`, branch `terrain-22`, not landed: `TERRAIN-22`), a ring entry's crossing sign carries B5 + D2 (`ROAD-62`), parking lots refuse walkways (`PARK-01`) and kerb bays save with renumbered roads (`PARK-05`).
 
 Roads, road edits and service/industry placements now take zoned land instead of being refused by
 it: the lots they cover go with their houses, the covered cells lose their paint, placed buildings,
