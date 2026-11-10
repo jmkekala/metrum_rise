@@ -141,6 +141,7 @@ impl<M: CellMaps> CellStore<M> {
     /// Completes the requested chunk and warm neighbours whose entire dirty envelope was
     /// covered by the caller's generation bounds. Partly covered and cold neighbours stay dirty.
     pub(crate) fn complete_generated_chunk(&mut self, chunk: (i32, i32), bounds: CellBounds) {
+        self.eligibility_epoch = self.eligibility_epoch.wrapping_add(1);
         let entry = self.chunks.entry_or_default(chunk);
         entry.generated = true;
         entry.dirty_bounds = None;

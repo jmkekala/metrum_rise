@@ -67,6 +67,8 @@ struct Inheritance {
     covered: Vec<CellKey>,
     // The cells painted so far, with their paint.
     inherited: Vec<(CellKey, u16)>,
+    // The cell store's eligibility epoch at the last pass, `None` before the first.
+    passed_epoch: Option<u64>,
 }
 
 /// A finished plan's parcel changes, for [`ZoningSystem::install_cell_lot_plan`].
@@ -277,14 +279,17 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
             bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
             blocked,
         );
-        self.inherit_paint();
         let generation_ms = phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
+        let phase = phase.map(|_| std::time::Instant::now());
+        self.inherit_paint();
+        let inheritance_ms = phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let phase = phase.map(|_| std::time::Instant::now());
         let report = self.derive_cell_lots(graph, bounds, sizes, |corners, _| blocked(corners));
         crate::debug_log!(
             "economy_phases",
-            "cell_lot_detail generation_ms={:.3} derivation_ms={:.3} candidates={} created={} retired={} reattached={}",
+            "cell_lot_detail generation_ms={:.3} inheritance_ms={:.3} derivation_ms={:.3} candidates={} created={} retired={} reattached={}",
             generation_ms,
+            inheritance_ms,
             phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0),
             report.candidates,
             report.created.len(),
@@ -321,6 +326,7 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
             sources,
             covered: paint.covered,
             inherited: Vec::new(),
+            passed_epoch: None,
         });
         self
     }
@@ -349,11 +355,19 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
 
     // Paints the new cells over the erased ones as [`Self::inheriting`] says, after a region's
     // generation; a cell decided before is painted or stays unpainted, so deciding again changes
-    // nothing. O(erased cells * cells over each) plus the paint writes.
+    // nothing. A pass after which no chunk's generation completed and no claim was released
+    // (the store's eligibility epoch unchanged) finds no new candidate and is skipped (round
+    // RL2: about half of a stroke's regions generate nothing). O(erased cells * cells over each)
+    // plus the paint writes, O(1) for a skipped pass.
     fn inherit_paint(&mut self) {
         let Some(inheritance) = self.inheritance.as_mut() else {
             return;
         };
+        let epoch = self.cells.eligibility_epoch();
+        if inheritance.passed_epoch == Some(epoch) {
+            return;
+        }
+        inheritance.passed_epoch = Some(epoch);
         let cells = &*self.cells;
         // (new cell, erased cell, its paint, shared area), the erased cells in key order.
         let mut overlaps = Vec::new();

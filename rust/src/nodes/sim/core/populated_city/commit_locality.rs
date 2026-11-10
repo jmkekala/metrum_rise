@@ -40,7 +40,8 @@
 //! row, and the mine's area over the rear row, after a parking lot on unzoned land beside the
 //! trunk, the same placement taking nothing (`LOCALITY_PLACEMENTS`): each one's wall time, the
 //! take of its footprint timed alone on the city as the placement finds it, the explicit sites
-//! that take's query visits, and what it demolished and erased.
+//! that take's query visits, and what it demolished and erased. Each one taking land releases the
+//! free paint around it, which its lot plan re-lays (`ZONE-14`, round RL2).
 
 use std::time::Instant;
 
@@ -100,8 +101,12 @@ fn benchmark_commit_locality() {
                 "parcels": core.zoning.parcels().len(), "agents": core.agents.len(),
                 "edges": core.region_graph.edge_count()})
         );
+        // The breakdown turns the `economy_phases` channel off after its commits; the edits below
+        // log their lot plans' phases on it when it was asked for (`cell_lot_detail`).
+        let phases = crate::debug::Channel::EconomyPhases.enabled();
         let samples =
             super::routing_benchmark::profile_commits(background as u32, &mut core, false);
+        crate::debug::Channel::EconomyPhases.set_enabled(phases);
         let demolitions = profile_demolitions(&mut core, background);
         let in_place = profile_in_place_edits(&mut core, background);
         let placements = profile_placements(&mut core, background);
@@ -312,6 +317,14 @@ fn profile_demolitions(core: &mut SimCore, background: usize) -> serde_json::Val
                 "land_release_ms": core.last_land_release_ms, "buildings_ms": m.buildings_ms,
                 "lots_spawn_ms": m.lots_spawn_ms, "adoption_ms": adoption_ms,
                 "lots_install_ms": lots.install_ms,
+                // The adoption's split (`ZONE-14` round RL2): the wait for the deferred plan
+                // (generation, inheritance and derivation, `cell_lot_detail` on the
+                // `economy_phases` channel), its install, the occupants' reattachment, the
+                // attachment repair and entrance rebuild, the road tool view's publication.
+                "plan_wait_ms": lots.install_ms - lots.plan_install_ms - lots.reattach_ms
+                    - lots.repair_ms,
+                "plan_install_ms": lots.plan_install_ms, "reattach_ms": lots.reattach_ms,
+                "repair_ms": lots.repair_ms, "view_publish_ms": lots.publish_ms,
                 "agent_scan_ms": agent_scan_ms, "household_scan_ms": household_scan_ms,
                 "zone_index_rebuild_ms": zone_index_ms})
         );
@@ -601,7 +614,8 @@ fn profile_placements(core: &mut SimCore, background: usize) -> serde_json::Valu
                 "take_buildings": take.buildings.len(), "take_lots": take.lots.len(),
                 "take_cells": take.cells.len(), "site_candidates": site_candidates,
                 "index_stale": index_stale, "index_rebuild_ms": index_rebuild_ms,
-                "take_ms": take_ms, "placement_ms": placement_ms})
+                "take_ms": take_ms, "land_release_ms": core.last_land_release_ms,
+                "placement_ms": placement_ms})
         );
         assert!(take.plotted.is_none(), "the {name} meets no plotted land");
         assert_eq!(demolished, take.buildings.len(), "the {name} demolishes its take");

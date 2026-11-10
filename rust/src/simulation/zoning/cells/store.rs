@@ -106,6 +106,10 @@ pub(crate) struct CellStore<M: CellMaps = LiveMaps> {
     painted_count: usize,
     claimed_count: usize,
     revision: u64,
+    // Advances whenever a cell may newly stand unpainted, unclaimed and generated: a chunk's
+    // generation completes or a lot releases its claim. A road edit's paint inheritance skips a
+    // pass while it is unchanged (`ZONE-14` round RL2).
+    eligibility_epoch: u64,
 }
 
 // Only the live kind has a default, so `CellStore::default()` names the live store; the view's
@@ -282,6 +286,7 @@ impl<M: CellMaps> CellStore<M> {
             painted_count: 0,
             claimed_count: 0,
             revision: 0,
+            eligibility_epoch: 0,
         }
     }
 
@@ -539,6 +544,13 @@ impl<M: CellMaps> CellStore<M> {
         self.revision
     }
 
+    /// The epoch that advances whenever a cell may newly stand unpainted, unclaimed and in
+    /// generated chunks: a chunk's generation completed or a lot released its claim. While it is
+    /// unchanged, no cell became such a cell. O(1).
+    pub(crate) fn eligibility_epoch(&self) -> u64 {
+        self.eligibility_epoch
+    }
+
     /// Constant-time idle/empty-world check used before scheduling asset-driven lot work.
     pub(crate) fn has_paint(&self) -> bool {
         self.painted_count != 0
@@ -745,6 +757,9 @@ impl<M: CellMaps> CellStore<M> {
                 block.refresh_reservation(offset);
                 self.journal.blocks.push(key.block());
             }
+        }
+        if parcel_id == 0 {
+            self.eligibility_epoch = self.eligibility_epoch.wrapping_add(1);
         }
         self.bump_revision();
     }
