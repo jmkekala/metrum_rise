@@ -16,6 +16,10 @@ const MoveTool := preload("res://scripts/tools/move_tool.gd")
 const RoadPropertiesWindow := preload("res://scripts/ui/road_properties_window.gd")
 const TIMEOUT_MS := 20000
 
+class TerrainStub extends Node3D:
+	func update_terrain_visuals() -> void:
+		pass
+
 class RoadToolStub extends Node3D:
 	var fwd_lanes := 1
 	var bkw_lanes := 1
@@ -74,7 +78,7 @@ func _load(scene: Node3D) -> void:
 	_expect(warnings.is_empty(), "the house pack loads: " + warnings)
 	_expect(simulation.load_game(_fixture), "the T fixture must load")
 	simulation.set_simulation_speed(0.0)
-	var terrain := Node3D.new()
+	var terrain := TerrainStub.new()
 	terrain.name = "Terrain"
 	scene.add_child(terrain)
 	var road := RoadToolStub.new()

@@ -156,7 +156,15 @@ func _reference(fixture: Dictionary) -> void:
 	var terrain := TerrainScript.new()
 	terrain.name = "Terrain"
 	scene.add_child(terrain)
-	simulation.acknowledge_network_render(generation)
+	# The ack is the renderer's, which only tries the core (`CODE-25`): on a loaded machine the
+	# simulation thread can hold it (the commit's lot plan), and an unacknowledged network keeps
+	# the terrain renderer from taking its dirty patches. No renderer retries it here, so retry.
+	var acked := simulation.acknowledge_network_render(generation)
+	var ack_deadline := Time.get_ticks_msec() + 20000
+	while not acked and Time.get_ticks_msec() < ack_deadline:
+		await process_frame
+		acked = simulation.acknowledge_network_render(generation)
+	_expect(acked, "%s: the committed road chunks are acknowledged" % fixture.name)
 	var terrain_deadline := Time.get_ticks_msec() + 20000
 	while simulation.is_terrain_dirty() and Time.get_ticks_msec() < terrain_deadline:
 		await process_frame
