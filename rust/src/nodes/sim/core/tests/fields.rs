@@ -102,7 +102,7 @@ fn farms_and_mines_need_a_sidewalk_on_their_side() {
     for (asset, x) in [(farm_id.as_str(), 150.0), ("test:mine_test", -150.0)] {
         let preview = core.get_industry_building_placement_preview_internal(asset, x, -8.0);
         assert_eq!(
-            preview.map_or_else(Some, |preview| preview.rejection),
+            preview.map_or_else(Some, |hover| hover.preview.rejection),
             Some(ExplicitServicePlacementRejection::NoSidewalk)
         );
         assert_eq!(
@@ -362,6 +362,7 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
     assert!(
         core.get_industry_building_placement_preview_internal(asset, 120.0, 8.0)
             .unwrap()
+            .preview
             .valid
     );
     let geometry = core
@@ -373,7 +374,8 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
         .set(100, &rectangle(100.0, 7.0, 60.0, 80.0));
     let preview = core
         .get_industry_building_placement_preview_internal(asset, 120.0, 8.0)
-        .unwrap();
+        .unwrap()
+        .preview;
     assert!(!preview.valid);
     assert_eq!(
         preview.rejection,
@@ -421,6 +423,7 @@ fn field_and_explicit_site_take_cell_paint_without_a_derived_lot() {
     assert!(
         core.get_industry_building_placement_preview_internal(asset, 120.0, 8.0)
             .unwrap()
+            .preview
             .valid
     );
     core.zoning.generate_cells(
@@ -440,6 +443,7 @@ fn field_and_explicit_site_take_cell_paint_without_a_derived_lot() {
     assert!(
         core.get_industry_building_placement_preview_internal(asset, 120.0, 8.0)
             .unwrap()
+            .preview
             .valid
     );
     let painted = |core: &SimCore| {

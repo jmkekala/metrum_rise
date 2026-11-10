@@ -68,6 +68,25 @@ fn work_area_take(
     }
 }
 
+/// An explicit building's hover (`ZONE-11`): the allocator's preview and the zoned land the
+/// placement would take, as its commit takes it; empty when the preview is refused, as a
+/// refused placement takes nothing.
+pub(crate) struct ExplicitPlacementHover {
+    /// The pose, the lot's corners and the first refusal.
+    pub(crate) preview: ExplicitServicePlacementPreview,
+    /// The cells, lots and buildings the placement takes.
+    pub(crate) take: RoadLandTake,
+}
+
+/// A field's or extraction area's hover (`ZONE-11`): its area and the zoned land it would take,
+/// as its commit takes it.
+pub(crate) struct WorkAreaPreview {
+    /// The polygon's area in square metres.
+    pub(crate) area_m2: f32,
+    /// The cells, lots and buildings the polygon takes.
+    pub(crate) take: RoadLandTake,
+}
+
 /// Axis-aligned world bounds of one player polygon, or `None` for fewer than three points.
 pub(crate) fn polygon_world_bounds(points: &[Vector2]) -> Option<(Vector2, Vector2)> {
     if points.len() < 3 {
@@ -1839,13 +1858,14 @@ impl SimCore {
         }
     }
 
-    /// Returns a road-frontage snapped preview for one explicit service building asset.
+    /// Returns a road-frontage snapped preview for one explicit service building asset, with
+    /// the zoned land it would take (`ZONE-11`).
     pub(crate) fn get_service_building_placement_preview_internal(
-        &self,
+        &mut self,
         asset_id: &str,
         world_x: f32,
         world_z: f32,
-    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+    ) -> Result<ExplicitPlacementHover, ExplicitServicePlacementRejection> {
         self.explicit_placement_preview(ExplicitPlacementKind::Service, asset_id, world_x, world_z)
     }
 
@@ -1867,13 +1887,14 @@ impl SimCore {
         Ok(building_idx)
     }
 
-    /// Returns a road-frontage snapped preview for one explicit industry building asset.
+    /// Returns a road-frontage snapped preview for one explicit industry building asset, with
+    /// the zoned land it would take (`ZONE-11`).
     pub(crate) fn get_industry_building_placement_preview_internal(
-        &self,
+        &mut self,
         asset_id: &str,
         world_x: f32,
         world_z: f32,
-    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+    ) -> Result<ExplicitPlacementHover, ExplicitServicePlacementRejection> {
         self.explicit_placement_preview(ExplicitPlacementKind::Industry, asset_id, world_x, world_z)
     }
 
@@ -1895,18 +1916,26 @@ impl SimCore {
     }
 
     // The preview of an explicit building, judged as its commit judges it, with the land under
-    // its lot read from the live core as it stands (a stale site index scans every site).
+    // its lot read from the live core: the take the commit would make, empty when the preview
+    // is refused (`ZONE-11`). The site queries' index is readied as a hover readies it
+    // (`prepare_site_query_chunks`: its site part only, never the lists that carry the
+    // simulation's order), so the site tests visit the chunks the lot touches. O(the
+    // placement's checks + the take), plus an O(B/p) site refresh once after the index is
+    // marked stale.
     fn explicit_placement_preview(
-        &self,
+        &mut self,
         kind: ExplicitPlacementKind,
         asset_id: &str,
         world_x: f32,
         world_z: f32,
-    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+    ) -> Result<ExplicitPlacementHover, ExplicitServicePlacementRejection> {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        self.allocator
+            .prepare_site_query_chunks(self.config.zone_cell_m);
         let land = CoreLand::of(self);
-        self.allocator.preview_explicit_placement(
+        let mut taken = None;
+        let preview = self.allocator.preview_explicit_placement(
             kind,
             asset_id,
             Vector2::new(world_x, world_z),
@@ -1915,8 +1944,15 @@ impl SimCore {
             &self.transit_network.roadbed,
             &self.heightmap,
             &catalog,
-            |lot| explicit_lot_take(&land, lot).map(|take| take.buildings),
-        )
+            |lot| {
+                let take = explicit_lot_take(&land, lot)?;
+                let buildings = take.buildings.clone();
+                taken = Some(take);
+                Ok(buildings)
+            },
+        )?;
+        let take = taken.filter(|_| preview.valid).unwrap_or_default();
+        Ok(ExplicitPlacementHover { preview, take })
     }
 
     // Places an explicit building (`ZONE-11`): every check first, the land under its lot among
@@ -2013,7 +2049,7 @@ impl SimCore {
     ) -> Result<crate::simulation::extraction::ExtractorSiteSummary, String> {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        self.prepare_field_polygon_validation()?;
+        self.prepare_field_polygon_validation(false)?;
         let land = CoreLand::of(self);
         let mut taken = None;
         self.resource_extraction.validate_site(
@@ -2145,34 +2181,87 @@ impl SimCore {
     }
 
     // The live inputs a field or extraction area is validated against: the current roadbed and
-    // the site query index.
-    fn prepare_field_polygon_validation(&mut self) -> Result<(), String> {
+    // the site query index; a hover readies only the index's site part
+    // (`prepare_site_query_chunks`), so it leaves the simulation's order alone.
+    fn prepare_field_polygon_validation(&mut self, hover: bool) -> Result<(), String> {
         if !self.transit_network.roadbed.is_current() {
             return Err("road surfaces are updating; try again shortly".to_owned());
         }
-        self.allocator
-            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
+        let cell_m = self.zoning.config.zone_cell_m;
+        if hover {
+            self.allocator.prepare_site_query_chunks(cell_m);
+        } else {
+            self.allocator.prepare_building_site_query_index(cell_m);
+        }
         Ok(())
     }
 
+    /// Validates a field or an extraction area of `building_idx` as its commit will
+    /// ([`Self::commit_field_polygon_internal`], [`Self::commit_extractor_polygon_internal`]),
+    /// without writing anything: the area, or the commit's refusal, and the zoned land the
+    /// polygon would take (`ZONE-11`). A farm draws a field, any other owner an extraction area.
+    /// For the field editor's drag and the industry tool's polygon. O(the commit's checks +
+    /// the take), plus an O(B/p) site refresh once after the site index is marked stale.
+    pub(crate) fn preview_work_area_internal(
+        &mut self,
+        building_idx: usize,
+        polygon_world: &[Vector2],
+    ) -> Result<WorkAreaPreview, String> {
+        self.prepare_field_polygon_validation(true)?;
+        let field = self
+            .allocator
+            .buildings
+            .get(building_idx)
+            .is_some_and(|building| {
+                self.allocator
+                    .registry
+                    .field_resource(&building.asset_id)
+                    .is_some()
+            });
+        let land = CoreLand::of(self);
+        let mut taken = None;
+        let land_test = |footprint: &PolygonFootprint<'static>| {
+            let take = work_area_take(&land, footprint, building_idx, field)?;
+            let buildings = take.buildings.clone();
+            taken = Some(take);
+            Ok(buildings)
+        };
+        let area_m2 = if field {
+            self.agriculture.validate_site(
+                building_idx,
+                polygon_world,
+                &self.allocator,
+                &self.zoning,
+                &self.transit_network.roadbed,
+                land_test,
+            )?
+        } else {
+            self.resource_extraction
+                .validate_site(
+                    building_idx,
+                    polygon_world.to_vec(),
+                    &self.resource_deposits,
+                    &self.allocator,
+                    &self.transit_network.roadbed,
+                    land_test,
+                )?
+                .area_m2
+        };
+        Ok(WorkAreaPreview {
+            area_m2,
+            take: taken.unwrap_or_default(),
+        })
+    }
+
     /// Validates a field preview without changing its saved polygon or work area.
+    #[cfg(test)]
     pub(crate) fn validate_field_polygon_internal(
         &mut self,
         building_idx: usize,
         polygon_world: &[Vector2],
     ) -> Result<f32, String> {
-        self.prepare_field_polygon_validation()?;
-        let land = CoreLand::of(self);
-        self.agriculture.validate_site(
-            building_idx,
-            polygon_world,
-            &self.allocator,
-            &self.zoning,
-            &self.transit_network.roadbed,
-            |footprint| {
-                work_area_take(&land, footprint, building_idx, true).map(|take| take.buildings)
-            },
-        )
+        self.preview_work_area_internal(building_idx, polygon_world)
+            .map(|preview| preview.area_m2)
     }
 
     /// Replaces only the field and farm identity captured when the drag began.
@@ -2213,7 +2302,7 @@ impl SimCore {
     ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        self.prepare_field_polygon_validation()?;
+        self.prepare_field_polygon_validation(false)?;
         let land = CoreLand::of(self);
         let mut taken = None;
         self.agriculture.validate_site(

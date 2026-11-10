@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Explicit industry area placement tool with a player-drawn production polygon.
+## The building and its polygon take the zoned land under them (`ZONE-11`): the building's hover
+## and the polygon's quote outline the lots they would take with the bulldoze highlight and
+## their labels name the buildings demolished.
 ##
 ## Rust methods called: get_industry_building_placement_preview(),
 ##   place_industry_building(), commit_extractor_polygon(), commit_field_polygon(),
@@ -9,6 +12,7 @@ extends Node3D
 
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
 const ProductionPlotOverlay := preload("res://scripts/tools/production_plot_overlay.gd")
+const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -48,6 +52,11 @@ var _preview_cache_placeable: bool = false
 var _preview_cache_build_cost: float = 0.0
 var _preview_cache_error: String = ""
 var _preview_cache_label_world_pos: Vector3 = Vector3.ZERO
+var _preview_cache_demolish_mesh: Mesh = null
+var _preview_cache_demolish_count: int = 0
+# The lots the building's hover and the polygon's quote would take.
+var _demolish_mesh: MeshInstance3D
+var _area_demolish_mesh: MeshInstance3D
 var _mode: Mode = Mode.PLACE_BUILDING
 var _pending_building_id: int = -1
 var _pending_building_footprint: PackedVector2Array = PackedVector2Array()
@@ -160,6 +169,10 @@ func _ready() -> void:
 	add_child(preview_part_root)
 	_preview_valid_material = _make_ghost_material(Color(0.70, 0.76, 0.58, 0.44))
 	_preview_invalid_material = _make_ghost_material(Color(1.0, 0.23, 0.12, 0.48))
+	_demolish_mesh = HighlightMesh.instance()
+	add_child(_demolish_mesh)
+	_area_demolish_mesh = HighlightMesh.instance()
+	add_child(_area_demolish_mesh)
 	_create_preview_price_label()
 	_create_tool_notification()
 	add_child(_plot_overlay)
@@ -314,14 +327,7 @@ func _update_preview() -> void:
 		and _preview_cache_asset_id == selected_asset_id
 		and _preview_cache_pos.distance_to(wp) < PREVIEW_REFRESH_DISTANCE_M
 	):
-		_apply_preview_payload(
-			_preview_cache_mesh,
-			_preview_cache_part_transforms,
-			_preview_cache_placeable,
-			_preview_cache_build_cost,
-			_preview_cache_error,
-			_preview_cache_label_world_pos
-		)
+		_apply_cached_preview()
 		return
 
 	var payload: Dictionary = simulation_node.get_industry_building_placement_preview(
@@ -329,6 +335,9 @@ func _update_preview() -> void:
 		wp.x,
 		wp.y
 	)
+	# The simulation thread holds the core: keep the last preview, ask again next frame.
+	if bool(payload.get("pending", false)):
+		return
 	var mesh: Mesh = null
 	var is_valid := bool(payload.get("valid", false))
 	var error := str(payload.get("error", ""))
@@ -338,6 +347,9 @@ func _update_preview() -> void:
 	if corners.size() == 4:
 		mesh = _build_preview_mesh(corners, is_valid)
 	var label_world_pos := _preview_label_world_pos(payload, wp, corners)
+	var demolish_lots: PackedVector3Array = payload.get("demolish_lots", PackedVector3Array())
+	_preview_cache_demolish_mesh = HighlightMesh.polygons(demolish_lots, 4) if is_valid else null
+	_preview_cache_demolish_count = int(payload.get("demolish_count", 0)) if is_valid else 0
 	_preview_cache_valid = true
 	_preview_cache_asset_id = selected_asset_id
 	_preview_cache_pos = wp
@@ -347,19 +359,20 @@ func _update_preview() -> void:
 	_preview_cache_build_cost = build_cost
 	_preview_cache_error = error
 	_preview_cache_label_world_pos = label_world_pos
-	_apply_preview_payload(mesh, part_transforms, is_valid, build_cost, error, label_world_pos)
+	_apply_cached_preview()
 
-func _apply_preview_payload(
-	support_mesh: Mesh,
-	part_transforms: PackedFloat32Array,
-	is_valid: bool,
-	build_cost: float,
-	error: String,
-	label_world_pos: Vector3
-) -> void:
-	_apply_preview_mesh(support_mesh)
-	_apply_part_preview(part_transforms, is_valid)
-	_apply_preview_price_label(build_cost, is_valid, error, label_world_pos)
+func _apply_cached_preview() -> void:
+	_apply_preview_mesh(_preview_cache_mesh)
+	_apply_part_preview(_preview_cache_part_transforms, _preview_cache_placeable)
+	_demolish_mesh.mesh = _preview_cache_demolish_mesh
+	_demolish_mesh.visible = _preview_cache_demolish_mesh != null
+	_apply_preview_price_label(
+		_preview_cache_build_cost,
+		_preview_cache_placeable,
+		_preview_cache_error,
+		_preview_cache_label_world_pos,
+		_preview_cache_demolish_count
+	)
 
 func _apply_preview_mesh(mesh: Mesh) -> void:
 	preview_mesh.mesh = mesh
@@ -388,11 +401,15 @@ func _clear_preview_cache() -> void:
 	_preview_cache_build_cost = 0.0
 	_preview_cache_error = ""
 	_preview_cache_label_world_pos = Vector3.ZERO
+	_preview_cache_demolish_mesh = null
+	_preview_cache_demolish_count = 0
 	_hide_preview_visuals()
 
 func _hide_preview_visuals() -> void:
 	if preview_mesh:
 		preview_mesh.visible = false
+	if _demolish_mesh:
+		_demolish_mesh.visible = false
 	for instance in _preview_part_instances:
 		instance.visible = false
 	if _price_label:
@@ -486,11 +503,12 @@ func _apply_preview_price_label(
 	build_cost: float,
 	is_valid: bool,
 	error: String,
-	label_world_pos: Vector3
+	label_world_pos: Vector3,
+	demolish: int
 ) -> void:
 	if not _price_label:
 		return
-	var price_text := "price %s" % _money(build_cost)
+	var price_text := "price %s" % _money(build_cost) + _demolition_text(demolish)
 	if not is_valid and not error.is_empty():
 		price_text += "  " + error
 		_price_label.add_theme_color_override("font_color", Color(1.0, 0.28, 0.18, 0.98))
@@ -523,6 +541,12 @@ func _preview_label_world_pos(
 	if simulation_node and simulation_node.has_method("get_world_surface_height"):
 		y = float(simulation_node.get_world_surface_height(fallback_world_pos))
 	return Vector3(fallback_world_pos.x, y + PREVIEW_LABEL_Y_OFFSET_M, fallback_world_pos.y)
+
+# "  demolishes N building(s)" for a placement that takes built lots, else empty.
+func _demolition_text(demolish: int) -> String:
+	if demolish <= 0:
+		return ""
+	return "  demolishes %d building%s" % [demolish, "" if demolish == 1 else "s"]
 
 func _money(value: float) -> String:
 	var sign := "-" if value < 0.0 else ""
@@ -564,32 +588,40 @@ func _update_polygon_mesh() -> void:
 	_update_first_polygon_marker(point_count)
 	if point_count == 0:
 		_price_label.hide()
+		_area_demolish_mesh.visible = false
 		polygon_mesh.visible = false
 		polygon_mesh.mesh = null
 		return
 	var preview_points := _current_polygon_preview_points()
 	if preview_points.size() < 2:
 		_price_label.hide()
+		_area_demolish_mesh.visible = false
 		polygon_mesh.visible = false
 		polygon_mesh.mesh = null
 		return
 	var preview_invalid := _preview_current_click_invalid()
 	if preview_points.size() < 3:
 		_price_label.hide()
+		_area_demolish_mesh.visible = false
 	else:
-		# A pending quote (the simulation thread holds the core) keeps the label as it was.
+		# A pending quote (the simulation thread holds the core) keeps the label and outline as
+		# they were.
 		var quote: Dictionary = simulation_node.get_industry_area_quote(_pending_building_id, PackedVector2Array(preview_points))
 		if bool(quote.get("ok", false)):
 			_price_label.text = "Area %.2f ha: setup %s; utilities %s/day if imported" % [
 				float(quote["area_hectares"]), _money(float(quote["build_cost"])),
-				_money(float(quote["imported_utilities_per_day"]))]
+				_money(float(quote["imported_utilities_per_day"]))] + _demolition_text(int(quote.get("demolish_count", 0)))
 			_label_world_pos = _polygon_vertex(preview_points[preview_points.size() - 1])
 			_price_label.show()
+			var lots: PackedVector3Array = quote.get("demolish_lots", PackedVector3Array())
+			_area_demolish_mesh.mesh = HighlightMesh.polygons(lots, 4)
+			_area_demolish_mesh.visible = _area_demolish_mesh.mesh != null
 		elif not bool(quote.get("pending", false)):
 			preview_invalid = true
 			_price_label.text = str(quote.get("error", "Invalid production area"))
 			_label_world_pos = _polygon_vertex(preview_points[preview_points.size() - 1])
 			_price_label.show()
+			_area_demolish_mesh.visible = false
 	var im := ImmediateMesh.new()
 	var fill_color := Color(0.42, 0.82, 1.0, 0.18)
 	var line_color := Color(0.62, 0.90, 1.0, 0.88)

@@ -73,6 +73,9 @@ pub(crate) struct ExtractorSiteSummary {
     pub(crate) total_reserve_units: f32,
     /// Reserve units remaining after any previous depletion.
     pub(crate) remaining_reserve_units: f32,
+    /// The mine's index after the commit: the land an area takes may demolish buildings, whose
+    /// swap-removes move it (`ZONE-11`).
+    pub(crate) building_idx: usize,
 }
 
 /// Runtime extraction state for all explicit industry extractor buildings.
@@ -268,6 +271,7 @@ impl ResourceExtractionSystem {
             area_m2: site.area_m2,
             total_reserve_units: site.total_reserve_units,
             remaining_reserve_units: site.total_reserve_units - site.extracted_units,
+            building_idx,
         };
         let area_scale = site.productive_area_scale();
         allocator

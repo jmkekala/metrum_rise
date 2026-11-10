@@ -587,3 +587,112 @@ fn a_zone_index_kept_across_removals_equals_a_rebuild() {
     assert_eq!(allocator.max_building_support_m, 3.0);
     assert!(allocator.admission_order.same_as(&rebuilt.admission_order));
 }
+
+// `ZONE-11` round RZ11b: a hover readies a stale index's site part alone
+// (`prepare_site_query_chunks`): the chunk lists, chunk bounds, maxima and explicit sites a
+// rebuild gives, the zone, vacancy and admission lists and the stale flag left for the index's
+// next reader. A removal makes it due again, and the removals' repair still equals a rebuild.
+#[test]
+fn a_hovers_site_refresh_leaves_the_order_to_the_next_reader() {
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::economy::agents::AgentSystem;
+    use crate::simulation::economy::households::HouseholdSystem;
+    use crate::simulation::economy::logistics::ShipmentSystem;
+    use crate::simulation::zoning::ZoningSystem;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.site_refresh",
+        ZoneClass::Residential,
+    );
+    for i in 0..18 {
+        let mut building = indexed_test_building(residential.clone(), ZoneType::Residential, i);
+        building.center_x = (i % 6) as f32 * 600.0 + 10.0;
+        building.center_y = if i == 17 { 3_000.0 } else { 10.0 };
+        building.support_height_m = (i % 4) as f32;
+        building.parcel_id = if i % 5 == 0 { 0 } else { i as u64 + 1 };
+        building.zone_type = if i % 5 == 0 {
+            ZoneType::None
+        } else {
+            ZoneType::Residential
+        };
+        allocator.buildings.push(building);
+    }
+    allocator.rebuild_building_site_clients(10.0);
+    allocator.rebuild_zone_index();
+    // Filling homes 4 and 1 and freeing 1 again takes them out of building order.
+    for building_idx in [4, 4, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1] {
+        allocator.claim_vacancy(building_idx);
+    }
+    allocator.release_vacancy(1);
+    allocator.mark_index_stale();
+    assert!(!allocator.site_chunks_ready());
+    let order = |allocator: &BuildingAllocator| {
+        (
+            allocator.zone_index.clone(),
+            allocator.vacancy_index.clone(),
+            allocator.vacancy_pos.clone(),
+            allocator.dirty_index,
+        )
+    };
+    let site_part = |allocator: &BuildingAllocator| {
+        (
+            allocator.building_chunks.clone(),
+            allocator.building_chunk_bounds,
+            allocator.max_building_support_m.to_bits(),
+            allocator.max_building_support_count,
+            allocator.max_lot_radius_cells.to_bits(),
+            allocator.max_lot_radius_count,
+            allocator.explicit_cell_sites.clone(),
+        )
+    };
+    let stale = order(&allocator);
+    let admission = allocator.admission_order.clone();
+    let mut rebuilt = allocator.clone();
+    rebuilt.rebuild_zone_index();
+    assert_ne!(
+        rebuilt.vacancy_index, stale.1,
+        "a rebuild would reorder the vacancies"
+    );
+
+    allocator.prepare_site_query_chunks(10.0);
+    assert!(allocator.site_chunks_ready());
+    assert_eq!(site_part(&allocator), site_part(&rebuilt));
+    assert_eq!(order(&allocator), stale);
+    assert!(allocator.admission_order.same_as(&admission));
+    let bounds = (0.0, 0.0, 20.0, 20.0);
+    assert!(
+        allocator
+            .site_candidate_indices_for_bounds(bounds.0, bounds.1, bounds.2, bounds.3)
+            .len()
+            < 18
+    );
+    assert_eq!(
+        allocator.site_candidate_indices_for_bounds(bounds.0, bounds.1, bounds.2, bounds.3),
+        rebuilt.site_candidate_indices_for_bounds(bounds.0, bounds.1, bounds.2, bounds.3)
+    );
+
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
+    assert!(allocator.remove_building_for_bulldoze(
+        5,
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut 0.0
+    ));
+    assert!(
+        !allocator.site_chunks_ready(),
+        "a removal makes the refresh due again"
+    );
+    let mut rebuilt = allocator.clone();
+    rebuilt.rebuild_zone_index();
+    allocator.rebuild_zone_index_after_removals();
+    assert_eq!(order(&allocator), order(&rebuilt));
+    assert_eq!(site_part(&allocator), site_part(&rebuilt));
+}

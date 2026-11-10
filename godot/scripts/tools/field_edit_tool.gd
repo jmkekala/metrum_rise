@@ -2,6 +2,8 @@
 
 ## Farm vertex editor. Rust validates and commits each released drag atomically.
 ## Draws the active field and farm boundaries; production and land reservations stay in Rust.
+## A field over zoned land takes it (`ZONE-11`): the drag outlines the lots the release would
+## take with the bulldoze highlight and the hint names the buildings it demolishes.
 extends Node3D
 
 signal field_changed(building_id: int, details: Dictionary)
@@ -9,6 +11,7 @@ signal field_changed(building_id: int, details: Dictionary)
 const PICK_RADIUS_PX := 14.0
 const HELP := "Drag a field vertex. Release to apply. Esc / right-click to finish."
 const ProductionPlotOverlay := preload("res://scripts/tools/production_plot_overlay.gd")
+const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -26,9 +29,12 @@ var _material := StandardMaterial3D.new()
 var _handles: Array[MeshInstance3D] = []
 var _hint := Label.new()
 var _plot_overlay := ProductionPlotOverlay.new()
+# The lots the dragged field would take.
+var _demolish_mesh := HighlightMesh.instance()
 
 func _ready() -> void:
 	add_child(_plot_overlay)
+	add_child(_demolish_mesh)
 	_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_material.no_depth_test = true
 	var mesh_instance := MeshInstance3D.new()
@@ -79,6 +85,7 @@ func cancel_edit() -> void:
 	_dragged = -1
 	_mouse_dirty = false
 	_outline.clear_surfaces()
+	_demolish_mesh.visible = false
 	for handle in _handles:
 		handle.hide()
 		handle.queue_free()
@@ -151,15 +158,25 @@ func _update_drag(release := false) -> void:
 	_preview[_dragged] = point
 	var validation: Dictionary = simulation_node.validate_field_polygon(_building_id, _preview)
 	var pending := bool(validation.get("pending", false))
-	_valid = pending or bool(validation.get("ok", false))
+	var ok := bool(validation.get("ok", false))
+	_valid = pending or ok
 	_hint.text = (HELP if _valid and not pending else str(validation.get("error", "Invalid field"))) + "\n" + ProductionPlotOverlay.LEGEND
-	if bool(validation.get("ok", false)):
+	if ok:
 		_hint.text += "\nExpansion $%.0f; utilities $%.0f/day if imported" % [
 			float(validation.get("build_cost", 0.0)), float(validation.get("imported_utilities_per_day", 0.0))]
+		var demolish := int(validation.get("demolish_count", 0))
+		if demolish > 0:
+			_hint.text += "  demolishes %d building%s" % [demolish, "" if demolish == 1 else "s"]
+	# A pending check (the simulation thread holds the core) keeps the outline as it was.
+	if not pending:
+		var lots: PackedVector3Array = validation.get("demolish_lots", PackedVector3Array())
+		_demolish_mesh.mesh = HighlightMesh.polygons(lots, 4) if ok else null
+		_demolish_mesh.visible = _demolish_mesh.mesh != null
 	_redraw()
 
 func _release_drag() -> void:
 	_dragged = -1
+	_demolish_mesh.visible = false
 	if _preview == _committed:
 		return
 	var result: Dictionary = simulation_node.resize_field_polygon(_building_id, _center, _committed, _preview)
@@ -168,6 +185,8 @@ func _release_drag() -> void:
 		_hint.text = HELP + "\n" + ProductionPlotOverlay.LEGEND
 		terrain_node.mark_field_overlay_dirty()
 		field_changed.emit(_building_id, result)
+		# The houses the field took moved the farm in the building store (`ZONE-11`).
+		_building_id = int(result.get("building_id", _building_id))
 	else:
 		_preview = _committed.duplicate()
 		_hint.text = "Move rejected: " + str(result.get("error", "Invalid field")) + "\n" + ProductionPlotOverlay.LEGEND

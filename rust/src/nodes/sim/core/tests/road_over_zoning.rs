@@ -60,10 +60,17 @@ fn commit(core: &mut SimCore, points: &[Vector3]) -> String {
 // A street along +x with houses grown on its south curb from x -60 to 60 and a family of two in
 // every house. Undo records are kept. Returns the core and the houses.
 fn street_with_houses() -> (SimCore, Vec<usize>) {
+    street_with_houses_on(|_| {})
+}
+
+// The street along +x from x -150 to 150 on the ground `shape` gives a fresh core, houses
+// registered and undo records kept. Returns the core and the street.
+fn street_on(shape: impl Fn(&mut SimCore)) -> (SimCore, usize) {
     let mut core = test_core();
     core.benchmark_mode = false;
     core.treasury.balance = 1.0e9;
     register_houses(&mut core);
+    shape(&mut core);
     commit_ready(
         &mut core,
         vec![
@@ -74,6 +81,12 @@ fn street_with_houses() -> (SimCore, Vec<usize>) {
     let street = (0..core.region_graph.edge_count())
         .find(|&edge| !core.region_graph.edge(edge).deleted)
         .expect("the street");
+    (core, street)
+}
+
+// [`street_with_houses`] on the ground `shape` gives.
+fn street_with_houses_on(shape: impl Fn(&mut SimCore)) -> (SimCore, Vec<usize>) {
+    let (mut core, street) = street_on(shape);
     let houses = grow(&mut core, street, -1.0, [-60.0, 60.0]);
     assert!(houses.len() >= 4, "houses along the street: {houses:?}");
     for &house in &houses {

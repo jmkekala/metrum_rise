@@ -7,7 +7,7 @@ use crate::nodes::sim::core::RoadRejection;
 use crate::simulation::network::graph::{RoadMedian, RoadParking};
 use crate::simulation::network::road_types::RoadAttributes;
 
-mod road_tool;
+pub(super) mod road_tool;
 mod road_types;
 mod roundabouts;
 

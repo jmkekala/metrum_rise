@@ -555,6 +555,10 @@ pub struct BuildingAllocator {
     index_scratch: index::IndexScratch,
     // What a zone index kept across the removal queue's swap-removes still owes (`SIM-02-K`).
     kept_index: index::KeptIndex,
+    // The site queries' part of a stale zone index (chunk lists, chunk bounds, maxima, explicit
+    // sites) was rebuilt for a hover since the index was last marked stale
+    // ([`Self::prepare_site_query_chunks`], `ZONE-11`); derived, never saved.
+    site_chunks_current: bool,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
 }
@@ -956,6 +960,7 @@ impl BuildingAllocator {
             border_arrival: Default::default(),
             index_scratch: Default::default(),
             kept_index: Default::default(),
+            site_chunks_current: false,
             registry: AssetRegistry::new(),
         }
     }
@@ -1212,6 +1217,7 @@ impl BuildingAllocator {
         self.dirty = false;
         self.dirty_index = false;
         self.kept_index = Default::default();
+        self.site_chunks_current = false;
         self.entrances.clear();
         self.entrances_dirty = false;
         if had_buildings || had_sites {

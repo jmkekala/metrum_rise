@@ -5,5 +5,6 @@
 mod cursor;
 mod ghost;
 mod preview;
-pub(super) use preview::{core_lot_outlines, view_lot_outlines};
+pub(super) use preview::view_lot_outlines;
+pub(in crate::nodes::simulation_node) use preview::core_lot_outlines;
 mod surface_debug;

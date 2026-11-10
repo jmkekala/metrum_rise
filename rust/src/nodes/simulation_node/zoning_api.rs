@@ -2,8 +2,10 @@
 
 //! Zoning and service-building Godot API methods.
 
+use super::network_api::road_tool;
 use crate::nodes::sim::core::SERVICE_BUILD_COST_PER_LOT_CELL;
 use crate::simulation::agriculture::FIELD_POLYGON_LINK_DISTANCE_M;
+use crate::simulation::buildings::allocator::ExplicitPlacementKind;
 use crate::simulation::extraction::EXTRACTOR_POLYGON_LINK_DISTANCE_M;
 
 use super::*;
@@ -196,6 +198,68 @@ impl SimulationNode {
         dict
     }
 
+    // The two explicit building hovers' dictionary: the pose, ghost parts, price, first refusal
+    // and the take of a valid placement (`ZONE-11`); `pending` while the core is held.
+    fn explicit_placement_preview_dict(
+        &self,
+        kind: ExplicitPlacementKind,
+        asset_id: GString,
+        world_x: f32,
+        world_z: f32,
+    ) -> VarDictionary {
+        let message = match kind {
+            ExplicitPlacementKind::Service => Self::service_placement_error_message,
+            ExplicitPlacementKind::Industry => Self::industry_placement_error_message,
+        };
+        let asset_id = asset_id.to_string();
+        if asset_id.is_empty() {
+            return Self::empty_service_preview_dict(match kind {
+                ExplicitPlacementKind::Service => "no service building selected",
+                ExplicitPlacementKind::Industry => "no industry building selected",
+            });
+        }
+        let Some(mut core) = self.try_lock_core() else {
+            return vdict! { "pending": true };
+        };
+        let build_cost = Self::explicit_building_build_cost(&core, &asset_id);
+        let hover =
+            match kind {
+                ExplicitPlacementKind::Service => core
+                    .get_service_building_placement_preview_internal(&asset_id, world_x, world_z),
+                ExplicitPlacementKind::Industry => core
+                    .get_industry_building_placement_preview_internal(&asset_id, world_x, world_z),
+            };
+        let mut dict = match hover {
+            Ok(hover) => {
+                let preview = hover.preview;
+                let part_transforms = core.get_service_building_preview_part_transforms_internal(
+                    &asset_id,
+                    preview.center_2d,
+                    preview.support_height_m,
+                    preview.facing_dir,
+                );
+                let corners = PackedVector3Array::from_iter(preview.corners.iter().map(|corner| {
+                    Vector3::new(corner.x, preview.support_height_m + 0.08, corner.y)
+                }));
+                vdict! {
+                    "valid": preview.valid,
+                    "error": GString::from(preview.rejection.map(message).unwrap_or("")),
+                    "corners": corners,
+                    "center_x": f64::from(preview.center_2d.x),
+                    "center_z": f64::from(preview.center_2d.y),
+                    "support_height_m": f64::from(preview.support_height_m),
+                    "facing_dir": preview.facing_dir,
+                    "part_transforms": part_transforms,
+                    "demolish_count": hover.take.buildings.len() as i64,
+                    "demolish_lots": road_tool::core_lot_outlines(&core, &hover.take),
+                }
+            }
+            Err(rejection) => Self::empty_service_preview_dict(message(rejection)),
+        };
+        dict.set("build_cost", build_cost);
+        dict
+    }
+
     fn explicit_building_build_cost(core: &SimCore, asset_id: &str) -> f64 {
         core.allocator
             .registry
@@ -312,7 +376,11 @@ impl SimulationNode {
         arr
     }
 
-    /// Returns a road-frontage snapped footprint preview for one service building asset.
+    /// Returns a road-frontage snapped footprint preview for one service building asset, with
+    /// `demolish_count` and `demolish_lots` (four corners per lot, as the road preview's) for the
+    /// zoned land a valid placement takes (`ZONE-11`). A hover: `{"pending": true}` at once
+    /// while the simulation thread holds the core, and the tool keeps its last preview
+    /// (`CODE-25`).
     #[func]
     pub fn get_service_building_placement_preview(
         &self,
@@ -320,52 +388,12 @@ impl SimulationNode {
         world_x: f32,
         world_z: f32,
     ) -> VarDictionary {
-        let asset_id = asset_id.to_string();
-        if asset_id.is_empty() {
-            return Self::empty_service_preview_dict("no service building selected");
-        }
-        let core = self.lock_core();
-        let build_cost = Self::explicit_building_build_cost(&core, &asset_id);
-        match core.get_service_building_placement_preview_internal(&asset_id, world_x, world_z) {
-            Ok(preview) => {
-                let part_transforms = core.get_service_building_preview_part_transforms_internal(
-                    &asset_id,
-                    preview.center_2d,
-                    preview.support_height_m,
-                    preview.facing_dir,
-                );
-                let mut corners = PackedVector3Array::new();
-                for corner in preview.corners {
-                    corners.push(Vector3::new(
-                        corner.x,
-                        preview.support_height_m + 0.08,
-                        corner.y,
-                    ));
-                }
-                let mut dict = VarDictionary::new();
-                dict.set("valid", preview.valid);
-                let error = preview
-                    .rejection
-                    .map(Self::service_placement_error_message)
-                    .unwrap_or("");
-                dict.set("error", GString::from(error));
-                dict.set("corners", corners);
-                dict.set("center_x", f64::from(preview.center_2d.x));
-                dict.set("center_z", f64::from(preview.center_2d.y));
-                dict.set("support_height_m", f64::from(preview.support_height_m));
-                dict.set("facing_dir", preview.facing_dir);
-                dict.set("part_transforms", part_transforms);
-                dict.set("build_cost", build_cost);
-                dict
-            }
-            Err(rejection) => {
-                let mut dict = Self::empty_service_preview_dict(
-                    Self::service_placement_error_message(rejection),
-                );
-                dict.set("build_cost", build_cost);
-                dict
-            }
-        }
+        self.explicit_placement_preview_dict(
+            ExplicitPlacementKind::Service,
+            asset_id,
+            world_x,
+            world_z,
+        )
     }
 
     /// Places one explicit service building and returns an empty string on success.
@@ -393,7 +421,8 @@ impl SimulationNode {
         }
     }
 
-    /// Returns a road-frontage snapped footprint preview for one industry building asset.
+    /// Returns a road-frontage snapped footprint preview for one industry building asset, as
+    /// [`Self::get_service_building_placement_preview`] does.
     #[func]
     pub fn get_industry_building_placement_preview(
         &self,
@@ -401,52 +430,12 @@ impl SimulationNode {
         world_x: f32,
         world_z: f32,
     ) -> VarDictionary {
-        let asset_id = asset_id.to_string();
-        if asset_id.is_empty() {
-            return Self::empty_service_preview_dict("no industry building selected");
-        }
-        let core = self.lock_core();
-        let build_cost = Self::explicit_building_build_cost(&core, &asset_id);
-        match core.get_industry_building_placement_preview_internal(&asset_id, world_x, world_z) {
-            Ok(preview) => {
-                let part_transforms = core.get_service_building_preview_part_transforms_internal(
-                    &asset_id,
-                    preview.center_2d,
-                    preview.support_height_m,
-                    preview.facing_dir,
-                );
-                let mut corners = PackedVector3Array::new();
-                for corner in preview.corners {
-                    corners.push(Vector3::new(
-                        corner.x,
-                        preview.support_height_m + 0.08,
-                        corner.y,
-                    ));
-                }
-                let mut dict = VarDictionary::new();
-                dict.set("valid", preview.valid);
-                let error = preview
-                    .rejection
-                    .map(Self::industry_placement_error_message)
-                    .unwrap_or("");
-                dict.set("error", GString::from(error));
-                dict.set("corners", corners);
-                dict.set("center_x", f64::from(preview.center_2d.x));
-                dict.set("center_z", f64::from(preview.center_2d.y));
-                dict.set("support_height_m", f64::from(preview.support_height_m));
-                dict.set("facing_dir", preview.facing_dir);
-                dict.set("part_transforms", part_transforms);
-                dict.set("build_cost", build_cost);
-                dict
-            }
-            Err(rejection) => {
-                let mut dict = Self::empty_service_preview_dict(
-                    Self::industry_placement_error_message(rejection),
-                );
-                dict.set("build_cost", build_cost);
-                dict
-            }
-        }
+        self.explicit_placement_preview_dict(
+            ExplicitPlacementKind::Industry,
+            asset_id,
+            world_x,
+            world_z,
+        )
     }
 
     /// Places one explicit industry building and returns placement metadata on success.
@@ -514,7 +503,8 @@ impl SimulationNode {
         dict
     }
 
-    /// Commits or replaces an extractor polygon for one placed industry building.
+    /// Commits or replaces an extractor polygon for one placed industry building; `building_id`
+    /// is the mine's index after the commit, which the land it takes may move (`ZONE-11`).
     #[func]
     pub fn commit_extractor_polygon(
         &mut self,
@@ -549,6 +539,7 @@ impl SimulationNode {
                     "remaining_reserve_units",
                     f64::from(summary.remaining_reserve_units),
                 );
+                dict.set("building_id", summary.building_idx as i64);
             }
             Err(err) => {
                 dict.set("ok", false);
@@ -561,7 +552,8 @@ impl SimulationNode {
         dict
     }
 
-    /// Commits or replaces a field polygon for one placed agricultural building.
+    /// Commits or replaces a field polygon for one placed agricultural building; `building_id`
+    /// is the farm's index after the commit, which the land it takes may move (`ZONE-11`).
     #[func]
     pub fn commit_field_polygon(
         &mut self,
@@ -586,6 +578,7 @@ impl SimulationNode {
                 dict.set("ok", true);
                 dict.set("error", GString::new());
                 dict.set("area_m2", f64::from(summary.area_m2));
+                dict.set("building_id", summary.building_idx as i64);
             }
             Err(err) => {
                 dict.set("ok", false);
@@ -596,79 +589,73 @@ impl SimulationNode {
         dict
     }
 
-    /// Quotes area construction and imported daily utilities without committing the polygon.
+    /// Quotes area construction and imported daily utilities without committing the polygon,
+    /// validated as its commit will validate it, with `demolish_count` and `demolish_lots` for
+    /// the zoned land it takes (`ZONE-11`). A hover: `{"pending": true}` while the simulation
+    /// thread holds the core.
     #[func]
     pub fn get_industry_area_quote(
         &self,
         building_id: i32,
         polygon_points: PackedVector2Array,
     ) -> VarDictionary {
-        let mut dict = VarDictionary::new();
-        let Some(core) = self.try_lock_core() else {
-            dict.set("pending", true);
-            return dict;
+        let Some(mut core) = self.try_lock_core() else {
+            return vdict! { "pending": true };
         };
-        let quote = usize::try_from(building_id)
-            .map_err(|_| "invalid industry building id".to_owned())
-            .and_then(|id| {
-                let area = crate::simulation::extraction::validate_extractor_polygon_world(
-                    polygon_points.as_slice(),
-                )?;
-                core.industry_area_quote_internal(id, area)
-                    .map(|(cost, utilities)| (area, cost, utilities))
-            });
-        match quote {
-            Ok((area, cost, utilities)) => {
-                dict.set("ok", true);
-                dict.set("area_hectares", f64::from(area) / 10_000.0);
-                dict.set("build_cost", cost);
-                dict.set("imported_utilities_per_day", f64::from(utilities));
-            }
-            Err(error) => {
-                dict.set("ok", false);
-                dict.set("error", GString::from(error.as_str()));
-            }
-        }
-        dict
+        Self::work_area_preview_dict(&mut core, building_id, &polygon_points)
     }
 
-    /// Checks a field drag without changing its committed polygon or economic state.
+    /// Checks a field drag without changing its committed polygon or economic state, as
+    /// [`Self::get_industry_area_quote`] does, with `area_m2`.
     #[func]
     pub fn validate_field_polygon(
         &self,
         building_id: i32,
         polygon_points: PackedVector2Array,
     ) -> VarDictionary {
-        let mut dict = VarDictionary::new();
         let Some(mut core) = self.try_lock_core() else {
-            dict.set("ok", false);
-            dict.set("pending", true);
-            dict.set("error", "Simulation busy; release to validate this move.");
-            return dict;
+            return vdict! {
+                "ok": false,
+                "pending": true,
+                "error": "Simulation busy; release to validate this move.",
+            };
         };
-        let result = usize::try_from(building_id)
-            .map_err(|_| "invalid field building id".to_owned())
-            .and_then(|idx| core.validate_field_polygon_internal(idx, polygon_points.as_slice()));
-        match result {
-            Ok(area) => {
-                dict.set("ok", true);
-                dict.set("area_m2", f64::from(area));
-                if let Ok((cost, utilities)) =
-                    core.industry_area_quote_internal(building_id as usize, area)
-                {
-                    dict.set("build_cost", cost);
-                    dict.set("imported_utilities_per_day", f64::from(utilities));
-                }
-            }
-            Err(error) => {
-                dict.set("ok", false);
-                dict.set("error", GString::from(error.as_str()));
-            }
-        }
-        dict
+        Self::work_area_preview_dict(&mut core, building_id, &polygon_points)
     }
 
-    /// Commits one vertex drag if the farm and previous polygon still match the edit session.
+    // A field's or extraction area's hover dictionary: `ok` with the area, its cost, its
+    // imported utilities and its take, else the commit's refusal as `error`.
+    fn work_area_preview_dict(
+        core: &mut SimCore,
+        building_id: i32,
+        polygon_points: &PackedVector2Array,
+    ) -> VarDictionary {
+        let preview = usize::try_from(building_id)
+            .map_err(|_| "invalid industry building id".to_owned())
+            .and_then(|idx| {
+                let preview = core.preview_work_area_internal(idx, polygon_points.as_slice())?;
+                let (cost, utilities) = core.industry_area_quote_internal(idx, preview.area_m2)?;
+                Ok((preview, cost, utilities))
+            });
+        match preview {
+            Ok((preview, cost, utilities)) => vdict! {
+                "ok": true,
+                "area_m2": f64::from(preview.area_m2),
+                "area_hectares": f64::from(preview.area_m2) / 10_000.0,
+                "build_cost": cost,
+                "imported_utilities_per_day": f64::from(utilities),
+                "demolish_count": preview.take.buildings.len() as i64,
+                "demolish_lots": road_tool::core_lot_outlines(core, &preview.take),
+            },
+            Err(error) => vdict! {
+                "ok": false,
+                "error": GString::from(error.as_str()),
+            },
+        }
+    }
+
+    /// Commits one vertex drag if the farm and previous polygon still match the edit session;
+    /// `building_id` is the farm's index after it, which the land it takes may move (`ZONE-11`).
     #[func]
     pub fn resize_field_polygon(
         &mut self,
@@ -692,8 +679,10 @@ impl SimulationNode {
                 polygon_points.as_slice().to_vec(),
             ) {
                 Ok(summary) => {
+                    // The take may have moved the farm (`ZONE-11`).
+                    let idx = summary.building_idx;
                     dict.set("ok", true);
-                    dict.set("building_id", building_id);
+                    dict.set("building_id", idx as i64);
                     dict.set("center_x", expected_center.x);
                     dict.set("center_z", expected_center.y);
                     dict.set("field_has_site", true);

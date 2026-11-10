@@ -545,6 +545,12 @@ godot_main_chain() {
     run_rust_fixture_generator record_road_edit_demolition_fixture || return 1
     run_guarded_godot_test godot --headless --path "$asset_test_project" \
         --script res://tests/road_edit_demolition_test.gd || return 1
+    # The street with houses the placement demolition test places a parking lot, a field and an
+    # extraction area over (`ZONE-11`), written by Rust with the houses' front line and pointers.
+    export METRUM_PLACEMENT_DEMOLITION_FIXTURE="$asset_test_profile/placement-demolition.sqlite"
+    run_rust_fixture_generator record_placement_demolition_fixture || return 1
+    run_guarded_godot_test godot --headless --path "$asset_test_project" \
+        --script res://tests/placement_demolition_test.gd || return 1
     export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"
     run_rust_fixture_generator generate_building_lod_fixtures || return 1
     # Intentional bad-tier import exercises fallback and emits an expected importer error.

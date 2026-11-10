@@ -49,6 +49,9 @@ pub(crate) struct FieldSite {
 pub(crate) struct FieldSiteSummary {
     /// Accepted field area in square metres.
     pub(crate) area_m2: f32,
+    /// The farm's index after the commit: the land a field takes may demolish buildings, whose
+    /// swap-removes move it (`ZONE-11`).
+    pub(crate) building_idx: usize,
 }
 
 /// Runtime agricultural field state for explicit field-producing buildings.
@@ -192,7 +195,10 @@ impl AgricultureSystem {
             top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
         }
 
-        Ok(FieldSiteSummary { area_m2 })
+        Ok(FieldSiteSummary {
+            area_m2,
+            building_idx,
+        })
     }
 
     /// Validates geometry, farm attachment and land-use clearance without changing the saved

@@ -230,6 +230,50 @@ impl BuildingAllocator {
         // Spare rows, so the first building appended after a load does not copy them.
         crate::utils::storage::reserve_rows(&mut self.vacancy_pos, self.buildings.len());
         self.vacancy_pos.resize(self.buildings.len(), usize::MAX);
+        let entries = self.rebuild_site_chunks();
+        for (idx, entry) in entries.iter().enumerate() {
+            if let Some(zi) = entry.zone {
+                self.zone_index[zi].push(idx);
+            }
+            if let Some(zi) = entry.vacancy {
+                self.vacancy_pos[idx] = self.vacancy_index[zi].len();
+                self.vacancy_index[zi].push(idx);
+            }
+        }
+        self.index_scratch.entries = entries;
+        self.rebuild_admission_order();
+        self.dirty_index = false;
+        self.site_chunks_current = false;
+        // The zone lists name the flow fields' sources (`SIM-02-I`): the next frame compares
+        // each zone's sources and rebuilds only fields whose sources changed.
+        self.dirty_zones = [true; 3];
+    }
+
+    /// Readies the site queries' part of the zone index (the chunk lists, the chunk bounds,
+    /// the maxima and the explicit sites) for a query asked outside the simulation's order: a
+    /// tool's hover (`ZONE-11`). Unlike [`Self::prepare_building_site_query_index`] it leaves
+    /// the zone, vacancy and admission lists and the stale flag as they are, so their next
+    /// reader still rebuilds them where it would have, and the simulation's order does not
+    /// depend on whether or when a hover ran; the site part is a function of the buildings
+    /// alone, which every later rebuild derives again. The site clients are rebuilt when out of
+    /// step, as the full preparation would (derived, unordered). O(1) when the site queries
+    /// are ready, else O(B/p + chunks) plus an O(B) fill, once until the index is next marked
+    /// stale; the queries then visit only the chunks they touch.
+    pub(crate) fn prepare_site_query_chunks(&mut self, zone_cell_m: f32) {
+        if self.building_sites.len() != self.buildings.len() {
+            self.rebuild_building_site_clients(zone_cell_m);
+        }
+        if !self.site_chunks_ready() {
+            self.index_scratch.entries = self.rebuild_site_chunks();
+            self.site_chunks_current = true;
+        }
+    }
+
+    // The site queries' part of a rebuild: each building's entries derived on the pool, then
+    // the explicit sites, chunk bounds, maxima with their counts and chunk lists filled in
+    // building order. Returns the entries (the scratch's storage) for the zone and vacancy
+    // lists. O(B/p + chunks) plus an O(B) fill.
+    fn rebuild_site_chunks(&mut self) -> Vec<IndexedBuilding> {
         self.building_chunk_bounds = None;
         self.max_building_support_m = f32::NEG_INFINITY;
         self.max_lot_radius_cells = 0.0;
@@ -270,13 +314,6 @@ impl BuildingAllocator {
             include_chunk(&mut self.building_chunk_bounds, entry.chunk);
             self.max_building_support_m = self.max_building_support_m.max(entry.support_height_m);
             self.max_lot_radius_cells = self.max_lot_radius_cells.max(entry.lot_radius_cells);
-            if let Some(zi) = entry.zone {
-                self.zone_index[zi].push(idx);
-            }
-            if let Some(zi) = entry.vacancy {
-                self.vacancy_pos[idx] = self.vacancy_index[zi].len();
-                self.vacancy_index[zi].push(idx);
-            }
             match &grid {
                 Some(grid) => grid_lists[grid.cell(entry.chunk)].push(idx),
                 None => self
@@ -320,13 +357,8 @@ impl BuildingAllocator {
                 "the chunk lists hold each chunk's buildings in building order"
             );
         }
-        self.index_scratch.entries = entries;
         self.index_scratch.grid_lists = grid_lists;
-        self.rebuild_admission_order();
-        self.dirty_index = false;
-        // The zone lists name the flow fields' sources (`SIM-02-I`): the next frame compares
-        // each zone's sources and rebuilds only fields whose sources changed.
-        self.dirty_zones = [true; 3];
+        entries
     }
 
     // Building `idx`'s index entries. O(1).
@@ -442,9 +474,10 @@ impl BuildingAllocator {
 
     /// Marks the zone index stale for its next reader's rebuild; an index kept across
     /// swap-removes then waits for a rebuild too.
-    pub(super) fn mark_index_stale(&mut self) {
+    pub(crate) fn mark_index_stale(&mut self) {
         self.dirty_index = true;
         self.kept_index.kept = false;
+        self.site_chunks_current = false;
     }
 
     /// Applies the swap-remove of building `removed`, about to happen, to the zone, chunk and

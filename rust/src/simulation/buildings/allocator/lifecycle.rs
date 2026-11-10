@@ -2113,6 +2113,9 @@ impl BuildingAllocator {
         self.record_building_changes([building_idx, last_idx]);
         self.dirty = true;
         self.dirty_index = true;
+        // A kept swap-remove follows the chunk lists, an unkept one does not: a hover's site
+        // refresh (`prepare_site_query_chunks`) is due again either way.
+        self.site_chunks_current = false;
         if entrances_clean {
             // As `rebuild_entrance_cache` leaves it, without deriving every entrance again.
             self.entrances.swap_remove(building_idx);

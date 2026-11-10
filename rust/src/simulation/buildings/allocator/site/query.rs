@@ -425,6 +425,16 @@ impl BuildingAllocator {
             && (!self.building_site_query_index_ready() || !self.explicit_cell_sites.is_empty())
     }
 
+    /// Whether the site queries can read the chunk lists, the chunk bounds and the largest lot:
+    /// the zone index is current, or its site part was readied for a hover since it was last
+    /// marked stale ([`Self::prepare_site_query_chunks`]). Else they scan every site, with the
+    /// same answers. O(1).
+    pub(crate) fn site_chunks_ready(&self) -> bool {
+        self.building_sites.len() == self.buildings.len()
+            && (!self.dirty_index || self.site_chunks_current)
+            && !self.building_chunks.is_empty()
+    }
+
     /// Whether bounded site queries can run without rebuilding or scanning the building store.
     /// Preview workers must defer unprepared inputs to normal allocator/terrain maintenance.
     pub(crate) fn building_site_query_index_ready(&self) -> bool {
@@ -568,10 +578,7 @@ impl BuildingAllocator {
         pos: Vector2,
         probe: impl Fn(&BuildingSiteClient) -> Option<T>,
     ) -> Option<T> {
-        if self.dirty_index
-            || self.building_sites.len() != self.buildings.len()
-            || self.building_chunks.is_empty()
-        {
+        if !self.site_chunks_ready() {
             return self.building_sites.iter().find_map(probe);
         }
 
@@ -763,10 +770,7 @@ impl BuildingAllocator {
         max_x: f32,
         max_z: f32,
     ) -> Vec<usize> {
-        if self.dirty_index
-            || self.building_sites.len() != self.buildings.len()
-            || self.building_chunks.is_empty()
-        {
+        if !self.site_chunks_ready() {
             return (0..self.building_sites.len()).collect();
         }
 

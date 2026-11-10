@@ -498,17 +498,22 @@ fn profile_placements(core: &mut SimCore, background: usize) -> serde_json::Valu
         let painted = core.zoning.cells.saved_cells().len();
         // The footprint the placement covers: a building's lot as its preview poses it, a
         // field's or area's polygon.
-        let preview_lot = |core: &SimCore, asset: &str, x: f32| {
+        let preview_lot = |core: &mut SimCore, asset: &str, x: f32| {
             let preview = if asset == lot_asset {
                 core.get_service_building_placement_preview_internal(asset, x, REQUEST_Z)
             } else {
                 core.get_industry_building_placement_preview_internal(asset, x, REQUEST_Z)
             };
-            preview.unwrap_or_else(|error| panic!("{asset} at x {x}: {error:?}")).corners.to_vec()
+            preview
+                .unwrap_or_else(|error| panic!("{asset} at x {x}: {error:?}"))
+                .preview
+                .corners
+                .to_vec()
         };
-        let preview_lot_at = |core: &SimCore, x: f32, z: f32| {
+        let preview_lot_at = |core: &mut SimCore, x: f32, z: f32| {
             core.get_service_building_placement_preview_internal(lot_asset, x, z)
                 .unwrap_or_else(|error| panic!("the lot at ({x}, {z}): {error:?}"))
+                .preview
                 .corners
                 .to_vec()
         };
@@ -966,9 +971,10 @@ fn benchmark_parking_locality() {
 // `preview_road` alone (no core). Then the roundabout tool's hover (`ZONE-10`, round RZ10b): a
 // ring of the default diameter in place of the crossing at (0, 350) (the commit benchmark's
 // ring), tried `HOVERS` times on the context's edit site as the pointer moves a tenth of a
-// metre at a time within the junction's reach, as `preview_roundabout` does. Their products (validity, reason
-// and what they take) must not depend on the tier, their cost must stay flat
-// (`PREVIEW_LOCALITY`).
+// metre at a time within the junction's reach, as `preview_roundabout` does. Last, the service
+// tool's hover of a parking lot over houses (`ZONE-11`, round RZ11b) on a prepared and on a
+// stale site index. Their products (validity, reason and what they take) must not depend on the
+// tier, their cost must stay flat (`PREVIEW_LOCALITY`).
 const HOVERS: usize = 40;
 
 #[test]
@@ -1058,6 +1064,7 @@ fn benchmark_preview_locality() {
             products.push(product);
         }
         products.push(ring_hover_product(&mut context, &core, background));
+        products.push(placement_hover_product(&mut core, background));
         match &reference {
             None => reference = Some(products),
             Some(reference) => assert_eq!(
@@ -1115,6 +1122,67 @@ fn ring_hover_product(
             "product": product})
     );
     assert_eq!(product["valid"], true, "the ring hover is valid: {product}");
+    product
+}
+
+// The service tool's hover (`ZONE-11`, round RZ11b): the grid's parking lot over the houses of
+// the south row's south curb (`profile_placements`' `service`), `HOVERS` times with the pointer
+// a tenth of a metre further each time, timed as `get_service_building_placement_preview` runs
+// it on the core (the lot outlines aside), first with the site index prepared ("lot_fresh"),
+// then with it marked stale before each hover ("lot_stale": each hover readies the index's site
+// part again, the worst case; the index's order-carrying lists are left to their next reader).
+// Returns what it shows: validity, reason and take, the same either way.
+fn placement_hover_product(core: &mut SimCore, background: usize) -> serde_json::Value {
+    const LOT: &str = "parking:building.parking.small_lot";
+    let mut product = serde_json::Value::Null;
+    for stale in [false, true] {
+        let mut total = Vec::with_capacity(HOVERS);
+        for hover in 0..HOVERS {
+            if stale {
+                core.allocator.mark_index_stale();
+            } else {
+                core.allocator
+                    .prepare_building_site_query_index(core.config.zone_cell_m);
+            }
+            let start = Instant::now();
+            let shown = core.get_service_building_placement_preview_internal(
+                LOT,
+                -100.0 + hover as f32 * 0.1,
+                -415.0,
+            );
+            total.push(start.elapsed().as_secs_f64() * 1e3);
+            if hover == 0 {
+                let shown = match shown {
+                    Ok(shown) => serde_json::json!({"valid": shown.preview.valid,
+                        "reason": shown.preview.rejection.map(|reason| format!("{reason:?}")),
+                        "cells": shown.take.cells.len(), "lots": shown.take.lots,
+                        "buildings": shown.take.buildings.len()}),
+                    Err(reason) => serde_json::json!({"valid": false,
+                        "reason": format!("{reason:?}")}),
+                };
+                if stale {
+                    assert_eq!(
+                        shown, product,
+                        "a stale index shows what a prepared one shows"
+                    );
+                } else {
+                    product = shown;
+                }
+            }
+        }
+        total.sort_by(f64::total_cmp);
+        let at = |q: f64| total[((total.len() - 1) as f64 * q).round() as usize];
+        eprintln!(
+            "PREVIEW_LOCALITY {}",
+            serde_json::json!({"background": background,
+                "stroke": if stale { "lot_stale" } else { "lot_fresh" },
+                "buildings": core.allocator.buildings.len(),
+                "parcels": core.zoning.parcels().len(), "hovers": HOVERS,
+                "preview_ms": {"p50": at(0.5), "p95": at(0.95), "max": at(1.0)},
+                "product": product})
+        );
+    }
+    assert_eq!(product["valid"], true, "the lot hover is valid: {product}");
     product
 }
 

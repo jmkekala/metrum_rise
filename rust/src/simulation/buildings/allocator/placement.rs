@@ -1765,10 +1765,7 @@ impl BuildingAllocator {
         zone_cell_m: f32,
         excluded_building: Option<usize>,
     ) -> Vec<usize> {
-        if self.dirty_index
-            || self.building_sites.len() != self.buildings.len()
-            || self.building_chunks.is_empty()
-        {
+        if !self.site_chunks_ready() {
             return (0..self.building_sites.len())
                 .filter(|i| Some(*i) != excluded_building)
                 .collect();

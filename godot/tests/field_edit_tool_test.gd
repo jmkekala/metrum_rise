@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Exercises vertex picking, release commits, rejection rollback and cancellation through the tool.
+## Exercises vertex picking, release commits, rejection rollback and cancellation through the tool,
+## the lots a drag would take outlined and named in the hint (`ZONE-11`), and the industry tool's
+## close click that the roadbed refuses keeping the polygon for the next click.
 ## Also checks that the farm inspector keeps resident household details beside its business data,
 ## and that inspecting another building replaces the open inspector window.
 ## Simulation responses are controlled here; native field geometry/economy have Rust regressions.
@@ -14,6 +16,10 @@ class SimulationStub extends Node3D:
 	var hit := Vector3.ZERO
 	var reject := false
 	var reject_area_quote := false
+	# Closes refused as while the roadbed compiles, before the commits go through.
+	var updating_roadbed := 0
+	# Houses a field check names, each with a 10 m lot outline.
+	var demolish := 0
 	var commits := 0
 	var cancelled_buildings: Array[int] = []
 	var previous := PackedVector2Array()
@@ -26,6 +32,9 @@ class SimulationStub extends Node3D:
 		result.merge({"ok": true, "building_id": 7, "area_kind": "field"})
 		return result
 	func commit_field_polygon(_id: int, _polygon: PackedVector2Array) -> Dictionary:
+		if updating_roadbed > 0:
+			updating_roadbed -= 1
+			return {"ok": false, "error": "road surfaces are updating; try again shortly"}
 		return {"ok": true, "area_m2": 40000.0}
 	func get_industry_area_quote(_id: int, _polygon: PackedVector2Array) -> Dictionary:
 		if reject_area_quote:
@@ -48,7 +57,13 @@ class SimulationStub extends Node3D:
 	func get_current_day() -> int:
 		return 0
 	func validate_field_polygon(_id: int, _polygon: PackedVector2Array) -> Dictionary:
-		return {"ok": not reject, "error": "field overlaps a road", "build_cost": 10000.0, "imported_utilities_per_day": 776.875}
+		var lots := PackedVector3Array()
+		for house in demolish:
+			var x := 10.0 * house
+			for corner in [Vector2(x, 0), Vector2(x + 10, 0), Vector2(x + 10, 10), Vector2(x, 10)]:
+				lots.append(Vector3(corner.x, 0.1, corner.y))
+		return {"ok": not reject, "error": "field overlaps a road", "build_cost": 10000.0, "imported_utilities_per_day": 776.875,
+			"demolish_count": demolish, "demolish_lots": lots}
 	func resize_field_polygon(id: int, center: Vector2, expected: PackedVector2Array, polygon: PackedVector2Array) -> Dictionary:
 		commits += 1
 		previous = expected.duplicate()
@@ -125,10 +140,14 @@ func _run() -> void:
 	tool._unhandled_input(press)
 	_expect(tool._dragged == 2, "Clicking a handle selects that vertex")
 	sim.hit = Vector3(140, 0, 100)
+	sim.demolish = 2
 	tool._input(InputEventMouseMotion.new())
 	tool._process(0.016)
 	_expect(sim.commits == 0 and tool._committed == polygon, "Motion must not mutate the committed field")
 	_expect(tool._hint.text.contains("Expansion $10000") and tool._hint.text.contains("utilities $777/day"), "Resize shows the Rust construction and utility quote before release")
+	_expect(tool._hint.text.contains("demolishes 2 buildings"), "Resize names the buildings it demolishes: '%s'" % tool._hint.text)
+	_expect(tool._demolish_mesh.visible and tool._demolish_mesh.mesh != null, "Resize outlines the lots it takes")
+	sim.demolish = 0
 	var release := InputEventMouseButton.new()
 	release.button_index = MOUSE_BUTTON_LEFT
 	tool._input(release)
@@ -136,6 +155,7 @@ func _run() -> void:
 	_expect(tool._committed[2] == Vector2(140, 100) and terrain.refreshes == 1, "Accepted release refreshes the field")
 	_expect(updates.size() == 1 and updates[0]["worker_capacity"] == 2, "Authoritative recalculation reaches the inspector listener")
 	_expect(tool._plot_overlay.mesh == boundary_mesh, "Vertex movement reuses the fixed boundary mesh")
+	_expect(not tool._demolish_mesh.visible, "The release clears the outline")
 	var accepted := tool._committed.duplicate()
 	press.position = camera.unproject_position(tool._handles[2].global_position)
 	tool._unhandled_input(press)
@@ -167,7 +187,14 @@ func _run() -> void:
 	industry._update_polygon_mesh()
 	_expect(industry._price_label.visible and industry._price_label.text.contains("at least 4.0 ha"), "Undersized fields show the Rust minimum-area rejection during drawing")
 	sim.reject_area_quote = false
-	industry._commit_polygon()
+	# The close click while the roadbed compiles is refused and keeps the polygon; the next
+	# click on the first point commits it.
+	sim.updating_roadbed = 1
+	sim.hit = Vector3(polygon[0].x, 0, polygon[0].y)
+	industry._add_polygon_point_at_mouse()
+	_expect(industry._mode == industry.Mode.DRAW_POLYGON and industry._polygon_points.size() == 4, "A refused close keeps the polygon")
+	_expect(industry._notification_panel.visible and industry._notification_label.text.contains("road surfaces are updating"), "A refused close says why: '%s'" % industry._notification_label.text)
+	industry._add_polygon_point_at_mouse()
 	_expect(not industry._plot_overlay.visible and not industry._field_hint.visible, "Finishing the polygon clears the guide")
 	_expect(sim.cancelled_buildings.is_empty(), "Finishing a polygon preserves its farm")
 	industry._commit_building_at_mouse()

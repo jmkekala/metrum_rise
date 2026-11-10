@@ -175,7 +175,8 @@ impl Placement {
         Some((owner, polygon))
     }
 
-    // Commits the placement: its building's index, or its owner's.
+    // Commits the placement: its building's index, or its owner's after it (the take's
+    // demolitions may move the owner).
     fn commit(
         self,
         core: &mut SimCore,
@@ -193,10 +194,10 @@ impl Placement {
                 .map_err(error),
             Self::Field | Self::FieldResize => core
                 .commit_field_polygon_internal(owner, polygon)
-                .map(|_| owner),
+                .map(|summary| summary.building_idx),
             Self::Area | Self::AreaResize => core
                 .commit_extractor_polygon_internal(owner, polygon)
-                .map(|_| owner),
+                .map(|summary| summary.building_idx),
         }
     }
 }
@@ -441,6 +442,7 @@ fn plotted_land_refuses_every_placement() {
         assert_eq!(
             core.get_service_building_placement_preview_internal(&assets.lot, x, 30.0)
                 .unwrap()
+                .preview
                 .rejection,
             Some(expected),
             "{plotted:?}"
@@ -668,6 +670,7 @@ fn a_demolished_house_does_not_refuse_the_site_height() {
     let lot = core
         .get_service_building_placement_preview_internal(&assets.lot, 0.0, -30.0)
         .unwrap()
+        .preview
         .corners;
     let lots = lots_of(&core, &houses);
     let under_lot: Vec<_> = houses
@@ -683,6 +686,7 @@ fn a_demolished_house_does_not_refuse_the_site_height() {
     assert_eq!(
         core.get_service_building_placement_preview_internal(&assets.lot, 0.0, -30.0)
             .unwrap()
+            .preview
             .rejection,
         None
     );
@@ -692,4 +696,395 @@ fn a_demolished_house_does_not_refuse_the_site_height() {
         .expect("the houses under the lot are demolished, not neighbours");
     assert_eq!(core.allocator.buildings.len(), before - under_lot.len() + 1);
     assert_eq!(core.allocator.buildings[placed].parcel_id, 0);
+}
+
+impl Placement {
+    // The hover the placement's tool shows before its commit (`ZONE-11`, round RZ11b): the
+    // building's preview at the commit's pointer, or the field's or area's check; the take it
+    // shows, or its refusal.
+    fn hover(
+        self,
+        core: &mut SimCore,
+        assets: &Assets,
+        owner: usize,
+        polygon: &[Vector2],
+    ) -> Result<crate::nodes::sim::core::RoadLandTake, String> {
+        let hover = match self {
+            Self::Service => {
+                core.get_service_building_placement_preview_internal(&assets.lot, 0.0, -30.0)
+            }
+            Self::Industry => {
+                core.get_industry_building_placement_preview_internal(&assets.farm, -30.0, -8.0)
+            }
+            _ => {
+                return core
+                    .preview_work_area_internal(owner, polygon)
+                    .map(|preview| preview.take);
+            }
+        };
+        match hover {
+            Ok(hover) => match hover.preview.rejection {
+                None => Ok(hover.take),
+                Some(rejection) => {
+                    assert!(hover.take.is_empty(), "a refused hover shows no take");
+                    Err(format!("{rejection:?}"))
+                }
+            },
+            Err(rejection) => Err(format!("{rejection:?}")),
+        }
+    }
+}
+
+// Round RZ11b, per placement: the hover shows exactly what its commit takes. The buildings it
+// names are the ones the commit demolishes (by handle), the lots it names the ones removed, the
+// painted cells it names the ones erased, and nothing else changes.
+#[test]
+fn each_hover_shows_what_its_placement_takes() {
+    for placement in PLACEMENTS {
+        let (mut core, houses, assets) = street();
+        let (owner, polygon) = placement
+            .prepare(&mut core, &assets, &houses)
+            .unwrap_or((usize::MAX, Vec::new()));
+        core.prepare_cell_lots_internal();
+        let take = placement
+            .hover(&mut core, &assets, owner, &polygon)
+            .unwrap_or_else(|error| panic!("{placement:?}: {error}"));
+        assert!(
+            !take.buildings.is_empty(),
+            "{placement:?} shows a demolition"
+        );
+        let handles: Vec<_> = take
+            .buildings
+            .iter()
+            .map(|&building| core.allocator.building_handles.handle(building))
+            .collect();
+        let others: Vec<_> = (0..core.allocator.buildings.len())
+            .filter(|building| !take.buildings.contains(building))
+            .map(|building| core.allocator.building_handles.handle(building))
+            .collect();
+        let painted_before = painted(&core);
+        let owner_handle =
+            (owner != usize::MAX).then(|| core.allocator.building_handles.handle(owner));
+        let placed = placement
+            .commit(&mut core, &assets, owner, polygon)
+            .unwrap_or_else(|error| panic!("{placement:?}: {error}"));
+        if let Some(owner_handle) = owner_handle {
+            assert_eq!(
+                core.allocator.building_handles.resolve(owner_handle),
+                Some(placed),
+                "{placement:?}: the commit names its owner where the take left it"
+            );
+        }
+        for handle in &handles {
+            assert!(
+                core.allocator.building_handles.resolve(*handle).is_none(),
+                "{placement:?}: a shown building is demolished"
+            );
+        }
+        for handle in &others {
+            assert!(
+                core.allocator.building_handles.resolve(*handle).is_some(),
+                "{placement:?}: a building not shown stands"
+            );
+        }
+        for lot in &take.lots {
+            assert!(
+                core.zoning.parcel_by_raw_id(*lot).is_none(),
+                "{placement:?}: the shown lot {lot} is removed"
+            );
+        }
+        let painted_after = painted(&core);
+        let erased: Vec<_> = painted_before
+            .iter()
+            .filter(|cell| !painted_after.contains(cell))
+            .map(|&(key, _)| key)
+            .collect();
+        let shown: Vec<_> = take
+            .cells
+            .iter()
+            .filter(|&&(_, paint)| paint != 0)
+            .map(|&(key, _)| key)
+            .collect();
+        assert_eq!(
+            erased, shown,
+            "{placement:?}: the shown cells are the erased ones"
+        );
+    }
+}
+
+// Round RZ11b: a hover over plotted land shows the commit's refusal and no take, for each
+// placement kind: a building over a placed building's lot, a field over another field, an
+// extraction area over a placed building's lot.
+#[test]
+fn a_refused_hover_shows_the_commits_refusal() {
+    let (mut core, _, assets) = street();
+    let placed = core
+        .place_service_building_internal(&assets.lot, 0.0, 30.0)
+        .unwrap();
+    let (_, _, lot_z0, lot_z1) = bounds(&core.allocator.building_sites[placed].lot_footprint_world);
+    let farm = core
+        .place_industry_building_internal(&assets.farm, 40.0, 8.0)
+        .unwrap();
+    let other = core
+        .place_industry_building_internal(&assets.farm, 120.0, 8.0)
+        .unwrap();
+    core.commit_field_polygon_internal(other, rectangle(85.0, 108.0, lot_z0, lot_z0 + 2_000.0))
+        .unwrap();
+    let mine = core
+        .place_industry_building_internal(&assets.mine, -40.0, 8.0)
+        .unwrap();
+    let strip = |x0, x1| rectangle(x0, x1, lot_z0 + 1.0, lot_z1 - 1.0);
+    let state = refused_state(&core);
+
+    let hover = core
+        .get_service_building_placement_preview_internal(&assets.lot, 0.0, 30.0)
+        .unwrap();
+    assert_eq!(
+        hover.preview.rejection,
+        Some(ExplicitServicePlacementRejection::SiteOverlap)
+    );
+    assert!(hover.take.is_empty());
+    assert_eq!(
+        core.place_service_building_internal(&assets.lot, 0.0, 30.0),
+        Err(ExplicitServicePlacementRejection::SiteOverlap)
+    );
+
+    for (owner, polygon, reason) in [
+        (farm, strip(52.0, 95.0), "field overlaps another field"),
+        (
+            mine,
+            strip(-32.0, 20.0),
+            "extraction area overlaps a placed building's lot",
+        ),
+    ] {
+        assert_eq!(
+            core.preview_work_area_internal(owner, &polygon)
+                .err()
+                .as_deref(),
+            Some(reason)
+        );
+        let committed = if owner == farm {
+            core.commit_field_polygon_internal(owner, polygon)
+                .map(|_| ())
+        } else {
+            core.commit_extractor_polygon_internal(owner, polygon)
+                .map(|_| ())
+        };
+        assert_eq!(committed.err().as_deref(), Some(reason));
+    }
+    assert_eq!(refused_state(&core), state);
+}
+
+// Round RZ11b, hover locality: a hover on a stale site index readies only the index's site part
+// (`prepare_site_query_chunks`), so the site queries read the chunk lists, while the lists that
+// carry the simulation's order (zone, vacancy, admission) and the stale flag stay for the
+// index's next reader to rebuild where it would have: whether or when a hover ran does not
+// change the simulation. The hover answers as one on a prepared index does.
+#[test]
+fn a_hover_on_a_stale_index_leaves_the_simulation_order() {
+    let (mut core, houses, assets) = street();
+    let z = front(&core, &houses);
+    let field = rectangle(-99.0, -15.0, z - 500.0, z);
+    let order = |core: &SimCore| {
+        let allocator = &core.allocator;
+        (
+            allocator.zone_index.clone(),
+            allocator.vacancy_index.clone(),
+            allocator.vacancy_pos.clone(),
+            allocator.dirty_index,
+        )
+    };
+    // A farm west of the houses, for the field's check, and farms east of them on the far curb:
+    // their farmhouses are empty homes. A claim swap-removes one from its vacancy list, out of
+    // building order, which the index's next rebuild restores.
+    let farm = core
+        .place_industry_building_internal(&assets.farm, -110.0, -8.0)
+        .unwrap();
+    let farm = core.allocator.building_handles.handle(farm);
+    let homes = [30.0, 60.0, 90.0, 120.0].map(|x| {
+        let home = core
+            .place_industry_building_internal(&assets.farm, x, 8.0)
+            .unwrap();
+        core.allocator.building_handles.handle(home)
+    });
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    for (round, home) in [homes[0], homes[1]].into_iter().enumerate() {
+        let home = core.allocator.building_handles.resolve(home).unwrap();
+        core.allocator.claim_vacancy(home);
+        core.allocator.mark_index_stale();
+        assert!(!core.allocator.site_chunks_ready(), "round {round}");
+        let stale = order(&core);
+        let admission = core.allocator.admission_order.clone();
+        let mut rebuilt = core.allocator.clone();
+        rebuilt.rebuild_zone_index();
+        assert_ne!(
+            (&rebuilt.vacancy_index, &rebuilt.vacancy_pos),
+            (&stale.1, &stale.2),
+            "round {round}: a rebuild now would change the vacancy lists"
+        );
+
+        let take = if round == 0 {
+            let hover = core
+                .get_service_building_placement_preview_internal(&assets.lot, 0.0, -30.0)
+                .unwrap();
+            assert!(hover.preview.valid, "{:?}", hover.preview.rejection);
+            hover.take
+        } else {
+            let owner = core.allocator.building_handles.resolve(farm).unwrap();
+            core.preview_work_area_internal(owner, &field).unwrap().take
+        };
+        assert!(!take.buildings.is_empty(), "round {round}");
+        assert_eq!(
+            order(&core),
+            stale,
+            "round {round}: the hover left the order's lists"
+        );
+        assert!(
+            core.allocator.admission_order.same_as(&admission),
+            "round {round}"
+        );
+        assert!(
+            core.allocator.site_chunks_ready(),
+            "round {round}: the site queries read the chunk lists"
+        );
+
+        // The same answer on a prepared index.
+        let mut prepared = rebuilt;
+        prepared.prepare_building_site_query_index(core.config.zone_cell_m);
+        std::mem::swap(&mut core.allocator, &mut prepared);
+        let reference = if round == 0 {
+            core.get_service_building_placement_preview_internal(&assets.lot, 0.0, -30.0)
+                .unwrap()
+                .take
+        } else {
+            let owner = core.allocator.building_handles.resolve(farm).unwrap();
+            core.preview_work_area_internal(owner, &field).unwrap().take
+        };
+        std::mem::swap(&mut core.allocator, &mut prepared);
+        assert_eq!(
+            (&take.cells, &take.lots, &take.buildings),
+            (&reference.cells, &reference.lots, &reference.buildings),
+            "round {round}"
+        );
+    }
+}
+
+// Round RZ11b, HANDOFF-RZ11a's open question: a placement on sloped ground over houses does not
+// read their terrain pads. The support solve samples the source terrain and the roads, and a
+// site's pad never writes the source terrain (the graded terrain derives pads from the sites);
+// the taken houses' heights are skipped (`a_demolished_house_does_not_refuse_the_site_height`).
+// So the lot placed over the houses stands exactly as the same lot on the same slope with no
+// house ever built there, and its hover shows that pose.
+#[test]
+fn a_placement_on_a_slope_does_not_read_the_demolished_pads() {
+    // 2.5 % across the street, rising to +z: the houses' lots fall away from their pads.
+    let slope = |core: &mut SimCore| {
+        core.slope_terrain_internal(
+            Vector2::ZERO,
+            256.0,
+            Vector2::new(0.0, -128.0),
+            0.0,
+            Vector2::new(0.0, 128.0),
+            6.4,
+            1.0,
+        )
+    };
+    let (mut built, _) = street_with_houses_on(slope);
+    let lot = register_lot(&mut built);
+    let hover = built
+        .get_service_building_placement_preview_internal(&lot, 0.0, -30.0)
+        .unwrap();
+    assert!(hover.preview.valid, "{:?}", hover.preview.rejection);
+    assert!(
+        !hover.take.buildings.is_empty(),
+        "the lot stands over houses"
+    );
+    let ground = |core: &SimCore, x: f32, z: f32| {
+        core.heightmap.sample_height_world(x, z) * crate::config::HEIGHT_SCALE
+    };
+    for &house in &hover.take.buildings {
+        let building = &built.allocator.buildings[house];
+        let below =
+            building.support_height_m - ground(&built, building.center_x, building.center_y);
+        assert!(
+            below > 0.2,
+            "house {house} stands on a pad {below} m above its ground"
+        );
+    }
+    let corners = hover.preview.corners;
+    let placed = built
+        .place_service_building_internal(&lot, 0.0, -30.0)
+        .unwrap();
+
+    let (mut bare, _) = street_on(slope);
+    let bare_lot = register_lot(&mut bare);
+    let bare_placed = bare
+        .place_service_building_internal(&bare_lot, 0.0, -30.0)
+        .unwrap();
+    for corner in corners {
+        assert_eq!(
+            ground(&built, corner.x, corner.y).to_bits(),
+            ground(&bare, corner.x, corner.y).to_bits(),
+            "the houses left no mark in the source terrain"
+        );
+    }
+    let pose = |core: &SimCore, building: usize| {
+        let b = &core.allocator.buildings[building];
+        let site = &core.allocator.building_sites[building];
+        (
+            b.support_height_m.to_bits(),
+            b.center_x.to_bits(),
+            b.center_y.to_bits(),
+            site.footprint_world
+                .iter()
+                .map(|p| [p.x.to_bits(), p.y.to_bits()])
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(
+        pose(&built, placed),
+        pose(&bare, bare_placed),
+        "the lot over the demolished houses stands as on bare ground"
+    );
+    assert_eq!(
+        hover.preview.support_height_m.to_bits(),
+        built.allocator.buildings[placed].support_height_m.to_bits(),
+        "the hover showed the placed height"
+    );
+}
+
+// The Godot placement demolition test's fixture (`godot/tests/placement_demolition_test.gd`,
+// PLAN-RZ 11.6 test 6): the houses' street, saved to `METRUM_PLACEMENT_DEMOLITION_FIXTURE`, and
+// beside it, in `<save>.json`, the houses' front line, the bundled parking lot's pointer over
+// houses with what its hover here takes, and the farm's and mine's pointers west and east of the
+// houses (the game's farm and mine are posed there by the test itself).
+#[test]
+#[ignore = "writes the Godot placement demolition test's fixture"]
+fn record_placement_demolition_fixture() {
+    let path = std::env::var("METRUM_PLACEMENT_DEMOLITION_FIXTURE")
+        .expect("METRUM_PLACEMENT_DEMOLITION_FIXTURE: path of the fixture save to write");
+    let (mut core, houses) = street_with_houses();
+    let lot = register_lot(&mut core);
+    let hover = core
+        .get_service_building_placement_preview_internal(&lot, 0.0, -30.0)
+        .unwrap();
+    assert!(hover.preview.valid && !hover.take.buildings.is_empty());
+    let front_z = front(&core, &houses);
+    let house_x: Vec<f32> = houses
+        .iter()
+        .map(|&house| core.allocator.buildings[house].center_x)
+        .collect();
+    core.save_game_settled_at(&path, None, 0).unwrap();
+    let spec = serde_json::json!({
+        "lot_asset": lot,
+        "lot_pointer": [0.0, -30.0],
+        "lot_demolishes": hover.take.buildings.len(),
+        "front_z": front_z,
+        "house_x": house_x,
+        "farm_pointer": [-110.0, -8.0],
+        "mine_pointer": [110.0, -8.0],
+    });
+    std::fs::write(format!("{path}.json"), spec.to_string()).unwrap();
+    eprintln!("PLACEMENT_DEMOLITION_FIXTURE {spec}");
 }
