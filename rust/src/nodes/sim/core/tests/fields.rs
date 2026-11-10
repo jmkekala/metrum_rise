@@ -411,7 +411,10 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
 }
 
 // Painted cells with no derived lot are zoned land: an explicit building over them and a field
-// over them take their paint instead of refusing (`ZONE-11`).
+// over them take their paint instead of refusing (`ZONE-11`), and release the free paint of the
+// land they regenerate, which re-lays around them (`ZONE-14`, D-placements (a)): the cells behind
+// the lot lose their road column and their paint, the cells beside it keep theirs, and the field
+// takes the paint of the cells beside the lot that it covers.
 #[test]
 fn field_and_explicit_site_take_cell_paint_without_a_derived_lot() {
     use crate::simulation::agriculture::PolygonFootprint;
@@ -434,8 +437,9 @@ fn field_and_explicit_site_take_cell_paint_without_a_derived_lot() {
         },
         |_| false,
     );
-    let path = [DVec2::new(120.0, 12.0), DVec2::new(120.0, 42.0)];
-    let selection = core.zoning.cells.select(CellSelectionShape::Cell, &path);
+    // Four rows of the north curb from x 60 to 180, around the new farm's lot at x 120.
+    let path = [DVec2::new(60.0, 12.0), DVec2::new(180.0, 42.0)];
+    let selection = core.zoning.cells.select(CellSelectionShape::Marquee, &path);
     assert!(!selection.cells.is_empty());
     core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
     assert!(core.zoning.parcels().is_empty());
@@ -466,8 +470,22 @@ fn field_and_explicit_site_take_cell_paint_without_a_derived_lot() {
     let left = painted(&core);
     assert!(left.len() < selection.cells.len(), "the lot took paint");
     assert!(left.iter().all(|&key| !under(&core, key, &lot)));
+    // Every other cell of the selection either stands with its paint, re-laid in place, or lost
+    // its road column behind the lot and stands no more; some did.
+    let gone: Vec<_> = selection
+        .cells
+        .iter()
+        .copied()
+        .filter(|&key| !under(&core, key, &lot) && !left.contains(&key))
+        .collect();
+    assert!(!gone.is_empty(), "the cells behind the lot lose their column");
+    assert!(
+        gone.iter()
+            .all(|&key| core.zoning.cells.profile(key).is_none()),
+        "no cell over the released land stands unpainted: {gone:?}"
+    );
     // The field behind the farms' lots (the new farm's lot refuses it as plotted land) takes
-    // the rest of the paint.
+    // the paint of the cells beside the lot it covers; the cells in front of it keep theirs.
     let back = core.allocator.building_sites[placed]
         .lot_footprint_world
         .iter()
@@ -475,14 +493,80 @@ fn field_and_explicit_site_take_cell_paint_without_a_derived_lot() {
         .fold(f32::NEG_INFINITY, f32::max);
     let polygon = rectangle(polygon[0].x, back, 400.0, 500.0);
     let field = PolygonFootprint::new(&polygon);
-    assert!(!left.is_empty() && left.iter().all(|&key| under(&core, key, &field)));
+    let (taken, kept): (Vec<_>, Vec<_>) = left.iter().partition(|&&key| under(&core, key, &field));
+    assert!(!taken.is_empty() && !kept.is_empty(), "{taken:?} {kept:?}");
     core.commit_field_polygon_internal(farm, polygon).unwrap();
+    let after = painted(&core);
     assert!(
-        painted(&core)
-            .iter()
-            .all(|&key| !under(&core, key, &field)),
+        after.iter().all(|&key| !under(&core, key, &field)),
         "the field took the paint under it"
     );
+    assert_eq!(after, kept, "the cells in front of the field keep their paint");
+}
+
+// `ZONE-14`, D-placements (a): a field's release reaches the region its polygon's marks
+// regenerate, not only the covered cells' halos. A field reaching from behind its farm to the
+// road takes two painted cells at x 150-170 and covers the unpainted front rows at x 300-392,
+// cutting the painted rear rows there off the road, beyond those cells' halos: the rear cells are
+// released and, with no road column left, gone. Without the two cells the field takes no zoned
+// land and releases nothing: the rear cells keep their paint.
+#[test]
+fn a_fields_release_follows_its_marks() {
+    use crate::simulation::agriculture::PolygonFootprint;
+    use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
+    use glam::DVec2;
+    for takes_paint in [true, false] {
+        let (mut core, farm, behind) = farm_fixture();
+        core.zoning.generate_cells(
+            &core.region_graph,
+            CellBounds {
+                min: DVec2::splat(-600.0),
+                max: DVec2::splat(600.0),
+            },
+            |_| false,
+        );
+        let mut paint = |corners: [DVec2; 2]| {
+            let selection = core.zoning.cells.select(CellSelectionShape::Marquee, &corners);
+            assert!(!selection.cells.is_empty());
+            core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
+            selection.cells
+        };
+        let front = if takes_paint {
+            paint([DVec2::new(155.0, 11.0), DVec2::new(165.0, 21.0)])
+        } else {
+            Vec::new()
+        };
+        let rear = paint([DVec2::new(305.0, 41.0), DVec2::new(390.0, 61.0)]);
+        // From behind the farm (a field lies within 10 m of its farm) east, then down to the
+        // road.
+        let polygon = vec![
+            behind[0],
+            Vector2::new(150.0, behind[0].y),
+            Vector2::new(150.0, 6.0),
+            Vector2::new(392.0, 6.0),
+            Vector2::new(392.0, 36.0),
+            Vector2::new(300.0, 36.0),
+            Vector2::new(300.0, 300.0),
+            Vector2::new(behind[0].x, 300.0),
+        ];
+        let field = PolygonFootprint::new(&polygon);
+        let under =
+            |key| field.overlaps(&PolygonFootprint::new(&cell_corners(&core, key)));
+        assert!(front.iter().any(|&key| under(key)) == takes_paint, "the field takes paint");
+        assert!(rear.iter().all(|&key| !under(key)), "the rear rows lie beside the field");
+        core.commit_field_polygon_internal(farm, polygon.clone())
+            .unwrap();
+        let standing: Vec<_> = rear
+            .iter()
+            .copied()
+            .filter(|&key| core.zoning.cells.profile(key).is_some_and(|p| p != 0))
+            .collect();
+        if takes_paint {
+            assert_eq!(standing, Vec::new(), "the cut-off rear cells are gone");
+        } else {
+            assert_eq!(standing, rear, "a field over unpainted land releases nothing");
+        }
+    }
 }
 
 // A cell's corners in world XZ, narrowed to f32 for the field footprint tests.

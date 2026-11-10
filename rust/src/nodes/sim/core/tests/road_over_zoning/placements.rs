@@ -3,8 +3,9 @@
 //! Plotted placements over zoned land (`ZONE-11`, round RZ11a): an explicit building (a service
 //! lot, a farm), a field (new or resized) and an extraction area (new or resized) take the zoned
 //! land under their lot or polygon as a road does: the growable buildings on the lots it covers
-//! are demolished, those lots removed and only the covered cells' paint erased, with no undo
-//! record (decision D-undo); plotted land (a field, an extraction area, a placed building's lot)
+//! are demolished, those lots removed and the covered cells' paint erased, with no undo record
+//! (decision D-undo); the free paint around it is released and re-laid (`ZONE-14`, in `relay`);
+//! plotted land (a field, an extraction area, a placed building's lot)
 //! refuses each of them with nothing changed, a farm's or mine's own field, area and lot
 //! excepted. An extraction area blocks cells and parcels as a field does (decision
 //! D-extraction-blocks).
@@ -95,7 +96,7 @@ fn front(core: &SimCore, houses: &[usize]) -> f32 {
 
 // Whether a cell's road-contact interior overlaps `polygon` with positive area: the oracle of
 // "under the placement".
-fn under(core: &SimCore, key: CellKey, polygon: &[Vector2]) -> bool {
+pub(super) fn under(core: &SimCore, key: CellKey, polygon: &[Vector2]) -> bool {
     let frame = core.zoning.cells.frame(key.grid).unwrap();
     let interior = road_contact_interior(&frame.corners(key.x, key.y)).map(|p| [p.x, p.y]);
     PolygonFootprint::new(polygon).overlaps_precise_points(&interior)
@@ -246,8 +247,9 @@ fn place(placement: Placement) -> Placed {
 
 // `ZONE-11`, per placement: the lots the footprint covers are taken with their houses (the
 // families evacuated, every reference consistent), only the covered cells lose their paint, a
-// taken lot's other cells stay painted and free, no paint is inherited, no reserved cell is left
-// under the footprint, the other houses stand, and no undo record is pushed (decision D-undo).
+// taken lot's other cells stay painted and free (released and re-laid in place with their own
+// paint, `ZONE-14`), no other paint arises, no reserved cell is left under the footprint, the
+// other houses stand, and no undo record is pushed (decision D-undo).
 #[test]
 fn each_placement_takes_the_zoned_land_under_it() {
     // Cells of taken lots outside the footprints: a lot aligned with the footprint has none.

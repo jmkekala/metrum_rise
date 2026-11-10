@@ -101,6 +101,11 @@ pub(crate) fn polygon_world_bounds(points: &[Vector2]) -> Option<(Vector2, Vecto
     }))
 }
 
+// The cell bounds of a [`polygon_world_bounds`] pair.
+fn vector_pair_bounds((min, max): (Vector2, Vector2)) -> CellBounds {
+    CellBounds::from_points([min, max].map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))))
+}
+
 /// Result of a road placement attempt after synchronous input validation.
 #[derive(Clone, Debug)]
 pub(crate) struct RoadAddOutcome {
@@ -236,11 +241,12 @@ impl SimCore {
     }
 
     // Takes the zoned land of an accepted road edit, applied on the graph (`ZONE-09`; the
-    // in-place edits, `ZONE-10`): demolishes the buildings on the lots it covers, removes those
-    // lots and the authored parcels it covers, then releases the free paint of `regeneration`,
-    // the envelopes the edit's marks invalidated, and of the covered cells' halos (`ZONE-14`,
-    // PLAN-RL 2.1; `None` releases nothing: the explicit placements, whose marks round RL2
-    // brings): the empty lots there
+    // in-place edits, `ZONE-10`; the placements, `ZONE-11`): demolishes the buildings on the
+    // lots it covers, removes those lots and the authored parcels it covers, then releases the
+    // free paint of `regeneration`, the envelopes the edit's marks invalidated, and of the
+    // covered cells' and removed authored parcels' halos, which the take invalidates
+    // (`ZONE-14`, PLAN-RL 2.1; `Some(&[])` those halos only: a crossing toggle, a class change
+    // off the ground; `None` nothing: a placement taking no zoned land): the empty lots there
     // are removed, and one erase takes the covered cells' paint and the released cells', whose
     // inverse it returns for the undo record. The edit's lot plan re-lays the released cells as
     // unpainted ones and hands their paint on to the cells it lays over them. Lot regions around
@@ -261,6 +267,14 @@ impl SimCore {
         }
         let start = Instant::now();
         let [removals_ms, sites_ms] = self.demolish_for_road(&take.buildings);
+        // A removed authored parcel's halo is regenerated (`remove_parcels_under_road`), so it
+        // is released with the edit's own envelopes (round RL1's deviation 5: a road edit's
+        // envelopes contain it; a placement's lot or polygon marks need not).
+        let region = regeneration.map(|region| {
+            let mut region = region.to_vec();
+            region.extend(self.zoning.authored_parcel_halos(&take.lots));
+            region
+        });
         let lots_start = Instant::now();
         if !take.lots.is_empty() {
             self.zoning.remove_parcels_under_road(&take.lots);
@@ -275,8 +289,8 @@ impl SimCore {
             .map(|&(key, _)| key)
             .collect::<Vec<_>>();
         let release_start = Instant::now();
-        let (released, released_lots) = regeneration.map_or_else(Default::default, |region| {
-            self.zoning.release_painted_cells(region, &covered)
+        let (released, released_lots) = region.map_or_else(Default::default, |region| {
+            self.zoning.release_painted_cells(&region, &covered)
         });
         if self.zoning.remove_parcels_under_road(&released_lots) > 0 {
             self.allocator.dirty = true;
@@ -1981,9 +1995,11 @@ impl SimCore {
 
     // Places an explicit building (`ZONE-11`): every check first, the land under its lot among
     // them (plotted land refuses); then the zoned land under the lot is taken, demolishing the
-    // growable buildings on it, removing their lots and erasing the covered cells' paint, and
-    // the site is placed. Nothing after the take refuses. A placement has no undo record
-    // (decision D-undo), so the erase is final. O(the placement's checks + the take).
+    // growable buildings on it, removing their lots and erasing the covered cells' paint with the
+    // free paint of the land that erase regenerates, the covered cells' halos (`ZONE-14`,
+    // D-placements (a)), and the site is placed. Nothing after the take refuses. A placement has
+    // no undo record (decision D-undo), so the erase is final. O(the placement's checks + the
+    // take).
     fn place_explicit_building(
         &mut self,
         kind: ExplicitPlacementKind,
@@ -2018,9 +2034,11 @@ impl SimCore {
                 Ok(buildings)
             },
         )?;
-        // Nothing below refuses the placement.
+        // Nothing below refuses the placement. The lot's own mark is its site's publication,
+        // after the take: its envelope (the lot and 7 cells) lies within the covered cells'
+        // 12-cell halos for any lot up to 5 cells across, so the halos are its region.
         if let Some((take, lot)) = taken {
-            self.take_land_for_edit(take, None);
+            self.take_land_for_placement(take, &[]);
             debug_assert!(
                 explicit_lot_take(&CoreLand::of(self), &lot).is_ok_and(|take| take.is_empty()),
                 "the land under the lot was taken"
@@ -2031,8 +2049,37 @@ impl SimCore {
             .place_explicit_site(prepared, &catalog, &tuning))
     }
 
-    // An explicit building's tail: its cost, the lot plan (which takes the erased paint, if any:
-    // no new cell inherits it, as the site blocks the land), entrances and site publication.
+    // Marks the cell lots of a work area's `footprints` (its old and new polygon bounds) and
+    // returns the envelopes the marks invalidated: the region the area regenerates, marked
+    // before its take as the road edits mark theirs (`ZONE-14`). O(footprints).
+    fn mark_placement_footprints(
+        &mut self,
+        footprints: impl IntoIterator<Item = CellBounds>,
+    ) -> Vec<CellBounds> {
+        footprints
+            .into_iter()
+            .map(|bounds| self.zoning.mark_cell_lots_dirty(bounds))
+            .collect()
+    }
+
+    // A placement's take (`ZONE-11`) with the release of decision D-placements (a) (`ZONE-14`):
+    // the free paint of `region`, the envelopes its marks invalidated, and of the covered cells'
+    // and authored parcels' halos goes with the covered paint, so the lot plan re-lays that land
+    // around the lot or polygon. A placement that takes no zoned land releases nothing: over
+    // unpainted land it erases nothing. Returns the erase, `None` when no paint was erased.
+    fn take_land_for_placement(
+        &mut self,
+        take: RoadLandTake,
+        region: &[CellBounds],
+    ) -> Option<CellPaintUndo> {
+        let release = (!take.is_empty()).then_some(region);
+        self.take_land_for_edit(take, release)
+    }
+
+    // An explicit building's tail: its cost, the lot plan (the entrance rebuild's first step,
+    // which re-lays the land the take released around the site and hands its paint on,
+    // `ZONE-14`: no new cell inherits under the lot, which the site blocks), entrances and site
+    // publication.
     fn finish_explicit_placement(&mut self, building_idx: usize) {
         if !self.benchmark_mode
             && let Some(building) = self.allocator.buildings.get(building_idx)
@@ -2046,13 +2093,19 @@ impl SimCore {
     }
 
     // Takes the zoned land a field or an extraction area of `owner` covers (`ZONE-11`), `take`
-    // computed on the land as it is: the take's buildings are demolished, which may swap-remove
-    // `owner` to a lower index. Returns the owner's index after the take and whether paint was
-    // erased (the edit then plans its lots: decision D-lot-plan). The erase has no undo record
-    // (decision D-undo).
-    fn take_land_for_work_area(&mut self, take: RoadLandTake, owner: usize) -> (usize, bool) {
+    // computed on the land as it is, with the free paint of `region`, the envelopes the marks
+    // of its old and new polygons invalidated (`ZONE-14`): the take's buildings are demolished,
+    // which may swap-remove `owner` to a lower index. Returns the owner's index after the take
+    // and whether paint was erased (the edit then plans its lots: decision D-lot-plan). The
+    // erase has no undo record (decision D-undo).
+    fn take_land_for_work_area(
+        &mut self,
+        take: RoadLandTake,
+        owner: usize,
+        region: &[CellBounds],
+    ) -> (usize, bool) {
         let handle = self.allocator.building_handles.handle(owner);
-        let erased = self.take_land_for_edit(take, None).is_some();
+        let erased = self.take_land_for_placement(take, region).is_some();
         let owner = self
             .allocator
             .building_handles
@@ -2089,15 +2142,22 @@ impl SimCore {
                 Ok(buildings)
             },
         )?;
-        // Nothing below refuses the area.
-        let (building_idx, erased) =
-            self.take_land_for_work_area(taken.unwrap_or_default(), building_idx);
-        self.debug_assert_work_area_land_taken(&polygon_world, building_idx, false);
+        // Nothing below refuses the area. The land of the old and new polygons is replanned, as
+        // the area blocks cells; marked before the take, whose release follows the marks.
         let previous = self
             .resource_extraction
             .site_for_building(building_idx)
             .map(|site| (site.area_m2, polygon_world_bounds(&site.polygon_world)));
         let committed = polygon_world_bounds(&polygon_world);
+        let region = self.mark_placement_footprints(
+            [previous.and_then(|(_, bounds)| bounds), committed]
+                .into_iter()
+                .flatten()
+                .map(vector_pair_bounds),
+        );
+        let (building_idx, erased) =
+            self.take_land_for_work_area(taken.unwrap_or_default(), building_idx, &region);
+        self.debug_assert_work_area_land_taken(&polygon_world, building_idx, false);
         let summary = self
             .resource_extraction
             .commit_site(
@@ -2111,16 +2171,6 @@ impl SimCore {
             .expect("an area validated before its land was taken commits");
         let previous_area = previous.map_or(0.0, |(area, _)| area);
         self.charge_industry_area_expansion(building_idx, previous_area, summary.area_m2);
-        for bounds in [previous.and_then(|(_, bounds)| bounds), committed]
-            .into_iter()
-            .flatten()
-        {
-            self.zoning.mark_cell_lots_dirty(
-                crate::simulation::zoning::cells::CellBounds::from_points(
-                    [bounds.0, bounds.1].map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))),
-                ),
-            );
-        }
         if erased {
             self.plan_lots_after_erase();
         }
@@ -2343,20 +2393,27 @@ impl SimCore {
             },
         )?;
         // Nothing below refuses the field.
-        let (building_idx, erased) =
-            self.take_land_for_work_area(taken.unwrap_or_default(), building_idx);
-        self.debug_assert_work_area_land_taken(&polygon_world, building_idx, true);
         let previous_area = self
             .agriculture
             .site_for_building(building_idx)
             .map_or(0.0, |site| site.area_m2);
         // Captured before the commit: a resize has to give back the ground the old polygon
-        // covered as well as take the ground the new one covers.
+        // covered as well as take the ground the new one covers. Marked before the take, whose
+        // release follows the marks.
         let previous = self
             .agriculture
             .site_for_building(building_idx)
             .and_then(|site| polygon_world_bounds(&site.polygon_world));
         let committed = polygon_world_bounds(&polygon_world);
+        let region = self.mark_placement_footprints(
+            [previous, committed]
+                .into_iter()
+                .flatten()
+                .map(vector_pair_bounds),
+        );
+        let (building_idx, erased) =
+            self.take_land_for_work_area(taken.unwrap_or_default(), building_idx, &region);
+        self.debug_assert_work_area_land_taken(&polygon_world, building_idx, true);
         let summary = self
             .agriculture
             .commit_site(
@@ -2370,11 +2427,6 @@ impl SimCore {
             .expect("a field validated before its land was taken commits");
         self.charge_industry_area_expansion(building_idx, previous_area, summary.area_m2);
         for bounds in [previous, committed].into_iter().flatten() {
-            self.zoning.mark_cell_lots_dirty(
-                crate::simulation::zoning::cells::CellBounds::from_points(
-                    [bounds.0, bounds.1].map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))),
-                ),
-            );
             self.invalidate_vegetation_over(bounds);
         }
         if erased {

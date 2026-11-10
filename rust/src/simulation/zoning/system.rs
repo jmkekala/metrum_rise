@@ -192,14 +192,8 @@ impl ZoningSystem {
                     self.cells.release_lot(lot, raw);
                 }
                 None => {
-                    let bounds = super::cells::CellBounds::from_points(
-                        parcel
-                            .corners()
-                            .map(|p| DVec2::new(f64::from(p.x), f64::from(p.y))),
-                    );
-                    self.cells.invalidate_generated_cells(bounds.expanded(
-                        (super::cells::CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m),
-                    ));
+                    let halo = self.authored_parcel_halo(parcel);
+                    self.cells.invalidate_generated_cells(halo);
                 }
             }
             self.parcels.remove_local(id);
@@ -210,6 +204,34 @@ impl ZoningSystem {
             self.bump_overlay_revision();
         }
         removed
+    }
+
+    /// The generated cells [`Self::remove_parcels_under_road`] will invalidate around the
+    /// authored parcels among `raw_ids`, for the release of the edit removing them (`ZONE-14`).
+    /// Cell lots invalidate nothing there. O(ids).
+    pub(crate) fn authored_parcel_halos(
+        &self,
+        raw_ids: &[u64],
+    ) -> impl Iterator<Item = super::cells::CellBounds> {
+        raw_ids.iter().filter_map(|&raw| {
+            let parcel = self
+                .parcels
+                .get(crate::simulation::zoning::ParcelId::from_raw(raw))?;
+            parcel
+                .cell_lot()
+                .is_none()
+                .then(|| self.authored_parcel_halo(parcel))
+        })
+    }
+
+    // An authored parcel's bounds and the rear rows its removal can free around it.
+    fn authored_parcel_halo(&self, parcel: &ZoningParcel) -> super::cells::CellBounds {
+        super::cells::CellBounds::from_points(
+            parcel
+                .corners()
+                .map(|p| DVec2::new(f64::from(p.x), f64::from(p.y))),
+        )
+        .expanded((super::cells::CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m))
     }
 
     pub(crate) fn parcel_ids_overlapping_road_corridor(

@@ -6,9 +6,13 @@
 //! land, and each cell over the old paint takes the paint it overlaps most. An occupied lot stays
 //! pinned with its cells; paint without a road column vanishes; undo gives the old cells and
 //! paint back exactly, and is refused whole while a building stands anywhere on the re-laid land.
-//! A ring over a zoned crossroads leaves no cell on its island (`ZONE-13`).
+//! A ring over a zoned crossroads leaves no cell on its island (`ZONE-13`). The explicit
+//! placements follow the same rule within the region their lot or polygon regenerates (round RL2,
+//! PLAN-RL test 9, D-placements (a)); one over unpainted land releases nothing.
 
+use super::placements::under;
 use super::*;
+use crate::nodes::sim::core::tests::parking::register_lot;
 use crate::simulation::network::roundabouts::{
     RoundaboutLayout, RoundaboutRequest, RoundaboutSite,
 };
@@ -512,4 +516,192 @@ fn a_long_stroke_re_lays_every_chunk_it_crosses() {
     );
     assert_relaid_in(&core, LONG, &before, "long stroke");
     assert_references_consistent(&core);
+}
+
+// A parking lot (a service building) placed at (x, -30) on the street's south curb; returns its
+// lot's corners.
+fn place_lot(core: &mut SimCore, asset: &str, x: f32) -> Vec<Vector2> {
+    let lot = core
+        .place_service_building_internal(asset, x, -30.0)
+        .unwrap_or_else(|error| panic!("the lot at x {x}: {error:?}"));
+    core.allocator.building_sites[lot]
+        .lot_footprint_world
+        .to_vec()
+}
+
+// Test 9 (round RL2, D-placements (a)): a parking lot placed into a block painted whole with two
+// zones takes the cells under it and releases the free paint of the land it regenerates; its own
+// lot plan lays that land as it lies around the same lot on the unpainted street: the cells
+// behind the lot that lost their road column are gone with their paint, the others carry the
+// paint they overlap most, and no cell stands on the lot's land.
+#[test]
+fn a_parking_lot_into_a_painted_block_re_lays_it_as_unpainted_land() {
+    let mut core = curbs_painted(Some(2));
+    let asset = register_lot(&mut core);
+    let before = painted(&core);
+    let lot = place_lot(&mut core, &asset, 0.0);
+    // The placement planned its lots before returning: nothing over the old paint waits
+    // unpainted for a frame.
+    assert_relaid(&core, &before, "the placement's own plan");
+    let gone: Vec<_> = before
+        .iter()
+        .map(|&(key, _)| key)
+        .filter(|&key| !under(&core, key, &lot) && core.zoning.cells.profile(key).is_none())
+        .collect();
+    assert!(!gone.is_empty(), "the cells behind the lot lose their column");
+    settle(&mut core);
+    let mut twin = street_on(|_| {}).0;
+    let asset = register_lot(&mut twin);
+    place_lot(&mut twin, &asset, 0.0);
+    settle(&mut twin);
+    assert_eq!(layout(&core), layout(&twin), "the re-laid cells");
+    assert_paint_follows(&core, &before, "placement");
+    assert_relaid(&core, &before, "placement");
+    let on_lot: Vec<_> = cell_keys(&core)
+        .into_iter()
+        .filter(|&key| under(&core, key, &lot))
+        .collect();
+    assert_eq!(on_lot, Vec::new(), "no cell on the lot's land");
+    assert_references_consistent(&core);
+}
+
+// Determinism (round RL2): two cities built alike, each re-laid by a stroke and then by a parking
+// lot placed on the stroke's re-laid land, end bit for bit equal: cells, land and the stroke's
+// record.
+#[test]
+fn a_stroke_and_a_placement_re_lay_deterministically() {
+    let run = || {
+        let mut core = curbs_painted(Some(2));
+        let asset = register_lot(&mut core);
+        commit_diagonal(&mut core);
+        place_lot(&mut core, &asset, -100.0);
+        settle(&mut core);
+        let record = core
+            .undo_stack
+            .back()
+            .and_then(|record| record.cells.as_ref())
+            .map(|cells| (cells.erased().to_vec(), cells.inherited().to_vec()));
+        (core.zoning.cells.state_digest(), land_state(&core), record)
+    };
+    assert_eq!(run(), run());
+}
+
+// D-placements (a): a placement that takes no zoned land releases nothing. A lot over the
+// unpainted front rows of a block painted only behind them erases no paint: the painted rear
+// cells it cuts off from the road stay as they were.
+#[test]
+fn a_placement_over_unpainted_land_releases_nothing() {
+    let (mut core, _) = street_on(|_| {});
+    let asset = register_lot(&mut core);
+    let corners = [DVec2::new(-60.0, -45.0), DVec2::new(60.0, -65.0)];
+    paint(&mut core, CellSelectionShape::Marquee, &corners, 1);
+    settle(&mut core);
+    let before = painted(&core);
+    let lot = place_lot(&mut core, &asset, 0.0);
+    assert!(
+        before.iter().all(|&(key, _)| !under(&core, key, &lot)),
+        "the lot covers no paint"
+    );
+    assert_eq!(painted(&core), before, "nothing released");
+    settle(&mut core);
+    assert_eq!(painted(&core), before, "nothing released, after the frame");
+}
+
+// Test 9, the service building and Ctrl+Z (decision D-undo: a placement has no undo record):
+// a parking lot placed on the land a stroke re-laid takes inherited cells of the stroke's
+// record, so Ctrl+Z, which reaches the stroke, is refused whole and changes nothing (D5).
+#[test]
+fn a_parking_lot_on_re_laid_land_refuses_the_strokes_undo() {
+    let mut core = curbs_painted(None);
+    let asset = register_lot(&mut core);
+    let (_, inherited) = commit_diagonal(&mut core);
+    settle(&mut core);
+    let before = painted(&core);
+    let depth = core.undo_stack.len();
+    let lot = place_lot(&mut core, &asset, -100.0);
+    assert!(
+        inherited
+            .iter()
+            .any(|&(key, _)| under(&core, key, &lot)),
+        "the lot takes inherited cells"
+    );
+    assert_eq!(core.undo_stack.len(), depth, "a placement has no record");
+    assert_relaid(&core, &before, "the lot on re-laid land");
+    let state = land_state(&core);
+    assert!(!core.undo_action_internal(), "the stroke's undo is refused");
+    assert_eq!(land_state(&core), state, "a refused undo changes nothing");
+    assert_eq!(core.undo_stack.len(), depth, "the stroke's record stays");
+}
+
+// An authored parcel's 7-cell halo, which its removal regenerates, is released by the take
+// that removes it (round RL1's deviation 5, for placements whose marks need not contain it):
+// a take of the parcel alone erases the free paint in the halo and nothing else, and the lot plan
+// gives every cell its paint back in place.
+#[test]
+fn a_taken_authored_parcels_halo_is_released() {
+    use crate::nodes::sim::core::RoadLandTake;
+    use crate::simulation::zoning::ParcelGeometry;
+    let mut core = curbs_painted(None);
+    let street = (0..core.region_graph.edge_count())
+        .find(|&edge| !core.region_graph.edge(edge).deleted)
+        .unwrap();
+    let profile = core
+        .zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    // A 10 m square beyond the street's east end, its halo over the curbs' last 20 m.
+    let at = |x: f32, z: f32| Vector2::new(x, z);
+    let parcel = core
+        .zoning
+        .parcels
+        .insert_new(
+            ParcelGeometry {
+                edge_idx: street,
+                side: 1,
+                frontage_center_t: 1.0,
+                frontage_m: 10.0,
+                depth_m: 10.0,
+                front_center: at(205.0, 0.0),
+                center: at(205.0, 5.0),
+                tangent: at(1.0, 0.0),
+                normal: at(0.0, 1.0),
+                corners: [at(200.0, 0.0), at(210.0, 0.0), at(210.0, 10.0), at(200.0, 10.0)],
+                aabb_min: at(200.0, 0.0),
+                aabb_max: at(210.0, 10.0),
+            },
+            profile,
+        )
+        .raw();
+    let wide = CellBounds {
+        min: DVec2::splat(-400.0),
+        max: DVec2::splat(400.0),
+    };
+    let before = painted_in(&core, wide);
+    let take = RoadLandTake {
+        lots: vec![parcel],
+        lot_points: vec![DVec2::new(205.0, 5.0)],
+        ..RoadLandTake::default()
+    };
+    let erased = core
+        .take_land_for_edit(take, Some(&[]))
+        .expect("the halo's paint is released");
+    assert!(core.zoning.parcel_by_raw_id(parcel).is_none());
+    let halo = CellBounds {
+        min: DVec2::new(200.0, 0.0),
+        max: DVec2::new(210.0, 10.0),
+    }
+    .expanded(70.0);
+    assert!(!erased.erased().is_empty());
+    for &(key, _) in erased.erased() {
+        let footprint = corners(&core, key);
+        assert!(
+            footprint.iter().any(|p| {
+                (halo.min.x..=halo.max.x).contains(&p.x) && (halo.min.y..=halo.max.y).contains(&p.y)
+            }),
+            "{key:?} lies in the halo"
+        );
+    }
+    core.prepare_cell_lots_internal();
+    assert_eq!(painted_in(&core, wide), before, "every cell re-laid in place");
 }
