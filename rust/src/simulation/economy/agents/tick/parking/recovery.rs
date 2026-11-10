@@ -4,7 +4,9 @@
 
 use super::*;
 use crate::simulation::core::handles::Handle;
-use crate::simulation::economy::agents::tick::planning::quote_parking_leg_from_lane;
+use crate::simulation::economy::agents::tick::planning::{
+    plan_network_replan, quote_parking_leg_from_lane,
+};
 use crate::simulation::economy::agents::{
     ACCESS_LANE_ATTACH_PENDING, ACTIVITY_HOME, TRANSIT_ACCESS_INGRESS, TRANSIT_NETWORK,
 };
@@ -278,6 +280,11 @@ impl AgentSystem {
             self.apply_parking_leg(i, plan, &origin);
             self.agents.pos_x[i] = position.0;
             self.agents.pos_y[i] = position.1;
+        } else if self.stands_at_a_node_on_its_drive(i, trip) {
+            if !self.plan_drive_from_node(i, target, destination, allocator, network, graph) {
+                self.queue_parking_retry(i, 30);
+                return;
+            }
         } else {
             let (lane, distance) = if self.agents.current_lane_id[i] != usize::MAX {
                 (self.agents.current_lane_id[i], self.agents.lane_distance[i])
@@ -346,5 +353,64 @@ impl AgentSystem {
         self.agents.parking_trip[i].ready = false;
         self.agents.parking_trip[i].replan_needed = false;
         self.agents.next_replan_time[i] = 0.0;
+    }
+
+    // Whether car `i` on its drive stands at a node with no lane and no attach point to plan
+    // from: a road edit dropped it off the junction connector it was crossing
+    // (`clear_route_plan_after_road_edit`), or the next road of its path went (`TRAFFIC-31`). O(1).
+    fn stands_at_a_node_on_its_drive(&self, i: usize, trip: ParkingTrip) -> bool {
+        let a = &self.agents;
+        trip.phase == ParkingTripPhase::Drive
+            && a.transit[i] == TRANSIT_NETWORK
+            && a.current_lane_id[i] == usize::MAX
+            && a.access_flags[i] & ACCESS_LANE_ATTACH_PENDING == 0
+            && a.current_node[i] != u32::MAX
+    }
+
+    // Plans car `i`'s drive from the node it stands at to its bay, as the movement pass's replan
+    // gate plans any car there (`replan_start`), and installs the route as that gate does; the
+    // movement pass then enters the route's first road lane from the node. The car keeps its
+    // place and stands, speed 0, until that entry. Without this a car frozen for recovery at a
+    // node waited for a lane nothing gave it, a retry every 30 game minutes for good
+    // (`TRAFFIC-31`). O(Q), one route query; false, with nothing changed, when no route reaches
+    // the bay.
+    fn plan_drive_from_node(
+        &mut self,
+        i: usize,
+        target: usize,
+        destination: BuildingEntrance,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> bool {
+        let Ok(replan) = plan_network_replan(
+            self.agents.current_node[i],
+            self.agents.current_edge[i],
+            None,
+            target,
+            MODE_CAR,
+            0,
+            allocator,
+            network,
+            graph,
+            &self.pathfind_count,
+            Some((i, "parking-recovery-at-node")),
+            None,
+            Some(destination),
+        ) else {
+            return false;
+        };
+        let a = &mut self.agents;
+        a.parking_trip[i].route_replaced(replan.current_path.len());
+        a.current_path[i] = replan.current_path;
+        a.walk_lanes[i].clear();
+        a.current_path_index[i] = usize::from(a.current_path[i].len() >= 2);
+        a.planned_detach_node[i] = replan.planned_detach_node;
+        a.planned_detach_lane_id[i] = replan.planned_detach_lane_id as u32;
+        a.planned_detach_lane_d[i] = replan.planned_detach_lane_d;
+        a.access_flags[i] = replan.access_flags;
+        a.network_replan_failures[i] = 0;
+        a.speed[i] = 0.0;
+        true
     }
 }
