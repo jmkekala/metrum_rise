@@ -28,7 +28,9 @@
 //! a row street widened from 1+1 to 2+2 (its front rows), a 40 m right pocket at a cross-street
 //! junction, a one-lane ring replacing a crossing (its island's lots too) and a T's junction
 //! moved 6 m into a block, each with its publication, as the Road Properties window, the Junction
-//! window, the roundabout tool and the move tool's release commit them (`LOCALITY_IN_PLACE`).
+//! window, the roundabout tool and the move tool's release commit them (`LOCALITY_IN_PLACE`). The
+//! narrowing back and the pocket's removal follow, the same transactions taking no land: the
+//! reference for what the take adds at each tier.
 
 use std::time::Instant;
 
@@ -349,8 +351,18 @@ fn profile_in_place_edits(core: &mut SimCore, background: usize) -> serde_json::
             })
             .expect("a street between the nodes")
     };
+    // Row 11's west block; row 13's west block into the crossing at x = 0; row 15's west T, whose
+    // move bends no street onto a parking lot.
+    let (row, _) = edge_between(core, node_at(core, -400.0, 150.0), node_at(core, 0.0, 150.0));
+    let (arm, end) = edge_between(core, node_at(core, -400.0, 250.0), node_at(core, 0.0, 250.0));
+    let tee = node_at(core, -400.0, 350.0);
     let mut takes = Vec::new();
-    for name in ["widening", "pocket", "ring", "move"] {
+    // Each taking edit, and the narrowing and the pocket's removal, the same transactions taking
+    // no land: the reference for what the take adds. (A node moved back takes the cells beside
+    // its street: the round trip leaves the street millimetres off its line.)
+    for name in [
+        "widening", "narrowing", "pocket", "pocket_off", "ring", "move",
+    ] {
         let (buildings, households, agents) = (
             core.allocator.buildings.len(),
             core.households.households.len(),
@@ -359,34 +371,25 @@ fn profile_in_place_edits(core: &mut SimCore, background: usize) -> serde_json::
         let depth = core.undo_stack.len();
         let terrain = core.terrain_dirty_patch_states();
         core.acknowledge_terrain_render_patches(&terrain);
+        let lanes = |core: &SimCore, lanes| {
+            let attributes = RoadAttributes::of_edge(core.region_graph.edge(row));
+            (row as i32, lanes, lanes, None, RoadParking::NONE, attributes)
+        };
+        let pocket = |on: bool| PocketRequest {
+            edge: arm,
+            end,
+            left: false,
+            right: on,
+            body_m: 40.0,
+        };
         let start = Instant::now();
         let applied = match name {
-            // Row 11's west block.
-            "widening" => {
-                let (west, east) = (node_at(core, -400.0, 150.0), node_at(core, 0.0, 150.0));
-                let (edge, _) = edge_between(core, west, east);
-                let attributes = RoadAttributes::of_edge(core.region_graph.edge(edge));
-                core.set_edge_cross_section_internal(
-                    edge as i32,
-                    2,
-                    2,
-                    None,
-                    RoadParking::NONE,
-                    attributes,
-                )
+            "widening" | "narrowing" => {
+                let (edge, fwd, bkw, median, parking, attributes) =
+                    lanes(core, if name == "widening" { 2 } else { 1 });
+                core.set_edge_cross_section_internal(edge, fwd, bkw, median, parking, attributes)
             }
-            // Row 13's west block into the crossing at x = 0.
-            "pocket" => {
-                let (west, junction) = (node_at(core, -400.0, 250.0), node_at(core, 0.0, 250.0));
-                let (edge, end) = edge_between(core, west, junction);
-                core.set_road_pocket_internal(PocketRequest {
-                    edge,
-                    end,
-                    left: false,
-                    right: true,
-                    body_m: 40.0,
-                })
-            }
+            "pocket" | "pocket_off" => core.set_road_pocket_internal(pocket(name == "pocket")),
             "ring" => {
                 let site = RoundaboutSite::Junction(node_at(core, 0.0, 350.0));
                 core.place_roundabout_internal(RoundaboutRequest {
@@ -394,11 +397,10 @@ fn profile_in_place_edits(core: &mut SimCore, background: usize) -> serde_json::
                     diameter_m: default_diameter_m(site.lanes(&core.region_graph)),
                 })
             }
-            // Row 14's west T, into the block to its north-east.
+            // Into the block to the T's south-east.
             _ => {
-                let node = node_at(core, -400.0, 300.0);
-                let to = Vector3::new(-394.0, core.heightmap.sample_height_world(-394.0, 306.0), 306.0);
-                core.move_network_node_taking_land_internal(node as i32, to)
+                let to = Vector3::new(-394.0, core.heightmap.sample_height_world(-394.0, 344.0), 344.0);
+                core.move_network_node_taking_land_internal(tee as i32, to)
             }
         };
         let edit_ms = start.elapsed().as_secs_f64() * 1e3;
@@ -425,7 +427,11 @@ fn profile_in_place_edits(core: &mut SimCore, background: usize) -> serde_json::
                 "demolished": demolished, "erased_cells": erased, "inherited_cells": inherited,
                 "edit_ms": edit_ms, "publish_ms": publish_ms})
         );
-        assert!(demolished >= 1, "the {name} takes built lots: {demolished}");
+        if ["narrowing", "pocket_off"].contains(&name) {
+            assert_eq!((demolished, erased), (0, 0), "the {name} takes nothing");
+        } else {
+            assert!(demolished >= 1, "the {name} takes built lots: {demolished}");
+        }
         takes.push(serde_json::json!({"edit": name, "demolished": demolished,
             "erased_cells": erased, "inherited_cells": inherited}));
     }
