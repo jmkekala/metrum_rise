@@ -440,3 +440,76 @@ fn a_ring_over_a_zoned_crossroads_leaves_no_cell_on_its_island() {
     );
     assert_eq!(painted(&loaded), painted(&core), "the save keeps the paint");
 }
+
+// Where the long street and its stroke lie: four chunks along x, two along z.
+const LONG: CellBounds = CellBounds {
+    min: DVec2::new(-1000.0, -200.0),
+    max: DVec2::new(1000.0, 200.0),
+};
+
+// A street from x -900 to 900 with both curbs painted whole, or with none, its cells generated.
+fn long_street(painted: bool) -> SimCore {
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    core.treasury.balance = 1.0e9;
+    register_houses(&mut core);
+    commit_ready(
+        &mut core,
+        vec![
+            Vector3::new(-900.0, 0.0, 0.0),
+            Vector3::new(900.0, 0.0, 0.0),
+        ],
+    );
+    if painted {
+        for z in [15.0, -15.0] {
+            paint(
+                &mut core,
+                CellSelectionShape::Fill,
+                &[DVec2::new(0.0, z)],
+                1,
+            );
+        }
+    }
+    settle_long(&mut core);
+    core
+}
+
+// [`settle`] over every chunk of `LONG`.
+fn settle_long(core: &mut SimCore) {
+    core.precompute_road_mesh_data();
+    core.publish_road_tool_view();
+    core.prepare_cell_lots_internal();
+    for x in -2..=1 {
+        for z in -1..=0 {
+            assert!(core.prepare_cell_chunk_internal((x, z)));
+        }
+    }
+}
+
+// A stroke 1.4 km long across the south block: its lot plan serves several regions, and the
+// released cells of the later ones must not inherit before those regions regenerate them, or
+// their paint would pin the old grid there (`CellStore::generation_current`). The block re-lays
+// along the whole stroke as unpainted land does.
+#[test]
+fn a_long_stroke_re_lays_every_chunk_it_crosses() {
+    let stroke = [
+        Vector3::new(-700.0, 0.0, -75.0),
+        Vector3::new(700.0, 0.0, -30.0),
+    ];
+    let mut twin = long_street(false);
+    assert_eq!(commit(&mut twin, &stroke), "");
+    twin.adopt_pending_cell_lots();
+    settle_long(&mut twin);
+    let mut core = long_street(true);
+    let before = painted_in(&core, LONG);
+    assert_eq!(commit(&mut core, &stroke), "");
+    assert!(core.adopt_pending_cell_lots().adopted);
+    settle_long(&mut core);
+    assert_eq!(
+        layout_in(&core, LONG),
+        layout_in(&twin, LONG),
+        "the re-laid cells"
+    );
+    assert_relaid_in(&core, LONG, &before, "long stroke");
+    assert_references_consistent(&core);
+}

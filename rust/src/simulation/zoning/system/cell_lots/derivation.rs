@@ -65,8 +65,6 @@ struct Inheritance {
     sources: Vec<(CellKey, u16, [DVec2; 4])>,
     // The erased cells the edit's pieces cover, sorted: they never inherit.
     covered: Vec<CellKey>,
-    // Whether the chunks the cells over the sources touch were generated.
-    prepared: bool,
     // The cells painted so far, with their paint.
     inherited: Vec<(CellKey, u16)>,
 }
@@ -272,7 +270,6 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
         let phase = crate::debug::Channel::EconomyPhases
             .enabled()
             .then(std::time::Instant::now);
-        self.prepare_inherited_land(graph, blocked);
         // Share cell selection's completeness cache, including local dirty envelopes.
         // Growth can depend on a front row just outside the changed paint's chunk.
         self.prepare_generated_cells(
@@ -323,7 +320,6 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
             erase: paint.erase,
             sources,
             covered: paint.covered,
-            prepared: false,
             inherited: Vec::new(),
         });
         self
@@ -351,37 +347,6 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
         })
     }
 
-    // Generates, before the plan's first region, every chunk a cell over an erased one can touch
-    // (`ZONE-14`): the paint is then handed on once, on the land's final cells, before any
-    // region's lots derive, so each region's derivation sees every cell that inherits in it, in
-    // whatever order the regions come. These chunks lie in the plan's regions, whose preparation
-    // would generate them anyway. O(erased cells) chunk lookups plus that generation.
-    fn prepare_inherited_land(
-        &mut self,
-        graph: &RegionGraph,
-        blocked: &(impl Fn(&[DVec2; 4]) -> bool + Sync),
-    ) {
-        let reach = 2.0 * f64::from(self.config.zone_cell_m);
-        let Some(inheritance) = self.inheritance.as_mut().filter(|i| !i.prepared) else {
-            return;
-        };
-        inheritance.prepared = true;
-        let mut chunks: Vec<_> = inheritance
-            .sources
-            .iter()
-            .flat_map(|(_, _, corners)| {
-                CellStore::chunks_touching(CellBounds::from_points(*corners).expanded(reach))
-            })
-            .collect();
-        chunks.sort_unstable();
-        chunks.dedup();
-        let parcels = self.parcels.base();
-        self.cells
-            .ensure_generated_chunks(graph, self.config, chunks, |corners| {
-                super::super::cell_editing::overlaps_parcels(parcels, corners) || blocked(corners)
-            });
-    }
-
     // Paints the new cells over the erased ones as [`Self::inheriting`] says, after a region's
     // generation; a cell decided before is painted or stays unpainted, so deciding again changes
     // nothing. O(erased cells * cells over each) plus the paint writes.
@@ -404,12 +369,11 @@ impl<M: CellMaps> CellLotPlanner<'_, M> {
                     return;
                 };
                 let footprint = frame.corners(key.x, key.y);
-                // A cell a later region could still regenerate must not inherit: painted, it
-                // would pin its old grid against the edit's new one. The first region generated
-                // every chunk a cell over a source touches (`prepare_inherited_land`).
-                let current = cells.generation_current(CellBounds::from_points(footprint));
-                debug_assert!(current, "{key:?} over an erased cell awaits generation");
-                if !current {
+                // A cell a later region may still regenerate waits for it: painted now, it would
+                // pin its old grid against the edit's new one. It inherits at the latest after
+                // its own region's generation, before that region's lots derive: a region
+                // generates its chunks and those within a lot's reach around it.
+                if !cells.generation_current(CellBounds::from_points(footprint)) {
                     return;
                 }
                 let area = convex_overlap_area(&footprint, &corners);

@@ -153,8 +153,13 @@ fn live_edges(core: &SimCore) -> usize {
 
 // Every painted cell in `AREA` with its paint.
 fn painted(core: &SimCore) -> Vec<(CellKey, u16)> {
+    painted_in(core, AREA)
+}
+
+// Every painted cell in `bounds` with its paint.
+fn painted_in(core: &SimCore, bounds: CellBounds) -> Vec<(CellKey, u16)> {
     let mut cells = Vec::new();
-    core.zoning.cells.visit_in_bounds(AREA, |key| {
+    core.zoning.cells.visit_in_bounds(bounds, |key| {
         if let Some(profile) = core.zoning.cells.profile(key).filter(|&p| p != 0) {
             cells.push((key, profile));
         }
@@ -327,8 +332,13 @@ fn a_road_over_a_growable_lot_demolishes_it_and_removes_only_covered_cells() {
 // each cell over it taking the paint it overlaps most; released land where no cell stands keeps
 // none.
 fn assert_relaid(core: &SimCore, before: &[(CellKey, u16)], label: &str) {
+    assert_relaid_in(core, AREA, before, label);
+}
+
+// [`assert_relaid`] over the cells of `bounds`.
+fn assert_relaid_in(core: &SimCore, bounds: CellBounds, before: &[(CellKey, u16)], label: &str) {
     let mut unpainted = Vec::new();
-    core.zoning.cells.visit_in_bounds(AREA, |key| {
+    core.zoning.cells.visit_in_bounds(bounds, |key| {
         if core.zoning.cells.profile(key) == Some(0)
             && core.zoning.cells.lot(key) == Some(0)
             && before.iter().any(|&(source, _)| {
@@ -531,8 +541,13 @@ fn the_one_shot_corridor_check_finds_plotted_land() {
 // Every cell footprint in `AREA` by its corners' bits, sorted: the cell layout, whatever the
 // frame ids.
 fn layout(core: &SimCore) -> Vec<[[u64; 2]; 4]> {
+    layout_in(core, AREA)
+}
+
+// [`layout`] over the cells of `bounds`.
+fn layout_in(core: &SimCore, bounds: CellBounds) -> Vec<[[u64; 2]; 4]> {
     let mut cells = Vec::new();
-    core.zoning.cells.visit_in_bounds(AREA, |key| {
+    core.zoning.cells.visit_in_bounds(bounds, |key| {
         cells.push(corners(core, key).map(|p| [p.x.to_bits(), p.y.to_bits()]));
     });
     cells.sort_unstable();

@@ -17,34 +17,23 @@ impl<M: CellMaps> CellStore<M> {
         bounds: CellBounds,
         blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
     ) -> CellGeneration {
+        let mut report = CellGeneration::default();
         if !bounds.is_valid() {
-            return CellGeneration::default();
+            return report;
         }
         let size = f64::from(RegionGraph::CHUNK_SIZE);
         let min = (bounds.min / size).floor();
         let max = (bounds.max / size).floor();
-        let chunks = (min.x as i32..=max.x as i32)
-            .flat_map(|x| (min.y as i32..=max.y as i32).map(move |y| (x, y)));
-        self.ensure_generated_chunks(graph, config, chunks, blocked)
-    }
-
-    /// [`Self::ensure_generated_in_bounds`] for the listed chunks, in their order.
-    pub(crate) fn ensure_generated_chunks(
-        &mut self,
-        graph: &RegionGraph,
-        config: &WorldConfig,
-        chunks: impl IntoIterator<Item = (i32, i32)>,
-        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
-    ) -> CellGeneration {
-        let mut report = CellGeneration::default();
-        for chunk in chunks {
-            if let Some(dirty) = self.chunk_generation_bounds(chunk) {
-                let generated = self.generate_in_bounds(graph, config, dirty, &blocked);
-                report.roads += generated.roads;
-                report.candidates += generated.candidates;
-                report.comparisons += generated.comparisons;
-                report.accepted += generated.accepted;
-                self.complete_generated_chunk(chunk, dirty);
+        for x in min.x as i32..=max.x as i32 {
+            for y in min.y as i32..=max.y as i32 {
+                if let Some(dirty) = self.chunk_generation_bounds((x, y)) {
+                    let generated = self.generate_in_bounds(graph, config, dirty, &blocked);
+                    report.roads += generated.roads;
+                    report.candidates += generated.candidates;
+                    report.comparisons += generated.comparisons;
+                    report.accepted += generated.accepted;
+                    self.complete_generated_chunk((x, y), dirty);
+                }
             }
         }
         report

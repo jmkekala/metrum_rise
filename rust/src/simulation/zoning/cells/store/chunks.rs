@@ -16,11 +16,6 @@ impl CellStore {
     pub(crate) fn chunk_bounds(chunk: (i32, i32)) -> CellBounds {
         chunk_bounds(chunk)
     }
-
-    /// The cell chunks `bounds` touches, row by row.
-    pub(crate) fn chunks_touching(bounds: CellBounds) -> impl Iterator<Item = (i32, i32)> {
-        chunks_for_bounds(bounds)
-    }
 }
 
 // [`CellStore::chunk_bounds`], for the store's generic methods.
