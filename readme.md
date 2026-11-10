@@ -69,5 +69,5 @@ Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Su
 ![First attempt to make a t-junction](/screenshots/t-junction.png)
 
 
-## State of the Game (09/2026)
-[![Metrum Rise - State of the Game - 09/2026](https://img.youtube.com/vi/2zcum8CIC68/0.jpg)](https://youtu.be/2zcum8CIC68)
+## State of the Game (10/2026)
+[![Metrum Rise - State of the Game - 10/2026](https://img.youtube.com/vi/g77z47cO7kM/0.jpg)](https://youtu.be/g77z47cO7kM)
