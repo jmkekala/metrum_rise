@@ -163,8 +163,9 @@ func _show_pending(step: Dictionary, pos: Vector3) -> void:
 	if _demolish_mesh != null:
 		_demolish_mesh.mesh = mesh
 		_demolish_mesh.visible = mesh != null
-	_pending_label.visible = not step.is_empty()
-	_pending_label.text = RoadReasonText.text(step) if not step.is_empty() else ""
+	if _pending_label != null:
+		_pending_label.visible = not step.is_empty()
+		_pending_label.text = RoadReasonText.text(step) if not step.is_empty() else ""
 
 ## Whether a drag step is pending its release (for the tests).
 func has_pending_move() -> bool:

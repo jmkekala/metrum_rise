@@ -15,8 +15,8 @@ class CellSimulationStub extends Node3D:
 	var paths: Array = []
 	func get_zone_profiles() -> Array:
 		return [{"runtime_id": 1}, {"runtime_id": 2}]
-	func move_network_node(_node: int, _position: Vector3) -> bool:
-		return false
+	func move_network_node_step(_node: int, _position: Vector3) -> Dictionary:
+		return {"moved": false, "pending": false}
 	func get_node_pos(_node: int) -> Vector3:
 		return hit
 	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait := false) -> Vector3:
