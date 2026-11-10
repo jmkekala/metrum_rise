@@ -176,7 +176,7 @@ fn parking_lot_needs_a_frontage_cars_can_use() {
         .get_service_building_placement_preview_internal(&id, 0.0, 110.0)
         .expect("a resolved pose");
     assert_eq!(
-        preview.rejection,
+        preview.preview.rejection,
         Some(ExplicitServicePlacementRejection::NoCarAccess)
     );
     let count = c.allocator.buildings.len();
