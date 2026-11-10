@@ -18,8 +18,10 @@ releases by hand.
 - A release is `YYYY.M.N` (`2026.11.1`): the UTC year and month of the build, and N counting that
   month's releases from 1. The tag is `v2026.11.1`. `tools/ci/version.sh` computes it.
 - Test runs are labelled `test-<sha7>` and take no number.
-- The version is stamped into `application/config/version` for the build only, so the game and
-  the macOS bundle carry it; it is never committed.
+- The version is stamped into `application/config/version` for the build only, so the main menu
+  and the macOS bundle show it; it is never committed. The library jobs get it as
+  `METRUM_VERSION`, and saves record it as `save_meta.game_build`. A local build shows and
+  records `dev`. The crate version in `Cargo.toml` is not the game version and stays unchanged.
 - Save and world compatibility is not in the number. Both formats load only on an exact match
   (`SAVE_VERSION`, `WORLD_DEFINITION_FORMAT_VERSION`), and the release notes say whether saves
   and worlds from the previous release still load (`tools/ci/release_notes.sh`).

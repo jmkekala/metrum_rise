@@ -87,6 +87,15 @@ func _build_ui() -> void:
 	footer.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	content.add_child(footer)
 
+	# Release builds carry the version CI stamps into the project (docs/release.md); a checkout has none.
+	var version := str(ProjectSettings.get_setting("application/config/version", ""))
+	var version_label := Label.new()
+	version_label.text = "Version " + (version if not version.is_empty() else "dev")
+	version_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UIStyle.set_font_size(version_label, 13)
+	version_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	content.add_child(version_label)
+
 func _make_main_button(label: String, callback: Callable) -> Button:
 	var button := Button.new()
 	button.text = label

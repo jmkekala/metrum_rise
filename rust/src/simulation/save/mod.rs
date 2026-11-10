@@ -35,6 +35,13 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
 
+// The build that wrote a save (`save_meta.game_build`). Release builds get `METRUM_VERSION` from CI
+// (`YYYY.M.N`, or `test-<sha7>` on the test branch; docs/release.md); a local build says `dev`.
+const GAME_BUILD: &str = match option_env!("METRUM_VERSION") {
+    Some(version) => version,
+    None => "dev",
+};
+
 pub mod agents;
 mod camera;
 mod cell_zoning;
@@ -376,7 +383,7 @@ fn write_snapshot(
     }
     tx.execute(
         "INSERT INTO save_meta(version, saved_at_unix, game_build) VALUES (?1, ?2, ?3)",
-        params![SAVE_VERSION, view.saved_at_unix, env!("CARGO_PKG_VERSION")],
+        params![SAVE_VERSION, view.saved_at_unix, GAME_BUILD],
     )?;
     tx.execute(
         "INSERT INTO world_config(width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",

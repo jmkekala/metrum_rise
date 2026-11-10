@@ -37,6 +37,10 @@ jobs:
   lib-linux:
     # The oldest supported Ubuntu image, so the library also runs on distributions with older glibc.
     runs-on: ubuntu-22.04
+    needs: version
+    env:
+      # Recorded in saves as the build that wrote them (save/mod.rs).
+      METRUM_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -59,6 +63,9 @@ jobs:
   lib-windows:
     # Cross-built with MinGW, the path the first export trial tested (TOOLS-15).
     runs-on: ubuntu-24.04
+    needs: version
+    env:
+      METRUM_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -83,8 +90,10 @@ jobs:
 
   lib-macos:
     runs-on: macos-15
+    needs: version
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
+      METRUM_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
