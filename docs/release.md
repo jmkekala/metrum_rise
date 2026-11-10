@@ -23,9 +23,10 @@ releases by hand.
   and the macOS bundle show it; it is never committed. The library jobs get it as
   `METRUM_VERSION`, and saves record it as `save_meta.game_build`. A local build shows and
   records `dev`. The crate version in `Cargo.toml` is not the game version and stays unchanged.
-- Save and world compatibility is not in the number. Both formats load only on an exact match
-  (`SAVE_VERSION`, `WORLD_DEFINITION_FORMAT_VERSION`), and the release notes say whether saves
-  and worlds from the previous release still load (`tools/ci/release_notes.sh`).
+- Save compatibility is not in the number. A save loads only on an exact `SAVE_VERSION` match,
+  and the release notes say whether saves from the previous release still load
+  (`tools/ci/release_notes.sh`). World definitions of any older format still load
+  (`WORLD_DEFINITION_FORMAT_VERSION` is a maximum), so the notes do not mention them.
 
 ## Pipeline
 
