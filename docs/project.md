@@ -20,6 +20,12 @@ Zoning cells, parcels and the painting preview are now drawn into the ground sur
 meshes are gone ([ground mask](zoning.md#ground-mask-rendering)). Veeti's branch came in as one
 squashed commit in round `Z1` with two fixes, verified on the RX 7900 XTX (`ZONE-08`).
 
+Roads, road edits and service/industry placements now take zoned land instead of being refused by
+it: the lots they cover go with their houses, the covered cells lose their paint, placed buildings,
+fields and mine areas still refuse, and every tool outlines what it would demolish first (branch
+`roads-over-zoning`, level L timing level with `dev`, waiting for the user's in-game test;
+`ZONE-09`-`ZONE-11`, [zoning](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
+
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
 Vulkan/MoltenVK and Linux Vulkan, without slowing streaming or setup

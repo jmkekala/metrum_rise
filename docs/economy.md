@@ -767,8 +767,14 @@ scale with the full area, even after the staffing cap.
 New and resized fields must:
 - stay inside the world;
 - be at least the profile minimum (4 ha for grain) and within 10 m of the farm;
-- avoid roads, sidewalks, building sites, zoning parcels and other fields (shared edges are
-  allowed).
+- avoid roads, sidewalks, explicit building sites (their footprints and lots), mines' extraction
+  areas and other fields (shared edges are allowed).
+
+Since `ZONE-11` zoned land no longer refuses a field: a new or resized field takes the painted
+cells, cell lots and authored parcels under it, demolishing their buildings, and the erased paint
+is final (fields have no undo, `ZONE-12`). An extraction area follows the same rules and also
+refuses roads and building footprints, its own mine's included
+([`zoning.md`](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
 
 Clearance uses exact polygon intersection over the existing 512 m chunk layout. Each vertex
 release in the inspector's **Edit Field** mode validates and commits atomically; a rejected move

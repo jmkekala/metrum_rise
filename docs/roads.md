@@ -456,7 +456,9 @@ pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
   their closure (node pieces, fields, painted cells, steepened profiles), then puts the graph
   back; a planned pocket's corridor is also checked against water, parcels and the curve radius
   on the carriageway's own axis (`Edge::carriageway_axis`, the centreline shifted by
-  `kerb_shift_m`, half-width `width / 2` plus the side band: exact on both sides, D17). The
+  `kerb_shift_m`, half-width `width / 2` plus the side band: exact on both sides, D17; since
+  `ZONE-10` parcels and painted cells are taken instead of refusing,
+  [land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)). The
   verdict carries `cost_delta`: the pair's build cost after less before, floored at 0, never
   refunded (D14). The preview is this check (D11). The commit applies the plan again, moves the
   dependents (`migrate_pocket_dependents`: a join moves the second edge's buildings onto the first
@@ -518,7 +520,8 @@ pocket, its Godot calls and its undo; the Road Properties section is round R5b2.
   sidewalk's top, the entrance on its own sidewalk lane's line, its own road's lanes); the edit's
   dependents migration keeps the houses on the kept curb there through an add, a resize, a
   removal and each undo (bit for bit, lanes by road, index and direction); a house on the curb a
-  pocket would widen still refuses it (`parcel_overlap`).
+  pocket would widen still refuses it (`parcel_overlap`; since `ZONE-10` the pocket takes its lot
+  and demolishes it, [land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)).
   Still symmetric: the cursor's snap width, signs and pedestrian insets (conservative, D17).
 - **Godot calls** (`network_api.rs`): `get_road_pocket(edge, end)` (`has_pocket`, `left`, `right`,
   `length_m`, `pocket_edge`, `junction`, `one_way` and the length range),
@@ -582,8 +585,9 @@ found, added the benchmark row and rendered the stills for D2 and D13.
   street grid is built and before it is zoned, a 40 m right pocket on every 2+2 arterial end at a
   junction, in edge-id order (end before start), then one whole lane rebuild so the snapshot's
   continuation check compares like lane numbering; a `PERF_POCKETS` line counts the placed pockets
-  and refusals by reason. In a zoned city the parcels refuse every widening (`parcel_overlap`), so
-  the pockets go in before zoning; the 1+1 row streets get none, since their pockets cost the
+  and refusals by reason. In a zoned city the parcels refuse every widening (`parcel_overlap`;
+  since `ZONE-10` they would be taken and their houses demolished), so the pockets go in before
+  zoning; the 1+1 row streets get none, since their pockets cost the
   back-to-back lots (the one-block-wider grid then housed 9,302 residents for 10,000). The 10k
   4-Lane city takes 11 pockets (both ends of the trunk's 400 m links and the border link's east
   end); 399 cross-street ends are `pocket_road_too_short` (50 m blocks) and 77
@@ -1205,7 +1209,10 @@ and its sidewalk, the island included, is `parcel_overlap`: a lot there would ke
 the plan applied, the nodes laid out, the closure compiled and the graph put back. A closure that
 fails is `roundabout_arms_too_close` when a ring node's corner does not fit and
 `roundabout_arm_too_short` otherwise; fields, painted cells and steepened profiles refuse as in any
-closure. The preview is that check, so its verdict is the commit's. The commit applies the plan
+closure. Since `ZONE-10` the parcel disc is gone: the ring's pieces and its island (a 64-gon at
+radius plus half the ring plus the sidewalk) take the zoned land they newly cover, the island's
+cells are erased but not blocked (`ZONE-13`), and only plotted land refuses
+([land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)). The preview is that check, so its verdict is the commit's. The commit applies the plan
 again, moves each trimmed arm's buildings and occupancy (an arm that lost its start drops the whole
 cells before the cut; every building takes its frontage along the shorter arm; journaled in
 `PocketDependentsUndo`), marks the lots, rebuilds lanes, cars and entrances locally, retires the old
@@ -1736,14 +1743,17 @@ command's routing rebuild (undo and road bulldoze offer theirs; a commit's publi
 the replica follows by the records
 of the owners whose pieces the roadbed rebuilt. The commit tests the pieces it installs against
 fields and painted cells, and its stroke corridor against parcels ([open questions 1 and
-25](#road-68-open-questions)); since part 2 round 3 the view shares the field index (an `Arc`
+25](#road-68-open-questions); since `ZONE-09` the pieces take the zoned land they newly cover and
+only plotted land refuses, [land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10));
+since part 2 round 3 the view shares the field index (an `Arc`
 the allocator copies on write) in `O(1)`, and since round 6 a persistent copy (`imbl` maps,
 cloned in `O(1)`) of the whole zoning cell store, whose live maps stay plain: each publication
 copies exactly the entries the live store's write journal names
 ([question 32](#road-68-open-questions)), beside the commit's graph copy on the shared pool
 (round 7); the preview runs the commit's own test on its installed and replaced pieces against
 the store's reserved cells, so it shows `field_overlap` or `zoning_cell_overlap` before the
-click. Since round 5 every lot derivation is one planner (`CellLotPlanner`: cell generation and
+click (since `ZONE-09` the commit's land take on the road tool's land instead: it outlines what
+the stroke takes and shows only plotted land's reasons). Since round 5 every lot derivation is one planner (`CellLotPlanner`: cell generation and
 lot claims on a cell store and lot queue it changes in place, against a parcel store it only
 reads, recording its parcel changes as the store calls they stand for) and one installer that
 makes those calls on the parcel store the plan read; the preview is to run the same planner on
@@ -1792,7 +1802,9 @@ continuation, flat and sloped; since round 3 the composed chunks, and
 sets of the composition). Godot's preview display draws the overlays, which carry the paint, over
 the resident chunks with the replaced runs collapsed; the overlays carry no lights or signs, and
 the resident chunks' lights and signs stay shown until the commit installs its own. The field and cell checks of the preview's pieces and the parcel
-corridor check run at the commit only ([open question 25](#road-68-open-questions)). The
+corridor check run at the commit only ([open question 25](#road-68-open-questions); closed by
+part 2 round 3, and since `ZONE-09` the preview computes the commit's land take, [land taken by
+road edits](#land-taken-by-road-edits-zone-09-zone-10)). The
 fingerprint is the road-tool surface
 generation, the roadbed generation and the source and visual terrain generations: the roadbed
 generation and the delta's dirty marks decide whether pieces install, so no per-edge or per-node
@@ -1804,7 +1816,12 @@ published view: profile, endpoints, water) and `validate_road_candidate_for_comm
 road benchmark's fixture search and the debug console's attempt replay call them once. A valid
 stroke's corridor is then checked against the live parcels and field reservations
 (`RoadCorridorClearance`), which the view does not copy, so both wait for the core
-([`debug.md` "Busy Core"](debug.md#busy-core)). Before `ROAD-102` they took it only when free
+([`debug.md` "Busy Core"](debug.md#busy-core)). Since `ZONE-09` (round RZ3) the check judges
+plotted land (fields, extraction areas, explicit sites' lots) on the stroke's pieces, compiled on
+the road tool's context (`RoadPreviewContext::with_plan_pieces`, no graded or render work), against
+the live core, so a bridge deck over a field is accepted there as at the commit; the corridor test
+remains only when the view has no complete plan, and parcels are counted, never refused (D8). The
+lock order is context, then core. Before `ROAD-102` they took it only when free
 and otherwise answered `is_pending` (not valid, no reason), which the walkway test and the
 benchmark's fixture search read as a refusal without a reason. A stroke that is not valid now
 always names its reason.
@@ -1839,7 +1856,9 @@ ledgers and site ownership that only they read; the view keeps the patches' site
   patches without recompiling, then applies the topology mutation (graph, lanes, zoning, parcels).
 - If it is stale, the simulation recompiles locally and synchronously.
 - Either way the pieces it installs must keep clear of committed fields and painted cells, or the
-  staged edit rolls back ([open question 1](#road-68-open-questions)).
+  staged edit rolls back ([open question 1](#road-68-open-questions)). Since `ZONE-09` only
+  plotted land (fields, extraction areas, explicit sites' lots) rolls it back; the zoned land the
+  pieces newly cover is taken ([land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)).
 
 Godot keeps showing the preview until the committed generation is acknowledged, then swaps road and
 terrain atomically, so no frame shows neither.
@@ -1858,7 +1877,7 @@ The road tool holds the terrain preview until the commit's own patches replace i
 renderer's `patch_render_will_change` releases it in the call that installs them.
 Superseded by `TERRAIN-07-E` round 1 (2026-10-26): the commit has no terrain validation, so no
 terrain failure can refuse a road; it refuses only field and cell overlaps and failed node
-pieces. The preview stages its graded tiles and the commit adopts those whose inputs equal its
+pieces (since `ZONE-09`: plotted land and failed node pieces). The preview stages its graded tiles and the commit adopts those whose inputs equal its
 own ([`terrain.md`](terrain.md#preview-commit-undo-and-load)); the preview still builds the
 exact cut's patches for Godot's preview until `TERRAIN-07-E`'s Godot half, but no commit reads
 them.
@@ -1883,6 +1902,72 @@ edit meets: a road steeper fails the load with `road_too_steep` ([open question
 37](#road-68-open-questions)). It then compiles every piece from the graph in parallel. A junction
 that fails layout or the profile solve fails the load with its typed error. A load repairs
 nothing: a save loads as saved or not at all (save compatibility is not required).
+
+### Land taken by road edits (`ZONE-09`, `ZONE-10`)
+
+Built 2026-11-09/10 on branch `roads-over-zoning`, waiting for the user's in-game test. The rules
+(what is taken, what refuses, inheritance, undo) are zoning's:
+[roads, road edits and placements over zoned land](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11).
+This section is the road side. It supersedes [open questions 1 and 2](#road-68-open-questions)
+and the refusals `parcel_overlap` and `zoning_cell_overlap` wherever this document names them for
+a stroke or a graph edit; `parcel_overlap` remains only for unstaged bulk adds, which plan no
+pieces and take no land.
+
+- **One land take, two sources.** `RoadLandTake::of` (`nodes/sim/core/road_edit_plan.rs`) on
+  `CoreLand` at the commits and on `ViewLand` in the road tool's hovers replaces
+  `ReservedOverlap` and `ZoningSystem::cells_newly_covered_by_road_piece` (both deleted). A plotted
+  hit refuses with `field_overlap`, `extraction_area_overlap` or `plotted_building_overlap`.
+- **The stroke.** `validate_staged_road_render_installing` installs the pieces, computes the take,
+  rolls back on a plotted hit (then on a failed node piece, as before), takes the land
+  (`take_land_for_edit`: demolition, lot and parcel removal, paint erase), stages the graded tiles
+  and accepts; the undo record gains `cells` (`CellPaintUndo`). Plan readiness
+  (`RoadEditPlan::failed_check`) tests water only, and the commit's parcel corridor refusal stays
+  only for unstaged adds. The land stage is logged on the `road` channel (`road_commit_land`
+  with `removals_ms sites_ms lots_ms erase_ms`) and reported as `surface_land_ms` in
+  `RoadEditMetrics`.
+- **The shared edit site.** Every graph edit (widening and class change, turn pocket, roundabout,
+  node move, crossing toggle, road and ring removal) tries itself on `RoadEditSite<'a, L:
+  RoadLandSource>` (`nodes/sim/core/road_edit_site.rs`: graph, roadbed, terrain, water, land,
+  scratch), built by `SimCore::road_edit_site()` on the live core or
+  `RoadPreviewContext::road_edit_site()` on the road tool's context. Its `try_graph_edit` returns
+  `TriedGraphEdit { checkpoint, take }`; `closure_take` refuses a failed node
+  (`node_piece_failed`), then plotted land, and otherwise returns the land the closure's pieces
+  newly cover against the published pieces of the edit's edges and nodes. Each edit's apply and
+  corridor checks are site methods; the widening's and pocket's tries stay on the core, as their
+  allocator checks interleave. The lift left every graph edit's products unchanged (digests of all
+  of them, and the commit locality products, before and after).
+- **Where each edit takes:** a widening after `apply_edge_cross_section`, a pocket before
+  `migrate_pocket_dependents`, a ring (and its island disc) before `migrate_trimmed_arms`, a node
+  move after its apply, a class change, crossing toggle or removal after its apply and before
+  lanes (a removal before its parcel capture). Each records `cells` in its own undo record and,
+  when it erased paint, plans its lots before returning. The widening's and the pocket's corridor
+  checks (`widened_corridor_refusal`, `pocket_corridor_refusal`) lost their parcel branch and keep
+  water and the illegal curve radius; the ring's parcel disc is gone (`roundabout_water_refusal`
+  keeps the water test). Of the four edits that
+  had kept the old rule, a class change bringing a bridge or tunnel to the ground takes the lots
+  under it; a crossing toggle's moved mouths and a removal's re-laid ends can only take slivers.
+- **Verdicts and hovers.** `CrossSectionVerdict`, `PocketVerdict` and `RoundaboutVerdict` carry the
+  take; their dictionaries (and the road preview's) add `demolish_count` and `demolish_lots` (four
+  corners per removed lot, packed by one `lot_outlines`). `CrossSectionVerdict.buildings_removed`
+  adds the take's buildings that do not front the edge to the zoning-off count. The roundabout
+  hover (`get_roundabout_site`, `preview_roundabout`) runs on the road tool's context and the view
+  land without the core; the click asks the core. The road hover reads the land the simulation
+  republishes after each frame that changed it (`RoadToolLand`, `RoadToolShared::publish_land`).
+- **Node moves (decision D-move (b')).** `move_network_node_step` (the drag step) refuses a non-empty
+  take as `pending_demolition` with counts and outlines, writing nothing; the move tool shows "Release
+  to demolish N building(s)" and the release calls `commit_network_node_move`
+  (`move_network_node_taking_land_internal`), one move and one undo step. Known drift (`ROAD-111`):
+  `deform_edge` weighs each point by its arc-length fraction on the already deformed polyline, so a
+  move and its reverse use different weights; a 400 m street with 8 m stations moved 6 m and back
+  ends 13.7 mm off its line, and the move back now shows a pending demolition of the next row of
+  lots instead of being refused (`zoning_cell_overlap`) as before. A two-point street returns
+  exactly.
+- **Bounds.** The take is O(pieces × reserved cells in their bounds × top triangles) plus the
+  plotted queries; hovers stay flat with the city (stroke p50 7-10 ms as before, the take's stage
+  +0.03-0.17 ms; ring hover 1.3-1.8 ms at 0 / 10k / 30k). A demolishing edit adds one parallel
+  agent scan (`PERF-20`) and its lot plan (`PERF-21`); the four in-place edits measured 16-59 ms
+  with 2-34 houses at 0-30k background (`benchmark_commit_locality`, products bitwise equal across
+  tiers).
 
 ### Commit consequences
 
@@ -2191,6 +2276,12 @@ These need a user decision; work that does not depend on them continues.
    return, clear of both roads' corridors) fails with the corridor checks and passes now. Still
    open: the preview does not show the overlap before the click, because the view publishes no
    field or cell index ([open question 25](#road-68-open-questions)).
+   **Superseded by `ZONE-09` (2026-11-09/10, branch `roads-over-zoning`).** The pieces' test now
+   takes the zoned land they newly cover (lots with their buildings, authored parcels, the covered
+   cells' paint) instead of refusing it; only plotted land (fields, extraction areas, explicit
+   sites' lots) refuses, and the parcel corridor check is gone from the commit and from plan
+   readiness. `ReservedOverlap` and `cells_newly_covered_by_road_piece` are replaced by
+   `RoadLandTake` ([land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)).
 2. **Node moves over painted cells — decided 2026-10-24 (user): restore in `ROAD-68-E`**, with question 11's (c). The node-move reservation check compiled a local surface.
    It is removed until `ROAD-68-F`; node moves are currently unchecked against cell reservations.
    **Implemented in `ROAD-68-E` part 2 (2026-10-25).** A node move tries the move on the graph,
@@ -2204,6 +2295,10 @@ These need a user decision; work that does not depend on them continues.
    movement tests, `bridge_entry_points_never_use_the_global_pool` and `run.sh`'s
    `zoning_cells_tool_test` run again (the global-pool test's save now settles the routing hold
    first, `save_game_settled`: a harness change `ROAD-68-G`'s D7 required while the test was off).
+   **Superseded by `ZONE-10` (2026-11-10).** A node move over zoned land is a pending demolition:
+   the drag step moves nothing and answers `pending_demolition`, and the release takes the land
+   ([land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)); plotted land still
+   refuses it.
 3. **Site CDT margin — decided 2026-10-24 (user): resolved by `ROAD-68-D`'s shared grading envelope.** Building-site loops used the legacy seam-vertex grading margin for their
    sample bounds. They now use the base local sample margin. Steep site tie-ins may sample less
    terrain until `ROAD-68-D` defines the grading envelope for both roads and sites.
@@ -2402,7 +2497,8 @@ These need a user decision; work that does not depend on them continues.
       that dirties nodes (undo, terrain sync, node moves), so a published gap can only come from
       a bug. **Part 2 (2026-10-25):** node moves, crosswalk overrides and edge class changes try
       their graph edit, compile its closure into a scratch roadbed and refuse when a node fails or
-      a piece newly covers reserved land (question 2, `SimCore::try_graph_edit`; the crosswalk
+      a piece newly covers reserved land (question 2, `SimCore::try_graph_edit`, since `ZONE-10`
+      `RoadEditSite::try_graph_edit`, which takes zoned land instead; the crosswalk
       override's earlier layout-only test is replaced). **Round 2 (2026-10-25):** the other three.
       - *Terrain edits.* The terrain sync re-graded every standard road and copied its control
         polyline over its physical profile without the junction solve, so every sloped junction
@@ -3075,7 +3171,8 @@ These need a user decision; work that does not depend on them continues.
       stays open until they are persistent.
     - **Part 2, round 2 (2026-10-25): (c) not started.** The preview has the pieces the commit
       installs (`RoadPreviewPieces::delta`) and the pieces they replace (the view's roadbed), so
-      it can call `ReservedOverlap::first` once that takes the two indices instead of the core.
+      it can call `ReservedOverlap::first` once that takes the two indices instead of the core
+      (`ReservedOverlap` was replaced by `RoadLandTake` in `ZONE-09`/`ZONE-10`).
       The field index (`FieldClearanceIndex`) is small and changes only on field edits, so the view
       can share it as an `Arc` replaced on change. The cell reservations live in the cell store's
       blocks (a `HashMap` per store, painted masks, lot claims, frames); a copy per publication is
@@ -3094,7 +3191,8 @@ These need a user decision; work that does not depend on them continues.
       takes both in `O(1)`; a paint publishes the view (unchanged roads publish in `O(1)`), as
       field commits already did. `ReservedOverlap::first` takes the two indices, and the
       preview calls it on the pieces its delta installs and replaces, as the commit does, and
-      turns an overlap into the stroke's invalid reason, which the road tool shows ("Road
+      turns an overlap into the stroke's invalid reason (since `ZONE-09` the preview computes
+      `RoadLandTake` instead and painted cells no longer refuse), which the road tool shows ("Road
       overlaps a farm field", "Road overlaps painted zoning cells") without submitting the
       click. The cell test reads the index in both, so the same function on the same data
       decides; `the_reservation_index_follows_paint_erase_and_undo` checks the index visits the
@@ -3536,7 +3634,7 @@ These need a user decision; work that does not depend on them continues.
       `validate::edit_violation`, called by the plan the preview and the commit share, so the
       preview shows the refusal before the click with the measured grade and the limit
       ([`ROAD-54`](#road-geometry-validation-road-54)); node edits refuse it in
-      `SimCore::try_graph_edit`. The validator's grade tiers become 16% / 1:3 for streets and
+      `SimCore::try_graph_edit` (since `ZONE-10` `RoadEditSite::try_graph_edit`). The validator's grade tiers become 16% / 1:3 for streets and
       6% / 1:3 for bridges and tunnels: one maximum for every class (decided by the coordinator
       under the user's delegation, 2026-10-25 night, confirmed by the user 2026-10-26: the user's 1:3 named no class,
       and `ROAD-54`'s structural 16% was never refused). Not covered in `ROAD-68-K14`:
@@ -7047,7 +7145,8 @@ question 21 (b) is not started, so the gate's final commit waits.
   order test gains end-to-end joins (details under the question).
 - **Question 25 (c).** The view shares the field index and a persistent cell-reservation index
   in `O(1)`; the preview runs `ReservedOverlap::first`, the commit's own test, and the road tool
-  shows the refusal before the click (details under the question).
+  shows the refusal before the click (details under the question; since `ZONE-09` both run
+  `RoadLandTake`).
 - **Question 31 (new; decided by the coordinator under the user's delegation, for review).**
   The recorded replay's quality limits failed on three profiles beside steep junctions
   (5.08-5.76 m over the ground against 5 m): the plane was sampled 12 m out inside wider
@@ -7141,7 +7240,7 @@ Part 1 of the round: round 3 rebased onto `road` `4dc466fc` (`ROAD-68-F` part 2'
   pair of two profiles now takes its corridor plane sampled at its mouth stations; zoning's
   `piece_covers` and the field index's `overlaps_road_piece` walk the piece's query grid (part 2)
   under round 3's reservation index, and the preview still calls the commit's own
-  `ReservedOverlap::first`. Ignores: four `TERRAIN-07`, none `ROAD-68-E` or `ROAD-68-F`.
+  `ReservedOverlap::first` (since `ZONE-09` `RoadLandTake`). Ignores: four `TERRAIN-07`, none `ROAD-68-E` or `ROAD-68-F`.
 - **Product probes, attributed.** Each entry of the combined tree's tables against both
   parents' recordings, with a build of the combined tree with only question 31's sample
   reverted (`R31`), whose tables equal part 2's exactly (so round 3's plan excerpt, reservation
@@ -7187,7 +7286,8 @@ Part 2 of the round (question 21 (b) and the first-commit attribution):
   behind the same API, so a copy of the store is `O(1)` (bar the edits' stale-chunk list) and
   shares every block until either side writes it. The road tool's view holds the store
   instead of round 3's mirror index, which is removed with its test; `ReservedOverlap::first`
-  reads the store's own reserved masks in the commit and the preview. Lot sizes and the
+  (since `ZONE-09` `RoadLandTake`) reads the store's own reserved masks in the commit and the
+  preview. Lot sizes and the
   explicit-site index are not in the view yet: nothing reads them until the preview derives
   lots. The user decided (question 21) that the preview never shows the lots it derives; the
   preview's payload stays road chunks and terrain patches.
@@ -11264,7 +11364,11 @@ newly covered painted cells (`field_overlap`, `zoning_cell_overlap`) and a steep
 corridor (`width / 2` plus the road's side band, `parcel_overlap`; a widening is judged on the
 roadbed half-width since round RB3b) and the
 illegal curve radius at the new width (`cross_section_too_wide_for_curve`). The graph is put back
-either way; the preview is this check.
+either way; the preview is this check. Since `ZONE-10` painted cells and parcels no longer refuse:
+the closure's pieces take the zoned land they newly cover (the verdict carries the take, its
+outlines and its count in `buildings_removed`, and the commit demolishes those buildings), and
+only plotted land (`field_overlap`, `extraction_area_overlap`, `plotted_building_overlap`)
+refuses ([land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)).
 
 The commit pushes the check's checkpoint (whole `Node` and `Edge` records, so undo restores lane
 counts and width with nothing new in the undo path), marks the cell lots and surfaces of the two
@@ -11319,7 +11423,7 @@ road's sidewalks), the speed limit (with `base_cost` recomputed, only when the s
 roadbed half-width (`visual_roadbed_half_width_m`: sidewalks, or without them the 0.75 m
 shoulders), so sidewalks added beside a parcel are refused (`parcel_overlap`) though the
 carriageway keeps its width, and the parcel corridor is `width / 2` plus the road's wider side
-band (`widest_side_band_width_m`); a side gaining a sidewalk counts as a widening whatever the
+band (`widest_side_band_width_m`; since `ZONE-10` the parcel is taken instead of refusing); a side gaining a sidewalk counts as a widening whatever the
 larger side does ([`ROAD-107`](#one-sided-sidewalks-road-107)). Walkers on a removed sidewalk go through the same reattach as cars: the
 nearest sidewalk lane within 30 m, else laneless on their road (`TRAFFIC-19`'s case); none is
 moved or lost. A sidewalk under a building's door stays: the edit is refused
@@ -12088,7 +12192,7 @@ shows the measured value and the limit. Grade above 1:3 is refused as `road_too_
 (`ROAD-68-K14`): on the drawn road's pieces, and on every other profile the edit re-derives (the
 arms its node planes re-pin) where it is steeper than before, so an existing steep road can still
 be extended or repaired. Node edits (moves, removals, class changes, crossing toggles) refuse the
-same way in `SimCore::try_graph_edit`. Profiles are built within the rule where their
+same way in `RoadEditSite::try_graph_edit` ([land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)). Profiles are built within the rule where their
 constraints allow ([Heights](#heights)), and a stroke whose pins and source-delta limit force more
 is refused before its topology is planned, with the least grade they allow. A valid preview above
 the design tier carries `warning_reason = "road_steep"` and `warning_limit`, which the road tool

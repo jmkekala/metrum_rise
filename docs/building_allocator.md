@@ -141,6 +141,35 @@ on demolition undo (`ECON-07`; see [`economy.md`](economy.md#field-placement-and
 The bulldoze command retains the actual footprint center for revalidation: an offset imported
 building footprint need not contain the logical lot center.
 
+**Roads, road edits and explicit placements as callers** (`ZONE-09`-`ZONE-11`, branch
+`roads-over-zoning`; rules in
+[`zoning.md`](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
+A road stroke, a graph edit or an explicit placement (building, field, extraction area) that takes
+zoned land demolishes the growable buildings on the lots it removes through
+`SimCore::demolish_for_road` (`nodes/sim/editing.rs`), with no undo record (road undo returns the
+paint, never the buildings). One batch per edit, in descending index order so the remaining
+indices survive the swap-removes:
+
+1. one parallel scan for the agents naming any building of the batch
+   (`agents_referencing_any_building`) and one for the households
+   (`households_referencing_any_building`), rescanned only if a removal renumbered agents;
+2. every building of the batch evacuated before the first removal, its households rehoused
+   outside the batch (`claim_available_home_except` takes the excluded set), so no evacuee is
+   rehoused into a building about to go and the zone index is not rebuilt per removed home;
+3. `remove_building_for_road` per building (the lifecycle's removal: parcel occupancy, households,
+   logistics, electricity, the swap remap through agents, households, logistics, parcel occupancy,
+   the field and extraction indices and production sites);
+4. once: `publish_pending_building_site_changes`, terrain dirty bounds, flow fields dirty.
+
+The agent scan, O(agents / P) per demolishing edit, is decision D11 (`PERF-20`). Building, parcel
+and cell products are bitwise equal across 0 / 10k / 30k background (`benchmark_commit_locality`);
+the removals take 0.15-0.48 ms for four housed homes and the site publication 6.6-20 ms, flat with
+the city. Which home an evacuee gets can differ from per-building evacuation. Explicit placements
+call the same path after their checks: `prepare_explicit_placement` (sidewalk, land, roads, support;
+the support's neighbour-height test skips the buildings the take demolishes), the take, then
+`place_explicit_site`; fields and extraction areas follow their owner by handle across the
+removals (`take_land_for_work_area`) and return its new index to Godot.
+
 ## Build-Site Model
 
 In the live runtime, a build site is one frontage-attached roadside candidate footprint. It is not a
@@ -196,7 +225,12 @@ inputs before claiming anything; queued actions are not permission to use stale 
 
 Zoning reserves the entire explicit-building lot, including land outside the imported structure's
 flat support footprint. This check shares the existing lot query used by placement neighbors and
-converts its cached cell radius using the live world's cell size. Surface-height, terrain and
+converts its cached cell radius using the live world's cell size. Since `ZONE-11` an explicit
+lot over zoned land takes it (the lots and authored parcels it covers are removed with their
+buildings, the covered paint erased) and only plotted land refuses: explicit sites refuse each
+other by exact lot polygons, shared edges allowed (`SiteOverlap`, "building lot overlaps a placed
+building's lot"), fields and extraction areas by their polygons; the old axis-aligned box loop over
+every building site and `validate_explicit_zoning_reservation` are gone. Surface-height, terrain and
 bulldoze queries retain their support-footprint bounds. Both use the same building chunk index.
 
 Committing placement appends the building and derived site, marks `dirty`, `dirty_index`,
@@ -382,6 +416,21 @@ the removed or the moved building in one scan each and repairs only those (`SIM-
 agent remap scans every agent when a removed carrier renumbered agents meanwhile. The slot's
 production-site terrain boxes are render state: they refresh one a light slot later while the
 zone index and site clients are current, and a load recomputes them whole.
+
+**A hover readies only the site part** (`ZONE-11` round RZ11b). A placement hover runs outside
+the simulation's order, so it must not rebuild the order-carrying lists: on a stale index every
+site query (`lot_candidate_indices_for_bounds`, `site_at`, `site_candidate_indices_for_bounds`)
+would otherwise enumerate all B sites, several times per hover. `prepare_site_query_chunks`
+rebuilds the site part alone (chunk lists, chunk bounds, the maxima with their counts, the explicit
+sites; `rebuild_zone_index` is split into `rebuild_site_chunks` and the zone/vacancy fill, outputs
+unchanged) behind its own flag, `site_chunks_current`; the three site queries read the chunks
+whenever `site_chunks_ready()`. The zone, vacancy and admission lists and the stale flag are left
+to their next reader, so a hover changes no simulation order; every stale mark and every
+swap-remove clears the flag. Cost: O(1) when ready, else O(B/p + chunks) plus an O(B) fill once per
+stale episode, not per hover (0.07 / 0.10 / 0.19 ms at 0 / 10k / 30k background in
+`benchmark_preview_locality`'s `lot_stale` row; a prepared hover 0.06-0.10 ms). The field
+editor's check and the industry area quote use the same refresh. The Godot-facing per-frame
+queries that still rebuild the whole index when stale are `ALLOC-05`.
 
 Inspector and service-funding picks share `nearest_building_idx_at()`. It searches building
 centres strictly within 30 m, preferring the lowest building index on an exact distance tie.

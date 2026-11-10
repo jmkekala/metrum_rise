@@ -301,16 +301,18 @@ A refused road stroke logs two lines on `events`. The first says why, with the n
 used, where, and what was drawn:
 
 ```text
-road rejected by commit: parcel_overlap: the road corridor overlaps zoned parcels; 3 parcels, first 812. Stroke (412.0, -96.5) -> (530.2, -40.1), 2 points, 131.0 m, lanes 1/1, snap on; start node 57, road y 12.40, terrain y 12.40; end open terrain, road y 14.05, terrain y 13.90. Attempt 4.
-road_attempt {"attempt":4,"by":"commit","reason":"parcel_overlap","generation":31,"fwd_lanes":1,"bkw_lanes":1,"snap":true,"points":[[412.0,12.4,-96.5],[530.25,14.05,-40.125]]}
+road rejected by commit: plotted_building_overlap: the road corridor overlaps the lot of a placed building (a service, farm, mine or plant); zoned lots are taken, placed buildings are not; the road or its junctions overlap the lot of the placed building building.power.coal_power_plant. Stroke (412.0, -96.5) -> (530.2, -40.1), 2 points, 131.0 m, lanes 1/1, snap on; start node 57, road y 12.40, terrain y 12.40; end open terrain, road y 14.05, terrain y 13.90. Attempt 4.
+road_attempt {"attempt":4,"by":"commit","reason":"plotted_building_overlap","generation":31,"fwd_lanes":1,"bkw_lanes":1,"snap":true,"points":[[412.0,12.4,-96.5],[530.25,14.05,-40.125]]}
 ```
 
 - `by` is `tool` when the road tool's click check refused the stroke, before anything reached the
   simulation, and `commit` when the simulation's authoritative commit refused it.
 - The reason is the stable key the checks use: `bridge_clearance`, `tunnel_clearance`,
   `same_node_connection`, `too_short`, `water_requires_bridge`, `surface_geometry_invalid` and
-  the `terrain_clip_*` compile failures, `field_overlap`, `parcel_overlap`,
-  `zoning_cell_overlap`, `render_geometry_invalid` (the committed surface or its terrain failed
+  the `terrain_clip_*` compile failures, `field_overlap`, `extraction_area_overlap`,
+  `plotted_building_overlap` (plotted land under the road's pieces; zoned land is taken, not
+  refused, since `ZONE-09`), `parcel_overlap` (unstaged bulk adds only),
+  `render_geometry_invalid` (the committed surface or its terrain failed
   to build and the edit was rolled back), `validation_unavailable`, and the plan states
   `road_plan_stale`, `road_plan_pending`, `road_plan_provisional`, `road_plan_consumed`,
   `road_plan_mismatch` and `road_plan_invalid` (terrain earthwork failure). A plan refused
@@ -351,7 +353,7 @@ zoning and street lights).
 Each attempt prints one line:
 
 ```text
-attempt 4 (commit, parcel_overlap): reproduced, refused by commit
+attempt 4 (commit, plotted_building_overlap): reproduced, refused by commit
 attempt 2 (tool, same_node_connection): reproduced, refused by tool [made on road generation 29, save holds 31: the network changed since]
 ```
 
@@ -661,8 +663,23 @@ rule for game code (`CODE-25`):
   instead of reading the last hover, which may be older. The road tool's cursor, preview and
   commit read the road tool's published view and need no core. Its one-shot stroke checks
   (`validate_road_candidate_with_snap`, `validate_road_candidate_for_commit_with_snap`) always
-  wait for the core for the corridor's parcel and field clearance (`ROAD-102`); a call that
-  answers "not valid" must name the reason, never stand for "busy".
+  wait for the core for the corridor's parcel and field clearance (`ROAD-102`; since `ZONE-09`
+  the plotted land on the stroke's pieces, compiled on the road tool's context first: the lock
+  order is context, then core, and nothing takes them the other way); a call that answers "not
+  valid" must name the reason, never stand for "busy".
+- **Land a hover takes** (`ZONE-09`-`ZONE-11`). The road tool's preview and the roundabout tool's
+  hover (`get_roundabout_site`, `preview_roundabout`) compute the land they would take on the road
+  tool's context without the core: the simulation republishes that land (`RoadToolLand`: parcels
+  per 512 m chunk with their occupants, the explicit sites, the field and extraction indices) at
+  the end of any frame that changed it, into an O(1) slot the context reads. The ring's click asks
+  the core. The service and industry building hovers, the industry area quote and the field
+  editor's check try-lock the core and answer `pending` while it is held; the tools keep their last
+  ghost, outline and label. Such a hover readies only the site part of a stale site index, so when
+  it runs never changes the simulation's order
+  ([`building_allocator.md`](building_allocator.md#indices-and-vacancy-rules)). The move tool's
+  drag step (`move_network_node_step`) and its release (`commit_network_node_move`) wait for the
+  core, as the move tool's calls did before. `core_busy_input_test` holds the core through a ring hover and a building hover:
+  both answer at once.
 - **A waiting call gets the core when the frame or edit in progress ends.** `std`'s mutex is not
   fair: once frames overran their 16.7 ms interval and ran back to back, the simulation thread
   took the core again 40-80 µs after freeing it and won the race against a waiting call frame

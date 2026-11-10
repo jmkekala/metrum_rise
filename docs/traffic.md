@@ -2027,7 +2027,9 @@ Road and building edits reconcile the affected sources at the existing publicati
 the site-cell index, revalidates their lots and blockers, then reconciles the kerbs of every
 touched edge and of every edge whose blockers moved, through `replace_source`: an unmoved bay keeps
 its car, and a removed one tows it. Splits, frontage changes, road demolition and detachment, asset
-reload and undo all pass through this and the site journal. Removing a bay never refuses the edit:
+reload and undo all pass through this and the site journal. A building a road, road edit or
+explicit placement demolishes when it takes zoned land (`ZONE-09`-`ZONE-11`) is a building
+removal like a bulldoze: its lot places go through the same site journal and their cars are towed. Removing a bay never refuses the edit:
 claims on it are cancelled and a car in it is towed to free supply near home, else stored off-map.
 A resident's car is towed by its home door's catchment, the debug fleet's by the geometric
 `nearest` (straight line, walking speed). Stable handles order the towing. Undo reconciles live
