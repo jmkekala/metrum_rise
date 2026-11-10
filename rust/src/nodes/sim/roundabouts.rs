@@ -158,20 +158,22 @@ impl SimCore {
         let (applied, changed) = self
             .road_edit_site()
             .apply_roundabout_layout(&layout, &nodes);
-        // The land under the ring and its island, before the trimmed arms' dependents move (no
-        // building is left on the land a cut drops) and before the lanes rebuild (`ZONE-10`).
-        let erased = self.take_land_for_edit(take);
-        let erased_paint = erased.is_some();
         let affected: HashSet<usize> = edges
             .into_iter()
             .chain(changed)
             .chain(applied.ring.iter().copied())
             .chain(applied.arms.iter().copied())
             .collect();
-        let dependents = self.migrate_trimmed_arms(&trims);
-        // The frontage moves with the cut: the arms' lots and their neighbours' mouths.
-        self.zoning
+        // The frontage moves with the cut: the arms' lots and their neighbours' mouths, the
+        // region whose paint the take releases (`ZONE-14`).
+        let regeneration = self
+            .zoning
             .mark_cell_lots_for_roads(&self.region_graph, affected.iter().copied());
+        // The land under the ring and its island, before the trimmed arms' dependents move (no
+        // building is left on the land a cut drops) and before the lanes rebuild (`ZONE-10`).
+        let erased = self.take_land_for_edit(take, &regeneration);
+        let erased_paint = erased.is_some();
+        let dependents = self.migrate_trimmed_arms(&trims);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
         self.transit_network
@@ -282,12 +284,14 @@ impl SimCore {
             &mut changed,
         );
         debug_assert!(changed.is_subset(&edges));
-        // The zoned land the arms' new ends newly cover (`ZONE-10`), before the lanes rebuild.
-        let erased = self.take_land_for_edit(take);
+        let regeneration = self
+            .zoning
+            .mark_cell_lots_for_roads(&self.region_graph, edges.iter().copied());
+        // The zoned land the arms' new ends newly cover (`ZONE-10`), before the lanes rebuild,
+        // and the paint of the region the removal regenerates (`ZONE-14`).
+        let erased = self.take_land_for_edit(take, &regeneration);
         let erased_paint = erased.is_some();
         self.push_network_undo_delta(checkpoint, None, erased);
-        self.zoning
-            .mark_cell_lots_for_roads(&self.region_graph, edges.iter().copied());
         self.transit_network
             .mark_surface_dirty_from_sets(&edges, &nodes);
         let bare = ring_nodes

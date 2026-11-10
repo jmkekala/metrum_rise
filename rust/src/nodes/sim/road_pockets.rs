@@ -170,15 +170,20 @@ impl SimCore {
             verdict,
         } = tried;
         let (applied, changed) = self.road_edit_site().apply_pocket_plan(&plan, &nodes);
-        // The land the pocket covers, before the dependents move (its journal then holds only
-        // the buildings that stay) and before the lanes rebuild (`ZONE-10`).
-        let erased = self.take_land_for_edit(take);
-        let erased_paint = erased.is_some();
         let affected: HashSet<usize> = edges
             .into_iter()
             .chain(changed.iter().copied())
             .chain(applied.edges())
             .collect();
+        // The frontage moves with the split: the pair's lots and its neighbours' mouths, the
+        // region whose paint the take releases (`ZONE-14`).
+        let regeneration = self
+            .zoning
+            .mark_cell_lots_for_roads(&self.region_graph, affected.iter().copied());
+        // The land the pocket covers, before the dependents move (its journal then holds only
+        // the buildings that stay) and before the lanes rebuild (`ZONE-10`).
+        let erased = self.take_land_for_edit(take, &regeneration);
+        let erased_paint = erased.is_some();
         let nodes: HashSet<u32> = nodes.into_iter().chain(applied.transition).collect();
         let dependents = migrate_pocket_dependents(
             &self.region_graph,
@@ -186,9 +191,6 @@ impl SimCore {
             &self.zoning,
             &mut self.allocator,
         );
-        // The frontage moves with the split: the pair's lots and its neighbours' mouths.
-        self.zoning
-            .mark_cell_lots_for_roads(&self.region_graph, affected.iter().copied());
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
         self.transit_network

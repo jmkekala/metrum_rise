@@ -10,6 +10,7 @@ use crate::nodes::sim::core::{
     steepened_profile,
 };
 use crate::simulation::zoning::CellPaintUndo;
+use crate::simulation::zoning::cells::CellBounds;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::nodes::simulation_node::vegetation_api::{self, CANOPY_CLEAR_RADIUS_M};
@@ -112,6 +113,9 @@ pub(crate) struct RoadAddOutcome {
     /// Wall-clock milliseconds of the undo record, the topology mutation (graph, parcels and
     /// adopted plan) and the cell-lot marks, for the commit breakdown (`ROAD-68-G`).
     pub(crate) stage_ms: RoadAddStageTimes,
+    /// The envelopes the cell-lot marks invalidated: the region the stroke regenerates, whose
+    /// free paint its land take releases (`ZONE-14`).
+    pub(crate) regeneration: Vec<CellBounds>,
 }
 
 /// Wall-clock cost of the stages of one accepted road addition.
@@ -129,6 +133,7 @@ impl RoadAddOutcome {
             build_cost: 0.0,
             finalized_geometry: None,
             stage_ms: RoadAddStageTimes::default(),
+            regeneration: Vec::new(),
         }
     }
 }
@@ -137,7 +142,7 @@ impl SimCore {
     /// Accepts a road only after its roadbed builds, restoring the staged checkpoint otherwise.
     #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        self.validate_staged_road_render_installing(None, None, &mut Default::default())
+        self.validate_staged_road_render_installing(None, None, &[], &mut Default::default())
     }
 
     /// As [`Self::validate_staged_road_render`], installing a preview's pieces when they still
@@ -146,7 +151,9 @@ impl SimCore {
     /// either refusal rolls the staged edit back with nothing else changed. Then the zoned land
     /// the pieces newly cover is taken (`ZONE-09`, [`RoadLandTake`]): the buildings on its lots
     /// are demolished, the lots removed and the covered cells' paint erased, none of which can
-    /// refuse. No terrain failure rejects the road (`TERRAIN-07-E`): an accepted edit stages its
+    /// refuse; with them the free paint of `regeneration`, the envelopes the stroke's marks
+    /// invalidated, is released to re-lay (`ZONE-14`). No terrain failure rejects the road
+    /// (`TERRAIN-07-E`): an accepted edit stages its
     /// graded tiles, adopting the preview's `graded` tiles whose inputs equal the committed ones.
     /// The undo record keeps what the install replaced and the erased paint. True when the edit
     /// is accepted. `metrics` receives the sub-stages' times (`surface_roadbed_ms`,
@@ -155,6 +162,7 @@ impl SimCore {
         &mut self,
         delta: Option<&RoadbedDelta>,
         graded: Option<&crate::nodes::sim::core::GradedPose>,
+        regeneration: &[CellBounds],
         metrics: &mut RoadEditMetrics,
     ) -> bool {
         let roadbed_start = Instant::now();
@@ -206,7 +214,7 @@ impl SimCore {
         }
         // Nothing below refuses the edit.
         let land_start = Instant::now();
-        let erased_paint = self.take_land_for_edit(take);
+        let erased_paint = self.take_land_for_edit(take, regeneration);
         metrics.surface_land_ms = land_start.elapsed().as_secs_f64() * 1000.0;
         let graded_start = Instant::now();
         let graded = self.stage_committed_graded_tiles(roadbed_before, graded);
@@ -229,13 +237,22 @@ impl SimCore {
 
     // Takes the zoned land of an accepted road edit, applied on the graph (`ZONE-09`; the
     // in-place edits, `ZONE-10`): demolishes the buildings on the lots it covers, removes those
-    // lots and the authored parcels it covers, then erases the covered cells' paint, whose
-    // inverse it returns for the undo record. Lot regions around the removed lots and cells are
-    // queued for the edit's lot plan. O(the take's buildings, lots and cells) plus one parallel
-    // agent scan per batch (`demolish_for_road`).
-    pub(super) fn take_land_for_edit(&mut self, take: RoadLandTake) -> Option<CellPaintUndo> {
+    // lots and the authored parcels it covers, then releases the free paint of `regeneration`,
+    // the envelopes the edit's marks invalidated (`ZONE-14`, PLAN-RL 2.1): the empty lots there
+    // are removed, and one erase takes the covered cells' paint and the released cells', whose
+    // inverse it returns for the undo record. The edit's lot plan re-lays the released cells as
+    // unpainted ones and hands their paint on to the cells it lays over them. Lot regions around
+    // the removed lots and covered cells are queued for that plan. O(the take's buildings, lots
+    // and cells + reserved cells in the envelopes) plus one parallel agent scan per batch
+    // (`demolish_for_road`).
+    pub(super) fn take_land_for_edit(
+        &mut self,
+        take: RoadLandTake,
+        regeneration: &[CellBounds],
+    ) -> Option<CellPaintUndo> {
         debug_assert!(take.plotted.is_none());
-        if take.is_empty() {
+        self.last_land_release_ms = 0.0;
+        if take.is_empty() && (regeneration.is_empty() || !self.zoning.cells.has_paint()) {
             return None;
         }
         let start = Instant::now();
@@ -247,26 +264,38 @@ impl SimCore {
             // removed lot is refused there (its door changed); ids are never reused.
             self.allocator.dirty = true;
         }
-        let painted = take
+        let covered = take
             .cells
             .iter()
             .filter(|&&(_, profile)| profile != 0)
             .map(|&(key, _)| key)
             .collect::<Vec<_>>();
+        let release_start = Instant::now();
+        let (released, released_lots) = self.zoning.release_painted_cells(regeneration, &covered);
+        if self.zoning.remove_parcels_under_road(&released_lots) > 0 {
+            self.allocator.dirty = true;
+        }
+        let mut painted = covered.clone();
+        painted.extend(released);
+        painted.sort_unstable();
+        painted.dedup();
         let erase_start = Instant::now();
+        self.last_land_release_ms = (erase_start - release_start).as_secs_f64() * 1000.0;
         let erased = (!painted.is_empty())
-            .then(|| self.zoning.erase_cells_under_road(painted))
+            .then(|| self.zoning.erase_cells_under_road(painted, covered))
             .flatten();
         debug_log!(
             "road",
-            "road_commit_land buildings={} lots={} cells={} painted={} removals_ms={:.3} sites_ms={:.3} lots_ms={:.3} erase_ms={:.3} total_ms={:.3}",
+            "road_commit_land buildings={} lots={} cells={} released_lots={} painted={} removals_ms={:.3} sites_ms={:.3} lots_ms={:.3} release_ms={:.3} erase_ms={:.3} total_ms={:.3}",
             take.buildings.len(),
             take.lots.len(),
             take.cells.len(),
+            released_lots.len(),
             erased.as_ref().map_or(0, |undo| undo.erased().len()),
             removals_ms,
             sites_ms,
-            (erase_start - lots_start).as_secs_f64() * 1000.0,
+            (release_start - lots_start).as_secs_f64() * 1000.0,
+            (erase_start - release_start).as_secs_f64() * 1000.0,
             erase_start.elapsed().as_secs_f64() * 1000.0,
             start.elapsed().as_secs_f64() * 1000.0
         );
@@ -982,17 +1011,20 @@ impl SimCore {
                 return false;
             }
         };
+        // The region the removal regenerates, marked before the take releases its paint
+        // (`ZONE-14`): the removed road's rows lose their frontage.
+        let regeneration = self
+            .zoning
+            .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
         // The zoned land the re-laid ends newly cover (`ZONE-10`), before the removed road's
         // parcels are captured, so its undo never restores a taken lot onto erased paint, and
         // while the lanes the evacuation reads are valid.
-        let erased = self.take_land_for_edit(take);
+        let erased = self.take_land_for_edit(take, &regeneration);
         let erased_paint = erased.is_some();
         self.push_road_removal_undo(affected_edges.clone(), affected_nodes.clone(), edge_idx);
         if let Some(record) = self.undo_stack.back_mut() {
             record.cells = erased;
         }
-        self.zoning
-            .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
         self.transit_network
             .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
         for point in &edge_points {
@@ -1408,13 +1440,22 @@ impl SimCore {
             }
         };
         self.region_graph.edge_mut(edge_idx).class = class;
-        // A deck brought down to the ground takes the zoned land it now covers (`ZONE-10`).
-        let erased = self.take_land_for_edit(take);
+        let regeneration = self
+            .zoning
+            .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);
+        // A deck brought down to the ground takes the zoned land it now covers (`ZONE-10`) and
+        // releases the paint of the region it regenerates (`ZONE-14`). A road lifted off the
+        // ground keeps its paint pinned, so the lots come back with the ground class (decision
+        // D-class, round RL1).
+        let regeneration = if class == crate::simulation::network::types::EdgeClass::Standard {
+            regeneration
+        } else {
+            Vec::new()
+        };
+        let erased = self.take_land_for_edit(take, &regeneration);
         let erased_paint = erased.is_some();
         // The checkpoint holds the whole records the change touches: its undo record (R3-k).
         self.push_network_undo_delta(checkpoint, None, erased);
-        self.zoning
-            .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &affected_nodes);
 
@@ -1795,7 +1836,7 @@ impl SimCore {
             .unwrap_or(&self.transit_network.bulk_dirty_edges);
         // An adopted plan names the dirty edges whose geometry changed (`ROAD-68-G`); the
         // others' cells change only near those, so they queue no lot regions of their own.
-        match finalized_geometry
+        let regeneration = match finalized_geometry
             .as_ref()
             .and_then(|geometry| geometry.changed_edges.as_ref())
         {
@@ -1807,7 +1848,7 @@ impl SimCore {
             None => self
                 .zoning
                 .mark_cell_lots_for_roads(&self.region_graph, dirty.iter().copied()),
-        }
+        };
         let road_dirty_edges = std::mem::replace(
             &mut self.transit_network.bulk_dirty_edges,
             earlier_bulk_dirty_edges,
@@ -1831,6 +1872,7 @@ impl SimCore {
                 topology_ms: dt_topo_us as f64 / 1000.0,
                 zoning_ms,
             },
+            regeneration,
         }
     }
 
@@ -1972,7 +2014,7 @@ impl SimCore {
         )?;
         // Nothing below refuses the placement.
         if let Some((take, lot)) = taken {
-            self.take_land_for_edit(take);
+            self.take_land_for_edit(take, &[]);
             debug_assert!(
                 explicit_lot_take(&CoreLand::of(self), &lot).is_ok_and(|take| take.is_empty()),
                 "the land under the lot was taken"
@@ -2004,7 +2046,7 @@ impl SimCore {
     // (decision D-undo).
     fn take_land_for_work_area(&mut self, take: RoadLandTake, owner: usize) -> (usize, bool) {
         let handle = self.allocator.building_handles.handle(owner);
-        let erased = self.take_land_for_edit(take).is_some();
+        let erased = self.take_land_for_edit(take, &[]).is_some();
         let owner = self
             .allocator
             .building_handles
@@ -2633,8 +2675,9 @@ impl SimCore {
         let changed = self
             .road_edit_site()
             .apply_crosswalk_toggle(node, edge_id, enabled);
-        // The zoned land the moved mouths newly cover (`ZONE-10`), before the lanes rebuild.
-        let erased = self.take_land_for_edit(take);
+        // The zoned land the moved mouths newly cover (`ZONE-10`), before the lanes rebuild. A
+        // toggle moves no frontage and marks nothing: it releases only around covered cells.
+        let erased = self.take_land_for_edit(take, &[]);
         let erased_paint = erased.is_some();
         self.push_network_undo_delta(checkpoint, None, erased);
         let nodes = HashSet::from([node]);

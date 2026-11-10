@@ -646,13 +646,16 @@ fn a_plan_on_the_views_persistent_copy_equals_the_live_plan_and_the_copy_follows
     assert_eq!(view.state_digest(), zoning.cells.state_digest());
 }
 
-// `ZONE-09` (PLAN-RZ 2.4): a road on land a stroke took. Its frontage cell `(x, y)` on the road's
-// frame, the road's frame and a plan of `bounds` handing `sources` (erased cells and their paint)
-// on to the new cells, on a zoning that has `before` already generated or not. Returns the zoning
-// after the plan's installation and the paint handed on.
+// `ZONE-09` (PLAN-RZ 2.4), `ZONE-14` (PLAN-RL 2.2): a road on land an edit took. Its frontage cell
+// `(x, y)` on the road's frame, the road's frame and a plan of `bounds` handing `sources` (erased
+// cells and their paint) on to the cells it lays, on a zoning that has its cells already
+// generated or not. With cells generated before, the road frame's cells at the lattice
+// coordinates `covered` are the edit's covered cells: the plan's sites block them. Returns the
+// zoning after the plan's installation and the paint handed on.
 fn inherit_along_a_road(
     sources: impl FnOnce(&mut ZoningSystem, GridFrame, i32, i32) -> Vec<(CellKey, u16)>,
     generated_before: bool,
+    covered: &[(i32, i32)],
 ) -> (ZoningSystem, Option<crate::simulation::zoning::RoadPaint>) {
     let mut graph = RegionGraph::new();
     let a = node(&mut graph, 0.0, 0.0);
@@ -668,12 +671,27 @@ fn inherit_along_a_road(
     if generated_before {
         zoning.generate_cells(&graph, extent(), |_| false);
     }
+    let mut covered: Vec<_> = covered
+        .iter()
+        .map(|&(dx, dy)| road_cell(&zoning, frame, key.x + dx, key.y + dy))
+        .collect();
+    covered.sort_unstable();
+    let footprints: Vec<_> = covered
+        .iter()
+        .map(|key| frame.corners(key.x, key.y))
+        .collect();
     let paint = crate::simulation::zoning::RoadPaint {
         erase: 7,
         cells: sources(&mut zoning, frame, key.x, key.y),
+        covered,
+    };
+    let blocked = |corners: &[DVec2; 4]| {
+        footprints
+            .iter()
+            .any(|footprint| interiors_overlap(footprint, corners))
     };
     let mut planner = zoning.cell_lot_planner().inheriting(Some(paint));
-    planner.plan_region(&graph, extent(), &[size()], &|_| false);
+    planner.plan_region(&graph, extent(), &[size()], &blocked);
     let inherited = planner.take_inherited();
     let plan = planner.finish();
     zoning.install_cell_lot_plan(plan);
@@ -758,6 +776,7 @@ fn new_frontage_cells_inherit_the_most_overlapped_removed_paint() {
             sources
         },
         false,
+        &[],
     );
     let inherited = inherited.expect("new cells inherited paint");
     assert_eq!(inherited.erase, 7);
@@ -783,19 +802,37 @@ fn new_frontage_cells_inherit_the_most_overlapped_removed_paint() {
     assert_eq!(claimed, 6);
 }
 
-// Rule 5's first half: only cells the plan generates inherit. Cells standing when the plan began
-// keep their paint, here none, even over erased land.
+// `ZONE-14` (PLAN-RL 2.2): a cell standing when the plan began, released and regenerated in
+// place, takes the paint of the erased cell it overlaps most, as a new one does; a covered cell
+// never inherits (here blocked, as the road's pieces block it), and the cell beside it still
+// inherits the erased cell's remainder.
 #[test]
-fn cells_standing_before_the_plan_do_not_inherit() {
-    let (zoning, inherited) = inherit_along_a_road(
-        |zoning, frame, x, y| {
-            let shifted = zoning.cells.register_frame(frame.moved(0, 3.0));
-            vec![(CellKey { grid: shifted, x, y }, 2)]
-        },
-        true,
-    );
-    assert!(inherited.is_none());
-    assert!(!zoning.cells.has_paint());
+fn standing_cells_inherit_and_covered_cells_do_not() {
+    // An erased cell 3 m along the road from the lattice: road cell `x` overlaps it by 70 m²,
+    // cell `x + 1` by 30 m².
+    let source = |zoning: &mut ZoningSystem, frame: GridFrame, x: i32, y: i32| {
+        let shifted = zoning.cells.register_frame(frame.moved(0, 3.0));
+        vec![(cell_at(frame.moved(0, 3.0), shifted, frame, f64::from(x) + 0.35, y), 2)]
+    };
+    let road_cells = |zoning: &ZoningSystem, inherited: &crate::simulation::zoning::RoadPaint| {
+        // Road cell `x + 1`, which stands in both cases.
+        let key = zoning.cells.pick(DVec2::new(65.0, 12.0)).unwrap();
+        let frame = zoning.cells.frame(key.grid).unwrap();
+        inherited
+            .cells
+            .iter()
+            .map(|&(cell, profile)| {
+                assert_eq!(zoning.cells.frame(cell.grid), Some(frame));
+                ((cell.x - key.x + 1, cell.y - key.y), profile)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (zoning, inherited) = inherit_along_a_road(source, true, &[]);
+    let inherited = inherited.expect("the standing cells inherit");
+    assert_eq!(road_cells(&zoning, &inherited), [((0, 0), 2), ((1, 0), 2)]);
+    let (zoning, inherited) = inherit_along_a_road(source, true, &[(0, 0)]);
+    let inherited = inherited.expect("the uncovered cell inherits");
+    assert_eq!(road_cells(&zoning, &inherited), [((1, 0), 2)]);
 }
 
 #[test]
@@ -918,6 +955,7 @@ fn benchmark_cell_inheritance_locality() {
             let paint = inherit.then(|| crate::simulation::zoning::RoadPaint {
                 erase: 1,
                 cells: sources.clone(),
+                covered: Vec::new(),
             });
             let start = Instant::now();
             let mut planner = zoning.cell_lot_planner().inheriting(paint);

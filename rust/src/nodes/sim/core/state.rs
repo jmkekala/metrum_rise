@@ -291,6 +291,9 @@ pub struct SimCore {
     pub last_agent_tick_us: u64,
     /// Per-phase timing breakdown from the last road placement, for profiling.
     pub last_road_timing: String,
+    /// Wall time of the last land take's paint release (`ZONE-14`): the region's free painted
+    /// cells found and their empty lots removed, in milliseconds; for the locality benchmark.
+    pub(crate) last_land_release_ms: f64,
     /// Why the last refused road placement was refused; `commit_road` reports and clears it.
     pub(crate) last_road_rejection: Option<crate::nodes::sim::core::RoadRejection>,
     /// Fixed-size diagnostics; dictionary conversion happens only when explicitly requested.
@@ -454,6 +457,7 @@ impl SimCore {
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,
             last_road_timing: String::new(),
+            last_land_release_ms: 0.0,
             last_road_rejection: None,
             last_road_edit_metrics: Default::default(),
             last_road_terrain_changes: Default::default(),

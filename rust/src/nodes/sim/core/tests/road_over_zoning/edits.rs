@@ -2,8 +2,9 @@
 
 //! Road edits in place over zoned land (`ZONE-10`, round RZ10a): a widening, a turn pocket and a
 //! roundabout (its island included) take the zoned land their pieces newly cover as a road
-//! stroke does, demolishing the buildings on the lots and erasing only the covered cells' paint;
-//! the reverse edit takes nothing; plotted land (a field, an extraction area, a placed building's
+//! stroke does, demolishing the buildings on the lots and erasing the covered cells' paint, and
+//! re-lay the free paint of the region they regenerate (`ZONE-14`); the reverse edit covers
+//! nothing; plotted land (a field, an extraction area, a placed building's
 //! lot) refuses each of them with nothing changed. Their undo gives the road and the paint back,
 //! not the buildings, and is refused whole while the paint's land is held. Each verdict (the
 //! roundabout hover on the road tool's context, the windows') shows what its commit takes (round
@@ -140,13 +141,22 @@ fn graph_digest(core: &SimCore) -> u64 {
 }
 
 // Test 1 (`ZONE-10`, PLAN-RZ 10.5): each edit demolishes the houses on the lots its pieces newly
-// cover, their families moved out, and erases the paint of the covered cells only; the paint of
-// every other cell stays, no reserved cell is left under a road, and the Road Properties
-// window's verdict counts the widening's demolitions. The reverse edit takes nothing.
+// cover, their families moved out, and erases the paint of the covered cells; no reserved cell
+// is left under a road, and the Road Properties window's verdict counts the widening's
+// demolitions. The free paint of the region it regenerates re-lays (`ZONE-14`, PLAN-RL test 6):
+// no cell over the old paint is left unpainted, and the cell layout equals that of the same edit
+// on the T without that paint. The reverse edit covers nothing and demolishes nothing; it re-lays
+// the paint of the frontage it moves (D-removal).
 #[test]
 fn each_in_place_edit_takes_the_zoned_land_it_newly_covers() {
     for edit in EDITS {
         let (mut core, node) = t_with_houses();
+        let twin = {
+            let (mut twin, node) = t_with_houses();
+            erase_free_paint(&mut twin);
+            assert!(edit.apply(&mut twin, node), "{edit:?} without the free paint");
+            layout(&twin)
+        };
         let painted_before = painted(&core);
         let buildings = core.allocator.buildings.len();
         let agents = core.agents.agents.len();
@@ -184,34 +194,35 @@ fn each_in_place_edit_takes_the_zoned_land_it_newly_covers() {
             inherited.len()
         );
         assert!(!erased.is_empty(), "{edit:?}");
-        // The ring also takes its island's land (decision D-ring).
+        // The erase holds old paint only, and every painted cell the pieces cover; the ring also
+        // takes its island's land (decision D-ring).
         let island = island.as_ref();
-        for &(key, _) in &erased {
+        for &(key, profile) in &painted_before {
             let on_island = island.is_some_and(|island| {
                 let interior = road_contact_interior(&corners(&core, key)).map(|p| [p.x, p.y]);
                 island.overlaps_precise_points(&interior)
             });
-            assert!(
-                under_road(&core, key) || on_island,
-                "{edit:?} {key:?}: only covered cells are erased"
-            );
-        }
-        assert_eq!(reserved_under_road(&core), Vec::new(), "{edit:?}");
-        let after = painted(&core);
-        for &(key, profile) in &painted_before {
-            if erased.binary_search_by_key(&key, |&(erased, _)| erased).is_err() {
-                assert!(after.contains(&(key, profile)), "{edit:?} {key:?} keeps its paint");
+            if under_road(&core, key) || on_island {
+                assert!(erased.contains(&(key, profile)), "{edit:?} {key:?} covered and erased");
             }
         }
-        // The reverse edit takes nothing and demolishes nothing.
+        for paint in &erased {
+            assert!(painted_before.contains(paint), "{edit:?} {paint:?} was painted");
+        }
+        assert_eq!(reserved_under_road(&core), Vec::new(), "{edit:?}");
+        assert_relaid(&core, &painted_before, &format!("{edit:?}"));
+        assert_eq!(layout(&core), twin, "{edit:?}: the re-laid cells are the unpainted ones");
+        // The reverse edit covers nothing and demolishes nothing.
         let (buildings, painted_now) = (core.allocator.buildings.len(), painted(&core));
         if let Some(applied) = edit.reverse(&mut core, node) {
             assert!(applied, "{edit:?} reversed");
             assert_eq!(core.allocator.buildings.len(), buildings, "{edit:?} reversed");
-            assert!(record_paint(&core).is_none(), "{edit:?} reversed takes no paint");
-            for (key, profile) in painted_now {
-                assert_eq!(core.zoning.cells.profile(key), Some(profile), "{edit:?} reversed");
+            if let Some((erased, _)) = record_paint(&core) {
+                for (key, _) in erased {
+                    assert!(!under_road(&core, key), "{edit:?} reversed covers {key:?}");
+                }
             }
+            assert_relaid(&core, &painted_now, &format!("{edit:?} reversed"));
             assert_references_consistent(&core);
         }
     }
@@ -525,7 +536,8 @@ fn standing(core: &SimCore) -> std::collections::BTreeSet<u64> {
 }
 
 // Asserts that the commit just made demolished exactly `expected` (handles, descending) of the
-// buildings `before` held, and erased the paint of `cells`' painted ones.
+// buildings `before` held, and erased the paint of `cells`' painted ones; any other cell it
+// erased is released paint off the road (`ZONE-14`).
 fn assert_commit_took(
     core: &SimCore,
     before: &std::collections::BTreeSet<u64>,
@@ -538,7 +550,15 @@ fn assert_commit_took(
     assert_eq!(gone, expected, "{edit}: the commit demolishes what its verdict showed");
     let painted: Vec<(CellKey, u16)> = cells.iter().copied().filter(|&(_, p)| p != 0).collect();
     let erased = record_paint(core).map(|(erased, _)| erased).unwrap_or_default();
-    assert_eq!(erased, painted, "{edit}: the commit erases the verdict's painted cells");
+    for paint in &painted {
+        assert!(erased.contains(paint), "{edit}: the commit erases the verdict's {paint:?}");
+    }
+    for &(key, profile) in &erased {
+        assert!(
+            painted.contains(&(key, profile)) || !under_road(core, key),
+            "{edit}: {key:?} is under the road but not in the verdict"
+        );
+    }
 }
 
 // Test 6 (`ZONE-10`, round RZ10b): each edit with a verdict shows what its commit takes. The

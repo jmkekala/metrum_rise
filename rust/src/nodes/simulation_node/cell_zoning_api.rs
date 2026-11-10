@@ -57,7 +57,9 @@ impl SimulationNode {
 
     /// Polls visible chunk metadata in one nonblocking call. Each input XZ pair has four output
     /// values: cell revision (including crossing owners), generation-complete flag, parcel
-    /// revision and world generation. Height alone never changes ground-mask geometry.
+    /// revision and world generation. Height alone never changes ground-mask geometry. Busy while
+    /// a commit's lot plan waits: the live cells show the land it released unpainted until then,
+    /// so the masks keep their versions (`ZONE-14`, D-mask).
     #[func]
     pub fn try_get_zoning_cell_chunk_states(&self, chunks: PackedInt32Array) -> VarDictionary {
         let mut result = VarDictionary::new();
@@ -65,6 +67,9 @@ impl SimulationNode {
         let Some(core) = self.try_lock_core() else {
             return result;
         };
+        if core.cell_lots_pending() {
+            return result;
+        }
         if !chunks.len().is_multiple_of(2) {
             return result;
         }

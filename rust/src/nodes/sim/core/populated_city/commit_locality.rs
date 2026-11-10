@@ -19,7 +19,9 @@
 //!
 //! After the branches, three strokes take built land of the neighbourhood (`ZONE-09`, round RZ2):
 //! each a new diagonal street between two row streets, demolishing the buildings on the lots of
-//! its block (the block is zoned whole, so no new cell inherits). Every home is housed first: each
+//! its block; the block is zoned whole, so the stroke releases its free paint and the block re-lays
+//! around the new street, the cells inheriting the paint (`ZONE-14`, round RL1; the release's own
+//! time is `land_release_ms`). Every home is housed first: each
 //! background resident gets a household and each of the neighbourhood's homes, which the grid
 //! builds empty, a resident with one, so the removal evacuates its homes and its agent and
 //! household scans meet a background that grows with the tier (`LOCALITY_DEMOLITION`).
@@ -29,7 +31,8 @@
 //! junction and a one-lane ring replacing a crossing (its island's lots too), each with its
 //! publication, as the Road Properties window, the Junction window and the roundabout tool commit
 //! them (`LOCALITY_IN_PLACE`). The narrowing back and the pocket's removal follow, the same
-//! transactions taking no land: the reference for what the take adds at each tier.
+//! transactions covering no land (they re-lay the paint of the frontage they move, `ZONE-14`):
+//! the reference for what the take adds at each tier.
 //!
 //! Last, the plotted placements take built land of the grid's south edge (`ZONE-11`, round
 //! RZ11a): a parking lot over the houses of the south row's south curb, a farm and a mine over
@@ -305,16 +308,17 @@ fn profile_demolitions(core: &mut SimCore, background: usize) -> serde_json::Val
                 "demolished": demolished, "erased_cells": erased, "inherited_cells": inherited,
                 "commit_ms": commit_ms, "core_work_ms": m.core_work_ms,
                 "surface_ms": m.surface_ms, "surface_overlap_ms": m.surface_overlap_ms,
-                "surface_land_ms": m.surface_land_ms, "buildings_ms": m.buildings_ms,
+                "surface_land_ms": m.surface_land_ms,
+                "land_release_ms": core.last_land_release_ms, "buildings_ms": m.buildings_ms,
                 "lots_spawn_ms": m.lots_spawn_ms, "adoption_ms": adoption_ms,
                 "lots_install_ms": lots.install_ms,
                 "agent_scan_ms": agent_scan_ms, "household_scan_ms": household_scan_ms,
                 "zone_index_rebuild_ms": zone_index_ms})
         );
-        // The block is zoned whole, so its painted cells keep the new street's frame off the
-        // land its erased cells leave (rule 5: new cells fill free land only); its plan still
-        // hands their paint on, to no cell.
+        // The block is zoned whole: the stroke releases its free paint, and the block re-lays
+        // around the new street with it (`ZONE-14`).
         assert!(demolished >= 2, "demolition {stroke} takes built lots: {demolished}");
+        assert!(inherited > 0, "demolition {stroke} re-lays its block's paint");
         takes.push(serde_json::json!({"demolished": demolished, "erased_cells": erased,
             "inherited_cells": inherited}));
     }
@@ -424,10 +428,13 @@ fn profile_in_place_edits(core: &mut SimCore, background: usize) -> serde_json::
             serde_json::json!({"background": background, "edit": name,
                 "buildings": buildings, "households": households, "agents": agents,
                 "demolished": demolished, "erased_cells": erased, "inherited_cells": inherited,
+                "land_release_ms": core.last_land_release_ms,
                 "edit_ms": edit_ms, "publish_ms": publish_ms})
         );
         if ["narrowing", "pocket_off"].contains(&name) {
-            assert_eq!((demolished, erased), (0, 0), "the {name} takes nothing");
+            // It covers no new land; the paint of the frontage it moves re-lays (`ZONE-14`,
+            // D-removal).
+            assert_eq!(demolished, 0, "the {name} takes nothing");
         } else {
             assert!(demolished >= 1, "the {name} takes built lots: {demolished}");
         }

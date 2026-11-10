@@ -118,18 +118,20 @@ impl SimCore {
             (fwd, bkw, median, parking, attributes),
             &nodes,
         );
-        // The land the wider pieces cover, before the lanes rebuild (its buildings' agents leave
-        // by the lanes they hold) and before the zoning-off parcels are captured, so that undo
-        // never restores a lot the take removed onto its erased paint (`ZONE-10`).
-        let erased = self.take_land_for_edit(take);
-        let erased_paint = erased.is_some();
         let affected: HashSet<usize> = incident
             .into_iter()
             .chain(changed.iter().copied())
             .collect();
-        // The frontage moves with the width: the edited road's lots and its neighbours' mouths.
-        self.zoning
+        // The frontage moves with the width: the edited road's lots and its neighbours' mouths,
+        // the region whose paint the take releases (`ZONE-14`).
+        let regeneration = self
+            .zoning
             .mark_cell_lots_for_roads(&self.region_graph, affected.iter().copied());
+        // The land the wider pieces cover, before the lanes rebuild (its buildings' agents leave
+        // by the lanes they hold) and before the zoning-off parcels are captured, so that undo
+        // never restores a lot the take removed onto its erased paint (`ZONE-10`).
+        let erased = self.take_land_for_edit(take, &regeneration);
+        let erased_paint = erased.is_some();
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
         self.transit_network

@@ -16,6 +16,11 @@ impl CellStore {
     pub(crate) fn chunk_bounds(chunk: (i32, i32)) -> CellBounds {
         chunk_bounds(chunk)
     }
+
+    /// The cell chunks `bounds` touches, row by row.
+    pub(crate) fn chunks_touching(bounds: CellBounds) -> impl Iterator<Item = (i32, i32)> {
+        chunks_for_bounds(bounds)
+    }
 }
 
 // [`CellStore::chunk_bounds`], for the store's generic methods.
@@ -93,6 +98,14 @@ impl<M: CellMaps> CellStore<M> {
         self.chunks
             .get(&chunk)
             .map_or((0, false), |entry| (entry.revision, entry.generated))
+    }
+
+    /// Whether every chunk `bounds` touches holds current generated cells: no pending
+    /// invalidation can regenerate (keep or drop) a cell inside it. A lot plan hands erased paint
+    /// on only to such cells (`ZONE-14`). O(touched chunks).
+    pub(crate) fn generation_current(&self, bounds: CellBounds) -> bool {
+        chunks_for_bounds(bounds)
+            .all(|chunk| self.chunks.get(&chunk).is_some_and(|entry| entry.generated))
     }
 
     /// Returns a bounded batch of nearby dirty envelopes, or the full chunk for a cold cache.

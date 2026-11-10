@@ -133,19 +133,22 @@ impl ZoningSystem {
     }
 
     /// Marks an externally edited area without scanning background roads, cells or parcels.
-    pub(crate) fn mark_cell_lots_dirty(&mut self, bounds: CellBounds) {
-        self.mark_road_cells_dirty(bounds, bounds);
+    /// Returns the envelope whose generated cells it invalidated.
+    pub(crate) fn mark_cell_lots_dirty(&mut self, bounds: CellBounds) -> CellBounds {
+        self.mark_road_cells_dirty(bounds, bounds)
     }
 
     // Invalidates the generated cells an edit inside `cells` can change and queues the lot
-    // regions of `lots`, which must contain it.
-    fn mark_road_cells_dirty(&mut self, cells: CellBounds, lots: CellBounds) {
+    // regions of `lots`, which must contain it. Returns the invalidated envelope: the region
+    // that edit regenerates (`ZONE-14`).
+    fn mark_road_cells_dirty(&mut self, cells: CellBounds, lots: CellBounds) -> CellBounds {
         self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
         // A lost column cell affects up to five rear rows beyond its direct conflict halo.
-        self.cells.invalidate_generated_cells(
-            cells.expanded((CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m)),
-        );
+        let invalidated =
+            cells.expanded((CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m));
+        self.cells.invalidate_generated_cells(invalidated);
         self.cell_lot_queue.mark(lots);
+        invalidated
     }
 
     /// Queues an area for lot derivation alone, keeping its generated cells: for a change that
@@ -163,14 +166,15 @@ impl ZoningSystem {
 
     /// Queues the supplied topology edit's road corridors, including retained deleted geometry,
     /// and those of every road at their endpoints, whose curb frames the edit refreshes.
+    /// Returns the envelopes it invalidated, as [`Self::mark_cell_lots_for_road_edit`] does.
     pub(crate) fn mark_cell_lots_for_roads(
         &mut self,
         graph: &RegionGraph,
         edges: impl IntoIterator<Item = usize>,
-    ) {
+    ) -> Vec<CellBounds> {
         let edges: BTreeSet<_> = edges.into_iter().collect();
         let scope = CellStore::road_alignment_scope(graph, &edges);
-        self.mark_cell_lots_for_road_edit(graph, &edges, &scope);
+        self.mark_cell_lots_for_road_edit(graph, &edges, &scope)
     }
 
     /// [`Self::mark_cell_lots_for_roads`] for an edit that knows which of its `dirty` roads
@@ -180,28 +184,38 @@ impl ZoningSystem {
     /// only near the changed roads, whose corridors cover them, and the regions those mark are
     /// derived at once, so the queue is left as the wider marks leave it. An edit that leaves
     /// its regions to the `cell lots` queue marks the whole scope, or the queue would serve
-    /// other regions at other slots (`ROAD-68-G` part 4). O(dirty roads + their incidences).
+    /// other regions at other slots (`ROAD-68-G` part 4). Returns the envelopes whose generated
+    /// cells it invalidated, one per changed or realigned road: the region the edit regenerates,
+    /// whose free paint the edit's land take releases (`ZONE-14`); empty when no cell is painted
+    /// or cached. O(dirty roads + their incidences).
     pub(crate) fn mark_cell_lots_for_road_edit(
         &mut self,
         graph: &RegionGraph,
         dirty: &BTreeSet<usize>,
         changed: &BTreeSet<usize>,
-    ) {
+    ) -> Vec<CellBounds> {
         // Empty generated grids also become stale when a road changes eligibility.
         self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
         let realigned =
             self.cells
                 .refresh_road_alignments(graph, &self.config, dirty.iter().copied());
         if !self.cells.has_paint() && !self.cells.has_cached_chunks() {
-            return;
+            return Vec::new();
         }
         let mut edges: Vec<_> = changed.iter().copied().chain(realigned).collect();
+        edges.sort_unstable();
+        edges.dedup();
+        // The release follows the narrow marks alone, so the whole-ring test mode re-lays the
+        // same paint (`ZONE-14`).
+        #[cfg(test)]
+        let narrow = edges.clone();
         #[cfg(test)]
         if self.full_road_marks {
             edges.extend(CellStore::road_alignment_scope(graph, dirty));
+            edges.sort_unstable();
+            edges.dedup();
         }
-        edges.sort_unstable();
-        edges.dedup();
+        let mut invalidated = Vec::with_capacity(edges.len());
         for id in edges {
             let Some(edge) = graph.get_edge(id) else {
                 continue;
@@ -226,9 +240,18 @@ impl ZoningSystem {
             );
             let lots = rows.expanded(f64::from(MAX_PARCEL_FRONTAGE_M));
             #[cfg(test)]
-            let rows = if self.full_road_marks { lots } else { rows };
-            self.mark_road_cells_dirty(rows, lots);
+            if self.full_road_marks {
+                self.mark_road_cells_dirty(lots, lots);
+                if narrow.binary_search(&id).is_ok() {
+                    invalidated.push(
+                        rows.expanded((CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m)),
+                    );
+                }
+                continue;
+            }
+            invalidated.push(self.mark_road_cells_dirty(rows, lots));
         }
+        invalidated
     }
 
     /// Queues the changed strips and their direct conflict halo after paint or an inverse.
@@ -237,13 +260,24 @@ impl ZoningSystem {
         keys: impl Iterator<Item = CellKey>,
     ) {
         for key in keys {
-            if let Some(frame) = self.cells.frame(key.grid) {
-                let bounds = CellBounds::from_points(frame.corners(key.x, key.y))
-                    .expanded((CELL_DEPTH + CELL_GROUP_COLUMNS + 2) as f64 * frame.cell_m());
+            if let Some(bounds) = self.cell_key_halo(key) {
                 self.cells.invalidate_generated_cells(bounds);
                 self.cell_lot_queue.mark(bounds);
             }
         }
+    }
+
+    // The strip and direct conflict halo [`Self::mark_cell_keys_dirty`] invalidates and queues
+    // for a changed cell; `None` for a key on no registered frame.
+    pub(in crate::simulation::zoning::system) fn cell_key_halo(
+        &self,
+        key: CellKey,
+    ) -> Option<CellBounds> {
+        let frame = self.cells.frame(key.grid)?;
+        Some(
+            CellBounds::from_points(frame.corners(key.x, key.y))
+                .expanded((CELL_DEPTH + CELL_GROUP_COLUMNS + 2) as f64 * frame.cell_m()),
+        )
     }
 
     /// True only for queued authoring work; idle demand updates do not enumerate cells.

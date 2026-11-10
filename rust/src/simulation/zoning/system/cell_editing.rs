@@ -72,17 +72,21 @@ impl CellPaintUndo {
     }
 }
 
-/// Cell paint of one road stroke's land (`ZONE-09`): `erase` names the stroke's erase (the cell
-/// revision it left), `cells` holds cell keys with their paint, sorted by key. As the erase's
-/// sources, the painted cells the stroke erased, which the commit's lot plan hands on to the new
-/// cells along the road (PLAN-RZ 2.4, [`super::CellLotPlanner::inheriting`]); as that plan's
-/// product, the new cells it painted, for the stroke's undo record.
+/// Cell paint of one road edit's land (`ZONE-09`, `ZONE-14`): `erase` names the edit's erase (the
+/// cell revision it left), `cells` holds cell keys with their paint, sorted by key. As the erase's
+/// sources, the painted cells the edit erased: those its pieces cover and the free painted cells
+/// of the region it regenerates, which the edit's lot plan hands on to the cells it lays there
+/// (PLAN-RL 2.1-2.2, [`super::CellLotPlanner::inheriting`]); as that plan's product, the cells it
+/// painted, for the edit's undo record.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RoadPaint {
-    /// The cell revision the stroke's erase left.
+    /// The cell revision the edit's erase left.
     pub(crate) erase: u64,
     /// Cells and their paint, sorted by key.
     pub(crate) cells: Vec<(CellKey, u16)>,
+    /// As sources, the erased keys the edit's pieces cover, sorted: they never inherit. Empty in
+    /// a plan's product.
+    pub(crate) covered: Vec<CellKey>,
 }
 
 impl ZoningSystem {
@@ -312,13 +316,64 @@ impl ZoningSystem {
         true
     }
 
-    /// Erases the paint of `keys`, valid cells a committed road stroke newly covers (`ZONE-09`),
-    /// after the commit removed their lots: the cells stay until the deferred lot plan's
-    /// regeneration drops them, as the road's pieces block them. Queues their regions for lot
-    /// derivation and leaves the erased paint to the commit's lot plan, whose new cells along
-    /// the road inherit it ([`Self::take_road_paint_sources`]). Returns the erase for the
-    /// stroke's undo record, or `None` when no cell was painted. O(keys).
-    pub(crate) fn erase_cells_under_road(&mut self, keys: Vec<CellKey>) -> Option<CellPaintUndo> {
+    /// The free painted cells of `region`, the envelopes a road edit regenerates, and the empty
+    /// lots claiming them (`ZONE-14`, PLAN-RL 2.1): with the strip and conflict halo of each
+    /// `covered` key, the cells the edit's pieces cover, which their erase invalidates. A cell is
+    /// free when painted and claimed by no lot or by an empty one; an occupied lot's cells and a
+    /// grace claim stay pinned with their lot. Both lists sorted and deduplicated; a lot with a
+    /// released cell is released whole. Call after the edit removed the lots it covers. O(reserved
+    /// cells in the envelopes) through the chunk index, plus a lookup per claimed cell.
+    pub(crate) fn release_painted_cells(
+        &self,
+        region: &[CellBounds],
+        covered: &[CellKey],
+    ) -> (Vec<CellKey>, Vec<u64>) {
+        let mut keys = Vec::new();
+        let mut lots = Vec::new();
+        let halos = covered.iter().filter_map(|&key| self.cell_key_halo(key));
+        for bounds in region.iter().copied().chain(halos) {
+            self.cells.visit_reserved_in_bounds(bounds, |key| {
+                if self.cells.profile(key).is_none_or(|profile| profile == 0) {
+                    return;
+                }
+                match self.cells.lot(key) {
+                    Some(0) | None => keys.push(key),
+                    Some(lot) => {
+                        if self
+                            .parcel_by_raw_id(lot)
+                            .is_none_or(ZoningParcel::is_available)
+                        {
+                            keys.push(key);
+                            lots.push(lot);
+                        }
+                    }
+                }
+            });
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        lots.sort_unstable();
+        lots.dedup();
+        (keys, lots)
+    }
+
+    /// Erases the paint of `keys`, valid cells of a committed road edit (`ZONE-09`, `ZONE-14`):
+    /// the painted cells its pieces newly cover (`covered`, sorted), after the commit removed their
+    /// lots, and the free painted cells of the region it regenerates
+    /// ([`Self::release_painted_cells`]), after their empty lots were removed. The covered cells
+    /// stay until the lot plan's regeneration drops them, as the road's pieces block them; the
+    /// released cells regenerate there as unpainted cells do. Queues every erased cell's strip and
+    /// conflict halo, as any erase does: a released cell no road proposes again (one a retained
+    /// or curved frame kept only while painted) frees land up to its halo, which may reach beyond
+    /// the edit's own envelopes (round RL1's finding, `narrow_road_marks_match_marking_the_whole_
+    /// refreshed_ring`). Leaves the erased paint to the edit's lot plan, whose cells inherit it
+    /// ([`Self::take_road_paint_sources`]). Returns the erase for the edit's undo record, or
+    /// `None` when no cell was painted. O(keys).
+    pub(crate) fn erase_cells_under_road(
+        &mut self,
+        keys: Vec<CellKey>,
+        covered: Vec<CellKey>,
+    ) -> Option<CellPaintUndo> {
         let selection = CellSelection {
             revision: self.cells.revision(),
             cells: keys,
@@ -333,6 +388,7 @@ impl ZoningSystem {
         self.road_paint_sources = Some(RoadPaint {
             erase: erased.revision,
             cells: erased.previous.clone(),
+            covered,
         });
         Some(CellPaintUndo {
             erased,
@@ -356,11 +412,12 @@ impl ZoningSystem {
     /// Whether the road undo can give every erased cell its paint back now (`ZONE-09`, decision
     /// D5: otherwise the whole undo is refused). Every inherited cell must still carry the paint
     /// it inherited, claimed by no lot or by an empty one: undo erases that paint and removes
-    /// those lots first. Then each erased cell must still stand unpainted and unclaimed or,
-    /// dropped since, meet no reserved cell but the inherited ones; and no authored parcel or
-    /// `blocked` (fields, explicit sites) may hold its land. A building on inherited cells
-    /// therefore refuses the undo, the erased cells under it being taken. Roads are the
-    /// caller's: the undo takes away the stroke that covers these cells.
+    /// those lots first. Then each erased cell must still stand unpainted and unclaimed, stand
+    /// with its inherited paint (a released cell regenerated in place, `ZONE-14`) or, dropped
+    /// since, meet no reserved cell but the inherited ones; and no authored parcel or `blocked`
+    /// (fields, explicit sites) may hold its land. A building on inherited cells therefore
+    /// refuses the undo, the erased cells under it being taken: anywhere on the land the edit
+    /// re-laid. Roads are the caller's: the undo takes away the edit that covers these cells.
     /// O((erased + inherited cells) * local candidates).
     pub(crate) fn can_restore_cell_paint_undo(
         &self,
@@ -389,7 +446,9 @@ impl ZoningSystem {
                         let corners = frame.corners(key.x, key.y);
                         let free = match self.cells.profile(key) {
                             Some(0) => self.cells.lot(key) == Some(0),
-                            Some(_) => false,
+                            // A released cell regenerated in place carries its inherited paint,
+                            // which `inherited_free` checked (`ZONE-14`).
+                            Some(_) => is_inherited(key),
                             None => !self.cells.overlaps_reserved_except(&corners, is_inherited),
                         };
                         free && !overlaps_parcels(&self.parcels, &corners) && !blocked(&corners)

@@ -3,7 +3,9 @@
 //! Roads over zoned land (`ZONE-09`, rounds RZ1 and RZ2; the in-place edits, `ZONE-10`, in
 //! `edits`): a road stroke takes the zoned land its
 //! pieces newly cover, demolishing the buildings on the lots it crosses, removing those lots and
-//! erasing the covered cells' paint, which the new cells along the road inherit; a plotted
+//! erasing the covered cells' paint; it releases the free paint of the region it regenerates,
+//! which re-lays around the new road as unpainted land does, every cell over the old paint
+//! inheriting it (`ZONE-14`, round RL1, in `relay`); a plotted
 //! reservation (a placed building's lot, a field, an extraction area) refuses it and changes
 //! nothing; a bridge's deck takes no land. Undo gives the road and the erased paint back and takes
 //! the inherited paint away, not the buildings, and is refused whole while the paint's land is
@@ -241,8 +243,9 @@ fn assert_references_consistent(core: &SimCore) {
 }
 
 // Rules 1, 3, 4, 6 and 9: a stroke through built lots commits; the houses on the lots it covers
-// are demolished with their lots, their families moved out; only the covered cells lose their
-// paint, the rest of a taken lot stays painted and free; the other houses stand on their lots.
+// are demolished with their lots, their families moved out; the covered cells lose their paint;
+// the other houses stand on their lots, whose cells keep their paint and claim; once the plan
+// re-laid the released land (`ZONE-14`), every cell over the land painted before is painted.
 #[test]
 fn a_road_over_a_growable_lot_demolishes_it_and_removes_only_covered_cells() {
     let (mut core, houses) = street_with_houses();
@@ -276,8 +279,8 @@ fn a_road_over_a_growable_lot_demolishes_it_and_removes_only_covered_cells() {
     assert_eq!(core.agents.agents.len(), agents_before);
     assert_references_consistent(&core);
 
-    // No reserved cell is left under the new road; a taken lot's other cells keep their paint
-    // and are free; every other cell's paint is unchanged.
+    // No reserved cell is left under the new road; the taken lots' covered cells lost their
+    // paint, the other cells of those lots are free; the kept lots' cells keep paint and claim.
     let mut reserved_under_road = Vec::new();
     core.zoning
         .cells
@@ -287,16 +290,15 @@ fn a_road_over_a_growable_lot_demolishes_it_and_removes_only_covered_cells() {
             }
         });
     assert!(reserved_under_road.is_empty(), "{reserved_under_road:?}");
-    let mut erased = 0;
+    let mut covered = 0;
     let mut leftover = 0;
     for (_, cells) in &taken {
         for &key in cells {
-            let profile = core.zoning.cells.profile(key);
-            if profile.is_none_or(|profile| profile == 0) {
-                erased += 1;
+            if under_road(&core, key) {
+                covered += 1;
                 assert!(
-                    under_road(&core, key),
-                    "{key:?}: only covered cells are erased"
+                    core.zoning.cells.profile(key).is_none_or(|profile| profile == 0),
+                    "{key:?} lost its paint"
                 );
             } else {
                 leftover += 1;
@@ -305,21 +307,40 @@ fn a_road_over_a_growable_lot_demolishes_it_and_removes_only_covered_cells() {
         }
     }
     assert!(
-        erased > 0 && leftover > 0,
-        "erased {erased}, leftover {leftover}"
+        covered > 0 && leftover > 0,
+        "covered {covered}, leftover {leftover}"
     );
-    let painted_after = painted(&core);
-    for &(key, profile) in &painted_before {
-        if !under_road(&core, key) {
-            assert!(
-                painted_after.contains(&(key, profile)),
-                "{key:?} keeps its paint"
-            );
+    for (id, cells) in &kept {
+        for &key in cells {
+            assert_eq!(core.zoning.cells.profile(key), Some(1), "{key:?} keeps its paint");
+            assert_eq!(core.zoning.cells.lot(key), Some(*id), "{key:?} keeps its lot");
         }
     }
     let after = core.adopt_pending_cell_lots();
     assert!(after.adopted);
+    assert_relaid(&core, &painted_before, "side street");
     assert_references_consistent(&core);
+}
+
+// `ZONE-14` (PLAN-RL test 1 (c)): after an edit's lot plan no unpainted, unclaimed cell stands
+// over land painted in `before`: the plan re-laid the land the edit released with its paint,
+// each cell over it taking the paint it overlaps most; released land where no cell stands keeps
+// none.
+fn assert_relaid(core: &SimCore, before: &[(CellKey, u16)], label: &str) {
+    let mut unpainted = Vec::new();
+    core.zoning.cells.visit_in_bounds(AREA, |key| {
+        if core.zoning.cells.profile(key) == Some(0)
+            && core.zoning.cells.lot(key) == Some(0)
+            && before.iter().any(|&(source, _)| {
+                convex_overlap_area(&corners(core, key), &corners(core, source)) > 0.0
+            })
+        {
+            unpainted.push(key);
+        }
+    });
+    unpainted.sort_unstable();
+    unpainted.dedup();
+    assert!(unpainted.is_empty(), "{label}: unpainted over paint {unpainted:?}");
 }
 
 // Rule 8 (decisions D5, D6): undo removes the road and gives back every erased cell's paint,
@@ -507,6 +528,49 @@ fn the_one_shot_corridor_check_finds_plotted_land() {
     assert!(clearance(&core, x + 160.0).extraction_overlap);
 }
 
+// Every cell footprint in `AREA` by its corners' bits, sorted: the cell layout, whatever the
+// frame ids.
+fn layout(core: &SimCore) -> Vec<[[u64; 2]; 4]> {
+    let mut cells = Vec::new();
+    core.zoning.cells.visit_in_bounds(AREA, |key| {
+        cells.push(corners(core, key).map(|p| [p.x.to_bits(), p.y.to_bits()]));
+    });
+    cells.sort_unstable();
+    cells.dedup();
+    cells
+}
+
+// Erases every free painted cell (claimed by no lot or by an empty one) within 400 m of the
+// origin and derives the lots: the same land and buildings with no paint but the built lots',
+// the unpainted twin a re-laid edit's layout is compared with (`ZONE-14`).
+fn erase_free_paint(core: &mut SimCore) {
+    let bounds = CellBounds {
+        min: DVec2::splat(-400.0),
+        max: DVec2::splat(400.0),
+    };
+    let mut cells = Vec::new();
+    core.zoning.cells.visit_in_bounds(bounds, |key| {
+        let free = core.zoning.cells.lot(key).is_some_and(|lot| {
+            lot == 0
+                || core
+                    .zoning
+                    .parcel_by_raw_id(lot)
+                    .is_some_and(|parcel| parcel.is_available())
+        });
+        if free && core.zoning.cells.profile(key).is_some_and(|p| p != 0) {
+            cells.push(key);
+        }
+    });
+    cells.sort_unstable();
+    cells.dedup();
+    let selection = CellSelection {
+        revision: core.zoning.cells.revision(),
+        cells,
+    };
+    assert!(core.zoning.paint_cells(&selection, 0, |_| false).is_some());
+    core.prepare_cell_lots_internal();
+}
+
 // A cell's footprint.
 fn corners(core: &SimCore, key: CellKey) -> [DVec2; 4] {
     core.zoning
@@ -532,9 +596,11 @@ fn commit_diagonal(core: &mut SimCore) -> (Paint, Paint) {
     (record.erased().to_vec(), record.inherited().to_vec())
 }
 
-// Rule 5: the new frontage cells along a stroke fill the land its erased cells leave, each taking
-// the paint of the erased cell it overlaps most (ties to the lowest key); no new cell over erased
-// land stays unpainted; the inherited paint gets lots in the commit's own lot plan.
+// Rule 5 (`ZONE-14`): the cells the stroke's plan lays over the land of its erased cells, the
+// covered and the released, each take the paint of the erased cell they overlap most (ties to
+// the lowest key): the new road's cells on its own frame, and the released cells regenerated in
+// place, which take their own paint back; no cell over erased land stays unpainted; the
+// inherited paint gets lots in the commit's own lot plan.
 #[test]
 fn new_cells_along_a_stroke_inherit_the_erased_paint() {
     let (mut core, _) = street_with_houses();
@@ -553,8 +619,15 @@ fn new_cells_along_a_stroke_inherit_the_erased_paint() {
             }
         }
         assert_eq!(best, Some(profile), "{key:?}");
-        assert_ne!(key.grid, erased[0].0.grid, "a new frame's cell");
+        if let Ok(at) = erased.binary_search_by_key(&key, |&(source, _)| source) {
+            assert_eq!(erased[at].1, profile, "{key:?} takes its own paint back");
+        }
     }
+    let old_grids: std::collections::BTreeSet<_> = erased.iter().map(|(key, _)| key.grid).collect();
+    assert!(
+        inherited.iter().any(|(key, _)| !old_grids.contains(&key.grid)),
+        "the side street's own cells inherit"
+    );
     // Every cell standing over erased land is painted: none is left unpainted.
     let mut unpainted = Vec::new();
     core.zoning.cells.visit_in_bounds(AREA, |key| {
@@ -578,11 +651,21 @@ fn undo_takes_the_inherited_paint_and_its_lots_away() {
     let painted_before = painted(&core);
     let (_, inherited) = commit_diagonal(&mut core);
     assert!(!inherited.is_empty());
+    let erased: Vec<CellKey> = core
+        .undo_stack
+        .back()
+        .and_then(|record| record.cells.as_ref())
+        .map(|cells| cells.erased().iter().map(|&(key, _)| key).collect())
+        .unwrap();
     assert!(core.undo_action_internal());
     assert_eq!(painted(&core), painted_before);
+    // The inherited cells that were not erased (the new road's) are unpainted and free; the
+    // released cells regenerated in place carry their erased paint again.
     for (key, _) in inherited {
-        assert!(core.zoning.cells.profile(key).is_none_or(|p| p == 0));
-        assert!(core.zoning.cells.lot(key).is_none_or(|lot| lot == 0));
+        if erased.binary_search(&key).is_err() {
+            assert!(core.zoning.cells.profile(key).is_none_or(|p| p == 0));
+            assert!(core.zoning.cells.lot(key).is_none_or(|lot| lot == 0));
+        }
     }
     core.prepare_cell_lots_internal();
     assert_references_consistent(&core);
@@ -769,3 +852,4 @@ fn a_bridge_deck_over_a_field_is_no_field_overlap() {
 mod edits;
 mod placements;
 mod preview;
+mod relay;
