@@ -2310,7 +2310,17 @@ choosing replacement supply. It never moves a travelling car by towing. A failed
 parking leg asks for this ordered recovery, so the stuck-agent watchdog does not teleport the car
 (`TRAFFIC-20`). A displaced resident with a persistent car and no home left walks.
 
-Recovery replans from a lane, so a car with none waits for a retry.
+Recovery replans from a lane, or, for a car on its drive standing at a node with none, from that
+node (`TRAFFIC-31`). A road edit that clears a car's route while it crosses a junction drops it off
+its connector at the junction's node (`clear_route_plan_after_road_edit`), and a car whose path's
+next road went stands at the node its lane ended at. Recovery plans such a car from the node to its
+bay as the movement pass's replan gate plans any car at a node (`replan_start`,
+`plan_network_replan` with the bay's entrance), and the movement pass then enters the route's first
+road lane from the node. Before, a car frozen there for recovery (its replan from the node failed
+or its booking went) waited for a lane nothing gave it: every 30 game minute retry found none, and
+it stood in the junction for good, in no lane bucket, so traffic drove past it. With no route the
+car waits for the retry and plans from the node again. Any other car with no lane to plan from
+waits for its retry. The check is O(1) in the commit's visit of the car, plus one route query.
 
 A trip can be taken from a driver on the way (`TRAFFIC-29`, the car's case of `TRAFFIC-24`): its
 job ends (`assign_work_building`), its household loses or changes its home, or the building goes.
