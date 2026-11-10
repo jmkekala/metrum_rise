@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Exercises full-page migration and edit publication with controlled allocator pressure.
-## GPU runs compare the published bytes; headless runs check ownership and serials.
+## GPU runs compare the published bytes (Compatibility: the pages' CPU copy, TERRAIN-22);
+## headless runs check ownership and serials.
 extends SceneTree
 
 const Tiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
@@ -32,14 +33,15 @@ func check_bytes(graded: Tiles, entry: Dictionary, data: Dictionary) -> void:
 	for page_id: int in entry["copies"]:
 		var page: Dictionary = graded.page_store.by_id[page_id]
 		var copy: Vector3i = entry["copies"][page_id]
-		var image: Image = page["texels"].get_layer_data(copy.x)
+		var side := int(graded.page_store.levels[int(page["code"])]["side"])
+		var image := Image.create_from_data(side, side + 1, false, Image.FORMAT_RGBAF, graded.page_store.layer_data(page, true, copy.x))
 		var header := image.get_pixel(0, image.get_height() - 1)
 		header.r = 0
 		image.set_pixel(0, image.get_height() - 1, header)
 		expect(image.get_data() == data["texels"], "migration preserves exact slot bytes")
 		var rows := PackedByteArray()
 		for layer in (data["rows"] as PackedByteArray).size() / Pages.ATLAS_LAYER_BYTES:
-			rows.append_array(page["atlas"].get_layer_data(copy.y + layer).get_data())
+			rows.append_array(graded.page_store.layer_data(page, false, copy.y + layer))
 		expect(rows == data["rows"], "migration preserves exact atlas bytes")
 
 func _run() -> void:

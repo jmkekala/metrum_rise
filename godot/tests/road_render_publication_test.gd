@@ -187,15 +187,15 @@ func audit(stroke: int):
 			for page_id in entry.copies:
 				var page: Dictionary = graded.page_store.by_id[page_id]
 				var copy: Vector3i = entry.copies[page_id]
-				var texels: Image = page.texels.get_layer_data(copy.x)
 				var side: int = graded.page_store.levels[entry.level].side
+				var texels := Image.create_from_data(side, side + 1, false, Image.FORMAT_RGBAF, graded.page_store.layer_data(page, true, copy.x))
 				var header := texels.get_pixel(0,side)
 				header.r = 0
 				texels.set_pixel(0,side,header)
 				check(texels.get_data() == tile.texels, "GPU texels mismatch stroke=%d tile=%s" % [stroke,key])
 				var rows := PackedByteArray()
 				for layer in tile.rows.size() / 4096:
-					rows.append_array(page.atlas.get_layer_data(copy.y + layer).get_data())
+					rows.append_array(graded.page_store.layer_data(page, false, copy.y + layer))
 				check(rows == tile.rows, "GPU atlas mismatch stroke=%d tile=%s" % [stroke,key])
 			pending.erase(key)
 		await process_frame

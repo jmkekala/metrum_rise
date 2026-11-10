@@ -8,7 +8,8 @@
 ## size, hands out a page's slots and first-fit atlas runs, and uploads a copy. Which page a block
 ## of patches uses, the tiles' copies, a block's growth and the materials' binding are
 ## terrain_graded_tiles.gd's. Nothing here allocates per frame: pages are pooled, and every upload
-## goes through the level's pooled Images.
+## goes through the level's pooled Images. On Compatibility each page also keeps its uploaded
+## layers' bytes, which a growth copies (TERRAIN-22).
 extends RefCounted
 
 # Texels of a row atlas layer (residency.rs ATLAS_WIDTH, checked against the layout at setup).
@@ -91,18 +92,55 @@ static func _array(zero: Image, count: int) -> TextureLayered:
 static func _copy_array(source: TextureLayered, target: TextureLayered) -> void:
 	if target is CopyableArray:
 		target.copy_from(source)
-	elif DisplayServer.get_name() != "headless":
-		# Compatibility has no RenderingDevice. Growth alone reads back its bounded old page;
-		# ordinary uploads and idle frames never do. The dummy renderer stores no texels.
+	elif RenderingServer.get_rendering_device() != null:
+		# A one-layer page on Forward+/Mobile: the RenderingDevice reads it back exactly. The
+		# dummy renderer (headless) stores no texels, and Compatibility copies its CPU copy.
 		for layer in source.get_layers():
 			target.update_layer(source.get_layer_data(layer), layer)
 
+# Compatibility (TERRAIN-22): uploads the source page's CPU copy of every layer written since it
+# was created or pooled into the same layers of `target` (a page just created or taken from the
+# pool, holding no copy), which shares those bytes. Godot 4.7.2's GLES3 `get_layer_data` returns
+# an RGBAF layer as layer 0, clamped to 0-1 at 8 bits, so nothing is read back. O(written bytes).
+func _copy_written(source: Dictionary, target: Dictionary, key: String, image: Image) -> void:
+	var from: Array = source[key]
+	var into: Array = target[key]
+	var texture: TextureLayered = target["texels" if key == "texel_bytes" else "atlas"]
+	for layer in from.size():
+		var data: PackedByteArray = from[layer]
+		if data.is_empty():
+			continue
+		# set_data shares the bytes: the next write_copy replaces or copies them, never edits them.
+		image.set_data(image.get_width(), image.get_height(), false, Image.FORMAT_RGBAF, data)
+		texture.update_layer(image, layer)
+		_keep_written(into, layer, data)
+
+# Records `data` as the CPU copy of layer `layer` of a page array (Compatibility only).
+func _keep_written(written: Array, layer: int, data: PackedByteArray) -> void:
+	mirror_bytes += data.size() - (written[layer] as PackedByteArray).size()
+	written[layer] = data
+
+# Drops a page's CPU copies (Compatibility only): it holds no copy any more. O(slots + layers).
+func _drop_written(page: Dictionary) -> void:
+	if not mirrored:
+		return
+	for key: String in ["texel_bytes", "atlas_bytes"]:
+		for data: PackedByteArray in page[key]:
+			mirror_bytes -= data.size()
+		(page[key] as Array).fill(PackedByteArray())
+
 # Preserve the page's published contents and allocation layout before rebinding its materials.
 # No rebake is involved: edits, unlisted commit tiles and previews all keep their exact bytes.
-# O(source slots + source atlas layers), with device-to-device copies on Forward+/Mobile.
+# O(source slots + source atlas layers), with device-to-device copies on Forward+/Mobile and the
+# CPU copy's written layers on Compatibility.
 func copy_page(source: Dictionary, target: Dictionary) -> void:
-	_copy_array(source["texels"], target["texels"])
-	_copy_array(source["atlas"], target["atlas"])
+	if mirrored:
+		var level: Dictionary = levels[int(source["code"])]
+		_copy_written(source, target, "texel_bytes", level["texel_image"])
+		_copy_written(source, target, "atlas_bytes", level["atlas_image"])
+	else:
+		_copy_array(source["texels"], target["texels"])
+		_copy_array(source["atlas"], target["atlas"])
 	var free: Array[int] = []
 	for slot in range(int(target["slots"]) - 1, int(source["slots"]) - 1, -1):
 		free.append(slot)
@@ -120,10 +158,18 @@ var counters: Dictionary = {}
 var levels: Array[Dictionary] = []
 # Page id -> {id, code, block, texels, atlas (Texture2DArray), slots, layers, free (slots), runs
 # (free atlas runs as Vector2i(first, count), sorted by first), tiles and previews (tile key ->
-# true: the installed and preview copies it holds), bytes}.
+# true: the installed and preview copies it holds), bytes, and on Compatibility texel_bytes and
+# atlas_bytes (below)}.
 var by_id: Dictionary = {}
 # Every page's bytes, the free pooled ones included.
 var bytes := 0
+# Compatibility only (no RenderingDevice, a real renderer; TERRAIN-22): each page also keeps
+# `texel_bytes` and `atlas_bytes`, per slot and atlas layer the bytes last uploaded there since
+# the page was created or pooled (empty: never written, still zero), which a move copies instead
+# of reading the page back. `mirror_bytes` is their total: the written layers of the pages in use,
+# at most their page bytes; a pooled free page keeps none.
+var mirrored := RenderingServer.get_rendering_device() == null and DisplayServer.get_name() != "headless"
+var mirror_bytes := 0
 var _next_id := 0
 # Free pages for reuse: "code,slots,layers" -> Array of page ids.
 var _free: Dictionary = {}
@@ -158,6 +204,7 @@ func reset() -> void:
 	by_id.clear()
 	_free.clear()
 	bytes = 0
+	mirror_bytes = 0
 
 # A page of `slots` slot layers and `layers` atlas layers for `block` at level `code`: a pooled
 # free one of that size, else created within the budget (-1: the budget refuses it). O(slots +
@@ -181,6 +228,15 @@ func create(code: int, block: Vector2i, slots: int, layers: int) -> int:
 		counters["textures_created"] += 2
 		counters["pages_created"] += 1
 		page = {"id": _next_id, "code": code, "slots": slots, "layers": layers, "texels": texels, "atlas": atlas, "bytes": page_bytes}
+		if mirrored:
+			var texel_bytes := []
+			texel_bytes.resize(slots)
+			texel_bytes.fill(PackedByteArray())
+			var atlas_bytes := []
+			atlas_bytes.resize(layers)
+			atlas_bytes.fill(PackedByteArray())
+			page["texel_bytes"] = texel_bytes
+			page["atlas_bytes"] = atlas_bytes
 		by_id[_next_id] = page
 		_next_id += 1
 		bytes += page_bytes
@@ -210,6 +266,7 @@ func _drop_free_page() -> bool:
 # Returns a page holding no copy to the free pool (dropped past FREE_PAGES_KEPT of its size).
 func release(page_id: int) -> void:
 	var page: Dictionary = by_id[page_id]
+	_drop_written(page)
 	var size_key := "%d,%d,%d" % [int(page["code"]), int(page["slots"]), int(page["layers"])]
 	if not _free.has(size_key):
 		_free[size_key] = []
@@ -296,6 +353,8 @@ func write_copy(page: Dictionary, copy: Vector3i, tile: Dictionary) -> void:
 	header.r = float(copy.y)
 	image.set_pixel(0, side, header)
 	page["texels"].update_layer(image, copy.x)
+	if mirrored:
+		_keep_written(page["texel_bytes"], copy.x, image.get_data())
 	var rows: PackedByteArray = tile["rows"]
 	var count := rows.size() / ATLAS_LAYER_BYTES
 	if count > 0:
@@ -305,6 +364,20 @@ func write_copy(page: Dictionary, copy: Vector3i, tile: Dictionary) -> void:
 		for index in count:
 			layer.blit_rect(run, Rect2i(0, index, ATLAS_WIDTH, 1), Vector2i.ZERO)
 			page["atlas"].update_layer(layer, copy.y + index)
+			if mirrored:
+				# The next blit copies these shared bytes before writing (copy-on-write).
+				_keep_written(page["atlas_bytes"], copy.y + index, layer.get_data())
 	counters["upload_ms_max"] = max(float(counters["upload_ms_max"]), float(Time.get_ticks_usec() - upload_start_us) / 1000.0)
 	counters["uploads"] += 1
 	counters["upload_bytes"] += (tile["texels"] as PackedByteArray).size() + rows.size()
+
+# The bytes layer `layer` of `page`'s slot layers (`texels`) or row atlas holds, for the tests'
+# byte checks: on Compatibility its CPU copy (an unwritten layer is zero), where the readback
+# fails (TERRAIN-22), else the device's readback. Not for the frame path: it reads back.
+func layer_data(page: Dictionary, texels: bool, layer: int) -> PackedByteArray:
+	if not mirrored:
+		return (page["texels" if texels else "atlas"] as TextureLayered).get_layer_data(layer).get_data()
+	var data: PackedByteArray = page["texel_bytes" if texels else "atlas_bytes"][layer]
+	if data.is_empty():
+		return (levels[int(page["code"])]["zero_texels" if texels else "zero_atlas"] as Image).get_data()
+	return data
