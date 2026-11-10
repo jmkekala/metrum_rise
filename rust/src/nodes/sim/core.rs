@@ -42,7 +42,7 @@ pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTime
 pub(crate) use graded_edits::{GradedEdit, GradedEditJournal, GradedEditSelection, GradedInstallTiles};
 pub(crate) use graded_stage::{GradedPose, GradedPreview, GradedUndo};
 pub(crate) use road_commit::RoadCommitAck;
-pub(crate) use road_edit_plan::{RoadEditPlan, RoadLandSource, RoadLandTake};
+pub(crate) use road_edit_plan::{CoreLand, RoadEditPlan, RoadLandSource, RoadLandTake};
 pub(crate) use road_edit_site::{
     RoadEditSite, TriedGraphEdit, compile_closure, edge_grade, steepened_profile,
 };

@@ -340,6 +340,12 @@ impl ZoningSystem {
         })
     }
 
+    /// Whether an erase's paint waits for the lot plan that drains it.
+    #[cfg(test)]
+    pub(crate) fn has_road_paint_sources(&self) -> bool {
+        self.road_paint_sources.is_some()
+    }
+
     /// The paint the last road stroke erased, for its commit's lot plan to hand on to the new
     /// cells along the road (PLAN-RZ 2.4): the plan that drains the stroke's lot regions takes
     /// it. `O(1)`.

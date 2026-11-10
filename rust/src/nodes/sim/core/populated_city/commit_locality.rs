@@ -31,6 +31,14 @@
 //! window, the roundabout tool and the move tool's release commit them (`LOCALITY_IN_PLACE`). The
 //! narrowing back and the pocket's removal follow, the same transactions taking no land: the
 //! reference for what the take adds at each tier.
+//!
+//! Last, the plotted placements take built land of the grid's south edge (`ZONE-11`, round
+//! RZ11a): a parking lot over the houses of the south row's south curb, a farm and a mine over
+//! others, the farm's 4 ha field behind the rows (taking nothing) then resized over their rear
+//! row, and the mine's area over the rear row, after a parking lot on unzoned land beside the
+//! trunk, the same placement taking nothing (`LOCALITY_PLACEMENTS`): each one's wall time, the
+//! take of its footprint timed alone on the city as the placement finds it, the explicit sites
+//! that take's query visits, and what it demolished and erased.
 
 use std::time::Instant;
 
@@ -94,9 +102,11 @@ fn benchmark_commit_locality() {
             super::routing_benchmark::profile_commits(background as u32, &mut core, false);
         let demolitions = profile_demolitions(&mut core, background);
         let in_place = profile_in_place_edits(&mut core, background);
+        let placements = profile_placements(&mut core, background);
         let mut products = local_products(&mut core, &samples);
         products["demolitions"] = demolitions;
         products["in_place_edits"] = in_place;
+        products["placements"] = placements;
         eprintln!(
             "LOCALITY_PRODUCTS {}",
             serde_json::json!({"background": background, "products": products})
@@ -436,6 +446,222 @@ fn profile_in_place_edits(core: &mut SimCore, background: usize) -> serde_json::
             "erased_cells": erased, "inherited_cells": inherited}));
     }
     serde_json::Value::Array(takes)
+}
+
+// The plotted placements of `ZONE-11` on the grid's south row (z = -400), south curb, which no
+// earlier edit touches and no parking lot fronts: a parking lot at x -100, a farm at x -300 and a
+// mine at x 300, each over built lots; the farm's field behind the rows west of the lot, then
+// resized over their rear row; the mine's area over the rear row west of it. First a parking lot
+// on unzoned land beside the trunk west of the grid: the reference taking nothing. Each one is
+// committed as its tool commits it; the take of its footprint is timed alone before (median of 9,
+// on the city as the placement finds it, its site index prepared and that rebuild timed apart),
+// with the explicit sites its query visits. Returns the
+// takes and the field and area polygons, the products every tier must equal.
+fn profile_placements(core: &mut SimCore, background: usize) -> serde_json::Value {
+    use crate::nodes::sim::core::{CoreLand, RoadLandTake};
+    use crate::simulation::agriculture::PolygonFootprint;
+    const ROW_Z: f32 = -400.0;
+    const REQUEST_Z: f32 = ROW_Z - 15.0;
+    // Beside the trunk west of the grid, on unzoned land: the placement taking nothing, the
+    // reference for what the take adds at each tier.
+    const FREE_Z: f32 = 15.0;
+    const FARM: &str = "kenney:building.industrial.small_farm";
+    const MINE: &str = "kenney:building.coal.mine";
+    // The grid's parking lot (`add_parking_lots`).
+    let lot_asset = "parking:building.parking.small_lot";
+    let rect = |x0: f32, x1: f32, z0: f32, z1: f32| {
+        vec![
+            Vector2::new(x0, z0),
+            Vector2::new(x1, z0),
+            Vector2::new(x1, z1),
+            Vector2::new(x0, z1),
+        ]
+    };
+    let mut takes = Vec::new();
+    // The farm and mine by handle: a later placement's demolition may move their indices.
+    let mut farm = None;
+    let mut mine = None;
+    let resolve = |core: &SimCore, handle: Option<_>| {
+        core.allocator
+            .building_handles
+            .resolve(handle.expect("the owner stands"))
+            .expect("an owner is never taken")
+    };
+    for name in [
+        "service_free", "service", "farm", "field", "field_resize", "mine", "area",
+    ] {
+        let (buildings, households, agents) = (
+            core.allocator.buildings.len(),
+            core.households.households.len(),
+            core.agents.len(),
+        );
+        let painted = core.zoning.cells.saved_cells().len();
+        // The footprint the placement covers: a building's lot as its preview poses it, a
+        // field's or area's polygon.
+        let preview_lot = |core: &SimCore, asset: &str, x: f32| {
+            let preview = if asset == lot_asset {
+                core.get_service_building_placement_preview_internal(asset, x, REQUEST_Z)
+            } else {
+                core.get_industry_building_placement_preview_internal(asset, x, REQUEST_Z)
+            };
+            preview.unwrap_or_else(|error| panic!("{asset} at x {x}: {error:?}")).corners.to_vec()
+        };
+        let preview_lot_at = |core: &SimCore, x: f32, z: f32| {
+            core.get_service_building_placement_preview_internal(lot_asset, x, z)
+                .unwrap_or_else(|error| panic!("the lot at ({x}, {z}): {error:?}"))
+                .corners
+                .to_vec()
+        };
+        let lot_bounds = |core: &SimCore, owner: usize| {
+            let lot = core.allocator.building_sites[owner].lot_footprint_world;
+            lot.iter().fold(
+                (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY),
+                |(x0, x1, z0), p| (x0.min(p.x), x1.max(p.x), z0.min(p.y)),
+            )
+        };
+        let (footprint, owner) = match name {
+            "service_free" => (preview_lot_at(core, -600.0, FREE_Z), None),
+            "service" => (preview_lot(core, lot_asset, -100.0), None),
+            "farm" => (preview_lot(core, FARM, -300.0), None),
+            "mine" => (preview_lot(core, MINE, 300.0), None),
+            "field" | "field_resize" => {
+                let owner = resolve(core, farm);
+                let (_, x1, _) = lot_bounds(core, owner);
+                let top = if name == "field" { -430.0 } else { -420.0 };
+                (rect(x1 + 1.0, -130.0, -700.0, top), Some(owner))
+            }
+            _ => {
+                let owner = resolve(core, mine);
+                let (x0, _, _) = lot_bounds(core, owner);
+                (rect(120.0, x0 - 1.0, -560.0, -420.0), Some(owner))
+            }
+        };
+        // The site index as the placement's first step prepares it (stale after the last
+        // placement's new site), timed apart: an O(buildings) rebuild, `PERF-21`'s kind.
+        let index_stale = !core.allocator.building_site_query_index_ready();
+        let start = Instant::now();
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let index_rebuild_ms = start.elapsed().as_secs_f64() * 1e3;
+        let polygon = PolygonFootprint::new(&footprint);
+        let mut take = RoadLandTake::default();
+        let take_ms = median_of_9(&mut || {
+            take = RoadLandTake::of_footprint(&CoreLand::of(core), &polygon, owner);
+        });
+        let site_candidates = core.allocator.explicit_site_candidate_count(
+            polygon.min,
+            polygon.max,
+            core.config.zone_cell_m,
+        );
+        let terrain = core.terrain_dirty_patch_states();
+        core.acknowledge_terrain_render_patches(&terrain);
+        let start = Instant::now();
+        match name {
+            "service_free" => core
+                .place_service_building_internal(lot_asset, -600.0, FREE_Z)
+                .map(|_| ())
+                .map_err(|error| format!("{error:?}")),
+            "service" => {
+                core.place_service_building_internal(lot_asset, -100.0, REQUEST_Z)
+                    .map(|_| ())
+                    .map_err(|error| format!("{error:?}"))
+            }
+            "farm" | "mine" => {
+                let asset = if name == "farm" { FARM } else { MINE };
+                let x = if name == "farm" { -300.0 } else { 300.0 };
+                core.place_industry_building_internal(asset, x, REQUEST_Z)
+                    .map(|index| {
+                        let handle = Some(core.allocator.building_handles.handle(index));
+                        if name == "farm" {
+                            farm = handle;
+                        } else {
+                            mine = handle;
+                        }
+                    })
+                    .map_err(|error| format!("{error:?}"))
+            }
+            "field" | "field_resize" => core
+                .commit_field_polygon_internal(owner.unwrap(), footprint.clone())
+                .map(|_| ()),
+            _ => core
+                .commit_extractor_polygon_internal(owner.unwrap(), footprint.clone())
+                .map(|_| ()),
+        }
+        .unwrap_or_else(|error| panic!("the {name} is refused: {error}"));
+        let placement_ms = start.elapsed().as_secs_f64() * 1e3;
+        let placed = usize::from(matches!(name, "service_free" | "service" | "farm" | "mine"));
+        let demolished = buildings + placed - core.allocator.buildings.len();
+        let erased = painted - core.zoning.cells.saved_cells().len();
+        eprintln!(
+            "LOCALITY_PLACEMENTS {}",
+            serde_json::json!({"background": background, "placement": name,
+                "buildings": buildings, "households": households, "agents": agents,
+                "demolished": demolished, "erased_cells": erased,
+                "take_buildings": take.buildings.len(), "take_lots": take.lots.len(),
+                "take_cells": take.cells.len(), "site_candidates": site_candidates,
+                "index_stale": index_stale, "index_rebuild_ms": index_rebuild_ms,
+                "take_ms": take_ms, "placement_ms": placement_ms})
+        );
+        assert!(take.plotted.is_none(), "the {name} meets no plotted land");
+        assert_eq!(demolished, take.buildings.len(), "the {name} demolishes its take");
+        if ["service_free", "field"].contains(&name) {
+            assert_eq!((demolished, erased), (0, 0), "the {name} takes nothing");
+        } else {
+            assert!(demolished >= 1, "the {name} takes built lots: {demolished}");
+        }
+        takes.push(serde_json::json!({"placement": name, "demolished": demolished,
+            "erased_cells": erased, "take_lots": take.lots.len()}));
+    }
+    // The building placements' tail alone, again on the city as they left it: the lot plan,
+    // attachment repair and entrance rebuild, then the site publication (`dev`'s path, no take).
+    let start = Instant::now();
+    core.rebuild_building_entrances_internal();
+    let entrances_ms = start.elapsed().as_secs_f64() * 1e3;
+    let start = Instant::now();
+    core.publish_pending_building_site_changes();
+    let publication_ms = start.elapsed().as_secs_f64() * 1e3;
+    eprintln!(
+        "LOCALITY_PLACEMENT_TAIL {}",
+        serde_json::json!({"background": background, "entrances_ms": entrances_ms,
+            "publication_ms": publication_ms})
+    );
+    // The field and area as committed, by their owners' lots (indices differ by tier).
+    let bits = |points: &[Vector2]| {
+        points
+            .iter()
+            .map(|p| [p.x.to_bits(), p.y.to_bits()])
+            .collect::<Vec<_>>()
+    };
+    let owner_lot =
+        |core: &SimCore, owner: usize| bits(&core.allocator.building_sites[owner].lot_footprint_world);
+    let mut work_areas: Vec<_> = core
+        .agriculture
+        .sites()
+        .iter()
+        .map(|site| (owner_lot(core, site.building_idx), bits(&site.polygon_world)))
+        .chain(
+            core.resource_extraction
+                .sites()
+                .iter()
+                .map(|site| (owner_lot(core, site.building_idx), bits(&site.polygon_world))),
+        )
+        .collect();
+    work_areas.sort();
+    serde_json::json!({"takes": takes,
+        "work_areas": format!("{:016x}", crate::debug::work::debug_hash(&work_areas))})
+}
+
+// The median wall time of nine runs, in ms.
+fn median_of_9(run: &mut dyn FnMut()) -> f64 {
+    let mut samples: Vec<f64> = (0..9)
+        .map(|_| {
+            let start = Instant::now();
+            run();
+            start.elapsed().as_secs_f64() * 1e3
+        })
+        .collect();
+    samples.sort_by(f64::total_cmp);
+    samples[4]
 }
 
 // A household of one in every home, admitted as an immigrant household, outside timing: each

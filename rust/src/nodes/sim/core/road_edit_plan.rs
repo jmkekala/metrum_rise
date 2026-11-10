@@ -5,7 +5,9 @@
 use super::road_preview::RoadPreviewRequest;
 use super::{RoadRejection, SimCore};
 use crate::simulation::agriculture::{FieldClearanceIndex, PolygonFootprint};
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{
+    BuildingAllocator, ExplicitServicePlacementRejection,
+};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
     PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
@@ -57,6 +59,31 @@ impl PlottedOverlap {
         }
     }
 
+    /// The refusal of an explicit building whose lot holds this overlap (`ZONE-11`).
+    pub(crate) fn placement_rejection(self) -> ExplicitServicePlacementRejection {
+        match self {
+            Self::Field => ExplicitServicePlacementRejection::FieldOverlap,
+            Self::ExtractionArea => ExplicitServicePlacementRejection::ExtractionAreaOverlap,
+            Self::Building(_) => ExplicitServicePlacementRejection::SiteOverlap,
+        }
+    }
+
+    /// The refusal of a field (`field`) or an extraction area whose polygon holds this overlap
+    /// (`ZONE-11`).
+    pub(crate) fn work_area_refusal(self, field: bool) -> String {
+        let (label, other) = if field {
+            ("field", "a mine's extraction area")
+        } else {
+            ("extraction area", "another mine's extraction area")
+        };
+        match self {
+            Self::Field if field => "field overlaps another field".to_owned(),
+            Self::Field => format!("{label} overlaps a farm field"),
+            Self::ExtractionArea => format!("{label} overlaps {other}"),
+            Self::Building(_) => format!("{label} overlaps a placed building's lot"),
+        }
+    }
+
     /// The commit's report of this overlap; a building is named by its asset.
     pub(crate) fn rejection(self, core: &SimCore) -> RoadRejection {
         self.rejection_on(&CoreLand::of(core))
@@ -94,13 +121,14 @@ pub(crate) trait RoadLandSource {
     fn extraction(&self) -> &FieldClearanceIndex;
     /// The zoning cells, painted and claimed.
     fn cells(&self) -> &CellStore<Self::Maps>;
-    /// The lowest-index explicit site whose lot bounds meet `min`..`max` and whose lot passes
-    /// `test`, as the allocator's
+    /// The lowest-index explicit site other than `ignore` (a building index) whose lot bounds
+    /// meet `min`..`max` and whose lot passes `test`, as the allocator's
     /// [`crate::simulation::buildings::allocator::BuildingAllocator::first_explicit_site_lot`].
     fn first_explicit_site_lot(
         &self,
         min: Vector2,
         max: Vector2,
+        ignore: Option<usize>,
         test: impl FnMut(&[Vector2; 4]) -> bool,
     ) -> Option<usize>;
     /// Visits the authored parcels (`ZONE-01`, no cell lot) whose bounds may meet `min`..`max`,
@@ -170,10 +198,11 @@ impl RoadLandSource for CoreLand<'_> {
         &self,
         min: Vector2,
         max: Vector2,
+        ignore: Option<usize>,
         test: impl FnMut(&[Vector2; 4]) -> bool,
     ) -> Option<usize> {
         self.allocator
-            .first_explicit_site_lot(min, max, self.zone_cell_m, test)
+            .first_explicit_site_lot(min, max, self.zone_cell_m, ignore, test)
     }
 
     fn visit_authored_parcels(
@@ -211,8 +240,9 @@ impl RoadLandSource for CoreLand<'_> {
 /// overlapped any, a cell, lot or parcel when a new piece covers its road-contact interior and no
 /// replaced piece did ([`road_piece_newly_covers`]). An edit may take land beyond its pieces by
 /// the same rules, as extra footprints (a roundabout's island, decision D-ring:
-/// [`footprint_newly_covers`]). `B` names the buildings as the source does
-/// ([`RoadLandSource::Building`]).
+/// [`footprint_newly_covers`]). A plotted placement (`ZONE-11`) takes the land under its lot or
+/// polygon by the same rules, as one footprint and no pieces ([`RoadLandTake::of_footprint`]).
+/// `B` names the buildings as the source does ([`RoadLandSource::Building`]).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoadLandTake<B = usize> {
     /// The first plotted reservation, pieces in order and each piece's field, then extraction
@@ -255,7 +285,7 @@ impl<B> RoadLandTake<B> {
 impl RoadLandTake {
     /// [`Self::of`] against the live core, as the commit takes it, with no extra footprint.
     pub(crate) fn in_core(core: &SimCore, pieces: &[&PieceMesh], before: &[&PieceMesh]) -> Self {
-        Self::of(&CoreLand::of(core), pieces, before, &[])
+        Self::of(&CoreLand::of(core), pieces, before, &[], None)
     }
 }
 
@@ -285,11 +315,12 @@ impl Cover<'_> {
         }
     }
 
-    // Whether it overlaps a polygon of `index` (fields or extraction areas).
-    fn overlaps(self, index: &FieldClearanceIndex) -> bool {
+    // Whether it overlaps a polygon of `index` (fields or extraction areas) other than the
+    // owner's.
+    fn overlaps(self, index: &FieldClearanceIndex, owner: Option<usize>) -> bool {
         match self {
             Self::Piece(mesh) => index.overlaps_road_piece(mesh),
-            Self::Footprint(footprint) => index.overlaps(footprint, None),
+            Self::Footprint(footprint) => index.overlaps(footprint, owner),
         }
     }
 
@@ -306,7 +337,9 @@ impl Cover<'_> {
 impl<B: Copy + Ord> RoadLandTake<B> {
     /// The take of `pieces`, the pieces the edit installs, and of `extra`, land it takes beyond
     /// them, over `before`, the pieces it replaces, against `land`: the fields, extraction areas
-    /// and explicit sites, cells and parcels. O((pieces + extra) * reservations in their
+    /// and explicit sites, cells and parcels. `owner` is the building (an index) whose own
+    /// field or extraction polygon and own lot the land may overlap: a farm's field or a mine's
+    /// area (`ZONE-11`); `None` for road edits. O((pieces + extra) * reservations in their
     /// bounds * top triangles) plus a lookup per covered cell and lot; a piece with nothing
     /// reserved in its bounds costs one bounds query per index.
     pub(crate) fn of<S: RoadLandSource<Building = B>>(
@@ -314,6 +347,7 @@ impl<B: Copy + Ord> RoadLandTake<B> {
         pieces: &[&PieceMesh],
         before: &[&PieceMesh],
         extra: &[PolygonFootprint<'static>],
+        owner: Option<usize>,
     ) -> Self {
         let covers = || {
             pieces
@@ -321,7 +355,7 @@ impl<B: Copy + Ord> RoadLandTake<B> {
                 .map(|&mesh| Cover::Piece(mesh))
                 .chain(extra.iter().map(Cover::Footprint))
         };
-        let plotted = Self::first_plotted(land, covers(), before);
+        let plotted = Self::first_plotted(land, covers(), before, owner);
         if plotted.is_some() {
             return Self {
                 plotted,
@@ -391,11 +425,25 @@ impl<B: Copy + Ord> RoadLandTake<B> {
         }
     }
 
-    // The first plotted reservation a cover newly covers, covers in order.
+    /// The land a plotted placement takes (`ZONE-11`): [`Self::of`] of its lot or polygon
+    /// `footprint` alone, replacing no piece, `owner` the building whose own polygon and lot it
+    /// may overlap. O(reservations in the footprint's bounds * its vertices) plus a lookup per
+    /// covered cell and lot.
+    pub(crate) fn of_footprint<S: RoadLandSource<Building = B>>(
+        land: &S,
+        footprint: &PolygonFootprint<'static>,
+        owner: Option<usize>,
+    ) -> Self {
+        Self::of(land, &[], &[], std::slice::from_ref(footprint), owner)
+    }
+
+    // The first plotted reservation a cover newly covers, covers in order; `owner`'s own
+    // polygons and lot are not plotted for it.
     fn first_plotted<'a, S: RoadLandSource>(
         land: &S,
         mut covers: impl Iterator<Item = Cover<'a>>,
         before: &[&PieceMesh],
+        owner: Option<usize>,
     ) -> Option<PlottedOverlap> {
         let (fields, extraction) = (land.fields(), land.extraction());
         let fields_before = before.iter().any(|mesh| fields.overlaps_road_piece(mesh));
@@ -403,14 +451,14 @@ impl<B: Copy + Ord> RoadLandTake<B> {
             .iter()
             .any(|mesh| extraction.overlaps_road_piece(mesh));
         covers.find_map(|cover| {
-            if !fields_before && cover.overlaps(fields) {
+            if !fields_before && cover.overlaps(fields, owner) {
                 return Some(PlottedOverlap::Field);
             }
-            if !extraction_before && cover.overlaps(extraction) {
+            if !extraction_before && cover.overlaps(extraction, owner) {
                 return Some(PlottedOverlap::ExtractionArea);
             }
             let (min, max) = cover.query_box();
-            land.first_explicit_site_lot(min, max, |lot| {
+            land.first_explicit_site_lot(min, max, owner, |lot| {
                 let corners = lot.map(|p| DVec2::new(f64::from(p.x), f64::from(p.y)));
                 cover.newly_covers(before, &corners)
             })
@@ -430,6 +478,7 @@ pub(crate) fn first_plotted_overlap<S: RoadLandSource>(
         land,
         pieces.iter().map(|&mesh| Cover::Piece(mesh)),
         before,
+        None,
     )
 }
 

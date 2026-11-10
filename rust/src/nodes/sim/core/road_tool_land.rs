@@ -97,7 +97,7 @@ impl ViewLand<'_> {
     /// The land the view's pieces take: [`RoadLandTake::of`] on this source. Buildings are
     /// named by their handles.
     pub(crate) fn take(&self, pieces: &[&PieceMesh], before: &[&PieceMesh]) -> RoadLandTake<u64> {
-        RoadLandTake::of(self, pieces, before, &[])
+        RoadLandTake::of(self, pieces, before, &[], None)
     }
 }
 
@@ -121,11 +121,12 @@ impl RoadLandSource for ViewLand<'_> {
         &self,
         min: Vector2,
         max: Vector2,
+        ignore: Option<usize>,
         test: impl FnMut(&[Vector2; 4]) -> bool,
     ) -> Option<usize> {
         self.land
             .sites
-            .first_lot(min, max, self.land.zone_cell_m, test)
+            .first_lot(min, max, self.land.zone_cell_m, ignore, test)
     }
 
     fn visit_authored_parcels(

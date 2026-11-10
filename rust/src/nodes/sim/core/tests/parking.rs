@@ -68,7 +68,7 @@ fn commit_before_its_frame(
 // Bays in the bundled small lot.
 const LOT_BAYS: usize = 12;
 
-fn register_lot(core: &mut SimCore) -> String {
+pub(in crate::nodes::sim::core::tests) fn register_lot(core: &mut SimCore) -> String {
     register_lot_toml(
         core,
         include_str!(concat!(

@@ -32,7 +32,7 @@ pub(crate) use index::SavedVacancyOrder;
 pub(crate) use lifecycle::DemandBuildingActionExecution;
 pub(crate) use lifecycle::{BuildingRemovalKind, BuildingRemovalRequest};
 pub(crate) use placement::BuildingSiteEnvironment;
-pub(crate) use placement::ExplicitServicePlacementPreview;
+pub(crate) use placement::{ExplicitPlacementKind, ExplicitServicePlacementPreview};
 pub(crate) use placement::ExplicitSiteSnapshot;
 pub(crate) use placement::SpawnProfileAssetCandidates;
 pub(crate) use placement::construction_duration_hours;
@@ -127,12 +127,15 @@ pub(crate) enum ExplicitServicePlacementRejection {
     NeighborSiteHeightConflict,
     /// The flat support footprint cannot tie into surrounding terrain or roads within slope limits.
     SiteSupportTieInInvalid,
-    /// The selected footprint overlaps an existing building site.
+    /// The selected lot overlaps the lot of a placed (explicit) building (`ZONE-11`: a
+    /// growable building's lot is taken instead).
     SiteOverlap,
     /// The selected footprint overlaps an existing road corridor.
     RoadOverlap,
     /// The selected footprint overlaps a committed agricultural field.
     FieldOverlap,
+    /// The selected lot overlaps a mine's extraction area (`ZONE-11`).
+    ExtractionAreaOverlap,
 }
 
 /// The applicant seeds of buildings placed outside the demand queue (`SIM-02-I`): this bit

@@ -139,6 +139,7 @@ impl RoadCorridorClearance {
 fn corridor_overlaps_explicit_site(core: &SimCore, points: &[Vector3], half_width: f32) -> bool {
     use crate::simulation::agriculture::PolygonFootprint;
     use godot::prelude::Vector2;
+    let cell_m = core.config.zone_cell_m;
     points.windows(2).any(|pair| {
         let start = Vector2::new(pair[0].x, pair[0].z);
         let end = Vector2::new(pair[1].x, pair[1].z);
@@ -150,7 +151,7 @@ fn corridor_overlaps_explicit_site(core: &SimCore, points: &[Vector3], half_widt
         let quad = [start - normal, end - normal, end + normal, start + normal];
         let corridor = PolygonFootprint::new(&quad);
         core.allocator
-            .first_explicit_site_lot(corridor.min, corridor.max, core.config.zone_cell_m, |lot| {
+            .first_explicit_site_lot(corridor.min, corridor.max, cell_m, None, |lot| {
                 corridor.overlaps(&PolygonFootprint::new(lot))
             })
             .is_some()

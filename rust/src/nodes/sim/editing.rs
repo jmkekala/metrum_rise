@@ -5,15 +5,17 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    RoadEditPlan, RoadEditSite, RoadLandTake, RoadRejection, SERVICE_BUILD_COST_PER_LOT_CELL,
-    SimCore, TriedGraphEdit, compile_closure, edge_grade, steepened_profile,
+    CoreLand, RoadEditPlan, RoadEditSite, RoadLandTake, RoadRejection,
+    SERVICE_BUILD_COST_PER_LOT_CELL, SimCore, TriedGraphEdit, compile_closure, edge_grade,
+    steepened_profile,
 };
 use crate::simulation::zoning::CellPaintUndo;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::nodes::simulation_node::vegetation_api::{self, CANOPY_CLEAR_RADIUS_M};
+use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::buildings::allocator::{
-    ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
+    ExplicitPlacementKind, ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
 };
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -37,6 +39,34 @@ pub(crate) const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
 const BULLDOZE_ROAD_PICK_RADIUS_M: f32 = 24.0;
 const BULLDOZE_ROAD_PICK_MARGIN_M: f32 = 0.75;
 const ROAD_UNDO_TOPOLOGY_MARGIN_M: f32 = 40.0;
+
+// The land under an explicit building's lot (`ZONE-11`): its take, or the refusal of the
+// plotted land it holds.
+fn explicit_lot_take(
+    land: &CoreLand,
+    lot: &[Vector2; 4],
+) -> Result<RoadLandTake, ExplicitServicePlacementRejection> {
+    let take = RoadLandTake::of_footprint(land, &PolygonFootprint::new(lot), None);
+    match take.plotted {
+        Some(overlap) => Err(overlap.placement_rejection()),
+        None => Ok(take),
+    }
+}
+
+// The land under a field (`field`) or an extraction area of `owner` (`ZONE-11`): its take, the
+// owner's own polygon and lot excepted, or the refusal of the plotted land it holds.
+fn work_area_take(
+    land: &CoreLand,
+    footprint: &PolygonFootprint<'static>,
+    owner: usize,
+    field: bool,
+) -> Result<RoadLandTake, String> {
+    let take = RoadLandTake::of_footprint(land, footprint, Some(owner));
+    match take.plotted {
+        Some(overlap) => Err(overlap.work_area_refusal(field)),
+        None => Ok(take),
+    }
+}
 
 /// Axis-aligned world bounds of one player polygon, or `None` for fewer than three points.
 pub(crate) fn polygon_world_bounds(points: &[Vector2]) -> Option<(Vector2, Vector2)> {
@@ -1816,17 +1846,7 @@ impl SimCore {
         world_x: f32,
         world_z: f32,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        self.allocator.preview_explicit_service_placement(
-            asset_id,
-            Vector2::new(world_x, world_z),
-            &self.zoning,
-            &self.region_graph,
-            &self.transit_network.roadbed,
-            &self.heightmap,
-            &catalog,
-        )
+        self.explicit_placement_preview(ExplicitPlacementKind::Service, asset_id, world_x, world_z)
     }
 
     /// Places one explicit service building, charging its build cost to the city treasury.
@@ -1836,34 +1856,14 @@ impl SimCore {
         world_x: f32,
         world_z: f32,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let building_idx = self.allocator.execute_explicit_service_placement(
+        let building_idx = self.place_explicit_building(
+            ExplicitPlacementKind::Service,
             asset_id,
-            Vector2::new(world_x, world_z),
-            &self.zoning,
-            &self.region_graph,
-            &self.transit_network.roadbed,
-            &self.heightmap,
-            &catalog,
-            &tuning,
+            world_x,
+            world_z,
         )?;
-
         self.register_service_input_capacity(building_idx);
-
-        if !self.benchmark_mode
-            && let Some(building) = self.allocator.buildings.get(building_idx)
-        {
-            let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
-            self.treasury
-                .deduct_build_cost(lot_cells * SERVICE_BUILD_COST_PER_LOT_CELL);
-        }
-        self.rebuild_building_entrances_internal();
-        self.publish_pending_building_site_changes();
+        self.finish_explicit_placement(building_idx);
         Ok(building_idx)
     }
 
@@ -1874,22 +1874,59 @@ impl SimCore {
         world_x: f32,
         world_z: f32,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        self.allocator.preview_explicit_industry_placement(
-            asset_id,
-            Vector2::new(world_x, world_z),
-            &self.zoning,
-            &self.region_graph,
-            &self.transit_network.roadbed,
-            &self.heightmap,
-            &catalog,
-        )
+        self.explicit_placement_preview(ExplicitPlacementKind::Industry, asset_id, world_x, world_z)
     }
 
     /// Places one explicit industry building, charging its build cost to the city treasury.
     pub(crate) fn place_industry_building_internal(
         &mut self,
+        asset_id: &str,
+        world_x: f32,
+        world_z: f32,
+    ) -> Result<usize, ExplicitServicePlacementRejection> {
+        let building_idx = self.place_explicit_building(
+            ExplicitPlacementKind::Industry,
+            asset_id,
+            world_x,
+            world_z,
+        )?;
+        self.finish_explicit_placement(building_idx);
+        Ok(building_idx)
+    }
+
+    // The preview of an explicit building, judged as its commit judges it, with the land under
+    // its lot read from the live core as it stands (a stale site index scans every site).
+    fn explicit_placement_preview(
+        &self,
+        kind: ExplicitPlacementKind,
+        asset_id: &str,
+        world_x: f32,
+        world_z: f32,
+    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let land = CoreLand::of(self);
+        self.allocator.preview_explicit_placement(
+            kind,
+            asset_id,
+            Vector2::new(world_x, world_z),
+            self.config.zone_cell_m,
+            &self.region_graph,
+            &self.transit_network.roadbed,
+            &self.heightmap,
+            &catalog,
+            |lot| explicit_lot_take(&land, lot).map(|take| take.buildings),
+        )
+    }
+
+    // Places an explicit building (`ZONE-11`): every check first, the land under its lot among
+    // them (plotted land refuses); then the zoned land under the lot is taken, demolishing the
+    // growable buildings on it, removing their lots and erasing the covered cells' paint, and
+    // the site is placed. Nothing after the take refuses. A placement has no undo record
+    // (decision D-undo), so the erase is final. O(the placement's checks + the take).
+    fn place_explicit_building(
+        &mut self,
+        kind: ExplicitPlacementKind,
         asset_id: &str,
         world_x: f32,
         world_z: f32,
@@ -1900,17 +1937,43 @@ impl SimCore {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let building_idx = self.allocator.execute_explicit_industry_placement(
+        // The explicit sites are queried through the site index.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+        let land = CoreLand::of(self);
+        let mut taken = None;
+        let prepared = self.allocator.prepare_explicit_placement(
+            kind,
             asset_id,
             Vector2::new(world_x, world_z),
-            &self.zoning,
+            self.config.zone_cell_m,
             &self.region_graph,
             &self.transit_network.roadbed,
             &self.heightmap,
             &catalog,
-            &tuning,
+            |lot| {
+                let take = explicit_lot_take(&land, lot)?;
+                let buildings = take.buildings.clone();
+                taken = Some((take, *lot));
+                Ok(buildings)
+            },
         )?;
+        // Nothing below refuses the placement.
+        if let Some((take, lot)) = taken {
+            self.take_land_for_edit(take);
+            debug_assert!(
+                explicit_lot_take(&CoreLand::of(self), &lot).is_ok_and(|take| take.is_empty()),
+                "the land under the lot was taken"
+            );
+        }
+        Ok(self
+            .allocator
+            .place_explicit_site(prepared, &catalog, &tuning))
+    }
 
+    // An explicit building's tail: its cost, the lot plan (which takes the erased paint, if any:
+    // no new cell inherits it, as the site blocks the land), entrances and site publication.
+    fn finish_explicit_placement(&mut self, building_idx: usize) {
         if !self.benchmark_mode
             && let Some(building) = self.allocator.buildings.get(building_idx)
         {
@@ -1920,10 +1983,29 @@ impl SimCore {
         }
         self.rebuild_building_entrances_internal();
         self.publish_pending_building_site_changes();
-        Ok(building_idx)
     }
 
-    /// Commits or replaces a resource-extraction polygon for one placed industry building.
+    // Takes the zoned land a field or an extraction area of `owner` covers (`ZONE-11`), `take`
+    // computed on the land as it is: the take's buildings are demolished, which may swap-remove
+    // `owner` to a lower index. Returns the owner's index after the take and whether paint was
+    // erased (the edit then plans its lots: decision D-lot-plan). The erase has no undo record
+    // (decision D-undo).
+    fn take_land_for_work_area(&mut self, take: RoadLandTake, owner: usize) -> (usize, bool) {
+        let handle = self.allocator.building_handles.handle(owner);
+        let erased = self.take_land_for_edit(take).is_some();
+        let owner = self
+            .allocator
+            .building_handles
+            .resolve(handle)
+            .expect("a work area's owner is plotted, never taken");
+        (owner, erased)
+    }
+
+    /// Commits or replaces a resource-extraction polygon for one placed industry building
+    /// (`ZONE-11`): validated with the land under it (plotted land refuses), then the zoned land
+    /// it covers is taken, demolishing the growable buildings there, and the area written;
+    /// nothing after the take refuses. The land of the old and new polygons is replanned, as the
+    /// area blocks cells (decision D-extraction-blocks).
     pub(crate) fn commit_extractor_polygon_internal(
         &mut self,
         building_idx: usize,
@@ -1931,18 +2013,71 @@ impl SimCore {
     ) -> Result<crate::simulation::extraction::ExtractorSiteSummary, String> {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
-        let previous_area = self
+        self.prepare_field_polygon_validation()?;
+        let land = CoreLand::of(self);
+        let mut taken = None;
+        self.resource_extraction.validate_site(
+            building_idx,
+            polygon_world.clone(),
+            &self.resource_deposits,
+            &self.allocator,
+            &self.transit_network.roadbed,
+            |footprint| {
+                let take = work_area_take(&land, footprint, building_idx, false)?;
+                let buildings = take.buildings.clone();
+                taken = Some(take);
+                Ok(buildings)
+            },
+        )?;
+        // Nothing below refuses the area.
+        let (building_idx, erased) =
+            self.take_land_for_work_area(taken.unwrap_or_default(), building_idx);
+        self.debug_assert_work_area_land_taken(&polygon_world, building_idx, false);
+        let previous = self
             .resource_extraction
             .site_for_building(building_idx)
-            .map_or(0.0, |site| site.area_m2);
-        let summary = self.resource_extraction.commit_site(
-            building_idx,
-            polygon_world,
-            &self.resource_deposits,
-            &mut self.allocator,
-        )?;
+            .map(|site| (site.area_m2, polygon_world_bounds(&site.polygon_world)));
+        let committed = polygon_world_bounds(&polygon_world);
+        let summary = self
+            .resource_extraction
+            .commit_site(
+                building_idx,
+                polygon_world,
+                &self.resource_deposits,
+                &mut self.allocator,
+                &self.transit_network.roadbed,
+                |_| Ok(Vec::new()),
+            )
+            .expect("an area validated before its land was taken commits");
+        let previous_area = previous.map_or(0.0, |(area, _)| area);
         self.charge_industry_area_expansion(building_idx, previous_area, summary.area_m2);
+        for bounds in [previous.and_then(|(_, bounds)| bounds), committed]
+            .into_iter()
+            .flatten()
+        {
+            self.zoning.mark_cell_lots_dirty(
+                crate::simulation::zoning::cells::CellBounds::from_points(
+                    [bounds.0, bounds.1].map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))),
+                ),
+            );
+        }
+        if erased {
+            self.plan_lots_after_erase();
+        }
         Ok(summary)
+    }
+
+    // Debug builds: after a work area's take, the land under its polygon holds nothing more to
+    // take or refuse (`ZONE-11`). O(the take).
+    fn debug_assert_work_area_land_taken(&self, polygon: &[Vector2], owner: usize, field: bool) {
+        if cfg!(debug_assertions) {
+            let footprint = PolygonFootprint::new(polygon);
+            let fresh = work_area_take(&CoreLand::of(self), &footprint, owner, field);
+            debug_assert!(
+                fresh.is_ok_and(|take| take.is_empty()),
+                "the land under the area was taken"
+            );
+        }
     }
 
     /// Quotes the extra construction charge and all-import daily utilities for a valid area.
@@ -2009,6 +2144,8 @@ impl SimCore {
             .deduct_build_cost(profile.area_expansion_cost(previous_area, area));
     }
 
+    // The live inputs a field or extraction area is validated against: the current roadbed and
+    // the site query index.
     fn prepare_field_polygon_validation(&mut self) -> Result<(), String> {
         if !self.transit_network.roadbed.is_current() {
             return Err("road surfaces are updating; try again shortly".to_owned());
@@ -2025,12 +2162,16 @@ impl SimCore {
         polygon_world: &[Vector2],
     ) -> Result<f32, String> {
         self.prepare_field_polygon_validation()?;
+        let land = CoreLand::of(self);
         self.agriculture.validate_site(
             building_idx,
             polygon_world,
             &self.allocator,
             &self.zoning,
             &self.transit_network.roadbed,
+            |footprint| {
+                work_area_take(&land, footprint, building_idx, true).map(|take| take.buildings)
+            },
         )
     }
 
@@ -2061,7 +2202,10 @@ impl SimCore {
         self.commit_field_polygon_internal(building_idx, polygon_world)
     }
 
-    /// Commits a validated field and immediately rebuilds its area and placement reservation.
+    /// Commits a validated field and immediately rebuilds its area and placement reservation
+    /// (`ZONE-11`): validated with the land under it (plotted land refuses, the farm's own lot
+    /// and old field excepted), then the zoned land it covers is taken, demolishing the
+    /// growable buildings there, and the field written; nothing after the take refuses.
     pub(crate) fn commit_field_polygon_internal(
         &mut self,
         building_idx: usize,
@@ -2070,6 +2214,25 @@ impl SimCore {
         // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
         self.adopt_pending_cell_lots();
         self.prepare_field_polygon_validation()?;
+        let land = CoreLand::of(self);
+        let mut taken = None;
+        self.agriculture.validate_site(
+            building_idx,
+            &polygon_world,
+            &self.allocator,
+            &self.zoning,
+            &self.transit_network.roadbed,
+            |footprint| {
+                let take = work_area_take(&land, footprint, building_idx, true)?;
+                let buildings = take.buildings.clone();
+                taken = Some(take);
+                Ok(buildings)
+            },
+        )?;
+        // Nothing below refuses the field.
+        let (building_idx, erased) =
+            self.take_land_for_work_area(taken.unwrap_or_default(), building_idx);
+        self.debug_assert_work_area_land_taken(&polygon_world, building_idx, true);
         let previous_area = self
             .agriculture
             .site_for_building(building_idx)
@@ -2081,13 +2244,17 @@ impl SimCore {
             .site_for_building(building_idx)
             .and_then(|site| polygon_world_bounds(&site.polygon_world));
         let committed = polygon_world_bounds(&polygon_world);
-        let summary = self.agriculture.commit_site(
-            building_idx,
-            polygon_world,
-            &mut self.allocator,
-            &self.zoning,
-            &self.transit_network.roadbed,
-        )?;
+        let summary = self
+            .agriculture
+            .commit_site(
+                building_idx,
+                polygon_world,
+                &mut self.allocator,
+                &self.zoning,
+                &self.transit_network.roadbed,
+                |_| Ok(Vec::new()),
+            )
+            .expect("a field validated before its land was taken commits");
         self.charge_industry_area_expansion(building_idx, previous_area, summary.area_m2);
         for bounds in [previous, committed].into_iter().flatten() {
             self.zoning.mark_cell_lots_dirty(
@@ -2096,6 +2263,9 @@ impl SimCore {
                 ),
             );
             self.invalidate_vegetation_over(bounds);
+        }
+        if erased {
+            self.plan_lots_after_erase();
         }
         Ok(summary)
     }

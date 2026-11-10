@@ -109,13 +109,16 @@ impl SimulationNode {
                 "building site cannot tie into surrounding terrain"
             }
             ExplicitServicePlacementRejection::SiteOverlap => {
-                "building footprint overlaps an existing site"
+                "building lot overlaps a placed building's lot"
             }
             ExplicitServicePlacementRejection::RoadOverlap => {
                 "building footprint overlaps an existing road"
             }
             ExplicitServicePlacementRejection::FieldOverlap => {
-                "building footprint overlaps an existing field"
+                "building lot overlaps a farm field"
+            }
+            ExplicitServicePlacementRejection::ExtractionAreaOverlap => {
+                "building lot overlaps a mine's extraction area"
             }
         }
     }
@@ -165,13 +168,16 @@ impl SimulationNode {
                 "building site cannot tie into surrounding terrain"
             }
             ExplicitServicePlacementRejection::SiteOverlap => {
-                "building footprint overlaps an existing site"
+                "building lot overlaps a placed building's lot"
             }
             ExplicitServicePlacementRejection::RoadOverlap => {
                 "building footprint overlaps an existing road"
             }
             ExplicitServicePlacementRejection::FieldOverlap => {
-                "building footprint overlaps an existing field"
+                "building lot overlaps a farm field"
+            }
+            ExplicitServicePlacementRejection::ExtractionAreaOverlap => {
+                "building lot overlaps a mine's extraction area"
             }
         }
     }

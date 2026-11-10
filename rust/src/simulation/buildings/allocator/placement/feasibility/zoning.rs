@@ -77,6 +77,10 @@ impl BuildingAllocator {
         if self.field_clearance.overlaps_polygon(&geometry.corners) {
             return Err("field_overlap");
         }
+        // Zoned land an extraction area took does not grow back in the pit (`ZONE-11`).
+        if self.extraction_clearance.overlaps_polygon(&geometry.corners) {
+            return Err("extraction_area_overlap");
+        }
         if self.parcel_geometry_overlaps_explicit_site(geometry, zoning.config.zone_cell_m) {
             return Err("parcel overlaps a placed building site");
         }
@@ -190,6 +194,7 @@ impl BuildingAllocator {
             height,
             f32::from_bits(key.cell_size),
             key.replaced_building,
+            &[],
         )?;
         if !building_site_support_tie_in_is_valid(
             &footprint,

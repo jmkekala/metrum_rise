@@ -249,6 +249,9 @@ pub(super) fn validate_reservations(
     }
     // This one-time load pass visits each external owner and uses existing cell chunk/mask
     // queries for its footprint. It never compares every saved cell with every external owner.
+    // Extraction areas are not owners here: saves hold painted cells under areas drawn before
+    // they blocked zoning (`ZONE-11`); those keep their paint until erased or taken by the next
+    // edit of the area, and the unpainted ones fall out at regeneration.
     if agriculture
         .sites()
         .par_iter()

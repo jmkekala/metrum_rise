@@ -119,6 +119,7 @@ impl SimCore {
         };
         let graph = Arc::clone(inputs.graph);
         let fields = Arc::clone(&self.allocator.field_clearance);
+        let extraction = Arc::clone(&self.allocator.extraction_clearance);
         let sites = self.allocator.explicit_site_snapshot();
         let sizes = self.cached_cell_lot_sizes().to_vec();
         let cell_m = self.config.zone_cell_m;
@@ -133,7 +134,7 @@ impl SimCore {
                 std::thread::sleep(delay);
             }
             let planned = deferred.plan(&graph, |corners| {
-                footprint_blocked(&fields, &sites, &roadbed, cell_m, corners)
+                footprint_blocked(&fields, &extraction, &sites, &roadbed, cell_m, corners)
             });
             routing.start();
             planned

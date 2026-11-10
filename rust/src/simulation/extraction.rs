@@ -6,6 +6,7 @@
 //! live simulation state: a placed building owns one player-drawn polygon, a
 //! reserve snapshot derived from the deposit grid, and a depletion counter.
 
+use crate::simulation::agriculture::{PolygonFootprint, work_area_clearance};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntimeKind, RuntimeEconomyCatalog, load_runtime_economy_catalog,
@@ -14,6 +15,7 @@ use crate::simulation::economy::households::{
     OPERATIONAL_HOURS_PER_DAY, building_operation_factors, consume_hourly_production_inputs,
     scaled_output_buffer_capacity_units_for_building,
 };
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
 use crate::simulation::work_area::{
     explicit_work_area_scale, remove_work_area_owner, top_up_explicit_work_area_startup_budget,
@@ -165,14 +167,22 @@ impl ResourceExtractionSystem {
         self.bump_visual_revision();
     }
 
-    /// Commits or replaces the extraction polygon for one placed extractor building.
-    pub(crate) fn commit_site(
-        &mut self,
+    /// Validates an extraction polygon for one placed extractor building without changing
+    /// anything, and returns the site it would commit: the resource, the geometry, the link to
+    /// the building, then `land` on the polygon (`ZONE-11`: plotted land refuses; the answer is
+    /// the buildings the area will demolish, descending), then the building sites and roads it
+    /// may not cover ([`crate::simulation::agriculture::work_area_clearance`], decision
+    /// D-extraction-rules), then the reserve.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn validate_site(
+        &self,
         building_idx: usize,
         polygon_world: Vec<Vector2>,
         deposits: &ResourceDepositSystem,
-        allocator: &mut BuildingAllocator,
-    ) -> Result<ExtractorSiteSummary, String> {
+        allocator: &BuildingAllocator,
+        roads: &RoadbedSystem,
+        land: impl FnOnce(&PolygonFootprint<'static>) -> Result<Vec<usize>, String>,
+    ) -> Result<ExtractorSite, String> {
         let building = allocator
             .buildings
             .get(building_idx)
@@ -193,11 +203,13 @@ impl ResourceExtractionSystem {
             "extractor",
             EXTRACTOR_POLYGON_LINK_DISTANCE_M,
         )?;
+        let footprint = PolygonFootprint::new(&polygon_world);
+        let taken = land(&footprint)?;
+        work_area_clearance(&footprint, "extraction area", allocator, roads, &taken)?;
 
         let position = self
             .sites
             .binary_search_by_key(&building_idx, |site| site.building_idx);
-        let had_site = position.is_ok();
         let reserve_density_kg_per_m2 = position
             .ok()
             .map_or(COAL_UNITS_PER_FULL_RICHNESS_M2, |idx| {
@@ -217,7 +229,7 @@ impl ResourceExtractionSystem {
         // let a later expansion grant that same reserve again.
         let total_reserve_units = sampled_reserve_units.max(extracted_units);
         validate_extractor_reserve(total_reserve_units, extracted_units)?;
-        let site = ExtractorSite {
+        Ok(ExtractorSite {
             building_idx,
             resource_id,
             polygon_world,
@@ -225,6 +237,37 @@ impl ResourceExtractionSystem {
             total_reserve_units,
             reserve_density_kg_per_m2,
             extracted_units,
+        })
+    }
+
+    /// Commits or replaces the extraction polygon for one placed extractor building, validated
+    /// as [`Self::validate_site`] does with `land`; nothing is written on a refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_site(
+        &mut self,
+        building_idx: usize,
+        polygon_world: Vec<Vector2>,
+        deposits: &ResourceDepositSystem,
+        allocator: &mut BuildingAllocator,
+        roads: &RoadbedSystem,
+        land: impl FnOnce(&PolygonFootprint<'static>) -> Result<Vec<usize>, String>,
+    ) -> Result<ExtractorSiteSummary, String> {
+        let site = self.validate_site(
+            building_idx,
+            polygon_world,
+            deposits,
+            allocator,
+            roads,
+            land,
+        )?;
+        let position = self
+            .sites
+            .binary_search_by_key(&building_idx, |site| site.building_idx);
+        let had_site = position.is_ok();
+        let summary = ExtractorSiteSummary {
+            area_m2: site.area_m2,
+            total_reserve_units: site.total_reserve_units,
+            remaining_reserve_units: site.total_reserve_units - site.extracted_units,
         };
         let area_scale = site.productive_area_scale();
         allocator
@@ -243,11 +286,7 @@ impl ResourceExtractionSystem {
             top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
         }
 
-        Ok(ExtractorSiteSummary {
-            area_m2,
-            total_reserve_units,
-            remaining_reserve_units: total_reserve_units - extracted_units,
-        })
+        Ok(summary)
     }
 
     /// Rebuilds cached productive area and the allocator's extraction-area index from committed
@@ -744,6 +783,9 @@ mod tests {
             .profile_for_id("coal_mine_basic")
             .unwrap()
             .runtime_id;
+        // West of the deposit, within the link distance: an area may not cover its own mine
+        // (`ZONE-11`, decision D-extraction-rules).
+        mine.center_x = -25.0;
         allocator.buildings.push(mine);
         allocator.push_building_site_client(0, 10.0);
         let polygon = |right| {
@@ -754,9 +796,10 @@ mod tests {
                 Vector2::new(-5.0, 5.0),
             ]
         };
+        let roads = RoadbedSystem::new(512.0);
         let mut extraction = ResourceExtractionSystem::new();
         let first = extraction
-            .commit_site(0, polygon(15.0), &deposits, &mut allocator)
+            .commit_site(0, polygon(15.0), &deposits, &mut allocator, &roads, |_| Ok(Vec::new()))
             .unwrap();
         assert_eq!(
             first.total_reserve_units,
@@ -770,7 +813,9 @@ mod tests {
         allocator.buildings[0].operating_budget = 1.0;
         for (right, expected_remaining) in [(15.0, 300.0), (5.0, 0.0), (15.0, 300.0)] {
             let summary = extraction
-                .commit_site(0, polygon(right), &deposits, &mut allocator)
+                .commit_site(0, polygon(right), &deposits, &mut allocator, &roads, |_| {
+                    Ok(Vec::new())
+                })
                 .unwrap();
             let site = extraction.site_for_building(0).unwrap();
             assert_eq!(

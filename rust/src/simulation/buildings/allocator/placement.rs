@@ -626,40 +626,31 @@ impl BuildingAllocator {
         else {
             return Err(DemandSpawnPlacementRejection::SlotUnavailable);
         };
-        self.prepare_site_support(&mut resolved, graph, road_surface, terrain)?;
+        self.prepare_site_support(&mut resolved, &[], graph, road_surface, terrain)?;
         Ok(self.commit_resolved_slot(resolved, applicant_seed, zoning, catalog, tuning))
     }
 
+    /// Previews an explicit building of `kind` at the road frontage nearest `point`, validated
+    /// as its commit validates it ([`Self::prepare_explicit_placement`]) in the same order:
+    /// sidewalk, `land`, roads, support. `land` judges the land under the lot's corners and
+    /// answers the buildings it would demolish, descending (`ZONE-11`: plotted land refuses,
+    /// zoned land is taken); the support solve ignores those. The pose is kept and the first
+    /// refusal named.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn preview_explicit_service_placement(
+    pub(crate) fn preview_explicit_placement(
         &self,
+        kind: ExplicitPlacementKind,
         asset_id: &str,
         point: Vector2,
-        zoning: &ZoningSystem,
+        zone_cell_m: f32,
         graph: &RegionGraph,
         road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
+        land: impl FnOnce(&[Vector2; 4]) -> Result<Vec<usize>, ExplicitServicePlacementRejection>,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
-        let params = self.explicit_service_placement_params(asset_id, catalog)?;
-        let placement = self.resolve_explicit_service_placement(
-            asset_id,
-            &params,
-            point,
-            zoning.config.zone_cell_m,
-            graph,
-        )?;
-        self.preview_resolved_site(placement, graph, road_surface, terrain, zoning)
-    }
-
-    fn preview_resolved_site(
-        &self,
-        mut placement: ResolvedPlacement,
-        graph: &RegionGraph,
-        road_surface: &RoadbedSystem,
-        terrain: &TerrainSystem,
-        zoning: &ZoningSystem,
-    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+        let mut placement =
+            self.resolve_explicit_placement(kind, asset_id, point, zone_cell_m, graph, catalog)?;
         // The sidewalk's refusal comes first: a shoulder's own site problems would only hide it.
         let sidewalk = Self::validate_explicit_frontage_side(&placement, graph);
         // Keep a resolved invalid pose, but avoid apron work when cheap overlap checks reject it.
@@ -671,25 +662,25 @@ impl BuildingAllocator {
                     .unwrap_or_else(|| explicit_rejection_from_site_rejection(rejection))
             })?;
         placement.support_height_m = preferred_height;
-        let rejection = sidewalk
-            .and_then(|()| self.validate_explicit_zoning_reservation(&placement, zoning))
-            .and_then(|()| self.validate_explicit_site_overlap(&placement))
-            .err()
-            .or_else(|| {
-                self.validate_explicit_site_road_overlap(&placement, graph)
-                    .err()
-            })
-            .or_else(|| {
-                self.finalize_site_support(
-                    &mut placement,
-                    &connections,
-                    graph,
-                    road_surface,
-                    terrain,
-                )
+        let taken = sidewalk.and_then(|()| land(&self.placement_site_corners(&placement)));
+        let rejection = match taken {
+            Err(rejection) => Some(rejection),
+            Ok(taken) => self
+                .validate_explicit_site_road_overlap(&placement, graph)
                 .err()
-                .map(explicit_rejection_from_site_rejection)
-            });
+                .or_else(|| {
+                    self.finalize_site_support(
+                        &mut placement,
+                        &connections,
+                        &taken,
+                        graph,
+                        road_surface,
+                        terrain,
+                    )
+                    .err()
+                    .map(explicit_rejection_from_site_rejection)
+                }),
+        };
         Ok(ExplicitServicePlacementPreview {
             corners: self.placement_site_corners(&placement),
             center_2d: placement.center_2d,
@@ -700,6 +691,87 @@ impl BuildingAllocator {
         })
     }
 
+    /// Validates an explicit building of `kind` at the road frontage nearest `point` without
+    /// writing anything: its sidewalk, then `land` on the lot's corners (`ZONE-11`: plotted land
+    /// refuses; the answer is the buildings the placement will demolish, descending), then
+    /// the road overlap and the support solve, which ignores those buildings (they are gone
+    /// when the site is placed, and a removed neighbour only lifts a constraint). Every refusal
+    /// comes before the caller takes the land; [`Self::place_explicit_site`] then cannot refuse.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_explicit_placement(
+        &self,
+        kind: ExplicitPlacementKind,
+        asset_id: &str,
+        point: Vector2,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        road_surface: &RoadbedSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+        land: impl FnOnce(&[Vector2; 4]) -> Result<Vec<usize>, ExplicitServicePlacementRejection>,
+    ) -> Result<PreparedExplicitPlacement, ExplicitServicePlacementRejection> {
+        let mut placement =
+            self.resolve_explicit_placement(kind, asset_id, point, zone_cell_m, graph, catalog)?;
+        Self::validate_explicit_frontage_side(&placement, graph)?;
+        let taken = land(&self.placement_site_corners(&placement))?;
+        self.validate_explicit_site_road_overlap(&placement, graph)?;
+        self.prepare_site_support(&mut placement, &taken, graph, road_surface, terrain)
+            .map_err(explicit_rejection_from_site_rejection)?;
+        Ok(PreparedExplicitPlacement(placement))
+    }
+
+    /// Places a prepared explicit building (after the caller took its land) and returns its
+    /// index. Never refuses.
+    pub(crate) fn place_explicit_site(
+        &mut self,
+        prepared: PreparedExplicitPlacement,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> usize {
+        let building_idx = self.place_building_instance(prepared.0, None, catalog, tuning);
+        debug_log!(
+            "economy",
+            "explicit site placed building idx={} asset_id={} edge={} center=({:.1}, {:.1}) support_height_m={:.2}",
+            building_idx,
+            self.buildings[building_idx].asset_id,
+            self.buildings[building_idx].edge_idx,
+            self.buildings[building_idx].center_x,
+            self.buildings[building_idx].center_y,
+            self.buildings[building_idx].support_height_m,
+        );
+        building_idx
+    }
+
+    /// [`Self::preview_explicit_placement`] of a service building with no land under it: the
+    /// allocator's own checks, for tests without a core.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn preview_explicit_service_placement(
+        &self,
+        asset_id: &str,
+        point: Vector2,
+        zoning: &ZoningSystem,
+        graph: &RegionGraph,
+        road_surface: &RoadbedSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+        self.preview_explicit_placement(
+            ExplicitPlacementKind::Service,
+            asset_id,
+            point,
+            zoning.config.zone_cell_m,
+            graph,
+            road_surface,
+            terrain,
+            catalog,
+            |_| Ok(Vec::new()),
+        )
+    }
+
+    /// [`Self::prepare_explicit_placement`] and [`Self::place_explicit_site`] of a service
+    /// building with no land under it: the allocator's own checks, for tests without a core.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_explicit_service_placement(
         &mut self,
@@ -712,108 +784,18 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
-        let params = self.explicit_service_placement_params(asset_id, catalog)?;
-        let placement = self.resolve_explicit_service_placement(
+        let prepared = self.prepare_explicit_placement(
+            ExplicitPlacementKind::Service,
             asset_id,
-            &params,
             point,
             zoning.config.zone_cell_m,
-            graph,
-        )?;
-        self.commit_explicit_site(
-            placement,
             graph,
             road_surface,
             terrain,
             catalog,
-            tuning,
-            zoning,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn preview_explicit_industry_placement(
-        &self,
-        asset_id: &str,
-        point: Vector2,
-        zoning: &ZoningSystem,
-        graph: &RegionGraph,
-        road_surface: &RoadbedSystem,
-        terrain: &TerrainSystem,
-        catalog: &RuntimeEconomyCatalog,
-    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
-        let params = self.explicit_industry_placement_params(asset_id, catalog)?;
-        let placement = self.resolve_explicit_service_placement(
-            asset_id,
-            &params,
-            point,
-            zoning.config.zone_cell_m,
-            graph,
+            |_| Ok(Vec::new()),
         )?;
-        self.preview_resolved_site(placement, graph, road_surface, terrain, zoning)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn execute_explicit_industry_placement(
-        &mut self,
-        asset_id: &str,
-        point: Vector2,
-        zoning: &ZoningSystem,
-        graph: &RegionGraph,
-        road_surface: &RoadbedSystem,
-        terrain: &TerrainSystem,
-        catalog: &RuntimeEconomyCatalog,
-        tuning: &RuntimeEconomyTuning,
-    ) -> Result<usize, ExplicitServicePlacementRejection> {
-        let params = self.explicit_industry_placement_params(asset_id, catalog)?;
-        let placement = self.resolve_explicit_service_placement(
-            asset_id,
-            &params,
-            point,
-            zoning.config.zone_cell_m,
-            graph,
-        )?;
-        self.commit_explicit_site(
-            placement,
-            graph,
-            road_surface,
-            terrain,
-            catalog,
-            tuning,
-            zoning,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn commit_explicit_site(
-        &mut self,
-        mut placement: ResolvedPlacement,
-        graph: &RegionGraph,
-        road_surface: &RoadbedSystem,
-        terrain: &TerrainSystem,
-        catalog: &RuntimeEconomyCatalog,
-        tuning: &RuntimeEconomyTuning,
-        zoning: &ZoningSystem,
-    ) -> Result<usize, ExplicitServicePlacementRejection> {
-        Self::validate_explicit_frontage_side(&placement, graph)?;
-        self.validate_explicit_zoning_reservation(&placement, zoning)?;
-        self.validate_explicit_site_overlap(&placement)?;
-        self.validate_explicit_site_road_overlap(&placement, graph)?;
-        self.prepare_site_support(&mut placement, graph, road_surface, terrain)
-            .map_err(explicit_rejection_from_site_rejection)?;
-
-        let building_idx = self.place_building_instance(placement, None, catalog, tuning);
-        debug_log!(
-            "economy",
-            "explicit site placed building idx={} asset_id={} edge={} center=({:.1}, {:.1}) support_height_m={:.2}",
-            building_idx,
-            self.buildings[building_idx].asset_id,
-            self.buildings[building_idx].edge_idx,
-            self.buildings[building_idx].center_x,
-            self.buildings[building_idx].center_y,
-            self.buildings[building_idx].support_height_m,
-        );
-        Ok(building_idx)
+        Ok(self.place_explicit_site(prepared, catalog, tuning))
     }
 
     // Every placed building stands on a side with a sidewalk (`ROAD-109`), through preview and
@@ -829,17 +811,26 @@ impl BuildingAllocator {
         }
     }
 
-    fn validate_explicit_zoning_reservation(
+    // The asset checked as `kind` and posed at the road frontage nearest `point`: graph and
+    // registry only.
+    fn resolve_explicit_placement(
         &self,
-        placement: &ResolvedPlacement,
-        zoning: &ZoningSystem,
-    ) -> Result<(), ExplicitServicePlacementRejection> {
-        let footprint = PolygonFootprint::new(&self.placement_site_corners(placement));
-        if zoning.overlaps_reservation(&footprint) {
-            Err(ExplicitServicePlacementRejection::SiteOverlap)
-        } else {
-            Ok(())
-        }
+        kind: ExplicitPlacementKind,
+        asset_id: &str,
+        point: Vector2,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Result<ResolvedPlacement, ExplicitServicePlacementRejection> {
+        let params = match kind {
+            ExplicitPlacementKind::Service => {
+                self.explicit_service_placement_params(asset_id, catalog)
+            }
+            ExplicitPlacementKind::Industry => {
+                self.explicit_industry_placement_params(asset_id, catalog)
+            }
+        }?;
+        self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)
     }
 
     fn explicit_service_placement_params(
@@ -1078,38 +1069,6 @@ impl BuildingAllocator {
         best
     }
 
-    fn validate_explicit_site_overlap(
-        &self,
-        placement: &ResolvedPlacement,
-    ) -> Result<(), ExplicitServicePlacementRejection> {
-        if self
-            .field_clearance
-            .overlaps_polygon(&self.placement_site_corners(placement))
-        {
-            return Err(ExplicitServicePlacementRejection::FieldOverlap);
-        }
-        let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
-        for building_idx in self.lot_candidate_indices_for_bounds(
-            (min_x, min_z, max_x, max_z),
-            placement.zone_cell_m,
-            placement.replaced_building,
-        ) {
-            let Some((site_min_x, site_min_z, site_max_x, site_max_z)) =
-                self.site_world_bounds(building_idx)
-            else {
-                continue;
-            };
-            let overlaps = site_min_x < max_x - EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M
-                && site_max_x > min_x + EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M
-                && site_min_z < max_z - EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M
-                && site_max_z > min_z + EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M;
-            if overlaps {
-                return Err(ExplicitServicePlacementRejection::SiteOverlap);
-            }
-        }
-        Ok(())
-    }
-
     fn validate_explicit_site_road_overlap(
         &self,
         placement: &ResolvedPlacement,
@@ -1280,26 +1239,44 @@ impl BuildingAllocator {
         zone_cell_m: f32,
         overlaps: impl Fn(&[Vector2; 4]) -> bool,
     ) -> bool {
-        self.first_explicit_site_lot(min, max, zone_cell_m, overlaps)
+        self.first_explicit_site_lot(min, max, zone_cell_m, None, overlaps)
             .is_some()
     }
 
-    /// The lowest-index explicit cell site (a plotted building: no parcel, no zone) whose lot
-    /// bounds meet `min`..`max` and whose lot passes `test` (`ZONE-09`: a road piece over it).
-    /// Read with the site query index prepared, else every site is a candidate. O(sites in the
+    /// How many buildings an explicit-site query of `min`..`max` visits: the locality
+    /// benchmark's witness that a placement's site test follows its neighbourhood.
+    #[cfg(test)]
+    pub(crate) fn explicit_site_candidate_count(
+        &self,
+        min: Vector2,
+        max: Vector2,
+        zone_cell_m: f32,
+    ) -> usize {
+        self.lot_candidate_indices_for_bounds((min.x, min.y, max.x, max.y), zone_cell_m, None)
+            .len()
+    }
+
+    /// The lowest-index explicit cell site (a plotted building: no parcel, no zone) other than
+    /// `ignore` whose lot bounds meet `min`..`max` and whose lot passes `test` (`ZONE-09`: a
+    /// road piece over it; `ZONE-11`: a placement's lot or polygon, its owner ignored). Read
+    /// with the site query index prepared, else every site is a candidate. O(sites in the
     /// chunks the bounds touch, widened by the largest lot).
     pub(crate) fn first_explicit_site_lot(
         &self,
         min: Vector2,
         max: Vector2,
         zone_cell_m: f32,
+        ignore: Option<usize>,
         mut test: impl FnMut(&[Vector2; 4]) -> bool,
     ) -> Option<usize> {
         if !self.has_explicit_cell_sites() {
             return None;
         }
-        let candidate_indices =
-            self.lot_candidate_indices_for_bounds((min.x, min.y, max.x, max.y), zone_cell_m, None);
+        let candidate_indices = self.lot_candidate_indices_for_bounds(
+            (min.x, min.y, max.x, max.y),
+            zone_cell_m,
+            ignore,
+        );
         candidate_indices.into_iter().find(|&building_idx| {
             let (Some(building), Some(site)) = (
                 self.buildings.get(building_idx),
@@ -1442,6 +1419,7 @@ impl BuildingAllocator {
         self.finalize_site_support(
             &mut placement,
             &connections,
+            &[],
             graph,
             environment.road_surface,
             environment.terrain,
@@ -1450,10 +1428,12 @@ impl BuildingAllocator {
             && placement.support_height_m == building.support_height_m
     }
 
-    // All placement modes resolve and validate the same road-attached support plane.
+    // All placement modes resolve and validate the same road-attached support plane. `taken`
+    // (descending) are the buildings the placement demolishes (`ZONE-11`), no neighbours.
     fn prepare_site_support(
         &self,
         placement: &mut ResolvedPlacement,
+        taken: &[usize],
         graph: &RegionGraph,
         road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
@@ -1469,13 +1449,14 @@ impl BuildingAllocator {
             half_m(placement.width_cells),
             half_m(placement.depth_cells),
         );
-        self.finalize_site_support(placement, &connections, graph, road_surface, terrain)
+        self.finalize_site_support(placement, &connections, taken, graph, road_surface, terrain)
     }
 
     fn finalize_site_support(
         &self,
         placement: &mut ResolvedPlacement,
         connections: &[(Vector2, f32)],
+        taken: &[usize],
         graph: &RegionGraph,
         road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
@@ -1490,7 +1471,7 @@ impl BuildingAllocator {
             road_surface,
         )
         .ok_or(DemandSpawnPlacementRejection::SiteSupportTieInInvalid)?;
-        self.validate_neighbor_site_height(placement, placement.support_height_m)?;
+        self.validate_neighbor_site_height(placement, placement.support_height_m, taken)?;
         self.validate_site_support_tie_in(placement, graph, road_surface, terrain)
     }
 
@@ -1698,10 +1679,13 @@ impl BuildingAllocator {
         Some(center + normal * road_connection_lateral_offset_m(edge, side))
     }
 
+    // The site height against its neighbours' other than `taken` (descending), the buildings a
+    // placement demolishes (`ZONE-11`).
     fn validate_neighbor_site_height(
         &self,
         placement: &ResolvedPlacement,
         support_height_m: f32,
+        taken: &[usize],
     ) -> Result<f32, DemandSpawnPlacementRejection> {
         if self.building_sites.is_empty() {
             return Ok(support_height_m);
@@ -1712,15 +1696,19 @@ impl BuildingAllocator {
             support_height_m,
             placement.zone_cell_m,
             placement.replaced_building,
+            taken,
         )
     }
 
+    // The neighbour height check of a flat support footprint, `replaced_building` and `taken`
+    // (descending) excluded.
     fn validate_footprint_neighbor_height(
         &self,
         footprint_world: &[Vector2],
         support_height_m: f32,
         zone_cell_m: f32,
         replaced_building: Option<usize>,
+        taken: &[usize],
     ) -> Result<f32, DemandSpawnPlacementRejection> {
         if self.building_sites.is_empty() {
             return Ok(support_height_m);
@@ -1735,6 +1723,12 @@ impl BuildingAllocator {
             let Some(site) = self.building_sites.get(building_idx) else {
                 continue;
             };
+            if taken
+                .binary_search_by(|probe| building_idx.cmp(probe))
+                .is_ok()
+            {
+                continue;
+            }
             let (site_min_x, site_min_z, site_max_x, site_max_z) = site.bounds();
             if site_min_x > max_x + BUILDING_SITE_NEIGHBOR_EPS_M
                 || site_max_x < min_x - BUILDING_SITE_NEIGHBOR_EPS_M
@@ -2118,6 +2112,19 @@ struct DrivewayConnectionCandidate {
     height_m: Option<f32>,
 }
 
+/// The two kinds of explicit placement (`ZONE-11`): which tool's asset checks apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExplicitPlacementKind {
+    /// A city service building (the Services tool).
+    Service,
+    /// A farm or mine (the Industry tool).
+    Industry,
+}
+
+/// An explicit building validated by
+/// [`BuildingAllocator::prepare_explicit_placement`], waiting for its land to be taken.
+pub(crate) struct PreparedExplicitPlacement(ResolvedPlacement);
+
 /// World-space preview of one explicit service building footprint.
 pub(crate) struct ExplicitServicePlacementPreview {
     /// Ground-plane footprint corners in metres, ordered around the lot perimeter.
@@ -2467,13 +2474,15 @@ impl ExplicitSiteSnapshot {
     }
 
     /// [`BuildingAllocator::first_explicit_site_lot`] at the snapshot (prepared index): the
-    /// lowest-index site of the candidate chunks whose lot bounds meet `min`..`max` and whose lot
-    /// passes `test`. O(sites in the chunks the bounds touch, widened by the largest lot).
+    /// lowest-index site other than `ignore` of the candidate chunks whose lot bounds meet
+    /// `min`..`max` and whose lot passes `test`. O(sites in the chunks the bounds touch, widened
+    /// by the largest lot).
     pub(crate) fn first_lot(
         &self,
         min: Vector2,
         max: Vector2,
         zone_cell_m: f32,
+        ignore: Option<usize>,
         mut test: impl FnMut(&[Vector2; 4]) -> bool,
     ) -> Option<usize> {
         if self.sites.is_empty() {
@@ -2491,6 +2500,7 @@ impl ExplicitSiteSnapshot {
                     let site = &self.sites[position as usize];
                     let (site_min_x, site_min_z, site_max_x, site_max_z) = site.lot_bounds;
                     if first.is_some_and(|first| first < site.building)
+                        || Some(site.building) == ignore
                         || site_min_x > max.x
                         || site_max_x < min.x
                         || site_min_z > max.y
@@ -2678,11 +2688,11 @@ mod tests {
         assert!(!allocator.placement_overlaps_existing_flat_support(&touching));
         assert!(allocator.placement_overlaps_existing_flat_support(&overlapping));
         assert_eq!(
-            allocator.validate_neighbor_site_height(&touching, 14.0),
+            allocator.validate_neighbor_site_height(&touching, 14.0, &[]),
             Err(DemandSpawnPlacementRejection::NeighborSiteHeightConflict)
         );
         assert_eq!(
-            allocator.validate_neighbor_site_height(&touching, 12.0),
+            allocator.validate_neighbor_site_height(&touching, 12.0, &[]),
             Ok(12.0)
         );
     }

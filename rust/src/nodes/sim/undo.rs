@@ -785,6 +785,7 @@ impl SimCore {
                 .iter()
                 .any(|(idx, building)| *idx == undo.building_idx && building.parcel_id == 0);
             if self.allocator.field_clearance.overlaps(&footprint, None)
+                || self.allocator.extraction_clearance.overlaps(&footprint, None)
                 || (explicit_site && self.zoning.overlaps_reservation(&footprint))
             {
                 return false;
@@ -797,6 +798,7 @@ impl SimCore {
         {
             let footprint = PolygonFootprint::new(&field.polygon_world);
             if self.allocator.field_clearance.overlaps(&footprint, None)
+                || self.allocator.extraction_clearance.overlaps(&footprint, None)
                 || self.zoning.overlaps_reservation(&footprint)
             {
                 return false;

@@ -153,7 +153,7 @@ impl<L: RoadLandSource> RoadEditSite<'_, L> {
             .filter_map(|(id, _)| self.roadbed.piece_mesh(id))
             .collect();
         let installed: Vec<_> = delta.pieces().filter_map(|(_, mesh)| mesh).collect();
-        let take = RoadLandTake::of(&self.land, &installed, &before, extra);
+        let take = RoadLandTake::of(&self.land, &installed, &before, extra, None);
         match take.plotted {
             Some(overlap) => Err(overlap.rejection_on(&self.land)),
             None => Ok(take),

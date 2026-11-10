@@ -451,12 +451,6 @@ impl BuildingAllocator {
         self.dirty_index || (self.building_chunks.is_empty() && !self.buildings.is_empty())
     }
 
-    pub(crate) fn site_world_bounds(&self, building_idx: usize) -> Option<(f32, f32, f32, f32)> {
-        self.building_sites
-            .get(building_idx)
-            .map(|site| site.lot_bounds())
-    }
-
     /// Ground a site draws on: its lot and any paving run on past the lot line to the road.
     pub(crate) fn site_dirty_bounds(&self, building_idx: usize) -> Option<(f32, f32, f32, f32)> {
         self.building_sites.get(building_idx).map(|site| {

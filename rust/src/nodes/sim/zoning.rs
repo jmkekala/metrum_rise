@@ -218,14 +218,21 @@ impl SimCore {
     }
 
     /// Whether a road undo can give back the paint its stroke erased (`ZONE-09`, D5): the cells'
-    /// land is free of reserved cells, authored parcels, fields and explicit sites. The stroke
+    /// land is free of reserved cells, authored parcels, fields, extraction areas and explicit
+    /// sites. The stroke
     /// being undone covers that land, so roads are not tested. Prepares the site query index.
     pub(crate) fn can_restore_road_cell_paint(&mut self, undo: &CellPaintUndo) -> bool {
         let cell_m = self.config.zone_cell_m;
         self.allocator.prepare_building_site_query_index(cell_m);
         let allocator = &self.allocator;
         self.zoning.can_restore_cell_paint_undo(undo, |corners| {
-            footprint_blocked_by_sites(&allocator.field_clearance, allocator, cell_m, corners)
+            footprint_blocked_by_sites(
+                &allocator.field_clearance,
+                &allocator.extraction_clearance,
+                allocator,
+                cell_m,
+                corners,
+            )
         })
     }
 
@@ -375,39 +382,53 @@ fn cell_site_blocked(
     cell_m: f32,
     corners: &[DVec2; 4],
 ) -> bool {
-    footprint_blocked(&allocator.field_clearance, allocator, roads, cell_m, corners)
+    footprint_blocked(
+        &allocator.field_clearance,
+        &allocator.extraction_clearance,
+        allocator,
+        roads,
+        cell_m,
+        corners,
+    )
 }
 
-// Whether a cell or lot footprint meets a field, an explicit cell site or a road on or above the
-// ground. A tunnel's bore lies in the hill: the land over it is used as if no tunnel ran under it
-// (`ROAD-61` round R8h).
+// Whether a cell or lot footprint meets a field, an extraction area (`ZONE-11`, decision
+// D-extraction-blocks: zoned land taken by an area does not grow back in the pit), an explicit
+// cell site or a road on or above the ground. A tunnel's bore lies in the hill: the land over it
+// is used as if no tunnel ran under it (`ROAD-61` round R8h).
 pub(super) fn footprint_blocked(
     fields: &FieldClearanceIndex,
+    extraction: &FieldClearanceIndex,
     sites: &impl ExplicitCellSites,
     roads: &RoadbedSystem,
     cell_m: f32,
     corners: &[DVec2; 4],
 ) -> bool {
-    if footprint_blocked_by_sites(fields, sites, cell_m, corners) {
+    if footprint_blocked_by_sites(fields, extraction, sites, cell_m, corners) {
         return true;
     }
     let points = road_contact_interior(corners).map(|p| [p.x, p.y]);
     PolygonFootprint::from_precise_slice(&points).overlaps_exposed_roads(roads)
 }
 
-// The field and explicit-site half of `footprint_blocked`.
+// The field, extraction-area and explicit-site half of `footprint_blocked`. O(polygons and sites
+// in the footprint's chunks); one emptiness test per index when it holds none.
 fn footprint_blocked_by_sites(
     fields: &FieldClearanceIndex,
+    extraction: &FieldClearanceIndex,
     sites: &impl ExplicitCellSites,
     cell_m: f32,
     corners: &[DVec2; 4],
 ) -> bool {
     // Keep the same canonical corners used by reciprocal placement and save validation.
     // Narrowing to f32 here can hide small intersections at large world coordinates.
-    if !fields.is_empty() || sites.any() {
+    if !fields.is_empty() || !extraction.is_empty() || sites.any() {
         let points = corners.map(|p| [p.x, p.y]);
         let footprint = PolygonFootprint::from_precise_slice(&points);
-        if fields.overlaps(&footprint, None) || sites.overlaps(&footprint, cell_m) {
+        if fields.overlaps(&footprint, None)
+            || extraction.overlaps(&footprint, None)
+            || sites.overlaps(&footprint, cell_m)
+        {
             return true;
         }
     }
