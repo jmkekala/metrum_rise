@@ -5,6 +5,7 @@
 use super::road_preview::RoadPreviewRequest;
 use super::{RoadRejection, SimCore};
 use crate::simulation::agriculture::{FieldClearanceIndex, PolygonFootprint};
+use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
     PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
@@ -58,6 +59,12 @@ impl PlottedOverlap {
 
     /// The commit's report of this overlap; a building is named by its asset.
     pub(crate) fn rejection(self, core: &SimCore) -> RoadRejection {
+        self.rejection_on(&CoreLand::of(core))
+    }
+
+    /// The report of this overlap against `land`, which names a building by its asset when it
+    /// can ([`RoadLandSource::building_asset`]).
+    pub(crate) fn rejection_on<S: RoadLandSource>(self, land: &S) -> RoadRejection {
         let detail = match self {
             Self::Field => "the road or its junctions overlap a farm field".to_owned(),
             Self::ExtractionArea => {
@@ -65,10 +72,7 @@ impl PlottedOverlap {
             }
             Self::Building(index) => format!(
                 "the road or its junctions overlap the lot of the placed building {}",
-                core.allocator
-                    .buildings
-                    .get(index)
-                    .map_or("?", |building| building.asset_id.as_str())
+                land.building_asset(index).unwrap_or("?")
             ),
         };
         RoadRejection::new(self.reason(), detail)
@@ -109,26 +113,57 @@ pub(crate) trait RoadLandSource {
     );
     /// The building standing on the parcel `lot`; `at` is a point inside the parcel.
     fn occupant(&self, lot: u64, at: DVec2) -> Option<Self::Building>;
+    /// The asset of the building at `index` (an explicit site's), when the source holds the
+    /// buildings: a refusal names it.
+    fn building_asset(&self, _index: usize) -> Option<&str> {
+        None
+    }
 }
 
 /// The live core as a [`RoadLandSource`]: the commit's land, read with the site query index
-/// prepared (else every explicit site is a candidate).
-pub(crate) struct CoreLand<'a>(pub(crate) &'a SimCore);
+/// prepared (else every explicit site is a candidate). It borrows only the three parts of the
+/// core it reads, so a [`super::RoadEditSite`] can hold it beside the core's graph.
+#[derive(Clone, Copy)]
+pub(crate) struct CoreLand<'a> {
+    allocator: &'a BuildingAllocator,
+    zoning: &'a ZoningSystem,
+    zone_cell_m: f32,
+}
+
+impl<'a> CoreLand<'a> {
+    /// The land of `core`.
+    pub(crate) fn of(core: &'a SimCore) -> Self {
+        Self::from_parts(&core.allocator, &core.zoning, core.config.zone_cell_m)
+    }
+
+    /// The land of a core borrowed in parts.
+    pub(crate) fn from_parts(
+        allocator: &'a BuildingAllocator,
+        zoning: &'a ZoningSystem,
+        zone_cell_m: f32,
+    ) -> Self {
+        Self {
+            allocator,
+            zoning,
+            zone_cell_m,
+        }
+    }
+}
 
 impl RoadLandSource for CoreLand<'_> {
     type Maps = crate::simulation::zoning::cells::LiveMaps;
     type Building = usize;
 
     fn fields(&self) -> &FieldClearanceIndex {
-        &self.0.allocator.field_clearance
+        &self.allocator.field_clearance
     }
 
     fn extraction(&self) -> &FieldClearanceIndex {
-        &self.0.allocator.extraction_clearance
+        &self.allocator.extraction_clearance
     }
 
     fn cells(&self) -> &CellStore {
-        &self.0.zoning.cells
+        &self.zoning.cells
     }
 
     fn first_explicit_site_lot(
@@ -137,9 +172,8 @@ impl RoadLandSource for CoreLand<'_> {
         max: Vector2,
         test: impl FnMut(&[Vector2; 4]) -> bool,
     ) -> Option<usize> {
-        self.0
-            .allocator
-            .first_explicit_site_lot(min, max, self.0.config.zone_cell_m, test)
+        self.allocator
+            .first_explicit_site_lot(min, max, self.zone_cell_m, test)
     }
 
     fn visit_authored_parcels(
@@ -148,7 +182,7 @@ impl RoadLandSource for CoreLand<'_> {
         max: Vector2,
         mut visit: impl FnMut(u64, &[Vector2; 4]),
     ) {
-        let parcels = &self.0.zoning.parcels;
+        let parcels = &self.zoning.parcels;
         if parcels.has_authored_parcels() {
             parcels.visit_in_bounds(min, max, |parcel| {
                 if parcel.cell_lot().is_none() {
@@ -159,7 +193,14 @@ impl RoadLandSource for CoreLand<'_> {
     }
 
     fn occupant(&self, lot: u64, _at: DVec2) -> Option<usize> {
-        self.0.zoning.parcel_by_raw_id(lot)?.occupied_building()
+        self.zoning.parcel_by_raw_id(lot)?.occupied_building()
+    }
+
+    fn building_asset(&self, index: usize) -> Option<&str> {
+        self.allocator
+            .buildings
+            .get(index)
+            .map(|building| building.asset_id.as_str())
     }
 }
 
@@ -214,7 +255,7 @@ impl<B> RoadLandTake<B> {
 impl RoadLandTake {
     /// [`Self::of`] against the live core, as the commit takes it, with no extra footprint.
     pub(crate) fn in_core(core: &SimCore, pieces: &[&PieceMesh], before: &[&PieceMesh]) -> Self {
-        Self::of(&CoreLand(core), pieces, before, &[])
+        Self::of(&CoreLand::of(core), pieces, before, &[])
     }
 }
 

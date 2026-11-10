@@ -105,7 +105,7 @@ impl RoadCorridorClearance {
             .parcel_ids_overlapping_road_corridor(points, half_width);
         let (field_overlap, extraction_overlap, plotted_overlap) = match pieces {
             Some((installed, replaced)) => {
-                let plotted = first_plotted_overlap(&CoreLand(core), installed, replaced);
+                let plotted = first_plotted_overlap(&CoreLand::of(core), installed, replaced);
                 (
                     plotted == Some(PlottedOverlap::Field),
                     plotted == Some(PlottedOverlap::ExtractionArea),

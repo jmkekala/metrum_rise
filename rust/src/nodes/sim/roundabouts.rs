@@ -12,10 +12,11 @@
 //! commit adds `O(the arms' buildings + occupancy + local lanes)` and the undo's parallel
 //! `O(A / P + B / P)` membership passes. Nothing here runs per tick.
 
-use super::core::{RoadLandTake, RoadRejection, SimCore};
-use super::editing::TriedGraphEdit;
+use super::core::{RoadEditSite, RoadLandTake, RoadRejection, SimCore, TriedGraphEdit};
+
 use crate::debug_log;
-use crate::simulation::network::graph::RegionGraphUndoDelta;
+use crate::nodes::sim::core::RoadLandSource;
+use crate::simulation::network::graph::{RegionGraph, RegionGraphUndoDelta};
 use crate::simulation::network::pockets::{PocketDependentsUndo, migrate_arm_trims};
 use crate::simulation::network::road_types::cost::BUILD_COST_PER_M;
 use crate::simulation::network::roadbed::{
@@ -59,9 +60,9 @@ pub(crate) struct RoundaboutVerdict {
 }
 
 // One tried edit: its undo checkpoint, the land it takes, the plan, the closure and the verdict.
-struct TriedRoundabout {
+pub(crate) struct TriedRoundabout<B = usize> {
     checkpoint: RegionGraphUndoDelta,
-    take: RoadLandTake,
+    take: RoadLandTake<B>,
     layout: RoundaboutLayout,
     edges: HashSet<usize>,
     nodes: HashSet<u32>,
@@ -110,7 +111,7 @@ impl SimCore {
         // The take reads the explicit sites through the site index, as a stroke's commit does.
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
-        let tried = match self.try_roundabout_edit(request) {
+        let tried = match self.road_edit_site().try_roundabout_edit(request) {
             Ok(tried) => tried,
             Err(rejection) => {
                 debug_log!(
@@ -133,7 +134,9 @@ impl SimCore {
             verdict,
         } = tried;
         let trims = layout.arm_trims(&self.region_graph);
-        let (applied, changed) = self.apply_roundabout_layout(&layout, &nodes);
+        let (applied, changed) = self
+            .road_edit_site()
+            .apply_roundabout_layout(&layout, &nodes);
         // The land under the ring and its island, before the trimmed arms' dependents move (no
         // building is left on the land a cut drops) and before the lanes rebuild (`ZONE-10`).
         let erased = self.take_land_for_edit(take);
@@ -185,116 +188,9 @@ impl SimCore {
         request: RoundaboutRequest,
     ) -> Result<RoundaboutVerdict, RoadRejection> {
         self.adopt_pending_cell_lots();
-        self.try_roundabout_edit(request).map(|tried| tried.verdict)
-    }
-
-    // The edit's check: the plan's refusals, water under the ring, then the graph edit, whose
-    // closure must compile (arms closer than their mouths are `roundabout_arms_too_close`, any
-    // other node that fails has too short an approach), keep its pieces and its island clear of
-    // plotted land and steepen no profile; the zoned land they newly cover is its take.
-    fn try_roundabout_edit(
-        &mut self,
-        request: RoundaboutRequest,
-    ) -> Result<TriedRoundabout, RoadRejection> {
-        let layout = RoundaboutLayout::prepare(&self.region_graph, request)
-            .map_err(|reason| RoadRejection::new(reason, format!("{request:?}")))?;
-        if let Some(rejection) = self.roundabout_water_refusal(&layout) {
-            return Err(rejection);
-        }
-        let (edges, nodes) = self.roundabout_closure(&layout);
-        let mut crowded = None;
-        let mut cost = 0.0;
-        let island = [layout.island_footprint()];
-        let tried = self.try_graph_edit(&edges, &nodes, &island, |core| {
-            let (applied, changed) = core.apply_roundabout_layout(&layout, &nodes);
-            cost = core.build_cost_of(&applied.ring) * BUILD_COST_PER_M;
-            crowded = ring_corner_refusal(core, &applied);
-            changed
-                .into_iter()
-                .chain(applied.ring)
-                .chain(applied.arms)
-                .collect()
-        });
-        let TriedGraphEdit { checkpoint, take } = tried.map_err(|rejection| {
-            if rejection.reason == "node_piece_failed" {
-                let reason = crowded.unwrap_or("roundabout_arm_too_short");
-                RoadRejection::new(reason, rejection.detail)
-            } else {
-                rejection
-            }
-        })?;
-        let verdict = RoundaboutVerdict {
-            cost,
-            ring: layout.outline(),
-            arms: layout.arm_cuts().collect(),
-        };
-        Ok(TriedRoundabout {
-            checkpoint,
-            take,
-            layout,
-            edges,
-            nodes,
-            verdict,
-        })
-    }
-
-    // Why the ring cannot stand where it is planned: water under its corridor. The land under
-    // its pieces and its island is the closure's take (`ZONE-10`). `O(ring points)`.
-    fn roundabout_water_refusal(&self, layout: &RoundaboutLayout) -> Option<RoadRejection> {
-        for edge in layout.ring_edges() {
-            if self.watermap.road_corridor_overlaps_visible_water(
-                &edge.geometry,
-                visual_roadbed_half_width_m(edge),
-            ) {
-                return Some(RoadRejection::new(
-                    "water_requires_bridge",
-                    "the ring would reach visible water",
-                ));
-            }
-        }
-        None
-    }
-
-    // The closure of the edit: the old junction, the arms' far nodes and every arm of them, and
-    // the ring nodes the plan appends, the next ids (ids past the graph are skipped until they
-    // exist). `O(arms x degree)`.
-    fn roundabout_closure(&self, layout: &RoundaboutLayout) -> (HashSet<usize>, HashSet<u32>) {
-        let graph = &self.region_graph;
-        let first_new = graph.node_count() as u32;
-        let mut nodes: HashSet<u32> = (first_new..first_new + layout.ring_edges().len() as u32)
-            .chain(layout.old_node())
-            .collect();
-        for (arm, _) in layout.arm_cuts() {
-            let edge = graph.edge(arm);
-            nodes.extend([edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node)));
-        }
-        let edges = nodes
-            .iter()
-            .filter(|&&node| (node as usize) < graph.node_count())
-            .flat_map(|&node| graph.node_adjacency(node).iter().copied())
-            .filter(|&edge| !graph.edge(edge).deleted)
-            .collect();
-        (edges, nodes)
-    }
-
-    // Applies the plan on the graph and lays out `nodes`: their clips and the profile solve that
-    // pins their arms up to them. Returns what the plan installed and the edges whose profiles
-    // the solve changed.
-    fn apply_roundabout_layout(
-        &mut self,
-        layout: &RoundaboutLayout,
-        nodes: &HashSet<u32>,
-    ) -> (RoundaboutApplied, HashSet<usize>) {
-        let applied = layout.apply(&mut self.region_graph);
-        self.region_graph
-            .rebuild_intersection_clips_for_nodes(nodes);
-        let mut changed = HashSet::new();
-        self.region_graph.finalize_junction_endpoint_profiles(
-            nodes,
-            Some(&self.heightmap),
-            &mut changed,
-        );
-        (applied, changed)
+        self.road_edit_site()
+            .try_roundabout_edit(request)
+            .map(|tried| tried.verdict)
     }
 
     /// Removes the whole ring through `edge` with one undo record (D15): every ring edge goes and
@@ -320,23 +216,21 @@ impl SimCore {
                 [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node))
             })
             .collect();
-        let removal = |core: &mut Self, changed: &mut HashSet<usize>| {
-            for &id in &ring {
-                core.region_graph.delete_edge_locally(id);
-            }
-            core.region_graph
-                .rebuild_intersection_clips_for_nodes(&nodes);
-            core.region_graph.finalize_junction_endpoint_profiles(
-                &ring_nodes,
-                Some(&core.heightmap),
-                changed,
-            );
-        };
-        let tried = self.try_graph_edit(&edges, &nodes, &[], |core| {
-            let mut changed = HashSet::new();
-            removal(core, &mut changed);
-            changed
-        });
+        let tried = self
+            .road_edit_site()
+            .try_graph_edit(&edges, &nodes, &[], |site| {
+                let mut changed = HashSet::new();
+                for &id in &ring {
+                    site.graph.delete_edge_locally(id);
+                }
+                site.graph.rebuild_intersection_clips_for_nodes(&nodes);
+                site.graph.finalize_junction_endpoint_profiles(
+                    &ring_nodes,
+                    Some(site.terrain),
+                    &mut changed,
+                );
+                changed
+            });
         let checkpoint = match tried.and_then(TriedGraphEdit::keeping_zoned_land) {
             Ok(checkpoint) => checkpoint,
             Err(rejection) => {
@@ -352,7 +246,16 @@ impl SimCore {
         };
         self.push_network_undo_delta(checkpoint, None, None);
         let mut changed = HashSet::new();
-        removal(self, &mut changed);
+        for &id in &ring {
+            self.region_graph.delete_edge_locally(id);
+        }
+        self.region_graph
+            .rebuild_intersection_clips_for_nodes(&nodes);
+        self.region_graph.finalize_junction_endpoint_profiles(
+            &ring_nodes,
+            Some(&self.heightmap),
+            &mut changed,
+        );
         debug_assert!(changed.is_subset(&edges));
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, edges.iter().copied());
@@ -406,12 +309,119 @@ impl SimCore {
     }
 }
 
+impl<L: RoadLandSource> RoadEditSite<'_, L> {
+    // The edit's check: the plan's refusals, water under the ring, then the graph edit, whose
+    // closure must compile (arms closer than their mouths are `roundabout_arms_too_close`, any
+    // other node that fails has too short an approach), keep its pieces and its island clear of
+    // plotted land and steepen no profile; the zoned land they newly cover is its take.
+    pub(crate) fn try_roundabout_edit(
+        &mut self,
+        request: RoundaboutRequest,
+    ) -> Result<TriedRoundabout<L::Building>, RoadRejection> {
+        let layout = RoundaboutLayout::prepare(self.graph, request)
+            .map_err(|reason| RoadRejection::new(reason, format!("{request:?}")))?;
+        if let Some(rejection) = self.roundabout_water_refusal(&layout) {
+            return Err(rejection);
+        }
+        let (edges, nodes) = self.roundabout_closure(&layout);
+        let mut crowded = None;
+        let mut cost = 0.0;
+        let island = [layout.island_footprint()];
+        let tried = self.try_graph_edit(&edges, &nodes, &island, |site| {
+            let (applied, changed) = site.apply_roundabout_layout(&layout, &nodes);
+            cost = site.build_cost_of(&applied.ring) * BUILD_COST_PER_M;
+            crowded = ring_corner_refusal(site.graph, &applied);
+            changed
+                .into_iter()
+                .chain(applied.ring)
+                .chain(applied.arms)
+                .collect()
+        });
+        let TriedGraphEdit { checkpoint, take } = tried.map_err(|rejection| {
+            if rejection.reason == "node_piece_failed" {
+                let reason = crowded.unwrap_or("roundabout_arm_too_short");
+                RoadRejection::new(reason, rejection.detail)
+            } else {
+                rejection
+            }
+        })?;
+        let verdict = RoundaboutVerdict {
+            cost,
+            ring: layout.outline(),
+            arms: layout.arm_cuts().collect(),
+        };
+        Ok(TriedRoundabout {
+            checkpoint,
+            take,
+            layout,
+            edges,
+            nodes,
+            verdict,
+        })
+    }
+
+    // Why the ring cannot stand where it is planned: water under its corridor. The land under
+    // its pieces and its island is the closure's take (`ZONE-10`). `O(ring points)`.
+    fn roundabout_water_refusal(&self, layout: &RoundaboutLayout) -> Option<RoadRejection> {
+        for edge in layout.ring_edges() {
+            if self.water.road_corridor_overlaps_visible_water(
+                &edge.geometry,
+                visual_roadbed_half_width_m(edge),
+            ) {
+                return Some(RoadRejection::new(
+                    "water_requires_bridge",
+                    "the ring would reach visible water",
+                ));
+            }
+        }
+        None
+    }
+
+    // The closure of the edit: the old junction, the arms' far nodes and every arm of them, and
+    // the ring nodes the plan appends, the next ids (ids past the graph are skipped until they
+    // exist). `O(arms x degree)`.
+    fn roundabout_closure(&self, layout: &RoundaboutLayout) -> (HashSet<usize>, HashSet<u32>) {
+        let graph = &*self.graph;
+        let first_new = graph.node_count() as u32;
+        let mut nodes: HashSet<u32> = (first_new..first_new + layout.ring_edges().len() as u32)
+            .chain(layout.old_node())
+            .collect();
+        for (arm, _) in layout.arm_cuts() {
+            let edge = graph.edge(arm);
+            nodes.extend([edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node)));
+        }
+        let edges = nodes
+            .iter()
+            .filter(|&&node| (node as usize) < graph.node_count())
+            .flat_map(|&node| graph.node_adjacency(node).iter().copied())
+            .filter(|&edge| !graph.edge(edge).deleted)
+            .collect();
+        (edges, nodes)
+    }
+
+    // Applies the plan on the graph and lays out `nodes`: their clips and the profile solve that
+    // pins their arms up to them. Returns what the plan installed and the edges whose profiles
+    // the solve changed.
+    fn apply_roundabout_layout(
+        &mut self,
+        layout: &RoundaboutLayout,
+        nodes: &HashSet<u32>,
+    ) -> (RoundaboutApplied, HashSet<usize>) {
+        let applied = layout.apply(self.graph);
+        self.graph.rebuild_intersection_clips_for_nodes(nodes);
+        let mut changed = HashSet::new();
+        self.graph
+            .finalize_junction_endpoint_profiles(nodes, Some(self.terrain), &mut changed);
+        (applied, changed)
+    }
+}
+
 // The refusal of arms closer than their mouths at a ring node of the applied plan. `O(ring nodes
 // x node plan)`.
-fn ring_corner_refusal(core: &SimCore, applied: &RoundaboutApplied) -> Option<&'static str> {
+fn ring_corner_refusal(graph: &RegionGraph, applied: &RoundaboutApplied) -> Option<&'static str> {
     let corner = |&node: &u32| {
         matches!(
-            check_node(&core.region_graph, node),
+            check_node(graph, node),
             Err(NodeError::Layout(LayoutError::CornerDoesNotFit { .. }))
         )
     };

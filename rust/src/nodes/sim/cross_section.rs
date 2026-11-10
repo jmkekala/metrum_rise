@@ -19,8 +19,7 @@
 //! its side (`ROAD-109`): `O(segments + chunks + candidates log candidates)` through the chunk
 //! index, only when the edit removes a side; the side's empty lots go with it, in the same undo.
 
-use super::core::{RoadLandTake, RoadRejection, SimCore};
-use super::editing::TriedGraphEdit;
+use super::core::{RoadEditSite, RoadLandTake, RoadRejection, SimCore, TriedGraphEdit};
 use crate::debug_log;
 use crate::simulation::buildings::allocator::Building;
 use crate::simulation::network::graph::{
@@ -111,7 +110,7 @@ impl SimCore {
             .lost_in(attributes.sidewalks);
         let TriedGraphEdit { checkpoint, take } = tried;
         let incident = self.live_edges_at(&nodes, edge);
-        let changed = self.apply_edge_cross_section(
+        let changed = self.road_edit_site().apply_edge_cross_section(
             edge,
             (fwd, bkw, median, parking, attributes),
             &nodes,
@@ -265,17 +264,19 @@ impl SimCore {
         // A side given a sidewalk widens there whatever the larger side does (`ROAD-107`).
         let check_corridor = widens || attributes.sidewalks.adds_to(current.sidewalk_sides());
         let mut corridor = None;
-        let tried = self.try_graph_edit(&edges, &nodes, &[], |core| {
-            let changed = core.apply_edge_cross_section(
-                edge,
-                (fwd, bkw, median, parking, attributes),
-                &nodes,
-            );
-            if check_corridor {
-                corridor = core.widened_corridor_refusal(edge);
-            }
-            changed
-        });
+        let tried = self
+            .road_edit_site()
+            .try_graph_edit(&edges, &nodes, &[], |site| {
+                let changed = site.apply_edge_cross_section(
+                    edge,
+                    (fwd, bkw, median, parking, attributes),
+                    &nodes,
+                );
+                if check_corridor {
+                    corridor = site.widened_corridor_refusal(edge);
+                }
+                changed
+            });
         if let Some(rejection) = corridor {
             return Err(rejection);
         }
@@ -423,7 +424,9 @@ impl SimCore {
             .chain([edge])
             .collect()
     }
+}
 
+impl<L> RoadEditSite<'_, L> {
     // Sets the cross-section and attributes and re-lays out both end nodes on the graph, since
     // the width moves every mouth there: their clips and the profile solve that pins their arms
     // up to them. Returns the edges whose profiles changed.
@@ -439,16 +442,12 @@ impl SimCore {
         ),
         nodes: &HashSet<u32>,
     ) -> HashSet<usize> {
-        self.region_graph
+        self.graph
             .set_edge_cross_section(edge, fwd, bkw, median, parking, attributes);
-        self.region_graph
-            .rebuild_intersection_clips_for_nodes(nodes);
+        self.graph.rebuild_intersection_clips_for_nodes(nodes);
         let mut changed = HashSet::new();
-        self.region_graph.finalize_junction_endpoint_profiles(
-            nodes,
-            Some(&self.heightmap),
-            &mut changed,
-        );
+        self.graph
+            .finalize_junction_endpoint_profiles(nodes, Some(self.terrain), &mut changed);
         changed
     }
 
@@ -456,11 +455,11 @@ impl SimCore {
     // class change refuses one), or a curve tighter than the illegal radius at its new width.
     // The land its pieces newly cover is the closure's take (`ZONE-10`). O(points).
     fn widened_corridor_refusal(&self, edge_idx: usize) -> Option<RoadRejection> {
-        let edge = self.region_graph.edge(edge_idx);
+        let edge = self.graph.edge(edge_idx);
         let points = centreline(edge);
         if edge.class == EdgeClass::Standard
             && self
-                .watermap
+                .water
                 .road_corridor_overlaps_visible_water(points, visual_roadbed_half_width_m(edge))
         {
             return Some(RoadRejection::new(
@@ -470,7 +469,7 @@ impl SimCore {
         }
         let mut violations = Vec::new();
         validate_edge(
-            &self.region_graph,
+            self.graph,
             edge_idx,
             &RoadGeometryLimits::default(),
             &mut violations,

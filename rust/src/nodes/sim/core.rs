@@ -21,6 +21,7 @@ mod parking;
 mod populated_city;
 mod road_commit;
 mod road_edit_plan;
+mod road_edit_site;
 mod road_preview;
 mod road_rejection;
 mod road_terrain_inputs;
@@ -41,7 +42,10 @@ pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTime
 pub(crate) use graded_edits::{GradedEdit, GradedEditJournal, GradedEditSelection, GradedInstallTiles};
 pub(crate) use graded_stage::{GradedPose, GradedPreview, GradedUndo};
 pub(crate) use road_commit::RoadCommitAck;
-pub(crate) use road_edit_plan::{CoreLand, RoadEditPlan, RoadLandTake};
+pub(crate) use road_edit_plan::{RoadEditPlan, RoadLandSource, RoadLandTake};
+pub(crate) use road_edit_site::{
+    RoadEditSite, TriedGraphEdit, compile_closure, edge_grade, steepened_profile,
+};
 pub(crate) use road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
 pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,

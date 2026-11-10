@@ -15,9 +15,9 @@
 //! passes. Nothing here runs per tick.
 
 use super::core::{
-    RoadLandTake, RoadRejection, SimCore, SimulationRuntimeSnapshot, SimulationSnapshot,
+    RoadEditSite, RoadLandTake, RoadRejection, SimCore, SimulationRuntimeSnapshot,
+    SimulationSnapshot, TriedGraphEdit,
 };
-use super::editing::TriedGraphEdit;
 use crate::debug_log;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::zoning::CellPaintUndo;
@@ -166,7 +166,7 @@ impl SimCore {
             nodes,
             verdict,
         } = tried;
-        let (applied, changed) = self.apply_pocket_plan(&plan, &nodes);
+        let (applied, changed) = self.road_edit_site().apply_pocket_plan(&plan, &nodes);
         // The land the pocket covers, before the dependents move (its journal then holds only
         // the buildings that stay) and before the lanes rebuild (`ZONE-10`).
         let erased = self.take_land_for_edit(take);
@@ -246,21 +246,22 @@ impl SimCore {
             )
             .filter(|&edge| !graph.edge(edge).deleted)
             .collect();
-        let cost_before = self.build_cost_of(&plan.source_edges());
+        let mut site = self.road_edit_site();
+        let cost_before = site.build_cost_of(&plan.source_edges());
         // Any planned pocket is checked: a role added widens the road, a longer body widens more
         // of it.
         let widens = plan.pocket().is_some();
         let mut corridor = None;
         let mut cost_after = 0.0;
-        let tried = self.try_graph_edit(&edges, &nodes, &[], |core| {
-            let (applied, changed) = core.apply_pocket_plan(&plan, &nodes);
+        let tried = site.try_graph_edit(&edges, &nodes, &[], |site| {
+            let (applied, changed) = site.apply_pocket_plan(&plan, &nodes);
             let pieces: Vec<usize> = applied
                 .edges()
-                .filter(|&edge| !core.region_graph.edge(edge).deleted)
+                .filter(|&edge| !site.graph.edge(edge).deleted)
                 .collect();
-            cost_after = core.build_cost_of(&pieces);
+            cost_after = site.build_cost_of(&pieces);
             if widens && let Some(pocket_edge) = applied.pocket_edge {
-                corridor = core.pocket_corridor_refusal(pocket_edge);
+                corridor = site.pocket_corridor_refusal(pocket_edge);
             }
             changed.into_iter().chain(applied.edges()).collect()
         });
@@ -287,85 +288,6 @@ impl SimCore {
         })
     }
 
-    // The build cost of `edges` in units of `BUILD_COST_PER_M`: each one's road weight times its
-    // length (D14). O(edges).
-    pub(super) fn build_cost_of(&self, edges: &[usize]) -> f64 {
-        edges
-            .iter()
-            .map(|&edge| {
-                let edge = self.region_graph.edge(edge);
-                edge.cost_weight() * f64::from(edge.physical_length)
-            })
-            .sum()
-    }
-
-    // Applies the plan on the graph and lays out `nodes` and the transition again: their clips
-    // and the profile solve that pins their arms up to them. Returns what the plan changed and
-    // the edges whose profiles the solve changed.
-    fn apply_pocket_plan(
-        &mut self,
-        plan: &PocketPlan,
-        nodes: &HashSet<u32>,
-    ) -> (PocketApplied, HashSet<usize>) {
-        let applied = plan.apply_to_graph(&mut self.region_graph);
-        let nodes: HashSet<u32> = nodes
-            .iter()
-            .copied()
-            .filter(|&node| (node as usize) < self.region_graph.node_count())
-            .chain(applied.transition)
-            .collect();
-        self.region_graph
-            .rebuild_intersection_clips_for_nodes(&nodes);
-        let mut changed = HashSet::new();
-        self.region_graph.finalize_junction_endpoint_profiles(
-            &nodes,
-            Some(&self.heightmap),
-            &mut changed,
-        );
-        (applied, changed)
-    }
-
-    // Why pocket edge `edge_idx` (applied on the graph) cannot stay, read on its carriageway's
-    // axis (D17), whose half-width is exact on both sides: a standard road over water, or a
-    // curve tighter than the illegal radius at its width. The land its pieces newly cover is the
-    // closure's take (`ZONE-10`). O(points).
-    fn pocket_corridor_refusal(&self, edge_idx: usize) -> Option<RoadRejection> {
-        let edge = self.region_graph.edge(edge_idx);
-        let axis = edge.carriageway_axis(centreline(edge));
-        let half_width_m = edge.width * 0.5 + widest_side_band_width_m(edge);
-        if edge.class == EdgeClass::Standard
-            && self
-                .watermap
-                .road_corridor_overlaps_visible_water(&axis, half_width_m)
-        {
-            return Some(RoadRejection::new(
-                "water_requires_bridge",
-                format!("pocket edge {edge_idx} would reach visible water"),
-            ));
-        }
-        let mut violations = Vec::new();
-        validate_edge(
-            &self.region_graph,
-            edge_idx,
-            &RoadGeometryLimits::default(),
-            &mut violations,
-        );
-        violations.into_iter().find_map(|violation| match violation {
-            RoadGeometryViolation::HorizontalRadius {
-                measured,
-                limit,
-                tier: RoadGeometryTier::Illegal,
-                ..
-            } => Some(RoadRejection::new(
-                "cross_section_too_wide_for_curve",
-                format!(
-                    "pocket edge {edge_idx} turns at a {measured:.1} m radius; its width needs {limit:.1} m"
-                ),
-            )),
-            _ => None,
-        })
-    }
-
     // The pocket edit's undo record: the graph checkpoint (whole records; the transition and
     // second edge an add appended drop past the original counts), the dependents journal and the
     // paint the land take erased (`ZONE-10`).
@@ -385,6 +307,71 @@ impl SimCore {
             cells,
             runtime: Some(SimulationRuntimeSnapshot::RoadDependents(dependents)),
         });
+    }
+}
+
+impl<L> RoadEditSite<'_, L> {
+    // Applies the plan on the graph and lays out `nodes` and the transition again: their clips
+    // and the profile solve that pins their arms up to them. Returns what the plan changed and
+    // the edges whose profiles the solve changed.
+    fn apply_pocket_plan(
+        &mut self,
+        plan: &PocketPlan,
+        nodes: &HashSet<u32>,
+    ) -> (PocketApplied, HashSet<usize>) {
+        let applied = plan.apply_to_graph(self.graph);
+        let nodes: HashSet<u32> = nodes
+            .iter()
+            .copied()
+            .filter(|&node| (node as usize) < self.graph.node_count())
+            .chain(applied.transition)
+            .collect();
+        self.graph.rebuild_intersection_clips_for_nodes(&nodes);
+        let mut changed = HashSet::new();
+        self.graph
+            .finalize_junction_endpoint_profiles(&nodes, Some(self.terrain), &mut changed);
+        (applied, changed)
+    }
+
+    // Why pocket edge `edge_idx` (applied on the graph) cannot stay, read on its carriageway's
+    // axis (D17), whose half-width is exact on both sides: a standard road over water, or a
+    // curve tighter than the illegal radius at its width. The land its pieces newly cover is the
+    // closure's take (`ZONE-10`). O(points).
+    fn pocket_corridor_refusal(&self, edge_idx: usize) -> Option<RoadRejection> {
+        let edge = self.graph.edge(edge_idx);
+        let axis = edge.carriageway_axis(centreline(edge));
+        let half_width_m = edge.width * 0.5 + widest_side_band_width_m(edge);
+        if edge.class == EdgeClass::Standard
+            && self
+                .water
+                .road_corridor_overlaps_visible_water(&axis, half_width_m)
+        {
+            return Some(RoadRejection::new(
+                "water_requires_bridge",
+                format!("pocket edge {edge_idx} would reach visible water"),
+            ));
+        }
+        let mut violations = Vec::new();
+        validate_edge(
+            self.graph,
+            edge_idx,
+            &RoadGeometryLimits::default(),
+            &mut violations,
+        );
+        violations.into_iter().find_map(|violation| match violation {
+            RoadGeometryViolation::HorizontalRadius {
+                measured,
+                limit,
+                tier: RoadGeometryTier::Illegal,
+                ..
+            } => Some(RoadRejection::new(
+                "cross_section_too_wide_for_curve",
+                format!(
+                    "pocket edge {edge_idx} turns at a {measured:.1} m radius; its width needs {limit:.1} m"
+                ),
+            )),
+            _ => None,
+        })
     }
 }
 
