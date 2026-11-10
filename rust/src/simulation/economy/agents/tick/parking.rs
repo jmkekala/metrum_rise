@@ -9,6 +9,7 @@ use super::planning::{
     BuiltTripPlan, ParkingLegQuote, ParkingQuote, SharedNetworkQuotes, TripQueryScratch,
     parking_trip_bays, quote_parking_between_places, quote_parking_leg,
 };
+use super::trip_failures::FailureOutcome;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use crate::simulation::parking::stats::DepartureOutcome;
@@ -224,7 +225,11 @@ impl AgentSystem {
         let count = &self.pathfind_count;
         let Some(quote) = known.leg_or(leg.key, |quotes| leg.quote(network, graph, count, quotes))
         else {
-            self.queue_parking_retry(i, 30);
+            if next == ParkingTripPhase::WalkToDoor {
+                self.walk_cut_off(i, target, &leg.origin, parking, allocator, network, graph);
+            } else {
+                self.queue_parking_retry(i, 30);
+            }
             return;
         };
         let Some(plan) = self.materialize_parking_leg(
@@ -441,6 +446,15 @@ impl AgentSystem {
         self.agents.parking_trip[i].retry_pending = true;
         self.agents.next_replan_time[i] = f32::MAX;
         self.parking_retries.push((self.handles.handle(i), seconds));
+        // A retry at the next slot only prepares the route's buffer: the leg is planned.
+        let outcome = if seconds == 0 {
+            FailureOutcome::Replans
+        } else {
+            FailureOutcome::ParkingRetry {
+                after_s: f32::from(seconds),
+            }
+        };
+        self.record_parking_outcome(i, None, outcome);
     }
 
     fn apply_parking_leg(&mut self, i: usize, plan: BuiltTripPlan, origin: &BuildingEntrance) {

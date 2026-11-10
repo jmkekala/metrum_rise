@@ -483,6 +483,7 @@ pub(super) fn validate_loaded_agents(
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
             if preserve_loaded_network_retry_state(agents, i, graph)
                 || loaded_departure_backoff(agents, i)
+                || loaded_cut_off_backoff(agents, i)
             {
                 clear_loaded_access_plan_fields(agents, i);
             } else {
@@ -579,6 +580,14 @@ fn loaded_departure_backoff(agents: &AgentSystem, i: usize) -> bool {
     agents.transit[i] == TRANSIT_IN_BUILDING
         && agents.access_flags[i] & ACCESS_PLAN_VALID == 0
         && agents.next_replan_time[i] > 0.0
+}
+
+// A car whose drive to its bay was cut off waits out its backoff at, or on its way to, a lane's
+// end with no plan (`TRAFFIC-34`); its step is retry state the running game keeps.
+fn loaded_cut_off_backoff(agents: &AgentSystem, i: usize) -> bool {
+    agents.transit[i] == TRANSIT_NETWORK
+        && agents.parking_trip[i].phase == crate::simulation::parking::ParkingTripPhase::Drive
+        && agents.network_replan_failures[i] > 0
 }
 
 fn preserve_loaded_network_retry_state(
@@ -714,6 +723,7 @@ pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_co
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
             if preserve_loaded_network_retry_state_without_graph(agents, i)
                 || loaded_departure_backoff(agents, i)
+                || loaded_cut_off_backoff(agents, i)
             {
                 clear_loaded_access_plan_fields(agents, i);
             } else {

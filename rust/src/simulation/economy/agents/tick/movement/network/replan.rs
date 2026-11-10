@@ -159,9 +159,12 @@ unsafe fn ensure_exact_access_plan(
         let s_next_replan_time = &slices.next_replan_time;
 
         let target_building = *s_tgt_b.get(i);
+        // A car waiting out a cut-off drive's backoff drives on to its lane's end; its leg's
+        // recovery plans it (`TRAFFIC-34`).
         if *s_transit.get(i) == TRANSIT_IMMIGRATING
             || (*s_access_flags.get(i) & ACCESS_PLAN_VALID) != 0
             || target_building == usize::MAX
+            || super::walk_home::waits_out_cut_off(i, slices)
         {
             return true;
         }

@@ -53,7 +53,9 @@ use std::sync::atomic::AtomicU32;
 /// Waits before a stranded walker's home plans, by backoff step; the last one repeats.
 pub(super) const STRANDED_RETRY_S: [f32; 3] = [5.0, 30.0, 120.0];
 
-fn retry_after_s(step: u8) -> f32 {
+/// The wait before backoff step `step`'s plan home, in simulated seconds; the stranded walkers'
+/// backoff, also a cut-off car's (`TRAFFIC-34`).
+pub(in crate::simulation::economy::agents::tick) fn retry_after_s(step: u8) -> f32 {
     STRANDED_RETRY_S[usize::from(step).min(STRANDED_RETRY_S.len() - 1)]
 }
 
@@ -178,9 +180,10 @@ pub(super) unsafe fn head_home_without_trip(
 }
 
 /// Car `i` stands at the end of its road lane, `length` metres long, with no plan and its trip
-/// taken from it on the way (`TRAFFIC-29`). On a parking leg its bay and route belong to the
-/// ordered phase, so it keeps the lane and asks the leg's recovery, which plans from here in the
-/// commit of this same tick. Off one it turns for home: the replan gate plans from the node it
+/// taken from it on the way (`TRAFFIC-29`), or waiting out a cut-off drive's backoff
+/// (`waits_out_cut_off`). On a parking leg its bay and route belong to the ordered phase, so it
+/// keeps the lane and asks the leg's recovery, which plans from here in the commit of this same
+/// tick, or, with a retry pending, when the retry runs. Off one it turns for home: the replan gate plans from the node it
 /// reached, as for any car with a destination and no plan. With no home it stands off the lane
 /// for its household's next one. Returns whether the car keeps the lane. O(1), then one route
 /// query in the recovery or the gate.
@@ -210,6 +213,21 @@ pub(super) unsafe fn car_trip_taken(
             head_home(i, home, sim_time, slices);
         }
         false
+    }
+}
+
+/// Whether car `i` waits out a cut-off drive's backoff (`TRAFFIC-34` (c)): on its parking drive
+/// with no plan, a backoff step under way. It drives to the end of its lane and stands there,
+/// frozen for its leg's recovery (`car_trip_taken`), which the retry runs; no replan gate plans it
+/// meanwhile. O(1).
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+#[inline]
+pub(super) unsafe fn waits_out_cut_off(i: usize, slices: &MovementSlices) -> bool {
+    unsafe {
+        slices.parking_trip.get(i).phase == ParkingTripPhase::Drive
+            && *slices.network_replan_failures.get(i) > 0
+            && *slices.access_flags.get(i) & ACCESS_PLAN_VALID == 0
     }
 }
 

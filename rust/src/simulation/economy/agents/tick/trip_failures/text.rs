@@ -31,7 +31,7 @@ pub(super) fn failure_line(
 }
 
 /// Short names of the causes, by [`cause_index`], for the summaries.
-pub(super) const CAUSE_LABELS: [&str; 11] = [
+pub(super) const CAUSE_LABELS: [&str; 12] = [
     "no road to the next node",
     "no turn at a junction",
     "no turn into the exit lane",
@@ -43,6 +43,7 @@ pub(super) const CAUSE_LABELS: [&str; 11] = [
     "no route at departure",
     "no position to plan from",
     "no plan",
+    "no walk from the parking bay",
 ];
 
 /// The cause's index in [`CAUSE_LABELS`].
@@ -59,6 +60,7 @@ pub(super) fn cause_index(cause: &FailureCause) -> u8 {
         FailureCause::NoDeparture { .. } => 8,
         FailureCause::NoPosition => 9,
         FailureCause::NoPlan => 10,
+        FailureCause::NoWalkFromBay => 11,
     }
 }
 
@@ -188,6 +190,11 @@ impl fmt::Display for Cause<'_> {
             ),
             FailureCause::NoPosition => write!(f, "no position on the road to plan from"),
             FailureCause::NoPlan => write!(f, "travelling with no plan to reach its destination"),
+            FailureCause::NoWalkFromBay => write!(
+                f,
+                "no walk from its parking bay to building {}",
+                failure.destination
+            ),
         }
     }
 }
@@ -301,6 +308,33 @@ impl fmt::Display for Outcome {
             FailureOutcome::NoBorder { after_s } => {
                 write!(f, "no border node to send it to; retry in {after_s:.0} s")
             }
+            FailureOutcome::ParkingRecovery => write!(f, "its parking leg's recovery plans again"),
+            FailureOutcome::ParkingRetry { after_s } => {
+                write!(f, "its parking leg plans again in {after_s:.0} s")
+            }
+            FailureOutcome::ParksNearby { at } => write!(
+                f,
+                "parks in the nearest free bay it can reach by road, at ({:.1}, {:.1}), and \
+                 walks on",
+                at.x, at.y
+            ),
+            FailureOutcome::DrivesHome { building } => {
+                write!(f, "gives up and drives home to building {building}")
+            }
+            FailureOutcome::WaitsAtLaneEnd { lane, after_s } => {
+                write!(f, "no free bay in reach and no way home: ")?;
+                if lane == usize::MAX {
+                    write!(f, "stands at its node")?;
+                } else {
+                    write!(f, "stops at the end of lane {lane}")?;
+                }
+                write!(f, ", plans home again in {after_s:.0} s")
+            }
+            FailureOutcome::StaysParked { after_s } => write!(
+                f,
+                "no way home either: stays parked in its bay, plans the drive home again in \
+                 {after_s:.0} s"
+            ),
         }
     }
 }

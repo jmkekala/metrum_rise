@@ -27,6 +27,7 @@ use pose::update_network_pose;
 pub(super) use replan::apply_network_replan;
 use replan::prepare_network_replan;
 use std::sync::atomic::AtomicU32;
+pub(in crate::simulation::economy::agents::tick) use walk_home::retry_after_s;
 pub(super) use walk_home::walker_lost;
 
 /// Handles network, immigration, and active junction connector movement.

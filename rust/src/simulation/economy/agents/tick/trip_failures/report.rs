@@ -108,9 +108,10 @@ impl FailurePlaces {
             FailureCause::NoImmigrationRoute { border, .. } => {
                 ([border, u32::MAX], [NO_LANE; 2], [NO_LANE; 2])
             }
-            FailureCause::NoDeparture { .. } | FailureCause::NoPosition | FailureCause::NoPlan => {
-                ([u32::MAX; 2], [NO_LANE; 2], [NO_LANE; 2])
-            }
+            FailureCause::NoDeparture { .. }
+            | FailureCause::NoPosition
+            | FailureCause::NoPlan
+            | FailureCause::NoWalkFromBay => ([u32::MAX; 2], [NO_LANE; 2], [NO_LANE; 2]),
         };
         Self {
             cause: CAUSE_LABELS[usize::from(cause_index(&failure.cause))],

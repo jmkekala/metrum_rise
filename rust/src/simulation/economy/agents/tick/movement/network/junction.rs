@@ -337,9 +337,10 @@ pub(super) unsafe fn handle_lane_end(
             }
             return LaneEndAction::Break;
         }
-        // A car whose trip was taken on the way has no plan to go on with (`TRAFFIC-29`).
+        // A car whose trip was taken on the way has no plan to go on with (`TRAFFIC-29`), nor has
+        // one waiting out a cut-off drive's backoff (`TRAFFIC-34`).
         if !access_plan_valid
-            && network_trip_taken(i, slices)
+            && (network_trip_taken(i, slices) || super::walk_home::waits_out_cut_off(i, slices))
             && super::walk_home::car_trip_taken(i, lane.length, sim_time, allocator, slices)
         {
             *remaining_dist = 0.0;

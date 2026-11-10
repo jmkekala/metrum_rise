@@ -434,6 +434,31 @@ impl ParkingSystem {
         self.first_free_candidate_after_departure(building, Handle::NONE)
     }
 
+    /// The free fitting candidates of `building`'s door in the catchment's order (walking
+    /// seconds, manoeuvre, handle), for a driver that has to find one it can reach by road
+    /// (`TRAFFIC-34`). O(k) to exhaust, allocation-free.
+    pub(crate) fn free_candidates(
+        &self,
+        building: u64,
+    ) -> impl Iterator<Item = ParkingCandidate> + '_ {
+        self.candidates
+            .get(&building)
+            .into_iter()
+            .flat_map(|list| list.entries.iter().copied())
+            .filter(|c| self.free_fitting(c.place, Handle::NONE))
+    }
+
+    // A bay a car may book: active, fitting, unreserved and empty or `freed`. O(1).
+    fn free_fitting(&self, place: Handle<Place>, freed: Handle<Place>) -> bool {
+        self.place_handles.resolve(place).is_some_and(|p| {
+            self.places.active[p]
+                && (self.places.occupant[p].is_none() || place == freed)
+                && self.places.reservation[p].is_none()
+                && self.places.width[p] >= 1.8
+                && self.places.length[p] >= 4.5
+        })
+    }
+
     /// O(k) hypothetical return scan; only the caller's actual departure bay may be released.
     pub(crate) fn first_free_candidate_after_departure(
         &self,
@@ -445,15 +470,7 @@ impl ParkingSystem {
             .entries
             .iter()
             .copied()
-            .find(|c| {
-                self.place_handles.resolve(c.place).is_some_and(|p| {
-                    self.places.active[p]
-                        && (self.places.occupant[p].is_none() || c.place == freed)
-                        && self.places.reservation[p].is_none()
-                        && self.places.width[p] >= 1.8
-                        && self.places.length[p] >= 4.5
-                })
-            })
+            .find(|c| self.free_fitting(c.place, freed))
     }
 
     /// O(k) lookup of the actual car's bay in the origin door's prepared catchment.

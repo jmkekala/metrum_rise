@@ -68,7 +68,8 @@ pub(super) unsafe fn network_trip_taken(i: usize, slices: &MovementSlices) -> bo
 /// Records one failed live network replan and recovers the agent once the watchdog threshold is hit.
 /// `reason` names the call site on `traffic`; `cause` is what the `events` log reports. A walker
 /// is never recovered here: it plans again from where it stands, walks home or is stranded
-/// (`walker_lost`).
+/// (`walker_lost`). A car on a parking leg is frozen for the leg's recovery instead, which
+/// completes its record.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
@@ -106,11 +107,15 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
         }
         // Captured before the attempt is cleared, so the log shows where the agent failed.
         let mut failure = TripFailure::capture(i, cause, FailureOutcome::Replans, slices);
+        // A parking leg's failure goes to the leg's recovery in this tick's commit, which gives
+        // the record the outcome it takes (`TRAFFIC-32`).
         if slices.parking_trip.get(i).phase != crate::simulation::parking::ParkingTripPhase::None {
             let trip = slices.parking_trip.get_mut(i);
             trip.ready = true;
             trip.replan_needed = true;
             *slices.speed.get_mut(i) = 0.0;
+            failure.outcome = FailureOutcome::ParkingRecovery;
+            slices.failures.push(failure);
             return;
         }
         clear_failed_replan_attempt(i, slices);

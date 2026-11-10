@@ -31,6 +31,12 @@ impl Commute {
     // The commute on `roads`, committed in order; the lots stand at x = -450 and 450, south of
     // the road along z = 0.
     fn on_roads(roads: &[Road]) -> Self {
+        Self::with_lots_near_work(roads, &[])
+    }
+
+    // `on_roads` with a public lot of its own `x` metres short of the workplace for each `x` in
+    // `near_work`, on the way from home.
+    fn with_lots_near_work(roads: &[Road], near_work: &[f32]) -> Self {
         let mut c = SimCore::new(
             WorldConfig::new(2048.0, 1024.0, 16.0, 10.0)
                 .with_chunking(128.0, 0.0)
@@ -56,6 +62,12 @@ impl Commute {
         } else {
             (1, 0)
         };
+        let side = c.allocator.buildings[work].center_x.signum();
+        for &x in near_work {
+            c.place_service_building_internal(&id, side * (450.0 - x), -30.0)
+                .unwrap();
+        }
+        c.publish_pending_building_site_changes();
         let agent = c.debug_add_parking_commuter(home, work).unwrap();
         c.agents.assign_work_building(agent, work, 0);
         c.agents.release_departure(agent);
@@ -474,55 +486,4 @@ fn a_road_edit_under_a_pull_in_ends_it_in_its_bay() {
     assert!(t.c.parking.vehicle_place(t.car()).is_some(), "it parked");
 }
 
-// `TRAFFIC-31`: a road edit that cuts a driver's route while it crosses a junction drops it off its
-// connector at the junction's node, with no lane (`clear_route_plan_after_road_edit`), and with
-// its workplace cut off its replan there fails and asks the drive's recovery. The recovery planned
-// only from a lane, so the car stood in the junction for good, its retry every 30 game minutes
-// finding no lane, even once the road was back. It now plans from the node and drives on.
-#[test]
-fn a_car_left_in_a_junction_by_a_cut_route_drives_on_once_the_road_is_back() {
-    // The commute's road in 100 m pieces with a side road at x = 0: the junction the car crosses on
-    // a connector. The cut is the fourth piece on, so the edit leaves that junction's lanes alone.
-    let mut roads = vec![((-600.0, 0.0), (-400.0, 0.0))];
-    roads.extend((-4..4).map(|k| ((k as f32 * 100.0, 0.0), ((k + 1) as f32 * 100.0, 0.0))));
-    roads.extend([((400.0, 0.0), (600.0, 0.0)), ((0.0, 0.0), (0.0, 300.0))]);
-    let mut t = Commute::on_roads(&roads);
-    let node_at = |c: &SimCore, x: f32| {
-        let graph = &c.region_graph;
-        (0..graph.nodes().len() as u32)
-            .find(|&n| {
-                let pos = graph.nodes()[n as usize].pos;
-                (pos.x - x).abs() < 0.5 && pos.z.abs() < 0.5 && graph.node_has_live_incident_edge(n)
-            })
-            .unwrap()
-    };
-    let (agent, work) = (t.agent, t.work);
-    let junction = node_at(&t.c, 0.0);
-    t.tick_until("crossed the junction", |c, i| {
-        c.agents.transit[i] == TRANSIT_INTERSECTION && c.agents.current_node[i] == junction
-    });
-    let side = t.c.allocator.buildings[work].center_x.signum();
-    let cut = (side * 300.0, side * 400.0);
-    let edge = t
-        .c
-        .region_graph
-        .get_edge_between_nodes(node_at(&t.c, cut.0), node_at(&t.c, cut.1))
-        .unwrap();
-    assert!(t.c.bulldoze_road_edge_for_test(edge));
-    // The frames after an edit hold until its routing is adopted; these ticks skip the frame.
-    t.c.transit_network.settle_cch();
-    let a = &t.c.agents;
-    assert_eq!(
-        (a.transit[agent], a.current_node[agent], a.current_lane_id[agent]),
-        (TRANSIT_NETWORK, junction, usize::MAX),
-        "the edit leaves the car at the junction's node"
-    );
-    t.tick_until("asked for a retry", |c, i| c.agents.parking_trip[i].retry_pending);
-    assert_eq!(t.c.agents.current_lane_id[agent], usize::MAX, "no route: it waits");
-    commit(&mut t.c, (cut.0, 0.0), (cut.1, 0.0));
-    t.c.transit_network.settle_cch();
-    t.tick_until("drove on", |c, i| c.agents.current_lane_id[i] != usize::MAX);
-    assert_eq!(t.c.agents.current_node[agent], junction, "it drives on from where it stood");
-    t.inside(work);
-    assert!(t.c.parking.vehicle_place(t.car()).is_some(), "it parked");
-}
+mod cut_off;

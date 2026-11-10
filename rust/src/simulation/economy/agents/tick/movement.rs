@@ -24,6 +24,7 @@ use crate::simulation::network::graph::RegionGraph;
 use access_state::{handle_access_egress, handle_access_ingress};
 use building::handle_in_building;
 use network::handle_network_movement;
+pub(super) use network::retry_after_s;
 use std::sync::atomic::AtomicU32;
 
 const BUILDING_REPLAN_DELAY_S: f32 = 30.0;

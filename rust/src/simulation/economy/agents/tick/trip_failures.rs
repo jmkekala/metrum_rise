@@ -12,7 +12,7 @@
 mod report;
 mod text;
 
-use super::super::{ACCESS_IMMIGRATION_ORIGIN, TRANSIT_IMMIGRATING};
+use super::super::{ACCESS_IMMIGRATION_ORIGIN, AgentSystem, AgentVec, TRANSIT_IMMIGRATING};
 use super::planning::ReplanFailure;
 use super::slices::MovementSlices;
 use godot::prelude::Vector2;
@@ -70,6 +70,8 @@ pub(super) enum FailureCause {
     NoPosition,
     /// The agent travels with no plan to reach its destination.
     NoPlan,
+    /// A driver who has parked finds no walk from its bay to its destination (`TRAFFIC-34`).
+    NoWalkFromBay,
 }
 
 /// What happens to the agent after the failure.
@@ -105,6 +107,23 @@ pub(super) enum FailureOutcome {
     },
     /// The watchdog found no border node to move it to and retries after `after_s`.
     NoBorder { after_s: f32 },
+    /// A car on a parking leg is frozen for the leg's recovery, which runs in the same tick's
+    /// commit and replaces this with what it does (`TRAFFIC-32`).
+    ParkingRecovery,
+    /// The parking leg's recovery plans the leg again after `after_s`.
+    ParkingRetry { after_s: f32 },
+    /// A car whose bay is cut off parks in the nearest free bay it can reach by road, at `at`,
+    /// and the driver walks on (`TRAFFIC-34`).
+    ParksNearby { at: Vector2 },
+    /// A driver gives the trip up and drives home to `building` (`TRAFFIC-34`).
+    DrivesHome { building: usize },
+    /// With no bay in reach and no way home, a car stops at the end of `lane` (at its node when
+    /// `usize::MAX`) and plans home again after `after_s`, then on the walkers' backoff
+    /// (`TRAFFIC-34`).
+    WaitsAtLaneEnd { lane: usize, after_s: f32 },
+    /// A parked driver with no walk on and no way home stays in its bay and plans the drive home
+    /// again after `after_s`, then on the walkers' backoff (`TRAFFIC-34`).
+    StaysParked { after_s: f32 },
 }
 
 impl FailureOutcome {
@@ -151,16 +170,9 @@ impl TripFailure {
             let moving_in = *slices.pending_household_size.get(i) > 0
                 || *slices.transit.get(i) == TRANSIT_IMMIGRATING
                 || *slices.access_flags.get(i) & ACCESS_IMMIGRATION_ORIGIN != 0;
-            let kind = if *slices.freight_shipment_id.get(i) != u64::MAX {
-                AgentKind::FreightCarrier
-            } else if moving_in {
-                AgentKind::MovingIn
-            } else {
-                AgentKind::Resident
-            };
             Self {
                 agent: i,
-                kind,
+                kind: AgentKind::of(*slices.freight_shipment_id.get(i) != u64::MAX, moving_in),
                 mode: *slices.tmode.get(i),
                 node: *slices.cur_n.get(i),
                 edge: *slices.cur_e.get(i),
@@ -173,6 +185,79 @@ impl TripFailure {
                 outcome,
             }
         }
+    }
+
+    /// Agent `i`'s failure from its row, for a site outside the movement pass: the parking
+    /// commit.
+    pub(super) fn of_row(
+        a: &AgentVec,
+        i: usize,
+        cause: FailureCause,
+        outcome: FailureOutcome,
+    ) -> Self {
+        let moving_in = a.pending_household_size[i] > 0
+            || a.transit[i] == TRANSIT_IMMIGRATING
+            || a.access_flags[i] & ACCESS_IMMIGRATION_ORIGIN != 0;
+        Self {
+            agent: i,
+            kind: AgentKind::of(a.freight_shipment_id[i] != u64::MAX, moving_in),
+            mode: a.transit_mode[i],
+            node: a.current_node[i],
+            edge: a.current_edge[i],
+            lane: a.current_lane_id[i],
+            lane_d: a.lane_distance[i],
+            origin: a.current_building[i],
+            destination: a.target_building[i],
+            border: a.freight_target_border_node[i],
+            cause,
+            outcome,
+        }
+    }
+}
+
+impl AgentKind {
+    fn of(freight: bool, moving_in: bool) -> Self {
+        if freight {
+            Self::FreightCarrier
+        } else if moving_in {
+            Self::MovingIn
+        } else {
+            Self::Resident
+        }
+    }
+}
+
+impl AgentSystem {
+    /// What a parking leg's recovery did about agent `i`'s failure (`TRAFFIC-32`). The movement
+    /// pass recorded the failure this tick with [`FailureOutcome::ParkingRecovery`]: that record
+    /// takes `outcome`. With none, a failure the recovery found itself is recorded now with
+    /// `cause`, from the agent's row; `None` records nothing, as for a retry on its backoff, so a
+    /// failure logs once and its retries do not. O(failures this tick), only on the commit's
+    /// recovery outcomes; the buffer is empty on almost every tick.
+    pub(super) fn record_parking_outcome(
+        &mut self,
+        i: usize,
+        cause: Option<FailureCause>,
+        outcome: FailureOutcome,
+    ) {
+        let buffer = &mut self.trip_failures.buffer;
+        if let Some(failure) = buffer.iter_mut().rev().find(|failure| {
+            failure.agent == i && failure.outcome == FailureOutcome::ParkingRecovery
+        }) {
+            failure.outcome = outcome;
+            return;
+        }
+        let Some(cause) = cause else {
+            return;
+        };
+        let failure = TripFailure::of_row(&self.agents, i, cause, outcome);
+        #[cfg(test)]
+        probe_tally::add(
+            probe_tally::RECORD,
+            &failure,
+            text::CAUSE_LABELS[usize::from(text::cause_index(&failure.cause))],
+        );
+        buffer.push(failure);
     }
 }
 
@@ -299,6 +384,12 @@ pub(crate) mod probe_tally {
             FailureOutcome::Home { .. } => "TELEPORT home",
             FailureOutcome::Border { .. } => "TELEPORT border",
             FailureOutcome::NoBorder { .. } => "no border",
+            FailureOutcome::ParkingRecovery => "parking recovery",
+            FailureOutcome::ParkingRetry { .. } => "parking retry",
+            FailureOutcome::ParksNearby { .. } => "parks nearby",
+            FailureOutcome::DrivesHome { .. } => "drives home",
+            FailureOutcome::WaitsAtLaneEnd { .. } => "waits at its lane end",
+            FailureOutcome::StaysParked { .. } => "stays parked",
         };
         *TALLY
             .lock()
