@@ -106,6 +106,11 @@
 #   Missing/stale imported resources are repaired once per asset-source state.
 #   METRUM_SKIP_GODOT_IMPORT_REPAIR=1 skips the repair pass.
 #   METRUM_FORCE_GODOT_IMPORT_REPAIR=1 retries even after a previous attempt.
+#
+# Git LFS assets:
+#   A clone made without Git LFS holds pointer stubs. Every run fetches them (git lfs pull),
+#   restores the .import metadata Godot invalidated on them, and replaces stubs that a first
+#   launch seeded into the player's mods with the bundled originals.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Performance contracts are engine-independent and must not build/deploy the GDExtension.
@@ -809,6 +814,107 @@ repair_godot_import_cache_if_needed() {
     fi
 }
 
+# The player's installed packs, seeded from godot/bootstrap/mods on first launch.
+player_mods_dir() {
+    if [ "$METRUM_PLATFORM" = "darwin" ]; then
+        printf '%s\n' "$HOME/Library/Application Support/Godot/app_userdata/Metrum Rise/mods"
+    else
+        printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/godot/app_userdata/Metrum Rise/mods"
+    fi
+}
+
+LFS_POINTER_HEADER="version https://git-lfs.github.com/spec/v1"
+
+# Reads NUL-separated paths and prints, NUL-separated, those that are Git LFS pointer stubs.
+# -I skips binary files after their first buffer, so real assets cost almost nothing.
+filter_lfs_pointer_stubs() {
+    xargs -0 grep -l --null -x -F -I -m1 -- "$LFS_POINTER_HEADER" 2>/dev/null
+}
+
+# A clone made before `git lfs install` checks every LFS asset out as a pointer stub: Godot then
+# fails each model and texture import, marks its .import metadata invalid, and the first launch
+# seeds the stubs into the player's mods. Fetch the assets and undo what the stubs left behind.
+ensure_lfs_assets() {
+    if ! command -v git >/dev/null 2>&1 || \
+       ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        return 0
+    fi
+    local stubs=()
+    local path
+    while IFS= read -r -d '' path; do
+        stubs+=("$path")
+    done < <(cd "$PROJECT_ROOT" && git ls-files -z ':(attr:filter=lfs)' | filter_lfs_pointer_stubs)
+    if [ ${#stubs[@]} -gt 0 ]; then
+        echo "${#stubs[@]} Git LFS assets are pointer stubs; fetching them..."
+        if ! git -C "$PROJECT_ROOT" lfs version >/dev/null 2>&1; then
+            echo "Error: Git LFS is not installed. Install git-lfs and rerun ./run.sh." >&2
+            return 2
+        fi
+        # Without the LFS filters, git would report every fetched asset as modified.
+        if [ -z "$(git -C "$PROJECT_ROOT" config filter.lfs.process)" ] && \
+           ! git -C "$PROJECT_ROOT" lfs install --local; then
+            echo "Error: could not enable Git LFS for this repository." >&2
+            return 1
+        fi
+        if ! git -C "$PROJECT_ROOT" lfs pull; then
+            echo "Error: git lfs pull failed." >&2
+            return 1
+        fi
+        local remaining
+        remaining="$(cd "$PROJECT_ROOT" && git ls-files -z ':(attr:filter=lfs)' | filter_lfs_pointer_stubs | tr -cd '\0' | wc -c)"
+        if [ "$remaining" -gt 0 ]; then
+            echo "Error: $remaining Git LFS assets are still pointer stubs after git lfs pull." >&2
+            return 1
+        fi
+        # Restore the committed import metadata Godot invalidated; the import cache repair
+        # then reimports the real assets.
+        local invalid_imports=()
+        for path in "${stubs[@]}"; do
+            if grep -q -x -F 'valid=false' "$PROJECT_ROOT/$path.import" 2>/dev/null && \
+               ! git -C "$PROJECT_ROOT" diff --quiet -- "$path.import"; then
+                invalid_imports+=("$path.import")
+            fi
+        done
+        if [ ${#invalid_imports[@]} -gt 0 ] && \
+           ! git -C "$PROJECT_ROOT" checkout -- "${invalid_imports[@]}"; then
+            echo "Error: could not restore Godot import metadata for the fetched assets." >&2
+            return 1
+        fi
+    fi
+    repair_seeded_mod_stubs
+}
+
+# Seeding never overwrites the player's files, so stubs seeded before the assets were fetched
+# stay broken. Replace each with its fetched bootstrap original; packs without one are left alone.
+repair_seeded_mod_stubs() {
+    local mods_dir
+    mods_dir="$(player_mods_dir)"
+    if [ ! -d "$mods_dir" ]; then
+        return 0
+    fi
+    local stub relative_path seed repaired=0
+    # LFS pointers are about 130 bytes, so only files under 1 KiB need reading.
+    while IFS= read -r -d '' stub; do
+        relative_path="${stub#"$mods_dir"/}"
+        seed="$GODOT_DIR/bootstrap/mods/$relative_path"
+        if [ -f "$seed" ] && ! grep -q -x -F -I -m1 -- "$LFS_POINTER_HEADER" "$seed"; then
+            if ! cp "$seed" "$stub"; then
+                echo "Error: could not replace the pointer stub $stub." >&2
+                return 1
+            fi
+            repaired=$((repaired + 1))
+        fi
+    done < <(
+        find "$mods_dir" -type f -size -2k \
+            \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.exr' -o -iname '*.dds' \
+            -o -iname '*.glb' -o -iname '*.gltf' -o -iname '*.bin' \) \
+            -print0 | filter_lfs_pointer_stubs
+    )
+    if [ $repaired -gt 0 ]; then
+        echo "Replaced $repaired pointer stubs in $mods_dir with the bundled assets."
+    fi
+}
+
 i=1
 while [ $i -le $# ]; do
     arg="${!i}"
@@ -993,6 +1099,13 @@ if [ $TEST -eq 1 ] || [ $TEST_QUICK -eq 1 ]; then
     if ! require_cargo_nextest; then
         exit 2
     fi
+fi
+
+# Rust tests read bundled packs and Godot imports the assets, so fetch them before either.
+ensure_lfs_assets
+lfs_status=$?
+if [ $lfs_status -ne 0 ]; then
+    exit $lfs_status
 fi
 
 # Quick mode builds and runs only the library tests: no dev library, bench check or Godot.
@@ -1434,11 +1547,7 @@ fi
 
 if [ -n "$ROAD_REPLAY_DUMP" ]; then
     # The player's installed packs, read before the isolated profile replaces XDG_DATA_HOME.
-    if [ "$METRUM_PLATFORM" = "darwin" ]; then
-        road_replay_packs="$HOME/Library/Application Support/Godot/app_userdata/Metrum Rise/mods"
-    else
-        road_replay_packs="${XDG_DATA_HOME:-$HOME/.local/share}/godot/app_userdata/Metrum Rise/mods"
-    fi
+    road_replay_packs="$(player_mods_dir)"
     road_replay_packs="${METRUM_ROAD_REPLAY_PACKS:-$road_replay_packs}"
     # The replay loads the save and edits only that loaded copy; the profile is thrown away.
     create_isolated_godot_profile || exit 1
