@@ -2328,13 +2328,12 @@ impl SimCore {
     }
 
     // The end of an in-place edit whose take erased paint (`ZONE-10`, decision D-lot-plan): the
-    // roadbed publishes the edit's pieces, which block cells under them, then the edit plans its
-    // lots at once (the in-commit plan, whose products equal the deferred plan's), so the new
-    // cells along the road inherit the paint into this edit's undo record before another edit
-    // erases any. An edit that erased nothing leaves its regions to the lot queue.
-    // O(closure pieces + the queued regions' plan).
+    // edit plans its lots at once (the in-commit plan, whose products equal the deferred
+    // plan's; its site queries compile the edit's pieces first, which block the cells under
+    // them), so the new cells along the road inherit the paint into this edit's undo record
+    // before another edit erases any. An edit that erased nothing leaves its regions to the lot
+    // queue. O(closure pieces + the queued regions' plan).
     pub(super) fn plan_lots_after_erase(&mut self) {
-        self.publish_network_surface(false, None);
         self.prepare_cell_lots_internal();
     }
 
