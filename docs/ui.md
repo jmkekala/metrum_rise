@@ -247,7 +247,6 @@ building(s)" unless noted:
 | --- | --- |
 | Road tool | the HUD measurement line, after the cost |
 | Roundabout tool | the label beside the ring |
-| Move tool | a drag step that would take land moves nothing (the roads stop following); outlines and "Release to demolish N building(s)"; the release makes the move, demolishing them, as one undo step; dragging back off the land clears it |
 | Road Properties | the selected roads' widenings outlined; Apply asks "Apply removes N building(s). This cannot be undone." |
 | Junction window | the pocket row's verdict ("..., demolishes N building(s)") and the row's take outlined |
 | Services and Industry building placement | the price label; while the core is busy the hover keeps its last ghost, outline and label |
@@ -382,7 +381,6 @@ Current WorldEditor shortcuts:
 | X          | Toggle Walkway tool |
 | O          | Toggle Roundabout tool (the two keys right of P, `[` `]` on a US layout, step its diameter) |
 | Z          | Toggle Zoning tool |
-| M          | Toggle Move tool |
 | V          | Toggle Select tool |
 | Y          | Toggle Terrain Sculpt |
 | Space      | Pause / unpause |
@@ -702,7 +700,6 @@ godot/
     lane_tool.gd
     launch_router.gd
     main_ui.gd
-    move_tool.gd
     network_renderer.gd
     network_tool.gd
     pack_manager.gd
@@ -743,7 +740,6 @@ godot/
       editor_camera_input.gd      AssetEditor sandbox camera pan / orbit / zoom
     tools/                        Player-facing placement and editing tools
       road_tool.gd
-      move_tool.gd
       select_tool.gd
       network_tool.gd
       zoning_tool.gd

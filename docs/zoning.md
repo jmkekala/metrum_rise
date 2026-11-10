@@ -1008,7 +1008,8 @@ was refused (`parcel_overlap` from its corridor, `zoning_cell_overlap` from its 
 widenings, turn pockets, roundabouts and node moves, and an explicit placement's lot refused
 painted cells and every building site by an axis-aligned box test; an extraction area tested
 nothing. The sections above and below that describe those refusals record the state before this
-work.
+work. Manual node moving, which `ZONE-10` also covered, was removed from the game on 2026-11-10
+(`ROAD-111`).
 
 **Growable or plotted, from data.** A growable building has a parcel (`Building.parcel_id != 0`:
 a cell lot or an authored parcel that demand claimed). Plotted land is an explicit site's lot
@@ -1021,7 +1022,7 @@ swap-remove remap). No asset or zone name is tested.
 the night delegation, for review):
 
 1. A road stroke, every graph edit (widening and class change through Road Properties, a turn
-   pocket, a roundabout, a node move, a crossing toggle, a road or ring removal) and every explicit
+   pocket, a roundabout, a crossing toggle, a road or ring removal) and every explicit
    placement (a service or industry building, a farm field new or resized, an extraction area new
    or resized) takes the zoned land it **newly** covers: every lot one of the covered cells belongs
    to is removed with the building on it (a claim is atomic), every authored parcel it covers is
@@ -1069,7 +1070,7 @@ transaction has passed, so nothing after it refuses:
 Where each transaction takes: a stroke in `validate_staged_road_render_installing`, after the
 install (a plotted hit or a failed node piece rolls the staged edit back first) and before graded
 staging; a widening after `apply_edge_cross_section`; a pocket before
-`migrate_pocket_dependents`; a ring before `migrate_trimmed_arms`; a node move after its apply;
+`migrate_pocket_dependents`; a ring before `migrate_trimmed_arms`;
 class change, crossing toggle and the two removals after their apply and before lanes (a removal
 before its parcel capture). The shared graph-edit try is one site, `RoadEditSite`
 (`nodes/sim/core/road_edit_site.rs`), built on the live core or on the road tool's context
@@ -1124,9 +1125,8 @@ tool's land (`RoadToolLand`: parcels per 512 m chunk with their occupants, the e
 chunk-indexed snapshot, the field and extraction `Arc`s), which `SimCore::refresh_road_tool_land`
 refreshes at the end of every simulation frame (O(1) unchanged; only parcel chunks whose revision
 moved are rebuilt, the sites only after a building change with the site index current) and
-publishes into an O(1) slot. The widening and pocket verdicts carry the take from the core. A node
-move's drag step that would take land moves nothing and answers `pending_demolition`; the release
-commits it (D-move (b')). The building hovers try-lock the core, answer `pending` while it is held
+publishes into an O(1) slot. The widening and pocket verdicts carry the take from the core. The
+building hovers try-lock the core, answer `pending` while it is held
 and ready only the site part of a stale site index
 ([`building_allocator.md`](building_allocator.md#indices-and-vacancy-rules)), so a hover changes
 no simulation order ([`debug.md` "Busy Core"](debug.md#busy-core)). The commit is authoritative: a
@@ -1138,14 +1138,12 @@ pointer re-previews on the next pointer move or publication.
 | `field_overlap`, "Road overlaps a farm field" | a road or graph edit over a field |
 | `extraction_area_overlap`, "Road overlaps a mine's extraction area" | the same over an extraction area |
 | `plotted_building_overlap`, "Road overlaps a placed building's lot" | the same over an explicit site's lot |
-| `pending_demolition`, "Release to demolish N building(s)" | a node move's drag step (the release takes) |
 | `parcel_overlap` | only unstaged bulk road adds (setup paths that plan no pieces and take no land) |
 | "building lot overlaps a placed building's lot / a farm field / a mine's extraction area" | an explicit building's lot |
 | "field overlaps another field / a mine's extraction area / a placed building's lot / a building site / a road" | a field; an area reads "extraction area overlaps a farm field / another mine's extraction area / ..." |
 
 **Known limits.** Cells on a ring's island are erased but not blocked, so they stay as unpainted
-cells there (`ZONE-13`). A node moved away and back stays millimetres off its line, so the move
-back shows a pending demolition of the next row (`ROAD-111`). A demolishing commit scans every
+cells there (`ZONE-13`). A demolishing commit scans every
 agent once (`PERF-20`); the lot plan's cost grows with the city (`PERF-21`); an explicit
 placement's tail does too (`PERF-22`); Godot-facing per-frame queries still rebuild a stale zone
 index whole (`ALLOC-05`).
@@ -1461,7 +1459,7 @@ Since `ROAD-68-G` part 7 the commit plans those regions in a pure job on its roa
 cell copy and the parcel store as it left them, and the next frame (or the next edit, save or
 lot preparation, whichever comes first) adopts the plan with the attachment repair and entrance
 update that follow it; the result equals planning in the commit bitwise
-([`simulation.md`](simulation.md#pure-jobs), [`roads.md`](roads.md#commit-stages-part-7-road-68-g-2026-10-27)). Every other road edit (undo, rollback, bulldoze, node moves, class, no-build and
+([`simulation.md`](simulation.md#pure-jobs), [`roads.md`](roads.md#commit-stages-part-7-road-68-g-2026-10-27)). Every other road edit (undo, rollback, bulldoze, class, no-build and
 border edits) queues the corridors of its roads and of the whole ring at their ends, as before
 part 3: undo and border edits leave their regions to the `cell lots` queue, where fewer regions
 would be served at other slots. A digest test runs each edit kind with the narrow and the
@@ -2374,6 +2372,10 @@ answers `pending_demolition` and moves nothing; the release commits the move and
 ([roads over zoned land](#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
 Plotted land still refuses it.
 
+Removed with the move tool (`ROAD-111`, 2026-11-10): the game no longer moves road nodes, so this
+guard, its regressions (`cell_zoning::movement`) and the bridge cases are gone; the record below is
+history.
+
 Initial guard release verification: **1,982 library tests pass**, 76 timing fixtures ignored; all
 three headless Godot bridge suites and warning-free Rustdoc pass. Commands are the full library
 test, release build, the three named bridge scripts above, and `cargo doc --offline --no-deps
@@ -2437,6 +2439,8 @@ established performance improvement. Accepted-move finalization remains outside 
 measurement, and no new rendered-reference captures were taken for the movement changes.
 
 ### Staged node validation and boundary lookup cost
+
+History: node movement was removed from the game with the move tool (`ROAD-111`, 2026-11-10).
 
 Node movement now checks each prospective span's actual compiled carriageway, curb and sidewalk
 polygons before solving terminal or junction pieces. Any span overlap is sufficient to reject the

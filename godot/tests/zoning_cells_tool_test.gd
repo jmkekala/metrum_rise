@@ -15,10 +15,6 @@ class CellSimulationStub extends Node3D:
 	var paths: Array = []
 	func get_zone_profiles() -> Array:
 		return [{"runtime_id": 1}, {"runtime_id": 2}]
-	func move_network_node_step(_node: int, _position: Vector3) -> Dictionary:
-		return {"moved": false, "pending": false}
-	func get_node_pos(_node: int) -> Vector3:
-		return hit
 	func intersect_world_surface(_origin: Vector3, _direction: Vector3, _wait := false) -> Vector3:
 		return hit
 	func hover_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
@@ -120,13 +116,6 @@ func _test_cell_controller() -> void:
 	_expect(tool.cell_shape == 1 and tool.cell_erase, "Toolbar combines Marquee with the separate Erase operation")
 	controls._radius.value = 35.0
 	_expect(tool.cell_brush_radius_m == 35.0, "Brush radius is expressed in world metres")
-	var move := preload("res://scripts/tools/move_tool.gd").new()
-	move.simulation_node = sim
-	move.selected_node_id = 1
-	move.selected_node_pos = Vector3.ONE
-	move._apply_move(Vector3.ONE)
-	_expect(move.selected_node_pos == sim.hit, "Rejected move restores the cursor without asking renderers to rebuild")
-	move.free()
 	scene.free()
 
 func _cell_chunk(x: int, z: int, version := PackedInt64Array()) -> Dictionary:
@@ -167,13 +156,6 @@ func _test_cell_bridge() -> void:
 	for style in _mask_styles(painted):
 		_expect(style == 1.0, "Vacant painted cells carry the fill flag")
 	_expect(not preview.get("masks", []).is_empty(), "Preview exports the same ground-mask path")
-	var endpoint := simulation.get_closest_node(Vector3(96, 0, 0), 1.0)
-	_expect(endpoint >= 0, "Move fixture resolves the road endpoint")
-	if endpoint >= 0:
-		_expect(not simulation.move_network_node(endpoint, Vector3(96, 0, 40)), "Node movement cannot cross painted reservations")
-		_expect(simulation.get_node_pos(endpoint) == Vector3(96, 0, 0), "Rejected movement retains the accepted position")
-		var after_rejection := await _cell_chunk(0, 0, painted.version)
-		_expect(after_rejection.get("unchanged", false), "Rejected movement does not invalidate the zoning mesh")
 	var remote_after := await _cell_chunk(0, -1, remote.version)
 	_expect(remote_after.get("unchanged", false), "Opposite-side masks keep their existing versions")
 	_expect(simulation.apply_zoning_parcel_at(0.0, -16.0, 0, 2, 2), "Manual parcels remain usable beside painted cells")
@@ -192,9 +174,6 @@ func _test_cell_bridge() -> void:
 		await create_timer(0.01).timeout
 	_expect(restored, "Undo restores the original cell paint after an unrelated manual placement")
 	_expect(simulation.get_zoning_parcels_overlay().size() == 1, "Cell undo preserves the authored parcel")
-	if endpoint >= 0:
-		_expect(simulation.move_network_node(endpoint, Vector3(120, 0, 0)), "Clear road extension returns successful movement")
-		_expect(simulation.get_node_pos(endpoint) == Vector3(120, 0, 0), "Accepted movement publishes the new position")
 
 func _mask_styles(payload: Dictionary) -> PackedFloat32Array:
 	var styles := PackedFloat32Array()

@@ -137,23 +137,12 @@ fn narrow_road_marks_match_marking_the_whole_refreshed_ring() {
     };
 
     // A T split of the trunk 100 m west of the grid, its undo, and the split again.
-    let (x, end) = (-H - 100.0, -H - 94.0);
+    let x = -H - 100.0;
     step("T split", &|core| commit(core, (x, 0.0), (x, 120.0)));
     step("undo of the T split", &|core| core.undo_action_internal());
     step("T split again", &|core| commit(core, (x, 0.0), (x, 120.0)));
-    // The branch's free end moves, then the branch extends straight on from it.
-    step("node move", &|core| {
-        let node = node_at(core, x, 120.0);
-        core.move_network_node_internal(node as i32, point(core, end, 128.0))
-    });
-    step("straight extension", &|core| {
-        let direction = DVec2::new(6.0, 128.0).normalize() * 80.0;
-        commit(
-            core,
-            (end, 128.0),
-            (end + direction.x as f32, 128.0 + direction.y as f32),
-        )
-    });
+    // The branch extends straight on from its free end.
+    step("straight extension", &|core| commit(core, (x, 120.0), (x, 200.0)));
     // A painted block's cross street becomes a bridge and a street again.
     for (name, class) in [("class change to a bridge", 1), ("class change back", 0)] {
         step(name, &|core| {
@@ -192,25 +181,6 @@ fn narrow_road_marks_match_marking_the_whole_refreshed_ring() {
     step("T beside painted cells", &|core| {
         commit(core, (-H - 36.0, 0.0), (-H - 36.0, -70.0))
     });
-    // Painted grid junctions moved 1 m, an edge T and an interior crossing, would carry their
-    // roads onto painted lots, so both drag steps are refused as pending the land they would take
-    // (`ROAD-68` open question 2, `ZONE-10` decision D-move) and leave every product, and the undo
-    // history, as it was.
-    for (name, at, to) in [
-        ("grid node move", (H, 150.0), (H + 1.0, 150.0)),
-        ("interior node move", (0.0, -250.0), (1.0, -250.0)),
-    ] {
-        let before = cores.each_mut().map(|core| (products(core), core.undo_stack.len()));
-        for core in &mut cores {
-            let node = node_at(core, at.0, at.1);
-            let target = point(core, to.0, to.1);
-            assert!(!core.move_network_node_internal(node as i32, target), "{name}");
-            let reason = core.last_road_rejection.take().map(|rejection| rejection.reason);
-            assert_eq!(reason.as_deref(), Some("pending_demolition"), "{name}");
-        }
-        let after = cores.each_mut().map(|core| (products(core), core.undo_stack.len()));
-        assert_eq!(before, after, "{name}: a refused move changes nothing");
-    }
 }
 
 // `ROAD-68-G` part 7: what a commit's lots leave beyond `products`, read before them so that

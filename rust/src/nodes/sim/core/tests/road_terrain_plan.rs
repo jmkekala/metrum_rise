@@ -388,27 +388,6 @@ fn a_road_up_to_one_in_three_commits_and_a_steeper_one_is_refused() {
     assert_eq!(core.region_graph.edge_count(), edges);
 }
 
-// A node edit may not steepen a road past 1:3 either; one that keeps it within commits
-// (`ROAD-68` open question 37).
-#[test]
-fn a_node_move_that_steepens_a_road_past_one_in_three_is_refused() {
-    let (mut core, points) = fall_line_stroke_at(0.10);
-    assert_eq!(commit_stroke(&mut core, &points), "");
-    let end = core
-        .region_graph
-        .find_node_within(points[1], crate::config::SNAP_TOLERANCE)
-        .unwrap();
-    let at = core.region_graph.node(end).pos;
-    // The move deforms the road with a smoothstep over its 180 m, so 60 m adds up to 50%.
-    assert!(!core.move_network_node_internal(end as i32, at + Vector3::new(0.0, 60.0, 0.0)));
-    assert_eq!(
-        core.last_road_rejection.as_ref().map(|rejection| rejection.reason.as_str()),
-        Some("road_too_steep")
-    );
-    assert_eq!(core.region_graph.node(end).pos, at);
-    assert!(core.move_network_node_internal(end as i32, at + Vector3::new(0.0, 0.5, 0.0)));
-}
-
 // A terrain edit may not leave a road steeper than 1:3 and steeper than before either
 // (`ROAD-68-K15` (1), decided by the user 2026-10-26 for `TERRAIN-07-E`): a 20 m mound under a
 // flat road is refused with `road_too_steep` and rolled back from its undo record, which

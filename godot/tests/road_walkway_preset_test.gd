@@ -4,8 +4,10 @@
 ## picked on the Road tool carries its median; X picks the Walkway type, which clears it, and a
 ## walkway stroke then previews valid. Rust stays the guard: a walkway stroke carrying a median
 ## is refused (`median_requires_vehicle_road`). R draws the divided type again. The removed lane
-## and median keys (] [ Up Down . , N ; ') change nothing. Writes the road-type library, so it
-## runs only in the isolated profile. Ported from Veeti's `road_walkway_preset_test.gd`.
+## and median keys (] [ Up Down . , N ; ') change nothing. The game has no node move tool
+## (`ROAD-111`): neither the tool list, the scene, the toolbar nor M offers one. Writes the
+## road-type library, so it runs only in the isolated profile. Ported from Veeti's
+## `road_walkway_preset_test.gd`.
 extends SceneTree
 
 const TIMEOUT_MS := 60000
@@ -85,6 +87,17 @@ func _run() -> void:
 	_press(input_manager, KEY_R)
 	_expect(input_manager.current_tool == input_manager.Tool.ROAD, "R picks the Road tool")
 	_expect(tool.road_type_id == avenue and tool.median_style == 2, "R draws the last road type again: %s %d" % [tool.road_type_id, tool.median_style])
+
+	# No node move tool (`ROAD-111`).
+	var tools: Array = input_manager.Tool.keys()
+	_expect(tools == ["NONE", "ROAD", "WALKWAY", "ZONING", "SERVICES", "INDUSTRY", "AGENT", "SCULPT", "SELECT", "BULLDOZE", "VEGETATION", "FIELD_EDIT", "ROUNDABOUT"], "the tool list: %s" % [tools])
+	_expect(_main.get_node_or_null("MoveTool") == null, "the scene has no move tool")
+	var toolbar: Array = []
+	for button in _main.get_node("MainUI").main_toolbar.get_children():
+		toolbar.append(String(button.text))
+	_expect(toolbar == ["Roads", "Zoning", "Services", "Industry", "Terrain", "Inspect"], "the toolbar: %s" % [toolbar])
+	_press(input_manager, KEY_M)
+	_expect(input_manager.current_tool == input_manager.Tool.ROAD, "M picks no tool")
 	_expect(_simulation.delete_road_type(avenue).is_empty(), "the fixture type is deleted")
 	tool.active = false
 	_main.queue_free()

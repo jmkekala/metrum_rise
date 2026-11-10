@@ -289,12 +289,6 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
         core.set_edge_class_internal(edge, 0);
         core.build_snapshot();
     });
-    e.run("node move", || {
-        let node = core.region_graph.get_edge(0).unwrap().end_node;
-        let at = core.region_graph.node(node).pos;
-        core.move_network_node_internal(node as i32, at + Vector3::new(4.0, 0.0, 4.0));
-        core.build_snapshot();
-    });
     e.run("terrain tools", || {
         core.start_terrain_stroke_internal();
         core.sculpt_terrain_internal(Vector2::new(700.0, 700.0), 30.0, 2.0);

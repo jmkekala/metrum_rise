@@ -24,13 +24,12 @@
 //! builds empty, a resident with one, so the removal evacuates its homes and its agent and
 //! household scans meet a background that grows with the tier (`LOCALITY_DEMOLITION`).
 //!
-//! Then the four in-place edits take built land of the neighbourhood (`ZONE-10`, round RZ10a):
+//! Then the three in-place edits take built land of the neighbourhood (`ZONE-10`, round RZ10a):
 //! a row street widened from 1+1 to 2+2 (its front rows), a 40 m right pocket at a cross-street
-//! junction, a one-lane ring replacing a crossing (its island's lots too) and a T's junction
-//! moved 6 m into a block, each with its publication, as the Road Properties window, the Junction
-//! window, the roundabout tool and the move tool's release commit them (`LOCALITY_IN_PLACE`). The
-//! narrowing back and the pocket's removal follow, the same transactions taking no land: the
-//! reference for what the take adds at each tier.
+//! junction and a one-lane ring replacing a crossing (its island's lots too), each with its
+//! publication, as the Road Properties window, the Junction window and the roundabout tool commit
+//! them (`LOCALITY_IN_PLACE`). The narrowing back and the pocket's removal follow, the same
+//! transactions taking no land: the reference for what the take adds at each tier.
 //!
 //! Last, the plotted placements take built land of the grid's south edge (`ZONE-11`, round
 //! RZ11a): a parking lot over the houses of the south row's south curb, a farm and a mine over
@@ -361,18 +360,13 @@ fn profile_in_place_edits(core: &mut SimCore, background: usize) -> serde_json::
             })
             .expect("a street between the nodes")
     };
-    // Row 11's west block; row 13's west block into the crossing at x = 0; row 15's west T, whose
-    // move bends no street onto a parking lot.
+    // Row 11's west block; row 13's west block into the crossing at x = 0.
     let (row, _) = edge_between(core, node_at(core, -400.0, 150.0), node_at(core, 0.0, 150.0));
     let (arm, end) = edge_between(core, node_at(core, -400.0, 250.0), node_at(core, 0.0, 250.0));
-    let tee = node_at(core, -400.0, 350.0);
     let mut takes = Vec::new();
     // Each taking edit, and the narrowing and the pocket's removal, the same transactions taking
-    // no land: the reference for what the take adds. (A node moved back takes the cells beside
-    // its street: the round trip leaves the street millimetres off its line.)
-    for name in [
-        "widening", "narrowing", "pocket", "pocket_off", "ring", "move",
-    ] {
+    // no land: the reference for what the take adds.
+    for name in ["widening", "narrowing", "pocket", "pocket_off", "ring"] {
         let (buildings, households, agents) = (
             core.allocator.buildings.len(),
             core.households.households.len(),
@@ -400,17 +394,12 @@ fn profile_in_place_edits(core: &mut SimCore, background: usize) -> serde_json::
                 core.set_edge_cross_section_internal(edge, fwd, bkw, median, parking, attributes)
             }
             "pocket" | "pocket_off" => core.set_road_pocket_internal(pocket(name == "pocket")),
-            "ring" => {
+            _ => {
                 let site = RoundaboutSite::Junction(node_at(core, 0.0, 350.0));
                 core.place_roundabout_internal(RoundaboutRequest {
                     site,
                     diameter_m: default_diameter_m(site.lanes(&core.region_graph)),
                 })
-            }
-            // Into the block to the T's south-east.
-            _ => {
-                let to = Vector3::new(-394.0, core.heightmap.sample_height_world(-394.0, 344.0), 344.0);
-                core.move_network_node_taking_land_internal(tee as i32, to)
             }
         };
         let edit_ms = start.elapsed().as_secs_f64() * 1e3;

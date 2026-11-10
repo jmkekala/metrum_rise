@@ -203,11 +203,10 @@ fn assert_profiles_fresh(name: &str, core: &SimCore) {
     }
 }
 
-// A node move and a road removal re-derive every profile they reach: moving the T's side-road end
-// changes its arm's sample, so the junction's plane and every arm's pin; removing the side road
-// turns the junction into a pass-through.
+// A road removal re-derives every profile it reaches: removing the T's side road turns the
+// junction into a pass-through.
 #[test]
-fn node_moves_and_removals_leave_freshly_solved_profiles() {
+fn removals_leave_freshly_solved_profiles() {
     let strokes = [
         ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 1),
         ([Vector2::ZERO, Vector2::new(0.0, ARM_M)], 1),
@@ -221,11 +220,6 @@ fn node_moves_and_removals_leave_freshly_solved_profiles() {
                 (pos.x, pos.z) == (0.0, ARM_M)
             })
             .unwrap();
-        let target = Vector2::new(24.0, ARM_M);
-        let height = core.get_world_surface_height_internal(target);
-        let to = Vector3::new(target.x, height + 1.5, target.y);
-        assert!(core.move_network_node_internal(side_end as i32, to));
-        assert_profiles_fresh(&format!("move, sloped {sloped}"), &core);
         let side = (0..core.region_graph.edge_count())
             .find(|&edge| {
                 let edge = core.region_graph.edge(edge);

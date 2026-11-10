@@ -1,21 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Road edits in place over zoned land (`ZONE-10`, round RZ10a): a widening, a turn pocket, a
-//! roundabout (its island included) and a node move take the zoned land their pieces newly cover
-//! as a road stroke does, demolishing the buildings on the lots and erasing only the covered
-//! cells' paint; the reverse edit takes nothing; plotted land (a field, an extraction area, a
-//! placed building's lot) refuses each of them with nothing changed. Their undo gives the road and
-//! the paint back, not the buildings, and is refused whole while the paint's land is held. A drag
-//! step of the node move does not take land: it is refused as pending (decision D-move). Each
-//! verdict (the roundabout hover on the road tool's context, the windows', the pending drag step)
-//! shows what its commit takes (round RZ10b), and the other graph edits take land by the same
-//! rule (a bridge brought to the ground).
+//! Road edits in place over zoned land (`ZONE-10`, round RZ10a): a widening, a turn pocket and a
+//! roundabout (its island included) take the zoned land their pieces newly cover as a road
+//! stroke does, demolishing the buildings on the lots and erasing only the covered cells' paint;
+//! the reverse edit takes nothing; plotted land (a field, an extraction area, a placed building's
+//! lot) refuses each of them with nothing changed. Their undo gives the road and the paint back,
+//! not the buildings, and is refused whole while the paint's land is held. Each verdict (the
+//! roundabout hover on the road tool's context, the windows') shows what its commit takes (round
+//! RZ10b), and the other graph edits take land by the same rule (a bridge brought to the ground).
 
 use super::preview::{handles, tool_context};
 use super::*;
 use crate::nodes::sim::core::RoadLandTake;
 use crate::nodes::sim::core::tests::road_crosswalks::arm_towards;
-use crate::nodes::sim::editing::NodeMoveStep;
 use crate::simulation::network::graph::RoadParking;
 use crate::simulation::network::pockets::PocketRequest;
 use crate::simulation::network::road_types::RoadAttributes;
@@ -41,7 +38,7 @@ fn west_arm(core: &SimCore, node: u32) -> usize {
     arm_towards(core, node, Vector3::new(-150.0, 0.0, 0.0))
 }
 
-// One of the four edits under test, applied to the T: whether it was applied.
+// One of the three edits under test, applied to the T: whether it was applied.
 #[derive(Clone, Copy, Debug)]
 enum Edit {
     // The west arm from 1+1 to 2+2 lanes.
@@ -51,11 +48,9 @@ enum Edit {
     Pocket,
     // A one-lane ring of 60 m in place of the junction.
     Ring,
-    // The junction moved 6 m into the houses' block, taking the land.
-    Move,
 }
 
-const EDITS: [Edit; 4] = [Edit::Widen, Edit::Pocket, Edit::Ring, Edit::Move];
+const EDITS: [Edit; 3] = [Edit::Widen, Edit::Pocket, Edit::Ring];
 
 impl Edit {
     fn apply(self, core: &mut SimCore, node: u32) -> bool {
@@ -63,9 +58,6 @@ impl Edit {
             Self::Widen => widen(core, west_arm(core, node), 2),
             Self::Pocket => core.set_road_pocket_internal(pocket(core, node, true)),
             Self::Ring => core.place_roundabout_internal(ring(node)),
-            Self::Move => {
-                core.move_network_node_taking_land_internal(node as i32, Vector3::new(0.0, 0.0, -6.0))
-            }
         }
     }
 
@@ -75,9 +67,6 @@ impl Edit {
             Self::Widen => widen(core, west_arm(core, node), 1),
             Self::Pocket => core.set_road_pocket_internal(pocket(core, node, false)),
             Self::Ring => return None,
-            Self::Move => {
-                core.move_network_node_taking_land_internal(node as i32, Vector3::ZERO)
-            }
         })
     }
 }
@@ -264,14 +253,12 @@ fn a_ring_takes_the_lots_on_its_island() {
 #[test]
 fn plotted_land_refuses_each_in_place_edit() {
     // Each edit's polygon on land it newly covers: beside the widened west arm far from the
-    // houses, beside the pocket, on the ring's island across the street from the side street,
-    // under the street bent by the moved junction.
+    // houses, beside the pocket, on the ring's island across the street from the side street.
     let polygon = |edit: Edit| {
         let [x0, z0, x1, z1] = match edit {
             Edit::Widen => [-120.0, -8.0, -100.0, -6.0],
             Edit::Pocket => [-30.0, -8.0, -20.0, -6.0],
             Edit::Ring => [10.0, 10.0, 14.0, 14.0],
-            Edit::Move => [8.0, -10.0, 10.0, -9.0],
         };
         [
             Vector2::new(x0, z0),
@@ -300,16 +287,13 @@ fn plotted_land_refuses_each_in_place_edit() {
 }
 
 // Test 1, a placed building's lot (`plotted_building_overlap`): a widening of the farm's road
-// and a node move bending it into the farm's lot are refused with nothing changed; the node move
-// tested no such land before `ZONE-10`.
+// into the farm's lot is refused with nothing changed.
 #[test]
-fn a_placed_buildings_lot_refuses_a_widening_and_a_node_move() {
+fn a_placed_buildings_lot_refuses_a_widening() {
     let (mut core, farm, _) = super::super::fields::farm_fixture();
     core.benchmark_mode = false;
     core.treasury.balance = 1.0e9;
     let road = core.allocator.buildings[farm].edge_idx;
-    let lot = core.allocator.building_sites[farm].lot_footprint_world;
-    let x = (lot[0].x + lot[2].x) * 0.5;
     let state = land_state(&core);
     let attributes = RoadAttributes::of_edge(core.region_graph.edge(road));
     let refusal = core
@@ -318,38 +302,6 @@ fn a_placed_buildings_lot_refuses_a_widening_and_a_node_move() {
     assert_eq!(refusal.reason, "plotted_building_overlap");
     assert!(!widen(&mut core, road, 3));
     assert_eq!(land_state(&core), state);
-    // A stub from the south ends on the farm's road in front of the lot; its junction moved
-    // north bends the road into the lot.
-    assert_eq!(commit(&mut core, &[Vector3::new(x, 0.0, -40.0), Vector3::new(x, 0.0, 0.0)]), "");
-    core.adopt_pending_cell_lots();
-    let node = core
-        .region_graph
-        .find_node_within(Vector3::new(x, 0.0, 0.0), 1.0)
-        .expect("the stub's junction");
-    let state = land_state(&core);
-    let to = Vector3::new(x, 0.0, 6.0);
-    assert!(!core.move_network_node_taking_land_internal(node as i32, to));
-    let reason = core.last_road_rejection.take().map(|r| r.reason);
-    assert_eq!(reason.as_deref(), Some("plotted_building_overlap"));
-    assert!(!core.move_network_node_internal(node as i32, to));
-    assert_eq!(land_state(&core), state);
-}
-
-// Decision D-move: a drag step whose pieces would take zoned land does not commit: it is refused
-// as pending with nothing written, and the release takes the land in one transaction.
-#[test]
-fn a_drag_step_over_zoned_land_is_pending_and_the_release_takes_it() {
-    let (mut core, node) = t_with_houses();
-    let to = Vector3::new(0.0, 0.0, -6.0);
-    let state = (land_state(&core), graph_digest(&core));
-    assert!(!core.move_network_node_internal(node as i32, to));
-    let rejection = core.last_road_rejection.take().expect("a reason");
-    assert_eq!(rejection.reason, "pending_demolition", "{}", rejection.detail);
-    assert_eq!((land_state(&core), graph_digest(&core)), state, "a pending step writes nothing");
-    let buildings = core.allocator.buildings.len();
-    assert!(core.move_network_node_taking_land_internal(node as i32, to));
-    assert!(core.allocator.buildings.len() < buildings);
-    assert_eq!(core.region_graph.node(node).pos, to);
 }
 
 // Test 2 (decisions D5, D6): each edit's undo gives the road and the erased paint back, not the
@@ -494,8 +446,9 @@ fn a_zoning_off_widening_captures_no_taken_lot() {
 
 // The `before` rule (`ZONE-10`): land an edit's replaced pieces already cover is not newly
 // covered. An authored parcel lying on the side street (an inconsistent state, set directly)
-// stays when a 0.2 m drag step re-lays the street's junction and the side street with it: the
-// step commits and takes nothing, where judged without the replaced pieces it would be pending.
+// stays when turning the side street's crossing off re-lays the junction and the side street
+// with it: the toggle commits and takes nothing, where judged without the replaced pieces it
+// would take the parcel.
 #[test]
 fn a_re_laid_junction_takes_none_of_the_land_it_already_covers() {
     use crate::simulation::zoning::ParcelGeometry;
@@ -531,11 +484,8 @@ fn a_re_laid_junction_takes_none_of_the_land_it_already_covers() {
         )
         .raw();
     let buildings = core.allocator.buildings.len();
-    assert!(
-        core.move_network_node_internal(node as i32, Vector3::new(0.2, 0.0, 0.0)),
-        "{:?}",
-        core.last_road_rejection
-    );
+    assert!(core.set_crosswalk_override_internal(node, side as i32, false));
+    assert_eq!(core.region_graph.node(node).crosswalk_overrides.get(&side), Some(&false));
     assert!(record_paint(&core).is_none());
     assert!(core.zoning.parcel_by_raw_id(parcel).is_some(), "the parcel stays");
     assert_eq!(core.allocator.buildings.len(), buildings);
@@ -594,9 +544,9 @@ fn assert_commit_took(
 // Test 6 (`ZONE-10`, round RZ10b): each edit with a verdict shows what its commit takes. The
 // roundabout tool's hover, on the road tool's context without the core, takes the same cells,
 // lots, lot points and buildings (by handle) as the core's check, and its outlines are the lots'
-// own corners; the Road Properties window's widening verdict, the Junction window's pocket
-// verdict and the move tool's pending drag step carry the take; each commit (the click, Apply,
-// the release) then demolishes exactly those buildings and erases exactly those cells.
+// own corners; the Road Properties window's widening verdict and the Junction window's pocket
+// verdict carry the take; each commit (the click, Apply) then demolishes exactly those buildings
+// and erases exactly those cells.
 #[test]
 fn each_edit_verdict_shows_what_its_commit_takes() {
     // The ring: the hover on the context, then the click.
@@ -650,17 +600,6 @@ fn each_edit_verdict_shows_what_its_commit_takes() {
     let before = standing(&core);
     assert!(core.set_road_pocket_internal(pocket(&core, node, true)));
     assert_commit_took(&core, &before, &expected, &verdict.take.cells, "pocket");
-
-    // The move: the pending drag step, then the release.
-    let (mut core, node) = t_with_houses();
-    let to = Vector3::new(0.0, 0.0, -6.0);
-    let NodeMoveStep::Pending(take) = core.move_network_node_step_internal(node as i32, to) else {
-        panic!("the drag step is pending");
-    };
-    let expected = take_handles(&core, &take);
-    let before = standing(&core);
-    assert!(core.move_network_node_taking_land_internal(node as i32, to));
-    assert_commit_took(&core, &before, &expected, &take.cells, "move");
 }
 
 // The bridge edge of a free bridge drawn over the houses' lots at `x` (`bridge_at`).
@@ -738,9 +677,8 @@ fn a_field_refuses_a_bridge_brought_to_the_ground() {
 
 // The Godot road edit demolition test's fixture (`godot/tests/road_edit_demolition_test.gd`,
 // PLAN-RZ 10.5 test 9): the T with houses, saved to `METRUM_ROAD_EDIT_DEMOLITION_FIXTURE`, and
-// beside it, in `<save>.json`, the junction, a point on its west arm and the move's target in
-// the houses' block, by position (a save compacts the ids). The ring, the widening and the move
-// each take houses here.
+// beside it, in `<save>.json`, the junction and a point on its west arm, by position (a save
+// compacts the ids). The ring and the widening each take houses here.
 #[test]
 #[ignore = "writes the Godot road edit demolition test's fixture"]
 fn record_road_edit_demolition_fixture() {
@@ -753,15 +691,8 @@ fn record_road_edit_demolition_fixture() {
     let widening = core
         .preview_edge_cross_section_internal(west as i32, 2, 2, None, RoadParking::NONE, attributes)
         .expect("the widening");
-    let to = Vector3::new(0.0, 0.0, -6.0);
-    let NodeMoveStep::Pending(move_take) = core.move_network_node_step_internal(node as i32, to)
-    else {
-        panic!("the move is pending");
-    };
     assert!(
-        !ring_take.buildings.is_empty()
-            && widening.buildings_removed > 0
-            && !move_take.buildings.is_empty(),
+        !ring_take.buildings.is_empty() && widening.buildings_removed > 0,
         "each edit takes houses"
     );
     let junction = core.region_graph.node(node).pos;
@@ -769,13 +700,12 @@ fn record_road_edit_demolition_fixture() {
     let spec = serde_json::json!({
         "junction": [junction.x, junction.y, junction.z],
         "west_point": [-60.0, 0.0, 0.0],
-        "move_to": [to.x, to.y, to.z],
         "ring_diameter_m": ring(node).diameter_m,
     });
     std::fs::write(format!("{path}.json"), spec.to_string()).unwrap();
     eprintln!(
         "ROAD_EDIT_DEMOLITION_FIXTURE {}",
         serde_json::json!({"path": path, "ring": ring_take.buildings.len(),
-            "widening": widening.buildings_removed, "move": move_take.buildings.len()})
+            "widening": widening.buildings_removed})
     );
 }

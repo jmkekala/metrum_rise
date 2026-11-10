@@ -101,10 +101,9 @@ Five centimetres is far above f32 spacing anywhere in a 20 km world, and far bel
 segment. Regressions: `split_next_to_a_knot_leaves_no_sub_millimetre_segment` and
 `endpoint_on_a_road_beside_a_knot_keeps_the_new_road_on_its_line` (`simulation/network/topology.rs`).
 
-Road insertion, node movement, rollback and undo also refresh the zoning system's recorded
-straight-road grid choices from the affected edge set. Node movement invalidates both old and
-new corridors. These choices belong to zoning, use one local adjacency ring, and survive save
-remapping; see [persistent alignment](zoning.md#persistent-straight-road-alignment-checkpoint).
+Road insertion, rollback and undo also refresh the zoning system's recorded straight-road grid
+choices from the affected edge set. These choices belong to zoning, use one local adjacency ring,
+and survive save remapping; see [persistent alignment](zoning.md#persistent-straight-road-alignment-checkpoint).
 
 The graph is not the final visible road surface, final terrain clip carrier, final earthwork
 boundary, or final node polygon carrier.
@@ -1237,9 +1236,10 @@ the user tries this.
 shows it and names it, "Roundabout, 4 arms". The ring edges go in one `try_graph_edit`, the arms stay
 with their ring nodes as road ends on the old ring line, one undo record.
 
-**Fixed.** A ring keeps its section, class, pocket-free state, zoning and node positions:
-`validate_cross_section`, `validate_pocket` and a node move refuse with `roundabout_fixed`, the class
-change and the zoning toggle do nothing on a ring edge.
+**Fixed.** A ring keeps its section, class, pocket-free state and zoning:
+`validate_cross_section` and `validate_pocket` refuse with `roundabout_fixed`, the class
+change and the zoning toggle do nothing on a ring edge. No tool moves a node (the move tool was
+removed, `ROAD-111`).
 
 **Bounds.** Plan `O(arm points + ring points + clearance)`, clearance `O(ring log E + ring points x
 nearby points)`, a split `O(points)`, the stroke check `O(log E + edges within 40 m of the stroke + ring
@@ -1459,9 +1459,9 @@ approach sections (`ROAD-68-K18`, [open question 37](#road-68-open-questions)).
   `O(sum over touched edges of (points * inserted knots) + sum over their far nodes of degree * points)`,
   local but larger beside a high-degree hub. Every caller passes both ends of every edge whose
   control polyline it changed: road edits (both ends of each dirty edge), the crossing toggle,
-  and, since the pre-D review, node moves (the moved node and its arms' far nodes)
-  and road removals (the removed edge's two ends), which rebuilt clips without re-solving
-  before. A road edit plan solves on a local excerpt of the graph, which must hold that 2-ring:
+  and, since the pre-D review, road removals (the removed edge's two ends), which rebuilt
+  clips without re-solving before (node moves did too until the move tool's removal, `ROAD-111`).
+  A road edit plan solves on a local excerpt of the graph, which must hold that 2-ring:
   every edge near the stroke and two rings of incidence around them, and a plan whose affected
   nodes or the far nodes of the edges they re-derive lack an arm in the excerpt is refused
   (`ROAD-68-E` part 2 round 3; with one ring a far node lost its pin, open question 8). The solve,
@@ -1928,7 +1928,7 @@ pieces and take no land.
   with `removals_ms sites_ms lots_ms erase_ms`) and reported as `surface_land_ms` in
   `RoadEditMetrics`.
 - **The shared edit site.** Every graph edit (widening and class change, turn pocket, roundabout,
-  node move, crossing toggle, road and ring removal) tries itself on `RoadEditSite<'a, L:
+  crossing toggle, road and ring removal) tries itself on `RoadEditSite<'a, L:
   RoadLandSource>` (`nodes/sim/core/road_edit_site.rs`: graph, roadbed, terrain, water, land,
   scratch), built by `SimCore::road_edit_site()` on the live core or
   `RoadPreviewContext::road_edit_site()` on the road tool's context. Its `try_graph_edit` returns
@@ -1939,8 +1939,8 @@ pieces and take no land.
   allocator checks interleave. The lift left every graph edit's products unchanged (digests of all
   of them, and the commit locality products, before and after).
 - **Where each edit takes:** a widening after `apply_edge_cross_section`, a pocket before
-  `migrate_pocket_dependents`, a ring (and its island disc) before `migrate_trimmed_arms`, a node
-  move after its apply, a class change, crossing toggle or removal after its apply and before
+  `migrate_pocket_dependents`, a ring (and its island disc) before `migrate_trimmed_arms`, a class
+  change, crossing toggle or removal after its apply and before
   lanes (a removal before its parcel capture). Each records `cells` in its own undo record and,
   when it erased paint, plans its lots before returning. The widening's and the pocket's corridor
   checks (`widened_corridor_refusal`, `pocket_corridor_refusal`) lost their parcel branch and keep
@@ -1955,19 +1955,18 @@ pieces and take no land.
   hover (`get_roundabout_site`, `preview_roundabout`) runs on the road tool's context and the view
   land without the core; the click asks the core. The road hover reads the land the simulation
   republishes after each frame that changed it (`RoadToolLand`, `RoadToolShared::publish_land`).
-- **Node moves (decision D-move (b')).** `move_network_node_step` (the drag step) refuses a non-empty
-  take as `pending_demolition` with counts and outlines, writing nothing; the move tool shows "Release
-  to demolish N building(s)" and the release calls `commit_network_node_move`
-  (`move_network_node_taking_land_internal`), one move and one undo step. Known drift (`ROAD-111`):
-  `deform_edge` weighs each point by its arc-length fraction on the already deformed polyline, so a
-  move and its reverse use different weights; a 400 m street with 8 m stations moved 6 m and back
-  ends 13.7 mm off its line, and the move back now shows a pending demolition of the next row of
-  lots instead of being refused (`zoning_cell_overlap`) as before. A two-point street returns
-  exactly.
+- **Node moves: removed (`ROAD-111`, 2026-11-10).** RZ10a/RZ10b gave the move tool a pending
+  drag step (`pending_demolition`) and a release that took the land. The user removed manual node
+  moving from the game ("it has not worked in ages"): the move tool, its M shortcut, the bridge
+  calls (`move_network_node`, `move_network_node_step`, `commit_network_node_move`), the core paths
+  and the `pending_demolition` reason are gone. Its known drift (a node moved away and back left
+  its streets millimetres off their line, `deform_edge` weighing each point on the already
+  deformed polyline) is moot. `RegionGraph::move_node` and `deform_edge` stay: a new road's free
+  end snaps onto an intersection through them (`snap_new_edge_endpoint_to_intersection`).
 - **Bounds.** The take is O(pieces × reserved cells in their bounds × top triangles) plus the
   plotted queries; hovers stay flat with the city (stroke p50 7-10 ms as before, the take's stage
   +0.03-0.17 ms; ring hover 1.3-1.8 ms at 0 / 10k / 30k). A demolishing edit adds one parallel
-  agent scan (`PERF-20`) and its lot plan (`PERF-21`); the four in-place edits measured 16-59 ms
+  agent scan (`PERF-20`) and its lot plan (`PERF-21`); the in-place edits measured 16-59 ms
   with 2-34 houses at 0-30k background (`benchmark_commit_locality`, products bitwise equal across
   tiers).
 
@@ -2300,7 +2299,7 @@ These need a user decision; work that does not depend on them continues.
    **Superseded by `ZONE-10` (2026-11-10).** A node move over zoned land is a pending demolition:
    the drag step moves nothing and answers `pending_demolition`, and the release takes the land
    ([land taken by road edits](#land-taken-by-road-edits-zone-09-zone-10)); plotted land still
-   refuses it.
+   refuses it. **Moot since `ROAD-111` (2026-11-10):** manual node moving is removed from the game.
 3. **Site CDT margin — decided 2026-10-24 (user): resolved by `ROAD-68-D`'s shared grading envelope.** Building-site loops used the legacy seam-vertex grading margin for their
    sample bounds. They now use the base local sample margin. Steep site tie-ins may sample less
    terrain until `ROAD-68-D` defines the grading envelope for both roads and sites.
@@ -4620,7 +4619,7 @@ These need a user decision; work that does not depend on them continues.
       `road_too_steep` refusal where the band and the grade leave no blend).
     - **Implemented (`ROAD-68-K15`).** The source terrain reaches the junction profile solve
       (`RegionGraph::finalize_junction_endpoint_profiles(nodes, terrain)`) from every caller with a
-      world: the road edit plan's validation graph, the unplanned bulk commit, node moves, road
+      world: the road edit plan's validation graph, the unplanned bulk commit, road
       removals, the crossing toggle, the load repair and the terrain sync; `None` only from graph
       fixtures without a world (the probe fixtures, graph unit tests and the graph-only non-bulk
       `TransitNetwork::add_road`, which no gameplay commit takes). The band, its widening near held
@@ -5962,8 +5961,8 @@ checks pass. The walking proof holds on both tiers, with no footpath in either c
   arms start on a repeated point, built in two edge orders).
 - **Freshness.** Node moves and road removals rebuilt clips but never re-ran the profile solve,
   so the arms they reach kept pins from the old plane. Both now solve their nodes; test
-  `node_moves_and_removals_leave_freshly_solved_profiles` compares every profile with a solve from
-  scratch, flat and sloped.
+  `removals_leave_freshly_solved_profiles` (the node-move half went with the move tool,
+  `ROAD-111`) compares every profile with a solve from scratch, flat and sloped.
 - **No silent fallbacks** (`layout.rs`, `node.rs`). `bisector_station` returns `None`, a typed
   `ArmTooShort`, instead of station zero where an arm's first segment would not move away from the
   bisector; a straight sector rules that out, since its bisector lies within half a degree of the
@@ -8262,7 +8261,7 @@ not inside a frame. A profile of those local commits:
 - *Agents.* The route-state test runs on the shared pool and the routes clear in agent order.
 - *Adoption offset: one frame* ([pure jobs](simulation.md#pure-jobs)). The sim thread waits for a
   late build before it takes the core lock, so Godot's acknowledgements never queue behind it.
-- *Editor rebuilds.* Node moves, lane connection edits, crosswalk toggles, edge class changes and
+- *Editor rebuilds.* Lane connection edits, crosswalk toggles, edge class changes and
   border connections schedule the deferred rebuild (`schedule_cch_rebuild_of_live_graph`). The
   lane edits used to mark a chunk after their synchronous build, which rebuilt the CCH a second
   time at the next frame; the scheduled job's graph copy holds the edit, so that mark is gone.

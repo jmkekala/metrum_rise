@@ -2,30 +2,21 @@
 
 ## Road edits in place over zoned land (`ZONE-10`, round RZ10b, PLAN-RZ 10.5 test 9): on a T
 ## junction whose street is lined with houses (`METRUM_ROAD_EDIT_DEMOLITION_FIXTURE`, written by
-## the Rust recorder `record_road_edit_demolition_fixture`, with the junction, a point on the
-## widened arm and the move's target in `<fixture>.json`; ids are found by position, as a save
-## compacts them), the roundabout tool's hover over the junction outlines
-## the lots the ring takes with the bulldoze highlight and names the buildings in its label, and
-## the click builds the ring; the Road Properties window's confirmation reads "Apply removes N";
-## the move tool's drag into the block is pending (outlined, "Release to demolish N"), moves
-## nothing, and the release commits it. Each part loads the fixture afresh.
+## the Rust recorder `record_road_edit_demolition_fixture`, with the junction and a point on the
+## widened arm in `<fixture>.json`; ids are found by position, as a save compacts them), the
+## roundabout tool's hover over the junction outlines the lots the ring takes with the bulldoze
+## highlight and names the buildings in its label, and the click builds the ring; the Road
+## Properties window's confirmation reads "Apply removes N". Each part loads the fixture afresh.
 extends SceneTree
 
 const RoundaboutTool := preload("res://scripts/tools/roundabout_tool.gd")
-const MoveTool := preload("res://scripts/tools/move_tool.gd")
 const RoadPropertiesWindow := preload("res://scripts/ui/road_properties_window.gd")
 const TIMEOUT_MS := 20000
-
-class TerrainStub extends Node3D:
-	func update_terrain_visuals() -> void:
-		pass
 
 class RoadToolStub extends Node3D:
 	var fwd_lanes := 1
 	var bkw_lanes := 1
 	func mark_network_topology_dirty() -> void:
-		pass
-	func update_main_mesh() -> void:
 		pass
 
 var _failures := 0
@@ -54,7 +45,6 @@ func _run() -> void:
 	root.add_child(scene)
 	await _test_ring(scene)
 	await _test_road_properties(scene)
-	await _test_move(scene)
 	_finish(scene)
 
 func _finish(scene: Node) -> void:
@@ -78,7 +68,7 @@ func _load(scene: Node3D) -> void:
 	_expect(warnings.is_empty(), "the house pack loads: " + warnings)
 	_expect(simulation.load_game(_fixture), "the T fixture must load")
 	simulation.set_simulation_speed(0.0)
-	var terrain := TerrainStub.new()
+	var terrain := Node3D.new()
 	terrain.name = "Terrain"
 	scene.add_child(terrain)
 	var road := RoadToolStub.new()
@@ -158,36 +148,3 @@ func _test_road_properties(scene: Node3D) -> void:
 	var text: String = window.demolition_text()
 	_expect(text.begins_with("Apply removes %d building" % removed), "the window asks before demolishing: '%s'" % text)
 	window.free()
-
-func _test_move(scene: Node3D) -> void:
-	_load(scene)
-	var tool: Node3D = MoveTool.new()
-	tool.name = "MoveTool"
-	scene.add_child(tool)
-	tool.set_process(false)
-	tool.active = true
-	var start := _vector(_spec["junction"])
-	var node := simulation.get_closest_node(start, 1.0)
-	_expect(node >= 0, "the junction is a node")
-	var target := _vector(_spec["move_to"])
-	tool.selected_node_id = node
-	tool.selected_node_pos = start
-	tool.current_state = tool.State.DRAGGING
-	var before := _buildings()
-	tool._apply_move(target)
-	_expect(tool.has_pending_move(), "a drag into the block is pending")
-	_expect(simulation.get_node_pos(node) == start, "a pending step moves nothing")
-	_expect(_buildings() == before, "a pending step demolishes nothing")
-	_expect(tool._demolish_mesh != null and tool._demolish_mesh.visible, "the pending step outlines the lots")
-	var count := int(tool._pending.get("demolish_count", 0))
-	_expect(count > 0, "the pending step names the buildings: %s" % tool._pending)
-	_expect(tool._pending_label.visible and tool._pending_label.text.begins_with("Release to demolish %d building" % count), "the label: '%s'" % tool._pending_label.text)
-	var release := InputEventMouseButton.new()
-	release.button_index = MOUSE_BUTTON_LEFT
-	release.pressed = false
-	tool._input(release)
-	_expect(not tool.has_pending_move(), "the release ends the pending step")
-	_expect(simulation.get_node_pos(node) == target, "the release moves the node: %s" % simulation.get_node_pos(node))
-	_expect(_buildings() == before - count, "the release demolishes what the step showed: %d -> %d" % [before, _buildings()])
-	_expect(not tool._demolish_mesh.visible, "the outline goes with the release")
-	tool.cancel_move()

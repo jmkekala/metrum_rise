@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Base class for all road-network editing tools (RoadTool, MoveTool).
+## Base class for the road-network editing tools (RoadTool, RoundaboutTool).
 ##
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
 ##   get_road_mesh_data(full_snapshot), get_network_nodes(), get_node_pos(), get_world_surface_height(),

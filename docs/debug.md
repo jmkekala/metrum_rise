@@ -676,9 +676,8 @@ rule for game code (`CODE-25`):
   editor's check try-lock the core and answer `pending` while it is held; the tools keep their last
   ghost, outline and label. Such a hover readies only the site part of a stale site index, so when
   it runs never changes the simulation's order
-  ([`building_allocator.md`](building_allocator.md#indices-and-vacancy-rules)). The move tool's
-  drag step (`move_network_node_step`) and its release (`commit_network_node_move`) wait for the
-  core, as the move tool's calls did before. `core_busy_input_test` holds the core through a ring hover and a building hover:
+  ([`building_allocator.md`](building_allocator.md#indices-and-vacancy-rules)).
+  `core_busy_input_test` holds the core through a ring hover and a building hover:
   both answer at once.
 - **Godot's readers never rebuild the simulation's order** (`ALLOC-05`). Every per-frame query,
   hover, overlay and inspector, and the render snapshot the simulation thread builds after every

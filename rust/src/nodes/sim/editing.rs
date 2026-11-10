@@ -28,7 +28,7 @@ use crate::simulation::network::road_edit::{
 use crate::simulation::network::roadbed::{
     RoadbedDelta, RoadbedRestore, crossing_arm_eligible, visual_roadbed_half_width_m,
 };
-use crate::simulation::network::roundabouts::{ring_at, ring_near_stroke};
+use crate::simulation::network::roundabouts::ring_near_stroke;
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -131,31 +131,6 @@ impl RoadAddOutcome {
             stage_ms: RoadAddStageTimes::default(),
         }
     }
-}
-// A drag step's refusal of a move that would take zoned land (`ZONE-10`, decision D-move): what
-// the release would take, in the move tool's words.
-fn pending_demolition(take: &RoadLandTake) -> RoadRejection {
-    RoadRejection::new(
-        "pending_demolition",
-        format!(
-            "Release to demolish {} building(s) ({} lot(s), {} cell(s))",
-            take.buildings.len(),
-            take.lots.len(),
-            take.cells.len()
-        ),
-    )
-}
-
-/// What one drag step of the move tool did (`ZONE-10`, decision D-move).
-#[derive(Debug)]
-pub(crate) enum NodeMoveStep {
-    /// The node moved, with its undo record.
-    Moved,
-    /// Nothing changed: the move was refused (`last_road_rejection` says why) or moved nothing.
-    Refused,
-    /// The move would take this zoned land; nothing changed, and the release commits it
-    /// through [`SimCore::move_network_node_taking_land_internal`].
-    Pending(RoadLandTake),
 }
 
 impl SimCore {
@@ -2413,148 +2388,6 @@ impl SimCore {
         true
     }
 
-    /// Repositions a network node: one step of the move tool's drag. Unchanged moves leave
-    /// authoritative state and undo history untouched. A step whose pieces would newly cover
-    /// zoned land does not commit (`ZONE-10`, decision D-move): it is refused with
-    /// `pending_demolition`, nothing written, and the drag's release takes the land through
-    /// [`Self::move_network_node_taking_land_internal`]. Plotted land refuses it either way.
-    pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) -> bool {
-        matches!(self.move_network_node(node_id, pos, false), NodeMoveStep::Moved)
-    }
-
-    /// One drag step of the move tool as [`Self::move_network_node_internal`], with the land a
-    /// pending step would take, for the tool's outlines and count (`ZONE-10`, decision D-move).
-    pub(crate) fn move_network_node_step_internal(
-        &mut self,
-        node_id: i32,
-        pos: Vector3,
-    ) -> NodeMoveStep {
-        self.move_network_node(node_id, pos, false)
-    }
-
-    /// Repositions a network node as [`Self::move_network_node_internal`] does, taking the
-    /// zoned land its pieces newly cover as a road stroke does (`ZONE-10`): the buildings on
-    /// the lots demolished, the lots removed and the covered cells' paint erased, into the
-    /// move's undo record; the new cells along the moved roads inherit the paint.
-    pub fn move_network_node_taking_land_internal(&mut self, node_id: i32, pos: Vector3) -> bool {
-        matches!(self.move_network_node(node_id, pos, true), NodeMoveStep::Moved)
-    }
-
-    fn move_network_node(&mut self, node_id: i32, pos: Vector3, take_land: bool) -> NodeMoveStep {
-        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
-        self.adopt_pending_cell_lots();
-        if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() && pos.is_finite() {
-            let node_id = self.region_graph.get_valid_node(node_id as u32);
-            let old_pos = self.region_graph.node(node_id).pos;
-            if old_pos == pos {
-                return NodeMoveStep::Refused;
-            }
-            // A ring keeps its circle (`ROAD-62`): its nodes stay on it.
-            if ring_at(&self.region_graph, node_id).is_some() {
-                self.last_road_rejection = Some(RoadRejection::new(
-                    "roundabout_fixed",
-                    "a ring node stays on its circle",
-                ));
-                return NodeMoveStep::Refused;
-            }
-            let mut affected_edges: HashSet<usize> = self
-                .region_graph
-                .node_adjacency(node_id)
-                .iter()
-                .copied()
-                .filter(|&id| !self.region_graph.edge(id).deleted)
-                .collect();
-            let mut affected_nodes = HashSet::from([node_id]);
-            for &edge_idx in &affected_edges {
-                let edge = self.region_graph.edge(edge_idx);
-                affected_nodes.insert(edge.start_node);
-                affected_nodes.insert(edge.end_node);
-            }
-            // Endpoint deformation can change the clips of other approaches at either end.
-            // Keep their cell frontage, lane and surface dependents in the same transaction.
-            for &node in &affected_nodes {
-                affected_edges.extend(
-                    self.region_graph
-                        .node_adjacency(node)
-                        .iter()
-                        .copied()
-                        .filter(|&id| !self.region_graph.edge(id).deleted),
-                );
-            }
-
-            // The moved pieces must compile and keep clear of plotted land (`ROAD-68` open
-            // questions 2 and 11 (c), `ZONE-10`); the zoned land they newly cover is taken.
-            self.allocator
-                .prepare_building_site_query_index(self.config.zone_cell_m);
-            let tried = self
-                .road_edit_site()
-                .try_graph_edit(&affected_edges, &affected_nodes, &[], |site| {
-                    site.apply_node_move(node_id, pos, &affected_edges, &affected_nodes);
-                    HashSet::new()
-                });
-            let (tried, pending) = match tried {
-                Ok(tried) if !take_land && !tried.take.is_empty() => {
-                    (Err(pending_demolition(&tried.take)), Some(tried.take))
-                }
-                tried => (tried, None),
-            };
-            let TriedGraphEdit { checkpoint, take } = match tried {
-                Ok(tried) => tried,
-                Err(rejection) => {
-                    debug_log!(
-                        "road",
-                        "node_move_rejected node={} reason={} detail={}",
-                        node_id,
-                        rejection.reason,
-                        rejection.detail
-                    );
-                    self.last_road_rejection = Some(rejection);
-                    return pending.map_or(NodeMoveStep::Refused, NodeMoveStep::Pending);
-                }
-            };
-            self.push_network_undo_delta(checkpoint, None, None);
-            // Invalidate both corridors; moving a node can leave its old cached cells behind.
-            self.zoning
-                .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
-            self.road_edit_site()
-                .apply_node_move(node_id, pos, &affected_edges, &affected_nodes);
-            // The land the moved pieces cover, before the lanes rebuild: its buildings' agents
-            // leave by the lanes they hold (`ZONE-10`). The record pushed above keeps the paint.
-            let erased = self.take_land_for_edit(take);
-            let erased_paint = erased.is_some();
-            if let Some(record) = self.undo_stack.back_mut() {
-                record.cells = erased;
-            }
-            self.zoning
-                .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
-            self.agents.invalidate_lane_ids_for_edges(
-                &affected_edges,
-                &self.transit_network.lane_system,
-                &self.region_graph,
-            );
-            self.transit_network
-                .lane_system
-                .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
-            self.agents.reattach_invalidated_lanes_for_edges(
-                &affected_edges,
-                &self.transit_network.lane_system,
-                &self.region_graph,
-            );
-            self.rebuild_building_entrances_internal();
-            // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
-            self.schedule_cch_rebuild_of_live_graph();
-            self.transit_network.flow_fields.mark_all_dirty();
-            self.transit_network
-                .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
-            self.mark_local_network_render_dirty();
-            if erased_paint {
-                self.plan_lots_after_erase();
-            }
-            return NodeMoveStep::Moved;
-        }
-        NodeMoveStep::Refused
-    }
-
     // The end of an in-place edit whose take erased paint (`ZONE-10`, decision D-lot-plan): the
     // edit plans its lots at once (the in-commit plan, whose products equal the deferred
     // plan's; its site queries compile the edit's pieces first, which block the cells under
@@ -3153,29 +2986,6 @@ impl SimCore {
 }
 
 impl<L> RoadEditSite<'_, L> {
-    // Moves a node on the graph alone: its position, the clips at the affected nodes and the
-    // profiles the move reaches. Every edge the move deformed has both ends among the affected
-    // nodes, so the solve re-derives each profile whose pins the move can reach, from its
-    // control polyline (`ROAD-68` invariant 6); all of them are in the undo record.
-    fn apply_node_move(
-        &mut self,
-        node_id: u32,
-        pos: Vector3,
-        affected_edges: &HashSet<usize>,
-        affected_nodes: &HashSet<u32>,
-    ) {
-        self.graph.move_node(node_id, pos);
-        self.graph
-            .rebuild_intersection_clips_for_nodes(affected_nodes);
-        let mut changed = HashSet::new();
-        self.graph.finalize_junction_endpoint_profiles(
-            affected_nodes,
-            Some(self.terrain),
-            &mut changed,
-        );
-        debug_assert!(changed.is_subset(affected_edges));
-    }
-
     // Sets the override and re-lays the node out on the graph: its clips and the profile solve
     // that pins its arms up to them, since a crossing moves the mouths. Returns the edges whose
     // profiles changed.
@@ -4193,65 +4003,6 @@ mod tests {
         assert!(!core.vegetation_edits.cell(cell).0);
         assert_eq!(vegetation_api::remove_at(&mut core, pos, 0.0, 0), 1);
         assert_eq!(core.vegetation_edits.snapshot_cell(cell), bulldozed);
-    }
-
-    #[test]
-    fn move_network_node_undo_restores_pre_move_graph_state() {
-        let mut core = test_core();
-        let n0 = core
-            .region_graph
-            .add_node(Vector3::new(-10.0, 0.0, 0.0), NodeType::Junction);
-        let n1 = core
-            .region_graph
-            .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
-        core.region_graph.add_edge(Edge {
-            start_node: n0,
-            end_node: n1,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 120.0,
-            physical_length: 20.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-            physical_geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-            deleted: false,
-            no_building_spawn: false,
-            no_street_lights: false,
-            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
-            median: None,
-            parking: crate::simulation::network::graph::RoadParking::NONE,
-            pocket: None,
-            sidewalks: crate::simulation::network::graph::SidewalkSides::BOTH,
-            roundabout: None,
-        });
-        core.region_graph.rebuild_adjacency_list();
-
-        core.zoning
-            .mark_cell_lots_for_roads(&core.region_graph, [0]);
-        let frames = core.zoning.cells.saved_road_alignments();
-        assert_eq!(frames.len(), 1);
-        let revision = core.zoning.cell_external_revision();
-        core.move_network_node_internal(n0 as i32, Vector3::new(-20.0, 0.0, 0.0));
-        assert_eq!(core.region_graph.node(n0).pos.x, -20.0);
-        assert_ne!(core.zoning.cells.saved_road_alignments(), frames);
-        assert!(core.zoning.cell_external_revision() > revision);
-
-        assert!(core.undo_action_internal());
-        assert_eq!(
-            core.region_graph.node(n0).pos,
-            Vector3::new(-10.0, 0.0, 0.0)
-        );
-        assert_eq!(
-            core.region_graph.edge(0).physical_geometry[0],
-            Vector3::new(-10.0, 0.0, 0.0)
-        );
-        assert_eq!(core.zoning.cells.saved_road_alignments(), frames);
     }
 
     #[test]

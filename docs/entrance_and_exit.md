@@ -2397,7 +2397,7 @@ and a road bulldoze ([`roads.md`](roads.md) D7) therefore never route between th
 - `TransitNetwork::cch_current()` is false while a result waits to be installed or an edited
   chunk waits for a rebuild. Saved rolls, saved workplace quotes and border arrival costs treat
   that state as stale, as they treated dirty chunks.
-- Node moves, lane connection edits, crosswalk toggles, edge class changes and border
+- Lane connection edits, crosswalk toggles, edge class changes and border
   connections schedule the same job on a copy of the live graph (since `ROAD-68-G` part 2).
   The allocator's cache repair and a frame's marked chunks still rebuild synchronously; such a
   rebuild replaces a pending job's result with a build of the live graph, and the hold still

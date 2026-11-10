@@ -391,9 +391,9 @@ impl RegionGraph {
     ///
     /// Uses adjacency and O(K log K) local ordering to update each edge once. Profile work is
     /// O(control + physical points), retaining distinct heights at shared horizontal stations.
-    /// Does NOT rebuild intersection clips — callers that need visual clip updates
-    /// (e.g. `move_network_node_internal`) must explicitly rebuild clips at affected endpoints.
-    /// The topology path (`process_intersections` → `add_road`) calls it after all splits.
+    /// Does NOT rebuild intersection clips — callers that need visual clip updates must
+    /// explicitly rebuild clips at affected endpoints. The topology path
+    /// (`process_intersections` → `add_road`) calls it after all splits.
     pub fn move_node(&mut self, node_id: u32, new_pos: Vector3) {
         let node_id = self.get_valid_node(node_id);
         let old_pos = self.node(node_id).pos;

@@ -56,7 +56,7 @@
 //! | | `get_terrain_border_loop` | `terrain.gd`, `water.gd` |
 //! | | `get_height_at` | `road_tool.gd`, `building_tool.gd` |
 //! | | `intersect_terrain` | `world_editor.gd`, `terrain.gd` (authored base) |
-//! | | `get_world_surface_height` | `road_tool.gd`, `move_tool.gd` |
+//! | | `get_world_surface_height` | `road_tool.gd` |
 //! | | `intersect_world_surface` | `road_tool.gd`, `select_tool.gd`, `input_manager.gd` |
 //! | **Water** | `is_water_dirty` | `water.gd` |
 //! | | `acknowledge_water_patches` | `water.gd` |

@@ -540,7 +540,7 @@ godot_main_chain() {
     run_guarded_godot_test godot --headless --path "$asset_test_project" \
         --script res://tests/road_tool_demolition_test.gd || return 1
     # The T junction with houses along its street the in-place edit demolition test edits
-    # (`ZONE-10`), written by Rust with the junction, the widened arm and the move's target.
+    # (`ZONE-10`), written by Rust with the junction and the widened arm.
     export METRUM_ROAD_EDIT_DEMOLITION_FIXTURE="$asset_test_profile/road-edit-demolition.sqlite"
     run_rust_fixture_generator record_road_edit_demolition_fixture || return 1
     run_guarded_godot_test godot --headless --path "$asset_test_project" \

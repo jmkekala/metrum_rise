@@ -1,4 +1,4 @@
-[gd_scene load_steps=17 format=3 uid="uid://c8n6j7m8x4y2"]
+[gd_scene load_steps=16 format=3 uid="uid://c8n6j7m8x4y2"]
 
 [ext_resource type="Script" path="res://scripts/core/main_scene.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/renderers/terrain.gd" id="1_terrain"]
@@ -10,7 +10,6 @@
 [ext_resource type="Script" path="res://scripts/renderers/buildings.gd" id="5_buildings"]
 [ext_resource type="Script" path="res://scripts/renderers/zoning_overlay.gd" id="12_zoneoverlay"]
 [ext_resource type="Script" path="res://scripts/renderers/agents.gd" id="6_agents"]
-[ext_resource type="Script" path="res://scripts/tools/move_tool.gd" id="8_move"]
 [ext_resource type="Script" path="res://scripts/core/input_manager.gd" id="9_input"]
 [ext_resource type="Script" path="res://scripts/ui/main_ui.gd" id="10_ui"]
 [ext_resource type="Script" path="res://scripts/renderers/network_renderer.gd" id="11_netrender"]
@@ -70,9 +69,6 @@ script = ExtResource("6_agents")
 
 [node name="ParkedCars" type="Node3D" parent="."]
 script = ExtResource("18_parked")
-
-[node name="MoveTool" type="Node3D" parent="."]
-script = ExtResource("8_move")
 
 [node name="NetworkRenderer" type="Node" parent="."]
 script = ExtResource("11_netrender")

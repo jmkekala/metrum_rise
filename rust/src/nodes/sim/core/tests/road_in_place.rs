@@ -1124,7 +1124,7 @@ fn street_lights_turned_off_in_place_relight_the_street_and_undo() {
     assert_eq!(fully_emitted_chunks(&mut core), lit_chunks);
 }
 
-// A ring keeps its section, class, zoning and shape (`ROAD-62`, `roundabout_fixed`).
+// A ring keeps its section, class and zoning (`ROAD-62`, `roundabout_fixed`).
 #[test]
 fn a_ring_edge_refuses_every_in_place_edit() {
     use crate::simulation::network::graph::SidewalkSides;
@@ -1166,15 +1166,5 @@ fn a_ring_edge_refuses_every_in_place_edit() {
     assert!(core.region_graph.edge(edge).no_building_spawn);
     assert_eq!(core.region_graph.edge(edge).speed_limit, RING_SPEED_MS);
 
-    let node = applied.nodes[0];
-    let before = core.region_graph.node(node).pos;
-    assert!(!core.move_network_node_internal(node as i32, before + Vector3::new(3.0, 0.0, 0.0)));
-    assert_eq!(core.region_graph.node(node).pos, before);
-    assert_eq!(
-        core.last_road_rejection
-            .as_ref()
-            .map(|refusal| refusal.reason.as_str()),
-        Some("roundabout_fixed")
-    );
     assert_eq!(core.region_graph.edge(edge).sidewalks, SidewalkSides::RIGHT);
 }

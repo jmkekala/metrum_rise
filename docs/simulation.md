@@ -965,7 +965,7 @@ field diffusion and other read-only precomputation.
 - **Paused.** Every `step_frame` call counts, paused or not, so a paused game adopts on time;
   the flow fields follow the new build generation at the first running frame, as they did after
   a synchronous rebuild.
-- **A second edit inside the hold** (commit, undo, road bulldoze, node move, lane connection
+- **A second edit inside the hold** (commit, undo, road bulldoze, lane connection
   edit, crosswalk toggle, edge class change or border connection) supersedes the pending job
   and restarts the hold. A synchronous rebuild of the live graph (the allocator's cache repair,
   a frame's dirty chunks) supersedes it too; the hold still runs out.

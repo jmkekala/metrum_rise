@@ -377,64 +377,6 @@ impl SimulationNode {
         self.lock_core().get_node_connection_count_internal(node_id)
     }
 
-    /// Repositions a network node, returning false when the move is refused or would take
-    /// zoned land (see [`Self::move_network_node_step`]).
-    #[func]
-    pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) -> bool {
-        let moved = self.lock_core().move_network_node_internal(node_id, pos);
-        if moved {
-            self.refresh_snapshot_from_core();
-        }
-        moved
-    }
-
-    /// One drag step of the move tool (`ZONE-10`, decision D-move): `moved` when the node moved
-    /// with its undo record; else `pending` when its roads would take zoned land, with
-    /// `demolish_count` (the buildings on it) and `demolish_lots` (four corners per lot, as the
-    /// road preview's), nothing changed, for [`Self::commit_network_node_move`] at the release;
-    /// else refused, with `invalid_reason` and `detail` when Rust named one. Waits for the core.
-    #[func]
-    pub fn move_network_node_step(&mut self, node_id: i32, pos: Vector3) -> VarDictionary {
-        use crate::nodes::sim::editing::NodeMoveStep;
-        let mut core = self.lock_core();
-        core.last_road_rejection = None;
-        let step = core.move_network_node_step_internal(node_id, pos);
-        let mut dict = vdict! {
-            "moved": matches!(step, NodeMoveStep::Moved),
-            "pending": matches!(step, NodeMoveStep::Pending(_)),
-        };
-        if let NodeMoveStep::Pending(take) = &step {
-            dict.set("demolish_count", take.buildings.len() as i64);
-            dict.set("demolish_lots", road_tool::core_lot_outlines(&core, take));
-        }
-        if !matches!(step, NodeMoveStep::Moved)
-            && let Some(rejection) = core.last_road_rejection.as_ref()
-        {
-            dict.set("invalid_reason", rejection.reason.clone());
-            dict.set("detail", rejection.detail.clone());
-        }
-        drop(core);
-        if matches!(step, NodeMoveStep::Moved) {
-            self.refresh_snapshot_from_core();
-        }
-        dict
-    }
-
-    /// The move tool's release of a pending step (`ZONE-10`, decision D-move): moves the node to
-    /// `pos` in one transaction that takes the zoned land its roads newly cover (the buildings
-    /// on it demolished, the covered cells' paint erased into the move's undo record). Returns
-    /// whether it moved; plotted land still refuses it.
-    #[func]
-    pub fn commit_network_node_move(&mut self, node_id: i32, pos: Vector3) -> bool {
-        let moved = self
-            .lock_core()
-            .move_network_node_taking_land_internal(node_id, pos);
-        if moved {
-            self.refresh_snapshot_from_core();
-        }
-        moved
-    }
-
     /// Returns all junction node positions, read from the pre-computed snapshot.
     ///
     /// Reading from the snapshot (RwLock) avoids acquiring the SimCore mutex, which

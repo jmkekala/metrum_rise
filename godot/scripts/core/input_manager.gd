@@ -3,7 +3,7 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
 ## Routes input events to the active tool node (RoadTool, ZoningTool,
-## MoveTool, SelectTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool, RoundaboutTool,
+## SelectTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool, RoundaboutTool,
 ## VegetationTool, FieldEditTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
@@ -26,7 +26,6 @@ signal world_ready
 @onready var water_node = $"../Water"
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_tool = $"../ZoningTool"
-@onready var move_tool = $"../MoveTool"
 var service_building_tool: Node3D
 var industry_building_tool: Node3D
 var field_edit_tool: Node3D
@@ -41,7 +40,7 @@ var building_inspector: Node
 var junction_debug_overlay: Node3D
 var agent_inspector: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, AGENT, SCULPT, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT, ROUNDABOUT }
 var current_tool: Tool = Tool.NONE
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
@@ -282,7 +281,6 @@ func _unhandled_input(event):
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
-			KEY_M: _toggle_tool(Tool.MOVE)
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
@@ -422,7 +420,6 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 	if enabled and tool_type != Tool.FIELD_EDIT and building_inspector:
 		building_inspector.close_window()
 	match tool_type:
-		Tool.MOVE: if move_tool: move_tool.active = enabled
 		Tool.ROAD:
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
 			if road_tool:
@@ -498,8 +495,6 @@ func _ensure_saves_dir() -> void:
 func _refresh_after_world_load():
 	if road_tool and road_tool.current_state != 0:
 		road_tool.cancel_road()
-	if move_tool and move_tool.current_state != 0:
-		move_tool.cancel_move()
 	_cancel_active_tool()
 	if building_inspector:
 		building_inspector.close_window()
@@ -725,8 +720,6 @@ func _on_agent_building_requested(world_pos: Vector3, screen_pos: Vector2) -> vo
 func _handle_right_click():
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:
 		road_tool.cancel_road()
-	elif current_tool == Tool.MOVE and move_tool.current_state != 0:
-		move_tool.cancel_move()
 	elif current_tool == Tool.SCULPT:
 		pass # Right click is used for lowering ground during sculpting
 
