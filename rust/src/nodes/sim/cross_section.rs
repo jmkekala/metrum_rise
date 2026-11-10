@@ -130,7 +130,7 @@ impl SimCore {
         // The land the wider pieces cover, before the lanes rebuild (its buildings' agents leave
         // by the lanes they hold) and before the zoning-off parcels are captured, so that undo
         // never restores a lot the take removed onto its erased paint (`ZONE-10`).
-        let erased = self.take_land_for_edit(take, &regeneration);
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
         let erased_paint = erased.is_some();
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);

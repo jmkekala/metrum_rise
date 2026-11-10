@@ -214,7 +214,7 @@ impl SimCore {
         }
         // Nothing below refuses the edit.
         let land_start = Instant::now();
-        let erased_paint = self.take_land_for_edit(take, regeneration);
+        let erased_paint = self.take_land_for_edit(take, Some(regeneration));
         metrics.surface_land_ms = land_start.elapsed().as_secs_f64() * 1000.0;
         let graded_start = Instant::now();
         let graded = self.stage_committed_graded_tiles(roadbed_before, graded);
@@ -238,7 +238,9 @@ impl SimCore {
     // Takes the zoned land of an accepted road edit, applied on the graph (`ZONE-09`; the
     // in-place edits, `ZONE-10`): demolishes the buildings on the lots it covers, removes those
     // lots and the authored parcels it covers, then releases the free paint of `regeneration`,
-    // the envelopes the edit's marks invalidated (`ZONE-14`, PLAN-RL 2.1): the empty lots there
+    // the envelopes the edit's marks invalidated, and of the covered cells' halos (`ZONE-14`,
+    // PLAN-RL 2.1; `None` releases nothing: the explicit placements, whose marks round RL2
+    // brings): the empty lots there
     // are removed, and one erase takes the covered cells' paint and the released cells', whose
     // inverse it returns for the undo record. The edit's lot plan re-lays the released cells as
     // unpainted ones and hands their paint on to the cells it lays over them. Lot regions around
@@ -248,11 +250,13 @@ impl SimCore {
     pub(super) fn take_land_for_edit(
         &mut self,
         take: RoadLandTake,
-        regeneration: &[CellBounds],
+        regeneration: Option<&[CellBounds]>,
     ) -> Option<CellPaintUndo> {
         debug_assert!(take.plotted.is_none());
         self.last_land_release_ms = 0.0;
-        if take.is_empty() && (regeneration.is_empty() || !self.zoning.cells.has_paint()) {
+        if take.is_empty()
+            && (regeneration.is_none_or(<[_]>::is_empty) || !self.zoning.cells.has_paint())
+        {
             return None;
         }
         let start = Instant::now();
@@ -271,7 +275,9 @@ impl SimCore {
             .map(|&(key, _)| key)
             .collect::<Vec<_>>();
         let release_start = Instant::now();
-        let (released, released_lots) = self.zoning.release_painted_cells(regeneration, &covered);
+        let (released, released_lots) = regeneration.map_or_else(Default::default, |region| {
+            self.zoning.release_painted_cells(region, &covered)
+        });
         if self.zoning.remove_parcels_under_road(&released_lots) > 0 {
             self.allocator.dirty = true;
         }
@@ -1019,7 +1025,7 @@ impl SimCore {
         // The zoned land the re-laid ends newly cover (`ZONE-10`), before the removed road's
         // parcels are captured, so its undo never restores a taken lot onto erased paint, and
         // while the lanes the evacuation reads are valid.
-        let erased = self.take_land_for_edit(take, &regeneration);
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
         let erased_paint = erased.is_some();
         self.push_road_removal_undo(affected_edges.clone(), affected_nodes.clone(), edge_idx);
         if let Some(record) = self.undo_stack.back_mut() {
@@ -1452,7 +1458,7 @@ impl SimCore {
         } else {
             Vec::new()
         };
-        let erased = self.take_land_for_edit(take, &regeneration);
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
         let erased_paint = erased.is_some();
         // The checkpoint holds the whole records the change touches: its undo record (R3-k).
         self.push_network_undo_delta(checkpoint, None, erased);
@@ -2014,7 +2020,7 @@ impl SimCore {
         )?;
         // Nothing below refuses the placement.
         if let Some((take, lot)) = taken {
-            self.take_land_for_edit(take, &[]);
+            self.take_land_for_edit(take, None);
             debug_assert!(
                 explicit_lot_take(&CoreLand::of(self), &lot).is_ok_and(|take| take.is_empty()),
                 "the land under the lot was taken"
@@ -2046,7 +2052,7 @@ impl SimCore {
     // (decision D-undo).
     fn take_land_for_work_area(&mut self, take: RoadLandTake, owner: usize) -> (usize, bool) {
         let handle = self.allocator.building_handles.handle(owner);
-        let erased = self.take_land_for_edit(take, &[]).is_some();
+        let erased = self.take_land_for_edit(take, None).is_some();
         let owner = self
             .allocator
             .building_handles
@@ -2677,7 +2683,7 @@ impl SimCore {
             .apply_crosswalk_toggle(node, edge_id, enabled);
         // The zoned land the moved mouths newly cover (`ZONE-10`), before the lanes rebuild. A
         // toggle moves no frontage and marks nothing: it releases only around covered cells.
-        let erased = self.take_land_for_edit(take, &[]);
+        let erased = self.take_land_for_edit(take, Some(&[]));
         let erased_paint = erased.is_some();
         self.push_network_undo_delta(checkpoint, None, erased);
         let nodes = HashSet::from([node]);
@@ -3540,6 +3546,9 @@ mod tests {
         assert_eq!(core.allocator.buildings[0].rezone_grace_days_remaining, 11);
     }
 
+    // The occupied lot keeps its claim and paint through the bulldoze and its undo; the free
+    // paint loses its road column with the road and goes (`ZONE-14`, D-removal), and the undo
+    // gives it back.
     #[test]
     fn curved_road_bulldoze_and_undo_keep_occupied_cell_claims_until_building_removal() {
         use crate::simulation::zoning::cells::{CellBounds, CellLotSize, CellSelectionShape};
@@ -3606,6 +3615,11 @@ mod tests {
                 core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
             }
             let paint = core.zoning.cells.saved_cells();
+            let claimed: Vec<_> = paint
+                .iter()
+                .copied()
+                .filter(|&(key, _)| lot.cells().any(|cell| cell == key))
+                .collect();
             assert!(core.bulldoze_road_edge(0));
             assert!(core.region_graph.edge(0).deleted);
             for undo in [false, true] {
@@ -3624,7 +3638,8 @@ mod tests {
                     lot.cells()
                         .all(|key| core.zoning.cells.lot(key) == Some(id.raw()))
                 );
-                assert_eq!(core.zoning.cells.saved_cells(), paint);
+                let expected = if undo { &paint } else { &claimed };
+                assert_eq!(&core.zoning.cells.saved_cells(), expected);
                 let building = &core.allocator.buildings[0];
                 assert_eq!(
                     (building.center_x, building.center_y, building.facing_dir),

@@ -171,7 +171,7 @@ impl SimCore {
             .mark_cell_lots_for_roads(&self.region_graph, affected.iter().copied());
         // The land under the ring and its island, before the trimmed arms' dependents move (no
         // building is left on the land a cut drops) and before the lanes rebuild (`ZONE-10`).
-        let erased = self.take_land_for_edit(take, &regeneration);
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
         let erased_paint = erased.is_some();
         let dependents = self.migrate_trimmed_arms(&trims);
         self.transit_network
@@ -289,7 +289,7 @@ impl SimCore {
             .mark_cell_lots_for_roads(&self.region_graph, edges.iter().copied());
         // The zoned land the arms' new ends newly cover (`ZONE-10`), before the lanes rebuild,
         // and the paint of the region the removal regenerates (`ZONE-14`).
-        let erased = self.take_land_for_edit(take, &regeneration);
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
         let erased_paint = erased.is_some();
         self.push_network_undo_delta(checkpoint, None, erased);
         self.transit_network

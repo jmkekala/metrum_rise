@@ -182,7 +182,7 @@ impl SimCore {
             .mark_cell_lots_for_roads(&self.region_graph, affected.iter().copied());
         // The land the pocket covers, before the dependents move (its journal then holds only
         // the buildings that stay) and before the lanes rebuild (`ZONE-10`).
-        let erased = self.take_land_for_edit(take, &regeneration);
+        let erased = self.take_land_for_edit(take, Some(&regeneration));
         let erased_paint = erased.is_some();
         let nodes: HashSet<u32> = nodes.into_iter().chain(applied.transition).collect();
         let dependents = migrate_pocket_dependents(
