@@ -12591,10 +12591,15 @@ cache). A request gets a serial; a newer request for the key, a cancel (the key 
 set) or a clear (a reset) makes the older one stale, and its product is dropped when polled,
 never delivered. At most 32 jobs are out (from the request until the poll takes the result) and
 none starts while 64 MB of products wait; finished products are taken oldest first and their
-storage is reused, so a steady stream allocates no product storage. A worker that finds the core
-busy tries again every 0.25 ms for about 2 ms before it hands the patch back as busy (the renderer
-queues it again). The products are functions of the snapshot alone, so the order jobs complete
-in decides only when a patch draws, never what it draws.
+storage is reused, so a steady stream allocates no product storage. At most four jobs run at
+once, each running its queries sequentially (`VegetationWorld::parallel`), so the vegetation
+holds at most four of the background pool's threads beside the frame; the rest wait in request
+order, and one that went stale meanwhile lands unbuilt. One snapshot taker at a time takes the
+core once under `try_lock` and snapshots its whole batch in that hold, then starts one build job
+per snapshot. On a busy core the batch goes back to the front of the queue at once, nothing
+sleeps or waits, and the next event that pumps the jobs (a build ending, a request, the
+renderer's poll) tries again. The products are functions of the snapshot alone, so the order jobs
+complete in decides only when a patch draws, never what it draws.
 
 **The frame path.** The renderer requests at most the area budget a frame (16 sub-patches), most
 needed first, skips a patch already in flight with the same bands and revisions, and installs
@@ -12746,24 +12751,103 @@ p99.9, preempted less wait 6.28 / 4.44 / 4.84 ms against the control's 6.73 / 4.
 p99 -0.4%), the `PERF-17` known exception on both sides. The simulation never runs the vegetation
 jobs, so this guards the build, not the workers: the workers' contention is the rendered rows'.
 
-**Bars** (plan section 7 V1b). No vegetation query on the main thread: met, the counter moved on
-no benchmark frame. Largest single unit at most 2.0 ms in every phase: met on Kuopio (0.82 ms),
-missed in one phase each at 30k (2.73 ms, `zoom_in`) and on the town (3.14 ms,
-`night_turn_repeat`), every other phase at most 1.9 ms; control 57 and 27 ms. Vegetation script
-time at most 2.5 ms a frame on the 30k and Kuopio turns: met on the 1 s turns the bar's controls
-measured (30k 1.5-1.6, Kuopio 2.3-2.4, controls 7.6-8.6 and 5.9-7.2) and on every 30k turn; on
-Kuopio's 0.5 s turns 2.35-2.61 (two of three over by 0.05-0.11), the band scan and detail refresh
-over 400 resident patches being 1.0 ms of it (`RENDER-32-F`'s). Products identical: met (the
-golden uploads through the snapshot, the populated fixture, the 30k city's every patch, the
-appearance digests). Median wanted-to-drawn on the pans not worse than control: met on Kuopio
-(0, 0, 0 against 0, 0, 0), missed by one frame on the 30k `pan_repeat` (1 against 0; `pan_out`
-and `pan_back` 0 against 0). `PERF-07` at 30k unchanged at level F: met. `-C`'s carried
-bar, the product's main-thread cost under 0.05 ms a frame on Kuopio: met as the product (none
-left on the main thread; the control's 0.17-0.30 ms); what remains is the poll's copy of the
-buffers into Godot's arrays, 0.045-0.056 ms a frame on the turns. The worker contention behind the
-missed units and the 30k turn maxima is carried to `RENDER-32-E` with a recommendation (the
-queries' inner loops sequential on the worker and at most half the background pool's threads in
-vegetation jobs).
+**The contention fix** (2026-11-12, after the coordinator's review: "fix first", in the same
+round). The rows and instrumented numbers above are the first build's. Three changes, on the
+rebased branch (`69284b14`, `1a6a7114`, `afd4e7a8`): the worker's scatter and stand cover loops
+run sequentially and at most four vegetation jobs run at once, so the vegetation holds at most
+half the background pool's eight threads beside the frame (a cap of four is the largest that
+leaves the frame's own shared-pool work and the render thread four cores; the first build fanned
+every job over all eight); the busy retry no longer sleeps inside a pool job; and one snapshot
+taker at a time takes the core for its whole batch, because four jobs started together tried the
+core at the same instant and all but one came back busy (5-10 busy products a frame at 30k in the
+intermediate builds, 0 now). A busy core puts the batch back at the front of the queue, retried at
+the next build ending, request or poll, so a patch never makes the round trip to the renderer.
+
+Fresh instrumented runs of the final build (`afd4e7a8`'s library; one run per input; the control
+columns are the first build's control runs above), vegetation on the main thread:
+
+| | 30k control | 30k branch | Kuopio control | Kuopio branch | 10k town branch |
+|---|---|---|---|---|---|
+| Script time, 1 s turns (mean a frame) | 7.6-8.6 | 1.5-1.7 | 5.9-7.2 | 2.1 | 1.2-1.3 |
+| Script time, 0.5 s turns | 8.8-10.8 | 1.5-1.6 | 7.0-7.9 | 2.3-2.7 | 1.1-1.5 |
+| Script time, pans, zooms | 4.2-7.6 | 0.9-1.5 | 2.3-3.3 | 1.3-1.4 | 0.6-0.7 |
+| Largest single unit, any phase | 57.1 | 2.38 | 26.9 | 0.74 | 1.30 |
+| Busy products a frame | - | 0 | - | 0 | 0 |
+| Wanted to drawn, pans, median frames | 0, 0, 0 | 0, 0, 1 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 |
+| Wanted to drawn, the jump, median | 11 | 6 | 12 | 12 | 0 |
+
+Rows: control `dev` `dba68da6`'s release library (`RENDER-32-H`'s, built from `806ae5c1`, whose
+code equals `dba68da6`) with its scripts, branch `afd4e7a8`'s; C B B C over the moving phases, the
+10k town's run twice (its first round put two turns' maxima 2.3 and 3.1 ms over a 0.9 and 2.7 ms
+spread; the second none):
+
+30k city:
+
+| Phase | `dev` `dba68da6` p50 | max | >33.3 | `RENDER-32-D` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| turn_out 0.5s | 29.3-29.4 | 43-46 | 6 | 24.4-28.0 | 38-40 | 5-6 |
+| turn_back 0.5s | 27.2-31.9 | 39 | 3-6 | 24.5-25.4 | 37-48 | 2-3 |
+| turn_repeat 0.5s | 31.7-35.1 | 45 | 6-9 | 25.5-27.5 | 37-41 | 3-5 |
+| turn_out 1s | 26.8-27.4 | 38-39 | 3-6 | 24.6-25.1 | 33-38 | 0-3 |
+| turn_back 1s | 26.5-29.9 | 37-42 | 3-9 | 25.4-25.7 | 34 | 1-4 |
+| turn_repeat 1s | 26.9-27.1 | 35-44 | 3-5 | 23.5-25.1 | 37-43 | 2-5 |
+| pan_out 3s | 20.8 | 36-63 | 1 | 16.2-16.4 | 29-31 | 0 |
+| pan_back 3s | 20.9-21.2 | 45-46 | 2-4 | 15.9-16.4 | 25-26 | 0 |
+| pan_repeat 3s | 20.7-20.9 | 31-63 | 0-2 | 16.2-16.5 | 28-30 | 0 |
+| zoom_in 1.5s | 22.5-23.1 | 64-71 | 7 | 17.4-18.1 | 34-36 | 1 |
+| zoom_out 1.5s | 15.3-16.2 | 57-59 | 3-4 | 14.6-14.7 | 34-40 | 1-3 |
+| zoom_in_repeat 1.5s | 21.6-22.2 | 72-80 | 3-7 | 17.9-18.0 | 31 | 0 |
+| jump | 14.3-15.0 | 41-48 | 1-2 | 13.9-14.2 | 37-44 | 1 |
+| jump_back | 16.3-17.1 | 34-40 | 1 | 16.5-16.8 | 42 | 1 |
+
+10k town, second round:
+
+| Phase | `dev` `dba68da6` p50 | max | >33.3 | `RENDER-32-D` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| turn_out 0.5s | 17.3-19.4 | 24-25 | 0 | 13.0-14.3 | 18-22 | 0 |
+| turn_back 0.5s | 18.4-19.4 | 25-26 | 0 | 13.2-13.8 | 19-23 | 0 |
+| turn_repeat 0.5s | 18.0-18.8 | 23-26 | 0 | 14.6-15.0 | 19-24 | 0 |
+| turn_out 1s | 15.9-16.1 | 38-40 | 1 | 11.9-12.0 | 19-20 | 0 |
+| turn_back 1s | 16.0-16.6 | 22-24 | 0 | 11.5-11.8 | 22-25 | 0 |
+| turn_repeat 1s | 14.9-15.6 | 20-21 | 0 | 12.3 | 20-26 | 0 |
+| pan_out 3s | 9.3-9.7 | 70-72 | 3-4 | 6.7-6.9 | 12-14 | 0 |
+| pan_back 3s | 9.2-9.6 | 56-63 | 4 | 6.7-7.1 | 15-17 | 0 |
+| pan_repeat 3s | 9.4-9.8 | 65-74 | 3 | 6.8-6.9 | 15-16 | 0 |
+| zoom_in 1.5s | 10.3 | 53-58 | 1-2 | 7.9-8.0 | 15-18 | 0 |
+| zoom_out 1.5s | 9.5-10.3 | 46-57 | 2-3 | 8.2 | 23-28 | 0 |
+| zoom_in_repeat 1.5s | 9.5-11.1 | 52-55 | 1 | 7.9-8.0 | 15 | 0 |
+| jump | 7.2-7.8 | 28-30 | 0 | 5.0-5.6 | 15-20 | 0 |
+| jump_back | 7.1-7.5 | 24-27 | 0 | 7.6-8.0 | 18-22 | 0 |
+
+At 30k every phase is now better or level by the same-binary spread, maxima included: the three
+turns whose worst frames rose 4-13 ms in the first build are 0.6 ms higher to 5.4 ms lower, and
+every p50 is level or lower (the turns 2.3-6.9 ms, pans and zooms 1.2-5.0). On the town every phase
+but `jump_back` is better at p50 (1.7-5.4 ms) and every maximum level or lower in the second round;
+`jump_back`'s p50 reads +0.5 ms against a 0.4 ms spread there (the vegetation does 0.08 ms of work
+a frame in that phase; the first round read it level).
+
+**Graded tiles by digest** (the site snapshot's buckets serve the graded bakes too): 30k, control
+and branch with `METRUM_STREAM_DIGESTS=1`, 12 settle points. 11 identical; at the second
+`turn_repeat` point 3 tiles 2,005-2,014 m from the camera hold `GL3` step 2 on the control and
+`GL2` on the branch, the 2 km level boundary's 32 m hysteresis band, which `RENDER-32-B` found
+path-dependent control against control. Every one of the 39,357 tile comparisons at equal level,
+step and token is byte-identical.
+
+**Bars** (plan section 7 V1b; final build). No vegetation query on the main thread: met. Largest
+single unit at most 2.0 ms in every phase: met on Kuopio (0.74 ms) and the town (1.30 ms), and at
+30k in every phase but one: a single request of 2.38 ms on `night_turn_back` (a request is
+otherwise 0.02 ms: a bridge call and a job queued; nothing in it waits), on a frame whose agents
+and terrain also ran long. It is not install work and not the worker's own time; the cause is
+not proven (the main thread delayed inside the call is what the evidence fits). Vegetation
+script time at most 2.5 ms a frame on the 30k and Kuopio turns: met at 30k (1.5-1.7) and on
+Kuopio's 1 s turns (2.1); Kuopio's 0.5 s turns 2.34-2.71, of which the band scan and detail
+refresh over 400 patches are about 1 ms (`RENDER-32-F`'s). Products identical: met (vegetation
+bitwise as above; graded tiles byte-identical at equal levels). Median wanted-to-drawn on the
+pans not worse than control: met on Kuopio and the town, missed by one frame on the 30k
+`pan_repeat` (1 against 0; it read 1 in both builds). `PERF-07` at 30k unchanged at level F: met
+on the first build; the fix changes only the vegetation jobs, which the simulation never runs.
+`-C`'s carried bar: the product left the main thread; the poll's copy of the buffers into Godot's
+arrays is 0.045-0.056 ms a frame on Kuopio's turns. The 30k turn maxima: no longer worse.
 
 ## Implemented Runtime Contract
 
