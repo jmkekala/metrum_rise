@@ -22,6 +22,8 @@ pub mod network;
 /// Authored resource overlay rendering.
 pub mod resources;
 pub(crate) mod vehicle_ground;
+/// Street lights' lamp grid, far light map, light pool and chunk batches (`RENDER-32-H`).
+pub(crate) mod street_lights;
 /// The streaming core: render-consumer state chosen from the view (`RENDER-32`).
 pub(crate) mod stream;
 /// A vegetation patch's instance buffers, bounds and ranges (`RENDER-32-C`).

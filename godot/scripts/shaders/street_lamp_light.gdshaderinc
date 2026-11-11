@@ -3,7 +3,8 @@
 // Street lamps past the real SpotLight3D handoff, lit inside the receiving material (ROAD-59).
 // Reproduces Godot's spot light diffuse term (range window, inverse distance, 80° cone with
 // attenuation exponent 2, Lambert) per lamp listed in the camera cell of the grid that
-// street_lamp_grid.gd packs; the caller adds the result times albedo to EMISSION. Each lamp is
+// StreetLightBook (nodes/sim/render/street_lights.rs) packs; the caller adds the result times
+// albedo to EMISSION. Each lamp is
 // weighted by the complement of the real light's distance fade, so the two sum to one lamp.
 // Cost: one fetch for an empty cell, else at most STREET_LAMP_CAPACITY lamps; zero by day.
 // Past street_lamp_far_fade the exact lamps hand over to street_lamp_far: each lamp's ground light
@@ -37,7 +38,7 @@ vec3 street_lamp_light(vec3 lamp_world_position, vec3 lamp_world_normal, vec3 ey
 		return vec3(0.0);
 	}
 	vec3 result = vec3(0.0);
-	// One cell of at most STREET_LAMP_CAPACITY heads (street_lamp_grid.gd), one fetch each; the kind
+	// One cell of at most STREET_LAMP_CAPACITY heads (StreetLightBook), one fetch each; the kind
 	// table is a handful of texels that stay in cache. A zero kind ends a partial list.
 	for (int slot = 0; slot < STREET_LAMP_CAPACITY; slot++) {
 		vec4 head = texelFetch(street_lamp_cells, ivec2(cell.x * STREET_LAMP_CAPACITY + slot, cell.y), 0);

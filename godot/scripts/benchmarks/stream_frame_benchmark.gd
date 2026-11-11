@@ -20,7 +20,9 @@
 ## records the graded tiles' product in `graded_digests`: per installed tile its level, step,
 ## token, flag, walls and the bytes of each of its copies (the slot layer with its run's place in
 ## the header masked, and the run), so two builds' settled installs compare by digest whatever
-## slots they took (`RENDER-32-B`).
+## slots they took (`RENDER-32-B`). At night it also records the street lights' lamp grid and far
+## map textures by digest in `lamp_digests`, and adds two night settle points, the jump's pose
+## and back, each far enough to re-centre both (`RENDER-32-H`).
 extends RefCounted
 
 const SCHEMA_VERSION := 1
@@ -88,7 +90,7 @@ func run(bench: Node) -> void:
 		"runtime": bench._runtime_metadata(), "save_path": OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH"),
 		"world_path": bench.world_path, "simulation_speed": float(OS.get_environment("METRUM_STREAM_SPEED")),
 		"pitch_radians": PITCH_RAD, "distance_m": DISTANCE_M, "phases": phases, "turn_durations_s": turns,
-		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [],
+		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [], "lamp_digests": [],
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
 	bench._metrics = _report
@@ -195,6 +197,18 @@ func run(bench: Node) -> void:
 			_report.samples.append(await _capture_turn(bench, turn[0], 1.0, turn[1]))
 		for pan: Array in [["night_pan_out", 0.0, pan_m], ["night_pan_back", pan_m, 0.0]]:
 			_report.samples.append(await _capture_view(bench, pan[0], PAN_S, base, 0, pan[1], pan[2], false))
+		if _digests:
+			var direction := -Vector2(base[0], base[2])
+			if direction.length() < 1.0:
+				direction = Vector2(1.0, 0.0)
+			var step := direction.normalized() * minf(JUMP_M, world.x * 0.3)
+			var jumped := base.duplicate()
+			jumped[0] = base[0] + step.x
+			jumped[2] = base[2] + step.y
+			for view: PackedFloat32Array in [jumped, base]:
+				if not await _start_from(bench, view):
+					bench._fail("a night digest pose did not settle")
+					return
 		main.menu_set_time_of_day(10.0)
 	if _scripts:
 		PerfDebug.end_frame_capture()
@@ -260,6 +274,7 @@ func _record_digest(label: String) -> void:
 	if not _digests:
 		return
 	_settle_points += 1
+	_record_lamp_digest()
 	var tiles: Variant = _terrain.graded_tiles
 	if tiles == null:
 		return
@@ -296,6 +311,22 @@ func _record_digest(label: String) -> void:
 		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
 		"camera": [camera.x, camera.y, camera.z], "tiles": lines.size(),
 		"digest": _sha("\n".join(lines).to_utf8_buffer()), "by_tile": by_tile})
+
+# The street lights' two textures as uploaded, read back (night only: by day neither is built).
+func _record_lamp_digest() -> void:
+	var lights: Variant = _road_tool.get("_street_lights")
+	if lights == null:
+		return
+	var cells: Variant = lights.get("_cell_texture")
+	var far: Variant = lights.get("_far_texture")
+	if cells == null or far == null:
+		return
+	var camera: Vector3 = _terrain.get_viewport().get_camera_3d().global_position
+	_report.lamp_digests.append({"point": _settle_points,
+		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
+		"camera": [camera.x, camera.y, camera.z],
+		"cells": _sha((cells as ImageTexture).get_image().get_data()),
+		"far": _sha((far as ImageTexture).get_image().get_data())})
 
 static func _sha(bytes: PackedByteArray) -> String:
 	var context := HashingContext.new()
