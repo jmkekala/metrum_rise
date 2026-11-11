@@ -41,7 +41,9 @@ solve. One Rust-owned streaming core (view, rings, a 2.0 ms streaming budget, po
 `RenderingServer` objects) replaces each renderer's own bookkeeping over sixteen rounds, starting
 with a wall-clock stream benchmark ([streaming core](terrain.md#streaming-core-render-32)). Its
 second round (`RENDER-32-B`) puts the graded tiles' levels and bake queue in Rust: the 30k turn
-is 3-4 ms faster a frame and a 100k load's graded tiles settle in 11 s instead of 34 s.
+is 3-4 ms faster a frame and a 100k load's graded tiles settle in 11 s instead of 34 s. The
+third (`RENDER-32-C`) builds every vegetation instance buffer in Rust, bit for bit what the
+GDScript built (Rust now owns the plants' appearance hash): Kuopio's turns are 3-5 ms faster.
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,

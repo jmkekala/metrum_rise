@@ -12254,6 +12254,197 @@ every metric; 30k 32x C B B C level on every metric (mean +0.5%, p99 -1.4%), the
 exception on both sides.
 
 
+### Vegetation patch product in Rust (`RENDER-32-C`, 2026-11-11)
+
+V1a. Every instance buffer a vegetation patch draws is built in Rust:
+`rust/src/nodes/sim/render/vegetation_product.rs`, through one static, lock-free bridge call,
+`SimulationNode.build_vegetation_product(placements, stand_cover, hedge_runs, origin, near_band,
+caster, settings, catalogue)`. Its inputs are what the three existing queries return for the
+patch (still fetched synchronously on the main thread; `RENDER-32-D` moves them to the background
+pool), the band choice (`vegetation.gd` keeps residency, bands and staleness until `-F`), the draw
+distances with the probe overrides, and the mesh catalogue packed once by the renderer (per canopy
+species the impostor forms' centres and sizes, and each near variant's full-mesh bounds). It
+returns per batch (one `MultiMesh`): species, level, variant, caster flag, count, lanes, the
+buffer, the `MultiMesh`'s own bounds (impostors), the bounds every level of a species shares and
+the visibility range; plus the tree count and the canopy box. `vegetation.gd` creates the same
+nodes in the same order and assigns one buffer each; the asset editor's yard preview draws the
+same near level from the same call (a hedge's scale lane there now carries the flat lot's zero
+rise, as the scatter's does, instead of its unit scale).
+
+**What moved, bit for bit.** The appearance seed (Godot's `hash()` of the placement's world
+position, an `int` hash of the seed for each of the four jitters), the variant (a pin, or seed
+bits), the transform (`Basis` from axis and angle twice, two `Basis` products and the scale), the
+tint, the stand closure (bilinear over the cover grid, gated by the smoothstep), hedge modules and
+the distant hedge boxes, the impostor rows (transform rows, then the variant layer plus half the
+closure, then the tint), the impostor bounds (the baked forms' reach at the largest axis scale plus
+the wind margin), the shared bounds (`_share_patch_bounds`: the near levels' bounds as the engine
+computes them, each instance's transform of the full mesh's bounds merged in order, merged with the
+impostor's and the caster's in child order), the reach-padded ranges and the understory stagger.
+`render/vegetation_product/godot_math.rs` reproduces Godot 4.7's arithmetic for each: GDScript
+`float` work in double precision, `Vector3`, `Basis`, `Color` and `AABB` lanes in single, Godot's
+operation order (`Basis::set_axis_angle`, `Basis::operator*=`, `Transform3D::xform(AABB)`,
+`AABB::merge`, which recomputes each end, and `MIN`/`MAX`, whose second operand wins a tie), libm's
+`sinf`/`cosf`/`sin`/`cos` and no fused multiply-add, as in the engine's x86-64 build. Rust now owns
+the appearance hash, so a plant's look no longer depends on the engine version.
+
+**Cost.** `O(P + R + B)` for `P` placements, `R` hedge runs and `B` batches (at most 51 near
+variants, two impostor batches and their casters, three hedge kinds): one counting sort into the
+(species, variant) buckets, one transform per placement shared by the near and the impostor row,
+one closure per canopy tree, one bounds transform per near canopy instance. No allocation once a
+thread's scratch and product storage have grown to the largest patch (both reused across calls);
+the bridge copies each buffer once into the `PackedFloat32Array` the `MultiMesh` takes.
+
+**Deleted from `vegetation.gd`** (measured, `git diff --numstat`): 400 lines out, 90 in, 1,133 to
+823 lines: `_instance_transform`, `_instance_tint`, `_appearance_seed`, `_variant_index`,
+`_stand_closure`, `_write_impostor`, `_share_patch_bounds`, `_add_hedge_runs`, `lod_range`,
+`proxy_range`, `_understory_stagger`, the placement loops and impostor bounds of `_upload_patch`,
+and their constants. Added: the batch install loop, the catalogue packing, the settings, the
+`product_ms` part timer. The yard preview lost its own copy of the appearance (24 out, 18 in).
+
+**Tests.** Rust, `vegetation_api/product_parity.rs`: `product_golden.txt` was written once by the
+control's GDScript (`_upload_patch` of `dev` `239d1c1e`, unchanged since `f74a4754`) on a rendered
+Godot 4.7.2, because the near buffers and the engine's own near bounds read back only from a real
+renderer: every coarse patch and a third of the fine patches of a 2,040 m blank world (its
+generated scatter), and every patch of a 1,020 m blank world with brush stands of all 23 painting
+presets, seven pinned plants, three hedge rows and a cleared disc, each at three camera distances
+(near band with understory and caster, caster without near band, neither): 510 uploads, 5,852
+batches, 200,119 plants. The test rebuilds both worlds through the same edit kernels, checks each
+upload's placements, stand cover and hedge runs against the golden digests, and asserts the
+product's tree count, canopy box and every instance record (species, level, variant, caster,
+count, lanes, both bounds, range, buffer SHA-256) bitwise: all 510 equal.
+`vegetation_product/tests.rs`: Godot's `hash()` against 921 `Vector2` and 1,613 `int` vectors
+dumped from Godot (both zeros, extremes, a subnormal, random world positions, seeds xor the jitter
+salts); the impostor row layout and the caster sharing its buffer; storage reuse. Godot:
+`vegetation_appearance_test` (now reading the product where the dummy renderer cannot read a
+buffer back; its position and appearance digests equal the control's, `8c00b5d7` and `6bdeb2c9`),
+`vegetation_invalidation_test`, `vegetation_edit_test`, `vegetation_land_cover_test`, and the
+rendered `vegetation_level_match_test` and `vegetation_wind_gate_test`, in `./run.sh --test`.
+
+**Rows** (fresh, 2026-11-11, boot `978f0c18`; method and inputs as the rows of record). Control:
+`RENDER-32-B`'s landed release library (`b1cd7ed4`, built from `36759b99`, whose code equals `dev`
+`f74a4754`) with its scripts; branch: `stream-v1a`'s release library (`503ed8a2`) with its
+scripts; both ran the branch's benchmark scripts. Another round's benchmark rows and builds ran
+between these (the timing locks keep each row exclusive), so the 30k pair was run twice, C B B C
+each (`$ARTIFACTS/run-stream-v1a.sh`, `compare.py`).
+
+30k city, p50 / max ms and frames over 33.3 ms, ranges over four runs a side:
+
+| Phase | `RENDER-32-B` p50 | max | >33.3 | `RENDER-32-C` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| still | 11.9-13.2 | 18-28 | 0 | 11.7-12.1 | 18-24 | 0 |
+| turn_out 0.5s | 28.8-30.1 | 43-46 | 6-7 | 29.2-31.3 | 41-45 | 5-7 |
+| turn_back 0.5s | 27.5-30.8 | 36-44 | 4-7 | 29.7-32.2 | 37-42 | 4-5 |
+| turn_repeat 0.5s | 31.4-34.1 | 42-44 | 7-9 | 31.2-33.0 | 40-46 | 6-8 |
+| turn_out 1s | 25.7-27.7 | 38-44 | 3-7 | 26.6-27.1 | 35-41 | 4-6 |
+| turn_back 1s | 25.9-28.0 | 34-40 | 2-6 | 26.3-29.4 | 35-44 | 2-9 |
+| turn_repeat 1s | 25.3-27.6 | 40-41 | 4-6 | 25.6-28.7 | 37-43 | 3-10 |
+| pan_out 3s | 20.0-21.7 | 33-64 | 0-2 | 20.1-20.9 | 32-66 | 0-2 |
+| pan_back 3s | 20.7-21.2 | 45-53 | 1 | 20.6-21.3 | 42-68 | 1-3 |
+| pan_repeat 3s | 20.4-21.4 | 31-68 | 0-2 | 20.3-21.1 | 30-64 | 0-2 |
+| zoom_in 1.5s | 21.0-22.2 | 60-79 | 2-5 | 22.8-23.5 | 59-78 | 4-7 |
+| zoom_out 1.5s | 15.1-18.1 | 50-57 | 2-3 | 15.7-17.6 | 57-63 | 3-4 |
+| zoom_in_repeat 1.5s | 20.4-22.5 | 62-79 | 2-3 | 21.1-22.4 | 51-73 | 2-4 |
+| jump | 14.6-15.4 | 43-55 | 1-2 | 14.7-15.0 | 41-45 | 1-2 |
+| jump_back | 16.5-17.5 | 34-49 | 1 | 16.2-17.1 | 33-44 | 0-1 |
+| night_still | 11.4-13.5 | 20-26 | 0 | 11.3-11.9 | 16-21 | 0 |
+| night_turn_out 1s | 26.2-35.8 | 54-61 | 9-16 | 26.5-29.0 | 53-60 | 10-11 |
+| night_turn_back 1s | 25.3-30.2 | 58-68 | 10-12 | 26.9-29.4 | 56-71 | 9-11 |
+| night_turn_repeat 1s | 27.1-34.2 | 52-63 | 10-17 | 26.3-28.8 | 57-60 | 8-11 |
+| night_pan_out 3s | 21.5-22.4 | 58-67 | 7-10 | 21.4-22.3 | 53-66 | 8-11 |
+| night_pan_back 3s | 20.1-21.1 | 47-61 | 6-8 | 19.7-20.6 | 48-63 | 6-9 |
+
+Kuopio, two runs a side:
+
+| Phase | `RENDER-32-B` p50 | max | >33.3 | `RENDER-32-C` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| still | 2.8-2.9 | 5-10 | 0 | 3.0 | 6-11 | 0 |
+| turn_out 0.5s | 14.6-15.6 | 33-38 | 1-2 | 13.3-16.3 | 22-29 | 0 |
+| turn_back 0.5s | 16.5-19.9 | 28-31 | 0 | 12.4-15.1 | 18-21 | 0 |
+| turn_repeat 0.5s | 14.3-16.5 | 25-26 | 0 | 14.2-16.9 | 21-35 | 0-1 |
+| turn_out 1s | 14.6-16.1 | 31-32 | 0 | 11.6-12.5 | 28-33 | 0-1 |
+| turn_back 1s | 14.4-15.3 | 26-29 | 0 | 8.9-11.6 | 26-40 | 0-1 |
+| turn_repeat 1s | 13.3-13.9 | 24-35 | 0-1 | 10.7-13.4 | 27-31 | 0 |
+| pan_out 3s | 7.0-8.7 | 39-40 | 1-2 | 7.0-7.5 | 38-43 | 1-3 |
+| pan_back 3s | 7.5-9.3 | 39-40 | 1-2 | 6.1 | 30-37 | 0-1 |
+| pan_repeat 3s | 6.3-8.0 | 35-42 | 2 | 4.8-7.0 | 29-38 | 0-2 |
+| zoom_in 1.5s | 6.0-8.8 | 29-35 | 0-1 | 6.0-9.8 | 26-38 | 0-1 |
+| zoom_out 1.5s | 5.6-6.0 | 35-36 | 1 | 5.0-5.9 | 21-23 | 0 |
+| zoom_in_repeat 1.5s | 5.0-7.5 | 28-32 | 0 | 4.5-4.6 | 24-35 | 0-1 |
+| jump | 10.6-13.4 | 24-26 | 0 | 11.8 | 23-24 | 0 |
+| jump_back | 10.1-11.7 | 24-30 | 0 | 3.9-4.4 | 26-29 | 0 |
+| night_still | 3.0 | 4-9 | 0 | 2.9-3.0 | 8 | 0 |
+| night_turn_out 1s | 17.3-17.4 | 34-39 | 2 | 11.1-14.2 | 28-29 | 0 |
+| night_turn_back 1s | 17.2-17.4 | 31-34 | 0-1 | 10.1-16.6 | 32-39 | 0-1 |
+| night_turn_repeat 1s | 16.4-16.8 | 34-36 | 1 | 14.2-17.4 | 31-39 | 0-1 |
+| night_pan_out 3s | 7.8-9.5 | 35 | 1-2 | 6.8-7.2 | 33-41 | 0-1 |
+| night_pan_back 3s | 7.0-7.1 | 33-36 | 0-1 | 4.7-7.2 | 31-32 | 0 |
+
+By the same-binary spread (G1's rule): on Kuopio, where vegetation dominates the moving frame,
+the turns are 3-5 ms faster at p50 where they differ (0.5 s back, 1 s out and back, night turn
+out), the pans and jumps up to 2-7 ms; every other phase is level, and no phase is worse beyond
+the spread except the still's p50, +0.1 ms against a 0.1 ms spread. At 30k (vegetation is a few
+percent of the frame there) every phase is level pooled over four runs a side, except `zoom_in`'s
+p50, +1.5 ms against a 1.2 ms spread (every branch run above every control run) and `zoom_out`'s
+maximum, +7.9 against 6.6 ms; the first round alone also flagged `turn_back 1s` (+1.7 against
+1.5), which the second round did not. An instrumented
+pair at 30k (one run a side, so a diagnosis, not a row) puts the vegetation's script time on
+`zoom_in` at 7.14 against 6.29 ms (fetch 4.68 against 4.36, the product 0.04, the install part
+0.79 against 0.68), on `turn_out 1s` at 7.91 against 6.86 (install 1.74 against 1.00) and on
+`night_turn_out 1s` at 7.16 against 7.65. One cause is structural: `MultiMesh.buffer` uploads the
+buffer and computes the engine's bounds when it is assigned, inside the upload's timer, where the
+control's per-instance setters left both to the frame's end; on a city patch (few plants, many
+batches) that outweighs the loops removed. The `zoom_in` p50 is the one phase where the branch was
+slower in every run; it is not explained by the vegetation's own time alone, and `RENDER-32-E`
+replaces this install path (pooled multimeshes, one budget) in any case.
+
+**Vegetation parts on Kuopio** (instrumented, one run a side, mean ms a frame; `fetch` is the
+three Rust queries, `product` the Rust build measured from GDScript, `rest` the node creation and
+buffer assignment):
+
+| Phase | control: vegetation total | uploads: fetch / rest | branch: vegetation total | uploads: fetch / product / rest | worst upload, control / branch |
+|---|---|---|---|---|---|
+| turn 0.5 s (out, back, repeat) | 8.3-9.9 | 2.7-3.4 / 3.4-3.8 | 7.8-8.7 | 4.2-4.8 / 0.29-0.32 / 0.9-1.1 | 7.4-8.2 / 3.5-6.4 |
+| turn 1 s | 8.0-9.9 | 2.7-3.3 / 3.3-4.1 | 6.3-7.0 | 3.1-3.4 / 0.20-0.22 / 1.1-1.2 | 8.9-12.4 / 5.2-6.6 |
+| pan 3 s | 3.4-4.3 | 1.2-1.7 / 0.9-1.1 | 2.9-3.4 | 1.2-1.4 / 0.04-0.06 / 0.3-0.4 | 17-33 / 23-26 |
+| jump, back | 3.8-5.3 | 1.6-2.5 / 2.0-2.8 | 2.2-3.3 | 1.7-2.5 / 0.09-0.14 / 0.2-0.6 | 8.7-9.4 / 5.2-5.3 |
+| night turn 1 s | 7.9-9.4 | 2.8-3.2 / 3.4-4.0 | 5.7-7.6 | 2.8-3.8 / 0.18-0.25 / 1.0-1.1 | 7.7-13.3 / 4.1-10.3 |
+
+The upload work besides the fetch falls from 3.3-4.1 to 1.3-1.5 ms a frame on the 1 s turns
+(the product 0.20-0.22 of it), and the vegetation's total by 1.5-2.9 ms. The fetch is unchanged
+work (the hedge runs' query now counts in it; it varies with the frames' upload mix) and the
+worst single uploads on pans are the fetch's (`VEG-27`, `RENDER-32-D`).
+
+**The bridge call's cost** (headless, the dense fixture cut to `n` placements; p50 of 300 calls,
+GDScript to GDScript): about 1 µs fixed, then 60 ns a placement inside the near band (every level,
+the near bounds included) and 14 ns outside it: 13 µs at 150 placements, 37 µs at 600, 245 µs at
+4,096 near (57 µs far). The 4,096-placement patch in Rust alone (`dense_patch_product_cost`,
+release, P-cores): p50 0.236 ms, p95 0.248 ms near; 0.054 ms far. Round 1's GDScript loops took
+5.6 ms on it, and the control's whole upload of it 6.99 ms in `vegetation_appearance_test` against
+the branch's 0.79 ms.
+
+**Stills** (the idle-frame matrix's screenshots, Kuopio `forest_low`, `close` and `mid`, 1080p,
+wind held): byte-identical PNGs, control against branch, at all three poses.
+
+**Timing level F** (`./run.sh --timing --level F --base 239d1c1e`, release lib test binaries:
+control `RENDER-32-B`'s (`df80cc74`), branch `694e7dd1`): 30k 1x day acceptance passes
+(unpreempted, p99.9, preempted less wait 6.73 / 4.19 / 4.11 ms against the control's 6.24 / 4.24
+/ 3.89, the control's row reused from `RENDER-32-B`'s session after a passing calibration), mean
+2.203 against 2.228 ms, level on every metric. 30k 32x C B B C: the first round read mean +1.7%
+against a 1.4% tolerance (branch 4.43-4.51, control 4.38-4.41 ms); rerun once, level on every
+metric (mean -0.7%; branch 4.35-4.41, control 4.39-4.43); the `PERF-17` known exception on both
+sides. No simulation code changed: the product runs only from the renderer.
+
+**Bars** (plan section 7 V1a): buffers bitwise equal to the control: met (510 uploads, every
+batch, the bounds and ranges too); GDScript placement work gone: met, no per-placement GDScript is
+left (the control's 1.14 ms a frame on the Kuopio turn); "under 0.05 ms a frame" read as the Rust
+product's own cost: missed, 0.20-0.22 ms on the 1 s turns and 0.29-0.32 on the 0.5 s ones, about
+60 ns a near placement (so about 3,500 near placements a frame on those turns, inferred from the
+call's measured cost), each with four `sinf`/`cosf`, two `sin`/`cos` and five hashes that the bit
+parity fixes to libm's and Godot's (not profiled further); it leaves the main thread with the
+query in `RENDER-32-D`. A 4,096-placement patch's loops under 0.3 ms in Rust: met (0.236 ms p50). Stills
+identical: met.
+
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
