@@ -6,9 +6,11 @@
 ## -0.1 rad and an 800 m orbit, and records every frame of: a still view; 180-degree orbit turns
 ## over 0.5 s and 1 s (out, back, repeat); a 3 s keyboard-speed pan (out, back, repeat); a zoom
 ## 800 -> 60 -> 800 m over 1.5 s each; a 3 km camera jump and back, each until settled; and at
-## 23:00 a still, a 1 s turn and a pan. `post_load` records the frames from the load call's
-## return until settled. METRUM_STREAM_PHASES picks phases (still, turns, pan, zoom, jump, night,
-## post_load), METRUM_STREAM_TURNS the turn durations in seconds.
+## 23:00 a still, a 1 s turn and, from the settled base pose as by day, a pan (`RENDER-32-I`: the
+## night pan started where the night turns left the terrain catching up). `post_load` records
+## the frames from the load call's return until settled. METRUM_STREAM_PHASES picks phases
+## (still, turns, pan, zoom, jump, night, post_load), METRUM_STREAM_TURNS the turn durations in
+## seconds.
 ##
 ## A row is one frame: its time from one `process_frame` to the next (the frame's scripts and its
 ## draw), the renderer's CPU and GPU measures, draw counts, the streaming counters of every chunked
@@ -200,6 +202,11 @@ func run(bench: Node) -> void:
 		_report.samples.append(await _capture_frames(bench, "night_still", STILL_FRAMES))
 		for turn: Array in [["night_turn_out", 1.0], ["night_turn_back", -1.0], ["night_turn_repeat", 1.0]]:
 			_report.samples.append(await _capture_turn(bench, turn[0], 1.0, turn[1]))
+		# The pans start settled, as the day's do.
+		settled = await _start_from(bench, base)
+		if not settled:
+			bench._fail("the night pan's start did not settle")
+			return
 		for pan: Array in [["night_pan_out", 0.0, pan_m], ["night_pan_back", pan_m, 0.0]]:
 			_report.samples.append(await _capture_view(bench, pan[0], PAN_S, base, 0, pan[1], pan[2], false))
 		if _digests:
