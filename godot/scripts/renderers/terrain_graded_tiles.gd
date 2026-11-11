@@ -371,7 +371,7 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	while _block_tiles(block_patches + 1) <= layer_limit / 4:
 		block_patches += 1
 	page_store.counters = counters
-	page_store.levels.clear()
+	page_store.clear_levels()
 	for code in levels.size():
 		var cap: int = WORLD_PAGE_SLOTS[code] if code < 2 else _block_tiles(block_patches)
 		if code < pool_slots.size():
@@ -578,7 +578,7 @@ func _place_copies(key: Vector2i, code: int, tile: Dictionary, held: Dictionary,
 	for pair: Array in wanted:
 		var page_id := int(pair[0])
 		var page: Dictionary = page_store.by_id.get(page_id, {})
-		if not page.is_empty() and GradedPages.can_place(page, held.get(page_id, GradedPages.NO_COPY), layers):
+		if not page.is_empty() and page_store.can_place(page_id, held.get(page_id, GradedPages.NO_COPY), layers):
 			continue
 		_place_failed = true
 		if page_id == PAGE_PENDING:
@@ -595,7 +595,7 @@ func _place_copies(key: Vector2i, code: int, tile: Dictionary, held: Dictionary,
 		var page_id := int(pair[0])
 		var page: Dictionary = page_store.by_id[page_id]
 		var before: Vector3i = held.get(page_id, GradedPages.NO_COPY)
-		var copy := GradedPages.place(page, before, layers)
+		var copy := page_store.place(page_id, before, layers)
 		if trace != null:
 			trace.note("place %d %d %d %d %d %d %d %d" % [page_id, before.x, before.y, before.z, layers, copy.x, copy.y, copy.z])
 		if not (fresh and copy == before):
@@ -626,7 +626,7 @@ func _free_copy(tile: Vector2i, page_id: int, copy: Vector3i, is_preview: bool) 
 	if page.is_empty():
 		return
 	var code := int(page["code"])
-	GradedPages.vacate(page, copy)
+	page_store.vacate(page_id, copy)
 	if trace != null:
 		trace.note("vacate %d %d %d %d" % [page_id, copy.x, copy.y, copy.z])
 	(page["previews"] if is_preview else page["tiles"]).erase(tile)
@@ -675,18 +675,22 @@ func _free_copies(tile: Vector2i, entry: Dictionary, is_preview: bool) -> void:
 # larger page (docs/terrain.md "Growth"), sized for its listed tiles now and at least twice the
 # dimension that ran out. The published bytes and allocator layout move together.
 # Returns false where no larger page can be made (the level's cap and the layer limit, or the
-# budget). O(the block's tiles).
-func _grow(code: int, block: Vector2i, layers: int, allocation: Dictionary = {}) -> bool:
+# budget). An edit batch's reservation passes what its plan found the page lacking (`full`: no
+# free slot, `no_run`: no run of `layers`), the page itself back as it was. O(the block's tiles).
+func _grow(code: int, block: Vector2i, layers: int, full := -1, no_run := -1) -> bool:
 	var target := int(_block_target[code].get(block, -1))
 	var from_id := target if target >= 0 else int(_block_page[code].get(block, -1))
-	var from: Dictionary = allocation if int(allocation.get("id", -1)) == from_id else page_store.by_id.get(from_id, {})
+	var from: Dictionary = page_store.by_id.get(from_id, {})
 	if from.is_empty():
 		return false
+	if full < 0:
+		full = int(page_store.book.free_slots(from_id) == 0)
+		no_run = int(not page_store.book.has_run(from_id, maxi(layers, 1)))
 	var slots := int(from["slots"])
 	var atlas := int(from["layers"])
 	var least := Vector2i(
-		slots * 2 if (from["free"] as Array).is_empty() else slots,
-		atlas * 2 if GradedPages.find_run(from["runs"], maxi(layers, 1)) < 0 else atlas)
+		slots * 2 if full == 1 else slots,
+		atlas * 2 if no_run == 1 else atlas)
 	var size := _page_size(code, block, least)
 	if size.x <= slots and size.y <= atlas:
 		return false
@@ -1612,15 +1616,12 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 	var reservation := _reserve_edit_copies()
 	if reservation.is_empty():
 		return 0
-	# Every allocation fits before any published texture is overwritten. Register all incoming
-	# holders before uploads free old-level copies, so no page needed later in the batch retires.
+	# Every allocation fits before any published texture is overwritten (the reservation placed
+	# them in the book). Register all incoming holders before uploads free old-level copies, so no
+	# page needed later in the batch retires.
 	if trace != null:
 		for note in _reserve_notes:
 			trace.note(note)
-	for page_id: int in reservation["pages"]:
-		var page: Dictionary = page_store.by_id[page_id]
-		page["free"] = reservation["pages"][page_id]["free"]
-		page["runs"] = reservation["pages"][page_id]["runs"]
 	for key: Vector2i in reservation["tiles"]:
 		for page_id: int in reservation["tiles"][key]:
 			var page: Dictionary = page_store.by_id[page_id]
@@ -1648,6 +1649,10 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 var _reserve_notes := PackedStringArray()
 func _reserve_edit_copies() -> Dictionary:
 	_reserve_notes.clear()
+	var book: GradedTileBook = page_store.book
+	# The batch places its copies in the book's pages, each kept as it was first: a failure puts
+	# them back (plan_abort), so only a whole batch changes a page.
+	book.plan_begin()
 	var pages := {}
 	var tiles := {}
 	for key: Vector2i in _edit_staged:
@@ -1660,18 +1665,20 @@ func _reserve_edit_copies() -> Dictionary:
 		for pair: Array in _copy_pages(key, code):
 			var page_id := int(pair[0])
 			if page_id < 0:
+				book.plan_abort()
 				return {}
 			if not pages.has(page_id):
-				var plan: Dictionary = page_store.by_id[page_id].duplicate()
-				plan["free"] = plan["free"].duplicate()
-				plan["runs"] = plan["runs"].duplicate()
-				pages[page_id] = plan
-			var plan: Dictionary = pages[page_id]
+				book.plan_keep(page_id)
+				pages[page_id] = true
 			var before: Vector3i = held.get(page_id, GradedPages.NO_COPY)
-			if not GradedPages.can_place(plan, before, layers):
+			if not page_store.can_place(page_id, before, layers):
+				# What the plan's page lacks decides the growth; the page itself goes back first.
+				var full := int(book.free_slots(page_id) == 0)
+				var no_run := int(not book.has_run(page_id, maxi(layers, 1)))
+				book.plan_abort()
 				var target := int(_block_target[code].get(pair[1], -1))
 				if target < 0 or target == page_id:
-					if not _grow(code, pair[1], layers, plan):
+					if not _grow(code, pair[1], layers, full, no_run):
 						# Preserve the existing explicit pool-exhaustion contract at the device/budget
 						# cap. Only a recorded refusal may leave the batch without an upload.
 						_exhaust(key, code, "%d,%d,%d,%d" % [key.x, key.y, code, int(tile["step"])], int(tile["token"]))
@@ -1679,7 +1686,7 @@ func _reserve_edit_copies() -> Dictionary:
 						_edit_staged.erase(key)
 						_edit_levels.erase(key)
 				return {}
-			copies[page_id] = GradedPages.place(plan, before, layers)
+			copies[page_id] = page_store.place(page_id, before, layers)
 			if trace != null:
 				# Noted only if the whole reservation is applied (_install_edit_batch).
 				_reserve_notes.append("place %d %d %d %d %d %d %d %d" % [page_id, before.x, before.y, before.z, layers,
@@ -2125,7 +2132,7 @@ func _request_tiles() -> void:
 		for pair: Array in _copy_pages(tile, level.x):
 			var page_id := int(pair[0])
 			var page: Dictionary = page_store.by_id.get(page_id, {})
-			if not page.is_empty() and (held.has(page_id) or not (page["free"] as Array).is_empty()):
+			if not page.is_empty() and (held.has(page_id) or page_store.book.free_slots(page_id) > 0):
 				continue
 			blocked = true
 			if page_id == PAGE_PENDING:
@@ -3220,16 +3227,16 @@ func get_pool_counters() -> Dictionary:
 			var page: Dictionary = page_store.by_id[page_id]
 			pages += 1
 			slots += int(page["slots"])
-			free += (page["free"] as Array).size()
+			free += page_store.book.free_slots(page_id)
 			layers += int(page["layers"])
-			for run: Vector2i in page["runs"]:
-				free_layers += run.y
+			free_layers += page_store.book.free_layers(page_id)
 		out["pages_%d" % code] = pages
 		out["slots_%d" % code] = slots
 		out["free_%d" % code] = free
 		out["layers_%d" % code] = layers
 		out["free_layers_%d" % code] = free_layers
-	out["pool_bytes"] = page_store.bytes
+	out["pool_bytes"] = page_store.page_bytes()
+	out["pooled_bytes"] = page_store.book.pooled_bytes()
 	out["layer_limit"] = layer_limit
 	out["block_patches"] = block_patches
 	out["growing"] = _growth_waits.size()

@@ -513,9 +513,16 @@ godot_vehicle_chain() {
     for script in \
         vehicle_ground_support_test road_turn_lanes_test road_walkway_preset_test road_types_test \
         road_builder_test road_junction_preview_test road_preview_stream_test \
-        zoning_reference_test road_tunnels_test agent_inspector_test core_busy_input_test; do
+        road_tunnels_test agent_inspector_test core_busy_input_test; do
         run_godot_bridge_test "$script" || return 1
     done
+    # Record and replay (`RENDER-32-I`): the zoning reference test's graded renderers record their
+    # traces, which must replay through the renderer bit for bit.
+    METRUM_GRADED_TRACE="$asset_test_profile/graded-trace" run_godot_bridge_test zoning_reference_test || return 1
+    local traces
+    traces=$(find "$asset_test_profile" -maxdepth 1 -name 'graded-trace.*' | sort | tr '\n' ';')
+    [ -n "$traces" ] || { echo "graded_replay: zoning_reference_test recorded no trace"; return 1; }
+    METRUM_GRADED_REPLAY="$traces" run_godot_bridge_test graded_replay || return 1
 }
 
 # Every other Godot regression. Each fixture generator runs just before the test that reads it.

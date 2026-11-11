@@ -9,9 +9,11 @@
 //! ([`requests`]), both measured from one [`view::StreamView`]. The vegetation patches (round
 //! V1b, `RENDER-32-D`) are the second: their queries run on the background pool from a
 //! snapshot, tracked by the prepare queue ([`prepare`]) and held for the poll by the product
-//! cache ([`cache`]).
+//! cache ([`cache`]). The graded renderer's remaining state (round G2a, `RENDER-32-I`) is a layer
+//! of its own ([`layers`]).
 
 pub(crate) mod cache;
+pub(crate) mod layers;
 pub(crate) mod levels;
 pub(crate) mod prepare;
 pub(crate) mod requests;

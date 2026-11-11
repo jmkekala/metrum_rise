@@ -61,7 +61,7 @@ func _run() -> void:
 	graded._show_preview_tile(second)
 	var old_id := int(graded._block_page[2][Vector2i.ZERO])
 	var old: Dictionary = graded.page_store.by_id[old_id]
-	expect((old["runs"] as Array).is_empty(), "fixture fills the old atlas")
+	expect(graded.page_store.book.free_layers(old_id) == 0, "fixture fills the old atlas")
 	expect(not graded._levels.has(a), "commit-only installed tile has no residency-list reference")
 	# Same preview epoch, newer pose: its failed upload must not become adoptable old bytes.
 	var newer_preview := payload(graded, b, 1, 13)
