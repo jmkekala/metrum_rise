@@ -67,6 +67,8 @@ pub(crate) struct VegetationJobs {
     // Started requests not yet running, oldest first, and the jobs running.
     waiting: VecDeque<Waiting>,
     running: usize,
+    // The snapshot taker is out.
+    taking: bool,
 }
 
 // A started request waiting for a running place: what its job needs.
@@ -85,6 +87,7 @@ impl Default for VegetationJobs {
             catalogue: None,
             waiting: VecDeque::new(),
             running: 0,
+            taking: false,
         }
     }
 }
@@ -197,49 +200,88 @@ pub(crate) fn spawn_request(spawner: &Spawner, request: PatchRequest) -> Option<
     Some(serial)
 }
 
-// Starts waiting jobs while fewer than `MAX_RUNNING` run. A waiting request that went stale
-// lands unbuilt (the poll drops it and keeps its storage). `O(1)` per job started.
+// Starts the snapshot taker when requests wait and fewer than `MAX_RUNNING` jobs run. One taker
+// at a time takes the core once, under `try_lock`, and snapshots every request it was handed in
+// that one hold, so the vegetation's own jobs never collide on the core; it then starts one
+// build job per snapshot. A busy core lands the batch busy at once (the renderer asks again on a
+// later frame); nothing waits. A waiting request that went stale lands unbuilt (the poll drops
+// it and keeps its storage). `O(batch)` per start.
 fn pump(spawner: &Spawner) {
-    loop {
-        let waiting = {
-            let mut jobs = spawner.jobs.lock().unwrap();
-            if jobs.running >= MAX_RUNNING {
-                return;
-            }
-            let Some(waiting) = jobs.waiting.pop_front() else {
-                return;
-            };
-            if !jobs.queue.is_live(waiting.request.key, waiting.serial) {
+    let batch: Vec<Waiting> = {
+        let mut jobs = spawner.jobs.lock().unwrap();
+        if jobs.taking {
+            return;
+        }
+        let mut batch = Vec::new();
+        while jobs.running + batch.len() < MAX_RUNNING
+            && let Some(waiting) = jobs.waiting.pop_front()
+        {
+            if jobs.queue.is_live(waiting.request.key, waiting.serial) {
+                batch.push(waiting);
+            } else {
                 jobs.land(waiting.request.key, waiting.serial, Some(waiting.product));
-                continue;
             }
-            jobs.running += 1;
-            waiting
-        };
-        let next = spawner.clone();
-        spawner.async_jobs.spawn(move || {
-            let Waiting {
-                request,
-                serial,
-                mut product,
-                catalogue,
-            } = waiting;
-            let inputs = SimulationNode::try_lock_shared_core(&next.core).and_then(|mut core| {
-                VegetationPatchInputs::take(&mut core, request.origin, request.span)
-            });
-            let built = inputs.map(|inputs| {
-                prepare_patch(&inputs, &request, &catalogue, &mut product);
-                product
-            });
-            {
-                let mut jobs = next.jobs.lock().unwrap();
-                jobs.land(request.key, serial, built);
+        }
+        if batch.is_empty() {
+            return;
+        }
+        jobs.taking = true;
+        jobs.running += batch.len();
+        batch
+    };
+    let next = spawner.clone();
+    spawner.async_jobs.spawn(move || {
+        let mut inputs: Vec<Option<VegetationPatchInputs>> = Vec::with_capacity(batch.len());
+        if let Some(mut core) = SimulationNode::try_lock_shared_core(&next.core) {
+            for waiting in &batch {
+                let request = &waiting.request;
+                inputs.push(VegetationPatchInputs::take(
+                    &mut core,
+                    request.origin,
+                    request.span,
+                ));
+            }
+        }
+        inputs.resize_with(batch.len(), || None);
+        let mut busy = Vec::new();
+        for (waiting, inputs) in batch.into_iter().zip(inputs) {
+            match inputs {
+                Some(inputs) => build(&next, waiting, inputs),
+                None => busy.push((waiting.request.key, waiting.serial)),
+            }
+        }
+        {
+            let mut jobs = next.jobs.lock().unwrap();
+            for (key, serial) in busy {
+                jobs.land(key, serial, None);
                 jobs.running -= 1;
             }
-            pump(&next);
-        });
-    }
+            jobs.taking = false;
+        }
+        pump(&next);
+    });
 }
+
+// Builds one snapshot's product on the background pool, sequentially, and lands it.
+fn build(spawner: &Spawner, waiting: Waiting, inputs: VegetationPatchInputs) {
+    let next = spawner.clone();
+    spawner.async_jobs.spawn(move || {
+        let Waiting {
+            request,
+            serial,
+            mut product,
+            catalogue,
+        } = waiting;
+        prepare_patch(&inputs, &request, &catalogue, &mut product);
+        {
+            let mut jobs = next.jobs.lock().unwrap();
+            jobs.land(request.key, serial, Some(product));
+            jobs.running -= 1;
+        }
+        pump(&next);
+    });
+}
+
 /// Builds `request`'s product from `world` into `product`: the three queries the renderer
 /// asked of the core one by one before (`RENDER-32-C`'s inputs), then the product. Equal to the
 /// product of the synchronous queries on the same world, bitwise.
