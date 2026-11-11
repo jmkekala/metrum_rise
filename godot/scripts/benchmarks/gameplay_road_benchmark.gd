@@ -123,6 +123,9 @@ func run() -> void:
 	if matrix_name == "idle":
 		await preload("res://scripts/benchmarks/idle_frame_benchmark.gd").new().run(self)
 		return
+	if matrix_name == "stream":
+		await preload("res://scripts/benchmarks/stream_frame_benchmark.gd").new().run(self)
+		return
 	if matrix_name == "graded_drag":
 		await preload("res://scripts/benchmarks/graded_drag_probe.gd").new().run(self)
 		return

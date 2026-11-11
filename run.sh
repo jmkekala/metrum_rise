@@ -27,6 +27,11 @@
 #                        Run deterministic Rust generation and Godot upload benchmarks
 #   --benchmark-road-chunk-upload
 #                        Run only the deterministic Godot upload benchmark
+#   --benchmark-stream   Release build, then the rendered camera-move benchmark (PERF-23,
+#                        tools/stream_benchmark.py): gamescope headless at 1000 Hz, isolated
+#                        profile, timing CPUs and locks. METRUM_STREAM_SAVE loads a save (else
+#                        Kuopio), METRUM_STREAM_LABEL / METRUM_STREAM_OUT name the output,
+#                        METRUM_STREAM_DETAIL=1 records the perf channel (shares, not times)
 #   --benchmark-gameplay-roads / --benchmark-gameplay-roads-headless
 #                        Measure the gameplay workload without profiler overhead
 #   --profile-gameplay-roads
@@ -142,6 +147,7 @@ TEST=0
 TEST_QUICK=0
 ROAD_CHUNK_BENCHMARK=0
 ROAD_CHUNK_UPLOAD_BENCHMARK=0
+STREAM_BENCHMARK=0
 ROAD_REPLAY_DUMP=""
 GAMEPLAY_ROAD_PROFILE_MODE=""
 GAMEPLAY_ROAD_USE_PROFILER=0
@@ -520,6 +526,7 @@ godot_main_chain() {
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
         selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
+        stream_benchmark_report_test \
         vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
@@ -631,6 +638,9 @@ build_gate_targets() {
         return 1
     fi
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_timing_session.py; then
+        return 1
+    fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_stream_benchmark.py; then
         return 1
     fi
     echo "Checking benchmark targets for API drift..."
@@ -930,6 +940,9 @@ while [ $i -le $# ]; do
     elif [ "$arg" = "--benchmark-road-chunk-upload" ]; then
         ROAD_CHUNK_UPLOAD_BENCHMARK=1
         RELEASE=1
+    elif [ "$arg" = "--benchmark-stream" ]; then
+        STREAM_BENCHMARK=1
+        RELEASE=1
     elif [ "$arg" = "--replay-road-terrain" ] || [ "$arg" = "--replay-road-terrain-headless" ]; then
         GAMEPLAY_ROAD_PROFILE_MODE="windowed"
         if [ "$arg" = "--replay-road-terrain-headless" ]; then
@@ -1227,7 +1240,7 @@ fi
 INTERACTIVE_RELEASE=0
 if [ $RELEASE -eq 1 ] && [ $TEST -eq 0 ] && \
    [ $ROAD_CHUNK_BENCHMARK -eq 0 ] && [ $ROAD_CHUNK_UPLOAD_BENCHMARK -eq 0 ] && \
-   [ -z "$GAMEPLAY_ROAD_PROFILE_MODE" ] && [ -z "$ROAD_REPLAY_DUMP" ]; then
+   [ $STREAM_BENCHMARK -eq 0 ] && [ -z "$GAMEPLAY_ROAD_PROFILE_MODE" ] && [ -z "$ROAD_REPLAY_DUMP" ]; then
     INTERACTIVE_RELEASE=1
     for engine_arg in "${GODOT_ENGINE_ARGS[@]}"; do
         case "$engine_arg" in
@@ -1526,6 +1539,14 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     fi
     echo "Gameplay road benchmark finished with status $PROFILE_STATUS."
     exit $PROFILE_STATUS
+fi
+
+if [ $STREAM_BENCHMARK -eq 1 ]; then
+    stream_args=(run --label "${METRUM_STREAM_LABEL:-stream-$(date -u +%Y%m%dT%H%M%SZ)}"
+        --out "${METRUM_STREAM_OUT:-$PROJECT_ROOT/benchmark-results}" --godot-dir "$GODOT_DIR")
+    [ -n "${METRUM_STREAM_SAVE:-}" ] && stream_args+=(--save "$METRUM_STREAM_SAVE")
+    [ "${METRUM_STREAM_DETAIL:-0}" = 1 ] && stream_args+=(--detail)
+    exec python3 "$PROJECT_ROOT/tools/stream_benchmark.py" "${stream_args[@]}"
 fi
 
 if [ $ROAD_CHUNK_UPLOAD_BENCHMARK -eq 1 ]; then
