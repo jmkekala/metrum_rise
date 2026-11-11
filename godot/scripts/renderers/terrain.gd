@@ -533,7 +533,8 @@ func _graded_patch_changed(key: Vector2i) -> void:
 	var patch: Dictionary = patches.get(key, {})
 	var data: Dictionary = patch.get("last_patch_data", {}) as Dictionary
 	if not resident_patch_lookup.has(key) or patch.is_empty() or data.is_empty():
-		_graded_resident.erase(key)
+		if _graded_resident.erase(key):
+			graded_tiles.trace_patch(key, {})
 		return
 	var size := Vector2(float(data["world_size_x"]), float(data["world_size_z"]))
 	_graded_resident[key] = {
@@ -544,6 +545,7 @@ func _graded_patch_changed(key: Vector2i) -> void:
 		"generation": get_patch_surface_generation(key),
 		"aabb": patch_cull_aabb(size),
 	}
+	graded_tiles.trace_patch(key, _graded_resident[key])
 
 func get_resident_patch_keys() -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []
@@ -1476,6 +1478,8 @@ func _clear_patches() -> void:
 		_release_terrain_patch_resources(patch)
 	patches.clear()
 	resident_patch_lookup.clear()
+	if graded_tiles != null and not _graded_resident.is_empty():
+		graded_tiles.trace_patch(Vector2i.ZERO, {}, true)
 	_graded_resident.clear()
 	_graded_changed.clear()
 	patch_payload_requested.clear()

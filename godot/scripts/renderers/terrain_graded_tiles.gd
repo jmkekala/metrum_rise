@@ -34,6 +34,7 @@ const GRADED_SHADER := preload("res://assets/materials/terrain_graded.gdshader")
 const GRADED_BEHIND_SHADER := preload("res://assets/materials/terrain_graded_behind.gdshader")
 const WALL_SHADER := preload("res://assets/materials/terrain_graded_walls.gdshader")
 const GradedPages := preload("res://scripts/renderers/terrain_graded_pages.gd")
+const GradedTrace := preload("res://scripts/renderers/terrain_graded_trace.gd")
 const TILE_M := 64.0
 # Pages (docs/terrain.md "Pages and the row atlas", T54 (a) and T50 (b), TERRAIN-07-G round 8).
 # GL0 and GL1 have one page each for the world, sized by their bands' bound (the memory table);
@@ -73,6 +74,10 @@ const SIDE_OFFSETS := [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2
 const LEVEL_STEPS := [Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 2), Vector2i(3, 4), Vector2i(3, 8)]
 
 var simulation_node: Node
+## Record and replay (terrain_graded_trace.gd): null unless METRUM_GRADED_TRACE names a file to
+## record into (one file per renderer: `<path>.<n>`), or a replay sets it before setup().
+var trace: RefCounted = null
+static var _traces := 0
 var terrain_cell_m := 10.0
 # The patch grid: patches of patch_span_m from the world's lower corner.
 var patch_span_m := 510.0
@@ -340,18 +345,26 @@ var _frame_moved := 0
 ## `pool_slots` overrides the per-level most slots a page holds (tests use small pages).
 func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, pool_slots: Array = []) -> void:
 	simulation_node = simulation
+	if trace == null and not OS.get_environment("METRUM_GRADED_TRACE").is_empty():
+		_traces += 1
+		trace = GradedTrace.record("%s.%d" % [OS.get_environment("METRUM_GRADED_TRACE"), _traces])
+	if trace != null:
+		trace.entry("setup %s %s" % [GradedTrace.floats(PackedFloat32Array([cell_m, world_size.x, world_size.y, span_m])), GradedTrace.ints(pool_slots)])
 	terrain_cell_m = cell_m
 	patch_span_m = span_m
 	world_min = -world_size * 0.5
 	# The base lattice starts at the negative half extents (BaseGrid), in half-metres.
 	lattice_anchor_hm = Vector2i(int(round(-world_size.x)), int(round(-world_size.y)))
-	var layout: Dictionary = simulation_node.get_graded_tile_layout()
+	var layout: Dictionary = _sim_layout()
 	_level_end_m = GradedTileLevels.level_end_m()
 	_gl3_end_m = GradedTileLevels.gl3_end_m()
 	levels.clear()
 	for level: Dictionary in layout.get("levels", []):
 		levels.append(level)
 	layer_limit = GradedPages.device_layer_limit()
+	if trace != null:
+		layer_limit = int(trace.value("layer_limit", str(layer_limit)))
+	page_store.trace = trace
 	# B: the largest block of patches whose tiles fit a quarter of the layers (docs/terrain.md
 	# "Blocks"), so a full block's slots and its tiles' mean atlas runs fit one page.
 	block_patches = 1
@@ -364,6 +377,8 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 		if code < pool_slots.size():
 			cap = int(pool_slots[code])
 		page_store.add_level(levels[code], mini(cap, layer_limit))
+		if trace != null:
+			trace.note("level %d %d %d %d" % [code, int(levels[code]["side"]), mini(cap, layer_limit), int(levels[code]["max_row_texels"])])
 	_reset_pages()
 	_build_meshes()
 	_wall_material = ShaderMaterial.new()
@@ -581,6 +596,8 @@ func _place_copies(key: Vector2i, code: int, tile: Dictionary, held: Dictionary,
 		var page: Dictionary = page_store.by_id[page_id]
 		var before: Vector3i = held.get(page_id, GradedPages.NO_COPY)
 		var copy := GradedPages.place(page, before, layers)
+		if trace != null:
+			trace.note("place %d %d %d %d %d %d %d %d" % [page_id, before.x, before.y, before.z, layers, copy.x, copy.y, copy.z])
 		if not (fresh and copy == before):
 			page_store.write_copy(page, copy, tile)
 		copies[page_id] = copy
@@ -610,6 +627,8 @@ func _free_copy(tile: Vector2i, page_id: int, copy: Vector3i, is_preview: bool) 
 		return
 	var code := int(page["code"])
 	GradedPages.vacate(page, copy)
+	if trace != null:
+		trace.note("vacate %d %d %d %d" % [page_id, copy.x, copy.y, copy.z])
 	(page["previews"] if is_preview else page["tiles"]).erase(tile)
 	var block: Vector2i = page["block"]
 	if int(_block_target[code].get(block, -1)) >= 0:
@@ -872,6 +891,8 @@ func _notification(what: int) -> void:
 
 ## Frees every slot and cell resource, as the renderer resets.
 func clear() -> void:
+	if trace != null:
+		trace.entry("clear")
 	for key: Vector2i in installed.keys():
 		_free_copies(key, installed[key], false)
 	installed.clear()
@@ -915,8 +936,8 @@ func clear() -> void:
 	_preview_waits.clear()
 	_dirty_shown.clear()
 	_levels.clear()
-	if is_instance_valid(simulation_node):
-		simulation_node.cancel_graded_tile_requests()
+	if is_instance_valid(simulation_node) or (trace != null and trace.replaying):
+		_sim_cancel_all()
 	_tile_lists.clear()
 	_counted.clear()
 	_counts.clear()
@@ -948,6 +969,9 @@ func dispose() -> void:
 ## clears both); with neither, nor a camera move, nor finished work, the frame only polls.
 ## O(changes) per frame: a changed patch or an arriving list costs its own tiles.
 func process(camera_position: Vector3, resident_patches: Dictionary, changed_patches: Dictionary, changed_materials: Dictionary) -> void:
+	if trace != null:
+		trace.entry("process %s %d %d %s %s" % [GradedTrace.floats(PackedFloat32Array([camera_position.x, camera_position.y, camera_position.z])),
+			int(unbudgeted), int(residency_settling), GradedTrace.keys(changed_patches), GradedTrace.keys(changed_materials)])
 	var start_us := Time.get_ticks_usec()
 	_resident = resident_patches
 	_frame_sync_us = 0
@@ -1133,6 +1157,8 @@ func installed_edit_serial() -> int:
 ## pool and draws in place of the installed tile from this frame; a removed one returns to the
 ## installed tile. Returns the milliseconds it took. O(changed tiles x slot bytes).
 func show_preview(changes: Dictionary) -> float:
+	if trace != null:
+		trace.entry(GradedTrace.preview(changes))
 	var start_us := Time.get_ticks_usec()
 	var removed: PackedInt32Array = changes.get("graded_removed", PackedInt32Array())
 	var tiles: Array = changes.get("graded_tiles", [])
@@ -1173,6 +1199,8 @@ func show_preview(changes: Dictionary) -> float:
 ## draw again. A cancelled preview drops its own epoch; an edit batch drops every epoch up to the
 ## one its commit adopted.
 func release_preview(first_epoch: int, last_epoch: int) -> void:
+	if trace != null:
+		trace.entry("release_preview %d %d" % [first_epoch, last_epoch])
 	for key: Vector2i in preview.keys():
 		var token := int(preview[key]["token"])
 		if token >= first_epoch and token <= last_epoch:
@@ -1297,7 +1325,7 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 		if progressed and _over_budget(start_us):
 			return
 		var poll_start_us := Time.get_ticks_usec()
-		var result: Dictionary = simulation_node.poll_graded_tile_results(POLL_BATCH)
+		var result: Dictionary = _sim_poll()
 		counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(Time.get_ticks_usec() - poll_start_us) / 1000.0)
 		_tiles_pending = int(result.get("tiles_pending", 0))
 		for kind: String in RESULT_KINDS:
@@ -1352,7 +1380,78 @@ func _take_list(list: Dictionary, resident_patches: Dictionary) -> void:
 	_release_patch_blocks(key)
 
 func _over_budget(start_us: int) -> bool:
-	return not unbudgeted and float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS
+	var over := not unbudgeted and float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS
+	if trace != null:
+		over = trace.value("budget", str(int(over))) == "1"
+	return over
+
+# --- Rust calls, through the trace when one records or replays (a replay calls no Rust). ---
+
+func _sim_layout() -> Dictionary:
+	if trace == null:
+		return simulation_node.get_graded_tile_layout()
+	var parts := PackedStringArray()
+	if not trace.replaying:
+		var layout: Dictionary = simulation_node.get_graded_tile_layout()
+		for level: Dictionary in layout.get("levels", []):
+			parts.append("%d,%d" % [int(level["side"]), int(level["max_row_texels"])])
+	var levels := []
+	for part in trace.value("layout", ";".join(parts)).split(";", false):
+		levels.append({"side": int(part.get_slice(",", 0)), "max_row_texels": int(part.get_slice(",", 1))})
+	return {"levels": levels}
+
+func _sim_poll() -> Dictionary:
+	if trace == null:
+		return simulation_node.poll_graded_tile_results(POLL_BATCH)
+	trace.out("poll %d" % POLL_BATCH)
+	return trace.poll({} if trace.replaying else simulation_node.poll_graded_tile_results(POLL_BATCH))
+
+func _sim_request_tiles(flat: PackedInt64Array) -> PackedByteArray:
+	if trace == null:
+		return simulation_node.request_graded_tiles(flat)
+	trace.out("request_tiles " + GradedTrace.ints(flat))
+	var reply := "" if trace.replaying else GradedTrace.ints(simulation_node.request_graded_tiles(flat))
+	return PackedByteArray(Array(GradedTrace.ints_of(trace.value("request_tiles", reply))))
+
+func _sim_request_lists(flat: PackedInt64Array) -> PackedByteArray:
+	if trace == null:
+		return simulation_node.request_graded_patch_tiles(flat)
+	trace.out("request_lists " + GradedTrace.ints(flat))
+	var reply := "" if trace.replaying else GradedTrace.ints(simulation_node.request_graded_patch_tiles(flat))
+	return PackedByteArray(Array(GradedTrace.ints_of(trace.value("request_lists", reply))))
+
+func _sim_cancel(tile: Vector2i) -> int:
+	if trace == null:
+		return int(simulation_node.cancel_graded_tile(tile))
+	trace.out("cancel %d %d" % [tile.x, tile.y])
+	return int(trace.value("cancel", "" if trace.replaying else str(int(simulation_node.cancel_graded_tile(tile)))))
+
+func _sim_cancel_all() -> void:
+	if trace != null:
+		trace.out("cancel_all")
+		if trace.replaying:
+			return
+	simulation_node.cancel_graded_tile_requests()
+
+func _sim_view(camera_position: Vector3) -> void:
+	if trace != null:
+		trace.out("view " + GradedTrace.floats(PackedFloat32Array([camera_position.x, camera_position.y, camera_position.z])))
+		if trace.replaying:
+			return
+	simulation_node.set_road_preview_terrain_view(camera_position, _level_end_m, _gl3_end_m)
+
+## terrain.gd's mutations of the resident patch dictionary, recorded as it makes them (a replay
+## makes the same ones, so the dictionary's order is the same too): `entry` set for `key`, or with
+## an empty `entry` erased; `clear_all` the whole dictionary cleared.
+func trace_patch(key: Vector2i, entry: Dictionary, clear_all := false) -> void:
+	if trace == null or trace.replaying:
+		return
+	if clear_all:
+		trace.entry("patches_clear")
+	elif entry.is_empty():
+		trace.entry("patch_erase %d %d" % [key.x, key.y])
+	else:
+		trace.entry(GradedTrace.patch(key, entry))
 
 # A failed request: a transient one (busy core, unready site index) is asked again; one Rust
 # refuses by contract is recorded with its token, counted and logged once, and not asked again
@@ -1515,6 +1614,9 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 		return 0
 	# Every allocation fits before any published texture is overwritten. Register all incoming
 	# holders before uploads free old-level copies, so no page needed later in the batch retires.
+	if trace != null:
+		for note in _reserve_notes:
+			trace.note(note)
 	for page_id: int in reservation["pages"]:
 		var page: Dictionary = page_store.by_id[page_id]
 		page["free"] = reservation["pages"][page_id]["free"]
@@ -1543,7 +1645,9 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 # Plan all slot/run allocations on scratch allocator state. Failure starts a page move and
 # keeps the complete edit staged; it must not acknowledge an upload that never happened.
 # O(batch copies + free runs of the touched pages), independent of world size; idle does none.
+var _reserve_notes := PackedStringArray()
 func _reserve_edit_copies() -> Dictionary:
+	_reserve_notes.clear()
 	var pages := {}
 	var tiles := {}
 	for key: Vector2i in _edit_staged:
@@ -1576,6 +1680,10 @@ func _reserve_edit_copies() -> Dictionary:
 						_edit_levels.erase(key)
 				return {}
 			copies[page_id] = GradedPages.place(plan, before, layers)
+			if trace != null:
+				# Noted only if the whole reservation is applied (_install_edit_batch).
+				_reserve_notes.append("place %d %d %d %d %d %d %d %d" % [page_id, before.x, before.y, before.z, layers,
+					copies[page_id].x, copies[page_id].y, copies[page_id].z])
 		tiles[key] = copies
 	return {"pages": pages, "tiles": tiles}
 
@@ -1873,7 +1981,7 @@ func _drop_requests(tile: Vector2i) -> void:
 		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
 		requested.erase(request_key)
 		refused.erase(request_key)
-	simulation_node.cancel_graded_tile(tile)
+	_sim_cancel(tile)
 
 # The camera moved: Rust re-levels the tiles due (its travel buckets, T26) and returns those whose
 # level changed, which want a bake at it. The road preview stages its tiles at the same rule's
@@ -1883,7 +1991,7 @@ func _move_camera(camera_position: Vector3) -> void:
 	_frame_relevelled = 0
 	if _camera_set and camera_position == _camera:
 		return
-	simulation_node.set_road_preview_terrain_view(camera_position, _level_end_m, _gl3_end_m)
+	_sim_view(camera_position)
 	_camera = camera_position
 	_camera_set = true
 	var changed := _levels.move_camera(camera_position)
@@ -1953,7 +2061,7 @@ func _request_patch_lists(resident_patches: Dictionary) -> void:
 		flat.append_array(PackedInt64Array([key.x, key.y, generation]))
 	if flat.is_empty():
 		return
-	var accepted: PackedByteArray = simulation_node.request_graded_patch_tiles(flat)
+	var accepted: PackedByteArray = _sim_request_lists(flat)
 	for index in accepted.size():
 		if accepted[index] == 0:
 			var key := Vector2i(flat[index * 3], flat[index * 3 + 1])
@@ -1992,7 +2100,7 @@ func _request_tiles() -> void:
 		):
 			# It shows what it wants: a request of another level still pending (the camera moved
 			# on before it started) is dropped unbaked. One in flight runs on and installs.
-			var dropped := int(simulation_node.cancel_graded_tile(tile))
+			var dropped := _sim_cancel(tile)
 			if dropped >= 0:
 				var stale: Vector2i = LEVEL_STEPS[dropped]
 				requested.erase("%d,%d,%d,%d" % [tile.x, tile.y, stale.x, stale.y])
@@ -2041,7 +2149,7 @@ func _request_tiles() -> void:
 	_frame_handed += sent.size()
 	# 0: not queued (an unknown level); 1: queued; 2 + k: queued in place of the tile's pending
 	# request at LEVEL_STEPS[k], which Rust drops unbaked.
-	var accepted: PackedByteArray = simulation_node.request_graded_tiles(flat)
+	var accepted: PackedByteArray = _sim_request_tiles(flat)
 	for index in sent.size():
 		var code := int(accepted[index]) if index < accepted.size() else 0
 		if code == 0:
@@ -2239,6 +2347,9 @@ func _flush_cell_buffers(cells: Dictionary) -> void:
 			continue
 		(nodes[index] as MultiMeshInstance3D).multimesh.buffer = cells["buffers"][index]
 		dirty[index] = 0
+		if trace != null:
+			var key: Vector2i = cells["key"]
+			trace.out("cells %d %d %d %d" % [key.x, key.y, index, hash((cells["buffers"][index] as PackedFloat32Array).to_byte_array())])
 	_frame_write_us += Time.get_ticks_usec() - start_us
 
 static func _set_cell_count(node: MultiMeshInstance3D, counts: Array[int], index: int, count: int) -> void:
@@ -2528,6 +2639,8 @@ func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 	var patch: Dictionary = resident_patches[key]
 	var cells: Dictionary = patch_cells.get(key, {})
 	var state := _draw_state(key, patch, cells)
+	if trace != null:
+		trace.out("draw %d %d %d" % [key.x, key.y, state])
 	_set_ready(key, state != DRAW_NONE)
 	# A patch drawing nothing whose list names a tile waits for its set as a shown tile does: its
 	# build goes first (one whose list has not arrived may need none).
@@ -2832,6 +2945,8 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 ## Returns a patch to its PlaneMesh and its cell resources to the pool. Called when the patch
 ## recycles (leaves the residency or the renderer resets).
 func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
+	if trace != null:
+		trace.entry("release_patch %d %d %d" % [key.x, key.y, trace.object_id(patch_node)])
 	var cells: Dictionary = patch_cells.get(key, {})
 	patch_cells.erase(key)
 	_builds.erase(key)

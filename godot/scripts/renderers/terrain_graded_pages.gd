@@ -134,6 +134,8 @@ func _drop_written(page: Dictionary) -> void:
 # O(source slots + source atlas layers), with device-to-device copies on Forward+/Mobile and the
 # CPU copy's written layers on Compatibility.
 func copy_page(source: Dictionary, target: Dictionary) -> void:
+	if trace != null:
+		trace.out("page_copy %d %d" % [int(source["id"]), int(target["id"])])
 	if mirrored:
 		var level: Dictionary = levels[int(source["code"])]
 		_copy_written(source, target, "texel_bytes", level["texel_image"])
@@ -152,6 +154,9 @@ func copy_page(source: Dictionary, target: Dictionary) -> void:
 
 # The renderer's counters (the same Dictionary): textures, images and pages created, uploads.
 var counters: Dictionary = {}
+# The renderer's record and replay (terrain_graded_trace.gd), null when off: page creations,
+# releases, moves and slot uploads are its outputs.
+var trace: RefCounted = null
 # Per level code: the slot layer's side, the pooled upload Images, the zero layers new pages start
 # from, the most slots a page of the level holds (`cap`) and the most atlas layers a tile's rows
 # take (`max_layers`).
@@ -215,6 +220,8 @@ func create(code: int, block: Vector2i, slots: int, layers: int) -> int:
 	var page: Dictionary = {}
 	if not pooled.is_empty():
 		page = by_id[pooled.pop_back()]
+		if trace != null:
+			trace.out("page_reuse %d %d %d,%d %d %d" % [int(page["id"]), code, block.x, block.y, slots, layers])
 	else:
 		var level: Dictionary = levels[code]
 		var side := int(level["side"])
@@ -222,6 +229,8 @@ func create(code: int, block: Vector2i, slots: int, layers: int) -> int:
 		while bytes + page_bytes > GRADED_PAGE_BUDGET_MB * 1048576 and _drop_free_page():
 			pass
 		if bytes + page_bytes > GRADED_PAGE_BUDGET_MB * 1048576:
+			if trace != null:
+				trace.out("page_refused %d %d,%d %d %d" % [code, block.x, block.y, slots, layers])
 			return -1
 		var texels := _array(level["zero_texels"], slots)
 		var atlas := _array(level["zero_atlas"], layers)
@@ -238,6 +247,8 @@ func create(code: int, block: Vector2i, slots: int, layers: int) -> int:
 			page["texel_bytes"] = texel_bytes
 			page["atlas_bytes"] = atlas_bytes
 		by_id[_next_id] = page
+		if trace != null:
+			trace.out("page_new %d %d %d,%d %d %d" % [_next_id, code, block.x, block.y, slots, layers])
 		_next_id += 1
 		bytes += page_bytes
 	var free: Array[int] = []
@@ -260,6 +271,8 @@ func _drop_free_page() -> bool:
 		var page: Dictionary = by_id[pooled.pop_back()]
 		by_id.erase(int(page["id"]))
 		bytes -= int(page["bytes"])
+		if trace != null:
+			trace.out("page_drop %d" % int(page["id"]))
 		return true
 	return false
 
@@ -271,6 +284,8 @@ func release(page_id: int) -> void:
 	if not _free.has(size_key):
 		_free[size_key] = []
 	var pooled: Array = _free[size_key]
+	if trace != null:
+		trace.out("page_release %d %d" % [page_id, int(pooled.size() < FREE_PAGES_KEPT)])
 	if pooled.size() < FREE_PAGES_KEPT:
 		pooled.append(page_id)
 		return
@@ -345,6 +360,9 @@ static func vacate(page: Dictionary, copy: Vector3i) -> void:
 # (residency.rs `pack_slot`), and its run into its copy in `page`. O(slot texels + rows).
 func write_copy(page: Dictionary, copy: Vector3i, tile: Dictionary) -> void:
 	var level: Dictionary = levels[int(page["code"])]
+	if trace != null:
+		trace.out("write %d %d %d %d %d %d %d %d %d" % [int(page["id"]), copy.x, copy.y, copy.z,
+			int(tile["tile_x"]), int(tile["tile_z"]), int(tile["level"]), int(tile["step"]), int(tile["token"])])
 	var upload_start_us := Time.get_ticks_usec()
 	var side := int(level["side"])
 	var image: Image = level["texel_image"]
