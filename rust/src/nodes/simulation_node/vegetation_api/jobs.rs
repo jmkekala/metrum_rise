@@ -182,8 +182,8 @@ pub(crate) struct Spawner {
 
 /// Starts `request`, or returns `None` when the jobs refuse it for now. It runs on the
 /// background pool once fewer than [`MAX_RUNNING`] jobs run. The worker takes the snapshot under
-/// `try_lock` once and never waits: a busy core lands a `None` product at once, and the renderer
-/// asks again on a later frame. `O(1)` on the calling thread.
+/// `try_lock` and never waits: a busy core puts the request back at the front of the queue,
+/// and the next request, build or poll tries again. `O(1)` on the calling thread.
 pub(crate) fn spawn_request(spawner: &Spawner, request: PatchRequest) -> Option<u64> {
     let serial = {
         let mut jobs = spawner.jobs.lock().unwrap();
@@ -203,10 +203,10 @@ pub(crate) fn spawn_request(spawner: &Spawner, request: PatchRequest) -> Option<
 // Starts the snapshot taker when requests wait and fewer than `MAX_RUNNING` jobs run. One taker
 // at a time takes the core once, under `try_lock`, and snapshots every request it was handed in
 // that one hold, so the vegetation's own jobs never collide on the core; it then starts one
-// build job per snapshot. A busy core lands the batch busy at once (the renderer asks again on a
-// later frame); nothing waits. A waiting request that went stale lands unbuilt (the poll drops
+// build job per snapshot. A busy core puts the batch back at the front of the queue; nothing
+// waits. A waiting request that went stale lands unbuilt (the poll drops
 // it and keeps its storage). `O(batch)` per start.
-fn pump(spawner: &Spawner) {
+pub(crate) fn pump(spawner: &Spawner) {
     let batch: Vec<Waiting> = {
         let mut jobs = spawner.jobs.lock().unwrap();
         if jobs.taking {
@@ -247,18 +247,24 @@ fn pump(spawner: &Spawner) {
         for (waiting, inputs) in batch.into_iter().zip(inputs) {
             match inputs {
                 Some(inputs) => build(&next, waiting, inputs),
-                None => busy.push((waiting.request.key, waiting.serial)),
+                None => busy.push(waiting),
             }
         }
+        let retry = busy.is_empty();
         {
             let mut jobs = next.jobs.lock().unwrap();
-            for (key, serial) in busy {
-                jobs.land(key, serial, None);
-                jobs.running -= 1;
+            // A busy batch goes back to the front of the queue, in order, without waiting: the
+            // next event that pumps (a build job ending, a request or the renderer's poll) tries
+            // the core again. It does not pump itself, so a held core is not spun on.
+            jobs.running -= busy.len();
+            for waiting in busy.into_iter().rev() {
+                jobs.waiting.push_front(waiting);
             }
             jobs.taking = false;
         }
-        pump(&next);
+        if retry {
+            pump(&next);
+        }
     });
 }
 

@@ -377,12 +377,7 @@ impl SimulationNode {
             caster,
             settings,
         };
-        let spawner = jobs::Spawner {
-            core: Arc::clone(&self.core),
-            jobs: Arc::clone(&self.vegetation_jobs),
-            async_jobs: Arc::clone(&self.async_jobs),
-        };
-        jobs::spawn_request(&spawner, request).map_or(-1, |serial| serial as i64)
+        jobs::spawn_request(&self.vegetation_spawner(), request).map_or(-1, |serial| serial as i64)
     }
 
     /// The oldest finished vegetation patch of a live request, or an empty dictionary: `key`,
@@ -392,6 +387,8 @@ impl SimulationNode {
     /// into Godot's arrays.
     #[func]
     pub fn poll_vegetation_product(&self) -> VarDictionary {
+        // Requests a busy core put back are tried again here at the latest, once a frame.
+        jobs::pump(&self.vegetation_spawner());
         let Some(delivered) = self.vegetation_jobs.lock().unwrap().poll() else {
             return VarDictionary::new();
         };
@@ -472,6 +469,17 @@ impl SimulationNode {
         self.lock_core()
             .vegetation_edits
             .patch_generation(pack_patch_key(key.x, key.y)) as i64
+    }
+}
+
+impl SimulationNode {
+    // What the vegetation jobs need to start one another.
+    fn vegetation_spawner(&self) -> jobs::Spawner {
+        jobs::Spawner {
+            core: Arc::clone(&self.core),
+            jobs: Arc::clone(&self.vegetation_jobs),
+            async_jobs: Arc::clone(&self.async_jobs),
+        }
     }
 }
 
