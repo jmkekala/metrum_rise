@@ -92,6 +92,7 @@ impl SimCore {
         };
         *target = profile;
         self.parking.invalidate_all_ground();
+        self.vehicle_ground_generation += 1;
         true
     }
 

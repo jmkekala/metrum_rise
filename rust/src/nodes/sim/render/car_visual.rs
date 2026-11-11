@@ -5,10 +5,21 @@
 //! Presentation state only: it is never saved and never read by the simulation. Every frame
 //! moves each visible car's drawn pose toward its latest snapshot pose, keyed by the stable
 //! render ID, so cars do not visibly step at the simulation tick rate.
+//!
+//! **Rest (`RENDER-28`, `RENDER-32-G`).** The smoothing never closes its gap exactly: on a fixed
+//! snapshot pose it wanders one or two units in the last place frame to frame, forever. A car
+//! whose drawn pose has come within [`REST_ULPS`] of its snapshot pose is at rest: while its
+//! snapshot pose stays the same bit for bit it is drawn exactly as it was, with no smoothing and,
+//! off-lane, no ground solve. The solve it keeps is the one that grounded that very pose, so it
+//! stays a fresh solve's answer while the ground ([`GroundView::key`]) and the car's side of the
+//! full-detail radius stay. A bucket whose inputs are last frame's bit for bit and whose cars all
+//! rest is not touched at all, and its drawn buffer is not uploaded again.
 
-use glam::{Mat3, Quat, Vec3};
+use glam::{Mat3, Quat, Vec2, Vec3};
+use godot::prelude::Vector2;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// Fraction of the remaining origin gap closed per second of frame time.
 const INTERPOLATION_RATE: f32 = 24.0;
@@ -26,8 +37,13 @@ const MIN_DETERMINANT: f32 = 1e-6;
 const PARALLEL_MIN_CARS: usize = 2048;
 /// Godot's `CMP_EPSILON`: headings closer than this blend linearly in `slerp`.
 const CMP_EPSILON: f32 = 1e-5;
+/// Units in the last place (of the larger magnitude, at least 1) within which a drawn pose has
+/// reached its snapshot pose. Four times the smoothing's own wander on fixed targets (1-2 units,
+/// measured over 2,000 frames of 5,000 cars at varying frame times): under a millimetre at 4 km
+/// from the origin, a few microradians of heading.
+const REST_ULPS: f32 = 8.0;
 
-type PoseMap = HashMap<i64, VisualPose, foldhash::fast::FixedState>;
+type CarMap = HashMap<i64, DrawnCar, foldhash::fast::FixedState>;
 
 #[derive(Clone, Copy)]
 struct VisualPose {
@@ -35,16 +51,91 @@ struct VisualPose {
     rotation: Quat,
     // Lane geometry and off-lane support are distinct height owners; never blend across them.
     grounded: bool,
-    // The snapshot pose this frame moved toward, bit for bit.
-    target: [u32; STRIDE],
 }
 
-/// Drawn car poses from the previous frame, double-buffered so cars that left the snapshot are
-/// forgotten after one frame. Both maps keep their capacity, so steady frames do not allocate.
+/// One car as drawn, kept for the next frame.
+#[derive(Clone, Copy)]
+struct DrawnCar {
+    pose: VisualPose,
+    // The snapshot pose it moved toward, bit for bit, and the pose drawn.
+    target: [u32; STRIDE],
+    drawn: [f32; STRIDE],
+    // Drawn at its target to f32 resolution (`REST_ULPS`): drawn again unchanged while the
+    // target stays.
+    rest: bool,
+    // Off-lane: the solve that grounded `drawn` was the exact one, inside the full-detail radius.
+    near: bool,
+    // The bucket and frame it was recorded in. It is still drawn while that bucket's recording
+    // stands (`Bucket::recorded`) and the bucket is drawn.
+    bucket: u8,
+    frame: u64,
+}
+
+/// A bucket's inputs and drawn buffer, aligned by instance, from the frame it was last smoothed.
+#[derive(Default)]
+struct Bucket {
+    ids: Vec<i64>,
+    targets: Vec<u32>,
+    flags: Vec<u8>,
+    near: Vec<bool>,
+    drawn: Vec<f32>,
+    // Cars not at rest (or not recordable), and off-lane cars, as recorded.
+    moving: usize,
+    off_lane: usize,
+    // The frame its cars were recorded in and the last frame it was drawn in (0: never); the
+    // same as of the previous frame, which the cars' lookups read.
+    recorded: u64,
+    present: u64,
+    recorded_before: u64,
+    present_before: u64,
+}
+
+/// What an off-lane car's ground solve reads besides its pose.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct GroundView {
+    /// The snapshot's `vehicle_ground_key`: world epoch, ground generation, full-detail radius
+    /// bits. A change re-solves every off-lane car once.
+    pub key: [u64; 3],
+    /// The camera XZ of the ground solve's level of detail; `None` solves exactly everywhere.
+    pub camera: Option<[f32; 2]>,
+}
+
+impl GroundView {
+    // Whether a car at `pose` is solved exactly, as `SimCore::vehicle_ground_pose` decides.
+    fn near(&self, pose: &[f32]) -> bool {
+        let full = f32::from_bits(self.key[2] as u32);
+        self.camera.is_none_or(|[x, z]| {
+            Vector2::new(x, z).distance_squared_to(Vector2::new(pose[3], pose[11])) <= full * full
+        })
+    }
+}
+
+/// The last frame's split (`RENDER-28`), for the perf channel: microseconds smoothing (with the
+/// copy of the snapshot poses), in the ground solve (with its core attempt) and recording; then
+/// cars, off-lane cars, off-lane cars solved, cars at rest and such off-lane cars, buckets
+/// uploaded and buckets kept untouched.
+pub(crate) type CarFrameParts = [i64; 10];
+
+/// Drawn car poses by render ID and the buckets they were drawn in. Maps and buffers keep their
+/// capacity, so steady frames do not allocate. Per frame: [`Self::begin_frame`], then
+/// [`Self::smooth_bucket`] or [`Self::pass_through`] per bucket, then [`Self::finish_frame`].
 #[derive(Default)]
 pub(crate) struct CarVisualSmoother {
-    drawn: PoseMap,
-    next: PoseMap,
+    cars: CarMap,
+    // By bucket key.
+    buckets: Vec<Bucket>,
+    frame: u64,
+    ground: GroundView,
+    ground_changed: bool,
+    camera_moved: bool,
+    // A bucket was smoothed or left this frame: some recorded cars may be stale.
+    stale: bool,
+    // Per-frame scratch.
+    poses: Vec<f32>,
+    solve: Vec<u8>,
+    reused: Vec<bool>,
+    left: Vec<u8>,
+    parts: CarFrameParts,
 }
 
 impl CarVisualSmoother {
@@ -57,36 +148,238 @@ impl CarVisualSmoother {
         }
     }
 
-    /// Replaces snapshot poses in `poses` with this frame's drawn poses. Cars first seen, jumping
-    /// past the snap distance or changing height owner show their orthonormalized snapshot pose.
-    /// A degenerate or non-finite snapshot pose is passed through unchanged. O(cars), one lookup
-    /// each; the math mirrors Godot's `Vector3.lerp` and `Basis.slerp(...).orthonormalized()`.
-    pub(crate) fn interpolate(&self, poses: &mut [f32], ids: &[i64], flags: &[u8], alpha: f32) {
+    /// Starts a frame whose off-lane cars are grounded against `ground`. O(buckets).
+    pub(crate) fn begin_frame(&mut self, ground: GroundView) {
+        self.frame += 1;
+        self.ground_changed = ground.key != self.ground.key;
+        self.camera_moved = ground.camera != self.ground.camera;
+        self.ground = ground;
+        self.stale = false;
+        self.left.clear();
+        self.parts = [0; 10];
+        for bucket in &mut self.buckets {
+            bucket.recorded_before = bucket.recorded;
+            bucket.present_before = bucket.present;
+        }
+    }
+
+    /// Draws one bucket: `targets` are its snapshot poses, `ids` and `flags` (1: off-lane) are
+    /// aligned with them. `solve` grounds the poses flagged in its mask in place and returns
+    /// false when it could not (busy or unprepared): those cars then show their snapshot pose.
+    /// Returns the drawn buffer when it differs from the one drawn last frame, `None` when the
+    /// last one stands (nothing to upload). O(1) plus a compare of the inputs for an untouched
+    /// bucket; otherwise O(cars) with one lookup and one insert each, and one solve per off-lane
+    /// car not at rest.
+    pub(crate) fn smooth_bucket(
+        &mut self,
+        key: u8,
+        targets: &[f32],
+        ids: &[i64],
+        flags: &[u8],
+        alpha: f32,
+        solve: impl FnOnce(&mut [f32], &[u8]) -> bool,
+    ) -> Option<&[f32]> {
+        let count = ids.len();
+        debug_assert!(targets.len() == count * STRIDE && flags.len() == count);
+        self.parts[3] += count as i64;
+        let off_lane = flags.iter().filter(|&&flag| flag != 0).count();
+        self.parts[4] += off_lane as i64;
+        if self.untouched(key, targets, ids, flags) {
+            self.parts[6] += count as i64;
+            self.parts[7] += off_lane as i64;
+            self.parts[9] += 1;
+            self.buckets[usize::from(key)].present = self.frame;
+            return None;
+        }
+        self.stale = true;
+
+        let started = Instant::now();
+        self.interpolate(targets, ids, flags, alpha);
+        self.parts[0] += started.elapsed().as_micros() as i64;
+
+        let started = Instant::now();
+        let mut solved = true;
+        if self.solve.iter().any(|&flag| flag != 0) {
+            solved = solve(&mut self.poses, &self.solve);
+            if solved {
+                self.parts[5] += self.solve.iter().filter(|&&flag| flag != 0).count() as i64;
+            } else {
+                restore_off_lane_targets(&mut self.poses, targets, &self.solve);
+            }
+        }
+        self.parts[1] += started.elapsed().as_micros() as i64;
+
+        let started = Instant::now();
+        self.record(key, targets, ids, flags, solved);
+        let bucket = &mut self.buckets[usize::from(key)];
+        let changed = !same_bits(&bucket.drawn, &self.poses);
+        if changed {
+            std::mem::swap(&mut bucket.drawn, &mut self.poses);
+            self.parts[8] += 1;
+        }
+        self.parts[2] += started.elapsed().as_micros() as i64;
+        changed.then_some(bucket.drawn.as_slice())
+    }
+
+    /// Draws a malformed bucket (counts that do not match) as its snapshot poses, unsmoothed
+    /// and unrecorded. Returns them when they differ from last frame's drawn buffer. O(cars).
+    pub(crate) fn pass_through(&mut self, key: u8, targets: &[f32]) -> Option<&[f32]> {
+        self.stale = true;
+        let frame = self.frame;
+        let bucket = self.bucket_mut(key);
+        bucket.ids.clear();
+        bucket.targets.clear();
+        bucket.flags.clear();
+        bucket.near.clear();
+        // Never untouched: such a bucket is drawn as given every frame.
+        bucket.moving = 1;
+        bucket.off_lane = 0;
+        bucket.recorded = frame;
+        bucket.present = frame;
+        if same_bits(&bucket.drawn, targets) {
+            return None;
+        }
+        bucket.drawn.clear();
+        bucket.drawn.extend_from_slice(targets);
+        Some(bucket.drawn.as_slice())
+    }
+
+    /// Ends the frame. Returns the keys of the buckets drawn last frame and not this one: their
+    /// cars are forgotten and their drawn buffers are empty. O(buckets), plus O(recorded cars)
+    /// on a frame that smoothed or lost a bucket.
+    pub(crate) fn finish_frame(&mut self) -> &[u8] {
+        let frame = self.frame;
+        for (key, bucket) in self.buckets.iter_mut().enumerate() {
+            if was_drawn_before(bucket, frame) && bucket.present != frame {
+                *bucket = Bucket::default();
+                self.left.push(key as u8);
+                self.stale = true;
+            }
+        }
+        if self.stale {
+            let buckets = &self.buckets;
+            self.cars
+                .retain(|_, car| is_drawn(car, &buckets[usize::from(car.bucket)], frame));
+        }
+        &self.left
+    }
+
+    /// The last frame's split ([`CarFrameParts`]).
+    pub(crate) fn parts(&self) -> CarFrameParts {
+        self.parts
+    }
+
+    /// Bucket `key`'s drawn buffer as of the last frame.
+    #[cfg(test)]
+    pub(crate) fn drawn_bucket(&self, key: u8) -> &[f32] {
+        &self.buckets[usize::from(key)].drawn
+    }
+
+    /// Where car `id` was drawn this frame, if it was. One lookup.
+    pub(crate) fn drawn_origin(&self, id: i64) -> Option<Vec3> {
+        self.cars
+            .get(&id)
+            .filter(|car| is_drawn(car, &self.buckets[usize::from(car.bucket)], self.frame))
+            .map(|car| car.pose.origin)
+    }
+
+    fn bucket_mut(&mut self, key: u8) -> &mut Bucket {
+        if self.buckets.len() <= usize::from(key) {
+            self.buckets
+                .resize_with(usize::from(key) + 1, Bucket::default);
+        }
+        &mut self.buckets[usize::from(key)]
+    }
+
+    // Whether bucket `key` stands as drawn last frame: drawn then, every car at rest, the same
+    // inputs bit for bit and, for its off-lane cars, the same ground and side of the full-detail
+    // radius. O(1) plus the compare; O(off-lane cars) more when the camera moved.
+    fn untouched(&mut self, key: u8, targets: &[f32], ids: &[i64], flags: &[u8]) -> bool {
+        let frame = self.frame;
+        let (ground, ground_changed, camera_moved) =
+            (self.ground, self.ground_changed, self.camera_moved);
+        let bucket = self.bucket_mut(key);
+        if !was_drawn_before(bucket, frame)
+            || bucket.moving != 0
+            || bucket.ids != ids
+            || bucket.flags != flags
+            || !targets
+                .iter()
+                .zip(&bucket.targets)
+                .all(|(target, &bits)| target.to_bits() == bits)
+        {
+            return false;
+        }
+        if bucket.off_lane == 0 || !camera_moved {
+            return bucket.off_lane == 0 || !ground_changed;
+        }
+        !ground_changed
+            && bucket
+                .drawn
+                .as_chunks::<STRIDE>()
+                .0
+                .iter()
+                .zip(&bucket.flags)
+                .zip(&bucket.near)
+                .all(|((pose, &flag), &near)| flag == 0 || ground.near(pose) == near)
+    }
+
+    // Writes this frame's poses into `self.poses` and marks the off-lane cars to solve in
+    // `self.solve`: a car at rest copies its drawn pose; any other moves toward its target as
+    // Godot's `Vector3.lerp` and `Basis.slerp(...).orthonormalized()` would. Cars first seen,
+    // jumping past the snap distance or changing height owner show their orthonormalized
+    // snapshot pose; a degenerate or non-finite snapshot pose passes through unchanged.
+    fn interpolate(&mut self, targets: &[f32], ids: &[i64], flags: &[u8], alpha: f32) {
+        let count = ids.len();
+        self.poses.clear();
+        self.poses.extend_from_slice(targets);
+        self.solve.clear();
+        self.solve.resize(count, 0);
+        self.reused.clear();
+        self.reused.resize(count, false);
         let rotation_alpha =
             (alpha * (ROTATION_INTERPOLATION_RATE / INTERPOLATION_RATE)).clamp(0.0, 1.0);
+        let (cars, buckets, frame) = (&self.cars, &self.buckets, self.frame);
+        let (ground, ground_changed) = (self.ground, self.ground_changed);
         // Godot's main thread calls this every frame: shared pool (CODE-17).
         crate::thread_pools::install(|| {
-            poses
+            self.poses
                 .par_chunks_exact_mut(STRIDE)
+                .zip(self.solve.par_iter_mut().zip(self.reused.par_iter_mut()))
                 .zip(ids.par_iter().zip(flags))
                 .with_min_len(PARALLEL_MIN_CARS)
-                .for_each(|(pose, (&id, &flag))| {
+                .for_each(|((pose, (solve, reused)), (&id, &flag))| {
+                    let previous = cars.get(&id).filter(|car| {
+                        was_drawn_before(&buckets[usize::from(car.bucket)], frame)
+                            && car.frame == buckets[usize::from(car.bucket)].recorded_before
+                            && car.pose.grounded == (flag != 0)
+                    });
+                    if let Some(car) = previous.filter(|car| {
+                        car.rest
+                            && same_target(&car.target, pose)
+                            && (flag == 0
+                                || (!ground_changed && ground.near(&car.drawn) == car.near))
+                    }) {
+                        pose.copy_from_slice(&car.drawn);
+                        *reused = true;
+                        return;
+                    }
+                    *solve = flag;
                     let Some((target_origin, target_basis)) = read_pose(pose) else {
                         return;
                     };
                     let target_basis = orthonormalized(target_basis);
-                    match self.drawn.get(&id) {
-                        Some(previous)
-                            if previous.grounded == (flag != 0)
-                                && previous.origin.distance_squared(target_origin)
-                                    <= SNAP_DISTANCE_M * SNAP_DISTANCE_M =>
+                    match previous {
+                        Some(car)
+                            if car.pose.origin.distance_squared(target_origin)
+                                <= SNAP_DISTANCE_M * SNAP_DISTANCE_M =>
                         {
                             let rotation = slerp(
-                                previous.rotation,
+                                car.pose.rotation,
                                 Quat::from_mat3(&target_basis),
                                 rotation_alpha,
                             );
-                            let origin = previous.origin.lerp(target_origin, alpha);
+                            let origin = car.pose.origin.lerp(target_origin, alpha);
                             write_pose(pose, origin, Mat3::from_quat(rotation));
                         }
                         _ => write_pose(pose, target_origin, target_basis),
@@ -95,62 +388,126 @@ impl CarVisualSmoother {
         });
     }
 
-    /// Stores the poses actually uploaded, including any support correction or busy fallback,
-    /// as next frame's starting points. Unusable poses are not stored and so snap next frame.
-    pub(crate) fn record(&mut self, poses: &[f32], targets: &[f32], ids: &[i64], flags: &[u8]) {
-        let targets = targets.as_chunks::<STRIDE>().0;
-        for (((pose, target), &id), &flag) in poses
+    // Stores the poses drawn, including any support correction or busy fallback, as next
+    // frame's starting points, and the bucket's inputs. Unusable poses are not stored and so
+    // snap next frame. A car is at rest when it was, or when its drawn pose has reached its
+    // target ([`at_target`]) through a solve that succeeded.
+    fn record(&mut self, key: u8, targets: &[f32], ids: &[i64], flags: &[u8], solved: bool) {
+        let frame = self.frame;
+        let ground = self.ground;
+        let mut bucket = std::mem::take(self.bucket_mut(key));
+        bucket.ids.clear();
+        bucket.ids.extend_from_slice(ids);
+        bucket.flags.clear();
+        bucket.flags.extend_from_slice(flags);
+        bucket.targets.clear();
+        bucket
+            .targets
+            .extend(targets.iter().map(|value| value.to_bits()));
+        bucket.near.clear();
+        bucket.moving = 0;
+        bucket.off_lane = 0;
+        for (index, (((pose, target), &id), &flag)) in self
+            .poses
             .as_chunks::<STRIDE>()
             .0
             .iter()
-            .zip(targets)
+            .zip(targets.as_chunks::<STRIDE>().0)
             .zip(ids)
             .zip(flags)
+            .enumerate()
         {
-            if let Some((origin, basis)) = read_pose(pose) {
-                // Drawn, supported and snapshot bases are already orthonormal.
-                let rotation = Quat::from_mat3(&basis);
-                self.next.insert(
-                    id,
-                    VisualPose {
-                        origin,
-                        rotation,
-                        grounded: flag != 0,
-                        target: target.map(f32::to_bits),
+            bucket.off_lane += usize::from(flag != 0);
+            let previous = self.reused[index].then(|| self.cars[&id]);
+            let near = match previous {
+                Some(car) => car.near,
+                None => flag != 0 && ground.near(pose),
+            };
+            bucket.near.push(near);
+            let Some((origin, basis)) = read_pose(pose) else {
+                bucket.moving += 1;
+                continue;
+            };
+            let rest = previous.is_some()
+                || ((self.solve[index] == 0 || solved) && at_target(pose, target, flag));
+            if !rest {
+                bucket.moving += 1;
+            } else if previous.is_some() {
+                self.parts[6] += 1;
+                self.parts[7] += i64::from(flag != 0);
+            }
+            self.cars.insert(
+                id,
+                DrawnCar {
+                    pose: match previous {
+                        Some(car) => car.pose,
+                        // Drawn, supported and snapshot bases are already orthonormal.
+                        None => VisualPose {
+                            origin,
+                            rotation: Quat::from_mat3(&basis),
+                            grounded: flag != 0,
+                        },
                     },
-                );
-            }
+                    target: target.map(f32::to_bits),
+                    drawn: *pose,
+                    rest,
+                    near,
+                    bucket: key,
+                    frame,
+                },
+            );
         }
+        bucket.recorded = frame;
+        bucket.present = frame;
+        *self.bucket_mut(key) = bucket;
     }
+}
 
-    /// Ends the frame: recorded poses become the drawn set and unrecorded cars are forgotten.
-    pub(crate) fn finish_frame(&mut self) {
-        std::mem::swap(&mut self.drawn, &mut self.next);
-        self.next.clear();
-    }
+// Whether `bucket` was drawn in the frame before `frame`.
+fn was_drawn_before(bucket: &Bucket, frame: u64) -> bool {
+    bucket.present_before != 0 && bucket.present_before + 1 == frame
+}
 
-    /// Cars of a bucket whose snapshot pose is bit for bit last frame's, all and off-lane ones:
-    /// the share of the smoothing and the ground solve spent on unchanged poses (`RENDER-28`).
-    /// O(cars), one lookup each; call before [`Self::record`].
-    pub(crate) fn unchanged_targets(&self, targets: &[f32], ids: &[i64], flags: &[u8]) -> [usize; 2] {
-        let mut unchanged = [0; 2];
-        for ((target, id), &flag) in targets.as_chunks::<STRIDE>().0.iter().zip(ids).zip(flags) {
-            if self
-                .drawn
-                .get(id)
-                .is_some_and(|pose| pose.target == target.map(f32::to_bits))
-            {
-                unchanged[0] += 1;
-                unchanged[1] += usize::from(flag != 0);
-            }
-        }
-        unchanged
-    }
+// Whether `car` is drawn in `frame`: its bucket is, and its recording there stands.
+fn is_drawn(car: &DrawnCar, bucket: &Bucket, frame: u64) -> bool {
+    bucket.present == frame && car.frame == bucket.recorded
+}
 
-    /// Where car `id` was drawn this frame, if it was. One lookup.
-    pub(crate) fn drawn_origin(&self, id: i64) -> Option<Vec3> {
-        self.drawn.get(&id).map(|pose| pose.origin)
+fn same_target(target: &[u32; STRIDE], pose: &[f32]) -> bool {
+    target
+        .iter()
+        .zip(pose)
+        .all(|(&bits, value)| value.to_bits() == bits)
+}
+
+fn same_bits(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+}
+
+// Within `REST_ULPS` units in the last place of the larger magnitude, at least 1.
+fn close(a: f32, b: f32) -> bool {
+    (a - b).abs() <= REST_ULPS * f32::EPSILON * a.abs().max(b.abs()).max(1.0)
+}
+
+/// Whether a drawn pose has reached its target to f32 resolution ([`REST_ULPS`]). A lane car
+/// compares its whole transform with the orthonormalized target the smoothing approaches; an
+/// off-lane car the inputs of its ground solve, its XZ and its horizontal heading, because the
+/// solve owns its height and tilt.
+fn at_target(pose: &[f32; STRIDE], target: &[f32; STRIDE], flag: u8) -> bool {
+    if flag == 0 {
+        let Some((origin, basis)) = read_pose(target) else {
+            return false;
+        };
+        let mut wanted = [0.0; STRIDE];
+        write_pose(&mut wanted, origin, orthonormalized(basis));
+        return pose.iter().zip(&wanted).all(|(&a, &b)| close(a, b));
     }
+    let heading = |pose: &[f32; STRIDE]| Vec2::new(pose[2], pose[10]).normalize_or_zero();
+    let (drawn, wanted) = (heading(pose), heading(target));
+    close(pose[3], target[3])
+        && close(pose[11], target[11])
+        && close(drawn.x, wanted.x)
+        && close(drawn.y, wanted.y)
 }
 
 /// Restores the snapshot pose of every off-lane car. Used when the support solve is busy or
@@ -253,195 +610,4 @@ fn write_pose(pose: &mut [f32], origin: Vec3, basis: Mat3) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::f32::consts::FRAC_PI_2;
-
-    fn pose(yaw: f32, origin: Vec3) -> Vec<f32> {
-        let mut pose = vec![0.0; STRIDE];
-        write_pose(&mut pose, origin, Mat3::from_rotation_y(yaw));
-        pose
-    }
-
-    fn origin(pose: &[f32]) -> Vec3 {
-        Vec3::new(pose[3], pose[7], pose[11])
-    }
-
-    fn yaw(pose: &[f32]) -> f32 {
-        // Column z of a yaw rotation is (sin, 0, cos).
-        pose[2].atan2(pose[10])
-    }
-
-    /// Draws one frame of a single car and returns its uploaded pose.
-    fn frame(smoother: &mut CarVisualSmoother, target: &[f32], flag: u8, alpha: f32) -> Vec<f32> {
-        let mut poses = target.to_vec();
-        smoother.interpolate(&mut poses, &[7], &[flag], alpha);
-        smoother.record(&poses, target, &[7], &[flag]);
-        smoother.finish_frame();
-        poses
-    }
-
-    #[test]
-    fn first_sight_shows_the_snapshot_pose() {
-        let mut smoother = CarVisualSmoother::default();
-        let target = pose(0.3, Vec3::new(4.0, 1.0, -2.0));
-        let drawn = frame(&mut smoother, &target, 0, 0.25);
-        for (a, b) in drawn.iter().zip(&target) {
-            assert!((a - b).abs() < 1e-6, "{drawn:?} vs {target:?}");
-        }
-    }
-
-    #[test]
-    fn origin_and_heading_close_their_gaps_at_their_own_rates() {
-        let mut smoother = CarVisualSmoother::default();
-        frame(&mut smoother, &pose(0.0, Vec3::ZERO), 0, 1.0);
-        let alpha = 0.4;
-        let drawn = frame(
-            &mut smoother,
-            &pose(FRAC_PI_2, Vec3::new(10.0, 0.0, 0.0)),
-            0,
-            alpha,
-        );
-        assert!((origin(&drawn) - Vec3::new(4.0, 0.0, 0.0)).length() < 1e-5);
-        let expected_yaw = FRAC_PI_2 * alpha * ROTATION_INTERPOLATION_RATE / INTERPOLATION_RATE;
-        assert!((yaw(&drawn) - expected_yaw).abs() < 1e-4, "{}", yaw(&drawn));
-        // The drawn basis stays a rotation, not a scaled blend.
-        let basis = read_pose(&drawn).unwrap().1;
-        assert!((basis.determinant() - 1.0).abs() < 1e-5);
-        // The next frame starts from the drawn pose, not the previous snapshot pose.
-        let next = frame(
-            &mut smoother,
-            &pose(FRAC_PI_2, Vec3::new(10.0, 0.0, 0.0)),
-            0,
-            alpha,
-        );
-        assert!((origin(&next) - Vec3::new(6.4, 0.0, 0.0)).length() < 1e-5);
-    }
-
-    #[test]
-    fn long_jumps_and_height_owner_changes_snap() {
-        for (target_origin, flag) in [(Vec3::new(81.0, 0.0, 0.0), 0), (Vec3::ONE, 1)] {
-            let mut smoother = CarVisualSmoother::default();
-            frame(&mut smoother, &pose(0.0, Vec3::ZERO), 0, 1.0);
-            let target = pose(1.0, target_origin);
-            let drawn = frame(&mut smoother, &target, flag, 0.1);
-            assert!((origin(&drawn) - target_origin).length() < 1e-6);
-            assert!((yaw(&drawn) - 1.0).abs() < 1e-5);
-        }
-    }
-
-    #[test]
-    fn cars_absent_for_a_frame_are_forgotten() {
-        let mut smoother = CarVisualSmoother::default();
-        frame(&mut smoother, &pose(0.0, Vec3::ZERO), 0, 1.0);
-        smoother.finish_frame();
-        let target = pose(0.0, Vec3::new(10.0, 0.0, 0.0));
-        assert_eq!(
-            origin(&frame(&mut smoother, &target, 0, 0.1)),
-            origin(&target)
-        );
-    }
-
-    #[test]
-    fn degenerate_and_non_finite_poses_pass_through_and_are_not_recorded() {
-        let mut smoother = CarVisualSmoother::default();
-        let mut degenerate = pose(0.0, Vec3::new(1.0, 2.0, 3.0));
-        // A zero lane tangent produces a zero z column.
-        for index in [2, 6, 10] {
-            degenerate[index] = 0.0;
-        }
-        let mut non_finite = pose(0.0, Vec3::ZERO);
-        non_finite[3] = f32::NAN;
-        for target in [degenerate, non_finite] {
-            let drawn = frame(&mut smoother, &target, 0, 0.5);
-            assert_eq!(
-                drawn.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                target.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
-            );
-            assert!(smoother.drawn.is_empty());
-        }
-    }
-
-    #[test]
-    fn busy_support_restores_only_off_lane_snapshot_poses() {
-        let targets = [pose(0.0, Vec3::ZERO), pose(0.0, Vec3::ONE)].concat();
-        let mut poses = vec![5.0; targets.len()];
-        restore_off_lane_targets(&mut poses, &targets, &[0, 1]);
-        assert_eq!(&poses[..STRIDE], &[5.0; STRIDE]);
-        assert_eq!(&poses[STRIDE..], &targets[STRIDE..]);
-    }
-
-    #[test]
-    #[ignore = "release timing of the per-frame car smoothing; run with --nocapture"]
-    fn car_smoothing_frame_cost() {
-        use std::time::Instant;
-        for count in [1_000usize, 5_000, 20_000] {
-            let ids: Vec<i64> = (0..count as i64).map(|i| i * 1_000_003 + 17).collect();
-            let flags = vec![0u8; count];
-            let yaws: Vec<f32> = (0..count)
-                .map(|i| (i as f32 * 0.618).fract() * std::f32::consts::TAU)
-                .collect();
-            let mut targets: Vec<f32> = (0..count)
-                .flat_map(|i| {
-                    let x = (i % 200) as f32 * 50.0 - 5000.0;
-                    pose(yaws[i], Vec3::new(x, 1.0, (i / 200) as f32 * 50.0 - 5000.0))
-                })
-                .collect();
-            let mut smoother = CarVisualSmoother::default();
-            let mut poses = targets.clone();
-            let mut samples = Vec::new();
-            let mut interpolate_samples = Vec::new();
-            for step in 0..40 {
-                // Each car advances 0.1 m along its heading, as at 12 m/s and 120 Hz.
-                for (target, yaw) in targets.as_chunks_mut::<STRIDE>().0.iter_mut().zip(&yaws) {
-                    target[3] += 0.1 * yaw.sin();
-                    target[11] += 0.1 * yaw.cos();
-                }
-                let start = Instant::now();
-                poses.copy_from_slice(&targets);
-                smoother.interpolate(&mut poses, &ids, &flags, 0.2);
-                let interpolated = start.elapsed().as_secs_f64() * 1e3;
-                smoother.record(&poses, &targets, &ids, &flags);
-                smoother.finish_frame();
-                if step >= 8 {
-                    samples.push(start.elapsed().as_secs_f64() * 1e3);
-                    interpolate_samples.push(interpolated);
-                }
-            }
-            samples.sort_by(f64::total_cmp);
-            interpolate_samples.sort_by(f64::total_cmp);
-            let median = samples[samples.len() / 2];
-            eprintln!(
-                "CAR_SMOOTHING count={count} median_ms={median:.3} p90_ms={:.3} \
-                 interpolate_median_ms={:.3} us_per_car={:.3}",
-                samples[samples.len() * 9 / 10],
-                interpolate_samples[interpolate_samples.len() / 2],
-                median * 1e3 / count as f64
-            );
-        }
-    }
-
-    #[test]
-    fn nearest_cars_picks_the_closest_within_radius_nearest_first() {
-        let eye = Vec3::new(0.0, 2.0, 0.0);
-        let first: Vec<f32> = [
-            pose(0.0, Vec3::new(30.0, 0.0, 0.0)),
-            pose(0.0, Vec3::new(5.0, 0.0, 0.0)),
-            pose(0.0, Vec3::new(500.0, 0.0, 0.0)),
-        ]
-        .concat();
-        let second: Vec<f32> = [
-            pose(0.0, Vec3::new(0.0, 0.0, -10.0)),
-            pose(0.0, Vec3::new(0.0, 0.0, 20.0)),
-        ]
-        .concat();
-        let buffers = [first.as_slice(), second.as_slice()];
-        assert_eq!(
-            nearest_cars(&buffers, eye, 100.0, 3),
-            vec![(0, 1), (1, 0), (1, 1)]
-        );
-        // Beyond the radius is never chosen, however few cars are near.
-        assert_eq!(nearest_cars(&buffers, eye, 100.0, 10).len(), 4);
-        assert!(nearest_cars(&buffers, eye, 100.0, 0).is_empty());
-    }
-}
+mod tests;

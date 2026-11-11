@@ -308,6 +308,9 @@ pub struct RenderSnapshot {
     pub(crate) parked: crate::simulation::parking::ParkedPublication,
     /// World identity of the coherent vehicle frame.
     pub(crate) vehicle_world_epoch: u64,
+    /// What a drawn car's ground solve depends on besides its pose and the camera: the world,
+    /// [`SimCore::vehicle_ground_generation`] and the full-detail radius's bits (`RENDER-28`).
+    pub(crate) vehicle_ground_key: [u64; 3],
     /// Per `pedestrian_type` → flat 12-float `Transform3D` buffer.
     pub pedestrian_transforms: HashMap<u8, Vec<f32>>,
     /// Per `(vehicle_type * 10 + color_variant)` → flat 12-float `Transform3D` buffer.
@@ -421,6 +424,7 @@ impl Default for RenderSnapshot {
         Self {
             parked: Default::default(),
             vehicle_world_epoch: 0,
+            vehicle_ground_key: [0; 3],
             pedestrian_transforms: HashMap::new(),
             car_transforms: HashMap::new(),
             car_render_ids: HashMap::new(),
@@ -555,6 +559,11 @@ impl SimCore {
         self.build_agent_instances(&mut snapshot);
         self.publish_parked_chunks(&mut snapshot.parked);
         snapshot.vehicle_world_epoch = self.world_epoch;
+        snapshot.vehicle_ground_key = [
+            self.world_epoch,
+            self.vehicle_ground_generation,
+            u64::from(self.vehicle_ground_full_detail_m.to_bits()),
+        ];
 
         let node_positions = self.network_node_positions_snapshot();
 

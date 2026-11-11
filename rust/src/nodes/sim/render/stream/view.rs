@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The view a streaming layer measures its chunks from (`RENDER-32`): the camera and how far it
-//! has travelled. For the graded tiles the camera is the renderer's (`terrain.gd`): its XZ with,
+//! has travelled, and the agents' ground rectangle from the camera's corner rays. For the graded tiles the camera is the renderer's (`terrain.gd`): its XZ with,
 //! as `y`, its height above the visible ground under it (`docs/terrain.md` "LOD and distant
 //! tiles"), so a camera high over a tile takes the level of its distance, not of its offset
 //! along the ground. Values are Godot's `f32` position widened to `f64`, as GDScript measured
 //! them, so a distance here equals the one the GDScript renderer computed bit for bit.
 
 use crate::simulation::terrain::graded::{TILE_M, TileKey};
+use godot::prelude::Vector3;
 
 /// A camera and the distance it travelled since it was first set.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -70,9 +71,69 @@ impl StreamView {
     }
 }
 
+/// The ground rectangle `[x_min, x_max, z_min, z_max]` the agents are culled to (`RENDER-28`):
+/// each of the viewport's four corner rays `(origin, direction)` meets the ground plane `y = 0`
+/// where it comes down onto it, at most `far` along the ray, and the rectangle around the four
+/// points is padded by `pad`. In the operation order of the GDScript it replaced
+/// (`agents.gd` `_update_camera_aabb`: `f64` distances and bounds, `f32` points), so the
+/// rectangle is the one it computed bit for bit. O(1).
+pub(crate) fn agent_ground_rect(rays: [(Vector3, Vector3); 4], far: f32, pad: f32) -> [f32; 4] {
+    let mut bounds = [
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for (origin, direction) in rays {
+        // A ray that does not come down steeply enough would meet the ground beyond any sane
+        // distance, or never.
+        let distance = if f64::from(direction.y) < -1e-3 {
+            (-f64::from(origin.y) / f64::from(direction.y)).min(f64::from(far))
+        } else {
+            f64::from(far)
+        };
+        let point = origin + direction * distance as f32;
+        bounds[0] = bounds[0].min(f64::from(point.x));
+        bounds[1] = bounds[1].max(f64::from(point.x));
+        bounds[2] = bounds[2].min(f64::from(point.z));
+        bounds[3] = bounds[3].max(f64::from(point.z));
+    }
+    let pad = f64::from(pad);
+    [
+        (bounds[0] - pad) as f32,
+        (bounds[1] + pad) as f32,
+        (bounds[2] - pad) as f32,
+        (bounds[3] + pad) as f32,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_agent_rectangle_meets_the_ground_or_stops_at_the_far_distance() {
+        let eye = Vector3::new(100.0, 50.0, -20.0);
+        let down = |x: f32, z: f32| Vector3::new(x, -1.0, z).normalized();
+        // Two corners come down 50 m below the eye; two look over the horizon and stop at 4 km.
+        let rays = [
+            (eye, down(-1.0, -1.0)),
+            (eye, down(1.0, -1.0)),
+            (eye, Vector3::new(0.6, 0.0, 0.8)),
+            (eye, Vector3::new(-0.6, 0.0005, 0.8)),
+        ];
+        let [x_min, x_max, z_min, z_max] = agent_ground_rect(rays, 4000.0, 200.0);
+        assert!((x_min - (100.0 - 2400.0 - 200.0)).abs() < 1e-2, "{x_min}");
+        assert!((x_max - (100.0 + 2400.0 + 200.0)).abs() < 1e-2, "{x_max}");
+        assert!((z_min - (-20.0 - 50.0 - 200.0)).abs() < 1e-3, "{z_min}");
+        assert!((z_max - (-20.0 + 3200.0 + 200.0)).abs() < 1e-2, "{z_max}");
+        // The GDScript's order: the f64 distance rounded once to f32, then the f32 point.
+        let z = rays[..2].iter().map(|&(origin, direction)| {
+            let distance = -f64::from(origin.y) / f64::from(direction.y);
+            f64::from((origin + direction * distance as f32).z)
+        });
+        assert_eq!(z_min, (z.fold(f64::INFINITY, f64::min) - 200.0) as f32);
+    }
 
     #[test]
     fn travel_sums_the_moves_and_skips_the_first_and_still_cameras() {

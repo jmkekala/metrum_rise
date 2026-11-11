@@ -2,9 +2,11 @@
 
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
-## Rust methods called: get_agent_transforms(), get_car_render_data(), smooth_car_render_data(),
-##   set_vehicle_ground_support(),
-##   get_agent_paths_debug(), get_agent_cull_far_m(), get_agent_cull_padding_m(), set_camera_aabb()
+## Rust methods called: get_agent_transforms(), get_vehicle_frame(), smooth_car_render_data(),
+##   get_changed_car_buckets(), get_car_frame_parts(), set_vehicle_ground_support(),
+##   get_agent_paths_debug(), update_agent_view()
+## The agents' view (the ground rectangle the snapshot culls to) comes from the camera in Rust.
+## Only the car buckets whose drawn buffer changed are uploaded: a car at rest is drawn as it was.
 ## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
 ##   [xx, yx, zx, ox, xy, yy, zy, oy, xz, yz, zz, oz] — MultiMesh row-major 3×4 layout.
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
@@ -29,7 +31,7 @@ const WALKER_VAT_REVERSE_PHASE := true
 const CAR_TRANSFORM_STRIDE := 12
 const DEBUG_LABEL_LIMIT := 96
 const SWARM_PARTS: Array[String] = ["walker_fetch", "walker_assign", "vehicle_frame", "car_smooth", "car_assign", "headlights"]
-const CAR_PARTS: Array[String] = ["car_interpolate", "car_ground", "car_record", "cars_smoothed", "cars_off_lane", "off_lane_solved", "cars_unchanged", "off_lane_unchanged"]
+const CAR_PARTS: Array[String] = ["car_interpolate", "car_ground", "car_record", "cars_smoothed", "cars_off_lane", "off_lane_solved", "cars_at_rest", "off_lane_at_rest", "car_buckets_uploaded", "car_buckets_kept"]
 var _vehicles := preload("res://scripts/renderers/vehicle_resources.gd").new()
 var _headlights := VehicleHeadlights.new()
 
@@ -193,15 +195,16 @@ func _notification(what: int) -> void:
 
 func _process(delta):
 	if not PerfDebug.is_enabled():
-		_update_camera_aabb()
-		# Upload every rendered frame so cars do not visually quantize to 12 Hz at fast speeds.
+		_update_view()
+		# Update every rendered frame so cars do not visually quantize to 12 Hz at fast speeds;
+		# only the buckets that changed upload.
 		update_swarm(delta)
 		return
 	var frame_start_us := Time.get_ticks_usec()
 	var aabb_start_us := frame_start_us
-	_update_camera_aabb()
+	_update_view()
 	var aabb_elapsed_ms := float(Time.get_ticks_usec() - aabb_start_us) / 1000.0
-	# Upload every rendered frame so cars do not visually quantize to 12 Hz at fast speeds.
+	# Update every rendered frame so cars do not visually quantize to 12 Hz at fast speeds.
 	var swarm_start_us := Time.get_ticks_usec()
 	update_swarm(delta)
 	var swarm_elapsed_ms := float(Time.get_ticks_usec() - swarm_start_us) / 1000.0
@@ -224,41 +227,10 @@ func _process(delta):
 	details["cars"] = cars
 	PerfDebug.record("agents", elapsed_ms, details)
 
-func _update_camera_aabb():
-	var camera = get_viewport().get_camera_3d()
-	if not camera:
-		return
-	# For each viewport corner ray, find how far along the ray to sample.
-	# Prefer the ground-plane (y=0) intersection — this gives a tight AABB when
-	# the camera is steep. Fall back to AGENT_CULL_FAR_M when the ray is
-	# near-horizontal (dir.y small), which was the original bug: ground intersection
-	# produced a point at astronomical distance or didn't exist at all.
-	var cull_far = SimulationNode.get_agent_cull_far_m()
-	var vp_size = get_viewport().get_visible_rect().size
-	var screen_corners = [
-		Vector2(0, 0),
-		Vector2(vp_size.x, 0),
-		Vector2(vp_size.x, vp_size.y),
-		Vector2(0, vp_size.y),
-	]
-	var x_min = INF; var x_max = -INF
-	var z_min = INF; var z_max = -INF
-	for c in screen_corners:
-		var origin = camera.project_ray_origin(c)
-		var dir = camera.project_ray_normal(c)
-		# Compute the distance to y=0; use it if it's valid and closer than cull_far.
-		var dist: float
-		if dir.y < -1e-3:
-			dist = min(-origin.y / dir.y, cull_far)
-		else:
-			dist = cull_far
-		var pt = origin + dir * dist
-		x_min = min(x_min, pt.x); x_max = max(x_max, pt.x)
-		z_min = min(z_min, pt.z); z_max = max(z_max, pt.z)
-	var pad = SimulationNode.get_agent_cull_padding_m()
-	simulation_node.set_camera_aabb(
-		x_min - pad, x_max + pad, z_min - pad, z_max + pad, camera.global_position
-	)
+func _update_view() -> void:
+	var camera := get_viewport().get_camera_3d()
+	if camera:
+		simulation_node.update_agent_view(camera)
 
 func update_swarm(delta: float = 0.0):
 	# Walkers (Grouped by variant)
@@ -291,8 +263,11 @@ func update_swarm(delta: float = 0.0):
 		vehicle_frame["cars"], delta
 	)
 	var smoothed_us := Time.get_ticks_usec()
-	for type_key in car_mmis:
-		var mmi = car_mmis[type_key]
+	# A bucket absent from car_buffers left the view: it draws none.
+	for type_key in simulation_node.get_changed_car_buckets():
+		var mmi = car_mmis.get(type_key)
+		if mmi == null:
+			continue
 		var buffer: PackedFloat32Array = car_buffers.get(type_key, PackedFloat32Array())
 		var count := int(buffer.size() / CAR_TRANSFORM_STRIDE)
 		if count != mmi.multimesh.instance_count:

@@ -226,8 +226,10 @@ pub struct SimulationNode {
     pub(crate) building_lods: crate::nodes::sim::render::building_lod::spatial::SpatialBatches,
     /// Main-thread drawn car poses between snapshots; never serialized or read by simulation.
     pub(crate) car_visuals: crate::nodes::sim::render::car_visual::CarVisualSmoother,
-    /// The last car smoothing call's split for the perf channel (`get_car_frame_parts`).
-    car_frame_parts: [i64; 8],
+    /// The drawn car buffers by bucket, as `smooth_car_render_data` returns them, and the
+    /// buckets its last call changed (`RENDER-28`); presentation state like `car_visuals`.
+    car_buffers: VarDictionary,
+    changed_car_buckets: PackedInt64Array,
     /// Last camera origin reported with agent culling, shared by interpolated vehicle grounding.
     pub(crate) render_camera_position: Option<Vector2>,
     /// Stuck-at-junction detector; exists only while the `junction_connectors` view is on.
@@ -486,7 +488,8 @@ impl INode3D for SimulationNode {
             water_patch_mesh_jobs,
             building_lods: Default::default(),
             car_visuals: Default::default(),
-            car_frame_parts: [0; 8],
+            car_buffers: VarDictionary::new(),
+            changed_car_buckets: PackedInt64Array::new(),
             render_camera_position: None,
             junction_stalls: None,
             terrain_patch_payload_jobs,

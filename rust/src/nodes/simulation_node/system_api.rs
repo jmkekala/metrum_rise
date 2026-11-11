@@ -98,6 +98,39 @@ impl SimulationNode {
         });
     }
 
+    /// Takes the agents' view from `camera` (`RENDER-32-G`): the ground rectangle the snapshot
+    /// culls agents to (the viewport's corner rays down to the ground, at most
+    /// `AGENT_CULL_FAR_M` along each, padded by `AGENT_CULL_PADDING_M`) and the camera position
+    /// the off-lane ground solve's level of detail measures from, as `set_camera_aabb` sets
+    /// them. Returns the rectangle as (x_min, x_max, z_min, z_max). O(1): four corner rays.
+    #[func]
+    pub fn update_agent_view(&mut self, camera: Gd<godot::classes::Camera3D>) -> Vector4 {
+        use crate::nodes::sim::render::stream::view::agent_ground_rect;
+        let Some(viewport) = camera.get_viewport() else {
+            return Vector4::ZERO;
+        };
+        let size = viewport.get_visible_rect().size;
+        let corners = [
+            Vector2::ZERO,
+            Vector2::new(size.x, 0.0),
+            size,
+            Vector2::new(0.0, size.y),
+        ];
+        let rays = corners.map(|corner| {
+            (
+                camera.project_ray_origin(corner),
+                camera.project_ray_normal(corner),
+            )
+        });
+        let [x_min, x_max, z_min, z_max] = agent_ground_rect(
+            rays,
+            crate::config::AGENT_CULL_FAR_M,
+            crate::config::AGENT_CULL_PADDING_M,
+        );
+        self.set_camera_aabb(x_min, x_max, z_min, z_max, camera.get_global_position());
+        Vector4::new(x_min, x_max, z_min, z_max)
+    }
+
     /// Maximum far-plane distance used when building the camera frustum AABB for agent culling.
     #[func]
     pub fn get_agent_cull_far_m() -> f32 {
@@ -333,22 +366,32 @@ impl SimulationNode {
         out
     }
 
-    /// Returns bucket → MultiMesh transform buffer for this frame's drawn cars, from buckets
-    /// shaped like `get_car_render_data`. Poses move toward their snapshot poses and off-lane cars
-    /// are grounded; if the support solve is busy they show their validated snapshot pose. A
-    /// bucket with mismatched identity or flag counts is returned unsmoothed.
-    /// O(cars) per frame; one non-blocking core attempt per bucket with off-lane cars.
+    /// Returns bucket → MultiMesh transform buffer of this frame's drawn cars, from buckets shaped
+    /// like `get_car_render_data`. Poses move toward their snapshot poses and off-lane cars are
+    /// grounded; if the support solve is busy they show their validated snapshot pose. A bucket
+    /// with mismatched identity or flag counts is drawn unsmoothed. Cars at rest are drawn as
+    /// they were, with no solve (`RENDER-28`); [`Self::get_changed_car_buckets`] lists the
+    /// buckets whose buffer changed, the only ones to upload. The dictionary is the node's own,
+    /// valid until the next call. O(cars) per frame for the buckets with a moving car, one
+    /// non-blocking core attempt per bucket with an off-lane car to solve; O(1) plus a compare
+    /// of its inputs for an untouched bucket.
     #[func]
     pub fn smooth_car_render_data(&mut self, car_data: VarDictionary, delta: f64) -> VarDictionary {
-        use crate::nodes::sim::render::car_visual::{CarVisualSmoother, restore_off_lane_targets};
-        use std::time::Instant;
+        use crate::nodes::sim::render::car_visual::{CarVisualSmoother, GroundView};
         let alpha = CarVisualSmoother::alpha(delta);
-        let mut result = VarDictionary::new();
-        // The split of `RENDER-28` (see `get_car_frame_parts`), summed over the buckets.
-        let mut parts = [0i64; 8];
-        let micros = |since: Instant| since.elapsed().as_micros() as i64;
+        let camera = self.render_camera_position;
+        self.car_visuals.begin_frame(GroundView {
+            key: self.snapshot.read().unwrap().vehicle_ground_key,
+            camera: camera.map(|camera| [camera.x, camera.y]),
+        });
+        self.changed_car_buckets.clear();
         for (key, bucket) in car_data.iter_shared() {
-            let Ok(bucket) = bucket.try_to::<VarDictionary>() else {
+            let (Ok(bucket), Some(slot)) = (
+                bucket.try_to::<VarDictionary>(),
+                key.try_to::<i64>()
+                    .ok()
+                    .and_then(|key| u8::try_from(key).ok()),
+            ) else {
                 continue;
             };
             let field = |name: &str| bucket.get(name).unwrap_or_default();
@@ -362,79 +405,50 @@ impl SimulationNode {
                 .try_to::<PackedByteArray>()
                 .unwrap_or_default();
             let count = targets.len() / 12;
-            if targets.len() % 12 != 0 || ids.len() != count || flags.len() != count {
-                result.set(key, targets);
-                continue;
+            let core = &self.core;
+            let drawn = if targets.len() % 12 != 0 || ids.len() != count || flags.len() != count {
+                self.car_visuals.pass_through(slot, targets.as_slice())
+            } else {
+                self.car_visuals.smooth_bucket(
+                    slot,
+                    targets.as_slice(),
+                    ids.as_slice(),
+                    flags.as_slice(),
+                    alpha,
+                    |poses, solve| {
+                        Self::try_lock_shared_core(core).is_some_and(|core| {
+                            core.ground_vehicle_transforms(slot / 10, poses, solve, camera)
+                        })
+                    },
+                )
+            };
+            if let Some(drawn) = drawn {
+                self.car_buffers
+                    .set(i64::from(slot), PackedFloat32Array::from(drawn));
+                self.changed_car_buckets.push(i64::from(slot));
             }
-            let [unchanged, unchanged_off_lane] = self.car_visuals.unchanged_targets(
-                targets.as_slice(),
-                ids.as_slice(),
-                flags.as_slice(),
-            );
-            let off_lane = flags.as_slice().iter().filter(|&&flag| flag != 0).count();
-            parts[3] += count as i64;
-            parts[4] += off_lane as i64;
-            parts[6] += unchanged as i64;
-            parts[7] += unchanged_off_lane as i64;
-            let started = Instant::now();
-            let mut poses = PackedFloat32Array::from(targets.as_slice());
-            self.car_visuals.interpolate(
-                poses.as_mut_slice(),
-                ids.as_slice(),
-                flags.as_slice(),
-                alpha,
-            );
-            parts[0] += micros(started);
-            let started = Instant::now();
-            if off_lane > 0 {
-                let vehicle = key
-                    .try_to::<i64>()
-                    .ok()
-                    .and_then(|k| u8::try_from(k / 10).ok());
-                let grounded = vehicle.is_some_and(|vehicle| {
-                    Self::try_lock_shared_core(&self.core).is_some_and(|core| {
-                        core.ground_vehicle_transforms(
-                            vehicle,
-                            poses.as_mut_slice(),
-                            flags.as_slice(),
-                            self.render_camera_position,
-                        )
-                    })
-                });
-                if grounded {
-                    parts[5] += off_lane as i64;
-                } else {
-                    restore_off_lane_targets(
-                        poses.as_mut_slice(),
-                        targets.as_slice(),
-                        flags.as_slice(),
-                    );
-                }
-            }
-            parts[1] += micros(started);
-            let started = Instant::now();
-            self.car_visuals.record(
-                poses.as_slice(),
-                targets.as_slice(),
-                ids.as_slice(),
-                flags.as_slice(),
-            );
-            result.set(key, poses);
-            parts[2] += micros(started);
         }
-        self.car_visuals.finish_frame();
-        self.car_frame_parts = parts;
-        result
+        for &slot in self.car_visuals.finish_frame() {
+            self.car_buffers.remove(i64::from(slot));
+            self.changed_car_buckets.push(i64::from(slot));
+        }
+        self.car_buffers.clone()
+    }
+
+    /// The buckets whose drawn buffer the last `smooth_car_render_data` call changed, including
+    /// those that left (now absent from its dictionary: draw none). O(changed buckets).
+    #[func]
+    pub fn get_changed_car_buckets(&self) -> PackedInt64Array {
+        self.changed_car_buckets.clone()
     }
 
     /// The last `smooth_car_render_data` call's split (`RENDER-28`), for the perf channel:
-    /// microseconds smoothing (with the copy of the snapshot poses), in the off-lane ground
-    /// solve (with its core attempt), recording the drawn poses (with the bucket's hand-over);
-    /// then cars, off-lane cars, off-lane cars solved, cars whose snapshot pose is bit for bit
-    /// last frame's, and such off-lane cars. O(1).
+    /// microseconds smoothing (with the copy of the snapshot poses), in the off-lane ground solve
+    /// (with its core attempt) and recording; then cars, off-lane cars, off-lane cars solved,
+    /// cars at rest, such off-lane cars, buckets uploaded and buckets left untouched. O(1).
     #[func]
     pub fn get_car_frame_parts(&self) -> PackedInt64Array {
-        PackedInt64Array::from(self.car_frame_parts.as_slice())
+        PackedInt64Array::from(self.car_visuals.parts().as_slice())
     }
 
     /// Returns debug path geometry for active agents.

@@ -342,12 +342,14 @@ impl SimCore {
 
     /// Forgets the parked poses within `reach` of each changed rectangle, plus the longest car's
     /// contacts. The graded edit journal's records call this, for every change of the ground a
-    /// parked car stands on that they see. O(rectangles × their chunks' places).
+    /// parked car stands on that they see, and counts the change for the drawn moving cars
+    /// ([`SimCore::vehicle_ground_generation`]). O(rectangles × their chunks' places).
     pub(crate) fn invalidate_parked_ground(
         &mut self,
         changed: impl IntoIterator<Item = [f64; 4]>,
         reach: f64,
     ) {
+        self.vehicle_ground_generation += 1;
         let reach = reach + f64::from(self.vehicle_contact_reach_m());
         for [min_x, min_z, max_x, max_z] in changed {
             self.parking

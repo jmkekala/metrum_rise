@@ -914,6 +914,95 @@ fn vehicle_ground_lod_keeps_boundary_exact_and_shares_the_far_pose() {
     );
 }
 
+// A drawn off-lane car at rest keeps the solve that grounded it, bit for bit what a fresh solve
+// of the same input gives, and solves again once the ground under it changes (`RENDER-28`).
+#[test]
+fn a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes() {
+    use crate::nodes::sim::render::car_visual::{CarVisualSmoother, GroundView};
+    use std::cell::{Cell, RefCell};
+
+    let mut core = kuopio_yard_fixture();
+    let site = &core.allocator.building_sites[0];
+    let p = &site.surfaces[0].vertices_world;
+    let point = p[0].lerp(p[1], 0.43).lerp(p[3].lerp(p[2], 0.43), 0.2);
+    let ground = |core: &SimCore| GroundView {
+        key: [
+            core.world_epoch,
+            core.vehicle_ground_generation,
+            u64::from(core.vehicle_ground_full_detail_m.to_bits()),
+        ],
+        camera: None,
+    };
+    let bits = |values: &[f32]| {
+        values
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>()
+    };
+    // The snapshot's pose, grounded as the snapshot grounds it; the car is drawn first 1.6 m off.
+    let (s, c) = 0.6f32.sin_cos();
+    let mut target = vec![c, 0.0, s, point.x, 0.0, 1.0, 0.0, 0.0, -s, 0.0, c, point.y];
+    assert!(core.ground_vehicle_transforms(0, &mut target, &[1], None));
+    let mut start = target.clone();
+    start[3] += 1.5;
+    start[11] -= 0.5;
+    assert!(core.ground_vehicle_transforms(0, &mut start, &[1], None));
+
+    let (input, calls) = (RefCell::new(Vec::new()), Cell::new(0));
+    // One frame; whether it uploaded and how many solves it ran.
+    let draw = |smoother: &mut CarVisualSmoother, core: &SimCore, poses: &[f32], alpha| {
+        smoother.begin_frame(ground(core));
+        let before = calls.get();
+        let uploaded = smoother
+            .smooth_bucket(0, poses, &[9], &[1], alpha, |poses, mask| {
+                calls.set(calls.get() + 1);
+                *input.borrow_mut() = poses.to_vec();
+                core.ground_vehicle_transforms(0, poses, mask, None)
+            })
+            .is_some();
+        smoother.finish_frame();
+        (uploaded, calls.get() - before)
+    };
+    let fresh = |core: &SimCore| {
+        let mut fresh = input.borrow().clone();
+        assert!(core.ground_vehicle_transforms(0, &mut fresh, &[1], None));
+        bits(&fresh)
+    };
+
+    let mut smoother = CarVisualSmoother::default();
+    draw(&mut smoother, &core, &start, 1.0);
+    let rested = (0..400).any(|frame| {
+        let alpha = 0.15 + 0.3 * (frame as f32 * 0.618_034).fract();
+        draw(&mut smoother, &core, &target, alpha) == (false, 0)
+    });
+    assert!(rested, "a still car comes to rest");
+    assert_eq!(bits(smoother.drawn_bucket(0)), fresh(&core));
+    for _ in 0..30 {
+        assert_eq!(draw(&mut smoother, &core, &target, 0.3), (false, 0));
+    }
+
+    // Each record of the graded edit journal counts as a change of the ground.
+    let generation = core.vehicle_ground_generation;
+    core.record_graded_road_edit(&Default::default());
+    core.record_graded_site_edit(&[]);
+    assert_eq!(core.vehicle_ground_generation, generation + 2);
+    // A terrain edit under the car: it is solved again, against the new ground.
+    let at = Vector2::new(point.x, point.y);
+    core.slope_terrain_internal(
+        at,
+        30.0,
+        at - Vector2::new(15.0, 0.0),
+        0.0,
+        at + Vector2::new(15.0, 0.0),
+        2.0,
+        1.0,
+    );
+    assert!(core.vehicle_ground_generation > generation + 2);
+    core.prepare_site_queries();
+    assert_eq!(draw(&mut smoother, &core, &target, 0.3).1, 1);
+    assert_eq!(bits(smoother.drawn_bucket(0)), fresh(&core));
+}
+
 #[test]
 #[ignore = "unprofiled support-batch measurement; run alone with --release --ignored --nocapture"]
 fn graded_yard_vehicle_support_batch_benchmark() {

@@ -324,7 +324,11 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
             let flags = &cars.car_ground_flags[&key];
             core.ground_vehicle_transforms(0, transforms, flags, None);
             let ids = &cars.car_render_ids[&key];
-            CarVisualSmoother::default().interpolate(transforms, ids, flags, 0.5);
+            let mut smoother = CarVisualSmoother::default();
+            smoother.begin_frame(Default::default());
+            smoother.smooth_bucket(key, transforms, ids, flags, 0.5, |poses, solve| {
+                core.ground_vehicle_transforms(0, poses, solve, None)
+            });
         }
     });
 }

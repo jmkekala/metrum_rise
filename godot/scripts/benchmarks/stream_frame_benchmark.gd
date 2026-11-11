@@ -127,6 +127,13 @@ func run(bench: Node) -> void:
 	if not settled:
 		bench._fail("the world did not settle after its load")
 		return
+	# The clock stays stopped until the world is handed over, so a speed set at the load call
+	# alone never ran (`RENDER-32-G`): set it again once settled, where the hand-over is done.
+	if float(_report.simulation_speed) > 0.0:
+		if not bench.input_manager.is_world_ready():
+			bench._fail("the settled world was not handed over; the speed cannot be set")
+			return
+		bench.input_manager.set_simulation_speed(float(_report.simulation_speed))
 	var saved_view: PackedFloat32Array = bench.camera.get_view_state()
 	var base := saved_view.duplicate()
 	base[4] = PITCH_RAD
