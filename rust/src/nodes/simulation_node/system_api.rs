@@ -373,8 +373,8 @@ impl SimulationNode {
     /// they were, with no solve (`RENDER-28`); [`Self::get_changed_car_buckets`] lists the
     /// buckets whose buffer changed, the only ones to upload. The dictionary is the node's own,
     /// valid until the next call. O(cars) per frame for the buckets with a moving car, one
-    /// non-blocking core attempt per bucket with an off-lane car to solve; O(1) plus a compare
-    /// of its inputs for an untouched bucket.
+    /// non-blocking core attempt and one parallel solve pass a frame for the off-lane cars not
+    /// at rest; O(1) plus a compare of its inputs for an untouched bucket.
     #[func]
     pub fn smooth_car_render_data(&mut self, car_data: VarDictionary, delta: f64) -> VarDictionary {
         use crate::nodes::sim::render::car_visual::{CarVisualSmoother, GroundView};
@@ -405,9 +405,8 @@ impl SimulationNode {
                 .try_to::<PackedByteArray>()
                 .unwrap_or_default();
             let count = targets.len() / 12;
-            let core = &self.core;
-            let drawn = if targets.len() % 12 != 0 || ids.len() != count || flags.len() != count {
-                self.car_visuals.pass_through(slot, targets.as_slice())
+            if targets.len() % 12 != 0 || ids.len() != count || flags.len() != count {
+                self.car_visuals.pass_through(slot, targets.as_slice());
             } else {
                 self.car_visuals.smooth_bucket(
                     slot,
@@ -415,20 +414,27 @@ impl SimulationNode {
                     ids.as_slice(),
                     flags.as_slice(),
                     alpha,
-                    |poses, solve| {
-                        Self::try_lock_shared_core(core).is_some_and(|core| {
-                            core.ground_vehicle_transforms(slot / 10, poses, solve, camera)
-                        })
-                    },
-                )
-            };
-            if let Some(drawn) = drawn {
-                self.car_buffers
-                    .set(i64::from(slot), PackedFloat32Array::from(drawn));
-                self.changed_car_buckets.push(i64::from(slot));
+                );
             }
         }
-        for &slot in self.car_visuals.finish_frame() {
+        if self.car_visuals.needs_solve() {
+            // One non-blocking core attempt a frame, held for the one solve pass.
+            let core = Self::try_lock_shared_core(&self.core);
+            self.car_visuals.solve_pending(|slot, poses, solve| {
+                core.as_ref().is_some_and(|core| {
+                    core.ground_vehicle_transforms(slot / 10, poses, solve, camera)
+                })
+            });
+        }
+        self.car_visuals.finish_frame();
+        for &slot in self.car_visuals.changed() {
+            self.car_buffers.set(
+                i64::from(slot),
+                PackedFloat32Array::from(self.car_visuals.drawn_bucket(slot)),
+            );
+            self.changed_car_buckets.push(i64::from(slot));
+        }
+        for &slot in self.car_visuals.left() {
             self.car_buffers.remove(i64::from(slot));
             self.changed_car_buckets.push(i64::from(slot));
         }

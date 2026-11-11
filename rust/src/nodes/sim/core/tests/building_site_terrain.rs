@@ -919,7 +919,8 @@ fn vehicle_ground_lod_keeps_boundary_exact_and_shares_the_far_pose() {
 #[test]
 fn a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes() {
     use crate::nodes::sim::render::car_visual::{CarVisualSmoother, GroundView};
-    use std::cell::{Cell, RefCell};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let mut core = kuopio_yard_fixture();
     let site = &core.allocator.building_sites[0];
@@ -948,23 +949,23 @@ fn a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes() {
     start[11] -= 0.5;
     assert!(core.ground_vehicle_transforms(0, &mut start, &[1], None));
 
-    let (input, calls) = (RefCell::new(Vec::new()), Cell::new(0));
+    let (input, calls) = (Mutex::new(Vec::new()), AtomicUsize::new(0));
     // One frame; whether it uploaded and how many solves it ran.
     let draw = |smoother: &mut CarVisualSmoother, core: &SimCore, poses: &[f32], alpha| {
         smoother.begin_frame(ground(core));
-        let before = calls.get();
-        let uploaded = smoother
-            .smooth_bucket(0, poses, &[9], &[1], alpha, |poses, mask| {
-                calls.set(calls.get() + 1);
-                *input.borrow_mut() = poses.to_vec();
-                core.ground_vehicle_transforms(0, poses, mask, None)
-            })
-            .is_some();
+        let before = calls.load(Ordering::Relaxed);
+        smoother.smooth_bucket(0, poses, &[9], &[1], alpha);
+        smoother.solve_pending(|_, poses, mask| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            *input.lock().unwrap() = poses.to_vec();
+            core.ground_vehicle_transforms(0, poses, mask, None)
+        });
         smoother.finish_frame();
-        (uploaded, calls.get() - before)
+        let uploaded = smoother.changed().contains(&0);
+        (uploaded, calls.load(Ordering::Relaxed) - before)
     };
     let fresh = |core: &SimCore| {
-        let mut fresh = input.borrow().clone();
+        let mut fresh = input.lock().unwrap().clone();
         assert!(core.ground_vehicle_transforms(0, &mut fresh, &[1], None));
         bits(&fresh)
     };

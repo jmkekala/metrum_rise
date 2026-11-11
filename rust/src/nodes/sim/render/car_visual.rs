@@ -44,6 +44,11 @@ const CMP_EPSILON: f32 = 1e-5;
 const REST_ULPS: f32 = 8.0;
 
 type CarMap = HashMap<i64, DrawnCar, foldhash::fast::FixedState>;
+// One car of a bucket being smoothed: its pose, solve mask and reuse mark, ID and flag.
+type CarItem<'a> = (
+    (&'a mut [f32], (&'a mut u8, &'a mut bool)),
+    (&'a i64, &'a u8),
+);
 
 #[derive(Clone, Copy)]
 struct VisualPose {
@@ -71,7 +76,8 @@ struct DrawnCar {
     frame: u64,
 }
 
-/// A bucket's inputs and drawn buffer, aligned by instance, from the frame it was last smoothed.
+/// A bucket's inputs and drawn buffer, aligned by instance, from the frame it was last smoothed,
+/// and this frame's poses while it is smoothed.
 #[derive(Default)]
 struct Bucket {
     ids: Vec<i64>,
@@ -88,6 +94,19 @@ struct Bucket {
     present: u64,
     recorded_before: u64,
     present_before: u64,
+    // Smoothed this frame and not yet recorded: its poses, the off-lane cars to solve, the cars
+    // drawn as they were, and whether the solve succeeded.
+    pending: bool,
+    next: Vec<f32>,
+    solve: Vec<u8>,
+    reused: Vec<bool>,
+    solved: bool,
+}
+
+impl Bucket {
+    fn wants_solve(&self) -> bool {
+        self.pending && self.solve.iter().any(|&flag| flag != 0)
+    }
 }
 
 /// What an off-lane car's ground solve reads besides its pose.
@@ -110,15 +129,16 @@ impl GroundView {
     }
 }
 
-/// The last frame's split (`RENDER-28`), for the perf channel: microseconds smoothing (with the
-/// copy of the snapshot poses), in the ground solve (with its core attempt) and recording; then
-/// cars, off-lane cars, off-lane cars solved, cars at rest and such off-lane cars, buckets
-/// uploaded and buckets kept untouched.
+/// The last frame's split (`RENDER-28`), for the perf channel: microseconds smoothing, in the
+/// ground solve (with its core attempt) and recording; then cars, off-lane cars, off-lane cars
+/// solved, cars at rest and such off-lane cars, buckets uploaded and buckets kept untouched.
 pub(crate) type CarFrameParts = [i64; 10];
 
 /// Drawn car poses by render ID and the buckets they were drawn in. Maps and buffers keep their
-/// capacity, so steady frames do not allocate. Per frame: [`Self::begin_frame`], then
-/// [`Self::smooth_bucket`] or [`Self::pass_through`] per bucket, then [`Self::finish_frame`].
+/// capacity, so steady frames do not allocate. Per frame: [`Self::begin_frame`]; per bucket
+/// [`Self::smooth_bucket`] or [`Self::pass_through`]; one [`Self::solve_pending`] for every
+/// bucket's off-lane cars together; [`Self::finish_frame`]; then [`Self::changed`] and
+/// [`Self::left`] say what to upload.
 #[derive(Default)]
 pub(crate) struct CarVisualSmoother {
     cars: CarMap,
@@ -130,10 +150,7 @@ pub(crate) struct CarVisualSmoother {
     camera_moved: bool,
     // A bucket was smoothed or left this frame: some recorded cars may be stale.
     stale: bool,
-    // Per-frame scratch.
-    poses: Vec<f32>,
-    solve: Vec<u8>,
-    reused: Vec<bool>,
+    changed: Vec<u8>,
     left: Vec<u8>,
     parts: CarFrameParts,
 }
@@ -155,6 +172,7 @@ impl CarVisualSmoother {
         self.camera_moved = ground.camera != self.ground.camera;
         self.ground = ground;
         self.stale = false;
+        self.changed.clear();
         self.left.clear();
         self.parts = [0; 10];
         for bucket in &mut self.buckets {
@@ -163,13 +181,10 @@ impl CarVisualSmoother {
         }
     }
 
-    /// Draws one bucket: `targets` are its snapshot poses, `ids` and `flags` (1: off-lane) are
-    /// aligned with them. `solve` grounds the poses flagged in its mask in place and returns
-    /// false when it could not (busy or unprepared): those cars then show their snapshot pose.
-    /// Returns the drawn buffer when it differs from the one drawn last frame, `None` when the
-    /// last one stands (nothing to upload). O(1) plus a compare of the inputs for an untouched
-    /// bucket; otherwise O(cars) with one lookup and one insert each, and one solve per off-lane
-    /// car not at rest.
+    /// Smooths one bucket: `targets` are its snapshot poses, `ids` and `flags` (1: off-lane) are
+    /// aligned with them. Leaves an untouched bucket as it was drawn; O(1) plus a compare of the
+    /// inputs for it. Otherwise O(cars) with one lookup each; the bucket's off-lane cars not at
+    /// rest then wait for [`Self::solve_pending`] and its recording for [`Self::finish_frame`].
     pub(crate) fn smooth_bucket(
         &mut self,
         key: u8,
@@ -177,8 +192,7 @@ impl CarVisualSmoother {
         ids: &[i64],
         flags: &[u8],
         alpha: f32,
-        solve: impl FnOnce(&mut [f32], &[u8]) -> bool,
-    ) -> Option<&[f32]> {
+    ) {
         let count = ids.len();
         debug_assert!(targets.len() == count * STRIDE && flags.len() == count);
         self.parts[3] += count as i64;
@@ -189,41 +203,91 @@ impl CarVisualSmoother {
             self.parts[7] += off_lane as i64;
             self.parts[9] += 1;
             self.buckets[usize::from(key)].present = self.frame;
-            return None;
+            return;
         }
         self.stale = true;
-
         let started = Instant::now();
-        self.interpolate(targets, ids, flags, alpha);
+        let bucket = &mut self.buckets[usize::from(key)];
+        bucket.ids.clear();
+        bucket.ids.extend_from_slice(ids);
+        bucket.flags.clear();
+        bucket.flags.extend_from_slice(flags);
+        bucket.targets.clear();
+        bucket
+            .targets
+            .extend(targets.iter().map(|value| value.to_bits()));
+        bucket.pending = true;
+        bucket.solved = true;
+        let mut next = std::mem::take(&mut bucket.next);
+        let mut solve = std::mem::take(&mut bucket.solve);
+        let mut reused = std::mem::take(&mut bucket.reused);
+        next.clear();
+        next.extend_from_slice(targets);
+        solve.clear();
+        solve.resize(count, 0);
+        reused.clear();
+        reused.resize(count, false);
+        self.interpolate(&mut next, &mut solve, &mut reused, ids, flags, alpha);
+        let bucket = &mut self.buckets[usize::from(key)];
+        bucket.next = next;
+        bucket.solve = solve;
+        bucket.reused = reused;
         self.parts[0] += started.elapsed().as_micros() as i64;
+    }
 
+    /// Whether a bucket smoothed this frame has an off-lane car to solve. O(buckets + cars).
+    pub(crate) fn needs_solve(&self) -> bool {
+        self.buckets.iter().any(Bucket::wants_solve)
+    }
+
+    /// Grounds every bucket's off-lane cars not at rest in one parallel pass: `solve(key,
+    /// poses, mask)` grounds the poses flagged in `mask` in place and returns false when it
+    /// could not (busy or unprepared); those cars then show their snapshot pose. One wait on
+    /// the pool a frame, not one a bucket.
+    pub(crate) fn solve_pending(&mut self, solve: impl Fn(u8, &mut [f32], &[u8]) -> bool + Sync) {
+        if !self.needs_solve() {
+            return;
+        }
         let started = Instant::now();
-        let mut solved = true;
-        if self.solve.iter().any(|&flag| flag != 0) {
-            solved = solve(&mut self.poses, &self.solve);
-            if solved {
-                self.parts[5] += self.solve.iter().filter(|&&flag| flag != 0).count() as i64;
-            } else {
-                restore_off_lane_targets(&mut self.poses, targets, &self.solve);
+        // Godot's main thread solves every frame: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.buckets
+                .par_iter_mut()
+                .enumerate()
+                .filter(|(_, bucket)| bucket.wants_solve())
+                .for_each(|(key, bucket)| {
+                    bucket.solved = solve(key as u8, &mut bucket.next, &bucket.solve);
+                });
+        });
+        for bucket in self
+            .buckets
+            .iter_mut()
+            .filter(|bucket| bucket.wants_solve())
+        {
+            if bucket.solved {
+                self.parts[5] += bucket.solve.iter().filter(|&&flag| flag != 0).count() as i64;
+                continue;
+            }
+            // The snapshot pose of every car the solve was to ground.
+            for ((pose, target), &flag) in bucket
+                .next
+                .as_chunks_mut::<STRIDE>()
+                .0
+                .iter_mut()
+                .zip(bucket.targets.as_chunks::<STRIDE>().0)
+                .zip(&bucket.solve)
+            {
+                if flag != 0 {
+                    *pose = target.map(f32::from_bits);
+                }
             }
         }
         self.parts[1] += started.elapsed().as_micros() as i64;
-
-        let started = Instant::now();
-        self.record(key, targets, ids, flags, solved);
-        let bucket = &mut self.buckets[usize::from(key)];
-        let changed = !same_bits(&bucket.drawn, &self.poses);
-        if changed {
-            std::mem::swap(&mut bucket.drawn, &mut self.poses);
-            self.parts[8] += 1;
-        }
-        self.parts[2] += started.elapsed().as_micros() as i64;
-        changed.then_some(bucket.drawn.as_slice())
     }
 
     /// Draws a malformed bucket (counts that do not match) as its snapshot poses, unsmoothed
-    /// and unrecorded. Returns them when they differ from last frame's drawn buffer. O(cars).
-    pub(crate) fn pass_through(&mut self, key: u8, targets: &[f32]) -> Option<&[f32]> {
+    /// and unrecorded. O(cars).
+    pub(crate) fn pass_through(&mut self, key: u8, targets: &[f32]) {
         self.stale = true;
         let frame = self.frame;
         let bucket = self.bucket_mut(key);
@@ -236,19 +300,24 @@ impl CarVisualSmoother {
         bucket.off_lane = 0;
         bucket.recorded = frame;
         bucket.present = frame;
-        if same_bits(&bucket.drawn, targets) {
-            return None;
+        if !same_bits(&bucket.drawn, targets) {
+            bucket.drawn.clear();
+            bucket.drawn.extend_from_slice(targets);
+            self.changed.push(key);
         }
-        bucket.drawn.clear();
-        bucket.drawn.extend_from_slice(targets);
-        Some(bucket.drawn.as_slice())
     }
 
-    /// Ends the frame. Returns the keys of the buckets drawn last frame and not this one: their
-    /// cars are forgotten and their drawn buffers are empty. O(buckets), plus O(recorded cars)
-    /// on a frame that smoothed or lost a bucket.
-    pub(crate) fn finish_frame(&mut self) -> &[u8] {
+    /// Ends the frame: records the smoothed buckets, forgets the buckets drawn last frame and
+    /// not this one with their cars. O(buckets + smoothed cars), plus O(recorded cars) on a
+    /// frame that smoothed or lost a bucket.
+    pub(crate) fn finish_frame(&mut self) {
+        let started = Instant::now();
         let frame = self.frame;
+        for key in 0..self.buckets.len() {
+            if self.buckets[key].pending {
+                self.record(key as u8);
+            }
+        }
         for (key, bucket) in self.buckets.iter_mut().enumerate() {
             if was_drawn_before(bucket, frame) && bucket.present != frame {
                 *bucket = Bucket::default();
@@ -261,18 +330,27 @@ impl CarVisualSmoother {
             self.cars
                 .retain(|_, car| is_drawn(car, &buckets[usize::from(car.bucket)], frame));
         }
+        self.parts[2] += started.elapsed().as_micros() as i64;
+    }
+
+    /// The buckets whose drawn buffer this frame changed: the ones to upload.
+    pub(crate) fn changed(&self) -> &[u8] {
+        &self.changed
+    }
+
+    /// The buckets drawn last frame and not this one: they draw nothing now.
+    pub(crate) fn left(&self) -> &[u8] {
         &self.left
+    }
+
+    /// Bucket `key`'s drawn buffer.
+    pub(crate) fn drawn_bucket(&self, key: u8) -> &[f32] {
+        &self.buckets[usize::from(key)].drawn
     }
 
     /// The last frame's split ([`CarFrameParts`]).
     pub(crate) fn parts(&self) -> CarFrameParts {
         self.parts
-    }
-
-    /// Bucket `key`'s drawn buffer as of the last frame.
-    #[cfg(test)]
-    pub(crate) fn drawn_bucket(&self, key: u8) -> &[f32] {
-        &self.buckets[usize::from(key)].drawn
     }
 
     /// Where car `id` was drawn this frame, if it was. One lookup.
@@ -324,101 +402,108 @@ impl CarVisualSmoother {
                 .all(|((pose, &flag), &near)| flag == 0 || ground.near(pose) == near)
     }
 
-    // Writes this frame's poses into `self.poses` and marks the off-lane cars to solve in
-    // `self.solve`: a car at rest copies its drawn pose; any other moves toward its target as
-    // Godot's `Vector3.lerp` and `Basis.slerp(...).orthonormalized()` would. Cars first seen,
-    // jumping past the snap distance or changing height owner show their orthonormalized
-    // snapshot pose; a degenerate or non-finite snapshot pose passes through unchanged.
-    fn interpolate(&mut self, targets: &[f32], ids: &[i64], flags: &[u8], alpha: f32) {
-        let count = ids.len();
-        self.poses.clear();
-        self.poses.extend_from_slice(targets);
-        self.solve.clear();
-        self.solve.resize(count, 0);
-        self.reused.clear();
-        self.reused.resize(count, false);
+    // Writes this frame's poses over the snapshot poses in `poses` and marks the off-lane cars
+    // to solve in `solve`: a car at rest copies its drawn pose (`reused`); any other moves
+    // toward its target as Godot's `Vector3.lerp` and `Basis.slerp(...).orthonormalized()`
+    // would. Cars first seen, jumping past the snap distance or changing height owner show their
+    // orthonormalized snapshot pose; a degenerate or non-finite snapshot pose passes through
+    // unchanged. A bucket below `PARALLEL_MIN_CARS` stays on the calling thread: waking the pool
+    // for it costs more than its math.
+    fn interpolate(
+        &self,
+        poses: &mut [f32],
+        solve: &mut [u8],
+        reused: &mut [bool],
+        ids: &[i64],
+        flags: &[u8],
+        alpha: f32,
+    ) {
         let rotation_alpha =
             (alpha * (ROTATION_INTERPOLATION_RATE / INTERPOLATION_RATE)).clamp(0.0, 1.0);
         let (cars, buckets, frame) = (&self.cars, &self.buckets, self.frame);
         let (ground, ground_changed) = (self.ground, self.ground_changed);
+        let step = |((pose, (solve, reused)), (&id, &flag)): CarItem<'_>| {
+            let previous = cars.get(&id).filter(|car| {
+                was_drawn_before(&buckets[usize::from(car.bucket)], frame)
+                    && car.frame == buckets[usize::from(car.bucket)].recorded_before
+                    && car.pose.grounded == (flag != 0)
+            });
+            if let Some(car) = previous.filter(|car| {
+                car.rest
+                    && same_target(&car.target, pose)
+                    && (flag == 0 || (!ground_changed && ground.near(&car.drawn) == car.near))
+            }) {
+                pose.copy_from_slice(&car.drawn);
+                *reused = true;
+                return;
+            }
+            *solve = flag;
+            let Some((target_origin, target_basis)) = read_pose(pose) else {
+                return;
+            };
+            let target_basis = orthonormalized(target_basis);
+            match previous {
+                Some(car)
+                    if car.pose.origin.distance_squared(target_origin)
+                        <= SNAP_DISTANCE_M * SNAP_DISTANCE_M =>
+                {
+                    let rotation = slerp(
+                        car.pose.rotation,
+                        Quat::from_mat3(&target_basis),
+                        rotation_alpha,
+                    );
+                    let origin = car.pose.origin.lerp(target_origin, alpha);
+                    write_pose(pose, origin, Mat3::from_quat(rotation));
+                }
+                _ => write_pose(pose, target_origin, target_basis),
+            }
+        };
+        if ids.len() < PARALLEL_MIN_CARS {
+            poses
+                .as_chunks_mut::<STRIDE>()
+                .0
+                .iter_mut()
+                .map(<[f32; STRIDE]>::as_mut_slice)
+                .zip(solve.iter_mut().zip(reused.iter_mut()))
+                .zip(ids.iter().zip(flags))
+                .for_each(step);
+            return;
+        }
         // Godot's main thread calls this every frame: shared pool (CODE-17).
         crate::thread_pools::install(|| {
-            self.poses
+            poses
                 .par_chunks_exact_mut(STRIDE)
-                .zip(self.solve.par_iter_mut().zip(self.reused.par_iter_mut()))
+                .zip(solve.par_iter_mut().zip(reused.par_iter_mut()))
                 .zip(ids.par_iter().zip(flags))
                 .with_min_len(PARALLEL_MIN_CARS)
-                .for_each(|((pose, (solve, reused)), (&id, &flag))| {
-                    let previous = cars.get(&id).filter(|car| {
-                        was_drawn_before(&buckets[usize::from(car.bucket)], frame)
-                            && car.frame == buckets[usize::from(car.bucket)].recorded_before
-                            && car.pose.grounded == (flag != 0)
-                    });
-                    if let Some(car) = previous.filter(|car| {
-                        car.rest
-                            && same_target(&car.target, pose)
-                            && (flag == 0
-                                || (!ground_changed && ground.near(&car.drawn) == car.near))
-                    }) {
-                        pose.copy_from_slice(&car.drawn);
-                        *reused = true;
-                        return;
-                    }
-                    *solve = flag;
-                    let Some((target_origin, target_basis)) = read_pose(pose) else {
-                        return;
-                    };
-                    let target_basis = orthonormalized(target_basis);
-                    match previous {
-                        Some(car)
-                            if car.pose.origin.distance_squared(target_origin)
-                                <= SNAP_DISTANCE_M * SNAP_DISTANCE_M =>
-                        {
-                            let rotation = slerp(
-                                car.pose.rotation,
-                                Quat::from_mat3(&target_basis),
-                                rotation_alpha,
-                            );
-                            let origin = car.pose.origin.lerp(target_origin, alpha);
-                            write_pose(pose, origin, Mat3::from_quat(rotation));
-                        }
-                        _ => write_pose(pose, target_origin, target_basis),
-                    }
-                });
+                .for_each(step);
         });
     }
 
-    // Stores the poses drawn, including any support correction or busy fallback, as next
-    // frame's starting points, and the bucket's inputs. Unusable poses are not stored and so
-    // snap next frame. A car is at rest when it was, or when its drawn pose has reached its
-    // target ([`at_target`]) through a solve that succeeded.
-    fn record(&mut self, key: u8, targets: &[f32], ids: &[i64], flags: &[u8], solved: bool) {
+    // Records a smoothed bucket: its poses as next frame's starting points (including any
+    // support correction or busy fallback), unusable poses not stored so they snap next frame.
+    // A car is at rest when it was, or when its drawn pose has reached its target
+    // ([`at_target`]) through a solve that succeeded. Notes the bucket as changed when its
+    // drawn buffer differs from last frame's.
+    fn record(&mut self, key: u8) {
         let frame = self.frame;
         let ground = self.ground;
         let mut bucket = std::mem::take(self.bucket_mut(key));
-        bucket.ids.clear();
-        bucket.ids.extend_from_slice(ids);
-        bucket.flags.clear();
-        bucket.flags.extend_from_slice(flags);
-        bucket.targets.clear();
-        bucket
-            .targets
-            .extend(targets.iter().map(|value| value.to_bits()));
         bucket.near.clear();
         bucket.moving = 0;
         bucket.off_lane = 0;
-        for (index, (((pose, target), &id), &flag)) in self
-            .poses
+        for (index, ((pose, target), &flag)) in bucket
+            .next
             .as_chunks::<STRIDE>()
             .0
             .iter()
-            .zip(targets.as_chunks::<STRIDE>().0)
-            .zip(ids)
-            .zip(flags)
+            .zip(bucket.targets.as_chunks::<STRIDE>().0)
+            .zip(&bucket.flags)
             .enumerate()
         {
+            let id = bucket.ids[index];
             bucket.off_lane += usize::from(flag != 0);
-            let previous = self.reused[index].then(|| self.cars[&id]);
+            let previous = bucket.reused[index].then(|| self.cars[&id]);
             let near = match previous {
                 Some(car) => car.near,
                 None => flag != 0 && ground.near(pose),
@@ -428,8 +513,9 @@ impl CarVisualSmoother {
                 bucket.moving += 1;
                 continue;
             };
+            let target = target.map(f32::from_bits);
             let rest = previous.is_some()
-                || ((self.solve[index] == 0 || solved) && at_target(pose, target, flag));
+                || ((bucket.solve[index] == 0 || bucket.solved) && at_target(pose, &target, flag));
             if !rest {
                 bucket.moving += 1;
             } else if previous.is_some() {
@@ -459,6 +545,12 @@ impl CarVisualSmoother {
         }
         bucket.recorded = frame;
         bucket.present = frame;
+        bucket.pending = false;
+        if !same_bits(&bucket.drawn, &bucket.next) {
+            std::mem::swap(&mut bucket.drawn, &mut bucket.next);
+            self.changed.push(key);
+            self.parts[8] += 1;
+        }
         *self.bucket_mut(key) = bucket;
     }
 }
@@ -508,22 +600,6 @@ fn at_target(pose: &[f32; STRIDE], target: &[f32; STRIDE], flag: u8) -> bool {
         && close(pose[11], target[11])
         && close(drawn.x, wanted.x)
         && close(drawn.y, wanted.y)
-}
-
-/// Restores the snapshot pose of every off-lane car. Used when the support solve is busy or
-/// unprepared: an interpolated off-lane pose is never shown without its support correction.
-pub(crate) fn restore_off_lane_targets(poses: &mut [f32], targets: &[f32], flags: &[u8]) {
-    for ((pose, target), &flag) in poses
-        .as_chunks_mut::<STRIDE>()
-        .0
-        .iter_mut()
-        .zip(targets.as_chunks::<STRIDE>().0)
-        .zip(flags)
-    {
-        if flag != 0 {
-            *pose = *target;
-        }
-    }
 }
 
 /// Godot's `Quaternion.slerp`, normalized as Godot's `Basis(Quaternion)` constructor does.

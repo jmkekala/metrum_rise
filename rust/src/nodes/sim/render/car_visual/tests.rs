@@ -3,9 +3,9 @@
 //! Car smoothing, rest and the untouched buckets (`RENDER-28`, `RENDER-32-G`).
 
 use super::*;
-use std::cell::Cell;
 use std::collections::HashSet;
 use std::f32::consts::FRAC_PI_2;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn pose(yaw: f32, origin: Vec3) -> Vec<f32> {
     let mut pose = vec![0.0; STRIDE];
@@ -22,10 +22,11 @@ fn yaw(pose: &[f32]) -> f32 {
     pose[2].atan2(pose[10])
 }
 
-/// Draws one frame of a single car and returns its drawn pose.
+/// Draws one frame of a single car and returns its drawn pose; a solve leaves poses as they are.
 fn frame(smoother: &mut CarVisualSmoother, target: &[f32], flag: u8, alpha: f32) -> Vec<f32> {
     smoother.begin_frame(GroundView::default());
-    smoother.smooth_bucket(0, target, &[7], &[flag], alpha, |_, _| true);
+    smoother.smooth_bucket(0, target, &[7], &[flag], alpha);
+    smoother.solve_pending(|_, _, _| true);
     smoother.finish_frame();
     smoother.buckets[0].drawn.clone()
 }
@@ -118,12 +119,48 @@ fn degenerate_and_non_finite_poses_pass_through_and_are_not_recorded() {
 }
 
 #[test]
-fn busy_support_restores_only_off_lane_snapshot_poses() {
-    let targets = [pose(0.0, Vec3::ZERO), pose(0.0, Vec3::ONE)].concat();
-    let mut poses = vec![5.0; targets.len()];
-    restore_off_lane_targets(&mut poses, &targets, &[0, 1]);
-    assert_eq!(&poses[..STRIDE], &[5.0; STRIDE]);
-    assert_eq!(&poses[STRIDE..], &targets[STRIDE..]);
+fn a_busy_solve_restores_only_the_cars_it_was_to_solve() {
+    let ground = GroundView {
+        key: [1, 1, u64::from(250.0f32.to_bits())],
+        camera: None,
+    };
+    let (ids, flags) = ([1, 2, 3], [0, 1, 1]);
+    let mut targets = [
+        pose(0.0, Vec3::ZERO),
+        pose(0.5, Vec3::new(30.0, 0.0, 0.0)),
+        pose(1.0, Vec3::new(60.0, 0.0, 0.0)),
+    ]
+    .concat();
+    for pose in &mut targets.as_chunks_mut::<STRIDE>().0[1..] {
+        fake_solve(pose, true);
+    }
+    let mut smoother = CarVisualSmoother::default();
+    let solved = AtomicUsize::new(0);
+    for frame in 0..200 {
+        draw(
+            &mut smoother,
+            ground,
+            0,
+            &targets,
+            &ids,
+            &flags,
+            alpha_at(frame),
+            &solved,
+        );
+    }
+    // Every car rests. Car 3's snapshot pose moves 2 m and the core is busy: car 3 shows its
+    // snapshot pose; car 2 keeps its solve, car 1 its pose.
+    let rested = smoother.buckets[0].drawn.clone();
+    let mut moved = targets.clone();
+    moved[2 * STRIDE + 3] += 2.0;
+    smoother.begin_frame(ground);
+    smoother.smooth_bucket(0, &moved, &ids, &flags, 0.3);
+    smoother.solve_pending(|_, _, _| false);
+    smoother.finish_frame();
+    let drawn = &smoother.buckets[0].drawn;
+    assert_eq!(bits(&drawn[..2 * STRIDE]), bits(&rested[..2 * STRIDE]));
+    assert_eq!(bits(&drawn[2 * STRIDE..]), bits(&moved[2 * STRIDE..]));
+    assert_eq!(smoother.changed(), [0]);
 }
 
 #[test]
@@ -151,9 +188,16 @@ fn car_smoothing_frame_cost() {
                 target[11] += 0.1 * yaw.cos();
             }
             let start = Instant::now();
-            smoother.begin_frame(GroundView::default());
-            smoother.smooth_bucket(0, &targets, &ids, &flags, 0.2, |_, _| true);
-            smoother.finish_frame();
+            draw(
+                &mut smoother,
+                GroundView::default(),
+                0,
+                &targets,
+                &ids,
+                &flags,
+                0.2,
+                &AtomicUsize::new(0),
+            );
             let interpolated = smoother.parts()[0] as f64 / 1e3;
             if step >= 8 {
                 samples.push(start.elapsed().as_secs_f64() * 1e3);
@@ -224,15 +268,34 @@ fn fake_solve(pose: &mut [f32], near: bool) {
 }
 
 // Solves the poses flagged in `mask` with `fake_solve`, counting the calls and the cars.
-fn solve_masked(poses: &mut [f32], mask: &[u8], ground: GroundView, cars: &Cell<usize>) -> bool {
+fn solve_masked(poses: &mut [f32], mask: &[u8], ground: GroundView, cars: &AtomicUsize) -> bool {
     for (pose, &flag) in poses.as_chunks_mut::<STRIDE>().0.iter_mut().zip(mask) {
         if flag != 0 {
             let near = ground.near(pose);
             fake_solve(pose, near);
-            cars.set(cars.get() + 1);
+            cars.fetch_add(1, Ordering::Relaxed);
         }
     }
     true
+}
+
+// One frame of one bucket, solved by `fake_solve`; whether its drawn buffer changed.
+#[allow(clippy::too_many_arguments)]
+fn draw(
+    smoother: &mut CarVisualSmoother,
+    ground: GroundView,
+    key: u8,
+    targets: &[f32],
+    ids: &[i64],
+    flags: &[u8],
+    alpha: f32,
+    solved: &AtomicUsize,
+) -> bool {
+    smoother.begin_frame(ground);
+    smoother.smooth_bucket(key, targets, ids, flags, alpha);
+    smoother.solve_pending(|_, poses, mask| solve_masked(poses, mask, ground, solved));
+    smoother.finish_frame();
+    smoother.changed().contains(&key)
 }
 
 fn bits(values: &[f32]) -> Vec<u32> {
@@ -269,29 +332,24 @@ fn still_cars_come_to_rest_and_their_bucket_is_left_alone() {
             }
         }
     }
-    let solved = Cell::new(0);
+    let solved = AtomicUsize::new(0);
     let mut smoother = CarVisualSmoother::default();
-    let draw = |smoother: &mut CarVisualSmoother, ground: GroundView, targets: &[f32], alpha| {
-        smoother.begin_frame(ground);
-        let uploaded = smoother
-            .smooth_bucket(3, targets, &ids, &flags, alpha, |poses, mask| {
-                solve_masked(poses, mask, ground, &solved)
-            })
-            .is_some();
-        smoother.finish_frame();
-        uploaded
-    };
-    draw(&mut smoother, ground, &start, 1.0);
+    let draw_cars =
+        |smoother: &mut CarVisualSmoother, ground: GroundView, targets: &[f32], alpha| {
+            draw(smoother, ground, 3, targets, &ids, &flags, alpha, &solved)
+        };
+    draw_cars(&mut smoother, ground, &start, 1.0);
     let rest_frame = (0..400).find(|&frame| {
-        let before = solved.get();
-        !draw(&mut smoother, ground, &targets, alpha_at(frame)) && solved.get() == before
+        let before = solved.load(Ordering::Relaxed);
+        !draw_cars(&mut smoother, ground, &targets, alpha_at(frame))
+            && solved.load(Ordering::Relaxed) == before
     });
     assert!(rest_frame.is_some(), "still cars must come to rest");
     // A still frame: no smoothing, no solve, no upload.
     for frame in 0..60 {
-        let before = solved.get();
-        assert!(!draw(&mut smoother, ground, &targets, alpha_at(frame)));
-        assert_eq!(solved.get(), before);
+        let before = solved.load(Ordering::Relaxed);
+        assert!(!draw_cars(&mut smoother, ground, &targets, alpha_at(frame)));
+        assert_eq!(solved.load(Ordering::Relaxed), before);
         assert_eq!(smoother.parts()[3..], [40, 20, 0, 40, 20, 0, 1]);
     }
     let rested = smoother.buckets[3].drawn.clone();
@@ -312,9 +370,9 @@ fn still_cars_come_to_rest_and_their_bucket_is_left_alone() {
         camera: Some([20_000.0, 0.0]),
         ..ground
     };
-    assert!(draw(&mut smoother, far, &targets, 0.3));
+    assert!(draw_cars(&mut smoother, far, &targets, 0.3));
     assert_eq!(smoother.parts()[5..8], [20, 20, 0]);
-    assert!(!draw(&mut smoother, far, &targets, 0.3));
+    assert!(!draw_cars(&mut smoother, far, &targets, 0.3));
     assert_eq!(smoother.parts()[5], 0);
 
     // A new ground generation solves every off-lane car again, once.
@@ -322,15 +380,15 @@ fn still_cars_come_to_rest_and_their_bucket_is_left_alone() {
         key: [1, 2, ground.key[2]],
         ..far
     };
-    draw(&mut smoother, edited, &targets, 0.3);
+    draw_cars(&mut smoother, edited, &targets, 0.3);
     assert_eq!(smoother.parts()[5..8], [20, 20, 0]);
-    assert!(!draw(&mut smoother, edited, &targets, 0.3));
+    assert!(!draw_cars(&mut smoother, edited, &targets, 0.3));
     assert_eq!(smoother.parts()[9], 1);
 
     // One car's snapshot pose moves: only it is smoothed and solved; the others stay at rest.
     let mut moved = targets.clone();
     moved[STRIDE + 3] += 1.0;
-    assert!(draw(&mut smoother, edited, &moved, 0.3));
+    assert!(draw_cars(&mut smoother, edited, &moved, 0.3));
     assert_eq!(smoother.parts()[5..9], [1, 39, 19, 1]);
 }
 
@@ -383,7 +441,7 @@ impl Control {
             }
         }
         if flags.iter().any(|&flag| flag != 0) {
-            solve_masked(&mut poses, flags, ground, &Cell::new(0));
+            solve_masked(&mut poses, flags, ground, &AtomicUsize::new(0));
         }
         for (pose, (&id, &flag)) in poses
             .as_chunks::<STRIDE>()
@@ -483,7 +541,7 @@ fn drawn_buffers_follow_the_control_frame_by_frame() {
     let mut smoother = CarVisualSmoother::default();
     let mut control = Control::default();
     let mut ever_rested = HashSet::new();
-    let (solved, mut control_solved) = (Cell::new(0), 0);
+    let (solved, mut control_solved) = (AtomicUsize::new(0), 0);
     for frame in 0..600 {
         // The camera sweeps across the cars, except in the pause; the ground changes once.
         let camera_x = frame.min(PAUSE.start) as f32 * 3.0 - 900.0
@@ -494,8 +552,9 @@ fn drawn_buffers_follow_the_control_frame_by_frame() {
         };
         let alpha = alpha_at(frame);
         smoother.begin_frame(ground);
-        let before = solved.get();
-        let mut uploads = 0;
+        let before = solved.load(Ordering::Relaxed);
+        let mut expected = Vec::new();
+        let mut previous = Vec::new();
         for (&key, bucket) in keys.iter().zip(&cars) {
             // Bucket 23 is gone for two frames: its cars are forgotten.
             if key == 23 && (200..202).contains(&frame) {
@@ -509,32 +568,38 @@ fn drawn_buffers_follow_the_control_frame_by_frame() {
                     flags.push(car.flag(frame));
                 }
             }
-            let expected = control.bucket(&targets, &ids, &flags, alpha, ground);
+            expected.push((
+                key,
+                ids.clone(),
+                control.bucket(&targets, &ids, &flags, alpha, ground),
+            ));
             control_solved += flags.iter().filter(|&&flag| flag != 0).count();
-            let previous = smoother
-                .buckets
-                .get(usize::from(key))
-                .map(|b| b.drawn.clone());
-            let uploaded = smoother
-                .smooth_bucket(key, &targets, &ids, &flags, alpha, |poses, mask| {
-                    solve_masked(poses, mask, ground, &solved)
-                })
-                .is_some();
-            let drawn = &smoother.buckets[usize::from(key)].drawn;
-            if !uploaded {
+            previous.push(
+                smoother
+                    .buckets
+                    .get(usize::from(key))
+                    .map(|b| b.drawn.clone()),
+            );
+            smoother.smooth_bucket(key, &targets, &ids, &flags, alpha);
+        }
+        smoother.solve_pending(|_, poses, mask| solve_masked(poses, mask, ground, &solved));
+        smoother.finish_frame();
+        let uploads = smoother.changed().len();
+        for ((key, ids, expected), previous) in expected.iter().zip(previous) {
+            let drawn = &smoother.buckets[usize::from(*key)].drawn;
+            if !smoother.changed().contains(key) {
                 assert_eq!(
                     previous.map(|p| bits(&p)),
                     Some(bits(drawn)),
                     "frame {frame}"
                 );
             }
-            uploads += usize::from(uploaded);
             for ((drawn, expected), id) in drawn
                 .as_chunks::<STRIDE>()
                 .0
                 .iter()
                 .zip(expected.as_chunks::<STRIDE>().0)
-                .zip(&ids)
+                .zip(ids)
             {
                 if ever_rested.contains(id) {
                     // Rest stops the smoothing's last wander: within it, never beyond.
@@ -548,7 +613,6 @@ fn drawn_buffers_follow_the_control_frame_by_frame() {
                 }
             }
         }
-        smoother.finish_frame();
         control.finish();
         ever_rested.extend(
             smoother
@@ -559,15 +623,19 @@ fn drawn_buffers_follow_the_control_frame_by_frame() {
         );
         // Late in the pause every car rests: nothing is solved or uploaded.
         if (PAUSE.start + 90..PAUSE.end).contains(&frame) {
-            assert_eq!((solved.get() - before, uploads), (0, 0), "frame {frame}");
+            assert_eq!(
+                (solved.load(Ordering::Relaxed) - before, uploads),
+                (0, 0),
+                "frame {frame}"
+            );
             assert_eq!(smoother.parts()[9], 3);
         }
     }
     assert!(ever_rested.len() > 150);
     // Cars wait 40-72 frames at a time and take about 30 to come to rest.
     assert!(
-        solved.get() * 3 < control_solved * 2,
+        solved.load(Ordering::Relaxed) * 3 < control_solved * 2,
         "{} vs {control_solved}",
-        solved.get()
+        solved.load(Ordering::Relaxed)
     );
 }
