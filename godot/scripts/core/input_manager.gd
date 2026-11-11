@@ -49,7 +49,7 @@ const WORLD_CAMERA_MAX_DISTANCE_M := 40000.0
 const WORLD_CAMERA_MIN_FAR_M := 9000.0
 const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 # A world load hands the game over once every patch within this distance of the camera draws what it
-# draws settled (TERRAIN-15): the graded levels' detailed ring (GL2 ends at 2 km, terrain_graded_tiles.gd
+# draws settled (TERRAIN-15): the graded levels' detailed ring (GL2 ends at 2 km, the Rust level rule's
 # LEVEL_END_M); the farther patches stream on within the frame budget.
 const WORLD_READY_RADIUS_M := 2000.0
 const GameSettings := preload("res://scripts/core/game_settings.gd")

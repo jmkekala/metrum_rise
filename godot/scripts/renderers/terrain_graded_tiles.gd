@@ -20,8 +20,13 @@
 ## with the edit's batch instead of rebaking, and the batch releases the preview tiles of the
 ## epoch the commit adopted, in the same frame.
 ##
+## The tiles' levels by camera distance and their travel buckets are Rust's (GradedTileLevels),
+## and so is the bake queue (TERRAIN-13 part 1): every tile that can install is handed over once,
+## and Rust starts the bakes nearest the camera first within its in-flight bound.
+##
 ## Rust methods called: get_graded_tile_layout(), request_graded_patch_tiles(),
-##   request_graded_tiles(), poll_graded_tile_results(), set_road_preview_terrain_view()
+##   request_graded_tiles(), cancel_graded_tile(), cancel_graded_tile_requests(),
+##   poll_graded_tile_results(), set_road_preview_terrain_view(); GradedTileLevels
 extends RefCounted
 
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -30,12 +35,6 @@ const GRADED_BEHIND_SHADER := preload("res://assets/materials/terrain_graded_beh
 const WALL_SHADER := preload("res://assets/materials/terrain_graded_walls.gdshader")
 const GradedPages := preload("res://scripts/renderers/terrain_graded_pages.gd")
 const TILE_M := 64.0
-# Level distances with their hysteresis (T5, TD10): GL0 to 64 m, GL1 to 128 m, GL2 to 2 km,
-# GL3 beyond, at the patch LOD rule's steps (2 to 5 km, 4 to 12 km, 8 beyond). Tuned by the GPU
-# idle frame in TERRAIN-07-D round 8 (256 and 512 m drew GL0 and GL1 cells down to 1.8 px).
-const LEVEL_END_M := [64.0, 128.0, 2000.0]
-const GL3_STEP_END_M := [[2, 5000.0], [4, 12000.0], [8, INF]]
-const LEVEL_HYSTERESIS_M := 32.0
 # Pages (docs/terrain.md "Pages and the row atlas", T54 (a) and T50 (b), TERRAIN-07-G round 8).
 # GL0 and GL1 have one page each for the world, sized by their bands' bound (the memory table);
 # GL2 and GL3 one per block of patches and level, sized for the block's listed tiles.
@@ -47,7 +46,6 @@ const PAGE_LAYERS_PER_SLOT := 3
 # the instances of each cell MultiMesh (_cells_per_patch). A tile's place in its patch is
 # column + PATCH_TILE_ROW * row in one instance channel (terrain_cells.gdshaderinc).
 const PATCH_TILE_ROW := 32
-const REQUESTS_PER_FRAME := 24
 const INSTALL_BUDGET_MS := 1.0
 const POLL_BATCH := 4
 # The cell meshes of a patch: GL0-GL3 (0-3), the base cells (CELL_BASE) and GL0-GL3 of the tiles
@@ -70,7 +68,8 @@ const MAX_WALLS_PER_PATCH := 256
 const HIDDEN_RANGE_M := 0.001
 const WALL_FACE_FLOATS := 8
 const SIDE_OFFSETS := [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]
-# Every (level code, GL3 step) a tile can be requested at.
+# Every (level code, GL3 step) a tile can be requested at, in the order of request_graded_tiles'
+# replaced-request codes.
 const LEVEL_STEPS := [Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 2), Vector2i(3, 4), Vector2i(3, 8)]
 
 var simulation_node: Node
@@ -204,11 +203,14 @@ var unbudgeted := false
 ## (_block_lists_pending).
 var residency_settling := false
 var _uniform_names: PackedStringArray = PackedStringArray()
-# Tile key -> {level: Vector2i(code, step), token, bucket}: every tile a resident patch's list
-# names. It follows the changes: a patch entering, leaving or getting a new list adds and
-# removes its own tiles (each tile counts the lists naming it, in _tile_lists, and the patch's
-# counted tiles are kept in _counted), and a camera move re-levels only the tiles due (T26).
-var _desired: Dictionary = {}
+# The desired tiles (Rust's GradedTileLevels): every tile a resident patch's list names, at its
+# distance's level (GL0 to 64 m, GL1 to 128 m, GL2 to 2 km, GL3 beyond at steps 2, 4, 8; T5, TD10)
+# with hysteresis around the level it is installed at. It follows the changes: a patch entering,
+# leaving or getting a new list adds and removes its own tiles (each tile counts the lists naming
+# it, in _tile_lists, and the patch's counted tiles are kept in _counted), and a camera move
+# re-levels only the tiles due (its travel buckets, T26). A desired tile's token is its
+# tile_tokens entry (0 before any edit).
+var _levels: GradedTileLevels = GradedTileLevels.new()
 var _tile_lists: Dictionary = {}
 var _counted: Dictionary = {}
 # The counts _recount queued that are not applied yet, in order, as (x, z, +1 or -1): the poll
@@ -217,20 +219,12 @@ var _counted: Dictionary = {}
 # 10). _counted already holds what they count to.
 var _counts: Array[Vector3i] = []
 var _counts_next := 0
-# The camera (XZ, with its height above the ground as y) and the distance it has travelled since
-# setup. A tile's distance changes by at most the camera's travel, so a tile levelled at travel t
-# with its distance m from the nearest distance where its level can change keeps its level until
-# the travel reaches t + m: it waits in bucket floor((t + m) / LEVEL_BUCKET_M) (bucket -> {tile:
-# true}), and a frame re-levels the buckets the travel has reached since the last, its own
-# included. Exact: every desired tile has its distance's level in every frame.
+# The last camera (XZ, with its height above the ground as y), and the level rule's ends the
+# road preview's view takes (GradedTileLevels').
 var _camera := Vector3.ZERO
 var _camera_set := false
-var _travel := 0.0
-var _buckets: Dictionary = {}
-var _bucket_first := 0
-const LEVEL_BUCKET_M := 8.0
-# The distances are float64 from float32 positions; their rounding is far below this.
-const LEVEL_MARGIN_SLACK_M := 1e-6
+var _level_end_m := PackedFloat64Array()
+var _gl3_end_m := PackedFloat64Array()
 # A patch's cells change per tile (T26): tiles whose instance or a side's code may have changed
 # this frame (a tile installed at a new slot or lattice or evicted, with its four neighbours; the
 # tiles along a patch whose residency or step changed).
@@ -238,11 +232,20 @@ var _dirty_cell_tiles: Dictionary = {}
 # Patch key -> the LOD step of each resident patch, to tell a step change from other changes.
 var _patch_steps: Dictionary = {}
 # The tiles and patch lists that may need a request: a tile whose desire, level or token
-# changed, whose request failed or did not go out (the per-frame budget or Rust's in-flight
-# bound); a patch that changed or whose list arrived, failed or was not accepted. An idle frame
-# has none.
+# changed, whose request failed or whose page event unblocked it; a patch that changed or whose
+# list arrived, failed or was not accepted. _request_tiles hands every wanted tile over or parks
+# it, so an idle frame has none.
 var _wanted: Dictionary = {}
 var _lists_wanted: Dictionary = {}
+# Tiles whose copy waits for a block page made only once the block's lists are in (PAGE_PENDING):
+# block Vector3i(code, x, z) -> {tile: true}, and tile -> its block. They are wanted again when
+# the block's lists are in (_release_block), not walked every frame. The settle flags they last
+# saw (_block_lists_pending reads them).
+var _page_parked: Dictionary = {}
+var _parked: Dictionary = {}
+var _parked_flags := -1
+# Tile bakes waiting in Rust's queue, as of the last poll.
+var _tiles_pending := 0
 # Patch list requests per frame: Rust holds at most 32 in flight.
 const LIST_REQUESTS_PER_FRAME := 32
 var counters := {
@@ -340,6 +343,8 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	# The base lattice starts at the negative half extents (BaseGrid), in half-metres.
 	lattice_anchor_hm = Vector2i(int(round(-world_size.x)), int(round(-world_size.y)))
 	var layout: Dictionary = simulation_node.get_graded_tile_layout()
+	_level_end_m = GradedTileLevels.level_end_m()
+	_gl3_end_m = GradedTileLevels.gl3_end_m()
 	levels.clear()
 	for level: Dictionary in layout.get("levels", []):
 		levels.append(level)
@@ -844,24 +849,6 @@ func _build_meshes() -> void:
 static func base_code(step: int) -> int:
 	return 3 + int(round(log(float(max(step, 1))) / log(2.0)))
 
-## The level code (0-3) and GL3 step a tile takes at `distance_m`, with hysteresis around its
-## current level.
-func desired_level(distance_m: float, current_code: int) -> Vector2i:
-	var code := 3
-	for index in LEVEL_END_M.size():
-		var end_m: float = LEVEL_END_M[index]
-		if current_code >= 0 and current_code <= index:
-			end_m += LEVEL_HYSTERESIS_M
-		if distance_m < end_m:
-			code = index
-			break
-	if code < 3:
-		return Vector2i(code, 0)
-	for entry: Array in GL3_STEP_END_M:
-		if distance_m < float(entry[1]):
-			return Vector2i(3, int(entry[0]))
-	return Vector2i(3, 8)
-
 # The cell sets' nodes are not reference counted: they go with the renderer (terrain.gd makes a
 # new one per world load and disposes of the last). Before round 6 each load leaked the previous
 # renderer's 1,296 Kuopio sets; until `TERRAIN-07-G` round 10 dispose() freed each set's nodes but
@@ -924,17 +911,20 @@ func clear() -> void:
 	_variant_waits.clear()
 	_preview_waits.clear()
 	_dirty_shown.clear()
-	_desired.clear()
+	_levels.clear()
+	if is_instance_valid(simulation_node):
+		simulation_node.cancel_graded_tile_requests()
 	_tile_lists.clear()
 	_counted.clear()
 	_counts.clear()
 	_counts_next = 0
 	_camera_set = false
-	_travel = 0.0
-	_buckets.clear()
-	_bucket_first = 0
 	_wanted.clear()
 	_lists_wanted.clear()
+	_page_parked.clear()
+	_parked.clear()
+	_parked_flags = -1
+	_tiles_pending = 0
 
 ## Frees the cell sets, which are Nodes detached while pooled (no scene owner frees them).
 ## Renderer replacement and shutdown call it before dropping the renderer; clear() first returns
@@ -992,6 +982,11 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		_take_variant_waits(resident_patches)
 	if not _lists_wanted.is_empty():
 		_request_patch_lists(resident_patches)
+	var flags := int(unbudgeted) * 2 + int(residency_settling)
+	if flags != _parked_flags:
+		_parked_flags = flags
+		for marked: Vector3i in _page_parked.keys():
+			_release_block(marked)
 	if not _wanted.is_empty():
 		_request_tiles()
 	var residency_us := Time.get_ticks_usec()
@@ -1028,8 +1023,8 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 			"flips": _frame_flips, "flip_ms": float(_frame_flip_us) / 1000.0,
 			"lists": _frame_lists, "lists_unchanged": _frame_lists_same,
 			"uploads": int(counters["uploads"]) - uploads_before,
-			"requested": requested.size() - requests_before, "wanted": _wanted.size(),
-			"desired": _desired.size(), "installed": installed.size(),
+			"requested": requested.size() - requests_before, "wanted": wanted_count(),
+			"desired": _levels.size(), "installed": installed.size(),
 		}
 		if perf:
 			counters["frame_parts"] = parts
@@ -1292,6 +1287,7 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 		var poll_start_us := Time.get_ticks_usec()
 		var result: Dictionary = simulation_node.poll_graded_tile_results(POLL_BATCH)
 		counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(Time.get_ticks_usec() - poll_start_us) / 1000.0)
+		_tiles_pending = int(result.get("tiles_pending", 0))
 		for kind: String in RESULT_KINDS:
 			for entry: Dictionary in result.get(kind, []):
 				if progressed and _over_budget(start_us):
@@ -1341,6 +1337,7 @@ func _take_list(list: Dictionary, resident_patches: Dictionary) -> void:
 	_recount(key, resident_patches)
 	# A list baked for an older generation is asked again.
 	_lists_wanted[key] = true
+	_release_patch_blocks(key)
 
 func _over_budget(start_us: int) -> bool:
 	return not unbudgeted and float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS
@@ -1359,6 +1356,7 @@ func _failed(failure: Dictionary) -> void:
 		if not retry:
 			patch_lists_refused[key] = token
 			_dirty_shown[key] = true
+			_release_patch_blocks(key)
 		_lists_wanted[key] = true
 	else:
 		var tile := Vector2i(keys[0], keys[1])
@@ -1465,11 +1463,7 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary, rese
 		_mask_changed(key, resident_patches)
 	# The installed level moves the hysteresis: the tile is levelled again at once. A bake of an
 	# older level or token (the camera moved, an edit dirtied it) still wants one.
-	var want: Dictionary = _desired.get(key, {})
-	if not want.is_empty():
-		_level_tile(key, want)
-		if want["level"] != Vector2i(code, step) or int(want["token"]) != token:
-			_wanted[key] = true
+	_hold(key, code, step, token)
 	# Rewritten in place, the tile keeps its instances; a new slot or lattice rewrites its own
 	# instances and its neighbours' sides, and changed faces the walls of the patches that draw them.
 	if (current.is_empty() or int(current["level"]) != code or int(current["code"]) != cell_code
@@ -1595,12 +1589,18 @@ func _adopt_preview(key: Vector2i, tile: Dictionary) -> bool:
 	counters["edit_adopted"] += 1
 	# As _upload: the installed level moves the hysteresis, and a bake of another level or token
 	# is still wanted.
-	var want: Dictionary = _desired.get(key, {})
-	if not want.is_empty():
-		_level_tile(key, want)
-		if want["level"] != Vector2i(int(tile["level"]), int(tile["step"])) or int(want["token"]) != token:
-			_wanted[key] = true
+	_hold(key, int(tile["level"]), int(tile["step"]), token)
 	return true
+
+# Tile `key` is installed at `code` and `step` with `token`: Rust levels it again with the
+# hysteresis around its new level; a desired tile whose level changed, or whose installed level or
+# token is not the one it wants, wants a bake.
+func _hold(key: Vector2i, code: int, step: int, token: int) -> void:
+	var want := _levels.hold(key, code)
+	if want.x < 0:
+		return
+	if want.z != 0 or Vector2i(want.x, want.y) != Vector2i(code, step) or int(tile_tokens.get(key, 0)) != token:
+		_wanted[key] = true
 
 # Rebakes the tiles an edit dirtied at the level each is held at, installed or in flight.
 func _apply_edit(edit: Dictionary) -> void:
@@ -1636,7 +1636,7 @@ func _apply_edit(edit: Dictionary) -> void:
 	# that list, as a newly graded tile does.
 	for tile: Dictionary in edit.get("staged", []):
 		var key := Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))
-		var held := installed.has(key) or _desired.has(key)
+		var held := installed.has(key) or _levels.has(key)
 		if not held and not (preview.has(key) and bool(tile["graded"])):
 			continue
 		_dirty_tile(key, serial)
@@ -1653,11 +1653,8 @@ func _apply_edit(edit: Dictionary) -> void:
 # batch.
 func _dirty_tile(tile: Vector2i, serial: int) -> void:
 	var token: int = max(int(tile_tokens.get(tile, 0)), serial)
+	_drop_requests(tile)
 	tile_tokens[tile] = token
-	for level: Vector2i in LEVEL_STEPS:
-		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
-		requested.erase(request_key)
-		refused.erase(request_key)
 	if _edit_staged.has(tile):
 		var staged: Dictionary = _edit_staged[tile]
 		_edit_levels[tile] = Vector2i(int(staged["level"]), int(staged["step"]))
@@ -1665,8 +1662,7 @@ func _dirty_tile(tile: Vector2i, serial: int) -> void:
 	if installed.has(tile) or _edit_batch.has(tile):
 		_edit_batch[tile] = token
 		_wanted[tile] = true
-	if _desired.has(tile):
-		_desired[tile]["token"] = token
+	if _levels.has(tile):
 		_wanted[tile] = true
 
 # Records that `tile` found level `code`'s pool exhausted at `request_key` and `token`: counted,
@@ -1740,6 +1736,7 @@ func _walls_changed(key: Vector2i) -> void:
 # its list is asked again if its generation moved, and its cells follow its LOD step.
 func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 	_recount(key, resident_patches)
+	_release_patch_blocks(key)
 	# The cells across its sides stitch to its step, or to their own while it is not resident.
 	var step := int(resident_patches[key]["step"]) if resident_patches.has(key) else -1
 	if step != int(_patch_steps.get(key, -1)):
@@ -1754,7 +1751,7 @@ func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 		# meeting them leaves, using this patch's bounded tile rectangle rather than a world scan.
 		var rect := Rect2(world_min + Vector2(key) * patch_span_m, Vector2.ONE * patch_span_m)
 		for tile: Vector2i in _patch_tiles(rect):
-			if not installed.has(tile) or _desired.has(tile):
+			if not installed.has(tile) or _levels.has(tile):
 				continue
 			var retained := false
 			for neighbour: Vector2i in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
@@ -1827,18 +1824,15 @@ func _apply_count() -> void:
 # A tile some resident patch lists: its level at the camera's distance, with hysteresis around
 # the level it is installed at.
 func _desire(tile: Vector2i) -> void:
-	var want := {"level": Vector2i(-1, -1), "token": int(tile_tokens.get(tile, 0)), "bucket": -1}
-	_desired[tile] = want
-	_level_tile(tile, want)
+	_levels.desire(tile, int(installed.get(tile, {}).get("level", -1)))
 	_wanted[tile] = true
 
 # A tile no resident patch lists any more: its slot is freed and its requests, token and
 # refusals dropped (only held tiles keep a token).
 func _undesire(tile: Vector2i) -> void:
-	if _desired.has(tile):
-		_unbucket(tile, int(_desired[tile]["bucket"]))
-	_desired.erase(tile)
+	_levels.undesire(tile)
 	_wanted.erase(tile)
+	_unpark_tile(tile)
 	if _growth_waits.has(tile):
 		var waiting: Vector3i = _growth_waits[tile]
 		(_block_waiting[waiting.x].get(Vector2i(waiting.y, waiting.z), {}) as Dictionary).erase(tile)
@@ -1855,96 +1849,75 @@ func _undesire(tile: Vector2i) -> void:
 	_edit_staged.erase(tile)
 	_edit_levels.erase(tile)
 	_exhausted.erase(tile)
+	_drop_requests(tile)
+	tile_tokens.erase(tile)
+
+# Drops every request and refusal of `tile`: its bake pending in Rust's queue is cancelled, never
+# baked (one in flight runs on, its result no longer requested).
+func _drop_requests(tile: Vector2i) -> void:
 	for level: Vector2i in LEVEL_STEPS:
 		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
 		requested.erase(request_key)
 		refused.erase(request_key)
-	tile_tokens.erase(tile)
+	simulation_node.cancel_graded_tile(tile)
 
-# The camera's distance to a tile (docs/terrain.md "LOD and distant tiles"): to the tile's centre
-# on the ground under the camera, from the camera's height above that ground, so a camera high
-# over a tile takes the level of its distance, not of its offset along the ground. In float64.
-func _tile_distance(tile: Vector2i) -> float:
-	var dx := (float(tile.x) + 0.5) * TILE_M - _camera.x
-	var dz := (float(tile.y) + 0.5) * TILE_M - _camera.z
-	return sqrt(dx * dx + _camera.y * _camera.y + dz * dz)
-
-# The camera moved: its travel grows by the move and the buckets it reached since the last move
-# are levelled again, the last one included (a tile due within it waits there). O(tiles due +
-# buckets passed).
+# The camera moved: Rust re-levels the tiles due (its travel buckets, T26) and returns those whose
+# level changed, which want a bake at it. The road preview stages its tiles at the same rule's
+# levels, without the hysteresis (T42). A still camera costs nothing; a move O(tiles due + buckets
+# passed) in Rust and O(changed tiles) here.
 func _move_camera(camera_position: Vector3) -> void:
-	if not _camera_set or camera_position != _camera:
-		# The road preview stages its tiles at this rule's levels, without the hysteresis (T42).
-		var gl3_end_m := PackedFloat64Array()
-		for entry: Array in GL3_STEP_END_M:
-			gl3_end_m.append(float(entry[1]))
-		simulation_node.set_road_preview_terrain_view(camera_position, PackedFloat64Array(LEVEL_END_M), gl3_end_m)
-	if not _camera_set:
-		_camera = camera_position
-		_camera_set = true
+	_frame_relevelled = 0
+	if _camera_set and camera_position == _camera:
 		return
-	var dx := float(camera_position.x) - _camera.x
-	var dy := float(camera_position.y) - _camera.y
-	var dz := float(camera_position.z) - _camera.z
-	var moved := sqrt(dx * dx + dy * dy + dz * dz)
-	if moved == 0.0:
-		return
+	simulation_node.set_road_preview_terrain_view(camera_position, _level_end_m, _gl3_end_m)
 	_camera = camera_position
-	_travel += moved
-	var last := int(floor(_travel / LEVEL_BUCKET_M))
-	for bucket in range(_bucket_first, last + 1):
-		if not _buckets.has(bucket):
-			continue
-		var tiles: Dictionary = _buckets[bucket]
-		_buckets.erase(bucket)
-		for tile: Vector2i in tiles.keys():
-			var want: Dictionary = _desired[tile]
-			want["bucket"] = -1
-			_level_tile(tile, want)
-			_frame_relevelled += 1
-	_bucket_first = last
+	_camera_set = true
+	var changed := _levels.move_camera(camera_position)
+	for index in range(0, changed.size(), 2):
+		_wanted[Vector2i(changed[index], changed[index + 1])] = true
+	_frame_relevelled = _levels.relevelled()
 
-# A desired tile's level at the camera's distance, with hysteresis around its installed level (a
-# tile whose level changed wants a bake at it), and its bucket: the travel at which its distance
-# can first reach a distance where that level changes.
-func _level_tile(tile: Vector2i, want: Dictionary) -> void:
-	var distance := _tile_distance(tile)
-	var current_code := int(installed.get(tile, {}).get("level", -1))
-	var level := desired_level(distance, current_code)
-	if level != want["level"]:
-		want["level"] = level
-		_wanted[tile] = true
-	var margin: float = max(_level_margin(distance, current_code) - LEVEL_MARGIN_SLACK_M, 0.0)
-	var bucket := int(floor((_travel + margin) / LEVEL_BUCKET_M))
-	if bucket == int(want["bucket"]):
-		return
-	_unbucket(tile, int(want["bucket"]))
-	if not _buckets.has(bucket):
-		_buckets[bucket] = {}
-	_buckets[bucket][tile] = true
-	want["bucket"] = bucket
+# Parks `tile`, whose copy waits for block `block`'s page at level `code` (PAGE_PENDING), until the
+# block's lists are in.
+func _park_tile(tile: Vector2i, code: int, block: Vector2i) -> void:
+	_unpark_tile(tile)
+	var marked := Vector3i(code, block.x, block.y)
+	if not _page_parked.has(marked):
+		_page_parked[marked] = {}
+	_page_parked[marked][tile] = true
+	_parked[tile] = marked
 
-func _unbucket(tile: Vector2i, bucket: int) -> void:
-	if not _buckets.has(bucket):
+func _unpark_tile(tile: Vector2i) -> void:
+	if not _parked.has(tile):
 		return
-	var tiles: Dictionary = _buckets[bucket]
+	var marked: Vector3i = _parked[tile]
+	_parked.erase(tile)
+	var tiles: Dictionary = _page_parked[marked]
 	tiles.erase(tile)
 	if tiles.is_empty():
-		_buckets.erase(bucket)
+		_page_parked.erase(marked)
 
-# The distance from `distance_m` to the nearest distance at which desired_level(_, current_code)
-# changes value: each level's end, with the hysteresis desired_level adds around the installed
-# level, and the GL3 steps' ends.
-func _level_margin(distance_m: float, current_code: int) -> float:
-	var margin := INF
-	for index in LEVEL_END_M.size():
-		var end_m: float = LEVEL_END_M[index]
-		if current_code >= 0 and current_code <= index:
-			end_m += LEVEL_HYSTERESIS_M
-		margin = min(margin, abs(distance_m - end_m))
-	for entry: Array in GL3_STEP_END_M:
-		margin = min(margin, abs(distance_m - float(entry[1])))
-	return margin
+# Patch `key`'s list arrived or was refused, or its residency changed: the parked tiles of its
+# blocks are wanted again once those blocks' lists are in. O(block patches) per parked block.
+func _release_patch_blocks(key: Vector2i) -> void:
+	if _page_parked.is_empty():
+		return
+	for code in [2, 3]:
+		var block := _block_of(key, code)
+		_release_block(Vector3i(code, block.x, block.y))
+
+func _release_block(marked: Vector3i) -> void:
+	if not _page_parked.has(marked) or _block_lists_pending(marked.x, Vector2i(marked.y, marked.z)):
+		return
+	for tile: Vector2i in _page_parked[marked]:
+		_parked.erase(tile)
+		_wanted[tile] = true
+	_page_parked.erase(marked)
+
+## The tiles that want a bake and have none started: wanted, parked on a page, or pending in
+## Rust's queue (as of the last poll).
+func wanted_count() -> int:
+	return _wanted.size() + _parked.size() + _tiles_pending
 
 # Asks for the lists of the wanted patches whose list is not of their generation, not in flight
 # and not refused at it, within Rust's in-flight bound; the rest stay wanted.
@@ -1973,23 +1946,27 @@ func _request_patch_lists(resident_patches: Dictionary) -> void:
 			patch_lists_requested.erase(key)
 			_lists_wanted[key] = true
 
-# Asks for the wanted tiles that are not installed at their level and token, not in flight and
-# not refused at that token, closest first within the per-frame budget. O(wanted tiles).
+# Hands every wanted tile that is not installed at its level and token, not requested or refused
+# at that token and not blocked on a page to Rust's queue, which starts the bakes nearest the
+# camera first as its in-flight places free (TERRAIN-13 part 1). A newer request replaces the
+# tile's pending one, never baked: its request key goes. A tile blocked on a page waits for the
+# event that unblocks it: its block's move (_end_waits), a freed slot of its exhausted level
+# (_free_copy) or its block's lists (_release_block). Every wanted tile leaves _wanted.
+# O(wanted tiles), each once per change.
 func _request_tiles() -> void:
-	var wanted: Array = []
+	var flat := PackedInt64Array()
+	var sent: Array[Array] = []
 	for tile: Vector2i in _wanted.keys():
-		var want: Dictionary = _desired.get(tile, {})
-		if want.is_empty():
+		_wanted.erase(tile)
+		var level := _levels.level_of(tile)
+		if level.x < 0:
 			# A committed apron tile can be installed without ever appearing in a patch list.
 			# It still needs invalidation while resident; otherwise its edit batch never finishes.
 			var held: Dictionary = installed.get(tile, {})
 			if held.is_empty() and not _edit_levels.has(tile):
-				_wanted.erase(tile)
 				continue
-			var held_level: Vector2i = _edit_levels[tile] if held.is_empty() else Vector2i(int(held["level"]), int(held["step"]))
-			want = {"level": held_level, "token": int(tile_tokens.get(tile, 0))}
-		var level: Vector2i = want["level"]
-		var token := int(want["token"])
+			level = _edit_levels[tile] if held.is_empty() else Vector2i(int(held["level"]), int(held["step"]))
+		var token := int(tile_tokens.get(tile, 0))
 		var current: Dictionary = installed.get(tile, {})
 		if (
 			not current.is_empty()
@@ -1998,20 +1975,16 @@ func _request_tiles() -> void:
 			and int(current["token"]) == token
 			and _tile_complete(tile, current)
 		):
-			_wanted.erase(tile)
 			continue
 		# A tile waiting for its block's larger page is asked again when the block moves.
 		if _growth_waits.has(tile):
-			_wanted.erase(tile)
 			continue
 		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
 		if int(requested.get(request_key, -1)) == token or int(refused.get(request_key, -1)) == token:
-			_wanted.erase(tile)
 			continue
 		var exhausted: Array = _exhausted.get(tile, [])
 		if not exhausted.is_empty() and String(exhausted[1]) == request_key and int(exhausted[2]) == token:
 			if not bool(exhausted[3]):
-				_wanted.erase(tile)
 				continue
 		else:
 			_exhausted.erase(tile)
@@ -2027,8 +2000,8 @@ func _request_tiles() -> void:
 				continue
 			blocked = true
 			if page_id == PAGE_PENDING:
-				# Its block's lists are not all in: it stays wanted for a later frame.
-				pass
+				# Its block's lists are not all in.
+				_park_tile(tile, level.x, pair[1])
 			elif not page.is_empty() and _wait_or_grow(level.x, pair[1], page_id, 0):
 				_wait_for_growth(tile, level.x, pair[1])
 			else:
@@ -2036,22 +2009,22 @@ func _request_tiles() -> void:
 			break
 		if blocked:
 			continue
-		wanted.append([_tile_distance(tile), tile, level, token, request_key])
-	if wanted.is_empty():
+		flat.append_array(PackedInt64Array([tile.x, tile.y, level.x, level.y, token]))
+		sent.append([tile, request_key, token])
+	if sent.is_empty():
 		return
-	wanted.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
-	var sent := wanted.slice(0, REQUESTS_PER_FRAME)
-	var flat := PackedInt64Array()
-	for entry: Array in sent:
-		var tile: Vector2i = entry[1]
-		var level: Vector2i = entry[2]
-		flat.append_array(PackedInt64Array([tile.x, tile.y, level.x, level.y, entry[3]]))
-	# Rust queues what fits its in-flight budget; the rest stays wanted for a later frame.
+	# 0: not queued (an unknown level); 1: queued; 2 + k: queued in place of the tile's pending
+	# request at LEVEL_STEPS[k], which Rust drops unbaked.
 	var accepted: PackedByteArray = simulation_node.request_graded_tiles(flat)
 	for index in sent.size():
-		if index < accepted.size() and accepted[index] != 0:
-			requested[sent[index][4]] = sent[index][3]
-			_wanted.erase(sent[index][1])
+		var code := int(accepted[index]) if index < accepted.size() else 0
+		if code == 0:
+			continue
+		var tile: Vector2i = sent[index][0]
+		if code >= 2:
+			var replaced: Vector2i = LEVEL_STEPS[code - 2]
+			requested.erase("%d,%d,%d,%d" % [tile.x, tile.y, replaced.x, replaced.y])
+		requested[sent[index][1]] = sent[index][2]
 
 # The tiles whose interior meets a patch rectangle.
 static func _patch_tiles(rect: Rect2) -> Array[Vector2i]:
@@ -2504,15 +2477,17 @@ func _draw_state(key: Vector2i, patch: Dictionary, cells: Dictionary) -> int:
 # its level's pool is exhausted (T23). Its patch's set draws without it (a base cell; both are
 # counted and logged errors).
 func _refused_at_level(tile: Vector2i) -> bool:
-	var want: Dictionary = _desired.get(tile, {})
-	if want.is_empty():
+	if refused.is_empty() and not _exhausted.has(tile):
 		return false
-	var level: Vector2i = want["level"]
+	var level := _levels.level_of(tile)
+	if level.x < 0:
+		return false
+	var token := int(tile_tokens.get(tile, 0))
 	var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
 	var exhausted: Array = _exhausted.get(tile, [])
-	if not exhausted.is_empty() and String(exhausted[1]) == request_key and int(exhausted[2]) == int(want["token"]):
+	if not exhausted.is_empty() and String(exhausted[1]) == request_key and int(exhausted[2]) == token:
 		return true
-	return int(refused.get(request_key, -1)) == int(want["token"])
+	return int(refused.get(request_key, -1)) == token
 
 # Patch `key` draws what _draw_state says: its set shown (its meshes and instance uniforms set, its
 # materials bound and synced where its watched parameters moved) or hidden, waiting kept current
@@ -2637,7 +2612,7 @@ func cell_builds_pending() -> int:
 	return _builds.size() + _builds_urgent.size()
 
 ## Whether queued work will change what the graded cells draw without a new input: tile or list
-## requests in flight or waiting for Rust's in-flight bound, counts, results deferred past a
+## requests pending or in flight in Rust, tiles parked on a block's page, counts, results deferred past a
 ## frame's budget, an edit batch waiting for its tiles, a resident patch drawing nothing (T53
 ## (a)), and the cell set builds of patches a shown tile waits for or whose list names a tile (a
 ## set whose patch lists none stays hidden when built, so its build changes nothing drawn).
@@ -2647,7 +2622,7 @@ func cell_builds_pending() -> int:
 func has_pending_work() -> bool:
 	if not (
 		requested.is_empty() and patch_lists_requested.is_empty() and _lists_wanted.is_empty()
-		and _counts.is_empty() and _wanted.is_empty() and _deferred.is_empty()
+		and _counts.is_empty() and _wanted.is_empty() and _page_parked.is_empty() and _deferred.is_empty()
 		and _edit_batch.is_empty() and _builds_urgent.is_empty() and _unready.is_empty()
 		and _growth_waits.is_empty() and _variants_wanted.is_empty() and _variant_waits.is_empty()
 		and _preview_waits.is_empty()
@@ -3123,14 +3098,9 @@ func get_pool_counters() -> Dictionary:
 	out["cell_builds_queued"] = _builds.size() + _builds_urgent.size()
 	out["cell_sets_free"] = _cells_pool.size()
 	out["refused"] = refused.size() + patch_lists_refused.size()
-	out["desired"] = _desired.size()
+	out["desired"] = _levels.size()
 	# Tiles waiting for a slot of their level's exhausted pool (T23), and the desired tiles per
 	# wanted level code (the pools' demand).
 	out["exhausted"] = _exhausted.size()
-	var demand := [0, 0, 0, 0]
-	for want: Dictionary in _desired.values():
-		var level: Vector2i = want["level"]
-		if level.x >= 0:
-			demand[level.x] += 1
-	out["desired_by_level"] = demand
+	out["desired_by_level"] = Array(_levels.count_by_code())
 	return out

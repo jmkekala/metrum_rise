@@ -200,10 +200,12 @@ func _check_moving_camera(graded: GradedTiles, resident: Dictionary) -> void:
 			camera.y = move_toward(camera.y, target_height, 40.0)
 			_frame(graded, camera, resident)
 			await process_frame
-			for tile: Vector2i in graded._desired.keys():
+			# Rust's levels against its rule evaluated directly, at the levels GDScript installed.
+			var desired: PackedInt32Array = graded._levels.tiles()
+			for index in range(0, desired.size(), 2):
+				var tile := Vector2i(desired[index], desired[index + 1])
 				var installed: Dictionary = graded.installed.get(tile, {})
-				var level: Vector2i = graded.desired_level(graded._tile_distance(tile), int(installed.get("level", -1)))
-				if graded._desired[tile]["level"] != level:
+				if graded._levels.level_of(tile) != graded._levels.rule_level(tile, int(installed.get("level", -1))):
 					exact = false
 		_expect(await _settle(graded, camera, resident), "the tiles settle at %.0f m" % target_height)
 		for tile: Vector2i in graded.installed.keys():
@@ -349,6 +351,12 @@ class RefusingBridge extends Node:
 		return accepted
 
 	func set_road_preview_terrain_view(_camera: Vector3, _level_end_m: PackedFloat64Array, _gl3_end_m: PackedFloat64Array) -> void:
+		pass
+
+	func cancel_graded_tile(_tile: Vector2i) -> void:
+		pass
+
+	func cancel_graded_tile_requests() -> void:
 		pass
 
 	func poll_graded_tile_results(_max_tiles: int) -> Dictionary:
@@ -898,7 +906,7 @@ func _check_road_preview(graded: GradedTiles, simulation: SimulationNode, camera
 	_mark_changed(resident)
 	_expect(await _settle(graded, camera, resident), "the residency settles after the commit")
 	for key: Vector2i in shown:
-		_expect(graded._desired.has(key), "the committed tile %s is listed" % key)
+		_expect(graded._levels.has(key), "the committed tile %s is listed" % key)
 	for key: Vector2i in graded.patch_cells.keys():
 		_check_cells(graded, key, resident)
 

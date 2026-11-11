@@ -16,6 +16,11 @@
 ## (METRUM_DEBUG_PERF=1, shares only) that frame's PerfDebug records. "Settled" means the gameplay
 ## harness's idle state, `terrain.is_render_settled()` and no vegetation upload pending, for
 ## SETTLED_FRAMES frames in a row. `./run.sh --benchmark-stream` runs it pinned and isolated.
+## With METRUM_STREAM_DIGESTS=1 (an untimed run: it reads the pages back) every settle point
+## records the graded tiles' product in `graded_digests`: per installed tile its level, step,
+## token, flag, walls and the bytes of each of its copies (the slot layer with its run's place in
+## the header masked, and the run), so two builds' settled installs compare by digest whatever
+## slots they took (`RENDER-32-B`).
 extends RefCounted
 
 const SCHEMA_VERSION := 1
@@ -52,6 +57,8 @@ var _viewport_rid: RID
 var _scripts := false
 var _last_us := 0
 var _previous_streams: Dictionary
+var _digests := false
+var _settle_points := 0
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -75,12 +82,13 @@ func run(bench: Node) -> void:
 	if not turn_text.is_empty():
 		turns = Array(turn_text.split(",", false)).map(func(token: String) -> float: return float(token))
 	_scripts = PerfDebug.is_enabled()
+	_digests = OS.get_environment("METRUM_STREAM_DIGESTS") == "1"
 	_report = {
 		"schema_version": SCHEMA_VERSION, "benchmark": "stream", "success": false, "mode": bench.mode,
 		"runtime": bench._runtime_metadata(), "save_path": OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH"),
 		"world_path": bench.world_path, "simulation_speed": float(OS.get_environment("METRUM_STREAM_SPEED")),
 		"pitch_radians": PITCH_RAD, "distance_m": DISTANCE_M, "phases": phases, "turn_durations_s": turns,
-		"perf_records": _scripts, "load": {}, "samples": [],
+		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [],
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
 	bench._metrics = _report
@@ -243,7 +251,57 @@ func _wait_settled(bench: Node) -> bool:
 			return false
 		await bench.get_tree().process_frame
 		stable = stable + 1 if _is_settled(bench) else 0
+	_record_digest("settled")
 	return true
+
+# The graded tiles' settled product (METRUM_STREAM_DIGESTS=1), as the header describes. Reads
+# every copy back from its page: a settle point costs seconds, so timed runs leave it off.
+func _record_digest(label: String) -> void:
+	if not _digests:
+		return
+	_settle_points += 1
+	var tiles: Variant = _terrain.graded_tiles
+	if tiles == null:
+		return
+	var lines := PackedStringArray()
+	var by_tile := {}
+	var keys: Array = tiles.installed.keys()
+	keys.sort()
+	for tile: Vector2i in keys:
+		var entry: Dictionary = tiles.installed[tile]
+		var copies := PackedStringArray()
+		for page_id: int in entry["copies"]:
+			var page: Dictionary = tiles.page_store.by_id[page_id]
+			var copy: Vector3i = entry["copies"][page_id]
+			var side := int(tiles.page_store.levels[int(page["code"])]["side"])
+			var texels: PackedByteArray = tiles.page_store.layer_data(page, true, copy.x).duplicate()
+			# The header's first channel is the copy's first atlas layer: a place, not a product.
+			texels.encode_float(side * side * 16, 0.0)
+			var rows := PackedByteArray()
+			for index in copy.z:
+				rows.append_array(tiles.page_store.layer_data(page, false, copy.y + index))
+			copies.append("%s/%s" % [_sha(texels), _sha(rows)])
+		var unique := {}
+		for text in copies:
+			unique[text] = true
+		var hashes: Array = unique.keys()
+		hashes.sort()
+		var line := "%d,%d,%d,%d,%d,%s,%s,%s" % [tile.x, tile.y, int(entry["level"]), int(entry["step"]),
+			int(entry["token"]), str(bool(entry["behind"])), _sha((entry["walls"] as PackedFloat32Array).to_byte_array()),
+			"+".join(PackedStringArray(hashes))]
+		lines.append(line)
+		by_tile["%d,%d" % [tile.x, tile.y]] = line
+	var camera: Vector3 = _terrain.get_viewport().get_camera_3d().global_position
+	_report.graded_digests.append({"point": _settle_points, "label": label,
+		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
+		"camera": [camera.x, camera.y, camera.z], "tiles": lines.size(),
+		"digest": _sha("\n".join(lines).to_utf8_buffer()), "by_tile": by_tile})
+
+static func _sha(bytes: PackedByteArray) -> String:
+	var context := HashingContext.new()
+	context.start(HashingContext.HASH_SHA256)
+	context.update(bytes)
+	return context.finish().hex_encode()
 
 # Starts a sample: drops the perf records and the counters' history from before it.
 func _begin() -> Array:
@@ -317,6 +375,8 @@ func _capture_until_settled(bench: Node, label: String, max_frames: int, start: 
 			stable = 0
 	var sample := _finish(label, 0.0, rows)
 	sample.merge({"settled": stable >= SETTLED_FRAMES, "settle_ms": settle_ms, "settle_frames": settle_frames})
+	if stable >= SETTLED_FRAMES:
+		_record_digest(label)
 	return sample
 
 func _row(index: int) -> Dictionary:
@@ -398,7 +458,10 @@ func _streams() -> Dictionary:
 	if tiles != null:
 		for key: String in ["uploads", "same_level_uploads", "unready_in_view", "pool_exhausted"]:
 			graded[key] = tiles.counters.get(key, 0)
-		graded.merge({"wanted": tiles._wanted.size(), "desired": tiles._desired.size(),
+		# A control build before RENDER-32-B keeps its levels and wanted tiles in GDScript.
+		var rust_levels: bool = tiles.has_method("wanted_count")
+		graded.merge({"wanted": tiles.wanted_count() if rust_levels else tiles._wanted.size(),
+			"desired": tiles._levels.size() if rust_levels else tiles._desired.size(),
 			"installed": tiles.installed.size(), "requested": tiles.requested.size(),
 			"cell_builds_pending": tiles.cell_builds_pending()})
 	var lods: Variant = _buildings.lod_renderer
