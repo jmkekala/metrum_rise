@@ -55,7 +55,11 @@ releases by hand.
 | `MetrumRise-macos-universal.zip` | `Metrum Rise.app`, bundle ID `com.metrumrise.game`, ad-hoc signed |
 
 - The macOS bundle ID is fixed: a change makes macOS treat the game as a different app.
-- Builds are unsigned. Windows shows SmartScreen; macOS needs approval under Privacy & Security.
+- Builds are unsigned. Windows shows SmartScreen (More info → Run anyway). macOS blocks a
+  downloaded copy ("Apple could not verify…") until the player picks Open Anyway under System
+  Settings → Privacy & Security; only signing and notarization through a paid Apple Developer
+  account would avoid that.
+- macOS minimums come from Godot's templates: macOS 13 on Apple silicon, 11 on Intel.
 - Players keep saves and packs in `user://`, so an update replaces only the game folder.
 - About 500 MB compressed per platform; 4K textures in `assets/textures/general` are most of it.
 - Extra content packs are shared separately as `.metrum.zip` (`TOOLS-09`/`TOOLS-10`).
@@ -88,8 +92,15 @@ The smoke jobs check out only `tools/ci`, so a path baked in at compile time can
 takes well under a minute per platform. Locally, hide the checkout the same way (for example with
 `bwrap --tmpfs <checkout>`) and keep Godot on an isolated profile.
 
-Not covered: macOS (no Mac runner smoke test yet), real Windows, GPU rendering, and play beyond
-starting a city. A person tries each platform's package before announcing a release.
+Not covered in CI: macOS (no Mac runner smoke test yet), real Windows, GPU rendering, and play
+beyond starting a city. A person tries each platform's package before announcing a release.
+
+First manual check (2026-11-11, test packages of runs 42878759282/42885365956): on an M2 Pro the
+macOS package's checksum, bundle ID, universal executable and library, ad-hoc signature
+(`codesign --verify --deep --strict`) and this smoke test ported to macOS passed for both worlds
+on arm64 and for `test` under Rosetta, and the game played in a window. The Windows package ran
+and played on Windows. Test builds show version `1.0.0` on macOS because `test-<sha7>` is not a
+valid bundle version; `main` builds carry `YYYY.M.N`.
 
 ## When Godot or Rust changes
 

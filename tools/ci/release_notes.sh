@@ -29,4 +29,4 @@ else
   fi
 fi
 echo
-echo "The builds are not signed. Windows shows a SmartScreen warning (More info → Run anyway); on macOS, allow the app under System Settings → Privacy & Security."
+echo "The builds are not signed. Windows shows a SmartScreen warning (More info → Run anyway); on macOS, choose Open Anyway under System Settings → Privacy & Security."
