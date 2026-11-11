@@ -87,7 +87,11 @@ const BAND_HYSTERESIS_M := 64.0
 # Rust's background pool (`RENDER-32-D`), so only the node creation is paid here. Products are
 # taken twice a frame: in `_process`, and again just before the frame draws, which installs the
 # patches requested earlier in the same frame whose products the workers finished meanwhile.
-const INSTALL_BUDGET_USEC := 1000
+const INSTALL_BUDGET_USEC := 800
+# A patch installs in slices of about this much main-thread time, hidden until its last batch is
+# in, so no single unit of vegetation work holds the frame for long however many batches a patch
+# has (`RENDER-32-D`'s 2 ms bar; the pools of `RENDER-32-E` replace the node creation).
+const INSTALL_SLICE_USEC := 600
 
 ## Whether a patch casts. A canopy tree casts from its branched level within
 ## TreeSpecies.TREE_SHADOW_HANDOVER_M of the camera and from its impostor's silhouette, faced to
@@ -164,11 +168,16 @@ var _poll_us := 0
 # The longest single main-thread vegetation unit this frame (a request, or a poll and its
 # install), microseconds.
 var _unit_max_us := 0
+var _request_max_us := 0
 # This frame's installs and the microseconds they took, against INSTALL_BUDGET_USEC, and the
 # products that came back busy (their worker never got the core).
 var _frame_busy := 0
 var _frame_installs := 0
 var _frame_install_us := 0
+# Installs under way, by key (the request, the product, the hidden patch node and the next
+# batch), and their keys oldest first.
+var _installing: Dictionary = {}
+var _install_order: Array[Vector3i] = []
 # This frame's perf record, written by `_process` and completed before the draw.
 var _frame_record: Dictionary = {}
 # The mesh catalogue packed for the product; see _product_catalogue.
@@ -206,7 +215,8 @@ func _install_before_draw() -> void:
 		var details: Dictionary = _frame_record["details"]
 		details.merge({"pre_draw_ms": pre_draw_ms, "pre_draw_installs": installs,
 			"uploads": int(details["uploads"]) + installs, "poll_ms": float(_poll_us) / 1000.0,
-			"upload_max_ms": float(_unit_max_us) / 1000.0, "busy": _frame_busy}, true)
+			"upload_max_ms": float(_unit_max_us) / 1000.0, "busy": _frame_busy,
+			"request_max_ms": float(_request_max_us) / 1000.0}, true)
 		PerfDebug.record("vegetation", float(_frame_record["elapsed_ms"]) + pre_draw_ms, details)
 	_frame_record = {}
 
@@ -276,6 +286,8 @@ func rebuild_from_simulation_state() -> void:
 	queued.clear()
 	requested.clear()
 	simulation.clear_vegetation_requests()
+	for key in _installing.keys():
+		_drop_install(key)
 	stale_land_epoch = -1
 	_vegetation_generations.clear()
 	_generations_epoch = -1
@@ -311,6 +323,7 @@ func _process(_delta: float) -> void:
 	var start_us := Time.get_ticks_usec()
 	_poll_us = 0
 	_unit_max_us = 0
+	_request_max_us = 0
 	_frame_installs = 0
 	_frame_install_us = 0
 	_frame_busy = 0
@@ -378,6 +391,9 @@ func _process(_delta: float) -> void:
 			if not wanted.has(key):
 				simulation.cancel_vegetation_patch(key)
 				requested.erase(key)
+		for key in _installing.keys():
+			if not wanted.has(key):
+				_drop_install(key)
 		for key in wanted:
 			if patches.has(key):
 				continue
@@ -455,6 +471,7 @@ func _process(_delta: float) -> void:
 			_queue_patch(next)
 			break
 		_unit_max_us = maxi(_unit_max_us, Time.get_ticks_usec() - one_start)
+		_request_max_us = maxi(_request_max_us, Time.get_ticks_usec() - one_start)
 		budget -= 1
 		requests += 1
 	var installs := _poll_products()
@@ -692,7 +709,8 @@ func _restore_patch(key: Vector3i) -> void:
 	tree_count += int(patch.get_meta("tree_count"))
 
 func has_pending_work() -> bool:
-	return enabled and (last_revision == -1 or not queue.is_empty() or not requested.is_empty())
+	return enabled and (last_revision == -1 or not queue.is_empty() or not requested.is_empty()
+		or not _installing.is_empty())
 
 func metrics() -> Dictionary:
 	return {"enabled": enabled, "resident_patches": patches.size(), "resident_trees": tree_count,
@@ -770,17 +788,34 @@ func _request_changed(key: Vector3i, distance: float) -> bool:
 		or bands[0] != bool(request["understory"]) or bands[1] != bool(request["near_band"])
 		or bands[2] != int(request["shadow_caster"]))
 
-## Takes finished products from Rust and installs those of live requests while the frame's
-## install time stays under `limit_us` (the frame's first install always runs). A product that
-## comes back busy (the simulation held its lock) is queued again. Returns the installs.
+## Takes finished products from Rust and installs them, a slice at a time, while the frame's
+## install time stays under `limit_us` (the frame's first slice always runs). Installs already
+## under way continue first, oldest first. A product that comes back busy (the simulation held
+## its lock) is queued again. Returns the installs completed.
 func _poll_products(limit_us: int = INSTALL_BUDGET_USEC) -> int:
 	var installs := 0
 	while _frame_installs == 0 or _frame_install_us < limit_us:
 		var one_start := Time.get_ticks_usec()
-		var result: Dictionary = simulation.poll_vegetation_product()
-		_poll_us += Time.get_ticks_usec() - one_start
-		if result.is_empty():
+		if _install_order.is_empty() and not _start_next_install():
 			break
+		var done := _advance_install(_install_order[0], INSTALL_SLICE_USEC)
+		var spent := Time.get_ticks_usec() - one_start
+		_unit_max_us = maxi(_unit_max_us, spent)
+		_frame_install_us += spent
+		_frame_installs += 1
+		if done:
+			installs += 1
+	return installs
+
+## Takes the next finished product of a live request from Rust and starts its install. False
+## when Rust holds none.
+func _start_next_install() -> bool:
+	while true:
+		var poll_start := Time.get_ticks_usec()
+		var result: Dictionary = simulation.poll_vegetation_product()
+		_poll_us += Time.get_ticks_usec() - poll_start
+		if result.is_empty():
+			return false
 		var key: Vector3i = result["key"]
 		var request: Dictionary = requested.get(key, {})
 		if request.is_empty() or int(request["serial"]) != int(result["serial"]):
@@ -791,27 +826,44 @@ func _poll_products(limit_us: int = INSTALL_BUDGET_USEC) -> int:
 			_queue_patch(key)
 			continue
 		_install_product(key, request, result)
-		var spent := Time.get_ticks_usec() - one_start
-		_unit_max_us = maxi(_unit_max_us, spent)
-		_frame_install_us += spent
-		_frame_installs += 1
-		installs += 1
-	return installs
+		return true
+	return false
 
-## Installs a requested patch's product: one node per batch, in the product's order, replacing
-## the patch's previous version in the same frame.
+## Starts installing a requested patch's product: a hidden patch node that the next slices
+## fill with one node per batch, in the product's order (_advance_install). A newer product
+## for the same key replaces an install still under way.
 func _install_product(key: Vector3i, request: Dictionary, product: Dictionary) -> void:
-	var start := Time.get_ticks_usec()
+	_drop_install(key)
 	var origin: Vector2 = request["origin"]
-	var caster: int = request["shadow_caster"]
 	var patch := Node3D.new()
 	patch.position = Vector3(origin.x, 0.0, origin.y)
+	patch.visible = false
 	add_child(patch)
+	var canopy_box: AABB = product.get("canopy_box", AABB())
+	# The near canopy's level is chosen before its meshes are set, so each `MultiMesh` takes its
+	# mesh once: a later mesh write recomputes the bounds over every instance of the buffer.
+	var detail := (_near_detail_lod(canopy_box, _camera_position()) if bool(request["near_band"])
+		else DETAIL_FULL)
+	_installing[key] = {"request": request, "product": product, "patch": patch, "next": 0,
+		"detail": detail, "start_us": Time.get_ticks_usec()}
+	_install_order.append(key)
+
+## Adds the next batches of an install under way until `slice_us` is spent (at least one batch),
+## and completes the install once the last is in. Returns whether it completed.
+func _advance_install(key: Vector3i, slice_us: int) -> bool:
+	var start := Time.get_ticks_usec()
+	var entry: Dictionary = _installing[key]
+	var request: Dictionary = entry["request"]
+	var product: Dictionary = entry["product"]
+	var patch: Node3D = entry["patch"]
+	var detail: int = entry["detail"]
+	var caster: int = request["shadow_caster"]
 	var batches: PackedInt32Array = product.get("batches", PackedInt32Array())
 	var bounds: PackedFloat32Array = product.get("bounds", PackedFloat32Array())
 	var buffers: Array = product.get("buffers", [])
+	var batch: int = entry["next"]
 	# Eight ints and fourteen floats a batch; see SimulationNode.build_vegetation_product.
-	for batch in range(batches.size() / 8):
+	while batch < batches.size() / 8 and (batch == entry["next"] or Time.get_ticks_usec() - start < slice_us):
 		var at := batch * 8
 		var species := batches[at]
 		var lod := batches[at + 1]
@@ -820,18 +872,18 @@ func _install_product(key: Vector3i, request: Dictionary, product: Dictionary) -
 		mm.transform_format = MultiMesh.TRANSFORM_3D
 		mm.use_colors = batches[at + 5] == 1
 		mm.use_custom_data = batches[at + 6] == 1
-		# A canopy variant's level is chosen below, once the patch knows where its trees stand.
 		mm.mesh = (TreeSpecies.impostor_mesh() if lod == 2
 			else TreeSpecies.hedge_run_mesh(variant - TreeSpecies.HEDGE_FIRST_VARIANT) if lod == HEDGE_RUN_LOD
-			else meshes[species][variant][DETAIL_FULL])
+			else meshes[species][variant][detail if species < TreeSpecies.BUSH else DETAIL_FULL])
 		mm.instance_count = batches[at + 4]
-		# A shadow caster names its impostor's buffer: packed arrays are copy-on-write, so the
-		# two share the data instead of copying it.
-		mm.buffer = buffers[batches[at + 7]]
 		var box := batch * 14
 		if lod == 2:
 			# The shader moves vertices outside the quad's own bounds; Rust bounds every form.
+			# Set before the buffer, which then has no bounds of its own to compute.
 			mm.custom_aabb = _box(bounds, box)
+		# A shadow caster names its impostor's buffer: packed arrays are copy-on-write, so the
+		# two share the data instead of copying it.
+		mm.buffer = buffers[batches[at + 7]]
 		var instance := _add_instance(patch, mm, species, lod, variant, caster, batches[at + 3] == 1)
 		var shared := _box(bounds, box + 6)
 		if shared.size != Vector3.ZERO:
@@ -841,27 +893,41 @@ func _install_product(key: Vector3i, request: Dictionary, product: Dictionary) -
 		# its shaders instead, and these ranges only bound the patches that take part.
 		instance.visibility_range_begin = bounds[box + 12]
 		instance.visibility_range_end = bounds[box + 13]
+		batch += 1
+	entry["next"] = batch
+	if batch < batches.size() / 8:
+		return false
+	_finish_install(key, entry)
+	return true
+
+## Completes an install: the patch's record, then it shows and its previous version goes in the
+## same frame, so the patch appears whole and an edit does not blank the forest for a frame.
+func _finish_install(key: Vector3i, entry: Dictionary) -> void:
+	_installing.erase(key)
+	_install_order.erase(key)
+	var request: Dictionary = entry["request"]
+	var product: Dictionary = entry["product"]
+	var patch: Node3D = entry["patch"]
 	var count: int = product.get("tree_count", 0)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", request["generation"])
 	patch.set_meta("vegetation_generation", request["vegetation_generation"])
 	patch.set_meta("understory", request["understory"])
 	patch.set_meta("near_band", request["near_band"])
-	patch.set_meta("shadow_caster", caster)
+	patch.set_meta("shadow_caster", request["shadow_caster"])
 	# Every canopy tree origin of the patch in world space, which the detail choice measures.
 	patch.set_meta("canopy_box", product.get("canopy_box", AABB()))
-	patch.set_meta("near_detail_lod", DETAIL_FULL)
+	patch.set_meta("near_detail_lod", entry["detail"])
 	_refresh_near_detail(patch, _camera_position())
 	_refresh_branched_shadow(patch, _camera_position())
-	# Replace in place. The previous node stays visible until this one is in the tree,
-	# so an edit does not blank the surrounding forest for a frame.
+	patch.visible = true
 	if patches.has(key):
 		tree_count -= int(patches[key].get_meta("tree_count"))
 		patches[key].queue_free()
 	patches[key] = patch
 	tree_count += count
 	generated_patches += 1
-	generation_ms_max = maxf(generation_ms_max, float(Time.get_ticks_usec() - start) / 1000.0)
+	generation_ms_max = maxf(generation_ms_max, float(Time.get_ticks_usec() - int(entry["start_us"])) / 1000.0)
 	# The camera or an edit may have moved since the request: a patch whose bands or generations
 	# no longer match is asked for again (the staleness sweep and band scan ran before it drew).
 	var camera_xz := _camera_xz()
@@ -869,6 +935,14 @@ func _install_product(key: Vector3i, request: Dictionary, product: Dictionary) -
 		var distance := _patch_distance(key, simulation.get_terrain_world_size(), camera_xz)
 		if _is_patch_stale(key) or _bands_changed(patch, distance, _key_span(key)):
 			_queue_patch(key)
+
+## Abandons an install under way, freeing its hidden patch.
+func _drop_install(key: Vector3i) -> void:
+	if not _installing.has(key):
+		return
+	_installing[key]["patch"].queue_free()
+	_installing.erase(key)
+	_install_order.erase(key)
 
 func _add_instance(
 	patch: Node3D, mm: MultiMesh, species: int, lod: int, variant: int,
