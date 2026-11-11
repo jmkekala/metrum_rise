@@ -353,8 +353,8 @@ class RefusingBridge extends Node:
 	func set_road_preview_terrain_view(_camera: Vector3, _level_end_m: PackedFloat64Array, _gl3_end_m: PackedFloat64Array) -> void:
 		pass
 
-	func cancel_graded_tile(_tile: Vector2i) -> void:
-		pass
+	func cancel_graded_tile(_tile: Vector2i) -> int:
+		return -1
 
 	func cancel_graded_tile_requests() -> void:
 		pass

@@ -322,6 +322,9 @@ var _frame_walls_us := 0
 var _frame_lists := 0
 var _frame_lists_same := 0
 var _frame_relevelled := 0
+# The wanted tiles _request_tiles took this frame and those it handed to Rust.
+var _frame_considered := 0
+var _frame_handed := 0
 var _frame_cell_tiles := 0
 # Sets that started or stopped drawing, and the time it took, since the counter's reader reset it.
 var _frame_flips := 0
@@ -952,6 +955,8 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	_frame_lists = 0
 	_frame_lists_same = 0
 	_frame_relevelled = 0
+	_frame_considered = 0
+	_frame_handed = 0
 	_frame_cell_tiles = 0
 	_frame_flips = 0
 	_frame_flip_us = 0
@@ -977,7 +982,9 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	counters["install_ms_max"] = max(float(counters["install_ms_max"]), float(counters["install_ms_last"]))
 	for key: Vector2i in changed_patches.keys():
 		_patch_changed(key, resident_patches)
+	var changes_us := Time.get_ticks_usec()
 	_advance_builds(start_us, resident_patches)
+	var builds_us := Time.get_ticks_usec()
 	if not (_variant_waits.is_empty() and _preview_waits.is_empty()):
 		_take_variant_waits(resident_patches)
 	if not _lists_wanted.is_empty():
@@ -1015,11 +1022,16 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 			"relevel_ms": ms.call(start_us, relevel_us),
 			"batch_ms": ms.call(relevel_us, batch_us), "poll_ms": ms.call(batch_us, polled_us),
 			"residency_ms": ms.call(polled_us, residency_us), "watched_ms": ms.call(residency_us, watched_us),
+			# residency_ms's parts: the changed patches, the cell set builds and the requests
+			# (variant waits, lists, parked tiles, tile requests).
+			"patch_changes_ms": ms.call(polled_us, changes_us), "builds_ms": ms.call(changes_us, builds_us),
+			"requests_ms": ms.call(builds_us, residency_us),
 			"cells_ms": ms.call(watched_us, cells_us), "cells_sync_ms": float(_frame_sync_us) / 1000.0,
 			"cells_walls_ms": float(_frame_walls_us) / 1000.0, "walls_ms": ms.call(cells_us, end_us),
 			"total_ms": ms.call(start_us, end_us),
 			"cell_patches": cell_patches, "wall_patches": wall_patches,
 			"cell_tiles": _frame_cell_tiles, "relevelled": _frame_relevelled,
+			"considered": _frame_considered, "handed": _frame_handed,
 			"flips": _frame_flips, "flip_ms": float(_frame_flip_us) / 1000.0,
 			"lists": _frame_lists, "lists_unchanged": _frame_lists_same,
 			"uploads": int(counters["uploads"]) - uploads_before,
@@ -1462,8 +1474,9 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary, rese
 	if not current.is_empty() and int(current["level"]) == code and not preview.has(key):
 		_mask_changed(key, resident_patches)
 	# The installed level moves the hysteresis: the tile is levelled again at once. A bake of an
-	# older level or token (the camera moved, an edit dirtied it) still wants one.
-	_hold(key, code, step, token)
+	# older level or token (the camera moved, an edit dirtied it) still wants one; at its level and
+	# token the tile has just taken a copy in every page that draws it.
+	_hold(key, code, step, token, true)
 	# Rewritten in place, the tile keeps its instances; a new slot or lattice rewrites its own
 	# instances and its neighbours' sides, and changed faces the walls of the patches that draw them.
 	if (current.is_empty() or int(current["level"]) != code or int(current["code"]) != cell_code
@@ -1589,17 +1602,18 @@ func _adopt_preview(key: Vector2i, tile: Dictionary) -> bool:
 	counters["edit_adopted"] += 1
 	# As _upload: the installed level moves the hysteresis, and a bake of another level or token
 	# is still wanted.
-	_hold(key, int(tile["level"]), int(tile["step"]), token)
+	_hold(key, int(tile["level"]), int(tile["step"]), token, false)
 	return true
 
 # Tile `key` is installed at `code` and `step` with `token`: Rust levels it again with the
-# hysteresis around its new level; a desired tile whose level changed, or whose installed level or
-# token is not the one it wants, wants a bake.
-func _hold(key: Vector2i, code: int, step: int, token: int) -> void:
+# hysteresis around its new level. A desired tile whose installed level or token is not the one it
+# wants wants a bake, and so does one whose level changed unless `complete` (its copies were just
+# placed in every page that draws it, _upload).
+func _hold(key: Vector2i, code: int, step: int, token: int, complete: bool) -> void:
 	var want := _levels.hold(key, code)
 	if want.x < 0:
 		return
-	if want.z != 0 or Vector2i(want.x, want.y) != Vector2i(code, step) or int(tile_tokens.get(key, 0)) != token:
+	if (want.z != 0 and not complete) or Vector2i(want.x, want.y) != Vector2i(code, step) or int(tile_tokens.get(key, 0)) != token:
 		_wanted[key] = true
 
 # Rebakes the tiles an edit dirtied at the level each is held at, installed or in flight.
@@ -1956,6 +1970,7 @@ func _request_patch_lists(resident_patches: Dictionary) -> void:
 func _request_tiles() -> void:
 	var flat := PackedInt64Array()
 	var sent: Array[Array] = []
+	_frame_considered += _wanted.size()
 	for tile: Vector2i in _wanted.keys():
 		_wanted.erase(tile)
 		var level := _levels.level_of(tile)
@@ -1975,6 +1990,12 @@ func _request_tiles() -> void:
 			and int(current["token"]) == token
 			and _tile_complete(tile, current)
 		):
+			# It shows what it wants: a request of another level still pending (the camera moved
+			# on before it started) is dropped unbaked. One in flight runs on and installs.
+			var dropped := int(simulation_node.cancel_graded_tile(tile))
+			if dropped >= 0:
+				var stale: Vector2i = LEVEL_STEPS[dropped]
+				requested.erase("%d,%d,%d,%d" % [tile.x, tile.y, stale.x, stale.y])
 			continue
 		# A tile waiting for its block's larger page is asked again when the block moves.
 		if _growth_waits.has(tile):
@@ -2009,10 +2030,15 @@ func _request_tiles() -> void:
 			break
 		if blocked:
 			continue
-		flat.append_array(PackedInt64Array([tile.x, tile.y, level.x, level.y, token]))
+		flat.append(tile.x)
+		flat.append(tile.y)
+		flat.append(level.x)
+		flat.append(level.y)
+		flat.append(token)
 		sent.append([tile, request_key, token])
 	if sent.is_empty():
 		return
+	_frame_handed += sent.size()
 	# 0: not queued (an unknown level); 1: queued; 2 + k: queued in place of the tile's pending
 	# request at LEVEL_STEPS[k], which Rust drops unbaked.
 	var accepted: PackedByteArray = simulation_node.request_graded_tiles(flat)

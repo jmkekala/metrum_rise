@@ -527,10 +527,11 @@ impl SimulationNode {
         PackedByteArray::from(accepted.as_slice())
     }
 
-    /// Drops `tile`'s pending bake request, so it is never baked (a bake in flight runs on, its
-    /// result ignored by its token). `O(1)`.
+    /// Drops `tile`'s pending bake request, so it is never baked (a bake in flight runs on).
+    /// Returns the dropped request's level as `request_graded_tiles`' `k` (its index among
+    /// `GL0`, `GL1`, `GL2`, `GL3` steps 2, 4, 8), -1 when none was pending. `O(1)`.
     #[func]
-    pub fn cancel_graded_tile(&mut self, tile: Vector2i) {
+    pub fn cancel_graded_tile(&mut self, tile: Vector2i) -> i64 {
         self.graded_jobs
             .lock()
             .unwrap()
@@ -538,7 +539,8 @@ impl SimulationNode {
             .cancel(TileKey {
                 x: tile.x,
                 z: tile.y,
-            });
+            })
+            .map_or(-1, |level| i64::from(level_index(level)))
     }
 
     /// Drops every pending bake request, as the renderer resets.
