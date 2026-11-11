@@ -421,7 +421,7 @@ func _edit(record: Dictionary, kind: String) -> Dictionary:
 	var frames := 0
 	await _next_frame()
 	_kind = "wait"
-	while frames < EDIT_FRAME_LIMIT and (int(_graded.counters["edits"]) == edits or not _graded._edit_batch.is_empty() or _graded._edit_release >= 0):
+	while frames < EDIT_FRAME_LIMIT and (int(_graded.counters["edits"]) == edits or _graded._book.edit_batch_len() > 0 or _graded._edit_release >= 0):
 		await _next_frame()
 		frames += 1
 	var batch: Array = _frames.filter(func(row): return row.has("batch_ms"))
@@ -516,7 +516,7 @@ func _settle(record: Dictionary) -> bool:
 	while bool(wait.get("ok", false)) and graded != null and stable < 3 and frames < SETTLE_FRAME_LIMIT:
 		await _bench.get_tree().process_frame
 		frames += 1
-		var idle: bool = (graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
+		var idle: bool = (not graded._book.has_pending_work() and graded.patch_lists_requested.is_empty()
 			and graded._builds.is_empty() and graded._builds_urgent.is_empty())
 		stable = stable + 1 if idle else 0
 	if stable < 3:

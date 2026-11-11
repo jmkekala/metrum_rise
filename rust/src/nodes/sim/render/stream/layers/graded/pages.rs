@@ -224,8 +224,8 @@ pub(crate) enum PageEvent {
     Drop(u32),
     /// A block moved: `from`'s layers are copied into `to`.
     Copy { from: u32, to: u32 },
-    /// The budget refused a page.
-    Refused,
+    /// The budget refused a page of `slots` and `layers` for `block` at level `code`.
+    Refused { code: u8, block: (i32, i32), slots: u32, layers: u32 },
 }
 
 // A pool size class: level code, slots, layers.
@@ -323,7 +323,7 @@ impl PageStore {
                 let page_bytes = self.page_bytes(code, slots, layers);
                 while self.bytes + page_bytes > PAGE_BUDGET_BYTES && self.drop_free_page() {}
                 if self.bytes + page_bytes > PAGE_BUDGET_BYTES {
-                    self.events.push(PageEvent::Refused);
+                    self.events.push(PageEvent::Refused { code, block, slots, layers });
                     return None;
                 }
                 let id = self.next_id;

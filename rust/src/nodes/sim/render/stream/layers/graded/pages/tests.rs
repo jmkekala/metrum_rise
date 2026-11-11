@@ -159,8 +159,9 @@ fn replay_allocator(trace: &str) -> usize {
                 check(&mut store, &mut pending);
             }
             (">", "page_refused") => {
-                pending.push(PageEvent::Refused);
-                let made = store.create(int(words[2]) as u8, block(words[3]), int(words[4]) as u32, int(words[5]) as u32);
+                let (code, place, slots, layers) = (int(words[2]) as u8, block(words[3]), int(words[4]) as u32, int(words[5]) as u32);
+                pending.push(PageEvent::Refused { code, block: place, slots, layers });
+                let made = store.create(code, place, slots, layers);
                 assert_eq!(made, None, "{}", at());
                 check(&mut store, &mut pending);
             }

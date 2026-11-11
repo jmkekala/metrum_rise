@@ -85,17 +85,21 @@ func _replay(path: String) -> bool:
 				trace.take()
 				var rect: PackedFloat32Array = Trace.floats_of(words[6])
 				var box: PackedFloat32Array = Trace.floats_of(words[9])
-				resident[Vector2i(int(words[2]), int(words[3]))] = {
+				var key := Vector2i(int(words[2]), int(words[3]))
+				resident[key] = {
 					"node": _node(int(words[4])), "material": _material(int(words[5])),
 					"rect": Rect2(rect[0], rect[1], rect[2], rect[3]), "step": int(words[7]), "generation": int(words[8]),
 					"aabb": AABB(Vector3(box[0], box[1], box[2]), Vector3(box[3], box[4], box[5])),
 				}
+				renderer.patch_mutated(key, resident[key])
 			"patch_erase":
 				trace.take()
 				resident.erase(Vector2i(int(words[2]), int(words[3])))
+				renderer.patch_mutated(Vector2i(int(words[2]), int(words[3])), {})
 			"patches_clear":
 				trace.take()
 				resident.clear()
+				renderer.patch_mutated(Vector2i.ZERO, {}, true)
 			"process":
 				var camera: PackedFloat32Array = Trace.floats_of(words[2])
 				renderer.unbudgeted = words[3] == "1"

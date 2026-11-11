@@ -125,13 +125,16 @@ func _drop_written(page: Dictionary) -> void:
 			mirror_bytes -= data.size()
 		(page[key] as Array).fill(PackedByteArray())
 
-# Preserve the page's published contents and allocation layout before rebinding its materials.
-# No rebake is involved: edits, unlisted commit tiles and previews all keep their exact bytes.
-# O(source slots + source atlas layers), with device-to-device copies on Forward+/Mobile and the
-# CPU copy's written layers on Compatibility; the layout is the book's.
-func copy_page(source: Dictionary, target: Dictionary) -> void:
-	book.copy_layout(int(source["id"]), int(target["id"]))
-	_apply_events()
+# A block moved (the book's effect): page `source_id`'s published contents are copied into page
+# `target_id` before the block's materials rebind (the book laid the copies out). No rebake is
+# involved: edits, unlisted commit tiles and previews all keep their exact bytes. O(source slots +
+# source atlas layers), with device-to-device copies on Forward+/Mobile and the CPU copy's written
+# layers on Compatibility.
+func copied(source_id: int, target_id: int) -> void:
+	if trace != null:
+		trace.out("page_copy %d %d" % [source_id, target_id])
+	var source: Dictionary = by_id[source_id]
+	var target: Dictionary = by_id[target_id]
 	if mirrored:
 		var level: Dictionary = levels[int(source["code"])]
 		_copy_written(source, target, "texel_bytes", level["texel_image"])
@@ -149,11 +152,12 @@ var trace: RefCounted = null
 # from, the most slots a page of the level holds (`cap`) and the most atlas layers a tile's rows
 # take (`max_layers`).
 var levels: Array[Dictionary] = []
-# The allocator: page ids, sizes, the pool, the budget, each page's free slots and atlas runs.
+# The graded state in Rust (GradedTileBook, the renderer's): page ids, sizes, the pool, the
+# budget, each page's free slots and atlas runs, and which copies each holds.
 var book := GradedTileBook.new()
-# Page id -> {id, code, block, texels, atlas (Texture2DArray), slots, layers, tiles and previews
-# (tile key -> true: the installed and preview copies it holds), bytes, and on Compatibility
-# texel_bytes and atlas_bytes (below)}: the book's live pages, the pooled ones included.
+# Page id -> {id, code, block, texels, atlas (Texture2DArray), slots, layers, bytes, and on
+# Compatibility texel_bytes and atlas_bytes (below)}: the book's live pages, the pooled ones
+# included.
 var by_id: Dictionary = {}
 # Compatibility only (no RenderingDevice, a real renderer; TERRAIN-22): each page also keeps
 # `texel_bytes` and `atlas_bytes`, per slot and atlas layer the bytes last uploaded there since
@@ -162,8 +166,6 @@ var by_id: Dictionary = {}
 # at most their page bytes; a pooled free page keeps none.
 var mirrored := RenderingServer.get_rendering_device() == null and DisplayServer.get_name() != "headless"
 var mirror_bytes := 0
-# The page creation a book event refers to (code, block, slots, layers), for its trace line.
-var _creating := []
 
 # The device's array layer limit (docs/terrain.md "Layer limit"): the RenderingDevice's, else
 # what Vulkan and GLES3 both guarantee, never above the half-float slot channel's 2,048.
@@ -178,7 +180,6 @@ static func device_layer_limit() -> int:
 # slots a page holds, and the most atlas layers a tile's rows take.
 func add_level(level: Dictionary, cap: int) -> void:
 	var side := int(level["side"])
-	book.add_level(side)
 	counters["images_created"] += 5
 	levels.append({
 		"side": side,
@@ -191,83 +192,29 @@ func add_level(level: Dictionary, cap: int) -> void:
 		"zero_atlas": Image.create_empty(ATLAS_WIDTH, 1, false, Image.FORMAT_RGBAF),
 	})
 
-# Drops every level and page, as the renderer sets up.
+# Drops every level and page, as the renderer sets up (the book makes its pages again).
 func clear_levels() -> void:
 	levels.clear()
-	book.reset_pages(false)
 	by_id.clear()
 	mirror_bytes = 0
 
-# Drops every page, the free pooled ones included.
-func reset() -> void:
-	book.reset_pages(true)
-	by_id.clear()
-	mirror_bytes = 0
-
-# Every page's bytes, the free pooled ones included.
-func page_bytes() -> int:
-	return book.page_bytes()
-
-# A page of `slots` slot layers and `layers` atlas layers for `block` at level `code`: a pooled
-# free one of that size, else created within the budget (-1: the budget refuses it). O(slots +
-# layers).
-func create(code: int, block: Vector2i, slots: int, layers: int) -> int:
-	_creating = [code, block, slots, layers]
-	var page_id: int = book.create_page(code, block, slots, layers)
-	_apply_events()
-	if page_id < 0:
-		return -1
-	var page: Dictionary = by_id[page_id]
-	page["block"] = block
-	page["tiles"] = {}
-	page["previews"] = {}
-	return page_id
-
-# Applies the book's page events in order: a new page's arrays made, a dropped or freed page's
-# let go, a pooled page's CPU copies dropped; each one a trace output.
-func _apply_events() -> void:
-	var events: PackedInt64Array = book.take_page_events()
-	for at in range(0, events.size(), 4):
-		var page_id := int(events[at + 1])
-		match int(events[at]):
-			0:
-				_make_page(page_id)
-			1:
-				if trace != null:
-					trace.out("page_reuse %d %d %d,%d %d %d" % [page_id, _creating[0], _creating[1].x, _creating[1].y, _creating[2], _creating[3]])
-			2:
-				var kept := int(events[at + 2]) == 1
-				if trace != null:
-					trace.out("page_release %d %d" % [page_id, int(kept)])
-				_drop_written(by_id[page_id])
-				if not kept:
-					by_id.erase(page_id)
-			3:
-				if trace != null:
-					trace.out("page_drop %d" % page_id)
-				by_id.erase(page_id)
-			4:
-				if trace != null:
-					trace.out("page_copy %d %d" % [page_id, int(events[at + 2])])
-			5:
-				if trace != null:
-					trace.out("page_refused %d %d,%d %d %d" % [_creating[0], _creating[1].x, _creating[1].y, _creating[2], _creating[3]])
-
-# The arrays of new page `page_id`, of the creation in progress.
-func _make_page(page_id: int) -> void:
-	var code: int = _creating[0]
-	var slots: int = _creating[2]
-	var layers: int = _creating[3]
+# A page the book made (`reused`: from its pool, the arrays kept) for `block` at level `code`.
+func made(page_id: int, reused: bool, code: int, block: Vector2i, slots: int, layers: int) -> void:
+	if reused:
+		if trace != null:
+			trace.out("page_reuse %d %d %d,%d %d %d" % [page_id, code, block.x, block.y, slots, layers])
+		by_id[page_id]["block"] = block
+		return
 	if trace != null:
-		trace.out("page_new %d %d %d,%d %d %d" % [page_id, code, _creating[1].x, _creating[1].y, slots, layers])
+		trace.out("page_new %d %d %d,%d %d %d" % [page_id, code, block.x, block.y, slots, layers])
 	var level: Dictionary = levels[code]
 	var side := int(level["side"])
 	var texels := _array(level["zero_texels"], slots)
 	var atlas := _array(level["zero_atlas"], layers)
 	counters["textures_created"] += 2
 	counters["pages_created"] += 1
-	var page := {"id": page_id, "code": code, "slots": slots, "layers": layers, "texels": texels, "atlas": atlas,
-		"bytes": slots * side * (side + 1) * 16 + layers * ATLAS_LAYER_BYTES}
+	var page := {"id": page_id, "code": code, "block": block, "slots": slots, "layers": layers, "texels": texels,
+		"atlas": atlas, "bytes": slots * side * (side + 1) * 16 + layers * ATLAS_LAYER_BYTES}
 	if mirrored:
 		var texel_bytes := []
 		texel_bytes.resize(slots)
@@ -279,25 +226,24 @@ func _make_page(page_id: int) -> void:
 		page["atlas_bytes"] = atlas_bytes
 	by_id[page_id] = page
 
-# Returns a page holding no copy to the pool (freed past the pool's bounds).
-func release(page_id: int) -> void:
-	book.release_page(page_id)
-	_apply_events()
+# A page holding no copy was released: pooled (`kept`, its CPU copies dropped) or freed.
+func released(page_id: int, kept: bool) -> void:
+	if trace != null:
+		trace.out("page_release %d %d" % [page_id, int(kept)])
+	_drop_written(by_id[page_id])
+	if not kept:
+		by_id.erase(page_id)
 
-# Whether page `page_id` can take a copy of `layers` atlas layers, `held` its copy there (x < 0:
-# none): a free slot for a new copy, and a run unless the held one is long enough.
-func can_place(page_id: int, held: Vector3i, layers: int) -> bool:
-	return book.can_place(page_id, held, layers)
+# A pooled page was freed to make room in the budget.
+func dropped(page_id: int) -> void:
+	if trace != null:
+		trace.out("page_drop %d" % page_id)
+	by_id.erase(page_id)
 
-# Places a copy in page `page_id` (can_place holds): the held slot kept, else a free one, and the
-# held run kept while long enough, else a new one (the held run freed after). Returns the copy,
-# Vector3i(slot, first atlas layer, layers).
-func place(page_id: int, held: Vector3i, layers: int) -> Vector3i:
-	return book.place(page_id, held, layers)
-
-# Returns a copy's slot and run to page `page_id`.
-func vacate(page_id: int, copy: Vector3i) -> void:
-	book.vacate(page_id, copy)
+# The budget refused a page (the book records its tile exhausted).
+func refused(code: int, block: Vector2i, slots: int, layers: int) -> void:
+	if trace != null:
+		trace.out("page_refused %d %d,%d %d %d" % [code, block.x, block.y, slots, layers])
 
 # Writes a tile's slot layer, its header's first channel set to its run's first atlas layer
 # (residency.rs `pack_slot`), and its run into its copy in `page`. O(slot texels + rows).

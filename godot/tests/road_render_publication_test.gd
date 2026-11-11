@@ -128,7 +128,7 @@ func settle(label: String) -> bool:
 		if stable == 3:
 			return true
 	var g = terrain.graded_tiles
-	check(false, "%s timeout held=%d serial=%d installed=%d batch=%s staged=%s wanted=%s requests=%s counts=%s" % [label, tool._held_serial, sim.get_graded_edit_serial(), g.installed_edit_serial(), g._edit_batch, g._edit_staged.keys(), g._wanted, g.requested, terrain.get_pending_render_work_counts()])
+	check(false, "%s timeout held=%d serial=%d installed=%d batch=%s staged=%s wanted=%s requests=%s counts=%s" % [label, tool._held_serial, sim.get_graded_edit_serial(), g.installed_edit_serial(), g._book.edit_batch_len(), g._edit_staged.keys(), g.wanted_count(), g.get_pool_counters(), terrain.get_pending_render_work_counts()])
 	return false
 
 func audit(stroke: int):

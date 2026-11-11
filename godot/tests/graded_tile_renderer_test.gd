@@ -201,11 +201,11 @@ func _check_moving_camera(graded: GradedTiles, resident: Dictionary) -> void:
 			_frame(graded, camera, resident)
 			await process_frame
 			# Rust's levels against its rule evaluated directly, at the levels GDScript installed.
-			var desired: PackedInt32Array = graded._levels.tiles()
+			var desired: PackedInt32Array = graded._book.desired_tiles()
 			for index in range(0, desired.size(), 2):
 				var tile := Vector2i(desired[index], desired[index + 1])
 				var installed: Dictionary = graded.installed.get(tile, {})
-				if graded._levels.level_of(tile) != graded._levels.rule_level(tile, int(installed.get("level", -1))):
+				if graded._book.level_of(tile) != graded._book.rule_level(tile, int(installed.get("level", -1))):
 					exact = false
 		_expect(await _settle(graded, camera, resident), "the tiles settle at %.0f m" % target_height)
 		for tile: Vector2i in graded.installed.keys():
@@ -256,16 +256,19 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 	var moving := {}
 	for code in 4:
 		for block: Vector2i in graded._block_page[code].keys():
-			var page: Dictionary = graded.page_store.by_id[graded._block_page[code][block]]
-			if (page["tiles"] as Dictionary).is_empty():
+			var page_id := int(graded._block_page[code][block])
+			var page: Dictionary = graded.page_store.by_id[page_id]
+			var holders := graded.installed.keys().filter(func(tile: Vector2i) -> bool: return (graded.installed[tile]["copies"] as Dictionary).has(page_id))
+			if holders.is_empty():
 				continue
 			_expect(graded._move_block(code, block, Vector2i(int(page["slots"]) * 2, int(page["layers"]))), "level %d block %s starts its move" % [code, block])
-			moving[Vector3i(code, block.x, block.y)] = int(graded._block_target[code][block])
+			var target := int(graded._book.block_target(code, block))
+			moving[Vector3i(code, block.x, block.y)] = target
 			# Until the move, a copy of the block's tiles goes into both pages: its sets keep
 			# showing every installed tile from the page they bind.
-			for tile: Vector2i in (page["tiles"] as Dictionary).keys():
-				var pages: Array = graded._copy_pages(tile, code).map(func(pair: Array) -> int: return int(pair[0]))
-				_expect(pages.has(int(page["id"])) and pages.has(int(graded._block_target[code][block])),
+			for tile: Vector2i in holders:
+				var pages := Array(graded._book.copy_pages(tile, code))
+				_expect(pages.has(page_id) and pages.has(target),
 					"tile %s of moving block %s goes into both pages: %s" % [tile, block, pages])
 	_expect(not moving.is_empty(), "some block holds tiles to move")
 	# The camera climbs while the blocks move: tiles change level and install meanwhile, into the
@@ -524,19 +527,23 @@ func _check_exhausted_pools(simulation: SimulationNode, host: Node3D, layout: Di
 	# asks them again.
 	var freed := Vector2i.ZERO
 	var code := -1
+	var waiting: PackedInt64Array = graded._book.exhausted_tiles()
 	for tile: Vector2i in graded.installed.keys():
-		for entry: Array in graded._exhausted.values():
-			if int(entry[0]) == int(graded.installed[tile]["level"]):
+		for at in range(0, waiting.size(), 4):
+			if int(waiting[at + 2]) == int(graded.installed[tile]["level"]):
 				freed = tile
-				code = int(entry[0])
+				code = int(waiting[at + 2])
 	_expect(code >= 0, "a level holds an installed tile and waiting ones")
 	if code >= 0:
-		graded._undesire(freed)
+		graded._book.undesire(freed)
+		graded._apply_effects()
 		var asked := 0
-		for tile: Vector2i in graded._exhausted.keys():
-			if int(graded._exhausted[tile][0]) == code and bool(graded._exhausted[tile][3]):
+		waiting = graded._book.exhausted_tiles()
+		for at in range(0, waiting.size(), 4):
+			var tile := Vector2i(int(waiting[at]), int(waiting[at + 1]))
+			if int(waiting[at + 2]) == code and waiting[at + 3] == 1:
 				asked += 1
-				_expect(graded._wanted.has(tile), "the tile asked again is wanted")
+				_expect(graded._book.is_wanted(tile), "the tile asked again is wanted")
 		_expect(asked == 1, "a freed slot asks one of its level's waiting tiles again: %d" % asked)
 	graded.clear()
 	for key: Vector2i in resident.keys():
@@ -574,7 +581,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 		_expect(false, "patch %s still waits for its payload" % key)
 	# A request Rust refuses by contract is a bug, reported apart from the retries.
 	_expect(terrain.patch_payload_refused.is_empty(), "no payload request is refused: %s" % terrain.patch_payload_refused)
-	_expect(int(graded.get_pool_counters()["refused"]) == 0, "no graded request is refused: %s" % graded.refused)
+	_expect(int(graded.get_pool_counters()["refused"]) == 0, "no graded request is refused: %s" % graded.get_pool_counters())
 	_expect(graded.installed.has(Vector2i(0, 0)), "the junction's tile installs graded")
 	_expect(graded.patch_cells.has(junction_patch) and bool(graded.patch_cells[junction_patch]["shown"]), "the junction's patch draws cells")
 	var grass := GrassRenderer.new()
@@ -906,7 +913,7 @@ func _check_road_preview(graded: GradedTiles, simulation: SimulationNode, camera
 	_mark_changed(resident)
 	_expect(await _settle(graded, camera, resident), "the residency settles after the commit")
 	for key: Vector2i in shown:
-		_expect(graded._levels.has(key), "the committed tile %s is listed" % key)
+		_expect(graded._book.level_of(key).x >= 0, "the committed tile %s is listed" % key)
 	for key: Vector2i in graded.patch_cells.keys():
 		_check_cells(graded, key, resident)
 

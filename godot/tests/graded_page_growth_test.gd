@@ -108,13 +108,13 @@ func check_cpu_copy(graded: Tiles, page: Dictionary, copy: Vector3i, texels: Pac
 
 # Moves the block to a page twice the size and switches to it: no rebake, no rewrite.
 func grow(graded: Tiles, label: String) -> int:
-	var old_id := int(graded._block_page[2][Vector2i.ZERO])
+	var old_id := int(graded._book.block_page(2, Vector2i.ZERO))
 	var old: Dictionary = graded.page_store.by_id[old_id]
 	var uploads := int(graded.counters["uploads"])
 	expect(graded._move_block(2, Vector2i.ZERO, Vector2i(int(old["slots"]) * 2, int(old["layers"]) * 2)), "%s: the block moves" % label)
 	graded._advance_growth()
-	var page_id := int(graded._block_page[2][Vector2i.ZERO])
-	expect(page_id != old_id and graded._block_target[2].is_empty(), "%s: the block binds its larger page" % label)
+	var page_id := int(graded._book.block_page(2, Vector2i.ZERO))
+	expect(page_id != old_id and graded._book.block_target(2, Vector2i.ZERO) < 0, "%s: the block binds its larger page" % label)
 	expect(int(graded.counters["uploads"]) == uploads, "%s: the move uploads no tile" % label)
 	return page_id
 
@@ -139,7 +139,10 @@ func _run() -> void:
 	var graded := Tiles.new()
 	graded.setup(sim, 10, Vector2(500, 500), 512, [8, 8, 8, 8])
 	graded._resident = {Vector2i.ZERO: {"rect": Rect2(-250, -250, 512, 512), "step": 1, "generation": 0}}
+	graded._book.sync_resident(PackedInt32Array([0, 0]))
+	graded._resident_synced = true
 	graded.patch_lists[Vector2i.ZERO] = {"tiles": [], "token": 0}
+	graded._book.take_list(Vector2i.ZERO, 0, PackedInt32Array())
 	var tiles := {}
 	for index in 3:
 		var key := Vector2i(index, 0)
@@ -149,7 +152,7 @@ func _run() -> void:
 	tiles[shown] = payload(graded, shown, 9, 3)
 	graded._show_preview_tile(tiles[shown])
 	await process_frame
-	var first_page := int(graded._block_page[2][Vector2i.ZERO])
+	var first_page := int(graded._book.block_page(2, Vector2i.ZERO))
 	await check_page(graded, first_page, tiles, "before the moves")
 	var moved := grow(graded, "first move")
 	await check_page(graded, moved, tiles, "first move")

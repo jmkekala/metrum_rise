@@ -504,10 +504,12 @@ func _streams() -> Dictionary:
 		for key: String in ["uploads", "same_level_uploads", "unready_in_view", "pool_exhausted"]:
 			graded[key] = tiles.counters.get(key, 0)
 		# A control build before RENDER-32-B keeps its levels and wanted tiles in GDScript.
+		# A control before RENDER-32-I keeps its requests in GDScript.
 		var rust_levels: bool = tiles.has_method("wanted_count")
+		var book: bool = "_book" in tiles
 		graded.merge({"wanted": tiles.wanted_count() if rust_levels else tiles._wanted.size(),
-			"desired": tiles._levels.size() if rust_levels else tiles._desired.size(),
-			"installed": tiles.installed.size(), "requested": tiles.requested.size(),
+			"desired": tiles._book.desired_len() if book else (tiles._levels.size() if rust_levels else tiles._desired.size()),
+			"installed": tiles.installed.size(), "requested": -1 if book else tiles.requested.size(),
 			"cell_builds_pending": tiles.cell_builds_pending()})
 	var lods: Variant = _buildings.lod_renderer
 	return {

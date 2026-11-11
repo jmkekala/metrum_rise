@@ -32,7 +32,6 @@ impl<K, V> Default for OrderedMap<K, V> {
 }
 
 impl<K: Copy + Eq + Hash, V> OrderedMap<K, V> {
-    #[cfg(test)] // Used by the port's next parts (copies, requests).
     pub(crate) fn len(&self) -> usize {
         self.index.len()
     }
@@ -91,7 +90,6 @@ impl<K: Copy + Eq + Hash, V> OrderedMap<K, V> {
             .filter_map(|entry| entry.as_ref().map(|(key, value)| (key, value)))
     }
 
-    #[cfg(test)] // Used by the port's next parts (copies, requests).
     pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
         self.iter().map(|(key, _)| key)
     }

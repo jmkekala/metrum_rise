@@ -52,17 +52,19 @@ func _run() -> void:
 	var graded := Tiles.new()
 	graded.setup(sim, 10, Vector2(500, 500), 512, [8, 8, 8, 8])
 	graded._resident = {Vector2i.ZERO: {"rect": Rect2(-250, -250, 512, 512), "step": 1, "generation": 0}}
+	graded._book.sync_resident(PackedInt32Array([0, 0]))
+	graded._resident_synced = true
 	graded.patch_lists[Vector2i.ZERO] = {"tiles": [], "token": 0}
+	graded._book.take_list(Vector2i.ZERO, 0, PackedInt32Array())
 	var a := Vector2i.ZERO
 	var b := Vector2i(1, 0)
 	var first := payload(graded, a, 1, 12)
 	var second := payload(graded, b, 1, 12)
 	graded._upload(a, first, graded._resident)
 	graded._show_preview_tile(second)
-	var old_id := int(graded._block_page[2][Vector2i.ZERO])
-	var old: Dictionary = graded.page_store.by_id[old_id]
-	expect(graded.page_store.book.free_layers(old_id) == 0, "fixture fills the old atlas")
-	expect(not graded._levels.has(a), "commit-only installed tile has no residency-list reference")
+	var old_id := int(graded._book.block_page(2, Vector2i.ZERO))
+	expect(int(graded._book.page_info(old_id)[6]) == 0, "fixture fills the old atlas")
+	expect(graded._book.level_of(a).x < 0, "commit-only installed tile has no residency-list reference")
 	# Same preview epoch, newer pose: its failed upload must not become adoptable old bytes.
 	var newer_preview := payload(graded, b, 1, 13)
 	graded._show_preview_tile(newer_preview)
@@ -74,14 +76,14 @@ func _run() -> void:
 	# without acknowledgement, while migration preserves both installed and preview holders.
 	var changed := payload(graded, a, 2, 13)
 	graded._edit_serial_taken = 2
-	graded._edit_batch[a] = 2
+	graded._book.edit_batch_set(a, 2)
 	graded._edit_staged[a] = changed
 	expect(graded._install_edit_batch(graded._resident) == 0, "full bound page defers the whole edit")
 	expect(graded.installed_edit_serial() < 2, "a deferred upload must not acknowledge its edit")
 	expect(int(graded.installed[a]["token"]) == 1, "deferred edit preserves published token")
 	graded._advance_growth()
-	expect(graded._block_target[2].is_empty(), "unlisted installed tiles cannot strand migration")
-	expect(int(graded._block_page[2][Vector2i.ZERO]) != old_id, "larger page becomes bound")
+	expect(graded._book.block_target(2, Vector2i.ZERO) < 0, "unlisted installed tiles cannot strand migration")
+	expect(graded._book.block_page(2, Vector2i.ZERO) != old_id, "larger page becomes bound")
 	await process_frame
 	check_bytes(graded, graded.installed[a], first)
 	check_bytes(graded, graded.preview[b], second)
@@ -93,20 +95,22 @@ func _run() -> void:
 	# even though no patch list has ever named it.
 	graded._dirty_tile(a, 3)
 	graded._request_tiles()
-	expect(graded.requested.has("0,0,2,0"), "unlisted installed tile requests its dirty rebake")
+	expect(graded._book.requested_token(a, 2, 0) >= 0, "unlisted installed tile requests its dirty rebake")
 	# A site edit can arrive while a new road tile is staged but not installed yet.
 	var c := Vector2i(2, 0)
-	graded._edit_batch[c] = 3
+	graded._book.edit_batch_set(c, 3)
 	graded._edit_staged[c] = payload(graded, c, 3, 1)
 	graded._apply_edit({"serial": 4, "all": false, "levels": [{"level": 2, "step": 0, "tiles": PackedInt32Array([2, 0])}]})
 	graded._request_tiles()
-	expect(int(graded._edit_batch[c]) == 4 and int(graded.requested.get("2,0,2,0", -1)) == 4,
+	expect(graded._book.edit_batch_token(c) == 4 and graded._book.requested_token(c, 2, 0) == 4,
 		"a newer site edit rebakes a tile invalidated before its first install")
-	graded._undesire(c)
+	graded._book.undesire(c)
+	graded._apply_effects()
 	graded.release_preview(0, 1)
 	graded._resident = {}
+	graded._book.sync_resident(PackedInt32Array())
 	graded._patch_changed(Vector2i.ZERO, {})
-	expect(graded.installed.is_empty() and graded._edit_batch.is_empty(), "leaving residency evicts commit-only tiles and pending edits")
+	expect(graded.installed.is_empty() and graded._book.edit_batch_len() == 0, "leaving residency evicts commit-only tiles and pending edits")
 	graded.dispose()
 	sim.free()
 	print("Graded page publication tests: %d failures" % failures)
