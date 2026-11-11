@@ -184,6 +184,8 @@ var _frame_record: Dictionary = {}
 var _catalogue := PackedFloat32Array()
 # Whether Rust holds the catalogue the background products are built against.
 var _catalogue_sent := false
+# The world's size, see _world_size.
+var _world := Vector2.ZERO
 @onready var terrain = $"../Terrain"
 @onready var simulation = $"../SimulationNode"
 
@@ -219,6 +221,14 @@ func _install_before_draw() -> void:
 			"request_max_ms": float(_request_max_us) / 1000.0}, true)
 		PerfDebug.record("vegetation", float(_frame_record["elapsed_ms"]) + pre_draw_ms, details)
 	_frame_record = {}
+
+## The world's size, read from Rust once per loaded world: it changes only with a load, which
+## rebuilds the renderer, and the read waits on the render snapshot's lock while the simulation
+## publishes a frame (`RENDER-32-D`: no wait on the vegetation's frame path).
+func _world_size() -> Vector2:
+	if _world == Vector2.ZERO:
+		_world = simulation.get_terrain_world_size()
+	return _world
 
 ## Canopy far range in effect. One accessor so the draw range and the patch residency test
 ## can never disagree about how far the scatter reaches.
@@ -285,6 +295,7 @@ func rebuild_from_simulation_state() -> void:
 	queue.clear()
 	queued.clear()
 	requested.clear()
+	_world = Vector2.ZERO
 	simulation.clear_vegetation_requests()
 	for key in _installing.keys():
 		_drop_install(key)
@@ -335,7 +346,7 @@ func _process(_delta: float) -> void:
 		last_revision = revision
 		last_camera_cell = camera_cell
 		var wanted: Dictionary = {}
-		var world: Vector2 = simulation.get_terrain_world_size()
+		var world: Vector2 = _world_size()
 		# Terrain residency is answered on the terrain grid. Each resident terrain patch expands
 		# into the sub-patches it owns, so residency stays terrain-coarse while every distance
 		# below is answered on the finer grid.
@@ -421,7 +432,7 @@ func _process(_delta: float) -> void:
 	# camera changes no distance; restored patches still need their mesh and band checks.
 	if residency_changed or camera_xz != last_band_camera_xz:
 		last_band_camera_xz = camera_xz
-		var world: Vector2 = simulation.get_terrain_world_size()
+		var world: Vector2 = _world_size()
 		for key in patches:
 			var patch: Node3D = patches[key]
 			var distance := _patch_distance(key, world, camera_xz)
@@ -456,7 +467,7 @@ func _process(_delta: float) -> void:
 	var budget := upload_budget_override if upload_budget_override >= 1 else divisor * divisor
 	var upload_start := Time.get_ticks_usec()
 	var requests := 0
-	var world: Vector2 = simulation.get_terrain_world_size()
+	var world: Vector2 = _world_size()
 	while budget > 0 and not queue.is_empty():
 		var next: Vector3i = queue.pop_back()
 		queued.erase(next)
@@ -494,7 +505,7 @@ func _process(_delta: float) -> void:
 ## Puts away every stand-in whose area the wanted patches now cover. O(stand-ins x the
 ## sub-patches of one terrain patch), and stand-ins exist only while a tier change uploads.
 func _release_standins(camera_xz: Vector2) -> void:
-	var world: Vector2 = simulation.get_terrain_world_size()
+	var world: Vector2 = _world_size()
 	for key in standins.keys():
 		if _area_built(key):
 			_put_away(key, standins[key], world, camera_xz)
@@ -743,7 +754,7 @@ func _upload_patch(key: Vector3i, span: float) -> bool:
 	var generations := _owner_generations(owner, null)
 	var generation: int = generations.x
 	var vegetation_generation: int = generations.y
-	var world: Vector2 = simulation.get_terrain_world_size()
+	var world: Vector2 = _world_size()
 	patch_span_m = span
 	# A direct caller can name a span the key's own grid does not imply, so the key is made
 	# to agree with it before any distance is measured from it.
@@ -932,7 +943,7 @@ func _finish_install(key: Vector3i, entry: Dictionary) -> void:
 	# no longer match is asked for again (the staleness sweep and band scan ran before it drew).
 	var camera_xz := _camera_xz()
 	if camera_xz != Vector2.INF:
-		var distance := _patch_distance(key, simulation.get_terrain_world_size(), camera_xz)
+		var distance := _patch_distance(key, _world_size(), camera_xz)
 		if _is_patch_stale(key) or _bands_changed(patch, distance, _key_span(key)):
 			_queue_patch(key)
 
