@@ -15,8 +15,9 @@
 //!
 //! `TERRAIN-09`: the pool kept up to [`FREE_PAGES_KEPT`] free pages of every size, each size a
 //! block's page took, without a bound on their sum (11 pooled empty pages held 94.2 MiB at 100k,
-//! T56). [`PoolPolicy::kept_bytes`] bounds the pooled pages' bytes: a release past it frees the
-//! page instead of pooling it.
+//! T56). [`PoolPolicy::kept_bytes`] bounds the pooled pages' bytes ([`POOL_KEPT_BYTES`]): a
+//! release past it frees the page instead of pooling it. What a page holds and draws does not
+//! depend on whether it was pooled (a page's lists start fresh either way).
 
 use super::ordered::OrderedMap;
 
@@ -29,6 +30,11 @@ pub(crate) const ATLAS_LAYER_BYTES: u64 = ATLAS_WIDTH * 16;
 pub(crate) const PAGE_BUDGET_BYTES: u64 = 1024 * 1_048_576;
 /// Free pages kept per level and size for reuse before a new one is created.
 pub(crate) const FREE_PAGES_KEPT: usize = 4;
+/// The pooled free pages' bytes together (`TERRAIN-09`). Block pages come in many sizes, so the
+/// pool rarely serves one: on the recorded traces it held 101-119 MiB after the 30k and 100k
+/// loads and the populated swing, and served 12 creations on the 30k load and 66 on Kuopio's
+/// swing, every one of which fits under 16 MiB.
+pub(crate) const POOL_KEPT_BYTES: u64 = 32 * 1_048_576;
 
 /// A copy's place in a page: its slot layer, and its row atlas run (first layer, layers).
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -56,6 +62,18 @@ pub(crate) struct PoolPolicy {
 
 impl Default for PoolPolicy {
     fn default() -> Self {
+        Self {
+            kept_per_size: FREE_PAGES_KEPT,
+            kept_bytes: Some(POOL_KEPT_BYTES),
+        }
+    }
+}
+
+impl PoolPolicy {
+    /// The pool before `TERRAIN-09`: four a size, no bound on their bytes (the GDScript
+    /// allocator's, which the recorded traces replay).
+    #[cfg(test)]
+    pub(crate) fn unbounded() -> Self {
         Self {
             kept_per_size: FREE_PAGES_KEPT,
             kept_bytes: None,

@@ -9,6 +9,7 @@ use super::*;
 // GL2-like shapes: a 17-texel side (17 x 18 x 16 bytes a slot) and three layers a tile.
 fn store() -> PageStore {
     let mut store = PageStore::default();
+    store.set_policy(PoolPolicy::unbounded());
     store.add_level(9);
     store.add_level(9);
     store.add_level(17);
@@ -106,7 +107,7 @@ fn terrain_09_bounds_the_pooled_pages() {
     }
     assert!(store.pooled_bytes() <= 3 * page_bytes);
     assert_eq!(store.bytes(), store.pooled_bytes(), "a freed page leaves the budget");
-    // Without the bound, four a size.
+    // Without the bound, four a size; the default bound keeps POOL_KEPT_BYTES.
     let mut store = self::store();
     let ids: Vec<u32> = (0..12).map(|x| store.create(2, (x, 0), 32, 96).unwrap()).collect();
     for id in ids {
@@ -121,6 +122,7 @@ fn terrain_09_bounds_the_pooled_pages() {
 // the operations replayed.
 fn replay_allocator(trace: &str) -> usize {
     let mut store = PageStore::default();
+    store.set_policy(PoolPolicy::unbounded());
     let mut pending = Vec::new();
     let mut events = Vec::new();
     let mut replayed = 0;
@@ -139,7 +141,11 @@ fn replay_allocator(trace: &str) -> usize {
             pending.clear();
         };
         match (words[0], words.get(1).copied().unwrap_or("")) {
-            ("<", "setup") => store = PageStore::default(),
+            ("<", "setup") => {
+                // The traces are the GDScript allocator's, before `TERRAIN-09`'s bound.
+                store = PageStore::default();
+                store.set_policy(PoolPolicy::unbounded());
+            }
             ("=", "level") => {
                 assert_eq!(int(words[2]) as usize, store.levels(), "{}", at());
                 store.add_level(int(words[3]) as u64);
@@ -216,4 +222,16 @@ fn the_allocator_replays_recorded_traces() {
         let replayed = replay_allocator(&trace);
         eprintln!("{path}: {replayed} allocator operations replayed");
     }
+}
+
+#[test]
+fn the_default_pool_keeps_at_most_its_bytes() {
+    let mut store = PageStore::default();
+    store.add_level(129);
+    let ids: Vec<u32> = (0..8).map(|x| store.create(0, (x, 0), 64 + x as u32, 128).unwrap()).collect();
+    for id in ids {
+        store.release(id);
+        assert!(store.pooled_bytes() <= POOL_KEPT_BYTES);
+    }
+    assert!(store.pooled_bytes() > 0);
 }

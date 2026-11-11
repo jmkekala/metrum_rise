@@ -56,7 +56,8 @@ impl GradedTileBook {
         self.plan.clear();
     }
 
-    /// Bounds the pooled free pages' bytes (`TERRAIN-09`); negative: no bound but four a size.
+    /// The pooled free pages' bytes bound (`TERRAIN-09`, by default 32 MiB); negative: none but
+    /// four pages a size (the allocator before the bound, for replays of its traces).
     #[func]
     pub fn set_pool_kept_bytes(&mut self, bytes: i64) {
         self.pages.set_policy(PoolPolicy {

@@ -6,7 +6,8 @@
 ## budget's answers are fed back in order, and every output (Rust calls, page creations and
 ## moves, slot uploads, cell buffer publications, draw states) must equal the recorded one. The
 ## trace is METRUM_GRADED_REPLAY or the first user argument; a list of traces separated by `;`
-## replays each. Exit 0 when every trace replays to its end.
+## replays each; METRUM_GRADED_REPLAY_POOL=unbounded replays traces recorded before `TERRAIN-09`'s
+## bound on the pooled pages. Exit 0 when every trace replays to its end.
 extends SceneTree
 
 const Tiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
@@ -77,6 +78,9 @@ func _replay(path: String) -> bool:
 				var values: PackedFloat32Array = Trace.floats_of(words[2])
 				var slots := Array(Trace.ints_of(words[3]))
 				renderer.setup(null, values[0], Vector2(values[1], values[2]), values[3], slots)
+				# Traces recorded before `TERRAIN-09`'s pool bound replay with the pool unbounded.
+				if OS.get_environment("METRUM_GRADED_REPLAY_POOL") == "unbounded":
+					renderer.page_store.book.set_pool_kept_bytes(-1)
 			"patch":
 				trace.take()
 				var rect: PackedFloat32Array = Trace.floats_of(words[6])
