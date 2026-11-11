@@ -491,15 +491,14 @@ func _process(delta: float) -> void:
 		for key_variant in water_sync_perf_stats.keys():
 			var perf_key := str(key_variant)
 			perf_details[perf_key] = water_sync_perf_stats[key_variant]
+		# The frame's own time ends here: the diagnostic count below walks every cell set.
+		var elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
 		if graded_tiles != null:
 			var graded_parts: Dictionary = graded_tiles.counters["frame_parts"]
+			graded_tiles.count_submitted_cells(graded_parts)
 			for part: String in graded_parts.keys():
 				perf_details["graded_" + part] = float(graded_parts[part])
-		PerfDebug.record(
-			"terrain",
-			float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
-			perf_details
-		)
+		PerfDebug.record("terrain", elapsed_ms, perf_details)
 		_reset_terrain_resource_pool_perf_counters()
 
 # Hands the resident patches to the graded tile renderer with the keys changed since last frame,

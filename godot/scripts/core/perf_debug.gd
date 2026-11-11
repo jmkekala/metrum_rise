@@ -6,6 +6,8 @@
 ## (`METRUM_DEBUG_PERF=1` at launch, or the debug console). The summary is intentionally coarse
 ## and stable: one rolling line every half second with total frame renderer CPU and
 ## per-renderer costs, logged on the `perf` channel and kept for the console's Perf tab.
+## A benchmark can also take the records frame by frame (begin_frame_capture/take_frame): the
+## stream benchmark joins each frame's records to that frame's own time.
 extends RefCounted
 
 class_name PerfDebug
@@ -22,6 +24,9 @@ static var _frame_max_ms: float = 0.0
 static var _frame_spikes: int = 0
 static var _renderer_stats: Dictionary = {}
 static var _detail_stats: Dictionary = {}
+# Records since the last take_frame, while a benchmark captures: renderer -> {elapsed_ms, details}.
+static var _capturing := false
+static var _captured: Dictionary = {}
 
 ## Latest summary line without its channel prefix; empty until the first summary.
 static var last_summary: String = ""
@@ -29,9 +34,30 @@ static var last_summary: String = ""
 static func is_enabled() -> bool:
 	return MetrumDebug.is_enabled("perf")
 
+## Starts keeping every record until the next take_frame, alongside the rolling summary. Records
+## arrive only while the perf channel is on.
+static func begin_frame_capture() -> void:
+	_capturing = true
+	_captured = {}
+
+static func end_frame_capture() -> void:
+	_capturing = false
+	_captured = {}
+
+## The records since the previous call, by renderer: {elapsed_ms, details}, the elapsed times and
+## numeric details of a renderer that recorded more than once summed. A caller that takes them
+## each time `process_frame` resumes it gets one frame's records: the scripts and the pre-draw
+## hooks of the frame whose time it has just measured, not those of the frame starting.
+static func take_frame() -> Dictionary:
+	var frame := _captured
+	_captured = {}
+	return frame
+
 static func record(renderer_name: String, elapsed_ms: float, details: Dictionary = {}) -> void:
 	if not is_enabled():
 		return
+	if _capturing:
+		_capture(renderer_name, maxf(0.0, elapsed_ms), details)
 	var now_us := Time.get_ticks_usec()
 	if _last_log_us == 0:
 		_last_log_us = now_us
@@ -45,6 +71,18 @@ static func record(renderer_name: String, elapsed_ms: float, details: Dictionary
 		var value = details[key_variant]
 		if value is int or value is float:
 			_add_stat(_detail_stats, "%s.%s" % [renderer_name, str(key_variant)], float(value))
+
+static func _capture(renderer_name: String, elapsed_ms: float, details: Dictionary) -> void:
+	var entry: Dictionary = _captured.get(renderer_name, {})
+	if entry.is_empty():
+		entry = {"elapsed_ms": 0.0, "details": {}}
+		_captured[renderer_name] = entry
+	entry["elapsed_ms"] = float(entry["elapsed_ms"]) + elapsed_ms
+	var kept: Dictionary = entry["details"]
+	for key_variant in details.keys():
+		var value = details[key_variant]
+		if value is int or value is float:
+			kept[key_variant] = kept.get(key_variant, 0) + value
 
 static func _advance_frame(frame: int) -> void:
 	if _current_frame < 0:

@@ -243,24 +243,37 @@ func _process(delta: float) -> void:
 				light.visible = false
 			_pool_camera = Vector3(INF, INF, INF)
 		return
+	var start_us := Time.get_ticks_usec()
 	var eye := camera.global_position
 	var cell := Vector2i(floori(eye.x / LampGrid.CELL_M), floori(eye.z / LampGrid.CELL_M))
 	# Re-centre only after a long move: the window reaches 1 km each way, and a rebuild walks every
 	# lamp in it, so following each 16 m cell would cost a GDScript pass per few metres of panning.
 	var moved := (cell - _grid_cell).abs()
-	if _grid_dirty or maxi(moved.x, moved.y) > GRID_RECENTRE_CELLS:
+	var grid_rebuilt := _grid_dirty or maxi(moved.x, moved.y) > GRID_RECENTRE_CELLS
+	if grid_rebuilt:
 		_rebuild_grid(cell)
 		_pool_age_s = INF
+	var grid_us := Time.get_ticks_usec()
 	var focus := _ground_focus(camera)
-	if _far_dirty or focus.distance_to(_far_centre) > FAR_RECENTRE_M:
+	var far_rebuilt := _far_dirty or focus.distance_to(_far_centre) > FAR_RECENTRE_M
+	if far_rebuilt:
 		_rebuild_far(focus)
+	var far_uploaded := _far_upload
 	if _far_upload:
 		_upload_far()
-	if _pool_age_s < POOL_REFRESH_S and eye.distance_to(_pool_camera) < POOL_REFRESH_MOVE_M:
-		return
-	_pool_age_s = 0.0
-	_pool_camera = eye
-	_assign_pool(eye)
+	var far_us := Time.get_ticks_usec()
+	var pool_due := _pool_age_s >= POOL_REFRESH_S or eye.distance_to(_pool_camera) >= POOL_REFRESH_MOVE_M
+	if pool_due:
+		_pool_age_s = 0.0
+		_pool_camera = eye
+		_assign_pool(eye)
+	if PerfDebug.is_enabled():
+		var end_us := Time.get_ticks_usec()
+		PerfDebug.record("street_lights", float(end_us - start_us) / 1000.0, {
+			"grid_ms": float(grid_us - start_us) / 1000.0, "far_ms": float(far_us - grid_us) / 1000.0,
+			"pool_ms": float(end_us - far_us) / 1000.0, "grid_rebuilds": 1 if grid_rebuilt else 0,
+			"far_rebuilds": 1 if far_rebuilt else 0, "far_uploads": 1 if far_uploaded else 0,
+			"pool_assigns": 1 if pool_due else 0})
 
 # Nearest lamps in local road chunks: O(N + C log C), C candidates within 80 m.
 func _assign_pool(eye: Vector3) -> void:

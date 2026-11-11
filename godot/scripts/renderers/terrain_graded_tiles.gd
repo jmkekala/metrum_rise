@@ -1032,17 +1032,6 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 			"desired": _desired.size(), "installed": installed.size(),
 		}
 		if perf:
-			# What the cells submit (before culling): instances and triangles per cell mesh.
-			for index in CELL_MESHES:
-				parts["cells_%d" % index] = 0
-				parts["cell_triangles_%d" % index] = 0
-			for cells: Dictionary in patch_cells.values():
-				for index in (cells["nodes"] as Array).size():
-					var node: MultiMeshInstance3D = cells["nodes"][index]
-					if node.is_visible_in_tree():
-						var count := node.multimesh.visible_instance_count
-						parts["cells_%d" % index] += count
-						parts["cell_triangles_%d" % index] += count * node.multimesh.mesh.surface_get_array_index_len(0) / 3
 			counters["frame_parts"] = parts
 		if batch_tiles > 0:
 			counters["edit_frame_parts"] = parts
@@ -1052,6 +1041,21 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		counters["edit_tiles_last"] = batch_tiles
 		counters["edit_install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 		counters["edit_install_ms_max"] = max(float(counters["edit_install_ms_max"]), float(counters["edit_install_ms_last"]))
+
+## Perf diagnostics: what the shown cell sets submit (before culling), instances and triangles per
+## cell mesh, into `parts` as cells_<mesh> and cell_triangles_<mesh>. O(resident patches' cell
+## nodes) a call; the perf channel calls it after its timed span, so it costs no renderer time.
+func count_submitted_cells(parts: Dictionary) -> void:
+	for index in CELL_MESHES:
+		parts["cells_%d" % index] = 0
+		parts["cell_triangles_%d" % index] = 0
+	for cells: Dictionary in patch_cells.values():
+		for index in (cells["nodes"] as Array).size():
+			var node: MultiMeshInstance3D = cells["nodes"][index]
+			if node.is_visible_in_tree():
+				var count := node.multimesh.visible_instance_count
+				parts["cells_%d" % index] += count
+				parts["cell_triangles_%d" % index] += count * node.multimesh.mesh.surface_get_array_index_len(0) / 3
 
 # The residency margin's check (T53 (a)): the unready patches whose culling box (the one Godot
 # culls the patch by) is not wholly outside a plane of the view's frustum. O(unready patches):

@@ -124,8 +124,8 @@ var upload_budget_override := 0
 var patch_span_m := 0.0
 var patches: Dictionary = {}
 # Patches that left terrain residency but are still inside the scatter radius. Terrain
-# residency follows the camera frustum, so a rotation evicts patches that are about to be
-# wanted again. These are hidden rather than freed, because rebuilding one costs a frame.
+# residency is a square about the camera (not its frustum), so a camera moving back wants
+# them again. These are hidden rather than freed, because rebuilding one costs a frame.
 var cache: Dictionary = {}
 var queue: Array[Vector3i] = []
 # Membership avoids duplicate work when camera checks and edit polling overlap.
@@ -158,6 +158,9 @@ var generation_ms_max := 0.0
 # Rust once per owner instead of once per sub-patch. Cleared, never replaced, each frame.
 var owner_generations: Dictionary = {}
 var ready_for_world := false
+# Microseconds this frame's uploads spent in the Rust placement and stand cover fetches, for
+# the perf channel (`RENDER-27`: the larger part of an upload on a city).
+var _fetch_us := 0
 @onready var terrain = $"../Terrain"
 @onready var simulation = $"../SimulationNode"
 
@@ -297,6 +300,8 @@ func _process(_delta: float) -> void:
 	owner_generations.clear()
 	var camera_xz := Vector2(camera.global_position.x, camera.global_position.z)
 	var camera_cell := Vector2i((camera_xz / span).floor())
+	var start_us := Time.get_ticks_usec()
+	_fetch_us = 0
 	var revision: int = terrain.get_resident_patch_revision()
 	# O(resident patches) only on residency/camera-cell changes, not O(total scatter).
 	var residency_changed := revision != last_revision or camera_cell != last_camera_cell
@@ -377,6 +382,7 @@ func _process(_delta: float) -> void:
 			if a_missing != (not patches.has(b)):
 				return not a_missing
 			return wanted[a] > wanted[b])
+	var residency_us := Time.get_ticks_usec()
 	# O(resident patches) on camera/residency changes only. Rotation about a stationary
 	# camera changes no distance; restored patches still need their mesh and band checks.
 	if residency_changed or camera_xz != last_band_camera_xz:
@@ -387,6 +393,7 @@ func _process(_delta: float) -> void:
 			var distance := _patch_distance(key, world, camera_xz)
 			if _bands_changed(patch, distance, _key_span(key)):
 				_queue_patch(key)
+	var bands_us := Time.get_ticks_usec()
 	# O(resident patches), O(1) each, on camera/residency changes only.
 	var camera_position := _camera_position()
 	if residency_changed or camera_position != last_detail_camera:
@@ -394,6 +401,7 @@ func _process(_delta: float) -> void:
 		for key in patches:
 			_refresh_near_detail(patches[key], camera_position)
 			_refresh_branched_shadow(patches[key], camera_position)
+	var detail_us := Time.get_ticks_usec()
 	# O(1) while no revision moved. A patch is stale only when its terrain owner committed a
 	# newer surface or Rust advanced its vegetation revision, and each of those moves one of
 	# these two counters, so the O(resident patches) sweep runs on the frame an edit lands.
@@ -411,6 +419,7 @@ func _process(_delta: float) -> void:
 	var budget := upload_budget_override if upload_budget_override >= 1 else divisor * divisor
 	var upload_start := Time.get_ticks_usec()
 	var uploads := 0
+	var upload_max_us := 0
 	while budget > 0 and not queue.is_empty():
 		var next: Vector3i = queue.pop_back()
 		queued.erase(next)
@@ -421,7 +430,9 @@ func _process(_delta: float) -> void:
 				if uploads > 0 and Time.get_ticks_usec() - upload_start >= UPLOAD_BUDGET_USEC:
 					break
 				continue
+		var one_start := Time.get_ticks_usec()
 		_upload_patch(next, _key_span(next))
+		upload_max_us = maxi(upload_max_us, Time.get_ticks_usec() - one_start)
 		budget -= 1
 		uploads += 1
 		var limit := UPLOAD_BUDGET_USEC
@@ -429,8 +440,19 @@ func _process(_delta: float) -> void:
 			limit = MISSING_UPLOAD_BUDGET_USEC
 		if Time.get_ticks_usec() - upload_start >= limit:
 			break
+	var uploaded_us := Time.get_ticks_usec()
 	if not standins.is_empty():
 		_release_standins(camera_xz)
+	if PerfDebug.is_enabled():
+		var ms := func(from_us: int, to_us: int) -> float: return float(to_us - from_us) / 1000.0
+		var end_us := Time.get_ticks_usec()
+		PerfDebug.record("vegetation", ms.call(start_us, end_us), {
+			"residency_ms": ms.call(start_us, residency_us), "bands_ms": ms.call(residency_us, bands_us),
+			"detail_ms": ms.call(bands_us, detail_us), "stale_ms": ms.call(detail_us, upload_start),
+			"uploads_ms": ms.call(upload_start, uploaded_us), "fetch_ms": float(_fetch_us) / 1000.0,
+			"upload_max_ms": float(upload_max_us) / 1000.0, "standins_ms": ms.call(uploaded_us, end_us),
+			"uploads": uploads, "residency_changed": 1 if residency_changed else 0,
+			"queue": queue.size(), "patches": patches.size(), "wanted": wanted_keys.size()})
 
 ## Puts away every stand-in whose area the wanted patches now cover. O(stand-ins x the
 ## sub-patches of one terrain patch), and stand-ins exist only while a tier change uploads.
@@ -679,10 +701,12 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	var caster := _shadow_caster_wanted(distance, span,
 		int(previous.get_meta("shadow_caster")) if previous != null else ShadowCaster.NONE)
 	var origin :=Vector2(key.x, key.y) * span - world * 0.5
+	var fetch_start := Time.get_ticks_usec()
 	var data: PackedFloat32Array = simulation.get_decorative_tree_patch(origin, span, understory)
 	# Crown coverage around the patch, averaged over 40 m, which each canopy tree samples once
 	# for its stand closure.
 	var cover: Dictionary = simulation.get_vegetation_stand_cover(origin, span)
+	_fetch_us += Time.get_ticks_usec() - fetch_start
 	var cover_bytes: PackedByteArray = cover.get("bytes", PackedByteArray())
 	var cover_size := Vector2i(int(cover.get("width", 0)), int(cover.get("height", 0)))
 	var cover_bounds: Vector4 = cover.get("world_bounds", Vector4.ZERO)

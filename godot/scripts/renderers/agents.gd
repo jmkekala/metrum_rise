@@ -28,6 +28,7 @@ const WALKER_VAT_FRAMES := 30.0
 const WALKER_VAT_REVERSE_PHASE := true
 const CAR_TRANSFORM_STRIDE := 12
 const DEBUG_LABEL_LIMIT := 96
+const SWARM_PARTS: Array[String] = ["walker_fetch", "walker_assign", "vehicle_frame", "car_smooth", "car_assign", "headlights"]
 var _vehicles := preload("res://scripts/renderers/vehicle_resources.gd").new()
 var _headlights := VehicleHeadlights.new()
 
@@ -36,6 +37,10 @@ var debug_mesh: ImmediateMesh
 var debug_labels: Array = []
 var show_paths = false
 var _debug_overlay_visible := false
+# The last swarm update's parts in microseconds, for the perf channel (`RENDER-28`): walker fetch,
+# walker buffers, vehicle frame, car smoothing with the off-lane ground solve, car buffers,
+# headlights. Written in place every update.
+var _swarm_us := PackedInt64Array([0, 0, 0, 0, 0, 0])
 
 func _ready():
 	# --- Walker MultiMeshes — VAT (Vertex Animation Texture) pipeline ---
@@ -199,14 +204,19 @@ func _process(delta):
 	var swarm_start_us := Time.get_ticks_usec()
 	update_swarm(delta)
 	var swarm_elapsed_ms := float(Time.get_ticks_usec() - swarm_start_us) / 1000.0
-	PerfDebug.record(
-		"agents",
-		float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
-		{
-			"camera_aabb": aabb_elapsed_ms,
-			"swarm": swarm_elapsed_ms,
-		}
-	)
+	var elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
+	var details := {"camera_aabb": aabb_elapsed_ms, "swarm": swarm_elapsed_ms}
+	for index in SWARM_PARTS.size():
+		details[SWARM_PARTS[index]] = float(_swarm_us[index]) / 1000.0
+	var walkers := 0
+	var cars := 0
+	for mmi in walker_mmis.values():
+		walkers += mmi.multimesh.instance_count
+	for mmi in car_mmis.values():
+		cars += mmi.multimesh.instance_count
+	details["walkers"] = walkers
+	details["cars"] = cars
+	PerfDebug.record("agents", elapsed_ms, details)
 
 func _update_camera_aabb():
 	var camera = get_viewport().get_camera_3d()
@@ -246,7 +256,9 @@ func _update_camera_aabb():
 
 func update_swarm(delta: float = 0.0):
 	# Walkers (Grouped by variant)
+	var start_us := Time.get_ticks_usec()
 	var walker_data = simulation_node.get_agent_transforms()
+	var fetched_us := Time.get_ticks_usec()
 	for p_type in walker_mmis:
 		var mmi = walker_mmis[p_type]
 		var buffer = walker_data.get(p_type, PackedFloat32Array())
@@ -258,6 +270,7 @@ func update_swarm(delta: float = 0.0):
 		if count > 0:
 			mmi.multimesh.buffer = buffer
 
+	var walkers_us := Time.get_ticks_usec()
 	# Cars (grouped by vehicle type and color variant). Rust moves each drawn pose toward its
 	# snapshot pose and grounds off-lane cars, so they do not step at the simulation tick rate.
 	var parked_renderer: Node = get_node_or_null("../ParkedCars")
@@ -267,9 +280,11 @@ func update_swarm(delta: float = 0.0):
 	var vehicle_frame: Dictionary = simulation_node.get_vehicle_frame(full)
 	if parked_renderer != null and vehicle_frame.has("parked"):
 		parked_renderer.apply_publication(vehicle_frame["parked"])
+	var frame_us := Time.get_ticks_usec()
 	var car_buffers: Dictionary = simulation_node.smooth_car_render_data(
 		vehicle_frame["cars"], delta
 	)
+	var smoothed_us := Time.get_ticks_usec()
 	for type_key in car_mmis:
 		var mmi = car_mmis[type_key]
 		var buffer: PackedFloat32Array = car_buffers.get(type_key, PackedFloat32Array())
@@ -278,7 +293,15 @@ func update_swarm(delta: float = 0.0):
 			mmi.multimesh.instance_count = count
 		if count > 0:
 			mmi.multimesh.buffer = buffer
+	var assigned_us := Time.get_ticks_usec()
 	_headlights.update(simulation_node, car_buffers)
+	var lit_us := Time.get_ticks_usec()
+	_swarm_us[0] = fetched_us - start_us
+	_swarm_us[1] = walkers_us - fetched_us
+	_swarm_us[2] = frame_us - walkers_us
+	_swarm_us[3] = smoothed_us - frame_us
+	_swarm_us[4] = assigned_us - smoothed_us
+	_swarm_us[5] = lit_us - assigned_us
 
 	if show_paths:
 		var data = simulation_node.get_agent_paths_debug()

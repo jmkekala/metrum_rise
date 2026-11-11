@@ -71,6 +71,8 @@ var _vote_transform := Transform3D.IDENTITY
 var _vote_projection := Projection()
 var _vote_rect := Rect2()
 var _vote_offsets := Vector2.ZERO
+# Microseconds the last frame's vote took, for the perf channel.
+var _vote_us := 0
 # Per vote ray, the water level it last came down onto, or NAN.
 var _ray_levels := PackedFloat32Array()
 var _ray_weights := PackedFloat32Array()
@@ -164,8 +166,18 @@ func _exit_tree() -> void:
 	RenderingServer.global_shader_parameter_set("water_reflection_map_2", null)
 	RenderingServer.global_shader_parameter_set("water_reflection_plane", Vector4.ZERO)
 
-# After every node has moved the camera and the key light for this frame.
+# After every node has moved the camera and the key light for this frame. The perf channel
+# records the hook as "water_reflection", with the vote's own share.
 func _update_before_draw() -> void:
+	var start_us := Time.get_ticks_usec()
+	_vote_us = 0
+	_update_mirrors()
+	if PerfDebug.is_enabled():
+		PerfDebug.record("water_reflection", float(Time.get_ticks_usec() - start_us) / 1000.0, {
+			"vote_ms": float(_vote_us) / 1000.0,
+			"mirrors": int(_mirrors[0][3]) + int(_mirrors[1][3])})
+
+func _update_mirrors() -> void:
 	_building_proxies.sync()
 	var main_viewport := get_viewport()
 	var main_camera := main_viewport.get_camera_3d() if main_viewport != null else null
@@ -175,7 +187,9 @@ func _update_before_draw() -> void:
 		_publish_planes()
 		return
 	main_camera.cull_mask &= ~REFLECTION_LAYER
+	var vote_start := Time.get_ticks_usec()
 	var levels := _vote_planes(main_camera)
+	_vote_us = Time.get_ticks_usec() - vote_start
 	var synced := false
 	for index in MIRROR_COUNT:
 		var mirror: Array = _mirrors[index]
