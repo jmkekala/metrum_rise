@@ -299,8 +299,7 @@ func _run() -> void:
 ## Requests a patch and installs what the mock built for it, as the next frames' polls would.
 func _upload(vegetation: Node3D, key: Vector3i, span: float) -> void:
 	vegetation._upload_patch(key, span)
-	while vegetation._poll_products() > 0:
-		pass
+	vegetation._poll_products(1 << 40)
 
 func _check_hysteresis(vegetation: Node3D) -> void:
 	var half := VEGETATION_SPAN_M * VegetationScript.PATCH_HALF_DIAGONAL

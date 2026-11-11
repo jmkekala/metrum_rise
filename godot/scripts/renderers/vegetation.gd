@@ -83,8 +83,10 @@ const PATCH_SUBDIVISION := 4
 # Retain richer content beyond its entry distance. Never delay an approaching upgrade.
 const BAND_HYSTERESIS_M := 64.0
 # Installs of finished products stop once this much of the frame is spent on them; the first
-# always runs. A request costs a few microseconds: the query and the product run on Rust's
-# background pool (`RENDER-32-D`), so only the node creation is paid here.
+# of a frame always runs. A request costs a few microseconds: the query and the product run on
+# Rust's background pool (`RENDER-32-D`), so only the node creation is paid here. Products are
+# taken twice a frame: in `_process`, and again just before the frame draws, which installs the
+# patches requested earlier in the same frame whose products the workers finished meanwhile.
 const INSTALL_BUDGET_USEC := 1000
 
 ## Whether a patch casts. A canopy tree casts from its branched level within
@@ -158,6 +160,11 @@ var _poll_us := 0
 # The longest single main-thread vegetation unit this frame (a request, or a poll and its
 # install), microseconds.
 var _unit_max_us := 0
+# This frame's installs and the microseconds they took, against INSTALL_BUDGET_USEC.
+var _frame_installs := 0
+var _frame_install_us := 0
+# This frame's perf record, written by `_process` and completed before the draw.
+var _frame_record: Dictionary = {}
 # The mesh catalogue packed for the product; see _product_catalogue.
 var _catalogue := PackedFloat32Array()
 # Whether Rust holds the catalogue the background products are built against.
@@ -174,6 +181,28 @@ func _ready() -> void:
 	TreeSpecies.set_crossfade(canopy_near_m())
 	TreeSpecies.set_detail(near_detail_m())
 	TreeSpecies.set_far(canopy_far_m())
+	RenderingServer.frame_pre_draw.connect(_install_before_draw)
+
+func _exit_tree() -> void:
+	if RenderingServer.frame_pre_draw.is_connected(_install_before_draw):
+		RenderingServer.frame_pre_draw.disconnect(_install_before_draw)
+
+## Takes the products finished since `_process` within the frame's install budget, so a patch
+## requested this frame draws this frame when its worker was quick enough, and completes the
+## frame's perf record.
+func _install_before_draw() -> void:
+	if not enabled or not ready_for_world or not is_processing():
+		return
+	var start_us := Time.get_ticks_usec()
+	var installs := _poll_products()
+	if PerfDebug.is_enabled() and not _frame_record.is_empty():
+		var pre_draw_ms := float(Time.get_ticks_usec() - start_us) / 1000.0
+		var details: Dictionary = _frame_record["details"]
+		details.merge({"pre_draw_ms": pre_draw_ms, "pre_draw_installs": installs,
+			"uploads": int(details["uploads"]) + installs, "poll_ms": float(_poll_us) / 1000.0,
+			"upload_max_ms": float(_unit_max_us) / 1000.0}, true)
+		PerfDebug.record("vegetation", float(_frame_record["elapsed_ms"]) + pre_draw_ms, details)
+	_frame_record = {}
 
 ## Canopy far range in effect. One accessor so the draw range and the patch residency test
 ## can never disagree about how far the scatter reaches.
@@ -271,6 +300,9 @@ func _process(_delta: float) -> void:
 	var start_us := Time.get_ticks_usec()
 	_poll_us = 0
 	_unit_max_us = 0
+	_frame_installs = 0
+	_frame_install_us = 0
+	_frame_record = {}
 	var revision: int = terrain.get_resident_patch_revision()
 	# O(resident patches) only on residency/camera-cell changes, not O(total scatter).
 	var residency_changed := revision != last_revision or camera_cell != last_camera_cell
@@ -416,16 +448,17 @@ func _process(_delta: float) -> void:
 	if not standins.is_empty():
 		_release_standins(camera_xz)
 	if PerfDebug.is_enabled():
+		# Recorded before the draw, with the installs taken there (_install_before_draw).
 		var ms := func(from_us: int, to_us: int) -> float: return float(to_us - from_us) / 1000.0
 		var end_us := Time.get_ticks_usec()
-		PerfDebug.record("vegetation", ms.call(start_us, end_us), {
+		_frame_record = {"elapsed_ms": ms.call(start_us, end_us), "details": {
 			"residency_ms": ms.call(start_us, residency_us), "bands_ms": ms.call(residency_us, bands_us),
 			"detail_ms": ms.call(bands_us, detail_us), "stale_ms": ms.call(detail_us, upload_start),
 			"uploads_ms": ms.call(upload_start, uploaded_us), "poll_ms": float(_poll_us) / 1000.0,
 			"upload_max_ms": float(_unit_max_us) / 1000.0, "standins_ms": ms.call(uploaded_us, end_us),
 			"uploads": installs, "requests": requests, "requested": requested.size(),
 			"residency_changed": 1 if residency_changed else 0,
-			"queue": queue.size(), "patches": patches.size(), "wanted": wanted_keys.size()})
+			"queue": queue.size(), "patches": patches.size(), "wanted": wanted_keys.size()}}
 
 ## Puts away every stand-in whose area the wanted patches now cover. O(stand-ins x the
 ## sub-patches of one terrain patch), and stand-ins exist only while a tier change uploads.
@@ -705,13 +738,12 @@ func _request_changed(key: Vector3i, distance: float) -> bool:
 		or bands[0] != bool(request["understory"]) or bands[1] != bool(request["near_band"])
 		or bands[2] != int(request["shadow_caster"]))
 
-## Takes finished products from Rust and installs those of live requests, until the install
-## budget is spent (the first always installs). A product that comes back busy (the simulation
-## held its lock) is queued again. Returns the installs.
-func _poll_products() -> int:
-	var start := Time.get_ticks_usec()
+## Takes finished products from Rust and installs those of live requests while the frame's
+## install time stays under `limit_us` (the frame's first install always runs). A product that
+## comes back busy (the simulation held its lock) is queued again. Returns the installs.
+func _poll_products(limit_us: int = INSTALL_BUDGET_USEC) -> int:
 	var installs := 0
-	while installs == 0 or Time.get_ticks_usec() - start < INSTALL_BUDGET_USEC:
+	while _frame_installs == 0 or _frame_install_us < limit_us:
 		var one_start := Time.get_ticks_usec()
 		var result: Dictionary = simulation.poll_vegetation_product()
 		_poll_us += Time.get_ticks_usec() - one_start
@@ -726,7 +758,10 @@ func _poll_products() -> int:
 			_queue_patch(key)
 			continue
 		_install_product(key, request, result)
-		_unit_max_us = maxi(_unit_max_us, Time.get_ticks_usec() - one_start)
+		var spent := Time.get_ticks_usec() - one_start
+		_unit_max_us = maxi(_unit_max_us, spent)
+		_frame_install_us += spent
+		_frame_installs += 1
 		installs += 1
 	return installs
 
