@@ -13,9 +13,10 @@
 //! - **Lamp grid**: `SIDE` x `SIDE` cells of `CELL_M` around the camera's cell, `CAPACITY` slots a
 //!   cell, every lamp head in the cells its range reaches, in a stable world order (x, z, y,
 //!   kind). It re-centres after `GRID_RECENTRE_CELLS` cells of travel: `O(l log l + l k)` for
-//!   the `l` lamps of the window's chunks, `k` <= 25 cells a lamp, packed in bands of
-//!   `BAND_ROWS` cell rows on the shared pool. A chunk edit re-packs only the cells the chunk's
-//!   lamps can reach, in place: `O(m log m + m k)` for the `m` lamps of the chunks around it. A cell's list depends only on the lamps reaching it and the window origin,
+//!   the `l` lamps of the window's chunks, `k` <= 25 cells a lamp (0.3-0.6 ms for the 30k
+//!   city's 3,500 lamps in a window; serial, because bands on the shared pool saved little and
+//!   waited on it). A chunk edit re-packs only the cells the chunk's lamps can reach, in place:
+//!   `O(m log m + m k)` for the `m` lamps of the chunks around it. A cell's list depends only on the lamps reaching it and the window origin,
 //!   so a region re-pack equals a full one.
 //! - **Far map**: `FAR_SIDE`^2 texels of `FAR_CELL_M` around the look ray's ground point, each
 //!   head's light splatted bilinearly. Rebuilt after `FAR_RECENTRE_M` of focus travel: `O(C + h)`
@@ -26,12 +27,13 @@
 //!   around it, every `POOL_REFRESH_S` or `POOL_REFRESH_MOVE_M`: `O(n)` for the `n` heads of
 //!   those chunks (a selection, not a sort).
 //!
-//! One texture is rebuilt a frame: when both are due, the one that waited goes first. A still
-//! camera costs a few comparisons. No allocation once the scratch buffers reached their size.
+//! A frame does one texture step: build the lamp grid, build the far map, or hand one built
+//! texture to Godot for upload (the next frame), so a build and a 4 MiB upload never share a
+//! frame; when both textures are due, the one that waited goes first. A still camera costs a
+//! few comparisons. No allocation once the scratch buffers reached their size.
 
 use super::vegetation_product::godot_math::{Basis, basis_axis_angle};
 use godot::prelude::*;
-use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
@@ -72,8 +74,6 @@ const LAMP_ANGLE_DEG: f64 = 80.0;
 const ARM_M: f32 = 3.4;
 // More edited chunks than this before a pack re-packs the whole window instead.
 const MAX_GRID_EDITS: usize = 32;
-// Cell rows a parallel pack's band holds.
-const BAND_ROWS: usize = 16;
 // Floats a cell takes: CAPACITY RGBA slots.
 const CELL_FLOATS: usize = CAPACITY * 4;
 const CELL_BYTES: usize = SIDE * SIDE * CELL_FLOATS * 4;
@@ -123,7 +123,11 @@ fn write_f32(bytes: &mut [u8], index: usize, value: f32) {
 }
 
 fn read_f32(bytes: &[u8], index: usize) -> f32 {
-    f32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().expect("four bytes"))
+    f32::from_le_bytes(
+        bytes[index * 4..index * 4 + 4]
+            .try_into()
+            .expect("four bytes"),
+    )
 }
 
 /// A rectangle of cells or chunk keys, both ends inclusive.
@@ -394,7 +398,9 @@ pub(crate) struct LampBook {
     far_built: bool,
     far_origin: [f32; 2],
     far_centre: [f32; 2],
+    // The far map or the lamp grid changed since Godot last uploaded it.
     far_upload: bool,
+    cells_upload: bool,
     // Both textures were due and the far map waited.
     far_waited: bool,
     pool_age_s: f64,
@@ -424,6 +430,7 @@ impl Default for LampBook {
             far_origin: [0.0, 0.0],
             far_centre: [f32::INFINITY, f32::INFINITY],
             far_upload: false,
+            cells_upload: false,
             far_waited: false,
             pool_age_s: f64::INFINITY,
             pool_camera: None,
@@ -521,7 +528,8 @@ impl LampBook {
                     // origin + Transform3D(basis, base) * local, in single precision.
                     let head: [f32; 3] = std::array::from_fn(|i| {
                         let row = basis[i];
-                        origin[i] + (row[0] * local[0] + row[1] * local[1] + row[2] * local[2] + base[i])
+                        origin[i]
+                            + (row[0] * local[0] + row[1] * local[1] + row[2] * local[2] + base[i])
                     });
                     chunk.heads.push(head);
                     chunk.kinds.push(*kind);
@@ -533,9 +541,13 @@ impl LampBook {
         batches.glow.reserve(chunk.heads.len() * 16);
         for (head, &kind) in chunk.heads.iter().zip(&chunk.kinds) {
             let local: [f32; 3] = std::array::from_fn(|i| head[i] - origin[i]);
-            batches.glow.extend_from_slice(&[1.0, 0.0, 0.0, local[0], 0.0, 1.0, 0.0, local[1]]);
+            batches
+                .glow
+                .extend_from_slice(&[1.0, 0.0, 0.0, local[0], 0.0, 1.0, 0.0, local[1]]);
             batches.glow.extend_from_slice(&[0.0, 0.0, 1.0, local[2]]);
-            batches.glow.extend_from_slice(&self.colors[usize::from(kind)]);
+            batches
+                .glow
+                .extend_from_slice(&self.colors[usize::from(kind)]);
         }
         self.insert_heads(key, chunk.heads, chunk.kinds, far);
         batches
@@ -554,7 +566,14 @@ impl LampBook {
         let order = self.next_order;
         self.next_order += 1;
         self.order.insert(order, key);
-        self.chunks.insert(key, Chunk { order, heads, kinds });
+        self.chunks.insert(
+            key,
+            Chunk {
+                order,
+                heads,
+                kinds,
+            },
+        );
         self.chunk_edited(key);
         self.splat_chunk(key, 1.0, far);
     }
@@ -602,7 +621,15 @@ impl LampBook {
         };
         for (head, &kind) in chunk.heads.iter().zip(&chunk.kinds) {
             let light = self.kind_light[usize::from(kind)];
-            splat_head(far, *head, light, scale, self.far_origin, FAR_CELL_M, FAR_SIDE as i32);
+            splat_head(
+                far,
+                *head,
+                light,
+                scale,
+                self.far_origin,
+                FAR_CELL_M,
+                FAR_SIDE as i32,
+            );
         }
         self.far_upload = true;
     }
@@ -613,9 +640,10 @@ impl LampBook {
         self.pool_camera.take().is_some()
     }
 
-    /// A night frame from the camera at `eye` looking along `forward`: re-centres the lamp grid
-    /// or re-packs its edited cells, rebuilds or re-uploads the far map (one texture a frame),
-    /// and assigns the pool when due. Returns the `*_CHANGED` flags.
+    /// A night frame from the camera at `eye` looking along `forward`: hands Godot one changed
+    /// texture to upload, or else builds one (re-centres the lamp grid or re-packs its edited
+    /// cells, or rebuilds the far map), and assigns the pool when due. Returns the `*_CHANGED`
+    /// flags.
     pub(crate) fn update(
         &mut self,
         eye: [f32; 3],
@@ -627,39 +655,15 @@ impl LampBook {
         self.pool_age_s += delta_s;
         self.packed_rows = 0;
         let mut flags = 0;
-        let cell = [
-            (f64::from(eye[0]) / f64::from(CELL_M)).floor() as i32,
-            (f64::from(eye[2]) / f64::from(CELL_M)).floor() as i32,
-        ];
-        let recentre = self.grid.is_none_or(|grid| {
-            let moved = [(cell[0] - grid.cell[0]).abs(), (cell[1] - grid.cell[1]).abs()];
-            moved[0].max(moved[1]) > GRID_RECENTRE_CELLS
-        });
-        let grid_due = recentre || !self.grid_edits.is_empty();
-        let focus = ground_focus(eye, forward);
-        let far_rebuild = !self.far_built || {
-            let dx = focus[0] - self.far_centre[0];
-            let dz = focus[1] - self.far_centre[1];
-            f64::from((dx * dx + dz * dz).sqrt()) > FAR_RECENTRE_M
-        };
-        let far_due = far_rebuild || self.far_upload;
-        let far_first = far_due && (!grid_due || self.far_waited);
-        if grid_due && !far_first {
-            if recentre {
-                self.recentre_grid(cell, cells);
-                self.pool_age_s = f64::INFINITY;
-            } else {
-                self.pack_edits(cells);
-            }
+        if self.cells_upload {
+            // Built last frame: Godot uploads it now.
+            self.cells_upload = false;
             flags |= CELLS_CHANGED;
-            self.far_waited = far_due;
-        } else if far_due {
-            if far_rebuild {
-                self.rebuild_far(focus, far);
-            }
+        } else if self.far_upload {
             self.far_upload = false;
-            self.far_waited = false;
             flags |= FAR_CHANGED;
+        } else {
+            self.build_texture(eye, forward, cells, far);
         }
         let pool_due = self.pool_age_s >= POOL_REFRESH_S
             || self.pool_camera.is_none_or(|camera| {
@@ -673,6 +677,48 @@ impl LampBook {
             flags |= POOL_CHANGED;
         }
         flags
+    }
+
+    // A frame's texture build when no upload is pending: the lamp grid (re-centred or its edited
+    // cells re-packed) or the far map, whichever is due; when both are, the one that waited.
+    fn build_texture(
+        &mut self,
+        eye: [f32; 3],
+        forward: [f32; 3],
+        cells: &mut [u8],
+        far: &mut [u8],
+    ) {
+        let cell = [
+            (f64::from(eye[0]) / f64::from(CELL_M)).floor() as i32,
+            (f64::from(eye[2]) / f64::from(CELL_M)).floor() as i32,
+        ];
+        let recentre = self.grid.is_none_or(|grid| {
+            let moved = [
+                (cell[0] - grid.cell[0]).abs(),
+                (cell[1] - grid.cell[1]).abs(),
+            ];
+            moved[0].max(moved[1]) > GRID_RECENTRE_CELLS
+        });
+        let grid_due = recentre || !self.grid_edits.is_empty();
+        let focus = ground_focus(eye, forward);
+        let far_due = !self.far_built || {
+            let dx = focus[0] - self.far_centre[0];
+            let dz = focus[1] - self.far_centre[1];
+            f64::from((dx * dx + dz * dz).sqrt()) > FAR_RECENTRE_M
+        };
+        if grid_due && !(far_due && self.far_waited) {
+            if recentre {
+                self.recentre_grid(cell, cells);
+                self.pool_age_s = f64::INFINITY;
+            } else {
+                self.pack_edits(cells);
+            }
+            self.cells_upload = true;
+            self.far_waited = far_due;
+        } else if far_due {
+            self.rebuild_far(focus, far);
+            self.far_waited = false;
+        }
     }
 
     /// Re-centres the lamp grid on `cell` and packs every cell. `O(l log l + l k)`.
@@ -770,41 +816,15 @@ impl LampBook {
             }
         }
         self.rows.sort_unstable_by(row_order);
-        let rows = &self.rows;
-        // Packs the region's part of a band of cell rows, every head in order.
-        let pack = |mut band: CellRows, region: CellRect| {
-            clear_cells(&mut band, region);
-            for row in rows {
-                let slot_kind = f32::from(row.kind + 1);
-                pack_head(&mut band, row.head, slot_kind, row.reach, origin, region);
-            }
+        let mut band = CellRows {
+            bytes: cells,
+            counts: &mut self.counts,
+            z_base: 0,
         };
-        if region == CellRect::WINDOW {
-            // Bands of cell rows are independent: each packs the heads reaching it, in order.
-            let band_bytes = BAND_ROWS * SIDE * CELL_FLOATS * 4;
-            let counts = &mut self.counts;
-            crate::thread_pools::install(|| {
-                cells
-                    .par_chunks_mut(band_bytes)
-                    .zip(counts.par_chunks_mut(BAND_ROWS * SIDE))
-                    .enumerate()
-                    .for_each(|(band, (bytes, counts))| {
-                        let z_base = (band * BAND_ROWS) as i32;
-                        let rect = CellRect {
-                            z0: z_base,
-                            z1: z_base + BAND_ROWS as i32 - 1,
-                            ..region
-                        };
-                        pack(CellRows { bytes, counts, z_base }, rect);
-                    });
-            });
-        } else {
-            let band = CellRows {
-                bytes: cells,
-                counts: &mut self.counts,
-                z_base: 0,
-            };
-            pack(band, region);
+        clear_cells(&mut band, region);
+        for row in &self.rows {
+            let slot_kind = f32::from(row.kind + 1);
+            pack_head(&mut band, row.head, slot_kind, row.reach, origin, region);
         }
         self.packed_rows += self.rows.len();
     }
@@ -836,7 +856,15 @@ impl LampBook {
             let chunk = &self.chunks[key];
             for (head, &kind) in chunk.heads.iter().zip(&chunk.kinds) {
                 let light = self.kind_light[usize::from(kind)];
-                splat_head(far, *head, light, 1.0, self.far_origin, FAR_CELL_M, FAR_SIDE as i32);
+                splat_head(
+                    far,
+                    *head,
+                    light,
+                    1.0,
+                    self.far_origin,
+                    FAR_CELL_M,
+                    FAR_SIDE as i32,
+                );
             }
             self.packed_rows += chunk.heads.len();
         }
@@ -906,7 +934,11 @@ fn ground_focus(eye: [f32; 3], forward: [f32; 3]) -> [f32; 2] {
 }
 
 fn color_array(colors: &PackedColorArray) -> Vec<[f32; 4]> {
-    colors.as_slice().iter().map(|c| [c.r, c.g, c.b, c.a]).collect()
+    colors
+        .as_slice()
+        .iter()
+        .map(|c| [c.r, c.g, c.b, c.a])
+        .collect()
 }
 
 fn heads_of(heads: &PackedVector3Array) -> impl Iterator<Item = [f32; 3]> + '_ {
@@ -1007,7 +1039,8 @@ impl StreetLightBook {
     #[func]
     pub fn remove_chunk(&mut self, key: Vector2i) -> bool {
         self.buffers();
-        self.book.remove_chunk((key.x, key.y), self.far.as_mut_slice())
+        self.book
+            .remove_chunk((key.x, key.y), self.far.as_mut_slice())
     }
 
     /// Takes every chunk out.
@@ -1107,11 +1140,26 @@ impl StreetLightBook {
             counts: &mut counts,
             z_base: 0,
         };
-        for ((head, &kind), &reach) in heads_of(&heads).zip(kinds.as_slice()).zip(ranges.as_slice()) {
+        for ((head, &kind), &reach) in heads_of(&heads)
+            .zip(kinds.as_slice())
+            .zip(ranges.as_slice())
+        {
             let slot_kind = f32::from(kind) + 1.0;
-            pack_head(&mut rows, head, slot_kind, reach, [origin.x, origin.y], CellRect::WINDOW);
+            pack_head(
+                &mut rows,
+                head,
+                slot_kind,
+                reach,
+                [origin.x, origin.y],
+                CellRect::WINDOW,
+            );
         }
-        bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
     }
 
     /// Adds `heads`' light (`kind_light` per kind) times `scale` into `texels` (RGBA rows of
@@ -1128,13 +1176,30 @@ impl StreetLightBook {
         side: i64,
         scale: f32,
     ) -> PackedFloat32Array {
-        let mut bytes: Vec<u8> = texels.as_slice().iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut bytes: Vec<u8> = texels
+            .as_slice()
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
         let light = color_array(&kind_light);
         for (head, &kind) in heads_of(&heads).zip(kinds.as_slice()) {
             let [r, g, b, _] = light[usize::from(kind)];
-            splat_head(&mut bytes, head, [r, g, b], scale, [origin.x, origin.y], cell_m, side as i32);
+            splat_head(
+                &mut bytes,
+                head,
+                [r, g, b],
+                scale,
+                [origin.x, origin.y],
+                cell_m,
+                side as i32,
+            );
         }
-        bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
     }
 
     /// The ground flux of a lamp at `height` with range `reach` and cone `cone_cos`.
