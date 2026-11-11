@@ -86,12 +86,10 @@ fn influence(plant: &Plant, pos: Vector2, radius: f32) -> f32 {
 }
 
 /// Uses species clearance while keeping the authored canopy owner cell.
-pub(super) fn authored_clear(core: &SimCore, plant: &Plant) -> bool {
+pub(super) fn authored_clear(core: &impl VegetationWorld, plant: &Plant) -> bool {
     let class = PlantClass::of(plant.species, plant.variant);
-    let in_planting = class == PlantClass::Tree
-        && core
-            .allocator
-            .in_yard_planting(Vector2::new(plant.x, plant.z));
+    let in_planting =
+        class == PlantClass::Tree && core.in_yard_planting(Vector2::new(plant.x, plant.z));
     let relief = match class {
         PlantClass::Tree => 3.0,
         PlantClass::Landscape => 1.0,

@@ -205,3 +205,53 @@ fn vegetation_product_matches_the_gdscript_upload_bitwise() {
         "{checked} uploads, {instances} batches"
     );
 }
+
+// `RENDER-32-D`: the background path (a snapshot of the patch's inputs, the three queries and
+// the product on the worker) against the same goldens: bitwise the GDScript upload too.
+#[test]
+fn background_patch_matches_the_gdscript_upload_bitwise() {
+    use super::jobs::{PatchRequest, prepare_patch};
+    use super::world::VegetationPatchInputs;
+    let golden = include_str!("product_golden.txt");
+    let catalogue_line = golden.lines().next().unwrap();
+    let catalogue =
+        ProductCatalogue::from_lanes(&floats_of(catalogue_line.strip_prefix("C ").unwrap()))
+            .expect("catalogue lanes");
+    let mut worlds = [world(0), world(1)];
+    let mut product = VegetationProduct::default();
+    let mut mismatches = Vec::new();
+    let mut checked = 0;
+    for line in golden.lines().skip(1) {
+        let f: Vec<&str> = line.split(' ').collect();
+        let num = |i: usize| f[i].parse::<i64>().unwrap();
+        let core = &mut worlds[num(1) as usize];
+        let origin = floats_of(f[9]);
+        let request = PatchRequest {
+            key: [num(2) as i32, num(3) as i32, num(4) as i32],
+            origin: Vector2::new(origin[0], origin[1]),
+            span: 510.0 / num(4) as f32,
+            understory: num(6) == 1,
+            near_band: num(7) == 1,
+            caster: num(8) != 0,
+            settings: SETTINGS,
+        };
+        let inputs = VegetationPatchInputs::take(core, request.origin, request.span)
+            .expect("inputs ready");
+        prepare_patch(&inputs, &request, &catalogue, &mut product);
+        let records = record_lines(&product);
+        if product.tree_count != num(10)
+            || float_hex(&product.canopy_box.lanes()) != f[11]
+            || sha(records.as_bytes()) != f[15]
+        {
+            mismatches.push(line.to_owned());
+        }
+        checked += 1;
+    }
+    assert!(
+        mismatches.is_empty(),
+        "{} of {checked} background patches differ; first: {}",
+        mismatches.len(),
+        mismatches.first().map_or("", |m| m.as_str())
+    );
+    assert!(checked >= 500, "{checked} uploads");
+}

@@ -20,8 +20,8 @@ const POLE_BEYOND_SURFACE_M: f64 = 0.75;
 /// Whether a tree trunk keeps clear of walkways and lamp poles. Generated and brushed trees
 /// both follow it; a yard planting's trees stand where its asset put them. A tunnel's walkways
 /// lie under the hill and set nothing back.
-pub(super) fn clear(core: &SimCore, x: f32, z: f32) -> bool {
-    let surface = &core.transit_network.roadbed;
+pub(super) fn clear(core: &impl VegetationWorld, x: f32, z: f32) -> bool {
+    let surface = core.roadbed();
     let point = RoadVec2::new(f64::from(x), f64::from(z));
     let near = |radius, kinds: fn(BandKind) -> bool| {
         surface.any_exposed_band_near_disc(point, radius, kinds)
@@ -38,8 +38,8 @@ pub(super) fn clear(core: &SimCore, x: f32, z: f32) -> bool {
     ) || lamps_clear(core, Vector2::new(x, z))
 }
 
-fn lamps_clear(core: &SimCore, point: Vector2) -> bool {
-    let surface = &core.transit_network.roadbed;
+fn lamps_clear(core: &impl VegetationWorld, point: Vector2) -> bool {
+    let surface = core.roadbed();
     let span = surface.chunk_span_m();
     let (ox, oz) = surface.chunk_origin_m();
     let origin = Vector2::new(ox, oz);
@@ -51,7 +51,7 @@ fn lamps_clear(core: &SimCore, point: Vector2) -> bool {
     // per chunk rather than city size, without allocation.
     for cx in first.x as i32..=last.x as i32 {
         for cz in first.y as i32..=last.y as i32 {
-            let Some(mesh) = core.cached_road_mesh_chunks.get(&(cx, cz)) else {
+            let Some(mesh) = core.road_chunks().get(&(cx, cz)) else {
                 continue;
             };
             // Poles are local to the chunk's frame centre.

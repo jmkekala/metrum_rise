@@ -243,14 +243,6 @@ impl GradedSurface<'_> {
         // whole tile is needed. Index-free fixtures retain the gather reference's complete-tile
         // preparation, against which indexed queries are compared.
         let reach = reach.max(0.0);
-        if !self.query_index.is_some_and(TerrainQueryIndex::ready) {
-            let min_x = ((x - reach) / TILE_M).floor() * TILE_M;
-            let min_z = ((z - reach) / TILE_M).floor() * TILE_M;
-            let max_x = ((x + reach) / TILE_M).floor() * TILE_M + TILE_M;
-            let max_z = ((z + reach) / TILE_M).floor() * TILE_M + TILE_M;
-            self.prepare(grown([min_x, min_z, max_x, max_z], GL0_M), scratch);
-            return;
-        }
         let first = Cell::at(x - reach, z - reach).rect(0);
         let last = Cell::at(x + reach, z + reach).rect(0);
         let centre = Cell::at(x, z).rect(1);
@@ -260,6 +252,14 @@ impl GradedSurface<'_> {
             last[2].max(centre[2]),
             last[3].max(centre[3]),
         ];
+        if !self.query_index.is_some_and(|index| index.ready_for(rect)) {
+            let min_x = ((x - reach) / TILE_M).floor() * TILE_M;
+            let min_z = ((z - reach) / TILE_M).floor() * TILE_M;
+            let max_x = ((x + reach) / TILE_M).floor() * TILE_M + TILE_M;
+            let max_z = ((z + reach) / TILE_M).floor() * TILE_M + TILE_M;
+            self.prepare(grown([min_x, min_z, max_x, max_z], GL0_M), scratch);
+            return;
+        }
         self.prepare(rect, scratch);
     }
 
@@ -549,7 +549,7 @@ impl GradedSurface<'_> {
     // within the cap wait for [`Self::gather_rest`]. `O(P + V / 8 + K log K)` plus the sites, for
     // the `K` seams of the runs and sites that may bind.
     fn prepare(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
-        if let Some(index) = self.query_index.filter(|index| index.ready()) {
+        if let Some(index) = self.query_index.filter(|index| index.ready_for(rect)) {
             if scratch.rect == Some(rect)
                 && scratch.index_identity == index.identity()
                 && scratch.index_generation == index.generation()

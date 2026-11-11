@@ -27,7 +27,7 @@ pub(super) struct Coverage {
 impl Coverage {
     /// Evaluates O(K + A) local candidates/additions with indexed footprint queries.
     /// Each accepted crown touches at most nine texels and 64 fixed samples per texel.
-    pub(super) fn build(core: &SimCore, origin: Vector2, span: f32) -> Self {
+    pub(super) fn build(core: &impl VegetationWorld, origin: Vector2, span: f32) -> Self {
         let first = (origin / TEXEL_M).floor() - Vector2::ONE;
         let end = ((origin + Vector2::splat(span)) / TEXEL_M).ceil() + Vector2::ONE;
         let width = (end.x - first.x) as usize;
@@ -51,12 +51,12 @@ impl Coverage {
         );
         let nx = high.x - low.x + 1;
         let nz = high.z - low.z + 1;
-        let edited = core.vegetation_edits.any_in_cell_range(
+        let edited = core.edits().any_in_cell_range(
             VegetationLayer::Canopy,
             (low.x, high.x),
             (low.z, high.z),
         );
-        if edited || core.vegetation.config.enabled {
+        if edited || core.generator().config.enabled {
             // Godot's main thread builds land cover: shared pool (CODE-17).
             crate::thread_pools::install(|| {
                 (0..nx * nz).into_par_iter().for_each(|i| {
@@ -66,7 +66,7 @@ impl Coverage {
                         z: low.z + i / nx,
                     };
                     let (removed, added): (bool, &[Plant]) = if edited {
-                        core.vegetation_edits.cell(cell)
+                        core.edits().cell(cell)
                     } else {
                         (false, &[])
                     };
@@ -166,7 +166,6 @@ impl Coverage {
     }
 
     // The stand grid's bytes, size and world rectangle, as `stand_grid` publishes them.
-    #[cfg(test)]
     pub(super) fn stand_parts(&self, radius: usize) -> (Vec<u8>, usize, usize, [f32; 4]) {
         let (w, h) = (self.width as f32, self.height as f32);
         let bounds = [self.origin.x, self.origin.y, w * TEXEL_M, h * TEXEL_M];

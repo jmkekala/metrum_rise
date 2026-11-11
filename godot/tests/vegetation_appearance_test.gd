@@ -34,6 +34,27 @@ class Simulation extends Node:
 			world[i] += origin.x
 			world[i + 2] += origin.y
 		return world
+	# Rust builds a requested product on its background pool (`RENDER-32-D`); the mock builds it
+	# at once from its own fetches and hands it to the next poll.
+	var _products: Array = []
+	var _serial := 0
+	var _catalogue := PackedFloat32Array()
+	func set_vegetation_product_catalogue(catalogue):
+		_catalogue = catalogue
+		return true
+	func clear_vegetation_requests(): _products.clear()
+	func cancel_vegetation_patch(_key): pass
+	func request_vegetation_patch(key, origin, span, understory, near_band, caster, settings):
+		var runs: PackedFloat32Array = (PackedFloat32Array() if near_band
+			else get_vegetation_hedge_runs(origin, span))
+		var product: Dictionary = SimulationNode.build_vegetation_product(
+			get_decorative_tree_patch(origin, span, understory), get_vegetation_stand_cover(origin, span),
+			runs, origin, near_band, caster, settings, _catalogue)
+		_serial += 1
+		product.merge({"key": key, "serial": _serial, "busy": false})
+		_products.append(product)
+		return _serial
+	func poll_vegetation_product(): return {} if _products.is_empty() else _products.pop_front()
 func _initialize(): call_deferred("run")
 func run():
 	var host := Node3D.new()
@@ -59,12 +80,12 @@ func run():
 	_check_meshes(vegetation.meshes)
 	_check_atlas_cells()
 	for key in [Vector3i(0,0,1), Vector3i(1,0,1), Vector3i(0,1,1), Vector3i(1,1,1)]:
-		vegetation._upload_patch(key, SPAN)
+		_upload(vegetation, key, SPAN)
 	await process_frame
 	vegetation.generation_ms_max = 0.0
 	for repeat in range(6):
 		for key in vegetation.patches.keys():
-			vegetation._upload_patch(key, SPAN)
+			_upload(vegetation, key, SPAN)
 		await process_frame
 	var nodes := 0
 	var resident := 0
@@ -249,7 +270,7 @@ func run():
 	# keeping one distant instance per canopy species. It is also past the sun's range, so
 	# nothing it holds can reach a cascade and it carries no caster either.
 	camera.global_position = Vector3(2000.0, 0.0, -255.0)
-	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
+	_upload(vegetation, Vector3i(0, 0, 1), SPAN)
 	var far_patch: Node3D = vegetation.patches[Vector3i(0, 0, 1)]
 	assert(not far_patch.get_meta("near_band") and not far_patch.get_meta("understory"))
 	assert(far_patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.NONE)
@@ -267,14 +288,14 @@ func run():
 	# The near band must not follow the span of whichever patch uploaded last. It once did, and
 	# with the floor below the coarse diagonal every upload flipped it between 250 m and 721 m,
 	# so resident patches disagreed with their own record each frame and rebuilt without end.
-	vegetation._upload_patch(Vector3i(0, 0, Vegetation.PATCH_SUBDIVISION), SPAN / Vegetation.PATCH_SUBDIVISION)
+	_upload(vegetation, Vector3i(0, 0, Vegetation.PATCH_SUBDIVISION), SPAN / Vegetation.PATCH_SUBDIVISION)
 	var fine_near: float = vegetation.canopy_near_m()
-	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
+	_upload(vegetation, Vector3i(0, 0, 1), SPAN)
 	assert(vegetation.canopy_near_m() == fine_near)
 	camera.global_position = Vector3.ZERO
 	# Empty buckets emit no nodes, and changing density preserves the original subset rule.
 	vegetation.density_fraction = 0.0
-	vegetation._upload_patch(Vector3i(0, 0, 1), SPAN)
+	_upload(vegetation, Vector3i(0, 0, 1), SPAN)
 	assert(vegetation.patches[Vector3i(0, 0, 1)].get_child_count() == 0)
 	assert(vegetation.patches[Vector3i(0, 0, 1)].get_meta("tree_count") == 0)
 	# Pins name the variant in both the bucketed near level and the far-only impostor rows, whose
@@ -304,6 +325,12 @@ func run():
 	host.free()
 	print("PASS vegetation appearance, shared material and bounds, LOD buckets, positions and empty density")
 	quit()
+
+## Requests a patch and installs what the mock built for it, as the next frames' polls would.
+func _upload(vegetation, key: Vector3i, span: float) -> void:
+	vegetation._upload_patch(key, span)
+	while vegetation._poll_products() > 0:
+		pass
 
 func _check_impostors(vegetation: Node3D) -> void:
 	var metadata := Species.impostor_metadata()

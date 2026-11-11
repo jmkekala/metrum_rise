@@ -2,7 +2,9 @@
 
 ## Vegetation presentation reuses terrain residency; Rust owns the generated and edited state.
 ## Rust supplies deterministic patch-local placements for four species: conifer, broadleaf,
-## bush and rock. Uploads use a time budget, with at least one pending upload per frame.
+## bush and rock. A patch is requested by key and Rust builds its product on the background pool
+## from a snapshot (`RENDER-32-D`); finished products install under a time budget, with at least
+## one install per frame.
 ## A patch regenerates when the terrain renderer commits a newer surface generation for it,
 ## or Rust advances its independent vegetation revision. Later surface edits clear generated
 ## scatter; player placements remain authoritative.
@@ -80,11 +82,10 @@ const PATCH_HALF_DIAGONAL := 0.7071067811865476
 const PATCH_SUBDIVISION := 4
 # Retain richer content beyond its entry distance. Never delay an approaching upgrade.
 const BAND_HYSTERESIS_M := 64.0
-# A single upload is indivisible and may exceed these soft budgets. A patch that draws nothing
-# yet gets the larger one: at 2 ms a camera flying over forest left up to 220 wanted patches
-# unbuilt, and the ground showed through where their trees belonged.
-const UPLOAD_BUDGET_USEC := 2000
-const MISSING_UPLOAD_BUDGET_USEC := 6000
+# Installs of finished products stop once this much of the frame is spent on them; the first
+# always runs. A request costs a few microseconds: the query and the product run on Rust's
+# background pool (`RENDER-32-D`), so only the node creation is paid here.
+const INSTALL_BUDGET_USEC := 1000
 
 ## Whether a patch casts. A canopy tree casts from its branched level within
 ## TreeSpecies.TREE_SHADOW_HANDOVER_M of the camera and from its impostor's silhouette, faced to
@@ -148,13 +149,19 @@ var generation_ms_max := 0.0
 # Rust once per owner instead of once per sub-patch. Cleared, never replaced, each frame.
 var owner_generations: Dictionary = {}
 var ready_for_world := false
-# Microseconds this frame's uploads spent in the Rust placement and stand cover fetches, for
-# the perf channel (`RENDER-27`: the larger part of an upload on a city).
-var _fetch_us := 0
-# Microseconds this frame's uploads spent building their products in Rust (`RENDER-32-C`).
-var _product_us := 0
+# Patches requested from Rust and not yet installed, by key: the request's serial and what the
+# install stamps on the patch (both generations as read before the request, and the bands).
+var requested: Dictionary = {}
+# Microseconds this frame spent taking finished products from Rust (their buffers copied into
+# Godot arrays), for the perf channel.
+var _poll_us := 0
+# The longest single main-thread vegetation unit this frame (a request, or a poll and its
+# install), microseconds.
+var _unit_max_us := 0
 # The mesh catalogue packed for the product; see _product_catalogue.
 var _catalogue := PackedFloat32Array()
+# Whether Rust holds the catalogue the background products are built against.
+var _catalogue_sent := false
 @onready var terrain = $"../Terrain"
 @onready var simulation = $"../SimulationNode"
 
@@ -232,6 +239,8 @@ func rebuild_from_simulation_state() -> void:
 	wanted_keys.clear()
 	queue.clear()
 	queued.clear()
+	requested.clear()
+	simulation.clear_vegetation_requests()
 	stale_land_epoch = -1
 	stale_surface_revision = -1
 	last_band_camera_xz = Vector2.INF
@@ -260,8 +269,8 @@ func _process(_delta: float) -> void:
 	var camera_xz := Vector2(camera.global_position.x, camera.global_position.z)
 	var camera_cell := Vector2i((camera_xz / span).floor())
 	var start_us := Time.get_ticks_usec()
-	_fetch_us = 0
-	_product_us = 0
+	_poll_us = 0
+	_unit_max_us = 0
 	var revision: int = terrain.get_resident_patch_revision()
 	# O(resident patches) only on residency/camera-cell changes, not O(total scatter).
 	var residency_changed := revision != last_revision or camera_cell != last_camera_cell
@@ -320,6 +329,11 @@ func _process(_delta: float) -> void:
 			else:
 				queued.erase(key)
 		queue.resize(retained)
+		# A request for a patch no longer wanted is dropped: its product will not be delivered.
+		for key in requested.keys():
+			if not wanted.has(key):
+				simulation.cancel_vegetation_patch(key)
+				requested.erase(key)
 		for key in wanted:
 			if patches.has(key):
 				continue
@@ -374,32 +388,30 @@ func _process(_delta: float) -> void:
 		for key in patches:
 			if _is_patch_stale(key, owner_generations):
 				_queue_patch(key)
-	# Retain the area/count limit as a ceiling, but stop after the first upload that exhausts
-	# the elapsed-time budget. A valid cached patch or an obsolete band request costs no upload.
+	# Requests up to the area/count limit a frame, most needed first; a patch already in flight
+	# with the same bands and generations is not asked again. Rust refuses a request while its
+	# jobs are full, and the patch then stays queued for the next frame.
 	var budget := upload_budget_override if upload_budget_override >= 1 else divisor * divisor
 	var upload_start := Time.get_ticks_usec()
-	var uploads := 0
-	var upload_max_us := 0
+	var requests := 0
+	var world: Vector2 = simulation.get_terrain_world_size()
 	while budget > 0 and not queue.is_empty():
 		var next: Vector3i = queue.pop_back()
 		queued.erase(next)
+		var distance := _patch_distance(next, world, camera_xz)
 		if patches.has(next):
-			var world: Vector2 = simulation.get_terrain_world_size()
-			var distance := _patch_distance(next, world, camera_xz)
 			if not _is_patch_stale(next) and not _bands_changed(patches[next], distance, _key_span(next)):
-				if uploads > 0 and Time.get_ticks_usec() - upload_start >= UPLOAD_BUDGET_USEC:
-					break
 				continue
+		if requested.has(next) and not _request_changed(next, distance):
+			continue
 		var one_start := Time.get_ticks_usec()
-		_upload_patch(next, _key_span(next))
-		upload_max_us = maxi(upload_max_us, Time.get_ticks_usec() - one_start)
-		budget -= 1
-		uploads += 1
-		var limit := UPLOAD_BUDGET_USEC
-		if not queue.is_empty() and not patches.has(queue.back()):
-			limit = MISSING_UPLOAD_BUDGET_USEC
-		if Time.get_ticks_usec() - upload_start >= limit:
+		if not _upload_patch(next, _key_span(next)):
+			_queue_patch(next)
 			break
+		_unit_max_us = maxi(_unit_max_us, Time.get_ticks_usec() - one_start)
+		budget -= 1
+		requests += 1
+	var installs := _poll_products()
 	var uploaded_us := Time.get_ticks_usec()
 	if not standins.is_empty():
 		_release_standins(camera_xz)
@@ -409,10 +421,10 @@ func _process(_delta: float) -> void:
 		PerfDebug.record("vegetation", ms.call(start_us, end_us), {
 			"residency_ms": ms.call(start_us, residency_us), "bands_ms": ms.call(residency_us, bands_us),
 			"detail_ms": ms.call(bands_us, detail_us), "stale_ms": ms.call(detail_us, upload_start),
-			"uploads_ms": ms.call(upload_start, uploaded_us), "fetch_ms": float(_fetch_us) / 1000.0,
-			"product_ms": float(_product_us) / 1000.0,
-			"upload_max_ms": float(upload_max_us) / 1000.0, "standins_ms": ms.call(uploaded_us, end_us),
-			"uploads": uploads, "residency_changed": 1 if residency_changed else 0,
+			"uploads_ms": ms.call(upload_start, uploaded_us), "poll_ms": float(_poll_us) / 1000.0,
+			"upload_max_ms": float(_unit_max_us) / 1000.0, "standins_ms": ms.call(uploaded_us, end_us),
+			"uploads": installs, "requests": requests, "requested": requested.size(),
+			"residency_changed": 1 if residency_changed else 0,
 			"queue": queue.size(), "patches": patches.size(), "wanted": wanted_keys.size()})
 
 ## Puts away every stand-in whose area the wanted patches now cover. O(stand-ins x the
@@ -615,7 +627,7 @@ func _restore_patch(key: Vector3i) -> void:
 	tree_count += int(patch.get_meta("tree_count"))
 
 func has_pending_work() -> bool:
-	return enabled and (last_revision == -1 or not queue.is_empty())
+	return enabled and (last_revision == -1 or not queue.is_empty() or not requested.is_empty())
 
 func metrics() -> Dictionary:
 	return {"enabled": enabled, "resident_patches": patches.size(), "resident_trees": tree_count,
@@ -636,14 +648,15 @@ func _tier_count(divisor: int) -> int:
 			total += 1
 	return total
 
-func _upload_patch(key: Vector3i, span: float) -> void:
-	var start := Time.get_ticks_usec()
-	# Read before the placement fetch. Stamping an older generation onto newer data only
-	# causes one redundant rebuild; the reverse would leave a stale patch undetected.
-	# Deliberately not the memoised read. The order matters here: this value is stamped onto
-	# the patch, so it must be fetched after any edit that preceded this upload and before the
-	# placement fetch below. A value memoised earlier in the frame can be newer than that and
-	# would stamp an edit as already rendered.
+## Requests a patch's product from Rust with the bands its distance asks for. Returns false when
+## Rust refuses for now (its jobs are full), and the caller keeps the patch queued.
+func _upload_patch(key: Vector3i, span: float) -> bool:
+	# Read before the request. Stamping an older generation onto newer data only causes one
+	# redundant rebuild; the reverse would leave a stale patch undetected. Deliberately not the
+	# memoised read. The order matters here: this value is stamped onto the patch, so it must be
+	# fetched after any edit that preceded this request and before Rust's worker takes the
+	# patch's inputs. A value memoised earlier in the frame can be newer than that and would
+	# stamp an edit as already rendered.
 	var owner := _owner_key(key)
 	var generation: int = terrain.get_patch_surface_generation(owner)
 	var vegetation_generation: int = simulation.get_vegetation_patch_generation(owner)
@@ -652,32 +665,77 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	# A direct caller can name a span the key's own grid does not imply, so the key is made
 	# to agree with it before any distance is measured from it.
 	terrain_span_m = span * float(maxi(key.z, 1))
-	var distance := _patch_distance(key, world, _camera_xz())
-	# Preserve band history through edits and queued uploads as well as cache restoration.
+	var bands := _bands_for(key, _patch_distance(key, world, _camera_xz()))
+	var origin := Vector2(key.x, key.y) * span - world * 0.5
+	if not _catalogue_sent:
+		_catalogue_sent = simulation.set_vegetation_product_catalogue(_product_catalogue())
+	# Every buffer, bounds and range of the patch, built in Rust on the background pool from a
+	# snapshot (`RENDER-32-D`): the placements, the crown coverage around the patch (each canopy
+	# tree's stand closure), the distant hedge runs outside the near band, then the product
+	# (`RENDER-32-C`). One buffer assignment per instance when it installs.
+	var serial: int = simulation.request_vegetation_patch(key, origin, span, bands[0], bands[1],
+		bands[2] != ShadowCaster.NONE, _product_settings())
+	if serial < 0:
+		return false
+	requested[key] = {"serial": serial, "generation": generation,
+		"vegetation_generation": vegetation_generation, "understory": bands[0],
+		"near_band": bands[1], "shadow_caster": bands[2], "origin": origin}
+	return true
+
+## The bands a patch at `distance` wants: understory, near band and shadow caster, each keeping
+## the patch's current band through its hysteresis.
+func _bands_for(key: Vector3i, distance: float) -> Array:
+	var span := _key_span(key)
 	var previous: Node3D = patches.get(key)
-	var understory := _understory_wanted(distance, span,
-		previous != null and bool(previous.get_meta("understory")))
-	var near_band := _near_band_wanted(distance, span,
-		previous != null and bool(previous.get_meta("near_band")))
-	var caster := _shadow_caster_wanted(distance, span,
-		int(previous.get_meta("shadow_caster")) if previous != null else ShadowCaster.NONE)
-	var origin :=Vector2(key.x, key.y) * span - world * 0.5
-	var fetch_start := Time.get_ticks_usec()
-	var data: PackedFloat32Array = simulation.get_decorative_tree_patch(origin, span, understory)
-	# Crown coverage around the patch, averaged over 40 m, which each canopy tree samples once
-	# for its stand closure.
-	var cover: Dictionary = simulation.get_vegetation_stand_cover(origin, span)
-	# The distant hedge: one box per straight run Rust merged from the modules.
-	var runs: PackedFloat32Array = (PackedFloat32Array() if near_band
-		else simulation.get_vegetation_hedge_runs(origin, span))
-	_fetch_us += Time.get_ticks_usec() - fetch_start
-	# Every buffer, bounds and range of the patch, built in Rust (`RENDER-32-C`): the appearance
-	# seed, variant, transform, tint and stand closure of each plant, the impostor rows, the hedge
-	# boxes and the bounds every level of a species shares. One buffer assignment per instance.
-	var product_start := Time.get_ticks_usec()
-	var product: Dictionary = SimulationNode.build_vegetation_product(data, cover, runs, origin,
-		near_band, caster != ShadowCaster.NONE, _product_settings(), _product_catalogue())
-	_product_us += Time.get_ticks_usec() - product_start
+	return [
+		_understory_wanted(distance, span, previous != null and bool(previous.get_meta("understory"))),
+		_near_band_wanted(distance, span, previous != null and bool(previous.get_meta("near_band"))),
+		_shadow_caster_wanted(distance, span,
+			int(previous.get_meta("shadow_caster")) if previous != null else ShadowCaster.NONE),
+	]
+
+## Whether a patch in flight must be asked again: its owner's generations or its bands moved
+## since the request.
+func _request_changed(key: Vector3i, distance: float) -> bool:
+	var request: Dictionary = requested[key]
+	var generations := _owner_generations(_owner_key(key), null)
+	var bands := _bands_for(key, distance)
+	return (generations.x != int(request["generation"])
+		or generations.y != int(request["vegetation_generation"])
+		or bands[0] != bool(request["understory"]) or bands[1] != bool(request["near_band"])
+		or bands[2] != int(request["shadow_caster"]))
+
+## Takes finished products from Rust and installs those of live requests, until the install
+## budget is spent (the first always installs). A product that comes back busy (the simulation
+## held its lock) is queued again. Returns the installs.
+func _poll_products() -> int:
+	var start := Time.get_ticks_usec()
+	var installs := 0
+	while installs == 0 or Time.get_ticks_usec() - start < INSTALL_BUDGET_USEC:
+		var one_start := Time.get_ticks_usec()
+		var result: Dictionary = simulation.poll_vegetation_product()
+		_poll_us += Time.get_ticks_usec() - one_start
+		if result.is_empty():
+			break
+		var key: Vector3i = result["key"]
+		var request: Dictionary = requested.get(key, {})
+		if request.is_empty() or int(request["serial"]) != int(result["serial"]):
+			continue
+		requested.erase(key)
+		if bool(result["busy"]):
+			_queue_patch(key)
+			continue
+		_install_product(key, request, result)
+		_unit_max_us = maxi(_unit_max_us, Time.get_ticks_usec() - one_start)
+		installs += 1
+	return installs
+
+## Installs a requested patch's product: one node per batch, in the product's order, replacing
+## the patch's previous version in the same frame.
+func _install_product(key: Vector3i, request: Dictionary, product: Dictionary) -> void:
+	var start := Time.get_ticks_usec()
+	var origin: Vector2 = request["origin"]
+	var caster: int = request["shadow_caster"]
 	var patch := Node3D.new()
 	patch.position = Vector3(origin.x, 0.0, origin.y)
 	add_child(patch)
@@ -717,10 +775,10 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 		instance.visibility_range_end = bounds[box + 13]
 	var count: int = product.get("tree_count", 0)
 	patch.set_meta("tree_count", count)
-	patch.set_meta("surface_generation", generation)
-	patch.set_meta("vegetation_generation", vegetation_generation)
-	patch.set_meta("understory", understory)
-	patch.set_meta("near_band", near_band)
+	patch.set_meta("surface_generation", request["generation"])
+	patch.set_meta("vegetation_generation", request["vegetation_generation"])
+	patch.set_meta("understory", request["understory"])
+	patch.set_meta("near_band", request["near_band"])
 	patch.set_meta("shadow_caster", caster)
 	# Every canopy tree origin of the patch in world space, which the detail choice measures.
 	patch.set_meta("canopy_box", product.get("canopy_box", AABB()))
@@ -736,6 +794,13 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	tree_count += count
 	generated_patches += 1
 	generation_ms_max = maxf(generation_ms_max, float(Time.get_ticks_usec() - start) / 1000.0)
+	# The camera or an edit may have moved since the request: a patch whose bands or generations
+	# no longer match is asked for again (the staleness sweep and band scan ran before it drew).
+	var camera_xz := _camera_xz()
+	if camera_xz != Vector2.INF:
+		var distance := _patch_distance(key, simulation.get_terrain_world_size(), camera_xz)
+		if _is_patch_stale(key) or _bands_changed(patch, distance, _key_span(key)):
+			_queue_patch(key)
 
 func _add_instance(
 	patch: Node3D, mm: MultiMesh, species: int, lod: int, variant: int,

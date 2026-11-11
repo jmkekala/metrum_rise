@@ -231,6 +231,29 @@ impl FieldClearanceIndex {
         Some(footprint)
     }
 
+    /// The fields indexed in the chunks `[min, max]` touches, copied: inside that rectangle
+    /// [`Self::covers_point`] answers as here (`RENDER-32-D`, the vegetation snapshot).
+    /// `O(chunks + their fields' vertices)`.
+    pub(crate) fn window(&self, min: Vector2, max: Vector2) -> Self {
+        let mut window = Self::default();
+        if self.footprints.is_empty() {
+            return window;
+        }
+        for key in chunks(min, max) {
+            let Some(bucket) = self.chunks.get(&key) else {
+                continue;
+            };
+            for id in bucket {
+                window
+                    .footprints
+                    .entry(*id)
+                    .or_insert_with(|| self.footprints[id].clone());
+            }
+            window.chunks.insert(key, bucket.clone());
+        }
+        window
+    }
+
     /// Whether building `building_idx` holds a field here.
     pub(crate) fn has_field(&self, building_idx: usize) -> bool {
         self.footprints.contains_key(&building_idx)

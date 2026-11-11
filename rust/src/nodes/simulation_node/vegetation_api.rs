@@ -10,9 +10,12 @@ use crate::simulation::vegetation::edits::{
 use crate::simulation::terrain::graded::GroundClass;
 use crate::simulation::vegetation::{hash, unit};
 use brush::preset;
+use world::VegetationWorld;
+pub(crate) use jobs::VegetationJobs;
 
 mod brush;
 mod hedge_runs;
+mod jobs;
 mod land_cover;
 
 // Texels on each side of the square a tree's stand closure averages over; see
@@ -20,6 +23,7 @@ mod land_cover;
 const STAND_RADIUS_TEXELS: usize = 2;
 mod placement;
 mod tree_clearance;
+mod world;
 mod yard_planting;
 pub(crate) mod yard_preview;
 #[cfg(test)]
@@ -110,7 +114,7 @@ impl SimulationNode {
             key.x as f32 * layout.span - layout.half_w,
             key.y as f32 * layout.span - layout.half_h,
         );
-        land_cover::Coverage::build(&core, origin, layout.span)
+        land_cover::Coverage::build(&*core, origin, layout.span)
             .payload(land_cover::generations(&core, key))
     }
 
@@ -120,13 +124,14 @@ impl SimulationNode {
     /// edge averages over real neighbours. O(K + A) like the terrain payload, plus O(texels).
     #[func]
     pub fn get_vegetation_stand_cover(&self, origin: Vector2, span: f32) -> VarDictionary {
+        jobs::count_main_thread_query();
         if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
             return VarDictionary::new();
         }
         let mut core = self.lock_core();
         core.prepare_site_queries();
         let margin = STAND_RADIUS_TEXELS as f32 * land_cover::TEXEL_M;
-        land_cover::Coverage::build(&core, origin - Vector2::splat(margin), span + 2.0 * margin)
+        land_cover::Coverage::build(&*core, origin - Vector2::splat(margin), span + 2.0 * margin)
             .stand_grid(STAND_RADIUS_TEXELS)
     }
 
@@ -172,13 +177,14 @@ impl SimulationNode {
         span: f32,
         include_understory: bool,
     ) -> PackedFloat32Array {
+        jobs::count_main_thread_query();
         if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
             return PackedFloat32Array::new();
         }
         let mut core = self.lock_core();
         core.prepare_site_queries();
         PackedFloat32Array::from(
-            decorative_tree_patch(&core, origin, span, include_understory).as_slice(),
+            decorative_tree_patch(&*core, origin, span, include_understory).as_slice(),
         )
     }
     /// Removes generated and authored plants in a bounded disc, returning the actual count.
@@ -239,13 +245,14 @@ impl SimulationNode {
     /// the hedge index 0 low, 1 medium, 2 tall). O(m log m) in the patch's hedge modules.
     #[func]
     pub fn get_vegetation_hedge_runs(&self, origin: Vector2, span: f32) -> PackedFloat32Array {
+        jobs::count_main_thread_query();
         if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
             return PackedFloat32Array::new();
         }
         // The runs stand on the graded surface, which reads the site index.
         let mut core = self.lock_core();
         core.prepare_site_queries();
-        PackedFloat32Array::from(hedge_runs::hedge_runs(&core, origin, span).as_slice())
+        PackedFloat32Array::from(hedge_runs::hedge_runs(&*core, origin, span).as_slice())
     }
 
     /// Where a hedge end drawn at `pos` would land once `plant_vegetation_line` joins it to a
@@ -321,6 +328,112 @@ impl SimulationNode {
         product::with_product(&inputs, &catalogue, product_dictionary)
     }
 
+    /// Sets the mesh catalogue the background patch products are built against (packed as for
+    /// `build_vegetation_product`). Returns false, keeping the previous one, when malformed.
+    #[func]
+    pub fn set_vegetation_product_catalogue(&self, catalogue: PackedFloat32Array) -> bool {
+        use crate::nodes::sim::render::vegetation_product::ProductCatalogue;
+        let Some(catalogue) = ProductCatalogue::from_lanes(catalogue.as_slice()) else {
+            godot_error!("set_vegetation_product_catalogue: malformed catalogue");
+            return false;
+        };
+        self.vegetation_jobs.lock().unwrap().set_catalogue(catalogue);
+        true
+    }
+
+    /// Requests the product of the vegetation patch `key` (column, row, subdivision) whose
+    /// minimum corner is `origin`, with the bands the renderer chose (`RENDER-32-D`): a
+    /// background worker takes the patch's inputs under `try_lock` and runs the scatter, stand
+    /// cover, hedge runs (outside the near band) and product off the lock, equal bitwise to
+    /// `build_vegetation_product` over the three synchronous queries. Returns the request's
+    /// serial, which [`Self::poll_vegetation_product`] hands back; a newer request for the key
+    /// makes this one stale. -1 when refused for now (32 jobs out, 64 MB of products held, no
+    /// catalogue set, malformed arguments): ask again next frame. `O(1)` on the calling thread.
+    #[func]
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_vegetation_patch(
+        &self,
+        key: Vector3i,
+        origin: Vector2,
+        span: f32,
+        understory: bool,
+        near_band: bool,
+        caster: bool,
+        settings: PackedFloat64Array,
+    ) -> i64 {
+        use crate::nodes::sim::render::vegetation_product::ProductSettings;
+        let Some(settings) = ProductSettings::from_lanes(settings.as_slice()) else {
+            return -1;
+        };
+        if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
+            return -1;
+        }
+        let request = jobs::PatchRequest {
+            key: [key.x, key.y, key.z],
+            origin,
+            span,
+            understory,
+            near_band,
+            caster,
+            settings,
+        };
+        jobs::spawn_request(&self.core, &self.vegetation_jobs, &self.async_jobs, request)
+            .map_or(-1, |serial| serial as i64)
+    }
+
+    /// The oldest finished vegetation patch of a live request, or an empty dictionary: `key`,
+    /// `serial`, and either `busy` (true: the core was busy, request the patch again) or the
+    /// product as `build_vegetation_product` returns it. Stale results (superseded, cancelled
+    /// or cleared requests) are dropped on the way. `O(product bytes)`: the buffers are copied
+    /// into Godot's arrays.
+    #[func]
+    pub fn poll_vegetation_product(&self) -> VarDictionary {
+        let Some(delivered) = self.vegetation_jobs.lock().unwrap().poll() else {
+            return VarDictionary::new();
+        };
+        let mut data = delivered
+            .product
+            .as_ref()
+            .map_or_else(VarDictionary::new, product_dictionary);
+        let [x, y, z] = delivered.key;
+        data.set("key", Vector3i::new(x, y, z));
+        data.set("serial", delivered.serial as i64);
+        data.set("busy", delivered.product.is_none());
+        if let Some(product) = delivered.product {
+            self.vegetation_jobs.lock().unwrap().recycle(product);
+        }
+        data
+    }
+
+    /// Makes the live request of `key` stale: its product will not be delivered. `O(1)`.
+    #[func]
+    pub fn cancel_vegetation_patch(&self, key: Vector3i) {
+        self.vegetation_jobs
+            .lock()
+            .unwrap()
+            .cancel([key.x, key.y, key.z]);
+    }
+
+    /// Makes every live vegetation request stale (the renderer's reset). `O(requests)`.
+    #[func]
+    pub fn clear_vegetation_requests(&self) {
+        self.vegetation_jobs.lock().unwrap().clear();
+    }
+
+    /// Vegetation patch jobs out: running, or finished and not yet polled.
+    #[func]
+    pub fn get_vegetation_jobs_in_flight(&self) -> i64 {
+        self.vegetation_jobs.lock().unwrap().in_flight() as i64
+    }
+
+    /// Synchronous vegetation queries (`get_decorative_tree_patch`, `get_vegetation_stand_cover`,
+    /// `get_vegetation_hedge_runs`) asked since the extension loaded. The renderer asks none
+    /// (`RENDER-32-D`); the stream benchmark records the count each frame.
+    #[func]
+    pub fn get_vegetation_main_thread_queries(&self) -> i64 {
+        jobs::main_thread_queries() as i64
+    }
+
     /// Returns a vegetation-only patch revision; terrain payload generations are unaffected.
     #[func]
     pub fn get_vegetation_patch_generation(&self, key: Vector2i) -> i64 {
@@ -332,12 +445,12 @@ impl SimulationNode {
 
 // `get_decorative_tree_patch` once the site queries are prepared.
 fn decorative_tree_patch(
-    core: &SimCore,
+    core: &impl VegetationWorld,
     origin: Vector2,
     span: f32,
     include_understory: bool,
 ) -> Vec<f32> {
-    let generator = core.vegetation;
+    let generator = *core.generator();
     let mut packed = scatter_layer(
         core,
         origin,
@@ -436,12 +549,13 @@ fn prepare_sites(core: &mut SimCore) {
         .prepare_building_site_query_index(core.zoning.config.zone_cell_m);
 }
 
-fn grid(core: &SimCore, layer: VegetationLayer) -> (f32, u32) {
+fn grid(core: &impl VegetationWorld, layer: VegetationLayer) -> (f32, u32) {
+    let generator = core.generator();
     let (cell_m, salt) = match layer {
-        VegetationLayer::Canopy => (core.vegetation.canopy_cell_m, CANOPY_SALT),
-        VegetationLayer::Understory => (core.vegetation.understory_cell_m, UNDERSTORY_SALT),
+        VegetationLayer::Canopy => (generator.canopy_cell_m, CANOPY_SALT),
+        VegetationLayer::Understory => (generator.understory_cell_m, UNDERSTORY_SALT),
     };
-    (cell_m, layer_base(salt, core.vegetation.config.seed))
+    (cell_m, layer_base(salt, generator.config.seed))
 }
 
 fn cell_at(pos: Vector2, layer: VegetationLayer, cell_m: f32) -> VegetationCell {
@@ -657,14 +771,14 @@ pub(crate) fn remove_at(core: &mut SimCore, pos: Vector2, radius: f32, stroke: i
 // One grid pass. Kept out of the entry point so the two layers cannot share acceptance state,
 // the caller reads as two independent passes, and a test can drive a layer without an engine.
 pub(crate) fn scatter_layer(
-    core: &SimCore,
+    core: &impl VegetationWorld,
     origin: Vector2,
     span: f32,
     cell_m: f32,
     layer_salt: u32,
     canopy: bool,
 ) -> Vec<f32> {
-    let generator = &core.vegetation;
+    let generator = core.generator();
     let salt = layer_base(layer_salt, generator.config.seed);
     let x0 = (origin.x / cell_m).floor() as i32;
     let z0 = (origin.y / cell_m).floor() as i32;
@@ -678,15 +792,16 @@ pub(crate) fn scatter_layer(
     // An unedited grid range pays nothing for the edit store: a handful of coarse block tests
     // replace a lookup per cell, which is the whole per-cell cost of an untouched patch. An
     // authored plant lives in the cell that contains it, so the cell range covers both kinds.
-    let edited =
-        core.vegetation_edits
-            .any_in_cell_range(layer, (x0, x0 + nx - 1), (z0, z0 + nz - 1));
+    let edited = core
+        .edits()
+        .any_in_cell_range(layer, (x0, x0 + nx - 1), (z0, z0 + nz - 1));
     if !edited && !generator.config.enabled {
         return Vec::new();
     }
     // Indexed collect preserves generator order regardless of Rayon scheduling. Edited patches
     // add one lookup per cell; neither branch allocates in the parallel per-cell body.
-    // Godot's main thread asks for patches: shared pool (CODE-17).
+    // Godot's main thread asks for patches: shared pool (CODE-17); a background worker's
+    // snapshot query stays on the background pool (`RENDER-32-D`).
     let records: Vec<_> = crate::thread_pools::install(|| {
         (0..nx * nz)
             .into_par_iter()
@@ -697,7 +812,7 @@ pub(crate) fn scatter_layer(
                     z: z0 + i / nx,
                 };
                 let (removed, added): (bool, &[Plant]) = if edited {
-                    core.vegetation_edits.cell(cell)
+                    core.edits().cell(cell)
                 } else {
                     (false, &[])
                 };
@@ -766,7 +881,7 @@ pub(crate) fn scatter_layer(
             // stands on the graded ground (`TERRAIN-07-F`).
             let height = |x: f32, z: f32| {
                 if authored {
-                    core.get_world_surface_height_internal(Vector2::new(x, z))
+                    core.surface_height(Vector2::new(x, z))
                 } else {
                     ground_height(core, x, z)
                 }
@@ -803,14 +918,19 @@ pub(crate) fn scatter_layer(
 
 // The graded ground the terrain renders at a point (`TERRAIN-07-F`). The site index must be
 // ready.
-fn ground_height(core: &SimCore, x: f32, z: f32) -> f32 {
-    core.with_graded_surface(|surface, scratch| {
+fn ground_height(core: &impl VegetationWorld, x: f32, z: f32) -> f32 {
+    core.with_surface(|surface, scratch| {
         surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32
     })
 }
 
 // The generator decision has one implementation for rendering, picking and painting.
-fn evaluate_cell(core: &SimCore, cell: VegetationCell, cell_m: f32, salt: u32) -> Option<Plant> {
+fn evaluate_cell(
+    core: &impl VegetationWorld,
+    cell: VegetationCell,
+    cell_m: f32,
+    salt: u32,
+) -> Option<Plant> {
     generated_candidate(core, cell, cell_m, salt)
         .filter(|plant| placement_clear(core, plant.x, plant.z, cell.layer))
 }
@@ -818,12 +938,12 @@ fn evaluate_cell(core: &SimCore, cell: VegetationCell, cell_m: f32, salt: u32) -
 // Keep intrinsic generation separate so occupancy rejects distant stems before querying
 // their surface footprint. Rendering still evaluates the same decision and clearance.
 fn generated_candidate(
-    core: &SimCore,
+    core: &impl VegetationWorld,
     cell: VegetationCell,
     cell_m: f32,
     salt: u32,
 ) -> Option<Plant> {
-    let generator = &core.vegetation;
+    let generator = core.generator();
     if !generator.config.enabled {
         return None;
     }
@@ -867,17 +987,23 @@ fn generated_candidate(
     })
 }
 
-fn inside_world(core: &SimCore, x: f32, z: f32) -> bool {
-    let (world_w, world_h) = core.heightmap.world_size();
+fn inside_world(core: &impl VegetationWorld, x: f32, z: f32) -> bool {
+    let (world_w, world_h) = core.world_size();
     x.is_finite() && z.is_finite() && x.abs() < world_w * 0.5 - 8.0 && z.abs() < world_h * 0.5 - 8.0
 }
 
-fn placement_clear(core: &SimCore, x: f32, z: f32, layer: VegetationLayer) -> bool {
+fn placement_clear(core: &impl VegetationWorld, x: f32, z: f32, layer: VegetationLayer) -> bool {
     placement_clear_for(core, x, z, layer, false)
 }
 
 // `yard`: an authored plant, which may stand on a building's lawn (see `clear_site`).
-fn placement_clear_for(core: &SimCore, x: f32, z: f32, layer: VegetationLayer, yard: bool) -> bool {
+fn placement_clear_for(
+    core: &impl VegetationWorld,
+    x: f32,
+    z: f32,
+    layer: VegetationLayer,
+    yard: bool,
+) -> bool {
     let (radius, max_relief) = if layer == VegetationLayer::Canopy {
         (CANOPY_CLEAR_RADIUS_M, 3.0)
     } else {
@@ -893,11 +1019,18 @@ fn placement_clear_for(core: &SimCore, x: f32, z: f32, layer: VegetationLayer, y
 // flat support and its paving; with `yard`, an authored plant keeps off only its walls and
 // paving, so a yard's lawn can be planted and a house's own hedge stands where its asset put
 // it. The site index must be ready.
-fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard: bool) -> bool {
+fn clear_site(
+    core: &impl VegetationWorld,
+    x: f32,
+    z: f32,
+    radius: f32,
+    max_relief: f32,
+    yard: bool,
+) -> bool {
     if !inside_world(core, x, z) {
         return false;
     }
-    core.with_graded_surface(|surface, scratch| {
+    core.with_surface(|surface, scratch| {
         let (cx, cz) = (f64::from(x), f64::from(z));
         // The slack covers the f32 rounding of the sample offsets; a sample outside the gather
         // would still be answered exactly, by its own query.
@@ -918,12 +1051,12 @@ fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard
             // stand returns if the field is redrawn or the farm is removed. The mask answers the
             // ground; a bridge deck over it is the roadbed's visible surface. A tunnel's deck
             // lies under the hill, which keeps its plants.
-            let road = core.transit_network.roadbed.exposed_height_at(p.x, p.y);
+            let road = core.roadbed().exposed_height_at(p.x, p.y);
             if built
-                || core.watermap.visible_depth_world(p.x, p.y) > 0.001
+                || core.water_depth(p) > 0.001
                 || road.is_some()
-                || (yard && core.allocator.building_site_blocks_yard_plant(p))
-                || core.allocator.field_clearance.covers_point(p)
+                || (yard && core.blocks_yard_plant(p))
+                || core.field_covers(p)
             {
                 return None;
             }
@@ -932,5 +1065,7 @@ fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard
     })
 }
 
+#[cfg(test)]
+mod snapshot_tests;
 #[cfg(test)]
 mod tests;

@@ -9,12 +9,12 @@ use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use std::collections::HashSet;
 use std::time::Instant;
 
-fn core() -> SimCore {
+pub(super) fn core() -> SimCore {
     super::super::tests::vegetation_test_core(VegetationConfig::default())
 }
 
 // Only a graph edge and its compiled surface: no zoning, lane rebuild or spawning.
-fn vegetation_test_path(core: &mut SimCore, from: Vector2, to: Vector2, lanes: u8) {
+pub(super) fn vegetation_test_path(core: &mut SimCore, from: Vector2, to: Vector2, lanes: u8) {
     use crate::simulation::network::graph::Edge;
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
     let y = core.heightmap.sample_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE;
@@ -47,7 +47,7 @@ fn vegetation_test_path(core: &mut SimCore, from: Vector2, to: Vector2, lanes: u
     core.transit_network.roadbed.mark_edge_dirty(edge);
 }
 
-fn commit_vegetation_test_road(core: &mut SimCore, points: [Vector3; 2]) {
+pub(super) fn commit_vegetation_test_road(core: &mut SimCore, points: [Vector3; 2]) {
     core.precompute_road_mesh_data();
     let outcome = core.commit_road(
         RoadCommitRequest {
@@ -1627,7 +1627,7 @@ fn hedge_modules(core: &SimCore) -> Vec<Plant> {
 }
 
 // A yard event lining the square lot from `min` to `max` on all four sides.
-fn square_yard(key: (u64, u32), min: Vector2, max: Vector2) -> YardEvent {
+pub(super) fn square_yard(key: (u64, u32), min: Vector2, max: Vector2) -> YardEvent {
     use crate::simulation::buildings::allocator::yard::YardHedgeRowWorld;
     let corners = [
         min,

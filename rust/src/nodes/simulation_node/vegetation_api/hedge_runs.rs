@@ -34,7 +34,7 @@ struct RunModule {
 /// lawn as drawn, so a graded yard's hedge stands on its grading. O(m log m) for the m modules
 /// in the patch's edited cells, the straightness test adding at most 16 per module; an unedited
 /// patch costs a few block tests. Deterministic: modules are ordered by a total key before they are merged.
-pub(crate) fn hedge_runs(core: &SimCore, origin: Vector2, span: f32) -> Vec<f32> {
+pub(crate) fn hedge_runs(core: &impl VegetationWorld, origin: Vector2, span: f32) -> Vec<f32> {
     let (cell_m, _) = grid(core, VegetationLayer::Canopy);
     let first = cell_at(origin, VegetationLayer::Canopy, cell_m);
     let last = cell_at(
@@ -42,9 +42,9 @@ pub(crate) fn hedge_runs(core: &SimCore, origin: Vector2, span: f32) -> Vec<f32>
         VegetationLayer::Canopy,
         cell_m,
     );
-    let height = |p: Vector2| core.get_world_surface_height_internal(p);
+    let height = |p: Vector2| core.surface_height(p);
     let mut modules = Vec::new();
-    if !core.vegetation_edits.any_in_cell_range(
+    if !core.edits().any_in_cell_range(
         VegetationLayer::Canopy,
         (first.x, last.x),
         (first.z, last.z),
@@ -58,7 +58,7 @@ pub(crate) fn hedge_runs(core: &SimCore, origin: Vector2, span: f32) -> Vec<f32>
                 x,
                 z,
             };
-            for plant in core.vegetation_edits.cell(cell).1 {
+            for plant in core.edits().cell(cell).1 {
                 let Some(hedge) = brush::hedge_index(plant.species, plant.variant) else {
                     continue;
                 };

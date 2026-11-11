@@ -14,6 +14,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::graded::{SiteBuffer, SiteSource};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector2;
+use std::collections::HashMap;
 #[cfg(test)]
 use godot::prelude::Vector3;
 
@@ -122,6 +123,43 @@ impl BuildingAllocator {
                 .into_iter()
                 .map(|idx| self.building_sites[idx].clone())
                 .collect(),
+            buckets: Default::default(),
+        })
+    }
+
+    /// Copies every site whose lot centre lies within the largest site radius of `rect`: the
+    /// sites a graded terrain query inside it reads, and every site that can answer
+    /// [`Self::building_site_blocks_yard_plant`] or [`Self::in_yard_planting`] at a point inside
+    /// it (a planting area may reach past the site's footprint and surface bounds, which
+    /// [`Self::graded_site_snapshot`] filters by). For the vegetation queries run off the
+    /// simulation lock (`RENDER-32-D`); `None` while the site index is being rebuilt.
+    /// `O(sites in the rectangle's chunks)`, each copied site once.
+    pub(crate) fn site_snapshot_by_reach(&self, rect: [f64; 4]) -> Option<SiteSnapshot> {
+        if !self.building_site_query_index_ready() {
+            return None;
+        }
+        let query = SiteRectQuery::new(rect, self.max_site_radius_m);
+        let [min_x, min_z, max_x, max_z] = query.rect;
+        let mut indices = Vec::new();
+        self.visit_indexed_site_candidates_for_bounds(min_x, min_z, max_x, max_z, |idx| {
+            if self
+                .building_sites
+                .get(idx)
+                .is_some_and(|site| query.reaches(site_lot_center(site)))
+            {
+                indices.push(idx);
+            }
+        });
+        indices.sort_unstable();
+        indices.dedup();
+        Some(SiteSnapshot {
+            rects: vec![rect],
+            max_site_radius_m: self.max_site_radius_m,
+            sites: indices
+                .into_iter()
+                .map(|idx| self.building_sites[idx].clone())
+                .collect(),
+            buckets: Default::default(),
         })
     }
 }
@@ -134,6 +172,14 @@ struct SiteRectQuery {
 }
 
 impl SiteRectQuery {
+    // Whether a lot centre lies within the reach of the rectangle.
+    fn reaches(&self, centre: Vector2) -> bool {
+        let [min_x, min_z, max_x, max_z] = self.rect;
+        let dx = (min_x - centre.x).max(centre.x - max_x).max(0.0);
+        let dz = (min_z - centre.y).max(centre.y - max_z).max(0.0);
+        dx * dx + dz * dz <= self.reach * self.reach
+    }
+
     fn new(rect: [f64; 4], max_site_radius_m: f32) -> Self {
         // Grown past the f32 rounding of the rectangle: a site more only adds inputs.
         let rect = [
@@ -159,10 +205,8 @@ impl SiteRectQuery {
     // sites whose footprint and surface bounds meet it.
     fn holds_parts(&self, centre: Vector2, bounds: (f32, f32, f32, f32)) -> bool {
         let [min_x, min_z, max_x, max_z] = self.rect;
-        let dx = (min_x - centre.x).max(centre.x - max_x).max(0.0);
-        let dz = (min_z - centre.y).max(centre.y - max_z).max(0.0);
         let (site_min_x, site_min_z, site_max_x, site_max_z) = bounds;
-        dx * dx + dz * dz <= self.reach * self.reach
+        self.reaches(centre)
             && site_min_x <= max_x
             && site_max_x >= min_x
             && site_min_z <= max_z
@@ -344,6 +388,86 @@ pub(crate) struct SiteSnapshot {
     rects: Vec<[f64; 4]>,
     max_site_radius_m: f32,
     sites: Vec<BuildingSiteClient>,
+    // The sites by the `SNAPSHOT_BUCKET_M` square holding their lot centre, in index order,
+    // built on the first point query.
+    buckets: std::sync::OnceLock<HashMap<(i32, i32), Vec<u32>>>,
+}
+
+// Side of a point query bucket of a site snapshot, metres.
+const SNAPSHOT_BUCKET_M: f32 = 64.0;
+
+fn snapshot_bucket(pos: Vector2) -> (i32, i32) {
+    (
+        (pos.x / SNAPSHOT_BUCKET_M).floor() as i32,
+        (pos.y / SNAPSHOT_BUCKET_M).floor() as i32,
+    )
+}
+
+impl SiteSnapshot {
+    /// [`BuildingAllocator::building_site_blocks_yard_plant`] at a point inside the snapshot's
+    /// rectangles, from a snapshot taken by [`BuildingAllocator::site_snapshot_by_reach`].
+    pub(crate) fn blocks_yard_plant(&self, pos: Vector2) -> bool {
+        self.site_at(pos, |site| {
+            site.contains_point(pos)
+                .then(|| site.blocks_yard_plant(pos))
+        })
+        .unwrap_or(false)
+    }
+
+    /// [`BuildingAllocator::in_yard_planting`] at a point inside the snapshot's rectangles,
+    /// from a snapshot taken by [`BuildingAllocator::site_snapshot_by_reach`].
+    pub(crate) fn in_yard_planting(&self, pos: Vector2) -> bool {
+        self.site_at(pos, |site| site.contains_yard_planting(pos).then_some(()))
+            .is_some()
+    }
+
+    // The allocator's `site_at` over the copied sites, which keep the allocator's index order:
+    // the lowest-index site that answers, among those whose lot centre is within reach.
+    // `O(buckets within reach + their sites)`; the buckets are built once, `O(sites)`.
+    fn site_at<T>(
+        &self,
+        pos: Vector2,
+        probe: impl Fn(&BuildingSiteClient) -> Option<T>,
+    ) -> Option<T> {
+        let reach = self.max_site_radius_m.max(0.0) + SITE_REACH_SLACK_M;
+        let mut best: Option<(u32, T)> = None;
+        self.visit_buckets(pos - Vector2::splat(reach), pos + Vector2::splat(reach), |index| {
+            if best.as_ref().is_some_and(|(found, _)| index >= *found) {
+                return;
+            }
+            let site = &self.sites[index as usize];
+            if site_lot_center(site).distance_squared_to(pos) > reach * reach {
+                return;
+            }
+            if let Some(answer) = probe(site) {
+                best = Some((index, answer));
+            }
+        });
+        best.map(|(_, answer)| answer)
+    }
+
+    // Visits the copied sites whose lot centre lies in a bucket meeting `[low, high]`, bucket by
+    // bucket. The buckets are built on the first visit, `O(sites)`.
+    fn visit_buckets(&self, low: Vector2, high: Vector2, mut visit: impl FnMut(u32)) {
+        let buckets = self.buckets.get_or_init(|| {
+            let mut buckets: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+            for (index, site) in self.sites.iter().enumerate() {
+                buckets
+                    .entry(snapshot_bucket(site_lot_center(site)))
+                    .or_default()
+                    .push(index as u32);
+            }
+            buckets
+        });
+        let (low, high) = (snapshot_bucket(low), snapshot_bucket(high));
+        for bx in low.0..=high.0 {
+            for bz in low.1..=high.1 {
+                for &index in buckets.get(&(bx, bz)).map_or(&[][..], Vec::as_slice) {
+                    visit(index);
+                }
+            }
+        }
+    }
 }
 
 impl SiteSource for SiteSnapshot {
@@ -362,9 +486,21 @@ impl SiteSource for SiteSnapshot {
             "graded site snapshot queried outside its rectangles"
         );
         let query = SiteRectQuery::new(rect, self.max_site_radius_m);
-        for site in self.sites.iter().filter(|site| query.holds(site)) {
-            push_graded_site(site, out);
-        }
+        // The graded queries put the sites in their canonical order themselves
+        // (`SiteBuffer::gather`), so the buckets' order serves: `O(buckets + their sites)`
+        // where every copied site was tested before.
+        let [min_x, min_z, max_x, max_z] = query.rect;
+        let reach = Vector2::splat(query.reach);
+        self.visit_buckets(
+            Vector2::new(min_x, min_z) - reach,
+            Vector2::new(max_x, max_z) + reach,
+            |index| {
+                let site = &self.sites[index as usize];
+                if query.holds(site) {
+                    push_graded_site(site, out);
+                }
+            },
+        );
     }
 }
 

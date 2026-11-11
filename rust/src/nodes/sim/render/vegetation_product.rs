@@ -290,6 +290,17 @@ pub(crate) fn with_product<R>(
     })
 }
 
+/// Builds one patch's product into `product`, reusing its storage (`RENDER-32-D`: a
+/// background worker builds into a product the vegetation jobs keep and recycle). The same
+/// product as [`with_product`]'s.
+pub(crate) fn build_product(
+    inputs: &ProductInputs,
+    catalogue: &ProductCatalogue,
+    product: &mut VegetationProduct,
+) {
+    SCRATCH.with_borrow_mut(|(scratch, _)| build_into(inputs, catalogue, scratch, product));
+}
+
 fn build_into(
     inputs: &ProductInputs,
     catalogue: &ProductCatalogue,
@@ -581,6 +592,15 @@ impl VegetationProduct {
     /// Instance buffers in use.
     pub(crate) fn buffer_count(&self) -> usize {
         self.buffer_count
+    }
+
+    /// Bytes of the batches and buffers in use, for a cache's byte cap.
+    pub(crate) fn bytes(&self) -> usize {
+        self.batches.len() * std::mem::size_of::<Batch>()
+            + self.buffers[..self.buffer_count]
+                .iter()
+                .map(|buffer| buffer.len() * std::mem::size_of::<f32>())
+                .sum::<usize>()
     }
 
     fn reset(&mut self) {

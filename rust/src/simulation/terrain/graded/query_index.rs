@@ -69,6 +69,10 @@ pub(crate) struct TerrainQueryIndex {
     ready: bool,
     identity: u64,
     generation: u64,
+    // A copy of the tiles of an inclusive tile range ([`Self::window`]): it answers only
+    // queries whose tiles lie inside, and a query reaching outside takes the index-free path.
+    // `None` for the live index, which holds every tile.
+    window: Option<(TileKey, TileKey)>,
 }
 
 impl Default for TerrainQueryIndex {
@@ -78,6 +82,7 @@ impl Default for TerrainQueryIndex {
             ready: true,
             identity: NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed),
             generation: 1,
+            window: None,
         }
     }
 }
@@ -117,8 +122,36 @@ impl TerrainQueryIndex {
         found
     }
 
-    pub(super) fn ready(&self) -> bool {
+    /// Whether the index answers a query of `rect`: ready, and for a window copy every tile the
+    /// rectangle touches inside the window. A query it does not answer takes the index-free
+    /// gather, whose answers equal the index's bitwise.
+    pub(super) fn ready_for(&self, rect: [f64; 4]) -> bool {
         self.ready
+            && self.window.is_none_or(|(low, high)| {
+                let (first, last) = (TileKey::at(rect[0], rect[1]), TileKey::at(rect[2], rect[3]));
+                first.x >= low.x && first.z >= low.z && last.x <= high.x && last.z <= high.z
+            })
+    }
+
+    /// The entries of the tiles `rect` touches, copied with a fresh identity, for a query run
+    /// off the simulation lock (`RENDER-32-D`, the vegetation snapshot): inside the rectangle
+    /// its answers are the live index's, outside it reports itself unready
+    /// ([`Self::ready_for`]). `O(tiles in rect x log active tiles + their inputs)`.
+    pub(crate) fn window(&self, rect: [f64; 4]) -> Self {
+        let (low, high) = (TileKey::at(rect[0], rect[1]), TileKey::at(rect[2], rect[3]));
+        let mut tiles = BTreeMap::new();
+        if self.ready {
+            for x in low.x..=high.x {
+                let row = TileKey { x, z: low.z }..=TileKey { x, z: high.z };
+                tiles.extend(self.tiles.range(row).map(|(key, inputs)| (*key, inputs.clone())));
+            }
+        }
+        Self {
+            tiles,
+            ready: self.ready,
+            window: Some((low, high)),
+            ..Self::default()
+        }
     }
 
     pub(crate) fn generation(&self) -> u64 {
@@ -130,7 +163,7 @@ impl TerrainQueryIndex {
     }
 
     pub(super) fn tile_is_quiet(&self, x: f64, z: f64) -> Option<bool> {
-        self.ready.then(|| {
+        self.ready_for([x, z, x, z]).then(|| {
             !self
                 .tiles
                 .get(&TileKey::at(x, z))

@@ -74,6 +74,37 @@ class MockSimulation:
 			vegetation_generations[key] = get_vegetation_patch_generation(key) + 1
 		return PackedFloat32Array([1.0, 0.0, 1.0, 0.0, 1.0, 0.0])
 
+	# Rust builds a requested product on its background pool (`RENDER-32-D`); the mock builds it
+	# at once from its own fetches and hands it to the next poll.
+	var _products: Array = []
+	var _serial := 0
+	var _catalogue := PackedFloat32Array()
+
+	func set_vegetation_product_catalogue(catalogue: PackedFloat32Array) -> bool:
+		_catalogue = catalogue
+		return true
+
+	func clear_vegetation_requests() -> void:
+		_products.clear()
+
+	func cancel_vegetation_patch(_key: Vector3i) -> void:
+		pass
+
+	func request_vegetation_patch(key: Vector3i, origin: Vector2, span: float, understory: bool,
+			near_band: bool, caster: bool, settings: PackedFloat64Array) -> int:
+		var runs: PackedFloat32Array = (PackedFloat32Array() if near_band
+			else get_vegetation_hedge_runs(origin, span))
+		var product: Dictionary = SimulationNode.build_vegetation_product(
+			get_decorative_tree_patch(origin, span, understory), get_vegetation_stand_cover(origin, span),
+			runs, origin, near_band, caster, settings, _catalogue)
+		_serial += 1
+		product.merge({"key": key, "serial": _serial, "busy": false})
+		_products.append(product)
+		return _serial
+
+	func poll_vegetation_product() -> Dictionary:
+		return {} if _products.is_empty() else _products.pop_front()
+
 class ProcessProbe extends VegetationScript:
 	var band_checks := 0
 	var stale_checks := 0
@@ -87,10 +118,10 @@ class ProcessProbe extends VegetationScript:
 		stale_checks += 1
 		return super._is_patch_stale(key, generations)
 
-	func _upload_patch(key: Vector3i, span: float) -> void:
-		super._upload_patch(key, span)
+	func _install_product(key: Vector3i, request: Dictionary, product: Dictionary) -> void:
+		super._install_product(key, request, product)
 		if delay_upload:
-			OS.delay_usec(UPLOAD_BUDGET_USEC)
+			OS.delay_usec(INSTALL_BUDGET_USEC)
 
 var _failures := 0
 
@@ -189,10 +220,10 @@ func _run() -> void:
 	# A concurrent edit during fetch must remain detectable: revisions are read before fetch.
 	var probe: Vector3i = _sub_keys(near)[0]
 	simulation.advance_during_fetch = true
-	vegetation._upload_patch(probe, VEGETATION_SPAN_M)
+	_upload(vegetation, probe, VEGETATION_SPAN_M)
 	_expect(vegetation._is_patch_stale(probe), "an edit during placement fetch must not be stamped as already rendered")
 	simulation.advance_during_fetch = false
-	vegetation._upload_patch(probe, VEGETATION_SPAN_M)
+	_upload(vegetation, probe, VEGETATION_SPAN_M)
 	_expect(not vegetation._is_patch_stale(probe), "a subsequent upload must settle the vegetation revision")
 
 	_check_hysteresis(vegetation)
@@ -237,7 +268,7 @@ func _run() -> void:
 	_expect(not vegetation._is_patch_stale(probe), "restoration must publish the current generation")
 	_expect(vegetation.patches[probe].get_meta("near_band"), "an edit must preserve band history")
 
-	# Make each upload exceed the time budget. Two pending uploads must span two frames,
+	# Make each install exceed the time budget. Two pending installs must span two frames,
 	# even when residency changes between them, and each frame must make progress.
 	simulation.vegetation_generations[near] += 1
 	for key in _sub_keys(near):
@@ -250,18 +281,26 @@ func _run() -> void:
 		terrain.revision += 1
 		vegetation._process(0.016)
 		_expect(vegetation.generated_patches == generated_before + 1,
-			"the time budget must permit one upload and stop before a second")
-		_expect(not vegetation.queue.is_empty(), "residency changes must preserve pending edits")
+			"the time budget must permit one install and stop before a second")
+		_expect(not vegetation.queue.is_empty() or not vegetation.requested.is_empty(),
+			"residency changes must preserve pending edits")
 	vegetation.delay_upload = false
 	for _i in range(SUB_PATCHES * 2):
 		vegetation._process(0.016)
 	for key in _sub_keys(near):
 		_expect(not vegetation._is_patch_stale(key), "all pending edits must eventually settle")
-	_expect(vegetation.queue.is_empty() and vegetation.queued.is_empty(), "settling must drain both queue stores")
+	_expect(vegetation.queue.is_empty() and vegetation.queued.is_empty() and vegetation.requested.is_empty(),
+		"settling must drain the queue stores and the requests")
 	host.free()
 	if _failures == 0:
 		print("vegetation_invalidation_test: PASS")
 	quit(1 if _failures > 0 else 0)
+
+## Requests a patch and installs what the mock built for it, as the next frames' polls would.
+func _upload(vegetation: Node3D, key: Vector3i, span: float) -> void:
+	vegetation._upload_patch(key, span)
+	while vegetation._poll_products() > 0:
+		pass
 
 func _check_hysteresis(vegetation: Node3D) -> void:
 	var half := VEGETATION_SPAN_M * VegetationScript.PATCH_HALF_DIAGONAL

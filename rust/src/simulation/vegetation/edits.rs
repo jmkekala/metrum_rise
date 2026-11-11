@@ -65,6 +65,9 @@ pub fn variant_in_range(species: u8, variant: u8) -> bool {
         .is_some_and(|count| variant <= *count)
 }
 
+/// An inclusive range of one layer's cells: the layer, its columns and its rows.
+pub(crate) type CellRange = (VegetationLayer, (i32, i32), (i32, i32));
+
 // One block covers 16x16 cells of a single layer, so a patch query tests a handful of blocks
 // instead of one lookup per cell. Every insertion maintains it, a save load included, so the
 // index cannot go stale. It is deliberately never pruned: it is a conservative superset, and a
@@ -135,6 +138,37 @@ impl VegetationEdits {
             ((x.0 >> CELL_BLOCK_SHIFT)..=(x.1 >> CELL_BLOCK_SHIFT))
                 .any(|bx| self.blocks.contains(&(layer, bx, bz)))
         })
+    }
+
+    /// The edited cells of the inclusive cell ranges, one per layer, with their blocks: inside
+    /// those ranges [`Self::cell`] and [`Self::any_in_cell_range`] answer as here
+    /// (`RENDER-32-D`, the vegetation snapshot). No revisions, epoch or yard bookkeeping.
+    /// `O(blocks in the ranges + 256 lookups per edited block)`.
+    pub(crate) fn window(&self, ranges: [CellRange; 2]) -> Self {
+        let mut window = Self::default();
+        if self.cells.is_empty() {
+            return window;
+        }
+        for (layer, x, z) in ranges {
+            for bz in (z.0 >> CELL_BLOCK_SHIFT)..=(z.1 >> CELL_BLOCK_SHIFT) {
+                for bx in (x.0 >> CELL_BLOCK_SHIFT)..=(x.1 >> CELL_BLOCK_SHIFT) {
+                    if !self.blocks.contains(&(layer, bx, bz)) {
+                        continue;
+                    }
+                    window.blocks.insert((layer, bx, bz));
+                    let side = 1 << CELL_BLOCK_SHIFT;
+                    for cz in (bz << CELL_BLOCK_SHIFT)..(bz << CELL_BLOCK_SHIFT) + side {
+                        for cx in (bx << CELL_BLOCK_SHIFT)..(bx << CELL_BLOCK_SHIFT) + side {
+                            let cell = VegetationCell { layer, x: cx, z: cz };
+                            if let Some(edit) = self.cells.get(&cell) {
+                                window.cells.insert(cell, edit.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        window
     }
 
     /// Borrows a cell delta with one expected O(1) lookup, without allocating.

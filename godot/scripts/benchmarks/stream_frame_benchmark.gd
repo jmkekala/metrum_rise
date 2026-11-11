@@ -13,7 +13,8 @@
 ## A row is one frame: its time from one `process_frame` to the next (the frame's scripts and its
 ## draw), the renderer's CPU and GPU measures, draw counts, the streaming counters of every chunked
 ## renderer and their change, the reflection's voted levels, and with the perf channel on
-## (METRUM_DEBUG_PERF=1, shares only) that frame's PerfDebug records. "Settled" means the gameplay
+## (METRUM_DEBUG_PERF=1, shares only) that frame's PerfDebug records and the frames each vegetation
+## patch drawn that frame waited from wanted to drawn. "Settled" means the gameplay
 ## harness's idle state, `terrain.is_render_settled()` and no vegetation upload pending, for
 ## SETTLED_FRAMES frames in a row. `./run.sh --benchmark-stream` runs it pinned and isolated.
 ## With METRUM_STREAM_DIGESTS=1 (an untimed run: it reads the pages back) every settle point
@@ -61,6 +62,8 @@ var _last_us := 0
 var _previous_streams: Dictionary
 var _digests := false
 var _settle_points := 0
+# Wanted vegetation patches drawing nothing yet, by the engine frame they were first seen so.
+var _vegetation_waiting := {}
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -430,6 +433,8 @@ func _row(index: int) -> Dictionary:
 		# timed (its scripts and its pre-draw hooks), not of the one starting.
 		"scripts": PerfDebug.take_frame() if _scripts else {},
 	}
+	if _scripts:
+		row["vegetation_drawn_frames"] = _vegetation_drawn_frames()
 	_previous_streams = streams
 	_last_us = now_us
 	return row
@@ -498,14 +503,44 @@ func _streams() -> Dictionary:
 	var lods: Variant = _buildings.lod_renderer
 	return {
 		"terrain": terrain, "water": water, "graded": graded,
-		"vegetation": {"queue": _vegetation.queue.size(), "patches": _vegetation.patches.size(),
-			"cache": _vegetation.cache.size(), "standins": _vegetation.standins.size(),
-			"trees": _vegetation.tree_count, "generated_total": _vegetation.generated_patches},
+		"vegetation": _vegetation_counters(),
 		"buildings": {"lod_parts": lods.evaluated_parts, "lod_chunks": lods.queried_chunks,
 			"upload_bytes": lods.uploaded_bytes},
 		"roads": {"chunks": _road_tool._road_chunk_instances.size()},
 		"grass": {"mask_renders": _grass.mask_renders, "mask_syncs": _grass.mask_mirror_syncs},
 	}
+
+# The vegetation's queue and residency counters. From `RENDER-32-D` on also its requests in
+# flight and Rust's count of synchronous vegetation queries (`queries_total`: a frame that moves
+# it asked one on the main thread); -1 on a control build without them.
+func _vegetation_counters() -> Dictionary:
+	var simulation: Node = _vegetation.simulation
+	var requested: Variant = _vegetation.get("requested")
+	return {"queue": _vegetation.queue.size(), "patches": _vegetation.patches.size(),
+		"cache": _vegetation.cache.size(), "standins": _vegetation.standins.size(),
+		"trees": _vegetation.tree_count, "generated_total": _vegetation.generated_patches,
+		"requested": (requested as Dictionary).size() if requested is Dictionary else -1,
+		"queries_total": int(simulation.call("get_vegetation_main_thread_queries"))
+			if simulation.has_method("get_vegetation_main_thread_queries") else -1}
+
+# Wanted-to-drawn of the vegetation patches, with the perf channel on only (it walks the wanted
+# set every frame): a wanted patch that draws nothing waits from the first frame it is seen so;
+# the frames it waited are recorded on the frame it draws. A patch no longer wanted stops waiting.
+func _vegetation_drawn_frames() -> Array:
+	var frame := Engine.get_process_frames()
+	var drawn := []
+	var wanted: Dictionary = _vegetation.wanted_keys
+	for key: Vector3i in wanted:
+		if _vegetation.patches.has(key):
+			if _vegetation_waiting.has(key):
+				drawn.append(frame - int(_vegetation_waiting[key]))
+				_vegetation_waiting.erase(key)
+		elif not _vegetation_waiting.has(key):
+			_vegetation_waiting[key] = frame
+	for key: Vector3i in _vegetation_waiting.keys():
+		if not wanted.has(key):
+			_vegetation_waiting.erase(key)
+	return drawn
 
 # The numeric changes between two counter snapshots, by group; unchanged values left out.
 static func _delta(before: Dictionary, after: Dictionary) -> Dictionary:

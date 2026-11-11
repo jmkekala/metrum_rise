@@ -485,29 +485,80 @@ impl WaterSystem {
 
     /// Bilinearly samples authored visible depth; returns zero outside the world.
     pub(crate) fn visible_depth_world(&self, world_x: f32, world_z: f32) -> f32 {
-        let (world_w, world_h) = self.world_size();
-        let grid_x = (world_x + world_w * 0.5) / self.cell_size;
-        let grid_z = (world_z + world_h * 0.5) / self.cell_size;
-        let max_x = self.width.saturating_sub(1) as f32;
-        let max_z = self.height.saturating_sub(1) as f32;
-        if grid_x < 0.0 || grid_z < 0.0 || grid_x > max_x || grid_z > max_z {
-            return 0.0;
-        }
-
-        let x0 = grid_x.floor() as usize;
-        let z0 = grid_z.floor() as usize;
-        let x1 = (x0 + 1).min(self.width.saturating_sub(1));
-        let z1 = (z0 + 1).min(self.height.saturating_sub(1));
-        let tx = grid_x - x0 as f32;
-        let tz = grid_z - z0 as f32;
-        let depth_00 = self.visible_depth_at(x0, z0);
-        let depth_10 = self.visible_depth_at(x1, z0);
-        let depth_01 = self.visible_depth_at(x0, z1);
-        let depth_11 = self.visible_depth_at(x1, z1);
-        let top = depth_00 + (depth_10 - depth_00) * tx;
-        let bottom = depth_01 + (depth_11 - depth_01) * tx;
-        top + (bottom - top) * tz
+        depth_at_world(
+            [self.width, self.height],
+            self.cell_size,
+            &self.baseline.depth,
+            world_x,
+            world_z,
+        )
     }
+
+    /// The authored visible depth alone, sharing its grid in `O(1)`: what a reader off the
+    /// simulation lock samples (`RENDER-32-D`, the vegetation snapshot).
+    pub(crate) fn visible_depth(&self) -> VisibleDepth {
+        VisibleDepth {
+            width: self.width,
+            height: self.height,
+            cell_size: self.cell_size,
+            depth: Arc::clone(&self.baseline.depth),
+        }
+    }
+}
+
+/// The authored visible depth of a [`WaterSystem`], shared ([`WaterSystem::visible_depth`]).
+#[derive(Clone)]
+pub(crate) struct VisibleDepth {
+    width: usize,
+    height: usize,
+    cell_size: f32,
+    depth: Arc<SparseChunkGrid<f32>>,
+}
+
+impl VisibleDepth {
+    /// [`WaterSystem::visible_depth_world`]: bilinear, zero outside the world.
+    pub(crate) fn at_world(&self, world_x: f32, world_z: f32) -> f32 {
+        depth_at_world(
+            [self.width, self.height],
+            self.cell_size,
+            &self.depth,
+            world_x,
+            world_z,
+        )
+    }
+}
+
+// Bilinear authored depth at a world position, zero outside the world.
+fn depth_at_world(
+    [width, height]: [usize; 2],
+    cell_size: f32,
+    depth: &SparseChunkGrid<f32>,
+    world_x: f32,
+    world_z: f32,
+) -> f32 {
+    let world_w = (width.saturating_sub(1)) as f32 * cell_size;
+    let world_h = (height.saturating_sub(1)) as f32 * cell_size;
+    let grid_x = (world_x + world_w * 0.5) / cell_size;
+    let grid_z = (world_z + world_h * 0.5) / cell_size;
+    let max_x = width.saturating_sub(1) as f32;
+    let max_z = height.saturating_sub(1) as f32;
+    if grid_x < 0.0 || grid_z < 0.0 || grid_x > max_x || grid_z > max_z {
+        return 0.0;
+    }
+
+    let x0 = grid_x.floor() as usize;
+    let z0 = grid_z.floor() as usize;
+    let x1 = (x0 + 1).min(width.saturating_sub(1));
+    let z1 = (z0 + 1).min(height.saturating_sub(1));
+    let tx = grid_x - x0 as f32;
+    let tz = grid_z - z0 as f32;
+    let depth_00 = depth.get(x0, z0);
+    let depth_10 = depth.get(x1, z0);
+    let depth_01 = depth.get(x0, z1);
+    let depth_11 = depth.get(x1, z1);
+    let top = depth_00 + (depth_10 - depth_00) * tx;
+    let bottom = depth_01 + (depth_11 - depth_01) * tx;
+    top + (bottom - top) * tz
 }
 
 fn render_patch_interval_cells(cell_size: f32, chunk_span_m: f32) -> usize {

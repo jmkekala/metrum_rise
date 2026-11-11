@@ -6,8 +6,13 @@
 //!
 //! It grows by its consumers. The graded tile renderer (`TERRAIN-13` part 1, round G1) is the
 //! first: its levels and their travel buckets ([`levels`]) and its bake request queue
-//! ([`requests`]), both measured from one [`view::StreamView`].
+//! ([`requests`]), both measured from one [`view::StreamView`]. The vegetation patches (round
+//! V1b, `RENDER-32-D`) are the second: their queries run on the background pool from a
+//! snapshot, tracked by the prepare queue ([`prepare`]) and held for the poll by the product
+//! cache ([`cache`]).
 
+pub(crate) mod cache;
 pub(crate) mod levels;
+pub(crate) mod prepare;
 pub(crate) mod requests;
 pub(crate) mod view;
