@@ -72,8 +72,13 @@ fn assert_golden(tag: &str, bytes: &[u8]) {
 fn pack(heads: &[[f32; 3]], kinds: &[u8], reaches: &[f32], origin: [f32; 2]) -> Vec<u8> {
     let mut bytes = vec![0u8; CELL_BYTES];
     let mut counts = vec![0u8; SIDE * SIDE];
+    let mut rows = CellRows {
+        bytes: &mut bytes,
+        counts: &mut counts,
+        z_base: 0,
+    };
     for ((head, &kind), &reach) in heads.iter().zip(kinds).zip(reaches) {
-        pack_head(&mut bytes, &mut counts, *head, f32::from(kind) + 1.0, reach, origin, CellRect::WINDOW);
+        pack_head(&mut rows, *head, f32::from(kind) + 1.0, reach, origin, CellRect::WINDOW);
     }
     bytes
 }

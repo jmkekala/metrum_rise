@@ -13,9 +13,9 @@
 //! - **Lamp grid**: `SIDE` x `SIDE` cells of `CELL_M` around the camera's cell, `CAPACITY` slots a
 //!   cell, every lamp head in the cells its range reaches, in a stable world order (x, z, y,
 //!   kind). It re-centres after `GRID_RECENTRE_CELLS` cells of travel: `O(l log l + l k)` for
-//!   the `l` lamps of the window's chunks, `k` <= 25 cells a lamp. A chunk edit re-packs only the
-//!   cells the chunk's lamps can reach, in place: `O(m log m + m k)` for the `m` lamps of the
-//!   chunks around it. A cell's list depends only on the lamps reaching it and the window origin,
+//!   the `l` lamps of the window's chunks, `k` <= 25 cells a lamp, packed in bands of
+//!   `BAND_ROWS` cell rows on the shared pool. A chunk edit re-packs only the cells the chunk's
+//!   lamps can reach, in place: `O(m log m + m k)` for the `m` lamps of the chunks around it. A cell's list depends only on the lamps reaching it and the window origin,
 //!   so a region re-pack equals a full one.
 //! - **Far map**: `FAR_SIDE`^2 texels of `FAR_CELL_M` around the look ray's ground point, each
 //!   head's light splatted bilinearly. Rebuilt after `FAR_RECENTRE_M` of focus travel: `O(C + h)`
@@ -31,6 +31,7 @@
 
 use super::vegetation_product::godot_math::{Basis, basis_axis_angle};
 use godot::prelude::*;
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
@@ -71,6 +72,8 @@ const LAMP_ANGLE_DEG: f64 = 80.0;
 const ARM_M: f32 = 3.4;
 // More edited chunks than this before a pack re-packs the whole window instead.
 const MAX_GRID_EDITS: usize = 32;
+// Cell rows a parallel pack's band holds.
+const BAND_ROWS: usize = 16;
 // Floats a cell takes: CAPACITY RGBA slots.
 const CELL_FLOATS: usize = CAPACITY * 4;
 const CELL_BYTES: usize = SIDE * SIDE * CELL_FLOATS * 4;
@@ -176,12 +179,24 @@ fn row_order(a: &Row, b: &Row) -> Ordering {
         .then_with(|| a.kind.cmp(&b.kind))
 }
 
-/// Packs one head into the cells of `region` (window cells) its range reaches, after the heads
-/// packed before it: `pack_cells` of `street_lamp_grid.gd` for one head. `slot_kind` is the value
-/// the slot's fourth channel stores (the kind plus one).
+// Cell rows `z_base..` of the lamp grid: their slot bytes and slot counts.
+struct CellRows<'a> {
+    bytes: &'a mut [u8],
+    counts: &'a mut [u8],
+    z_base: i32,
+}
+
+impl CellRows<'_> {
+    fn index(&self, x: i32, z: i32) -> usize {
+        (z - self.z_base) as usize * SIDE + x as usize
+    }
+}
+
+/// Packs one head into the cells of `region` (window cells, inside `rows`) its range reaches,
+/// after the heads packed before it: `pack_cells` of `street_lamp_grid.gd` for one head.
+/// `slot_kind` is the value the slot's fourth channel stores (the kind plus one).
 fn pack_head(
-    cells: &mut [u8],
-    counts: &mut [u8],
+    rows: &mut CellRows,
     head: [f32; 3],
     slot_kind: f32,
     reach: f32,
@@ -208,30 +223,30 @@ fn pack_head(
             if f64::from(dx * dx + dz * dz) > reach_sq {
                 continue;
             }
-            let cell = z as usize * SIDE + x as usize;
-            let count = usize::from(counts[cell]);
+            let cell = rows.index(x, z);
+            let count = usize::from(rows.counts[cell]);
             if count < CAPACITY {
                 let offset = (cell * CAPACITY + count) * 4;
-                write_f32(cells, offset, head[0]);
-                write_f32(cells, offset + 1, head[1]);
-                write_f32(cells, offset + 2, head[2]);
-                write_f32(cells, offset + 3, slot_kind);
-                counts[cell] += 1;
+                write_f32(rows.bytes, offset, head[0]);
+                write_f32(rows.bytes, offset + 1, head[1]);
+                write_f32(rows.bytes, offset + 2, head[2]);
+                write_f32(rows.bytes, offset + 3, slot_kind);
+                rows.counts[cell] += 1;
             }
         }
     }
 }
 
 // Zeroes the slots the cells of `region` hold.
-fn clear_cells(cells: &mut [u8], counts: &mut [u8], region: CellRect) {
+fn clear_cells(rows: &mut CellRows, region: CellRect) {
     for z in region.z0..=region.z1 {
         for x in region.x0..=region.x1 {
-            let cell = z as usize * SIDE + x as usize;
-            let used = usize::from(counts[cell]);
+            let cell = rows.index(x, z);
+            let used = usize::from(rows.counts[cell]);
             if used > 0 {
                 let start = cell * CELL_FLOATS * 4;
-                cells[start..start + used * 16].fill(0);
-                counts[cell] = 0;
+                rows.bytes[start..start + used * 16].fill(0);
+                rows.counts[cell] = 0;
             }
         }
     }
@@ -755,17 +770,41 @@ impl LampBook {
             }
         }
         self.rows.sort_unstable_by(row_order);
-        clear_cells(cells, &mut self.counts, region);
-        for row in &self.rows {
-            pack_head(
-                cells,
-                &mut self.counts,
-                row.head,
-                f32::from(row.kind + 1),
-                row.reach,
-                origin,
-                region,
-            );
+        let rows = &self.rows;
+        // Packs the region's part of a band of cell rows, every head in order.
+        let pack = |mut band: CellRows, region: CellRect| {
+            clear_cells(&mut band, region);
+            for row in rows {
+                let slot_kind = f32::from(row.kind + 1);
+                pack_head(&mut band, row.head, slot_kind, row.reach, origin, region);
+            }
+        };
+        if region == CellRect::WINDOW {
+            // Bands of cell rows are independent: each packs the heads reaching it, in order.
+            let band_bytes = BAND_ROWS * SIDE * CELL_FLOATS * 4;
+            let counts = &mut self.counts;
+            crate::thread_pools::install(|| {
+                cells
+                    .par_chunks_mut(band_bytes)
+                    .zip(counts.par_chunks_mut(BAND_ROWS * SIDE))
+                    .enumerate()
+                    .for_each(|(band, (bytes, counts))| {
+                        let z_base = (band * BAND_ROWS) as i32;
+                        let rect = CellRect {
+                            z0: z_base,
+                            z1: z_base + BAND_ROWS as i32 - 1,
+                            ..region
+                        };
+                        pack(CellRows { bytes, counts, z_base }, rect);
+                    });
+            });
+        } else {
+            let band = CellRows {
+                bytes: cells,
+                counts: &mut self.counts,
+                z_base: 0,
+            };
+            pack(band, region);
         }
         self.packed_rows += self.rows.len();
     }
@@ -1063,16 +1102,14 @@ impl StreetLightBook {
     ) -> PackedFloat32Array {
         let mut bytes = vec![0u8; CELL_BYTES];
         let mut counts = vec![0u8; SIDE * SIDE];
+        let mut rows = CellRows {
+            bytes: &mut bytes,
+            counts: &mut counts,
+            z_base: 0,
+        };
         for ((head, &kind), &reach) in heads_of(&heads).zip(kinds.as_slice()).zip(ranges.as_slice()) {
-            pack_head(
-                &mut bytes,
-                &mut counts,
-                head,
-                f32::from(kind) + 1.0,
-                reach,
-                [origin.x, origin.y],
-                CellRect::WINDOW,
-            );
+            let slot_kind = f32::from(kind) + 1.0;
+            pack_head(&mut rows, head, slot_kind, reach, [origin.x, origin.y], CellRect::WINDOW);
         }
         bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
     }
