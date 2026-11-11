@@ -35,6 +35,8 @@ struct VisualPose {
     rotation: Quat,
     // Lane geometry and off-lane support are distinct height owners; never blend across them.
     grounded: bool,
+    // The snapshot pose this frame moved toward, bit for bit.
+    target: [u32; STRIDE],
 }
 
 /// Drawn car poses from the previous frame, double-buffered so cars that left the snapshot are
@@ -95,8 +97,16 @@ impl CarVisualSmoother {
 
     /// Stores the poses actually uploaded, including any support correction or busy fallback,
     /// as next frame's starting points. Unusable poses are not stored and so snap next frame.
-    pub(crate) fn record(&mut self, poses: &[f32], ids: &[i64], flags: &[u8]) {
-        for ((pose, &id), &flag) in poses.as_chunks::<STRIDE>().0.iter().zip(ids).zip(flags) {
+    pub(crate) fn record(&mut self, poses: &[f32], targets: &[f32], ids: &[i64], flags: &[u8]) {
+        let targets = targets.as_chunks::<STRIDE>().0;
+        for (((pose, target), &id), &flag) in poses
+            .as_chunks::<STRIDE>()
+            .0
+            .iter()
+            .zip(targets)
+            .zip(ids)
+            .zip(flags)
+        {
             if let Some((origin, basis)) = read_pose(pose) {
                 // Drawn, supported and snapshot bases are already orthonormal.
                 let rotation = Quat::from_mat3(&basis);
@@ -106,6 +116,7 @@ impl CarVisualSmoother {
                         origin,
                         rotation,
                         grounded: flag != 0,
+                        target: target.map(f32::to_bits),
                     },
                 );
             }
@@ -116,6 +127,24 @@ impl CarVisualSmoother {
     pub(crate) fn finish_frame(&mut self) {
         std::mem::swap(&mut self.drawn, &mut self.next);
         self.next.clear();
+    }
+
+    /// Cars of a bucket whose snapshot pose is bit for bit last frame's, all and off-lane ones:
+    /// the share of the smoothing and the ground solve spent on unchanged poses (`RENDER-28`).
+    /// O(cars), one lookup each; call before [`Self::record`].
+    pub(crate) fn unchanged_targets(&self, targets: &[f32], ids: &[i64], flags: &[u8]) -> [usize; 2] {
+        let mut unchanged = [0; 2];
+        for ((target, id), &flag) in targets.as_chunks::<STRIDE>().0.iter().zip(ids).zip(flags) {
+            if self
+                .drawn
+                .get(id)
+                .is_some_and(|pose| pose.target == target.map(f32::to_bits))
+            {
+                unchanged[0] += 1;
+                unchanged[1] += usize::from(flag != 0);
+            }
+        }
+        unchanged
     }
 
     /// Where car `id` was drawn this frame, if it was. One lookup.
@@ -247,7 +276,7 @@ mod tests {
     fn frame(smoother: &mut CarVisualSmoother, target: &[f32], flag: u8, alpha: f32) -> Vec<f32> {
         let mut poses = target.to_vec();
         smoother.interpolate(&mut poses, &[7], &[flag], alpha);
-        smoother.record(&poses, &[7], &[flag]);
+        smoother.record(&poses, target, &[7], &[flag]);
         smoother.finish_frame();
         poses
     }
@@ -372,7 +401,7 @@ mod tests {
                 poses.copy_from_slice(&targets);
                 smoother.interpolate(&mut poses, &ids, &flags, 0.2);
                 let interpolated = start.elapsed().as_secs_f64() * 1e3;
-                smoother.record(&poses, &ids, &flags);
+                smoother.record(&poses, &targets, &ids, &flags);
                 smoother.finish_frame();
                 if step >= 8 {
                     samples.push(start.elapsed().as_secs_f64() * 1e3);

@@ -29,6 +29,7 @@ const WALKER_VAT_REVERSE_PHASE := true
 const CAR_TRANSFORM_STRIDE := 12
 const DEBUG_LABEL_LIMIT := 96
 const SWARM_PARTS: Array[String] = ["walker_fetch", "walker_assign", "vehicle_frame", "car_smooth", "car_assign", "headlights"]
+const CAR_PARTS: Array[String] = ["car_interpolate", "car_ground", "car_record", "cars_smoothed", "cars_off_lane", "off_lane_solved", "cars_unchanged", "off_lane_unchanged"]
 var _vehicles := preload("res://scripts/renderers/vehicle_resources.gd").new()
 var _headlights := VehicleHeadlights.new()
 
@@ -208,6 +209,11 @@ func _process(delta):
 	var details := {"camera_aabb": aabb_elapsed_ms, "swarm": swarm_elapsed_ms}
 	for index in SWARM_PARTS.size():
 		details[SWARM_PARTS[index]] = float(_swarm_us[index]) / 1000.0
+	# Inside car_smooth, from Rust: smoothing, the off-lane ground solve, recording (ms), then
+	# counts (`RENDER-28`).
+	var car_parts: PackedInt64Array = simulation_node.get_car_frame_parts()
+	for index in CAR_PARTS.size():
+		details[CAR_PARTS[index]] = float(car_parts[index]) / 1000.0 if index < 3 else car_parts[index]
 	var walkers := 0
 	var cars := 0
 	for mmi in walker_mmis.values():

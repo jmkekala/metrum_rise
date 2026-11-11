@@ -341,8 +341,12 @@ impl SimulationNode {
     #[func]
     pub fn smooth_car_render_data(&mut self, car_data: VarDictionary, delta: f64) -> VarDictionary {
         use crate::nodes::sim::render::car_visual::{CarVisualSmoother, restore_off_lane_targets};
+        use std::time::Instant;
         let alpha = CarVisualSmoother::alpha(delta);
         let mut result = VarDictionary::new();
+        // The split of `RENDER-28` (see `get_car_frame_parts`), summed over the buckets.
+        let mut parts = [0i64; 8];
+        let micros = |since: Instant| since.elapsed().as_micros() as i64;
         for (key, bucket) in car_data.iter_shared() {
             let Ok(bucket) = bucket.try_to::<VarDictionary>() else {
                 continue;
@@ -362,6 +366,17 @@ impl SimulationNode {
                 result.set(key, targets);
                 continue;
             }
+            let [unchanged, unchanged_off_lane] = self.car_visuals.unchanged_targets(
+                targets.as_slice(),
+                ids.as_slice(),
+                flags.as_slice(),
+            );
+            let off_lane = flags.as_slice().iter().filter(|&&flag| flag != 0).count();
+            parts[3] += count as i64;
+            parts[4] += off_lane as i64;
+            parts[6] += unchanged as i64;
+            parts[7] += unchanged_off_lane as i64;
+            let started = Instant::now();
             let mut poses = PackedFloat32Array::from(targets.as_slice());
             self.car_visuals.interpolate(
                 poses.as_mut_slice(),
@@ -369,7 +384,9 @@ impl SimulationNode {
                 flags.as_slice(),
                 alpha,
             );
-            if flags.as_slice().contains(&1) {
+            parts[0] += micros(started);
+            let started = Instant::now();
+            if off_lane > 0 {
                 let vehicle = key
                     .try_to::<i64>()
                     .ok()
@@ -384,7 +401,9 @@ impl SimulationNode {
                         )
                     })
                 });
-                if !grounded {
+                if grounded {
+                    parts[5] += off_lane as i64;
+                } else {
                     restore_off_lane_targets(
                         poses.as_mut_slice(),
                         targets.as_slice(),
@@ -392,12 +411,30 @@ impl SimulationNode {
                     );
                 }
             }
-            self.car_visuals
-                .record(poses.as_slice(), ids.as_slice(), flags.as_slice());
+            parts[1] += micros(started);
+            let started = Instant::now();
+            self.car_visuals.record(
+                poses.as_slice(),
+                targets.as_slice(),
+                ids.as_slice(),
+                flags.as_slice(),
+            );
             result.set(key, poses);
+            parts[2] += micros(started);
         }
         self.car_visuals.finish_frame();
+        self.car_frame_parts = parts;
         result
+    }
+
+    /// The last `smooth_car_render_data` call's split (`RENDER-28`), for the perf channel:
+    /// microseconds smoothing (with the copy of the snapshot poses), in the off-lane ground
+    /// solve (with its core attempt), recording the drawn poses (with the bucket's hand-over);
+    /// then cars, off-lane cars, off-lane cars solved, cars whose snapshot pose is bit for bit
+    /// last frame's, and such off-lane cars. O(1).
+    #[func]
+    pub fn get_car_frame_parts(&self) -> PackedInt64Array {
+        PackedInt64Array::from(self.car_frame_parts.as_slice())
     }
 
     /// Returns debug path geometry for active agents.
