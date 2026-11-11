@@ -44,6 +44,9 @@ second round (`RENDER-32-B`) puts the graded tiles' levels and bake queue in Rus
 is 3-4 ms faster a frame and a 100k load's graded tiles settle in 11 s instead of 34 s. The
 third (`RENDER-32-C`) builds every vegetation instance buffer in Rust, bit for bit what the
 GDScript built (Rust now owns the plants' appearance hash): Kuopio's turns are 3-5 ms faster.
+`RENDER-32-D` (built, not yet landed) runs the vegetation query on a background thread from a
+snapshot: the vegetation's frame time on a turn falls from 6-11 ms to 1.5-2.6 ms, and Kuopio's
+turns are twice as fast.
 `RENDER-32-H` (built, not yet landed) moves the street lights' night passes to Rust, bit for bit:
 on the 30k city at night they cost 0.2 ms a frame instead of 5 ms, and night turns no longer cost
 more than day turns.

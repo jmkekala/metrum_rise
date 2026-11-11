@@ -12553,6 +12553,218 @@ in every turn and pan; read on the frame mean, `night_pan_out` is +0.9 and +1.6 
 graded terrain after the unsettled night turns rather than the lights (decision for review).
 Both textures byte-identical at the settle poses: met (three night poses).
 
+### Vegetation query from a snapshot on the background pool (`RENDER-32-D`, 2026-11-11)
+
+V1b. `vegetation.gd` asks the core no vegetation query any more. It requests a patch by key with
+the bands it chose, `request_vegetation_patch(key, origin, span, understory, near_band, caster,
+settings)`, and polls finished products with `poll_vegetation_product()`; the mesh catalogue is
+handed over once (`set_vegetation_product_catalogue`). A background worker takes the patch's
+`VegetationPatchInputs` under `try_lock` and runs the scatter, the stand cover, the hedge runs
+(outside the near band) and `RENDER-32-C`'s product off the lock
+(`vegetation_api/jobs.rs`, `prepare_patch`). Nothing of the query runs on Godot's main thread:
+the three synchronous queries remain for tools and tests, and Rust counts every call of them
+(`get_vegetation_main_thread_queries`, recorded by the stream benchmark each frame).
+
+**The snapshot** (`vegetation_api/world.rs`). The queries read the world through a
+`VegetationWorld` trait that the core and the snapshot both implement, so one code path serves
+the simulation's own readers (edits, picking, the yards) and the workers. Shared in `O(1)`: the
+heightmap and the roadbed (as the graded bakes share them), the road mesh chunks (an `imbl` map;
+the street lights set trees back), the water's visible depth (its `Arc` grid,
+`WaterSystem::visible_depth`) and the generator. Copied for the patch's window (the patch grown
+by 64 m, which holds every read of the scatter, the stand cover's 16 m margin and texel, the
+largest crown, the clearance and lamp setbacks): the edited vegetation cells and their blocks
+(`VegetationEdits::window`), the committed fields' chunks (`FieldClearanceIndex::window`), the
+terrain query index's tiles one tile further out (`TerrainQueryIndex::window`; a query that
+reaches a tile outside it takes the index-free gather, whose answers equal the index's bitwise,
+`ready_for`), and every building site whose lot centre lies within the largest site radius of
+that rectangle grown by the cap (`BuildingAllocator::site_snapshot_by_reach`; not the graded
+bakes' bounds filter, because a yard's planting area reaches past a site's footprint and
+surface bounds). The copied sites answer the yard-plant and planting-area tests as the
+allocator's `site_at` does (the lowest-index site that answers) and the graded gathers through
+64 m buckets of their lot centres (the graded bakes' snapshot gathers through the same buckets
+now, where it scanned every copied site). Inside its window every answer equals the core's.
+Taking it costs `O(1)` for the shared parts plus the window's sites, index tiles, fields and
+edited cells: 0.058 ms p50, 0.26 ms max over every patch of the 30k city (release).
+
+**Jobs** (`stream/prepare.rs`, `stream/cache.rs`, the streaming core's prepare queue and product
+cache). A request gets a serial; a newer request for the key, a cancel (the key left the wanted
+set) or a clear (a reset) makes the older one stale, and its product is dropped when polled,
+never delivered. At most 32 jobs are out (from the request until the poll takes the result) and
+none starts while 64 MB of products wait; finished products are taken oldest first and their
+storage is reused, so a steady stream allocates no product storage. A worker that finds the core
+busy tries again every 0.25 ms for about 2 ms before it hands the patch back as busy (the renderer
+queues it again). The products are functions of the snapshot alone, so the order jobs complete
+in decides only when a patch draws, never what it draws.
+
+**The frame path.** The renderer requests at most the area budget a frame (16 sub-patches), most
+needed first, skips a patch already in flight with the same bands and revisions, and installs
+finished products twice a frame, in `_process` and again from `frame_pre_draw` (a patch requested
+early in a frame draws in that frame when its worker finished before the draw), within 0.8 ms of
+installs a frame, the first slice always running. A patch installs in slices of about 0.6 ms (at
+least one batch) under a hidden node, which shows and replaces the previous version in the frame
+its last batch is in, so a patch appears whole and an edit blanks nothing. The near canopy's
+detail level is chosen before its meshes are set and an impostor's bounds before its buffer, so
+no `MultiMesh` computes its bounds twice (the mesh swap after the install cost 1.5-2 ms a patch on
+Kuopio). The frame path takes no blocking core lock: the vegetation revisions come once a frame
+from `try_get_vegetation_generations(known_epoch)` (a try-lock read that copies the revision table
+only when the land cover epoch moved; while the simulation holds the core the staleness sweep
+waits a frame, and an older revision can only make a patch look stale), and the world size is
+read once per world (the render snapshot's lock waits while the simulation publishes a frame;
+those waits were the 2-13 ms single units of the first measurements).
+
+**The local gather** (plan section 6, Veeti's `d78a0efc`). Evaluated, not adopted. On the
+worker each plant's footprint prepares only its own cells through the windowed query index (the
+indexed `gather_near`), which is already local: a city patch pays for the seams near each plant,
+not for the patch's. Release, every patch of both grids, pinned: the 30k city's 1,469 patches
+(268,443 plants) take 0.72 ms p50 and 63.7 ms max a patch from a snapshot against 0.64 / 65.5 ms
+from the live core; a 2,040 m generated forest's 272 patches (97,489 plants) 0.18 / 10.9 ms
+against 0.15 / 9.7. A patch-wide gather would make the city's worst patch worse (the plan's
+112-115 ms) for a forest gain that no longer reaches the frame. (The snapshot's site gathers
+were linear in the copied sites at first, 7.3 s against the live 3.9 s for the city; the 64 m
+buckets brought them level.)
+
+**Complexity.** A request and a poll are `O(1)` on the main thread plus the product's buffer
+copy into Godot's arrays; a slice installs `O(batches)` nodes within its time; the generation
+read is `O(1)` while the epoch holds and `O(edited patches log edited patches)` when it moves.
+Worker: the snapshot as above, then `RENDER-32-C`'s query and product bounds.
+
+**Tests.** Rust: `background_patch_matches_the_gdscript_upload_bitwise` (the 510 golden uploads of
+`RENDER-32-C`, built through the snapshot path, bitwise); `vegetation_api/snapshot_tests.rs`:
+snapshot against live on a fixture with two streets and their sidewalks and lamps, a footpath, a
+committed field, a yard with walls, paving and a planting area reaching past its footprint, yard
+hedges, brush stands and the generated scatter, every fine and coarse patch, placements, stand
+cover, hedge runs and the whole product bitwise; a stale request never delivered (superseded in
+either landing order, cancelled, cleared; busy delivered); shuffled completion (three seeded
+permutations and the reverse) delivers the same product for every key; a brush stroke, a road
+commit and its undo change the placements only of patches whose revisions moved, and the brush
+moves none farther than its reach; the prepare queue's and the cache's own tests; and, manual
+and ignored (`vegetation_snapshot_on_a_saved_city`, `METRUM_VEG_SAVE`), every patch of a saved
+city snapshot against live: equal on all 1,469 patches of the 30k city. Godot:
+`vegetation_appearance_test` (position and appearance digests unchanged, `8c00b5d7`,
+`6bdeb2c9`), `vegetation_invalidation_test` (its fakes build the product at the request; the
+budget check is now per install), `vegetation_edit_test`, `vegetation_land_cover_test`.
+
+**Deleted and added** (`git diff --numstat` against `dev` `1279537c`): `vegetation.gd` 92 lines
+out, 299 in (823 to 1,030 lines). Gone: the three synchronous queries and the product call of
+`_upload_patch`, the 2 and 6 ms soft upload budgets, the per-frame blocking epoch read and the
+per-request revision reads. Added: the request book (serial, revisions and bands per key, cancel
+on residency), the poll and the sliced install (`_poll_products`, `_start_next_install`,
+`_install_product`, `_advance_install`, `_finish_install`, `_drop_install`), the pre-draw pass,
+the non-blocking revision table and its refresh. The plan's "about 80 lines" deleted assumed the
+install stayed one call; the request book and the slices are the bookkeeping `RENDER-32-E` (the
+pools and the scheduler) and `-F` (residency, bands and staleness in Rust) delete with the rest.
+
+**Rows** (fresh, 2026-11-11/12, boot `978f0c18`; method and inputs as the rows of record).
+Control: `RENDER-32-C`'s release library (`503ed8a2`, built from `d001ea3f`, whose code equals
+`dev` `1279537c`) with its scripts; branch: `stream-v1b`'s release library (`cab711cb`,
+built before the branch's rebase onto `dba68da6`, from the Rust of `1b42597a`; the later
+commits change scripts only) with its vegetation scripts as at `0d2ca706`; both ran the
+branch's benchmark scripts. Other rounds' builds and benchmark rows ran between (the timing locks
+keep each row exclusive). C B B C over the moving phases (`--phases turns,pan,zoom,jump`,
+`$ARTIFACTS/run-stream-v1b.sh`, `compare.py`), p50 / max ms and frames over 33.3 ms, two runs a
+side:
+
+30k city:
+
+| Phase | `RENDER-32-C` p50 | max | >33.3 | `RENDER-32-D` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| turn_out 0.5s | 30.4-31.4 | 41-42 | 6-7 | 23.2-25.8 | 43-47 | 3-6 |
+| turn_back 0.5s | 29.6-31.0 | 37 | 5-7 | 22.7-24.9 | 35-42 | 3-4 |
+| turn_repeat 0.5s | 31.4-32.3 | 42-45 | 7-8 | 27.0-27.2 | 39-40 | 4 |
+| turn_out 1s | 27.6-28.6 | 41-44 | 4-7 | 20.7-21.4 | 46-64 | 3-4 |
+| turn_back 1s | 28.3-29.8 | 36-38 | 4-9 | 21.4-25.1 | 46-53 | 4-8 |
+| turn_repeat 1s | 26.6 | 36-41 | 4-5 | 24.1-24.2 | 48-54 | 6 |
+| pan_out 3s | 20.9-21.1 | 35-68 | 1-3 | 16.9-17.1 | 34-39 | 1 |
+| pan_back 3s | 20.9-21.6 | 47-52 | 2-3 | 16.8 | 29-39 | 0-2 |
+| pan_repeat 3s | 20.8-21.1 | 31-67 | 0-1 | 16.7-16.9 | 36-40 | 1-2 |
+| zoom_in 1.5s | 22.0-23.4 | 39-76 | 4-5 | 17.7-17.8 | 49-59 | 3-4 |
+| zoom_out 1.5s | 15.8-17.1 | 56-62 | 3-6 | 14.7-15.5 | 36-37 | 2-3 |
+| zoom_in_repeat 1.5s | 21.6-21.9 | 65-70 | 1-3 | 18.7-18.8 | 40-51 | 2-4 |
+| jump | 14.2-15.1 | 50-53 | 1-2 | 13.5-13.8 | 41-54 | 1 |
+| jump_back | 16.7-17.1 | 42-50 | 1 | 16.9-17.2 | 39-43 | 1 |
+
+Kuopio:
+
+| Phase | `RENDER-32-C` p50 | max | >33.3 | `RENDER-32-D` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| turn_out 0.5s | 14.5-15.1 | 23-26 | 0 | 6.3-6.5 | 11-12 | 0 |
+| turn_back 0.5s | 13.5-14.4 | 21-27 | 0 | 6.7-6.8 | 11-12 | 0 |
+| turn_repeat 0.5s | 12.5-17.1 | 19-25 | 0 | 6.3-6.8 | 12 | 0 |
+| turn_out 1s | 9.5-10.6 | 23-26 | 0 | 5.4-6.0 | 16-17 | 0 |
+| turn_back 1s | 13.4-14.1 | 27-31 | 0 | 5.7-5.8 | 14-25 | 0 |
+| turn_repeat 1s | 11.7-12.5 | 26-31 | 0 | 5.5-5.7 | 12-14 | 0 |
+| pan_out 3s | 5.4-5.7 | 32-36 | 0-1 | 4.6-4.7 | 17-31 | 0 |
+| pan_back 3s | 6.7-7.4 | 29 | 0 | 4.1-4.3 | 24-25 | 0 |
+| pan_repeat 3s | 4.9-5.8 | 32-40 | 0-1 | 4.4-5.5 | 17-22 | 0 |
+| zoom_in 1.5s | 4.7-8.1 | 22-39 | 0-1 | 4.0-5.8 | 17-18 | 0 |
+| zoom_out 1.5s | 3.8-5.4 | 28 | 0 | 5.1-5.5 | 19-21 | 0 |
+| zoom_in_repeat 1.5s | 5.9-6.2 | 23-33 | 0 | 4.1-4.6 | 14-24 | 0 |
+| jump | 10.0-11.5 | 24-27 | 0 | 3.3-4.9 | 17-19 | 0 |
+| jump_back | 3.8-4.9 | 22-27 | 0 | 3.4 | 15 | 0 |
+
+By the same-binary spread (G1's rule): on Kuopio every phase is better or level, the turns 4-8 ms
+faster at p50 (half the frame) and their maxima 8-16 ms lower; at 30k every p50 is 1-7 ms lower
+(turns 2.4-7.0, pans and zooms 3-5), and every maximum is level or lower except three turns',
+whose single worst frames are 4-13 ms higher than the control's (`turn_out 0.5s` +3.8 against a
+3.4 ms spread, `turn_back 1s` +12.8 against 6.7, `turn_repeat 1s` +13.0 against 6.3) while their
+counts over 33.3 ms stay within the control's. The instrumented runs place those frames outside
+the vegetation (its script time there is 0-2.6 ms) on frames where the agents' script time doubles
+(8-13 ms against 3-5) or the scripts total 13-15 ms of a 41-48 ms frame: the background workers'
+queries now run beside the frame on the same eight pinned cores, where the control's ran inside
+it. See the bars.
+
+**Vegetation on the main thread** (instrumented, one run a side; the control's numbers are its
+uploads, the branch's its requests and install slices; the 10k town has no control run):
+
+| | 30k control | 30k branch | Kuopio control | Kuopio branch | 10k town branch |
+|---|---|---|---|---|---|
+| Script time, 1 s turns (mean a frame) | 7.6-8.6 | 1.5-1.6 | 5.9-7.2 | 2.3-2.4 | 1.3 |
+| Script time, 0.5 s turns | 8.8-10.8 | 1.6-1.8 | 7.0-7.9 | 2.4-2.6 | 1.4-1.6 |
+| Script time, night 1 s turns | 6.9-8.3 | 1.8 | 6.4-6.9 | 2.4-2.5 | 1.3-1.5 |
+| Script time, pans, zooms | 4.2-7.6 | 1.0-1.5 | 2.3-3.3 | 1.3-1.5 | 0.7-0.8 |
+| Largest single unit, any phase | 57.1 | 2.73 | 26.9 | 0.82 | 3.14 |
+| Frames that asked a synchronous query | - | 0 | - | 0 | 0 |
+| Wanted to drawn, pans, median frames | 0, 0, 0 | 0, 0, 1 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 |
+| Product on the main thread, turns | - | 0 (poll 0.04-0.05) | 0.17-0.30 | 0 (poll 0.05-0.06) | - |
+
+A patch drawn in the frame it became wanted counts 0 frames (the benchmark's
+`vegetation_drawn_frames`, detail runs only). On the turns the median is 0-2 frames against the
+control's 0-2 (Kuopio's 0.5 s turns 2-3 against 0), the 30k jump's 3 against 11. The three units
+over 1.7 ms in the three branch runs: a request of 2.73 ms on the 30k `zoom_in` (a request is
+otherwise 0.02-0.03 ms: a bridge call and a job queued), a poll of 1.71 ms on the 30k
+`pan_repeat` (otherwise 0.04 ms a frame), an install slice of 3.14 ms on the town's
+`night_turn_repeat` (slices are cut at 0.6 ms), each on a frame whose other work stalled as well;
+the main thread waiting for a core while the workers hold them is the explanation the evidence
+fits, not proven.
+
+**Timing level F** (`./run.sh --timing --level F --base 1279537c`, release lib test binaries:
+control `RENDER-32-C`'s (`694e7dd1`, code equal to `dev` `1279537c`), branch `e19feb21`, the
+branch's Rust before its rebase onto `dba68da6`): 30k 1x day acceptance passes (unpreempted,
+p99.9, preempted less wait 6.28 / 4.44 / 4.84 ms against the control's 6.73 / 4.19 / 4.11, the control's row reused from
+`RENDER-32-C`'s session after a passing calibration), level on every metric (mean 2.239 against
+2.203 ms, +1.7% against a 2.0% tolerance); 30k 32x C B B C level on every metric (mean +0.5%,
+p99 -0.4%), the `PERF-17` known exception on both sides. The simulation never runs the vegetation
+jobs, so this guards the build, not the workers: the workers' contention is the rendered rows'.
+
+**Bars** (plan section 7 V1b). No vegetation query on the main thread: met, the counter moved on
+no benchmark frame. Largest single unit at most 2.0 ms in every phase: met on Kuopio (0.82 ms),
+missed in one phase each at 30k (2.73 ms, `zoom_in`) and on the town (3.14 ms,
+`night_turn_repeat`), every other phase at most 1.9 ms; control 57 and 27 ms. Vegetation script
+time at most 2.5 ms a frame on the 30k and Kuopio turns: met on the 1 s turns the bar's controls
+measured (30k 1.5-1.6, Kuopio 2.3-2.4, controls 7.6-8.6 and 5.9-7.2) and on every 30k turn; on
+Kuopio's 0.5 s turns 2.35-2.61 (two of three over by 0.05-0.11), the band scan and detail refresh
+over 400 resident patches being 1.0 ms of it (`RENDER-32-F`'s). Products identical: met (the
+golden uploads through the snapshot, the populated fixture, the 30k city's every patch, the
+appearance digests). Median wanted-to-drawn on the pans not worse than control: met on Kuopio
+(0, 0, 0 against 0, 0, 0), missed by one frame on the 30k `pan_repeat` (1 against 0; `pan_out`
+and `pan_back` 0 against 0). `PERF-07` at 30k unchanged at level F: met. `-C`'s carried
+bar, the product's main-thread cost under 0.05 ms a frame on Kuopio: met as the product (none
+left on the main thread; the control's 0.17-0.30 ms); what remains is the poll's copy of the
+buffers into Godot's arrays, 0.045-0.056 ms a frame on the turns. The worker contention behind the
+missed units and the 30k turn maxima is carried to `RENDER-32-E` with a recommendation (the
+queries' inner loops sequential on the worker and at most half the background pool's threads in
+vegetation jobs).
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
