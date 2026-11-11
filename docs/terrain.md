@@ -11937,6 +11937,138 @@ landed library, C B B C, 30k and Kuopio.
 7. Visual choices wait for side-by-side stills in their round: the far canopy albedo
    (`42f07425`), agent draw distances, a finer vegetation grid.
 
+### Stream benchmark (`PERF-23`)
+
+`./run.sh --benchmark-stream` builds the release library and runs
+`tools/stream_benchmark.py run`, which launches the gameplay harness's `stream` matrix
+(`godot/scripts/benchmarks/stream_frame_benchmark.gd`) in gamescope's headless backend at 1000 Hz,
+1920x1080, in an isolated profile, pinned to the timing CPUs with eight workers, under the timing
+locks and outside the backup window (the local timing settings). The phases are those of the
+table above plus a still at night and, on request, the frames after a load (`post_load`). A row
+is one frame: its time from one `process_frame` to the next, render CPU and GPU, draws, every
+chunked renderer's queue and residency counters, the reflection's voted levels, and with
+`--detail` (the perf channel; shares, not times) that frame's perf records. Settled means the
+harness's idle state, `terrain.is_render_settled()` and no vegetation upload pending, 30 frames
+in a row. A control runs the same benchmark on another build:
+
+```bash
+METRUM_STREAM_SAVE=<populated_city_30000.sqlite> METRUM_STREAM_OUT="$ARTIFACTS" ./run.sh --benchmark-stream
+tools/stream_benchmark.py run --label ctl-30k-1 --out "$ARTIFACTS" --save <populated_city_30000.sqlite> \
+    --library <the control's libmetrum_rise.so> --scripts <the control tree's godot/scripts>
+tools/stream_benchmark.py summary "$ARTIFACTS/ctl-30k-1.metrics.json" [--scripts]
+```
+
+The perf channel's records join the frame they belong to: the benchmark takes them as
+`process_frame` resumes it, which ends the frame it has just timed (that frame's scripts and its
+pre-draw hooks). The planning probe sampled them by engine frame number and found them one row
+late (the correlation of script time with frame time 0.97 joined one row later, 0.20 as taken).
+The perf channel records the vegetation (its passes, uploads and the Rust fetch inside them), the
+street lights (grid, far map, pool), the water reflection's pre-draw hook with its vote, and the
+agents' split (walker fetch and buffers, vehicle frame, car smoothing with the ground solve, car
+buffers, headlights); the graded renderer's diagnostic cell count runs after the terrain's timed
+span.
+
+### Rows of record (`RENDER-32-A`, 2026-11-11)
+
+The controls for every later round. Two C B B C rounds, so four uninstrumented runs a side, in
+one boot and session: the control is `dev` `7a041c82`'s release library (SHA-256 `8556de17`)
+with its own scripts, the branch `stream-s0` `75534a01`'s release library (`9de3864a`) with its
+scripts; both ran this tree's benchmark scripts. Godot 4.7.2 stable, Forward+, gamescope headless
+at 1000 Hz, 1920x1080, P-cores, eight workers, paused, 10:00 and 23:00. Inputs: the timing
+cache's `populated_city_30000.sqlite` (save version 118, SHA-256 `e9a62f0e`) and Kuopio as a
+new game. Frame times are from one `process_frame` to the next, so they include the benchmark's
+own counters (a few hundredths of a millisecond).
+
+```bash
+tools/stream_benchmark.py run --label 30k-ctl1 --out "$ARTIFACTS" --save <populated_city_30000.sqlite> \
+    --library <7a041c82's libmetrum_rise.so> --scripts <7a041c82's godot/scripts>
+tools/stream_benchmark.py run --label 30k-br1 --out "$ARTIFACTS" --save <populated_city_30000.sqlite> \
+    --library <the branch's release libmetrum_rise.so>
+tools/stream_benchmark.py run --label kuopio-br1 --out "$ARTIFACTS" --library <...>   # Kuopio: no --save
+tools/stream_benchmark.py run --label 30k-br-detail --detail ...                       # shares, not times
+```
+
+30k city, p50 / max ms and frames over 33.3 ms, ranges over four runs a side:
+
+| Phase | `7a041c82` p50 | max | >33.3 | `RENDER-32-A` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| still | 12.4-13.3 | 20-24 | 0 | 12.3-13.0 | 17-27 | 0 |
+| turn_out 0.5s | 36.4-37.4 | 45-52 | 10-12 | 36.6-39.2 | 47-58 | 10-11 |
+| turn_back 0.5s | 37.9-41.3 | 46-52 | 11-13 | 35.1-41.0 | 42-46 | 11-13 |
+| turn_repeat 0.5s | 36.9-40.7 | 51-58 | 10-12 | 37.4-38.3 | 46-50 | 10-13 |
+| turn_out 1s | 31.3-33.7 | 43-50 | 11-17 | 29.6-31.6 | 41-46 | 9-14 |
+| turn_back 1s | 31.4-34.6 | 41-46 | 11-18 | 32.2-33.0 | 42-49 | 11-15 |
+| turn_repeat 1s | 30.3-32.2 | 41-49 | 9-13 | 29.4-35.4 | 41-53 | 10-16 |
+| pan_out 3s | 21.7-22.5 | 35-70 | 1-2 | 21.0-21.9 | 64-69 | 1-2 |
+| pan_back 3s | 22.0-22.6 | 49-69 | 1-2 | 21.7-22.6 | 49-63 | 1-3 |
+| pan_repeat 3s | 22.1-22.8 | 33-66 | 0-2 | 21.5-22.7 | 38-66 | 1 |
+| zoom_in 1.5s | 22.6-23.4 | 61-81 | 2-4 | 21.5-23.1 | 61-76 | 2-4 |
+| zoom_out 1.5s | 19.0-22.0 | 47-69 | 1-2 | 19.2-20.5 | 50-54 | 1-3 |
+| zoom_in_repeat 1.5s | 20.5-22.5 | 68-77 | 2-3 | 19.6-21.9 | 74-82 | 3-4 |
+| jump, settled in 1.6-1.8 s | 16.6-17.8 | 52-57 | 4-5 | 16.8-17.7 | 51-55 | 3-7 |
+| jump_back, settled in 1.6-1.8 s | 19.4-20.9 | 46-59 | 1-2 | 18.9-20.7 | 45-49 | 1-2 |
+| night_still | 11.9-12.8 | 17-27 | 0 | 11.9-13.1 | 19-27 | 0 |
+| night_turn_out 1s | 33.8-40.9 | 64-66 | 14-19 | 32.8-35.6 | 62-74 | 14-17 |
+| night_turn_back 1s | 33.6-38.6 | 61-72 | 14-19 | 35.2-36.5 | 63-72 | 16-19 |
+| night_turn_repeat 1s | 34.7-36.4 | 62-69 | 15-17 | 33.8-36.0 | 59-67 | 15-18 |
+| night_pan_out 3s | 22.3-22.9 | 62-74 | 10-13 | 21.4-22.5 | 64-74 | 9-12 |
+| night_pan_back 3s | 21.3-21.9 | 47-52 | 6-7 | 21.6-22.1 | 51-69 | 6-7 |
+
+Kuopio, p50 / max ms and frames over 33.3 ms, ranges over four runs a side:
+
+| Phase | `7a041c82` p50 | max | >33.3 | `RENDER-32-A` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| still | 3.3-3.7 | 4-7 | 0 | 2.8-3.3 | 5-8 | 0 |
+| turn_out 0.5s | 13.4-15.9 | 19-32 | 0 | 13.8-17.4 | 19-33 | 0 |
+| turn_back 0.5s | 13.6-19.6 | 20-28 | 0 | 13.5-18.3 | 27-32 | 0 |
+| turn_repeat 0.5s | 14.3-18.9 | 21-34 | 0-1 | 15.0-16.7 | 24-28 | 0 |
+| turn_out 1s | 15.2-16.1 | 29-34 | 0-1 | 12.4-17.4 | 29-46 | 0-1 |
+| turn_back 1s | 15.4-17.6 | 25-39 | 0-2 | 13.7-20.2 | 26-40 | 0-3 |
+| turn_repeat 1s | 13.6-17.6 | 24-33 | 0 | 14.5-17.0 | 27-41 | 0-1 |
+| pan_out 3s | 7.4-10.7 | 44-50 | 2-4 | 6.8-9.4 | 32-46 | 0-3 |
+| pan_back 3s | 6.8-10.3 | 39-47 | 2-3 | 6.0-10.8 | 29-41 | 0-3 |
+| pan_repeat 3s | 6.2-8.5 | 36-53 | 1-4 | 7.0-11.3 | 30-34 | 0-2 |
+| zoom_in 1.5s | 6.2-11.1 | 27-40 | 0-1 | 6.1-9.2 | 24-44 | 0-3 |
+| zoom_out 1.5s | 4.0-7.2 | 28-35 | 0-1 | 4.6-7.7 | 28-37 | 0-2 |
+| zoom_in_repeat 1.5s | 8.3-11.3 | 30-34 | 0-1 | 5.8-9.1 | 27-53 | 0-1 |
+| jump, settled in 0.7-1.4 s | 10.8-12.3 | 26-28 | 0 | 11.4-13.7 | 25-32 | 0 |
+| jump_back, settled in 0.6-0.8 s | 11.5-13.3 | 24-27 | 0 | 4.4-12.3 | 22-30 | 0 |
+| night_still | 3.3-3.5 | 5-12 | 0 | 2.8-3.1 | 5-10 | 0 |
+| night_turn_out 1s | 15.0-17.3 | 28-36 | 0-1 | 16.1-17.3 | 28-43 | 0-1 |
+| night_turn_back 1s | 15.5-18.4 | 27-34 | 0-2 | 14.6-16.5 | 27-36 | 0-1 |
+| night_turn_repeat 1s | 15.1-16.5 | 27-34 | 0-1 | 15.2-16.4 | 28-33 | 0 |
+| night_pan_out 3s | 11.4-13.9 | 33-53 | 0-4 | 5.6-12.9 | 28-36 | 0-2 |
+| night_pan_back 3s | 7.0-9.4 | 34-42 | 1-3 | 4.1-10.0 | 20-46 | 0-3 |
+
+No phase's p50 or maximum is worse than the control's by more than the larger same-binary
+spread of the four runs a side (the bar); with two runs a side the first round flagged four
+phases on each input, three of them single-frame maxima (vegetation uploads, which land in any
+phase), and the second round's runs put all of them inside the spread. The 30k 1 s turn is 31-34
+ms p50 against 17-19 ms of GPU (still view 9-10 ms), as planned.
+
+**The reflection vote cache** (Veeti's `19cf3498`, `RENDER-35`), instrumented runs, the hook's
+mean milliseconds a frame per phase: 30k 0.28-0.40 against the control's 0.55-0.78 (the vote
+itself 0.006-0.008; the rest is the building proxy sync, `RENDER-34`), Kuopio 0.016-0.043 against
+0.33-1.24. Both bars (0.4 and 0.1 ms) hold. The voted levels are equal on every pose of both
+inputs, but neither input sees water from its benchmark poses (every level is "no plane"), so
+this is weak evidence; the vote cache's own regression is `water_reflection_math_test`'s
+`_test_vote_cache`, which passes (the test's shader-text checks fail on `dev` as before and keep
+it out of the suite).
+
+**What the new records show** (instrumented, the 30k 1 s turn): the agents' 4.1 ms is 3.6 ms of
+`smooth_car_render_data` (car smoothing with the off-lane ground solve), 0.3 ms of buffer
+assignment and 0.03 ms of walker fetch; at night the street lights' 6.7 ms is 6.6 ms of lamp grid
+rebuilds (the far map and the light pool under 0.1 ms); vegetation's uploads are 6.1-6.4 ms a
+frame of which the Rust placement and cover fetch is 4.8-5.1 ms. With the graded renderer's
+diagnostic count out of the timed span, `terrain.gd` on the 30k still view reads 0.58 ms against
+the control's 1.23.
+
+**Timing level F** (`./run.sh --timing --level F --base 7a041c82`, release lib test binaries of
+both trees): 30k 1x B days pass the acceptance (unpreempted, p99.9, preempted less wait 6.59 /
+4.34 / 4.80 and 6.75 / 5.11 / 5.17 ms; a first B day in a noisy window read 8.21 ms preempted less
+wait and was rerun), mean 2.29 against the control's 2.50 ms (one control day, noisy); 30k 32x
+C B B C level on every metric (mean +0.2%, p99 -0.6%), the `PERF-17` known exception on both.
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
