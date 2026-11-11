@@ -12244,7 +12244,12 @@ misses are the per-change GDScript cost of the hand-over (the page checks stay i
 `RENDER-32-I`) and the install rate the queue unblocked; decision for the user in the round's
 report.
 
-@@TIMING@@
+**Timing level F** (`./run.sh --timing --level F --base dev`, release lib test binaries of
+`dev` and the branch; the control's 1x day timed fresh, its calibration against the cached row
+having drifted): 30k 1x day acceptance passes (unpreempted, p99.9, preempted less wait 6.24 /
+4.24 / 3.89 ms against the control's 5.83 / 4.23 / 3.94), mean 2.228 against 2.216 ms, level on
+every metric; 30k 32x C B B C level on every metric (mean +0.5%, p99 -1.4%), the `PERF-17` known
+exception on both sides.
 
 
 ## Implemented Runtime Contract
