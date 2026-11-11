@@ -44,6 +44,9 @@ second round (`RENDER-32-B`) puts the graded tiles' levels and bake queue in Rus
 is 3-4 ms faster a frame and a 100k load's graded tiles settle in 11 s instead of 34 s. The
 third (`RENDER-32-C`) builds every vegetation instance buffer in Rust, bit for bit what the
 GDScript built (Rust now owns the plants' appearance hash): Kuopio's turns are 3-5 ms faster.
+`RENDER-32-H` (built, not yet landed) moves the street lights' night passes to Rust, bit for bit:
+on the 30k city at night they cost 0.2 ms a frame instead of 5 ms, and night turns no longer cost
+more than day turns.
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,

@@ -12445,6 +12445,114 @@ query in `RENDER-32-D`. A 4,096-placement patch's loops under 0.3 ms in Rust: me
 identical: met.
 
 
+### Street lights' camera passes in Rust (`RENDER-32-H`, 2026-11-11)
+
+L1 (`RENDER-33`). `StreetLightBook` (`rust/src/nodes/sim/render/street_lights.rs`, a `RefCounted`
+the street light renderer owns, beside `GradedTileLevels`) keeps the lamps of every road chunk
+as `street_lights.gd` hands them over (the five floats a light Rust placed with the chunk) and
+builds what the night passes built in GDScript: the lamp grid (128 x 128 cells of 16 m, 16 slots
+a cell, the RGBAF texture `street_lamp_cells`), the far light map (512 x 512 texels of 16 m,
+`street_lamp_far`), the pool of the 32 nearest heads within 80 m with its handoff and fade, and
+each chunk's instance buffers (one per 64 m cell and kind, 12 floats an instance, and the glow
+batch, 16 floats an instance), which `street_lights.gd` assigns as `MultiMesh.buffer` instead of
+one call per instance. GDScript uploads the two textures when the book says they changed and
+places the 32 lights. Bit for bit what `street_lamp_grid.gd` and `street_lights.gd` built: the
+same window and chunk filters, the stable world order (x, z, y, kind), single precision where the
+engine stores `real_t` (window-relative head positions, `Basis(UP, yaw)` through `godot_math`'s
+axis-angle, the head transform), double where GDScript computed with `float` (the coverage test,
+the far map's sums and weights, the ground flux), and the far map's sums in chunk upload order (a
+re-uploaded chunk moves to the end, as a `Dictionary` key does). The lamp colours' linear values
+come from GDScript (`srgb_to_linear`), so Rust does not reproduce that conversion.
+
+**Only what moved or changed.** A still camera costs a few comparisons a frame. The grid
+re-centres after 16 cells (256 m) of travel, `O(l log l + l k)` for the `l` lamps of the
+window's chunks and `k` <= 25 cells a lamp (0.3-0.6 ms for the 30k city's 3,500 lamps in a
+window); a re-centre must re-pack every cell, because a cell's coverage test runs in
+window-relative single precision, so shifting cells would not equal the control's bytes. A chunk
+added or removed re-packs only the cells its lamps can reach, at the window's origin,
+`O(m log m + m k)` for the lamps of the chunks around it; that equals a full pack because a cell's
+list depends only on the lamps reaching it (tested). The far map is rebuilt after 1,024 m of
+focus travel from the chunks over it, `O(C + h)`, and an edit splats one chunk out and in as
+before. A frame does one texture step: build the grid, build the far map, or hand one built
+texture to Godot (so a build and a 4 MiB upload never share a frame; both textures settle two
+frames apart). The pool reads the chunks around the camera, `O(n)` for their heads, a selection
+of the nearest 32 (ties by position) every 0.2 s or 3 m. No allocation per frame; the texture
+bytes live in two `PackedByteArray`s Godot shares only while it uploads them. Serial: bands of
+cell rows on the shared pool packed the 30k window in 0.30 against 0.45 ms, and in one
+instrumented run waited 2.6 ms for the pool.
+
+**Deleted:** `street_lamp_grid.gd` (86 lines) and from `street_lights.gd` the grid rebuild, far
+rebuild and splat, ground focus, pool assignment and the per-instance batch loops (266 lines out,
+95 in: 485 to 314 lines). `street_lamp_grid_test.gd` became `street_lights_test.gd`: the same
+coverage, overflow, far splat and edit checks through the book, and the batches against the
+transforms GDScript builds.
+
+**Tests.** Rust (`street_lights/tests.rs`): `golden.txt` was written once by the control's
+GDScript (`dev` `1279537c`, headless Godot 4.7.2) on `street_lamp_grid_test.gd`'s fixtures and
+more (400 fractional heads at an odd origin, 300 far heads at both scales, the chunk edit
+sequence, a 60-light chunk's heads, batches and glow): every product bitwise equal (cells and
+far maps by SHA-256 with their non-zero floats, ground flux and kind light by bits). The 30k
+city's lamps (10,396 heads in 61 chunks, dumped live from the control at the night pose): the
+grid at five cells, the far map at four focus points and the pool at four eyes equal the
+control's (`city_lamps_equal_the_control`, ignored, `METRUM_LAMP_DUMP`). An edit's region re-pack
+equals a full pack; the pool equals a brute-force nearest 32. The stream benchmark records both
+textures' digests at the night settle points (`METRUM_STREAM_DIGESTS=1`, `lamp_digests`), adding
+two night poses (the jump's and back, each far enough to re-centre both): control and branch
+byte-identical at all three, and the graded digests equal at all five settle points.
+
+**Street lights' own time** (30k night, instrumented, one run a side, ms a frame; control V1a's
+library `503ed8a2`, code `dev` `1279537c`; branch `806ae5c1`, library `7e75a363`):
+
+| Phase | control mean / max | branch mean / max | branch book / upload max |
+|---|---|---|---|
+| night still | 0.01 / 0.0 | 0.007 / 0.04 | 0.01 / 0.00 |
+| night turn 1 s (out, back, repeat) | 4.62-5.39 / 24.0-24.9 | 0.166-0.193 / 0.64-0.67 | 0.58-0.61 / 0.26-0.53 |
+| night pan 3 s (out, back) | 0.91-1.25 / 23.4-24.8 | 0.068-0.087 / 0.66-0.69 | 0.57-0.63 / 0.29-0.61 |
+
+**Rows** (fresh, 2026-11-11, the rows of record's method and inputs; `$ARTIFACTS/run-stream-l1.sh`,
+`compare.py`, C B B C a side; round V1b's benchmark rows ran between them under the same locks).
+Control: V1a's release library (`503ed8a2`, code `dev` `1279537c`) with its scripts; branch
+`806ae5c1` (library `7e75a363`) with its scripts. 30k city, night phases, p50 / max ms and frames
+over 33.3 ms, two runs a side:
+
+| Phase | control p50 | max | >33.3 | `RENDER-32-H` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| night_still | 11.3-11.7 | 16-23 | 0 | 11.2-11.4 | 17-18 | 0 |
+| night_turn_out 1s | 27.2-28.1 | 56-59 | 10-11 | 25.5-26.5 | 42-43 | 6-7 |
+| night_turn_back 1s | 28.3-29.5 | 59-63 | 10-12 | 24.7-25.3 | 38-40 | 3-4 |
+| night_turn_repeat 1s | 29.8-32.0 | 62-63 | 12 | 25.5-27.6 | 38-41 | 4 |
+| night_pan_out 3s | 21.9 | 55-63 | 9-12 | 20.9-21.1 | 38-39 | 4-5 |
+| night_pan_back 3s | 20.4 | 48-52 | 7 | 19.5-20.3 | 43-45 | 1 |
+
+By the same-binary spread every night phase is better: the turns 1.6-4.3 ms at p50 and 15-23 ms
+at their maximum, the pans 0.5-0.9 ms at p50 and 6-20 ms at their maximum. Night against day,
+each run's night phase less the same run's day phase: p50 within 1 ms in every turn and pan
+(turns -0.8 to -3.6 ms, pans -1.4 to +0.6; the control +4.7 at worst); the frame mean within
+1 ms everywhere except `night_pan_out`, +0.9 and +1.6 ms (control +2.1 and +2.3). That pan
+follows the night turns without a settle, where the day pan starts settled; an instrumented
+branch run of both puts the difference in the graded terrain (5.32 against 3.47 ms a frame) and
+the street lights at 0.08 ms. The day phases run no street light code (one call a frame that
+returns): level by the spread except `turn_repeat 1s`'s p50 (+1.8 against 0.7) and two maxima
+(`turn_back 1s` +2.8, `pan_repeat 3s` +29), which an earlier round of this branch's rows
+(`31f0a1ae`, same code paths by day) did not show, so read as noise. Kuopio (still, turns, pans;
+no lamps): level in every phase.
+
+**Timing level F** (`./run.sh --timing --level F --base 1279537c`, release lib test binaries:
+control V1a's (`694e7dd1`, code `dev` `1279537c`), branch `7bac71fd` (`806ae5c1`)): 30k 1x day
+acceptance passes (unpreempted, p99.9, preempted less wait 6.27 / 4.21 / 5.66 ms against the
+control's 6.73 / 4.19 / 4.11, its row reused from `RENDER-32-C`'s session after a passing
+calibration), mean 2.207 against 2.203 ms, level on every metric; 30k 32x C B B C level on every
+metric (mean -1.2%), the `PERF-17` known exception on both sides. The book runs only from the
+renderer.
+
+**Bars** (plan section 7 L1): packed cells and far map bitwise equal to the GDScript on the test
+fixtures and the 30k city's lamps: met. Pool selection equal to a brute-force nearest 32: met.
+Street lights at most 0.3 ms mean and 1.0 ms in any frame on the 30k night turn and pan: met
+(0.07-0.19 mean, 0.69 max). Night turn and pan frame times within 1 ms of the day's: met at p50
+in every turn and pan; read on the frame mean, `night_pan_out` is +0.9 and +1.6 ms, from the
+graded terrain after the unsettled night turns rather than the lights (decision for review).
+Both textures byte-identical at the settle poses: met (three night poses).
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata

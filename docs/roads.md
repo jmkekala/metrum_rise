@@ -13534,7 +13534,10 @@ nearly flat.
 
 Every standard road and footpath gets street lights, placed in Rust with the road mesh
 (`rust/src/simulation/network/render/road/street_lights.rs`) and drawn by
-`godot/scripts/renderers/street_lights.gd`.
+`godot/scripts/renderers/street_lights.gd`; its camera passes (the lamp grid, the far light map,
+the light pool) and each chunk's instance buffers are built in Rust by `StreetLightBook`
+(`rust/src/nodes/sim/render/street_lights.rs`, `RENDER-32-H`), and the script uploads two
+textures and places the pool's lights.
 
 - Placement is a pure function of the compiled sections, along whole streets: chains of edges
   through degree-two nodes that take the same family of light (residential, main road, path).
@@ -13639,14 +13642,18 @@ last 30 m before the handoff, and the material lamp takes the same smoothstep's 
 real plus material light stays constant and no lamp pops. Real lights reaching 160 m instead of 80 m
 cost another 0.4 ms (2026-10-14), so the reach stays 80 m.
 
-The lamps reach the GPU through a camera-centred grid (`street_lamp_grid.gd`): 128 × 128 cells of
+The lamps reach the GPU through a camera-centred grid (`StreetLightBook`): 128 × 128 cells of
 16 m (2,048 m across), each listing up to 16 lamp heads whose range reaches it, one RGBAF texel per
 head (position and kind; 4 MiB in all), plus a texel per lamp kind for colour and range. A street
 puts about six to eight heads in a cell; 16 leaves room for junctions and median pairs, and a
 fuller cell keeps the first 16 in stable world order. Per pixel: one fetch to find an empty cell,
-otherwise at most 16 heads, one fetch each. The grid is rebuilt when chunks change or the camera
-moves 256 m from where it was last centred, O(lamps in the window). It took 0.9 ms in the
-`light-road` save; following every 16 m cell would have cost that per few metres of panning.
+otherwise at most 16 heads, one fetch each. The grid re-centres when the camera moves 256 m from
+where it was last centred: `O(l log l + l k)` for the `l` lamps of the window's chunks and
+`k` <= 25 cells a lamp, packed in bands of 16 cell rows on the shared pool; a chunk added or
+removed re-packs only the cells its lamps reach, which equals a full pack because a cell's list
+depends only on the lamps reaching it. In GDScript a re-centre took 0.9 ms in the `light-road`
+save and 25-38 ms on the 30k city (`RENDER-33`); in Rust the street lights take 0.2 ms a frame
+mean on the 30k night turn (`terrain.md`, [`RENDER-32-H`](terrain.md#street-lights-camera-passes-in-rust-render-32-h-2026-11-11)).
 
 Past 500 to 700 m from the camera the per-lamp loop hands over to a far light map
 (`street_lamp_far`): 512 × 512 cells of 16 m (8 km across), each holding the mean light its lamps
@@ -13657,8 +13664,10 @@ spreads that as a tent of 32 m. Before, the 2 km grid was centred on the camera,
 1 km out under a tilted camera fell off it and went totally dark at a hard edge, where real
 cities read as lit areas from a plane. The map is centred on where the camera looks (its
 centre ray to the ground, at most 3 km out) and re-centred after 1,024 m: a full rebuild
-splats every loaded lamp, 33 ms for 30,000 lamps plus 0.3 ms to upload; a chunk added or removed
-splats only its own lamps in or out. Walls get no far light (upward normal only); at that
+splats the lamps of the chunks over the map in chunk upload order, `O(chunks + lamps)` (33 ms for
+30,000 lamps in GDScript, a fraction of a millisecond in Rust); a chunk added or removed splats
+only its own lamps in or out. At most one of the two textures is rebuilt a frame; when both are
+due, the one that waited goes first. Walls get no far light (upward normal only); at that
 distance they are a few pixels.
 
 Check (2026-10-15, `light-road` at 01:00, far against exact in the fade band, mean absolute
