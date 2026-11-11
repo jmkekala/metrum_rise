@@ -22,6 +22,8 @@ pub mod network;
 /// Authored resource overlay rendering.
 pub mod resources;
 pub(crate) mod vehicle_ground;
+/// The streaming core: render-consumer state chosen from the view (`RENDER-32`).
+pub(crate) mod stream;
 /// Water patch mesh generation and cache helpers.
 pub mod water;
 /// The water a view ray first comes down onto, for the planar reflection's mirror planes.

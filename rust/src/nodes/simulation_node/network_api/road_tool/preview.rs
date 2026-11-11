@@ -538,8 +538,9 @@ impl SimulationNode {
     /// above the ground as `y`), where `GL0`-`GL2` end (`level_end_m`) and where `GL3` at steps
     /// 2, 4 and 8 ends (`gl3_end_m`, the last infinite). The road preview's next poses stage
     /// each tile at the level this distance rule gives it, without the hysteresis the renderer
-    /// keeps around a held tile's level; a commit stages at its preview's levels. Called when
-    /// the camera moves. Takes the context lock only.
+    /// keeps around a held tile's level; a commit stages at its preview's levels. The same
+    /// camera orders the pending tile bakes, nearest first (`TERRAIN-13` part 1). Called when
+    /// the camera moves. Takes the context lock and the graded jobs' lock.
     #[func]
     pub fn set_road_preview_terrain_view(
         &self,
@@ -547,6 +548,10 @@ impl SimulationNode {
         level_end_m: PackedFloat64Array,
         gl3_end_m: PackedFloat64Array,
     ) {
+        self.graded_jobs
+            .lock()
+            .unwrap()
+            .set_view([camera.x, camera.y, camera.z].map(f64::from));
         let (Ok(level_end_m), Ok(gl3_end_m)) = (
             <[f64; 3]>::try_from(level_end_m.as_slice()),
             <[f64; 3]>::try_from(gl3_end_m.as_slice()),
