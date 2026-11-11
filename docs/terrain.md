@@ -12848,6 +12848,104 @@ pans not worse than control: met on Kuopio and the town, missed by one frame on 
 on the first build; the fix changes only the vegetation jobs, which the simulation never runs.
 `-C`'s carried bar: the product left the main thread; the poll's copy of the buffers into Godot's
 arrays is 0.045-0.056 ms a frame on Kuopio's turns. The 30k turn maxima: no longer worse.
+### Record and replay, and the page allocator in Rust (`RENDER-32-I`, 2026-11-12, part 1)
+
+G2a's first part (`TERRAIN-13` part 2). The graded renderer's remaining state moves to Rust by
+record and replay, so every step is checked against what the GDScript renderer did.
+
+**Record and replay.** `terrain_graded_trace.gd` records, with `METRUM_GRADED_TRACE=<path>` (one
+file per renderer, `<path>.<n>`), every input the renderer reads, in order: its entry calls with
+their arguments (`setup`, `process` with the camera, the settle flags and the changed keys,
+`show_preview`, `release_preview`, `release_patch`, `clear`), `terrain.gd`'s mutations of the
+resident patch dictionary as it makes them (so a replay rebuilds it in the same order), every
+polled result (edits, lists, failures, tiles: keys, flags and wall bytes exactly, texel and row
+bytes by size), Rust's replies (requests accepted, cancels, lists accepted) and the install
+budget's answers. Its outputs are `>` lines: every Rust call (requests, cancels, list requests,
+the view, polls), page creations, reuses, releases, drops and moves, every slot upload (page,
+slot, atlas run, tile, level, step, token), every cell buffer published (patch, mesh, hash) and
+every patch's draw state. Floats are recorded as their 32-bit bytes. `godot/tests/graded_replay.gd`
+feeds a trace back through the renderer as it is, headless and without Rust: inputs return the
+recorded values and the first output that differs fails the replay with both lines. The page
+allocator's own calls are also noted (`=` lines: levels, placements, vacates), which the Godot
+replay skips and Rust's allocator replay reads. `./run.sh --test` records the zoning reference
+test's renderers and replays them.
+
+Traces (control: `dev`'s Rust, the `RENDER-32-H` release library `7e75a363`, with the recorder;
+untimed, gamescope): the 30k city's load and three 1 s turns (84,118 lines, 20,010 outputs), the
+100k diagnosis city's load to settled (258,975 lines, 57,429 outputs), the drag probe's populated
+swing on the 100k city (the `ROAD-68-H` strokes; 263,546 lines, 44,718 outputs, 280 preview
+poses) and Kuopio's `kuopio_08` swing with its fast click and undo (303,732 lines, 5,882 outputs,
+71 patch releases). The user's dump (save version 108) no longer loads, so Kuopio's swing stands
+in for it. Every trace replays bit for bit through the recorder's own renderer (the harness's
+proof); Kuopio's swing fails only the probe's fast-commit check, as `dev` does (`TERRAIN-23`).
+
+**The allocator in Rust.** `rust/src/nodes/sim/render/stream/layers/graded/pages.rs` holds what
+`terrain_graded_pages.gd` allocated: per level the slot side, the most slots a page holds and the
+most atlas layers a tile takes; pages created within the 1,024 MB budget (pooled pages dropped
+first, from the size class first released into); freed pages pooled per level and size (four a
+size); each page's free slots (slot 0 first, a freed slot taken next) and first-fit atlas runs
+merged on free; a copy's placement (the held slot kept, a held run kept while long enough, else a
+new run taken before the old is freed); a block move's layout (the source's slots and runs, the
+new slots and layers free). `GradedTileBook` (`layers/graded/book.rs`, a `RefCounted` the page
+store owns) exposes it; `terrain_graded_pages.gd` keeps each page's arrays and holders and applies
+the book's page events (new, reused, released, dropped, copied, refused) in order. An edit batch's
+reservation places its copies in the book, keeping each page's lists as they were first, and puts
+them back if any copy fails (the GDScript planned on copies of the pages). `ordered.rs` is a map
+iterating as a Godot `Dictionary` does (a new key last, a reassigned key in place, a removed key
+that returns last), which the port's next parts need wherever the GDScript's iteration order
+reached an output. Bounds: a create, release or move `O(slots + layers)`, a placement or vacate
+`O(the page's free runs)`, a pooled drop `O(size classes)`.
+
+**Replay parity.** Rust replays the GDScript allocator's every call from the traces (`pages`
+tests: 75,542 operations over the eight trace files, every page id, event, copy and refusal
+equal; a 3,367-line extraction of the Kuopio and populated swings is committed as
+`alloc_golden.txt`); and the renderer with the allocator in Rust replays every trace bit for bit
+(every output above). The traces hold no block growth (the loads size block pages once their
+lists are in); the moves are covered by `graded_page_growth_test`, `graded_page_publication_test`
+and the Rust layout test.
+
+**`TERRAIN-09`, the pooled empty pages: at most 32 MiB.** The pool kept up to four free pages of
+every size with no bound on their sum (eleven held 94.2 MiB at 100k, T56). Block pages come in
+many sizes, so it rarely served one: on the traces it held 101.2 MiB after the 30k load, 106.6
+after the 100k load and 119.4 after the populated swing, and served 12 creations on the 30k load,
+66 on Kuopio's swing and none at 100k, every one of which a 16 MiB bound keeps (replayed from the
+traces' page events). The pool now keeps at most 32 MiB (`POOL_KEPT_BYTES`): a release past it
+frees the page. A page's lists start fresh whether it was pooled or made, so nothing drawn
+changes. Evidence: each trace replays identically up to the first release the bound frees (the
+30k load at line 83,986 of 84,118, the 100k load at 258,021 of 258,975, the populated swing at
+216,116 of 263,546), Kuopio's swing in full, and with `METRUM_GRADED_REPLAY_POOL=unbounded` every
+trace in full; unit tests bound the pooled bytes. The page headroom (6,058 of 17,833 slots unused
+at settled, T56) and Vulkan's retained blocks are not changed: the headroom decides when blocks
+move, which the port must first reproduce.
+
+**Night against day, with the night pans settled (`-H`'s carried reading).** The stream
+benchmark's night pans now start from the settled base pose, as the day's do (they followed the
+night turns while the graded terrain caught up). Both sides ran this benchmark script (the tool
+copies it over a control's scripts). 30k city, phases `pan,night`, C B B C, fresh 2026-11-12
+00:48-00:54: control the `RENDER-32-H` release library `7e75a363` with `dev`'s scripts, branch
+this part's library (`9cd1f144`, `b7ea83d6`) with its scripts. `night_pan_out` against `pan_out`,
+frame mean (p50): control -0.99 (-1.09) and -0.29 (-0.53) ms, branch -0.06 (-0.13) and +0.29
+(+0.70) ms; `night_pan_back` against `pan_back` -0.55 to -1.33 ms. Night is within 1 ms of day
+in every pan: the +0.9/+1.6 ms `RENDER-32-H` read was the unsettled start, not cell-set work, so
+nothing carries to `-J`.
+
+**Ported, not yet wired** (the rest of `-I`): `layers/graded/state.rs`, `copies.rs` and
+`tiles.rs` hold the copies, a block's pages and growth (`_copy_pages`, `_place_copies`,
+`_free_copy`, `_page_emptied`, `_grow`, `_move_block`, `_switch_block`, `_advance_growth`), the
+installed and preview entries, the requests, refusals and exhaustion, the desired-set counts,
+parking and the tile hand-over (`_request_tiles`), each with its order of effects for the
+GDScript to apply (page events, uploads, binds, cancels, cell marks); unit-tested on a small world,
+not called yet. Wiring them behind `GradedTileBook` and replaying the traces through them is what
+the bars need: the hand-over's per-change cost is these GDScript page checks. Lines so far:
+`terrain_graded_pages.gd` 383 to 344; `terrain_graded_tiles.gd` 3,132 to 3,254 (the recorder's
+hooks, about 125 lines, stay as the port's harness).
+
+**Bars** (brief): replay parity met for the moved part (the allocator, every trace); `-B`'s page
+checks (residency and re-levelling at most 0.3 ms on the 30k 1 s turn, 0.5 ms on the 100k turns):
+missed, unchanged from `-B` (0.72-0.82 and 2.6-2.8 ms), the hand-over not yet moved, so none of
+the 30k turn's missing p50 gain is recovered yet; `TERRAIN-09`'s pooled pages bounded: met (32
+MiB, tested); `-H`'s night against day with the pans settled: met (above); `PERF-07` at level F:
+not run (no simulation path changed; the round is not a landing).
 
 ## Implemented Runtime Contract
 

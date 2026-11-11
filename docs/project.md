@@ -49,7 +49,9 @@ snapshot: the vegetation's frame time on a turn falls from 6-11 ms to 1.5-2.7 ms
 turns are twice as fast.
 `RENDER-32-H` (built, not yet landed) moves the street lights' night passes to Rust, bit for bit:
 on the 30k city at night they cost 0.2 ms a frame instead of 5 ms, and night turns no longer cost
-more than day turns.
+more than day turns. `RENDER-32-I` (in progress, not landed) moves the rest of the graded
+renderer's state to Rust by record and replay: the renderer's traces replay bit for bit, its
+page allocator is in Rust, and its pooled empty pages are bounded at 32 MiB (`TERRAIN-09`).
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
