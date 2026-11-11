@@ -52,6 +52,13 @@ pub(crate) trait VegetationWorld: Sync {
     fn blocks_yard_plant(&self, pos: Vector2) -> bool;
     /// Whether the point lies in a building's yard planting area.
     fn in_yard_planting(&self, pos: Vector2) -> bool;
+    /// Whether the queries split their loops over the Rayon pool: the core's callers wait for
+    /// the answer (Godot's main thread, the simulation's own edits); a snapshot's background job
+    /// runs them sequentially, so a capped number of jobs bounds the threads the vegetation takes
+    /// beside the frame. The answers are the same either way.
+    fn parallel(&self) -> bool {
+        true
+    }
 }
 
 impl VegetationWorld for SimCore {
@@ -244,5 +251,9 @@ impl VegetationWorld for VegetationPatchInputs {
             "vegetation snapshot read outside its window"
         );
         self.sites.in_yard_planting(pos)
+    }
+
+    fn parallel(&self) -> bool {
+        false
     }
 }

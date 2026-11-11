@@ -14,6 +14,7 @@ use crate::nodes::sim::render::stream::prepare::PrepareQueue;
 use crate::nodes::sim::render::vegetation_product::{
     ProductCatalogue, ProductInputs, ProductSettings, StandCover, VegetationProduct, build_product,
 };
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Most patch jobs out at once, from the request until the poll takes the result: twice the
@@ -24,10 +25,11 @@ const MAX_IN_FLIGHT: usize = 32;
 /// "Streaming core": 64 MB a layer).
 const CACHE_CAP_BYTES: usize = 64 << 20;
 
-// How often a worker tries the core for a patch's snapshot, and how long it waits between: at
-// most about 2 ms of one background worker, never the main thread.
-const SNAPSHOT_ATTEMPTS: usize = 9;
-const SNAPSHOT_RETRY: std::time::Duration = std::time::Duration::from_micros(250);
+/// Vegetation jobs running at once on the background pool. Each runs its queries sequentially,
+/// so this many of the pool's threads at most work for the vegetation while the frame runs beside
+/// them on the same cores; the rest wait in order of request. Measured in `RENDER-32-D`: at
+/// eight (every thread, each job fanning out) the 30k turns' worst frames rose 4-13 ms.
+const MAX_RUNNING: usize = 4;
 
 /// Calls of the synchronous vegetation queries (`get_decorative_tree_patch`,
 /// `get_vegetation_stand_cover`, `get_vegetation_hedge_runs`) since the extension loaded: the
@@ -62,6 +64,17 @@ pub(crate) struct VegetationJobs {
     queue: PrepareQueue<PatchKey>,
     cache: ProductCache<PatchKey, VegetationProduct>,
     catalogue: Option<Arc<ProductCatalogue>>,
+    // Started requests not yet running, oldest first, and the jobs running.
+    waiting: VecDeque<Waiting>,
+    running: usize,
+}
+
+// A started request waiting for a running place: what its job needs.
+struct Waiting {
+    request: PatchRequest,
+    serial: u64,
+    product: VegetationProduct,
+    catalogue: Arc<ProductCatalogue>,
 }
 
 impl Default for VegetationJobs {
@@ -70,6 +83,8 @@ impl Default for VegetationJobs {
             queue: PrepareQueue::new(MAX_IN_FLIGHT),
             cache: ProductCache::new(CACHE_CAP_BYTES),
             catalogue: None,
+            waiting: VecDeque::new(),
+            running: 0,
         }
     }
 }
@@ -139,7 +154,8 @@ impl VegetationJobs {
         self.queue.cancel(key);
     }
 
-    /// Drops every live request (the renderer's reset).
+    /// Drops every live request (the renderer's reset). Waiting jobs land unbuilt when their
+    /// turn comes.
     pub(crate) fn clear(&mut self) {
         self.queue.clear();
     }
@@ -150,38 +166,80 @@ impl VegetationJobs {
     }
 }
 
-/// Starts `request` on the background pool, or returns `None` when the jobs refuse it for now.
-/// The worker takes the snapshot under `try_lock`: a busy core lands a `None` product.
-pub(crate) fn spawn_request(
-    core: &Arc<Mutex<SimCore>>,
-    jobs: &Arc<Mutex<VegetationJobs>>,
-    async_jobs: &Arc<super::super::async_jobs::AsyncJobs>,
-    request: PatchRequest,
-) -> Option<u64> {
-    let (serial, mut product, catalogue) = jobs.lock().unwrap().start(request.key)?;
-    let (core, jobs) = (Arc::clone(core), Arc::clone(jobs));
-    async_jobs.spawn(move || {
-        // A busy core is asked again a few times before the patch goes back to the renderer:
-        // the main thread's own short core reads would otherwise cost the patch a frame each.
-        let mut inputs = None;
-        for attempt in 0..SNAPSHOT_ATTEMPTS {
-            if attempt > 0 {
-                std::thread::sleep(SNAPSHOT_RETRY);
-            }
-            if let Some(mut core) = SimulationNode::try_lock_shared_core(&core) {
-                inputs = VegetationPatchInputs::take(&mut core, request.origin, request.span);
-                break;
-            }
-        }
-        let built = inputs.map(|inputs| {
-            prepare_patch(&inputs, &request, &catalogue, &mut product);
-            product
+/// What a job needs to start the next waiting one: the core, the jobs and the pool's tracker.
+#[derive(Clone)]
+pub(crate) struct Spawner {
+    /// The simulation core the snapshots are taken from.
+    pub(crate) core: Arc<Mutex<SimCore>>,
+    /// The vegetation jobs.
+    pub(crate) jobs: Arc<Mutex<VegetationJobs>>,
+    /// The background pool's job tracker.
+    pub(crate) async_jobs: Arc<super::super::async_jobs::AsyncJobs>,
+}
+
+/// Starts `request`, or returns `None` when the jobs refuse it for now. It runs on the
+/// background pool once fewer than [`MAX_RUNNING`] jobs run. The worker takes the snapshot under
+/// `try_lock` once and never waits: a busy core lands a `None` product at once, and the renderer
+/// asks again on a later frame. `O(1)` on the calling thread.
+pub(crate) fn spawn_request(spawner: &Spawner, request: PatchRequest) -> Option<u64> {
+    let serial = {
+        let mut jobs = spawner.jobs.lock().unwrap();
+        let (serial, product, catalogue) = jobs.start(request.key)?;
+        jobs.waiting.push_back(Waiting {
+            request,
+            serial,
+            product,
+            catalogue,
         });
-        jobs.lock().unwrap().land(request.key, serial, built);
-    });
+        serial
+    };
+    pump(spawner);
     Some(serial)
 }
 
+// Starts waiting jobs while fewer than `MAX_RUNNING` run. A waiting request that went stale
+// lands unbuilt (the poll drops it and keeps its storage). `O(1)` per job started.
+fn pump(spawner: &Spawner) {
+    loop {
+        let waiting = {
+            let mut jobs = spawner.jobs.lock().unwrap();
+            if jobs.running >= MAX_RUNNING {
+                return;
+            }
+            let Some(waiting) = jobs.waiting.pop_front() else {
+                return;
+            };
+            if !jobs.queue.is_live(waiting.request.key, waiting.serial) {
+                jobs.land(waiting.request.key, waiting.serial, Some(waiting.product));
+                continue;
+            }
+            jobs.running += 1;
+            waiting
+        };
+        let next = spawner.clone();
+        spawner.async_jobs.spawn(move || {
+            let Waiting {
+                request,
+                serial,
+                mut product,
+                catalogue,
+            } = waiting;
+            let inputs = SimulationNode::try_lock_shared_core(&next.core).and_then(|mut core| {
+                VegetationPatchInputs::take(&mut core, request.origin, request.span)
+            });
+            let built = inputs.map(|inputs| {
+                prepare_patch(&inputs, &request, &catalogue, &mut product);
+                product
+            });
+            {
+                let mut jobs = next.jobs.lock().unwrap();
+                jobs.land(request.key, serial, built);
+                jobs.running -= 1;
+            }
+            pump(&next);
+        });
+    }
+}
 /// Builds `request`'s product from `world` into `product`: the three queries the renderer
 /// asked of the core one by one before (`RENDER-32-C`'s inputs), then the product. Equal to the
 /// product of the synchronous queries on the same world, bitwise.

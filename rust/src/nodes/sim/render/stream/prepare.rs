@@ -60,6 +60,11 @@ impl<K: Copy + Eq + Hash> PrepareQueue<K> {
         }
     }
 
+    /// Whether `serial` is `key`'s live request (a job not yet started can be skipped when not).
+    pub(crate) fn is_live(&self, key: K, serial: u64) -> bool {
+        self.live.get(&key) == Some(&serial)
+    }
+
     /// Makes `key`'s live request stale.
     pub(crate) fn cancel(&mut self, key: K) {
         self.live.remove(&key);
@@ -92,6 +97,7 @@ mod tests {
         let mut queue = PrepareQueue::new(2);
         let a = queue.start(1).unwrap();
         let b = queue.start(1).unwrap();
+        assert!(!queue.is_live(1, a) && queue.is_live(1, b));
         assert_eq!(queue.start(2), None, "the bound refuses a third job");
         assert!(!queue.finish(1, a), "a superseded request is stale");
         assert!(queue.finish(1, b), "the newest request is live");

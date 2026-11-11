@@ -57,32 +57,36 @@ impl Coverage {
             (low.z, high.z),
         );
         if edited || core.generator().config.enabled {
-            // Godot's main thread builds land cover: shared pool (CODE-17).
-            crate::thread_pools::install(|| {
-                (0..nx * nz).into_par_iter().for_each(|i| {
-                    let cell = VegetationCell {
-                        layer: VegetationLayer::Canopy,
-                        x: low.x + i % nx,
-                        z: low.z + i / nx,
-                    };
-                    let (removed, added): (bool, &[Plant]) = if edited {
-                        core.edits().cell(cell)
-                    } else {
-                        (false, &[])
-                    };
-                    if !removed && let Some(plant) = evaluate_cell(core, cell, cell_m, salt) {
-                        coverage.splat(&plant);
+            let cover = |i: i32| {
+                let cell = VegetationCell {
+                    layer: VegetationLayer::Canopy,
+                    x: low.x + i % nx,
+                    z: low.z + i / nx,
+                };
+                let (removed, added): (bool, &[Plant]) = if edited {
+                    core.edits().cell(cell)
+                } else {
+                    (false, &[])
+                };
+                if !removed && let Some(plant) = evaluate_cell(core, cell, cell_m, salt) {
+                    coverage.splat(&plant);
+                }
+                for plant in added {
+                    // Authored bushes/rocks occupy the canopy grid but do not make
+                    // forest floor.
+                    if plant.species < 2 && placement_clear(core, plant.x, plant.z, cell.layer) {
+                        coverage.splat(plant);
                     }
-                    for plant in added {
-                        // Authored bushes/rocks occupy the canopy grid but do not make
-                        // forest floor.
-                        if plant.species < 2 && placement_clear(core, plant.x, plant.z, cell.layer)
-                        {
-                            coverage.splat(plant);
-                        }
-                    }
-                });
-            });
+                }
+            };
+            // Godot's main thread builds land cover: shared pool (CODE-17). A background
+            // worker's snapshot query runs sequentially (`RENDER-32-D`). OR-ing the samples makes
+            // the order irrelevant.
+            if core.parallel() {
+                crate::thread_pools::install(|| (0..nx * nz).into_par_iter().for_each(cover));
+            } else {
+                (0..nx * nz).for_each(cover);
+            }
         }
         coverage
     }

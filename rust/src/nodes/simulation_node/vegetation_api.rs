@@ -377,8 +377,12 @@ impl SimulationNode {
             caster,
             settings,
         };
-        jobs::spawn_request(&self.core, &self.vegetation_jobs, &self.async_jobs, request)
-            .map_or(-1, |serial| serial as i64)
+        let spawner = jobs::Spawner {
+            core: Arc::clone(&self.core),
+            jobs: Arc::clone(&self.vegetation_jobs),
+            async_jobs: Arc::clone(&self.async_jobs),
+        };
+        jobs::spawn_request(&spawner, request).map_or(-1, |serial| serial as i64)
     }
 
     /// The oldest finished vegetation patch of a live request, or an empty dictionary: `key`,
@@ -828,31 +832,31 @@ pub(crate) fn scatter_layer(
     }
     // Indexed collect preserves generator order regardless of Rayon scheduling. Edited patches
     // add one lookup per cell; neither branch allocates in the parallel per-cell body.
-    // Godot's main thread asks for patches: shared pool (CODE-17); a background worker's
-    // snapshot query stays on the background pool (`RENDER-32-D`).
-    let records: Vec<_> = crate::thread_pools::install(|| {
-        (0..nx * nz)
-            .into_par_iter()
-            .map(|i| {
-                let cell = VegetationCell {
-                    layer,
-                    x: x0 + i % nx,
-                    z: z0 + i / nx,
-                };
-                let (removed, added): (bool, &[Plant]) = if edited {
-                    core.edits().cell(cell)
-                } else {
-                    (false, &[])
-                };
-                let generated = if removed {
-                    None
-                } else {
-                    evaluate_cell(core, cell, cell_m, salt)
-                };
-                (generated, added)
-            })
-            .collect()
-    });
+    let record = |i: i32| {
+        let cell = VegetationCell {
+            layer,
+            x: x0 + i % nx,
+            z: z0 + i / nx,
+        };
+        let (removed, added): (bool, &[Plant]) = if edited {
+            core.edits().cell(cell)
+        } else {
+            (false, &[])
+        };
+        let generated = if removed {
+            None
+        } else {
+            evaluate_cell(core, cell, cell_m, salt)
+        };
+        (generated, added)
+    };
+    // Godot's main thread asks for patches: shared pool (CODE-17). A background worker's
+    // snapshot query runs sequentially (`VegetationWorld::parallel`, `RENDER-32-D`).
+    let records: Vec<_> = if core.parallel() {
+        crate::thread_pools::install(|| (0..nx * nz).into_par_iter().map(record).collect())
+    } else {
+        (0..nx * nz).map(record).collect()
+    };
     let capacity = records
         .iter()
         .map(|(generated, added)| usize::from(generated.is_some()) + added.len())
@@ -864,7 +868,9 @@ pub(crate) fn scatter_layer(
     // removed, which is already how a generated candidate behaves. Generated candidates were
     // cleared inside evaluate_cell, so only the authored ones are tested here: one parallel pass
     // and one allocation for the whole patch, and neither for a patch with no authored plant.
-    let clearances: Vec<bool> = if records.iter().any(|(_, added)| !added.is_empty()) {
+    let clearances: Vec<bool> = if !records.iter().any(|(_, added)| !added.is_empty()) {
+        Vec::new()
+    } else if core.parallel() {
         crate::thread_pools::install(|| {
             records
                 .par_iter()
@@ -873,7 +879,11 @@ pub(crate) fn scatter_layer(
                 .collect()
         })
     } else {
-        Vec::new()
+        records
+            .iter()
+            .flat_map(|(_, added)| added.iter())
+            .map(|plant| placement::authored_clear(core, plant))
+            .collect()
     };
     let mut remaining = clearances.as_slice();
     let mut packed = Vec::with_capacity(capacity);
