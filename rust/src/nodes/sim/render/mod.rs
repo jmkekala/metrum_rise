@@ -24,6 +24,8 @@ pub mod resources;
 pub(crate) mod vehicle_ground;
 /// The streaming core: render-consumer state chosen from the view (`RENDER-32`).
 pub(crate) mod stream;
+/// A vegetation patch's instance buffers, bounds and ranges (`RENDER-32-C`).
+pub(crate) mod vegetation_product;
 /// Water patch mesh generation and cache helpers.
 pub mod water;
 /// The water a view ray first comes down onto, for the planar reflection's mirror planes.

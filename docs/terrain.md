@@ -371,7 +371,8 @@ rather than appending to a local typed one cost `3.8 ms` per patch. And a GDScri
 that path costs more than what it usually wraps -- writing the four `_jitter` calls out
 inline saved `2.6 ms` per patch, where replacing the four `hash()` calls inside them with
 bit extraction saved only `0.8 ms` more. That is why the variant index and the tint read
-bits of the existing seed, and why the jitters sit inline in `_instance_transform`.
+bits of the existing seed, and why the jitters sat inline in `_instance_transform`. (Since
+`RENDER-32-C` all of this is Rust: `vegetation_product.rs` builds the same buffers bit for bit.)
 
 The remaining near-patch cost is the placement loop. Every species rescans the whole payload
 to filter by species, so a four-species patch walks its placements four times, and
@@ -1756,8 +1757,9 @@ Three details in the mips decide how the impostor looks at distance:
 **The runtime.** `vegetation_impostor.gdshader` blends the three nearest views by their
 barycentric weights and reprojects the quad onto each view, so a tree does not jump as the
 camera turns. Each species has one `Texture2DArray` per channel, and the form is a per-instance
-layer in MultiMesh custom data. The distant placement loop computes the variant with
-`_variant_index`, so a brush pin keeps its species at every distance. The distant buffer is
+layer in MultiMesh custom data. The distant placement loop computes the variant as the near
+one does (`_variant_index`, in Rust's `vegetation_product.rs` since `RENDER-32-C`), so a brush
+pin keeps its species at every distance. The distant buffer is
 built as one packed array. The shadow proxy uses the same array as its own MultiMesh, with no
 copy. Catalogue index 3 and the `TREE_MID_M` swap are removed.
 

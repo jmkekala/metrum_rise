@@ -69,34 +69,28 @@ func _render() -> void:
 	_editor._preview.add_child(_root)
 	if _meshes.is_empty():
 		_meshes = TreeSpecies.build_meshes()
-	# Reuse the game's cosmetic seed, variant, proportions and tint, as well as its meshes.
-	# This helper never enters the tree, so it starts no world streaming or processing.
+	# The game's own near level: Rust builds the seed, variant, proportions and tint of every
+	# plant exactly as a vegetation patch does, here at the lot's origin with open stands. The
+	# helper renderer never enters the tree, so it starts no world streaming or processing.
 	var appearance := Vegetation.new()
-	var buckets := {}
-	for i in range(0, placements.size(), 6):
-		var packed := int(placements[i + 5])
-		var species := packed & 3
-		var seed: int = appearance._appearance_seed(placements, i)
-		var variant: int = appearance._variant_index(species, seed, packed >> 2)
-		var key := Vector2i(species, variant)
-		if not buckets.has(key):
-			buckets[key] = []
-		var hedge := TreeSpecies.is_hedge(species, variant)
-		var placed: Transform3D = (Transform3D(Basis(Vector3.UP, placements[i + 3]),
-			Vector3(placements[i], placements[i + 1], placements[i + 2])) if hedge
-			else appearance._instance_transform(placements, i, seed, Vector2.ZERO))
-		buckets[key].append([placed, Color.WHITE if hedge else appearance._instance_tint(seed)])
-	for key: Vector2i in buckets:
-		var entries: Array = buckets[key]
+	appearance.meshes = _meshes
+	var product: Dictionary = SimulationNode.build_vegetation_product(placements, {},
+		PackedFloat32Array(), Vector2.ZERO, true, false, appearance._product_settings(),
+		appearance._product_catalogue())
+	appearance.free()
+	var batches: PackedInt32Array = product.get("batches", PackedInt32Array())
+	var buffers: Array = product.get("buffers", [])
+	for at in range(0, batches.size(), 8):
+		# Only the near level; the distant impostors are for a patch seen from afar.
+		if batches[at + 1] != 0:
+			continue
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
 		mm.use_colors = true
-		mm.mesh = _meshes[key.x][key.y][0]
-		mm.instance_count = entries.size()
-		for i in entries.size():
-			mm.set_instance_transform(i, entries[i][0])
-			mm.set_instance_color(i, entries[i][1])
+		mm.use_custom_data = batches[at + 6] == 1
+		mm.mesh = _meshes[batches[at]][batches[at + 2]][0]
+		mm.instance_count = batches[at + 4]
+		mm.buffer = buffers[batches[at + 7]]
 		var instance := MultiMeshInstance3D.new()
 		instance.multimesh = mm
 		_root.add_child(instance)
-	appearance.free()

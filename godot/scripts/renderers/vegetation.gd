@@ -8,9 +8,6 @@
 ## scatter; player placements remain authoritative.
 extends Node3D
 
-# A storm leans an impostor's top downwind by up to 0.8 x WIND_MAX_LEAN_M (1.52 m) in
-# vegetation_wind.gdshaderinc; its bounds take that much more so a leaning crown is not culled.
-const WIND_LEAN_MARGIN_M := 1.6
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 # The shadow caster choice is bounded by the sun's own range; see _shadow_caster_wanted.
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
@@ -65,18 +62,11 @@ const ROCK_RANGE_M := 420.0
 # Half the diagonal of a square patch, per metre of span. A patch is one instance, so every
 # conservative range test measures from the patch centre out to its farthest corner.
 const PATCH_HALF_DIAGONAL := 0.7071067811865476
-# Coverage over 40 m at which a tree's stand is still open, and at which it is closed. The
-# same values as CANOPY_FLOOR_OPEN_COVER and CANOPY_FLOOR_CLOSED_COVER in terrain.gdshader.
-const STAND_OPEN_COVER := 0.35
-const STAND_CLOSED_COVER := 0.7
-
-# How far inside its range one understory variant may stop, as a share of that range. Bush
-# and rock carry a single level, so a variant that stops early drops nothing into a gap: the
-# plant ends and the rest of the patch carries on. Twelve variants then end at twelve
-# distances and the carpet dissolves over the last quarter of its range. Sharing one distance
-# instead ends every plant of one patch on one line, and a camera above the canopy reads
-# that line as a straight edge between forest floor and bare ground.
-const UNDERSTORY_STAGGER_MIN := 0.75
+# Bush and rock carry a single level, so a variant that stops early drops nothing into a gap:
+# the plant ends and the rest of the patch carries on. The product (Rust) staggers the twelve
+# variants' ranges over the last quarter of the band, so the carpet dissolves there instead of
+# ending every plant of one patch on one line, which a camera above the canopy reads as a
+# straight edge between forest floor and bare ground.
 
 # How many vegetation patches one terrain render patch is cut into along each axis. The
 # vegetation grid WAS the terrain grid, and that is what set every distance above: a patch is
@@ -161,6 +151,10 @@ var ready_for_world := false
 # Microseconds this frame's uploads spent in the Rust placement and stand cover fetches, for
 # the perf channel (`RENDER-27`: the larger part of an upload on a city).
 var _fetch_us := 0
+# Microseconds this frame's uploads spent building their products in Rust (`RENDER-32-C`).
+var _product_us := 0
+# The mesh catalogue packed for the product; see _product_catalogue.
+var _catalogue := PackedFloat32Array()
 @onready var terrain = $"../Terrain"
 @onready var simulation = $"../SimulationNode"
 
@@ -173,41 +167,6 @@ func _ready() -> void:
 	TreeSpecies.set_crossfade(canopy_near_m())
 	TreeSpecies.set_detail(near_detail_m())
 	TreeSpecies.set_far(canopy_far_m())
-
-## Draw range for one species level as (begin_m, end_m). `near_band` says whether the patch
-## also carries the near per-variant instances, and `reach_m` is how far a tree of the patch can
-## stand from the centre of its shared bounds, which is where Godot measures a range from.
-## `variant` staggers the understory and is ignored by the canopy.
-##
-## The canopy ranges are outer bounds only. Each tree hands over from its branched level to its
-## impostor by its own distance, in the shaders (see vegetation_wind.gdshaderinc), so a patch
-## draws a level while any of its trees may still show some of it. A patch built far away
-## carries no near band, and then the impostor must begin at zero: it is the only thing in the
-## patch, and the rebuild that adds the near band can lag a fast approach.
-func lod_range(species: int, lod: int, variant: int, near_band: bool, reach_m: float) -> Vector2:
-	if TreeSpecies.is_hedge(species, variant):
-		return Vector2(0.0, canopy_far_m())
-	if species == TreeSpecies.BUSH:
-		return Vector2(0.0, BUSH_RANGE_M * _understory_stagger(variant))
-	if species == TreeSpecies.ROCK:
-		return Vector2(0.0, ROCK_RANGE_M * _understory_stagger(variant))
-	# Both branched levels ride the same instance, which is built as level zero whichever
-	# mesh it holds, so there is no second range here for the reduced one.
-	if lod == 0:
-		return Vector2(0.0, canopy_near_m() + reach_m)
-	# Each tree dissolves by its own distance before canopy_far_m, so the patch reaches past it.
-	return Vector2(maxf(canopy_crossfade_begin_m() - reach_m, 0.0) if near_band else 0.0,
-		canopy_far_m() + reach_m)
-
-## Draw range of a patch's shadow caster: the whole patch life, because every tree casts from it.
-func proxy_range() -> Vector2:
-	return Vector2(0.0, canopy_far_m())
-
-## Share of its range one understory variant keeps. A low-discrepancy sequence rather than a
-## hash: twelve variants then spread evenly across the band, where twelve samples of a hash
-## clump and leave the carpet ending on two or three lines instead of twelve.
-func _understory_stagger(variant: int) -> float:
-	return lerpf(UNDERSTORY_STAGGER_MIN, 1.0, fmod(float(variant) * 0.6180339887498949, 1.0))
 
 ## Canopy far range in effect. One accessor so the draw range and the patch residency test
 ## can never disagree about how far the scatter reaches.
@@ -302,6 +261,7 @@ func _process(_delta: float) -> void:
 	var camera_cell := Vector2i((camera_xz / span).floor())
 	var start_us := Time.get_ticks_usec()
 	_fetch_us = 0
+	_product_us = 0
 	var revision: int = terrain.get_resident_patch_revision()
 	# O(resident patches) only on residency/camera-cell changes, not O(total scatter).
 	var residency_changed := revision != last_revision or camera_cell != last_camera_cell
@@ -450,6 +410,7 @@ func _process(_delta: float) -> void:
 			"residency_ms": ms.call(start_us, residency_us), "bands_ms": ms.call(residency_us, bands_us),
 			"detail_ms": ms.call(bands_us, detail_us), "stale_ms": ms.call(detail_us, upload_start),
 			"uploads_ms": ms.call(upload_start, uploaded_us), "fetch_ms": float(_fetch_us) / 1000.0,
+			"product_ms": float(_product_us) / 1000.0,
 			"upload_max_ms": float(upload_max_us) / 1000.0, "standins_ms": ms.call(uploaded_us, end_us),
 			"uploads": uploads, "residency_changed": 1 if residency_changed else 0,
 			"queue": queue.size(), "patches": patches.size(), "wanted": wanted_keys.size()})
@@ -706,182 +667,55 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	# Crown coverage around the patch, averaged over 40 m, which each canopy tree samples once
 	# for its stand closure.
 	var cover: Dictionary = simulation.get_vegetation_stand_cover(origin, span)
+	# The distant hedge: one box per straight run Rust merged from the modules.
+	var runs: PackedFloat32Array = (PackedFloat32Array() if near_band
+		else simulation.get_vegetation_hedge_runs(origin, span))
 	_fetch_us += Time.get_ticks_usec() - fetch_start
-	var cover_bytes: PackedByteArray = cover.get("bytes", PackedByteArray())
-	var cover_size := Vector2i(int(cover.get("width", 0)), int(cover.get("height", 0)))
-	var cover_bounds: Vector4 = cover.get("world_bounds", Vector4.ZERO)
-	# Texel coordinates of the patch origin, and texels per metre, so a tree's texel is one
-	# multiply-add from its patch-local position.
-	var cover_scale := Vector2(cover_size) / Vector2(maxf(cover_bounds.z, 1.0), maxf(cover_bounds.w, 1.0))
-	var cover_origin := (origin - Vector2(cover_bounds.x, cover_bounds.y)) * cover_scale - Vector2(0.5, 0.5)
+	# Every buffer, bounds and range of the patch, built in Rust (`RENDER-32-C`): the appearance
+	# seed, variant, transform, tint and stand closure of each plant, the impostor rows, the hedge
+	# boxes and the bounds every level of a species shares. One buffer assignment per instance.
+	var product_start := Time.get_ticks_usec()
+	var product: Dictionary = SimulationNode.build_vegetation_product(data, cover, runs, origin,
+		near_band, caster != ShadowCaster.NONE, _product_settings(), _product_catalogue())
+	_product_us += Time.get_ticks_usec() - product_start
 	var patch := Node3D.new()
 	patch.position = Vector3(origin.x, 0.0, origin.y)
 	add_child(patch)
-	# One transform and tint array per variant, rebuilt per species. The near level draws
-	# each array as its own MultiMesh and the distant level walks them in order, so the
-	# placement loop needs no slot bookkeeping, index chains or scratch arrays. Appending
-	# into a local typed array is what keeps this loop cheap: routing each placement through
-	# a nested untyped Array instead cost 3.8 ms per patch on a 4096-placement fixture.
-	# Out of the near band there is one transform bucket, with a variant and tint per tree.
-	# Work and storage remain O(placements) at upload; impostors add no per-frame CPU work.
-	var count := 0
-	# Tree origins of each canopy species, which is what the handover measures distance from.
-	var origins: Dictionary = {}
-	for species in range(TreeSpecies.SPECIES_COUNT):
-		var levels: Array = meshes[species][0]
-		# Bush and rock have only a near level, so out of the near band they draw nothing.
-		if not near_band and levels.size() == 1:
-			continue
-		# Two placement loops rather than one loop with two branches in it. The branches
-		# would run once per placement, and per-placement interpreted work is what this
-		# function is made of: the same reason the variant index reads seed bits instead of
-		# hashing. The distant loop keeps brush pins and the tint, which the impostor draws too.
-		var variant_transforms: Array = []
-		var variant_tints: Array = []
-		var species_count := 0
-		var flat_layers := PackedFloat32Array()
-		var flat_tints: Array[Color] = []
-		if near_band:
-			var variant_count: int = TreeSpecies.VARIANT_COUNTS[species]
-			variant_transforms.resize(variant_count)
-			variant_tints.resize(variant_count)
-			for variant in range(variant_count):
-				var empty_transforms: Array[Transform3D] = []
-				variant_transforms[variant] = empty_transforms
-				var empty_tints: Array[Color] = []
-				variant_tints[variant] = empty_tints
-			for i in range(0, data.size(), 6):
-				var packed := int(data[i + 5])
-				if packed & SPECIES_MASK != species:
-					continue
-				# Stable subset for paired density experiments, independent of residency order.
-				if fmod(absf(data[i] * 0.754877 + data[i + 2] * 0.56984), 1.0) >= density_fraction:
-					continue
-				var seed := _appearance_seed(data, i)
-				var variant := _variant_index(species, seed, packed >> SPECIES_BITS)
-				if TreeSpecies.is_hedge(species, variant):
-					# A hedge row closes only if every module keeps its authored size, stands
-					# upright and shares one colour; any per-module spread shows each metre.
-					# Lane four is the ground's rise along the module, which shears its length
-					# to follow the slope while its sides stay vertical.
-					var yaw := data[i + 3]
-					variant_transforms[variant].append(Transform3D(
-						Basis(Vector3(cos(yaw), data[i + 4], -sin(yaw)), Vector3.UP,
-							Vector3(sin(yaw), 0.0, cos(yaw))),
-						Vector3(data[i] - origin.x, data[i + 1], data[i + 2] - origin.y)))
-					variant_tints[variant].append(Color.WHITE)
-				else:
-					variant_transforms[variant].append(_instance_transform(data, i, seed, origin))
-					variant_tints[variant].append(_instance_tint(seed))
-				species_count += 1
-		else:
-			var flat: Array[Transform3D] = []
-			for i in range(0, data.size(), 6):
-				var packed := int(data[i + 5])
-				if packed & SPECIES_MASK != species:
-					continue
-				if fmod(absf(data[i] * 0.754877 + data[i + 2] * 0.56984), 1.0) >= density_fraction:
-					continue
-				var seed := _appearance_seed(data, i)
-				var variant := _variant_index(species, seed, packed >> SPECIES_BITS)
-				flat.append(_instance_transform(data, i, seed, origin))
-				flat_layers.append(variant)
-				flat_tints.append(_instance_tint(seed))
-			species_count = flat.size()
-			variant_transforms.append(flat)
-		if species_count == 0:
-			continue
-		count += species_count
-		if near_band:
-			for variant in range(variant_transforms.size()):
-				var near_transforms: Array[Transform3D] = variant_transforms[variant]
-				if near_transforms.is_empty():
-					continue
-				var near_tints: Array[Color] = variant_tints[variant]
-				var near_mm := MultiMesh.new()
-				near_mm.transform_format = MultiMesh.TRANSFORM_3D
-				near_mm.use_colors = true
-				# The canopy's level is chosen below, once the patch knows where its trees stand.
-				near_mm.mesh = meshes[species][variant][DETAIL_FULL]
-				var canopy := levels.size() > 1
-				near_mm.use_custom_data = canopy
-				near_mm.instance_count = near_transforms.size()
-				for i in range(near_transforms.size()):
-					near_mm.set_instance_transform(i, near_transforms[i])
-					near_mm.set_instance_color(i, near_tints[i])
-					if canopy:
-						near_mm.set_instance_custom_data(i, Color(
-							_stand_closure(cover_bytes, cover_size,
-							cover_origin + Vector2(near_transforms[i].origin.x, near_transforms[i].origin.z) * cover_scale), 0.0, 0.0, 0.0))
-				_add_instance(patch, near_mm, species, 0, variant, caster)
-		# One buffer assignment per species, with transform rows followed by custom RGBA.
-		# Near buckets already encode the variant; far-only placements supply their own.
-		if levels.size() > 1:
-			var far_mm := MultiMesh.new()
-			far_mm.transform_format = MultiMesh.TRANSFORM_3D
-			far_mm.use_custom_data = true
-			far_mm.mesh = TreeSpecies.impostor_mesh()
-			far_mm.instance_count = species_count
-			var buffer := PackedFloat32Array()
-			buffer.resize(species_count * 16)
-			# The shader moves vertices outside the QuadMesh bounds. Include every baked
-			# form before transforming, independent of the rendering backend.
-			var object_bounds := AABB()
-			var material := TreeSpecies.impostor_material(species)
-			var centres: PackedVector3Array = material.get_shader_parameter("bounds_centre")
-			var sizes: PackedFloat32Array = material.get_shader_parameter("bounds_size")
-			for layer in range(sizes.size()):
-				# A rotated square's corner reaches size / sqrt(2) from its centre.
-				var radius := sizes[layer] * PATCH_HALF_DIAGONAL
-				object_bounds = object_bounds.merge(AABB(centres[layer] - Vector3.ONE * radius,
-					Vector3.ONE * radius * 2.0))
-			# Per tree, only the origin span and the largest axis scale: transforming the box
-			# for every tree was the dearest line of this loop. The box then grows by its
-			# farthest corner at that scale, which contains every tree's box.
-			var reach := 0.0
-			for corner in range(8):
-				reach = maxf(reach, object_bounds.get_endpoint(corner).length())
-			var low := Vector3.INF
-			var high := -Vector3.INF
-			var scale_squared := 0.0
-			var slot := 0
-			for variant in range(variant_transforms.size()):
-				var far_transforms: Array[Transform3D] = variant_transforms[variant]
-				# The near buckets are the variants themselves; out of the band one bucket holds
-				# every tree with its variant and tint alongside.
-				var far_tints: Array[Color] = variant_tints[variant] if near_band else flat_tints
-				for i in range(far_transforms.size()):
-					var placed := far_transforms[i]
-					# The layer lane carries the stand closure below one half; see impostor shaders.
-					_write_impostor(buffer, slot * 16, placed,
-						(float(variant) if near_band else flat_layers[i])
-						+ 0.5 * _stand_closure(cover_bytes, cover_size,
-						cover_origin + Vector2(placed.origin.x, placed.origin.z) * cover_scale), far_tints[i])
-					low = low.min(placed.origin)
-					high = high.max(placed.origin)
-					scale_squared = maxf(scale_squared,
-						maxf(placed.basis.x.length_squared(), placed.basis.y.length_squared()))
-					slot += 1
-			far_mm.buffer = buffer
-			origins[species] = AABB(low, high - low)
-			var bounds := AABB(low, high - low).grow(reach * sqrt(scale_squared) + WIND_LEAN_MARGIN_M)
-			far_mm.custom_aabb = bounds
-			_add_instance(patch, far_mm, species, 2, 0, caster)
-			# The shadow caster: every tree's impostor, faced to the light.
-			if caster != ShadowCaster.NONE:
-				# The same buffer: the caster reads each tree's form from the custom lane.
-				# Packed arrays are copy-on-write, so this shares the data instead of copying it.
-				var proxy := MultiMesh.new()
-				proxy.transform_format = MultiMesh.TRANSFORM_3D
-				proxy.use_custom_data = true
-				proxy.mesh = TreeSpecies.impostor_mesh()
-				proxy.instance_count = species_count
-				proxy.buffer = buffer
-				proxy.custom_aabb = bounds
-				_add_instance(patch, proxy, species, 2, 0, caster, true)
-	if not near_band:
-		count += _add_hedge_runs(patch, origin, span, caster)
-	_share_patch_bounds(patch, near_band, caster, origins)
+	var batches: PackedInt32Array = product.get("batches", PackedInt32Array())
+	var bounds: PackedFloat32Array = product.get("bounds", PackedFloat32Array())
+	var buffers: Array = product.get("buffers", [])
+	# Eight ints and fourteen floats a batch; see SimulationNode.build_vegetation_product.
+	for batch in range(batches.size() / 8):
+		var at := batch * 8
+		var species := batches[at]
+		var lod := batches[at + 1]
+		var variant := batches[at + 2]
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = batches[at + 5] == 1
+		mm.use_custom_data = batches[at + 6] == 1
+		# A canopy variant's level is chosen below, once the patch knows where its trees stand.
+		mm.mesh = (TreeSpecies.impostor_mesh() if lod == 2
+			else TreeSpecies.hedge_run_mesh(variant - TreeSpecies.HEDGE_FIRST_VARIANT) if lod == HEDGE_RUN_LOD
+			else meshes[species][variant][DETAIL_FULL])
+		mm.instance_count = batches[at + 4]
+		# A shadow caster names its impostor's buffer: packed arrays are copy-on-write, so the
+		# two share the data instead of copying it.
+		mm.buffer = buffers[batches[at + 7]]
+		var box := batch * 14
+		if lod == 2:
+			# The shader moves vertices outside the quad's own bounds; Rust bounds every form.
+			mm.custom_aabb = _box(bounds, box)
+		var instance := _add_instance(patch, mm, species, lod, variant, caster, batches[at + 3] == 1)
+		var shared := _box(bounds, box + 6)
+		if shared.size != Vector3.ZERO:
+			instance.custom_aabb = shared
+		# No fade mode. VISIBILITY_RANGE_FADE_SELF alpha-blends the whole instance, which is a
+		# whole patch, and moves it out of the depth pre-pass. The canopy hands over per tree in
+		# its shaders instead, and these ranges only bound the patches that take part.
+		instance.visibility_range_begin = bounds[box + 12]
+		instance.visibility_range_end = bounds[box + 13]
+	var count: int = product.get("tree_count", 0)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", generation)
 	patch.set_meta("vegetation_generation", vegetation_generation)
@@ -889,12 +723,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	patch.set_meta("near_band", near_band)
 	patch.set_meta("shadow_caster", caster)
 	# Every canopy tree origin of the patch in world space, which the detail choice measures.
-	var spreads := origins.values()
-	var canopy_box: AABB = spreads[0] if not spreads.is_empty() else AABB()
-	for spread in spreads:
-		canopy_box = canopy_box.merge(spread)
-	canopy_box.position += patch.position
-	patch.set_meta("canopy_box", canopy_box)
+	patch.set_meta("canopy_box", product.get("canopy_box", AABB()))
 	patch.set_meta("near_detail_lod", DETAIL_FULL)
 	_refresh_near_detail(patch, _camera_position())
 	_refresh_branched_shadow(patch, _camera_position())
@@ -908,130 +737,10 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	generated_patches += 1
 	generation_ms_max = maxf(generation_ms_max, float(Time.get_ticks_usec() - start) / 1000.0)
 
-# Godot's 3D MultiMesh buffer stores three ROWS, each ending with one origin component.
-# Packed arrays are passed by reference; this writes the preallocated buffer without a copy.
-# The custom lane is the texture layer, which is the near variant, then the near tint.
-## Share of a closed stand around a tree at texel coordinate `at`, from the crown coverage
-## averaged over 40 m. Bilinear, and gated as the forest floor is: a lone crown or a small clump
-## stays open, the inside of a stand reaches one. O(1).
-func _stand_closure(bytes: PackedByteArray, size: Vector2i, at: Vector2) -> float:
-	if bytes.is_empty():
-		return 0.0
-	var x0 := clampi(floori(at.x), 0, size.x - 1)
-	var z0 := clampi(floori(at.y), 0, size.y - 1)
-	var x1 := mini(x0 + 1, size.x - 1)
-	var z1 := mini(z0 + 1, size.y - 1)
-	var fx := clampf(at.x - floorf(at.x), 0.0, 1.0)
-	var fz := clampf(at.y - floorf(at.y), 0.0, 1.0)
-	var c := lerpf(lerpf(bytes[z0 * size.x + x0], bytes[z0 * size.x + x1], fx),
-		lerpf(bytes[z1 * size.x + x0], bytes[z1 * size.x + x1], fx), fz) / 255.0
-	return c * smoothstep(STAND_OPEN_COVER, STAND_CLOSED_COVER, c)
-
-func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3D, layer: float,
-	tint: Color) -> void:
-	buffer[offset] = placed.basis.x.x
-	buffer[offset + 1] = placed.basis.y.x
-	buffer[offset + 2] = placed.basis.z.x
-	buffer[offset + 3] = placed.origin.x
-	buffer[offset + 4] = placed.basis.x.y
-	buffer[offset + 5] = placed.basis.y.y
-	buffer[offset + 6] = placed.basis.z.y
-	buffer[offset + 7] = placed.origin.y
-	buffer[offset + 8] = placed.basis.x.z
-	buffer[offset + 9] = placed.basis.y.z
-	buffer[offset + 10] = placed.basis.z.z
-	buffer[offset + 11] = placed.origin.z
-	buffer[offset + 12] = layer
-	buffer[offset + 13] = tint.r
-	buffer[offset + 14] = tint.g
-	buffer[offset + 15] = tint.b
-
-## Gives every level in a patch one set of bounds, so they all change level on one distance.
-## Godot measures a visibility range from the instance bounds, not from the node origin: a
-## probe put two MultiMeshInstance3D at the camera's own position and culled the one whose
-## single instance sat past the range. Each near level holds one variant and the distant level
-## holds the whole species, so their bounds centres stand about 12 m apart on a random scatter
-## and up to 67 m apart. The two ranges are complementary by construction and were not
-## complementary in practice: over the metres between the two centres the distant level had
-## already stopped and the near level had not yet started, and the trees of that variant were
-## drawn by neither. Roughly half the variants sit on the losing side of that, which is why the
-## canopy thins as the camera closes on the switch and fills back in a moment later.
-##
-## The pair is one species' near levels and that species' own distant level, so the merge is
-## per species. A bush must not pull a 25 m canopy box into the box its own 420 m range is
-## measured from, and a species with one level has no partner to fall between: it keeps its
-## own bounds, which is also what leaves the understory stagger in `lod_range` an effect.
-##
-## One pass over the patch's own children, at upload, and nothing per frame. The dummy renderer
-## reports empty automatic bounds; explicit impostor bounds also work headlessly.
-func _share_patch_bounds(patch: Node3D, near_band: bool, caster: int, origins: Dictionary) -> void:
-	var bounds: Dictionary = {}
-	var levels: Dictionary = {}
-	for instance in patch.get_children():
-		var species: int = instance.get_meta("species")
-		var box: AABB = instance.multimesh.custom_aabb
-		if box.size == Vector3.ZERO:
-			box = instance.get_aabb()
-		bounds[species] = box if not bounds.has(species) else (bounds[species] as AABB).merge(box)
-		var seen: Dictionary = levels.get(species, {})
-		seen[int(instance.get_meta("lod"))] = true
-		levels[species] = seen
-	for instance in patch.get_children():
-		var species: int = instance.get_meta("species")
-		var box: AABB = bounds[species]
-		if box.size != Vector3.ZERO and ((levels[species] as Dictionary).size() > 1
-			or instance.multimesh.use_custom_data):
-			instance.custom_aabb = box
-		# How far a tree origin stands from the box centre the range is measured from: its
-		# farthest corner. The box is padded for crowns and quads, which the handover ignores.
-		var reach := 0.0
-		if origins.has(species):
-			var spread: AABB = origins[species]
-			for corner in range(8):
-				reach = maxf(reach, spread.get_endpoint(corner).distance_to(box.get_center()))
-		var range_m: Vector2 = (proxy_range() if instance.get_meta("shadow_proxy")
-			else lod_range(species, int(instance.get_meta("lod")), int(instance.get_meta("variant")),
-				near_band, reach))
-		# No fade mode. VISIBILITY_RANGE_FADE_SELF alpha-blends the whole instance, which is a
-		# whole patch, and moves it out of the depth pre-pass. The canopy hands over per tree in
-		# its shaders instead, and these ranges only bound the patches that take part.
-		instance.visibility_range_begin = range_m.x
-		instance.visibility_range_end = range_m.y
-
-## Draws the patch's hedges as straight boxes, one per run Rust merged from the modules, so a
-## yard keeps its hedge out to the trees' far range for a dozen triangles a run. Returns the
-## number of runs. O(runs) here; the merge is Rust's.
-func _add_hedge_runs(patch: Node3D, origin: Vector2, span: float, caster: int) -> int:
-	var runs: PackedFloat32Array = simulation.get_vegetation_hedge_runs(origin, span)
-	var per_hedge: Array = [[], [], []]
-	for i in range(0, runs.size(), 7):
-		var yaw := runs[i + 3]
-		var length := runs[i + 4]
-		var size: Vector2 = TreeSpecies.HEDGE_RUN_SIZES[int(runs[i + 6])]
-		# Stretched along the run, sheared up its slope with the sides kept vertical, and sunk
-		# into the lawn like a module.
-		(per_hedge[int(runs[i + 6])] as Array).append(Transform3D(
-			Basis(Vector3(cos(yaw) * length, runs[i + 5], -sin(yaw) * length), Vector3.UP,
-				Vector3(sin(yaw), 0.0, cos(yaw))),
-			Vector3(runs[i] - origin.x, runs[i + 1] - 0.05 + size.x * 0.5, runs[i + 2] - origin.y)))
-	for hedge in per_hedge.size():
-		var placed: Array = per_hedge[hedge]
-		if placed.is_empty():
-			continue
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = TreeSpecies.hedge_run_mesh(hedge)
-		mm.instance_count = placed.size()
-		for i in placed.size():
-			mm.set_instance_transform(i, placed[i])
-		_add_instance(patch, mm, TreeSpecies.BUSH, HEDGE_RUN_LOD,
-			TreeSpecies.HEDGE_FIRST_VARIANT + hedge, caster)
-	return runs.size() / 7
-
 func _add_instance(
 	patch: Node3D, mm: MultiMesh, species: int, lod: int, variant: int,
 	caster: int, is_proxy: bool = false
-) -> void:
+) -> MultiMeshInstance3D:
 	var instance := MultiMeshInstance3D.new()
 	instance.multimesh = mm
 	if lod == 2:
@@ -1049,57 +758,38 @@ func _add_instance(
 	if lod == 0 and species < TreeSpecies.BUSH:
 		instance.set_instance_shader_parameter("hands_over", 1.0)
 	patch.add_child(instance)
+	return instance
 
-## Near mesh choice. A brush that plants one named tree passes a `pin` biased by one and that
-## mesh is used; zero falls back to the seed's own bits, so the choice stays independent of
-## proportions and lean. Bit extraction rather than another hash: the seed is already mixed,
-## and one more hash call in the per-placement path is worth about a millisecond per patch on
-## its own.
-func _variant_index(species: int, appearance_seed: int, pin: int) -> int:
-	if pin > 0:
-		return pin - 1
-	return ((appearance_seed >> 11) & 0xFFFF) % int(TreeSpecies.SEED_VARIANT_COUNTS[species])
+## Bounds packed as position then size from `at` in a product's bounds lanes.
+func _box(lanes: PackedFloat32Array, at: int) -> AABB:
+	return AABB(Vector3(lanes[at], lanes[at + 1], lanes[at + 2]),
+		Vector3(lanes[at + 3], lanes[at + 4], lanes[at + 5]))
 
-## A small value spread and opposing red/blue shifts keep the foliage on its green axis.
-## StandardMaterial3D multiplies instance and vertex colours, preserving per-face shade.
-## Disjoint bit ranges of the already-mixed seed, for the reason given on _variant_index:
-## the two hash calls this replaces cost 1.2 ms per patch on a 4096-placement fixture.
-func _instance_tint(appearance_seed: int) -> Color:
-	var value := lerpf(0.82, 1.18, float((appearance_seed >> 3) & 0xFFF) / 4096.0)
-	var warmth := lerpf(-0.10, 0.10, float((appearance_seed >> 27) & 0xFFF) / 4096.0)
-	return Color(value * (1.0 + warmth), value, value * (1.0 - warmth), 1.0)
+## The draw distances a product's ranges are measured with, overrides included.
+func _product_settings() -> PackedFloat64Array:
+	return PackedFloat64Array([density_fraction, canopy_near_m(), canopy_crossfade_begin_m(),
+		canopy_far_m(), BUSH_RANGE_M, ROCK_RANGE_M])
 
-## Default cosmetic seed from packed placement; never feeds simulation state. Keyed on the world
-## position Rust packs, not on one relative to the patch: one plant is drawn by a fine patch near
-## the camera and by a coarse one farther out, and a patch-relative key gave it a different form,
-## size and tint in each, so a whole terrain patch of trees changed as it crossed the fine radius.
-func _appearance_seed(data: PackedFloat32Array, i: int) -> int:
-	return hash(Vector2(data[i], data[i + 2]))
-
-## Per-instance appearance. Yaw alone is nearly invisible on a near-symmetric lathe, so the
-## variation that reads is the height/width ratio and a small lean off vertical.
-## A caller can reroll those proportions with a different seed at the same placement.
-## `origin` is the patch origin the transform is made relative to.
-func _instance_transform(
-	data: PackedFloat32Array, i: int, appearance_seed: int, origin: Vector2
-) -> Transform3D:
-	var x := data[i] - origin.x
-	var z := data[i + 2] - origin.y
-	var scale := data[i + 4]
-	# The four jitters below are the old _jitter() helper written out. Each of them ran once
-	# per placement, and the call alone cost 2.6 ms per patch on a 4096-placement fixture --
-	# more than the hashing it wrapped. The values are unchanged.
-	var height := scale * (0.82 + float(hash(appearance_seed ^ 17) & 0xFFFFFF) / 16777216.0 * 0.42)
-	var width := scale * (0.80 + float(hash(appearance_seed ^ 53) & 0xFFFFFF) / 16777216.0 * 0.48)
-	# A boulder's lean is its tilt in the ground, so rocks take it as well as plants.
-	var lean := 0.02 + float(hash(appearance_seed ^ 91) & 0xFFFFFF) / 16777216.0 * 0.07
-	var lean_direction := float(hash(appearance_seed ^ 137) & 0xFFFFFF) / 16777216.0 * TAU
-	var basis := (
-		Basis(Vector3.UP, data[i + 3])
-		* Basis(Vector3(cos(lean_direction), 0.0, sin(lean_direction)), lean)
-		* Basis.from_scale(Vector3(width, height, width))
-	)
-	return Transform3D(basis, Vector3(x, data[i + 1], z))
+## The mesh catalogue as the product reads it, packed once: per canopy species the impostor
+## material's baked form centres and sizes (its shader moves vertices outside the quad's own
+## bounds), then the bounds of each near variant's full mesh, which the engine transforms by
+## every instance to bound a near batch. See SimulationNode.build_vegetation_product.
+func _product_catalogue() -> PackedFloat32Array:
+	if not _catalogue.is_empty():
+		return _catalogue
+	for species in [TreeSpecies.CONIFER, TreeSpecies.BROADLEAF]:
+		var material := TreeSpecies.impostor_material(species)
+		var centres: PackedVector3Array = material.get_shader_parameter("bounds_centre")
+		var sizes: PackedFloat32Array = material.get_shader_parameter("bounds_size")
+		_catalogue.append(sizes.size())
+		for centre in centres:
+			_catalogue.append_array(PackedFloat32Array([centre.x, centre.y, centre.z]))
+		_catalogue.append_array(sizes)
+		for variant in range(TreeSpecies.VARIANT_COUNTS[species]):
+			var box: AABB = meshes[species][variant][DETAIL_FULL].get_aabb()
+			_catalogue.append_array(PackedFloat32Array([box.position.x, box.position.y,
+				box.position.z, box.size.x, box.size.y, box.size.z]))
+	return _catalogue
 
 ## What one instance does in the shadow pass, from the patch's caster choice and whether this
 ## instance is the caster. The branched canopy level starts out silent; _refresh_branched_shadow

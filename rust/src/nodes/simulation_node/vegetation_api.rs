@@ -24,6 +24,8 @@ mod yard_planting;
 pub(crate) mod yard_preview;
 #[cfg(test)]
 pub(crate) use hedge_runs::hedge_runs;
+#[cfg(test)]
+mod product_parity;
 pub(crate) use placement::publish_yards;
 use placement::{add_at, hedge_end_at, line_at, paint_at, stamp_limit};
 
@@ -175,28 +177,9 @@ impl SimulationNode {
         }
         let mut core = self.lock_core();
         core.prepare_site_queries();
-        let core = &*core;
-        let generator = core.vegetation;
-        let mut packed: Vec<f32> = Vec::new();
-        packed.extend(scatter_layer(
-            core,
-            origin,
-            span,
-            generator.canopy_cell_m,
-            CANOPY_SALT,
-            true,
-        ));
-        if include_understory {
-            packed.extend(scatter_layer(
-                core,
-                origin,
-                span,
-                generator.understory_cell_m,
-                UNDERSTORY_SALT,
-                false,
-            ));
-        }
-        PackedFloat32Array::from(packed.as_slice())
+        PackedFloat32Array::from(
+            decorative_tree_patch(&core, origin, span, include_understory).as_slice(),
+        )
     }
     /// Removes generated and authored plants in a bounded disc, returning the actual count.
     /// Visits O((radius / cell_m + 1)^2) cells per layer, plus their authored edits.
@@ -273,6 +256,71 @@ impl SimulationNode {
         hedge_end_at(&self.lock_core(), pos)
     }
 
+    /// Builds a vegetation patch's instance buffers from what the three queries above return
+    /// for it (`RENDER-32-C`; [`crate::nodes::sim::render::vegetation_product`]): `placements`
+    /// from `get_decorative_tree_patch`, `stand_cover` from `get_vegetation_stand_cover` and
+    /// `hedge_runs` from `get_vegetation_hedge_runs` (drawn only outside the near band), for the
+    /// patch whose minimum corner is `origin`. `settings` is (density, canopy near, canopy
+    /// crossfade begin, canopy far, bush range, rock range); `catalogue` is the renderer's packed
+    /// mesh catalogue, see `ProductCatalogue::from_lanes`. Static and pure: it takes no lock.
+    ///
+    /// Returns `batches` (eight ints a batch: species, level, variant, shadow caster, instance
+    /// count, colour lane, custom lane, buffer index), `bounds` (fourteen floats a batch: the
+    /// `MultiMesh` bounds, the shared instance bounds, each as position and size, then the
+    /// visibility range begin and end), `buffers` (one `PackedFloat32Array` each, a caster sharing
+    /// its impostor's), `tree_count` and `canopy_box`. Empty when `settings` or `catalogue` is
+    /// malformed. O(P + R + B) for P placements, R runs and B batches.
+    #[func]
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_vegetation_product(
+        placements: PackedFloat32Array,
+        stand_cover: VarDictionary,
+        hedge_runs: PackedFloat32Array,
+        origin: Vector2,
+        near_band: bool,
+        caster: bool,
+        settings: PackedFloat64Array,
+        catalogue: PackedFloat32Array,
+    ) -> VarDictionary {
+        use crate::nodes::sim::render::vegetation_product as product;
+        let (Some(settings), Some(catalogue)) = (
+            product::ProductSettings::from_lanes(settings.as_slice()),
+            product::ProductCatalogue::from_lanes(catalogue.as_slice()),
+        ) else {
+            godot_error!("build_vegetation_product: malformed settings or catalogue");
+            return VarDictionary::new();
+        };
+        let cover_bytes = stand_cover
+            .get("bytes")
+            .and_then(|bytes| bytes.try_to::<PackedByteArray>().ok())
+            .unwrap_or_default();
+        let lane = |key: &str| {
+            stand_cover
+                .get(key)
+                .and_then(|value| value.try_to::<i64>().ok())
+                .unwrap_or(0)
+        };
+        let bounds = stand_cover
+            .get("world_bounds")
+            .and_then(|value| value.try_to::<Vector4>().ok())
+            .unwrap_or(Vector4::ZERO);
+        let inputs = product::ProductInputs {
+            placements: placements.as_slice(),
+            cover: (!cover_bytes.is_empty()).then(|| product::StandCover {
+                bytes: cover_bytes.as_slice(),
+                width: lane("width"),
+                height: lane("height"),
+                bounds: [bounds.x, bounds.y, bounds.z, bounds.w],
+            }),
+            runs: hedge_runs.as_slice(),
+            origin: [origin.x, origin.y],
+            near_band,
+            caster,
+            settings,
+        };
+        product::with_product(&inputs, &catalogue, product_dictionary)
+    }
+
     /// Returns a vegetation-only patch revision; terrain payload generations are unaffected.
     #[func]
     pub fn get_vegetation_patch_generation(&self, key: Vector2i) -> i64 {
@@ -280,6 +328,76 @@ impl SimulationNode {
             .vegetation_edits
             .patch_generation(pack_patch_key(key.x, key.y)) as i64
     }
+}
+
+// `get_decorative_tree_patch` once the site queries are prepared.
+fn decorative_tree_patch(
+    core: &SimCore,
+    origin: Vector2,
+    span: f32,
+    include_understory: bool,
+) -> Vec<f32> {
+    let generator = core.vegetation;
+    let mut packed = scatter_layer(
+        core,
+        origin,
+        span,
+        generator.canopy_cell_m,
+        CANOPY_SALT,
+        true,
+    );
+    if include_understory {
+        packed.extend(scatter_layer(
+            core,
+            origin,
+            span,
+            generator.understory_cell_m,
+            UNDERSTORY_SALT,
+            false,
+        ));
+    }
+    packed
+}
+
+// The bridge form of a vegetation product; see `build_vegetation_product`.
+fn product_dictionary(
+    product: &crate::nodes::sim::render::vegetation_product::VegetationProduct,
+) -> VarDictionary {
+    let mut batches = Vec::with_capacity(product.batches.len() * 8);
+    let mut bounds = Vec::with_capacity(product.batches.len() * 14);
+    for batch in &product.batches {
+        batches.extend_from_slice(&[
+            i32::from(batch.species),
+            i32::from(batch.lod),
+            i32::from(batch.variant),
+            i32::from(batch.proxy),
+            batch.count as i32,
+            i32::from(batch.colors),
+            i32::from(batch.custom),
+            batch.buffer as i32,
+        ]);
+        bounds.extend_from_slice(&batch.mesh_bounds.lanes());
+        bounds.extend_from_slice(&batch.shared_bounds.lanes());
+        bounds.extend_from_slice(&batch.range);
+    }
+    let mut buffers = VarArray::new();
+    for index in 0..product.buffer_count() {
+        buffers.push(&PackedFloat32Array::from(product.buffer(index)).to_variant());
+    }
+    let canopy = product.canopy_box;
+    let mut data = VarDictionary::new();
+    data.set("batches", PackedInt32Array::from(batches.as_slice()));
+    data.set("bounds", PackedFloat32Array::from(bounds.as_slice()));
+    data.set("buffers", buffers);
+    data.set("tree_count", product.tree_count);
+    data.set(
+        "canopy_box",
+        Aabb::new(
+            Vector3::from_array(canopy.position),
+            Vector3::from_array(canopy.size),
+        ),
+    );
+    data
 }
 
 // One layout calculation, using exactly the fields published by get_terrain_patch_layout.

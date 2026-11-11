@@ -165,6 +165,14 @@ impl Coverage {
             .collect()
     }
 
+    // The stand grid's bytes, size and world rectangle, as `stand_grid` publishes them.
+    #[cfg(test)]
+    pub(super) fn stand_parts(&self, radius: usize) -> (Vec<u8>, usize, usize, [f32; 4]) {
+        let (w, h) = (self.width as f32, self.height as f32);
+        let bounds = [self.origin.x, self.origin.y, w * TEXEL_M, h * TEXEL_M];
+        (self.stand_bytes(radius), self.width, self.height, bounds)
+    }
+
     fn dictionary(&self, bytes: PackedByteArray) -> VarDictionary {
         let mut data = VarDictionary::new();
         data.set("width", self.width as i32);

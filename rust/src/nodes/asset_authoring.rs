@@ -287,23 +287,9 @@ impl AssetAuthoringPolicy {
             .iter()
             .map(|c| [[c[0], c[1]], [c[2], c[3]]])
             .collect();
-        let plants = crate::nodes::simulation_node::vegetation_api::yard_preview::plan(
-            &data,
-            &walls,
-            salt as u64,
-        );
-        let mut packed = Vec::with_capacity(plants.len() * 6);
-        for plant in plants {
-            packed.extend_from_slice(&[
-                plant.x,
-                0.0,
-                plant.z,
-                plant.yaw,
-                plant.scale,
-                f32::from((plant.variant << 2) | plant.species),
-            ]);
-        }
-        PackedFloat32Array::from(packed.as_slice())
+        use crate::nodes::simulation_node::vegetation_api::yard_preview;
+        let plants = yard_preview::plan(&data, &walls, salt as u64);
+        PackedFloat32Array::from(yard_preview::records(&plants).as_slice())
     }
 
     /// Preview a conversion with an exact change list. Applying it requires UI confirmation.

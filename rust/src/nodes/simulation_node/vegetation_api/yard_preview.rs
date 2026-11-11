@@ -81,6 +81,25 @@ impl FlatYard {
     }
 }
 
+/// The game's six-float placement records (x, y, z, yaw, scale, packed species and pin) for a
+/// planned lot at height zero. A hedge module's scale lane carries the ground's rise along it,
+/// as in the scatter, and a flat lot has none. O(plants).
+pub(crate) fn records(plants: &[Plant]) -> Vec<f32> {
+    let mut packed = Vec::with_capacity(plants.len() * 6);
+    for plant in plants {
+        let hedge = brush::hedge_index(plant.species, plant.variant).is_some();
+        packed.extend_from_slice(&[
+            plant.x,
+            0.0,
+            plant.z,
+            plant.yaw,
+            if hedge { 0.0 } else { plant.scale },
+            pack_species_variant(plant.species, plant.variant),
+        ]);
+    }
+    packed
+}
+
 /// Plan one isolated, flat, developed lot from editor parameters and loaded wall bounds.
 /// The synthetic parcel salt uses the same area seeding as a spawned building. Work is local:
 /// O(V² + L × V + C × (V + P)) for lot vertices V, hedge length L, candidates C
