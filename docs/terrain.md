@@ -4188,10 +4188,12 @@ km.
   the first and evicted with the last; the counts are queued under the streaming budget), a
   changed material syncs that patch's cells, copying only
   the parameters that differ, and only tiles whose desire, level or token changed, or whose
-  request failed or did not go out, are considered for requests. An idle frame polls Rust once:
+  request failed or whose page event unblocked them, are considered for requests (each handed to
+  Rust's request queue once, `RENDER-32-B`). An idle frame polls Rust once:
   `O(changes)` per frame (round 5 rebuilt the desired set from every resident list on any change:
   2.0-3.1 ms in an edit's frame).
-- **Re-levelling by camera travel** ([T26](#terrain-07-open-questions) (a), round 8). The renderer
+- **Re-levelling by camera travel** ([T26](#terrain-07-open-questions) (a), round 8; in Rust since
+  `RENDER-32-B`, `stream/levels.rs`, the [streaming core](#streaming-core-render-32)). The renderer
   sums the camera's travel (its moves in XZ and in height above the ground). A tile's distance
   changes by at most the travel, so a tile levelled at travel `t` keeps its level until the travel
   reaches `t + m`, `m` its distance's margin to the nearest distance where its level can change
@@ -12068,6 +12070,182 @@ both trees): 30k 1x B days pass the acceptance (unpreempted, p99.9, preempted le
 4.34 / 4.80 and 6.75 / 5.11 / 5.17 ms; a first B day in a noisy window read 8.21 ms preempted less
 wait and was rerun), mean 2.29 against the control's 2.50 ms (one control day, noisy); 30k 32x
 C B B C level on every metric (mean +0.2%, p99 -0.6%), the `PERF-17` known exception on both.
+
+### Graded levels and the request queue in Rust (`RENDER-32-B`, 2026-11-11)
+
+G1, `TERRAIN-13`'s first part. What moved, in `rust/src/nodes/sim/render/stream/`:
+
+- `levels.rs`: the level rule (`GL0` to 64 m, `GL1` to 128 m, `GL2` to 2 km, `GL3` beyond at
+  steps 2, 4 and 8, 32 m of hysteresis around the held level) and T26's travel buckets, as the
+  `GradedTileLevels` object the renderer owns (desire, drop, hold, move the camera). A move
+  re-levels the buckets the travel passed and returns only the tiles whose level changed;
+  `O(tiles due + buckets passed)`, nothing on a still frame, `O(1)` per desire, drop or hold, no
+  allocation once warm (bucket vectors reused, swap-remove with stored slots).
+- `requests.rs`: the bake request queue inside the graded residency jobs. The renderer hands
+  over every tile it can install once (level, token); the queue keeps one pending request per
+  tile (a newer one replaces it, a cancel drops it, neither is baked), starts bakes nearest the
+  view first whenever a request arrives or a polled result frees an in-flight place, at most 96
+  in flight (baking or finished and not polled, as before), and holds a request whose tile and
+  level is still in flight until that bake leaves. Pending tiles are kept per cell of the 512 m
+  chunk grid; a start is a best-first walk (chunks by their nearest point, a chunk's tiles into a
+  heap of exact distances only while no unopened chunk can be nearer), `O(c log c + t log t)` for
+  `c` chunks with pending tiles and `t` tiles of the chunks opened; push, replace and cancel are
+  `O(1)`. Issue order: ground distance to the tile's centre, then the tile key.
+- `view.rs`: `StreamView`, the camera and its travel, shared by both. Its distances are the
+  GDScript renderer's, operation for operation, from Godot's `f32` camera widened to `f64`.
+
+The renderer (`terrain_graded_tiles.gd`) keeps its pages, copies, growth, exhaustion, refusals,
+edits and previews (G2a-c). `_request_tiles` now takes only the tiles whose desire, level or token
+changed or whose page event unblocked them, and hands each over or parks it: a tile whose block
+page waits for the block's lists (`PAGE_PENDING`) waits per block and is wanted again when that
+block's lists are in or the load's settle flags change, instead of being walked every frame. A
+dropped or dirtied tile cancels its pending request, and a tile found showing its level and token
+drops a pending request of another level. Deleted from the script: `desired_level`,
+`_tile_distance`, `_level_tile`, `_unbucket`, `_level_margin`, `_move_camera`'s body, the request
+sort and its 24 a frame, and the desired, bucket and travel state (200 lines out, 196 in, mostly
+the parking and the hand-over; 3,136 to 3,132 lines).
+
+**Not as planned: the view is the renderer's camera, not one `CameraNode` publishes.** The levels
+must equal the GDScript rule bit for bit, and that rule measures from the visible ground under
+the eye (`terrain.gd`'s `get_world_surface_height`, a core-locked query `CameraNode` does not
+make); the Godot tests drive the renderer with synthetic cameras; and G1 has no second consumer.
+`CameraNode` publishes the view when the rings arrive (`RENDER-32-F`), which also takes the
+ground height off the frame path.
+
+**Tests.** Rust: the rule against 635 golden vectors dumped from the GDScript rule by Godot
+(every level and step end, both hysteresis sides, every held level; `levels_golden.txt`), random
+view walks (jumps, climbs, pans, tiles entering, leaving and installed at new levels) checked
+against the rule evaluated directly, a still frame doing no work, the hysteresis moving with the
+held level; the queue issuing nearest first over scattered chunks, never more than 96 in flight,
+replaced and cancelled requests never started, a same-key request waiting for its bake, and no
+walk without a change. Godot: `graded_tile_renderer_test` (T26's every-frame exactness now
+against Rust's levels), `graded_page_growth_test`, `graded_page_publication_test`,
+`road_preview_stream_test` in `./run.sh --test`.
+
+**Rows** (fresh, 2026-11-11, boot `978f0c18`). Method and inputs as the rows of record above.
+Control: `dev` `cf599b59`, the `RENDER-32-A` release library (`9de3864a`) with its own scripts;
+branch: `stream-g1`'s release library (`b1cd7ed4`, the final tip's Rust; the first 30k round and
+two Kuopio rounds ran the library before the stale-request cancel, `4377d881`, whose Kuopio path
+is the same) with its scripts; both ran the branch's benchmark scripts. C B B C rounds:
+
+```bash
+tools/stream_benchmark.py run --label 30k-f-ctl1 --out "$ARTIFACTS" --save <populated_city_30000.sqlite> \
+    --library <cf599b59's libmetrum_rise.so> --scripts <cf599b59's godot/scripts>
+tools/stream_benchmark.py run --label 30k-f-br1 --out "$ARTIFACTS" --save <populated_city_30000.sqlite> \
+    --library <the branch's release libmetrum_rise.so>
+METRUM_STREAM_DIGESTS=1 tools/stream_benchmark.py run --label 30k-digest-br1 ...   # untimed: settle-point digests
+tools/stream_benchmark.py run --label 100k-br-detail --save <commit_city_100000.sqlite> --detail \
+    --phases post_load,still,turns ...
+```
+
+30k city, p50 / max ms and frames over 33.3 ms, ranges over four runs a side:
+
+| Phase | `RENDER-32-A` p50 | max | >33.3 | `RENDER-32-B` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| still | 12.0-12.3 | 18-23 | 0 | 11.9-12.2 | 20-23 | 0 |
+| turn_out 0.5s | 34.3-38.6 | 48-53 | 8-12 | 30.0-30.1 | 42-46 | 5-8 |
+| turn_back 0.5s | 36.0-38.5 | 43-45 | 12-13 | 28.1-31.0 | 39-45 | 2-6 |
+| turn_repeat 0.5s | 36.6-39.5 | 48-58 | 10-13 | 30.3-33.5 | 43-48 | 5-9 |
+| turn_out 1s | 28.6-30.2 | 40-46 | 7-12 | 25.7-26.6 | 36-44 | 2-7 |
+| turn_back 1s | 30.7-31.8 | 41-48 | 9-11 | 26.0-27.9 | 38-41 | 3-8 |
+| turn_repeat 1s | 29.1-32.1 | 41-47 | 9-14 | 25.2-26.7 | 35-47 | 2-5 |
+| pan_out 3s | 20.8-21.4 | 62-66 | 1-2 | 20.2-21.0 | 61-70 | 1 |
+| pan_back 3s | 21.2-22.0 | 47-64 | 1-2 | 20.3-20.8 | 32-64 | 0-3 |
+| pan_repeat 3s | 21.7-21.9 | 31-68 | 0-2 | 20.2-21.5 | 62-68 | 1-2 |
+| zoom_in 1.5s | 21.4-23.1 | 62-77 | 3-4 | 21.7-22.2 | 70-77 | 3-6 |
+| zoom_out 1.5s | 17.6-20.3 | 48-63 | 1-3 | 15.1-16.6 | 50-53 | 2 |
+| zoom_in_repeat 1.5s | 20.1-21.3 | 74-79 | 3 | 21.4-21.6 | 61-77 | 2-3 |
+| jump | 16.1-17.7 | 53-55 | 4 | 14.4-15.1 | 42-71 | 1-2 |
+| jump_back | 18.6-19.3 | 43-46 | 1-2 | 16.7-17.1 | 34-46 | 1 |
+| night_still | 11.5-11.9 | 19-23 | 0 | 11.4-11.6 | 18-20 | 0 |
+| night_turn_out 1s | 32.7-33.7 | 60-65 | 13-15 | 28.0-28.9 | 57-62 | 9-11 |
+| night_turn_back 1s | 34.0-36.4 | 61-69 | 14-16 | 27.5-29.9 | 58-73 | 9-13 |
+| night_turn_repeat 1s | 30.7-37.4 | 61-66 | 12-19 | 28.5-30.7 | 53-58 | 11-12 |
+| night_pan_out 3s | 21.5-22.8 | 63-77 | 8-10 | 21.5-22.9 | 52-58 | 8-10 |
+| night_pan_back 3s | 21.1-21.7 | 48-60 | 7 | 19.7-21.8 | 48-63 | 6-8 |
+
+Kuopio, ranges over six runs a side:
+
+| Phase | `RENDER-32-A` p50 | max | >33.3 | `RENDER-32-B` p50 | max | >33.3 |
+|---|---|---|---|---|---|---|
+| still | 2.6-3.0 | 5-9 | 0 | 2.7-2.9 | 5-9 | 0 |
+| turn_out 0.5s | 12.0-17.0 | 25-33 | 0-1 | 13.9-18.9 | 22-36 | 0-1 |
+| turn_back 0.5s | 14.9-19.4 | 26-39 | 0-1 | 15.2-21.3 | 23-34 | 0-1 |
+| turn_repeat 0.5s | 16.0-18.1 | 21-32 | 0 | 14.5-18.7 | 23-38 | 0-1 |
+| turn_out 1s | 11.7-16.8 | 27-36 | 0-1 | 13.9-18.2 | 28-43 | 0-1 |
+| turn_back 1s | 13.1-18.2 | 27-39 | 0-2 | 13.7-17.6 | 24-38 | 0-1 |
+| turn_repeat 1s | 15.5-16.8 | 28-38 | 0-3 | 13.6-16.9 | 28-35 | 0-2 |
+| pan_out 3s | 7.1-12.4 | 33-41 | 0-2 | 6.4-9.4 | 30-37 | 0-2 |
+| pan_back 3s | 5.8-9.7 | 30-58 | 0-2 | 4.7-9.0 | 28-39 | 0-1 |
+| pan_repeat 3s | 5.9-10.2 | 29-45 | 0-2 | 4.6-8.7 | 26-40 | 0-3 |
+| zoom_in 1.5s | 4.7-8.0 | 27-44 | 0-1 | 4.8-13.4 | 26-35 | 0-1 |
+| zoom_out 1.5s | 3.9-5.9 | 26-35 | 0-1 | 4.2-6.2 | 24-44 | 0-1 |
+| zoom_in_repeat 1.5s | 6.1-8.0 | 26-34 | 0-1 | 6.1-9.9 | 20-32 | 0 |
+| jump | 11.1-13.4 | 24-28 | 0 | 11.3-14.4 | 24-29 | 0 |
+| jump_back | 9.9-13.5 | 23-29 | 0 | 6.2-14.0 | 22-30 | 0 |
+| night_still | 2.8-3.1 | 4-12 | 0 | 2.8-3.1 | 4-8 | 0 |
+| night_turn_out 1s | 12.7-16.9 | 28-43 | 0-2 | 14.3-17.3 | 25-32 | 0 |
+| night_turn_back 1s | 14.9-16.8 | 25-36 | 0-2 | 11.9-18.0 | 21-32 | 0 |
+| night_turn_repeat 1s | 11.2-15.9 | 24-36 | 0-1 | 10.7-16.5 | 21-33 | 0 |
+| night_pan_out 3s | 10.8-13.2 | 31-53 | 0-3 | 8.2-13.8 | 30-37 | 0-2 |
+| night_pan_back 3s | 5.1-9.5 | 29-38 | 0-2 | 5.5-9.1 | 28-46 | 0-2 |
+
+Pooled, no phase's p50 or maximum is worse than the control's by more than the larger
+same-binary spread, on either input. The 30k turns are faster: 1 s turns 3.2-4.0 ms lower at p50
+(control 28.6-32.1 ms), 0.5 s turns 4.8-8.3 ms lower, frames over 33.3 ms on a 1 s turn 2-8
+against 7-14; zoom out, jumps and night turns 2-6 ms lower. Kuopio has no graded tile and is
+unchanged.
+
+**The graded renderer's own parts** (instrumented, mean ms a frame; control `RENDER-32-A`,
+branch the final tip):
+
+| Phase | control: residency + relevel (graded total) | branch: residency + relevel (graded total) | branch requests / builds / patch changes | uploads a frame, control / branch |
+|---|---|---|---|---|
+| 30k turn 1 s (out, back, repeat) | 6.97-7.63 (8.8-9.5) | 0.72-0.82 (4.7-5.6) | 0.58-0.66 / 0.03-0.08 / 0.04-0.05; relevel 0.06 | 1.0 / 16-19 |
+| 30k turn 0.5 s | 8.40-9.56 (11.3-13.2) | 1.22-1.34 (5.9-6.4) | 1.02-1.12 / 0.03-0.05 / 0.07-0.11; relevel 0.08 | 0.9 / 16-18 |
+| 30k pan 3 s | 2.02-2.71 (3.9-4.6) | 0.24 (3.2-3.4) | 0.13 / 0.07 / 0.01; relevel 0.03 | 6.6 / 12 |
+| 100k turn 1 s | 20.2-26.1 (26.4-34.5) | 2.62-2.76 (9.2-11.0) | 2.26-2.35; relevel 0.20-0.22 | |
+| 100k after the load | 21.37 (24.0) | 2.14 (7.6) | 1.00 | |
+
+Re-levelling is now 0.06 ms a frame on the 30k turn (control 2.4-2.6) and 0.2 ms at 100k
+(control 9.4-12.4). What is left of `residency_ms` is the hand-over, `O(changes)` and no longer
+`O(wanted)`: on the 30k 1 s turn about 130 wanted tiles a frame (level changes, tiles back at
+their held level, results of an older level), 4-5 µs each in GDScript (the page checks, request
+keys and bookkeeping that stay there until `RENDER-32-I`), of which 40-60 are handed over. The
+queue also ends the request throttle: the control installed about one tile a frame on a turn
+with 1,400 wanted, the branch 16-19, so its tiles catch up during the turn, and the cell rewrites
+those installs cause (`cells_ms`, `RENDER-32-J`) rise from 1.7 to 3.0-3.8 ms of the 30k turn.
+
+**The 100k diagnosis** (`commit_city_100000`, instrumented, one run a side): from the load's
+hand-over to no graded tile wanted, 34.2 s with the control and 11.2-12.4 s with the branch; the
+most tiles wanted at once 9,087 against 4,270-4,296 (the queue runs bakes back to back).
+
+**Products.** Settle-point digests (every installed tile's level, step, token, flag, walls and the
+bytes of each of its copies read back from the pages, the copy's slot place masked), two runs a
+side: identical at 7 of 10 settle points (after the load, the base pose, the still, the zoom,
+the jump and back); after the turns and pans (points 4-6) the two control runs differ from each
+other as the branch runs do, in 1-19 tiles, each within a level end's hysteresis band from the
+camera (2,000-2,032 m or 128-160 m), whose held level depends on the frames the turn took. Every
+tile held at the same level, step and token (32,775 compared per branch run) has identical bytes.
+
+**T60's checks.** The drag probe under gamescope, all 13 Kuopio cases and a 30-degree swing
+(`kuopio_08`, converging, magenta background): no hole patch, no tile drawing other than what it
+shows, no preview tile without its road, no magenta pixel in 119 swing frames. Every stroke fails
+the fast commit's one-batch check, identically on the control: `TERRAIN-23`.
+
+**Bars** (plan section 7 G1): `residency_ms + relevel_ms` at most 0.3 ms on the 30k 1 s turn:
+missed, 0.72-0.82 (control 6.97-7.63); at most 0.5 ms at 100k with 4,000 or more tiles wanted:
+missed, 5.4 ms over the 4 such frames after the load (cell set builds 3.5 of it, the load's
+unbudgeted frames; requests 1.8 for 220-580 tiles handed a frame) and 2.6-2.8 on the 1 s turn (control 20-26); 1 s turn p50 at least 5 ms
+lower: missed, 3.2-4.0 (0.5 s turns 4.8-8.3); settled installs identical by digest: met where
+the settled state is path-independent, and bytewise for every tile at equal level; time to no
+tile wanted at 100k not longer: met (11.2-12.4 s against 34.2); T60's probe checks: met. The
+misses are the per-change GDScript cost of the hand-over (the page checks stay in GDScript until
+`RENDER-32-I`) and the install rate the queue unblocked; decision for the user in the round's
+report.
+
+@@TIMING@@
+
 
 ## Implemented Runtime Contract
 

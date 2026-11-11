@@ -39,7 +39,9 @@ Camera moves are the next rendering focus (`RENDER-32`, planned and adopted 2026
 by the graded tiles' residency, the vegetation's main-thread placement query and the cars' ground
 solve. One Rust-owned streaming core (view, rings, a 2.0 ms streaming budget, pooled
 `RenderingServer` objects) replaces each renderer's own bookkeeping over sixteen rounds, starting
-with a wall-clock stream benchmark ([streaming core](terrain.md#streaming-core-render-32)).
+with a wall-clock stream benchmark ([streaming core](terrain.md#streaming-core-render-32)). Its
+second round (`RENDER-32-B`) puts the graded tiles' levels and bake queue in Rust: the 30k turn
+is 3-4 ms faster a frame and a 100k load's graded tiles settle in 11 s instead of 34 s.
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
