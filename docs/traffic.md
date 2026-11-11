@@ -2521,8 +2521,26 @@ Each frame `godot/scripts/renderers/agents.gd` passes `get_car_render_data()` to
   busy they show their validated snapshot pose, never an unsupported interpolated one
 - a car absent from one frame is forgotten; degenerate or non-finite snapshot poses pass through
   unchanged and are not remembered
-- transform uploads happen every render frame so fast sim multipliers do not quantize cars to the
+- poses are smoothed every render frame so fast sim multipliers do not quantize cars to the
   simulation tick rate
+- **rest** (`RENDER-28`, `RENDER-32-G`): a car whose drawn pose has reached its snapshot pose to
+  `f32` resolution (within 8 units in the last place; an off-lane car compares the inputs of its
+  solve, XZ and horizontal heading) is drawn exactly as it was while its snapshot pose stays bit
+  for bit, with no smoothing and no ground solve. The solve it keeps grounded that very pose, so
+  it equals a fresh solve while the snapshot's `vehicle_ground_key` (world, the core's
+  `vehicle_ground_generation`, counted at every record of the graded edit journal and a new
+  support profile, and the full-detail radius) and the car's side of that radius stay. Without
+  this the smoothing never settles: on a fixed snapshot pose it wanders 1-2 units in the last
+  place every frame, so a paused city re-solved and re-uploaded every car every frame. A busy
+  core restores the snapshot pose only of the cars it could not solve; resting ones keep theirs.
+- a bucket whose snapshot inputs are bit for bit last frame's and whose cars all rest is not
+  touched; `get_changed_car_buckets()` lists the buckets whose drawn buffer changed, and only those
+  upload
+- the off-lane cars of every bucket are solved in one parallel pass a frame under one core
+  attempt, and a bucket under 2,048 cars smooths on the calling thread: a pool wait per bucket
+  (about 25 at 30k, twice each) cost more than the cars did
+- the camera rectangle the snapshot culls agents to comes from the camera in Rust
+  (`update_agent_view`: the viewport's corner rays down to the ground, as the GDScript did)
 
 Current render interpolation constants:
 
