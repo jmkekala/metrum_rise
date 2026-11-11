@@ -116,6 +116,12 @@ impl VegetationEdits {
         self.patch_generations.get(&key).copied().unwrap_or(0)
     }
 
+    /// Every patch revision that is not zero, as (packed key, generation), in no fixed order.
+    /// `O(edited patches)`.
+    pub(crate) fn patch_generations(&self) -> impl Iterator<Item = (i64, u64)> + '_ {
+        self.patch_generations.iter().map(|(&key, &generation)| (key, generation))
+    }
+
     /// Advances whenever any patch generation does, and never otherwise.
     pub fn epoch(&self) -> u64 {
         self.epoch

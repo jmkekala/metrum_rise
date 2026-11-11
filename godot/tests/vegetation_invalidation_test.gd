@@ -54,6 +54,14 @@ class MockSimulation:
 	func get_land_cover_epoch() -> int:
 		return vegetation_generations.hash()
 
+	func try_get_vegetation_generations(known_epoch: int) -> PackedInt64Array:
+		var epoch := get_land_cover_epoch()
+		var table := PackedInt64Array([epoch])
+		if epoch != known_epoch:
+			for key: Vector2i in vegetation_generations:
+				table.append_array(PackedInt64Array([key.x, key.y, vegetation_generations[key]]))
+		return table
+
 	func get_terrain_world_size() -> Vector2:
 		return WORLD_SIZE
 

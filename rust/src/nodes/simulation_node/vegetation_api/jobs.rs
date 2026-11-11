@@ -24,6 +24,11 @@ const MAX_IN_FLIGHT: usize = 32;
 /// "Streaming core": 64 MB a layer).
 const CACHE_CAP_BYTES: usize = 64 << 20;
 
+// How often a worker tries the core for a patch's snapshot, and how long it waits between: at
+// most about 2 ms of one background worker, never the main thread.
+const SNAPSHOT_ATTEMPTS: usize = 9;
+const SNAPSHOT_RETRY: std::time::Duration = std::time::Duration::from_micros(250);
+
 /// Calls of the synchronous vegetation queries (`get_decorative_tree_patch`,
 /// `get_vegetation_stand_cover`, `get_vegetation_hedge_runs`) since the extension loaded: the
 /// renderer asks none of them, so a benchmark frame that moves it ran a query on the main
@@ -156,9 +161,18 @@ pub(crate) fn spawn_request(
     let (serial, mut product, catalogue) = jobs.lock().unwrap().start(request.key)?;
     let (core, jobs) = (Arc::clone(core), Arc::clone(jobs));
     async_jobs.spawn(move || {
-        let inputs = SimulationNode::try_lock_shared_core(&core).and_then(|mut core| {
-            VegetationPatchInputs::take(&mut core, request.origin, request.span)
-        });
+        // A busy core is asked again a few times before the patch goes back to the renderer:
+        // the main thread's own short core reads would otherwise cost the patch a frame each.
+        let mut inputs = None;
+        for attempt in 0..SNAPSHOT_ATTEMPTS {
+            if attempt > 0 {
+                std::thread::sleep(SNAPSHOT_RETRY);
+            }
+            if let Some(mut core) = SimulationNode::try_lock_shared_core(&core) {
+                inputs = VegetationPatchInputs::take(&mut core, request.origin, request.span);
+                break;
+            }
+        }
         let built = inputs.map(|inputs| {
             prepare_patch(&inputs, &request, &catalogue, &mut product);
             product

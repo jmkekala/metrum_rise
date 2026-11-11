@@ -22,6 +22,7 @@ class Simulation extends Node:
 			data[i*6+4] = 0.8 + float(i % 17) * 0.025
 			data[i*6+5] = [0, 1, 2, 2, 2, 2, 3, 3][i % 8]
 	func get_vegetation_patch_generation(_key): return 0
+	func try_get_vegetation_generations(_known_epoch): return PackedInt64Array([0])
 	func get_terrain_world_size(): return Vector2(1020, 1020)
 	# Rust packs world positions; the fixture is authored relative to the patch it is fetched for.
 	# No crown coverage, so every tree keeps an open stand.

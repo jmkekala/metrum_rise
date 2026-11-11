@@ -62,8 +62,10 @@ var _last_us := 0
 var _previous_streams: Dictionary
 var _digests := false
 var _settle_points := 0
-# Wanted vegetation patches drawing nothing yet, by the engine frame they were first seen so.
+# Wanted vegetation patches drawing nothing yet, by the engine frame they were first seen so,
+# and the wanted set of the last frame.
 var _vegetation_waiting := {}
+var _vegetation_wanted := {}
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -524,22 +526,28 @@ func _vegetation_counters() -> Dictionary:
 			if simulation.has_method("get_vegetation_main_thread_queries") else -1}
 
 # Wanted-to-drawn of the vegetation patches, with the perf channel on only (it walks the wanted
-# set every frame): a wanted patch that draws nothing waits from the first frame it is seen so;
-# the frames it waited are recorded on the frame it draws. A patch no longer wanted stops waiting.
+# set every frame): a patch that enters the wanted set drawing nothing waits from that frame,
+# and the frames it waited are recorded on the frame it draws; one that enters already drawn
+# (built in the frame it was wanted, or kept from before) records 0. A patch no longer wanted
+# stops waiting.
 func _vegetation_drawn_frames() -> Array:
 	var frame := Engine.get_process_frames()
 	var drawn := []
 	var wanted: Dictionary = _vegetation.wanted_keys
 	for key: Vector3i in wanted:
-		if _vegetation.patches.has(key):
-			if _vegetation_waiting.has(key):
-				drawn.append(frame - int(_vegetation_waiting[key]))
-				_vegetation_waiting.erase(key)
-		elif not _vegetation_waiting.has(key):
-			_vegetation_waiting[key] = frame
+		var has_patch: bool = _vegetation.patches.has(key)
+		if not _vegetation_wanted.has(key):
+			if has_patch:
+				drawn.append(0)
+			else:
+				_vegetation_waiting[key] = frame
+		elif has_patch and _vegetation_waiting.has(key):
+			drawn.append(frame - int(_vegetation_waiting[key]))
+			_vegetation_waiting.erase(key)
 	for key: Vector3i in _vegetation_waiting.keys():
 		if not wanted.has(key):
 			_vegetation_waiting.erase(key)
+	_vegetation_wanted = wanted.duplicate()
 	return drawn
 
 # The numeric changes between two counter snapshots, by group; unchanged values left out.

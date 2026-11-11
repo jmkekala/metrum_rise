@@ -434,6 +434,34 @@ impl SimulationNode {
         jobs::main_thread_queries() as i64
     }
 
+    /// The land cover epoch ([`Self::get_land_cover_epoch`]) and, when it differs from
+    /// `known_epoch`, every vegetation patch revision that is not zero, without waiting for the
+    /// core (`RENDER-32-D`: the renderer's frame path takes no blocking core lock). Returns
+    /// `[epoch]` while the epoch is `known_epoch`, `[epoch, x, z, generation, ...]` when it moved
+    /// (sorted by key), and an empty array while the simulation holds the core: ask again next
+    /// frame. `O(1)` unchanged, `O(edited patches log edited patches)` when it moved.
+    #[func]
+    pub fn try_get_vegetation_generations(&self, known_epoch: i64) -> PackedInt64Array {
+        let Some(core) = self.try_lock_core() else {
+            return PackedInt64Array::new();
+        };
+        let epoch = core
+            .terrain_payload_generation_counter
+            .wrapping_add(core.vegetation_edits.epoch()) as i64;
+        if epoch == known_epoch {
+            return PackedInt64Array::from(&[epoch][..]);
+        }
+        let mut generations: Vec<(i64, u64)> = core.vegetation_edits.patch_generations().collect();
+        drop(core);
+        generations.sort_unstable();
+        let mut out = Vec::with_capacity(1 + generations.len() * 3);
+        out.push(epoch);
+        for (key, generation) in generations {
+            out.extend_from_slice(&[key >> 32, i64::from(key as u32 as i32), generation as i64]);
+        }
+        PackedInt64Array::from(out.as_slice())
+    }
+
     /// Returns a vegetation-only patch revision; terrain payload generations are unaffected.
     #[func]
     pub fn get_vegetation_patch_generation(&self, key: Vector2i) -> i64 {

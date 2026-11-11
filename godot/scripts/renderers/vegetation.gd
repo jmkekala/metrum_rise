@@ -131,6 +131,10 @@ var standins: Dictionary = {}
 var wanted_keys: Dictionary = {}
 # The two revision counters at the last staleness sweep; the sweep reruns when either moves.
 var stale_land_epoch := -1
+# Rust's vegetation patch revisions that are not zero, by owner patch, as of the land cover
+# epoch `_generations_epoch`; read without waiting for the core (`_refresh_generations`).
+var _vegetation_generations: Dictionary = {}
+var _generations_epoch := -1
 var stale_surface_revision := -1
 var last_band_camera_xz := Vector2.INF
 # The detail handover measures in three dimensions, so a camera that only rises moves it too.
@@ -160,7 +164,9 @@ var _poll_us := 0
 # The longest single main-thread vegetation unit this frame (a request, or a poll and its
 # install), microseconds.
 var _unit_max_us := 0
-# This frame's installs and the microseconds they took, against INSTALL_BUDGET_USEC.
+# This frame's installs and the microseconds they took, against INSTALL_BUDGET_USEC, and the
+# products that came back busy (their worker never got the core).
+var _frame_busy := 0
 var _frame_installs := 0
 var _frame_install_us := 0
 # This frame's perf record, written by `_process` and completed before the draw.
@@ -200,7 +206,7 @@ func _install_before_draw() -> void:
 		var details: Dictionary = _frame_record["details"]
 		details.merge({"pre_draw_ms": pre_draw_ms, "pre_draw_installs": installs,
 			"uploads": int(details["uploads"]) + installs, "poll_ms": float(_poll_us) / 1000.0,
-			"upload_max_ms": float(_unit_max_us) / 1000.0}, true)
+			"upload_max_ms": float(_unit_max_us) / 1000.0, "busy": _frame_busy}, true)
 		PerfDebug.record("vegetation", float(_frame_record["elapsed_ms"]) + pre_draw_ms, details)
 	_frame_record = {}
 
@@ -271,6 +277,8 @@ func rebuild_from_simulation_state() -> void:
 	requested.clear()
 	simulation.clear_vegetation_requests()
 	stale_land_epoch = -1
+	_vegetation_generations.clear()
+	_generations_epoch = -1
 	stale_surface_revision = -1
 	last_band_camera_xz = Vector2.INF
 	tree_count = 0
@@ -295,6 +303,9 @@ func _process(_delta: float) -> void:
 	var span := terrain_span / divisor
 	patch_span_m = span
 	owner_generations.clear()
+	# The vegetation revisions once a frame, before anything reads them through the frame's
+	# memo, without waiting for the core (`RENDER-32-D`).
+	var generations_fresh := _refresh_generations()
 	var camera_xz := Vector2(camera.global_position.x, camera.global_position.z)
 	var camera_cell := Vector2i((camera_xz / span).floor())
 	var start_us := Time.get_ticks_usec()
@@ -302,6 +313,7 @@ func _process(_delta: float) -> void:
 	_unit_max_us = 0
 	_frame_installs = 0
 	_frame_install_us = 0
+	_frame_busy = 0
 	_frame_record = {}
 	var revision: int = terrain.get_resident_patch_revision()
 	# O(resident patches) only on residency/camera-cell changes, not O(total scatter).
@@ -412,10 +424,12 @@ func _process(_delta: float) -> void:
 	# newer surface or Rust advanced its vegetation revision, and each of those moves one of
 	# these two counters, so the O(resident patches) sweep runs on the frame an edit lands.
 	# It runs even while uploads are pending, so a long upload queue cannot hide an edit.
-	var land_epoch: int = simulation.get_land_cover_epoch()
+	# The revisions are read without waiting for the core: while the simulation holds it, the
+	# sweep waits for a frame that can read them (`RENDER-32-D`).
 	var surface_revision: int = terrain.get_surface_commit_revision()
-	if land_epoch != stale_land_epoch or surface_revision != stale_surface_revision:
-		stale_land_epoch = land_epoch
+	if generations_fresh and (_generations_epoch != stale_land_epoch
+			or surface_revision != stale_surface_revision):
+		stale_land_epoch = _generations_epoch
 		stale_surface_revision = surface_revision
 		for key in patches:
 			if _is_patch_stale(key, owner_generations):
@@ -511,18 +525,36 @@ func _is_patch_stale(key: Vector3i, cache = null) -> bool:
 	)
 
 ## The surface and vegetation generations of an owner patch, as (surface, vegetation). With a
-## cache this crosses into Rust once per owner instead of once per caller; without one it
-## always crosses, because the answer is only about the moment it is asked.
+## cache this asks the terrain once per owner instead of once per caller; without one it first
+## brings the vegetation revisions up to date when the core is free, because the answer is only
+## about the moment it is asked.
 func _owner_generations(owner: Vector2i, cache) -> Vector2i:
 	if cache != null and cache.has(owner):
 		return cache[owner]
+	if cache == null:
+		_refresh_generations()
 	var generations := Vector2i(
 		terrain.get_patch_surface_generation(owner),
-		simulation.get_vegetation_patch_generation(owner)
+		int(_vegetation_generations.get(owner, 0))
 	)
 	if cache != null:
 		cache[owner] = generations
 	return generations
+
+## Brings `_vegetation_generations` to Rust's current revisions without waiting for the core:
+## one try-lock read, which copies the table only when the land cover epoch moved. Returns false
+## while the simulation holds the core; the table then keeps its older revisions, which can only
+## make a patch look stale, never current.
+func _refresh_generations() -> bool:
+	var table: PackedInt64Array = simulation.try_get_vegetation_generations(_generations_epoch)
+	if table.is_empty():
+		return false
+	if table[0] != _generations_epoch:
+		_vegetation_generations.clear()
+		for at in range(1, table.size(), 3):
+			_vegetation_generations[Vector2i(table[at], table[at + 1])] = table[at + 2]
+		_generations_epoch = table[0]
+	return true
 
 ## Camera position on the ground plane, or `INF` when there is no camera to measure from.
 func _camera_xz() -> Vector2:
@@ -685,14 +717,14 @@ func _tier_count(divisor: int) -> int:
 ## Rust refuses for now (its jobs are full), and the caller keeps the patch queued.
 func _upload_patch(key: Vector3i, span: float) -> bool:
 	# Read before the request. Stamping an older generation onto newer data only causes one
-	# redundant rebuild; the reverse would leave a stale patch undetected. Deliberately not the
-	# memoised read. The order matters here: this value is stamped onto the patch, so it must be
-	# fetched after any edit that preceded this request and before Rust's worker takes the
-	# patch's inputs. A value memoised earlier in the frame can be newer than that and would
-	# stamp an edit as already rendered.
+	# redundant rebuild; the reverse would leave a stale patch undetected. The order matters
+	# here: this value is stamped onto the patch, so it must not be newer than the inputs Rust's
+	# worker takes after the request. The revisions are refreshed without waiting for the core;
+	# when it is busy they are older, which costs at most that one rebuild.
 	var owner := _owner_key(key)
-	var generation: int = terrain.get_patch_surface_generation(owner)
-	var vegetation_generation: int = simulation.get_vegetation_patch_generation(owner)
+	var generations := _owner_generations(owner, null)
+	var generation: int = generations.x
+	var vegetation_generation: int = generations.y
 	var world: Vector2 = simulation.get_terrain_world_size()
 	patch_span_m = span
 	# A direct caller can name a span the key's own grid does not imply, so the key is made
@@ -755,6 +787,7 @@ func _poll_products(limit_us: int = INSTALL_BUDGET_USEC) -> int:
 			continue
 		requested.erase(key)
 		if bool(result["busy"]):
+			_frame_busy += 1
 			_queue_patch(key)
 			continue
 		_install_product(key, request, result)
