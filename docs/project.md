@@ -34,6 +34,13 @@ orphaned paint, no cell stands on a ring's island, and undo gives the old cells 
 exactly (branch `zone-relay-2`, rounds RL1 and RL2, not landed; `ZONE-14`, `ZONE-13` closed,
 [zoning](zoning.md#roads-road-edits-and-placements-over-zoned-land-zone-09-zone-10-zone-11)).
 
+Camera moves are the next rendering focus (`RENDER-32`, planned and adopted 2026-11-11): on the
+30k city a 1 s orbit turn spends 23.5 ms a frame in renderer scripts against 16.5 ms of GPU, led
+by the graded tiles' residency, the vegetation's main-thread placement query and the cars' ground
+solve. One Rust-owned streaming core (view, rings, a 2.0 ms streaming budget, pooled
+`RenderingServer` objects) replaces each renderer's own bookkeeping over sixteen rounds, starting
+with a wall-clock stream benchmark ([streaming core](terrain.md#streaming-core-render-32)).
+
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
 Vulkan/MoltenVK and Linux Vulkan, without slowing streaming or setup

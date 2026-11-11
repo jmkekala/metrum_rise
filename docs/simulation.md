@@ -1162,6 +1162,14 @@ moves its entities between the tiers' phase buckets.
   tick, about 4.2 s of CPU per game day, or about 1.6 ms per frame at 32× once spread.
 - Matched, unprofiled release runs, recorded here, as for the economy contract. The
   [`PERF-01`–`PERF-05`](economy.md#performance-contract-perf-01perf-05) mean limits still apply.
+- **The rendered frame** is measured apart: this budget is the simulation's, and Godot's main
+  thread has its own. Its counterpart is the stream benchmark (`PERF-23`,
+  `./run.sh --benchmark-stream`), which records wall-clock camera turns, pans, zooms, jumps and
+  night views per frame with each renderer's share; its rows of record and the streaming core
+  that owns the main thread's chunk work are in [`terrain.md`](terrain.md#streaming-core-render-32)
+  (`RENDER-32`). The main thread takes no blocking core lock on a frame path, only `try_lock`
+  queries and the published render snapshot, so a renderer never waits for the simulation frame
+  in progress.
 - **Benchmark:** `frame_budget::perf07_frame_budget`, run for every tier and speed by
   `tools/sim02_gate.py perf07`, pinned with `--cpus` to one thread per performance core; see
   [`SIM-02-A`](#sim-02-a-guards-and-pre-refactor-baseline).

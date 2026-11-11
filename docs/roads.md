@@ -4960,7 +4960,10 @@ These need a user decision; work that does not depend on them continues.
       simulation paused; its frames, time and frames over 16.7 ms in each case's `steady_wait`).
       (b) is `TERRAIN-13` (the user widened it at about 17:30: the graded renderer's GDScript
       bookkeeping moves to Rust, its residency pass following the changed tiles); its own track,
-      not blocking `ROAD-68`.
+      not blocking `ROAD-68`. Since 2026-11-11 it is built as `RENDER-32-B` (G1: the desired
+      levels, travel buckets and request queue in Rust; 23-35 ms a frame at 100k measured fresh),
+      and [T65](terrain.md#terrain-07-open-questions)'s one hand-over rule as `RENDER-32-K` (G2c)
+      ([streaming core](terrain.md#streaming-core-render-32)).
 65. **The rendered rows' misses beyond the GDScript share (`ROAD-68-H` round 4) — (a) with (d),
     decided by the user, 2026-10-29 (about 19:15).**
     - **Evidence** (round 4, fresh, [record](#round-4-terrain-12-fixed-in-the-rust-staging-the-poses-main-thread-work-attributed-the-runs-road-68-h-2026-10-29)).

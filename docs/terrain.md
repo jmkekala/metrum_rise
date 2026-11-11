@@ -11710,7 +11710,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       `TERRAIN-13`'s renderer move.
     - **Recommendation** (the user's own): spike (2), then (3). Owned by `TERRAIN-12` (the
       carried frames) and `TERRAIN-13` (the renderer move); the carried junction frames and the
-      fast click's crack belong here, not accepted.
+      fast click's crack belong here, not accepted. Since 2026-11-11 option (3) is built as the
+      streaming core's edit batches in `RENDER-32-K` (G2c,
+      [streaming core](#streaming-core-render-32)).
     - **A third layer: the vegetation (`ROAD-68-H` round 7, 2026-10-29).** Round 6's clip of
       `kuopio_03` attempt 8 showed a pine and ground plants standing on the drawn road in the
       final tip's panel (the undo's frame; the converged commit's last frames), not in the
@@ -11772,6 +11774,168 @@ measures it and the recommendation's condition decides; T2 was decided by the us
   ([budgets](#budgets)).
 - **40** (a clipped site loop in the shared-vertex height rule; recorded on branch `road68-D7`, not
   on `road`): superseded; nothing is clipped.
+
+## Streaming core (`RENDER-32`)
+
+### Purpose and status
+
+Every chunked renderer (terrain and water patches, graded tiles, vegetation, buildings, street
+lights, zoning masks, road chunks) keeps its own residency, camera derivation, budgets and Godot
+object churn in GDScript, and their per-frame costs add up on every camera move. `RENDER-32`
+replaces them with one Rust-owned streaming core. Planned 2026-11-11 against `dev` `7a041c82`
+(a planning review: measurements, design and phases); the user adopted every recommendation the
+same day (decisions below). Phases are `RENDER-32-A` to `-P`, one round each. The core is render
+consumer state: never simulation authority, never saved, rebuilt from the world on a load.
+
+### Where the frame goes (2026-11-11)
+
+Method: `RENDER-27` round 1's. The `7a041c82` release library, Godot 4.7.2 Forward+, gamescope
+headless at 1000 Hz, 1920x1080, P-cores, eight workers, isolated profile, simulation paused, 10:00
+unless night. Inputs: the timing cache's 30k city (32,619 agents, 4.6 km world) and 10k town,
+Kuopio without a save (18 km), and a 100k commit city generated for the diagnosis (103,390 agents,
+instrumented only). The camera starts from the save's view at pitch -0.1 rad and an 800 m orbit.
+
+Uninstrumented, p50 / max ms (two 30k runs; frames over 33.3 ms of the phase's):
+
+| Phase | 30k | Kuopio |
+|---|---|---|
+| still | 13.3-13.4 / 26-30, 0 | 3.5 / 6.6, 0 |
+| 180-degree turn, 0.5 s | 37.0-39.7 / 50-60, 9-12 of 15 | 13.7-14.7 / 24-25, 0 |
+| 180-degree turn, 1 s | 31.6-35.6 / 49-57, 12-19 of 30 | 12.7-14.0 / 22-25, 0 |
+| keyboard pan, 3 s | 22.4-22.6 / 36-45 | 6.7 / 35 |
+| zoom 800 -> 60 m, 1.5 s | 23.5-24.1 / 66-67 | 5.1 / 28 |
+| after a 3 km jump | 22-23 / 56-59, settled in 1.6 s | 11.8 / 27, 0.9 s |
+| night turn, 1 s | 38.1-39.0 / 67-75, 17-18 of 25 | - |
+
+GPU p50 is 9.3 ms on the 30k still view and 16.4-17.5 ms on its turns, so a 30k turn is half
+main-thread script work. A first turn now costs what a repeat costs: `RENDER-27` round 1's
+first-seen spike is gone, and terrain residency has been a square about the camera since
+`d13ac71c` (2026-10-01). A turn is expensive because the orbit camera moves (2.5 km of arc a
+second on an 800 m orbit) and every distance band keyed on its position sweeps with it.
+
+Instrumented (shares, not times; mean ms a frame of the timed scripts):
+
+| Owner | 30k still | 30k 1 s turn | 30k night turn | Kuopio 1 s turn | 100k 1 s turn |
+|---|---:|---:|---:|---:|---:|
+| Graded tiles | 0.19 | 8.72 | 9.43 | 1.12 | 41.39 |
+| Vegetation | 0.40 | 7.33 | 7.75 | 7.72 | 11.96 |
+| Agents | 4.45 | 4.44 | 4.56 | 0.08 | 7.26 |
+| Street lights | 0 | 0 | 6.91 | 0 | - |
+| Buildings | 0.03 | 0.98 | 1.03 | 0.09 | 5.62 |
+| Water reflection (pre-draw hook) | 0.55 | 0.69 | 0.79 | 0.61 | 1.56 |
+| Timed scripts | 7.67 | 23.47 | 31.82 | 12.70 | 70.12 |
+
+- **Graded tiles** (`TERRAIN-13`): the residency pass walks and sorts every wanted tile each
+  frame (4.7 ms on the 30k turn, 23-27 ms at 100k for as long as tiles are wanted), re-levelling
+  by travel bucket costs 3.2-3.5 us a tile (2.3 ms, 12 ms at 100k), cell buffer rewrites 1.4-1.6
+  ms; on Kuopio the cell set builds spend their 1.0 ms budget in every frame.
+- **Vegetation** (`RENDER-27`, `VEG-27`): four fifths of an upload on a city is the synchronous
+  Rust placement query on the main thread (4.3 ms a frame on the 30k turn); the GDScript loops
+  cost 1.36 us a placement (5.6 ms for a 4,096-placement forest patch); the band scan and the
+  staleness sweep walk every patch (1.1-3.3 ms). Single uploads reach 58 ms at 30k and 32 ms on
+  Kuopio.
+- **Agents** (`RENDER-28`): `smooth_car_render_data` is 3.9-4.0 ms of every 30k frame, paused
+  included; by elimination the off-lane ground solve re-solving unchanged poses (T37).
+- **Street lights** (`RENDER-33`), **building LOD** (`RENDER-34`), **the reflection's vote**
+  (`RENDER-35`) and **road hydration at a load** (`RENDER-36`, one 1.5-2 s frame at 100k) had no
+  row before.
+
+What a `RenderingServer` install costs (an empty Forward+ project, 512 batches, per batch):
+
+| Instances | Nodes, a call per instance | Nodes, one buffer | Objects created per install | Pooled objects, buffer written |
+|---:|---:|---:|---:|---:|
+| 64 | 15.6 us | 4.9-6.1 | 3.3-3.8 | 1.5-2.3 |
+| 4,000 | 620 | 235 | 233 | 71 |
+
+A call from GDScript costs about 20 ns, so call overhead does not decide where the Rust/Godot
+line goes; per-instance calls and object churn do.
+
+### Design
+
+- **Shared pieces**, in one module (`rust/src/nodes/sim/render/stream/`), each built in the
+  round of its first consumer: `StreamView` (one camera sample a frame, after the camera moved:
+  eye, pivot, yaw, pitch, distance, height above ground, frustum, travel); `RingSet` (membership
+  of a chunk grid in distance tiers with hysteresis, kept incrementally: a cell crossing emits
+  events for the ring boundaries only); travel buckets (T26's scheme); a prepare queue and
+  product cache on the background Rayon pool (nearest first, bounded in flight, inputs taken
+  under `try_lock`, stale generations dropped, a byte cap); one install scheduler; a
+  `RenderBackend` that alone calls `RenderingServer` (pooled multimeshes and instances by size
+  class, a recording implementation for tests); `StreamStatus` per layer (wanted, prepared,
+  installed, holes in view, holes in the near ring) for `TERRAIN-15`'s hand-over, `UI-08` and
+  every test's "settled" wait.
+- **The line.** Rust owns and calls `RenderingServer` directly for every instance layer it keeps
+  the books for (vegetation, graded cells and walls, street lights, parked cars, building
+  batches, agents). GDScript keeps what is a Godot resource or a scene object with other users
+  (meshes, materials, textures handed over as RIDs; terrain and water patch nodes; graded page
+  textures; tools, UI, lighting) and executes a short command list Rust decides. One Godot object
+  type has one owning side.
+- **The sets.** The installed set keeps each layer's rule and constants (what is drawn once
+  settled does not change); yaw never enters it, the frustum only orders work. A prepared set
+  (`RENDER-32-N`, only if measured necessary) holds products along the camera's reach: the orbit
+  circle, the eye-to-pivot zoom ray and a pan disc of 0.5 s at keyboard speed. The retained set
+  keeps today's hysteresis margins; a leaving chunk hides at once and frees under the budget.
+- **The scheduler.** One streaming budget a frame for all layers (2.0 ms, a setting) on a
+  monotonic clock; a unit starts only if its predicted cost (fixed constants, no adaptive
+  estimate) fits, the first unit of a frame always runs. Edits are atomic batches outside the
+  budget with `ROAD-68`'s 2.0 ms stage as their bar (T65 option (3), in `RENDER-32-K`). Order:
+  edit batch, hole in view, hole in the near ring, hole elsewhere, upgrade in view, upgrade
+  elsewhere, free; nearest first inside a class, ties by key.
+- **Main-thread rule.** No blocking core lock on a frame path: only `try_lock` snapshots and the
+  published render snapshot.
+- **Invariants tested in Rust without Godot**, against the recording backend on scripted view
+  sequences and job completion orders: exactly one version of every wanted chunk drawn each frame
+  (no hole, no overlap); the budget; zero ring cells visited and zero tiles re-levelled on a frame
+  without a crossing or completion; identical sets for view sequences that differ only in yaw;
+  shuffled completion gives the same settled set and products; caps never exceeded; no allocation
+  on a steady frame; T60's display rule and T61's holds as scripted edit sequences.
+- **Complexity.** View O(1) a frame; rings O(1) without a crossing, O(boundary cells) per ring on
+  one; graded levels O(tiles due + buckets passed); queues O(log n) per operation; staleness
+  O(patches of the edited area), pushed by edits; a jump O(new + old set) once.
+- **Whole-map view** (`RENDER-29`): tier tables are data, pools are sized from device limits at
+  setup, and each layer's far product (terrain at step 8 with the graded delta folded in,
+  vegetation's ground stand-in, a road LOD product, merged building tiers) holds the world at its
+  farthest tier.
+
+### Phases
+
+| Phase | Round | Scope | Bar (30k unless named; controls from the table above) |
+|---|---|---|---|
+| `RENDER-32-A` | S0 | Stream benchmark, perf counters, control rows, the reflection vote cache (Veeti's `19cf3498`) | Reflection hook at most 0.4 ms (30k) and 0.1 ms (Kuopio); voted levels equal; no phase worse than control beyond the same-binary spread |
+| `RENDER-32-B` | G1 | Graded desired levels, travel buckets and request queue in Rust | `residency_ms + relevel_ms` at most 0.3 ms on the 1 s turn, 0.5 ms at 100k; turn p50 5 ms lower; settled sets identical |
+| `RENDER-32-C` | V1a | Vegetation patch product in Rust, bitwise equal to the GDScript (Rust owns the appearance hash) | Buffers bitwise equal; Kuopio placement work under 0.05 ms a frame |
+| `RENDER-32-D` | V1b | Vegetation query from a snapshot on the background pool | No vegetation query on the main thread; largest unit 2.0 ms; vegetation 2.5 ms a frame on turns; `PERF-07` unchanged |
+| `RENDER-32-E` | V2a | Scheduler and `RenderingServer` pools; vegetation installs through them | Installs at most 2.0 ms in any frame; no node created on a frame path; stills identical |
+| `RENDER-32-F` | V2b | Rings; vegetation residency, bands and staleness in Rust | Vegetation 0.5 ms mean a frame; zero ring cells on frames without a crossing; `RENDER-27`'s bar |
+| `RENDER-32-G` | A1 | Agents without a visual change (`RENDER-28` part 1) | Agents 0.6 ms on the paused still |
+| `RENDER-32-H` | L1 | Street lights' grid, far map and pool in Rust (`RENDER-33`) | 0.3 ms mean, 1.0 ms max on night turns and pans |
+| `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe |
+| `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`) | 0.3 ms on the turn, 1.5 ms at 100k |
+| `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`) | 0.3 ms a frame on Kuopio's turn and pan |
+| `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement | Entered-to-drawn p95 at most three frames |
+| `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice |
+| `RENDER-32-P` | R1 | Road hydration at load, parked cars, zoning masks (`RENDER-36`) | The 100k load's frame at most 33 ms |
+
+Track acceptance, on the stream benchmark at 30k, 1080p, paused, after `-A` to `-H` and `-L`:
+timed scripts at most 4 ms mean in every moving phase, no frame over 33.3 ms, the 1 s turn's p50
+within 3 ms of its GPU time, night within 1 ms of day. Each round times at level F (it touches
+per-frame paths) with the stream benchmark as its own benchmark, against the previous round's
+landed library, C B B C, 30k and Kuopio.
+
+### Decisions (the user, 2026-11-11: every recommendation "as recommended")
+
+1. The core, in the order S0, G1, V1, V2, A1, L1, then G2, B1, T1: the measured milliseconds
+   put `TERRAIN-13`'s first part ahead of `RENDER-27`'s vegetation.
+2. `CODE-12` becomes "prepared along the orbit, zoom and pan reach", built only if the
+   measurement after V2 asks for it.
+3. Rust calls `RenderingServer` directly for the instance layers; GDScript keeps resources and
+   patch nodes. This widens `TERRAIN-13`'s 2026-10-29 decision to every instance layer.
+4. Veeti's `19cf3498` (reflection vote cache) is ported in S0; `d78a0efc` (one gather per patch)
+   is not, because it makes the 30k city's worst frames 126-665 ms (`VEG-27`); its idea returns in
+   V1b.
+5. `RENDER-28` in two parts: A1 (no visual change) early, A2 (draw distances) later with stills.
+6. One streaming budget of 2.0 ms a frame for all layers, as a setting.
+7. Visual choices wait for side-by-side stills in their round: the far canopy albedo
+   (`42f07425`), agent draw distances, a finer vegetation grid.
 
 ## Implemented Runtime Contract
 
