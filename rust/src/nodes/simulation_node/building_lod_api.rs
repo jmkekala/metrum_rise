@@ -134,6 +134,15 @@ impl SimulationNode {
         }
     }
 
+    /// Whether the building batches cast the sun's shadow (true unless a shadow benchmark's
+    /// caster variant clears it, `RENDER-15`).
+    #[func]
+    pub fn set_building_cast_shadows(&mut self, cast: bool) {
+        if let Some(draw) = self.building_draw.as_mut() {
+            draw.layer.set_cast_shadows(&mut draw.backend, cast);
+        }
+    }
+
     /// Registers the mesh and material override (an invalid RID: none) a group draws with,
     /// built by `building_lods.gd` when [`Self::update_building_lods`] named it missing.
     #[func]

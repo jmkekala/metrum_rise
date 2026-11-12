@@ -56,8 +56,8 @@ func _build_ui() -> void:
 		"Caps the frame rate. With V-Sync on, the display refresh rate also caps it.")
 	_render_scale = _add_choice(grid, "Render scale", GameSettings.KEY_RENDER_SCALE, RENDER_SCALE_LABELS,
 		"Renders the 3D view at a lower resolution and upscales it with FSR 2. The interface stays sharp.")
-	_shadow_quality = _add_choice(grid, "Shadows", GameSettings.KEY_SHADOW_QUALITY, ["High", "Low"],
-		"Low uses hard-edged shadows with two cascades instead of four.")
+	_shadow_quality = _add_choice(grid, "Shadows", GameSettings.KEY_SHADOW_QUALITY, ["High", "Medium", "Low"],
+		"Medium keeps soft shadows but draws them in two cascades instead of four, so distant shadows are coarser.\nLow also makes them hard-edged.")
 	_view_distance = _add_choice(grid, "View distance", GameSettings.KEY_VIEW_DISTANCE, ["Full", "Reduced"],
 		"Reduced stops drawing the world beyond about 3 km from the camera, unless zoomed far out.")
 	_lod_quality = _add_choice(grid, "Building detail", GameSettings.KEY_BUILDING_LOD_QUALITY,
@@ -146,6 +146,8 @@ func _value_for_index(key: String, index: int) -> Variant:
 			return GameSettings.MAX_FPS_CHOICES[index]
 		GameSettings.KEY_RENDER_SCALE:
 			return GameSettings.RENDER_SCALE_CHOICES[index]
+		GameSettings.KEY_SHADOW_QUALITY:
+			return GameSettings.SHADOW_QUALITY_CHOICES[index]
 	return index
 
 func _index_for_value(key: String, value: Variant) -> int:
@@ -154,6 +156,8 @@ func _index_for_value(key: String, value: Variant) -> int:
 			return GameSettings.MAX_FPS_CHOICES.find(value)
 		GameSettings.KEY_RENDER_SCALE:
 			return GameSettings.RENDER_SCALE_CHOICES.find(value)
+		GameSettings.KEY_SHADOW_QUALITY:
+			return GameSettings.SHADOW_QUALITY_CHOICES.find(value)
 	return int(value)
 
 func _set_pending(key: String, value: Variant) -> void:

@@ -324,12 +324,41 @@ def split(args):
     return 0 if quartets else 1
 
 
+def gpu_lines(name, runs):
+    """`compare --gpu` (`RENDER-15`): per phase the GPU p50's branch-minus-control delta against
+    its same-binary spread, read like `phase_verdict`'s, and the shadow passes' median primitives
+    and draw calls a side (rows from before `shadow_pass` show none)."""
+    stats = {key: phase_stats(report) for key, report in runs.items()}
+    shadow = {key: {phase_label(s): [percentile([r["shadow_pass"][i] for r in s["rows"]], 0.5)
+                                     for i in (2, 0)] if all("shadow_pass" in r for r in s["rows"]) else None
+                    for s in report["samples"]} for key, report in runs.items()}
+    lines = [f"## {name}: GPU p50 ms, delta vs same-binary spread; shadow-pass primitives (k) / draws, ctl / br",
+             "| phase | ctl gpu | br gpu | delta (spread) | shadow ctl | shadow br |", "|---|---|---|---|---|---|"]
+    for phase in stats["ctl1"]:
+        c = [stats[k][phase]["gpu"] for k in ("ctl1", "ctl2")]
+        b = [stats[k][phase]["gpu"] for k in ("br1", "br2")]
+        spread = max(abs(c[0] - c[1]), abs(b[0] - b[1]))
+        delta = statistics.mean(b) - statistics.mean(c)
+        verdict = "worse" if delta > spread else "better" if -delta > spread else "level"
+
+        def side(keys):
+            values = [shadow[k].get(phase) for k in keys]
+            if any(v is None for v in values):
+                return "-"
+            return f"{statistics.mean(v[0] for v in values) / 1000:.0f} / {statistics.mean(v[1] for v in values):.0f}"
+        lines.append(f"| {phase} | {statistics.mean(c):.2f} | {statistics.mean(b):.2f} | "
+                     f"{delta:+.2f} ({spread:.2f}) {verdict} | {side(('ctl1', 'ctl2'))} | {side(('br1', 'br2'))} |")
+    return lines
+
+
 def compare(args):
     directory = Path(args.dir)
     for name in args.inputs:
         runs = {f"{side}{n}": json.loads((directory / f"{name}-{side}{n}.metrics.json").read_text())
                 for side, n in SERIES}
         print("\n" + "\n".join(compare_lines(name, runs)))
+        if args.gpu:
+            print("\n" + "\n".join(gpu_lines(name, runs)))
     return 0
 
 
@@ -705,6 +734,8 @@ def main(argv=None):
     rows = commands.add_parser("compare")
     rows.add_argument("dir", help="the directory of the series' metrics")
     rows.add_argument("inputs", nargs="+", help="input labels: <dir>/<input>-ctl1.metrics.json ...")
+    rows.add_argument("--gpu", action="store_true",
+                      help="also the GPU p50 delta and the shadow passes' primitives and draws (RENDER-15)")
     digest = commands.add_parser("digests")
     digest.add_argument("a")
     digest.add_argument("b")

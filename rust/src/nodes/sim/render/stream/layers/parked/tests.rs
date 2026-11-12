@@ -112,3 +112,17 @@ fn a_reset_frees_every_object_the_layer_made() {
     assert_eq!((layer.pool().live(), layer.pool().spares()), (0, 0));
     assert_eq!(layer.drawn().count(), 0);
 }
+
+#[test]
+fn the_cast_toggle_reaches_drawn_and_later_chunks() {
+    let mut backend = Recorder::new();
+    let mut layer = layer();
+    let (a, b) = (poses(3, 0.0), poses(5, 100.0));
+    assert!(layer.install(&mut backend, (0, 0), [(10, &a[..])].into_iter()));
+    layer.set_cast_shadows(&mut backend, false);
+    assert!(layer.install(&mut backend, (1, 0), [(21, &b[..])].into_iter()));
+    assert_eq!(backend.visible(Scenario::Main).count(), 2, "the toggle hides nothing");
+    assert!(backend.visible(Scenario::Main).all(|(_, car)| car.shadow == Shadow::Off));
+    layer.set_cast_shadows(&mut backend, true);
+    assert!(backend.visible(Scenario::Main).all(|(_, car)| car.shadow == Shadow::On));
+}

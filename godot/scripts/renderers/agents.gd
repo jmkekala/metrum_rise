@@ -28,6 +28,10 @@ const VehicleHeadlights := preload("res://scripts/renderers/vehicle_headlights.g
 var walker_mmis: Dictionary = {}
 # Key: vehicle_type (int), Value: MultiMeshInstance3D
 var car_mmis: Dictionary = {}
+## The last frame's buffers per bucket as Rust returned them (walker type, car type key): the
+## shadow benchmark's caster twins read them instead of reading the GPU buffers back (`RENDER-15`).
+var walker_buffers: Dictionary = {}
+var car_buffers: Dictionary = {}
 var texture_cache: Dictionary = {}
 const WALKER_VAT_FRAMES := 30.0
 # Quaternius walk clips are baked in the opposite temporal direction from our distance phase.
@@ -252,6 +256,7 @@ func update_swarm(delta: float = 0.0):
 	# Walkers (Grouped by variant)
 	var start_us := Time.get_ticks_usec()
 	var walker_data: Dictionary = simulation_node.update_walker_buffers()
+	walker_buffers = walker_data
 	var fetched_us := Time.get_ticks_usec()
 	# Only the buckets the snapshot changed; a bucket absent from walker_data left: it draws none.
 	var changed_walkers: PackedInt64Array = simulation_node.get_changed_walker_buckets()
@@ -278,9 +283,7 @@ func update_swarm(delta: float = 0.0):
 	if parked_renderer != null and vehicle_frame.has("parked"):
 		parked_renderer.apply_publication(vehicle_frame["parked"])
 	var frame_us := Time.get_ticks_usec()
-	var car_buffers: Dictionary = simulation_node.smooth_car_render_data(
-		vehicle_frame["cars"], delta
-	)
+	car_buffers = simulation_node.smooth_car_render_data(vehicle_frame["cars"], delta)
 	var smoothed_us := Time.get_ticks_usec()
 	# A bucket absent from car_buffers left the view: it draws none.
 	for type_key in simulation_node.get_changed_car_buckets():

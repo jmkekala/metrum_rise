@@ -96,6 +96,9 @@ pub(crate) struct BuildingLayer {
     leaving: Map<(ChunkKey, BatchKey), ()>,
     // The last frame offered could not be drawn whole and waits (`RENDER-42`).
     waiting: bool,
+    // Whether the batches cast the sun's shadow (the shadow benchmark's caster classes,
+    // `RENDER-15`); the game never clears it.
+    cast_shadows: bool,
 }
 
 impl BuildingLayer {
@@ -108,6 +111,7 @@ impl BuildingLayer {
             missing: Vec::new(),
             leaving: Map::default(),
             waiting: false,
+            cast_shadows: true,
         }
     }
 
@@ -125,6 +129,16 @@ impl BuildingLayer {
     /// Whether reused slots get fresh storage (motion vectors on).
     pub(crate) fn set_fresh_buffers(&mut self, fresh: bool) {
         self.pool.set_fresh(fresh);
+    }
+
+    /// Whether the batches cast the sun's shadow, every drawn batch at once and later ones as
+    /// drawn (the shadow benchmark's caster classes, `RENDER-15`). `O(drawn batches)`.
+    pub(crate) fn set_cast_shadows(&mut self, backend: &mut impl RenderBackend, cast: bool) {
+        self.cast_shadows = cast;
+        let shadow = if cast { Shadow::On } else { Shadow::Off };
+        for &slot in self.drawn.values() {
+            self.pool.set_shadow(backend, slot, Role::Main, shadow, true);
+        }
     }
 
     /// Registers a group's look (`building_lods.gd`'s mesh and override for it).
@@ -284,7 +298,11 @@ impl BuildingLayer {
             aabb: Aabb::default(),
             range: [0.0; 2],
             material: look.material,
-            shadow: Shadow::On,
+            shadow: if self.cast_shadows {
+                Shadow::On
+            } else {
+                Shadow::Off
+            },
             visible: true,
         };
         self.pool.draw(backend, slot, Role::Main, main);

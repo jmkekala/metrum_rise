@@ -266,3 +266,20 @@ fn a_reset_frees_every_object_the_layer_made() {
     assert_eq!((layer.pool().live(), layer.pool().spares(), created), (0, 0, freed));
     assert_eq!(layer.batches().count(), 0);
 }
+
+#[test]
+fn the_cast_toggle_reaches_drawn_and_later_batches_but_not_the_proxies() {
+    let mut backend = Recorder::new();
+    let mut layer = layer();
+    let a = rows(5, 0.0);
+    layer.apply(&mut backend, &[], [change((0, 0), key(1, 1), &a)].into_iter());
+    layer.set_cast_shadows(&mut backend, false);
+    let b = rows(3, 50.0);
+    layer.apply(&mut backend, &[], [change((1, 0), key(1, 0), &b)].into_iter());
+    let main: Vec<_> = backend.visible(Scenario::Main).map(|(_, main)| main.shadow).collect();
+    assert_eq!(main, [Shadow::Off, Shadow::Off]);
+    assert!(backend.visible(Scenario::Reflection).all(|(_, proxy)| proxy.shadow == Shadow::Off));
+    layer.set_cast_shadows(&mut backend, true);
+    assert!(backend.visible(Scenario::Main).all(|(_, main)| main.shadow == Shadow::On));
+    assert_eq!(backend.visible(Scenario::Main).count(), 2, "the toggle hides nothing");
+}

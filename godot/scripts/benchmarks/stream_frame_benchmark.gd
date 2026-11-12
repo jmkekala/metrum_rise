@@ -87,7 +87,7 @@ const WATER_DISTANCE_M := 400.0
 const WATER_FRAMES := 90
 ## The keys every frame row carries (`scripts` is empty without the perf channel).
 const ROW_KEYS: Array[String] = ["frame", "frame_ms", "process_ms", "render_cpu_ms", "render_gpu_ms",
-	"draw_calls", "objects", "primitives", "video_mem", "streams", "stream_delta",
+	"draw_calls", "objects", "primitives", "video_mem", "shadow_pass", "streams", "stream_delta",
 	"reflection_levels", "scripts"]
 const STAT_KEYS: Array[String] = ["mean", "p50", "p95", "p99", "max"]
 
@@ -99,6 +99,7 @@ var _road_tool: Node
 var _grass: Node
 var _reflection: Node
 var _report: Dictionary
+var _viewport: Viewport
 var _viewport_rid: RID
 var _scripts := false
 var _last_us := 0
@@ -141,7 +142,8 @@ func run(bench: Node) -> void:
 	Engine.max_fps = 0
 	if bench.mode != "headless":
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
-	_viewport_rid = bench.get_viewport().get_viewport_rid()
+	_viewport = bench.get_viewport()
+	_viewport_rid = _viewport.get_viewport_rid()
 	RenderingServer.viewport_set_measure_render_time(_viewport_rid, true)
 	var phases: Array = Array(OS.get_environment("METRUM_STREAM_PHASES").split(",", false))
 	if phases.is_empty():
@@ -155,7 +157,7 @@ func run(bench: Node) -> void:
 	_gpu_profile = OS.get_environment("METRUM_STREAM_GPU_PASSES") == "1"
 	var shadows: Array = Array(OS.get_environment("METRUM_STREAM_SHADOWS").split(",", false))
 	for variant: String in shadows:
-		if not ShadowVariants.NAMES.has(variant):
+		if not ShadowVariants.is_known(variant):
 			bench._fail("unknown METRUM_STREAM_SHADOWS variant %s" % variant)
 			return
 	if shadows.size() > 1 and phases.any(func(phase: String) -> bool: return phase not in ["still", "turns", "post_load"]):
@@ -228,6 +230,10 @@ func run(bench: Node) -> void:
 		"load_call_ms": load_call_ms, "elapsed_ms": bench._elapsed_ms(load_start),
 		"agent_count": int(perf_stats.get("agent_count", -1)), "saved_view": Array(saved_view),
 		"world_size": [world.x, world.y], "streams": _streams(),
+		# The node renderers' casters by shadow policy category at the settled base pose, with
+		# their instances and those within the sun's shadow range of the camera (`RENDER-15`).
+		"node_casters": ShadowVariants.node_casters(main, bench.get_viewport().get_camera_3d().global_position,
+			sun.directional_shadow_max_distance),
 	}
 	print("[STREAM] LOAD_END agents=%d total_ms=%.1f load_call_ms=%.1f" % [
 		_report.load.agent_count, _report.load.elapsed_ms, load_call_ms])
@@ -776,6 +782,10 @@ func _row(index: int) -> Dictionary:
 		"objects": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_OBJECTS_IN_FRAME),
 		"primitives": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
 		"video_mem": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED),
+		# The shadow passes' share of the three above: draw calls, objects, primitives (`RENDER-15`).
+		"shadow_pass": [_viewport.get_render_info(Viewport.RENDER_INFO_TYPE_SHADOW, Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME),
+			_viewport.get_render_info(Viewport.RENDER_INFO_TYPE_SHADOW, Viewport.RENDER_INFO_OBJECTS_IN_FRAME),
+			_viewport.get_render_info(Viewport.RENDER_INFO_TYPE_SHADOW, Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME)],
 		"streams": streams, "stream_delta": _delta(_previous_streams, streams),
 		"reflection_levels": _reflection_levels(),
 		# Taken as this frame's process_frame resumes the benchmark: the records of the frame just

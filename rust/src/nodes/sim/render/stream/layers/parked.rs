@@ -41,6 +41,9 @@ pub(crate) struct ParkedLayer {
     drawn: Map<(ChunkKey, u32), SlotId>,
     // Each drawn chunk's buckets, so a chunk's update finds the buckets that left.
     buckets: Map<ChunkKey, Vec<u32>>,
+    // Whether the cars cast the sun's shadow (the shadow benchmark's caster classes,
+    // `RENDER-15`); the game never clears it.
+    cast_shadows: bool,
 }
 
 impl ParkedLayer {
@@ -51,6 +54,7 @@ impl ParkedLayer {
             meshes: Map::default(),
             drawn: Map::default(),
             buckets: Map::default(),
+            cast_shadows: true,
         }
     }
 
@@ -62,6 +66,16 @@ impl ParkedLayer {
     /// Whether reused slots get fresh storage (motion vectors on).
     pub(crate) fn set_fresh_buffers(&mut self, fresh: bool) {
         self.pool.set_fresh(fresh);
+    }
+
+    /// Whether the cars cast the sun's shadow, every drawn bucket at once and later ones as
+    /// drawn (the shadow benchmark's caster classes, `RENDER-15`). `O(drawn buckets)`.
+    pub(crate) fn set_cast_shadows(&mut self, backend: &mut impl RenderBackend, cast: bool) {
+        self.cast_shadows = cast;
+        let shadow = if cast { Shadow::On } else { Shadow::Off };
+        for &slot in self.drawn.values() {
+            self.pool.set_shadow(backend, slot, Role::Main, shadow, true);
+        }
     }
 
     /// Registers a vehicle bucket's mesh (a catalogue index).
@@ -186,7 +200,11 @@ impl ParkedLayer {
             aabb: Aabb::default(),
             range: [0.0; 2],
             material: None,
-            shadow: Shadow::On,
+            shadow: if self.cast_shadows {
+                Shadow::On
+            } else {
+                Shadow::Off
+            },
             visible: true,
         };
         self.pool.draw(backend, slot, Role::Main, main);

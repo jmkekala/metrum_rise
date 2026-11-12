@@ -169,6 +169,17 @@ class CompareTests(unittest.TestCase):
         # Worse on one metric outranks better on the other.
         self.assertEqual(sb.phase_verdict(runs((10, 20), (10, 20)), runs((9, 25), (9, 25)))[0], "worse max")
 
+    def test_gpu_lines_read_the_gpu_delta_and_the_shadow_pass(self):
+        def report(gpu, shadow):
+            rows = [{"frame_ms": 9.0, "render_gpu_ms": gpu, **({"shadow_pass": shadow} if shadow else {})}] * 3
+            return {"samples": [{"label": "still", "rows": rows, "over_33_3": 0}]}
+        runs = {"ctl1": report(8.8, [900, 300, 2_000_000]), "br1": report(7.5, [500, 200, 1_000_000]),
+                "br2": report(7.6, [500, 200, 1_000_000]), "ctl2": report(8.7, [900, 300, 2_000_000])}
+        self.assertEqual(sb.gpu_lines("30k", runs)[3],
+                         "| still | 8.75 | 7.55 | -1.20 (0.10) better | 2000 / 900 | 1000 / 500 |")
+        runs["ctl1"] = report(8.8, None)
+        self.assertTrue(sb.gpu_lines("30k", runs)[3].endswith("| - | 1000 / 500 |"))
+
 
 class DigestTests(unittest.TestCase):
     def setUp(self):

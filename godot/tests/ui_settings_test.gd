@@ -42,6 +42,7 @@ func _run() -> void:
 		_test_refresh(style)
 		_test_building_quality()
 		_test_frame_settings()
+		_test_shadow_quality()
 		_test_single_road_preview_mode()
 	if had_config:
 		var file := FileAccess.open(Settings.CFG_PATH, FileAccess.WRITE)
@@ -99,6 +100,48 @@ func _test_frame_settings() -> void:
 	panel.reset_defaults()
 	_expect(panel.apply_changes() == OK and Engine.max_fps == 0 and is_equal_approx(root.scaling_3d_scale, 1.0), "Reset restores the uncapped native frame")
 	panel.free()
+
+# Medium (`RENDER-15`): stored as its own value so an old file's Low stays Low, listed between
+# High and Low, and High's sun exactly as before Medium existed.
+func _test_shadow_quality() -> void:
+	for pair in [[0, 0], [1, 1], [2, 2], [3, 0], [-1, 0]]:
+		Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_SHADOW_QUALITY, pair[0])
+		_expect(Settings.get_shadow_quality() == pair[1], "Shadow quality %d reads back as %d" % pair)
+	Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_SHADOW_QUALITY, Settings.SHADOW_QUALITY_LOW)
+	var panel := preload("res://scripts/ui/graphics_options.gd").new()
+	root.add_child(panel)
+	_expect(panel._shadow_quality.item_count == 3 and panel._shadow_quality.selected == 2, "A saved Low shows as Low, the last of three")
+	panel._shadow_quality.item_selected.emit(1)
+	_expect(panel.apply_changes() == OK and Settings.get_shadow_quality() == Settings.SHADOW_QUALITY_MEDIUM, "Apply persists Medium")
+	panel.refresh()
+	_expect(panel._shadow_quality.selected == 1, "Medium reads back as the middle choice")
+	panel.reset_defaults()
+	_expect(panel._shadow_quality.selected == 0 and panel.apply_changes() == OK
+		and Settings.get_shadow_quality() == Settings.SHADOW_QUALITY_HIGH, "Reset restores High")
+	panel.free()
+	var lighting := preload("res://scripts/core/scene_lighting.gd")
+	var filter_path := "rendering/lights_and_shadows/directional_shadow/soft_shadow_filter_quality"
+	var sun := DirectionalLight3D.new()
+	# High as `apply_shadow_quality` set it before Medium, from any level the player left.
+	for previous in [Settings.SHADOW_QUALITY_LOW, Settings.SHADOW_QUALITY_MEDIUM]:
+		lighting.apply_shadow_quality(sun, previous)
+		lighting.apply_shadow_quality(sun, Settings.SHADOW_QUALITY_HIGH)
+		_expect(is_equal_approx(sun.light_angular_distance, lighting.SUN_ANGULAR_DISTANCE_DEG)
+			and sun.shadow_blur == lighting.SHADOW_BLUR
+			and sun.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+			and sun.directional_shadow_blend_splits, "High keeps its sun after level %d" % previous)
+	lighting.apply_shadow_quality(sun, Settings.SHADOW_QUALITY_MEDIUM)
+	_expect(is_equal_approx(sun.light_angular_distance, lighting.SUN_ANGULAR_DISTANCE_DEG)
+		and sun.shadow_blur == lighting.SHADOW_BLUR
+		and sun.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+		and sun.directional_shadow_blend_splits, "Medium is High's soft shadow over two splits")
+	lighting.apply_shadow_quality(sun, Settings.SHADOW_QUALITY_LOW)
+	_expect(sun.light_angular_distance == 0.0 and sun.shadow_blur == 0.0
+		and sun.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+		and not sun.directional_shadow_blend_splits, "Low is unchanged")
+	lighting.apply_shadow_quality(sun, Settings.SHADOW_QUALITY_HIGH)
+	_expect(ProjectSettings.get_setting(filter_path) == 4, "High's soft filter is the project's quality 4 (VEG-25)")
+	sun.free()
 
 func _test_refresh(style: Script) -> void:
 	var viewport := SubViewport.new()

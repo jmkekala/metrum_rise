@@ -673,17 +673,22 @@ func apply_graphics_settings() -> void:
 		_apply_shadow_quality(_sun)
 
 func _apply_shadow_quality(sun: DirectionalLight3D) -> void:
-	apply_shadow_quality(sun, GameSettings.get_shadow_quality() == GameSettings.SHADOW_QUALITY_LOW)
+	apply_shadow_quality(sun, GameSettings.get_shadow_quality())
 
-## Sets the sun's shadows as the High or the Low graphics setting draws them. The benchmarks'
-## shadow variants (`shadow_variants.gd`) start from it.
-static func apply_shadow_quality(sun: DirectionalLight3D, low: bool) -> void:
+## Sets the sun's shadows as the graphics setting `quality` (`GameSettings.SHADOW_QUALITY_*`)
+## draws them. The benchmarks' shadow variants (`shadow_variants.gd`) start from it.
+static func apply_shadow_quality(sun: DirectionalLight3D, quality: int) -> void:
 	# Angular distance drives Godot's variable-penumbra path; zero makes the directional shadow a
 	# plain PCF lookup. Two splits instead of four, and no split blending, halve the cascade
-	# sampling again.
+	# sampling again. Medium keeps High's filter and penumbra, so a trunk's shadow stays whole
+	# (`VEG-25`), and its split blending; drawing two shadow maps instead of four is its saving
+	# (`RENDER-15`, SH2).
+	var low := quality == GameSettings.SHADOW_QUALITY_LOW
+	var splits := 4 if quality == GameSettings.SHADOW_QUALITY_HIGH else 2
 	sun.light_angular_distance = 0.0 if low else SUN_ANGULAR_DISTANCE_DEG
 	sun.shadow_blur = 0.0 if low else SHADOW_BLUR
-	sun.set("directional_shadow_mode", 1 if low else 2)
+	sun.set("directional_shadow_mode",
+		DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if splits == 4 else DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS)
 	sun.set("directional_shadow_blend_splits", not low)
 	RenderingServer.directional_soft_shadow_filter_set_quality(
 		RenderingServer.SHADOW_QUALITY_HARD if low

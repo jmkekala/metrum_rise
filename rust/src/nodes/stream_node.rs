@@ -840,6 +840,15 @@ impl StreamNode {
         }
     }
 
+    /// Whether the parked cars cast the sun's shadow (true unless a shadow benchmark's caster
+    /// variant clears it, `RENDER-15`).
+    #[func]
+    pub fn set_parked_cast_shadows(&mut self, cast: bool) {
+        if let Some(draw) = self.parked.as_mut() {
+            draw.layer.set_cast_shadows(&mut draw.backend, cast);
+        }
+    }
+
     /// Whether reused parked slots take fresh storage (the viewport draws motion vectors).
     #[func]
     pub fn set_parked_fresh_buffers(&mut self, fresh: bool) {

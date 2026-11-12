@@ -46,9 +46,14 @@ const DEFAULT_SHOW_FPS := false
 ## 3D render scale; below 1.0 the frame is rendered smaller and upscaled with FSR 2.
 const RENDER_SCALE_CHOICES := [1.0, 0.77, 0.67, 0.5]
 const DEFAULT_RENDER_SCALE := 1.0
+## The stored shadow quality values keep their first meaning: an old settings file's Low stays
+## Low. The Options control lists them by cost, SHADOW_QUALITY_CHOICES.
 const SHADOW_QUALITY_HIGH := 0
 ## Plain PCF, two cascades and no cascade blending: the measured low-end shadow levers.
 const SHADOW_QUALITY_LOW := 1
+## High's soft filter and penumbra over two cascades instead of four (`RENDER-15`).
+const SHADOW_QUALITY_MEDIUM := 2
+const SHADOW_QUALITY_CHOICES := [SHADOW_QUALITY_HIGH, SHADOW_QUALITY_MEDIUM, SHADOW_QUALITY_LOW]
 const DEFAULT_SHADOW_QUALITY := SHADOW_QUALITY_HIGH
 const VIEW_DISTANCE_FULL := 0
 ## Caps the camera far plane at REDUCED_VIEW_DISTANCE_M instead of growing it with zoom.
@@ -126,7 +131,7 @@ static func get_render_scale() -> float:
 
 static func get_shadow_quality() -> int:
 	var value := int(_graphics_value(KEY_SHADOW_QUALITY, DEFAULT_SHADOW_QUALITY))
-	return value if value in [SHADOW_QUALITY_HIGH, SHADOW_QUALITY_LOW] else DEFAULT_SHADOW_QUALITY
+	return value if value in SHADOW_QUALITY_CHOICES else DEFAULT_SHADOW_QUALITY
 
 static func get_view_distance() -> int:
 	var value := int(_graphics_value(KEY_VIEW_DISTANCE, DEFAULT_VIEW_DISTANCE))
