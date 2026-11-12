@@ -59,6 +59,9 @@ frame, with no node per patch: stills identical, the vegetation's frame time on 
 `RENDER-32-G` (accepted by the user 2026-11-12) stops re-solving and re-uploading cars that
 stand still: the 30k city's agents cost 0.27 ms a paused frame instead of 4.4 ms, and 1.7 ms at
 1x instead of 3.7.
+`RENDER-32-J` (built, not yet landed) moves the graded cell sets, wall faces and draw states to
+Rust, replayed bit for bit: the cell rewrites on a 30k turn fall from 3.2-3.6 ms a frame to 0.5,
+and the 30k 1 s turns run at 20 ms p50 (28-32 before `RENDER-32-B`).
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,

@@ -11913,7 +11913,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-F` | V2b | Rings; vegetation residency, bands and staleness in Rust | `-D`'s carried bars (night delegation 2026-11-12, for review): the 30k `jump` frame maximum within the same-binary spread of `-E`'s control (`-E`: +2.7 ms, the residency's hides and frees in GDScript); vegetation at most 2.5 ms a frame on Kuopio's 0.5 s turns (the band scan), and the largest single vegetation unit at most 2.0 ms at 30k (one 2.38 ms request on `night_turn_back`). Vegetation 0.5 ms mean a frame; zero ring cells on frames without a crossing; `RENDER-27`'s bar |
 | `RENDER-32-G` | A1 | Agents without a visual change (`RENDER-28` part 1) | Agents 0.6 ms on the paused still |
 | `RENDER-32-H` | L1 | Street lights' grid, far map and pool in Rust (`RENDER-33`) | 0.3 ms mean, 1.0 ms max on night turns and pans. Landed 2026-11-11 (coordinator, night delegation, for review); its `night_pan_out` frame-mean reading of night within 1 ms of day (+0.9/+1.6 ms, graded catch-up) carried to `-I`/`-J` |
-| `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe |
+| `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe |
 | `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`) | 0.3 ms on the turn, 1.5 ms at 100k |
 | `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`) | 0.3 ms a frame on Kuopio's turn and pan |
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement | Entered-to-drawn p95 at most three frames |
@@ -13317,6 +13317,153 @@ path). No landed round between touched a car code path, so the rows above stand.
 **Not done here:** the walkers' buffers (0.10 ms) still upload every frame; the snapshot side still
 re-solves every off-lane car every simulation frame on the simulation thread; the draw distances are
 `RENDER-32-O`.
+
+### The graded cells, walls and draw states in Rust (`RENDER-32-J`, 2026-11-12)
+
+G2b (`TERRAIN-13` part 3), step 1 of two: the cell sets, the wall faces and what each resident
+patch draws become `GradedTileBook`'s, proven by record and replay; the GDScript keeps the Godot
+objects and makes today's Godot calls from the book's effects. Step 2 (the same calls through the
+`RENDER-32-E` backend) was not started: see the end of this record.
+
+**What moved** (`stream/layers/graded/cells.rs`, `draw_state.rs`). Every cell set's instance
+records (per mesh the custom data and tile of each instance, per tile place its mesh and
+instance), its complete CPU buffers and counts, which pages its materials bind, its base mesh and
+wall capacity, its build progress, `shown` and `complete`, and the sets' pool (by set id; setup
+prewarms one per patch of the grid in both halves); the per-tile updates (`_update_cell_tiles`,
+`_update_tile_cell`, `_cell_custom`, `_side_code`, `_cell_code`, `_cell_mesh`, `_shown_in`), a
+set's whole build (`_begin_build`, `_build_tiles`, `_rebuild_patch_cells`), the queues and marks
+(`_dirty_cell_tiles`, `_dirty_patches`, `_dirty_walls`, `_dirty_shown`, `_builds`,
+`_builds_urgent`, `_variants_wanted`, `_patch_steps`, `_cell_changed`, `_border_changed`,
+`_walls_changed`, `_mask_changed`, `_await_cells`, `_bind_block`, `_bind_page`), the wall faces
+(`_rebuild_patch_walls`: the book writes each face's three basis columns), the draw state and its
+flips (`_draw_state`, `_apply_shown`, `_previews_in`), the behind-the-road variant's bookkeeping
+(`_patch_flagged`, `_variant_missing`, the variant's records) and the grass mask revisions (grass
+reads a set's revision from the book). Each entry now holds its wall faces. The other parts' marks
+(binds, entry changes, evictions, exhaustion) are applied by the book where the GDScript applied
+them (`settle`, as `_apply_effects` did), so every queue keeps the GDScript's insertion order; the
+book keeps the block pages as the binds set them in order (the GDScript's `_block_page`). The
+resident patches' rectangles, steps and generations come with `terrain.gd`'s mutations of the
+dictionary. A set build's budget answers are the GDScript's `_over_budget`, asked from Rust (Godot's
+clock; a trace's recorded answers when one replays).
+
+**What the GDScript keeps**: each set's nodes, materials and their synced parameters, the build
+loop's order and its material sync under the install budget (the budget answers' order is part of
+the trace), the PlaneMesh collapse (`_set_plane`) and the readiness times, the bake results that
+wait (edit batch, variant waits) and the patch list requests. It applies the cells' effects with
+the Godot calls it made before: a set taken, its pages bound, parked, begun, its base mesh, its
+counts, a mesh's buffer published from the book's CPU buffer, shown, hidden, the variant's nodes, a
+whole rewrite's material, the walls' transforms, a patch's draw state. Its mirrors of the
+installed and preview entries and of the block pages are gone: `installed` and `preview` remain as
+views built from the book for tests and the probe (rebuilt once after each change), and the stream
+benchmark counts installed tiles without the view. `terrain_graded_tiles.gd` 2,603 to 1,949 lines.
+
+**Bounds.** A tile's update `O(1)` (each side finds one patch), a set's build `O(the patch's
+tiles)` budgeted per tile, walls `O(faces of the patch's tiles)`, a mark `O(the patches meeting a
+tile)`, a bind `O(the block's sets x levels)`. No allocation once the sets are prewarmed except a
+set's first behind-the-road variant (the build path, as before) and a staged face list.
+
+**Record and replay.** The recorder now also writes every wall rebuild (patch, faces, capacity,
+truncated, a hash of the basis columns set). Fresh traces from the control (`dev` `47ecab20`'s
+release library with the recorder, untimed, gamescope; the graded renderer is the same on `dev`
+`f1c93527`): the 30k load and three 1 s turns (91,611 lines), the 100k load (196,040), the drag
+probe's populated swing (296,352, 280 preview poses) and Kuopio's `kuopio_08` swing (305,602, 138
+preview poses, 71 patch releases; it fails only the fast commit's one-batch check, `TERRAIN-23`, as
+`dev` does; the populated swing passes every check). All eight trace files replay bit for bit
+through the book (every page event, upload, Rust call, cell buffer publication, draw state and
+wall rebuild; 4,993 to 13,812 publications and 2,511 to 6,736 draw states a trace). None of the
+traces draws a wall face (the populated save has none, Kuopio's swing none in range), so the walls
+are proven by `graded_tile_renderer_test`'s bridge mouth (every face drawn once) and not by replay.
+Rust tests: the per-tile updates equal a whole rewrite, the draw state follows the list, a side's
+stitching code (`cells.rs`).
+
+**The graded parts** (instrumented, mean ms a frame, one run a side, fresh 2026-11-12 04:10-04:15;
+control `dev` `f1c93527`'s release library built here with its scripts, branch `baa3cf7e`'s; both
+ran the branch's benchmark script):
+
+| Phase | control cells (graded total) | branch cells (graded total) | uploads a frame ctl / br | frame mean ctl / br |
+|---|---|---|---|---|
+| 30k turn_out 1 s | 3.22 (4.33) | 0.48 (1.66) | 22 / 31 | 24.2 / 22.4 |
+| 30k turn_back 1 s | 3.42 (4.76) | 0.51 (1.70) | 22 / 30 | 25.5 / 22.0 |
+| 30k turn_repeat 1 s | 3.57 (4.78) | 0.51 (1.65) | 22 / 27 | 25.2 / 22.8 |
+| 100k after the load | 2.89 (5.80) | 0.60 (2.96) | 35 / 38 | 35.0 / 35.3 |
+| 100k turn_out 1 s | 6.66 (7.88) | 0.77 (1.97) | 16 / 20 | 48.0 / 41.3 |
+| 100k turn_back 1 s | 6.28 (7.53) | 0.72 (1.95) | 16 / 20 | 48.0 / 41.9 |
+| 100k turn_repeat 1 s | 6.93 (8.15) | 1.02 (2.27) | 16 / 19 | 48.0 / 44.6 |
+| Kuopio after the load (builds) | 0.10 (2.14; builds 1.88) | 0.06 (1.33; builds 1.10) | | 15.6 / 15.0 |
+| Kuopio still, a minute on (builds) | 0.01 (1.04; builds 1.00) | 0.01 (0.88; builds 0.85) | | 4.6 / 5.2 |
+
+The cell rewrites fall from 3.2-3.6 to 0.5 ms a frame on the 30k turn and from 6.3-6.9 to 0.7-1.0
+at 100k, and the frees let more tiles install a frame (27-31 against 22). What is left of the
+graded total is the install budget's poll (0.9-1.0 ms: the page uploads, `write_copy`, in GDScript)
+and on Kuopio the cell set builds, whose time is now the patches' material sync in GDScript (about
+a hundred parameters into four materials per set, under the same budget and in the same order as
+before, which the traces pin). A first instrumented pair read the benchmark's per-frame counters
+through the new `installed` view (3,280 entries built a frame, 2-3 ms) and is discarded.
+
+**Rows** (timed, C B B C, fresh 2026-11-12 04:15-04:35, same controls; 30k city every phase,
+Kuopio still, turns and pans; `tools/stream_benchmark.py run` as above). 30k, p50 ms (control C1,
+C2 / branch B1, B2), the delta of means against the larger same-binary spread:
+
+| Phase | control p50 | branch p50 | delta p50 (spread) | max ctl / br |
+|---|---|---|---|---|
+| still | 12.4, 11.5 | 11.9, 11.7 | -0.2 (0.9) | 20, 17 / 18, 19 |
+| turn_out 0.5 s | 25.9, 23.1 | 21.3, 20.5 | -3.6 (2.8) | 34, 34 / 33, 32 |
+| turn_back 0.5 s | 24.2, 25.7 | 21.5, 20.3 | -4.1 (1.5) | 33, 40 / 31, 32 |
+| turn_repeat 0.5 s | 23.7, 24.4 | 20.2, 20.5 | -3.6 (0.7) | 38, 38 / 34, 29 |
+| turn_out 1 s | 22.0, 22.1 | 20.7, 20.4 | -1.5 (0.3) | 34, 40 / 36, 34 |
+| turn_back 1 s | 22.2, 22.7 | 20.6, 20.4 | -1.9 (0.5) | 44, 36 / 28, 31 |
+| turn_repeat 1 s | 23.4, 21.9 | 20.3, 19.6 | -2.7 (1.5) | 38, 37 / 28, 34 |
+| pan_out 3 s | 15.0, 14.7 | 13.4, 13.3 | -1.5 (0.3) | 21, 28 / 25, 21 |
+| pan_back 3 s | 15.6, 14.9 | 13.3, 13.2 | -2.0 (0.7) | 27, 26 / 26, 23 |
+| pan_repeat 3 s | 15.2, 15.0 | 13.4, 13.0 | -1.9 (0.4) | 24, 25 / 29, 28 |
+| night_turn_out 1 s | 22.2, 21.2 | 20.5, 18.9 | -2.0 (1.6) | 38, 37 / 29, 31 |
+| night_turn_back 1 s | 21.9, 21.8 | 19.0, 19.8 | -2.4 (0.8) | 35, 43 / 42, 30 |
+| night_turn_repeat 1 s | 21.9, 24.0 | 19.6, 19.4 | -3.5 (2.1) | 35, 37 / 36, 51 |
+| night_pan_out 3 s | 14.2, 14.3 | 12.8, 12.4 | -1.6 (0.4) | 26, 27 / 26, 20 |
+| night_pan_back 3 s | 14.3, 14.0 | 12.2, 12.5 | -1.8 (0.3) | 25, 21 / 21, 23 |
+
+Every turn and pan is faster at p50, the 0.5 s turns by 3.6-4.1 ms and the 1 s turns by 1.5-2.7
+ms; frames over 33.3 ms on the 1 s turns 0-1 a run (control 1-4). Against `-B`'s control (the
+`RENDER-32-A` rows of record: 1 s turns 28.6-32.1 ms p50, another boot and before `-C` to `-E`),
+the 1 s turns are 8-12 ms lower (19.6-20.7). Kuopio (no graded tile drawn; its graded work is the
+set builds): every turn 1.2-1.6 ms faster at p50 (control 4.1-4.6, branch 2.9-3.1), the pans 0.6
+faster or level. Read worse than the spread in this round: the 30k `pan_repeat` maximum (+3.9,
+spread 1.3) and Kuopio's still p50 (+0.2, spread 0.2); the one rerun of those rows (C B B C,
+04:48-04:56) reads both level or better (30k pans p50 -1.1 to -2.0, `pan_repeat` maximum -2.4;
+Kuopio still p50 -0.1): run-to-run variation.
+
+**Timing level F** (`./run.sh --timing --level F --control <ctl> --branch <br> --base f1c93527`,
+release lib test binaries of `dev` `f1c93527` (built in a side worktree) and the branch `baa3cf7e`;
+fresh, 04:34-04:45): 30k 1x day acceptance passes on both (unpreempted, p99.9, preempted less
+wait 6.71 / 4.18 / 4.33 ms against the control's 6.25 / 4.20 / 3.92), mean 2.207 against 2.219
+ms, level on every metric; 30k 32x C B B C level (mean +0.2 %), the `PERF-17` known exception on
+both sides. No simulation path changed.
+
+**Products.** Stills at three 30k poses (`saved`, `city`, `city_low`, hour 10, gamescope 1080p,
+the idle matrix): STILLS. T60's probe checks on the branch (gamescope): PROBE.
+
+**Bars** (brief): replay parity: met (every trace, every output, cell buffers, draw states and
+walls included). The 30k 1 s turn p50 at least 5 ms below `-B`'s control: met against the rows
+of record (19.6-20.7 against 28.6-32.1; another boot, with `-C` to `-E` landed between), and
+1.5-2.7 ms below this round's control. The cell rewrites: 3.2-3.6 to 0.5 ms a frame at 30k and
+6.3-6.9 to 0.7-1.0 at 100k. Graded total toward 0.5 ms on the 30k turn and 1.0 ms at 100k: where it
+stands, 1.65-1.70 and 1.95-2.27 ms (control 4.3-4.8 and 7.5-8.2), the rest the install budget's
+page uploads (0.9-1.0 ms, `-K`/G2c). Kuopio with no cell-set build time on frames: missed, 0.85
+ms a frame a minute after the load (control 1.0): the builds' remaining cost is the material sync
+in GDScript, whose budget queries the traces pin; it leaves the frame when the sets' materials do
+(step 2, the backend). `PERF-07` at level F: level.
+
+**Step 2, not started: the cells through the `RENDER-32-E` backend.** The backend landed on `dev`
+during this round (`f1c93527`); the move needs, beyond its vegetation slots: per-layer catalogue
+ranges (the seven lattice meshes and the wall quad), a material RID per instance (each set's
+graded materials bind its block's page and carry its patch's synced parameters, so they are per
+set, not catalogue entries), vector instance parameters (`cell_patch_rect_hm`,
+`cell_lattice_anchor_hm`) and the float `cell_mode`, an instance transform (a set draws under its
+patch node today), exact-size buffers and a base-mesh change that drops the buffer first
+(`TERRAIN-10`), and grass's mask mirrors reading the cell `MultiMesh`es by RID. With the sets'
+materials made once per page and level instead of synced per set, the material sync, and with it
+Kuopio's build time on frames, can leave the frame. Carried to `RENDER-32-K` (G2c) or a round of
+its own, with stills against this round's.
 
 ## Implemented Runtime Contract
 
