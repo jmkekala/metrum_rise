@@ -18,13 +18,28 @@
 //! at a time by `terrain.gd` and `water.gd` on their pooled nodes ([`ScriptExecutor`]), under
 //! the same frame budget; the terrain's residency changes feed the water's wanted set and the
 //! vegetation's tiers in the same pass.
+//!
+//! A load's road chunks (`RENDER-32-P`) hydrate after the patches in the first pass: one chunk a
+//! unit, nearest first with the view and the near ring first ([`RoadHydration`]), executed by
+//! `road_chunk_hydration.gd` through the road tool's commit, under a hydration budget a frame.
+//! The parked cars' chunks (`RENDER-32-P`) draw through pooled slots of their own backend
+//! ([`ParkedLayer`]): `parked_cars.gd` hands each changed chunk's poses over and creates no node.
+//! While the zoning overlay shows, its ground masks' resident chunks are a 2 km ring about the
+//! eye ([`ZoningRing`]), moved here once a frame.
 
 use crate::nodes::camera_node::CameraNode;
 use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow};
+use crate::nodes::sim::render::stream::layers::parked::{
+    ParkedLayer, SLOT_LIMIT as PARKED_SLOT_LIMIT, SPARE_LIMIT as PARKED_SPARE_LIMIT,
+};
+use crate::nodes::sim::render::stream::layers::roads::{
+    ROAD_HYDRATION_BUDGET_US, RoadExecutor, RoadHydration, RoadInstall, RoadKey, RoadWork,
+};
 use crate::nodes::sim::render::stream::layers::terrain::{
     Activation, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream, PatchWork, Payload,
     POST_LOAD_PATCH_BUDGET_US, TERRAIN_COSTS, TERRAIN_LIMITS, WATER_COSTS, WATER_LIMITS,
 };
+use crate::nodes::sim::render::stream::layers::zoning::ZoningRing;
 use crate::nodes::sim::render::stream::layers::vegetation::residency::{
     PatchJobs, PatchOrder, ResidencySettings, Standing, VegetationResidency,
 };
@@ -80,6 +95,23 @@ pub struct StreamNode {
     frame_patch_units_us: f64,
     terrain_work: PatchWork,
     water_work: PatchWork,
+    // A load's road chunk hydration (`RENDER-32-P`) and its executor, budget and frame.
+    roads: RoadHydration,
+    road_scripts: Option<Gd<Node>>,
+    road_budget: FrameBudget,
+    road_work: RoadWork,
+    // The parked cars' slots (`RENDER-32-P`), once `parked_cars.gd` gave the scenario.
+    parked: Option<ParkedDraw>,
+    // The zoning masks' ring while the overlay shows (`RENDER-32-P`).
+    zoning: Option<ZoningRing>,
+}
+
+// The parked layer with its own backend (its own mesh catalogue, appended as buckets appear)
+// and the borrowed poses of the chunk being installed (reused storage).
+struct ParkedDraw {
+    backend: GodotBackend,
+    layer: ParkedLayer,
+    poses: Vec<(u32, PackedFloat32Array)>,
 }
 
 #[godot_api]
@@ -116,6 +148,12 @@ impl INode for StreamNode {
             frame_patch_units_us: 0.0,
             terrain_work: PatchWork::default(),
             water_work: PatchWork::default(),
+            roads: RoadHydration::default(),
+            road_scripts: None,
+            road_budget: FrameBudget::new(ROAD_HYDRATION_BUDGET_US),
+            road_work: RoadWork::default(),
+            parked: None,
+            zoning: None,
         }
     }
 
@@ -131,6 +169,8 @@ impl INode for StreamNode {
             server.disconnect("frame_pre_draw", &callable);
         }
         self.clear_vegetation();
+        self.clear_road_hydration();
+        self.clear_parked_chunks();
     }
 
     fn process(&mut self, delta: f64) {
@@ -690,6 +730,201 @@ impl StreamNode {
         out
     }
 
+    /// Starts a load's road chunk hydration (`RENDER-32-P`): the chunks `keys` (x, z pairs) with
+    /// their `vertices`, on a grid of `span`-metre chunks whose chunk (0, 0) starts at `origin`,
+    /// installed nearest first by `executor`'s `stream_road_chunk(key) -> int` (0 installed, 1
+    /// gone, 2 busy, 3 cancelled), which hears `stream_road_hydration_done()` when none is left.
+    /// Replaces any hydration running. `O(chunks)`.
+    #[func]
+    pub fn begin_road_hydration(
+        &mut self,
+        executor: Gd<Node>,
+        span: f64,
+        origin: Vector2,
+        keys: PackedInt32Array,
+        vertices: PackedInt64Array,
+    ) {
+        let keys = keys.as_slice();
+        let vertices = vertices.as_slice();
+        let count = (keys.len() / 2).min(vertices.len());
+        self.roads.begin(
+            span as f32,
+            [origin.x, origin.y],
+            (0..count).map(|at| {
+                let key = [keys[2 * at], keys[2 * at + 1]];
+                (key, u32::try_from(vertices[at]).unwrap_or(u32::MAX))
+            }),
+        );
+        self.road_scripts = Some(executor);
+        if self.roads.pending() == 0 {
+            self.end_road_hydration();
+        }
+    }
+
+    /// Drops the road chunks still to hydrate.
+    #[func]
+    pub fn clear_road_hydration(&mut self) {
+        self.roads.clear();
+        self.road_scripts = None;
+    }
+
+    /// Whether road chunks of a load are still to hydrate.
+    #[func]
+    pub fn has_road_hydration_pending(&self) -> bool {
+        self.roads.pending() > 0
+    }
+
+    /// Road chunks still to hydrate any point of which lies within `radius` metres of the eye
+    /// on the ground (the load's hand-over waits for none within its near ring). `O(pending)`.
+    #[func]
+    pub fn get_road_holes_near(&self, radius: f64) -> i64 {
+        match self.view {
+            Some(view) => self.roads.holes_near(view.eye, radius as f32) as i64,
+            None => self.roads.pending() as i64,
+        }
+    }
+
+    /// The road hydration's counts: `pending` and `installed` since it began.
+    #[func]
+    pub fn get_road_hydration_counts(&self) -> Vector2i {
+        Vector2i::new(self.roads.pending() as i32, self.roads.installed() as i32)
+    }
+
+    /// Draws the parked cars in `scenario` from now on (`parked_cars.gd`, once; `RENDER-32-P`).
+    /// A second call keeps the slots.
+    #[func]
+    pub fn set_parked_scenario(&mut self, scenario: Rid) {
+        if self.parked.is_none() && scenario.is_valid() {
+            let mut backend = GodotBackend::new(scenario);
+            backend.set_catalogue(Vec::new(), Vec::new(), Vec::new());
+            self.parked = Some(ParkedDraw {
+                backend,
+                layer: ParkedLayer::new(PARKED_SLOT_LIMIT, PARKED_SPARE_LIMIT),
+                poses: Vec::new(),
+            });
+        }
+    }
+
+    /// Registers vehicle bucket `bucket`'s mesh (built by `parked_cars.gd` as the bucket is first
+    /// met). A bucket registered again keeps its first mesh.
+    #[func]
+    pub fn register_parked_mesh(&mut self, bucket: i64, mesh: Rid) {
+        if let Some(draw) = self.parked.as_mut()
+            && !draw.layer.has_mesh(bucket as u32)
+        {
+            let index = draw.backend.push_mesh(mesh);
+            draw.layer.register(bucket as u32, index);
+        }
+    }
+
+    /// Whether reused parked slots take fresh storage (the viewport draws motion vectors).
+    #[func]
+    pub fn set_parked_fresh_buffers(&mut self, fresh: bool) {
+        if let Some(draw) = self.parked.as_mut() {
+            draw.layer.set_fresh_buffers(fresh);
+        }
+    }
+
+    /// Installs parked chunk `key` as `buckets` (vehicle bucket to its poses, 12 floats each;
+    /// every bucket with poses registered), whole; false when the pool could not take it
+    /// (nothing changed: the caller offers it again). `O(buckets + poses)`.
+    #[func]
+    pub fn set_parked_chunk(&mut self, key: Vector2i, buckets: VarDictionary) -> bool {
+        let Some(draw) = self.parked.as_mut() else {
+            return false;
+        };
+        let ParkedDraw {
+            backend,
+            layer,
+            poses,
+        } = draw;
+        poses.clear();
+        for (bucket, rows) in buckets.iter_shared() {
+            let (Ok(bucket), Ok(rows)) = (bucket.try_to::<i64>(), rows.try_to::<PackedFloat32Array>())
+            else {
+                continue;
+            };
+            if layer.has_mesh(bucket as u32) {
+                poses.push((bucket as u32, rows));
+            }
+        }
+        let installed = layer.install(
+            backend,
+            (key.x, key.y),
+            poses.iter().map(|(bucket, rows)| (*bucket, rows.as_slice())),
+        );
+        poses.clear();
+        installed
+    }
+
+    /// Frees every parked slot (a world replaced; the renderer leaving).
+    #[func]
+    pub fn clear_parked_chunks(&mut self) {
+        if let Some(draw) = self.parked.as_mut() {
+            draw.layer.reset(&mut draw.backend);
+        }
+    }
+
+    /// The drawn parked buckets (tests and the stream benchmark's digests): `chunk`, `bucket`
+    /// and `multimesh` (its RID; its visible instances are the bucket's poses). `O(buckets)`.
+    #[func]
+    pub fn get_parked_drawn(&self) -> VarArray {
+        let mut out = VarArray::new();
+        let Some(draw) = self.parked.as_ref() else {
+            return out;
+        };
+        for (chunk, bucket, slot) in draw.layer.drawn() {
+            let mut item = VarDictionary::new();
+            item.set("chunk", Vector2i::new(chunk.0, chunk.1));
+            item.set("bucket", i64::from(bucket));
+            item.set("multimesh", Rid::new(draw.layer.pool().slot(slot).multimesh));
+            out.push(&item.to_variant());
+        }
+        out
+    }
+
+    /// The parked pool's `slots_live`, `slots_spare`, `slots_created` and `slots_freed`.
+    #[func]
+    pub fn get_parked_slots(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        if let Some(draw) = self.parked.as_ref() {
+            let pool = draw.layer.pool();
+            let (created, freed) = pool.churn();
+            out.set("slots_live", pool.live() as i64);
+            out.set("slots_spare", pool.spares() as i64);
+            out.set("slots_created", created as i64);
+            out.set("slots_freed", freed as i64);
+        }
+        out
+    }
+
+    /// Keeps the zoning masks' resident chunks on a ring from the next frame (`shown`, chunks of
+    /// `span` metres over a world of `world` metres about its centre), or forgets them.
+    #[func]
+    pub fn set_zoning_ring(&mut self, shown: bool, span: f64, world: Vector2) {
+        self.zoning = (shown && span > 0.0)
+            .then(|| ZoningRing::new(span, [f64::from(world.x), f64::from(world.y)]));
+    }
+
+    /// Advances whenever the zoning ring's resident chunks change (-1 without a ring).
+    #[func]
+    pub fn get_zoning_ring_revision(&self) -> i64 {
+        self.zoning.as_ref().map_or(-1, |ring| ring.revision() as i64)
+    }
+
+    /// The zoning ring's resident chunks, nearest first, as x, z pairs. `O(chunks)`.
+    #[func]
+    pub fn get_zoning_ring(&mut self) -> PackedInt32Array {
+        let mut out = PackedInt32Array::new();
+        if let Some(ring) = self.zoning.as_mut() {
+            for [x, z] in ring.resident() {
+                out.push(x);
+                out.push(z);
+            }
+        }
+        out
+    }
+
     /// Turns the perf channel's records on or off (`PerfDebug`, recorded as `vegetation`).
     #[func]
     pub fn set_perf_enabled(&mut self, enabled: bool) {
@@ -799,6 +1034,42 @@ impl StreamNode {
             };
     }
 
+    // The road hydration's units under its own budget a frame, nearest first; the executor hears
+    // when none is left.
+    fn road_frame(&mut self) {
+        self.road_work = RoadWork::default();
+        if self.roads.pending() == 0 {
+            return;
+        }
+        let Some(mut scripts) = self.road_scripts.clone() else {
+            return;
+        };
+        self.road_budget.begin_frame();
+        let planes = self.camera_frustum();
+        let in_view = |low: [f32; 3], high: [f32; 3]| {
+            planes
+                .as_ref()
+                .is_none_or(|planes| box_in_view(planes, low, high))
+        };
+        let eye = self.view.map(|view| view.eye);
+        self.road_work = self.roads.frame(
+            eye,
+            &mut self.road_budget,
+            &self.clock,
+            &in_view,
+            &mut RoadScriptExecutor(&mut scripts),
+        );
+        if self.roads.pending() == 0 {
+            self.end_road_hydration();
+        }
+    }
+
+    fn end_road_hydration(&mut self) {
+        if let Some(mut scripts) = self.road_scripts.take() {
+            scripts.call("stream_road_hydration_done", &[]);
+        }
+    }
+
     // The terrain's residency changes: the water's wanted set and the vegetation's tiers.
     fn follow_terrain(&mut self) {
         for (key, generation) in self.terrain.take_generations() {
@@ -822,6 +1093,10 @@ impl StreamNode {
         self.update_camera();
         if residency {
             self.patch_frame();
+            self.road_frame();
+            if let (Some(ring), Some(view)) = (self.zoning.as_mut(), self.view) {
+                ring.update([f64::from(view.eye[0]), f64::from(view.eye[2])]);
+            }
         }
         if residency && let Some(backend) = self.backend.as_mut() {
             let eye = self.view.map(|view| view.eye);
@@ -1004,6 +1279,23 @@ impl StreamNode {
                 ],
             );
         }
+        if self.road_work != RoadWork::default() || self.roads.pending() > 0 {
+            let mut roads = VarDictionary::new();
+            roads.set("installed", self.road_work.installed as i64);
+            roads.set("gone", self.road_work.gone as i64);
+            roads.set("busy", self.road_work.busy);
+            roads.set("pending", self.roads.pending() as i64);
+            roads.set("predicted_ms", self.road_budget.predicted_us / 1000.0);
+            roads.set("unit_max_ms", self.road_budget.max_unit_us / 1000.0);
+            script.call(
+                "record",
+                &[
+                    "road_hydration".to_variant(),
+                    (self.road_work.units_us / 1000.0).to_variant(),
+                    roads.to_variant(),
+                ],
+            );
+        }
         script.call(
             "record",
             &[
@@ -1132,6 +1424,25 @@ const PATCH_HIGH_M: f32 = 2500.0;
 
 // Runs a patch layer's units on `terrain.gd` / `water.gd`: their `stream_request`,
 // `stream_activate`, `stream_deactivate`, `stream_build` and `stream_set_lod`, one call a unit.
+// `road_chunk_hydration.gd`'s units.
+struct RoadScriptExecutor<'a>(&'a mut Gd<Node>);
+
+impl RoadExecutor for RoadScriptExecutor<'_> {
+    fn install(&mut self, key: RoadKey) -> RoadInstall {
+        let answer = self
+            .0
+            .call("stream_road_chunk", &[Vector2i::new(key[0], key[1]).to_variant()])
+            .try_to::<i64>()
+            .unwrap_or(3);
+        match answer {
+            0 => RoadInstall::Installed,
+            1 => RoadInstall::Gone,
+            2 => RoadInstall::Busy,
+            _ => RoadInstall::Cancelled,
+        }
+    }
+}
+
 struct ScriptExecutor<'a>(&'a mut Gd<Node>);
 
 impl PatchExecutor for ScriptExecutor<'_> {

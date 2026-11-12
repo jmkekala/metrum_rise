@@ -2,11 +2,14 @@
 
 ## PARK-01 bridge regression: shared mesh equivalence, lot supply, immutable chunks and towing;
 ## `ROAD-109`: a door keeps its sidewalk and a side without one takes no building, with the reason.
+## `RENDER-32-P`: the parked renderer draws every car once through the stream node's pooled slots,
+## makes no node per chunk, and frees every slot when it leaves.
 ## METRUM_PARKING_AGENT_CONTROL optionally points to the pre-extraction agents.gd source.
 extends SceneTree
 
 const AgentRenderer := preload("res://scripts/renderers/agents.gd")
 const VehicleResources := preload("res://scripts/renderers/vehicle_resources.gd")
+const ParkedRenderer := preload("res://scripts/renderers/parked_cars.gd")
 var _failures := 0
 
 func _initialize() -> void:
@@ -66,6 +69,35 @@ func _placement_preview(sim: SimulationNode, z: float) -> Dictionary:
 			await process_frame
 	return preview
 
+# The full payload through the renderer as the game installs it (`RENDER-32-P`).
+func _parked_renderer(sim: SimulationNode, full: Dictionary, filled: int) -> void:
+	sim.name = "SimulationNode"
+	var stream := StreamNode.new()
+	stream.name = "StreamNode"
+	root.add_child(stream)
+	var parked: Node3D = ParkedRenderer.new()
+	parked.name = "ParkedCars"
+	root.add_child(parked)
+	parked.apply_publication(full)
+	var expected := {}
+	for update: Dictionary in full["chunks"]:
+		for bucket: int in update["buckets"]:
+			expected["%s|%d" % [update["chunk"], bucket]] = update["buckets"][bucket]
+	var drawn := 0
+	var rows: Array[Dictionary] = parked.drawn_rows()
+	for item: Dictionary in rows:
+		var key := "%s|%d" % [item.chunk, item.bucket]
+		_expect(expected.get(key, PackedFloat32Array()) == item.rows, "parked bucket %s drawn bit for bit" % key)
+		drawn += (item.rows as PackedFloat32Array).size() / 12
+	_expect(rows.size() == expected.size(), "every parked bucket drawn once")
+	_expect(drawn == filled, "every parked car drawn once: %d of %d" % [drawn, filled])
+	_expect(parked.get_child_count() == 0, "no node per parked chunk")
+	parked.free()
+	var slots: Dictionary = stream.get_parked_slots()
+	_expect(int(slots.slots_live) == 0 and int(slots.slots_spare) == 0 and int(slots.slots_created) == int(slots.slots_freed),
+		"the renderer leaving frees every parked slot: %s" % slots)
+	stream.free()
+
 func _run() -> void:
 	_resources()
 	var sim := SimulationNode.new()
@@ -97,6 +129,7 @@ func _run() -> void:
 		for ids: PackedInt64Array in update["identities"].values():
 			published += ids.size()
 	_expect(published == filled, "the snapshot holds every parked car")
+	_parked_renderer(sim, full, filled)
 	var frame: Dictionary = sim.get_vehicle_frame(false)
 	_expect(not frame.has("busy"), "the vehicle frame has no busy state")
 	_expect(frame.has("cars") and frame.has("parked"), "cars and unseen chunks come together")

@@ -210,6 +210,10 @@ func is_world_ready() -> bool:
 func _await_world_ready() -> void:
 	if terrain_node != null and terrain_node.unready_patches_near_camera(WORLD_READY_RADIUS_M) > 0:
 		return
+	# The road chunks of the near ring too: a load's chunks stream in nearest first (RENDER-32-P).
+	var roads := get_node_or_null("../NetworkRenderer/RoadChunkHydration")
+	if roads != null and roads.holes_near(WORLD_READY_RADIUS_M) > 0:
+		return
 	if terrain_node != null:
 		terrain_node.set_load_settling(false)
 	_world_ready = true

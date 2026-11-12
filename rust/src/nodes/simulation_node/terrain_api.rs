@@ -220,6 +220,8 @@ impl SimulationNode {
         let Some(mut core) = self.try_lock_core() else {
             return false;
         };
+        // The revision's chunks, for a road hydration still running (`RENDER-32-P`).
+        let installed = Arc::clone(&core.pending_road_mesh_chunks);
         let accepted = core.acknowledge_network_render_generation(generation);
         if !accepted {
             return false;
@@ -239,6 +241,9 @@ impl SimulationNode {
             core.transit_network.roadbed.chunk_origin_m();
         snapshot.road_mesh_chunk_origin_x_m = road_chunk_origin_x_m;
         snapshot.road_mesh_chunk_origin_z_m = road_chunk_origin_z_m;
+        drop(snapshot);
+        drop(core);
+        self.road_hydration_acknowledged(generation, &installed);
         true
     }
 

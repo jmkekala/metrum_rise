@@ -155,6 +155,7 @@ mod gridlock_api;
 mod junction_debug_api;
 mod network_api;
 mod parking_api;
+mod road_hydration_api;
 mod system_api;
 mod terrain_api;
 #[cfg(test)]
@@ -230,6 +231,9 @@ pub struct SimulationNode {
     /// The building LOD batches' `RenderingServer` slots (`RENDER-32-L`), once
     /// `building_lods.gd` gave the scenario; presentation state like `building_lods`.
     pub(crate) building_draw: Option<building_lod_api::BuildingDraw>,
+    /// The network a load's road chunks hydrate from (`RENDER-32-P`), until the hydration ends;
+    /// presentation state like `building_lods`.
+    pub(crate) road_hydration: Option<road_hydration_api::RoadHydrationSource>,
     /// Main-thread drawn car poses between snapshots; never serialized or read by simulation.
     pub(crate) car_visuals: crate::nodes::sim::render::car_visual::CarVisualSmoother,
     /// The drawn car buffers by bucket, as `smooth_car_render_data` returns them, and the
@@ -499,6 +503,7 @@ impl INode3D for SimulationNode {
             water_patch_mesh_jobs,
             building_lods: Default::default(),
             building_draw: None,
+            road_hydration: None,
             car_visuals: Default::default(),
             car_buffers: VarDictionary::new(),
             changed_car_buckets: PackedInt64Array::new(),

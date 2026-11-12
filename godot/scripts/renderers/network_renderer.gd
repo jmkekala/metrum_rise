@@ -13,6 +13,7 @@
 extends Node
 
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const RoadChunkHydration := preload("res://scripts/renderers/road_chunk_hydration.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain = $"../Terrain"
@@ -28,11 +29,27 @@ var _road_debug_enabled: bool:
 # Startup-only: patch geometry dumps also need the road channel.
 var _road_geometry_debug_enabled: bool = false
 var _road_mesh_refreshed_surface_generation: int = -1
+# Where the road tool needs its whole network (a load), its chunks stream in nearest first
+# through the streaming core instead of in one frame (RENDER-32-P).
+var _hydration: Node
 
 const ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS := 64
 
 func _ready() -> void:
 	_road_geometry_debug_enabled = MetrumDebug.startup_mode("road_geometry_dump")
+	_road_hydration()
+
+# The hydration's executor, a child made on first use (a renderer outside a scene, as tests build
+# it, has no streaming core: its hydration installs every chunk at once).
+func _road_hydration() -> Node:
+	if _hydration == null:
+		_hydration = RoadChunkHydration.new()
+		_hydration.name = "RoadChunkHydration"
+		_hydration.simulation_node = simulation_node
+		_hydration.road_tool = road_tool
+		_hydration.stream_node = get_node_or_null("../StreamNode") if is_inside_tree() else null
+		add_child(_hydration)
+	return _hydration
 
 func _process(_delta: float) -> void:
 	var perf_enabled := PerfDebug.is_enabled()
@@ -43,7 +60,7 @@ func _process(_delta: float) -> void:
 	if not simulation_node.is_network_dirty():
 		if road_tool.needs_main_mesh_hydration():
 			var generation := _current_road_surface_generation()
-			if road_tool.update_main_mesh(generation) == generation:
+			if _road_hydration().prepare(generation) and _hydration.commit(true) == generation:
 				road_tool.mark_network_topology_dirty()
 		_road_mesh_refreshed_surface_generation = -1
 		if perf_enabled:
@@ -93,9 +110,14 @@ func _process(_delta: float) -> void:
 	# 3. Build and validate changed road chunks without replacing resident instances. Staging also
 	# rechecks the generation after potentially expensive ArrayMesh construction.
 	var road_mesh_staged := false
+	var road_hydration := road_tool.needs_main_mesh_hydration()
 	if _road_mesh_refreshed_surface_generation != surface_generation:
 		var road_mesh_start_us := Time.get_ticks_usec()
-		var staged_generation: int = road_tool.update_main_mesh(surface_generation, true)
+		var staged_generation: int = (
+			surface_generation if road_hydration and _road_hydration().prepare(surface_generation)
+			else -1 if road_hydration
+			else road_tool.update_main_mesh(surface_generation, true)
+		)
 		if staged_generation != surface_generation:
 			return
 		road_mesh_ms = float(Time.get_ticks_usec() - road_mesh_start_us) / 1000.0
@@ -116,7 +138,10 @@ func _process(_delta: float) -> void:
 		terrain_visuals_ms += float(Time.get_ticks_usec() - terrain_commit_start_us) / 1000.0
 	if road_mesh_staged:
 		var road_commit_start_us := Time.get_ticks_usec()
-		var rendered_generation: int = road_tool.commit_staged_main_mesh_update(surface_generation)
+		var rendered_generation: int = (
+			_road_hydration().commit(false) if road_hydration
+			else road_tool.commit_staged_main_mesh_update(surface_generation)
+		)
 		if rendered_generation != surface_generation:
 			return
 		road_mesh_ms += float(Time.get_ticks_usec() - road_commit_start_us) / 1000.0
