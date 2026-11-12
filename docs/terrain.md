@@ -4637,8 +4637,11 @@ km.
     journal's other dirty held tiles (another level, or outside the commit's selection) rebake
     as before, and the batch installs together. The batch's frame releases the preview tiles of
     every epoch up to the commit's, so no frame shows neither. A staged tile Godot neither holds
-    nor wants installs only where the preview shows it graded; its patch's list, refreshed with
-    the edit's patch generations, then wants it; any other waits for that list. A commit
+    nor wants installs where it is graded and a resident patch meets it (since `RENDER-32-K`
+    part 5, `TERRAIN-23`: before, only where the preview showed it, so a click right after the
+    poses installed none); its patch's list, refreshed with the edit's patch generations, then
+    wants it, and the last resident patch meeting it to leave evicts it; any other waits for that
+    list. A commit
     without a preview (no renderer view) attaches nothing and the journal rebakes as gate D
     built it.
   - *Retired.* The exact cut's preview patches (`RoadPreviewPieces::terrain`,
@@ -11927,7 +11930,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-F` | V2b | Rings; vegetation residency, bands and staleness in Rust | `-D`'s carried bars (night delegation 2026-11-12, for review): the 30k `jump` frame maximum within the same-binary spread of `-E`'s control (`-E`: +2.7 ms, the residency's hides and frees in GDScript); vegetation at most 2.5 ms a frame on Kuopio's 0.5 s turns (the band scan), and the largest single vegetation unit at most 2.0 ms at 30k (one 2.38 ms request on `night_turn_back`). Vegetation 0.5 ms mean a frame; zero ring cells on frames without a crossing; `RENDER-27`'s bar |
 | `RENDER-32-G` | A1 | Agents without a visual change (`RENDER-28` part 1) | Agents 0.6 ms on the paused still |
 | `RENDER-32-H` | L1 | Street lights' grid, far map and pool in Rust (`RENDER-33`) | 0.3 ms mean, 1.0 ms max on night turns and pans. Landed 2026-11-11 (coordinator, night delegation, for review); its `night_pan_out` frame-mean reading of night within 1 ms of day (+0.9/+1.6 ms, graded catch-up) carried to `-I`/`-J` |
-| `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. `-K` part 2 (G2c-2) landed 2026-11-12 (coordinator, delegation, for review; graded total carried to part 3): the page uploads and copies in Rust through the backend, 20-23 % more copies a frame in the same install budget; the graded total level (1.36-1.41 ms, 1.55-1.63 at 100k) and its bars missed: every frame of the turns spends the install budget with finished bakes waiting, so the total is the budget's, not the uploads' (record); carried to part 3. `-K` part 3 (G2c-3) landed 2026-11-12 (coordinator, delegation, for review; the graded totals carried to `-Q`, the drag probe on the charge to part 4; the coordinator's split, for review: edits, previews, T65 option (3), the tool holds and `TERRAIN-23` are part 4's): the tile result path in Rust, 7.6 us a copy against 32; graded total 0.80-0.84 ms on the 30k 1 s turn (the queue keeps up; the rest is the cell rewrites the installs cause) and 1.67-1.84 at 100k (budget-bound, twice the copies a frame); after the review fix (the install budget charges each placed tile its cell rewrites, 8 us) 0.83-0.88 and 1.39-1.48 against the control's 1.54-1.58: both bars missed, 100k not above control; carried to `-Q` (record). `-K` part 4 (G2c-4) landed 2026-11-12 (coordinator, delegation, for review; handed back at the round's limit, the rest is part 5): the edit batch and preview tiles in Rust, replayed bit for bit, every product and timing level with control; T65 option (3) with the tools' holds, the resident-patch hand-off, `TERRAIN-23`'s cause, the deletions and `ROAD-68-H`'s preview rows carried to part 5 ([record](#the-graded-edit-batch-and-preview-tiles-in-rust-render-32-k-part-4-2026-11-12)). |
+| `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. `-K` part 2 (G2c-2) landed 2026-11-12 (coordinator, delegation, for review; graded total carried to part 3): the page uploads and copies in Rust through the backend, 20-23 % more copies a frame in the same install budget; the graded total level (1.36-1.41 ms, 1.55-1.63 at 100k) and its bars missed: every frame of the turns spends the install budget with finished bakes waiting, so the total is the budget's, not the uploads' (record); carried to part 3. `-K` part 3 (G2c-3) landed 2026-11-12 (coordinator, delegation, for review; the graded totals carried to `-Q`, the drag probe on the charge to part 4; the coordinator's split, for review: edits, previews, T65 option (3), the tool holds and `TERRAIN-23` are part 4's): the tile result path in Rust, 7.6 us a copy against 32; graded total 0.80-0.84 ms on the 30k 1 s turn (the queue keeps up; the rest is the cell rewrites the installs cause) and 1.67-1.84 at 100k (budget-bound, twice the copies a frame); after the review fix (the install budget charges each placed tile its cell rewrites, 8 us) 0.83-0.88 and 1.39-1.48 against the control's 1.54-1.58: both bars missed, 100k not above control; carried to `-Q` (record). `-K` part 4 (G2c-4) landed 2026-11-12 (coordinator, delegation, for review; handed back at the round's limit, the rest is part 5): the edit batch and preview tiles in Rust, replayed bit for bit, every product and timing level with control; T65 option (3) with the tools' holds, the resident-patch hand-off, `TERRAIN-23`'s cause, the deletions and `ROAD-68-H`'s preview rows carried to part 5 ([record](#the-graded-edit-batch-and-preview-tiles-in-rust-render-32-k-part-4-2026-11-12)). `-K` part 5 (G2c-5, 2026-11-12, branch, not landed): `TERRAIN-23` fixed (a fast click installs in one batch frame), the audit's graded findings 3, 4 (goldens), 11, 12, 13 and 15, the preview rows re-measured (all missed); T65's last junction frames wait for the user's rule, the hand-off for T1, the executor deletion and `CODE-30` for a later round ([record](#terrain-23s-cause-and-the-streaming-audits-graded-findings-render-32-k-part-5-2026-11-12)). |
 | `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`); the detail swap without read-back (`RENDER-37`) | 0.3 ms on the turn, 1.5 ms at 100k; reflection hook 0.1 ms without water in view. Landed 2026-11-12 (coordinator, delegation, for review): every bar met (0.09-0.21 ms, 0.26-0.53 ms, 0.02-0.04 ms) |
 | `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`); step 0: a water input of record, a pond made on the prepared 30k city by a recorded deterministic recipe through the lake-fill mutators (planned 2026-11-12) | 0.3 ms a frame on Kuopio's turn and pan, the water half measured on the pond input too. Landed 2026-11-12 (branch `stream-t1`, rebased onto `8493e60a`, coordinator under delegation, for review; fix round the same day; the 100k settle carried to `-Q`): the control's decisions replayed exactly, settled patches equal by digest, stills identical; terrain and water 0.14-0.17 ms a frame on Kuopio's turns and 0.13-0.14 on its pans (control 0.20-0.28), 0.16-0.26 on the pond (0.21-0.56), the 100k load's patch residency 0.009 ms (2.1); a terrain build 0.41 to 0.16 ms (its land cover from the payload worker, constant material parameters once per pooled material) and the post-load window (5.2 ms a frame until first settled, the control's measured cost): Kuopio hands over 0.6 s and settles 0.6 s earlier than control, every bar met ([record](#terrain-and-water-patches-on-the-core-render-32-m-2026-11-12)) |
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement. Seen in play by the user (2026-11-12, `dev` `8493e60a`, release): chunks visibly pop in when zoomed far out, and trees load visibly while zooming from far out down to the ground. The go/no-go measurement covers both: a far zoom-out and a far-to-ground zoom (`stream_frame_benchmark.gd` zoom phase extended to them), entered-to-drawn per layer | Entered-to-drawn p95 at most three frames, on the far zoom-out and the far-to-ground zoom included |
@@ -14328,6 +14331,182 @@ the dump not runnable; part 3's carried check of the probe on the 8 us cell char
 swing passes, Kuopio's fast commit fails as on `dev` (`TERRAIN-23`). `ROAD-68-H`'s carried preview
 rows: not re-measured (they need the user's display and belong with T65's rule in part 5). Not
 relaxed.
+
+### `TERRAIN-23`'s cause and the streaming audit's graded findings (`RENDER-32-K` part 5, 2026-11-12)
+
+G2c-5's brief: `TERRAIN-23`, T65 option (3) as one rule, the resident-patch hand-off and the
+deletion of the renderer to an executor, `ROAD-68-H`'s carried preview rows, with the streaming
+core audit's graded findings (3, 4, 5, 11, 12, 13, 15) folded in. Built: `TERRAIN-23`'s fix
+(which is the fast click's part of T65's rule), findings 3, 4 (the tracked goldens), 11, 12, 13
+and 15, and the preview rows re-measured. Not built, with the reasons below: the rest of T65
+option (3) (a visual choice for the user), the resident-patch hand-off (it targets T1's rings,
+in flight beside this round), the executor deletion, finding 5 (recorded as `CODE-30`) and
+finding 4's extra trace lines. `terrain_graded_tiles.gd` 1,425 lines before and after (3 lines
+changed), `terrain_graded_pages.gd` 180 to 181.
+
+**`TERRAIN-23`'s cause.** Two suspects of part 4's narrowing were checked first. The pieces each
+pose rebuilds are not a key or reuse bug: the probe's poses are f32 points lerped along the
+stroke (`start.lerp(end, pose / 8)`), whose direction from the fixed start differs by about
+1e-6 rad pose to pose (`kuopio_08` attempt 21: -2.8598428 to -2.8598436 rad), so every piece of
+the growing stroke, its start terminal included, is a new input; at the terminal's 7 m that is
+the 1e-5 m its bounds move, which T60 (a)'s move selection rightly counts. A player's pointer
+moves them much more. Nor did the probe pass on `ROAD-68-H`'s tips: rounds 4 to 7 record 11 to
+14 fast clicks without a batch frame ([`ROAD-68-H` round 4](roads.md#road-68-open-questions):
+"no pose frame shows preview terrain (0 of 624)"), accepted then as T27 (d)'s lag (the user,
+2026-10-29 about 19:15); the per-round runners exited 0 on the failed check. What fails is the
+edit batch's rule for a commit's own tiles: a staged tile the renderer neither held nor wanted
+joined the batch only where the preview showed it, and T61 (1) (a)'s all-or-none display with
+`POSE_FRAME_TILES` 1 shows no tile on any pose frame of a continuous drag (a pose's 9 to 18
+tiles never all stage within the poses). So the click right after the poses committed tiles
+that waited for their patch's list and streamed in over later frames, the batch was empty, and
+the network tool's T61 (2) hold had no serial to wait for: the committed road drew over terrain
+not yet cut for it (`kuopio_06` attempt 17's 4-pixel crack).
+
+**The fix** (`ops.rs` `stage_edit_tile`). A commit's or undo's graded tile joins the batch
+wherever a resident patch meets it, shown by the preview or not. Its patch's list, refreshed
+with the edit's patch generations, then wants it, and the last resident patch meeting it to
+leave evicts it (`patch_changed` already did so for commit-only tiles); a tile no resident patch
+meets still waits for its list. `O(patches meeting a tile)` per staged tile. A unit test pins
+the three cases and the eviction. What changes on edit frames is T65's intended effect: a fast
+click's terrain installs in its batch frame with the committed road (the held chunks now wait
+for it) instead of streaming in after it. Replay: the eight recorded traces and the bridge trace
+bit for bit but `kuopio-swing.2`, which differs first at its commit's staged tiles (line
+303,621: tile (-16, -14), graded, neither held nor shown, now joins the batch); it was
+re-recorded with the branch (the probe's `kuopio_08` swing, which passes every check) and
+replays bit for bit with the other eight.
+
+**T65 option (3): what is left, a choice for the user.** With the fast click's frames gone, the
+probe's background frames are `kuopio_03` attempt 8's 16 junction frames (2 pose, 9 catch-up,
+3 sweep, the fast click's click and wait frame): the stroke's end joins stroke 6's span, so the
+pose replaces published pieces (the span split, the new junction), and the published tiles,
+drawn until the pose's whole selection is exact (T61 (1) (a)), discard the old pieces'
+footprint where the pose's pieces no longer cover it. One rule that draws one road version per
+area there must hold either the road or the terrain, and every option changes what the preview
+shows beyond "no background, no two versions": (a) a pose that replaces published pieces draws
+its road chunks only with its exact graded selection, the last such pose (or the published road)
+staying drawn until then: simple and testable in Rust, but at an existing road the preview road
+stops following a continuous drag until it pauses (ceil(pending / 2) frames), which breaks the
+moving preview rows' target that the drawn pose be the sampled one within 16.7 ms; (b) per piece:
+the replaced pieces' area keeps the published road and terrain while the stroke's own pieces draw
+at once: needs the preview payload split by piece, and the new arm meets the held old road at a
+seam where two versions touch; (c) T65's option (2), the terrain's cut-out following the road
+drawn (the user's own recommendation of 2026-10-29: spike (2), then (3)); (d) leave the 16 frames.
+Recommended: spike (c) first, as the user recommended; (a) only if the user accepts the
+preview's lag at junctions. Also left: the vegetation (T65's third layer) still follows an edit
+up to about 40 frames after its click, and the road and network tools' hold bookkeeping (about
+120 lines) stays in GDScript; it moves with whichever rule is chosen.
+
+**The audit's graded findings.** 3: a page write names its tile and takes only that tile's staged
+bake; a write without it is refused with an engine error and the tile baked again
+(`Graded::rewrite`), where a release build dropped it silently (test: a refused write's tile is
+wanted again). 4: the zoning reference test's eight traces and the bridge test's trace, recorded
+on this branch, are tracked (`godot/tests/fixtures/graded_traces/`) and replayed in the gate beside
+the self-replay, so a change that alters the renderer's outputs consistently no longer passes;
+re-recording them is a reviewed step. Not done: trace lines for set counts, show, hide, binds and
+the material sync (they would break the replay of every recorded trace). 5: not done, `CODE-30`
+(the book is a Godot class: a trait over the callbacks alone does not make the runs
+constructible without the engine; the state moves into a plain struct first). 11: an install reads
+its entry's scalars and copies into a reused scratch instead of cloning the entry and its walls;
+a preview tile's wall faces go through the book's reused scratch. 12: the unattached cell path
+(`cell_buffer`, `wall_floats`, the encodings of effects 30-39 and 41-46) and
+`GradedTileLevels`' class are gone; its two statics and a `level_at` sit on the book, and the
+stream benchmark asks the library under test for the rule (a control built before this round
+has only the class). 13: a freed page (released unkept, or a pooled page dropped) leaves the
+book's texture, shape and object maps (`forget_page` takes `kept`); the growth test checks the
+book holds the live and pooled pages' textures only. 15: `state.rs`'s and `book.rs`'s contract
+comments say what the book owns now.
+
+**Fresh results** (2026-11-12; control `dev` `3a6f5ef4`'s release library and release lib test
+binary built in a side worktree, with its scripts; branch `103ab8d2`'s, whose Rust equals the
+tip's; same session). Graded parts, instrumented, one run a side (graded total ms / copies a
+frame, mean a frame):
+
+| Phase | control | branch |
+|---|---|---|
+| 30k turn_out 1 s | 0.86 / 31.4 | 0.81 / 40.5 |
+| 30k turn_back 1 s | 0.93 / 36.2 | 0.76 / 35.4 |
+| 30k turn_repeat 1 s | 0.93 / 37.2 | 0.87 / 39.4 |
+| 100k after the load | 1.47 / 41.2 (settled in 11.8 s) | 1.56 / 42.1 (11.3 s) |
+| 100k turn_out 1 s | 1.31 / 36.2 | 1.28 / 35.0 |
+| 100k turn_back 1 s | 1.43 / 37.1 | 1.42 / 37.9 |
+| 100k turn_repeat 1 s | 1.43 / 37.9 | 1.40 / 37.8 |
+
+The 30k turns' mean over the three 0.91 ms on the control and 0.81 on the branch; the 100k turns'
+1.39 and 1.37; the 100k load's settling 0.09 ms higher with 0.9 more copies a frame (part 4's
+pair of the same phase: 1.58 and 1.57; not rerun, the brief's one rerun went to the rows). Rows
+(timed, `series` C B B C, 19:04-19:11; still and the 0.5 s and 1 s turns): Kuopio level in every
+phase (two better p50s by 0.1, `turn_out 1 s` max +1.1 against a spread of 1.1); 30k level but
+`turn_out 1 s` and `turn_repeat 1 s` p50 +0.8 and +1.4 ms against spreads of 0.3 and 0.5, with the
+branch's GPU p50 0.7-0.9 ms above the control's in those runs; their one rerun, the 30k 1 s turns
+only (19:20-19:23): level, better, better (p50 +0.3, -0.1, -1.0). Level F (`./run.sh --timing
+--level F --control <ctl> --branch <br> --base 3a6f5ef4`, 19:12-19:20): 30k 1x day mean 2.272
+against 2.255 ms, level on every metric, both acceptances PASS (control 6.34 / 4.45 / 5.27,
+branch 6.23 / 4.33 / 4.48); 30k 32x C B B C level (mean 4.409 / 4.421), the `PERF-17` known
+exception on both sides. Replay (the
+branch's build): the eight traces and the bridge trace bit for bit, `kuopio-swing` as
+re-recorded; the tracked goldens in the gate.
+
+**Products** (untimed, gamescope, 19:47-20:14, the same libraries). Settled installs by digest
+(30k load, still and turns): graded 4 of 4 settle points equal, buildings 4 of 4, water 1 of 1.
+Stills: Kuopio's `close`, `mid` and `forest_low` byte-identical to the control (4,000 warm-up
+frames); the 30k city two runs a side, `stills systematic` `none` on `city` and `city_low` and
+`systematic` on `saved` (by side 1,974 against the other pairings' 1,678 / 1,532), so `saved`
+was read against `RENDER-38`'s edge pixels with a third run a side: 318 pixels equal within each
+side and different between, 293 of them in `RENDER-38`'s edge-fault set and 25 outside it (max
+delta 10), where `RENDER-32-K` part 1's recheck of two builds with no change found 277, 257 and
+20; `city` 56 (55 in the set), `city_low` 56 (54): not a difference of this round. The drag probe
+(`tools/graded_drag_probe.py`, swing 30 degrees with pauses, background pixels counted): the
+populated 100k swing 2 strokes, 282 frames, none showing the background; Kuopio's 39 strokes 17 of
+6,037 frames with the background on the branch, all on `kuopio_03` attempt 8 (2 pose, 9
+catch-up, 3 sweep, the fast click's batch frame and 2 wait frames), the fast commit in one batch
+frame on every stroke; the control in the same session 17 of 6,037 (16 on `kuopio_03` attempt 8,
+1 on `kuopio_06` attempt 17) and the fast commit failing on 13. Gates on the tip's code
+(`2559fc9d`): clippy `--all-targets` warning set equal to `3a6f5ef4`'s (`asset_document.rs:15`
+only); debug `cargo test --lib` 2,494 passed, 0 failed, 222 ignored; `./run.sh --test` PASS (Rust
+2,498 of 2,498, 223 skipped; both Godot chains, no `SCRIPT ERROR`; `graded_tile_renderer_test`
+headless and rendered 0 failures; the self-recorded and the tracked golden traces replayed).
+
+**`ROAD-68-H`'s carried preview rows** (questions 62, 64, 65; re-measured against their unchanged
+targets on the branch's release library, 19:23-19:42, H4's Method: the user's display, vsync on,
+no FPS cap, windowed 1920x1080, four workers, 100 samples after 8 warm-ups, the paused rows N W W
+N, the populated row A P A on Xwayland and native Wayland; every run through the isolated
+launcher with the player's packs, `.run.lock` and the exclusive timing lock held). The real
+display because the rows' targets are its vsync pacing; gamescope's headless backend was only
+ever their dry run. Since this run the user's rule (2026-11-12) keeps rendered runs in gamescope
+unless a run truly needs the display.
+
+| Target | Result (`RENDER-32-K` part 5) | `ROAD-68-H` round 4 (T61 (1) (a)'s tip) |
+|---|---|---|
+| Moving, simulation paused: every sampled pose exact within 16.7 ms | N 83.0 % (3,241 of 3,904), W 80.0 % (3,080 of 3,849) | N 87.6 %, W 88.9 % |
+| Moving, simulation active: at least 99 % exact within 16.7 ms | 100k at 1x: x11 0 of 486, Wayland 0 of 475; paused (P): 0 of 630 and 0 of 647 | x11 A 42.6 %, P 82.7 %; Wayland A 44.2 %, P 87.8 % |
+| Stationary: p99 and stop to exact under 16.7 ms | paused rows: p95 8.6-24.6 ms (max 35.3), stop to exact 7.4-25.5 ms; populated: p95 21.8-89.3 ms | p95 up to 21.5 ms (max 28.6), stop to exact 5.7-17.5 ms |
+
+Every row misses its target, as on `ROAD-68-H`'s tip; the numbers are not a like-for-like
+comparison with it. The populated row runs a different 100k city: H4's save (version 108) no
+longer loads (`dev` is at 118, no old-save compatibility), so it runs the stream benchmark's
+100k commit city, on which every frame of the populated cases is over 16.7 ms even paused
+(frame p50 19.9-22.0 ms, the viewport's GPU p95 14.1 ms and CPU p95 8.3-8.9 ms): the row now
+measures that city's render cost before any preview work (`RENDER-30`, `RENDER-15`, PL1), not
+the preview. The paused rows are 4.6-8.9 points below round 4's: the machine has two screens
+(DP-2 3840x2160 at 120 Hz, DP-3 1920x1200 at 60 Hz) and the runner does not pin the window to
+DP-2; the first Wayland batch's frame p50 of 16.7 ms (sloped_t 184 of 343, its repeat 357 of 395)
+reads as a 60 Hz screen. Not rerun (the user's rule above); a rerun needs the window pinned to one
+screen, and the populated row a city that loads and a decision whether its target still stands
+on it.
+
+**Against the bars.** `TERRAIN-23` (the fast commit 13 of 13 on Kuopio): met, 39 of 39. T65 option
+(3) (the background in 0 of Kuopio's frames, 0 on the populated swing, never two versions): the
+populated swing met; Kuopio 17 of 6,037 against the control's 17, all `kuopio_03` attempt 8's
+junction frames: not met, the rule a choice for the user (above). The resident-patch hand-off and
+the deletions: not built (`terrain_graded_tiles.gd` 1,425 lines). The preview rows: re-measured,
+every row missed (above). Replay parity on all traces: met (one re-recorded, with its reason).
+Digests: equal. Stills: Kuopio byte-identical; the 30k city `none`, `none` and `saved` on
+`RENDER-38`'s edges as without a change. Edit-frame stills of T65: not taken, its rule not built;
+the fast click's frames are in the probe's counts. Graded totals not worse than control: the 30k
+turns 0.81 against 0.91 ms, the 100k turns 1.37 against 1.39; the 100k load's settling 1.56
+against 1.47 with more copies a frame, one run a side. No node created or freed on a frame path:
+met (nothing new makes an object). `graded_tile_renderer_test` headless and rendered in the gate
+(a `TERRAIN-24` pass) and `TERRAIN-17`'s test: met. `PERF-07` at level F: level. Not relaxed.
 
 ### Buildings by travel bucket, batches through the pools (`RENDER-32-L`, 2026-11-12)
 

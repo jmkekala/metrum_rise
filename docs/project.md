@@ -80,7 +80,11 @@ control's 1.5-1.6 with half again as many tiles a frame; the 0.5 / 1.0 ms bars s
 `RENDER-32-K` part 4 (landed 2026-11-12, part 5 left) moves the graded edit batch and the road
 preview's tiles to Rust, replayed bit for bit; T65's one rule, the tools' holds and the rest of the
 renderer's deletion are part 5's, and `TERRAIN-23` (the drag probe's fast commit) is narrowed, not
-fixed.
+fixed. `RENDER-32-K` part 5 (branch, not landed) fixes `TERRAIN-23`: a click right after a drag now
+installs its graded terrain in the same frame as its road, and the streaming audit's graded
+cleanups are in (a page write checked against its own bake, golden traces in the gate, no entry
+clone on install, freed pages forgotten); the last junction frames of T65 wait for the user's
+choice of rule, and the renderer's deletion to an executor is still to come.
 `RENDER-32-F` (landed)
 moves the vegetation's residency, bands and staleness to Rust, decision for decision equal to the
 GDScript on the benchmark's recorded paths: its frame time on a turn falls to 0.1-0.3 ms, and an
