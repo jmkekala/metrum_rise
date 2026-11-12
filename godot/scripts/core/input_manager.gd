@@ -509,6 +509,10 @@ func _refresh_after_world_load():
 	# Never leave the previous world's road chunks visible while the new terrain is rebuilt.
 	if road_tool:
 		road_tool.reset_main_mesh_chunks()
+	# The road chunks then stream in nearest first (RENDER-32-P): their one-time resources here.
+	var roads := get_node_or_null("../NetworkRenderer/RoadChunkHydration")
+	if roads != null:
+		roads.prewarm()
 	if terrain_node:
 		terrain_node.rebuild_from_simulation_state()
 	if water_node:

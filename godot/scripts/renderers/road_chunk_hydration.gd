@@ -24,6 +24,16 @@ var _plan: Dictionary = {}
 var _span := 0.0
 var _origin := Vector2.ZERO
 
+## Makes the road chunks' one-time resources (the sign models and the lamp meshes and kinds) in the
+## load call, which waits anyway, instead of in the first chunk's unit (0.3 s at 100k).
+func prewarm() -> void:
+	var signs: Node = road_tool.get("_road_signs")
+	if signs != null:
+		signs._ensure_meshes()
+	var lights: Node = road_tool.get("_street_lights")
+	if lights != null:
+		lights._set_kinds()
+
 ## Takes the network at `generation` from Rust for a hydration. False when the network moved
 ## past it (try again later). Nothing is drawn or replaced yet.
 func prepare(generation: int) -> bool:
