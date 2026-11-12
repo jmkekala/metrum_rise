@@ -11935,7 +11935,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`); step 0: a water input of record, a pond made on the prepared 30k city by a recorded deterministic recipe through the lake-fill mutators (planned 2026-11-12) | 0.3 ms a frame on Kuopio's turn and pan, the water half measured on the pond input too. Landed 2026-11-12 (branch `stream-t1`, rebased onto `8493e60a`, coordinator under delegation, for review; fix round the same day; the 100k settle carried to `-Q`): the control's decisions replayed exactly, settled patches equal by digest, stills identical; terrain and water 0.14-0.17 ms a frame on Kuopio's turns and 0.13-0.14 on its pans (control 0.20-0.28), 0.16-0.26 on the pond (0.21-0.56), the 100k load's patch residency 0.009 ms (2.1); a terrain build 0.41 to 0.16 ms (its land cover from the payload worker, constant material parameters once per pooled material) and the post-load window (5.2 ms a frame until first settled, the control's measured cost): Kuopio hands over 0.6 s and settles 0.6 s earlier than control, every bar met ([record](#terrain-and-water-patches-on-the-core-render-32-m-2026-11-12)) |
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement. Seen in play by the user (2026-11-12, `dev` `8493e60a`, release): chunks visibly pop in when zoomed far out, and trees load visibly while zooming from far out down to the ground. The go/no-go measurement covers both: a far zoom-out and a far-to-ground zoom (`stream_frame_benchmark.gd` zoom phase extended to them), entered-to-drawn per layer | Entered-to-drawn p95 at most three frames, on the far zoom-out and the far-to-ground zoom included |
 | `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice (2026-11-12): walkers to 1.0 km with a fade from 0.8 km, cars to 2.5 km with a fade from 2.0 km; stills identical inside the fade starts. Landed 2026-11-12 (coordinator, delegation, for review; the 100k 1x still p99 in the post-load graded frames carried to `-K` part 3, which timed it level with control, three runs a side; [record](#agent-draw-distances-render-32-o-2026-11-12)) |
-| `RENDER-32-P` | R1 | Road hydration at load, parked cars, zoning masks (`RENDER-36`) | The 100k load's frame at most 33 ms |
+| `RENDER-32-P` | R1 | Road hydration at load, parked cars, zoning masks (`RENDER-36`) | The 100k load's frame at most 33 ms. Built 2026-11-12 (branch `stream-r1`, for review): the road work at most 31.3 ms in any frame of the 100k load (control one 1,412 ms frame), all in the held load, the hand-over 1.5 s earlier; parked cars through the pools; zoning masks on a 2 km ring; `RENDER-42` fixed; digests and stills equal; the 30k zooms' `zoom_out` p50 (+0.1 ms) and `zoom_in` maximum flagged after the one rerun ([record](#road-hydration-at-a-load-parked-cars-and-zoning-masks-on-the-core-render-32-p-2026-11-12)) |
 | `RENDER-32-Q` | Close-out | The frame's streaming budgets: graded, buildings and the stream node each run their own `GodotBackend` and budget against the plan's one 2.0 ms (planned 2026-11-12, review of the rounds). Opens with a measurement of all layers' install work a frame on the 30k and 100k turns: inside 2.0 ms in every frame, the per-layer budgets are recorded as the design and the plan's sentence revised; over it, the graded poll and the building publication charge the stream node's budget. Carried from `-M`: the 100k load's settle (13.1 s against 11.6 on a control without `-K` parts 3-4; the graded tail, 38 installs a frame against 50), checked against a matched control with the post-load patch window. Carried from `-K` part 3: the graded totals (0.5 ms on the 30k 1 s turn, 1.0 ms at 100k; 0.83-0.88 and 1.39-1.48 at landing, below control), decided with the budget sum | The sum of the layers' install work at most 2.0 ms in every frame; the carried graded totals met or decided with it |
 
 Track acceptance, on the stream benchmark at 30k, 1080p, paused, after `-A` to `-H` and `-L`:
@@ -15136,6 +15136,158 @@ keeps the control's behaviour. (3) A dirty edit keeps the patch's installed step
 units run before the terrain's (a shore draws a frame after its ground). (5) The water's mesh job
 pipeline (about 30 budget constants) stays the water's product path; its applies through the
 scheduler are carried to `RENDER-32-Q`.
+
+### Road hydration at a load, parked cars and zoning masks on the core (`RENDER-32-P`, 2026-11-12)
+
+R1. Three layers that churned or stalled outside the core join it, and a building frame the slot
+pool refuses is no longer lost (`RENDER-42`). Nothing drawn once settled changes (digests and
+stills below).
+
+**A refused building frame waits whole** (`RENDER-42`, the streaming audit's finding 2). The
+building layer checks a frame against the pool before it sends anything: when its batches need
+more slots than the limit leaves (new batches, or batches moving to a larger size class), nothing
+of it is drawn, the bridge keeps its changes unacknowledged and offers it again every frame, with
+what later frames add, until it fits, as the vegetation keeps a refused product pending. A frame
+gives up its slots (removals, emptied batches, a grown batch's old slot) before it takes new
+ones, so a batch that outgrew its slot moves even in a full pool. `O(removed + changed batches)`
+for the check, nothing sent.
+
+**Road chunks at a load** (`RENDER-36`). Where the road tool needs its whole network (a load, a
+new game), `NetworkRenderer` takes it once from Rust (`begin_road_mesh_hydration`: the chunk map
+the full snapshot took, shared, with each chunk's vertex count; one blocking core lock, as the
+full snapshot had), replaces the road tool's chunks by none at that generation, and hands the
+chunk keys to the stream node. The stream node's first pass runs the hydration's units
+(`stream/layers/roads.rs`, `RoadHydration`) after the patches: one chunk a unit, atomic, in the
+view first, then the near ring (2 km, `TERRAIN-15`'s radius), then the rest, nearest first by
+exact squared ground distance from the eye to the chunk's centre, then by key; a unit runs if its
+predicted cost (vertices x 0.1 us) fits a hydration budget of 4 ms a frame, the frame's first
+always. `road_chunk_hydration.gd` executes a unit: Rust packs the chunk from the hydration's source
+(`get_road_mesh_hydration_chunk`, no lock), the road tool's own builder makes its mesh and its own
+commit installs it with its lights and signs, so a chunk draws as the full snapshot drew it. A
+newer network revision waiting answers busy (no unit runs until `NetworkRenderer` installs it, so
+a chunk never draws a revision its terrain has not); that revision's acknowledgement takes its
+chunks out of the source (`road_hydration_acknowledged`), so the hydration never draws an older
+version over a newer one; a reset of the road tool (another world) cancels it. The load's
+hand-over also waits for no road chunk within the near ring (`_await_world_ready`), and the
+stream benchmark's settled waits for the hydration. The road chunks' one-time resources (the 26
+sign models, the lamp meshes and kinds) are made in the load call (`prewarm`): in the first
+chunk's unit they took 0.30 s. Costs: nothing on a frame without pending chunks; with `p`
+pending, `O(p log p)` to order them and `O(units)` to run them; a unit `O(the chunk's vertices)`
+(at 100k: pack 0.9 ms, build 3.0, commit 1.8, medians). Road chunks stay `MeshInstance3D` nodes
+of the road tool (`network_tool.gd`, not this round's to change); their level of detail stays
+with `RENDER-29`.
+
+**Parked cars.** `parked_cars.gd` builds each vehicle bucket's mesh once (registered by RID) and
+hands every changed chunk's poses to the stream node, which draws them through pooled slots of
+its own backend (`stream/layers/parked.rs`, `ParkedLayer`, 8,192 slots, 2,048 spare): per bucket
+the mesh with its own materials, the engine's bounds of the poses, shadows on with the dynamic
+casters' 12 m extra margin, what the `MultiMeshInstance3D` per bucket drew. A chunk installs whole
+(its buckets that left hidden in the same call) or is refused whole when the pool cannot give its
+slots, and then the publication is not acknowledged and the snapshot offers it again
+(`RENDER-42`'s rule). No node is created or freed per chunk. The slots are freed when the
+renderer or the stream node leaves the tree and when the world's epoch changes (`RENDER-41`'s
+lesson; a recorder test checks every multimesh and instance freed). Costs: an install
+`O(buckets + poses)`; nothing allocates once the maps and the pool have grown (a chunk's first
+install allocates its bucket list).
+
+**Zoning masks on a ring.** While the overlay shows, the resident mask chunks are every zoning
+chunk whose square reaches within 2 km of the eye on the ground, with 64 m of hysteresis before
+one leaves (`stream/layers/zoning.rs`, `ZoningRing` on `RingSet`), instead of the box of the four
+screen corners' rays (clamped at 2 km, padded by a chunk) that `zoning_cells_overlay.gd` derived
+and sorted every frame. Yaw never enters the set; a still eye visits no chunk; a move re-evaluates
+the chunks near the two thresholds, `O(ring boundary chunks)`; the resident list, nearest first,
+is rebuilt only when it changed. The overlay moves the ring to its camera as it asks for the
+chunks (`update_zoning_ring`). The uploads per frame (2) and the chunks' payloads are unchanged.
+**Decision for review:** the ring covers every chunk within 2 km (everything the corner rays could
+reach within 2 km, so nothing nearer loses its tint); beyond 2 km the old box also tinted the
+chunks its corners spanned in the view's direction (to about 2.8 km), which the ring does not.
+No still shows it (the overlay is hidden in every benchmark pose).
+
+Tests (Rust, no Godot): the building layer's two refusal cases (a refused frame sends nothing and
+draws whole once a removal makes room; a grown batch moves alone in a full pool, and a frame that
+also needs a slot waits with the old rows the only version drawn); the hydration's order (view,
+near ring, distance, key), its budget, busy, gone and cancel answers, the near-ring count and a
+frame without pending chunks doing nothing; the parked layer against the recorder (a chunk as its
+nodes drew it, an update hiding the buckets that left and reusing slots, a full pool refusing a
+chunk whole, the reset freeing every object); the zoning ring against the rule over every chunk
+of the world on random walks with jumps (four seeds, 600 steps), a still eye visiting nothing.
+Godot: `parking_test` draws the full parked payload through the renderer, every car once and bit
+for bit, no node, every slot freed when it leaves; `network_tool_chunk_renderer_test` takes the
+hydration through Rust and checks a streamed one (the chunk under the camera first, every chunk,
+the source let go); `zoning_cells_tool_test`'s mask lifecycle runs with a stream node.
+
+Fresh results (2026-11-12, one boot; release libraries: control `dev` `3c6d09d6`'s, SHA-256
+`c1030206`, with its own Godot scripts; branch `stream-r1` on `3c6d09d6`, final library SHA-256
+`0385c07e` (the code of `4c106086`); 1080p, gamescope headless at 1000 Hz, P-cores, eight
+workers, paused; `$ARTIFACTS/stream/art-r1`). Rows measured on the branch library of `2dc6a01a`-
+`3383db11` (the first pass) differ from the final code only in the zoning ring's interface, the
+prewarm and the test fixes (none on a benchmark path); the load rows, the 100k load and the rerun
+quartet ran on the final library.
+
+- **The 100k load** (one instrumented run a side; the plan's 100k commit city): the control installs
+  every road chunk in the first frame after the load call, 1,412 ms of road work in one frame
+  (2,532 ms in all). The branch installs the 197 chunks in 185 frames, at most 31.3 ms of road work
+  in any frame (median 6.0, p95 10.5; per unit pack 0.9, build 2.9, commit 1.8 ms medians; the two
+  largest chunks build in 28-30 ms), all of them inside the held load (the last at 10.6 s, the
+  hand-over at 11.1 s). Hand-over 11.1 s against 12.6, settled 11.4 against 12.6. Frames over
+  33.3 ms: 21 against 15; 8 of the branch's would be under it without their road unit (33.6-50.3
+  ms, 5-31 ms of road work), all in the held load; the load's longest frames (0.6-1.2 s) are the
+  first-use shader stalls (`RENDER-43`) on both sides. Before the prewarm the first unit took
+  0.30 s, the sign models' and lamps' first load.
+- **Loads** (C B B C, from the load call's return; `final/*.series.txt`): the 30k city hands over
+  and settles at 7.1-7.7 s against 7.9-8.5 (first pass: 7.0 against 7.8), its load call 0.3 s
+  longer (10.2 against 9.9 s: the road resources' prewarm), from the load call's start 17.3-17.9 s
+  against 17.7-18.5. Kuopio (no road): hand-over 1.9-2.1 s against 2.0-2.1, settled 3.33-3.46
+  against 3.33-3.51, the load call equal (0.61 s; a world without roads skips the prewarm). The
+  30k `post_load` frames' p50 is 4-5 ms higher (the hydration's units in the held load: by
+  design, the 1.4 s frame they replace counts once).
+- **Stream rows** (C B B C, two runs a side, the same-binary spread verdict; `series/`): Kuopio
+  every phase level or better but two maxima of single frames (`still` +1.9 ms on 3-4 ms frames,
+  `turn_out 0.5s` +2.4 on the turn's 46-50 ms first frame, both on a spread of 0.2-2.4) and
+  `night_turn_repeat`'s p50 (+0.0 ms on a spread of 0.0). The 30k city: the 1 s turns better or
+  level, pans, jumps and night turns level, `still` and `night_still` p50 +0.0 on a spread of 0.0;
+  flagged: the 0.5 s turns' maxima and the zooms' p50 (+0.2-0.3 ms). The one rerun allowed, C B B
+  C of those groups on the final library (`final/30k-rerun.series.txt`): the 0.5 s turns level or
+  better (`turn_back` p50 1.3 ms lower); `zoom_out` p50 +0.1 ms (spread 0.1) and `zoom_in`'s
+  maximum +10.5 ms (its known spike frame, 70-73 against 58-64 ms) stay flagged, for review: the
+  zoom frames are GPU-bound (GPU 6.2-6.4 ms, frame 6.9-7.4), the draw and object counts are equal,
+  and the round adds no per-frame work on a zoom (no road pending, the overlay hidden, no parked
+  publication while paused) beyond the building frames' fit check (`O(changed batches)`).
+- **Settled products by digest** (`--digests`, one run a side, every settle point of still,
+  turns, pan and jump on the 30k city): road chunks 8 of 8 equal (66 chunks: every surface's
+  arrays, place and layout), parked cars 8 of 8 (1,274 buckets, their poses read back), building
+  batches 8 of 8, graded tiles 6 equal and 2 `band` (one tile each, 2,015-2,027 m from the camera,
+  the known 2 km class), lamps none by day. Control against control and branch against branch
+  repeat their parked digests.
+- **Stills** (10:00): Kuopio's `forest_low`, `close` and `mid` after 4,000 warm-up frames
+  byte-identical, control against branch. The 30k city's `saved`, `city` and `city_low`, three runs
+  a side: `city` byte-identical in all fifteen pairings; `saved` 0-2 pixels (delta at most 2)
+  between any two runs, control against control alike (the `RENDER-45` residue); `city_low`
+  identical except branch run 2 against every other run (1 pixel, delta 1; branch runs 1 and 3
+  identical to every control run).
+
+- **Level F** (`./run.sh --timing --level F --control <3c6d09d6's lib test binary> --branch <the final
+  code's> --base 3c6d09d6`, test binaries `0a835103` and `9007e991`): `PERF-07` 30k 1x acceptance
+  PASS on both (control 6.74 / 4.52 / 5.11, branch 6.27 / 4.31 / 4.84 ms unpreempted, p99.9,
+  preempted less wait), every metric level or better (mean 2.246 against 2.342 ms); 30k 32x C B B
+  C every metric level once the noisy branch row (`p07-2-br`, flagged by the runner, p99.9 13.98
+  ms) was timed again alone (8.40 ms; mean -0.4 %, p99.9 -2.0 %), the `PERF-17` known exception on
+  both sides. The round touches no simulation code (render layers, the bridge's acknowledgement
+  hook and the stream node).
+
+Bars: the 100k load's frame at most 33 ms: met as the road hydration's frame (road work at most
+31.3 ms in any frame against one 1,412 ms frame), with the near ring first (the hand-over waits for
+it and comes 1.5 s earlier); not met as the load's longest frame, which is the first-use shader
+stalls on both sides (`RENDER-43`), and 8 held-load frames end over 33.3 ms with their road unit
+(decision for review). Kuopio and 30k load to playable and to settled not later than control: met
+(30k 0.1-1.5 s earlier from the load call's return, 0.3 s of it spent earlier in the load call;
+Kuopio level). Digests equal at every settle point (roads, parked cars added): met. Stills: met
+(Kuopio byte-identical; the 30k city within the `RENDER-45` residue on `saved` and one 1-pixel speck
+in one run). `RENDER-42`'s tests, the road, parking and zoning Godot tests: met. No node created or
+freed on a frame path for parked cars and zoning masks: met; road chunks remain the road tool's
+nodes, one a unit (`network_tool.gd`, outside this round). Rows level or better: met but the 30k
+zooms (`zoom_out` p50 +0.1 ms, `zoom_in` maximum +10.5 ms after the one rerun; for review).
+`PERF-07` at level F: level.
 
 ## Implemented Runtime Contract
 
