@@ -12299,7 +12299,7 @@ continuous, grid, parallel, replace and freeform tools); no names, art or look a
 | E | Snapping toggles, guide lines, angle lock, length steps | 3 | R |
 | | **Landing 1** | | L |
 | F | Batch commit, grouped undo, undo refund | 5 | F + K22 |
-| G | Two-tier batch preview | 4 | F + preview rows |
+| G | Two-tier batch preview; part 2: T65 option (c), the terrain cut-out follows the drawn road | 8 | F + preview rows |
 | H | Profile field, automatic bridge/tunnel segmentation | 5 | F + K22 |
 | I | Height handles and HUD | 3 | R |
 | | **Landing 2** | | L |
@@ -12326,6 +12326,16 @@ continuous, grid, parallel, replace and freeform tools); no names, art or look a
 
 Rounds A and B add new files only. Round C and later start after `RENDER-32`'s G2c-5, R1 and
 BX1 have landed and re-read `road_tool.gd`, `network_tool.gd` and the hold rule at their base.
+
+Round G part 2 (user decision 2026-11-12): T65's remaining junction frames, where a drag pose
+replaces published pieces and the published graded tiles drop the old pieces' cut-out before the
+pose's exact selection is ready, take option (c): the graded terrain's road cut-out follows the
+road pieces drawn that frame, so road and terrain never disagree and the road is not held. It
+builds on `TERRAIN-23`'s batch rule and the single Rust hold rule, and moves the last GDScript
+hold bookkeeping to Rust. A short spike comes first; the bar is `kuopio_03` attempt 8's 16
+junction frames to 0 with the moving preview rows not worse than control. Background:
+[`terrain.md`](terrain.md#terrain-23s-cause-and-the-streaming-audits-graded-findings-render-32-k-part-5-2026-11-12),
+"T65 option (3): what is left".
 
 ### Moving and reshaping built roads (`ROAD-113`)
 
