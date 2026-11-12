@@ -252,8 +252,13 @@ impl SimulationNode {
         result.set("evaluating_us", self.building_lods.evaluating_us);
         result.set("evaluated_parts", self.building_lods.evaluated_parts as i64);
         result.set("queried_chunks", self.building_lods.queried_chunks as i64);
-        if !changed && self.building_lods.removed.is_empty() {
-            // An unchanged frame: nothing to draw, no batch visited.
+        let waiting = self
+            .building_draw
+            .as_ref()
+            .is_some_and(|draw| draw.layer.waiting());
+        if !changed && self.building_lods.removed.is_empty() && !waiting {
+            // An unchanged frame: nothing to draw, no batch visited. A frame that waits for
+            // slots is offered again instead (`RENDER-42`).
             if let Some(draw) = self.building_draw.as_mut() {
                 draw.applied = Applied::default();
             }
@@ -288,12 +293,15 @@ impl SimulationNode {
             .layer
             .apply(&mut draw.backend, &lods.removed, lods.changes());
         draw.applied = applied;
-        lods.acknowledge();
+        // A frame the pool could not take whole keeps its changes for the next offer.
+        if !draw.layer.waiting() {
+            lods.acknowledge();
+        }
         applied.bytes as i64
     }
 
     /// The last published frame's work (the perf channel): batches `written`, `hidden` (emptied
-    /// or their chunk left), `blocked` (pool full), and the pool's `slots_live`, `slots_spare`,
+    /// or their chunk left), `blocked` (slots the frame is short of: it waits whole), and the pool's `slots_live`, `slots_spare`,
     /// `slots_created` and `slots_freed` so far.
     #[func]
     pub fn get_building_lod_work(&self) -> VarDictionary {

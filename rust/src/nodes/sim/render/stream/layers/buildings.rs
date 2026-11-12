@@ -14,7 +14,11 @@
 //! A frame is applied whole or not at all, as the bridge published it: a building changes tier
 //! in one frame, never drawn twice or not at all. A group's mesh and material are Godot resources
 //! `building_lods.gd` builds as a group is first needed; while a changed batch's group has none,
-//! [`BuildingLayer::missing`] names it and the frame waits for the registration.
+//! [`BuildingLayer::missing`] names it and the frame waits for the registration. A frame the pool
+//! cannot take whole (every slot of the limit live: new batches, or batches that outgrew their
+//! slot's size class) sends nothing and waits too (`RENDER-42`): the bridge keeps its changes
+//! unacknowledged and offers it again every frame, with whatever later frames added, until it
+//! fits, as the vegetation keeps a refused product pending.
 //!
 //! Residency follows the building LOD's chunk query (its rule decides the tiers, history and all);
 //! a batch whose chunk leaves returns its slot to the pool hidden, and a chunk that comes back
@@ -57,6 +61,7 @@ pub(crate) struct Look {
 }
 
 /// One changed batch of a frame.
+#[derive(Clone, Copy)]
 pub(crate) struct Change<'a> {
     /// Its chunk.
     pub(crate) chunk: ChunkKey,
@@ -77,7 +82,7 @@ pub(crate) struct Applied {
     pub(crate) hidden: usize,
     /// Bytes of rows written.
     pub(crate) bytes: usize,
-    /// Batches not drawn: every slot of the limit was live.
+    /// Slots a waiting frame is short of: nothing of it was drawn (`RENDER-42`).
     pub(crate) blocked: usize,
 }
 
@@ -87,6 +92,10 @@ pub(crate) struct BuildingLayer {
     looks: Map<BatchKey, Look>,
     drawn: Map<(ChunkKey, BatchKey), SlotId>,
     missing: Vec<BatchKey>,
+    // The drawn batches a frame's removals take away (its check, reused storage).
+    leaving: Map<(ChunkKey, BatchKey), ()>,
+    // The last frame offered could not be drawn whole and waits (`RENDER-42`).
+    waiting: bool,
 }
 
 impl BuildingLayer {
@@ -97,7 +106,15 @@ impl BuildingLayer {
             looks: Map::default(),
             drawn: Map::default(),
             missing: Vec::new(),
+            leaving: Map::default(),
+            waiting: false,
         }
+    }
+
+    /// Whether the last frame offered waits for slots: the bridge offers it again, unchanged
+    /// or grown by later frames, until it is drawn whole.
+    pub(crate) fn waiting(&self) -> bool {
+        self.waiting
     }
 
     /// The pool (tests and status).
@@ -121,6 +138,7 @@ impl BuildingLayer {
         self.looks.clear();
         self.drawn.clear();
         self.missing.clear();
+        self.waiting = false;
     }
 
     /// The groups of non-empty changed batches that have no look yet, each once, in key order.
@@ -137,38 +155,69 @@ impl BuildingLayer {
         &self.missing
     }
 
-    /// Applies a frame: the removed batches' slots return to the pool hidden, every changed
-    /// batch is written and drawn, or hidden when empty. Every non-empty group must have its
-    /// look ([`BuildingLayer::missing`] empty).
+    /// Applies a frame, whole or not at all: when it needs more slots than the pool can give
+    /// (every slot of the limit live), nothing is sent, [`Applied::blocked`] counts the slots it
+    /// is short of and [`BuildingLayer::waiting`] holds until a frame fits (`RENDER-42`).
+    /// Otherwise the removed batches' slots return to the pool hidden, every changed batch is
+    /// written and drawn, or hidden when empty. Every non-empty group must have its look
+    /// ([`BuildingLayer::missing`] empty). `O(removed + changed batches + their instances)`.
     pub(crate) fn apply<'a>(
         &mut self,
         backend: &mut impl RenderBackend,
         removed: &[(ChunkKey, BatchKey)],
-        changes: impl Iterator<Item = Change<'a>>,
+        changes: impl Iterator<Item = Change<'a>> + Clone,
     ) -> Applied {
         let mut applied = Applied::default();
+        let needed = self.slots_short(removed, changes.clone());
+        self.waiting = needed > 0;
+        if self.waiting {
+            applied.blocked = needed;
+            return applied;
+        }
+        // Every slot the frame gives up first, so a batch moving to a larger size class can take
+        // the room its old slot leaves; a frame draws at its end, so the order is not seen.
         for at in removed {
             if let Some(slot) = self.drawn.remove(at) {
                 self.pool.release(backend, slot);
                 applied.hidden += 1;
             }
         }
-        for change in changes {
+        for change in changes.clone() {
             let at = (change.chunk, change.key);
+            let Some(&slot) = self.drawn.get(&at) else {
+                continue;
+            };
             if change.rows.is_empty() {
-                if let Some(slot) = self.drawn.remove(&at) {
-                    self.pool.release(backend, slot);
-                    applied.hidden += 1;
-                }
+                applied.hidden += 1;
+            } else if self.keeps(slot, self.looks[&change.key], change.rows.len() as u32) {
                 continue;
             }
+            self.drawn.remove(&at);
+            self.pool.release(backend, slot);
+        }
+        for change in changes {
+            if change.rows.is_empty() {
+                continue;
+            }
+            let at = (change.chunk, change.key);
             let look = self.looks[&change.key];
             let count = change.rows.len() as u32;
-            let slot = match self.slot_for(backend, at, look, count) {
-                Some(slot) => slot,
+            let slot = match self.drawn.get(&at) {
+                Some(&slot) => slot,
                 None => {
-                    applied.blocked += 1;
-                    continue;
+                    let kind = SlotKind {
+                        mesh: look.mesh,
+                        class: capacity_class(count).0,
+                        colors: false,
+                        custom: true,
+                        parameter: None,
+                    };
+                    let slot = self
+                        .pool
+                        .acquire(backend, kind)
+                        .expect("the frame was checked to fit the pool");
+                    self.drawn.insert(at, slot);
+                    slot
                 }
             };
             let rows = change.rows.as_flattened();
@@ -180,35 +229,50 @@ impl BuildingLayer {
         applied
     }
 
-    // The batch's slot: its own while it holds `count`, else one of the size class (the old one
-    // released). `None` when the pool is full.
-    fn slot_for(
+    // How many more slots the frame needs than the pool can give once the frame's own releases
+    // are counted (0: it fits). A batch needs a slot when it is not drawn after the removals or
+    // its slot no longer fits it; the pool can give every slot of the limit not live.
+    // `O(removed + changed batches)`, nothing sent.
+    fn slots_short<'a>(
         &mut self,
-        backend: &mut impl RenderBackend,
-        at: (ChunkKey, BatchKey),
-        look: Look,
-        count: u32,
-    ) -> Option<SlotId> {
-        let (class, _) = capacity_class(count);
-        if let Some(&slot) = self.drawn.get(&at) {
-            let kind = self.pool.slot(slot).kind();
-            // A slot keeps its peak size while its batch is drawn, as the nodes did.
-            if kind.mesh == look.mesh && kind.class >= class {
-                return Some(slot);
+        removed: &[(ChunkKey, BatchKey)],
+        changes: impl Iterator<Item = Change<'a>>,
+    ) -> usize {
+        self.leaving.clear();
+        let mut room = self.pool.available();
+        for at in removed {
+            if self.drawn.contains_key(at) && self.leaving.insert(*at, ()).is_none() {
+                room += 1;
             }
         }
-        let kind = SlotKind {
-            mesh: look.mesh,
-            class,
-            colors: false,
-            custom: true,
-            parameter: None,
-        };
-        let slot = self.pool.acquire(backend, kind)?;
-        if let Some(old) = self.drawn.insert(at, slot) {
-            self.pool.release(backend, old);
+        let mut needed = 0usize;
+        for change in changes {
+            let at = (change.chunk, change.key);
+            let drawn = (!self.leaving.contains_key(&at))
+                .then(|| self.drawn.get(&at).copied())
+                .flatten();
+            if change.rows.is_empty() {
+                room += usize::from(drawn.is_some());
+                continue;
+            }
+            let look = self.looks[&change.key];
+            match drawn {
+                Some(slot) if self.keeps(slot, look, change.rows.len() as u32) => {}
+                Some(_) => {
+                    needed += 1;
+                    room += 1;
+                }
+                None => needed += 1,
+            }
         }
-        Some(slot)
+        needed.saturating_sub(room)
+    }
+
+    // Whether a drawn batch keeps its slot: the same mesh and a size class that holds `count`
+    // (a slot keeps its peak size while its batch is drawn, as the nodes did).
+    fn keeps(&self, slot: SlotId, look: Look, count: u32) -> bool {
+        let kind = self.pool.slot(slot).kind();
+        kind.mesh == look.mesh && kind.class >= capacity_class(count).0
     }
 
     // Draws a written slot in the world and in the reflection's; settings the pool does not

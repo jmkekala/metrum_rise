@@ -142,3 +142,106 @@ fn a_batch_keeps_its_slot_while_it_fits_and_moves_when_it_grows() {
     assert_eq!((applied.hidden, layer.len()), (1, 0));
     assert_eq!(backend.visible(Scenario::Main).count(), 0);
 }
+
+// The rows every visible main instance draws, by multimesh, for "exactly one version" checks.
+fn drawn_rows(backend: &Recorder) -> Vec<Vec<f32>> {
+    let mut out: Vec<_> = backend
+        .visible(Scenario::Main)
+        .map(|(_, instance)| {
+            let multimesh = &backend.multimeshes[&instance.base];
+            let count = multimesh.visible_count.unwrap() as usize;
+            multimesh.rows[..count * 16].to_vec()
+        })
+        .collect();
+    out.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    out
+}
+
+#[test]
+fn a_frame_the_full_pool_refuses_waits_whole_and_draws_once_a_slot_frees() {
+    // `RENDER-42`: two slots, both live; a third batch's frame sends nothing, keeps the old
+    // frame drawn, and draws whole when a later frame's removal makes room.
+    let mut backend = Recorder::new();
+    let mut layer = BuildingLayer::new(2, 2);
+    layer.register(key(1, 0), Look { mesh: 3, material: None });
+    layer.register(key(1, 1), Look { mesh: 4, material: None });
+    let (a, b, c) = (rows(3, 0.0), rows(4, 50.0), rows(5, 100.0));
+    let first = [change((0, 0), key(1, 0), &a), change((0, 0), key(1, 1), &b)];
+    assert_eq!(layer.apply(&mut backend, &[], first.into_iter()).written, 2);
+    let before = (backend.commands.len(), drawn_rows(&backend));
+    let blocked = [change((1, 0), key(1, 0), &c)];
+    let applied = layer.apply(&mut backend, &[], blocked.into_iter());
+    assert_eq!((applied.written, applied.hidden, applied.blocked), (0, 0, 1));
+    assert!(layer.waiting(), "the refused frame waits");
+    assert_eq!(
+        (backend.commands.len(), drawn_rows(&backend)),
+        before,
+        "nothing of a refused frame is sent"
+    );
+    // Offered again unchanged: still short, still nothing sent.
+    layer.apply(&mut backend, &[], blocked.into_iter());
+    assert!(layer.waiting());
+    assert_eq!(backend.commands.len(), before.0);
+    // The bridge offers the waiting changes with the next frame's: a chunk leaves.
+    let removed = [((0, 0), key(1, 1))];
+    let applied = layer.apply(&mut backend, &removed, blocked.into_iter());
+    assert_eq!((applied.written, applied.hidden, applied.blocked), (1, 1, 0));
+    assert!(!layer.waiting());
+    assert_eq!(drawn_rows(&backend), {
+        let mut want = vec![a.as_flattened().to_vec(), c.as_flattened().to_vec()];
+        want.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        want
+    });
+}
+
+#[test]
+fn a_batch_that_outgrows_its_slot_in_a_full_pool_is_drawn_once_or_waits_whole() {
+    // `RENDER-42`: a batch moving to a larger size class gives up its old slot before it takes
+    // the new one, so in a full pool it moves alone; a frame that also needs a slot for a new
+    // batch waits whole, with the old rows the only version drawn, until a removal gives room.
+    let sorted = |mut rows: Vec<Vec<f32>>| {
+        rows.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        rows
+    };
+    let mut backend = Recorder::new();
+    let mut layer = BuildingLayer::new(2, 0);
+    layer.register(key(1, 0), Look { mesh: 3, material: None });
+    layer.register(key(1, 1), Look { mesh: 4, material: None });
+    let (small, other, medium) = (rows(5, 0.0), rows(6, 50.0), rows(40, 0.0));
+    let (huge, new, empty) = (rows(200, 0.0), rows(3, 900.0), rows(0, 0.0));
+    layer.apply(
+        &mut backend,
+        &[],
+        [change((0, 0), key(1, 0), &small), change((0, 0), key(1, 1), &other)].into_iter(),
+    );
+    let applied = layer.apply(&mut backend, &[], [change((0, 0), key(1, 0), &medium)].into_iter());
+    assert_eq!((applied.written, applied.blocked), (1, 0), "a move alone fits a full pool");
+    assert_eq!(
+        drawn_rows(&backend),
+        sorted(vec![medium.as_flattened().to_vec(), other.as_flattened().to_vec()])
+    );
+    let before = (backend.commands.len(), drawn_rows(&backend));
+    let frame = [change((0, 0), key(1, 0), &huge), change((1, 0), key(1, 0), &new)];
+    let applied = layer.apply(&mut backend, &[], frame.into_iter());
+    assert_eq!((applied.written, applied.blocked), (0, 1));
+    assert!(layer.waiting());
+    assert_eq!(
+        (backend.commands.len(), drawn_rows(&backend)),
+        before,
+        "the old rows, once, until the frame fits"
+    );
+    let applied = layer.apply(
+        &mut backend,
+        &[],
+        frame
+            .into_iter()
+            .chain([change((0, 0), key(1, 1), &empty)]),
+    );
+    assert_eq!((applied.written, applied.hidden, applied.blocked), (2, 1, 0));
+    assert!(!layer.waiting());
+    assert_eq!(
+        drawn_rows(&backend),
+        sorted(vec![huge.as_flattened().to_vec(), new.as_flattened().to_vec()])
+    );
+    assert_eq!((layer.len(), layer.pool().live()), (2, 2));
+}

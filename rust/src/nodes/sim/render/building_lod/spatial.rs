@@ -600,7 +600,7 @@ impl SpatialBatches {
 
     /// The frame's changed batches in publication order (chunks in query order, groups in key
     /// order) with their instances and bounds. O(resident batches + changed instances).
-    pub fn changes(&self) -> impl Iterator<Item = Change<'_>> + '_ {
+    pub fn changes(&self) -> impl Iterator<Item = Change<'_>> + Clone + '_ {
         self.ordered_chunks.iter().flat_map(move |&key| {
             let chunk = &self.chunks[&key].batches;
             chunk
