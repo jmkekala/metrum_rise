@@ -13595,6 +13595,12 @@ headless at 1000 Hz, P-cores, eight workers; `$ARTIFACTS/stream/art-v2b`):
   binary `eacffc98`, branch `3f9849b3`; one session): `PERF-07` 30k 1x acceptance PASS, every
   metric level (mean 2.229 against 2.239 ms); 30k 32x C B B C every metric level (one control run
   flagged noisy, tolerances doubled), `PERF-17` the known exception on both sides.
+- Rebased onto `dev` `b976e9aa` (`RENDER-32-G`, `-J` step 1; neither touches a vegetation path, so
+  the timing above stands): clippy's warning set equal to `dev`'s, debug `cargo test --lib` 2,471
+  passed, `./run.sh --test` PASS (2,475 Rust tests, both Godot chains, no `SCRIPT ERROR`), no
+  missing docs. Its stills: `close` and `mid` byte-identical to the `f1c93527` control at both hours;
+  `forest_low` equals `RENDER-32-J`'s own branch image (that round's settled grass mask, see its
+  record), not the older control's.
 
 Bars: vegetation at most 0.5 ms mean a frame plus its installs inside the shared 2 ms: met
 (0.34 ms at most in any phase of any input; installs at most 1.09 ms). Zero ring cells on frames
