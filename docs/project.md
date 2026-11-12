@@ -52,7 +52,10 @@ on the 30k city at night they cost 0.2 ms a frame instead of 5 ms, and night tur
 more than day turns. `RENDER-32-I` (built, not yet landed) moves the graded renderer's
 pages, copies, growth, installed tiles and bake hand-over to Rust, proven by replaying recorded
 traces bit for bit: the graded residency work on a 100k turn falls from 2.5-2.8 ms a frame to 0.4, and the pooled
-empty pages are bounded at 32 MiB (`TERRAIN-09`).
+empty pages are bounded at 32 MiB (`TERRAIN-09`). `RENDER-32-E` (built, not yet landed) installs the
+vegetation through pooled `RenderingServer` objects from Rust under one 2.0 ms streaming budget a
+frame, with no node per patch: stills identical, the vegetation's frame time on a 30k turn about
+1 ms (control 1.6-1.8) and at most 1.5 ms of installs in any frame.
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,

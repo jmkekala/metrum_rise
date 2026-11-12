@@ -13028,6 +13028,142 @@ pans settled: met. `PERF-07` at level F: level (the timing above ran before the 
 hand-over, which touches no simulation path). Carried to `-J`: the cell set builds inside
 `turn_back`'s 0.30 ms and the turn's p50 (the cell rewrites).
 
+### Scheduler and `RenderingServer` pools; vegetation installs through them (`RENDER-32-E`, 2026-11-12)
+
+V2a. The streaming core gets its install side, and the vegetation is its first layer to draw
+through it: `vegetation.gd` creates no node per patch any more.
+
+**The backend** (`stream/backend.rs`). The only code of the core that calls `RenderingServer`,
+behind the `RenderBackend` trait: `MultiMesh` create, re-allocate, mesh, buffer, visible count and
+custom bounds; instance create (main or reflection scenario), origin, visibility, shadow casting,
+visibility range (no fade, no margins), custom bounds, material override and a float instance
+parameter; free. Meshes, materials and parameter names are indices into what the layer registered
+(GDScript keeps the resources; Rust gets their RIDs). `GodotBackend` implements it on the main
+thread; `Recorder` (tests) records every command, keeps the state they leave (what each instance
+would draw) and digests the sequence. A layer draws a batch through a **slot**: one `MultiMesh`, its
+main instance, and on first use a second main-scenario instance on the same `MultiMesh` (a shadow
+caster) and a reflection-world instance. Slots are pooled by kind: mesh, capacity class (16, 24,
+32, 48, ...: powers of two and one and a half times them), colour and custom lanes, and the
+instance parameter set at creation (the canopy's `hands_over`). A slot keeps its mesh, because the
+engine reads a written buffer back from the GPU to rebound it on a mesh change; a reused slot gets
+its buffer, visible count and only the instance state that changed. The buffer is padded to the
+capacity with copies of its first instance, so the engine's own bounds of the `MultiMesh` are bit
+for bit those of the exact count (a merge with a box already merged is the same box), and
+`multimesh_set_visible_instances` draws the batch's instances only. The padded upload array is one
+`PackedFloat32Array` per buffer length, kept, so steady installs allocate nothing. The pool is
+bounded at setup: at most 3,072 slots live and spare together (each canopy instance holds 16 of
+the engine's 65,536 instance uniform slots), at most 768 spare; past the spare limit a released
+slot is freed, at the limit the oldest spare is freed for a new kind, and with every slot live an
+acquire is refused and the work waits. While the viewport draws motion vectors (FSR 2, TAA) a
+reused slot first gets fresh storage, because the engine keeps the previous upload as the
+previous frame's transforms.
+
+**The scheduler** (`stream/schedule.rs`, 5.4). One streaming budget a frame for every layer,
+2.0 ms. A unit (a chunk's product, atomic) starts only if its predicted cost fits what is left;
+the first unit of a frame always runs. Spent is the larger of the units' measured time (a
+monotonic clock around every unit) and their predicted cost (`0.5 us` a backend call plus
+`0.0005 us` a byte written, from the plan's install microbenchmark with a margin, fixed in code).
+Order: hole in view, hole in the near ring, hole elsewhere, upgrade in view, upgrade; inside a
+class nearest first by exact squared distance, then by key. The frustum (the camera's planes,
+read only while something waits) changes the class, never the wanted set. A unit the pool cannot
+take waits and the next one may still install (a replacement releases its own slots first).
+`stream/status.rs` keeps each layer's installed, visible, pending, blocked and slot counts and
+the frame's units, predicted and measured time and longest unit (`get_stream_status`).
+
+**The frame** (`StreamNode`, a Rust node after `CameraNode` in `Main.tscn`). In its `_process`
+and again just before the frame draws (`frame_pre_draw`, so a product the workers finished
+meanwhile draws this frame): take every finished product of a live request from the vegetation
+jobs (`RENDER-32-D`), move the near canopy's detail level and branched shadow with the camera,
+install within the budget, return the products' storage to the jobs, and with the perf channel on
+record its time as `vegetation` (summed with the script's record by `PerfDebug`).
+
+**The vegetation layer** (`stream/layers/vegetation.rs`). An install hides and releases the
+patch's previous version and fills and shows the new one in the same unit, so a patch is never a
+hole and never drawn twice (the node path showed both for a frame). It draws what the nodes drew:
+the product's buffers bit for bit, meshes (the near level chosen before the mesh is set, as
+before), the impostor and caster materials, the `MultiMesh` bounds of the impostors and the
+shared instance bounds, the ranges, every shadow rule of `_shadow_setting` and the branched
+canopy, `hands_over` on the near canopy, at the patch origin. The impostor's shadow caster is a
+second instance on the impostor's own `MultiMesh` (the node path uploaded a copy of the same
+buffer); a silent caster is hidden. The impostors are also drawn in the water reflection's world
+with the scene's bounds and material, no range and no shadow, as `water_reflection.gd`'s tree
+proxies were, from the frame they install (the reflection hands its scenario over once; its
+patch-node signals and proxy sync are gone). `vegetation.gd` keeps the catalogue, the wanted set,
+the bands and the staleness (`RENDER-32-F` moves them): it requests, forgets (before a new request
+and with a cancel), shows, hides and frees patches by key, keeps a record per patch (both
+generations, the bands, the plants) and learns of installs and busy products from the stream
+node's events at the start of its next frame. Costs: an install `O(batches + instances)` (the
+buffer copy), show, hide and free `O(batches)`, the camera refresh `O(shown patches)` on frames
+the camera moved and nothing otherwise; the products waiting are sorted each pass,
+`O(p log p)` for `p` at most the jobs in flight. Main thread only; nothing here is parallel work.
+
+Deleted from the GDScript: the install slices, the poll, the hidden patch nodes and their
+metadata, `_add_instance`, `_box`, `_shadow_setting`, the detail and branched shadow loops, the
+pre-draw hook (`vegetation.gd` 1,041 to 816 lines: 387 out, 162 in) and the reflection's tree
+proxies (`water_reflection.gd` 589 to 537 lines). The drag probe reads a patch's trunks back from
+its `MultiMesh` buffers through `get_vegetation_patch`; the stream benchmark's wanted-to-drawn asks
+the stream node what draws (`is_vegetation_drawn`), which the script's own books learn a frame
+later.
+
+Tests (Rust, no Godot; `stream/backend/tests.rs`, `stream/layers/vegetation/tests.rs`): invariant 1
+(after every frame of a scripted sequence of installs under the budget, upgrades, a superseded
+product, hide, show, camera moves, the shadow toggle, disable, free and a reflection change, the
+main-scenario instances drawn are exactly the shown patches' installed versions, each at its
+origin, and the reflection draws exactly their impostors; a patch once drawn is never a hole);
+invariant 2 (past the first unit the frame's predicted spend fits 2.0 ms; installs come in class,
+distance, key order across frames); invariant 6 and pool exhaustion (limits, spare limit,
+eviction of the oldest spare, the farthest hole waits and a free resumes it, a replacement fits in
+its own slots); invariant 7 (a steady frame: an idle frame sends nothing and, with the camera
+moving or a same-shaped patch replaced, the layer's and the pool's storage capacities are
+unchanged, against a backend that keeps nothing); the recorder's command digest of the scripted
+sequence pinned; an installed patch draws its product's buffers bit for bit with its ranges,
+bounds, materials, shadows and parameter; the near detail rule's boundaries. A true counting
+allocator needs an `unsafe impl GlobalAlloc` (test build only), not added without the user's
+approval; the capacity check stands in. Godot: `vegetation_appearance_test` reads what the stream
+node drew (`get_vegetation_patch`), `vegetation_invalidation_test` drives the renderer and the
+stream node frame by frame (the install budget's own test moved to Rust), the edit, land cover,
+level match and wind gate tests unchanged.
+
+Fresh results (2026-11-12, one boot; release libraries: control `dev` `0aab8176`'s, the V1b fix
+build from `afd4e7a8`, code equal, with `wt-v1b`'s tree; branch `dc0a5ac9`, SHA-256 `71fcdccc`;
+1080p, gamescope headless at 1000 Hz, P-cores, eight workers; `$ARTIFACTS/stream/art-v2a`):
+
+- Stills, Kuopio `forest_low`, `close` and `mid` at 10:00 and 17:00 (the idle matrix's
+  screenshots, `METRUM_IDLE_BENCH_HOUR`): all six byte-identical to the control's. Neither Kuopio
+  nor the 30k city has water, so no benchmark pose shows the reflection; the reflection
+  instances' state is checked in Rust and in the appearance test.
+- Instrumented (`--detail`), vegetation main-thread time per frame (script and stream node):
+  30k 1 s turns 0.98-1.23 ms (control 1.57-1.82), 0.5 s turns 0.96-1.01 (1.48-1.57), pans
+  0.57-0.59 (1.01-1.06), zooms 0.68-0.75 (1.40-1.76); Kuopio 1 s turns 1.19-1.26 (2.05-2.17),
+  0.5 s turns 1.48-1.60 (2.53-2.57). Installs in any frame at most 0.16 ms at 30k and 1.46 ms on
+  Kuopio (`night_pan_out`; control up to 3.56 and 1.49); the largest install 0.56 ms. The buffer
+  copy into Godot 0.001-0.010 ms a frame mean on Kuopio's turns (control 0.039-0.054), at most
+  0.081 in one frame. Wanted-to-drawn on the 30k `pan_repeat`: median 0, p90 1 (control 0 / 2).
+  Slots: at most 2,157 live on Kuopio, 646 at 30k.
+- Stream rows, C B B C (two runs a side, same-binary spread verdict): 30k every phase better or
+  level except `jump`'s maximum (+2.7 ms against a 1.2 ms spread: the jump frame itself, 35.6 and
+  36.8 against 33.1 and 33.9 ms; it is the frame the whole residency moves, where the branch hides
+  and frees patches by key); `zoom_in` p50 1.7 ms lower (16.0 against 17.7). Kuopio every phase
+  better or level, the turns 1.0-2.0 ms faster at p50.
+- Graded settle-point digests (30k, untimed, one run a side): 11 of 12 equal; point 5
+  (`turn_repeat`) differs, the path-dependent hysteresis tiles `RENDER-32-D` and `-B` met control
+  against control (this round changes nothing graded).
+- Level F (`./run.sh --timing --level F --base 0aab8176`; control `dev` `0aab8176`'s lib test
+  binary `467e1a74`, branch `0ada3083`; two sessions, the second the one rerun the brief allows):
+  `PERF-07` 30k 1x acceptance PASS and every metric level in both (mean 2.224 against 2.238 ms,
+  then 2.226 against 2.217). The 32x rows read worse in places (session 1: p99.9 only, one branch
+  run at 10.07 ms against 8.11 for the other; session 2: mean +2.4 %, p99.9 +9.4 %); no simulation
+  code changed (the round adds render code only, which the simulation benchmark never runs), so
+  this is layout or noise, for review.
+
+Bars: installs at most 2.0 ms in any frame: met (1.46). No node created or freed on a frame
+path: met (none in the vegetation). Stills identical: met. Vegetation at most 1.5 ms on the 30k
+turn: met (0.98-1.23). Carried: `-C`'s 30k `zoom_in` p50: met against this control (better by 1.7
+ms); `-D`'s 30k `pan_repeat` wanted-to-drawn median: met (0 against 0); `-D`'s buffer copy under
+0.05 ms a frame on Kuopio: met (0.010 at most, mean). Not bars, for review: the GDScript request on
+two 30k frames (2.12 ms on `turn_repeat 1s`, 1.79 on `zoom_out`; control 2.52 and 1.24 on its
+own frames) belongs to the request path `RENDER-32-F` replaces; the 30k `jump` frame's maximum.
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
