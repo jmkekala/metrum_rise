@@ -91,7 +91,7 @@ building batches and their water reflections through the pooled `RenderingServer
 buildings' frame time on a 30k turn falls from 1.4-1.9 ms to 0.1-0.2 (0.3-0.5 ms at 100k against
 3.5-5.1), the water reflection's hook from 0.3 ms a frame to 0.03, and the near canopy's detail swap
 on zooms no longer reads its buffer back from the GPU (`RENDER-37`: 6-11 ms frames to 0.14 ms).
-`RENDER-32-M` (built, not yet landed) decides the terrain and water patches' residency, mesh
+`RENDER-32-M` (landed 2026-11-12) decides the terrain and water patches' residency, mesh
 levels and prewarm in Rust, decision for decision as the scripts did on the benchmark's recorded
 paths: terrain and water cost 0.13-0.17 ms a frame on Kuopio's turns and pans (0.2-0.3 before), a
 100k load's patch bookkeeping falls from 2.1 ms a frame to 0.01, and Kuopio is playable and
