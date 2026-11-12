@@ -3,8 +3,8 @@
 //! Vegetation patches prepared on the background pool (`RENDER-32-D`): the renderer requests a
 //! patch by key with the bands it chose; a worker takes the patch's
 //! [`VegetationPatchInputs`] under `try_lock`, runs the scatter, the stand cover, the hedge
-//! runs and the product off the lock, and lands the product in the cache; the renderer polls
-//! finished products and installs them. Nothing of the query runs on Godot's main thread.
+//! runs and the product off the lock, and lands the product in the cache; the stream node polls
+//! finished products and installs them (`RENDER-32-E`). Nothing of the query runs on Godot's main thread.
 
 use super::land_cover::Coverage;
 use super::world::VegetationPatchInputs;
@@ -279,6 +279,8 @@ fn build(spawner: &Spawner, waiting: Waiting, inputs: VegetationPatchInputs) {
             catalogue,
         } = waiting;
         prepare_patch(&inputs, &request, &catalogue, &mut product);
+        product.origin = [request.origin.x, request.origin.y];
+        product.span = request.span;
         {
             let mut jobs = next.jobs.lock().unwrap();
             jobs.land(request.key, serial, Some(product));

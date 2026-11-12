@@ -83,8 +83,9 @@ class MockSimulation:
 		return PackedFloat32Array([1.0, 0.0, 1.0, 0.0, 1.0, 0.0])
 
 	# Rust builds a requested product on its background pool (`RENDER-32-D`); the mock builds it
-	# at once from its own fetches and hands it to the next poll.
-	var _products: Array = []
+	# at once from its own fetches and hands it to the stream node, which installs it
+	# (`RENDER-32-E`).
+	var stream: Node
 	var _serial := 0
 	var _catalogue := PackedFloat32Array()
 
@@ -93,7 +94,7 @@ class MockSimulation:
 		return true
 
 	func clear_vegetation_requests() -> void:
-		_products.clear()
+		pass
 
 	func cancel_vegetation_patch(_key: Vector3i) -> void:
 		pass
@@ -106,19 +107,14 @@ class MockSimulation:
 			get_decorative_tree_patch(origin, span, understory), get_vegetation_stand_cover(origin, span),
 			runs, origin, near_band, caster, settings, _catalogue)
 		_serial += 1
-		product.merge({"key": key, "serial": _serial, "busy": false})
-		_products.append(product)
+		stream.deliver_vegetation_product(key, _serial, product, origin, span)
 		return _serial
-
-	func poll_vegetation_product() -> Dictionary:
-		return {} if _products.is_empty() else _products.pop_front()
 
 class ProcessProbe extends VegetationScript:
 	var band_checks := 0
 	var stale_checks := 0
-	var delay_upload := false
 
-	func _bands_changed(patch: Node3D, distance: float, span: float) -> bool:
+	func _bands_changed(patch: Dictionary, distance: float, span: float) -> bool:
 		band_checks += 1
 		return super._bands_changed(patch, distance, span)
 
@@ -126,10 +122,6 @@ class ProcessProbe extends VegetationScript:
 		stale_checks += 1
 		return super._is_patch_stale(key, generations)
 
-	func _install_product(key: Vector3i, request: Dictionary, product: Dictionary) -> void:
-		super._install_product(key, request, product)
-		if delay_upload:
-			OS.delay_usec(INSTALL_BUDGET_USEC)
 
 var _failures := 0
 
@@ -152,6 +144,10 @@ func _run() -> void:
 	var simulation := MockSimulation.new()
 	simulation.name = "SimulationNode"
 	host.add_child(simulation)
+	var stream := StreamNode.new()
+	stream.name = "StreamNode"
+	host.add_child(stream)
+	simulation.stream = stream
 
 	var vegetation := ProcessProbe.new()
 	vegetation.name = "Vegetation"
@@ -173,7 +169,7 @@ func _run() -> void:
 
 	# At least one upload per frame; allow the worst case for both terrain patches.
 	for i in range(SUB_PATCHES * 2 + 1):
-		vegetation._process(0.016)
+		_frame(vegetation)
 	_expect(
 		vegetation.patches.size() == SUB_PATCHES * 2,
 		"both resident patches must build every sub-patch, got %d" % vegetation.patches.size()
@@ -187,7 +183,7 @@ func _run() -> void:
 	simulation.patch_fetches.clear()
 	terrain.generations[near] = 9
 	for i in range(SUB_PATCHES * 2):
-		vegetation._process(0.016)
+		_frame(vegetation)
 	_expect(
 		_sorted(simulation.patch_fetches) == _sorted(near_origins),
 		"only the edited patch may regenerate, got %s" % [simulation.patch_fetches]
@@ -198,29 +194,29 @@ func _run() -> void:
 	)
 	for key in _sub_keys(near):
 		_expect(
-			int(vegetation.patches[key].get_meta("surface_generation")) == 9,
+			int(vegetation.patches[key]["surface_generation"]) == 9,
 			"the rebuilt patch must record the generation it was built against"
 		)
 
 	# A settled patch must not regenerate again, and an uncommitted patch must not churn.
-	vegetation._process(0.016)
-	vegetation._process(0.016)
+	_frame(vegetation)
+	_frame(vegetation)
 	_expect(vegetation.queue.is_empty(), "a patch at the current generation must stay settled")
 	terrain.generations[far] = -1
-	vegetation._process(0.016)
+	_frame(vegetation)
 	_expect(vegetation.queue.is_empty(), "a patch with no committed payload must not churn")
 
 	# A vegetation edit changes no terrain generation, and only its own patch rebuilds.
 	simulation.patch_fetches.clear()
 	simulation.vegetation_generations[near] = 1
 	for i in range(SUB_PATCHES * 2):
-		vegetation._process(0.016)
+		_frame(vegetation)
 	_expect(
 		_sorted(simulation.patch_fetches) == _sorted(near_origins),
 		"vegetation edits must rebuild only their touched patch, got %s" % [simulation.patch_fetches]
 	)
 	for key in _sub_keys(near):
-		_expect(int(vegetation.patches[key].get_meta("vegetation_generation")) == 1, "upload must stamp the independent vegetation revision")
+		_expect(int(vegetation.patches[key]["vegetation_generation"]) == 1, "upload must stamp the independent vegetation revision")
 	_expect(terrain.generations[near] == 9, "vegetation must not advance terrain generations")
 	for key in _sub_keys(far):
 		_expect(not vegetation._is_patch_stale(key), "vegetation edits must leave the neighboring patch settled")
@@ -237,64 +233,63 @@ func _run() -> void:
 	_check_hysteresis(vegetation)
 	# Finish the other sub-patches dirtied by the concurrent-fetch check above.
 	for _i in range(SUB_PATCHES * 2):
-		vegetation._process(0.016)
+		_frame(vegetation)
 	for _i in range(8):
 		vegetation.band_checks = 0
 		vegetation.stale_checks = 0
-		vegetation._process(0.016)
+		_frame(vegetation)
 		_expect(vegetation.band_checks == 0, "a stationary camera must not walk patch bands")
 		_expect(vegetation.stale_checks == 0,
 			"an idle frame with no revision change must check no patch generation")
 
 	# This patch already carries near meshes. Restore it outside the entry distance but
 	# inside the retention interval: its content remains valid and its node must survive.
-	var patch_id: int = vegetation.patches[probe].get_instance_id()
+	var patch_id: int = _serial(vegetation, probe)
 	var center := Vector2(probe.x, probe.y) * VEGETATION_SPAN_M - WORLD_SIZE * 0.5 + Vector2.ONE * VEGETATION_SPAN_M * 0.5
 	var retention_distance := vegetation.canopy_near_m() + VEGETATION_SPAN_M * VegetationScript.PATCH_HALF_DIAGONAL + VegetationScript.BAND_HYSTERESIS_M * 0.5
 	vegetation._retire_patch(probe, WORLD_SIZE, vegetation._camera_xz())
 	camera.position = Vector3(center.x + retention_distance, 200.0, center.y)
 	terrain.revision += 1
 	for _i in range(SUB_PATCHES * 2):
-		vegetation._process(0.016)
-	_expect(vegetation.patches[probe].get_instance_id() == patch_id,
+		_frame(vegetation)
+	_expect(_serial(vegetation, probe) == patch_id,
 		"a restored patch in hysteresis slack must reuse its valid content")
-	_expect(vegetation.patches[probe].get_meta("near_band"), "restoration must retain near meshes in slack")
+	_expect(vegetation.patches[probe]["near_band"], "restoration must retain near meshes in slack")
 
 	# A queued band request can become obsolete before its upload turn.
 	vegetation._queue_patch(probe)
-	vegetation._process(0.016)
-	_expect(vegetation.patches[probe].get_instance_id() == patch_id,
+	_frame(vegetation)
+	_expect(_serial(vegetation, probe) == patch_id,
 		"an obsolete band request must not rebuild a valid patch")
 
 	vegetation._retire_patch(probe, WORLD_SIZE, vegetation._camera_xz())
 	simulation.vegetation_generations[near] += 1
 	terrain.revision += 1
 	for _i in range(SUB_PATCHES * 2):
-		vegetation._process(0.016)
-	_expect(vegetation.patches[probe].get_instance_id() != patch_id,
+		_frame(vegetation)
+	_expect(_serial(vegetation, probe) != patch_id,
 		"a restored patch edited while hidden must rebuild")
 	_expect(not vegetation._is_patch_stale(probe), "restoration must publish the current generation")
-	_expect(vegetation.patches[probe].get_meta("near_band"), "an edit must preserve band history")
+	_expect(vegetation.patches[probe]["near_band"], "an edit must preserve band history")
 
-	# Make each install exceed the time budget. Two pending installs must span two frames,
-	# even when residency changes between them, and each frame must make progress.
+	# Pending edits survive residency changes, and each frame makes progress.
 	simulation.vegetation_generations[near] += 1
 	for key in _sub_keys(near):
 		vegetation._queue_patch(key)
 		vegetation._queue_patch(key)
 	_expect(vegetation.queue.size() == SUB_PATCHES, "overlapping invalidations must not duplicate queue entries")
-	vegetation.delay_upload = true
+	# The install budget is the stream node's (`RENDER-32-E`; its Rust tests hold the bound): a
+	# frame whose residency changes keeps the edits pending and still makes progress.
 	for _i in range(2):
 		var generated_before: int = vegetation.generated_patches
 		terrain.revision += 1
 		vegetation._process(0.016)
-		_expect(vegetation.generated_patches == generated_before + 1,
-			"the time budget must permit one install and stop before a second")
-		_expect(not vegetation.queue.is_empty() or not vegetation.requested.is_empty(),
+		_expect(not vegetation.queue.is_empty() or not vegetation.requested.is_empty()
+			or vegetation.generated_patches > generated_before,
 			"residency changes must preserve pending edits")
-	vegetation.delay_upload = false
+		stream.flush_vegetation()
 	for _i in range(SUB_PATCHES * 2):
-		vegetation._process(0.016)
+		_frame(vegetation)
 	for key in _sub_keys(near):
 		_expect(not vegetation._is_patch_stale(key), "all pending edits must eventually settle")
 	_expect(vegetation.queue.is_empty() and vegetation.queued.is_empty() and vegetation.requested.is_empty(),
@@ -304,10 +299,21 @@ func _run() -> void:
 		print("vegetation_invalidation_test: PASS")
 	quit(1 if _failures > 0 else 0)
 
-## Requests a patch and installs what the mock built for it, as the next frames' polls would.
+## Requests a patch and installs what the mock built for it, as the next frames would: the stream
+## node installs it, and the renderer takes the install.
 func _upload(vegetation: Node3D, key: Vector3i, span: float) -> void:
 	vegetation._upload_patch(key, span)
-	vegetation._poll_products(1 << 40)
+	vegetation.stream.flush_vegetation()
+	vegetation._take_installs()
+
+## One frame of the renderer, then the stream node's installs (taken by the next frame).
+func _frame(vegetation: Node3D) -> void:
+	vegetation._process(0.016)
+	vegetation.stream.flush_vegetation()
+
+## The request serial of the version the stream node draws for `key`: a rebuild changes it.
+func _serial(vegetation: Node3D, key: Vector3i) -> int:
+	return int(vegetation.stream.get_vegetation_patch(key).get("serial", -1))
 
 func _check_hysteresis(vegetation: Node3D) -> void:
 	var half := VEGETATION_SPAN_M * VegetationScript.PATCH_HALF_DIAGONAL

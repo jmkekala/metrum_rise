@@ -15,7 +15,7 @@ pub(crate) use jobs::VegetationJobs;
 
 mod brush;
 mod hedge_runs;
-mod jobs;
+pub(crate) mod jobs;
 mod land_cover;
 
 // Texels on each side of the square a tree's stand closure averages over; see
@@ -346,7 +346,7 @@ impl SimulationNode {
     /// background worker takes the patch's inputs under `try_lock` and runs the scatter, stand
     /// cover, hedge runs (outside the near band) and product off the lock, equal bitwise to
     /// `build_vegetation_product` over the three synchronous queries. Returns the request's
-    /// serial, which [`Self::poll_vegetation_product`] hands back; a newer request for the key
+    /// serial, which the stream node's install event hands back (`RENDER-32-E`); a newer request for the key
     /// makes this one stale. -1 when refused for now (32 jobs out, 64 MB of products held, no
     /// catalogue set, malformed arguments): ask again next frame. `O(1)` on the calling thread.
     #[func]
@@ -378,32 +378,6 @@ impl SimulationNode {
             settings,
         };
         jobs::spawn_request(&self.vegetation_spawner(), request).map_or(-1, |serial| serial as i64)
-    }
-
-    /// The oldest finished vegetation patch of a live request, or an empty dictionary: `key`,
-    /// `serial`, and either `busy` (true: the core was busy, request the patch again) or the
-    /// product as `build_vegetation_product` returns it. Stale results (superseded, cancelled
-    /// or cleared requests) are dropped on the way. `O(product bytes)`: the buffers are copied
-    /// into Godot's arrays.
-    #[func]
-    pub fn poll_vegetation_product(&self) -> VarDictionary {
-        // Requests a busy core put back are tried again here at the latest, once a frame.
-        jobs::pump(&self.vegetation_spawner());
-        let Some(delivered) = self.vegetation_jobs.lock().unwrap().poll() else {
-            return VarDictionary::new();
-        };
-        let mut data = delivered
-            .product
-            .as_ref()
-            .map_or_else(VarDictionary::new, product_dictionary);
-        let [x, y, z] = delivered.key;
-        data.set("key", Vector3i::new(x, y, z));
-        data.set("serial", delivered.serial as i64);
-        data.set("busy", delivered.product.is_none());
-        if let Some(product) = delivered.product {
-            self.vegetation_jobs.lock().unwrap().recycle(product);
-        }
-        data
     }
 
     /// Makes the live request of `key` stale: its product will not be delivered. `O(1)`.
@@ -473,8 +447,9 @@ impl SimulationNode {
 }
 
 impl SimulationNode {
-    // What the vegetation jobs need to start one another.
-    fn vegetation_spawner(&self) -> jobs::Spawner {
+    /// What the vegetation jobs need to start one another; the stream node pulls finished
+    /// products through it (`RENDER-32-E`).
+    pub(crate) fn vegetation_spawner(&self) -> jobs::Spawner {
         jobs::Spawner {
             core: Arc::clone(&self.core),
             jobs: Arc::clone(&self.vegetation_jobs),

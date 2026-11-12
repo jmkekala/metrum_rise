@@ -80,18 +80,15 @@ var _ray_directions := PackedVector3Array()
 # The terrain patches the reflection world mirrors, by instance id, to [proxy instance RID,
 # base RID, transform, material]. Meshes are shared; terrain uses a cached clip-material variant.
 var _proxies := {}
-# The same for tree impostor MultiMeshes, which follow their patches' events, not the round robin.
-var _tree_proxies := {}
 var _proxy_frame := 0
 var _terrain: Node
 # Reflection variants of terrain materials, by source.
 var _grid_materials := {}
 var _proxy_shaders := {}
 var _dirty_terrain_patches := {}
+# The vegetation renderer: the stream node draws its tree impostors in this pass's world too
+# (`RENDER-32-E`), from the frame they install in the scene.
 var _vegetation: Node
-# Tree patches added, shown or hidden since the last frame, by instance id: their proxies are
-# synced in this frame's pre-draw, so the reflection's forest changes when the scene's does.
-var _dirty_tree_patches := {}
 # Building and scaffold batches mirrored as shared MultiMesh proxies (water_reflection_sources.gd).
 var _building_proxies: RefCounted
 
@@ -109,15 +106,17 @@ func setup(
 		_terrain.patches_will_reset.connect(_on_terrain_reset)
 	_sun = sun
 	_main_environment = environment
-	if _vegetation != null:
-		_vegetation.child_entered_tree.connect(_on_tree_patch_entered)
-		_vegetation.child_exiting_tree.connect(_on_tree_patch_exiting)
-		_vegetation.visibility_changed.connect(_on_vegetation_visibility_changed)
-		for patch in _vegetation.get_children():
-			_on_tree_patch_entered(patch)
+	_link_vegetation()
+
+## Hands the reflection's world to the vegetation once both exist (setup may come before or after
+## the world is made).
+func _link_vegetation() -> void:
+	if _vegetation != null and _world != null and _vegetation.has_method("set_reflection_scenario"):
+		_vegetation.set_reflection_scenario(_world.scenario)
 
 func _ready() -> void:
 	_world = World3D.new()
+	_link_vegetation()
 	_building_proxies = ReflectionSources.new()
 	_building_proxies.setup(_world.scenario, PROXY_SYNC_FRAMES,
 		_water.get_node_or_null("../Buildings") if _water != null else null)
@@ -156,10 +155,11 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	if _building_proxies != null:
 		_building_proxies.clear()
-	for proxies in [_proxies, _tree_proxies]:
-		for proxy in proxies.values():
-			RenderingServer.free_rid(proxy[0])
-		proxies.clear()
+	if is_instance_valid(_vegetation) and _vegetation.has_method("set_reflection_scenario"):
+		_vegetation.set_reflection_scenario(RID())
+	for proxy in _proxies.values():
+		RenderingServer.free_rid(proxy[0])
+	_proxies.clear()
 	if RenderingServer.frame_pre_draw.is_connected(_update_before_draw):
 		RenderingServer.frame_pre_draw.disconnect(_update_before_draw)
 	RenderingServer.global_shader_parameter_set("water_reflection_map", null)
@@ -204,7 +204,6 @@ func _update_mirrors() -> void:
 			continue
 		if not synced:
 			synced = true
-			_sync_tree_patches()
 			_sync_environment()
 			_sync_key_light()
 			_proxy_frame += 1
@@ -434,8 +433,8 @@ func _vote_planes(camera: Camera3D) -> PackedFloat32Array:
 	_voted_levels = _simulation.select_water_reflection_planes(_ray_levels, _ray_weights, _voted_levels)
 	return _voted_levels
 
-# Mirrors the resident terrain patches into the reflection world; tree impostors follow their
-# patches' events (_sync_tree_patches), buildings their batches' (water_reflection_sources.gd).
+# Mirrors the resident terrain patches into the reflection world; tree impostors are drawn there
+# by the stream node, buildings follow their batches' events (water_reflection_sources.gd).
 # Agents, grass, props, understory, near tree meshes, hedges, lots and roads are left out; a
 # bridge would need its own geometry first. Each frame handles
 # one PROXY_SYNC_FRAMES-th of the patches and of the proxies, round robin, so no frame pays for
@@ -486,57 +485,6 @@ func _sync_proxies() -> void:
 			RenderingServer.free_rid(_proxies[id][0])
 			_proxies.erase(id)
 	_dirty_terrain_patches.clear()
-
-# Tree patches are built, replaced, cached and restored as the camera moves. Synced round robin
-# like the terrain, a replaced patch's old proxies went in one slice and its new ones came in
-# another, up to ten frames apart, and its trees vanished from the reflection meanwhile. Synced
-# from the patch's own events, the reflection's forest changes in the frame the scene's does.
-# O(changed patches) per frame.
-func _on_tree_patch_entered(node: Node) -> void:
-	if not (node is Node3D):
-		return
-	if not node.visibility_changed.is_connected(_on_tree_patch_visibility_changed):
-		node.visibility_changed.connect(_on_tree_patch_visibility_changed.bind(node))
-	_dirty_tree_patches[node.get_instance_id()] = node
-
-func _on_tree_patch_exiting(node: Node) -> void:
-	_dirty_tree_patches.erase(node.get_instance_id())
-	_free_tree_proxies(node)
-
-func _on_tree_patch_visibility_changed(patch: Node3D) -> void:
-	_dirty_tree_patches[patch.get_instance_id()] = patch
-
-func _on_vegetation_visibility_changed() -> void:
-	for patch in _vegetation.get_children():
-		_on_tree_patch_entered(patch)
-
-func _sync_tree_patches() -> void:
-	if _dirty_tree_patches.is_empty():
-		return
-	var scenario := _world.scenario
-	for patch in _dirty_tree_patches.values():
-		if not is_instance_valid(patch) or not patch.is_inside_tree():
-			continue
-		if not patch.is_visible_in_tree():
-			_free_tree_proxies(patch)
-			continue
-		for child in patch.get_children():
-			var trees := child as MultiMeshInstance3D
-			if trees == null or not trees.visible or int(trees.get_meta("lod", 0)) != 2 \
-					or bool(trees.get_meta("shadow_proxy", false)):
-				continue
-			_sync_proxy(_tree_proxies, trees, trees.multimesh.get_rid(), trees.material_override,
-				scenario)
-	_dirty_tree_patches.clear()
-
-func _free_tree_proxies(patch: Node) -> void:
-	if _tree_proxies.is_empty():
-		return
-	for child in patch.get_children():
-		var id := child.get_instance_id()
-		if _tree_proxies.has(id):
-			RenderingServer.free_rid(_tree_proxies[id][0])
-			_tree_proxies.erase(id)
 
 func _sync_proxy(
 	proxies: Dictionary, source: GeometryInstance3D, base: RID, material: Material, scenario: RID

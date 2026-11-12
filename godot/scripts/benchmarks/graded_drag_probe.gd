@@ -548,22 +548,27 @@ func _vegetation_row() -> Dictionary:
 		"epoch": epoch}
 	for drawn: Dictionary in [_vegetation.patches, _vegetation.standins]:
 		for key: Vector3i in drawn:
-			var node: Node3D = drawn[key]
-			var origin := Vector2(node.position.x, node.position.z)
+			var record: Dictionary = drawn[key]
+			# What the stream node drew for the patch (`RENDER-32-E`): its install's serial
+			# identifies the version, as the patch node's instance id did.
+			var patch: Dictionary = _vegetation.stream.get_vegetation_patch(key)
+			if patch.is_empty():
+				continue
+			var origin: Vector2 = patch["origin"]
 			var span: float = _vegetation._key_span(key)
 			if not Rect2(origin, Vector2.ONE * span).intersects(_veg_region):
 				continue
-			var id := node.get_instance_id()
+			var id: int = patch["serial"]
 			if _veg_ids.has(key) and _veg_ids[key] != id:
 				row.uploads += 1
 			_veg_ids[key] = id
 			if not _veg_trunks.has(id):
-				_veg_trunks[id] = _patch_trunks(node)
+				_veg_trunks[id] = _patch_trunks(patch)
 			var local: Dictionary = _veg_trunks[id]
-			var understory := bool(node.get_meta("understory"))
+			var understory := bool(record["understory"])
 			var cached := "%s %s %d" % [key, understory, epoch]
 			if not _veg_rust.has(cached):
-				_veg_rust[cached] = _placement(origin, span, understory, bool(node.get_meta("near_band")))
+				_veg_rust[cached] = _placement(origin, span, understory, bool(record["near_band"]))
 			var placed: Dictionary = _veg_rust[cached]
 			for at: Vector2 in local:
 				if _veg_region.has_point(origin + at):
@@ -573,8 +578,8 @@ func _vegetation_row() -> Dictionary:
 				if not local.has(at) and _veg_region.has_point(origin + at):
 					row.missing += 1
 			var generations: Vector2i = _vegetation._owner_generations(_vegetation._owner_key(key), null)
-			if ((generations.x >= 0 and generations.x != int(node.get_meta("surface_generation")))
-					or generations.y != int(node.get_meta("vegetation_generation"))):
+			if ((generations.x >= 0 and generations.x != int(record["surface_generation"]))
+					or generations.y != int(record["vegetation_generation"])):
 				row.stale += 1
 				row.queued += 1 if _vegetation.queued.has(key) else 0
 	row.on_road = _on_road(trunks, false)
@@ -583,17 +588,17 @@ func _vegetation_row() -> Dictionary:
 	return row
 
 # A drawn patch's plant trunks in its own frame, as a set: the instance origins of its visible
-# levels, its shadow proxies and hedge runs left out.
-func _patch_trunks(node: Node3D) -> Dictionary:
+# levels (hedge runs left out; a shadow caster draws on its impostor's buffer), read back from
+# the stream node's `MultiMesh` buffers.
+func _patch_trunks(patch: Dictionary) -> Dictionary:
 	var out := {}
-	for child in node.get_children():
-		if (not child is MultiMeshInstance3D or not child.visible or child.get_meta("shadow_proxy", false)
-				or int(child.get_meta("lod", 0)) == Vegetation.HEDGE_RUN_LOD):
+	for batch: Dictionary in patch["batches"]:
+		if not bool(batch["main"]["visible"]) or int(batch["lod"]) == Vegetation.HEDGE_RUN_LOD:
 			continue
-		var multimesh: MultiMesh = child.multimesh
-		for i in multimesh.instance_count:
-			var at := multimesh.get_instance_transform(i).origin
-			out[Vector2(at.x, at.z)] = true
+		var stride := 12 + (4 if batch["colors"] else 0) + (4 if batch["custom"] else 0)
+		var buffer := RenderingServer.multimesh_get_buffer(batch["multimesh"])
+		for i in int(batch["count"]):
+			out[Vector2(buffer[i * stride + 3], buffer[i * stride + 11])] = true
 	return out
 
 # Rust's placement for a patch now, as its upload would draw it (vegetation.gd `_upload_patch`):

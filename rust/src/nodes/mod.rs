@@ -16,4 +16,5 @@ pub mod debug_bridge;
 pub mod lod_policy;
 pub mod sim;
 pub mod simulation_node;
+pub mod stream_node;
 pub mod vegetation_options;

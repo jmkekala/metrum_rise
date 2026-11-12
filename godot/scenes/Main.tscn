@@ -80,5 +80,7 @@ script = ExtResource("9_input")
 transform = Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 20, 30)
 current = true
 
+[node name="StreamNode" type="StreamNode" parent="."]
+
 [node name="MainUI" type="CanvasLayer" parent="."]
 script = ExtResource("10_ui")

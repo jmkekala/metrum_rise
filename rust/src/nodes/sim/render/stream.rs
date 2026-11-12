@@ -10,11 +10,17 @@
 //! V1b, `RENDER-32-D`) are the second: their queries run on the background pool from a
 //! snapshot, tracked by the prepare queue ([`prepare`]) and held for the poll by the product
 //! cache ([`cache`]). The graded renderer's remaining state (round G2a, `RENDER-32-I`) is a layer
-//! of its own ([`layers`]).
+//! of its own ([`layers`]). Round V2a (`RENDER-32-E`) adds the install side: the
+//! `RenderingServer` backend and its slot pools ([`backend`]), the frame's streaming budget and
+//! install order ([`schedule`]), each layer's status ([`status`]) and the vegetation layer that
+//! installs through them, run each frame by the `StreamNode`.
 
+pub(crate) mod backend;
 pub(crate) mod cache;
 pub(crate) mod layers;
 pub(crate) mod levels;
 pub(crate) mod prepare;
 pub(crate) mod requests;
+pub(crate) mod schedule;
+pub(crate) mod status;
 pub(crate) mod view;

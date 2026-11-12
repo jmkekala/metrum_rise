@@ -241,6 +241,11 @@ pub(crate) struct VegetationProduct {
     pub(crate) tree_count: i64,
     /// World box of the canopy tree origins, which the near detail choice measures.
     pub(crate) canopy_box: Aabb,
+    /// The patch's minimum corner and side, metres, as requested (set by the job that prepared
+    /// it, for the install; not part of the product's parity).
+    pub(crate) origin: [f32; 2],
+    /// See `origin`.
+    pub(crate) span: f32,
 }
 
 // One kept placement, in placement order.
@@ -584,6 +589,20 @@ fn clamp_i64(value: i64, low: i64, high: i64) -> i64 {
 }
 
 impl VegetationProduct {
+    /// A product from the bridge's parts (a product built by `build_vegetation_product` and
+    /// handed back for an install: tests and previews).
+    pub(crate) fn from_parts(batches: Vec<Batch>, buffers: Vec<Vec<f32>>, tree_count: i64, canopy_box: Aabb) -> Self {
+        Self {
+            batches,
+            buffer_count: buffers.len(),
+            buffers,
+            tree_count,
+            canopy_box,
+            origin: [0.0; 2],
+            span: 0.0,
+        }
+    }
+
     /// The instance buffer of a batch ([`Batch::buffer`]).
     pub(crate) fn buffer(&self, index: usize) -> &[f32] {
         &self.buffers[..self.buffer_count][index]
