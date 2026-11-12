@@ -31,7 +31,10 @@
 ## settle points, the jump's pose and back, each far enough to re-centre both (`RENDER-32-H`).
 ## Every settle point also records the building LOD batches in `building_digests` (per batch its
 ## chunk, group, count and rows), whichever side draws them (`RENDER-32-L`), and the terrain's and
-## water's resident patches with their mesh steps in `patch_digests` (`RENDER-32-M`).
+## water's resident patches with their mesh steps in `patch_digests` (`RENDER-32-M`), and the road
+## chunks drawn (per chunk its key, place and every surface's arrays) in `road_digests` and the
+## parked cars drawn (per chunk and bucket its rows) in `parked_digests` (`RENDER-32-P`). Settled
+## also waits for a load's road chunks to stream in (`RENDER-32-P`; a control draws them at once).
 ##
 ## The `water` phase (`RENDER-32-L`) looks at a shore across water, so the water reflection
 ## draws: the first wet point of a fixed scan out from the world's centre whose neighbour WATER_STEP_M
@@ -103,6 +106,9 @@ var _settle_points := 0
 var _vegetation_waiting := {}
 var _vegetation_wanted := {}
 var _gpu_profile := false
+# A load's road chunk hydration (`RENDER-32-P`; none on a control) and the parked cars.
+var _roads: Node
+var _parked: Node
 # Per pass key, the GPU milliseconds of each frame of the current sample (`--gpu-profile`).
 var _gpu_passes := {}
 
@@ -113,6 +119,8 @@ func run(bench: Node) -> void:
 	_vegetation = main.get_node("Vegetation")
 	_buildings = main.get_node("Buildings")
 	_road_tool = main.get_node("RoadTool")
+	_roads = main.get_node_or_null("NetworkRenderer/RoadChunkHydration")
+	_parked = main.get_node_or_null("ParkedCars")
 	_grass = main.get_node("Grass")
 	_reflection = main.get_node_or_null("SceneLighting/WaterReflection")
 	Engine.max_fps = 0
@@ -144,7 +152,8 @@ func run(bench: Node) -> void:
 		"world_path": bench.world_path, "simulation_speed": float(OS.get_environment("METRUM_STREAM_SPEED")),
 		"pitch_radians": PITCH_RAD, "distance_m": DISTANCE_M, "phases": phases, "turn_durations_s": turns,
 		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [], "lamp_digests": [],
-		"building_digests": [], "patch_digests": [], "water_pose": [], "shadows": shadows,
+		"building_digests": [], "patch_digests": [], "road_digests": [], "parked_digests": [],
+		"water_pose": [], "shadows": shadows,
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
 	bench._metrics = _report
@@ -349,7 +358,8 @@ func _start_from(bench: Node, view: PackedFloat32Array) -> bool:
 	return await _wait_settled(bench)
 
 func _is_settled(bench: Node) -> bool:
-	return bench._is_idle() and _terrain.is_render_settled() and not _vegetation.has_pending_work()
+	return (bench._is_idle() and _terrain.is_render_settled() and not _vegetation.has_pending_work()
+		and (_roads == null or not _roads.is_pending()))
 
 func _wait_settled(bench: Node) -> bool:
 	var start_us := Time.get_ticks_usec()
@@ -371,6 +381,8 @@ func _record_digest(label: String) -> void:
 	_record_lamp_digest()
 	_record_building_digest()
 	_record_patch_digest()
+	_record_road_digest()
+	_record_parked_digest()
 	var tiles: Variant = _terrain.graded_tiles
 	if tiles == null:
 		return
@@ -513,6 +525,51 @@ func _record_patch_digest() -> void:
 		entry[layer] = {"resident": lines.size(), "built": renderer.patches.size(),
 			"digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines}
 	_report.patch_digests.append(entry)
+
+# The road chunks drawn at a settle point (`RENDER-32-P`): per chunk its key, place, surface
+# layout and every surface's arrays, from the road tool's own index on either side.
+func _record_road_digest() -> void:
+	var chunks: Variant = _road_tool.get("_road_chunk_instances")
+	if chunks == null:
+		return
+	var lines := PackedStringArray()
+	for key: Vector2i in chunks:
+		var node: MeshInstance3D = chunks[key]
+		if not is_instance_valid(node) or not node.visible or not node.is_inside_tree():
+			continue
+		var mesh: ArrayMesh = node.mesh
+		var surfaces := PackedStringArray()
+		for surface in mesh.get_surface_count():
+			surfaces.append(_sha(var_to_bytes(mesh.surface_get_arrays(surface))))
+		lines.append("%d,%d|%s|%s|%s|%d" % [key.x, key.y, node.position, mesh.get_meta("road_layer_surfaces", []),
+			",".join(surfaces), node.get_child_count()])
+	lines.sort()
+	_report.road_digests.append({"point": _settle_points,
+		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
+		"chunks": lines.size(), "digest": _sha("\n".join(lines).to_utf8_buffer())})
+
+# The parked cars drawn at a settle point (`RENDER-32-P`): per chunk and vehicle bucket its rows,
+# from the stream backend's slots (`drawn_rows`) or the control's chunk nodes.
+func _record_parked_digest() -> void:
+	if _parked == null:
+		return
+	var lines := PackedStringArray()
+	if _parked.has_method("drawn_rows"):
+		for batch: Dictionary in _parked.drawn_rows():
+			lines.append("%d,%d|%d|%s" % [batch.chunk.x, batch.chunk.y, batch.bucket,
+				_sha((batch.rows as PackedFloat32Array).to_byte_array())])
+	else:
+		var chunks: Dictionary = _parked.get("_chunks")
+		var meshes: Dictionary = _parked.get("_meshes")
+		for key: Vector2i in chunks:
+			for view: Node in (chunks[key] as Node).get_children():
+				var multimesh: MultiMesh = (view as MultiMeshInstance3D).multimesh
+				lines.append("%d,%d|%d|%s" % [key.x, key.y, meshes.find_key(multimesh.mesh),
+					_sha(multimesh.buffer.to_byte_array())])
+	lines.sort()
+	_report.parked_digests.append({"point": _settle_points,
+		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
+		"batches": lines.size(), "digest": _sha("\n".join(lines).to_utf8_buffer())})
 
 # The building LOD batches at a settle point, whichever side draws them: Rust's stream backend
 # (`drawn_batches`) or the control's batch nodes (`batches`). Rows read back from the engine.
