@@ -717,6 +717,10 @@ impl Graded {
             self.out.push(Effect::CellCount { set, mesh: mesh as u8, count });
         }
         self.rebuild_walls(set);
+        // Grass mirrors the set by its mask revision (which meshes have instances, a render of
+        // its mask): the build began with the counts cleared, so a mask rendered meanwhile shows
+        // none of its cells until the next revision.
+        self.bump_mask(set);
         self.out.push(Effect::CellBuilt { set });
         true
     }
@@ -1220,5 +1224,23 @@ mod tests {
         assert_eq!(custom[2] as u32 & 7, 1);
         assert_eq!(custom[3] as u32 & 7, 3, "the -z side meets the base cells");
         assert_eq!((custom[2] as u32 >> 6) & 7, 1, "the +x side is the border of a patch not resident");
+    }
+
+    #[test]
+    fn a_finished_build_renders_the_grass_mask_again() {
+        let mut graded = world();
+        graded.take_list((0, 0), 0, vec![Tile { x: -1, z: -1 }]);
+        install(&mut graded, -1, -1, 0);
+        let set = graded.begin_build((0, 0));
+        let begun = graded.cells.sets[set as usize].mask_revision;
+        // Grass mirrored the set as the build began, its counts cleared.
+        let mut stop = || true;
+        assert!(!graded.build_tiles(set, Some((&mut stop, 1))), "a budgeted build stops part way");
+        assert_eq!(graded.cells.sets[set as usize].mask_revision, begun);
+        assert!(graded.build_tiles(set, None));
+        assert!(
+            graded.cells.sets[set as usize].mask_revision > begun,
+            "the built set's counts reach grass's mirrors"
+        );
     }
 }
