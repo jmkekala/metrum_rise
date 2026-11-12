@@ -31,9 +31,11 @@
 ##
 ## The `water` phase (`RENDER-32-L`) looks at a shore across water, so the water reflection
 ## draws: the first wet point of a fixed scan out from the world's centre whose neighbour WATER_STEP_M
-## east is dry, viewed eastwards from over the water at WATER_PITCH_RAD and WATER_DISTANCE_M. It
+## south is dry, viewed southwards from over the water at WATER_PITCH_RAD and WATER_DISTANCE_M. It
 ## records a still sample there (`water_still`, its rows carrying the voted levels) and a settle
-## point, and the pose in `water_pose`; a world without such a shore skips it.
+## point, and the pose in `water_pose`; a world without such a shore skips it. No input of record
+## has water: the pond copy of the 30k save (a 600 x 400 m pond, 3 m deep, north of its last
+## street) is the input of this phase.
 extends RefCounted
 
 const SCHEMA_VERSION := 1
@@ -385,14 +387,14 @@ func _water_pose(bench: Node, base: PackedFloat32Array, world: Vector2) -> Packe
 			var level: float = bench.simulation_node.get_camera_water_surface_at(point)
 			if is_nan(level):
 				continue
-			if not is_nan(bench.simulation_node.get_camera_water_surface_at(point + Vector2(WATER_STEP_M, 0.0))):
+			if not is_nan(bench.simulation_node.get_camera_water_surface_at(point + Vector2(0.0, -WATER_STEP_M))):
 				continue
 			var view := base.duplicate()
 			view[0] = point.x
 			view[1] = level
 			view[2] = point.y
-			# The camera west of the pivot looking east, across the water to the shore.
-			view[3] = -PI * 0.5
+			# The camera north of the pivot looking south, across the water to the shore.
+			view[3] = 0.0
 			view[4] = WATER_PITCH_RAD
 			view[5] = WATER_DISTANCE_M
 			return view
