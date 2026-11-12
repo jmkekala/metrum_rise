@@ -14079,6 +14079,11 @@ PASS; `graded_tile_renderer_test` headless and rendered 0 failures, a `TERRAIN-2
 Rust test: `graded_tiles_api.rs` (a tile's transient failure retried without a dictionary). The
 renderer test's `FlaggingTiles` flags results through the book (`flag_results_behind`) where it
 overrode `_install`.
+Again on the tip rebased onto `dev` `daec355a` (with the review fix; not re-timed): clippy set
+unchanged (`asset_document.rs:15` only); debug `cargo test --lib` 2,488 passed, 0 failed, 222
+ignored; `./run.sh --test` PASS (Rust 2,492 of 2,492, 223 skipped; both Godot chains, no `SCRIPT
+ERROR`, no Godot script skipped; `graded_tile_renderer_test` headless and rendered 0 failures, a
+second `TERRAIN-24` pass); the nine traces replay bit for bit.
 
 **The install budget charges its cell rewrites** (the coordinator's review, 2026-11-12: the 100k
 turns' graded total above the control blocks landing; the fix stays inside the graded poll's own
