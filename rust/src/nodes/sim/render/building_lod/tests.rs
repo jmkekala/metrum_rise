@@ -237,3 +237,158 @@ fn level_change_rise_eases_out_and_finishes() {
     assert_eq!(level_change_rise_progress(Duration::from_millis(2500)), 1.0);
     assert_eq!(level_change_rise_progress(Duration::from_secs(60)), 1.0);
 }
+
+// A deterministic generator for the walks (xorshift).
+struct Walk(u64);
+
+impl Walk {
+    fn next(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    fn range(&mut self, low: f32, high: f32) -> f32 {
+        low + (high - low) * self.next()
+    }
+}
+
+// The camera an orbit view gives: projection, world to clip as the bridge forms it, and its pose.
+fn orbit(pivot: Vec3, yaw: f32, pitch: f32, distance: f32, size: Vec2) -> (View, spatial::Pose) {
+    let direction = Vec3::new(yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos());
+    let eye = pivot - direction * distance;
+    let view_matrix = Mat4::look_at_rh(eye, pivot, Vec3::Y);
+    // The far plane follows the distance, as `CameraNode` sets it.
+    let projection = Mat4::perspective_rh_gl(
+        70_f32.to_radians(),
+        size.x / size.y,
+        0.5,
+        (distance * 4.0 + 3000.0).max(6000.0),
+    );
+    let camera = view_matrix.inverse();
+    (
+        View {
+            world_to_clip: projection * view_matrix,
+            render_size: size,
+            quality: LodQuality::Balanced,
+        },
+        spatial::Pose {
+            eye: camera.w_axis.truncate(),
+            basis: Mat3::from_mat4(camera),
+            projection,
+        },
+    )
+}
+
+fn selections(chunk: &Chunk) -> Vec<(usize, Option<usize>)> {
+    chunk
+        .entries
+        .iter()
+        .map(|entry| (entry.selected, entry.previous))
+        .collect()
+}
+
+fn packed_groups(chunk: &Chunk) -> Vec<(BatchKey, Vec<[f32; 16]>)> {
+    chunk
+        .batches
+        .iter()
+        .map(|batch| (batch.key, chunk.transforms(batch).to_vec()))
+        .collect()
+}
+
+#[test]
+fn travel_buckets_keep_every_tier_the_per_frame_rule_gives_on_random_walks() {
+    // Parts of many sizes and chains; instances over 3 km, rotated, scaled, at heights.
+    let mut walk = Walk(0x9e37_79b9_7f4a_7c15);
+    let parts: Vec<Part> = (0..12)
+        .map(|index| {
+            let half = Vec3::new(2.0 + 3.0 * index as f32, 3.0 + 5.0 * (index % 4) as f32, 4.0);
+            Part::new([-half, half], &vec![true; 2 + index % 5]).unwrap()
+        })
+        .collect();
+    let instances: Vec<Instance> = (0..1500)
+        .map(|building| {
+            let transform = Mat4::from_scale_rotation_translation(
+                Vec3::splat(walk.range(0.6, 1.6)),
+                glam::Quat::from_rotation_y(walk.range(0.0, 6.28)),
+                Vec3::new(
+                    walk.range(-1500.0, 1500.0),
+                    walk.range(0.0, 40.0),
+                    walk.range(-1500.0, 1500.0),
+                ),
+            );
+            Instance {
+                building,
+                part: building % parts.len(),
+                deserted: building % 7 == 0,
+                scheme: 0,
+                lighting: [0.0; 4],
+                transform,
+            }
+        })
+        .collect();
+    for seed in 1..=4u64 {
+        let mut lazy = Chunk::default();
+        let mut reference = Chunk::default();
+        lazy.synchronize(&instances, &parts, true);
+        reference.synchronize(&instances, &parts, true);
+        let mut travel = spatial::Travel::default();
+        let size = Vec2::new(1920.0, 1080.0);
+        let mut pivot = Vec3::new(0.0, 0.0, 0.0);
+        let (mut yaw, mut pitch, mut distance) = (0.3f32, 0.1f32, 800.0f32);
+        let mut walk = Walk(seed * 0x2545_f491_4f6c_dd1d);
+        let (mut lazy_work, mut reference_work) = (0, 0);
+        for frame in 0..900 {
+            // Runs of pans, orbit turns, zooms, pitch changes, still frames and jumps.
+            match (frame / 30 + seed as usize) % 6 {
+                0 => pivot += Vec3::new(walk.range(-12.0, 12.0), 0.0, walk.range(-12.0, 12.0)),
+                1 => yaw += walk.range(0.02, 0.14),
+                2 => distance = (distance * walk.range(0.9, 1.1)).clamp(20.0, 3000.0),
+                3 => pitch = (pitch + walk.range(-0.05, 0.05)).clamp(-0.2, 1.4),
+                4 => {}
+                _ => {
+                    if frame % 30 == 0 {
+                        pivot = Vec3::new(walk.range(-1500.0, 1500.0), 0.0, walk.range(-1500.0, 1500.0));
+                    }
+                    yaw -= walk.range(0.0, 0.2);
+                    pivot.x += walk.range(-30.0, 30.0);
+                }
+            }
+            let (view, pose) = orbit(pivot, yaw, pitch, distance, size);
+            let motion = travel.advance(Some(pose), view);
+            lazy.update_due(&parts, view, false, &motion);
+            reference.update(&parts, view, false);
+            lazy_work += lazy.evaluations;
+            reference_work += reference.evaluations;
+            assert_eq!(selections(&lazy), selections(&reference), "seed {seed} frame {frame}");
+            assert_eq!(packed_groups(&lazy), packed_groups(&reference), "seed {seed} frame {frame}");
+            lazy.acknowledge();
+            reference.acknowledge();
+        }
+        assert!(
+            lazy_work * 2 < reference_work,
+            "the buckets skip most evaluations: {lazy_work} of {reference_work}"
+        );
+    }
+}
+
+#[test]
+fn a_still_view_evaluates_nothing_and_a_pan_a_fraction() {
+    let parts = [Part::new([-Vec3::splat(8.0), Vec3::splat(8.0)], &[true; 5]).unwrap()];
+    let instances: Vec<Instance> = (0..400)
+        .map(|i| instance(i, 0, (i as f32 - 200.0) * 8.0))
+        .collect();
+    let mut chunk = Chunk::default();
+    chunk.synchronize(&instances, &parts, true);
+    let mut travel = spatial::Travel::default();
+    let size = Vec2::new(1920.0, 1080.0);
+    let (view, pose) = orbit(Vec3::ZERO, 0.0, 0.1, 400.0, size);
+    chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view));
+    assert_eq!(chunk.evaluations, 400, "a first frame evaluates every part");
+    chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view));
+    assert_eq!(chunk.evaluations, 0, "a still view evaluates nothing");
+    let (view, pose) = orbit(Vec3::new(4.0, 0.0, 0.0), 0.0, 0.1, 400.0, size);
+    chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view));
+    assert!(chunk.evaluations < 100, "a 4 m pan evaluates a few parts: {}", chunk.evaluations);
+}

@@ -151,6 +151,7 @@ impl SimulationNode {
             &core.allocator,
             bounds,
             view,
+            None,
             core.construction_clock_slots(),
             std::time::Instant::now(),
         );

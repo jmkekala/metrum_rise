@@ -3,9 +3,22 @@
 //! Engine-independent, reusable building LOD batches. The bridge supplies spatial-index
 //! candidates; this module never queries simulation state or calls Godot. Only topology
 //! changes allocate. Warm camera updates use two packed buffers and counting scatter.
+//!
+//! Travel buckets (`RENDER-34`): a part is evaluated by the per-frame rule (its projected size,
+//! [`select_lod`] with its previous tier) only on frames where that rule could choose another
+//! tier. After each evaluation the part gets the camera motion it can take before its size can
+//! leave the interval over which its tier is held ([`hold_interval`]): a bound on how far a rigid
+//! move of the view changes the projected extent of its box (see [`hold_distance`]), split into
+//! eye travel and rotation, the two path lengths the bridge accumulates ([`Motion`]). A frame
+//! whose motion has not reached a part's thresholds would give it the tier it has, so skipping it
+//! leaves every tier and every hysteresis history what the per-frame rule gives. A chunk is
+//! evaluated only once its least threshold is passed, and re-packed only when a tier moved.
 
-use crate::assets::lod_policy::{LodQuality, projected_size_pixels, select_lod};
-use glam::{Mat4, Vec2, Vec3};
+use crate::assets::lod_policy::{
+    LodQuality, hold_interval, projected_size_pixels, select_lod,
+};
+use glam::{Mat3, Mat4, Vec2, Vec3};
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 
 pub(crate) mod spatial;
@@ -86,11 +99,56 @@ pub(crate) struct BatchKey {
     pub lod: usize,
 }
 
+/// The camera's motion for the travel buckets: path lengths since the bridge began, and the
+/// view the thresholds are measured in (`RENDER-34`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Motion {
+    /// Evaluate every part: a first frame, a projection, viewport or quality change.
+    pub all: bool,
+    /// Whether the fields below describe the view; without them no part is ever held.
+    pub bounded: bool,
+    /// Eye travel summed over frames, metres.
+    pub travel: f64,
+    /// Rotation summed over frames: each frame's spectral norm of the change of the view
+    /// rotation, `2 sin(angle / 2)`, which bounds how far it moves a point per metre of distance.
+    pub turn: f64,
+    /// The eye.
+    pub eye: Vec3,
+    /// World to view rotation (rows: the camera's x, y and z axes; the view looks along -z).
+    pub rotation: Mat3,
+    /// Render pixels per unit of `x / depth` and of `y / depth`.
+    pub scale: [f32; 2],
+    /// The depth at and before which a point projects to infinity (the near plane).
+    pub near: f32,
+}
+
+impl Motion {
+    /// Every part evaluated, none held (no camera pose: tests, an orthographic view).
+    pub const ALL: Self = Self {
+        all: true,
+        bounded: false,
+        travel: 0.0,
+        turn: 0.0,
+        eye: Vec3::ZERO,
+        rotation: Mat3::IDENTITY,
+        scale: [0.0; 2],
+        near: 0.0,
+    };
+}
+
+// Parts evaluated together on one worker.
+const BLOCK: usize = 256;
+
 struct Entry {
     instance: Instance,
     group: usize,
     previous: Option<usize>,
     selected: usize,
+    // The LOD0 box's centre in the world and a bound on the distance between two of its corners.
+    center: Vec3,
+    reach: f32,
+    // The travel and the turn at which the part is next evaluated.
+    due: [f64; 2],
 }
 
 /// Slice into a chunk's packed transform/custom-data buffer.
@@ -117,6 +175,10 @@ pub(crate) struct Chunk {
     scratch: Vec<[f32; 16]>,
     /// Parts evaluated since the last acknowledgement.
     pub evaluations: usize,
+    // The least threshold of the chunk's parts, and whether its instances changed since the
+    // last update (every part then evaluated and the chunk re-packed).
+    due_min: [f64; 2],
+    resync: bool,
 }
 
 impl Chunk {
@@ -130,9 +192,11 @@ impl Chunk {
                     && old.instance.deserted == new.deserted
                     && old.instance.scheme == new.scheme
             });
+        self.resync = true;
         if same_layout {
             for (entry, instance) in self.entries.iter_mut().zip(instances) {
                 entry.instance = *instance;
+                (entry.center, entry.reach) = placed_box(&parts[instance.part], instance);
                 if reset_history {
                     entry.previous = None;
                 }
@@ -177,11 +241,17 @@ impl Chunk {
         }
         self.batches = batches;
         self.entries.clear();
-        self.entries.extend(instances.iter().map(|&instance| Entry {
-            instance,
-            group: groups[&(instance.part, instance.deserted, instance.scheme)],
-            previous: None,
-            selected: 0,
+        self.entries.extend(instances.iter().map(|&instance| {
+            let (center, reach) = placed_box(&parts[instance.part], &instance);
+            Entry {
+                instance,
+                group: groups[&(instance.part, instance.deserted, instance.scheme)],
+                previous: None,
+                selected: 0,
+                center,
+                reach,
+                due: [f64::NEG_INFINITY; 2],
+            }
         }));
         self.packed.resize(instances.len(), [0.0; 16]);
         self.scratch.resize(instances.len(), [0.0; 16]);
@@ -191,32 +261,68 @@ impl Chunk {
         }
     }
 
-    /// O(instances + groups), no allocations after synchronization. Callers parallelize
-    /// independent chunks with Rayon, then publish all changed groups in one render frame.
+    /// Every part evaluated (no travel buckets): O(instances + groups).
     pub fn update(&mut self, parts: &[Part], view: View, reset_history: bool) {
-        self.evaluations = self.entries.len();
+        self.update_due(parts, view, reset_history, &Motion::ALL);
+    }
+
+    /// Evaluates the parts whose thresholds `motion` reached (all of them after a
+    /// synchronization, a history reset or with `motion.all`), then re-packs the batches when a
+    /// tier moved. O(1) when the chunk's least threshold is not reached; otherwise O(instances)
+    /// threshold checks, O(due parts) evaluations in blocks across the Rayon pool, and
+    /// O(instances + groups) for a re-pack. No allocations after synchronization. Callers publish
+    /// all changed groups in one render frame.
+    pub fn update_due(
+        &mut self,
+        parts: &[Part],
+        view: View,
+        reset_history: bool,
+        motion: &Motion,
+    ) {
+        let all = reset_history || motion.all || self.resync;
+        if !all && motion.travel < self.due_min[0] && motion.turn < self.due_min[1] {
+            self.evaluations = 0;
+            return;
+        }
+        let (evaluations, moved, due_min) = self
+            .entries
+            .par_chunks_mut(BLOCK)
+            .map(|block| {
+                let mut evaluations = 0;
+                let mut moved = false;
+                let mut due_min = [f64::INFINITY; 2];
+                for entry in block {
+                    if all || motion.travel >= entry.due[0] || motion.turn >= entry.due[1] {
+                        let before = entry.selected;
+                        evaluate(entry, parts, view, reset_history, motion);
+                        evaluations += 1;
+                        moved |= entry.selected != before;
+                    }
+                    due_min = [due_min[0].min(entry.due[0]), due_min[1].min(entry.due[1])];
+                }
+                (evaluations, moved, due_min)
+            })
+            .reduce(
+                || (0, false, [f64::INFINITY; 2]),
+                |a, b| (a.0 + b.0, a.1 | b.1, [a.2[0].min(b.2[0]), a.2[1].min(b.2[1])]),
+            );
+        self.evaluations = evaluations;
+        self.due_min = due_min;
+        // Unmoved tiers of unchanged instances pack to the same bytes, so only a move or a
+        // synchronization re-packs.
+        if moved || self.resync {
+            self.pack();
+        }
+        self.resync = false;
+    }
+
+    // Counting scatter of every entry into its selected group, flagging the groups whose
+    // instances or bytes changed.
+    fn pack(&mut self) {
         for batch in &mut self.batches {
             batch.next_count = 0;
         }
-        for entry in &mut self.entries {
-            let part = &parts[entry.instance.part];
-            let pixels = projected_size_pixels(
-                part.bounds[0],
-                part.bounds[1],
-                view.world_to_clip * entry.instance.transform,
-                view.render_size,
-            );
-            let requested = select_lod(
-                pixels,
-                part.fallback.len(),
-                if reset_history { None } else { entry.previous },
-                view.quality,
-            )
-            .unwrap_or(0);
-            // Hysteresis follows the requested ordinal even when its import failed;
-            // fallback geometry must not change the policy or trigger import retries.
-            entry.previous = Some(requested);
-            entry.selected = entry.group + part.fallback[requested];
+        for entry in &self.entries {
             self.batches[entry.selected].next_count += 1;
         }
         let mut offset = 0;
@@ -280,6 +386,122 @@ impl Chunk {
         }
         self.evaluations = 0;
     }
+}
+
+// The per-frame rule for one part, then its thresholds.
+fn evaluate(entry: &mut Entry, parts: &[Part], view: View, reset_history: bool, motion: &Motion) {
+    let part = &parts[entry.instance.part];
+    let pixels = projected_size_pixels(
+        part.bounds[0],
+        part.bounds[1],
+        view.world_to_clip * entry.instance.transform,
+        view.render_size,
+    );
+    let tiers = part.fallback.len();
+    let requested = select_lod(
+        pixels,
+        tiers,
+        if reset_history { None } else { entry.previous },
+        view.quality,
+    )
+    .unwrap_or(0);
+    // Hysteresis follows the requested ordinal even when its import failed;
+    // fallback geometry must not change the policy or trigger import retries.
+    entry.previous = Some(requested);
+    entry.selected = entry.group + part.fallback[requested];
+    entry.due = if !motion.bounded {
+        [f64::NEG_INFINITY; 2]
+    } else if tiers <= 1 {
+        // One tier: every size selects it.
+        [f64::INFINITY; 2]
+    } else {
+        let hold = hold_interval(requested, tiers, view.quality);
+        let (distance, rho) = hold_distance(pixels, hold, entry.center, entry.reach, motion);
+        let distance = f64::from(distance);
+        let rho = f64::from(rho);
+        [
+            motion.travel + distance * 0.5,
+            motion.turn + distance / (2.0 * rho + distance),
+        ]
+    };
+}
+
+// What the rounding of the boundaries, the size and the bound's own arithmetic are allowed:
+// relative and absolute shrink of the hold interval, and the bound's safety factor.
+const HOLD_RELATIVE: f32 = 1e-3;
+const HOLD_ABSOLUTE: f32 = 1e-3;
+const BOUND_SAFETY: f32 = 1.02;
+
+/// The view motion `distance` (metres) a part can take before the per-frame rule could change
+/// its tier, and the bound `rho` on its corners' distance from the eye; a frame's motion is split
+/// as travel up to `distance / 2` and turn up to `distance / (2 rho + distance)`, so every corner
+/// moves at most `distance` in view space (`RENDER-34`).
+///
+/// The bound: a view change moves view-space points rigidly, `v' = Q v + d`. For the screen
+/// coordinate `f = x / depth` (and `y / depth`), the change of the difference between two corners
+/// is `g(v_i) - g(v_j)` with `g(v) = f(Q v + d) - f(v)`, so by the mean value theorem along the
+/// segment between them (inside the box) the projected extent moves by at most
+/// `reach x (|Q - I| |grad f| + |v' - v| |hess f|)`, where over the region the box can reach
+/// `|grad f| <= sqrt(1 + u^2) / w` and `|hess f| <= (u + sqrt(1 + u^2)) / w^2` (`w` the least
+/// depth, `u` the greatest `|x| / w`). That times the render scale must stay inside the hold
+/// interval's margin, and the least depth beyond the near plane (or, for a size projecting to
+/// infinity, the whole box behind it). Bounds of the region are taken for a motion capped at a
+/// fraction of the depth; the best of a few caps is kept.
+pub(crate) fn hold_distance(
+    pixels: f32,
+    hold: [f32; 2],
+    center: Vec3,
+    reach: f32,
+    motion: &Motion,
+) -> (f32, f32) {
+    let offset = center - motion.eye;
+    let view = motion.rotation * offset;
+    let depth = -view.z;
+    let half = reach * 0.5;
+    let rho = offset.length() + half;
+    let near = motion.near * (1.0 + HOLD_RELATIVE) + HOLD_ABSOLUTE;
+    if !pixels.is_finite() {
+        // Infinite (or NaN) sizes select the first tier while any corner stays at or before the
+        // near plane: held while the whole box is behind it.
+        let behind = motion.near * (1.0 - HOLD_RELATIVE) - HOLD_ABSOLUTE - (depth + half);
+        return (behind.max(0.0), rho);
+    }
+    let low = hold[0] * (1.0 + HOLD_RELATIVE) + HOLD_ABSOLUTE;
+    let high = hold[1] * (1.0 - HOLD_RELATIVE) - HOLD_ABSOLUTE;
+    let margin = (pixels - low).min(high - pixels);
+    let nearest = depth - half;
+    let room = nearest - near;
+    if margin.is_nan() || margin <= 0.0 || room <= 0.0 {
+        return (0.0, rho);
+    }
+    let mut best = 0.0f32;
+    for fraction in [0.0625f32, 0.125, 0.25, 0.5] {
+        let cap = (nearest * fraction).min(room * 0.999);
+        let least = nearest - cap;
+        let mut slope = 0.0f32;
+        for (lateral, scale) in [(view.x.abs(), motion.scale[0]), (view.y.abs(), motion.scale[1])] {
+            let u = (lateral + half + cap) / least;
+            let root = (1.0 + u * u).sqrt();
+            let gradient = root / least;
+            let hessian = (u + root) / (least * least);
+            slope = slope.max(scale * (gradient / (2.0 * rho) + hessian));
+        }
+        let slope = BOUND_SAFETY * reach * slope;
+        best = best.max(if slope > 0.0 { cap.min(margin / slope) } else { cap });
+    }
+    (best, rho)
+}
+
+// The LOD0 box's centre placed in the world, and the sum of its placed edge lengths, which no
+// two corners are farther apart than.
+fn placed_box(part: &Part, instance: &Instance) -> (Vec3, f32) {
+    let [low, high] = part.bounds;
+    let center = instance.transform.transform_point3((low + high) * 0.5);
+    let size = high - low;
+    let reach = (0..3)
+        .map(|axis| instance.transform.col(axis).truncate().length() * size[axis].abs())
+        .sum();
+    (center, reach)
 }
 
 /// Godot MultiMesh's row-major 3×4 affine buffer layout.

@@ -3,7 +3,7 @@
 //! Spatial-index adapter for the pure LOD batcher. Cached state belongs to the render
 //! consumer, never the simulation/save. Residency visits the existing 512 m center index.
 
-use super::{BatchKey, Chunk, Instance, Part, View};
+use super::{BatchKey, Chunk, Instance, Motion, Part, View};
 use crate::assets::AssetRegistry;
 use crate::nodes::sim::render::buildings::{
     building_part_pose, construction_rise_offset_m, construction_visual_progress,
@@ -11,7 +11,7 @@ use crate::nodes::sim::render::buildings::{
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
-use glam::{Mat4, Vec3};
+use glam::{DMat3, DVec3, Mat3, Mat4, Vec2, Vec3};
 use godot::prelude::Vector2;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -67,6 +67,97 @@ pub(crate) struct MaterialBinding {
     pub emission: Option<String>,
 }
 
+/// The camera as the travel buckets see it (`RENDER-34`): where it is, how it is turned, and the
+/// projection `View::world_to_clip` was made with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Pose {
+    /// The eye.
+    pub eye: Vec3,
+    /// The camera's basis (columns: its x, y and z axes in the world).
+    pub basis: Mat3,
+    /// The camera's projection.
+    pub projection: Mat4,
+}
+
+// What of a projection the sizes depend on: x and y scale and offset, and the near plane.
+fn projection_terms(projection: &Mat4) -> Option<[f32; 5]> {
+    let [x, y, z, w] = projection.to_cols_array_2d();
+    // Perspective only: the clip w is the depth.
+    if z[3] != -1.0 || w[3] != 0.0 || x[3] != 0.0 || y[3] != 0.0 || z[2] >= 1.0 {
+        return None;
+    }
+    let near = -w[2] / (1.0 - z[2]);
+    (near.is_finite() && near > 0.0).then_some([x[0], y[1], z[0], z[1], near])
+}
+
+// The camera's rotation, orthonormalised (Gram-Schmidt, x then y).
+fn orthonormal(basis: Mat3) -> DMat3 {
+    let x = basis.x_axis.as_dvec3().normalize();
+    let y = basis.y_axis.as_dvec3();
+    let y = (y - x * x.dot(y)).normalize();
+    DMat3::from_cols(x, y, x.cross(y))
+}
+
+// The path lengths the travel buckets read, and the last pose they were measured from.
+#[derive(Default)]
+pub(super) struct Travel {
+    last: Option<(Pose, DMat3, [f32; 5], Vec2, crate::assets::lod_policy::LodQuality)>,
+    travel: f64,
+    turn: f64,
+}
+
+impl Travel {
+    // This frame's motion: the path lengths advanced by the move from the last pose, or every
+    // part evaluated when what the sizes depend on besides the camera's place changed.
+    pub(super) fn advance(&mut self, pose: Option<Pose>, view: View) -> Motion {
+        let Some(pose) = pose else {
+            self.last = None;
+            return Motion::ALL;
+        };
+        let Some(terms) = projection_terms(&pose.projection) else {
+            self.last = None;
+            return Motion::ALL;
+        };
+        let rotation = orthonormal(pose.basis);
+        let mut all = true;
+        if let Some((last, last_rotation, last_terms, size, quality)) = self.last
+            && size == view.render_size
+            && quality == view.quality
+            && last_terms[..4] == terms[..4]
+            && ((last_terms[4] - terms[4]) / terms[4]).abs() < 1e-5
+        {
+            all = false;
+            if last.eye != pose.eye {
+                self.travel += f64::from(last.eye.distance(pose.eye)) + 1e-6;
+            }
+            if last.basis != pose.basis {
+                // |R - R0| = 2 sin(angle / 2) = sqrt(3 - tr(R R0^T)) for rotations.
+                let trace = DVec3::new(
+                    rotation.x_axis.dot(last_rotation.x_axis),
+                    rotation.y_axis.dot(last_rotation.y_axis),
+                    rotation.z_axis.dot(last_rotation.z_axis),
+                )
+                .element_sum();
+                self.turn += (3.0 - trace).max(0.0).sqrt() + 1e-6;
+            }
+        }
+        self.last = Some((pose, rotation, terms, view.render_size, view.quality));
+        Motion {
+            all,
+            bounded: true,
+            travel: self.travel,
+            turn: self.turn,
+            eye: pose.eye,
+            rotation: rotation.transpose().as_mat3(),
+            scale: [
+                terms[0].abs() * view.render_size.x * 0.5,
+                terms[1].abs() * view.render_size.y * 0.5,
+            ],
+            near: terms[4],
+        }
+    }
+}
+
 /// Candidate inputs and GPU groups retained while a spatial chunk is resident.
 #[derive(Default)]
 pub(crate) struct Resident {
@@ -115,6 +206,7 @@ pub(crate) struct SpatialBatches {
     level_change_started: HashMap<(u64, u32), Instant>,
     // Whether the previous frame animated, so the frame after the last rise settles it.
     level_change_animating: bool,
+    travel: Travel,
 }
 
 impl SpatialBatches {
@@ -214,19 +306,24 @@ impl SpatialBatches {
         self.ordered_chunks.clear();
         self.last_revision = None;
         self.last_view = None;
+        self.travel.last = None;
         self.construction = false;
         self.level_changes_seen = None;
         self.level_change_started.clear();
         self.level_change_animating = false;
     }
 
-    /// Returns false for an unchanged frame. Rectangle lookup is O(queried chunks);
-    /// candidate preparation/LOD work is O(parts + batch groups), independent of background N.
+    /// Returns false for an unchanged frame. Rectangle lookup is O(queried chunks); candidate
+    /// preparation is O(parts of changed chunks); LOD work is O(resident chunks) plus, in chunks
+    /// whose least threshold the camera's motion passed, O(parts) threshold checks and O(due
+    /// parts) evaluations (every part without a `pose`), independent of background N.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         allocator: &BuildingAllocator,
         bounds: [i32; 4],
         view: View,
+        pose: Option<Pose>,
         clock_slots: f64,
         now: Instant,
     ) -> bool {
@@ -265,6 +362,9 @@ impl SpatialBatches {
             .last_view
             .is_some_and(|last| last.quality != view.quality);
         let camera_changed = self.last_view != Some(view);
+        // Chunks updated without a camera change are resynchronized ones, which evaluate every
+        // part whatever the motion says.
+        let motion = self.travel.advance(pose, view);
         self.last_view = Some(view);
         self.last_bounds = Some(bounds);
         self.last_revision = Some(revision);
@@ -407,7 +507,9 @@ impl SpatialBatches {
                         chunk.revision = Some(revision);
                     }
                     if changed || camera_changed {
-                        chunk.batches.update(parts, view, quality_changed);
+                        chunk
+                            .batches
+                            .update_due(parts, view, quality_changed, &motion);
                     }
                 });
         });

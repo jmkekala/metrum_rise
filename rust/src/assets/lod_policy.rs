@@ -121,6 +121,29 @@ pub fn select_lod(
     })
 }
 
+/// The projected sizes, in render pixels, over which [`select_lod`] keeps `tier` when it was the
+/// previous choice: `[low, high)` from the boundaries and the hysteresis, an infinite side where
+/// the tier is the first or the last. Infinite and NaN sizes give the first tier, which keeps it
+/// on both sides (`RENDER-34`: the building LOD's travel buckets hold a part while its size stays
+/// inside). Exact up to the rounding of the boundaries' products, which callers allow for.
+pub fn hold_interval(tier: usize, tiers: usize, quality: LodQuality) -> [f32; 2] {
+    let last = tiers.saturating_sub(1);
+    let scale = quality.pixel_scale();
+    // Coarser once the size divided by (1 - H) falls below the tier's lower boundary; finer once
+    // the size divided by (1 + H) reaches its upper boundary.
+    let low = if tier >= last {
+        f32::NEG_INFINITY
+    } else {
+        switch_pixels(tier, LodQuality::Balanced) * (1.0 - HYSTERESIS) / scale
+    };
+    let high = if tier == 0 {
+        f32::INFINITY
+    } else {
+        switch_pixels(tier - 1, LodQuality::Balanced) * (1.0 + HYSTERESIS) / scale
+    };
+    [low, high]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +217,28 @@ mod tests {
             Some(0)
         );
         assert_eq!(select_lod(100.0, 2, Some(3), LodQuality::Balanced), Some(1));
+    }
+
+    #[test]
+    fn hold_interval_matches_the_selection() {
+        // Away from the boundaries' rounding the interval is exactly where the tier is kept.
+        for quality in [LodQuality::Performance, LodQuality::Balanced, LodQuality::Quality] {
+            for tiers in 1..7 {
+                for tier in 0..tiers {
+                    let [low, high] = hold_interval(tier, tiers, quality);
+                    for step in 0..4000 {
+                        let pixels = 0.05 * 1.004_f32.powi(step);
+                        let kept = select_lod(pixels, tiers, Some(tier), quality) == Some(tier);
+                        let near = |edge: f32| edge.is_finite() && (pixels / edge - 1.0).abs() < 1e-4;
+                        if near(low) || near(high) {
+                            continue;
+                        }
+                        assert_eq!(kept, pixels >= low && pixels < high, "{tier}/{tiers} {pixels}");
+                    }
+                    assert_eq!(select_lod(f32::INFINITY, tiers, Some(tier), quality), Some(0));
+                }
+            }
+        }
     }
 
     fn measure(projection: Mat4, distance: f32, scale: f32, viewport: Vec2) -> f32 {

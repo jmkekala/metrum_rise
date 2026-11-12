@@ -75,7 +75,7 @@ fn building_lod_spatial_queries_ignore_background_population_and_idle_clock() {
     let mut oracle = None;
     for background in [0, 1024, 65_536] {
         let (allocator, mut renderer) = setup(background);
-        assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(256.0), 0.0, Instant::now()));
+        assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(256.0), None, 0.0, Instant::now()));
         assert_eq!(renderer.evaluated_parts, 32);
         assert_eq!(renderer.queried_chunks, 1);
         let actual = output(&renderer);
@@ -85,7 +85,7 @@ fn building_lod_spatial_queries_ignore_background_population_and_idle_clock() {
             oracle = Some(actual);
         }
         renderer.acknowledge();
-        assert!(!renderer.update(&allocator, [0, 0, 0, 0], camera(256.0), 0.5, Instant::now()));
+        assert!(!renderer.update(&allocator, [0, 0, 0, 0], camera(256.0), None, 0.5, Instant::now()));
         assert_eq!(renderer.evaluated_parts, 0);
         assert_eq!(renderer.queried_chunks, 0);
     }
@@ -96,7 +96,7 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
     let (mut allocator, mut renderer) = setup(0);
     allocator.buildings[0].construction_total_hours = 4;
     allocator.buildings[0].set_construction_hours_left(4);
-    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now());
+    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, Instant::now());
     let initial_y = output(&renderer)[0].1[0][7];
     assert_eq!(
         output(&renderer)[0].1[0][15],
@@ -109,6 +109,7 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
         &allocator,
         [0, 0, 0, 0],
         camera(64.0),
+        None,
         SLOTS_PER_HOUR as f64 * 0.5,
         Instant::now()
     ));
@@ -119,7 +120,7 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
     );
     renderer.acknowledge();
     allocator.complete_construction(0);
-    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now());
+    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, Instant::now());
     assert_eq!(output(&renderer)[0].1[0][7], 0.0);
     assert!(
         output(&renderer)[0].1[0][15] > 0.0,
@@ -127,7 +128,7 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
     );
     renderer.acknowledge();
     allocator.mark_building_deserted(1);
-    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now());
+    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, Instant::now());
     for (_, instances) in output(&renderer).iter().filter(|(key, _)| key.deserted) {
         assert!(instances.iter().all(|instance| instance[15] == 0.0));
     }
@@ -143,7 +144,7 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
     allocator.buildings.swap_remove(0);
     allocator.bump_building_ref_revision();
     allocator.rebuild_zone_index();
-    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now());
+    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, Instant::now());
     assert_eq!(
         output(&renderer)
             .iter()
@@ -154,7 +155,7 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
     renderer.acknowledge();
     renderer.invalidate_world();
     assert!(!renderer.removed.is_empty());
-    assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now()));
+    assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, Instant::now()));
     assert_eq!(
         output(&renderer)
             .iter()
@@ -173,28 +174,28 @@ fn building_lod_level_change_rises_in_real_time_and_settles() {
     let at = |ms| start + Duration::from_millis(ms);
     let y = |renderer: &SpatialBatches| output(renderer)[0].1[0][7];
     // Changes recorded before the renderer first looked are history, not animations.
-    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, at(0));
+    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, at(0));
     assert_eq!(y(&renderer), 0.0);
     renderer.acknowledge();
 
     allocator.level_changes.record((7, 0));
-    assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, at(0)));
+    assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, at(0)));
     let sunk = y(&renderer);
     assert!(sunk < -5.0, "the replacement starts below ground: {sunk}");
     renderer.acknowledge();
     // The simulation clock stands still; real time alone drives the rise.
-    assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, at(1250)));
+    assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, at(1250)));
     let rising = y(&renderer);
     assert!(sunk < rising && rising < 0.0, "{sunk} < {rising} < 0");
     renderer.acknowledge();
-    assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, at(2600)));
+    assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, at(2600)));
     assert_eq!(
         y(&renderer),
         0.0,
         "the frame after the rise settles on the support plane"
     );
     renderer.acknowledge();
-    assert!(!renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, at(2700)));
+    assert!(!renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, at(2700)));
 }
 
 #[test]
@@ -205,11 +206,11 @@ fn building_lod_valid_meshless_sites_do_not_become_broken_placeholders() {
     manifest.mesh_parts.clear();
     allocator.registry.register("test", manifest, String::new());
     renderer.load_catalog(&allocator.registry);
-    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now());
+    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, Instant::now());
     assert!(output(&renderer).is_empty());
     allocator.buildings[0].broken = true;
     allocator.bump_building_ref_revision();
-    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now());
+    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, Instant::now());
     assert_eq!(output(&renderer)[0].0.part, 0);
     assert_eq!(output(&renderer)[0].1.len(), 1);
 }
@@ -220,7 +221,7 @@ fn building_lod_disconnected_buildings_remain_visible_without_becoming_economy_c
     allocator.buildings[0].edge_idx = usize::MAX;
     allocator.rebuild_zone_index();
     assert!(allocator.building_chunks[&(0, 0)].contains(&0));
-    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now());
+    renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), None, 0.0, Instant::now());
     assert_eq!(renderer.evaluated_parts, 32);
     let mut candidates = Vec::new();
     allocator.fill_nearby_buildings(32.0, 32.0, 0, 100, &mut candidates, |_, _| true);
@@ -300,6 +301,7 @@ fn benchmark_building_lod_locality() {
                     black_box(&allocator),
                     [0, 0, 0, 0],
                     camera(if iteration % 2 == 0 { 10.0 } else { 256.0 }),
+                    None,
                     0.0,
                     Instant::now(),
                 );
