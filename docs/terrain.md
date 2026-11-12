@@ -14116,7 +14116,7 @@ bit for bit; settled installs by digest 4 of 4 equal (3,280 tiles); Kuopio's thr
 byte-identical; the 30k poses without systematic difference (by side 1,738, 589, 315 a pose
 against 1,702-1,703, 481-601, 339-393 for the other pairings). The rows, level F and T60's probe
 above ran the uncharged `7cf092ba`; the charge only stops a frame's poll earlier and was not
-re-timed (the 100k 1x still below was).
+re-timed (the 100k 1x still above was, after it).
 
 **Against the bars.** The graded total at most 0.5 ms mean on the 30k 1 s turn and 1.0 ms at
 100k: missed (0.80-0.84 and 1.67-1.84 ms before the review fix; with the charge 0.83-0.88 and
