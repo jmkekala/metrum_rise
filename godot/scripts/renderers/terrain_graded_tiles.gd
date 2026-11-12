@@ -844,6 +844,7 @@ func _take_list(list: Dictionary, resident_patches: Dictionary) -> void:
 	# The cells show the installed tiles of the patch's rectangle, not its list: a list that
 	# empties or fills only starts or stops the set's drawing (the book's draw state); listed
 	# tiles install or evict on their own. A patch without a set builds one.
+	_book.list_cells(key, true)
 	patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
 	# Counted into the desired set; the parked tiles of its blocks released once their lists are in.
 	_book.take_list(key, int(list["token"]), flat)
@@ -1064,6 +1065,7 @@ func _failed(failure: Dictionary) -> void:
 			patch_lists_requested.erase(key)
 		if not retry:
 			patch_lists_refused[key] = token
+			_book.list_cells(key, false)
 			_book.list_refused(key, token)
 			_apply_effects()
 		_lists_wanted[key] = true

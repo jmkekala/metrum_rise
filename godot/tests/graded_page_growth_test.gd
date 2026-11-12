@@ -139,7 +139,8 @@ func _run() -> void:
 	var graded := Tiles.new()
 	graded.setup(sim, 10, Vector2(500, 500), 512, [8, 8, 8, 8])
 	graded._resident = {Vector2i.ZERO: {"rect": Rect2(-250, -250, 512, 512), "step": 1, "generation": 0}}
-	graded._book.sync_resident(PackedInt32Array([0, 0]))
+	graded._book.clear_resident()
+	graded._book_patch(Vector2i.ZERO, graded._resident[Vector2i.ZERO])
 	graded._resident_synced = true
 	graded.patch_lists[Vector2i.ZERO] = {"tiles": [], "token": 0}
 	graded._book.take_list(Vector2i.ZERO, 0, PackedInt32Array())

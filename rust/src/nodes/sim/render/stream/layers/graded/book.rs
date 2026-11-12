@@ -194,11 +194,9 @@ impl GradedTileBook {
         self.state.apply_count()
     }
 
-    /// Patch `key`'s list, flat `(x, z)` pairs: a patch without a set builds one, what it draws
-    /// follows its list.
+    /// Patch `key`'s list, flat `(x, z)` pairs.
     #[func]
     pub fn take_list(&mut self, key: Vector2i, token: i64, tiles: PackedInt32Array) {
-        self.state.list_arrived((key.x, key.y));
         let tiles = tiles
             .as_slice()
             .as_chunks::<2>().0.iter()
@@ -210,8 +208,6 @@ impl GradedTileBook {
     /// Patch `key`'s list refused at `token`.
     #[func]
     pub fn list_refused(&mut self, key: Vector2i, token: i64) {
-        self.state.settle();
-        self.state.cells.dirty_shown.insert((key.x, key.y), ());
         self.state.list_refused((key.x, key.y), token);
     }
 
@@ -707,6 +703,18 @@ impl GradedTileBook {
     pub fn clear_cells(&mut self) {
         self.state.settle();
         self.state.clear_cells();
+    }
+
+    /// Patch `key`'s list arrived (`arrived`: a patch without a set builds one) or was refused:
+    /// what it draws follows its list.
+    #[func]
+    pub fn list_cells(&mut self, key: Vector2i, arrived: bool) {
+        self.state.settle();
+        if arrived {
+            self.state.list_arrived((key.x, key.y));
+        } else {
+            self.state.cells.dirty_shown.insert((key.x, key.y), ());
+        }
     }
 
     /// A tile refused by contract: the sets of the patches meeting it may draw without it.
