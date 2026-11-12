@@ -134,7 +134,7 @@ func _test_shadow_quality() -> void:
 	_expect(is_equal_approx(sun.light_angular_distance, lighting.SUN_ANGULAR_DISTANCE_DEG)
 		and sun.shadow_blur == lighting.SHADOW_BLUR
 		and sun.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
-		and sun.directional_shadow_blend_splits, "Medium is High's soft shadow over two splits")
+		and not sun.directional_shadow_blend_splits, "Medium is High's soft shadow over two unblended splits")
 	lighting.apply_shadow_quality(sun, Settings.SHADOW_QUALITY_LOW)
 	_expect(sun.light_angular_distance == 0.0 and sun.shadow_blur == 0.0
 		and sun.directional_shadow_mode == DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS

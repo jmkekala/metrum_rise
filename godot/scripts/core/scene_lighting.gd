@@ -681,15 +681,16 @@ static func apply_shadow_quality(sun: DirectionalLight3D, quality: int) -> void:
 	# Angular distance drives Godot's variable-penumbra path; zero makes the directional shadow a
 	# plain PCF lookup. Two splits instead of four, and no split blending, halve the cascade
 	# sampling again. Medium keeps High's filter and penumbra, so a trunk's shadow stays whole
-	# (`VEG-25`), and its split blending; drawing two shadow maps instead of four is its saving
-	# (`RENDER-15`, SH2).
+	# (`VEG-25`); drawing two shadow maps instead of four is its saving. It blends no splits: with
+	# two, blending cost 0.06-0.16 ms more and moved the image further from High's, its blend band
+	# reaching far into the second split (`RENDER-15`, SH2).
 	var low := quality == GameSettings.SHADOW_QUALITY_LOW
 	var splits := 4 if quality == GameSettings.SHADOW_QUALITY_HIGH else 2
 	sun.light_angular_distance = 0.0 if low else SUN_ANGULAR_DISTANCE_DEG
 	sun.shadow_blur = 0.0 if low else SHADOW_BLUR
 	sun.set("directional_shadow_mode",
 		DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if splits == 4 else DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS)
-	sun.set("directional_shadow_blend_splits", not low)
+	sun.set("directional_shadow_blend_splits", splits == 4)
 	RenderingServer.directional_soft_shadow_filter_set_quality(
 		RenderingServer.SHADOW_QUALITY_HARD if low
 		else ProjectSettings.get_setting("rendering/lights_and_shadows/directional_shadow/soft_shadow_filter_quality"))

@@ -89,6 +89,10 @@ func run(bench: Node) -> void:
 	var warmup_frames: int = bench._environment_int("METRUM_IDLE_BENCH_WARMUP_FRAMES", DEFAULT_WARMUP_FRAMES, 0)
 	var capture_frames: int = bench._environment_int("METRUM_IDLE_BENCH_FRAMES", DEFAULT_CAPTURE_FRAMES, 10)
 	var variants := _selected(OS.get_environment("METRUM_IDLE_BENCH_VARIANTS"), VARIANTS)
+	# Any other sun-shadow variant `shadow_variants.gd` knows, in the order asked (`RENDER-15`).
+	for name in OS.get_environment("METRUM_IDLE_BENCH_VARIANTS").split(",", false):
+		if not name in VARIANTS and ShadowVariants.is_known(name):
+			variants.append(name)
 	_report = {
 		"schema_version": 1, "benchmark": "idle_frame", "success": false, "mode": bench.mode,
 		"runtime": bench._runtime_metadata(), "warmup_frames": warmup_frames,

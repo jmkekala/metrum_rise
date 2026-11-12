@@ -51,7 +51,7 @@ const DEFAULT_RENDER_SCALE := 1.0
 const SHADOW_QUALITY_HIGH := 0
 ## Plain PCF, two cascades and no cascade blending: the measured low-end shadow levers.
 const SHADOW_QUALITY_LOW := 1
-## High's soft filter and penumbra over two cascades instead of four (`RENDER-15`).
+## High's soft filter and penumbra over two cascades instead of four, unblended (`RENDER-15`).
 const SHADOW_QUALITY_MEDIUM := 2
 const SHADOW_QUALITY_CHOICES := [SHADOW_QUALITY_HIGH, SHADOW_QUALITY_MEDIUM, SHADOW_QUALITY_LOW]
 const DEFAULT_SHADOW_QUALITY := SHADOW_QUALITY_HIGH

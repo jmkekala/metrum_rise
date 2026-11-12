@@ -5,7 +5,7 @@
 ## cheapens one part: `none` the sun's shadow, `filter2` / `filter3` the soft filter at quality 2
 ## or 3 (High is the project's 4), `no_pcss` the variable penumbra (angular distance 0, a plain
 ## PCF lookup), `no_blend` the blending between splits, `low` and `medium` the game's Low and
-## Medium settings, `medium_noblend` Medium without its split blending, `no_cloud_shadows` the
+## Medium settings, `medium_blend` Medium with split blending, `no_cloud_shadows` the
 ## receivers' cloud lookup, and `no_casters` every caster (the light's `shadow_caster_mask` 0): the
 ## shadow maps draw nothing while the receivers still read them, so against `full` it is the
 ## drawing plus the penumbra filter the blocker search then skips.
@@ -23,7 +23,7 @@
 extends RefCounted
 
 const NAMES: Array[String] = ["full", "none", "filter2", "filter3", "no_pcss", "no_blend", "low",
-	"medium", "medium_noblend", "no_cloud_shadows", "no_casters", "no_buildings", "no_trees",
+	"medium", "medium_blend", "no_cloud_shadows", "no_casters", "no_buildings", "no_trees",
 	"no_cars", "no_walkers", "no_parked", "no_furniture", "agents_near"]
 const CLASSES: Array[String] = ["buildings", "trees", "cars", "walkers", "parked", "furniture"]
 # The node renderers' shadow policy categories (`SceneLighting.apply_shadow_policy`) per class;
@@ -58,7 +58,7 @@ static func is_known(variant: String) -> bool:
 			continue
 		if not NAMES.has(part):
 			return false
-		qualities += int(part in ["low", "medium", "medium_noblend"])
+		qualities += int(part in ["low", "medium", "medium_blend"])
 	var parts := variant.split("+")
 	# The twins take the agents' casters over; a class switch on them would fight it.
 	return qualities <= 1 and not (parts.has("agents_near") and (parts.has("no_cars") or parts.has("no_walkers")))
@@ -71,9 +71,14 @@ static func apply(lighting: Variant, sun: DirectionalLight3D, variant: String) -
 	var quality := QUALITY_HIGH
 	if parts.has("low"):
 		quality = QUALITY_LOW
-	elif parts.has("medium") or parts.has("medium_noblend"):
+	elif parts.has("medium") or parts.has("medium_blend"):
 		quality = QUALITY_MEDIUM
-	lighting.apply_shadow_quality(sun, quality)
+	# A tree from before Medium takes High or Low as a bool.
+	var takes_bool := false
+	for method: Dictionary in lighting.get_script().get_script_method_list():
+		if method.name == "apply_shadow_quality":
+			takes_bool = method.args[1].type == TYPE_BOOL
+	lighting.apply_shadow_quality(sun, quality == QUALITY_LOW if takes_bool else quality)
 	sun.shadow_enabled = not parts.has("none")
 	sun.shadow_caster_mask = 0 if parts.has("no_casters") else ALL_LAYERS
 	lighting.cloud_shadows_allowed = not parts.has("no_cloud_shadows")
@@ -86,8 +91,10 @@ static func apply(lighting: Variant, sun: DirectionalLight3D, variant: String) -
 				RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_MEDIUM)
 			"no_pcss":
 				sun.light_angular_distance = 0.0
-			"no_blend", "medium_noblend":
+			"no_blend":
 				sun.directional_shadow_blend_splits = false
+			"medium_blend":
+				sun.directional_shadow_blend_splits = true
 			_:
 				if part.begins_with("far") and part.trim_prefix("far").is_valid_int():
 					far_m = float(part.trim_prefix("far").to_int())
