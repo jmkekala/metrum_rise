@@ -771,7 +771,7 @@ impl Graded {
             };
             let tile_origin = [tile.x as f32 * TILE_M, tile.z as f32 * TILE_M];
             let origin = [tile_origin[0] - centre[0], tile_origin[1] - centre[1]];
-            for face in entry.walls.chunks_exact(WALL_FACE_FLOATS) {
+            for face in entry.walls.as_chunks::<WALL_FACE_FLOATS>().0 {
                 let [a_x, a_z, b_x, b_z, bottom_a, bottom_b, top_a, top_b] =
                     [0, 1, 2, 3, 4, 5, 6, 7].map(|at| f64::from(face[at]));
                 // GDScript sums the floats as doubles, then makes a real_t vector of them.
