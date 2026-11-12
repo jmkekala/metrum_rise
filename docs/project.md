@@ -110,6 +110,13 @@ the camera, and retries a building frame the full slot pool refused until it dra
 The building batches' pooled objects are freed when the game scene goes and before a world load
 lets go of their meshes (`RENDER-39`, `RENDER-41`, fixed 2026-11-12): no more `Parameter "mesh"
 is null` bursts on a load or at quit, and no leaked rendering objects at exit.
+With the simulation running (`PL1`, measured 2026-11-12, no behaviour change) the main thread's
+largest costs are its blocking waits for the simulation core in per-frame queries (`CODE-26`: 0.5
+ms a frame at 30k 1x, 2.9 at 30k 32x, 3.1 at 100k 1x, 44 at 100k 32x), the terrain's dirty-patch
+commit on growth edits (`RENDER-40`: 8-23 ms frames at 30k, up to 442 ms at 100k) and Godot's own
+draw (`RENDER-46`); the paused 30k turn's 6 ms over its GPU time is the draw's command replay, the
+core waits, Rayon joins and X11 round trips
+([record](terrain.md#where-the-frame-goes-with-the-simulation-running-pl1-2026-11-12)).
 The graded ground's material edges and road seams no longer flicker from frame to frame
 (`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
 city's stills byte-identical run to run again, at the control's GPU and frame time.

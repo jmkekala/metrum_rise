@@ -597,6 +597,14 @@ that runs once at load, such as the lighting summary, does not repeat after a sw
 `PerfDebug` keeps its 0.5 s summaries, logs them on `perf` and exposes the latest one as
 `PerfDebug.last_summary`.
 
+The main thread's core locks are counted by call site while a caller turns them on
+(`SimulationNode.set_core_lock_stats(true)` from the main thread; `take_core_lock_stats()` returns
+and resets, per `file:line`, the tries, the tries that found the core busy, the blocking waits,
+their total and longest wait in microseconds; `CODE-26`). Off, a lock pays one relaxed atomic
+load. The stream benchmark turns them on with the perf channel and records them per frame
+(`core_locks`); the terrain's `perf` record splits its dirty-patch commit (`upload_*`,
+`RENDER-40`). See [terrain.md](terrain.md#where-the-frame-goes-with-the-simulation-running-pl1-2026-11-12).
+
 ## Crash and Hang Diagnostics
 
 `METRUM_CRASH_DIAGNOSTICS=1` installs the panic hook, the ten-second hang watchdog and a

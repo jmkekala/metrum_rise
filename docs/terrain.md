@@ -12030,6 +12030,13 @@ tools/stream_benchmark.py stills variants "$ARTIFACTS/stills/s30-var" --crops "$
   distance from the camera's height over y = 0), which can only refuse a band, never grant one.
   `RENDER-32-L`'s 30k digests read buildings 13 of 13 equal, graded 10 equal and 3 band (5 tiles
   2,012-2,030 m from the camera), lamps 4 of 4.
+- `--still-s` (`METRUM_STREAM_STILL_S`) records the still for that many seconds instead of its
+  180 frames, and `--settle-cap-s` (`METRUM_STREAM_SETTLE_CAP_S`) starts a phase unsettled after
+  that long (`unsettled_starts` counts them): a city whose running simulation edits it every few
+  frames may never settle (100k at 32x). Every row carries its wall clock (`t_unix`, to join a
+  `perf record -k realtime` profile's samples to frames) and the game minute; with the perf
+  channel on also `draw_split` (the frame's process, its draw between `frame_pre_draw` and
+  `frame_post_draw`, and the rest) and `core_locks` (`PL1`, [record](#where-the-frame-goes-with-the-simulation-running-pl1-2026-11-12)).
 - `--shadows` (`METRUM_STREAM_SHADOWS`, benchmark-only, unset by default; a series' branch rows
   only) applies the sun-shadow variants of `godot/scripts/benchmarks/shadow_variants.gd` (`full`,
   `none`, `filter2`, `filter3`, `no_pcss`, `no_blend`, `low`, `no_cloud_shadows`, `no_casters`;
@@ -15355,6 +15362,276 @@ systematic` none on all three. The 30k stills logs: 1,768 `mesh is null` lines a
 leaked in each control run, none in either branch run. Settle-point digests (30k, one untimed run
 a side): graded, buildings, roads and parked 4 of 4 equal, water 1 of 1. No per-frame path changed
 (a node's exit and a load's order), so no timing round.
+
+### Where the frame goes with the simulation running (`PL1`, 2026-11-12)
+
+Round PL1, measurement only (the user's request, 2026-11-12: every stream benchmark row so far ran
+paused; find and rank the main-thread work that only shows during play). Build: `dev` `7679850d`
+release library plus the round's perf-channel counters (`$ARTIFACTS/bin/libmetrum_rise-br.so`,
+SHA-256 `1c0df74e`), Godot 4.7.2 Forward+, gamescope headless at 1000 Hz, 1920x1080, P-cores, eight
+workers, isolated profile, the 30k timing-cache city (32,619 agents) and the 100k commit city
+(103,330 agents). Every row is an instrumented run (`--detail`: shares, not times), one per
+configuration, the camera at the save's view (pitch -0.1 rad, 800 m orbit), the simulation running
+from the hand-over: a 60 s still, then the benchmark's three 1 s turns.
+
+```bash
+tools/stream_benchmark.py run --label c30-1x --out "$ARTIFACTS/play" --library <.so> \
+    --save <populated_city_30000.sqlite> --speed 1 --phases still,turns --turns 1 --still-s 60 \
+    --detail --timeout 900 --settle-timeout 300              # c30-32x: --speed 32; 100k: <commit_city_100000_...>
+tools/stream_benchmark.py run ... --speed 32 --settle-cap-s 20   # 100k at 32x never settles (below)
+# Profiles (untimed): the run above with perf on Godot's main thread from the load's end
+perf record -k realtime --switch-events -e cpu-clock/period=250000/ -e context-switches/period=1/ \
+    --call-graph fp -t <godot pid> -o <run>.perf.data
+```
+
+New benchmark-only instruments (perf channel off: no cost; `tools/stream_benchmark.py`
+`--still-s`, `--settle-cap-s`): each row's wall clock (`t_unix`, joins a `perf record -k realtime`
+profile to its frames) and game minute; with the perf channel on, each frame split at
+`frame_pre_draw` and `frame_post_draw` (`draw_split`: the frame's process with its pre-draw hooks,
+the draw, what follows it) and the main thread's core locks by call site (`core_locks`:
+`SimulationNode::set_core_lock_stats` / `take_core_lock_stats`, counted only while on: tries,
+tries that found the core busy, blocking waits, their time and the longest); the terrain's
+dirty-patch commit split into its dirty patches, prepare, commit and patches committed
+(`upload_*` in the `terrain` record). Zero cost with the channel off: a 30k still and 1 s turns
+series C B B C against `dev`'s library and scripts (`z30b`, below).
+
+**The paused 1 s turn's CPU gap first** (the coordinator's question: frame p50 14-15 ms against a
+GPU p50 of 8.4-9.3). Fresh, paused, 30k: uninstrumented frame p50 15.0-15.4 ms, GPU p50 8.7-8.9,
+the viewport's render CPU p50 5.9; the instrumented run's timed scripts 2.9 ms (agents 1.6, graded
+0.85). A profile of the main thread (`p30-prof`, `p30-prof2`, frames joined by `t_unix`) splits
+the turn frame (mean 15.0-15.7 ms) into 11.0 ms on the CPU and 4.0-4.4 ms off it:
+
+| Part of the paused 1 s turn frame | ms a frame | Still |
+|---|---:|---:|
+| Godot's draw on the CPU | 8.7 | 2.4 |
+| of which the viewport (culling, render lists, shadows: `render_camera`, what `render_cpu_ms` measures) | 5.05 | 1.5 |
+| of which the command replay at the frame's end (`RenderingDevice::swap_buffers` > `_end_frame` > `RenderingDeviceGraph::_run_render_commands`, outside `render_cpu_ms`) | 2.7 | 0.7 |
+| of which dirty materials and instances, submit and present | 0.5 | 0.1 |
+| Scripts and Rust on the CPU (process and pre-draw) | 2.3 | 0.35 |
+| Off the CPU: blocking core waits (`lock_core`) | 1.67 | 0.09 |
+| Off the CPU: Rayon joins from the main thread (`thread_pools::install`) | 0.91 | 0 |
+| Off the CPU: X11 round trips (`DisplayServerX11::window_can_draw`, `can_any_window_draw`) | 0.88 | 0.14 |
+| Off the CPU: the culling's worker threads | 0.35 | 0.13 |
+| Off the CPU: the GPU fence | 0.26 | 0.53 |
+
+So the gap is: the command replay (2.7 ms, not in `render_cpu_ms`), the core waits (1.7: the paused
+simulation thread still takes the core every tick to build the render snapshot, and terrain,
+grass and the camera ask it with a blocking `lock_core` every frame), Rayon joins (0.9: `thread_pools::install`
+on the shared pool from the main thread; on the paused turn the car smoothing's and ground
+solve's, the only project frames on the CPU around them), X11 round trips (0.9, through gamescope's XWayland)
+and the culling workers (0.35). The draw count is the same on the still and the turn (8,672
+against 8,943-8,958) but the viewport costs 3.4 times as much a draw on the turn (`_render_list`
+0.77 against 2.5 ms, uniform-set binds 0.2 against 0.8 in the replay, graded page copies 0.4):
+the profile points at state changes (instances installed during the turn and their uniform
+sets), not at more draws; `RENDER-46`'s measurement settles it.
+
+**The four configurations** (mean, p99 and max ms a frame by owner; the frame row gives p50,
+p99 and max; GPU p50 and p99). "Terrain script" includes its own blocking core waits (its land
+cover sync and coal-pit revision); "Core waits" sums every blocking `lock_core` of the frame,
+inside whichever owner made it; "Process outside the records" is the frame's process (from
+`draw_split`) minus the perf records: the camera node, grass, input, UI and other nodes.
+
+30k at 1x (the simulation kept 1.0x: 60 game minutes in 60 s):
+
+| Owner | still mean | p99 | max | 1 s turns mean | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| Stream node (vegetation, its pools) | 0.01 | 0.05 | 0.2 | 0.09 | 0.36 | 0.4 |
+| Stream node: terrain and water patches | 0.00 | 0.00 | 0.0 | 0.04 | 0.51 | 0.5 |
+| Graded tiles | 0.08 | 0.24 | 0.7 | 1.26 | 2.94 | 3.0 |
+| Terrain script (incl. its core waits) | 0.74 | 6.15 | 20.7 | 1.72 | 9.81 | 10.1 |
+| Terrain dirty-patch commit (`RENDER-40`) | 0.13 | 7.18 | 23.3 | 0.88 | 12.78 | 90.8 |
+| Water | 0.06 | 0.42 | 0.5 | 0.06 | 0.43 | 0.4 |
+| Water reflection hook | 0.03 | 0.05 | 0.3 | 0.04 | 0.07 | 0.1 |
+| Buildings (LOD batches, plots, construction sites) | 0.20 | 2.24 | 5.9 | 1.53 | 6.43 | 6.5 |
+| Agents | 1.35 | 1.81 | 5.8 | 2.43 | 7.14 | 8.8 |
+| Core waits, every blocking `lock_core` | 0.53 | 3.58 | 20.5 | 2.79 | 16.12 | 16.5 |
+| Process outside the records (UI, input, camera, grass, other nodes) | 1.46 | 4.03 | 12.0 | 4.11 | 16.49 | 18.2 |
+| Render CPU (viewport measure) | 4.66 | 5.98 | 17.0 | 6.35 | 8.46 | 15.2 |
+| Draw outside the viewport measure (command replay, present, fence) | 2.43 | 5.51 | 14.5 | 3.66 | 7.05 | 8.5 |
+| **Frame** (p50 in the mean column) | 10.5 | 22.5 | 45.5 | 20.6 | 43.0 | 123.4 |
+| GPU (p50 / p99) | 7.4 | 15.1 | | 14.3 | 17.2 | |
+
+Still 5345 frames, 199 over 16.7 ms, 1 over 33.3; turns 139 frames, 117 over 16.7, 8 over 33.3. Agents 32619, game minutes 2-66.
+
+30k at 32x (31.7x reached: 1,899 game minutes in 60 s):
+
+| Owner | still mean | p99 | max | 1 s turns mean | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| Stream node (vegetation, its pools) | 0.02 | 0.04 | 0.0 | 0.14 | 0.38 | 0.4 |
+| Stream node: terrain and water patches | 0.00 | 0.00 | 0.0 | 0.05 | 0.54 | 0.6 |
+| Graded tiles | 0.09 | 0.19 | 0.4 | 1.18 | 2.13 | 2.2 |
+| Terrain script (incl. its core waits) | 2.55 | 8.74 | 57.4 | 0.37 | 6.45 | 21.6 |
+| Terrain dirty-patch commit (`RENDER-40`) | 0.02 | 0.04 | 8.3 | 0.00 | 0.00 | 0.0 |
+| Water | 0.06 | 0.08 | 0.2 | 0.06 | 0.08 | 0.1 |
+| Water reflection hook | 0.03 | 0.06 | 0.2 | 0.04 | 0.06 | 0.1 |
+| Buildings (LOD batches, plots, construction sites) | 0.19 | 1.05 | 2.3 | 1.21 | 4.51 | 4.6 |
+| Agents | 2.12 | 3.61 | 4.8 | 3.18 | 6.99 | 8.4 |
+| Core waits, every blocking `lock_core` | 2.87 | 6.80 | 57.5 | 5.95 | 26.36 | 49.3 |
+| Process outside the records (UI, input, camera, grass, other nodes) | 2.07 | 7.11 | 55.5 | 7.78 | 28.17 | 29.7 |
+| Render CPU (viewport measure) | 5.22 | 6.56 | 17.8 | 6.65 | 9.44 | 9.7 |
+| Draw outside the viewport measure (command replay, present, fence) | 2.78 | 7.49 | 15.1 | 3.85 | 7.19 | 8.9 |
+| **Frame** (p50 in the mean column) | 15.7 | 25.7 | 75.5 | 23.5 | 47.0 | 70.0 |
+| GPU (p50 / p99) | 9.2 | 16.7 | | 14.8 | 18.3 | |
+
+Still 3936 frames, 1013 over 16.7 ms, 31 over 33.3; turns 126 frames, 120 over 16.7, 13 over 33.3. Agents 34625, game minutes 80-715.
+
+100k at 1x (1.0x):
+
+| Owner | still mean | p99 | max | 1 s turns mean | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| Stream node (vegetation, its pools) | 0.02 | 0.08 | 0.2 | 0.10 | 0.25 | 0.2 |
+| Stream node: terrain and water patches | 0.00 | 0.00 | 0.0 | 0.09 | 0.55 | 0.6 |
+| Graded tiles | 0.12 | 0.46 | 4.8 | 1.52 | 3.08 | 3.1 |
+| Terrain script (incl. its core waits) | 2.86 | 22.25 | 52.8 | 1.80 | 33.10 | 33.1 |
+| Terrain dirty-patch commit (`RENDER-40`) | 0.87 | 14.05 | 339.9 | 0.43 | 15.18 | 15.2 |
+| Water | 0.07 | 0.67 | 0.9 | 0.07 | 0.68 | 0.7 |
+| Water reflection hook | 0.03 | 0.06 | 0.1 | 0.04 | 0.06 | 0.1 |
+| Buildings (LOD batches, plots, construction sites) | 0.68 | 7.09 | 13.5 | 1.87 | 10.13 | 10.1 |
+| Agents | 1.62 | 2.75 | 10.6 | 2.52 | 8.22 | 8.2 |
+| Core waits, every blocking `lock_core` | 3.06 | 23.15 | 152.8 | 5.85 | 40.13 | 40.1 |
+| Process outside the records (UI, input, camera, grass, other nodes) | 2.20 | 9.17 | 26.4 | 6.90 | 29.40 | 29.4 |
+| Render CPU (viewport measure) | 10.78 | 13.44 | 35.0 | 13.20 | 16.66 | 16.7 |
+| Draw outside the viewport measure (command replay, present, fence) | 5.19 | 11.79 | 15.4 | 6.13 | 11.04 | 11.0 |
+| **Frame** (p50 in the mean column) | 22.3 | 50.6 | 370.2 | 33.5 | 66.6 | 66.6 |
+| GPU (p50 / p99) | 15.9 | 27.6 | | 23.8 | 29.8 | |
+
+Still 2445 frames, 2443 over 16.7 ms, 192 over 33.3; turns 90 frames, 90 over 16.7, 48 over 33.3. Agents 103330, game minutes 506-573.
+
+100k at 32x (`c100-32x-cap`; 23.0x reached: 1,377 game minutes in 60 s). Without a cap the base
+pose never settled in 300 s (the first run failed there: growth edits every few frames keep the
+terrain dirty), so every phase start is capped at 20 s (two starts unsettled):
+
+| Owner | still mean | p99 | max | 1 s turns mean | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| Stream node (vegetation, its pools) | 0.03 | 0.04 | 0.1 | 0.14 | 0.36 | 0.4 |
+| Stream node: terrain and water patches | 0.00 | 0.00 | 0.0 | 0.18 | 0.60 | 0.6 |
+| Graded tiles | 1.30 | 13.73 | 177.5 | 1.77 | 3.25 | 3.3 |
+| Terrain script (incl. its core waits) | 19.85 | 117.10 | 244.6 | 8.97 | 70.93 | 70.9 |
+| Terrain dirty-patch commit (`RENDER-40`) | 0.79 | 1.33 | 4.1 | 0.81 | 1.68 | 1.7 |
+| Water | 0.06 | 0.10 | 0.2 | 0.06 | 0.09 | 0.1 |
+| Water reflection hook | 0.05 | 0.07 | 1.0 | 0.05 | 0.20 | 0.2 |
+| Buildings (LOD batches, plots, construction sites) | 0.65 | 8.57 | 17.9 | 0.43 | 4.33 | 4.3 |
+| Agents | 4.37 | 9.87 | 20.2 | 4.15 | 5.79 | 5.8 |
+| Core waits, every blocking `lock_core` | 43.66 | 275.66 | 341.3 | 34.83 | 127.99 | 128.0 |
+| Process outside the records (UI, input, camera, grass, other nodes) | 26.68 | 128.75 | 261.8 | 30.70 | 59.24 | 59.2 |
+| Render CPU (viewport measure) | 12.50 | 16.50 | 18.2 | 14.23 | 19.98 | 20.0 |
+| Draw outside the viewport measure (command replay, present, fence) | 5.65 | 12.09 | 88.7 | 6.18 | 13.02 | 13.0 |
+| **Frame** (p50 in the mean column) | 53.9 | 309.1 | 372.9 | 62.4 | 158.0 | 158.0 |
+| GPU (p50 / p99) | 28.0 | 30.8 | | 30.8 | 33.0 | |
+
+Still 833 frames, 833 over 16.7 ms, 730 over 33.3; turns 50 frames, 50 over 16.7, 50 over 33.3. Agents 102465, game minutes 1112-520.
+
+**Owners over 2 ms and their triggers** (`$ARTIFACTS/tables/*.owners.txt` list every frame):
+
+- **Core waits** (`CODE-26`). The blocking per-frame queries: `get_land_cover_epoch` and
+  `is_vegetation_land_cover_current` (`terrain.gd` `_sync_land_cover`, and once per staged patch),
+  `get_coal_pit_overlay_revision` (`terrain.gd` `_process`), `get_world_surface_height`
+  (`terrain.gd` `_process_graded_tiles` and `grass.gd`, twice a frame), `get_height_at`
+  (`CameraNode`, every frame the camera moves), `get_growth_overview` (`main_ui.gd`), and
+  `get_vegetation_land_cover` (a staged patch). Each waits for the simulation's tick or edit to
+  end. At 30k 1x 0.53 ms a frame (22 % of frames wait 1 ms or more, longest 17.8 ms); at 30k 32x
+  2.9 ms, and every one of the still's 31 frames over 33.3 ms (50-75 ms) falls at a game hour's
+  second or third minute (`XX:02`, the hourly pass) and waits 10 ms or more (76 % of its time); at
+  100k 1x 3.1 ms still and 6.1 ms on turns, and 133 of the still's 192 frames over 33.3 ms wait 10
+  ms or more; at
+  100k 32x 43.7 ms a frame (97 % of frames wait), which alone holds the game near 18 fps.
+- **Terrain dirty-patch commit** (`RENDER-40`), below.
+- **Agents**: car smoothing with moving cars (1.0-2.0 ms of `car_smooth`, its ground solve 0.3-1.4
+  ms), 4-9 ms frames on turns at both sizes; at 100k 32x 4.4 ms a frame.
+- **Buildings** (`RENDER-30`), below; 4-10 ms frames on turns (a travel bucket's batches).
+- **Graded tiles**: 1.2-1.8 ms on turns (`RENDER-32-Q` carries them); at 100k 32x one 178 ms
+  frame of graded edit batches after a growth step.
+- **Render CPU and the command replay**: 4.7-6.4 + 2.4-3.9 ms at 30k, 10.8-13.2 + 5.2-6.1 at 100k,
+  every frame; at 100k 1x 44 of the still's 192 frames over 33.3 ms have the render CPU as their
+  largest part.
+- **Process outside the records** 1.5-2.2 ms still and 4-8 ms on turns: mostly the camera's and
+  grass's core waits (the profile's off-CPU share), the rest unattributed GDScript.
+
+**`RENDER-40`: the terrain script spike during a simulation edit.** The edit is growth: a
+building site marks its terrain bounds dirty (`mark_building_site_terrain_dirty_bounds`), the
+simulation publishes the dirty patches, and `terrain.gd` `_try_commit_standalone_terrain_visual_update`
+stages and commits every dirty patch in one frame. Nearly all of it is the prepare
+(`prepare_terrain_visual_update` > `_stage_dirty_patch_payloads_for_atomic_commit` >
+`_stage_terrain_patch_update`: height image and texture, the patch mesh with
+`SurfaceTool.generate_tangents`, and `_stage_patch_land_cover`, which calls
+`get_vegetation_land_cover`: a blocking `lock_core` and a Rayon `install` on the shared pool from
+the main thread); the commit is 0.1-0.5 ms a patch. Per edit: at 30k 1x 2-11 patches, 8-23 ms
+(about 4.6 ms a patch on two-patch edits, 2.1 ms on the 42-patch edit of a turn that took 90.8
+ms); 80 such frames over 2 ms in 60 s. At 100k 1x 1-8 patches, 8-37 ms, and one burst of 106-122
+dirty patches (game minutes 549-556) that made four frames of 271-340 ms of commit (frames 335-442
+ms). The 100k profile's worst frames are that burst: of 442 ms, 49.5 on the CPU, 197 in Rayon
+joins and 195 in core waits; every one of the eight worst frames is the same shape. The patches
+cost 2.5-3.2 ms each there, almost all of it waiting.
+
+**`RENDER-30`: the growing city's uploads and transforms at 100k 1x.** Buildings 0.68 ms a frame
+(p99 7.1, max 13.5): the LOD batches 0.27 and the plots and construction sites' frame
+(`try_get_building_site_frame`: plot, site, foundation and scaffold transforms set on their
+multimeshes, `SimCore::get_building_plot_transforms_internal`) 0.41 (p99 5.1, max 11.3); on turns
+1.9 ms (max 10.1). At 30k 1x 0.20 ms (LOD 0.11, sites 0.09, max 2.4).
+
+**`CODE-26`: how often per-frame queries find the core busy** (release, still, per frame):
+
+| | Tries a frame | Busy | Frames with a busy try | Blocking waits a frame | Wait ms a frame | Frames waiting 1 ms or more |
+|---|---:|---:|---:|---:|---:|---:|
+| 30k paused | 6.0 | 4.1 % | 22 % | 4.0 | 0.26 | 15 % |
+| 30k 1x | 7.0 | 7.0 % | 33 % | 11.1 | 0.53 | 22 % |
+| 30k 1x, turns | 14.9 | 57.5 % | 99 % | 29.5 | 2.85 | 51 % |
+| 30k 32x | 7.0 | 13.4 % | 73 % | 7.6 | 2.87 | 66 % |
+| 100k 1x | 7.3 | 14.3 % | 56 % | 32.5 | 3.06 | 42 % |
+| 100k 1x, turns | 13.6 | 58.1 % | 100 % | 113.3 | 6.05 | 92 % |
+| 100k 32x | 11.3 | 71.1 % | 94 % | 4.0 | 43.7 | 97 % |
+
+The try sites (`graded_tiles_api` edit selection, the terrain payload poll, the water reflection
+sources, the car ground solve, the building frame, the asset catalogue) keep their last answer
+when busy; the blocking sites above wait.
+
+**Ranked fixes** (ms a frame removed, frames over budget removed; the gap's items first):
+
+1. **The blocking per-frame core queries read published values** (`CODE-26`, widened):
+   epoch, coal-pit revision and growth overview in the render snapshot (as the field revision
+   already is, `ROAD-55`), the graded eye's and grass's surface height and the camera's ground
+   height from the published road-tool view or a snapshot heightmap, the land-cover currency
+   stamped on the payload. `O(1)` per query. Removes 1.7 ms of the paused turn, 0.5 / 2.8 ms
+   (still / turns) at 30k 1x, 2.9 ms at 30k 32x, 3.1 / 6.1
+   ms at 100k 1x and about 44 ms a frame at 100k 32x; every frame over 33.3 ms of the 30k 32x
+   still. Owner `CODE-26`; the next round.
+2. **The terrain dirty-patch commit off the frame** (`RENDER-40`): stage on the payload worker
+   (land cover with the payload, no `lock_core` or `install` from the main thread), commit through
+   the stream scheduler at a few patches a frame. Removes 80 frames over 2 ms a minute at 30k 1x
+   (8-23 ms, 91 ms on a turn) and the 271-442 ms frames at 100k; `O(patches committed)` a frame
+   inside the budget. Owner `RENDER-40`; `-Q` takes it into the budget sum.
+3. **The draw path's CPU** (`RENDER-46`, proposed): render CPU 4.7-6.4 ms plus 2.4-3.9 ms of
+   command replay at 30k, 10.8-13.2 plus 5.2-6.1 at 100k, every frame; 2.7 ms of the paused turn's
+   gap is the replay and the turn's state changes triple the per-draw cost. First a measurement of
+   draws, state changes and uniform sets by layer, then fewer draws and fewer distinct sets
+   (unmodified Godot). The largest block a frame at 100k.
+4. **The car smoothing off the main thread** (`RENDER-47`, proposed, `RENDER-28`'s follow-up):
+   1.0-2.0 ms of smoothing and ground solve with the simulation running, and the 0.9 ms of Rayon
+   joins on the paused turn; prepared on the pool a frame ahead.
+5. **The plots and construction sites through the pools** (`RENDER-30`): 0.41 ms a frame at 100k
+   1x, p99 5.1, max 11.3; buildings 1.9 ms on turns. `-Q` takes it into the budget sum.
+6. **Graded on turns** (1.2-1.8 ms; at 100k 32x an edit-batch frame of 178 ms): already `-Q`'s.
+7. **X11 round trips** (0.4-0.9 ms on turns): the engine's per-frame window queries through
+   gamescope's XWayland; to be measured on the real display before any action (no engine change).
+
+`-Q`'s budget sum takes, besides graded, buildings' LOD and the stream node: the terrain
+dirty-patch commit once it is scheduled (item 2), the buildings' plot and construction-site
+uploads (item 5) and the graded edit batches. The core waits, agents and Godot's own draw are not
+install work and stay out of it.
+
+**Zero cost** (`z30b`, 30k, still and 1 s turns, C B B C: control `dev` `7679850d`'s library and
+scripts, branch this round's, perf channel off): the still level (p50 7.6 against 7.6-7.7, max
+better by 1.1 ms); the turns one `worse` p50 (`turn_back` +0.9 against a 0.8 spread) among level
+ones, so the turns group was rerun alone (`z30t`): `turn_out` and `turn_repeat` level, `turn_back`
+better (-0.8). A first series (`z30`) shared the machine with a profile's symbolization and is not
+used. Nothing on a frame path changed with the channel off: one relaxed atomic load per core lock
+and a boolean check on the terrain's edit path.
+
+Gates (fresh): `cargo clippy --all-targets` warning set one warning
+(`asset_document.rs`, untouched, the base's recorded set); missing docs 0; debug `cargo test
+--lib` 2,520 passed, 0 failed, 224 ignored (the counters' unit test included); `./run.sh --test`
+PASS (nextest 2,524 passed, 225 skipped; godot-main and godot-vehicle PASS, no script skipped, 0
+SCRIPT ERROR).
 
 ## Implemented Runtime Contract
 
