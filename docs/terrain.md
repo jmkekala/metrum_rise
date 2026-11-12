@@ -13309,9 +13309,10 @@ ms on the still): met, 2.0 ms lower on the still (1.74 against 3.73) and 1.2-1.7
 paused frame does zero solves and zero uploads: met (counters above, and the tests); `PERF-07`
 unchanged: met (level F above). `_update_camera_aabb` deleted.
 
-**Gates** (the rebased tip): clippy adds no warning; debug `cargo test --lib` 2,414 passed, 0
-failed; `./run.sh --test` passes (no Godot script skipped; `vehicle_ground_support_test` and the
-agent inspector test drive the production `agents.gd` path).
+**Gates** (the tip rebased onto `f1c93527`, 2026-11-12): clippy adds no warning; debug `cargo test
+--lib` 2,454 passed, 0 failed; `./run.sh --test` passes with the graded replay step (no Godot script
+skipped; `vehicle_ground_support_test` and the agent inspector test drive the production `agents.gd`
+path). No landed round between touched a car code path, so the rows above stand.
 
 **Not done here:** the walkers' buffers (0.10 ms) still upload every frame; the snapshot side still
 re-solves every off-lane car every simulation frame on the simulation thread; the draw distances are
