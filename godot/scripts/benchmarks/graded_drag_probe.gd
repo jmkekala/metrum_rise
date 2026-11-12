@@ -517,7 +517,7 @@ func _settle(record: Dictionary) -> bool:
 		await _bench.get_tree().process_frame
 		frames += 1
 		var idle: bool = (not graded._book.has_pending_work() and graded.patch_lists_requested.is_empty()
-			and graded._builds.is_empty() and graded._builds_urgent.is_empty())
+			and graded.cell_builds_pending() == 0)
 		stable = stable + 1 if idle else 0
 	if stable < 3:
 		record["error"] = "the terrain did not settle"

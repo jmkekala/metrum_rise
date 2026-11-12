@@ -39,6 +39,9 @@ pub(crate) struct Entry {
     pub copies: Vec<(u32, Copy)>,
     // A preview entry the commit may adopt (false once a later pose of it failed to place).
     pub adoptable: bool,
+    // Its wall faces, eight floats each (`RENDER-32-J`): the bake's, taken as its entry changes
+    // while the call that installs it stages them.
+    pub walls: Vec<f32>,
 }
 
 impl Entry {
@@ -79,8 +82,8 @@ pub(crate) enum Effect {
     Cancel { tile: Tile, stale: bool },
     /// `tile`'s level's pool is exhausted (counted, logged; its patches' sets redraw).
     Exhausted { tile: Tile, code: u8 },
-    /// `tile` was evicted (counted; its cell and walls redraw; the mirror drops it).
-    Evicted { tile: Tile },
+    /// `tile` was evicted (counted; its cell redraws, and its walls where it had faces).
+    Evicted { tile: Tile, walls: bool },
     /// `tile`'s staged edit result is dropped.
     EditDropped { tile: Tile },
     /// An upload rewrote a tile at its installed level (counted).
@@ -93,6 +96,43 @@ pub(crate) enum Effect {
     CellChanged { tile: Tile, sides: bool },
     /// The sets of the patches meeting `tile` start or stop drawing, or build first.
     AwaitCells { tile: Tile },
+    // The cells' Godot calls (`RENDER-32-J`, [`super::cells`]), which the GDScript makes.
+    /// Set `set` takes patch `key` (its nodes take the patch's culling box).
+    CellAcquired { set: u32, key: PatchKey },
+    /// Set `set`'s materials of level `code` bind `page` (-1: none).
+    CellPages { set: u32, code: u8, page: i64 },
+    /// Set `set`'s root goes under patch `key`'s node (none: out of the tree).
+    CellPark { set: u32, key: Option<PatchKey> },
+    /// Set `set` starts a build for patch `key` at LOD `step` (its rectangle, step, material
+    /// sync restart).
+    CellBegin { set: u32, key: PatchKey, step: i32 },
+    /// Set `set`'s base cells take the mesh of lattice `code` (`reset`: dropping their buffer).
+    CellBaseMesh { set: u32, code: u8, reset: bool },
+    /// Every mesh of set `set` draws no instance.
+    CellCountsCleared { set: u32 },
+    /// Set `set`'s meshes from `first` on take their mesh and instance uniforms (it draws).
+    CellMeshes { set: u32, first: u8 },
+    /// Set `set`'s mesh `mesh` publishes its buffer (at `at` of the published floats).
+    CellPublish { set: u32, mesh: u8, at: u32 },
+    /// Set `set`'s mesh `mesh` draws `count` instances.
+    CellCount { set: u32, mesh: u8, count: u32 },
+    /// Set `set`'s walls: `count` faces from `start` of the wall floats, its capacity, the faces
+    /// past it.
+    CellWalls { set: u32, start: u32, count: u32, capacity: u32, truncated: u32 },
+    /// Resident patch `key` draws `state` (its PlaneMesh, its set or nothing).
+    Draw { key: PatchKey, state: u8 },
+    /// Set `set` starts drawing patch `key`.
+    CellShow { set: u32, key: PatchKey },
+    /// Set `set` stops drawing.
+    CellHide { set: u32 },
+    /// Set `set`'s grass mask revision.
+    CellMask { set: u32, revision: i64 },
+    /// Set `set` takes the behind-the-road variant's meshes, binding `pages` (`shown`: it draws).
+    CellVariant { set: u32, pages: [i64; 4], shown: bool },
+    /// Drawing set `set`, rewritten whole, takes patch `key`'s material again.
+    CellRebuilt { set: u32, key: PatchKey },
+    /// Set `set`'s build completed (counted).
+    CellBuilt { set: u32 },
 }
 
 /// The patch grid and the pages' shapes (setup).
@@ -139,7 +179,7 @@ pub(crate) struct Graded {
     pub(crate) installed: OrderedMap<Tile, Entry>,
     pub(crate) preview: OrderedMap<Tile, Entry>,
     // The resident patches, and per patch its list (token, tiles) or its refused list's token.
-    pub(crate) resident: OrderedMap<PatchKey, ()>,
+    pub(crate) resident: OrderedMap<PatchKey, super::cells::Patch>,
     pub(crate) lists: OrderedMap<PatchKey, (i64, Vec<Tile>)>,
     pub(crate) lists_refused: OrderedMap<PatchKey, i64>,
     // The load's settle flags (`unbudgeted`, `residency_settling`).
@@ -157,6 +197,10 @@ pub(crate) struct Graded {
     pub(crate) markers: bool,
     // Scratch for a block's listed tiles.
     pub(crate) listed_scratch: std::collections::HashSet<Tile>,
+    // The cell sets, walls and draw states (`RENDER-32-J`).
+    pub(crate) cells: super::cells::Cells,
+    // The effects settled (`super::cells`), in order, until the GDScript takes them.
+    pub(crate) out: Vec<Effect>,
 }
 
 impl Graded {

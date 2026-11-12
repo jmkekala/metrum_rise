@@ -149,12 +149,9 @@ func audit(stroke: int):
 			check(arrays[Mesh.ARRAY_VERTEX] == chunk[LAYERS[layer] + "_vertices"], "mesh mismatch stroke=%d chunk=%s layer=%s" % [stroke, key, LAYERS[layer]])
 			check(instance.mesh.surface_get_material(surfaces[layer]) != null, "missing material")
 	var g = terrain.graded_tiles
-	for key: Vector2i in g.patch_cells:
-		var cells: Dictionary = g.patch_cells[key]
-		for tile: Vector2i in cells.tiles:
-			var at: Vector2i = cells.where[g._cell_place(cells,tile)]
-			var expected: Color = g._cell_custom(tile,cells.first,g._resident[key],g._resident,key)
-			check(at.x == g._cell_mesh(tile,key) and cells.custom[at.x][at.y] == expected, "cell mismatch stroke=%d tile=%s stored=%s wanted=%s" % [stroke,tile,cells.custom[at.x][at.y],expected])
+	# Every set's every tile is one instance holding what it would be written as now.
+	var stale: int = g._book.stale_cells()
+	check(stale == 0, "cell mismatch stroke=%d: %d tiles" % [stroke, stale])
 	if DisplayServer.get_name() == "headless":
 		return
 	var graded = terrain.graded_tiles

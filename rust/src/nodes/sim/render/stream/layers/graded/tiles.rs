@@ -157,8 +157,8 @@ impl Graded {
         }
         if self.installed.contains_key(&tile) {
             self.free_copies(tile, false);
-            self.installed.remove(&tile);
-            self.effects.push(Effect::Evicted { tile });
+            let walls = self.installed.remove(&tile).is_some_and(|entry| !entry.walls.is_empty());
+            self.effects.push(Effect::Evicted { tile, walls });
         }
         let requests = &mut self.requests;
         requests.edit_batch.remove(&tile);
@@ -387,7 +387,7 @@ impl Graded {
         }
         self.installed.insert(
             tile,
-            Entry { cell_code, level: code, step, token, behind, copies, adoptable: true },
+            Entry { cell_code, level: code, step, token, behind, copies, adoptable: true, walls: Vec::new() },
         );
         self.effects.push(Effect::Installed { tile, preview: false });
         let previewed = self.preview.contains_key(&tile);

@@ -11,6 +11,7 @@
 //! Tiles are `Vector2i`, levels `(code, step)` as `request_graded_tiles` takes them, a copy
 //! `(page, slot, first atlas layer, layers)`.
 
+use super::cells::{Patch, Shown, WALL_INSTANCE_FLOATS};
 use super::copies::PlaceFailure;
 use super::pages::{Copy, PageEvent, PoolPolicy};
 use super::state::{Block, Effect, Graded, PageRef, Shape, Tile};
@@ -53,6 +54,12 @@ pub struct GradedTileBook {
     // The hand-over's answers, reused.
     results: Vec<i64>,
     considered: usize,
+    // What a tile showed before a preview change; the effects encoded; a published buffer.
+    before: Shown,
+    encoded: Vec<i64>,
+    buffer: PackedFloat32Array,
+    // The renderer's trace (record or replay): the cell builds' budget answers go through it.
+    trace: Option<Gd<RefCounted>>,
 }
 
 #[godot_api]
@@ -113,19 +120,22 @@ impl GradedTileBook {
         self.state.clear();
     }
 
-    /// The resident patch dictionary's mutation: `key` resident or not.
+    /// The resident patch dictionary's mutation: `key` resident (its entry's rectangle, LOD
+    /// step and generation) or erased.
     #[func]
-    pub fn set_resident(&mut self, key: Vector2i, resident: bool) {
-        self.state.set_resident((key.x, key.y), resident);
+    pub fn set_patch(&mut self, key: Vector2i, resident: bool, rect: Rect2, step: i64, generation: i64) {
+        let patch = resident.then_some(Patch {
+            rect: [rect.position.x, rect.position.y, rect.size.x, rect.size.y],
+            step: step as i32,
+            generation,
+        });
+        self.state.set_patch((key.x, key.y), patch);
     }
 
-    /// The resident patches, as the dictionary holds them (its first frame).
+    /// The resident dictionary cleared (its first frame fills it again with `set_patch`).
     #[func]
-    pub fn sync_resident(&mut self, keys: PackedInt32Array) {
+    pub fn clear_resident(&mut self) {
         self.state.resident.clear();
-        for key in keys.as_slice().as_chunks::<2>().0 {
-            self.state.resident.insert((key[0], key[1]), ());
-        }
     }
 
     /// The load's settle flags as the renderer holds them (a block's page waits while they say
@@ -184,9 +194,11 @@ impl GradedTileBook {
         self.state.apply_count()
     }
 
-    /// Patch `key`'s list, flat `(x, z)` pairs.
+    /// Patch `key`'s list, flat `(x, z)` pairs: a patch without a set builds one, what it draws
+    /// follows its list.
     #[func]
     pub fn take_list(&mut self, key: Vector2i, token: i64, tiles: PackedInt32Array) {
+        self.state.list_arrived((key.x, key.y));
         let tiles = tiles
             .as_slice()
             .as_chunks::<2>().0.iter()
@@ -198,6 +210,8 @@ impl GradedTileBook {
     /// Patch `key`'s list refused at `token`.
     #[func]
     pub fn list_refused(&mut self, key: Vector2i, token: i64) {
+        self.state.settle();
+        self.state.cells.dirty_shown.insert((key.x, key.y), ());
         self.state.list_refused((key.x, key.y), token);
     }
 
@@ -281,19 +295,23 @@ impl GradedTileBook {
         self.state.requests.edit_levels.clear();
     }
 
-    /// Installs `tile` at `code`/`step`/`token` with `layers` atlas layers. False where its
-    /// pages could not take it (it waits, or is exhausted: effects).
+    /// Installs `tile` at `code`/`step`/`token` with `layers` atlas layers and its bake's wall
+    /// faces. False where its pages could not take it (it waits, or is exhausted: effects).
     #[func]
-    pub fn upload(&mut self, tile: Vector2i, level: Vector4i, layers: i64) -> bool {
-        let level = (level.x as u8, level.y as u8, i64::from(level.z), level.w != 0);
-        self.state
-            .upload(tile_of(tile), level, layers as u32, None, &mut self.scratch)
+    pub fn upload(&mut self, tile: Vector2i, level: Vector4i, layers: i64, walls: PackedFloat32Array) -> bool {
+        self.upload_with(tile, level, layers, None, walls)
     }
 
     /// Installs an edit batch's `tile` into its reserved copies (flat page, slot, first, layers).
     #[func]
-    pub fn upload_reserved(&mut self, tile: Vector2i, level: Vector4i, layers: i64, copies: PackedInt64Array) -> bool {
-        let level = (level.x as u8, level.y as u8, i64::from(level.z), level.w != 0);
+    pub fn upload_reserved(
+        &mut self,
+        tile: Vector2i,
+        level: Vector4i,
+        layers: i64,
+        copies: PackedInt64Array,
+        walls: PackedFloat32Array,
+    ) -> bool {
         let copies = copies
             .as_slice()
             .as_chunks::<4>().0.iter()
@@ -301,21 +319,68 @@ impl GradedTileBook {
                 (copy[0] as u32, Copy { slot: copy[1] as u32, first: copy[2] as u32, layers: copy[3] as u32 })
             })
             .collect();
-        self.state
-            .upload(tile_of(tile), level, layers as u32, Some(copies), &mut self.scratch)
+        self.upload_with(tile, level, layers, Some(copies), walls)
     }
 
-    /// Places the preview's `tile`: 0 placed, 1 a full page waits (its block grows), 2 exhausted.
-    #[func]
-    pub fn place_preview(&mut self, tile: Vector2i, level: Vector4i, layers: i64) -> i64 {
+    // `_upload`: the walls staged for the entry it makes; a placed tile whose faces changed
+    // rewrites its patches' walls.
+    fn upload_with(
+        &mut self,
+        tile: Vector2i,
+        level: Vector4i,
+        layers: i64,
+        reserved: Option<Vec<(u32, Copy)>>,
+        walls: PackedFloat32Array,
+    ) -> bool {
+        let tile = tile_of(tile);
         let level = (level.x as u8, level.y as u8, i64::from(level.z), level.w != 0);
-        place_code(self.state.place_preview(tile_of(tile), level, layers as u32, &mut self.scratch))
+        self.state.settle();
+        let before = self.state.installed.get(&tile).map(|entry| entry.walls.clone()).unwrap_or_default();
+        self.state.cells.staged_walls = Some((tile, walls.as_slice().to_vec()));
+        let done = self.state.upload(tile, level, layers as u32, reserved, &mut self.scratch);
+        self.state.settle();
+        self.state.cells.staged_walls = None;
+        if done && walls.as_slice() != &before[..] {
+            self.state.walls_changed(tile);
+        }
+        done
     }
 
-    /// Drops the preview's `tile`; false when it showed none.
+    /// Places the preview's `tile` with its wall faces: 0 placed (what it draws changed), 1 a
+    /// full page waits (its block grows), 2 exhausted.
+    #[func]
+    pub fn place_preview(&mut self, tile: Vector2i, level: Vector4i, layers: i64, walls: PackedFloat32Array) -> i64 {
+        let tile = tile_of(tile);
+        let level = (level.x as u8, level.y as u8, i64::from(level.z), level.w != 0);
+        self.state.settle();
+        self.state.shown_copy(tile, &mut self.before);
+        self.state.cells.staged_walls = Some((tile, walls.as_slice().to_vec()));
+        let placed = place_code(self.state.place_preview(tile, level, layers as u32, &mut self.scratch));
+        self.state.settle();
+        self.state.cells.staged_walls = None;
+        if placed == 0 {
+            let before = std::mem::take(&mut self.before);
+            self.state.shown_changed(tile, &before);
+            self.before = before;
+        }
+        placed
+    }
+
+    /// Drops the preview's `tile` (what it draws changed); false when it showed none.
     #[func]
     pub fn drop_preview(&mut self, tile: Vector2i) -> bool {
-        self.state.drop_preview(tile_of(tile))
+        let tile = tile_of(tile);
+        self.state.settle();
+        if !self.state.preview.contains_key(&tile) {
+            return false;
+        }
+        self.state.shown_copy(tile, &mut self.before);
+        self.state.drop_preview(tile);
+        self.state.settle();
+        let before = std::mem::take(&mut self.before);
+        self.state.shown_changed(tile, &before);
+        self.before = before;
+        true
     }
 
     /// A committed tile adopts the preview's copies (`_adopt_preview`).
@@ -452,11 +517,12 @@ impl GradedTileBook {
         self.state.advance_growth();
     }
 
-    /// A resident patch entry changed (`rect` its rectangle) or left (`resident` false).
+    /// A resident patch entry changed (`rect` its rectangle) or left (`resident` false): its
+    /// tiles, its blocks and its set follow (`node_moved`: a drawing set's patch node changed).
     #[func]
-    pub fn patch_changed(&mut self, key: Vector2i, resident: bool, rect: Rect2) {
+    pub fn patch_changed(&mut self, key: Vector2i, resident: bool, rect: Rect2, node_moved: bool) {
         let rect = resident.then_some([rect.position.x, rect.position.y, rect.size.x, rect.size.y]);
-        self.state.patch_changed((key.x, key.y), rect);
+        self.state.patch_changed_cells((key.x, key.y), rect, node_moved);
     }
 
     /// Whether the book's queued work will change what is drawn.
@@ -623,6 +689,360 @@ impl GradedTileBook {
         out
     }
 
+    /// The renderer's trace (`terrain_graded_trace.gd`), null when none: a cell build asks it for
+    /// each budget answer, as `_over_budget` did.
+    #[func]
+    pub fn set_trace(&mut self, trace: Option<Gd<RefCounted>>) {
+        self.trace = trace;
+    }
+
+    /// Setup's cell sets: `count` of `per_patch` tile places, prewarmed and free.
+    #[func]
+    pub fn cells_setup(&mut self, per_patch: i64, count: i64) {
+        self.state.cells_setup(per_patch as usize, count as usize);
+    }
+
+    /// `clear`'s cell part, after every set was released: every queue and mark dropped.
+    #[func]
+    pub fn clear_cells(&mut self) {
+        self.state.settle();
+        self.state.clear_cells();
+    }
+
+    /// A tile refused by contract: the sets of the patches meeting it may draw without it.
+    #[func]
+    pub fn tile_refused(&mut self, tile: Vector2i) {
+        self.state.settle();
+        self.state.tile_shown_dirty(tile_of(tile));
+    }
+
+    /// `_variant_missing`: whether a set of the patches meeting `tile` lacks the behind-the-road
+    /// variant (each such set is queued for it).
+    #[func]
+    pub fn variant_missing(&mut self, tile: Vector2i) -> bool {
+        self.state.settle();
+        self.state.variant_missing(tile_of(tile))
+    }
+
+    /// The first set queued for the variant takes it: 1 added, 0 not needed, -1 none queued.
+    #[func]
+    pub fn add_next_variant(&mut self) -> i64 {
+        self.state.settle();
+        self.state.add_next_variant().map_or(-1, i64::from)
+    }
+
+    /// The blocks bound at level `code`, flat `(x, z, page)` in order. For tests.
+    #[func]
+    pub fn bound_blocks(&self, code: i64) -> PackedInt32Array {
+        self.state.block_page[code as usize]
+            .iter()
+            .flat_map(|(block, &page)| [block.0, block.1, page as i32])
+            .collect()
+    }
+
+    /// Tiles of every set (resident patches) not drawn as they would be written now: from
+    /// another mesh, or with other custom data. For tests.
+    #[func]
+    pub fn stale_cells(&self) -> i64 {
+        let state = &self.state;
+        let mut stale = 0;
+        for (&key, &set) in state.cells.by_patch.iter() {
+            let Some(patch) = state.resident.get(&key) else {
+                continue;
+            };
+            let set = &state.cells.sets[set as usize];
+            for &tile in &set.tiles {
+                let (mesh, index) = set.at[set.place(tile)];
+                let fresh = mesh >= 0
+                    && mesh as usize == state.cell_mesh(tile, key)
+                    && set.custom[mesh as usize][index as usize] == state.cell_custom(tile, set.first, patch, key);
+                stale += i64::from(!fresh);
+            }
+        }
+        stale
+    }
+
+    /// Whether a set is queued for the behind-the-road variant.
+    #[func]
+    pub fn has_variants_wanted(&self) -> bool {
+        self.state.cells.variants_wanted.len() > 0
+    }
+
+    /// Installed (or preview) tiles.
+    #[func]
+    pub fn entry_count(&self, preview: bool) -> i64 {
+        (if preview { self.state.preview.len() } else { self.state.installed.len() }) as i64
+    }
+
+    /// Set `set`'s instance count per cell mesh.
+    #[func]
+    pub fn set_counts(&self, set: i64) -> PackedInt32Array {
+        let set = &self.state.cells.sets[set as usize];
+        set.counts[..if set.variant { 9 } else { 5 }].iter().map(|&count| count as i32).collect()
+    }
+
+    /// Set `set`'s written instances, six floats each: mesh, instance, custom data. For the
+    /// probe's check of what the `MultiMesh`es hold.
+    #[func]
+    pub fn set_instances(&self, set: i64) -> PackedFloat32Array {
+        let set = &self.state.cells.sets[set as usize];
+        let mut out = Vec::with_capacity(set.tiles.len() * 6);
+        for &tile in &set.tiles {
+            let (mesh, index) = set.at[set.place(tile)];
+            if mesh < 0 {
+                continue;
+            }
+            out.extend([f32::from(mesh), index as f32]);
+            out.extend(set.custom[mesh as usize][index as usize]);
+        }
+        PackedFloat32Array::from(out.as_slice())
+    }
+
+    /// The next queued set build `(x, z, urgent)`; `urgent` -1 when none is queued.
+    #[func]
+    pub fn next_build(&self) -> Vector3i {
+        self.state
+            .next_build()
+            .map_or(Vector3i::new(0, 0, -1), |(key, urgent)| Vector3i::new(key.0, key.1, i32::from(urgent)))
+    }
+
+    /// Patch `key`'s queued build ended (`built`: its set may start drawing), or its patch left.
+    #[func]
+    pub fn build_finished(&mut self, key: Vector2i, built: bool) {
+        self.state.settle();
+        self.state.build_finished((key.x, key.y), built);
+    }
+
+    /// Patch `key`'s set for a build: started for the patch as it stands where it has none or
+    /// its build was dropped. Returns the set.
+    #[func]
+    pub fn begin_build(&mut self, key: Vector2i) -> i64 {
+        self.state.settle();
+        let key = (key.x, key.y);
+        let set = self.state.cells.by_patch.get(&key).copied();
+        let set = match set {
+            Some(set) if self.state.cells.sets[set as usize].built >= 0 => set,
+            _ => self.state.begin_build(key),
+        };
+        i64::from(set)
+    }
+
+    /// Whether set `set` holds every tile of its patch.
+    #[func]
+    pub fn set_built(&self, set: i64) -> bool {
+        self.state.cells.sets[set as usize].is_built()
+    }
+
+    /// Writes set `set`'s next tiles until the frame's install budget (from `start_us`, Godot's
+    /// ticks) is spent and at least `minimum` were written. Returns whether the set is built.
+    #[func]
+    pub fn build_tiles(&mut self, set: i64, start_us: i64, minimum: i64) -> bool {
+        self.state.settle();
+        let unbudgeted = self.state.unbudgeted;
+        let mut trace = self.trace.clone();
+        let mut over = move || {
+            let elapsed = godot::classes::Time::singleton().get_ticks_usec() as i64 - start_us;
+            let over = !unbudgeted && elapsed as f64 / 1000.0 >= 1.0;
+            match trace.as_mut() {
+                Some(trace) => {
+                    let answer = trace.call("value", &["budget".to_variant(), GString::from(if over { "1" } else { "0" }).to_variant()]);
+                    answer.to::<GString>() == GString::from("1")
+                }
+                None => over,
+            }
+        };
+        self.state.build_tiles(set as u32, Some((&mut over, minimum as u32)))
+    }
+
+    /// `_rebuild_patch_cells`: patch `key`'s set built whole now.
+    #[func]
+    pub fn rebuild_set(&mut self, key: Vector2i) {
+        self.state.settle();
+        self.state.rebuild_set((key.x, key.y));
+    }
+
+    /// `_apply_cell_changes`: the queued cell rewrites, draw states and flips.
+    #[func]
+    pub fn apply_cell_changes(&mut self) {
+        self.state.apply_cell_changes();
+    }
+
+    /// `_apply_wall_changes`: the queued wall rewrites.
+    #[func]
+    pub fn apply_wall_changes(&mut self) {
+        self.state.apply_wall_changes();
+    }
+
+    /// `release_patch`'s part: patch `key`'s set returns to the pool. Returns it, -1 when none.
+    #[func]
+    pub fn release_set(&mut self, key: Vector2i) -> i64 {
+        self.state.release_set((key.x, key.y)).map_or(-1, i64::from)
+    }
+
+    /// Patch `key`'s set, -1 when none.
+    #[func]
+    pub fn patch_set(&self, key: Vector2i) -> i64 {
+        self.state.cells.by_patch.get(&(key.x, key.y)).map_or(-1, |&set| i64::from(set))
+    }
+
+    /// Whether queued cell work will change what is drawn.
+    #[func]
+    pub fn cells_pending(&self) -> bool {
+        self.state.cells_pending()
+    }
+
+    /// Cell set builds still queued.
+    #[func]
+    pub fn builds_queued(&self) -> i64 {
+        (self.state.cells.builds.len() + self.state.cells.builds_urgent.len()) as i64
+    }
+
+    /// Patches queued for a whole rewrite and for their walls.
+    #[func]
+    pub fn dirty_counts(&self) -> Vector2i {
+        Vector2i::new(self.state.cells.dirty_patches.len() as i32, self.state.cells.dirty_walls.len() as i32)
+    }
+
+    /// The buffer a taken publication effect names (`at`), in a reused array.
+    #[func]
+    pub fn cell_buffer(&mut self, at: i64) -> PackedFloat32Array {
+        let len = self.state.cells.per_patch * 16;
+        let at = at as usize;
+        if self.buffer.len() != len {
+            self.buffer.resize(len);
+        }
+        self.buffer
+            .as_mut_slice()
+            .copy_from_slice(&self.state.cells.taken_publish[at..at + len]);
+        self.buffer.clone()
+    }
+
+    /// The taken wall effects' faces, nine floats each (three basis columns).
+    #[func]
+    pub fn wall_floats(&self) -> PackedFloat32Array {
+        debug_assert_eq!(self.state.cells.taken_walls.len() % WALL_INSTANCE_FLOATS, 0);
+        PackedFloat32Array::from(self.state.cells.taken_walls.as_slice())
+    }
+
+    /// The frame's cell counters since the last reset: tiles updated, sets flipped, instances
+    /// written, instances moved between meshes.
+    #[func]
+    pub fn frame_counters(&self) -> PackedInt64Array {
+        self.state.cells.frame.iter().map(|&count| count as i64).collect()
+    }
+
+    /// Resets the frame's cell counters.
+    #[func]
+    pub fn reset_frame_counters(&mut self) {
+        self.state.cells.frame = [0; 4];
+    }
+
+    /// The preview's tiles of epochs `first` to `last`, flat `(x, z)` in order.
+    #[func]
+    pub fn preview_tiles(&self, first: i64, last: i64) -> PackedInt32Array {
+        self.state
+            .preview
+            .iter()
+            .filter(|(_, entry)| entry.token >= first && entry.token <= last)
+            .flat_map(|(tile, _)| [tile.x, tile.z])
+            .collect()
+    }
+
+    /// Whether a preview tile meets `rect`.
+    #[func]
+    pub fn previews_in(&self, rect: Rect2) -> bool {
+        self.state.previews_in([rect.position.x, rect.position.y, rect.size.x, rect.size.y])
+    }
+
+    /// Drawing sets with a listed tile they do not show. For tests and the probe.
+    #[func]
+    pub fn partial_sets(&self) -> i64 {
+        self.state.partial_sets() as i64
+    }
+
+    /// The state half of `tile_draw_violations`: (holes, stitches). For tests and the probe.
+    #[func]
+    pub fn draw_violations(&self) -> Vector2i {
+        let (holes, stitches) = self.state.draw_violations();
+        Vector2i::new(holes as i32, stitches as i32)
+    }
+
+    /// Every installed (or preview) tile, flat `(x, z)` in order. For tests and the probe.
+    #[func]
+    pub fn entry_tiles(&self, preview: bool) -> PackedInt32Array {
+        let entries = if preview { &self.state.preview } else { &self.state.installed };
+        entries.keys().flat_map(|tile| [tile.x, tile.z]).collect()
+    }
+
+    /// `tile`'s installed (or preview) wall faces.
+    #[func]
+    pub fn entry_walls(&self, tile: Vector2i, preview: bool) -> PackedFloat32Array {
+        let entries = if preview { &self.state.preview } else { &self.state.installed };
+        entries
+            .get(&tile_of(tile))
+            .map_or_else(PackedFloat32Array::new, |entry| PackedFloat32Array::from(entry.walls.as_slice()))
+    }
+
+    /// Set `set`'s state for tests: `tiles`, `first`, `last`, `built`, `shown`, `complete`,
+    /// `variant`, `step`, `pages`, `counts`, per mesh its written custom data (`custom`, an
+    /// array of colours per mesh) and per tile place `at` (mesh, instance).
+    #[func]
+    pub fn cell_state(&self, set: i64) -> VarDictionary {
+        let set = &self.state.cells.sets[set as usize];
+        let mut out = VarDictionary::new();
+        let tiles: Array<Vector2i> = set.tiles.iter().map(|tile| Vector2i::new(tile.x, tile.z)).collect();
+        out.set("tiles", tiles);
+        out.set("first", Vector2i::new(set.first.x, set.first.z));
+        out.set("last", Vector2i::new(set.last.x, set.last.z));
+        out.set("built", set.built);
+        out.set("shown", set.shown);
+        out.set("complete", set.complete);
+        out.set("variant", set.variant);
+        out.set("step", set.step);
+        let pages: PackedInt64Array = set.pages.iter().copied().collect();
+        out.set("pages", pages);
+        let counts: PackedInt32Array = set.counts.iter().map(|&count| count as i32).collect();
+        out.set("counts", counts);
+        let mut custom = VarArray::new();
+        for (mesh, records) in set.custom.iter().enumerate() {
+            let written: Array<Color> = records[..set.counts[mesh] as usize]
+                .iter()
+                .map(|data| Color::from_rgba(data[0], data[1], data[2], data[3]))
+                .collect();
+            custom.push(&written.to_variant());
+        }
+        out.set("custom", custom);
+        let at: Array<Vector2i> = set.at.iter().map(|&(mesh, index)| Vector2i::new(i32::from(mesh), index)).collect();
+        out.set("at", at);
+        out
+    }
+
+    /// Whether a tile shown or installed in set `set`'s patch is flagged behind the road. For
+    /// tests.
+    #[func]
+    pub fn set_flagged(&self, set: i64) -> bool {
+        let set = &self.state.cells.sets[set as usize];
+        set.tiles.iter().any(|tile| {
+            self.state.preview.get(tile).is_some_and(|entry| entry.behind)
+                || self.state.installed.get(tile).is_some_and(|entry| entry.behind)
+        })
+    }
+
+    /// `_shown_in`: what `tile` draws in patch `key`'s cells as `[level, behind, slot]`, empty
+    /// when it draws its base cell. For tests.
+    #[func]
+    pub fn shown_in(&self, tile: Vector2i, key: Vector2i) -> PackedInt64Array {
+        let key = (key.x, key.y);
+        let Some(entry) = self.state.shown_in(tile_of(tile), key) else {
+            return PackedInt64Array::new();
+        };
+        let page = self.state.cells.bound[usize::from(entry.level)]
+            .get(&self.state.block_of(key, entry.level))
+            .copied();
+        let slot = page.and_then(|page| entry.copy_in(page)).map_or(-1, |copy| i64::from(copy.slot));
+        PackedInt64Array::from([i64::from(entry.level), i64::from(entry.behind), slot].as_slice())
+    }
+
     /// The effects since the last take, `EFFECT_FIELDS` integers each: kind, then
     /// 0 page made `(id, code, block x, block z, slots, layers)`, 1 page reused (the same),
     /// 2 released `(id, kept)`, 3 dropped `(id)`, 4 copied `(from, to)`, 5 refused `(-1, code,
@@ -630,11 +1050,26 @@ impl GradedTileBook {
     /// block x, block z, rewrite, page or -1)`, 12 cancel `(x, z, stale)`, 13 exhausted `(x, z,
     /// code)`, 14 evicted `(x, z)`, 15 edit dropped `(x, z)`, 16 same-level upload, 17 entry
     /// changed `(x, z, preview)`, 18 mask `(x, z)`, 19 cell `(x, z, sides)`, 20 await cells
-    /// `(x, z)`, 21 grew `(code, block x, block z, slots, layers)`, 22 moved.
+    /// `(x, z)`, 21 grew `(code, block x, block z, slots, layers)`, 22 moved; the cells' Godot
+    /// calls (`RENDER-32-J`): 30 set acquired `(set, x, z)`, 31 pages `(set, code, page or -1)`,
+    /// 32 park `(set, x, z, under a patch)`, 33 begin `(set, x, z, step)`, 34 base mesh `(set,
+    /// code, reset)`, 35 counts cleared `(set)`, 36 meshes `(set, first)`, 37 publish `(set, mesh,
+    /// at)` (`cell_buffer`), 38 count `(set, mesh, count)`, 39 walls `(set, start, count,
+    /// capacity, truncated)` (`wall_floats`), 40 draw `(x, z, state)`, 41 show `(set, x, z)`, 42
+    /// hide `(set)`, 43 mask `(set, revision)`, 44 variant `(set, four pages, shown)`, 45 rebuilt
+    /// `(set, x, z)`, 46 built `(set)`. The kinds the cells apply themselves (binds, entry
+    /// changes, marks) are settled first and not returned.
     #[func]
     pub fn take_effects(&mut self) -> PackedInt64Array {
-        let mut out = Vec::with_capacity(self.state.effects.len() * EFFECT_FIELDS);
-        for effect in self.state.effects.drain(..) {
+        self.state.settle();
+        let cells = &mut self.state.cells;
+        std::mem::swap(&mut cells.taken_publish, &mut cells.publish_floats);
+        cells.publish_floats.clear();
+        std::mem::swap(&mut cells.taken_walls, &mut cells.wall_floats);
+        cells.wall_floats.clear();
+        let mut out = std::mem::take(&mut self.encoded);
+        out.clear();
+        for effect in self.state.out.drain(..) {
             let fields: [i64; EFFECT_FIELDS] = match effect {
                 Effect::PageMade { id, reused, code, block, slots, layers } => [
                     i64::from(reused),
@@ -667,24 +1102,11 @@ impl GradedTileBook {
                     0,
                     0,
                 ],
-                Effect::Bind { code, block, rewrite, page } => [
-                    11,
-                    i64::from(code),
-                    i64::from(block.0),
-                    i64::from(block.1),
-                    i64::from(rewrite),
-                    page.map_or(-1, i64::from),
-                    0,
-                ],
                 Effect::Cancel { tile, stale } => [12, i64::from(tile.x), i64::from(tile.z), i64::from(stale), 0, 0, 0],
                 Effect::Exhausted { tile, code } => [13, i64::from(tile.x), i64::from(tile.z), i64::from(code), 0, 0, 0],
-                Effect::Evicted { tile } => [14, i64::from(tile.x), i64::from(tile.z), 0, 0, 0, 0],
+                Effect::Evicted { tile, .. } => [14, i64::from(tile.x), i64::from(tile.z), 0, 0, 0, 0],
                 Effect::EditDropped { tile } => [15, i64::from(tile.x), i64::from(tile.z), 0, 0, 0, 0],
                 Effect::SameLevel => [16, 0, 0, 0, 0, 0, 0],
-                Effect::Installed { tile, preview } => [17, i64::from(tile.x), i64::from(tile.z), i64::from(preview), 0, 0, 0],
-                Effect::MaskChanged { tile } => [18, i64::from(tile.x), i64::from(tile.z), 0, 0, 0, 0],
-                Effect::CellChanged { tile, sides } => [19, i64::from(tile.x), i64::from(tile.z), i64::from(sides), 0, 0, 0],
-                Effect::AwaitCells { tile } => [20, i64::from(tile.x), i64::from(tile.z), 0, 0, 0, 0],
                 Effect::Grew { code, block, slots, layers } => [
                     21,
                     i64::from(code),
@@ -695,9 +1117,40 @@ impl GradedTileBook {
                     0,
                 ],
                 Effect::Moved => [22, 0, 0, 0, 0, 0, 0],
+                Effect::CellAcquired { set, key } => [30, set.into(), key.0.into(), key.1.into(), 0, 0, 0],
+                Effect::CellPages { set, code, page } => [31, set.into(), code.into(), page, 0, 0, 0],
+                Effect::CellPark { set, key } => {
+                    let (x, z) = key.unwrap_or((0, 0));
+                    [32, set.into(), x.into(), z.into(), i64::from(key.is_some()), 0, 0]
+                }
+                Effect::CellBegin { set, key, step } => [33, set.into(), key.0.into(), key.1.into(), step.into(), 0, 0],
+                Effect::CellBaseMesh { set, code, reset } => [34, set.into(), code.into(), reset.into(), 0, 0, 0],
+                Effect::CellCountsCleared { set } => [35, set.into(), 0, 0, 0, 0, 0],
+                Effect::CellMeshes { set, first } => [36, set.into(), first.into(), 0, 0, 0, 0],
+                Effect::CellPublish { set, mesh, at } => [37, set.into(), mesh.into(), at.into(), 0, 0, 0],
+                Effect::CellCount { set, mesh, count } => [38, set.into(), mesh.into(), count.into(), 0, 0, 0],
+                Effect::CellWalls { set, start, count, capacity, truncated } => {
+                    [39, set.into(), start.into(), count.into(), capacity.into(), truncated.into(), 0]
+                }
+                Effect::Draw { key, state } => [40, key.0.into(), key.1.into(), state.into(), 0, 0, 0],
+                Effect::CellShow { set, key } => [41, set.into(), key.0.into(), key.1.into(), 0, 0, 0],
+                Effect::CellHide { set } => [42, set.into(), 0, 0, 0, 0, 0],
+                Effect::CellMask { set, revision } => [43, set.into(), revision, 0, 0, 0, 0],
+                Effect::CellVariant { set, pages, shown } => {
+                    [44, set.into(), pages[0], pages[1], pages[2], pages[3], shown.into()]
+                }
+                Effect::CellRebuilt { set, key } => [45, set.into(), key.0.into(), key.1.into(), 0, 0, 0],
+                Effect::CellBuilt { set } => [46, set.into(), 0, 0, 0, 0, 0],
+                Effect::Bind { .. }
+                | Effect::Installed { .. }
+                | Effect::MaskChanged { .. }
+                | Effect::CellChanged { .. }
+                | Effect::AwaitCells { .. } => unreachable!("settled"),
             };
             out.extend(fields);
         }
-        PackedInt64Array::from(out.as_slice())
+        let packed = PackedInt64Array::from(out.as_slice());
+        self.encoded = out;
+        packed
     }
 }

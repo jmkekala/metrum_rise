@@ -102,15 +102,6 @@ impl Graded {
         self.wanted.clear();
     }
 
-    /// The live resident dictionary's mutation (from the renderer's first frame on).
-    pub(crate) fn set_resident(&mut self, key: PatchKey, resident: bool) {
-        if resident {
-            self.resident.insert(key, ());
-        } else {
-            self.resident.remove(&key);
-        }
-    }
-
     // `_patch_tiles`: the tiles whose interior meets a rectangle (real_t corners, float math).
     fn patch_tiles(rect: [f32; 4], mut visit: impl FnMut(Tile)) {
         let end = [rect[0] + rect[2], rect[1] + rect[3]];
@@ -227,7 +218,7 @@ impl Graded {
         }
         self.preview.insert(
             tile,
-            Entry { cell_code: cell_code(code, step), level: code, step, token, behind, copies, adoptable: true },
+            Entry { cell_code: cell_code(code, step), level: code, step, token, behind, copies, adoptable: true, walls: Vec::new() },
         );
         self.effects.push(Effect::Installed { tile, preview: true });
         Ok(())

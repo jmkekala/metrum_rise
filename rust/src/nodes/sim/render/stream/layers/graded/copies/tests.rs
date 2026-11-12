@@ -25,7 +25,7 @@ fn world() -> Graded {
         graded.pages.add_level(side);
         graded.caps.push(LevelCaps { cap, max_layers });
     }
-    graded.resident.insert((0, 0), ());
+    graded.resident.insert((0, 0), super::super::cells::Patch::default());
     graded
 }
 
@@ -47,6 +47,7 @@ fn install(graded: &mut Graded, key: Tile, layers: u32, scratch: &mut Vec<(PageR
             behind: false,
             copies,
             adoptable: true,
+            walls: Vec::new(),
         },
     );
     Ok(())

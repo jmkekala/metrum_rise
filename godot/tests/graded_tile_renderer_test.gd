@@ -92,7 +92,9 @@ func _run() -> void:
 	for key: Vector2i in graded.patch_cells.keys():
 		_check_cells(graded, key, resident)
 	# A pooled cell set binds no material, so it holds none of Godot's instance uniform slots.
-	for cells: Dictionary in graded._cells_pool:
+	for cells: Dictionary in graded._sets:
+		if (cells["root"] as Node).get_parent() != null:
+			continue
 		for node: GeometryInstance3D in cells["nodes"]:
 			_expect(node.material_override == null, "a pooled cell set binds no material")
 
@@ -211,9 +213,9 @@ func _check_moving_camera(graded: GradedTiles, resident: Dictionary) -> void:
 		for tile: Vector2i in graded.installed.keys():
 			levels_seen[int(graded.installed[tile]["level"])] = true
 		for key: Vector2i in graded.patch_cells.keys():
-			var moved := _cell_record(graded.patch_cells[key])
+			var moved := _cell_record(graded, key)
 			graded._rebuild_patch_cells(key, resident)
-			_expect(moved == _cell_record(graded.patch_cells[key]), "patch %s: the per-tile cells equal the patch's rewrite" % key)
+			_expect(moved == _cell_record(graded, key), "patch %s: the per-tile cells equal the patch's rewrite" % key)
 			_check_cells(graded, key, resident)
 	_expect(exact, "every desired tile has its distance's level in every frame")
 	_expect(levels_seen.has(0) and levels_seen.has(2), "the climb moves tiles between levels: %s" % levels_seen)
@@ -255,8 +257,10 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 	var moves_before := int(graded.counters["page_moves"])
 	var moving := {}
 	for code in 4:
-		for block: Vector2i in graded._block_page[code].keys():
-			var page_id := int(graded._block_page[code][block])
+		var bound: PackedInt32Array = graded._book.bound_blocks(code)
+		for at in range(0, bound.size(), 3):
+			var block := Vector2i(bound[at], bound[at + 1])
+			var page_id := bound[at + 2]
 			var page: Dictionary = graded.page_store.by_id[page_id]
 			var holders := graded.installed.keys().filter(func(tile: Vector2i) -> bool: return (graded.installed[tile]["copies"] as Dictionary).has(page_id))
 			if holders.is_empty():
@@ -278,7 +282,7 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 	_expect(int(graded.counters["page_moves"]) - moves_before == moving.size(), "every block moved once: %d of %d" % [int(graded.counters["page_moves"]) - moves_before, moving.size()])
 	for marked: Vector3i in moving.keys():
 		var block := Vector2i(marked.y, marked.z)
-		_expect(int(graded._block_page[marked.x].get(block, -1)) == int(moving[marked]), "level %d block %s binds its new page" % [marked.x, block])
+		_expect(int(graded._book.block_page(marked.x, block)) == int(moving[marked]), "level %d block %s binds its new page" % [marked.x, block])
 	for tile: Vector2i in graded.installed.keys():
 		_expect(graded._tile_complete(tile, graded.installed[tile]), "tile %s has a copy in every page that draws it" % tile)
 	for key: Vector2i in resident.keys():
@@ -312,13 +316,15 @@ func _expect_streamed(label: String) -> void:
 	_expect(_violations == 0, "%s: up to %d patches drew their PlaneMesh over listed graded tiles" % [label, _violations])
 	_expect(_partial == 0, "%s: up to %d sets drew with a listed tile missing" % [label, _partial])
 
-# Per cell mesh, the sorted custom data of its instances, with the visible counts.
-func _cell_record(cells: Dictionary) -> Array:
+# Per cell mesh, the sorted custom data of its instances (the book's record), with the visible
+# counts.
+func _cell_record(graded: GradedTiles, key: Vector2i) -> Array:
 	var out := []
-	var counts: Array[int] = cells["counts"]
+	var cells: Dictionary = graded.patch_cells[key]
+	var state: Dictionary = graded._book.cell_state(graded._book.patch_set(key))
 	for index in (cells["nodes"] as Array).size():
 		var written: Array = []
-		for data: Color in (cells["custom"][index] as Array).slice(0, counts[index]):
+		for data: Color in state["custom"][index]:
 			written.append(str(data))
 		written.sort()
 		out.append([(cells["nodes"][index] as MultiMeshInstance3D).multimesh.visible_instance_count, written])
@@ -434,10 +440,10 @@ func _check_variant(simulation: SimulationNode, host: Node3D, layout: Dictionary
 	print("graded behind variant: %d flagged tiles, %d sets given the variant, %d waits" % [flagged, int(graded.counters["cell_variants_created"]), int(graded.counters["variant_waits"])])
 	for key: Vector2i in graded.patch_cells.keys():
 		var cells: Dictionary = graded.patch_cells[key]
-		_expect(bool(cells["variant"]) == graded._patch_flagged(cells), "patch %s holds the variant as its flagged tiles need it" % key)
-		var moved := _cell_record(cells)
+		_expect(bool(cells["variant"]) == graded._book.set_flagged(graded._book.patch_set(key)), "patch %s holds the variant as its flagged tiles need it" % key)
+		var moved := _cell_record(graded, key)
 		graded._rebuild_patch_cells(key, resident)
-		_expect(moved == _cell_record(cells), "patch %s: the per-tile cells equal the patch's rewrite" % key)
+		_expect(moved == _cell_record(graded, key), "patch %s: the per-tile cells equal the patch's rewrite" % key)
 		_check_cells(graded, key, resident)
 	graded.dispose()
 
@@ -448,12 +454,13 @@ func _flagged_outside_variant(graded: GradedTiles) -> int:
 		var cells: Dictionary = graded.patch_cells[key]
 		if not bool(cells["shown"]):
 			continue
-		for tile: Vector2i in cells["tiles"]:
-			var entry: Dictionary = graded._shown_in(tile, key)
-			if entry.is_empty() or not bool(entry["behind"]):
+		var state: Dictionary = graded._book.cell_state(graded._book.patch_set(key))
+		for tile: Vector2i in state["tiles"]:
+			var entry: PackedInt64Array = graded._book.shown_in(tile, key)
+			if entry.is_empty() or entry[1] == 0:
 				continue
-			var at: Vector2i = cells["where"][GradedTiles._cell_place(cells, tile)]
-			if at.x != int(entry["level"]) + GradedTiles.CELL_BEHIND:
+			var at: Vector2i = state["at"][_cell_place(state, tile)]
+			if at.x != int(entry[0]) + GradedTiles.CELL_BEHIND:
 				count += 1
 	return count
 
@@ -809,16 +816,17 @@ func _settle_edit(graded: GradedTiles, camera: Vector3, resident: Dictionary) ->
 
 # Every tile meeting the patch is one instance, graded where installed and a base cell
 # elsewhere; a side shared with a coarser cell stitches to the coarser code.
-func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> void:
+func _check_cells(graded: GradedTiles, key: Vector2i, _resident: Dictionary) -> void:
 	var cells: Dictionary = graded.patch_cells[key]
-	var patch: Dictionary = resident[key]
-	var tiles: Array[Vector2i] = GradedTiles._patch_tiles(patch["rect"])
+	var state: Dictionary = graded._book.cell_state(graded._book.patch_set(key))
+	var tiles: Array = state["tiles"]
 	var total := 0
 	var nodes: Array = cells["nodes"]
-	# The headless renderer keeps no MultiMesh custom data; the renderer's own record of what it
-	# wrote stands for it.
-	var counts: Array[int] = cells["counts"]
+	# The headless renderer keeps no MultiMesh custom data; the book's record of what it wrote
+	# stands for it.
+	var counts: PackedInt32Array = state["counts"]
 	var shown := bool(cells["shown"])
+	_expect(shown == bool(state["shown"]), "patch %s: the set draws as the book says" % key)
 	# Its graded materials bind the pages its block uses (docs/terrain.md "Pages and the row atlas").
 	_expect(nodes.size() == (GradedTiles.CELL_MESHES if bool(cells["variant"]) else GradedTiles.CELL_PLAIN)
 		and (cells["materials"] as Array).size() == nodes.size(), "patch %s holds its variant's meshes with it" % key)
@@ -826,17 +834,21 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 		if index == GradedTiles.CELL_BASE:
 			continue
 		var code := index - GradedTiles.CELL_BEHIND if index >= GradedTiles.CELL_BEHIND else index
-		var page: Dictionary = graded.page_store.by_id.get(graded._patch_page(key, code), {})
+		var page: Dictionary = graded.page_store.by_id.get(_patch_page(graded, key, code), {})
 		var material: ShaderMaterial = cells["materials"][index]
 		_expect(material.get_shader_parameter("graded_texels") == page.get("texels", null)
 			and material.get_shader_parameter("graded_atlas") == page.get("atlas", null),
 			"patch %s binds its block's level %d page" % [key, code])
-	_expect(shown == (GradedTiles._graded_cells(counts) > 0), "patch %s: a set draws while a tile of it shows graded" % key)
+	var graded_cells := 0
+	for index in counts.size():
+		if index != GradedTiles.CELL_BASE:
+			graded_cells += counts[index]
+	_expect(shown == (graded_cells > 0), "patch %s: a set draws while a tile of it shows graded" % key)
 	for index in nodes.size():
 		_expect((nodes[index] as GeometryInstance3D).material_override != null if shown else (nodes[index] as GeometryInstance3D).material_override == null,
 			"a set binds its materials while it draws its patch, and only then")
 		var multimesh: MultiMesh = (nodes[index] as MultiMeshInstance3D).multimesh
-		var written: Array = (cells["custom"][index] as Array).slice(0, counts[index])
+		var written: Array = state["custom"][index]
 		_expect(multimesh.visible_instance_count == written.size(), "visible instances match the written ones")
 		if DisplayServer.get_name() != "headless":
 			for instance in written.size():
@@ -848,14 +860,13 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 		for data: Color in written:
 			# The tile's place in the patch (column + 32 row) and the codes in two channels.
 			var place := int(data.r)
-			var tile: Vector2i = tiles[0] + Vector2i(place % GradedTiles.PATCH_TILE_ROW, place / GradedTiles.PATCH_TILE_ROW)
+			var tile: Vector2i = tiles[0] + Vector2i(place % 32, place / 32)
 			var codes := int(data.b) | (int(data.a) << 9)
 			_expect(data.r < 2048.0 and data.b < 2048.0 and data.a < 2048.0, "custom channels are exact as half floats")
 			var own := codes & 7
-			var entry: Dictionary = graded._shown_in(tile, key)
+			var entry: PackedInt64Array = graded._book.shown_in(tile, key)
 			if index != GradedTiles.CELL_BASE:
-				var page := graded._patch_page(key, int(entry.get("level", 0)))
-				_expect(not entry.is_empty() and int(data.g) == (entry["copies"][page] as Vector3i).x, "a graded instance names its slot in its block's page")
+				_expect(not entry.is_empty() and int(data.g) == entry[2] and entry[2] >= 0, "a graded instance names its slot in its block's page")
 			else:
 				_expect(entry.is_empty() and int(data.g) == -1, "a base cell has no slot")
 			for side in 4:
@@ -938,3 +949,13 @@ func _add_road(simulation: Node, points: Array) -> void:
 			return
 		await process_frame
 	_expect(false, "fixture road commit timed out")
+
+# The page patch `key`'s sets bind at level `code` (-1: none).
+func _patch_page(graded: GradedTiles, key: Vector2i, code: int) -> int:
+	return int(graded._book.block_page(code, Vector2i.ZERO if code < 2 else key / graded.block_patches))
+
+# A tile's index in a set's per-place record (`at`), row-major over the patch's tiles.
+func _cell_place(state: Dictionary, tile: Vector2i) -> int:
+	var first: Vector2i = state["first"]
+	var last: Vector2i = state["last"]
+	return (tile.x - first.x) + (last.x - first.x + 1) * (tile.y - first.y)
