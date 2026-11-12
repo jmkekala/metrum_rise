@@ -576,9 +576,15 @@ fn same_bits(a: &[f32], b: &[f32]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
 }
 
-// Within `REST_ULPS` units in the last place of the larger magnitude, at least 1.
+// How far apart `a` and `b` are in units in the last place of the larger magnitude, at least 1:
+// the unit of `REST_ULPS`.
+fn ulps_apart(a: f32, b: f32) -> f32 {
+    (a - b).abs() / (f32::EPSILON * a.abs().max(b.abs()).max(1.0))
+}
+
+// Within `REST_ULPS`.
 fn close(a: f32, b: f32) -> bool {
-    (a - b).abs() <= REST_ULPS * f32::EPSILON * a.abs().max(b.abs()).max(1.0)
+    ulps_apart(a, b) <= REST_ULPS
 }
 
 /// Whether a drawn pose has reached its target to f32 resolution ([`REST_ULPS`]). A lane car

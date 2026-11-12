@@ -602,13 +602,17 @@ fn drawn_buffers_follow_the_control_frame_by_frame() {
                 .zip(ids)
             {
                 if ever_rested.contains(id) {
-                    // Rest stops the smoothing's last wander: within it, never beyond.
+                    // The accepted rule (the user, 2026-11-12): after a car's first rest, within
+                    // 16 units in the last place of the control, in `REST_ULPS`'s unit.
                     assert!(
-                        drawn.iter().zip(expected).all(|(&a, &b)| (a - b).abs()
-                            <= 2.0 * REST_ULPS * f32::EPSILON * a.abs().max(b.abs()).max(1.0)),
+                        drawn
+                            .iter()
+                            .zip(expected)
+                            .all(|(&a, &b)| ulps_apart(a, b) <= 16.0),
                         "frame {frame} car {id}: {drawn:?} vs {expected:?}"
                     );
                 } else {
+                    // Before it: bit for bit.
                     assert_eq!(bits(drawn), bits(expected), "frame {frame} car {id}");
                 }
             }
