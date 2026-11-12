@@ -214,3 +214,39 @@ fn reflection_and_caster_instances_share_the_multimesh() {
     pool.drop_reflections(&mut backend);
     assert!(!backend.instances.contains_key(&reflection));
 }
+
+#[test]
+fn a_kept_slot_swaps_its_mesh_into_fresh_storage_without_a_read_back() {
+    let mut backend = Recorder::new();
+    let mut pool = SlotPool::new(4, 4);
+    let a = pool.acquire(&mut backend, kind(1, 20)).unwrap();
+    let written = rows(20, 5.0);
+    pool.fill_kept(&mut backend, a, &written, 20, Aabb::default());
+    let multimesh = pool.slot(a).multimesh;
+    let before = backend.commands.len();
+    pool.swap_mesh(&mut backend, a, 7);
+    // Fresh storage first, the mesh before any buffer, then the kept rows and the count: never a
+    // mesh change on a written buffer (`RENDER-37`).
+    assert!(matches!(
+        &backend.commands[before..],
+        [
+            Command::MultimeshReallocate(m0, 24),
+            Command::MultimeshMesh(m1, 7),
+            Command::MultimeshBuffer(m2, _, 16, 24),
+            Command::MultimeshVisible(m3, 20),
+        ] if [*m0, *m1, *m2, *m3] == [multimesh; 4]
+    ));
+    let recorded = &backend.multimeshes[&multimesh];
+    assert_eq!(recorded.mesh, Some(7));
+    assert_eq!(recorded.rows, written);
+    assert_eq!(recorded.visible_count, Some(20));
+    assert_eq!(pool.slot(a).kind().mesh, 7, "pooled under the new mesh");
+    // The same mesh again sends nothing; a plain fill drops the copy, so a later swap falls back.
+    let before = backend.commands.len();
+    pool.swap_mesh(&mut backend, a, 7);
+    assert_eq!(backend.commands.len(), before);
+    pool.fill(&mut backend, a, &rows(3, 0.0), 3, Aabb::default());
+    let before = backend.commands.len();
+    pool.swap_mesh(&mut backend, a, 2);
+    assert_eq!(&backend.commands[before..], &[Command::MultimeshMesh(multimesh, 2)]);
+}

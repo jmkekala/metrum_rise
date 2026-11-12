@@ -732,13 +732,25 @@ impl VegetationLayer {
             } else {
                 Aabb::default()
             };
-            self.pool.fill(
-                backend,
-                slot,
-                product.buffer(batch.buffer),
-                batch.count,
-                multimesh_aabb,
-            );
+            // The near canopy's slots keep their rows: its detail swap writes them again with
+            // the other mesh instead of the engine reading them back (`RENDER-37`).
+            if kind.parameter.is_some() {
+                self.pool.fill_kept(
+                    backend,
+                    slot,
+                    product.buffer(batch.buffer),
+                    batch.count,
+                    multimesh_aabb,
+                );
+            } else {
+                self.pool.fill(
+                    backend,
+                    slot,
+                    product.buffer(batch.buffer),
+                    batch.count,
+                    multimesh_aabb,
+                );
+            }
             let shadow = main_shadow(&rules, batch, self.cast_shadows, patch.branched);
             let drawn = Drawn {
                 origin,
@@ -877,7 +889,7 @@ fn refresh_one(
         }
         if detail_changed {
             let mesh = near_mesh(batch.species, batch.variant, detail);
-            pool.set_mesh(backend, batch.slot, mesh);
+            pool.swap_mesh(backend, batch.slot, mesh);
         }
         let shown = pool
             .slot(batch.slot)

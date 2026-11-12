@@ -13,7 +13,8 @@
 //! what the exact count gives (a merge with a box already merged is the same box), and only the
 //! batch's own instances draw (`multimesh_set_visible_instances`). A slot keeps its mesh, so a
 //! reused slot never pays the engine's buffer read-back that a mesh change on a written buffer
-//! costs.
+//! costs; a slot whose mesh must change with its batch (the near canopy's detail) keeps its rows
+//! and is written again into fresh storage instead (`RENDER-37`).
 //!
 //! The pool is bounded at setup: at most `limit` slots exist, live and spare together (every
 //! slot holds instance uniform slots of the engine's global buffer, 65,536 in all), at most
@@ -249,6 +250,9 @@ pub(crate) struct Slot {
     // The `MultiMesh`'s visible instance count and own bounds as last sent (`None`: unknown).
     count: Option<u32>,
     multimesh_aabb: Option<Aabb>,
+    // The rows last written by [`SlotPool::fill_kept`] (empty after a plain fill), so a mesh
+    // change can write them again into fresh storage instead of the engine reading them back.
+    kept: Vec<f32>,
 }
 
 impl Slot {
@@ -422,6 +426,7 @@ impl SlotPool {
             // A new `MultiMesh` draws all its instances, without bounds of its own.
             count: Some(capacity),
             multimesh_aabb: Some(Aabb::default()),
+            kept: Vec::new(),
         };
         self.live += 1;
         self.created += 1;
@@ -509,15 +514,24 @@ impl SlotPool {
         multimesh_aabb: Aabb,
     ) {
         let slot = self.slot_mut(id);
-        if slot.multimesh_aabb != Some(multimesh_aabb) {
-            backend.multimesh_set_custom_aabb(slot.multimesh, multimesh_aabb);
-            slot.multimesh_aabb = Some(multimesh_aabb);
-        }
-        backend.multimesh_set_buffer(slot.multimesh, rows, slot.kind.stride(), slot.capacity);
-        if slot.count != Some(count) {
-            backend.multimesh_set_visible_instances(slot.multimesh, count);
-            slot.count = Some(count);
-        }
+        slot.kept.clear();
+        write_rows(backend, slot, rows, count, multimesh_aabb);
+    }
+
+    /// [`SlotPool::fill`], keeping a copy of `rows` in the slot for [`SlotPool::swap_mesh`]
+    /// (`RENDER-37`). The copy reuses the slot's storage once it has grown. `O(rows)`.
+    pub(crate) fn fill_kept(
+        &mut self,
+        backend: &mut impl RenderBackend,
+        id: SlotId,
+        rows: &[f32],
+        count: u32,
+        multimesh_aabb: Aabb,
+    ) {
+        let slot = self.slot_mut(id);
+        slot.kept.clear();
+        slot.kept.extend_from_slice(rows);
+        write_rows(backend, slot, rows, count, multimesh_aabb);
     }
 
     /// Draws one of a live slot's instances as `drawn`, sending only what changed; the caster
@@ -554,6 +568,38 @@ impl SlotPool {
         apply_instance(backend, instance, last, &drawn);
         slot.drawn[at] = Some(drawn);
         true
+    }
+
+    /// Changes a live slot's mesh without the engine's read-back (`RENDER-37`): a slot filled by
+    /// [`SlotPool::fill_kept`] gets fresh storage, the new mesh before any buffer, and its kept
+    /// rows written again, so the engine bounds the new mesh from the rows it is given, as a
+    /// first fill does; any other slot falls back to [`SlotPool::set_mesh`]. `O(rows)`.
+    pub(crate) fn swap_mesh(&mut self, backend: &mut impl RenderBackend, id: SlotId, mesh: u32) {
+        let slot = self.slot_mut(id);
+        if slot.kind.mesh == mesh {
+            return;
+        }
+        if slot.kept.is_empty() {
+            self.set_mesh(backend, id, mesh);
+            return;
+        }
+        slot.kind.mesh = mesh;
+        let (capacity, colors, custom) = (slot.capacity, slot.kind.colors, slot.kind.custom);
+        backend.multimesh_reallocate(slot.multimesh, capacity, colors, custom);
+        backend.multimesh_set_mesh(slot.multimesh, mesh);
+        // Fresh storage: the count clamped through the empty allocation; the own bounds are
+        // sent again only when the slot has them.
+        let count = slot.count.take().unwrap_or(0);
+        let multimesh_aabb = slot.multimesh_aabb.take().unwrap_or_default();
+        let rows = std::mem::take(&mut slot.kept);
+        if !multimesh_aabb.is_zero_size() {
+            backend.multimesh_set_custom_aabb(slot.multimesh, multimesh_aabb);
+        }
+        slot.multimesh_aabb = Some(multimesh_aabb);
+        backend.multimesh_set_buffer(slot.multimesh, &rows, slot.kind.stride(), capacity);
+        backend.multimesh_set_visible_instances(slot.multimesh, count);
+        slot.count = Some(count);
+        slot.kept = rows;
     }
 
     /// Changes a live slot's mesh (the engine reads its buffer back to rebound it); the slot is
@@ -631,6 +677,26 @@ impl SlotPool {
         self.spare_order.clear();
         self.live = 0;
         self.spares = 0;
+    }
+}
+
+// Writes a slot's rows: its own bounds before the buffer (custom bounds skip the engine's pass
+// over the instances), then the count when it changed.
+fn write_rows(
+    backend: &mut impl RenderBackend,
+    slot: &mut Slot,
+    rows: &[f32],
+    count: u32,
+    multimesh_aabb: Aabb,
+) {
+    if slot.multimesh_aabb != Some(multimesh_aabb) {
+        backend.multimesh_set_custom_aabb(slot.multimesh, multimesh_aabb);
+        slot.multimesh_aabb = Some(multimesh_aabb);
+    }
+    backend.multimesh_set_buffer(slot.multimesh, rows, slot.kind.stride(), slot.capacity);
+    if slot.count != Some(count) {
+        backend.multimesh_set_visible_instances(slot.multimesh, count);
+        slot.count = Some(count);
     }
 }
 
