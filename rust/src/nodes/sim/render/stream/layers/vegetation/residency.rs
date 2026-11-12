@@ -26,7 +26,10 @@
 //! - **Requests**: a queue, missing patches before drawn ones and nearest first as of the last
 //!   evaluation, taken up to the upload budget a frame.
 //!
-//! Costs: a still frame `O(1)` (one `try_lock` read of the land cover epoch); a crossing
+//! Costs: a still frame `O(1)` (one `try_lock` read of the land cover epoch) while no stand-in
+//! waits, else `O(stand-ins x subdivision²)` (every frame puts away the stand-ins whose area is
+//! built: a key copy and sort, then `area_built` each; stand-ins last while the wanted patches
+//! over them are not installed, which a refused request or a full pool does not bound); a crossing
 //! `O(ring boundary blocks + changes + queue log queue)`; a moving frame `O(patches due + buckets
 //! passed)`; an edit `O(patches of the edited blocks)`; a request `O(1)`. Nothing allocates once
 //! the storage has grown.

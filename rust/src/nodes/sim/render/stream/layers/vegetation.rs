@@ -194,8 +194,13 @@ pub(crate) struct VegetationLayer {
     status: LayerStatus,
 }
 
-/// Slots the vegetation may hold. Each canopy slot takes instance uniform slots of the engine's
-/// global buffer (16 per instance, 65,536 in all): 3,072 slots leave a quarter of it to others.
+/// Slots the vegetation may hold. A canopy instance that hands over takes instance uniform
+/// entries of the engine's global shader buffer: 16 an instance (Godot's per-instance uniform
+/// limit, as the engine reserves them; not re-read in the engine source), of the
+/// `limits/global_shader_variables/buffer_size` entries `godot/project.godot` sets (1,048,576), so
+/// 65,536 instances in all. 3,072 slots of at most three instances (main, caster, reflection)
+/// take at most 147,456 entries, 14 % of the buffer. If the limit binds (`status.blocked`), the
+/// slots are the bound, not the buffer.
 pub(crate) const SLOT_LIMIT: usize = 3072;
 /// Spare slots kept for reuse.
 pub(crate) const SPARE_LIMIT: usize = 768;
@@ -251,7 +256,7 @@ impl VegetationLayer {
         });
     }
 
-    /// Reports a request whose core was busy: `vegetation.gd` asks for the patch again.
+    /// Reports a request whose core was busy: the residency asks for the patch again.
     pub(crate) fn deliver_busy(&mut self, key: PatchKey, serial: u64) {
         let event: [i64; EVENT_LANES] = [
             i64::from(key[0]),
