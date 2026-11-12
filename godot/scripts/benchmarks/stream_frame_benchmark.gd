@@ -30,7 +30,8 @@
 ## street lights' lamp grid and far map textures by digest in `lamp_digests`, and adds two night
 ## settle points, the jump's pose and back, each far enough to re-centre both (`RENDER-32-H`).
 ## Every settle point also records the building LOD batches in `building_digests` (per batch its
-## chunk, group, count and rows), whichever side draws them (`RENDER-32-L`).
+## chunk, group, count and rows), whichever side draws them (`RENDER-32-L`), and the terrain's and
+## water's resident patches with their mesh steps in `patch_digests` (`RENDER-32-M`).
 ##
 ## The `water` phase (`RENDER-32-L`) looks at a shore across water, so the water reflection
 ## draws: the first wet point of a fixed scan out from the world's centre whose neighbour WATER_STEP_M
@@ -143,7 +144,7 @@ func run(bench: Node) -> void:
 		"world_path": bench.world_path, "simulation_speed": float(OS.get_environment("METRUM_STREAM_SPEED")),
 		"pitch_radians": PITCH_RAD, "distance_m": DISTANCE_M, "phases": phases, "turn_durations_s": turns,
 		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [], "lamp_digests": [],
-		"building_digests": [], "water_pose": [], "shadows": shadows,
+		"building_digests": [], "patch_digests": [], "water_pose": [], "shadows": shadows,
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
 	bench._metrics = _report
@@ -369,6 +370,7 @@ func _record_digest(label: String) -> void:
 	_settle_points += 1
 	_record_lamp_digest()
 	_record_building_digest()
+	_record_patch_digest()
 	var tiles: Variant = _terrain.graded_tiles
 	if tiles == null:
 		return
@@ -481,6 +483,25 @@ func _water_pose(bench: Node, base: PackedFloat32Array, world: Vector2) -> Packe
 			view[5] = WATER_DISTANCE_M
 			return view
 	return PackedFloat32Array()
+
+# The terrain and water patches at a settle point (`RENDER-32-M`): per resident patch its key,
+# mesh step and whether its node draws, from the scripts' own books, so the control's residency
+# and the streaming core's compare whichever decides them.
+func _record_patch_digest() -> void:
+	var entry := {"point": _settle_points,
+		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else ""}
+	for layer: String in ["terrain", "water"]:
+		var renderer: Node = _terrain if layer == "terrain" else _water
+		var lines := PackedStringArray()
+		for key: Vector2i in renderer.resident_patch_lookup:
+			var patch: Dictionary = renderer.patches.get(key, {})
+			var node: MeshInstance3D = patch.get("node", null)
+			lines.append("%d,%d,%d,%d" % [key.x, key.y, int(patch.get("lod_step", -1)),
+				1 if node != null and node.visible else 0])
+		lines.sort()
+		entry[layer] = {"resident": lines.size(), "built": renderer.patches.size(),
+			"digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines}
+	_report.patch_digests.append(entry)
 
 # The building LOD batches at a settle point, whichever side draws them: Rust's stream backend
 # (`drawn_batches`) or the control's batch nodes (`batches`). Rows read back from the engine.

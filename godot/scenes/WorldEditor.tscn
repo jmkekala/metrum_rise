@@ -36,3 +36,5 @@ current = true
 
 [node name="EditorCameraInput" type="Node" parent="."]
 script = ExtResource("4_camera_input")
+
+[node name="StreamNode" type="StreamNode" parent="."]

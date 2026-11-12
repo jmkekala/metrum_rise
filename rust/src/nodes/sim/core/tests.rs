@@ -3,6 +3,7 @@
 //! Regression tests for simulation state, snapshots, demand cadence, and budget behavior.
 
 mod building_lod_fixture;
+mod stream_pond_fixture;
 mod building_site_terrain;
 mod commute_bounds;
 mod construction_throughput;

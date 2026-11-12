@@ -4,10 +4,13 @@
 //! product-to-install mapping and the display rules that are its own (`docs/terrain.md`
 //! "Streaming core" 5.6). The graded tiles ([`graded`]) are the first; the vegetation patches
 //! ([`vegetation`]) install through the backend's pools (`RENDER-32-E`), and so do the building
-//! LOD batches ([`buildings`], `RENDER-32-L`).
+//! LOD batches ([`buildings`], `RENDER-32-L`). The terrain and water patches ([`terrain`],
+//! `RENDER-32-M`) decide here and install through the scripts' pooled nodes.
 
 /// Building LOD batches drawn through the backend's pools (`RENDER-32-L`).
 pub(crate) mod buildings;
 pub(crate) mod graded;
+/// Terrain and water patch residency, levels of detail and prewarm (`RENDER-32-M`).
+pub(crate) mod terrain;
 /// Vegetation patches installed through the backend's pools (`RENDER-32-E`).
 pub(crate) mod vegetation;

@@ -12,9 +12,19 @@
 //! requests patches from the `SimulationNode`'s jobs, and shows, hides and frees installed patches
 //! itself; no node is created per patch and no GDScript runs per patch. Every `RenderingServer`
 //! call of the layer goes through [`GodotBackend`] on the main thread.
+//!
+//! The terrain and water patches (`RENDER-32-M`) run first in the frame's first pass: their
+//! residency, levels of detail and prewarm are decided by [`PatchStream`] and executed one unit
+//! at a time by `terrain.gd` and `water.gd` on their pooled nodes ([`ScriptExecutor`]), under
+//! the same frame budget; the terrain's residency changes feed the water's wanted set and the
+//! vegetation's tiers in the same pass.
 
 use crate::nodes::camera_node::CameraNode;
 use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow};
+use crate::nodes::sim::render::stream::layers::terrain::{
+    Activation, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream, PatchWork, Payload,
+    TERRAIN_COSTS, TERRAIN_LIMITS, WATER_COSTS, WATER_LIMITS,
+};
 use crate::nodes::sim::render::stream::layers::vegetation::residency::{
     PatchJobs, PatchOrder, ResidencySettings, Standing, VegetationResidency,
 };
@@ -53,6 +63,19 @@ pub struct StreamNode {
     frame_copy_us: f64,
     frame_pulled: usize,
     frame_residency_us: f64,
+    // Terrain and water patches (`RENDER-32-M`).
+    terrain: PatchStream,
+    water: PatchStream,
+    terrain_scripts: Option<Gd<Node>>,
+    water_scripts: Option<Gd<Node>>,
+    full_world: bool,
+    load_settling: bool,
+    camera_far: f32,
+    delta: f64,
+    frame_patch_us: f64,
+    frame_patch_units_us: f64,
+    terrain_work: PatchWork,
+    water_work: PatchWork,
 }
 
 #[godot_api]
@@ -75,6 +98,18 @@ impl INode for StreamNode {
             frame_copy_us: 0.0,
             frame_pulled: 0,
             frame_residency_us: 0.0,
+            terrain: PatchStream::new(TERRAIN_LIMITS, TERRAIN_COSTS),
+            water: PatchStream::new(WATER_LIMITS, WATER_COSTS),
+            terrain_scripts: None,
+            water_scripts: None,
+            full_world: false,
+            load_settling: false,
+            camera_far: f32::INFINITY,
+            delta: 0.0,
+            frame_patch_us: 0.0,
+            frame_patch_units_us: 0.0,
+            terrain_work: PatchWork::default(),
+            water_work: PatchWork::default(),
         }
     }
 
@@ -92,7 +127,8 @@ impl INode for StreamNode {
         self.clear_vegetation();
     }
 
-    fn process(&mut self, _delta: f64) {
+    fn process(&mut self, delta: f64) {
+        self.delta = delta;
         self.budget.begin_frame();
         self.frame_us = 0.0;
         self.frame_installs = 0;
@@ -522,6 +558,129 @@ impl StreamNode {
         out
     }
 
+    /// Starts the terrain and water patches over on a world's patch grid (`terrain.gd`'s layout:
+    /// `cols` x `rows` patches of `interval` cells of `cell` metres over `world`), executed by
+    /// `terrain` and `water` (their `stream_*` methods). Nothing is wanted, resident or built.
+    #[func]
+    #[allow(clippy::too_many_arguments)]
+    pub fn reset_terrain_patches(
+        &mut self,
+        terrain: Gd<Node>,
+        water: Option<Gd<Node>>,
+        cols: i64,
+        rows: i64,
+        interval: i64,
+        cell: f64,
+        world: Vector2,
+    ) {
+        let grid = (cols > 0 && rows > 0 && interval > 0 && cell > 0.0).then_some(PatchGrid {
+            cols: cols as i32,
+            rows: rows as i32,
+            interval: interval as i32,
+            cell: cell as f32,
+            world: [world.x, world.y],
+        });
+        self.terrain.reset(grid);
+        self.water.reset(grid);
+        self.terrain_scripts = Some(terrain);
+        self.water_scripts = water;
+    }
+
+    /// The `terrain_force_full_world` and `terrain_force_lod1` debug modes.
+    #[func]
+    pub fn set_terrain_modes(&mut self, full_world: bool, force_lod1: bool) {
+        self.full_world = full_world;
+        self.terrain.set_force_lod1(force_lod1);
+        self.water.set_force_lod1(force_lod1);
+    }
+
+    /// While a world load waits for the terrain to settle (the game is held, the frame time
+    /// does not matter), the patches' units are not limited by the frame budget, as the graded
+    /// renderer's work is not (`terrain.gd`'s `set_load_settling`).
+    #[func]
+    pub fn set_terrain_load_settling(&mut self, settling: bool) {
+        self.load_settling = settling;
+    }
+
+    /// A terrain patch's payload news from `terrain.gd`'s poll: 1 arrived, 0 dropped (ask
+    /// again), 2 refused. `O(1)`.
+    #[func]
+    pub fn terrain_payload(&mut self, key: Vector2i, news: i64) {
+        self.terrain.payload([key.x, key.y], Payload::from_code(news));
+    }
+
+    /// A water patch's payload news from `water.gd`'s poll (as [`Self::terrain_payload`]).
+    #[func]
+    pub fn water_payload(&mut self, key: Vector2i, news: i64) {
+        self.water.payload([key.x, key.y], Payload::from_code(news));
+    }
+
+    /// `terrain.gd` freed a patch's node itself (a failed upload): it is wanted again as a hole.
+    #[func]
+    pub fn terrain_patch_removed(&mut self, key: Vector2i) {
+        self.terrain.patch_removed([key.x, key.y]);
+        self.follow_terrain();
+    }
+
+    /// Starts the water's patches over (`water.gd` cleared its patches): it is executed by
+    /// `water` and wants the terrain's resident patches. `O(grid)`.
+    #[func]
+    pub fn reset_water_patches(&mut self, water: Gd<Node>) {
+        self.water.reset(self.terrain.grid());
+        for key in self.terrain.resident_keys().collect::<Vec<_>>() {
+            self.water.set_wanted(key, true);
+        }
+        self.water.set_halo(self.terrain.halo());
+        self.water_scripts = Some(water);
+    }
+
+    /// `water.gd` freed a patch's node itself.
+    #[func]
+    pub fn water_patch_removed(&mut self, key: Vector2i) {
+        self.water.patch_removed([key.x, key.y]);
+        self.water.take_changes().for_each(drop);
+        self.water.take_generations().for_each(drop);
+    }
+
+    /// Whether the terrain patches have work a settled view waits for: wanted patches not
+    /// resident, resident ones not wanted, or level checks queued.
+    #[func]
+    pub fn has_terrain_pending_work(&self) -> bool {
+        self.terrain.has_pending_work()
+    }
+
+    /// Whether the water patches have such work.
+    #[func]
+    pub fn has_water_pending_work(&self) -> bool {
+        self.water.has_pending_work()
+    }
+
+    /// The terrain's prewarm square, `(min_x, min_z, max_x, max_z)` in patches (the wanted
+    /// square and one patch beyond); `(0, 0, -1, -1)` before a view.
+    #[func]
+    pub fn get_terrain_halo(&self) -> Vector4i {
+        self.terrain
+            .halo()
+            .map_or(Vector4i::new(0, 0, -1, -1), |[a, b, c, d]| {
+                Vector4i::new(a, b, c, d)
+            })
+    }
+
+    /// The terrain's and the water's patch counts: `<layer>_missing`, `_leaving`, `_lod_queue`,
+    /// `_resident`.
+    #[func]
+    pub fn get_terrain_patch_counts(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        for (name, layer) in [("terrain", &self.terrain), ("water", &self.water)] {
+            let [missing, leaving, queue] = layer.pending();
+            out.set(format!("{name}_missing"), missing as i64);
+            out.set(format!("{name}_leaving"), leaving as i64);
+            out.set(format!("{name}_lod_queue"), queue as i64);
+            out.set(format!("{name}_resident"), layer.resident_count() as i64);
+        }
+        out
+    }
+
     /// Turns the perf channel's records on or off (`PerfDebug`, recorded as `vegetation`).
     #[func]
     pub fn set_perf_enabled(&mut self, enabled: bool) {
@@ -530,11 +689,95 @@ impl StreamNode {
 }
 
 impl StreamNode {
+    // The terrain and water patches' frame: the terrain's square from the view, its units, the
+    // water's wanted set and halo from the terrain's residency, the water's units; the
+    // vegetation's tiers follow the terrain's residency.
+    fn patch_frame(&mut self) {
+        self.frame_patch_us = 0.0;
+        self.frame_patch_units_us = 0.0;
+        let Some(grid) = self.terrain.grid() else {
+            return;
+        };
+        let start = std::time::Instant::now();
+        let units_before = self.budget.measured_us;
+        let eye = self.view.map(|view| view.eye);
+        let square = match eye {
+            Some(eye) => grid.target(eye, self.camera_far, self.full_world),
+            None => grid.target([0.0; 3], 0.0, true),
+        };
+        self.terrain.set_square(square);
+        let planes = (self.terrain.has_pending_work() || self.water.has_pending_work())
+            .then(|| self.camera_frustum())
+            .flatten();
+        let span = grid.span() as f32;
+        let in_view = |key: TerrainKey| {
+            planes.as_ref().is_none_or(|planes| {
+                let centre = grid.centre(key);
+                let half = span * 0.5;
+                box_in_view(
+                    planes,
+                    [centre[0] - half, PATCH_LOW_M, centre[1] - half],
+                    [centre[0] + half, PATCH_HIGH_M, centre[1] + half],
+                )
+            })
+        };
+        let unbudgeted = self.load_settling;
+        if let Some(scripts) = self.terrain_scripts.as_mut() {
+            let mut exec = ScriptExecutor(scripts);
+            self.terrain_work = self.terrain.frame(
+                eye,
+                self.delta,
+                &mut self.budget,
+                &self.clock,
+                unbudgeted,
+                &in_view,
+                &mut exec,
+            );
+        }
+        self.follow_terrain();
+        self.water.set_halo(self.terrain.halo());
+        if let Some(scripts) = self.water_scripts.as_mut() {
+            let mut exec = ScriptExecutor(scripts);
+            self.water_work = self.water.frame(
+                eye,
+                self.delta,
+                &mut self.budget,
+                &self.clock,
+                unbudgeted,
+                &in_view,
+                &mut exec,
+            );
+            self.water.take_changes().for_each(drop);
+            self.water.take_generations().for_each(drop);
+        }
+        self.frame_patch_us = start.elapsed().as_secs_f64() * 1e6;
+        self.frame_patch_units_us = self.budget.measured_us - units_before;
+    }
+
+    // The terrain's residency changes: the water's wanted set and the vegetation's tiers.
+    fn follow_terrain(&mut self) {
+        for (key, generation) in self.terrain.take_generations() {
+            self.residency.set_surface_generation(key, generation);
+        }
+        let mut changed = false;
+        for (key, resident) in self.terrain.take_changes() {
+            self.water.set_wanted(key, resident);
+            self.residency.set_resident(key, resident);
+            changed = true;
+        }
+        if changed {
+            self.residency.revise_residency();
+        }
+    }
+
     // One pass: the residency (the frame's first pass), pull, follow the camera, install within
     // what is left of the frame's budget, take the installs.
     fn run_pass(&mut self, residency: bool) {
         let start = std::time::Instant::now();
         self.update_camera();
+        if residency {
+            self.patch_frame();
+        }
         if residency && let Some(backend) = self.backend.as_mut() {
             let eye = self.view.map(|view| view.eye);
             let mut jobs = Jobs(self.spawner.as_mut());
@@ -559,7 +802,9 @@ impl StreamNode {
         self.residency.take_installs(&mut self.vegetation, backend);
         self.frame_copy_us += backend.take_copy_us();
         self.recycle_spent();
-        self.frame_us += start.elapsed().as_secs_f64() * 1e6;
+        // The patches' share is their own record (`terrain_stream`).
+        let patches_us = if residency { self.frame_patch_us } else { 0.0 };
+        self.frame_us += start.elapsed().as_secs_f64() * 1e6 - patches_us;
     }
 
     // Takes every finished product of a live request from the jobs; a busy one becomes an event.
@@ -602,10 +847,13 @@ impl StreamNode {
 
     // The view: `CameraNode`'s, published as it moved; another camera's position (tests).
     fn update_camera(&mut self) {
-        self.view = self
+        let camera = self
             .base()
             .get_viewport()
-            .and_then(|viewport| viewport.get_camera_3d())
+            .and_then(|viewport| viewport.get_camera_3d());
+        // The terrain's square is capped by the far plane (`get_visibility_cull_far_m`).
+        self.camera_far = camera.as_ref().map_or(f32::INFINITY, |camera| camera.get_far());
+        self.view = camera
             .map(|camera| match camera.try_cast::<CameraNode>() {
                 Ok(node) => node.bind().published_view().unwrap_or_else(|| {
                     plain_view(node.get_global_position().to_array())
@@ -620,6 +868,10 @@ impl StreamNode {
         if self.vegetation.pending() == 0 {
             return None;
         }
+        self.camera_frustum()
+    }
+
+    fn camera_frustum(&self) -> Option<[[f32; 4]; 6]> {
         let camera = self.base().get_viewport()?.get_camera_3d()?;
         let planes = camera.get_frustum();
         if planes.len() != 6 {
@@ -674,6 +926,38 @@ impl StreamNode {
         details.set("patches", counts[1]);
         details.set("queue", counts[4]);
         details.set("requested", counts[5]);
+        if self.terrain.grid().is_some() {
+            let mut patches = VarDictionary::new();
+            patches.set("units_ms", self.frame_patch_units_us / 1000.0);
+            for (name, layer, work) in [
+                ("terrain", &self.terrain, self.terrain_work),
+                ("water", &self.water, self.water_work),
+            ] {
+                let [missing, leaving, queue] = layer.pending();
+                patches.set(format!("{name}_missing"), missing as i64);
+                patches.set(format!("{name}_leaving"), leaving as i64);
+                patches.set(format!("{name}_lod_queue"), queue as i64);
+                patches.set(format!("{name}_resident"), layer.resident_count() as i64);
+                patches.set(format!("{name}_wanted_changes"), work.wanted_changes as i64);
+                patches.set(format!("{name}_ring_cells"), work.ring_cells as i64);
+                patches.set(format!("{name}_lod_checks"), work.lod_checks as i64);
+                patches.set(format!("{name}_activations"), work.activations as i64);
+                patches.set(format!("{name}_lod_changes"), work.lod_changes as i64);
+                patches.set(format!("{name}_frees"), work.frees as i64);
+                patches.set(format!("{name}_builds"), work.builds as i64);
+                patches.set(format!("{name}_requests"), work.requests as i64);
+                patches.set(format!("{name}_deferred"), work.deferred as i64);
+            }
+            // The patches' whole frame here, their units' script time included.
+            script.call(
+                "record",
+                &[
+                    "terrain_stream".to_variant(),
+                    (self.frame_patch_us / 1000.0).to_variant(),
+                    patches.to_variant(),
+                ],
+            );
+        }
         script.call(
             "record",
             &[
@@ -794,4 +1078,61 @@ fn product_from_dictionary(data: &VarDictionary) -> Option<VegetationProduct> {
         tree_count,
         Aabb::new(canopy.position.to_array(), canopy.size.to_array()),
     ))
+}
+
+// The lowest and highest ground a patch's view test assumes, metres: the box only orders work.
+const PATCH_LOW_M: f32 = -500.0;
+const PATCH_HIGH_M: f32 = 2500.0;
+
+// Runs a patch layer's units on `terrain.gd` / `water.gd`: their `stream_request`,
+// `stream_activate`, `stream_deactivate`, `stream_build` and `stream_set_lod`, one call a unit.
+struct ScriptExecutor<'a>(&'a mut Gd<Node>);
+
+impl PatchExecutor for ScriptExecutor<'_> {
+    fn request(&mut self, keys: &[i32], prewarm: bool, news: &mut Vec<i32>) {
+        let keys = PackedInt32Array::from(keys);
+        let answers = self
+            .0
+            .call("stream_request", &[keys.to_variant(), prewarm.to_variant()]);
+        if let Ok(answers) = answers.try_to::<PackedInt32Array>() {
+            news.extend_from_slice(answers.as_slice());
+        }
+    }
+
+    // The script answers `Vector2i(status, generation)`: status 0 done, 2 blocked, else not
+    // ready.
+    fn activate(&mut self, key: TerrainKey, step: u8) -> (Activation, i64) {
+        let done = self.0.call(
+            "stream_activate",
+            &[Vector2i::new(key[0], key[1]).to_variant(), i64::from(step).to_variant()],
+        );
+        let done = done.try_to::<Vector2i>().unwrap_or(Vector2i::new(1, -1));
+        let status = match done.x {
+            0 => Activation::Done,
+            2 => Activation::Blocked,
+            _ => Activation::NotReady,
+        };
+        (status, i64::from(done.y))
+    }
+
+    fn deactivate(&mut self, key: TerrainKey) {
+        self.0
+            .call("stream_deactivate", &[Vector2i::new(key[0], key[1]).to_variant()]);
+    }
+
+    // The script answers the built node's surface generation, or -2 when nothing was built.
+    fn build(&mut self, key: TerrainKey, step: u8) -> Option<i64> {
+        let built = self.0.call(
+            "stream_build",
+            &[Vector2i::new(key[0], key[1]).to_variant(), i64::from(step).to_variant()],
+        );
+        built.try_to::<i64>().ok().filter(|&generation| generation >= -1)
+    }
+
+    fn set_lod(&mut self, key: TerrainKey, step: u8) {
+        self.0.call(
+            "stream_set_lod",
+            &[Vector2i::new(key[0], key[1]).to_variant(), i64::from(step).to_variant()],
+        );
+    }
 }

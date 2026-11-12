@@ -43,17 +43,9 @@ const WATER_MIN_VISIBLE_DEPTH_M := 0.001
 const WATER_BORDER_MIN_DEPTH_M := 0.02
 const WATER_PATCH_EXTRA_CULL_MARGIN_M := 4096.0
 const WATER_DEBUG_LOG_INTERVAL_S := 0.5
-const WATER_PATCH_MUTATION_MAX_PER_FRAME := 256
-const WATER_PATCH_ADD_ATTEMPT_MAX_PER_FRAME := 64
-const WATER_PATCH_ADD_APPLY_MAX_PER_FRAME := 12
-const WATER_PATCH_MUTATION_BUDGET_MS := 4.0
 const WATER_PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
 const WATER_PATCH_RESOURCE_POOL_MAX := 96
-const WATER_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 64
 const WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
-const WATER_PATCH_PREWARM_MAX_PER_FRAME := 4
-const WATER_PATCH_PREWARM_BUDGET_MS := 0.75
-const WATER_PATCH_PREWARM_HALO_PATCHES := 1
 const WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME := 128
 const WATER_TERRAIN_BINDING_BUDGET_PER_FRAME := 128
 const WATER_PATCH_MESH_REQUEST_BUDGET_PER_FRAME := 8
@@ -82,26 +74,16 @@ const WATER_PATCH_MESH_APPLY_QUEUE_SOFT_BYTES := 1600000
 const WATER_PATCH_MESH_APPLY_QUEUE_HARD_BYTES := 3200000
 const WATER_PATCH_MESH_APPLY_HEADROOM_FRAME_MS := 5.0
 const WATER_PATCH_MESH_APPLY_HEADROOM_PREVIOUS_APPLY_MS := 1.4
-const WATER_PATCH_LOD_START_HEADROOM_MS := 1.25
-const WATER_PATCH_PREWARM_START_HEADROOM_MS := 1.75
-const WATER_PATCH_MESH_LOD_REFRESH_INTERVAL_S := 0.20
-const WATER_PATCH_MESH_LOD_REFRESH_BUDGET_MS := 0.75
-const WATER_PATCH_MESH_LOD_REFRESH_CAMERA_MOVE_M := 96.0
-const WATER_PATCH_MESH_LOD_REFRESH_MAX_CHECKS_PER_FRAME := 48
-const WATER_PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME := 8
-const WATER_PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
-const WATER_PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
-const WATER_PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
+@onready var _stream: Node = get_node_or_null("../StreamNode")
 
 var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_payload_requested: Dictionary = {}
 var patch_payload_ready: Dictionary = {}
 var pending_water_ack_states: PackedInt64Array = PackedInt64Array()
-var patch_prewarm_queue: Array[Vector2i] = []
 var height_texture_rebind_queue: Array[Vector2i] = []
 var height_texture_rebind_lookup: Dictionary = {}
 var terrain_patch_binding_queue: Array[Vector2i] = []
@@ -112,8 +94,6 @@ var mesh_pending_lod: Dictionary = {}
 var mesh_apply_queue: Array[Dictionary] = []
 var full_water_grid_mesh_cache: Dictionary = {}
 var patch_resource_pool: Array[Dictionary] = []
-var patch_lod_refresh_queue: Array[Vector2i] = []
-var patch_lod_refresh_lookup: Dictionary = {}
 var terrain_world_size: Vector2 = Vector2.ZERO
 var terrain_patch_cols: int = 0
 var terrain_patch_rows: int = 0
@@ -129,28 +109,9 @@ var _terrain_debug_enabled: bool:
 	get:
 		return MetrumDebug.is_enabled("terrain")
 var _terrain_debug_verbose: bool = false
-# Cached because LOD selection reads it per patch; `_on_visual_mode_changed` refreshes it.
-var _terrain_force_lod1: bool = false
-var _water_mesh_lod_refresh_elapsed_s: float = 0.0
-var _water_lod_refresh_camera_valid: bool = false
-var _water_lod_refresh_last_camera_position: Vector3 = Vector3.ZERO
-var _water_lod_last_processed_count: int = 0
-var _water_lod_last_changed_count: int = 0
-var _water_lod_last_queued_count: int = 0
-var _water_lod_last_queue_count: int = 0
-var _water_lod_last_replaced_count: int = 0
-var _water_lod_last_skipped_count: int = 0
-var _water_lod_last_deferred_count: int = 0
-var _water_prewarm_last_deferred_count: int = 0
-var _water_residency_pending_mutations: bool = false
-var _terrain_resident_patch_revision_seen: int = -1
 var _water_mesh_ready_backlog_estimate: int = 0
 var _water_mesh_last_frame_elapsed_ms: float = 0.0
 var _water_mesh_last_apply_elapsed_ms: float = 0.0
-var _water_residency_last_add_count: int = 0
-var _water_residency_last_remove_count: int = 0
-var _water_residency_last_add_pending_count: int = 0
-var _water_residency_last_remove_pending_count: int = 0
 var _water_resource_pool_hit_count: int = 0
 var _water_resource_pool_miss_count: int = 0
 var _water_resource_pool_release_count: int = 0
@@ -161,7 +122,6 @@ var _water_debug_elapsed_s: float = 0.0
 var _water_debug_frames: int = 0
 var _water_debug_frame_ms_total: float = 0.0
 var _water_debug_frame_ms_max: float = 0.0
-var _water_debug_patch_sync_ms_total: float = 0.0
 var _water_debug_upload_ms_total: float = 0.0
 var _water_debug_border_ms_total: float = 0.0
 var _water_debug_height_rebind_ms_total: float = 0.0
@@ -170,12 +130,8 @@ var _water_debug_patch_removes: int = 0
 var _water_debug_patch_uploads: int = 0
 var _water_debug_height_rebinds: int = 0
 var _water_debug_border_rebuilds: int = 0
-var _water_debug_residency_changes: int = 0
 
 func _ready() -> void:
-	var console := get_node_or_null("/root/DebugConsole")
-	if console != null:
-		console.visual_mode_changed.connect(_on_visual_mode_changed)
 	rebuild_from_simulation_state()
 
 func rebuild_from_simulation_state() -> void:
@@ -187,40 +143,23 @@ func rebuild_from_simulation_state() -> void:
 	var terrain_cell_m: float = float(patch_layout.get("terrain_cell_m", 1.0))
 	terrain_patch_span_m = terrain_cell_m * float(terrain_patch_interval_cells)
 	_terrain_debug_verbose = MetrumDebug.startup_mode("terrain_verbose")
-	_terrain_force_lod1 = MetrumDebug.visual_mode_index("terrain_force_lod1") != 0
-	_water_mesh_lod_refresh_elapsed_s = 0.0
-	_water_lod_refresh_camera_valid = false
-	_record_lod_perf_counters(0, 0, 0, 0)
-	_water_lod_last_deferred_count = 0
-	_water_prewarm_last_deferred_count = 0
 	_water_mesh_ready_backlog_estimate = 0
 	_water_mesh_last_frame_elapsed_ms = 0.0
 	_water_mesh_last_apply_elapsed_ms = 0.0
 	_reset_water_debug_counters()
 	_clear_patches()
+	# Residency follows the terrain's resident patches and levels the same rule; both, and the
+	# prewarm, are the streaming core's (`RENDER-32-M`), which calls the stream_* units below.
+	_stream.reset_water_patches(self)
 	_ensure_fallback_height_texture()
 	_ensure_water_border_visual()
 	_prewarm_water_patch_resource_pool()
 	_prewarm_full_water_grid_mesh_variants()
-	_sync_patch_residency(true)
 	_process_height_texture_rebinds(WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME)
 	_rebuild_water_border()
 	_process_terrain_patch_binding_queue(WATER_TERRAIN_BINDING_BUDGET_PER_FRAME)
-	_rebuild_patch_prewarm_queue()
 	if _terrain_debug_enabled:
-		_water_debug_log(
-			"renderer ready force_lod1=%s visual=%d"
-			% [str(_terrain_force_lod1), MetrumDebug.visual_mode_index("terrain_visual")]
-		)
-
-## Water residency follows the terrain's resident patches; only the forced LOD is its own.
-## LOD refresh otherwise waits for camera movement, so it is due now.
-func _on_visual_mode_changed(mode: String) -> void:
-	if mode != "terrain_force_lod1":
-		return
-	_terrain_force_lod1 = MetrumDebug.visual_mode_index("terrain_force_lod1") != 0
-	_water_lod_refresh_camera_valid = false
-	_water_mesh_lod_refresh_elapsed_s = WATER_PATCH_MESH_LOD_REFRESH_INTERVAL_S
+		_water_debug_log("renderer ready visual=%d" % MetrumDebug.visual_mode_index("terrain_visual"))
 
 func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
@@ -228,19 +167,12 @@ func _process(delta: float) -> void:
 	var payload_poll_start_us := frame_start_us
 	var payload_poll_count := _poll_ready_water_patch_payloads(WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
 	var payload_poll_elapsed_ms := float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
-	var patch_sync_start_us := Time.get_ticks_usec()
-	var residency_changed := _sync_patch_residency()
-	var patch_sync_elapsed_ms := float(Time.get_ticks_usec() - patch_sync_start_us) / 1000.0
 	var height_rebind_elapsed_ms := 0.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
 	var terrain_binding_elapsed_ms := 0.0
-	var lod_elapsed_ms := 0.0
 	var mesh_refresh_elapsed_ms := 0.0
 	var mesh_refresh_perf_stats: Dictionary = {}
-	var prewarm_elapsed_ms := 0.0
-	_water_lod_last_deferred_count = 0
-	_water_prewarm_last_deferred_count = 0
 	var height_rebind_start_us := Time.get_ticks_usec()
 	_process_height_texture_rebinds(WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME)
 	height_rebind_elapsed_ms = float(Time.get_ticks_usec() - height_rebind_start_us) / 1000.0
@@ -260,16 +192,6 @@ func _process(delta: float) -> void:
 	_process_terrain_patch_binding_queue(WATER_TERRAIN_BINDING_BUDGET_PER_FRAME)
 	terrain_binding_elapsed_ms = float(Time.get_ticks_usec() - terrain_binding_start_us) / 1000.0
 
-	if _water_frame_headroom_available(frame_start_us, WATER_PATCH_LOD_START_HEADROOM_MS):
-		if perf_enabled:
-			var lod_start_us := Time.get_ticks_usec()
-			_refresh_patch_mesh_lods(delta)
-			lod_elapsed_ms = float(Time.get_ticks_usec() - lod_start_us) / 1000.0
-		else:
-			_refresh_patch_mesh_lods(delta)
-	else:
-		_defer_patch_mesh_lods(delta)
-
 	var mesh_refresh_start_us := Time.get_ticks_usec()
 	mesh_refresh_perf_stats = _process_mesh_refresh_queue(
 		WATER_PATCH_MESH_REQUEST_BUDGET_PER_FRAME,
@@ -282,39 +204,13 @@ func _process(delta: float) -> void:
 		_record_water_debug_frame(
 			delta,
 			frame_elapsed_ms,
-			patch_sync_elapsed_ms,
 			upload_elapsed_ms,
 			border_elapsed_ms,
 			height_rebind_elapsed_ms
 		)
-	if (
-		not simulation_node.is_water_dirty()
-		and not residency_changed
-		and not _water_residency_pending_mutations
-	):
-		if (
-			patch_lod_refresh_queue.is_empty()
-			and _water_frame_headroom_available(frame_start_us, WATER_PATCH_PREWARM_START_HEADROOM_MS)
-		):
-			if perf_enabled:
-				var prewarm_start_us := Time.get_ticks_usec()
-				_prewarm_patch_cache()
-				prewarm_elapsed_ms = float(Time.get_ticks_usec() - prewarm_start_us) / 1000.0
-			else:
-				_prewarm_patch_cache()
-		else:
-			_water_prewarm_last_deferred_count = 1 if not patch_prewarm_queue.is_empty() else 0
-
 	if perf_enabled:
 		var water_frame_elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
 		var perf_details := {
-			"residency": patch_sync_elapsed_ms,
-			"residency_add_count": float(_water_residency_last_add_count),
-			"residency_remove_count": float(_water_residency_last_remove_count),
-			"residency_add_pending_count": float(_water_residency_last_add_pending_count),
-			"residency_remove_pending_count": float(_water_residency_last_remove_pending_count),
-			"residency_add_limit_count": float(WATER_PATCH_ADD_APPLY_MAX_PER_FRAME),
-			"residency_budget_ms": WATER_PATCH_MUTATION_BUDGET_MS,
 			"resource_pool_hit_count": float(_water_resource_pool_hit_count),
 			"resource_pool_miss_count": float(_water_resource_pool_miss_count),
 			"resource_pool_release_count": float(_water_resource_pool_release_count),
@@ -331,17 +227,7 @@ func _process(delta: float) -> void:
 			"border": border_elapsed_ms,
 			"height_rebind": height_rebind_elapsed_ms,
 			"terrain_binding": terrain_binding_elapsed_ms,
-			"lod": lod_elapsed_ms,
-			"lod_processed_count": float(_water_lod_last_processed_count),
-			"lod_changed_count": float(_water_lod_last_changed_count),
-			"lod_queued_count": float(_water_lod_last_queued_count),
-			"lod_queue_count": float(_water_lod_last_queue_count),
-			"lod_replaced_count": float(_water_lod_last_replaced_count),
-			"lod_skipped_count": float(_water_lod_last_skipped_count),
-			"lod_deferred_count": float(_water_lod_last_deferred_count),
 			"mesh_refresh": mesh_refresh_elapsed_ms,
-			"prewarm": prewarm_elapsed_ms,
-			"prewarm_deferred_count": float(_water_prewarm_last_deferred_count),
 		}
 		for key_variant in mesh_refresh_perf_stats.keys():
 			var perf_key := str(key_variant)
@@ -388,16 +274,14 @@ func get_pending_render_work_counts() -> Dictionary:
 		"payload_requested": patch_payload_requested.size(),
 		"payload_ready": patch_payload_ready.size(),
 		"pending_ack": int(pending_water_ack_states.size() / 3),
-		"prewarm": patch_prewarm_queue.size(),
 		"height_rebind": height_texture_rebind_queue.size(),
 		"terrain_binding": terrain_patch_binding_queue.size(),
 		"mesh_refresh": mesh_refresh_queue.size(),
 		"mesh_requested": mesh_refresh_requested_lod.size(),
 		"mesh_pending": mesh_pending_lod.size(),
 		"mesh_apply": mesh_apply_queue.size(),
-		"lod_refresh": patch_lod_refresh_queue.size(),
 		"ready_backlog": _water_mesh_ready_backlog_estimate,
-		"residency_mutation": 1 if _water_residency_pending_mutations else 0,
+		"stream_pending": 1 if _stream.has_water_pending_work() else 0,
 	}
 
 func has_pending_render_work(include_background_cache: bool = true) -> bool:
@@ -410,16 +294,9 @@ func has_pending_render_work(include_background_cache: bool = true) -> bool:
 		or not mesh_refresh_requested_lod.is_empty()
 		or not mesh_pending_lod.is_empty()
 		or not mesh_apply_queue.is_empty()
-		or not patch_lod_refresh_queue.is_empty()
 		or _water_mesh_ready_backlog_estimate > 0
-		or _water_residency_pending_mutations
-		or (
-			include_background_cache
-			and (
-				not patch_payload_ready.is_empty()
-				or not patch_prewarm_queue.is_empty()
-			)
-		)
+		or _stream.has_water_pending_work()
+		or (include_background_cache and not patch_payload_ready.is_empty())
 	)
 
 func get_water_patch_texture_binding(key: Vector2i) -> Dictionary:
@@ -444,131 +321,7 @@ func get_water_patch_texture_binding(key: Vector2i) -> Dictionary:
 		"world_size_z": float(patch.get("world_size_z", 0.0)),
 	}
 
-func _sync_patch_residency(force_full_sync: bool = false) -> bool:
-	if terrain_node == null or not terrain_node.has_method("get_resident_patch_keys"):
-		_record_residency_perf_counters(0, 0, 0, 0)
-		return false
-
-	var terrain_revision := _current_terrain_resident_patch_revision()
-	if (
-		not force_full_sync
-		and not _water_residency_pending_mutations
-		and terrain_revision >= 0
-		and terrain_revision == _terrain_resident_patch_revision_seen
-	):
-		_record_residency_perf_counters(0, 0, 0, 0)
-		return false
-
-	var desired_keys: Array[Vector2i] = terrain_node.get_resident_patch_keys()
-	var desired_lookup: Dictionary = {}
-	for key in desired_keys:
-		desired_lookup[key] = true
-
-	var keys_to_remove: Array[Vector2i] = []
-	for key in get_resident_patch_keys():
-		if not desired_lookup.has(key):
-			keys_to_remove.append(key)
-
-	var keys_to_add: Array[Vector2i] = []
-	for key in desired_keys:
-		if not resident_patch_lookup.has(key):
-			keys_to_add.append(key)
-
-	if keys_to_add.is_empty() and keys_to_remove.is_empty():
-		_water_residency_pending_mutations = false
-		_terrain_resident_patch_revision_seen = terrain_revision
-		_record_residency_perf_counters(0, 0, 0, 0)
-		return false
-
-	_sort_patch_keys_by_camera_priority(keys_to_add)
-	_sort_patch_keys_by_camera_priority(keys_to_remove)
-	keys_to_remove.reverse()
-	_request_water_patch_payloads(keys_to_add, WATER_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME)
-
-	var changed := false
-	var mutation_limit := WATER_PATCH_MUTATION_MAX_PER_FRAME
-	if force_full_sync:
-		mutation_limit = keys_to_add.size() + keys_to_remove.size()
-	var budget_start_us: int = Time.get_ticks_usec()
-	var processed_mutations := 0
-	var processed_adds := 0
-	var processed_removes := 0
-	for key in keys_to_remove:
-		if processed_mutations >= mutation_limit:
-			break
-		if _time_budget_exhausted(budget_start_us, WATER_PATCH_MUTATION_BUDGET_MS, processed_mutations):
-			break
-		_deactivate_patch(key)
-		processed_mutations += 1
-		processed_removes += 1
-		changed = true
-
-	var attempted_adds := 0
-	var add_attempt_limit: int = mini(
-		WATER_PATCH_ADD_ATTEMPT_MAX_PER_FRAME,
-		max(1, mutation_limit - processed_mutations)
-	)
-	for key in keys_to_add:
-		if processed_mutations >= mutation_limit:
-			break
-		if processed_adds >= WATER_PATCH_ADD_APPLY_MAX_PER_FRAME:
-			break
-		if attempted_adds >= add_attempt_limit:
-			break
-		if _time_budget_exhausted(budget_start_us, WATER_PATCH_MUTATION_BUDGET_MS, processed_mutations):
-			break
-		if not patches.has(key) and not patch_payload_ready.has(key):
-			attempted_adds += 1
-			continue
-		attempted_adds += 1
-		if _activate_patch(key):
-			processed_mutations += 1
-			processed_adds += 1
-			changed = true
-
-	_water_residency_pending_mutations = (
-		processed_adds < keys_to_add.size()
-		or processed_removes < keys_to_remove.size()
-	)
-	_terrain_resident_patch_revision_seen = terrain_revision
-	_record_residency_perf_counters(
-		processed_adds,
-		processed_removes,
-		max(0, keys_to_add.size() - processed_adds),
-		max(0, keys_to_remove.size() - processed_removes)
-	)
-	if changed:
-		_water_debug_residency_changes += 1
-		_rebuild_patch_prewarm_queue()
-		if _terrain_debug_verbose:
-			_water_debug_log(
-				"water residency changed resident=%d desired=%d add_pending=%d remove_pending=%d"
-				% [
-					resident_patch_lookup.size(),
-					desired_keys.size(),
-					max(0, keys_to_add.size() - processed_adds),
-					max(0, keys_to_remove.size() - processed_removes),
-				]
-			)
-	return changed
-
-func _record_residency_perf_counters(
-	add_count: int,
-	remove_count: int,
-	add_pending_count: int,
-	remove_pending_count: int
-) -> void:
-	_water_residency_last_add_count = add_count
-	_water_residency_last_remove_count = remove_count
-	_water_residency_last_add_pending_count = add_pending_count
-	_water_residency_last_remove_pending_count = remove_pending_count
-
-func _current_terrain_resident_patch_revision() -> int:
-	if terrain_node != null and terrain_node.has_method("get_resident_patch_revision"):
-		return int(terrain_node.get_resident_patch_revision())
-	return -1
-
-func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
+func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = true) -> void:
 	if patches.has(key):
 		return
 	var patch_data: Dictionary = _water_patch_data_for_key(key, allow_async)
@@ -595,9 +348,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		_water_patch_depth_bytes(patch_data)
 	)
 
-	var patch_center_x := world_origin_x + world_size_x * 0.5
-	var patch_center_z := world_origin_z + world_size_z * 0.5
-	var initial_lod_step := _mesh_lod_step_for_patch_center(patch_center_x, patch_center_z)
 	var mesh_stats: Dictionary = _empty_water_mesh_stats(initial_lod_step)
 	var depth_signature: int = int(patch_data.get("depth_signature", 0))
 
@@ -809,15 +559,35 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 			)
 	return true
 
-func _activate_patch(key: Vector2i) -> bool:
+# The streaming core's units (`RENDER-32-M`, `stream/layers/terrain.rs`): the StreamNode makes
+# the terrain's resident patches the water's and calls these, one unit at a time under its frame
+# budget. None of them calls the StreamNode back (it is mid-frame): what it must know is returned.
+
+## Requests the water payloads of `keys` (flat x, z pairs). Answers, as flat x, z, news triples,
+## the keys whose payload is already held or built (news 1).
+func stream_request(keys: PackedInt32Array, _prewarm: bool) -> PackedInt32Array:
+	var answers := PackedInt32Array()
+	var wanted: Array[Vector2i] = []
+	for index in range(0, keys.size(), 2):
+		var key := Vector2i(keys[index], keys[index + 1])
+		if patch_payload_ready.has(key) or patches.has(key):
+			answers.append_array(PackedInt32Array([key.x, key.y, 1]))
+		else:
+			wanted.append(key)
+	_request_water_patch_payloads(wanted, wanted.size())
+	return answers
+
+## Makes `key` resident at mesh step `step`, building its node from its payload if needed.
+## Answers Vector2i(status, -1): status 0 resident, 1 no payload (requested again).
+func stream_activate(key: Vector2i, step: int) -> Vector2i:
 	if resident_patch_lookup.has(key):
-		return false
+		return Vector2i(0, -1)
 	if not patches.has(key):
-		_create_patch(key)
+		_create_patch(key, step)
 	var patch: Dictionary = patches.get(key, {})
 	if patch.is_empty():
-		return false
-	_refresh_one_patch_mesh_lod(key)
+		return Vector2i(1, -1)
+	_set_patch_mesh_lod(key, step)
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.visible = true
 	resident_patch_lookup[key] = true
@@ -825,40 +595,46 @@ func _activate_patch(key: Vector2i) -> bool:
 		_queue_patch_mesh_refresh(key, int(patch.get("lod_step", 1)))
 	_queue_height_texture_rebind(key)
 	_queue_terrain_patch_binding(key)
-	return true
+	return Vector2i(0, -1)
 
-func _deactivate_patch(key: Vector2i) -> void:
+## Hides resident `key`, whose terrain patch left.
+func stream_deactivate(key: Vector2i) -> void:
 	if not resident_patch_lookup.has(key):
 		return
-	if not patches.has(key):
-		resident_patch_lookup.erase(key)
-		mesh_refresh_requested_lod.erase(key)
-		mesh_pending_lod.erase(key)
-		patch_lod_refresh_lookup.erase(key)
-		return
-	var patch: Dictionary = patches[key]
-	var patch_node: MeshInstance3D = patch["node"]
-	patch_node.visible = false
 	resident_patch_lookup.erase(key)
 	mesh_refresh_requested_lod.erase(key)
 	mesh_pending_lod.erase(key)
-	patch_lod_refresh_lookup.erase(key)
-	_queue_terrain_patch_binding(key)
+	if patches.has(key):
+		var patch_node: MeshInstance3D = patches[key]["node"]
+		patch_node.visible = false
+		_queue_terrain_patch_binding(key)
+
+## Builds `key`'s node hidden at mesh step `step` (prewarm). Answers -1, or -2 when nothing was
+## built (its payload went).
+func stream_build(key: Vector2i, step: int) -> int:
+	if not patches.has(key):
+		_create_patch(key, step)
+	if not patches.has(key):
+		return -2
+	(patches[key]["node"] as MeshInstance3D).visible = false
+	return -1
+
+## Gives resident `key` the mesh of step `step`.
+func stream_set_lod(key: Vector2i, step: int) -> void:
+	_set_patch_mesh_lod(key, step)
 
 func _remove_patch(key: Vector2i) -> void:
 	if not patches.has(key):
 		return
-	var was_resident: bool = resident_patch_lookup.has(key)
 	var patch: Dictionary = patches[key]
 	_release_water_patch_resources(patch)
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
 	mesh_refresh_requested_lod.erase(key)
 	mesh_pending_lod.erase(key)
-	patch_lod_refresh_lookup.erase(key)
-	if was_resident:
-		_terrain_resident_patch_revision_seen = -1
 	_queue_terrain_patch_binding(key)
+	# The streaming core wants it again while its terrain patch is resident.
+	_stream.water_patch_removed(key)
 	_water_debug_patch_removes += 1
 
 func _clear_patches() -> void:
@@ -870,7 +646,6 @@ func _clear_patches() -> void:
 	patch_payload_requested.clear()
 	patch_payload_ready.clear()
 	pending_water_ack_states = PackedInt64Array()
-	patch_prewarm_queue.clear()
 	height_texture_rebind_queue.clear()
 	height_texture_rebind_lookup.clear()
 	terrain_patch_binding_queue.clear()
@@ -879,17 +654,9 @@ func _clear_patches() -> void:
 	mesh_refresh_requested_lod.clear()
 	mesh_pending_lod.clear()
 	mesh_apply_queue.clear()
-	patch_lod_refresh_queue.clear()
-	patch_lod_refresh_lookup.clear()
-	_water_lod_refresh_camera_valid = false
-	_record_lod_perf_counters(0, 0, 0, 0)
-	_water_lod_last_deferred_count = 0
-	_water_prewarm_last_deferred_count = 0
 	_water_mesh_ready_backlog_estimate = 0
 	_water_mesh_last_frame_elapsed_ms = 0.0
 	_water_mesh_last_apply_elapsed_ms = 0.0
-	_water_residency_pending_mutations = false
-	_terrain_resident_patch_revision_seen = -1
 
 func _prewarm_water_patch_resource_pool() -> void:
 	while patch_resource_pool.size() < WATER_PATCH_RESOURCE_POOL_PREWARM_COUNT:
@@ -1091,100 +858,30 @@ func _reset_water_resource_pool_perf_counters() -> void:
 	_water_full_grid_mesh_cache_hit_count = 0
 	_water_full_grid_mesh_cache_miss_count = 0
 
-func _rebuild_patch_prewarm_queue() -> void:
-	patch_prewarm_queue.clear()
-	if terrain_patch_cols <= 0 or terrain_patch_rows <= 0:
-		return
-	var prewarm_bounds: Dictionary = _water_prewarm_patch_bounds()
-	if int(prewarm_bounds["max_x"]) < int(prewarm_bounds["min_x"]):
-		return
-	if int(prewarm_bounds["max_z"]) < int(prewarm_bounds["min_z"]):
-		return
-	for patch_z in range(int(prewarm_bounds["min_z"]), int(prewarm_bounds["max_z"]) + 1):
-		for patch_x in range(int(prewarm_bounds["min_x"]), int(prewarm_bounds["max_x"]) + 1):
-			var key := Vector2i(patch_x, patch_z)
-			if patches.has(key):
-				continue
-			patch_prewarm_queue.append(key)
-	_sort_patch_keys_by_camera_priority(patch_prewarm_queue)
-
-func _water_prewarm_patch_bounds() -> Dictionary:
-	if terrain_patch_cols <= 0 or terrain_patch_rows <= 0:
-		return {"min_x": 0, "max_x": -1, "min_z": 0, "max_z": -1}
-	var keys: Array[Vector2i] = []
-	if terrain_node != null and terrain_node.has_method("get_resident_patch_keys"):
-		keys = terrain_node.get_resident_patch_keys()
-	if keys.is_empty():
-		keys = get_resident_patch_keys()
-	if keys.is_empty():
-		var camera_key: Vector2i = _current_camera_patch_key()
-		return _water_expanded_patch_bounds(
-			{
-				"min_x": camera_key.x,
-				"max_x": camera_key.x,
-				"min_z": camera_key.y,
-				"max_z": camera_key.y,
-			},
-			WATER_PATCH_PREWARM_HALO_PATCHES
-		)
-	var min_patch_x: int = terrain_patch_cols - 1
-	var max_patch_x: int = 0
-	var min_patch_z: int = terrain_patch_rows - 1
-	var max_patch_z: int = 0
-	for key in keys:
-		min_patch_x = min(min_patch_x, key.x)
-		max_patch_x = max(max_patch_x, key.x)
-		min_patch_z = min(min_patch_z, key.y)
-		max_patch_z = max(max_patch_z, key.y)
-	return _water_expanded_patch_bounds(
-		{
-			"min_x": min_patch_x,
-			"max_x": max_patch_x,
-			"min_z": min_patch_z,
-			"max_z": max_patch_z,
-		},
-		WATER_PATCH_PREWARM_HALO_PATCHES
-	)
-
-func _water_expanded_patch_bounds(bounds: Dictionary, margin_patches: int) -> Dictionary:
-	return {
-		"min_x": max(0, int(bounds["min_x"]) - margin_patches),
-		"max_x": min(terrain_patch_cols - 1, int(bounds["max_x"]) + margin_patches),
-		"min_z": max(0, int(bounds["min_z"]) - margin_patches),
-		"max_z": min(terrain_patch_rows - 1, int(bounds["max_z"]) + margin_patches),
-	}
-
-func _prewarm_patch_cache() -> void:
-	if patch_prewarm_queue.is_empty():
-		return
-	var budget_start_us: int = Time.get_ticks_usec()
-	var attempted_patches := 0
-	var created_patches := 0
-	while attempted_patches < WATER_PATCH_PREWARM_MAX_PER_FRAME and not patch_prewarm_queue.is_empty():
-		if _time_budget_exhausted(budget_start_us, WATER_PATCH_PREWARM_BUDGET_MS, created_patches):
-			break
-		var key: Vector2i = patch_prewarm_queue.pop_front()
-		attempted_patches += 1
-		if patches.has(key):
-			continue
-		_create_patch(key)
-		var patch: Dictionary = patches.get(key, {})
-		if patch.is_empty():
-			continue
-		created_patches += 1
-		var patch_node: MeshInstance3D = patch["node"]
-		patch_node.visible = false
-
 func _time_budget_exhausted(start_us: int, budget_ms: float, completed_count: int) -> bool:
 	if completed_count <= 0:
 		return false
 	return float(Time.get_ticks_usec() - start_us) / 1000.0 >= budget_ms
 
-func _water_frame_headroom_available(frame_start_us: int, start_budget_ms: float) -> bool:
-	return float(Time.get_ticks_usec() - frame_start_us) / 1000.0 < start_budget_ms
-
 func _sort_patch_keys_by_camera_priority(keys: Array[Vector2i]) -> void:
-	TerrainRenderer.sort_patch_keys_by_distance(keys, _current_camera_patch_key())
+	sort_patch_keys_by_distance(keys, _current_camera_patch_key())
+
+## Sorts patch keys in place by Manhattan distance to `origin`, then row, then column.
+## O(n log n) in a native sort: each key packs (distance, z, x) into one int, 20 bits per field,
+## so patch coordinates must lie in [0, 2^20).
+static func sort_patch_keys_by_distance(keys: Array[Vector2i], origin: Vector2i) -> void:
+	if keys.size() <= 1:
+		return
+	var packed := PackedInt64Array()
+	packed.resize(keys.size())
+	for i in keys.size():
+		var key: Vector2i = keys[i]
+		var distance: int = absi(key.x - origin.x) + absi(key.y - origin.y)
+		packed[i] = (distance << 40) | (key.y << 20) | key.x
+	packed.sort()
+	for i in packed.size():
+		var value: int = packed[i]
+		keys[i] = Vector2i(value & 0xFFFFF, (value >> 20) & 0xFFFFF)
 
 func _current_camera_patch_key() -> Vector2i:
 	if terrain_patch_cols <= 0 or terrain_patch_rows <= 0 or terrain_patch_span_m <= 0.0:
@@ -1396,10 +1093,9 @@ func _poll_ready_water_patch_payloads(budget: int) -> int:
 	) as PackedInt32Array
 	for pair_index in range(failed_patch_keys.size() >> 1):
 		var offset := pair_index * 2
-		patch_payload_requested.erase(Vector2i(
-			failed_patch_keys[offset],
-			failed_patch_keys[offset + 1]
-		))
+		var failed_key := Vector2i(failed_patch_keys[offset], failed_patch_keys[offset + 1])
+		patch_payload_requested.erase(failed_key)
+		_stream.water_payload(failed_key, 0)
 	var payloads: Array = result.get("patches", []) as Array
 	var accepted_count := 0
 	for payload_variant in payloads:
@@ -1414,6 +1110,7 @@ func _poll_ready_water_patch_payloads(budget: int) -> int:
 			continue
 		patch_payload_ready[key] = patch_data
 		patch_payload_requested.erase(key)
+		_stream.water_payload(key, 1)
 		accepted_count += 1
 	return accepted_count
 
@@ -1454,165 +1151,11 @@ func _empty_water_mesh_stats(lod_step: int) -> Dictionary:
 		"emitted_triangles": 0,
 	}
 
-func _mesh_lod_step_for_patch_center(center_x: float, center_z: float) -> int:
-	var camera: Camera3D = get_viewport().get_camera_3d()
-	if camera == null:
-		return 1
-	return _mesh_lod_step_for_patch_center_with_camera(
-		center_x,
-		center_z,
-		camera.global_position,
-		true
-	)
-
-func _mesh_lod_step_for_patch_center_with_camera(
-	center_x: float,
-	center_z: float,
-	camera_position: Vector3,
-	camera_valid: bool
-) -> int:
-	if _terrain_force_lod1:
-		return 1
-	if not camera_valid:
-		return 1
-	var distance_m := camera_position.distance_to(Vector3(center_x, 0.0, center_z))
-	return _mesh_lod_step_for_distance(distance_m)
-
-func _mesh_lod_step_for_distance(distance_m: float) -> int:
-	if distance_m <= WATER_PATCH_MESH_LOD_NEAR_DISTANCE_M:
-		return 1
-	if distance_m <= WATER_PATCH_MESH_LOD_MID_DISTANCE_M:
-		return 2
-	if distance_m <= WATER_PATCH_MESH_LOD_FAR_DISTANCE_M:
-		return 4
-	return 8
-
-func _refresh_patch_mesh_lods(delta: float) -> void:
-	_water_lod_last_deferred_count = 0
-	if resident_patch_lookup.is_empty():
-		_water_mesh_lod_refresh_elapsed_s = 0.0
-		patch_lod_refresh_queue.clear()
-		patch_lod_refresh_lookup.clear()
-		_record_lod_perf_counters(0, 0, 0, 0)
-		return
-	var queued_count := 0
-	var replaced_count: int = 0
-	_water_lod_last_skipped_count = 0
-	_water_mesh_lod_refresh_elapsed_s += delta
-	if (
-		_water_mesh_lod_refresh_elapsed_s >= WATER_PATCH_MESH_LOD_REFRESH_INTERVAL_S
-		and _lod_refresh_camera_moved(WATER_PATCH_MESH_LOD_REFRESH_CAMERA_MOVE_M)
-	):
-		_water_mesh_lod_refresh_elapsed_s = 0.0
-		replaced_count = patch_lod_refresh_queue.size()
-		queued_count = _replace_resident_patch_lod_refreshes()
-	_process_patch_lod_refresh_queue(
-		WATER_PATCH_MESH_LOD_REFRESH_BUDGET_MS,
-		WATER_PATCH_MESH_LOD_REFRESH_MAX_CHECKS_PER_FRAME,
-		WATER_PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME
-	)
-	_water_lod_last_queued_count = queued_count
-	_water_lod_last_queue_count = patch_lod_refresh_queue.size()
-	_water_lod_last_replaced_count = replaced_count
-
-func _defer_patch_mesh_lods(delta: float) -> void:
-	_water_mesh_lod_refresh_elapsed_s += delta
-	_water_lod_last_deferred_count = 1
-	_record_lod_perf_counters(
-		0,
-		0,
-		0,
-		patch_lod_refresh_queue.size(),
-		0,
-		0
-	)
-
-func _lod_refresh_camera_moved(min_distance_m: float) -> bool:
-	var camera := get_viewport().get_camera_3d()
-	if camera == null:
-		return true
-	var position: Vector3 = camera.global_position
-	if not _water_lod_refresh_camera_valid:
-		_water_lod_refresh_camera_valid = true
-		_water_lod_refresh_last_camera_position = position
-		return true
-	if position.distance_squared_to(_water_lod_refresh_last_camera_position) < min_distance_m * min_distance_m:
-		return false
-	_water_lod_refresh_last_camera_position = position
-	return true
-
-func _replace_resident_patch_lod_refreshes() -> int:
-	var keys: Array[Vector2i] = get_resident_patch_keys()
-	var candidates: Array[Vector2i] = []
-	var camera: Camera3D = get_viewport().get_camera_3d()
-	var camera_position: Vector3 = Vector3.ZERO
-	var camera_valid: bool = camera != null
-	if camera_valid:
-		camera_position = camera.global_position
-	for key in keys:
-		if _water_patch_lod_refresh_needed(key, camera_position, camera_valid):
-			candidates.append(key)
-		else:
-			_water_lod_last_skipped_count += 1
-	_sort_patch_keys_by_camera_priority(candidates)
-	patch_lod_refresh_lookup.clear()
-	for key in candidates:
-		patch_lod_refresh_lookup[key] = true
-	patch_lod_refresh_queue = candidates
-	return candidates.size()
-
-func _water_patch_lod_refresh_needed(
-	key: Vector2i,
-	camera_position: Vector3,
-	camera_valid: bool
-) -> bool:
+func _set_patch_mesh_lod(key: Vector2i, target_lod_step: int) -> void:
 	var patch: Dictionary = patches.get(key, {})
-	if patch.is_empty():
-		return false
-	var patch_node: MeshInstance3D = patch["node"]
-	var target_lod_step: int = _mesh_lod_step_for_patch_center_with_camera(
-		patch_node.position.x,
-		patch_node.position.z,
-		camera_position,
-		camera_valid
-	)
-	return int(patch.get("lod_step", 1)) != target_lod_step
-
-func _process_patch_lod_refresh_queue(
-	refresh_budget_ms: float,
-	max_checks_per_frame: int,
-	max_changes_per_frame: int
-) -> void:
-	_water_lod_last_processed_count = 0
-	_water_lod_last_changed_count = 0
-	if patch_lod_refresh_queue.is_empty():
+	if patch.is_empty() or int(patch.get("lod_step", 1)) == target_lod_step:
 		return
-	var refresh_start_us: int = Time.get_ticks_usec()
-	var processed_count := 0
-	var changed_count := 0
-	while not patch_lod_refresh_queue.is_empty():
-		if processed_count >= max_checks_per_frame or changed_count >= max_changes_per_frame:
-			break
-		if _time_budget_exhausted(refresh_start_us, refresh_budget_ms, processed_count):
-			break
-		var key: Vector2i = patch_lod_refresh_queue.pop_front()
-		patch_lod_refresh_lookup.erase(key)
-		if resident_patch_lookup.has(key):
-			if _refresh_one_patch_mesh_lod(key):
-				changed_count += 1
-		processed_count += 1
-	_water_lod_last_processed_count = processed_count
-	_water_lod_last_changed_count = changed_count
-
-func _refresh_one_patch_mesh_lod(key: Vector2i) -> bool:
-	var patch: Dictionary = patches.get(key, {})
-	if patch.is_empty():
-		return false
 	var patch_node: MeshInstance3D = patch["node"]
-	var target_lod_step := _mesh_lod_step_for_patch_center(patch_node.position.x, patch_node.position.z)
-	var current_lod_step := int(patch.get("lod_step", 1))
-	if current_lod_step == target_lod_step:
-		return false
 	patch["lod_step"] = target_lod_step
 	var material: ShaderMaterial = patch["material"]
 	material.set_shader_parameter("water_debug_lod_step", float(target_lod_step))
@@ -1622,22 +1165,6 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> bool:
 	else:
 		patch_node.mesh = _empty_water_mesh_resource()
 	patch["mesh_stats"] = mesh_stats
-	return true
-
-func _record_lod_perf_counters(
-	processed_count: int,
-	changed_count: int,
-	queued_count: int,
-	queue_count: int,
-	replaced_count: int = 0,
-	skipped_count: int = 0
-) -> void:
-	_water_lod_last_processed_count = processed_count
-	_water_lod_last_changed_count = changed_count
-	_water_lod_last_queued_count = queued_count
-	_water_lod_last_queue_count = queue_count
-	_water_lod_last_replaced_count = replaced_count
-	_water_lod_last_skipped_count = skipped_count
 
 func _queue_patch_mesh_refresh(key: Vector2i, lod_step: int) -> void:
 	var safe_lod_step: int = max(1, lod_step)
@@ -2435,7 +1962,6 @@ func _current_terrain_border_revision() -> int:
 func _record_water_debug_frame(
 	delta: float,
 	frame_elapsed_ms: float,
-	patch_sync_elapsed_ms: float,
 	upload_elapsed_ms: float,
 	border_elapsed_ms: float,
 	height_rebind_elapsed_ms: float
@@ -2444,22 +1970,15 @@ func _record_water_debug_frame(
 	_water_debug_frames += 1
 	_water_debug_frame_ms_total += frame_elapsed_ms
 	_water_debug_frame_ms_max = maxf(_water_debug_frame_ms_max, frame_elapsed_ms)
-	_water_debug_patch_sync_ms_total += patch_sync_elapsed_ms
 	_water_debug_upload_ms_total += upload_elapsed_ms
 	_water_debug_border_ms_total += border_elapsed_ms
 	_water_debug_height_rebind_ms_total += height_rebind_elapsed_ms
 	if _water_debug_elapsed_s < WATER_DEBUG_LOG_INTERVAL_S:
 		return
 
-	var average_frame_ms := _water_debug_frame_ms_total / maxf(1.0, float(_water_debug_frames))
-	var average_patch_sync_ms := _water_debug_patch_sync_ms_total / maxf(1.0, float(_water_debug_frames))
-	var average_upload_ms := _water_debug_upload_ms_total / maxf(1.0, float(_water_debug_frames))
-	var average_border_ms := _water_debug_border_ms_total / maxf(1.0, float(_water_debug_frames))
-	var average_height_rebind_ms := _water_debug_height_rebind_ms_total / maxf(1.0, float(_water_debug_frames))
-	var lod_summary := _water_debug_lod_summary()
-
+	var frames := maxf(1.0, float(_water_debug_frames))
 	_water_debug_log(
-		"water resident=%d creates=%d removes=%d uploads=%d rebinds=%d border_rebuilds=%d residency_changes=%d lods=%s avg_ms=%.3f max_ms=%.3f patch_sync_ms=%.3f upload_ms=%.3f border_ms=%.3f rebind_ms=%.3f force_lod1=%s visual=%d"
+		"water resident=%d creates=%d removes=%d uploads=%d rebinds=%d border_rebuilds=%d avg_ms=%.3f max_ms=%.3f upload_ms=%.3f border_ms=%.3f rebind_ms=%.3f visual=%d"
 		% [
 			resident_patch_lookup.size(),
 			_water_debug_patch_creates,
@@ -2467,46 +1986,21 @@ func _record_water_debug_frame(
 			_water_debug_patch_uploads,
 			_water_debug_height_rebinds,
 			_water_debug_border_rebuilds,
-			_water_debug_residency_changes,
-			lod_summary,
-			average_frame_ms,
+			_water_debug_frame_ms_total / frames,
 			_water_debug_frame_ms_max,
-			average_patch_sync_ms,
-			average_upload_ms,
-			average_border_ms,
-			average_height_rebind_ms,
-			str(_terrain_force_lod1),
+			_water_debug_upload_ms_total / frames,
+			_water_debug_border_ms_total / frames,
+			_water_debug_height_rebind_ms_total / frames,
 			MetrumDebug.visual_mode_index("terrain_visual"),
 		]
 	)
 	_reset_water_debug_counters()
-
-func _water_debug_lod_summary() -> String:
-	var lod1 := 0
-	var lod2 := 0
-	var lod4 := 0
-	var lod8 := 0
-	for key_variant in resident_patch_lookup.keys():
-		var key: Vector2i = key_variant
-		var patch: Dictionary = patches.get(key, {})
-		var lod_step := int(patch.get("lod_step", 1))
-		match lod_step:
-			1:
-				lod1 += 1
-			2:
-				lod2 += 1
-			4:
-				lod4 += 1
-			_:
-				lod8 += 1
-	return "1x:%d,2x:%d,4x:%d,8x:%d" % [lod1, lod2, lod4, lod8]
 
 func _reset_water_debug_counters() -> void:
 	_water_debug_elapsed_s = 0.0
 	_water_debug_frames = 0
 	_water_debug_frame_ms_total = 0.0
 	_water_debug_frame_ms_max = 0.0
-	_water_debug_patch_sync_ms_total = 0.0
 	_water_debug_upload_ms_total = 0.0
 	_water_debug_border_ms_total = 0.0
 	_water_debug_height_rebind_ms_total = 0.0
@@ -2515,7 +2009,6 @@ func _reset_water_debug_counters() -> void:
 	_water_debug_patch_uploads = 0
 	_water_debug_height_rebinds = 0
 	_water_debug_border_rebuilds = 0
-	_water_debug_residency_changes = 0
 
 func _water_debug_log(message: String) -> void:
 	if _terrain_debug_enabled:

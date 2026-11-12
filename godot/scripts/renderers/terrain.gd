@@ -78,34 +78,15 @@ const TERRAIN_BORDER_CONTOUR_MINOR_COLOR := Color(0.13, 0.19, 0.16)
 const TERRAIN_BORDER_CONTOUR_MAJOR_COLOR := Color(0.10, 0.16, 0.14)
 const TERRAIN_BORDER_CONTOUR_MINOR_STRENGTH := 0.14
 const TERRAIN_BORDER_CONTOUR_MAJOR_STRENGTH := 0.28
-const PATCH_RESIDENCY_CULL_FAR_M := 8000.0
-const PATCH_EXTRA_CULL_MARGIN_M := 4096.0
-const PATCH_CULL_PAD_M := 64.0
 const TERRAIN_DEBUG_LOG_INTERVAL_S := 0.5
-const PATCH_RESIDENCY_HYSTERESIS_PATCHES := 2
-const PATCH_RESIDENCY_MUTATION_MAX_PER_FRAME := 256
-const PATCH_RESIDENCY_ADD_ATTEMPT_MAX_PER_FRAME := 64
-const PATCH_RESIDENCY_ADD_APPLY_MAX_PER_FRAME := 12
-const PATCH_RESIDENCY_MUTATION_BUDGET_MS := 4.0
+# The terrain's least resident half-side (the streaming core's `CULL_FAR_M`): the scene's distance
+# fade reads it through get_visibility_cull_far_m.
+const PATCH_RESIDENCY_CULL_FAR_M := 8000.0
 const PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
 const PATCH_RESOURCE_POOL_MAX := 96
-const PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 32
 const PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
-const PATCH_PREWARM_MAX_PER_FRAME := 4
-const PATCH_PREWARM_BUDGET_MS := 0.75
-const PATCH_PREWARM_HALO_PATCHES := 1
 const PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME := 128
 const PATCH_WATER_TEXTURE_SYNC_BUDGET_MS := 1.0
-const PATCH_LOD_START_HEADROOM_MS := 1.25
-const PATCH_PREWARM_START_HEADROOM_MS := 1.75
-const PATCH_MESH_LOD_REFRESH_INTERVAL_S := 0.20
-const PATCH_MESH_LOD_REFRESH_BUDGET_MS := 1.0
-const PATCH_MESH_LOD_REFRESH_CAMERA_MOVE_M := 96.0
-const PATCH_MESH_LOD_REFRESH_MAX_CHECKS_PER_FRAME := 32
-const PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME := 8
-const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
-const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
-const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 const FIELD_OVERLAY_TEXTURE_TILE_M := 12.0
 const FIELD_OVERLAY_STRENGTH := 0.84
 const FIELD_OVERLAY_GRAIN_TINT := Color(0.98, 1.02, 0.90, 1.0)
@@ -165,17 +146,17 @@ var patch_payload_requested_generation: Dictionary = {}
 var patch_payload_refused: Dictionary = {}
 var patch_payload_ready: Dictionary = {}
 var patch_payload_road_generation: int = -1
+# Keys whose payload was requested for a prewarm build (a subset of patch_payload_requested): a
+# settled view does not wait for them.
+var _prewarm_requests: Dictionary = {}
 var pending_terrain_ack_states: PackedInt64Array = PackedInt64Array()
 var dirty_patch_payload_generations: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
 var patch_resource_pool: Array[Dictionary] = []
-var patch_prewarm_queue: Array[Vector2i] = []
 # Count of payload commits over all patches. See get_surface_commit_revision.
 var _surface_commit_revision := 0
 # Land cover epoch at which every built patch was last found current, or -1 for none.
 var _land_cover_clean_epoch := -1
-var patch_lod_refresh_queue: Array[Vector2i] = []
-var patch_lod_refresh_lookup: Dictionary = {}
 var water_texture_sync_queue: Array[Vector2i] = []
 var water_texture_sync_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
@@ -190,11 +171,6 @@ var border_skirt_instance: MeshInstance3D
 var border_bottom_cap_instance: MeshInstance3D
 var border_skirt_material: ShaderMaterial
 var border_bottom_cap_material: StandardMaterial3D
-var _resident_patch_bounds_valid: bool = false
-var _resident_min_patch_x: int = 0
-var _resident_max_patch_x: int = -1
-var _resident_min_patch_z: int = 0
-var _resident_max_patch_z: int = -1
 # Channel switches are read live so the debug console takes effect on the next frame.
 var _terrain_debug_enabled: bool:
 	get:
@@ -207,25 +183,6 @@ var _terrain_debug_verbose: bool = false
 # The debug console changes them through `_on_visual_mode_changed`.
 var _terrain_force_full_world: bool = false
 var _terrain_force_lod1: bool = false
-var _terrain_mesh_lod_refresh_elapsed_s: float = 0.0
-var _terrain_lod_refresh_camera_valid: bool = false
-var _terrain_lod_refresh_last_camera_position: Vector3 = Vector3.ZERO
-var _terrain_lod_last_processed_count: int = 0
-var _terrain_lod_last_changed_count: int = 0
-var _terrain_lod_last_queued_count: int = 0
-var _terrain_lod_last_queue_count: int = 0
-var _terrain_lod_last_replaced_count: int = 0
-var _terrain_lod_last_skipped_count: int = 0
-var _terrain_lod_last_deferred_count: int = 0
-var _terrain_prewarm_last_deferred_count: int = 0
-var _terrain_residency_pending_mutations: bool = false
-var _terrain_residency_target_bounds_valid: bool = false
-var _terrain_residency_target_bounds: Dictionary = {}
-var _terrain_resident_patch_revision: int = 0
-var _terrain_residency_last_add_count: int = 0
-var _terrain_residency_last_remove_count: int = 0
-var _terrain_residency_last_add_pending_count: int = 0
-var _terrain_residency_last_remove_pending_count: int = 0
 var _terrain_resource_pool_hit_count: int = 0
 var _terrain_resource_pool_miss_count: int = 0
 var _terrain_resource_pool_release_count: int = 0
@@ -234,18 +191,14 @@ var _terrain_debug_elapsed_s: float = 0.0
 var _terrain_debug_frames: int = 0
 var _terrain_debug_frame_ms_total: float = 0.0
 var _terrain_debug_frame_ms_max: float = 0.0
-var _terrain_debug_residency_ms_total: float = 0.0
 var _terrain_debug_upload_ms_total: float = 0.0
 var _terrain_debug_border_ms_total: float = 0.0
 var _terrain_debug_water_sync_ms_total: float = 0.0
 var _terrain_debug_patch_creates: int = 0
 var _terrain_debug_patch_removes: int = 0
 var _terrain_debug_patch_uploads: int = 0
-var _terrain_debug_residency_changes: int = 0
 var _terrain_debug_dirty_batches: int = 0
 var _terrain_debug_dirty_patch_total: int = 0
-var _terrain_debug_last_cull_far_m: float = 0.0
-var _terrain_debug_last_desired_bounds: Dictionary = {}
 
 # Per-world bake of the position-only ground noise that terrain.gdshader reads.
 var _world_noise := TerrainWorldNoise.new()
@@ -278,22 +231,20 @@ func rebuild_from_simulation_state() -> void:
 	_rebuild_mask_pages(int(patch_layout.get("patch_border_texels", 0)))
 	terrain_cell_m = float(patch_layout.get("terrain_cell_m", 1.0))
 	patch_span_m = terrain_cell_m * float(patch_interval_cells)
-	if _stream != null:
-		_stream.set_terrain_patch_span(patch_span_m)
+	_stream.set_terrain_patch_span(patch_span_m)
 	_terrain_debug_verbose = MetrumDebug.startup_mode("terrain_verbose")
-	_read_residency_debug_modes()
-	_terrain_mesh_lod_refresh_elapsed_s = 0.0
-	_terrain_lod_refresh_camera_valid = false
-	_record_lod_perf_counters(0, 0, 0, 0)
-	_terrain_lod_last_deferred_count = 0
-	_terrain_prewarm_last_deferred_count = 0
 	_reset_terrain_debug_counters()
 	_clear_patches()
+	# The streaming core decides residency, levels of detail and prewarm from here on and calls
+	# the stream_* units below (`RENDER-32-M`).
+	_stream.reset_terrain_patches(
+		self, water_node, patch_cols, patch_rows, patch_interval_cells, terrain_cell_m, terrain_world_size
+	)
+	_push_debug_modes()
 	if graded_tiles != null:
 		graded_tiles.dispose()
 		graded_tiles = null
 	_prewarm_regular_terrain_mesh_variants()
-	_resident_patch_bounds_valid = false
 	_ensure_overlay_texture()
 	_ensure_coal_pit_texture()
 	_ensure_field_overlay_texture()
@@ -303,7 +254,6 @@ func rebuild_from_simulation_state() -> void:
 	_prewarm_terrain_patch_resource_pool()
 	graded_tiles = TerrainGradedTiles.new()
 	graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size, patch_span_m)
-	_sync_patch_residency(true)
 	mark_overlay_dirty()
 	_refresh_overlay_texture(int(simulation_node.get_current_day()))
 	var coal_pit_updated := _update_coal_pit_texture()
@@ -321,7 +271,6 @@ func rebuild_from_simulation_state() -> void:
 	cached_field_overlay_revision = (
 		int(simulation_node.get_agriculture_field_overlay_revision()) if field_updated else -1
 	)
-	_rebuild_patch_prewarm_queue()
 	if _terrain_debug_enabled:
 		_terrain_debug_log(
 			"renderer ready patch_grid=%dx%d patch_span=%.1fm chunk_span=%.1fm force_full_world=%s force_lod1=%s visual=%d"
@@ -336,19 +285,18 @@ func rebuild_from_simulation_state() -> void:
 			]
 		)
 
-func _read_residency_debug_modes() -> void:
+# The residency debug modes go to the streaming core: the square becomes the world, or every
+# step 1; the next frame loads or drops patches through the frame budget and checks every
+# resident patch's step.
+func _push_debug_modes() -> void:
 	_terrain_force_full_world = MetrumDebug.visual_mode_index("terrain_force_full_world") != 0
 	_terrain_force_lod1 = MetrumDebug.visual_mode_index("terrain_force_lod1") != 0
+	_stream.set_terrain_modes(_terrain_force_full_world, _terrain_force_lod1)
 
-## Residency and LOD selection read the cached flags, so the next residency sync loads or drops
-## patches through the normal per-frame budget. LOD refresh otherwise waits for camera movement,
-## so it is due now: every resident patch is checked against the new target LOD.
 func _on_visual_mode_changed(mode: String) -> void:
 	if mode != "terrain_force_full_world" and mode != "terrain_force_lod1":
 		return
-	_read_residency_debug_modes()
-	_terrain_lod_refresh_camera_valid = false
-	_terrain_mesh_lod_refresh_elapsed_s = PATCH_MESH_LOD_REFRESH_INTERVAL_S
+	_push_debug_modes()
 	if _terrain_debug_enabled:
 		_terrain_debug_log(
 			"residency debug force_full_world=%s force_lod1=%s"
@@ -358,27 +306,15 @@ func _on_visual_mode_changed(mode: String) -> void:
 func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
 	var perf_enabled := PerfDebug.is_enabled()
-	var payload_poll_elapsed_ms := 0.0
-	var payload_poll_count := 0
-	var residency_start_us := frame_start_us
 	var network_refresh_pending: bool = simulation_node.is_network_dirty()
-	var residency_changed := false
 	var payload_poll_start_us := Time.get_ticks_usec()
-	payload_poll_count = _poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
-	payload_poll_elapsed_ms = float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
+	var payload_poll_count := _poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
+	var payload_poll_elapsed_ms := float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
 	network_refresh_pending = network_refresh_pending or simulation_node.is_network_dirty()
-	# A network generation owns its complete terrain/road publication. Residency may hide patches
-	# while it is pending, but must not directly upload newly visible terrain outside that batch.
-	residency_changed = _sync_patch_residency(false, not network_refresh_pending)
-	var residency_elapsed_ms := float(Time.get_ticks_usec() - residency_start_us) / 1000.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
 	var water_sync_elapsed_ms := 0.0
 	var water_sync_perf_stats := {}
-	var lod_elapsed_ms := 0.0
-	var prewarm_elapsed_ms := 0.0
-	_terrain_lod_last_deferred_count = 0
-	_terrain_prewarm_last_deferred_count = 0
 	if not network_refresh_pending and simulation_node.is_terrain_dirty():
 		var dirty_start_us := Time.get_ticks_usec()
 		var dirty_pairs: PackedInt32Array = simulation_node.get_dirty_terrain_patches()
@@ -419,16 +355,6 @@ func _process(delta: float) -> void:
 			_apply_field_overlay_texture()
 			cached_field_overlay_revision = field_revision
 
-	if _terrain_frame_headroom_available(frame_start_us, PATCH_LOD_START_HEADROOM_MS):
-		if perf_enabled:
-			var lod_start_us := Time.get_ticks_usec()
-			_refresh_patch_mesh_lods(delta)
-			lod_elapsed_ms = float(Time.get_ticks_usec() - lod_start_us) / 1000.0
-		else:
-			_refresh_patch_mesh_lods(delta)
-	else:
-		_defer_patch_mesh_lods(delta)
-
 	if graded_tiles != null:
 		_process_graded_tiles()
 
@@ -442,40 +368,13 @@ func _process(delta: float) -> void:
 		_record_terrain_debug_frame(
 			delta,
 			frame_elapsed_ms,
-			residency_elapsed_ms,
 			upload_elapsed_ms,
 			border_elapsed_ms,
 			water_sync_elapsed_ms
 		)
 
-	if (
-		not network_refresh_pending
-		and not simulation_node.is_terrain_dirty()
-		and not residency_changed
-		and not _terrain_residency_pending_mutations
-	):
-		if (
-			patch_lod_refresh_queue.is_empty()
-			and _terrain_frame_headroom_available(frame_start_us, PATCH_PREWARM_START_HEADROOM_MS)
-		):
-			if perf_enabled:
-				var prewarm_start_us := Time.get_ticks_usec()
-				_prewarm_patch_cache()
-				prewarm_elapsed_ms = float(Time.get_ticks_usec() - prewarm_start_us) / 1000.0
-			else:
-				_prewarm_patch_cache()
-		else:
-			_terrain_prewarm_last_deferred_count = 1 if not patch_prewarm_queue.is_empty() else 0
-
 	if perf_enabled:
 		var perf_details := {
-			"residency": residency_elapsed_ms,
-			"residency_add_count": float(_terrain_residency_last_add_count),
-			"residency_remove_count": float(_terrain_residency_last_remove_count),
-			"residency_add_pending_count": float(_terrain_residency_last_add_pending_count),
-			"residency_remove_pending_count": float(_terrain_residency_last_remove_pending_count),
-			"residency_add_limit_count": float(PATCH_RESIDENCY_ADD_APPLY_MAX_PER_FRAME),
-			"residency_budget_ms": PATCH_RESIDENCY_MUTATION_BUDGET_MS,
 			"resource_pool_hit_count": float(_terrain_resource_pool_hit_count),
 			"resource_pool_miss_count": float(_terrain_resource_pool_miss_count),
 			"resource_pool_release_count": float(_terrain_resource_pool_release_count),
@@ -488,16 +387,6 @@ func _process(delta: float) -> void:
 			"upload": upload_elapsed_ms,
 			"border": border_elapsed_ms,
 			"water_sync": water_sync_elapsed_ms,
-			"lod": lod_elapsed_ms,
-			"lod_processed_count": float(_terrain_lod_last_processed_count),
-			"lod_changed_count": float(_terrain_lod_last_changed_count),
-			"lod_queued_count": float(_terrain_lod_last_queued_count),
-			"lod_queue_count": float(_terrain_lod_last_queue_count),
-			"lod_replaced_count": float(_terrain_lod_last_replaced_count),
-			"lod_skipped_count": float(_terrain_lod_last_skipped_count),
-			"lod_deferred_count": float(_terrain_lod_last_deferred_count),
-			"prewarm": prewarm_elapsed_ms,
-			"prewarm_deferred_count": float(_terrain_prewarm_last_deferred_count),
 		}
 		for key_variant in water_sync_perf_stats.keys():
 			var perf_key := str(key_variant)
@@ -565,35 +454,23 @@ func get_resident_patch_keys() -> Array[Vector2i]:
 		keys.append(key)
 	return keys
 
-func get_resident_patch_revision() -> int:
-	return _terrain_resident_patch_revision
-
-# The residency revision moves; the streaming core evaluates the vegetation's tiers next frame.
-func _revise_residency() -> void:
-	_terrain_resident_patch_revision += 1
-	if _stream != null:
-		_stream.revise_terrain_residency()
-
-func _push_resident(key: Vector2i, resident: bool) -> void:
-	if _stream != null:
-		_stream.set_terrain_patch_resident(key, resident)
-
 # The generation the patch's payload now carries (get_patch_surface_generation), -1 once gone.
 func _push_surface_generation(key: Vector2i) -> void:
-	if _stream != null:
-		_stream.set_terrain_surface_generation(key, get_patch_surface_generation(key))
+	_stream.set_terrain_surface_generation(key, get_patch_surface_generation(key))
 
+## The script's queues and the streaming core's patch counts (`terrain_missing`,
+## `terrain_leaving`, `terrain_lod_queue`, `terrain_resident` and the water's).
 func get_pending_render_work_counts() -> Dictionary:
-	return {
+	var counts := {
 		"payload_requested": patch_payload_requested.size(),
+		"prewarm_requested": _prewarm_requests.size(),
 		"payload_ready": patch_payload_ready.size(),
 		"pending_ack": int(pending_terrain_ack_states.size() / 3),
-		"prewarm": patch_prewarm_queue.size(),
-		"lod_refresh": patch_lod_refresh_queue.size(),
 		"water_texture_sync": water_texture_sync_queue.size(),
-		"residency_mutation": 1 if _terrain_residency_pending_mutations else 0,
 		"refused": patch_payload_refused.size(),
 	}
+	counts.merge(_stream.get_terrain_patch_counts())
+	return counts
 
 func get_blocked_dirty_patch_failures() -> Array[Dictionary]:
 	return []
@@ -601,19 +478,18 @@ func get_blocked_dirty_patch_failures() -> Array[Dictionary]:
 func has_blocked_dirty_patch_failure() -> bool:
 	return false
 
+## Payloads requested (prewarm's only with the background cache), an acknowledgement or water
+## texture sync waiting, or the streaming core's patches missing, leaving or queued for a level
+## check; with the background cache also payloads held for a later build.
 func has_pending_render_work(include_background_cache: bool = true) -> bool:
 	return (
-		not patch_payload_requested.is_empty()
+		patch_payload_requested.size() > _prewarm_requests.size()
 		or not pending_terrain_ack_states.is_empty()
-		or not patch_lod_refresh_queue.is_empty()
 		or not water_texture_sync_queue.is_empty()
-		or _terrain_residency_pending_mutations
+		or _stream.has_terrain_pending_work()
 		or (
 			include_background_cache
-			and (
-				not patch_payload_ready.is_empty()
-				or not patch_prewarm_queue.is_empty()
-			)
+			and (not patch_payload_ready.is_empty() or not _prewarm_requests.is_empty())
 		)
 	)
 
@@ -783,239 +659,12 @@ func commit_prepared_terrain_visual_update(prepared: Dictionary) -> bool:
 	_acknowledge_terrain_batch(dirty_states)
 	return true
 
-func _sync_patch_residency(
-	force_full_sync: bool = false,
-	allow_visible_additions: bool = true
-) -> bool:
-	if patch_cols <= 0 or patch_rows <= 0:
-		_record_residency_perf_counters(0, 0, 0, 0)
-		return false
-
-	var desired_bounds: Dictionary = _desired_patch_bounds()
-	_terrain_debug_last_desired_bounds = desired_bounds
-	var resident_target_bounds := _expanded_patch_bounds(
-		desired_bounds,
-		PATCH_RESIDENCY_HYSTERESIS_PATCHES
-	)
-	if (
-		not force_full_sync
-		and not _terrain_residency_pending_mutations
-		and _terrain_residency_target_bounds_valid
-		and _patch_bounds_equal(resident_target_bounds, _terrain_residency_target_bounds)
-	):
-		_record_residency_perf_counters(0, 0, 0, 0)
-		return false
-
-	var keys_to_add: Array[Vector2i] = []
-	for patch_z in range(
-		int(resident_target_bounds["min_z"]),
-		int(resident_target_bounds["max_z"]) + 1
-	):
-		for patch_x in range(
-			int(resident_target_bounds["min_x"]),
-			int(resident_target_bounds["max_x"]) + 1
-		):
-			var key := Vector2i(patch_x, patch_z)
-			if not resident_patch_lookup.has(key):
-				keys_to_add.append(key)
-
-	var keys_to_remove: Array[Vector2i] = []
-	for key_variant in resident_patch_lookup.keys():
-		var key: Vector2i = key_variant
-		if not _patch_key_in_bounds(key, resident_target_bounds):
-			keys_to_remove.append(key)
-
-	if keys_to_add.is_empty() and keys_to_remove.is_empty():
-		_terrain_residency_pending_mutations = false
-		_terrain_residency_target_bounds = resident_target_bounds.duplicate()
-		_terrain_residency_target_bounds_valid = true
-		_refresh_resident_patch_bounds()
-		_record_residency_perf_counters(0, 0, 0, 0)
-		return false
-
-	_sort_patch_keys_by_camera_priority(keys_to_add)
-	keys_to_add = _patch_keys_in_view_first(keys_to_add)
-	_sort_patch_keys_by_camera_priority(keys_to_remove)
-	keys_to_remove.reverse()
-	_request_terrain_patch_payloads(keys_to_add, PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME)
-
-	var changed := false
-	var mutation_limit := PATCH_RESIDENCY_MUTATION_MAX_PER_FRAME
-	if force_full_sync:
-		mutation_limit = keys_to_add.size() + keys_to_remove.size()
-	var budget_start_us: int = Time.get_ticks_usec()
-	var processed_mutations := 0
-	var processed_adds := 0
-	var processed_removes := 0
-	for key in keys_to_remove:
-		if processed_mutations >= mutation_limit:
-			break
-		if _time_budget_exhausted(budget_start_us, PATCH_RESIDENCY_MUTATION_BUDGET_MS, processed_mutations):
-			break
-		_deactivate_patch(key)
-		processed_mutations += 1
-		processed_removes += 1
-		changed = true
-
-	if allow_visible_additions:
-		var attempted_adds := 0
-		var add_attempt_limit: int = mini(
-			PATCH_RESIDENCY_ADD_ATTEMPT_MAX_PER_FRAME,
-			max(1, mutation_limit - processed_mutations)
-		)
-		for key in keys_to_add:
-			if processed_mutations >= mutation_limit:
-				break
-			if processed_adds >= PATCH_RESIDENCY_ADD_APPLY_MAX_PER_FRAME:
-				break
-			if attempted_adds >= add_attempt_limit:
-				break
-			if _time_budget_exhausted(budget_start_us, PATCH_RESIDENCY_MUTATION_BUDGET_MS, processed_mutations):
-				break
-			if not patches.has(key) and not patch_payload_ready.has(key):
-				attempted_adds += 1
-				continue
-			attempted_adds += 1
-			if _activate_patch(key):
-				processed_mutations += 1
-				processed_adds += 1
-				changed = true
-
-	_terrain_residency_pending_mutations = (
-		processed_adds < keys_to_add.size()
-		or processed_removes < keys_to_remove.size()
-	)
-	_record_residency_perf_counters(
-		processed_adds,
-		processed_removes,
-		max(0, keys_to_add.size() - processed_adds),
-		max(0, keys_to_remove.size() - processed_removes)
-	)
-	_refresh_resident_patch_bounds()
-	_terrain_residency_target_bounds = resident_target_bounds.duplicate()
-	_terrain_residency_target_bounds_valid = true
-	if changed:
-		_revise_residency()
-		_terrain_debug_residency_changes += 1
-		_rebuild_patch_prewarm_queue()
-		if _terrain_debug_verbose:
-			_terrain_debug_log(
-				"residency changed desired=%s resident=%s resident_count=%d add_pending=%d remove_pending=%d"
-				% [
-					_terrain_debug_bounds_label(desired_bounds),
-					_terrain_debug_current_resident_bounds_label(),
-					resident_patch_lookup.size(),
-					max(0, keys_to_add.size() - processed_adds),
-					max(0, keys_to_remove.size() - processed_removes),
-				]
-			)
-	return changed
-
-func _record_residency_perf_counters(
-	add_count: int,
-	remove_count: int,
-	add_pending_count: int,
-	remove_pending_count: int
-) -> void:
-	_terrain_residency_last_add_count = add_count
-	_terrain_residency_last_remove_count = remove_count
-	_terrain_residency_last_add_pending_count = add_pending_count
-	_terrain_residency_last_remove_pending_count = remove_pending_count
-
-func _patch_bounds_equal(a: Dictionary, b: Dictionary) -> bool:
-	return (
-		int(a.get("min_x", 0)) == int(b.get("min_x", 0))
-		and int(a.get("max_x", -1)) == int(b.get("max_x", -1))
-		and int(a.get("min_z", 0)) == int(b.get("min_z", 0))
-		and int(a.get("max_z", -1)) == int(b.get("max_z", -1))
-	)
-
-func _desired_patch_bounds() -> Dictionary:
-	if patch_cols <= 0 or patch_rows <= 0:
-		return {"min_x": 0, "max_x": -1, "min_z": 0, "max_z": -1}
-
-	if _terrain_force_full_world:
-		_terrain_debug_last_cull_far_m = terrain_world_size.length()
-		return {
-			"min_x": 0,
-			"max_x": patch_cols - 1,
-			"min_z": 0,
-			"max_z": patch_rows - 1,
-		}
-
-	var camera := get_viewport().get_camera_3d()
-	if camera == null:
-		_terrain_debug_last_cull_far_m = 0.0
-		return {
-			"min_x": 0,
-			"max_x": patch_cols - 1,
-			"min_z": 0,
-			"max_z": patch_rows - 1,
-		}
-
-	return _camera_patch_bounds(camera)
-
-## Residency is every patch within the cull distance in every direction, not only in view.
-## A frustum-derived set dropped what a turn brought into view, and a quick 90 degree turn then
-## built about 300 patches at about 5 per frame, so the distance filled in for about 2.5 s.
-## Godot's frustum culling already skips drawing the patches behind the camera. The set only
-## changes when the camera crosses a patch, and it holds what one look around already held,
-## because a patch that left the view was hidden, not freed.
-func _camera_patch_bounds(camera: Camera3D) -> Dictionary:
-	var cull_far := get_visibility_cull_far_m(camera)
-	_terrain_debug_last_cull_far_m = cull_far
-	var centre := Vector2(camera.global_position.x, camera.global_position.z)
-	return _world_patch_bounds(centre - Vector2.ONE * cull_far, centre + Vector2.ONE * cull_far)
-
-## The ground footprint of the view, which orders loading so the patches in view come first.
-func _camera_view_patch_bounds(camera: Camera3D) -> Dictionary:
-	var cull_far := get_visibility_cull_far_m(camera)
-	var viewport_size := get_viewport().get_visible_rect().size
-	var corners := [
-		Vector2.ZERO,
-		Vector2(viewport_size.x, 0.0),
-		Vector2(viewport_size.x, viewport_size.y),
-		Vector2(0.0, viewport_size.y),
-	]
-	var min_x := INF
-	var max_x := -INF
-	var min_z := INF
-	var max_z := -INF
-	for corner in corners:
-		var origin := camera.project_ray_origin(corner)
-		var direction := camera.project_ray_normal(corner)
-		var distance := cull_far
-		if direction.y < -1e-3:
-			distance = min(-origin.y / direction.y, cull_far)
-		var point := origin + direction * distance
-		min_x = min(min_x, point.x)
-		max_x = max(max_x, point.x)
-		min_z = min(min_z, point.z)
-		max_z = max(max_z, point.z)
-	return _world_patch_bounds(Vector2(min_x, min_z), Vector2(max_x, max_z))
-
-## Patch bounds covering a world-space XZ rectangle, padded by one patch, clamped to the world.
-func _world_patch_bounds(min_xz: Vector2, max_xz: Vector2) -> Dictionary:
-	var pad := patch_span_m
-	var half_world_w := terrain_world_size.x * 0.5
-	var half_world_h := terrain_world_size.y * 0.5
-	var min_patch_x := clampi(int(floor((min_xz.x - pad + half_world_w) / patch_span_m)), 0, patch_cols - 1)
-	var max_patch_x := clampi(int(floor((max_xz.x + pad + half_world_w) / patch_span_m)), 0, patch_cols - 1)
-	var min_patch_z := clampi(int(floor((min_xz.y - pad + half_world_h) / patch_span_m)), 0, patch_rows - 1)
-	var max_patch_z := clampi(int(floor((max_xz.y + pad + half_world_h) / patch_span_m)), 0, patch_rows - 1)
-	return {
-		"min_x": min_patch_x,
-		"max_x": max_patch_x,
-		"min_z": min_patch_z,
-		"max_z": max_patch_z,
-	}
-
 func _terrain_patch_cull_far_m(camera: Camera3D) -> float:
 	var camera_height := absf(camera.global_position.y)
 	var height_scaled_far := camera_height * 4.0
 	return maxf(PATCH_RESIDENCY_CULL_FAR_M, height_scaled_far)
 
-func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
+func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = true) -> void:
 	_graded_material_changed(key)
 	if patches.has(key):
 		return
@@ -1041,9 +690,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		_terrain_patch_height_bytes(patch_data)
 	)
 	var patch_mesh: Mesh
-	var patch_center_x := world_origin_x + world_size_x * 0.5
-	var patch_center_z := world_origin_z + world_size_z * 0.5
-	var initial_lod_step := _mesh_lod_step_for_patch(key, patch_center_x, patch_center_z)
 	var sample_step_m := world_size_x / float(max(1, sample_width - 1))
 	var initial_subdivision_factor := _mesh_subdivision_factor_for_patch(key, sample_step_m)
 	patch_mesh = _terrain_patch_mesh_from_data(patch_data, initial_lod_step, initial_subdivision_factor)
@@ -1178,7 +824,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"last_patch_data": patch_data,
 	}
 	_surface_commit_revision += 1
-	_push_surface_generation(key)
 
 	patches[key]["land_cover"] = patch_resources.get("land_cover", {})
 	patches[key]["spare_land_cover"] = patch_resources.get("spare_land_cover", {})
@@ -1273,7 +918,8 @@ func _stage_terrain_patch_update(
 	var sample_step_m := world_size_x / float(sample_width - 1)
 	var center_x := float(patch_data["world_origin_x"]) + world_size_x * 0.5
 	var center_z := float(patch_data["world_origin_z"]) + world_size_z * 0.5
-	var lod_step := _mesh_lod_step_for_patch(key, center_x, center_z)
+	# The streaming core owns the step: an edit keeps the installed one.
+	var lod_step := int(patch.get("lod_step", 1))
 	var subdivision_factor := _mesh_subdivision_factor_for_patch(key, sample_step_m)
 	var mesh_start_us := Time.get_ticks_usec()
 	var terrain_mesh := _terrain_patch_mesh_from_data(
@@ -1398,53 +1044,107 @@ func _apply_patch_visibility_for_residency(
 	if patch_node != null:
 		patch_node.visible = visible_for_residency
 
-func _activate_patch(key: Vector2i) -> bool:
+# The streaming core's units (`RENDER-32-M`, `stream/layers/terrain.rs`): the StreamNode decides
+# residency, levels of detail and prewarm after the camera moved and calls these, one unit at a
+# time under its frame budget. None of them calls the StreamNode back (it is mid-frame): what it
+# must know is returned.
+
+## Requests the payloads of `keys` (flat x, z pairs); `prewarm` marks a prewarm build's requests,
+## which a settled view does not wait for. Answers, as flat x, z, news triples, the keys whose
+## payload is already held or built (news 1) or was refused (2).
+func stream_request(keys: PackedInt32Array, prewarm: bool) -> PackedInt32Array:
+	var answers := PackedInt32Array()
+	var wanted: Array[Vector2i] = []
+	for index in range(0, keys.size(), 2):
+		var key := Vector2i(keys[index], keys[index + 1])
+		if patch_payload_ready.has(key) or patches.has(key):
+			answers.append_array(PackedInt32Array([key.x, key.y, 1]))
+		elif patch_payload_refused.has(key):
+			answers.append_array(PackedInt32Array([key.x, key.y, 2]))
+		else:
+			wanted.append(key)
+			if prewarm:
+				_prewarm_requests[key] = true
+	_request_terrain_patch_payloads(wanted, wanted.size())
+	return answers
+
+## Makes `key` resident at mesh step `step`, building its node from its payload if needed.
+## Answers Vector2i(status, surface generation): status 0 resident, 1 no payload (requested
+## again), 2 a network publication is pending (no activation this frame).
+func stream_activate(key: Vector2i, step: int) -> Vector2i:
+	if simulation_node.is_network_dirty():
+		return Vector2i(2, -1)
 	if resident_patch_lookup.has(key):
-		return false
+		return Vector2i(0, get_patch_surface_generation(key))
 	var network_generation := _terrain_network_render_generation()
 	if not patches.has(key):
-		_create_patch(key)
+		_create_patch(key, step)
 	var patch: Dictionary = patches.get(key, {})
 	if patch.is_empty():
-		return false
-	var last_patch_data: Dictionary = patch.get("last_patch_data", {}) as Dictionary
-	_refresh_one_patch_mesh_lod(key)
-	# Creation and refresh can build hidden resources, but a concurrent network generation owns
-	# their first visible publication together with its road chunks.
+		return Vector2i(1, -1)
+	_set_patch_mesh_lod(key, step)
+	# Creation can build hidden resources, but a concurrent network generation owns their first
+	# visible publication together with its road chunks.
 	if (
 		simulation_node.is_network_dirty()
 		or _terrain_network_render_generation() != network_generation
 	):
-		return false
+		return Vector2i(2, -1)
 	resident_patch_lookup[key] = true
-	_push_resident(key, true)
 	_graded_patch_changed(key)
-	_apply_patch_visibility_for_residency(key, patch, last_patch_data)
+	_apply_patch_visibility_for_residency(key, patch, patch.get("last_patch_data", {}) as Dictionary)
 	_queue_water_patch_texture_sync(key)
-	return true
+	return Vector2i(0, get_patch_surface_generation(key))
 
-func _deactivate_patch(key: Vector2i) -> void:
+## Hides resident `key`, which left the wanted square.
+func stream_deactivate(key: Vector2i) -> void:
 	if not resident_patch_lookup.has(key):
 		return
-	if not patches.has(key):
-		resident_patch_lookup.erase(key)
-		_push_resident(key, false)
-		_graded_patch_changed(key)
-		return
-	var patch: Dictionary = patches[key]
-	var patch_node: MeshInstance3D = patch["node"]
-	patch_node.visible = false
-	if graded_tiles != null:
-		graded_tiles.release_patch(key, patch_node)
 	resident_patch_lookup.erase(key)
-	_push_resident(key, false)
+	if patches.has(key):
+		var patch_node: MeshInstance3D = patches[key]["node"]
+		patch_node.visible = false
+		if graded_tiles != null:
+			graded_tiles.release_patch(key, patch_node)
 	_graded_patch_changed(key)
+
+## Builds `key`'s node hidden at mesh step `step` (prewarm). Answers its surface generation, -2
+## when nothing was built (its payload went).
+func stream_build(key: Vector2i, step: int) -> int:
+	_prewarm_requests.erase(key)
+	if not patches.has(key):
+		_create_patch(key, step)
+	if not patches.has(key):
+		return -2
+	(patches[key]["node"] as MeshInstance3D).visible = false
+	return get_patch_surface_generation(key)
+
+## Gives resident `key` the mesh of step `step`.
+func stream_set_lod(key: Vector2i, step: int) -> void:
+	_set_patch_mesh_lod(key, step)
+
+func _set_patch_mesh_lod(key: Vector2i, step: int) -> void:
+	var patch: Dictionary = patches.get(key, {})
+	if patch.is_empty() or int(patch.get("lod_step", 1)) == step:
+		return
+	var patch_data: Dictionary = patch.get("last_patch_data", {})
+	if patch_data.is_empty():
+		return
+	patch_render_will_change.emit(key)
+	patch["lod_step"] = step
+	_graded_patch_changed(key)
+	var material: ShaderMaterial = patch["material"]
+	material.set_shader_parameter("terrain_debug_lod_step", float(step))
+	(patch["node"] as MeshInstance3D).mesh = _terrain_patch_mesh_from_data(
+		patch_data,
+		step,
+		int(patch.get("subdivision_factor", 1))
+	)
 
 func _remove_patch(key: Vector2i) -> void:
 	if not patches.has(key):
 		return
 	patch_render_will_change.emit(key)
-	var was_resident: bool = resident_patch_lookup.has(key)
 	var patch: Dictionary = patches[key]
 	if graded_tiles != null:
 		graded_tiles.release_patch(key, patch["node"])
@@ -1452,56 +1152,10 @@ func _remove_patch(key: Vector2i) -> void:
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
 	_push_surface_generation(key)
-	if was_resident:
-		_push_resident(key, false)
 	_graded_patch_changed(key)
-	patch_lod_refresh_lookup.erase(key)
-	if was_resident:
-		_terrain_residency_target_bounds_valid = false
-		_revise_residency()
+	# The streaming core wants it again as a hole when it was resident.
+	_stream.terrain_patch_removed(key)
 	_terrain_debug_patch_removes += 1
-
-func _patch_key_in_bounds(key: Vector2i, bounds: Dictionary) -> bool:
-	return (
-		key.x >= int(bounds["min_x"])
-		and key.x <= int(bounds["max_x"])
-		and key.y >= int(bounds["min_z"])
-		and key.y <= int(bounds["max_z"])
-	)
-
-func _expanded_patch_bounds(bounds: Dictionary, margin_patches: int) -> Dictionary:
-	return {
-		"min_x": max(0, int(bounds["min_x"]) - margin_patches),
-		"max_x": min(patch_cols - 1, int(bounds["max_x"]) + margin_patches),
-		"min_z": max(0, int(bounds["min_z"]) - margin_patches),
-		"max_z": min(patch_rows - 1, int(bounds["max_z"]) + margin_patches),
-	}
-
-func _refresh_resident_patch_bounds() -> void:
-	if resident_patch_lookup.is_empty():
-		_resident_patch_bounds_valid = false
-		_resident_min_patch_x = 0
-		_resident_max_patch_x = -1
-		_resident_min_patch_z = 0
-		_resident_max_patch_z = -1
-		return
-
-	var min_patch_x := patch_cols - 1
-	var max_patch_x := 0
-	var min_patch_z := patch_rows - 1
-	var max_patch_z := 0
-	for key_variant in resident_patch_lookup.keys():
-		var key: Vector2i = key_variant
-		min_patch_x = min(min_patch_x, key.x)
-		max_patch_x = max(max_patch_x, key.x)
-		min_patch_z = min(min_patch_z, key.y)
-		max_patch_z = max(max_patch_z, key.y)
-
-	_resident_patch_bounds_valid = true
-	_resident_min_patch_x = min_patch_x
-	_resident_max_patch_x = max_patch_x
-	_resident_min_patch_z = min_patch_z
-	_resident_max_patch_z = max_patch_z
 
 func _clear_patches() -> void:
 	patches_will_reset.emit()
@@ -1512,8 +1166,7 @@ func _clear_patches() -> void:
 		_release_terrain_patch_resources(patch)
 	patches.clear()
 	resident_patch_lookup.clear()
-	if _stream != null:
-		_stream.clear_terrain_patches()
+	_stream.clear_terrain_patches()
 	if graded_tiles != null and not _graded_resident.is_empty():
 		graded_tiles.patch_mutated(Vector2i.ZERO, {}, true)
 	_graded_resident.clear()
@@ -1525,22 +1178,12 @@ func _clear_patches() -> void:
 	patch_payload_refused.clear()
 	patch_payload_road_generation = -1
 	pending_terrain_ack_states = PackedInt64Array()
-	patch_prewarm_queue.clear()
+	_prewarm_requests.clear()
 	# A load restarts both epoch counters, so an old value could match a new world.
 	_land_cover_clean_epoch = -1
-	patch_lod_refresh_queue.clear()
-	patch_lod_refresh_lookup.clear()
-	_terrain_lod_refresh_camera_valid = false
-	_record_lod_perf_counters(0, 0, 0, 0)
-	_terrain_lod_last_deferred_count = 0
-	_terrain_prewarm_last_deferred_count = 0
 	water_texture_sync_queue.clear()
 	water_texture_sync_lookup.clear()
-	_resident_patch_bounds_valid = false
-	_terrain_residency_pending_mutations = false
-	_terrain_residency_target_bounds_valid = false
-	_terrain_residency_target_bounds.clear()
-	_revise_residency()
+	_stream.revise_terrain_residency()
 
 func _prewarm_terrain_patch_resource_pool() -> void:
 	while patch_resource_pool.size() < PATCH_RESOURCE_POOL_PREWARM_COUNT:
@@ -1722,121 +1365,10 @@ func _reset_terrain_resource_pool_perf_counters() -> void:
 	_terrain_resource_pool_release_count = 0
 	_terrain_resource_pool_prewarm_count = 0
 
-func _rebuild_patch_prewarm_queue() -> void:
-	patch_prewarm_queue.clear()
-	if patch_cols <= 0 or patch_rows <= 0:
-		return
-	var prewarm_bounds: Dictionary = _prewarm_patch_bounds()
-	if int(prewarm_bounds["max_x"]) < int(prewarm_bounds["min_x"]):
-		return
-	if int(prewarm_bounds["max_z"]) < int(prewarm_bounds["min_z"]):
-		return
-	for patch_z in range(int(prewarm_bounds["min_z"]), int(prewarm_bounds["max_z"]) + 1):
-		for patch_x in range(int(prewarm_bounds["min_x"]), int(prewarm_bounds["max_x"]) + 1):
-			var key := Vector2i(patch_x, patch_z)
-			if patches.has(key):
-				continue
-			patch_prewarm_queue.append(key)
-	_sort_patch_keys_by_camera_priority(patch_prewarm_queue)
-
-func _prewarm_patch_bounds() -> Dictionary:
-	if patch_cols <= 0 or patch_rows <= 0:
-		return {"min_x": 0, "max_x": -1, "min_z": 0, "max_z": -1}
-	if _terrain_residency_target_bounds_valid:
-		return _expanded_patch_bounds(_terrain_residency_target_bounds, PATCH_PREWARM_HALO_PATCHES)
-	if _resident_patch_bounds_valid:
-		return _expanded_patch_bounds(
-			{
-				"min_x": _resident_min_patch_x,
-				"max_x": _resident_max_patch_x,
-				"min_z": _resident_min_patch_z,
-				"max_z": _resident_max_patch_z,
-			},
-			PATCH_PREWARM_HALO_PATCHES
-		)
-	return _expanded_patch_bounds(
-		_desired_patch_bounds(),
-		PATCH_RESIDENCY_HYSTERESIS_PATCHES + PATCH_PREWARM_HALO_PATCHES
-	)
-
-func _prewarm_patch_cache() -> void:
-	if patch_prewarm_queue.is_empty():
-		return
-	var budget_start_us: int = Time.get_ticks_usec()
-	var attempted_patches := 0
-	var created_patches := 0
-	while attempted_patches < PATCH_PREWARM_MAX_PER_FRAME and not patch_prewarm_queue.is_empty():
-		if _time_budget_exhausted(budget_start_us, PATCH_PREWARM_BUDGET_MS, created_patches):
-			break
-		var key: Vector2i = patch_prewarm_queue.pop_front()
-		attempted_patches += 1
-		if patches.has(key):
-			continue
-		_create_patch(key)
-		var patch: Dictionary = patches.get(key, {})
-		if patch.is_empty():
-			continue
-		created_patches += 1
-		var patch_node: MeshInstance3D = patch["node"]
-		patch_node.visible = false
-
 func _time_budget_exhausted(start_us: int, budget_ms: float, completed_count: int) -> bool:
 	if completed_count <= 0:
 		return false
 	return float(Time.get_ticks_usec() - start_us) / 1000.0 >= budget_ms
-
-func _terrain_frame_headroom_available(frame_start_us: int, start_budget_ms: float) -> bool:
-	return float(Time.get_ticks_usec() - frame_start_us) / 1000.0 < start_budget_ms
-
-## O(keys). Keeps the distance order within the patches in view and within the rest.
-func _patch_keys_in_view_first(keys: Array[Vector2i]) -> Array[Vector2i]:
-	var viewport := get_viewport()
-	var camera := viewport.get_camera_3d() if viewport != null else null
-	if camera == null or _terrain_force_full_world:
-		return keys
-	var view := _camera_view_patch_bounds(camera)
-	var in_view: Array[Vector2i] = []
-	var rest: Array[Vector2i] = []
-	for key in keys:
-		if _patch_key_in_bounds(key, view):
-			in_view.append(key)
-		else:
-			rest.append(key)
-	in_view.append_array(rest)
-	return in_view
-
-func _sort_patch_keys_by_camera_priority(keys: Array[Vector2i]) -> void:
-	sort_patch_keys_by_distance(keys, _current_camera_patch_key())
-
-## Sorts patch keys in place by Manhattan distance to `origin`, then row, then column.
-## O(n log n) in a native sort: each key packs (distance, z, x) into one int, 20 bits per field,
-## so patch coordinates must lie in [0, 2^20). A GDScript comparator lambda cost about 5 ms per
-## frame while a whole world's patches were still pending.
-static func sort_patch_keys_by_distance(keys: Array[Vector2i], origin: Vector2i) -> void:
-	if keys.size() <= 1:
-		return
-	var packed := PackedInt64Array()
-	packed.resize(keys.size())
-	for i in keys.size():
-		var key: Vector2i = keys[i]
-		var distance: int = absi(key.x - origin.x) + absi(key.y - origin.y)
-		packed[i] = (distance << 40) | (key.y << 20) | key.x
-	packed.sort()
-	for i in packed.size():
-		var value: int = packed[i]
-		keys[i] = Vector2i(value & 0xFFFFF, (value >> 20) & 0xFFFFF)
-
-func _current_camera_patch_key() -> Vector2i:
-	if patch_cols <= 0 or patch_rows <= 0 or patch_span_m <= 0.0:
-		return Vector2i.ZERO
-	var camera := get_viewport().get_camera_3d()
-	if camera == null:
-		return Vector2i(int(patch_cols / 2), int(patch_rows / 2))
-	var half_world := terrain_world_size * 0.5
-	return Vector2i(
-		clampi(int(floor((camera.global_position.x + half_world.x) / patch_span_m)), 0, patch_cols - 1),
-		clampi(int(floor((camera.global_position.z + half_world.y) / patch_span_m)), 0, patch_rows - 1)
-	)
 
 func _dirty_patch_keys(flat_pairs: PackedInt32Array) -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []
@@ -2012,6 +1544,8 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 		):
 			patch_payload_requested.erase(retry_key)
 			patch_payload_requested_generation.erase(retry_key)
+			_prewarm_requests.erase(retry_key)
+			_stream.terrain_payload(retry_key, 0)
 	var refused_requests: PackedInt64Array = result.get(
 		"refused_requests",
 		PackedInt64Array()
@@ -2024,6 +1558,8 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 		if int(patch_payload_requested.get(refused_key, -1)) == refused_step:
 			patch_payload_requested.erase(refused_key)
 			patch_payload_requested_generation.erase(refused_key)
+			_prewarm_requests.erase(refused_key)
+			_stream.terrain_payload(refused_key, 2)
 		if not patch_payload_refused.has(refused_key):
 			MetrumDebug.log(
 				"terrain",
@@ -2048,39 +1584,45 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 		var render_step_mm := int(patch_data.get("render_step_mm", _terrain_patch_payload_render_step_mm(key)))
 		if int(patch_payload_requested.get(key, -1)) != render_step_mm:
 			continue
+		_prewarm_requests.erase(key)
 		if bool(patch_data.get("retry", false)):
 			patch_payload_requested.erase(key)
 			patch_payload_requested_generation.erase(key)
+			_stream.terrain_payload(key, 0)
 			accepted_count += 1
 			continue
 		patch_payload_ready[key] = patch_data
 		patch_payload_requested.erase(key)
 		patch_payload_requested_generation.erase(key)
+		_stream.terrain_payload(key, 1)
 		accepted_count += 1
 	return accepted_count
 
+# Drops held and requested payloads the streaming core no longer wants: outside its prewarm
+# square (the wanted square and one patch beyond), and held payloads of built patches. O(held +
+# requested payloads), none on a settled frame.
 func _prune_patch_payload_cache() -> void:
 	_sync_patch_payload_road_generation()
+	if patch_payload_ready.is_empty() and patch_payload_requested.is_empty():
+		return
+	var halo: Vector4i = _stream.get_terrain_halo()
+	var outside := func(key: Vector2i) -> bool:
+		return key.x < halo.x or key.y < halo.y or key.x > halo.z or key.y > halo.w
 	for key_variant in patch_payload_ready.keys():
 		var key: Vector2i = key_variant
 		if patches.has(key):
 			patch_payload_ready.erase(key)
 			continue
-		if _terrain_residency_target_bounds_valid and not _patch_key_in_bounds(
-			key,
-			_terrain_residency_target_bounds
-		):
+		if outside.call(key):
 			patch_payload_ready.erase(key)
+			_stream.terrain_payload(key, 0)
 	for key_variant in patch_payload_requested.keys():
 		var key: Vector2i = key_variant
-		if (
-			_terrain_residency_target_bounds_valid
-			and not patches.has(key)
-			and not resident_patch_lookup.has(key)
-			and not _patch_key_in_bounds(key, _terrain_residency_target_bounds)
-		):
+		if not patches.has(key) and not resident_patch_lookup.has(key) and outside.call(key):
 			patch_payload_requested.erase(key)
 			patch_payload_requested_generation.erase(key)
+			_prewarm_requests.erase(key)
+			_stream.terrain_payload(key, 0)
 
 func _dirty_patch_payloads_ready_for_atomic_upload(keys: Array[Vector2i]) -> bool:
 	var all_ready := true
@@ -2233,6 +1775,7 @@ func _terrain_patch_data_for_key(
 			patch_payload_ready.erase(key)
 			patch_payload_requested.erase(key)
 			patch_payload_requested_generation.erase(key)
+			_prewarm_requests.erase(key)
 			return ready_patch_data
 		patch_payload_ready.erase(key)
 	_request_terrain_patch_payload(key, patches.has(key))
@@ -2386,207 +1929,6 @@ func _mesh_subdivision_factor_for_patch(_key: Vector2i, _sample_step_m: float) -
 	# a finer grid adds only vertices (the water reflection mirrored them, 5.8 M extra primitives on
 	# the saved Kuopio paths, TERRAIN-07-D round 8).
 	return 1
-
-func _mesh_lod_step_for_patch(key: Vector2i, center_x: float, center_z: float) -> int:
-	var camera: Camera3D = get_viewport().get_camera_3d()
-	if camera == null:
-		return _mesh_lod_step_for_patch_with_camera(key, center_x, center_z, Vector3.ZERO, false)
-	return _mesh_lod_step_for_patch_with_camera(key, center_x, center_z, camera.global_position, true)
-
-func _mesh_lod_step_for_patch_with_camera(
-	key: Vector2i,
-	center_x: float,
-	center_z: float,
-	camera_position: Vector3,
-	camera_valid: bool
-) -> int:
-	if _terrain_force_lod1:
-		return 1
-	if not camera_valid:
-		return 1
-	var distance_m := camera_position.distance_to(Vector3(center_x, 0.0, center_z))
-	return _mesh_lod_step_for_distance(distance_m)
-
-func _mesh_lod_step_for_distance(distance_m: float) -> int:
-	if distance_m <= PATCH_MESH_LOD_NEAR_DISTANCE_M:
-		return 1
-	if distance_m <= PATCH_MESH_LOD_MID_DISTANCE_M:
-		return 2
-	if distance_m <= PATCH_MESH_LOD_FAR_DISTANCE_M:
-		return 4
-	return 8
-
-func _refresh_patch_mesh_lods(delta: float) -> void:
-	_terrain_lod_last_deferred_count = 0
-	if resident_patch_lookup.is_empty():
-		_terrain_mesh_lod_refresh_elapsed_s = 0.0
-		patch_lod_refresh_queue.clear()
-		patch_lod_refresh_lookup.clear()
-		_record_lod_perf_counters(0, 0, 0, 0)
-		return
-	var queued_count := 0
-	var replaced_count: int = 0
-	_terrain_lod_last_skipped_count = 0
-	_terrain_mesh_lod_refresh_elapsed_s += delta
-	if (
-		_terrain_mesh_lod_refresh_elapsed_s >= PATCH_MESH_LOD_REFRESH_INTERVAL_S
-		and _lod_refresh_camera_moved(PATCH_MESH_LOD_REFRESH_CAMERA_MOVE_M)
-	):
-		_terrain_mesh_lod_refresh_elapsed_s = 0.0
-		replaced_count = patch_lod_refresh_queue.size()
-		queued_count = _replace_resident_patch_lod_refreshes()
-	_process_patch_lod_refresh_queue(
-		PATCH_MESH_LOD_REFRESH_BUDGET_MS,
-		PATCH_MESH_LOD_REFRESH_MAX_CHECKS_PER_FRAME,
-		PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME
-	)
-	_terrain_lod_last_queued_count = queued_count
-	_terrain_lod_last_queue_count = patch_lod_refresh_queue.size()
-	_terrain_lod_last_replaced_count = replaced_count
-
-func _defer_patch_mesh_lods(delta: float) -> void:
-	_terrain_mesh_lod_refresh_elapsed_s += delta
-	_terrain_lod_last_deferred_count = 1
-	_record_lod_perf_counters(
-		0,
-		0,
-		0,
-		patch_lod_refresh_queue.size(),
-		0,
-		0
-	)
-
-func _lod_refresh_camera_moved(min_distance_m: float) -> bool:
-	var camera := get_viewport().get_camera_3d()
-	if camera == null:
-		return true
-	var position: Vector3 = camera.global_position
-	if not _terrain_lod_refresh_camera_valid:
-		_terrain_lod_refresh_camera_valid = true
-		_terrain_lod_refresh_last_camera_position = position
-		return true
-	if position.distance_squared_to(_terrain_lod_refresh_last_camera_position) < min_distance_m * min_distance_m:
-		return false
-	_terrain_lod_refresh_last_camera_position = position
-	return true
-
-func _replace_resident_patch_lod_refreshes() -> int:
-	var keys: Array[Vector2i] = get_resident_patch_keys()
-	var candidates: Array[Vector2i] = []
-	var camera: Camera3D = get_viewport().get_camera_3d()
-	var camera_position: Vector3 = Vector3.ZERO
-	var camera_valid: bool = camera != null
-	if camera_valid:
-		camera_position = camera.global_position
-	for key in keys:
-		if _terrain_patch_lod_refresh_needed(key, camera_position, camera_valid):
-			candidates.append(key)
-		else:
-			_terrain_lod_last_skipped_count += 1
-	_sort_patch_keys_by_camera_priority(candidates)
-	patch_lod_refresh_lookup.clear()
-	for key in candidates:
-		patch_lod_refresh_lookup[key] = true
-	patch_lod_refresh_queue = candidates
-	return candidates.size()
-
-func _terrain_patch_lod_refresh_needed(
-	key: Vector2i,
-	camera_position: Vector3,
-	camera_valid: bool
-) -> bool:
-	var patch: Dictionary = patches.get(key, {})
-	if patch.is_empty():
-		return false
-	var patch_node: MeshInstance3D = patch["node"]
-	var target_lod_step: int = _mesh_lod_step_for_patch_with_camera(
-		key,
-		patch_node.position.x,
-		patch_node.position.z,
-		camera_position,
-		camera_valid
-	)
-	var target_subdivision_factor: int = _mesh_subdivision_factor_for_patch(
-		key,
-		float(patch.get("sample_step_m", terrain_cell_m))
-	)
-	return (
-		int(patch.get("lod_step", 1)) != target_lod_step
-		or int(patch.get("subdivision_factor", 1)) != target_subdivision_factor
-	)
-
-func _process_patch_lod_refresh_queue(
-	refresh_budget_ms: float,
-	max_checks_per_frame: int,
-	max_changes_per_frame: int
-) -> void:
-	_terrain_lod_last_processed_count = 0
-	_terrain_lod_last_changed_count = 0
-	if patch_lod_refresh_queue.is_empty():
-		return
-	var refresh_start_us: int = Time.get_ticks_usec()
-	var processed_count := 0
-	var changed_count := 0
-	while not patch_lod_refresh_queue.is_empty():
-		if processed_count >= max_checks_per_frame or changed_count >= max_changes_per_frame:
-			break
-		if _time_budget_exhausted(refresh_start_us, refresh_budget_ms, processed_count):
-			break
-		var key: Vector2i = patch_lod_refresh_queue.pop_front()
-		patch_lod_refresh_lookup.erase(key)
-		if resident_patch_lookup.has(key):
-			if _refresh_one_patch_mesh_lod(key):
-				changed_count += 1
-		processed_count += 1
-	_terrain_lod_last_processed_count = processed_count
-	_terrain_lod_last_changed_count = changed_count
-
-func _refresh_one_patch_mesh_lod(key: Vector2i) -> bool:
-	var patch: Dictionary = patches.get(key, {})
-	if patch.is_empty():
-		return false
-	var patch_node: MeshInstance3D = patch["node"]
-	var target_lod_step := _mesh_lod_step_for_patch(key, patch_node.position.x, patch_node.position.z)
-	var target_subdivision_factor := _mesh_subdivision_factor_for_patch(
-		key,
-		float(patch.get("sample_step_m", terrain_cell_m))
-	)
-	var current_lod_step := int(patch.get("lod_step", 1))
-	var current_subdivision_factor := int(patch.get("subdivision_factor", 1))
-	if current_lod_step == target_lod_step and current_subdivision_factor == target_subdivision_factor:
-		return false
-	var patch_data: Dictionary = patch.get("last_patch_data", {})
-	if patch_data.is_empty():
-		patch_data = _terrain_patch_data_for_key(key, false)
-	if patch_data.is_empty():
-		return false
-	patch_render_will_change.emit(key)
-	patch["lod_step"] = target_lod_step
-	_graded_patch_changed(key)
-	patch["subdivision_factor"] = target_subdivision_factor
-	var material: ShaderMaterial = patch["material"]
-	material.set_shader_parameter("terrain_debug_lod_step", float(target_lod_step))
-	patch_node.mesh = _terrain_patch_mesh_from_data(
-		patch_data,
-		target_lod_step,
-		target_subdivision_factor
-	)
-	return true
-
-func _record_lod_perf_counters(
-	processed_count: int,
-	changed_count: int,
-	queued_count: int,
-	queue_count: int,
-	replaced_count: int = 0,
-	skipped_count: int = 0
-) -> void:
-	_terrain_lod_last_processed_count = processed_count
-	_terrain_lod_last_changed_count = changed_count
-	_terrain_lod_last_queued_count = queued_count
-	_terrain_lod_last_queue_count = queue_count
-	_terrain_lod_last_replaced_count = replaced_count
-	_terrain_lod_last_skipped_count = skipped_count
 
 func _ensure_overlay_texture() -> bool:
 	var dims: Vector2 = simulation_node.get_heightmap_size()
@@ -2828,10 +2170,8 @@ func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> v
 	patch["water_depth_nonzero_count"] = 0
 
 func _queue_all_water_patch_texture_syncs() -> void:
-	var keys: Array[Vector2i] = get_resident_patch_keys()
-	_sort_patch_keys_by_camera_priority(keys)
-	for key in keys:
-		_queue_water_patch_texture_sync(key)
+	for key_variant in resident_patch_lookup.keys():
+		_queue_water_patch_texture_sync(key_variant as Vector2i)
 
 func _queue_water_patch_texture_sync(key: Vector2i) -> void:
 	if water_texture_sync_lookup.has(key):
@@ -3218,7 +2558,6 @@ func _add_skirt_vertex(surface_tool: SurfaceTool, position: Vector3, normal: Vec
 func _record_terrain_debug_frame(
 	delta: float,
 	frame_elapsed_ms: float,
-	residency_elapsed_ms: float,
 	upload_elapsed_ms: float,
 	border_elapsed_ms: float,
 	water_sync_elapsed_ms: float
@@ -3227,24 +2566,13 @@ func _record_terrain_debug_frame(
 	_terrain_debug_frames += 1
 	_terrain_debug_frame_ms_total += frame_elapsed_ms
 	_terrain_debug_frame_ms_max = maxf(_terrain_debug_frame_ms_max, frame_elapsed_ms)
-	_terrain_debug_residency_ms_total += residency_elapsed_ms
 	_terrain_debug_upload_ms_total += upload_elapsed_ms
 	_terrain_debug_border_ms_total += border_elapsed_ms
 	_terrain_debug_water_sync_ms_total += water_sync_elapsed_ms
 	if _terrain_debug_elapsed_s < TERRAIN_DEBUG_LOG_INTERVAL_S:
 		return
 
-	var desired_patch_count := _terrain_debug_patch_count_for_bounds(_terrain_debug_last_desired_bounds)
-	var desired_bounds_label := _terrain_debug_bounds_label(_terrain_debug_last_desired_bounds)
-	var resident_bounds_label := _terrain_debug_current_resident_bounds_label()
-	var resident_count := resident_patch_lookup.size()
-	var patch_capacity := patch_cols * patch_rows
-	var average_frame_ms := _terrain_debug_frame_ms_total / maxf(1.0, float(_terrain_debug_frames))
-	var average_residency_ms := _terrain_debug_residency_ms_total / maxf(1.0, float(_terrain_debug_frames))
-	var average_upload_ms := _terrain_debug_upload_ms_total / maxf(1.0, float(_terrain_debug_frames))
-	var average_border_ms := _terrain_debug_border_ms_total / maxf(1.0, float(_terrain_debug_frames))
-	var average_water_sync_ms := _terrain_debug_water_sync_ms_total / maxf(1.0, float(_terrain_debug_frames))
-	var lod_summary := _terrain_debug_lod_summary()
+	var frames := maxf(1.0, float(_terrain_debug_frames))
 	var camera := get_viewport().get_camera_3d()
 	var camera_label := "none"
 	if camera != null:
@@ -3253,31 +2581,25 @@ func _record_terrain_debug_frame(
 			camera.global_position.y,
 			camera.global_position.z,
 		]
-
+	# Residency and levels are the streaming core's: its counts stand for the old bounds.
 	_terrain_debug_log(
-		"fps=%d cam=%s resident=%d/%d desired=%d desired_bounds=%s resident_bounds=%s cull_far=%.1f residency_changes=%d creates=%d removes=%d uploads=%d dirty_batches=%d dirty_patches=%d lods=%s avg_ms=%.3f max_ms=%.3f residency_ms=%.3f upload_ms=%.3f border_ms=%.3f water_sync_ms=%.3f force_full_world=%s force_lod1=%s visual=%d"
+		"fps=%d cam=%s resident=%d/%d stream=%s creates=%d removes=%d uploads=%d dirty_batches=%d dirty_patches=%d avg_ms=%.3f max_ms=%.3f upload_ms=%.3f border_ms=%.3f water_sync_ms=%.3f force_full_world=%s force_lod1=%s visual=%d"
 		% [
 			Engine.get_frames_per_second(),
 			camera_label,
-			resident_count,
-			patch_capacity,
-			desired_patch_count,
-			desired_bounds_label,
-			resident_bounds_label,
-			_terrain_debug_last_cull_far_m,
-			_terrain_debug_residency_changes,
+			resident_patch_lookup.size(),
+			patch_cols * patch_rows,
+			str(_stream.get_terrain_patch_counts()),
 			_terrain_debug_patch_creates,
 			_terrain_debug_patch_removes,
 			_terrain_debug_patch_uploads,
 			_terrain_debug_dirty_batches,
 			_terrain_debug_dirty_patch_total,
-			lod_summary,
-			average_frame_ms,
+			_terrain_debug_frame_ms_total / frames,
 			_terrain_debug_frame_ms_max,
-			average_residency_ms,
-			average_upload_ms,
-			average_border_ms,
-			average_water_sync_ms,
+			_terrain_debug_upload_ms_total / frames,
+			_terrain_debug_border_ms_total / frames,
+			_terrain_debug_water_sync_ms_total / frames,
 			str(_terrain_force_full_world),
 			str(_terrain_force_lod1),
 			MetrumDebug.visual_mode_index("terrain_visual"),
@@ -3285,70 +2607,17 @@ func _record_terrain_debug_frame(
 	)
 	_reset_terrain_debug_counters()
 
-func _terrain_debug_lod_summary() -> String:
-	var lod1 := 0
-	var lod2 := 0
-	var lod4 := 0
-	var lod8 := 0
-	for key_variant in resident_patch_lookup.keys():
-		var key: Vector2i = key_variant
-		var patch: Dictionary = patches.get(key, {})
-		var lod_step := int(patch.get("lod_step", 1))
-		match lod_step:
-			1:
-				lod1 += 1
-			2:
-				lod2 += 1
-			4:
-				lod4 += 1
-			_:
-				lod8 += 1
-	return "1x:%d,2x:%d,4x:%d,8x:%d" % [lod1, lod2, lod4, lod8]
-
-func _terrain_debug_patch_count_for_bounds(bounds: Dictionary) -> int:
-	if bounds.is_empty():
-		return 0
-	var min_x: int = int(bounds.get("min_x", 0))
-	var max_x: int = int(bounds.get("max_x", -1))
-	var min_z: int = int(bounds.get("min_z", 0))
-	var max_z: int = int(bounds.get("max_z", -1))
-	if max_x < min_x or max_z < min_z:
-		return 0
-	return (max_x - min_x + 1) * (max_z - min_z + 1)
-
-func _terrain_debug_bounds_label(bounds: Dictionary) -> String:
-	if bounds.is_empty():
-		return "none"
-	return "[%d..%d,%d..%d]" % [
-		int(bounds.get("min_x", 0)),
-		int(bounds.get("max_x", -1)),
-		int(bounds.get("min_z", 0)),
-		int(bounds.get("max_z", -1)),
-	]
-
-func _terrain_debug_current_resident_bounds_label() -> String:
-	if not _resident_patch_bounds_valid:
-		return "none"
-	return "[%d..%d,%d..%d]" % [
-		_resident_min_patch_x,
-		_resident_max_patch_x,
-		_resident_min_patch_z,
-		_resident_max_patch_z,
-	]
-
 func _reset_terrain_debug_counters() -> void:
 	_terrain_debug_elapsed_s = 0.0
 	_terrain_debug_frames = 0
 	_terrain_debug_frame_ms_total = 0.0
 	_terrain_debug_frame_ms_max = 0.0
-	_terrain_debug_residency_ms_total = 0.0
 	_terrain_debug_upload_ms_total = 0.0
 	_terrain_debug_border_ms_total = 0.0
 	_terrain_debug_water_sync_ms_total = 0.0
 	_terrain_debug_patch_creates = 0
 	_terrain_debug_patch_removes = 0
 	_terrain_debug_patch_uploads = 0
-	_terrain_debug_residency_changes = 0
 	_terrain_debug_dirty_batches = 0
 	_terrain_debug_dirty_patch_total = 0
 

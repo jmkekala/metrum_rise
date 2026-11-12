@@ -149,6 +149,10 @@ func _check_renderers(console: Node) -> void:
 	camera.global_position = Vector3(-WORLD_M * 0.5 + 200.0, 300.0, -WORLD_M * 0.5 + 200.0)
 	camera.look_at(Vector3.ZERO)
 	camera.current = true
+	# The streaming core decides the patches' residency and levels (`RENDER-32-M`).
+	var stream := StreamNode.new()
+	stream.name = "StreamNode"
+	host.add_child(stream)
 	var agents := AgentsScript.new()
 	agents.name = "Agents"
 	host.add_child(agents)
@@ -246,8 +250,8 @@ func _lods(renderer: Node) -> Dictionary:
 			lods[key] = int(patch.get("lod_step", 1))
 	return lods
 
-# Settled means no pending residency work, empty LOD queues and the same patch counts for a
-# run of frames.
+# Settled means no patch missing, leaving or queued for a level check in the streaming core, no
+# payload requested and the same patch counts for a run of frames.
 func _settle(terrain: Node, water: Node) -> bool:
 	var stable := 0
 	var last := Vector2i(-1, -1)
@@ -255,10 +259,8 @@ func _settle(terrain: Node, water: Node) -> bool:
 		await process_frame
 		var counts := Vector2i(terrain.resident_patch_lookup.size(), water.resident_patch_lookup.size())
 		var busy: bool = (
-			terrain._terrain_residency_pending_mutations
-			or water._water_residency_pending_mutations
-			or not terrain.patch_lod_refresh_queue.is_empty()
-			or not water.patch_lod_refresh_queue.is_empty()
+			terrain._stream.has_terrain_pending_work()
+			or terrain._stream.has_water_pending_work()
 			or not terrain.patch_payload_requested.is_empty()
 		)
 		stable = stable + 1 if not busy and counts == last else 0
