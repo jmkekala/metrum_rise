@@ -12113,7 +12113,8 @@ must equal the GDScript rule bit for bit, and that rule measures from the visibl
 the eye (`terrain.gd`'s `get_world_surface_height`, a core-locked query `CameraNode` does not
 make); the Godot tests drive the renderer with synthetic cameras; and G1 has no second consumer.
 `CameraNode` publishes the view when the rings arrive (`RENDER-32-F`), which also takes the
-ground height off the frame path.
+ground height off the frame path. (`RENDER-32-F` publishes the eye and orbit and the vegetation
+measures from it; the graded tiles keep this camera and its ground height until their own round.)
 
 **Tests.** Rust: the rule against 635 golden vectors dumped from the GDScript rule by Godot
 (every level and step end, both hysteresis sides, every held level; `levels_golden.txt`), random
@@ -13473,6 +13474,137 @@ patch node today), exact-size buffers and a base-mesh change that drops the buff
 materials made once per page and level instead of synced per set, the material sync, and with it
 Kuopio's build time on frames, can leave the frame. Carried to `RENDER-32-K` (G2c) or a round of
 its own, with stills against this round's.
+
+### Rings; vegetation residency, bands and staleness in Rust (`RENDER-32-F`, 2026-11-12)
+
+V2b. The vegetation's residency leaves GDScript: what is wanted on which grid, the bands, the
+stand-ins, the cache, the staleness and the requests are the stream node's, with every rule and
+constant unchanged. `vegetation.gd` keeps the mesh and material catalogue and the settings
+(816 to 291 lines: 573 out, 48 in) and does no per-patch work; `vegetation_invalidation_test.gd`
+(363 lines) is gone, its contracts now Rust tests.
+
+**Rings and travel buckets** (`stream/rings.rs`). `RingSet` keeps a grid's cells' state as a
+function of one evaluation point. A cell's state can change only where its centre distance crosses
+a threshold of the rule, so a move of `m` re-evaluates the cells within `m` of each threshold (an
+annulus per band, walked row by row): `O(ring boundary cells)` for a crossing, nothing for a still
+point. A first point or a move past half the outer band re-evaluates the members and the cells
+inside the outer band instead, `O(new + old)`. The caller evaluates its own exact rule, so the
+states are the rule's at the point whatever the rounding (candidates take a 5 cm slack).
+`TravelBuckets` holds keys waiting for the view's travel to reach the distance at which their rule
+can first change (T26's scheme, generic): a still frame visits nothing, a move `O(keys due +
+buckets passed)`.
+
+**The residency** (`stream/layers/vegetation/residency.rs`, `residency/rules.rs`), in the
+script's arithmetic (single-precision `Vector2` centres and distances in the engine's operation
+order, comparisons in double):
+
+- Tiers: a resident terrain block is on the fine grid when its nearest corner is within the fine
+  radius, else one coarse patch within the far range; a fine patch is wanted within the far range
+  of its centre. A `RingSet` over the terrain grid with three bands (the fine radius, the coarse
+  far range, and the fine patches' far range, only when a fine block can reach it), evaluated on
+  the frames the script evaluated: a fine-grid cell crossing or a terrain residency change. The
+  wanted set's changes then run the script's pass in its order: leaving patches become stand-ins,
+  the cache frees what the camera left behind (checked by annulus too: a cached patch passed at the
+  last evaluation), leaving requests are cancelled, entering ones come back from the stand-ins or
+  the cache or are queued; the queue is sorted (missing first, nearest first).
+- Bands: understory, near canopy and shadow caster by patch-centre distance with 64 m of
+  hysteresis around the drawn record; a drawn patch waits in `TravelBuckets` for its nearest band
+  boundary.
+- Staleness, pushed: `terrain.gd` reports each payload commit's surface generation per terrain
+  patch, and a move of the land cover epoch (one `try_lock` read a frame, as before) names the
+  patches whose vegetation revision changed; only their sub-patches are checked
+  (`O(subdivision² + 1)` each). A busy core holds the check, as the script's sweep waited.
+- Requests: up to the budget a frame (16), straight into the background jobs (`PatchJobs`); a
+  refused request stays queued. Installs are taken in the same pass they happen (the script took
+  them a frame later), and stand-ins whose area is built are put away in that pass.
+- One grid tier per area: while a block's coarse patch is installed and shown, the install layer
+  keeps the block's fine patches hidden, and shows them in the call that hides or frees it. A block
+  moving to the fine grid therefore swaps from coarse to fine in one frame, when its last fine patch
+  installs, instead of drawing the fine patches over the coarse one as they arrived; the other way
+  the fine stand-ins leave in the frame the coarse patch installs, not the next.
+
+`terrain.gd` pushes its resident patches, residency revisions and surface generations to the stream
+node as they change (`set_terrain_patch_resident`, `revise_terrain_residency`,
+`set_terrain_surface_generation`, `clear_terrain_patches`, `set_terrain_patch_span`); `vegetation.gd`
+hands the settings over on each load (`set_vegetation_settings`). The install layer's near detail
+and branched shadow follow the camera by travel bucket too (the camera refresh visited every shown
+near-canopy patch on a moving frame; it sends the same commands, in another order).
+
+**The view.** `CameraNode` publishes its view as it moves (`CameraSample`: eye, pivot, yaw, pitch,
+distance; G1's deferral) and the stream node measures from it, after the camera moved, instead of
+the script's camera of the frame before; another camera (tests) is read by position. The graded
+tiles keep `terrain.gd`'s eye and ground height (their levels must equal the GDScript rule bit for
+bit; `-J`/`-K` territory), so the ground height from a snapshot is not yet published.
+
+Costs: a still frame `O(1)`; a crossing `O(ring boundary blocks + changes + queue log queue)`; a
+moving frame `O(patches due + buckets passed)`; an edit `O(patches of the edited blocks)`; a
+request `O(1)`. No allocation once the storage has grown (asserted on a steady walk).
+
+Tests (Rust, no Godot): ring deltas equal the brute-force set differences on random walks with
+jumps and still frames (a still point visits no cell); annulus enumeration against every cell of a
+box; travel buckets against the rule on every move; the residency's tiers against the rule over
+every resident block on random walks with residency changes, and every drawn patch out of its
+bands queued or in flight; one grid tier per area in every frame and no hole over a block moving
+grids; a still frame doing no work and a steady walk growing no storage (invariants 3, 7); views
+differing only in what the frustum sees giving the same wanted and drawn sets every frame
+(invariant 4); shuffled job completion settling to the same sets and products, records differing
+only in a band inside its hysteresis interval (invariant 5); the staleness contracts of
+`vegetation_invalidation_test` (an edit rebuilds only its block, no payload no churn, a revision
+read before the request, a busy core), the band boundaries, the restore path and refused requests.
+**Golden replay** (`residency/tests/golden.rs`): the control's `vegetation.gd` (`dev` `f1c93527`)
+recorded on every phase of the stream benchmark at 30k and on Kuopio; the residency evaluates its
+tiers on exactly the script's frames and reaches the same wanted set every time, and every
+recorded request and band check gets the same distance (bit for bit) and bands. The repository
+holds every 30k frame, Kuopio's evaluations and one band decision in 24; the whole recordings
+(9,205 frames, 752 evaluations, 17,254 requests, 25,112 band checks) replay in an ignored test
+from `$METRUM_VEG_GOLDEN`. Godot: `vegetation_appearance_test` builds and delivers its patches with
+the bands the stream node gives (`get_vegetation_bands`).
+
+Fresh results (2026-11-12, one boot; release libraries: control `dev` `f1c93527`'s, SHA-256
+`da6fbe50`, with its own Godot tree; branch `acec02e5`, SHA-256 `1670f428`; 1080p, gamescope
+headless at 1000 Hz, P-cores, eight workers; `$ARTIFACTS/stream/art-v2b`):
+
+- Stills, Kuopio `forest_low`, `close` and `mid` at 10:00 and 17:00: all six byte-identical to
+  the control's.
+- Instrumented (`--detail`), vegetation main-thread time a frame (the script's record and the
+  stream node's, summed), branch against control: 30k 1 s turns 0.12-0.13 ms (0.92-1.01), 0.5 s
+  turns 0.13-0.16 (0.99-1.07), pans 0.05 (0.57-0.61), zooms 0.19-0.26 (0.62-0.72), night turns
+  0.13-0.16 (0.93-1.04); Kuopio 0.5 s turns 0.27-0.34 (1.48-1.57), 1 s turns 0.17-0.18
+  (1.24-1.39), pans 0.04 (0.96-1.03); the 10k town's turns 0.08-0.13 (0.66-0.84). Installs at
+  most 0.25 ms in any frame at 30k and 1.09 ms on Kuopio (its jump); the largest install 0.23 ms
+  at 30k, 0.40 on Kuopio, 0.11 on the town. The residency's whole pass at most 0.39 ms in a 30k
+  frame and 0.45 on the town (both the jump); on Kuopio 0.18-0.37 on turns, up to 2.0 on its pans
+  and 2.4 / 3.2 ms on the jump and the jump back (frees and hides of a few hundred patches; the
+  control's script pass there 2.5 / 4.1). Ring cells visited on a frame without a crossing or a
+  residency change: 0 in every frame of every run. Wanted-to-drawn (a fine patch counts as drawn
+  while its block's coarse patch draws over it): median 0, p90 0 on every 30k phase (control
+  medians 0-5, p90 0-7); Kuopio p90 1-2 on moving phases, 14 and 6 on the jumps (control 14, 6).
+- Frames over 22 ms that vegetation put there (frame minus vegetation at most 22 ms): Kuopio and
+  the town 0; 30k 1 in each 1 s turn (vegetation 0.2-0.3 ms in them) and 4, 0 and 3 in the zooms,
+  each a near canopy detail swap: the `MultiMesh` mesh change makes the engine read the buffer back
+  from the GPU to rebound it, 3.8-5.9 ms in one frame. The control has the same swaps (2.6-4.4 ms
+  frames) and 0-7 such frames in each turn, pan and zoom phase, from `RENDER-32-E`'s install path, which this
+  round leaves as it is.
+- Stream rows, C B B C (two runs a side, same-binary spread verdict; `rows.md` there): 30k turns
+  better at p50 by 1.9-3.6 ms or level, pans level or better except `pan_out`'s maximum (+2.1 ms
+  against a 0.1 ms spread: both branch runs 28 ms on the same frame; the instrumented run puts that
+  frame's time in agents and buildings, vegetation under 0.3 ms), zooms better at p50, `jump` and
+  `jump_back` level (maximum -1.1 and -4.6 ms). Kuopio every phase better or level, the turns
+  1.2-1.5 ms faster at p50.
+- Level F (`./run.sh --timing --level F --base f1c93527`; control `dev` `f1c93527`'s lib test
+  binary `eacffc98`, branch `3f9849b3`; one session): `PERF-07` 30k 1x acceptance PASS, every
+  metric level (mean 2.229 against 2.239 ms); 30k 32x C B B C every metric level (one control run
+  flagged noisy, tolerances doubled), `PERF-17` the known exception on both sides.
+
+Bars: vegetation at most 0.5 ms mean a frame plus its installs inside the shared 2 ms: met
+(0.34 ms at most in any phase of any input; installs at most 1.09 ms). Zero ring cells on frames
+without a crossing: met. `RENDER-27`'s bar: installs at most 2 ms a frame met, products identical
+met (stills; the golden replay); no frame over 22 ms from vegetation met on Kuopio and the town and
+at 30k except the detail swaps' read-back on zooms (also the control's; a fix is a backend change,
+for review). Stills identical: met. Carried: `-D`'s vegetation at most 2.5 ms a frame on Kuopio's
+0.5 s turns met (0.27-0.34), the largest single vegetation unit at most 2.0 ms at 30k met (installs
+0.23, the residency pass 0.39); `-E`'s 30k `jump` maximum within the control's spread met (-1.1 ms,
+spread 5.2). `PERF-07` at level F: level.
 
 ## Implemented Runtime Contract
 
