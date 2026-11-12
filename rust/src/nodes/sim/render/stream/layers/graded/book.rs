@@ -167,9 +167,10 @@ impl MaterialSync {
     ) -> Option<usize> {
         self.ensure(set);
         if next == 0 {
-            let watched: Vec<Variant> =
-                self.watched.iter().map(|name| server.material_get_param(source, name)).collect();
-            self.held[set] = watched;
+            // The watched values as the pass starts (the set's list reused once it has one).
+            let held = &mut self.held[set];
+            held.clear();
+            held.extend(self.watched.iter().map(|name| server.material_get_param(source, name)));
         }
         let mut index = next;
         while index < self.names.len() {
