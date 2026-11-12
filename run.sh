@@ -696,6 +696,9 @@ build_gate_targets() {
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_godot_isolated.py; then
         return 1
     fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_graded_drag_probe.py; then
+        return 1
+    fi
     echo "Checking benchmark targets for API drift..."
     # `--bench '*'`, not `--benches`: the latter also checks the library as a bench harness,
     # which the test build compiles anyway.
