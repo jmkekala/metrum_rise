@@ -633,8 +633,9 @@ impl CellObjects {
         if count > 0 {
             let rows = &mut self.wall_rows;
             rows.clear();
-            for face in
-                faces[..count as usize * WALL_INSTANCE_FLOATS].chunks_exact(WALL_INSTANCE_FLOATS)
+            for face in faces[..count as usize * WALL_INSTANCE_FLOATS]
+                .as_chunks::<WALL_INSTANCE_FLOATS>()
+                .0
             {
                 // Basis columns (x, y, z axes) as `TRANSFORM_3D` rows, origin zero.
                 rows.extend_from_slice(&[

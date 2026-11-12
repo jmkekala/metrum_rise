@@ -1455,8 +1455,7 @@ impl GradedTileBook {
             return;
         };
         let mut server = godot::classes::RenderingServer::singleton();
-        for at in first as usize..end as usize {
-            let effect = cell_effects[at];
+        for &effect in &cell_effects[first as usize..end as usize] {
             let start = std::time::Instant::now();
             let applied = objects.apply(
                 backend,
