@@ -984,8 +984,8 @@ impl PatchStream {
             let mut news = std::mem::take(&mut self.news);
             news.clear();
             exec.request(&self.requests, prewarm, &mut news);
-            for answer in news.chunks_exact(3) {
-                self.payload([answer[0], answer[1]], Payload::from_code(i64::from(answer[2])));
+            for &[x, z, code] in news.as_chunks::<3>().0 {
+                self.payload([x, z], Payload::from_code(i64::from(code)));
             }
             self.news = news;
         }
