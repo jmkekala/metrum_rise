@@ -586,6 +586,11 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	camera.rotation_degrees = Vector3(-60.0, 0.0, 0.0)
 	camera.current = true
 	await _acknowledge_network(simulation)
+	# TERRAIN-24: with METRUM_GRADED_BRIDGE_TRACE set, this renderer records its trace (through the
+	# bridge's walls, until the load below), which run.sh replays.
+	var bridge_trace := OS.get_environment("METRUM_GRADED_BRIDGE_TRACE")
+	if not bridge_trace.is_empty():
+		OS.set_environment("METRUM_GRADED_TRACE", bridge_trace)
 	var terrain := TerrainRenderer.new()
 	terrain.name = "Terrain"
 	host.add_child(terrain)
@@ -632,8 +637,11 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	var edit_mask_syncs_before := grass.mask_mirror_syncs
 	simulation.set_edge_class(edge, 1)
 	simulation.sculpt_terrain(Vector2(0.0, 42.0), 26.0, -0.25)
+	# The graded journal records both edits as they are made (the renderer's polls started it).
+	var bridge_serial: int = simulation.get_graded_edit_serial()
+	_expect(bridge_serial > 0, "the bridge's edits are recorded")
 	await _acknowledge_network(simulation)
-	_expect(await _settle_production(terrain, simulation), "the bridge's terrain must settle: %s" % terrain.get_pending_render_work_counts())
+	_expect(await _settle_production(terrain, simulation, bridge_serial), "the bridge's terrain must settle: %s" % terrain.get_pending_render_work_counts())
 	_expect(grass.mask_renders > edit_mask_renders_before,
 		"a changed payload refreshes the grass mask")
 	_expect(grass.mask_mirror_syncs > edit_mask_syncs_before,
@@ -661,6 +669,9 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 		_expect(turn < 0.0, "wall quad triangle %d is clockwise seen from its lit side" % (t / 3))
 	_expect(terrain.patch_payload_refused.is_empty(), "no payload request is refused after the bridge: %s" % terrain.patch_payload_refused)
 	print("graded walls: %d faces over %d installed tiles" % [faces, graded.installed.size()])
+	if not bridge_trace.is_empty():
+		# The load's renderer records none; this one's trace ends with its disposal at the load.
+		OS.unset_environment("METRUM_GRADED_TRACE")
 	grass.free()
 	await _check_load_hand_over(simulation, terrain)
 	terrain.free()
@@ -734,9 +745,11 @@ func _acknowledge_network(simulation: SimulationNode) -> void:
 		simulation.acknowledge_network_render(simulation.get_network_render_generation())
 		await process_frame
 
-# The terrain renderer settled (its patches and graded tiles) and the simulation clean, for three
-# frames in a row.
-func _settle_production(terrain, simulation: SimulationNode) -> bool:
+# The terrain renderer settled (its patches and graded tiles), the graded edits up to
+# `edit_serial` (the simulation's after an edit) taken and installed by the renderer (TERRAIN-24:
+# an edit whose selection still runs on a worker leaves the renderer idle without its tiles), and
+# the simulation clean, for three frames in a row.
+func _settle_production(terrain, simulation: SimulationNode, edit_serial := 0) -> bool:
 	var stable := 0
 	for frame in TIMEOUT_FRAMES:
 		await process_frame
@@ -744,6 +757,7 @@ func _settle_production(terrain, simulation: SimulationNode) -> bool:
 			simulation.acknowledge_network_render(simulation.get_network_render_generation())
 		var idle: bool = (
 			terrain.is_render_settled()
+			and terrain.graded_tiles.installed_edit_serial() >= edit_serial
 			and not simulation.is_network_dirty()
 			and not simulation.is_terrain_dirty()
 		)

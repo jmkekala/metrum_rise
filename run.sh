@@ -525,6 +525,18 @@ godot_vehicle_chain() {
     METRUM_GRADED_REPLAY="$traces" run_godot_bridge_test graded_replay || return 1
 }
 
+# The graded tile renderer test, its production renderer recording a trace through the bridge's
+# wall faces (`TERRAIN-24`), which must draw a wall and replay through the renderer bit for bit.
+run_graded_bridge_trace_test() {
+    local trace="$asset_test_profile/graded-bridge-trace"
+    METRUM_GRADED_BRIDGE_TRACE="$trace" run_godot_bridge_test graded_tile_renderer_test || return 1
+    if ! grep -qE '^> walls -?[0-9]+ -?[0-9]+ [1-9]' "$trace.1"; then
+        echo "graded_replay: the bridge trace draws no wall face"
+        return 1
+    fi
+    METRUM_GRADED_REPLAY="$trace.1" run_godot_bridge_test graded_replay
+}
+
 # Every other Godot regression. Each fixture generator runs just before the test that reads it.
 godot_main_chain() {
     local script
@@ -539,6 +551,10 @@ godot_main_chain() {
         zoning_road_tool_test zoning_cells_tool_test debug_console_test \
         junction_debug_overlay_test road_rejection_report_test \
         street_lights_test graded_tile_renderer_test graded_page_publication_test road_render_publication_test parking_test; do
+        if [ "$script" = graded_tile_renderer_test ]; then
+            run_graded_bridge_trace_test || return 1
+            continue
+        fi
         run_godot_bridge_test "$script" || return 1
     done
     # The locked ring city the gridlock notice test loads (`TRAFFIC-14`), written by Rust.
