@@ -107,7 +107,9 @@
 //! | | `get_car_render_data` | `agents.gd` |
 //! | | `smooth_car_render_data` | `agents.gd` |
 //! | | `ground_car_transforms` | `vehicle_ground_support_test.gd` |
-//! | | `set_camera_aabb` | `agents.gd` (culling update) |
+//! | | `get_changed_car_buckets` | `agents.gd` (the car buckets to upload) |
+//! | | `update_agent_view` | `agents.gd` (culling rectangle from the camera) |
+//! | | `set_camera_aabb` | tests (culling update) |
 
 use godot::classes::{INode3D, Node3D};
 use godot::prelude::*;
