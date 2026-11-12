@@ -14,10 +14,12 @@ var _preview_payload: Dictionary = {}
 var _preview_view: Array[Vector2i] = []
 var _span: float
 var _reported_visible := false
-@onready var _stream: Node = get_node_or_null("../../StreamNode")
+# The streaming core: a sibling, or the overlay's sibling in the game scene.
+@onready var _stream: Node = get_node_or_null("../StreamNode") if has_node("../StreamNode") else get_node_or_null("../../StreamNode")
 # The ring's resident chunks, nearest first, as of its revision.
 var _ring: Array[Vector2i] = []
 var _ring_revision := -1
+var _world := Vector2.ZERO
 const UPLOADS_PER_FRAME := 2
 
 func full_refresh() -> void:
@@ -28,15 +30,12 @@ func full_refresh() -> void:
 	_preview_view.clear()
 	_masks.clear()
 	_masks.setup(simulation_node.get_terrain_world_size())
-	# A new world's ring, from its own chunks.
-	_ring = []
-	_ring_revision = -1
-	if _stream != null and _reported_visible:
-		_stream.set_zoning_ring(true, _span, simulation_node.get_terrain_world_size())
+	_world = simulation_node.get_terrain_world_size()
 
 func _ready() -> void:
 	_span = simulation_node.get_zoning_cell_chunk_span()
-	_masks.setup(simulation_node.get_terrain_world_size())
+	_world = simulation_node.get_terrain_world_size()
+	_masks.setup(_world)
 	top_level = true
 
 func _process(_delta: float) -> void:
@@ -45,8 +44,6 @@ func _process(_delta: float) -> void:
 	if visible != _reported_visible:
 		_reported_visible = visible
 		simulation_node.set_zoning_cell_overlay_visible(visible)
-		if _stream != null:
-			_stream.set_zoning_ring(visible, _span, simulation_node.get_terrain_world_size())
 	# Until a layer is resident the sampler globals are unset, and Godot binds its 4 x 4 white
 	# array there: the lookup would name layer 1 and the shader fetch past the texture.
 	RenderingServer.global_shader_parameter_set("zoning_mask_enabled", visible and _masks.has_layers())
@@ -126,11 +123,12 @@ func _upload_preview(keys: Array[Vector2i]) -> void:
 func _exit_tree() -> void:
 	_masks.clear()
 
-# The ring's chunks (the stream node moves it after the camera, once a frame).
+# The ring's chunks about the camera (the stream node moves it: nothing for a still eye).
 func _visible_chunks() -> Array[Vector2i]:
-	if _stream == null:
+	var camera := get_viewport().get_camera_3d()
+	if _stream == null or camera == null:
 		return _ring
-	var revision: int = _stream.get_zoning_ring_revision()
+	var revision: int = _stream.update_zoning_ring(camera.global_position, _span, _world)
 	if revision != _ring_revision:
 		_ring_revision = revision
 		# A new array: the preview keeps the list it was uploaded for.

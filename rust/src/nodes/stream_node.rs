@@ -25,7 +25,7 @@
 //! The parked cars' chunks (`RENDER-32-P`) draw through pooled slots of their own backend
 //! ([`ParkedLayer`]): `parked_cars.gd` hands each changed chunk's poses over and creates no node.
 //! While the zoning overlay shows, its ground masks' resident chunks are a 2 km ring about the
-//! eye ([`ZoningRing`]), moved here once a frame.
+//! eye ([`ZoningRing`]), which the overlay moves to its camera as it asks for them.
 
 use crate::nodes::camera_node::CameraNode;
 use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow};
@@ -103,8 +103,8 @@ pub struct StreamNode {
     frame_road_us: f64,
     // The parked cars' slots (`RENDER-32-P`), once `parked_cars.gd` gave the scenario.
     parked: Option<ParkedDraw>,
-    // The zoning masks' ring while the overlay shows (`RENDER-32-P`).
-    zoning: Option<ZoningRing>,
+    // The zoning masks' ring (`RENDER-32-P`) with the chunk span and world size it is for.
+    zoning: Option<(ZoningRing, f64, [f64; 2])>,
 }
 
 // The parked layer with its own backend (its own mesh catalogue, appended as buckets appear)
@@ -900,25 +900,33 @@ impl StreamNode {
         out
     }
 
-    /// Keeps the zoning masks' resident chunks on a ring from the next frame (`shown`, chunks of
-    /// `span` metres over a world of `world` metres about its centre), or forgets them.
+    /// Moves the zoning masks' ring of `span`-metre chunks over a world of `world` metres about
+    /// its centre to `eye` (a new ring for another span or world) and returns its revision, which
+    /// advances whenever its resident chunks change. `O(ring boundary chunks)` for a move,
+    /// `O(1)` for a still eye.
     #[func]
-    pub fn set_zoning_ring(&mut self, shown: bool, span: f64, world: Vector2) {
-        self.zoning = (shown && span > 0.0)
-            .then(|| ZoningRing::new(span, [f64::from(world.x), f64::from(world.y)]));
-    }
-
-    /// Advances whenever the zoning ring's resident chunks change (-1 without a ring).
-    #[func]
-    pub fn get_zoning_ring_revision(&self) -> i64 {
-        self.zoning.as_ref().map_or(-1, |ring| ring.revision() as i64)
+    pub fn update_zoning_ring(&mut self, eye: Vector3, span: f64, world: Vector2) -> i64 {
+        if span <= 0.0 {
+            return -1;
+        }
+        let world = [f64::from(world.x), f64::from(world.y)];
+        if self
+            .zoning
+            .as_ref()
+            .is_none_or(|(_, at_span, at_world)| *at_span != span || *at_world != world)
+        {
+            self.zoning = Some((ZoningRing::new(span, world), span, world));
+        }
+        let (ring, _, _) = self.zoning.as_mut().expect("made above");
+        ring.update([f64::from(eye.x), f64::from(eye.z)]);
+        ring.revision() as i64
     }
 
     /// The zoning ring's resident chunks, nearest first, as x, z pairs. `O(chunks)`.
     #[func]
     pub fn get_zoning_ring(&mut self) -> PackedInt32Array {
         let mut out = PackedInt32Array::new();
-        if let Some(ring) = self.zoning.as_mut() {
+        if let Some((ring, _, _)) = self.zoning.as_mut() {
             for [x, z] in ring.resident() {
                 out.push(x);
                 out.push(z);
@@ -1098,9 +1106,6 @@ impl StreamNode {
             let roads = std::time::Instant::now();
             self.road_frame();
             self.frame_road_us = roads.elapsed().as_secs_f64() * 1e6;
-            if let (Some(ring), Some(view)) = (self.zoning.as_mut(), self.view) {
-                ring.update([f64::from(view.eye[0]), f64::from(view.eye[2])]);
-            }
         }
         if residency && let Some(backend) = self.backend.as_mut() {
             let eye = self.view.map(|view| view.eye);

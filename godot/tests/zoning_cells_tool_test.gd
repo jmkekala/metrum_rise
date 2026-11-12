@@ -190,6 +190,10 @@ func _test_preview_mask_lifecycle() -> void:
 	camera.position = Vector3(0, 100, 100)
 	camera.look_at(Vector3.ZERO)
 	camera.current = true
+	# The streaming core keeps the masks' ring of resident chunks (`RENDER-32-P`).
+	var stream := StreamNode.new()
+	stream.name = "StreamNode"
+	host.add_child(stream)
 	var renderer := preload("res://scripts/renderers/zoning_cells_overlay.gd").new()
 	renderer.simulation_node = simulation
 	host.add_child(renderer)
