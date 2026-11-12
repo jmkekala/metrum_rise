@@ -12848,10 +12848,12 @@ pans not worse than control: met on Kuopio and the town, missed by one frame on 
 on the first build; the fix changes only the vegetation jobs, which the simulation never runs.
 `-C`'s carried bar: the product left the main thread; the poll's copy of the buffers into Godot's
 arrays is 0.045-0.056 ms a frame on Kuopio's turns. The 30k turn maxima: no longer worse.
-### Record and replay, and the page allocator in Rust (`RENDER-32-I`, 2026-11-12, part 1)
+### The graded renderer's state in Rust, by record and replay (`RENDER-32-I`, 2026-11-12)
 
-G2a's first part (`TERRAIN-13` part 2). The graded renderer's remaining state moves to Rust by
-record and replay, so every step is checked against what the GDScript renderer did.
+G2a (`TERRAIN-13` part 2): the graded renderer's pages, copies, growth, installed and preview
+tiles, requests and hand-over move to Rust by record and replay, every step checked against what
+the GDScript renderer did; the cells, walls and draw states (`-J`) and the edit and preview rules
+(`-K`) stay GDScript for now.
 
 **Record and replay.** `terrain_graded_trace.gd` records, with `METRUM_GRADED_TRACE=<path>` (one
 file per renderer, `<path>.<n>`), every input the renderer reads, in order: its entry calls with
@@ -12929,23 +12931,77 @@ frame mean (p50): control -0.99 (-1.09) and -0.29 (-0.53) ms, branch -0.06 (-0.1
 in every pan: the +0.9/+1.6 ms `RENDER-32-H` read was the unsettled start, not cell-set work, so
 nothing carries to `-J`.
 
-**Ported, not yet wired** (the rest of `-I`): `layers/graded/state.rs`, `copies.rs` and
-`tiles.rs` hold the copies, a block's pages and growth (`_copy_pages`, `_place_copies`,
-`_free_copy`, `_page_emptied`, `_grow`, `_move_block`, `_switch_block`, `_advance_growth`), the
-installed and preview entries, the requests, refusals and exhaustion, the desired-set counts,
-parking and the tile hand-over (`_request_tiles`), each with its order of effects for the
-GDScript to apply (page events, uploads, binds, cancels, cell marks); unit-tested on a small world,
-not called yet. Wiring them behind `GradedTileBook` and replaying the traces through them is what
-the bars need: the hand-over's per-change cost is these GDScript page checks. Lines so far:
-`terrain_graded_pages.gd` 383 to 344; `terrain_graded_tiles.gd` 3,132 to 3,254 (the recorder's
-hooks, about 125 lines, stay as the port's harness).
+**The rest of the state in Rust.** `layers/graded/state.rs` (`Graded`), `copies.rs`, `tiles.rs`
+and `ops.rs` hold, behind `GradedTileBook`, what `terrain_graded_tiles.gd` kept: a block's pages
+and growth (`_copy_pages`, `_place_copies`, `_free_copy`, `_page_emptied`, `_grow`, `_move_block`,
+`_switch_block`, `_advance_growth`), every installed and preview tile's entry and copies, the
+requests, refusals and exhaustion, the desired levels with their travel buckets (`LevelBook`,
+moved in) and list counts, parking, the edit batch's tokens and reservation, and the hand-over
+(`_request_tiles`), each ported with its order of effects. The renderer calls the book where its
+GDScript did the same work and applies the effects in order (`_apply_effects`: page arrays and
+slot uploads from the result it holds, the blocks' binds, Rust queue cancels, cell, wall and mask
+marks, and mirrors of `installed`, `preview` and `_block_page`, which its cell code reads until
+`RENDER-32-J` moves the cells). Every `_over_budget()` point and the poll loop stay where they
+were; a count is one `apply_count()` call. A frame's hand-over is two calls (the requests out,
+the queue's answers back). The book's resident set follows `terrain.gd`'s mutations of the
+resident dictionary (`patch_mutated`). Bounds: a hand-over `O(wanted tiles x the patches meeting
+each)` in Rust, each tile once per change; a still frame does nothing. Lines:
+`terrain_graded_tiles.gd` 3,132 to 2,583 (the recorder's hooks, about 125, included),
+`terrain_graded_pages.gd` 383 to 290.
 
-**Bars** (brief): replay parity met for the moved part (the allocator, every trace); `-B`'s page
-checks (residency and re-levelling at most 0.3 ms on the 30k 1 s turn, 0.5 ms on the 100k turns):
-missed, unchanged from `-B` (0.72-0.82 and 2.6-2.8 ms), the hand-over not yet moved, so none of
-the 30k turn's missing p50 gain is recovered yet; `TERRAIN-09`'s pooled pages bounded: met (32
-MiB, tested); `-H`'s night against day with the pans settled: met (above); `PERF-07` at level F:
-not run (no simulation path changed; the round is not a landing).
+**Parity.** Through the wired book the traces replay bit for bit (every output above: the 30k
+load and turns, the 100k load, the populated swing with its 280 preview poses and edits,
+Kuopio's swing with its commit and undo; `METRUM_GRADED_REPLAY_POOL=unbounded`, as recorded), on
+the branch and on its rebase onto `dev` `0aab8176`. The Godot tests that reached into the
+renderer use the book's queries.
+
+**The graded parts** (instrumented, mean ms a frame; fresh 2026-11-12, one run a side; control
+`dev` `0aab8176`'s release library built here with its scripts, branch `314b4a60`'s; both ran the
+branch's benchmark script):
+
+| Phase | control residency + relevel (requests) | branch residency + relevel (requests) | handed a frame ctl / br | graded total ctl / br |
+|---|---|---|---|---|
+| 30k turn_out 1 s | 0.65 + 0.06 = 0.71 (0.59) | 0.16 + 0.05 = 0.21 (0.11) | 60 / 75 | 4.60 / 4.41 |
+| 30k turn_back 1 s | 0.73 + 0.06 = 0.79 (0.57) | 0.26 + 0.05 = 0.31 (0.13) | 35 / 49 | 4.97 / 4.57 |
+| 30k turn_repeat 1 s | 0.65 + 0.06 = 0.71 (0.58) | 0.16 + 0.05 = 0.21 (0.11) | 48 / 52 | 5.21 / 5.11 |
+| 100k turn_out 1 s | (`-B`: 2.6-2.8) | 0.38 + 0.17 = 0.55 (0.33) | 205 | 7.68 |
+| 100k turn_back 1 s | | 0.54 + 0.16 = 0.70 (0.48) | 69 | 8.21 |
+| 100k turn_repeat 1 s | | 0.32 + 0.16 = 0.48 (0.27) | 185 | 7.83 |
+
+The hand-over (`requests_ms`) fell from 0.57-0.59 to 0.11-0.13 ms on the 30k turn while handing
+over more tiles a frame. What is left of `residency_ms` is the cell set builds (`builds_ms`
+0.03-0.11, `RENDER-32-J`) and the patch changes; at 100k the requests' 0.27-0.48 ms for 450-480
+tiles considered a frame are mostly the stale cancels, each complete tile one GDScript call to
+`cancel_graded_tile` (by count, not a timer: 250-400 a frame), which one batched queue call ends.
+The installs the faster hand-over lets through raise the cell rewrites (`cells_ms` 2.97-3.53 to
+3.27-3.91, `RENDER-32-J`), so the graded total falls by 0.1-0.4 ms a frame. After the 100k load
+the graded tiles settled in 12.2 s (post_load; `-B`: 11.2-12.4 s from hand-over to no tile wanted).
+
+**Rows** (timed, C B B C, 30k still, turns, pans and night; Kuopio still, turns, pans; same
+controls): the 30k 1 s turns' p50 -1.1, +0.6 and 0.0 ms against the control (spread 0.9-1.9), so
+none of `-B`'s missing p50 gain (5 ms) is measurable here: on `0aab8176` the turn's frame is
+24-25 ms against 15.5 ms of GPU, and the graded renderer's 4.4-5.1 ms of it is now cells (3.3-3.9).
+Night pans better at p50 (-0.4, -0.8). Read worse than the same-binary spread in the first round:
+the 30k `turn_repeat 0.5s` p50 (+0.8, spread 0.3) and three Kuopio maxima (+2.9 to +5.3); the one
+rerun of those rows (C B B C, 02:00-02:06) reads the 30k turns level or better (`turn_repeat 0.5s`
+-4.0) and the Kuopio maxima level, with two other Kuopio p50s 0.4-0.5 ms over a 0.3 ms spread
+(`turn_back 1s`, `pan_repeat 3s`; level in the first round), so the Kuopio flags move between
+rounds: read as run-to-run variation, reported for review.
+
+**Timing level F** (`./run.sh --timing --level F --control <ctl> --branch <br> --base 0aab8176`,
+release lib test binaries of `dev` `0aab8176` (`wt-ctl-g2a`) and the branch `314b4a60`, both built
+here; fresh, 01:49-01:57): 30k 1x day acceptance passes on both (unpreempted, p99.9, preempted less
+wait 6.30 / 4.29 / 5.48 ms against the control's 6.07 / 4.35 / 5.03), mean 2.227 against 2.238 ms,
+level on every metric; 30k 32x C B B C level (mean -0.2%), the `PERF-17` known exception on both
+sides. No simulation path changed.
+
+**Bars** (brief): replay parity: met (every trace, every output, through the Rust state). `-B`'s
+page checks: residency and re-levelling 0.21, 0.31 and 0.21 ms on the 30k 1 s turns (bar 0.3:
+met on two, 0.305 on `turn_back`, whose cell set builds are 0.11 ms of it) and 0.55, 0.70 and 0.48
+ms on the 100k turns (bar 0.5: met on one; the stale cancels' calls); none of the 30k turn's
+missing p50 gain recovered measurably. `TERRAIN-09`'s pooled pages bounded: met (32 MiB, tested).
+`-H`'s night against day with the pans settled: met. Remaining with attribution: the batched queue
+call (`-I` follow-up or `-J`) and the cell rewrites (`-J`).
 
 ## Implemented Runtime Contract
 
