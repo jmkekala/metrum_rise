@@ -61,7 +61,10 @@ stand still: the 30k city's agents cost 0.27 ms a paused frame instead of 4.4 ms
 1x instead of 3.7.
 `RENDER-32-J` (built, not yet landed) moves the graded cell sets, wall faces and draw states to
 Rust, replayed bit for bit: the cell rewrites on a 30k turn fall from 3.2-3.6 ms a frame to 0.5,
-and the 30k 1 s turns run at 20 ms p50 (28-32 before `RENDER-32-B`).
+and the 30k 1 s turns run at 20 ms p50 (28-32 before `RENDER-32-B`). `RENDER-32-K` part 1 (built,
+not yet landed) draws those cells, walls and their materials as `RenderingServer` objects from
+Rust with no node: stills identical, the cells' part of a turn 0.3-0.4 ms a frame instead of
+0.5-0.8, and Kuopio's cell-set builds done within its load instead of 0.8 ms a frame after it.
 `RENDER-32-F` (built, not yet landed)
 moves the vegetation's residency, bands and staleness to Rust, decision for decision equal to the
 GDScript on the benchmark's recorded paths: its frame time on a turn falls to 0.1-0.3 ms, and an
