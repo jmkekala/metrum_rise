@@ -75,7 +75,7 @@ fn a_block_page_waits_for_lists_then_fits_them() {
         vec![
             Effect::PageMade { id: page, reused: false, code: 2, block: (0, 0), slots: 64, layers: 192 },
             Effect::Bind { code: 2, block: (0, 0), rewrite: false, page: Some(page) },
-            Effect::Write { page, copy: Copy { slot: 0, first: 0, layers: 2 } },
+            Effect::Write { tile: tile(-8, -8), page, copy: Copy { slot: 0, first: 0, layers: 2 } },
         ]
     );
 }

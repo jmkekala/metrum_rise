@@ -307,138 +307,16 @@ impl LevelBook {
 }
 
 // Godot's level as `Vector2i(code, step)`, `(-1, -1)` for none.
-fn level_vector(level: Option<Level>) -> Vector2i {
+pub(crate) fn level_vector(level: Option<Level>) -> Vector2i {
     level.map_or(Vector2i::new(-1, -1), |level| {
         let (code, step) = level_code(level);
         Vector2i::new(code as i32, step as i32)
     })
 }
 
-fn held_code(held: i64) -> Option<u8> {
+// A held level code from Godot's integer, -1 (or any other) for none.
+pub(crate) fn held_code(held: i64) -> Option<u8> {
     u8::try_from(held).ok().filter(|&code| code < 4)
-}
-
-fn tile_key(tile: Vector2i) -> TileKey {
-    TileKey {
-        x: tile.x,
-        z: tile.y,
-    }
-}
-
-/// The graded tile renderer's desired levels (`terrain_graded_tiles.gd`, `TERRAIN-13` part 1):
-/// the tiles its resident patches list, each at its distance's level with hysteresis around the
-/// level it is installed at, re-levelled by travel bucket as the camera moves. Levels are
-/// `Vector2i(code, step)`: codes 0-3 for `GL0`-`GL3`, the `GL3` step in base cells (0 below
-/// `GL3`), `(-1, -1)` for a tile not desired. Held levels are codes, -1 for none.
-#[derive(GodotClass)]
-#[class(init, base = RefCounted)]
-pub struct GradedTileLevels {
-    book: LevelBook,
-}
-
-#[godot_api]
-impl GradedTileLevels {
-    /// Desires `tile` held at level code `held`; returns its level. `O(1)`.
-    #[func]
-    pub fn desire(&mut self, tile: Vector2i, held: i64) -> Vector2i {
-        level_vector(Some(self.book.desire(tile_key(tile), held_code(held))))
-    }
-
-    /// Drops `tile`; false when it was not desired. `O(1)`.
-    #[func]
-    pub fn undesire(&mut self, tile: Vector2i) -> bool {
-        self.book.undesire(tile_key(tile))
-    }
-
-    /// Records that `tile` is now installed at level code `held` (-1: evicted) and levels it
-    /// again. Returns `Vector3i(code, step, changed)`, `changed` 1 where the level changed;
-    /// `(-1, -1, 0)` for a tile not desired. `O(1)`.
-    #[func]
-    pub fn hold(&mut self, tile: Vector2i, held: i64) -> Vector3i {
-        match self.book.hold(tile_key(tile), held_code(held)) {
-            Some((level, changed)) => {
-                let level = level_vector(Some(level));
-                Vector3i::new(level.x, level.y, i32::from(changed))
-            }
-            None => Vector3i::new(-1, -1, 0),
-        }
-    }
-
-    /// The level of `tile`. `O(1)`.
-    #[func]
-    pub fn level_of(&self, tile: Vector2i) -> Vector2i {
-        level_vector(self.book.level_of(tile_key(tile)))
-    }
-
-    /// Whether `tile` is desired. `O(1)`.
-    #[func]
-    pub fn has(&self, tile: Vector2i) -> bool {
-        self.book.level_of(tile_key(tile)).is_some()
-    }
-
-    /// Moves the camera (XZ, with its height above the ground as `y`) and re-levels the tiles
-    /// due. Returns the tiles whose level changed as flat `(x, z)` pairs (the first camera and
-    /// an unchanged one re-level nothing). `O(tiles due + buckets passed)`.
-    #[func]
-    pub fn move_camera(&mut self, camera: Vector3) -> PackedInt32Array {
-        let changed = self
-            .book
-            .move_camera([camera.x, camera.y, camera.z].map(f64::from));
-        if changed.is_empty() {
-            return PackedInt32Array::new();
-        }
-        changed.iter().flat_map(|tile| [tile.x, tile.z]).collect()
-    }
-
-    /// The tiles the last move re-levelled.
-    #[func]
-    pub fn relevelled(&self) -> i64 {
-        self.book.last_move_work().0 as i64
-    }
-
-    /// The desired tiles.
-    #[func]
-    pub fn size(&self) -> i64 {
-        self.book.len() as i64
-    }
-
-    /// The desired tiles per level code (0-3).
-    #[func]
-    pub fn count_by_code(&self) -> PackedInt32Array {
-        self.book.by_code().map(|count| count as i32).into_iter().collect()
-    }
-
-    /// Every desired tile as flat `(x, z)` pairs, in no particular order. `O(desired tiles)`,
-    /// for tests and diagnostics.
-    #[func]
-    pub fn tiles(&self) -> PackedInt32Array {
-        self.book.tiles().flat_map(|tile| [tile.x, tile.z]).collect()
-    }
-
-    /// The level the rule gives `tile` held at level code `held` (-1: none) from the current
-    /// camera, evaluated directly. For tests.
-    #[func]
-    pub fn rule_level(&self, tile: Vector2i, held: i64) -> Vector2i {
-        level_vector(Some(self.book.rule_level(tile_key(tile), held_code(held))))
-    }
-
-    /// Where `GL0`-`GL2` end, for the road preview's view (`set_road_preview_terrain_view`).
-    #[func]
-    pub fn level_end_m() -> PackedFloat64Array {
-        PackedFloat64Array::from(LEVEL_END_M.as_slice())
-    }
-
-    /// Where `GL3` ends at steps 2, 4 and 8 (the last infinite).
-    #[func]
-    pub fn gl3_end_m() -> PackedFloat64Array {
-        PackedFloat64Array::from(GL3_END_M.as_slice())
-    }
-
-    /// Drops every tile and the camera, as the renderer resets.
-    #[func]
-    pub fn clear(&mut self) {
-        self.book.clear();
-    }
 }
 
 #[cfg(test)]

@@ -4,9 +4,9 @@
 //! block's pages and growth, the installed and preview tiles' copies, the requests, refusals and
 //! exhaustion, the desired levels and counts, and the hand-over, as `terrain_graded_tiles.gd`
 //! kept them ([`super::state`]). The renderer calls it where its GDScript did the same work and
-//! then applies the effects ([`GradedTileBook::take_effects`]) in order: page arrays, slot uploads
-//! (from the result it holds), binds, Rust queue cancels, cell marks and its mirrors of the
-//! installed and preview entries, which its cell code reads until `RENDER-32-J`.
+//! then applies the effects ([`GradedTileBook::take_effects`]) in order: page arrays, the runs of
+//! slot uploads and cell effects the book applies itself, Rust queue cancels and draw states. The
+//! cells, the edit batch and the preview's tiles are the book's (`RENDER-32-J`, `-K`).
 //!
 //! Tiles are `Vector2i`, levels `(code, step)` as `request_graded_tiles` takes them, a copy
 //! `(page, slot, first atlas layer, layers)`.
@@ -18,7 +18,9 @@ use super::pages::{Copy, PageEvent, PoolPolicy};
 use super::state::{Block, Effect, Graded, PageRef, Shape, Tile};
 use super::uploads::{self, ATLAS_WIDTH};
 use crate::nodes::sim::render::stream::backend::{GodotBackend, RenderBackend};
-use crate::nodes::sim::render::stream::levels::level_code;
+use crate::nodes::sim::render::stream::levels::{
+    GL3_END_M, LEVEL_END_M, desired_level, held_code, level_vector,
+};
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb as Bounds;
 use godot::prelude::*;
 
@@ -30,13 +32,6 @@ fn tile_of(tile: Vector2i) -> Tile {
         x: tile.x,
         z: tile.y,
     }
-}
-
-fn level_vector(level: Option<crate::simulation::terrain::graded::Level>) -> Vector2i {
-    level.map_or(Vector2i::new(-1, -1), |level| {
-        let (code, step) = level_code(level);
-        Vector2i::new(code as i32, step as i32)
-    })
 }
 
 // The cells' effects the objects apply (every cell kind but the draw state, which the GDScript
@@ -81,10 +76,9 @@ pub struct GradedTileBook {
     // The hand-over's answers, reused.
     results: Vec<i64>,
     considered: usize,
-    // What a tile showed before a preview change; the effects encoded; a published buffer.
+    // What a tile showed before a preview change; the effects encoded.
     before: Shown,
     encoded: Vec<i64>,
-    buffer: PackedFloat32Array,
     // The renderer's trace (record or replay): the cell builds' budget answers go through it.
     trace: Option<Gd<RefCounted>>,
     // The cells' `RenderingServer` objects and the backend they go through (`RENDER-32-K`),
@@ -104,6 +98,8 @@ pub struct GradedTileBook {
     staged: Option<Bake>,
     writes: Vec<PageWrite>,
     write_bake: Option<Bake>,
+    // Tiles whose write found no bake of theirs in the last take (refused, baked again).
+    unwritten: Vec<Tile>,
     upload_counts: [i64; 3],
     // The tile result path (`RENDER-32-K` part 3, [`results`]): its deferred results, the
     // results waiting for their sets' variant, its scratch and counters, and the owned bake
@@ -443,6 +439,26 @@ impl GradedTileBook {
             .get(&tile_of(tile))
             .copied()
             .unwrap_or(-1)
+    }
+
+    /// Where `GL0`-`GL2` end for a tile not held there, metres (the road preview's view,
+    /// `set_road_preview_terrain_view`).
+    #[func]
+    pub fn level_end_m() -> PackedFloat64Array {
+        PackedFloat64Array::from(LEVEL_END_M.as_slice())
+    }
+
+    /// Where `GL3` ends at steps 2, 4 and 8 (the last infinite), metres.
+    #[func]
+    pub fn gl3_end_m() -> PackedFloat64Array {
+        PackedFloat64Array::from(GL3_END_M.as_slice())
+    }
+
+    /// The level the distance rule gives a tile `distance` metres from the camera, held at level
+    /// code `held` (-1: none), as `Vector2i(code, step)` (the stream benchmark's hysteresis ends).
+    #[func]
+    pub fn level_at(distance: f64, held: i64) -> Vector2i {
+        level_vector(Some(desired_level(distance, held_code(held))))
     }
 
     /// The edit batch's tiles.
@@ -1048,27 +1064,6 @@ impl GradedTileBook {
         Vector2i::new(self.state.cells.dirty_patches.len() as i32, self.state.cells.dirty_walls.len() as i32)
     }
 
-    /// The buffer a taken publication effect names (`at`), in a reused array.
-    #[func]
-    pub fn cell_buffer(&mut self, at: i64) -> PackedFloat32Array {
-        let len = self.state.cells.per_patch * 16;
-        let at = at as usize;
-        if self.buffer.len() != len {
-            self.buffer.resize(len);
-        }
-        self.buffer
-            .as_mut_slice()
-            .copy_from_slice(&self.state.cells.taken_publish[at..at + len]);
-        self.buffer.clone()
-    }
-
-    /// The taken wall effects' faces, nine floats each (three basis columns).
-    #[func]
-    pub fn wall_floats(&self) -> PackedFloat32Array {
-        debug_assert_eq!(self.state.cells.taken_walls.len() % WALL_INSTANCE_FLOATS, 0);
-        PackedFloat32Array::from(self.state.cells.taken_walls.as_slice())
-    }
-
     /// The frame's cell counters since the last reset: tiles updated, sets flipped, instances
     /// written, instances moved between meshes.
     #[func]
@@ -1195,17 +1190,11 @@ impl GradedTileBook {
     /// block x, block z, rewrite, page or -1)`, 12 cancel `(x, z, stale)`, 13 exhausted `(x, z,
     /// code)`, 14 evicted `(x, z)`, 15 edit dropped `(x, z)`, 16 same-level upload, 17 entry
     /// changed `(x, z, preview)`, 18 mask `(x, z)`, 19 cell `(x, z, sides)`, 20 await cells
-    /// `(x, z)`, 21 grew `(code, block x, block z, slots, layers)`, 22 moved; the cells' Godot
-    /// calls (`RENDER-32-J`): 30 set acquired `(set, x, z)`, 31 pages `(set, code, page or -1)`,
-    /// 32 park `(set, x, z, under a patch)`, 33 begin `(set, x, z, step)`, 34 base mesh `(set,
-    /// code, reset)`, 35 counts cleared `(set)`, 36 meshes `(set, first)`, 37 publish `(set, mesh,
-    /// at)` (`cell_buffer`), 38 count `(set, mesh, count)`, 39 walls `(set, start, count,
-    /// capacity, truncated)` (`wall_floats`), 40 draw `(x, z, state)`, 41 show `(set, x, z)`, 42
-    /// hide `(set)`, 44 variant `(set, four pages, shown)`, 45 rebuilt
-    /// `(set, x, z)`, 46 built `(set)`. The kinds the cells apply themselves (binds, entry
-    /// changes, marks) are settled first and not returned. Once the cells' objects are attached
-    /// (`cells_attach`) the cells' kinds but 40 come as runs: 47 `(first, end)`, which
-    /// `apply_cells` applies.
+    /// `(x, z)`, 21 grew `(code, block x, block z, slots, layers)`, 22 moved, 40 draw `(x, z,
+    /// state)`; the runs the book applies itself: 47 cell effects `(first, end)` (`apply_cells`,
+    /// the cells' objects attached by `cells_attach`; a book without them drops them) and 48
+    /// writes `(first, end)` (`apply_writes`). The kinds the cells apply themselves (binds, entry
+    /// changes, marks) are settled first and not returned.
     #[func]
     pub fn take_effects(&mut self) -> PackedInt64Array {
         self.encode_effects();
@@ -1231,15 +1220,23 @@ impl GradedTileBook {
         let attached = self.objects.is_some();
         for effect in self.state.out.drain(..) {
             // The cells' effects run in Rust (`apply_cells`), as runs in their place.
-            if attached && is_cell_effect(&effect) {
-                push_run(&mut out, 47, self.cell_effects.len() as i64);
-                self.cell_effects.push(effect);
+            if is_cell_effect(&effect) {
+                if attached {
+                    push_run(&mut out, 47, self.cell_effects.len() as i64);
+                    self.cell_effects.push(effect);
+                }
                 continue;
             }
             // So do the uploads (`apply_writes`), each with the bake being placed.
-            if let Effect::Write { page, copy } = effect {
-                if staged.is_none() {
-                    debug_assert!(false, "a write without a staged bake");
+            if let Effect::Write { tile, page, copy } = effect {
+                // A write takes the bake staged for its own tile: one without it would draw the
+                // slot's old bytes as this tile (AUDIT-stream 3), so it is refused loudly and the
+                // tile baked again.
+                let own = staged.as_ref().is_some_and(|bake| bake.names[..2] == [i64::from(tile.x), i64::from(tile.z)]);
+                if !own {
+                    debug_assert!(false, "a write of tile ({}, {}) without its staged bake", tile.x, tile.z);
+                    godot_error!("graded write of tile ({}, {}) without its staged bake: baked again", tile.x, tile.z);
+                    self.unwritten.push(tile);
                     continue;
                 }
                 push_run(&mut out, 48, self.writes.len() as i64);
@@ -1294,38 +1291,20 @@ impl GradedTileBook {
                     0,
                 ],
                 Effect::Moved => [22, 0, 0, 0, 0, 0, 0],
-                Effect::CellAcquired { set, key } => [30, set.into(), key.0.into(), key.1.into(), 0, 0, 0],
-                Effect::CellPages { set, code, page } => [31, set.into(), code.into(), page, 0, 0, 0],
-                Effect::CellPark { set, key } => {
-                    let (x, z) = key.unwrap_or((0, 0));
-                    [32, set.into(), x.into(), z.into(), i64::from(key.is_some()), 0, 0]
-                }
-                Effect::CellBegin { set, key, step } => [33, set.into(), key.0.into(), key.1.into(), step.into(), 0, 0],
-                Effect::CellBaseMesh { set, code, reset } => [34, set.into(), code.into(), reset.into(), 0, 0, 0],
-                Effect::CellCountsCleared { set } => [35, set.into(), 0, 0, 0, 0, 0],
-                Effect::CellMeshes { set, first } => [36, set.into(), first.into(), 0, 0, 0, 0],
-                Effect::CellPublish { set, mesh, at } => [37, set.into(), mesh.into(), at.into(), 0, 0, 0],
-                Effect::CellCount { set, mesh, count } => [38, set.into(), mesh.into(), count.into(), 0, 0, 0],
-                Effect::CellWalls { set, start, count, capacity, truncated } => {
-                    [39, set.into(), start.into(), count.into(), capacity.into(), truncated.into(), 0]
-                }
                 Effect::Draw { key, state } => [40, key.0.into(), key.1.into(), state.into(), 0, 0, 0],
-                Effect::CellShow { set, key } => [41, set.into(), key.0.into(), key.1.into(), 0, 0, 0],
-                Effect::CellHide { set } => [42, set.into(), 0, 0, 0, 0, 0],
-                Effect::CellVariant { set, pages, shown } => {
-                    [44, set.into(), pages[0], pages[1], pages[2], pages[3], shown.into()]
-                }
-                Effect::CellRebuilt { set, key } => [45, set.into(), key.0.into(), key.1.into(), 0, 0, 0],
-                Effect::CellBuilt { set } => [46, set.into(), 0, 0, 0, 0, 0],
                 Effect::Bind { .. }
                 | Effect::Installed { .. }
                 | Effect::MaskChanged { .. }
                 | Effect::CellChanged { .. }
                 | Effect::AwaitCells { .. } => unreachable!("settled"),
+                effect => unreachable!("a cell effect, applied by the objects: {effect:?}"),
             };
             out.extend(fields);
         }
         self.encoded = out;
+        for tile in self.unwritten.drain(..) {
+            self.state.rewrite(tile);
+        }
         match staged {
             Some(bake) if !self.writes.is_empty() => self.write_bake = Some(bake),
             Some(bake) => self.taken.recycle_bake(bake.texels, bake.rows),
@@ -1507,14 +1486,30 @@ impl GradedTileBook {
         backend.texture_copy_layers(from[1], to[1], [ATLAS_WIDTH, 1], layers);
     }
 
-    /// Page `page` holds no copy any more (released): what the backend keeps of its layers
-    /// goes (Compatibility's CPU copies).
+    /// Page `page` holds no copy any more (released, pooled when `kept`) or a pooled page was
+    /// freed: what the backend keeps of its layers goes (Compatibility's CPU copies), and a page
+    /// that is not kept leaves the book's maps (AUDIT-stream 13), so no freed texture's handle
+    /// stays bindable. `O(1)`.
     #[func]
-    pub fn forget_page(&mut self, page: i64) {
+    pub fn forget_page(&mut self, page: i64, kept: bool) {
         if let (Some(backend), Some(textures)) = (self.backend.as_mut(), self.page_textures.get(&page)) {
             backend.texture_forget(textures[0]);
             backend.texture_forget(textures[1]);
         }
+        if kept {
+            return;
+        }
+        self.page_textures.remove(&page);
+        self.page_shapes.remove(&(page as u32));
+        if let Some(objects) = self.objects.as_mut() {
+            objects.pages.remove(&page);
+        }
+    }
+
+    /// The pages whose textures the book holds (tests: freed pages leave it).
+    #[func]
+    pub fn page_texture_count(&self) -> i64 {
+        self.page_textures.len() as i64
     }
 
     /// The CPU copy of page `page`'s slot layer (`texels`) or atlas layer `layer` where the

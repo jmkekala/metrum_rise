@@ -208,7 +208,7 @@ var residency_settling := false:
 # tiles are counted in one at a time under the install budget (_poll_and_install), before the
 # next result (a list counted at once took up to 0.35 ms past the budget, TERRAIN-07-D round 10).
 # The last camera (XZ, with its height above the ground as y), and the level rule's ends the
-# road preview's view takes (GradedTileLevels').
+# road preview's view takes (GradedTileBook's).
 var _camera := Vector3.ZERO
 var _camera_set := false
 var _level_end_m := PackedFloat64Array()
@@ -312,8 +312,8 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	# The base lattice starts at the negative half extents (BaseGrid), in half-metres.
 	lattice_anchor_hm = Vector2i(int(round(-world_size.x)), int(round(-world_size.y)))
 	var layout: Dictionary = _sim_layout()
-	_level_end_m = GradedTileLevels.level_end_m()
-	_gl3_end_m = GradedTileLevels.gl3_end_m()
+	_level_end_m = GradedTileBook.level_end_m()
+	_gl3_end_m = GradedTileBook.gl3_end_m()
 	levels.clear()
 	for level: Dictionary in layout.get("levels", []):
 		levels.append(level)

@@ -116,6 +116,9 @@ func grow(graded: Tiles, label: String) -> int:
 	var page_id := int(graded._book.block_page(2, Vector2i.ZERO))
 	expect(page_id != old_id and graded._book.block_target(2, Vector2i.ZERO) < 0, "%s: the block binds its larger page" % label)
 	expect(int(graded.counters["uploads"]) == uploads, "%s: the move uploads no tile" % label)
+	# A freed page leaves the book's texture map (AUDIT-stream 13); a pooled one stays in both.
+	expect(int(graded._book.page_texture_count()) == graded.page_store.by_id.size(),
+		"%s: the book holds the textures of the live and pooled pages only" % label)
 	return page_id
 
 func _run() -> void:

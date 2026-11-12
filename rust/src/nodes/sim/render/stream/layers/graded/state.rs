@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! The graded renderer's state as `terrain_graded_tiles.gd` keeps it (`RENDER-32-I`, WIP: not
-//! wired yet). One struct, its rules split by domain: [`super::copies`] (a block's pages, a tile's
-//! copies, growth), the tiles' requests and the hand-over (next). Every collection the GDScript
-//! iterated where the order reached an output is an [`OrderedMap`] (a Godot `Dictionary`'s
-//! order); the rest are hash maps.
+//! The graded renderer's state, ported from `terrain_graded_tiles.gd` (`RENDER-32-I` to `-K`) and
+//! owned by the book ([`super::book`]). One struct, its rules split by domain: [`super::copies`]
+//! (a block's pages, a tile's copies, growth), [`super::tiles`] (the requests and the hand-over),
+//! [`super::ops`] (patches, lists, the preview's tiles, the edit batch's reservation),
+//! [`super::cells`] (cell sets, walls and draw states). Every collection whose order reaches an
+//! output is an [`OrderedMap`] (the order the GDScript's `Dictionary` kept); the rest are hash
+//! maps.
 //!
-//! The GDScript renderer keeps the cells, the edit batch's staged results and the preview's
-//! waits; what the state decides for them comes back as [`Effect`]s in the order the GDScript
-//! made the same calls, which it applies after each call.
+//! What the state decides comes back as [`Effect`]s, in the order of the calls that made them:
+//! the book applies the cells', writes' and edit batch's itself and hands the renderer the rest
+//! (page arrays, Rust queue cancels, draw states).
 
 use super::ordered::OrderedMap;
 use super::pages::{Copy, PageEvent, PageStore};
@@ -74,8 +76,8 @@ pub(crate) enum Effect {
     Grew { code: u8, block: Block, slots: u32, layers: u32 },
     /// A block switched to its larger page (counted).
     Moved,
-    /// Upload the tile being placed into `page` at `copy`.
-    Write { page: u32, copy: Copy },
+    /// Upload the tile being placed, `tile`, into `page` at `copy` (from its own staged bake).
+    Write { tile: Tile, page: u32, copy: Copy },
     /// Block `block`'s sets bind its page at level `code` (`_bind_block`), `page` then.
     Bind { code: u8, block: Block, rewrite: bool, page: Option<u32> },
     /// Cancel `tile`'s pending bake; a `stale` cancel's answer goes back (`cancel_results`).
@@ -189,8 +191,10 @@ pub(crate) struct Graded {
     // The desired levels and their travel buckets, and the requests' half.
     pub(crate) levels: crate::nodes::sim::render::stream::levels::LevelBook,
     pub(crate) requests: super::tiles::Requests,
-    // Scratch for the wanted tiles a hand-over takes.
+    // Scratch for the wanted tiles a hand-over takes, and for an installing tile's old copies
+    // (`upload` reads them instead of cloning the entry, AUDIT-stream 11).
     pub(crate) wanted_scratch: Vec<Tile>,
+    pub(crate) old_copies: Vec<(u32, super::pages::Copy)>,
     // A trace records the hand-over's stale cancels in their place among the effects.
     pub(crate) markers: bool,
     // Scratch for a block's listed tiles.

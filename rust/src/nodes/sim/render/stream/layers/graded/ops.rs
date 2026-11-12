@@ -383,6 +383,15 @@ impl Graded {
         Some(token)
     }
 
+    /// A placed tile whose write found no bake of its own (AUDIT-stream 3, refused at the take):
+    /// its installed entry stops matching its token, so the next hand-over bakes it again.
+    pub(crate) fn rewrite(&mut self, tile: Tile) {
+        if let Some(entry) = self.installed.get_mut(&tile) {
+            entry.token = -1;
+        }
+        self.wanted.insert(tile, ());
+    }
+
     /// Whether queued work will change what the graded cells draw (`has_pending_work`'s part).
     pub(crate) fn has_pending_work(&self) -> bool {
         let requests = &self.requests;
@@ -437,5 +446,20 @@ mod tests {
         graded.resident.remove(&(0, 0));
         graded.patch_changed((0, 0), None);
         assert!(!graded.installed.contains_key(&near));
+    }
+
+    // AUDIT-stream 3: a placed tile whose write was refused (no bake of its own) is wanted
+    // again, its entry no longer matching any token, so the hand-over bakes it again.
+    #[test]
+    fn a_refused_write_bakes_its_tile_again() {
+        let mut graded = world();
+        let tile = Tile { x: -2, z: -2 };
+        graded.installed.insert(
+            tile,
+            Entry { cell_code: 0, level: 0, step: 0, token: 3, behind: false, copies: Vec::new(), adoptable: true, walls: Vec::new() },
+        );
+        graded.rewrite(tile);
+        assert_eq!(graded.installed.get(&tile).map(|entry| entry.token), Some(-1));
+        assert!(graded.wanted.contains_key(&tile));
     }
 }

@@ -245,14 +245,18 @@ impl GradedTileBook {
             i32::from(baked.behind),
         );
         let layers = (baked.rows.as_slice().len() / uploads::ATLAS_LAYER_BYTES) as u32;
-        let walls: Vec<f32> = baked
-            .walls
-            .as_slice()
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|bytes| f32::from_le_bytes(*bytes))
-            .collect();
+        // The faces into the reused scratch (a preview pose's frame allocates none, AUDIT-stream 11).
+        let mut walls = std::mem::take(&mut self.walls_scratch);
+        walls.clear();
+        walls.extend(
+            baked
+                .walls
+                .as_slice()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| f32::from_le_bytes(*bytes)),
+        );
         self.taken.recycle_bytes(baked.walls);
         self.stage(tile, level, baked.texels, baked.rows);
         let tile = tile_of(tile);
@@ -270,7 +274,9 @@ impl GradedTileBook {
                 .place_preview(tile, level, layers, &mut self.scratch),
         );
         self.state.settle();
-        self.state.cells.staged_walls = None;
+        if let Some((_, walls)) = self.state.cells.staged_walls.take() {
+            self.walls_scratch = walls;
+        }
         if placed == 0 {
             let before = std::mem::take(&mut self.before);
             self.state.shown_changed(tile, &before);

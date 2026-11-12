@@ -153,7 +153,7 @@ func made(page_id: int, reused: bool, code: int, block: Vector2i, slots: int, la
 func released(page_id: int, kept: bool) -> void:
 	if trace != null:
 		trace.out("page_release %d %d" % [page_id, int(kept)])
-	book.forget_page(page_id)
+	book.forget_page(page_id, kept)
 	if not kept:
 		by_id.erase(page_id)
 
@@ -161,6 +161,7 @@ func released(page_id: int, kept: bool) -> void:
 func dropped(page_id: int) -> void:
 	if trace != null:
 		trace.out("page_drop %d" % page_id)
+	book.forget_page(page_id, false)
 	by_id.erase(page_id)
 
 # The budget refused a page (the book records its tile exhausted).

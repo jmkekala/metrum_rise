@@ -228,7 +228,7 @@ impl Graded {
             let before = held_in(page_id);
             let copy = self.pages.page_mut(page_id).expect("live page").place(before, layers);
             if !(fresh && Some(copy) == before) {
-                self.effects.push(Effect::Write { page: page_id, copy });
+                self.effects.push(Effect::Write { tile, page: page_id, copy });
             }
             copies.push((page_id, copy));
             let holders = self.holders_mut(page_id);

@@ -337,34 +337,36 @@ impl Graded {
         scratch: &mut Vec<(PageRef, Block)>,
     ) -> bool {
         let (code, step, token, behind) = level;
-        let current = self.installed.get(&tile).cloned();
-        let same_level = current.as_ref().is_some_and(|entry| entry.level == code);
-        let held: Vec<(u32, Copy)> = if same_level {
-            current.as_ref().map(|entry| entry.copies.clone()).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let fresh = same_level
-            && current
-                .as_ref()
-                .is_some_and(|entry| entry.step == step && entry.token == token);
+        // The current entry's level, step, token, cell code and side, and its copies in the
+        // reused scratch: the entry itself is not cloned (AUDIT-stream 11).
+        let current = (self.installed.get(&tile))
+            .map(|entry| (entry.level, entry.step, entry.token, entry.cell_code, entry.behind));
+        let mut old = std::mem::take(&mut self.old_copies);
+        old.clear();
+        if let Some(entry) = self.installed.get(&tile) {
+            old.extend_from_slice(&entry.copies);
+        }
+        let same_level = current.is_some_and(|entry| entry.0 == code);
+        let held: &[(u32, Copy)] = if same_level { &old } else { &[] };
+        let fresh = same_level && current.is_some_and(|entry| entry.1 == step && entry.2 == token);
         let copies = match reserved {
-            None => match self.place_copies(tile, code, layers, &held, fresh, false, scratch) {
+            None => match self.place_copies(tile, code, layers, held, fresh, false, scratch) {
                 Ok(copies) => copies,
                 Err(failure) => {
                     if failure == PlaceFailure::Exhausted {
                         self.exhaust(tile, code, (tile, code, step), token);
                     }
+                    self.old_copies = old;
                     return false;
                 }
             },
             Some(copies) => {
                 for &(page, copy) in &copies {
                     if !(fresh && held.iter().any(|&(at, kept)| at == page && kept == copy)) {
-                        self.effects.push(Effect::Write { page, copy });
+                        self.effects.push(Effect::Write { tile, page, copy });
                     }
                 }
-                for &(page, copy) in &held {
+                for &(page, copy) in held {
                     if !copies.iter().any(|(at, _)| *at == page) {
                         self.free_copy(tile, page, copy, false);
                     }
@@ -377,10 +379,10 @@ impl Graded {
         }
         self.requests.exhausted.remove(&tile);
         let cell_code = cell_code(code, step);
-        let pages_changed = current.as_ref().is_none_or(|entry| {
-            entry.copies.len() != copies.len()
-                || copies.iter().any(|(page, _)| entry.copy_in(*page).is_none())
-        });
+        let pages_changed = current.is_none()
+            || old.len() != copies.len()
+            || copies.iter().any(|(page, _)| !old.iter().any(|(at, _)| at == page));
+        self.old_copies = old;
         // A tile moving between levels frees its copies in the old level's pages.
         if current.is_some() && !same_level {
             self.free_copies(tile, false);
@@ -395,12 +397,11 @@ impl Graded {
             self.effects.push(Effect::MaskChanged { tile });
         }
         self.hold(tile, code, step, token, true);
-        let redraw = current.as_ref().is_none_or(|entry| {
-            entry.level != code || entry.cell_code != cell_code || entry.behind != behind
-        }) || pages_changed;
+        let redraw = current.is_none_or(|entry| entry.0 != code || entry.3 != cell_code || entry.4 != behind)
+            || pages_changed;
         if redraw {
             if !previewed {
-                let sides = current.as_ref().is_none_or(|entry| entry.cell_code != cell_code);
+                let sides = current.is_none_or(|entry| entry.3 != cell_code);
                 self.effects.push(Effect::CellChanged { tile, sides });
             }
             self.effects.push(Effect::AwaitCells { tile });

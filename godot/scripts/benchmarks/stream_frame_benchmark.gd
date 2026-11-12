@@ -415,31 +415,29 @@ func _record_digest(label: String) -> void:
 # The graded level rule's ends, metres from the camera: where each of `GL0`-`GL2` ends for a tile
 # not held (`level_end_m`) and for one held at that level (`held_level_end_m`, the hysteresis
 # band's far side), `GL3`'s step ends, the levels as `[code, step]` and the tile size. The held
-# ends are found by asking the rule: a camera over tile (0, 0)'s centre at height h is h from it.
+# ends are found by asking the rule at a distance.
 func _graded_levels(tiles: Object) -> Dictionary:
 	var constants: Dictionary = tiles.get_script().get_script_constant_map()
 	var tile_m: float = constants["TILE_M"]
-	var levels := GradedTileLevels.new()
 	var held_ends: Array[float] = []
-	for code in GradedTileLevels.level_end_m().size():
+	for code in GradedTileBook.level_end_m().size():
 		var lo := 0.0
 		var hi := 100000.0
 		for _step in 64:
 			var mid := (lo + hi) * 0.5
-			levels.move_camera(Vector3(tile_m * 0.5, mid, tile_m * 0.5))
-			if levels.rule_level(Vector2i.ZERO, code).x <= code:
+			if GradedTileBook.level_at(mid, code).x <= code:
 				lo = mid
 			else:
 				hi = mid
 		held_ends.append(snappedf(hi, 0.001))
 	var finite_gl3: Array[float] = []
-	for end in GradedTileLevels.gl3_end_m():
+	for end in GradedTileBook.gl3_end_m():
 		if is_finite(end):
 			finite_gl3.append(end)
 	var steps: Array = []
 	for step: Vector2i in constants["LEVEL_STEPS"]:
 		steps.append([step.x, step.y])
-	return {"tile_m": tile_m, "level_end_m": Array(GradedTileLevels.level_end_m()),
+	return {"tile_m": tile_m, "level_end_m": Array(GradedTileBook.level_end_m()),
 		"held_level_end_m": held_ends, "gl3_end_m": finite_gl3, "level_steps": steps}
 
 # The view of the water phase (see the header): rings of WATER_SCAN_M about the world's centre,
