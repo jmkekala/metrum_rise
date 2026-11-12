@@ -569,7 +569,7 @@ func _record_parked_digest() -> void:
 	lines.sort()
 	_report.parked_digests.append({"point": _settle_points,
 		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
-		"batches": lines.size(), "digest": _sha("\n".join(lines).to_utf8_buffer())})
+		"batches": lines.size(), "digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines})
 
 # The building LOD batches at a settle point, whichever side draws them: Rust's stream backend
 # (`drawn_batches`) or the control's batch nodes (`batches`). Rows read back from the engine.

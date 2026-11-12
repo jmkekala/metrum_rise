@@ -72,7 +72,10 @@ func drawn_rows() -> Array[Dictionary]:
 		return out
 	for item: Dictionary in _stream.get_parked_drawn():
 		var multimesh: RID = item.multimesh
+		var rows := RenderingServer.multimesh_get_buffer(multimesh)
+		# -1: every instance draws (a slot filled to its capacity keeps the engine's default).
 		var count := RenderingServer.multimesh_get_visible_instances(multimesh)
-		var rows := RenderingServer.multimesh_get_buffer(multimesh).slice(0, count * 12)
+		if count >= 0:
+			rows = rows.slice(0, count * 12)
 		out.append({"chunk": item.chunk, "bucket": item.bucket, "rows": rows})
 	return out
