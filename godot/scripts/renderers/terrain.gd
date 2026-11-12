@@ -151,6 +151,10 @@ var patch_payload_road_generation: int = -1
 # Keys whose payload was requested for a prewarm build (a subset of patch_payload_requested): a
 # settled view does not wait for them.
 var _prewarm_requests: Dictionary = {}
+# The perf channel's split of this frame's patch builds (_create_patch), microseconds: builds,
+# total, resources, height texture, mesh and node, masks, material parameters, land cover.
+var _build_us := PackedFloat64Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+var _build_perf := false
 var pending_terrain_ack_states: PackedInt64Array = PackedInt64Array()
 var dirty_patch_payload_generations: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
@@ -309,6 +313,7 @@ func _on_visual_mode_changed(mode: String) -> void:
 func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
 	var perf_enabled := PerfDebug.is_enabled()
+	_build_perf = perf_enabled
 	var network_refresh_pending: bool = simulation_node.is_network_dirty()
 	var payload_poll_start_us := Time.get_ticks_usec()
 	var payload_poll_count := _poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
@@ -391,6 +396,15 @@ func _process(delta: float) -> void:
 			"border": border_elapsed_ms,
 			"water_sync": water_sync_elapsed_ms,
 		}
+		# The patch builds the streaming core ran since the last record (its units run after
+		# this script's frame).
+		var build_names := ["build_count", "build_ms", "build_resources_ms", "build_height_ms",
+			"build_node_ms", "build_masks_ms", "build_params_ms", "build_land_cover_ms",
+			"build_land_cover_query_ms", "build_land_cover_prepared"]
+		for part in build_names.size():
+			var counted := part == 0 or part == 9
+			perf_details[build_names[part]] = _build_us[part] if counted else _build_us[part] / 1000.0
+			_build_us[part] = 0.0
 		for key_variant in water_sync_perf_stats.keys():
 			var perf_key := str(key_variant)
 			perf_details[perf_key] = water_sync_perf_stats[key_variant]
@@ -676,6 +690,7 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 	var patch_data: Dictionary = _terrain_patch_data_for_key(key, false, allow_async)
 	if patch_data.is_empty():
 		return
+	var build_start_us := Time.get_ticks_usec() if _build_perf else 0
 	var sample_width := int(patch_data["sample_width"])
 	var sample_height := int(patch_data["sample_height"])
 	var texture_width := int(patch_data["texture_width"])
@@ -687,6 +702,7 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 	var inner_offset_x := float(patch_data["inner_offset_x"])
 	var inner_offset_z := float(patch_data["inner_offset_z"])
 	var patch_resources: Dictionary = _acquire_terrain_patch_resources()
+	var resources_us := Time.get_ticks_usec() if _build_perf else 0
 	var height_image: Image = patch_resources["height_image"] as Image
 	var height_texture: ImageTexture = _upload_terrain_patch_height_texture(
 		patch_resources,
@@ -694,6 +710,7 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 		texture_height,
 		_terrain_patch_height_bytes(patch_data)
 	)
+	var height_us := Time.get_ticks_usec() if _build_perf else 0
 	var patch_mesh: Mesh
 	var sample_step_m := world_size_x / float(max(1, sample_width - 1))
 	var initial_subdivision_factor := _mesh_subdivision_factor_for_patch(key, sample_step_m)
@@ -715,7 +732,9 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 	var material: ShaderMaterial = patch_resources["material"] as ShaderMaterial
 	material.shader = TERRAIN_SHADER
 	material.set_shader_parameter("heightmap", height_texture)
+	var node_us := Time.get_ticks_usec() if _build_perf else 0
 	_apply_patch_masks(key, material, _terrain_patch_mask_image(patch_data), texture_width, texture_height)
+	var masks_us := Time.get_ticks_usec() if _build_perf else 0
 	material.set_shader_parameter("overlay_texture", overlay_texture)
 	material.set_shader_parameter("coal_pit_texture", coal_pit_texture)
 	material.set_shader_parameter("coal_pit_overlay_world_bounds", coal_pit_overlay_world_bounds)
@@ -726,9 +745,7 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 	material.set_shader_parameter("terrain_grass_height", grass_height_texture)
 	material.set_shader_parameter("terrain_coal_albedo", coal_albedo_texture)
 	material.set_shader_parameter("terrain_grain_albedo", grain_albedo_texture)
-	WorldMaterials.apply_terrain_paving_parameters(material)
 	material.set_shader_parameter("overlay_mode", overlay_mode)
-	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("world_size", terrain_world_size)
 	material.set_shader_parameter("terrain_debug_patch_key", Vector2(key.x, key.y))
 	material.set_shader_parameter("terrain_debug_lod_step", float(initial_lod_step))
@@ -739,9 +756,7 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 		"scene_shadow_split_distances_m",
 		SceneLightingConfig.shadow_split_distances()
 	)
-	SceneLightingConfig.apply_ground_shadow_parameters(material)
 	SceneLightingConfig.apply_canopy_floor_shading(material)
-	TreeSpecies.apply_far_canopy(material)
 	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
 	material.set_shader_parameter("inner_sample_size_texels", Vector2(sample_width, sample_height))
@@ -750,43 +765,6 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 	material.set_shader_parameter("watermap_inner_sample_size_texels", Vector2(2, 2))
 	material.set_shader_parameter("patch_world_size_m", Vector2(world_size_x, world_size_z))
 	material.set_shader_parameter("terrain_cell_m", terrain_cell_m)
-	material.set_shader_parameter("terrain_grain_detail_scale", 1.0 / FIELD_OVERLAY_TEXTURE_TILE_M)
-	material.set_shader_parameter("terrain_field_strength", FIELD_OVERLAY_STRENGTH)
-	material.set_shader_parameter("terrain_grain_tint", FIELD_OVERLAY_GRAIN_TINT)
-	material.set_shader_parameter("terrain_grain_brightness", FIELD_OVERLAY_GRAIN_BRIGHTNESS)
-	material.set_shader_parameter("terrain_grain_mix_strength", FIELD_OVERLAY_GRAIN_MIX_STRENGTH)
-	material.set_shader_parameter("terrain_grain_macro_strength", FIELD_OVERLAY_GRAIN_MACRO_STRENGTH)
-	material.set_shader_parameter("terrain_rock_slope_start", TERRAIN_ROCK_SLOPE_START)
-	material.set_shader_parameter("terrain_rock_slope_end", TERRAIN_ROCK_SLOPE_END)
-	material.set_shader_parameter("terrain_relief_start_m", TERRAIN_RELIEF_START_M)
-	material.set_shader_parameter("terrain_relief_end_m", TERRAIN_RELIEF_END_M)
-	material.set_shader_parameter("terrain_shore_blend_strength", TERRAIN_SHORE_BLEND_STRENGTH)
-	material.set_shader_parameter("terrain_shore_lookup_radius_texels", TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS)
-	material.set_shader_parameter("cliff_slope_start", CLIFF_SLOPE_START)
-	material.set_shader_parameter("cliff_slope_end", CLIFF_SLOPE_END)
-	material.set_shader_parameter("cliff_relief_start_m", CLIFF_RELIEF_START_M)
-	material.set_shader_parameter("cliff_relief_end_m", CLIFF_RELIEF_END_M)
-	material.set_shader_parameter("cliff_sample_radius_texels", CLIFF_SAMPLE_RADIUS_TEXELS)
-	material.set_shader_parameter("cliff_lateral_smoothing_texels", CLIFF_LATERAL_SMOOTHING_TEXELS)
-	material.set_shader_parameter("cliff_face_strength", CLIFF_FACE_STRENGTH)
-	material.set_shader_parameter("cliff_edge_strength", CLIFF_EDGE_STRENGTH)
-	material.set_shader_parameter("cliff_contour_fade", CLIFF_CONTOUR_FADE)
-	material.set_shader_parameter("cliff_face_color", CLIFF_FACE_COLOR)
-	material.set_shader_parameter("cliff_top_edge_color", CLIFF_TOP_EDGE_COLOR)
-	material.set_shader_parameter("cliff_toe_edge_color", CLIFF_TOE_EDGE_COLOR)
-	material.set_shader_parameter("contour_minor_interval_m", CONTOUR_MINOR_INTERVAL_M)
-	material.set_shader_parameter("contour_major_interval_m", CONTOUR_MAJOR_INTERVAL_M)
-	material.set_shader_parameter("contour_minor_thickness", CONTOUR_MINOR_THICKNESS)
-	material.set_shader_parameter("contour_major_thickness", CONTOUR_MAJOR_THICKNESS)
-	material.set_shader_parameter("contour_minor_strength", CONTOUR_MINOR_STRENGTH)
-	material.set_shader_parameter("contour_major_strength", CONTOUR_MAJOR_STRENGTH)
-	material.set_shader_parameter(
-		"contour_relief_minor_boost_strength",
-		CONTOUR_RELIEF_MINOR_BOOST_STRENGTH
-	)
-	material.set_shader_parameter("contour_zero_elevation_fade_m", CONTOUR_ZERO_ELEVATION_FADE_M)
-	material.set_shader_parameter("contour_flat_relief_start_m", CONTOUR_FLAT_RELIEF_START_M)
-	material.set_shader_parameter("contour_flat_relief_end_m", CONTOUR_FLAT_RELIEF_END_M)
 	patch_node.material_override = material
 	_ensure_patch_node_parent(patch_node)
 	_terrain_debug_patch_creates += 1
@@ -830,9 +808,20 @@ func _create_patch(key: Vector2i, initial_lod_step: int, allow_async: bool = tru
 	}
 	_surface_commit_revision += 1
 
+	var params_us := Time.get_ticks_usec() if _build_perf else 0
 	patches[key]["land_cover"] = patch_resources.get("land_cover", {})
 	patches[key]["spare_land_cover"] = patch_resources.get("spare_land_cover", {})
-	_commit_patch_land_cover(patches[key], _stage_patch_land_cover(key, patches[key], true))
+	_commit_patch_land_cover(
+		patches[key],
+		_stage_patch_land_cover(key, patches[key], true, patch_data.get("land_cover", {}) as Dictionary)
+	)
+	if _build_perf:
+		var end_us := Time.get_ticks_usec()
+		var marks := [build_start_us, resources_us, height_us, node_us, masks_us, params_us, end_us]
+		_build_us[0] += 1.0
+		_build_us[1] += float(end_us - build_start_us)
+		for part in 6:
+			_build_us[part + 2] += float(marks[part + 1] - marks[part])
 
 func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	if not patches.has(key):
@@ -1254,6 +1243,53 @@ static func patch_cull_aabb(size_xz: Vector2) -> AABB:
 		Vector3(half.x * 2.0, PATCH_EXTRA_CULL_MARGIN_M * 2.0, half.y * 2.0)
 	)
 
+# The patch material's parameters that no patch, world or setting changes (`RENDER-32-M`): set
+# once when the pooled material is made, so a build sets only its own (a material keeps them
+# through the pool). The shadow distances and the canopy floor shading follow a setting and stay
+# per build, as before. (A template duplicated per material cost 0.31 ms a material.)
+func _apply_constant_patch_parameters(material: ShaderMaterial) -> void:
+	WorldMaterials.apply_terrain_paving_parameters(material)
+	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
+	SceneLightingConfig.apply_ground_shadow_parameters(material)
+	TreeSpecies.apply_far_canopy(material)
+	material.set_shader_parameter("terrain_grain_detail_scale", 1.0 / FIELD_OVERLAY_TEXTURE_TILE_M)
+	material.set_shader_parameter("terrain_field_strength", FIELD_OVERLAY_STRENGTH)
+	material.set_shader_parameter("terrain_grain_tint", FIELD_OVERLAY_GRAIN_TINT)
+	material.set_shader_parameter("terrain_grain_brightness", FIELD_OVERLAY_GRAIN_BRIGHTNESS)
+	material.set_shader_parameter("terrain_grain_mix_strength", FIELD_OVERLAY_GRAIN_MIX_STRENGTH)
+	material.set_shader_parameter("terrain_grain_macro_strength", FIELD_OVERLAY_GRAIN_MACRO_STRENGTH)
+	material.set_shader_parameter("terrain_rock_slope_start", TERRAIN_ROCK_SLOPE_START)
+	material.set_shader_parameter("terrain_rock_slope_end", TERRAIN_ROCK_SLOPE_END)
+	material.set_shader_parameter("terrain_relief_start_m", TERRAIN_RELIEF_START_M)
+	material.set_shader_parameter("terrain_relief_end_m", TERRAIN_RELIEF_END_M)
+	material.set_shader_parameter("terrain_shore_blend_strength", TERRAIN_SHORE_BLEND_STRENGTH)
+	material.set_shader_parameter("terrain_shore_lookup_radius_texels", TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS)
+	material.set_shader_parameter("cliff_slope_start", CLIFF_SLOPE_START)
+	material.set_shader_parameter("cliff_slope_end", CLIFF_SLOPE_END)
+	material.set_shader_parameter("cliff_relief_start_m", CLIFF_RELIEF_START_M)
+	material.set_shader_parameter("cliff_relief_end_m", CLIFF_RELIEF_END_M)
+	material.set_shader_parameter("cliff_sample_radius_texels", CLIFF_SAMPLE_RADIUS_TEXELS)
+	material.set_shader_parameter("cliff_lateral_smoothing_texels", CLIFF_LATERAL_SMOOTHING_TEXELS)
+	material.set_shader_parameter("cliff_face_strength", CLIFF_FACE_STRENGTH)
+	material.set_shader_parameter("cliff_edge_strength", CLIFF_EDGE_STRENGTH)
+	material.set_shader_parameter("cliff_contour_fade", CLIFF_CONTOUR_FADE)
+	material.set_shader_parameter("cliff_face_color", CLIFF_FACE_COLOR)
+	material.set_shader_parameter("cliff_top_edge_color", CLIFF_TOP_EDGE_COLOR)
+	material.set_shader_parameter("cliff_toe_edge_color", CLIFF_TOE_EDGE_COLOR)
+	material.set_shader_parameter("contour_minor_interval_m", CONTOUR_MINOR_INTERVAL_M)
+	material.set_shader_parameter("contour_major_interval_m", CONTOUR_MAJOR_INTERVAL_M)
+	material.set_shader_parameter("contour_minor_thickness", CONTOUR_MINOR_THICKNESS)
+	material.set_shader_parameter("contour_major_thickness", CONTOUR_MAJOR_THICKNESS)
+	material.set_shader_parameter("contour_minor_strength", CONTOUR_MINOR_STRENGTH)
+	material.set_shader_parameter("contour_major_strength", CONTOUR_MAJOR_STRENGTH)
+	material.set_shader_parameter(
+		"contour_relief_minor_boost_strength",
+		CONTOUR_RELIEF_MINOR_BOOST_STRENGTH
+	)
+	material.set_shader_parameter("contour_zero_elevation_fade_m", CONTOUR_ZERO_ELEVATION_FADE_M)
+	material.set_shader_parameter("contour_flat_relief_start_m", CONTOUR_FLAT_RELIEF_START_M)
+	material.set_shader_parameter("contour_flat_relief_end_m", CONTOUR_FLAT_RELIEF_END_M)
+
 func _new_terrain_patch_resources() -> Dictionary:
 	var patch_node := MeshInstance3D.new()
 	patch_node.name = "TerrainPatchPool"
@@ -1267,6 +1303,7 @@ func _new_terrain_patch_resources() -> Dictionary:
 
 	var material := ShaderMaterial.new()
 	material.shader = TERRAIN_SHADER
+	_apply_constant_patch_parameters(material)
 	patch_node.material_override = material
 
 	var texture_size: Vector2i = _terrain_default_patch_texture_size()
@@ -1294,11 +1331,19 @@ func _terrain_default_patch_texture_size() -> Vector2i:
 
 # A coverage upload uses the same active/spare ownership as the height texture. Building a
 # terrain stage cannot mutate the currently displayed texture; commit swaps both products.
-func _stage_patch_land_cover(key: Vector2i, patch: Dictionary, force: bool = false) -> Dictionary:
+## `prepared` is the land cover the patch's payload carried (`RENDER-32-M`: built on the payload
+## worker, the same bytes and revisions as the query); empty, the core is queried here.
+func _stage_patch_land_cover(
+	key: Vector2i, patch: Dictionary, force: bool = false, prepared: Dictionary = {}
+) -> Dictionary:
 	var current: Dictionary = patch.get("land_cover", {})
 	if not force and not current.is_empty() and simulation_node.is_vegetation_land_cover_current(key, current["generations"]):
 		return current
-	var data: Dictionary = simulation_node.get_vegetation_land_cover(key)
+	var query_us := Time.get_ticks_usec() if _build_perf else 0
+	var data: Dictionary = prepared if not prepared.is_empty() else simulation_node.get_vegetation_land_cover(key)
+	if _build_perf:
+		_build_us[8] += float(Time.get_ticks_usec() - query_us)
+		_build_us[9] += 0.0 if prepared.is_empty() else 1.0
 	var spare: Dictionary = patch.get("spare_land_cover", {})
 	var image: Image = spare.get("image", null) as Image
 	if image == null:
@@ -1604,7 +1649,7 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 	return accepted_count
 
 # Drops held and requested payloads the streaming core no longer wants: outside its prewarm
-# square (the wanted square and one patch beyond), and held payloads of built patches. O(held +
+# square (the wanted square), and held payloads of built patches. O(held +
 # requested payloads), none on a settled frame.
 func _prune_patch_payload_cache() -> void:
 	_sync_patch_payload_road_generation()

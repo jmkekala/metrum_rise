@@ -55,6 +55,9 @@ impl SimulationNode {
         let mut dict = Self::terrain_patch_metadata_dict(patch);
         dict.set("height_bytes", PackedByteArray::from(height_bytes.as_slice()));
         Self::set_mask_bytes(&mut dict, patch, &payload.mask_bytes);
+        if let Some(land_cover) = payload.land_cover.as_ref().and_then(|cover| cover.payload()) {
+            dict.set("land_cover", land_cover);
+        }
         dict.set("render_step_mm", i64::from(payload.key.render_step_mm));
         dict.set(
             "surface_generation",

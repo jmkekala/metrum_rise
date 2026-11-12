@@ -552,3 +552,33 @@ fn vegetation_snapshot_on_a_saved_city() {
         live_total,
     );
 }
+
+// A terrain patch's land cover built on the payload worker (`RENDER-32-M`) is the main-thread
+// query's, texel for texel, on every patch of the populated fixture.
+#[test]
+fn terrain_land_cover_from_the_payload_snapshot_equals_the_live_query() {
+    let mut core = populated();
+    let layout = super::PatchLayout::new(&core);
+    let (cols, rows) = (
+        (layout.half_w * 2.0 / layout.span).ceil() as i32,
+        (layout.half_h * 2.0 / layout.span).ceil() as i32,
+    );
+    let mut covered = 0;
+    for z in 0..rows {
+        for x in 0..cols {
+            let key = Vector2i::new(x, z);
+            let mut prepared = super::PatchLandCover::take(&mut core, key).expect("inputs ready");
+            prepared.bake();
+            let origin = Vector2::new(
+                x as f32 * layout.span - layout.half_w,
+                z as f32 * layout.span - layout.half_h,
+            );
+            core.prepare_site_queries();
+            let live = Coverage::build(&core, origin, layout.span).bytes();
+            assert_eq!(prepared.coverage_bytes(), live, "land cover of {key:?}");
+            covered += live.iter().filter(|&&byte| byte > 0).count();
+        }
+    }
+    assert!(covered > 100, "{covered} covered texels");
+    assert!(super::PatchLandCover::take(&mut core, Vector2i::new(cols, 0)).is_none());
+}

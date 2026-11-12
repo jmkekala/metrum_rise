@@ -23,7 +23,7 @@ use crate::nodes::camera_node::CameraNode;
 use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow};
 use crate::nodes::sim::render::stream::layers::terrain::{
     Activation, PatchExecutor, PatchGrid, PatchKey as TerrainKey, PatchStream, PatchWork, Payload,
-    TERRAIN_COSTS, TERRAIN_LIMITS, WATER_COSTS, WATER_LIMITS,
+    POST_LOAD_PATCH_BUDGET_US, TERRAIN_COSTS, TERRAIN_LIMITS, WATER_COSTS, WATER_LIMITS,
 };
 use crate::nodes::sim::render::stream::layers::vegetation::residency::{
     PatchJobs, PatchOrder, ResidencySettings, Standing, VegetationResidency,
@@ -70,6 +70,10 @@ pub struct StreamNode {
     water_scripts: Option<Gd<Node>>,
     full_world: bool,
     load_settling: bool,
+    // The post-load window (`POST_LOAD_PATCH_BUDGET_US`): from a world reset until the patches
+    // first settle, their units run under their own budget.
+    post_load_window: bool,
+    post_load_budget: FrameBudget,
     camera_far: f32,
     delta: f64,
     frame_patch_us: f64,
@@ -104,6 +108,8 @@ impl INode for StreamNode {
             water_scripts: None,
             full_world: false,
             load_settling: false,
+            post_load_window: false,
+            post_load_budget: FrameBudget::new(POST_LOAD_PATCH_BUDGET_US),
             camera_far: f32::INFINITY,
             delta: 0.0,
             frame_patch_us: 0.0,
@@ -582,6 +588,7 @@ impl StreamNode {
         });
         self.terrain.reset(grid);
         self.water.reset(grid);
+        self.post_load_window = grid.is_some();
         self.terrain_scripts = Some(terrain);
         self.water_scripts = water;
     }
@@ -630,7 +637,9 @@ impl StreamNode {
         for key in self.terrain.resident_keys().collect::<Vec<_>>() {
             self.water.set_wanted(key, true);
         }
-        self.water.set_halo(self.terrain.halo());
+        if let (Some(grid), Some(square)) = (self.terrain.grid(), self.terrain.square()) {
+            self.water.set_halo(Some(grid.widen(square, WATER_LIMITS.halo)));
+        }
         self.water_scripts = Some(water);
     }
 
@@ -656,7 +665,7 @@ impl StreamNode {
     }
 
     /// The terrain's prewarm square, `(min_x, min_z, max_x, max_z)` in patches (the wanted
-    /// square and one patch beyond); `(0, 0, -1, -1)` before a view.
+    /// square: the terrain builds nothing beyond it); `(0, 0, -1, -1)` before a view.
     #[func]
     pub fn get_terrain_halo(&self) -> Vector4i {
         self.terrain
@@ -722,30 +731,31 @@ impl StreamNode {
             })
         };
         let unbudgeted = self.load_settling;
-        // The terrain first, then the water with what is left: the water's holes are terrain
-        // patches resident since the last frame. (Water first starved the terrain's 0.5 ms builds
-        // of the frame's last fraction: Kuopio's load settled 0.6 s later.)
-        if let Some(scripts) = self.terrain_scripts.as_mut() {
-            let mut exec = ScriptExecutor(scripts);
-            self.terrain_work = self.terrain.frame(
-                eye,
-                self.delta,
-                &mut self.budget,
-                &self.clock,
-                unbudgeted,
-                &in_view,
-                &mut exec,
-            );
+        // In the post-load window the patch units run under their own budget, the stream node's
+        // frame budget otherwise (vegetation shares that one).
+        let window = self.post_load_window && !unbudgeted;
+        if window {
+            self.post_load_budget.begin_frame();
         }
-        self.follow_terrain();
-        self.water.set_halo(self.terrain.halo());
+        let window_before = self.post_load_budget.measured_us;
+        // The water first, then the terrain: the water's holes are terrain patches resident since
+        // the last frame and its units are cheap, so a shore draws a frame after its ground, as
+        // the scripts drew it, and the water's first draw (its shader's first use) falls inside
+        // the load like the terrain's.
+        self.water
+            .set_halo(self.terrain.square().map(|square| grid.widen(square, WATER_LIMITS.halo)));
         self.water.hold_prewarm(self.terrain.has_pending_work());
         if let Some(scripts) = self.water_scripts.as_mut() {
             let mut exec = ScriptExecutor(scripts);
+            let budget = if window {
+                &mut self.post_load_budget
+            } else {
+                &mut self.budget
+            };
             self.water_work = self.water.frame(
                 eye,
                 self.delta,
-                &mut self.budget,
+                budget,
                 &self.clock,
                 unbudgeted,
                 &in_view,
@@ -754,8 +764,39 @@ impl StreamNode {
             self.water.take_changes().for_each(drop);
             self.water.take_generations().for_each(drop);
         }
+        if let Some(scripts) = self.terrain_scripts.as_mut() {
+            let mut exec = ScriptExecutor(scripts);
+            let budget = if window {
+                &mut self.post_load_budget
+            } else {
+                &mut self.budget
+            };
+            self.terrain_work = self.terrain.frame(
+                eye,
+                self.delta,
+                budget,
+                &self.clock,
+                unbudgeted,
+                &in_view,
+                &mut exec,
+            );
+        }
+        self.follow_terrain();
+        // The window closes when the patches first settle with residents.
+        if self.post_load_window
+            && self.terrain.resident_count() > 0
+            && !self.terrain.has_pending_work()
+            && !self.water.has_pending_work()
+        {
+            self.post_load_window = false;
+        }
         self.frame_patch_us = start.elapsed().as_secs_f64() * 1e6;
-        self.frame_patch_units_us = self.budget.measured_us - units_before;
+        self.frame_patch_units_us = self.budget.measured_us - units_before
+            + if window {
+                self.post_load_budget.measured_us - window_before
+            } else {
+                0.0
+            };
     }
 
     // The terrain's residency changes: the water's wanted set and the vegetation's tiers.
@@ -933,6 +974,7 @@ impl StreamNode {
         if self.terrain.grid().is_some() {
             let mut patches = VarDictionary::new();
             patches.set("units_ms", self.frame_patch_units_us / 1000.0);
+            patches.set("post_load_window", self.post_load_window);
             for (name, layer, work) in [
                 ("terrain", &self.terrain, self.terrain_work),
                 ("water", &self.water, self.water_work),

@@ -123,6 +123,9 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayload {
     /// Baked shading masks for the payload's height samples, filled on the payload worker.
     /// Empty until then, or for a failure payload with nothing to draw.
     pub(in crate::nodes::simulation_node) mask_bytes: Vec<u8>,
+    /// The patch's land cover, built on the payload worker (`RENDER-32-M`); `None` when its
+    /// inputs could not be taken with the payload.
+    pub(in crate::nodes::simulation_node) land_cover: Option<super::super::vegetation_api::PatchLandCover>,
 }
 
 impl TerrainPatchPayload {
@@ -130,6 +133,9 @@ impl TerrainPatchPayload {
     pub(in crate::nodes::simulation_node) fn bake_shading_masks(&mut self) {
         let TerrainPatchPayloadData::Regular { patch, .. } = &self.data;
         self.mask_bytes = patch.shading_mask_bytes();
+        if let Some(land_cover) = self.land_cover.as_mut() {
+            land_cover.bake();
+        }
     }
 }
 

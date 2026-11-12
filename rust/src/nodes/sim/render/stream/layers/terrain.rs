@@ -19,8 +19,9 @@
 //!   over the patch lattice, so a check visits the cells near the three thresholds, and a patch
 //!   whose installed step differs from its ring step is queued; a queued patch takes the step of
 //!   the eye when its unit runs.
-//! - **Prewarm.** Once nothing is missing, queued or leaving, the patches one beyond the square
-//!   are built hidden, nearest first.
+//! - **Prewarm.** Once nothing is missing, queued or leaving, the water's patches one beyond
+//!   the terrain's square are built hidden, nearest first ([`Limits::halo`]); the terrain's
+//!   prewarm square is its wanted square, as its scripts' was in effect.
 //!
 //! The units run in the scheduler's order (`schedule::Class`): holes in view, holes within the
 //! near ring (the 2 km of `TERRAIN-15`'s hand-over), other holes, level changes in view, other
@@ -56,6 +57,16 @@ impl PatchGrid {
     /// The patch side, metres, as `terrain.gd` computes it.
     pub(crate) fn span(&self) -> f64 {
         f64::from(self.cell) * f64::from(self.interval)
+    }
+
+    /// `rect` widened by `by` patches on every side, clamped to the grid.
+    pub(crate) fn widen(&self, rect: [i32; 4], by: i32) -> [i32; 4] {
+        [
+            (rect[0] - by).max(0),
+            (rect[1] - by).max(0),
+            (rect[2] + by).min(self.cols - 1),
+            (rect[3] + by).min(self.rows - 1),
+        ]
     }
 
     fn len(&self) -> usize {
@@ -129,8 +140,6 @@ impl PatchGrid {
 pub(crate) const CULL_FAR_M: f64 = 8000.0;
 /// Patches of hysteresis about the wanted square (`PATCH_RESIDENCY_HYSTERESIS_PATCHES`).
 pub(crate) const HYSTERESIS_PATCHES: i32 = 2;
-/// Patches of prewarm halo about the wanted square (`PATCH_PREWARM_HALO_PATCHES`).
-pub(crate) const PREWARM_HALO_PATCHES: i32 = 1;
 /// The level of detail thresholds, metres of 3D distance: steps 1, 2 and 4 within them, 8 beyond.
 pub(crate) const LOD_DISTANCES_M: [f64; 3] = [2000.0, 5000.0, 12000.0];
 /// The level of detail check's gate: seconds since the last check (`..._REFRESH_INTERVAL_S`).
@@ -213,12 +222,23 @@ impl LodGate {
 pub(crate) struct Limits {
     /// Payload requests handed out per frame (the scripts' request budgets: jobs, not time).
     pub(crate) requests: usize,
+    /// Patches of prewarm halo about the wanted square.
+    pub(crate) halo: i32,
 }
 
-/// Terrain's limits (`PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME`).
-pub(crate) const TERRAIN_LIMITS: Limits = Limits { requests: 32 };
-/// Water's limits (`WATER_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME`).
-pub(crate) const WATER_LIMITS: Limits = Limits { requests: 64 };
+/// Terrain's limits (`PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME`). No halo: the scripts' terrain
+/// prewarm built nothing beyond the square, because their payload prune dropped every payload
+/// outside it each frame; the core keeps that.
+pub(crate) const TERRAIN_LIMITS: Limits = Limits {
+    requests: 32,
+    halo: 0,
+};
+/// Water's limits (`WATER_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME`): its halo is one patch about
+/// the terrain's square (`WATER_PATCH_PREWARM_HALO_PATCHES`), which its scripts did build.
+pub(crate) const WATER_LIMITS: Limits = Limits {
+    requests: 64,
+    halo: 1,
+};
 
 /// Predicted costs of the units, microseconds: fixed, from the scripts' measured unit times
 /// with a margin (`RENDER-32-M` record), never adapted.
@@ -235,12 +255,13 @@ pub(crate) struct UnitCosts {
 }
 
 /// Terrain's unit costs, measured on Kuopio's load (`RENDER-32-M` record): a build (a height
-/// image and texture, a mask layer, land cover and about a hundred material parameters in
-/// `terrain.gd`) takes 0.49 ms at the median; an activation of a built patch is a node shown, a
-/// level change and the graded hand-over's bookkeeping.
+/// image and texture, a mask layer, the land cover from its payload and the patch's own material
+/// parameters in `terrain.gd`) takes 0.16 ms a build (0.41 before the land cover left the main
+/// thread and the constant parameters moved to the pooled material); an activation of a built
+/// patch is a node shown, a level change and the graded hand-over's bookkeeping.
 pub(crate) const TERRAIN_COSTS: UnitCosts = UnitCosts {
     activate_us: 100.0,
-    build_us: 500.0,
+    build_us: 200.0,
     lod_us: 60.0,
     free_us: 40.0,
 };
@@ -252,6 +273,13 @@ pub(crate) const WATER_COSTS: UnitCosts = UnitCosts {
     lod_us: 40.0,
     free_us: 30.0,
 };
+
+/// The post-load window's budget for the patch units, microseconds (`RENDER-32-M`): from a world
+/// load (after the load's hold, `set_load_settling`) until the terrain and water first settle,
+/// their units may spend what the scripts spent a frame on Kuopio's load (`terrain.gd` without
+/// its graded renderer 3.95 ms, `water.gd` 1.27 ms, `dev` `daec355a`, instrumented); afterwards
+/// the stream node's 2.0 ms frame budget applies.
+pub(crate) const POST_LOAD_PATCH_BUDGET_US: f64 = 5200.0;
 
 /// What an activation did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -589,6 +617,11 @@ impl PatchStream {
         self.halo
     }
 
+    /// The wanted square (terrain).
+    pub(crate) fn square(&self) -> Option<[i32; 4]> {
+        self.square
+    }
+
     fn mark_wanted(&mut self, index: usize, wanted: bool) {
         let flags = self.flags[index];
         if (flags & WANTED != 0) == wanted {
@@ -676,13 +709,7 @@ impl PatchStream {
             return;
         }
         self.square = Some(square);
-        let halo = [
-            (square[0] - PREWARM_HALO_PATCHES).max(0),
-            (square[1] - PREWARM_HALO_PATCHES).max(0),
-            (square[2] + PREWARM_HALO_PATCHES).min(grid.cols - 1),
-            (square[3] + PREWARM_HALO_PATCHES).min(grid.rows - 1),
-        ];
-        self.set_halo(Some(halo));
+        self.set_halo(Some(grid.widen(square, self.limits.halo)));
         if let Some(old) = old {
             for_each_in_difference(old, square, |x, z| {
                 self.mark_wanted(grid.index([x, z]), false);

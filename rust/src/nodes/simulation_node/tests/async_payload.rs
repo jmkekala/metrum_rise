@@ -85,6 +85,7 @@ fn terrain_patch_payload_async_clear_drops_stale_world_payloads() {
             height_bytes: Vec::new(),
         },
         mask_bytes: Vec::new(),
+        land_cover: None,
     };
     state.completed.push(payload);
     let completed = std::mem::take(&mut state.completed);
@@ -121,6 +122,7 @@ fn terrain_patch_payload_async_generation_change_requeues_key() {
             height_bytes: Vec::new(),
         },
         mask_bytes: Vec::new(),
+        land_cover: None,
     };
     state.ingest_completed(vec![old_payload]);
     assert!(state.has_current_request(key, 1));
@@ -184,6 +186,7 @@ fn terrain_patch_payload_async_stale_completion_never_becomes_ready() {
             height_bytes: Vec::new(),
         },
         mask_bytes: Vec::new(),
+        land_cover: None,
     }]);
 
     assert!(!state.has_in_flight(key));

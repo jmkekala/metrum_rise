@@ -103,7 +103,16 @@ impl SimulationNode {
         let (mut failed, mut refused) = (Vec::new(), Vec::new());
         for request in requests {
             match Self::terrain_patch_payload_for_request(&mut core, request) {
-                Ok(source) => sources.push(source),
+                Ok(mut source) => {
+                    // The land cover's inputs with the payload, its coverage built off the lock
+                    // (`RENDER-32-M`): the patch's build no longer queries it on the main thread.
+                    let key = Vector2i::new(
+                        i32::try_from(request.key.patch_x).unwrap_or(i32::MAX),
+                        i32::try_from(request.key.patch_z).unwrap_or(i32::MAX),
+                    );
+                    source.land_cover = super::super::vegetation_api::PatchLandCover::take(&mut core, key);
+                    sources.push(source);
+                }
                 Err(PayloadDeferral::Retry) => failed.push(request),
                 Err(PayloadDeferral::Refused(reason)) => refused.push((request, reason)),
             }
@@ -231,6 +240,7 @@ impl SimulationNode {
                 height_bytes,
             },
             mask_bytes: Vec::new(),
+            land_cover: None,
         })
     }
 

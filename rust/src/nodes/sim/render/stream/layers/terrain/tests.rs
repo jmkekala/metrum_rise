@@ -288,7 +288,7 @@ fn water_follows_terrain_residency_and_prewarm_waits_for_the_rest() {
         for (key, resident) in terrain.take_changes() {
             water.set_wanted(key, resident);
         }
-        water.set_halo(terrain.halo());
+        water.set_halo(terrain.square().map(|square| GRID.widen(square, WATER_LIMITS.halo)));
         let mut budget = FrameBudget::new(f64::INFINITY);
         water.frame(Some(eye), 0.016, &mut budget, &FixedClock, false, &|_| false, &mut lake);
         deliver(&mut water, &mut lake);
@@ -297,9 +297,11 @@ fn water_follows_terrain_residency_and_prewarm_waits_for_the_rest() {
     let land_resident: BTreeSet<_> = terrain.resident_keys().collect();
     let lake_resident: BTreeSet<_> = water.resident_keys().collect();
     assert_eq!(land_resident, lake_resident);
-    // Settled: the halo is built hidden on both layers.
-    let halo = square_keys(terrain.halo().unwrap());
-    assert!(halo.iter().all(|key| land.built.contains(key)));
+    // Settled: the water's halo (a patch beyond the terrain's square) is built hidden; the
+    // terrain builds nothing beyond its square, as its scripts did.
+    let square = terrain.square().unwrap();
+    assert_eq!(terrain.halo(), Some(square));
+    let halo = square_keys(GRID.widen(square, WATER_LIMITS.halo));
     assert!(halo.iter().all(|key| lake.built.contains(key)));
 }
 

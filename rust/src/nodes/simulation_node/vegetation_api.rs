@@ -12,6 +12,7 @@ use crate::simulation::vegetation::{hash, unit};
 use brush::preset;
 use world::VegetationWorld;
 pub(crate) use jobs::VegetationJobs;
+pub(crate) use land_cover::PatchLandCover;
 
 mod brush;
 mod hedge_runs;

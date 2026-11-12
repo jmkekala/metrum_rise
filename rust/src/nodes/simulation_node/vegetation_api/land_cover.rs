@@ -129,6 +129,12 @@ impl Coverage {
         data
     }
 
+    /// The texels' bytes, as the bridge's (tests).
+    #[cfg(test)]
+    pub(super) fn bytes(&self) -> Vec<u8> {
+        (0..self.samples.len()).map(|i| self.byte(i)).collect()
+    }
+
     /// Dimensions, bytes and world bounds alone, for a reader that tracks no revisions.
     pub(super) fn grid(&self) -> VarDictionary {
         let mut bytes = PackedByteArray::new();
@@ -191,6 +197,67 @@ impl Coverage {
             ),
         );
         data
+    }
+}
+
+/// A terrain patch's land cover prepared off the main thread (`RENDER-32-M`): the inputs and the
+/// revisions are taken with the patch's payload under the core lock ([`Self::take`]), the
+/// coverage is built on the payload worker ([`Self::bake`]) from the same snapshot the vegetation
+/// jobs query, bit for bit the main-thread query's (`get_vegetation_land_cover`), and the bridge
+/// dictionary is made at the poll ([`Self::payload`]).
+pub(crate) struct PatchLandCover {
+    inputs: Option<super::world::VegetationPatchInputs>,
+    origin: Vector2,
+    span: f32,
+    generations: [i64; 18],
+    coverage: Option<Coverage>,
+}
+
+impl PatchLandCover {
+    /// Takes patch `key`'s inputs and revisions. `None` outside the world, or while the roadbed
+    /// or the site index is being rebuilt (the renderer then queries on its own). `O(1)` plus
+    /// the window's sites, index tiles, fields and edited cells.
+    pub(crate) fn take(core: &mut SimCore, key: Vector2i) -> Option<Self> {
+        let layout = super::PatchLayout::new(core);
+        if key.x < 0
+            || key.y < 0
+            || key.x as f32 * layout.span >= layout.half_w * 2.0
+            || key.y as f32 * layout.span >= layout.half_h * 2.0
+        {
+            return None;
+        }
+        let origin = Vector2::new(
+            key.x as f32 * layout.span - layout.half_w,
+            key.y as f32 * layout.span - layout.half_h,
+        );
+        let inputs = super::world::VegetationPatchInputs::take(core, origin, layout.span)?;
+        Some(Self {
+            inputs: Some(inputs),
+            origin,
+            span: layout.span,
+            generations: generations(core, key),
+            coverage: None,
+        })
+    }
+
+    /// Builds the coverage from the taken inputs and drops them. Off the main thread.
+    pub(crate) fn bake(&mut self) {
+        if let Some(inputs) = self.inputs.take() {
+            self.coverage = Some(Coverage::build(&inputs, self.origin, self.span));
+        }
+    }
+
+    /// The baked texels' bytes (tests).
+    #[cfg(test)]
+    pub(super) fn coverage_bytes(&self) -> Vec<u8> {
+        self.coverage.as_ref().map(Coverage::bytes).unwrap_or_default()
+    }
+
+    /// The bridge dictionary of `get_vegetation_land_cover`, once baked.
+    pub(crate) fn payload(&self) -> Option<VarDictionary> {
+        self.coverage
+            .as_ref()
+            .map(|coverage| coverage.payload(self.generations))
     }
 }
 
