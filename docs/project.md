@@ -56,6 +56,9 @@ empty pages are bounded at 32 MiB (`TERRAIN-09`). `RENDER-32-E` (built, not yet 
 vegetation through pooled `RenderingServer` objects from Rust under one 2.0 ms streaming budget a
 frame, with no node per patch: stills identical, the vegetation's frame time on a 30k turn about
 1 ms (control 1.6-1.8) and at most 1.5 ms of installs in any frame.
+`RENDER-32-G` (accepted by the user 2026-11-12) stops re-solving and re-uploading cars that
+stand still: the 30k city's agents cost 0.27 ms a paused frame instead of 4.4 ms, and 1.7 ms at
+1x instead of 3.7.
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,

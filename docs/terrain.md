@@ -11839,7 +11839,8 @@ Instrumented (shares, not times; mean ms a frame of the timed scripts):
   staleness sweep walk every patch (1.1-3.3 ms). Single uploads reach 58 ms at 30k and 32 ms on
   Kuopio.
 - **Agents** (`RENDER-28`): `smooth_car_render_data` is 3.9-4.0 ms of every 30k frame, paused
-  included; by elimination the off-lane ground solve re-solving unchanged poses (T37).
+  included; by elimination the off-lane ground solve re-solving unchanged poses (T37). Confirmed by
+  `RENDER-32-G`'s split timer, and fixed there.
 - **Street lights** (`RENDER-33`), **building LOD** (`RENDER-34`), **the reflection's vote**
   (`RENDER-35`) and **road hydration at a load** (`RENDER-36`, one 1.5-2 s frame at 100k) had no
   row before.
@@ -13163,6 +13164,158 @@ ms); `-D`'s 30k `pan_repeat` wanted-to-drawn median: met (0 against 0); `-D`'s b
 0.05 ms a frame on Kuopio: met (0.010 at most, mean). Not bars, for review: the GDScript request on
 two 30k frames (2.12 ms on `turn_repeat 1s`, 1.79 on `zoom_out`; control 2.52 and 1.24 on its
 own frames) belongs to the request path `RENDER-32-F` replaces; the 30k `jump` frame's maximum.
+
+### Agents without a visual change (`RENDER-32-G`, 2026-11-11)
+
+A1, `RENDER-28`'s first part. Branch `stream-a1`, off `dev` `239d1c1e`, rebased onto `f1c93527`.
+The user accepted (2026-11-12) the one change to the plan's bars: the smoothing never settles on
+its own, so "uploaded buffers equal to control's frame by frame" is tested as bit for bit until a
+car first rests and within 16 units in the last place after (below).
+
+**The split first** (instrumented, the split-only build `68e85686`, `063a29e6` after the rebase,
+behaviour equal to `dev`, 30k city, one run each; mean ms a frame):
+
+| | 30k paused, still | 30k paused, 1 s turns | 30k 1x, still | 30k 1x, 1 s turns |
+|---|---:|---:|---:|---:|
+| agents (the renderer's whole record) | 4.25 | 4.02-4.22 | 4.03 | 3.78-4.01 |
+| `smooth_car_render_data` | 3.87 | 3.56-3.76 | 3.48 | 3.05-3.28 |
+| of it: smoothing (with the copy of the snapshot poses) | 0.95 | 1.01-1.32 | 0.78 | 0.72-1.08 |
+| of it: off-lane ground solve (with the core attempt) | 2.67 | 2.08-2.47 | 2.43 | 1.75-2.30 |
+| of it: recording | 0.08 | 0.07-0.08 | 0.08 | 0.07-0.08 |
+| cars drawn / off-lane / off-lane solved | 3,408 / 254 / 221 | 3,300-3,400 / 178-191 / 141-169 | 3,349 / 239 / 192 | 3,240-3,320 / 170-180 / 114-155 |
+| snapshot poses bit for bit last frame's: all / off-lane | 100% / 100% | 97-99% / 96-98% | 10.5% / 50% | 16-17% / 32-36% |
+
+So the plan's attribution holds: the ground solve is two thirds of the cars' time, and paused it
+re-solves poses that have not changed. Two findings beside it: an off-lane solve costs 10-12 us a
+car on the main thread (254 cars, 2.7 ms), far above the 0.4 us `RENDER-14` measured on a synthetic
+surface, which turned out to be the per-bucket pool waits below; and 13% of the off-lane cars show
+their snapshot pose on a paused frame because the core was busy. At 1x half the off-lane cars wait
+with an unchanged pose, so the share the split attributes to unchanged poses is about 1.3 ms of the
+1x still (half the solve, a tenth of the smoothing). The first 1x run had in fact run paused: the
+stream benchmark set the speed at the load call, before the world's hand-over, which ignores it; it
+now sets it again once settled (a fix to `PERF-23`'s 1x variant, which had never run at 1x).
+
+**What changed:**
+
+- **Rest** (`car_visual.rs`). The smoothing never settles: on a fixed snapshot pose it wanders one
+  or two units in the last place every frame (measured, 5,000 cars over 2,000 frames of varying
+  frame time), so a paused city re-smoothed, re-solved and re-uploaded every car. A car whose drawn
+  pose has come within 8 units in the last place of its snapshot pose (of the larger magnitude, at
+  least 1: under a millimetre at 4 km from the origin; an off-lane car compares the inputs of its
+  solve, its XZ and horizontal heading) is at rest and, while its snapshot pose stays bit for bit,
+  is drawn exactly as it was: no smoothing and no solve. The solve it keeps grounded that very pose,
+  so it is bit for bit a fresh solve's answer while the ground and the car's side of the full-detail
+  radius stay. Not a visual change: the drawn pose stops inside the band the control wanders in.
+- **The ground key.** `SimCore::vehicle_ground_generation` counts the changes of the ground a
+  vehicle stands on at the points that already forget parked poses (every record of the graded edit
+  journal, a dense reset, a new support profile); the snapshot publishes it with the world epoch and
+  the full-detail radius as `vehicle_ground_key`. A changed key re-solves every off-lane car once. A
+  busy core restores the snapshot pose only of the cars it could not solve; resting ones keep
+  theirs.
+- **Untouched buckets.** A bucket whose snapshot inputs (ids, poses, flags) are bit for bit last
+  frame's, whose cars all rest and, for its off-lane cars, whose ground key and sides of the radius
+  stay, is not touched: no lookup, no upload. `smooth_car_render_data` returns the node's own
+  dictionary of drawn buffers; `get_changed_car_buckets()` lists the ones to upload, and `agents.gd`
+  uploads only those. Drawn cars are kept in one map stamped with their bucket's recording, so an
+  untouched bucket's cars stay drawn without a write; the map is swept only on a frame that smoothed
+  or lost a bucket.
+- **One wait on the pool a frame.** The control smoothed each bucket inside its own
+  `thread_pools::install` and solved each bucket's off-lane cars in another, about 25 buckets at
+  30k, each a wake of the shared pool from the main thread: those waits, not the cars, were most of
+  the cost (a first cut with rest alone saved nothing at 1x, where nearly every bucket has a moving
+  car: 2.0 ms for 107 solves). A bucket below `PARALLEL_MIN_CARS` (2,048) now smooths on the calling
+  thread, and the off-lane cars of every bucket are solved in one parallel pass under one core
+  attempt (`solve_pending`); the same math per car, so the output is unchanged.
+- **The view from Rust.** `update_agent_view(camera)` samples the viewport's four corner rays in
+  Rust and computes the agents' ground rectangle in the GDScript's operation order (`stream/view.rs`
+  `agent_ground_rect`), so the rectangle is the one `_update_camera_aabb` computed; that function is
+  deleted.
+- **Complexity.** An untouched bucket costs O(1) plus a compare of its inputs (about 60 bytes a
+  car), and O(off-lane cars) more when the camera moved; a smoothed bucket O(cars) with one lookup
+  and one insert each, as before, and one solve per off-lane car not at rest. The sweep is O(drawn
+  cars), on frames that smoothed or lost a bucket only. No allocation on a steady frame: maps,
+  bucket buffers and scratch keep their capacity (a bucket that leaves frees its buffers). Memory:
+  about 150 bytes a drawn car (pose, target, drawn pose) plus the bucket inputs.
+- **Determinism.** Presentation state only: no simulation state reads it; the counter is
+  render-consumer state, never saved.
+
+**Tests** (fresh): a still car comes to rest and its bucket is then neither smoothed, solved nor
+uploaded; a camera crossing the radius and a new ground key solve the off-lane cars once; a moved
+snapshot pose smooths and solves only that car (`still_cars_come_to_rest_...`). Over a scripted
+600-frame sequence (three buckets, 180 cars driving and waiting, a 150-frame pause, cars entering
+and leaving, a bucket gone for two frames, a jump past the snap distance, a height-owner switch, the
+camera sweeping across the full-detail radius, a ground change, frame times of 6-21 ms) the drawn
+buffers equal the pre-rest smoother's bit for bit for every car that has not yet rested, and within
+16 units in the last place (of the larger magnitude, at least 1, the rest band's unit) after; a buffer not uploaded equals the one uploaded before; late in the
+pause nothing is solved or uploaded; 43% fewer solves than the control
+(`drawn_buffers_follow_the_control_frame_by_frame`, a deterministic stand-in solve). With the real
+solve on the Kuopio yard fixture: a resting car's pose is bit for bit a fresh solve of the input
+that produced it; every journal record bumps the generation; a terrain edit under the car solves it
+again, bit for bit against the new ground
+(`a_resting_car_keeps_a_fresh_solve_until_the_ground_under_it_changes`). The agents' rectangle
+against hand-computed rays (`the_agent_rectangle_meets_the_ground_or_stops_at_the_far_distance`).
+
+**Fresh rows** (stream benchmark, 30k city at 1080p, eight workers on the P-cores, gamescope
+headless; control `RENDER-32-B`'s landed release library, SHA-256 `b1cd7ed4`, code equal to `dev`
+`239d1c1e`, with its own scripts; branch `6cfe5756`, before the rebase onto `RENDER-32-C`
+(`4c330967` after), release library `336d6f48`; the benchmark script the branch's on both sides).
+Uninstrumented, C B B C, p50 ranges in ms over two runs a side:
+
+| Phase | control | branch |
+|---|---|---|
+| still | 11.8-13.7 | 8.5 |
+| turn 0.5 s (out, back, repeat) | 30.0-38.5 | 23.8-26.2 |
+| turn 1 s | 25.5-27.7 | 21.5-24.6 |
+| pan 3 s | 20.4-21.2 | 15.6-16.2 |
+| zoom in, out | 21.2-23.1, 15.5-15.9 | 16.1-17.0, 10.1-11.5 |
+| jump, back | 14.5-15.2, 16.8 | 10.6-10.8, 12.5-12.7 |
+| night still | 11.7-11.8 | 6.9-7.0 |
+| night turn 1 s, pan | 26.6-30.7, 19.9-21.8 | 22.7-26.2, 15.5-17.9 |
+
+Every 30k phase is faster at p50; p95 is lower in all but the 1 s turn back, where the ranges
+overlap (34.8-35.9 against 31.8-36.5). GPU p50 reads lower too on the moving phases (pans 12.3-12.9
+against 10.9-11.1 ms; jump 10.3-10.4 against 6.3-6.4), the uploads not made; not attributed further.
+Kuopio (no cars; still and turns, C B B C, twice this session) lies inside its own same-binary
+spread (turn p50 13.5-17.3 control, 11.2-19.4 branch), as in `RENDER-32-B`.
+
+Instrumented (one run a side each, still and turns; agents' mean ms a frame, the renderer's whole
+record):
+
+| | control | branch | branch: smoothing / solve / record, solved cars, buckets uploaded |
+|---|---:|---:|---|
+| 30k paused, still | 4.39 | **0.27** | 0 / 0 / 0, 0, 0 of 25 |
+| 30k paused, turns | 3.79-4.05 | 0.67-1.01 | 0.07-0.10 / 0.08-0.32 / 0.09-0.12, 4-15, 12-16 |
+| 30k 1x, still | 3.73 | **1.74** | 0.26 / 0.56 / 0.29, 115, 25 |
+| 30k 1x, turns | 3.00-3.51 | 1.78-1.96 | 0.25-0.28 / 0.51-0.59 / 0.26-0.28, 84-101, 25 |
+
+The first cut (rest and untouched buckets only, `72a3ce44`; `f1c891d4` after the rebase) read 0.26
+ms on the paused still and 1.09-1.85 on paused turns, but at 1x 3.77 against the control's 3.77:
+every bucket still had a moving off-lane car and paid its two pool waits. That run is kept as the
+evidence for the second commit.
+
+**Timing level F** (`./run.sh --timing --level F --base dev`, release lib test binaries: control
+`RENDER-32-B`'s `df80cc74`, branch `db8a7c2c` built from `72a3ce44` (`f1c891d4` after the rebase);
+the second commit changes only the main-thread smoothing, which the headless rows do not run): 30k
+1x day acceptance passes (unpreempted, p99.9, preempted less wait 5.94 / 4.34 / 4.06 ms against the
+control's 6.24 / 4.24 / 3.89, its row reused after a passing calibration), mean 2.204 against 2.228
+ms, level on every metric; 30k 32x C B B C level on every metric (mean -1.5%; one branch row noisy,
+tolerances doubled), the `PERF-17` known exception on both sides; K22 at 30k click-to-ack 6.28
+against 6.98 ms. The rows stay valid for the agents' counters after the rebase onto `RENDER-32-C`,
+which changes no file of this round.
+
+**Bars** (plan section 7 A1): agents at most 0.6 ms on the 30k paused still: met, 0.27 (control
+4.39); at 1x lower than the control by the share the split attributes to unchanged poses (about 1.3
+ms on the still): met, 2.0 ms lower on the still (1.74 against 3.73) and 1.2-1.7 on the turns; a
+paused frame does zero solves and zero uploads: met (counters above, and the tests); `PERF-07`
+unchanged: met (level F above). `_update_camera_aabb` deleted.
+
+**Gates** (the rebased tip): clippy adds no warning; debug `cargo test --lib` 2,414 passed, 0
+failed; `./run.sh --test` passes (no Godot script skipped; `vehicle_ground_support_test` and the
+agent inspector test drive the production `agents.gd` path).
+
+**Not done here:** the walkers' buffers (0.10 ms) still upload every frame; the snapshot side still
+re-solves every off-lane car every simulation frame on the simulation thread; the draw distances are
+`RENDER-32-O`.
 
 ## Implemented Runtime Contract
 
