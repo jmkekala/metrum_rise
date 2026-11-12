@@ -10,6 +10,7 @@ pub(crate) mod book;
 pub(crate) mod cells;
 pub(crate) mod copies;
 pub(crate) mod draw_state;
+pub(crate) mod objects;
 pub(crate) mod ops;
 pub(crate) mod ordered;
 pub(crate) mod pages;

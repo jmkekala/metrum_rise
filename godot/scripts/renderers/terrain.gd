@@ -250,6 +250,12 @@ var _terrain_debug_last_desired_bounds: Dictionary = {}
 # Per-world bake of the position-only ground noise that terrain.gdshader reads.
 var _world_noise := TerrainWorldNoise.new()
 
+# The graded cells are the stream backend's `RenderingServer` instances, not nodes under this
+# one: they follow its visibility here (`RENDER-32-K`).
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED and graded_tiles != null:
+		graded_tiles.set_drawn(is_visible_in_tree())
+
 func _ready() -> void:
 	add_child(_world_noise)
 	var console := get_node_or_null("/root/DebugConsole")

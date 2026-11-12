@@ -47,8 +47,9 @@ var _draws: Array[MultiMeshInstance3D] = []
 var _near_draws: Array[MultiMeshInstance3D] = []
 var _masks: Array[SubViewport] = []
 var _mask_meshes: Array[MeshInstance3D] = []
-# Per mask slot, mirrors of the graded renderer's five cell MultiMeshes. They share the cell
-# buffers and bind only the grading textures needed to classify grass roots.
+# Per mask slot, mirrors of the graded renderer's cell MultiMeshes (`RenderingServer` instances of
+# the book's MultiMeshes in the mask world, by RID: [instance, material, base RID id]). They share
+# the cell buffers and bind only the grading textures needed to classify grass roots.
 var _graded_mask_cells: Array[Array] = []
 var _graded_mask_revisions: Array[int] = []
 var _bindings: Array[Dictionary] = []
@@ -147,9 +148,9 @@ func _process(_delta: float) -> void:
 		var patch_size: Vector2 = terrain_material.get_shader_parameter("patch_world_size_m")
 		var patch_min := Vector2(source.position.x, source.position.z) - patch_size * 0.5
 		var mask_mesh := _mask_meshes[slot]
-		var graded_cells: Dictionary = {}
+		var graded_cells := PackedInt64Array()
 		if _terrain.graded_tiles != null:
-			graded_cells = _terrain.graded_tiles.patch_cells.get(key, {})
+			graded_cells = _terrain.graded_tiles.mask_sources(key)
 		_sync_graded_mask(slot, source, graded_cells, key)
 		mask_mesh.visible = graded_cells.is_empty()
 		if _keys[slot] != key or mask_mesh.mesh != source.mesh:
@@ -240,28 +241,36 @@ func _create_mask() -> void:
 	_mask_meshes.append(mesh)
 	var cells: Array = []
 	for index in GradedTiles.CELL_MESHES:
-		var cell := MultiMeshInstance3D.new()
-		cell.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		cell.visible = false
+		var cell := RenderingServer.instance_create()
+		RenderingServer.instance_set_scenario(cell, viewport.world_3d.scenario)
+		RenderingServer.instance_geometry_set_cast_shadows_setting(cell, RenderingServer.SHADOW_CASTING_SETTING_OFF)
+		RenderingServer.instance_set_visible(cell, false)
 		var cell_material := ShaderMaterial.new()
 		cell_material.shader = GRADED_MASK_SHADER
-		cell.material_override = cell_material
-		viewport.add_child(cell)
-		cells.append(cell)
+		RenderingServer.instance_geometry_set_material_override(cell, cell_material.get_rid())
+		cells.append([cell, cell_material, 0])
 	_graded_mask_cells.append(cells)
+
+func _exit_tree() -> void:
+	for cells: Array in _graded_mask_cells:
+		for mirror: Array in cells:
+			RenderingServer.free_rid(mirror[0])
+	_graded_mask_cells.clear()
 
 # Mirrors one patch's current cell buffers into the private mask world. The source MultiMeshes
 # own all tile movement and counts, so steady frames only compare references and bindings.
+# `cells` is the graded renderer's mask_sources(): per cell mesh its MultiMesh's RID id, whether
+# it has instances and the page its material binds (empty: the patch has no set).
 func _sync_graded_mask(
-	slot: int, source: MeshInstance3D, cells: Dictionary, key: Vector2i
+	slot: int, source: MeshInstance3D, cells: PackedInt64Array, key: Vector2i
 ) -> void:
 	var mirrors: Array = _graded_mask_cells[slot]
 	if cells.is_empty():
 		if _graded_mask_revisions[slot] < 0:
 			return
 		mask_mirror_syncs += 1
-		for mirror: MultiMeshInstance3D in mirrors:
-			mirror.visible = false
+		for mirror: Array in mirrors:
+			RenderingServer.instance_set_visible(mirror[0], false)
 		_graded_mask_revisions[slot] = -1
 		_render_mask_once(slot)
 		return
@@ -271,35 +280,34 @@ func _sync_graded_mask(
 	mask_mirror_syncs += 1
 	_graded_mask_revisions[slot] = revision
 	_render_mask_once(slot)
-	var rect: Rect2 = cells["rect"]
+	var rect: Rect2 = _terrain.graded_tiles.patch_rect(key)
 	var rect_hm := Vector4i(
 		int(round(rect.position.x * 2.0)), int(round(rect.position.y * 2.0)),
 		int(round(rect.end.x * 2.0)), int(round(rect.end.y * 2.0))
 	)
-	var sources: Array = cells["nodes"]
-	var materials: Array = cells["materials"]
+	var pages: Dictionary = _terrain.graded_tiles.page_store.by_id
 	for index in mirrors.size():
-		var mirror := mirrors[index] as MultiMeshInstance3D
+		var mirror: Array = mirrors[index]
+		var instance: RID = mirror[0]
 		# A set without the behind-the-road variant has no cells to mirror there.
-		if index >= sources.size():
-			mirror.visible = false
+		if index * 3 >= cells.size():
+			RenderingServer.instance_set_visible(instance, false)
 			continue
-		var cell_source := sources[index] as MultiMeshInstance3D
-		mirror.multimesh = cell_source.multimesh
-		mirror.position = source.position
-		mirror.visible = cell_source.visible and cell_source.multimesh.visible_instance_count > 0
-		mirror.set_instance_shader_parameter("cell_patch_rect_hm", rect_hm)
-		mirror.set_instance_shader_parameter(
-			"cell_lattice_anchor_hm", _terrain.graded_tiles.lattice_anchor_hm
+		if int(mirror[2]) != cells[index * 3]:
+			mirror[2] = cells[index * 3]
+			RenderingServer.instance_set_base(instance, rid_from_int64(cells[index * 3]))
+		RenderingServer.instance_set_transform(instance, Transform3D(Basis.IDENTITY, source.position))
+		RenderingServer.instance_set_visible(instance, cells[index * 3 + 1] == 1)
+		RenderingServer.instance_geometry_set_shader_parameter(instance, "cell_patch_rect_hm", rect_hm)
+		RenderingServer.instance_geometry_set_shader_parameter(
+			instance, "cell_lattice_anchor_hm", _terrain.graded_tiles.lattice_anchor_hm
 		)
-		var material := mirror.material_override as ShaderMaterial
+		var material: ShaderMaterial = mirror[1]
 		material.set_shader_parameter("terrain_cell_m", _terrain.terrain_cell_m)
-		if materials[index] != null:
-			var source_material := materials[index] as ShaderMaterial
-			for parameter in [
-				&"graded_texels", &"graded_atlas"
-			]:
-				material.set_shader_parameter(parameter, source_material.get_shader_parameter(parameter))
+		if index != GradedTiles.CELL_BASE:
+			var page: Dictionary = pages.get(int(cells[index * 3 + 2]), {})
+			material.set_shader_parameter(&"graded_texels", page.get("texels", null))
+			material.set_shader_parameter(&"graded_atlas", page.get("atlas", null))
 
 func _render_mask_once(slot: int) -> void:
 	mask_renders += 1

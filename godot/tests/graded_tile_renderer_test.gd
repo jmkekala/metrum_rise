@@ -92,11 +92,12 @@ func _run() -> void:
 	for key: Vector2i in graded.patch_cells.keys():
 		_check_cells(graded, key, resident)
 	# A pooled cell set binds no material, so it holds none of Godot's instance uniform slots.
-	for cells: Dictionary in graded._sets:
-		if (cells["root"] as Node).get_parent() != null:
+	for set in int(graded.counters["cell_sets_prewarmed"]):
+		var pooled: Dictionary = graded._book.cell_objects(set)
+		if int(pooled["parent"]) != 0:
 			continue
-		for node: GeometryInstance3D in cells["nodes"]:
-			_expect(node.material_override == null, "a pooled cell set binds no material")
+		for material: RID in pooled["bound"]:
+			_expect(not material.is_valid(), "a pooled cell set binds no material")
 
 	# A populated edit: another road beside the junction. Rust selects the commit's dirty tiles;
 	# the installed ones among them rebake and install together in one frame, each into its own
@@ -322,12 +323,12 @@ func _cell_record(graded: GradedTiles, key: Vector2i) -> Array:
 	var out := []
 	var cells: Dictionary = graded.patch_cells[key]
 	var state: Dictionary = graded._book.cell_state(graded._book.patch_set(key))
-	for index in (cells["nodes"] as Array).size():
+	for index in (cells["multimeshes"] as Array).size():
 		var written: Array = []
 		for data: Color in state["custom"][index]:
 			written.append(str(data))
 		written.sort()
-		out.append([(cells["nodes"][index] as MultiMeshInstance3D).multimesh.visible_instance_count, written])
+		out.append([(cells["counts"] as PackedInt32Array)[index], written])
 	return out
 
 # A stand-in bridge that refuses every tile bake by contract (retry false), as Rust refused round
@@ -411,7 +412,7 @@ func _check_variant(simulation: SimulationNode, host: Node3D, layout: Dictionary
 	_check_partial = true
 	_expect(await _settle(graded, camera, resident), "the unflagged tiles settle")
 	for key: Vector2i in graded.patch_cells.keys():
-		_expect((graded.patch_cells[key]["nodes"] as Array).size() == GradedTiles.CELL_PLAIN, "patch %s with no flagged tile holds five cell meshes" % key)
+		_expect((graded.patch_cells[key]["multimeshes"] as Array).size() == GradedTiles.CELL_PLAIN, "patch %s with no flagged tile holds five cell meshes" % key)
 		_check_cells(graded, key, resident)
 	_expect(int(graded.counters["cell_variants_created"]) == 0, "no set holds the variant without a flagged tile")
 	graded.flag_all = true
@@ -465,9 +466,8 @@ func _flagged_outside_variant(graded: GradedTiles) -> int:
 	return count
 
 # A world's renderer is set up, loads, is replaced by the next load's and shut down, as terrain.gd
-# does (dispose, then a new renderer): every cell set's nodes are freed, roots included, so the
-# orphan node count returns to its value before the first setup (round 9C: each set's root
-# leaked, one orphan per set per load).
+# does (dispose, then a new renderer): the cell sets are the book's `RenderingServer` objects, no
+# node (round 9C leaked one orphan root per set per load), and dispose() frees them.
 func _check_dispose_frees_every_set(simulation: SimulationNode, host: Node3D, layout: Dictionary, world_size: Vector2) -> void:
 	await process_frame
 	var orphans := int(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT))
@@ -477,10 +477,13 @@ func _check_dispose_frees_every_set(simulation: SimulationNode, host: Node3D, la
 	for load in 2:
 		var graded := GradedTiles.new()
 		graded.setup(simulation, CELL_M, world_size, span, [24, 24, 24, 24])
-		_expect(int(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)) > orphans, "the prewarmed sets are detached nodes")
+		_expect(int(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)) == orphans, "the prewarmed sets are no nodes")
+		var book: GradedTileBook = graded._book
+		_expect(((book.cell_objects(0)["multimeshes"] as Array)[0] as RID).is_valid(), "the prewarmed sets hold their objects")
 		_mark_changed(resident)
 		_expect(await _settle(graded, camera, resident), "load %d settles" % load)
 		graded.dispose()
+		_expect(book.cell_objects(0).is_empty(), "dispose() frees the sets' objects")
 		# PREDELETE after dispose() finds no set left: dropping the renderer frees nothing twice.
 		graded = null
 	await process_frame
@@ -641,7 +644,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	var instances := 0
 	for key: Vector2i in graded.patch_cells.keys():
 		if bool(graded.patch_cells[key]["shown"]):
-			instances += ((graded.patch_cells[key]["walls"] as MultiMeshInstance3D).multimesh).visible_instance_count
+			instances += int(graded.patch_cells[key]["walls"])
 	_expect(faces > 0, "the bridge's mouth has wall faces")
 	_expect(instances == faces, "every wall face draws once: %d instances of %d faces" % [instances, faces])
 	_expect(int(graded.counters["walls_truncated"]) == 0, "no patch runs out of wall instances")
@@ -821,7 +824,7 @@ func _check_cells(graded: GradedTiles, key: Vector2i, _resident: Dictionary) -> 
 	var state: Dictionary = graded._book.cell_state(graded._book.patch_set(key))
 	var tiles: Array = state["tiles"]
 	var total := 0
-	var nodes: Array = cells["nodes"]
+	var nodes: Array = cells["multimeshes"]
 	# The headless renderer keeps no MultiMesh custom data; the book's record of what it wrote
 	# stands for it.
 	var counts: PackedInt32Array = state["counts"]
@@ -829,15 +832,15 @@ func _check_cells(graded: GradedTiles, key: Vector2i, _resident: Dictionary) -> 
 	_expect(shown == bool(state["shown"]), "patch %s: the set draws as the book says" % key)
 	# Its graded materials bind the pages its block uses (docs/terrain.md "Pages and the row atlas").
 	_expect(nodes.size() == (GradedTiles.CELL_MESHES if bool(cells["variant"]) else GradedTiles.CELL_PLAIN)
-		and (cells["materials"] as Array).size() == nodes.size(), "patch %s holds its variant's meshes with it" % key)
+		and (cells["textures"] as Array).size() == 2 * nodes.size(), "patch %s holds its variant's meshes with it" % key)
 	for index in nodes.size():
 		if index == GradedTiles.CELL_BASE:
 			continue
 		var code := index - GradedTiles.CELL_BEHIND if index >= GradedTiles.CELL_BEHIND else index
 		var page: Dictionary = graded.page_store.by_id.get(_patch_page(graded, key, code), {})
-		var material: ShaderMaterial = cells["materials"][index]
-		_expect(material.get_shader_parameter("graded_texels") == page.get("texels", null)
-			and material.get_shader_parameter("graded_atlas") == page.get("atlas", null),
+		var texels: RID = (page["texels"] as Texture).get_rid() if not page.is_empty() else RID()
+		var atlas: RID = (page["atlas"] as Texture).get_rid() if not page.is_empty() else RID()
+		_expect(cells["textures"][2 * index] == texels and cells["textures"][2 * index + 1] == atlas,
 			"patch %s binds its block's level %d page" % [key, code])
 	var graded_cells := 0
 	for index in counts.size():
@@ -845,16 +848,16 @@ func _check_cells(graded: GradedTiles, key: Vector2i, _resident: Dictionary) -> 
 			graded_cells += counts[index]
 	_expect(shown == (graded_cells > 0), "patch %s: a set draws while a tile of it shows graded" % key)
 	for index in nodes.size():
-		_expect((nodes[index] as GeometryInstance3D).material_override != null if shown else (nodes[index] as GeometryInstance3D).material_override == null,
+		_expect((cells["bound"][index] as RID).is_valid() == shown,
 			"a set binds its materials while it draws its patch, and only then")
-		var multimesh: MultiMesh = (nodes[index] as MultiMeshInstance3D).multimesh
+		var multimesh: RID = nodes[index]
 		var written: Array = state["custom"][index]
-		_expect(multimesh.visible_instance_count == written.size(), "visible instances match the written ones")
+		_expect((cells["counts"] as PackedInt32Array)[index] == written.size(), "visible instances match the written ones")
 		if DisplayServer.get_name() != "headless":
 			for instance in written.size():
-				_expect(multimesh.get_instance_transform(instance).is_equal_approx(Transform3D.IDENTITY),
+				_expect(RenderingServer.multimesh_instance_get_transform(multimesh, instance).is_equal_approx(Transform3D.IDENTITY),
 					"patch %s mesh %d cell %d keeps its identity transform" % [key, index, instance])
-				_expect(multimesh.get_instance_custom_data(instance) == written[instance],
+				_expect(RenderingServer.multimesh_instance_get_custom_data(multimesh, instance) == written[instance],
 					"patch %s mesh %d cell %d keeps its tile data" % [key, index, instance])
 		total += written.size()
 		for data: Color in written:

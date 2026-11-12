@@ -4,7 +4,7 @@
 //! object (what an instance would draw), and a digest of the sequence, so the layers' per-frame
 //! invariants are checked without Godot.
 
-use super::{Handle, RenderBackend, Scenario, Shadow};
+use super::{Handle, RenderBackend, Scenario, Shadow, Vector};
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use std::collections::BTreeMap;
 
@@ -26,6 +26,17 @@ pub(crate) enum Command {
     InstanceMaterial(Handle, Option<u32>),
     InstanceParameter(Handle, u32, f32),
     Free(Handle),
+    MaterialCreate(Handle, Handle),
+    MaterialTexture(Handle, u32, Option<Handle>),
+    InstanceMaterialHandle(Handle, Option<Handle>),
+    InstanceVector(Handle, u32, Vector),
+}
+
+/// A recorded material: its shader and its texture parameters.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RecordedMaterial {
+    pub(crate) shader: Handle,
+    pub(crate) textures: BTreeMap<u32, Handle>,
 }
 
 /// A recorded `MultiMesh`.
@@ -54,6 +65,9 @@ pub(crate) struct RecordedInstance {
     pub(crate) aabb: Aabb,
     pub(crate) material: Option<u32>,
     pub(crate) parameters: Vec<(u32, f32)>,
+    // A material handle override (`instance_set_material_handle`) and vector parameters.
+    pub(crate) material_handle: Option<Handle>,
+    pub(crate) vectors: BTreeMap<u32, Vector>,
 }
 
 /// Records commands and keeps the state they leave.
@@ -62,6 +76,7 @@ pub(crate) struct Recorder {
     pub(crate) commands: Vec<Command>,
     pub(crate) multimeshes: BTreeMap<Handle, RecordedMultimesh>,
     pub(crate) instances: BTreeMap<Handle, RecordedInstance>,
+    pub(crate) materials: BTreeMap<Handle, RecordedMaterial>,
     // Whether the reflection scenario exists.
     pub(crate) reflection: bool,
     next: Handle,
@@ -234,6 +249,8 @@ impl RenderBackend for Recorder {
                 aabb: Aabb::default(),
                 material: None,
                 parameters: Vec::new(),
+                material_handle: None,
+                vectors: BTreeMap::new(),
             },
         );
         Some(handle)
@@ -281,6 +298,9 @@ impl RenderBackend for Recorder {
 
     fn free(&mut self, handle: Handle) {
         self.commands.push(Command::Free(handle));
+        if self.materials.remove(&handle).is_some() {
+            return;
+        }
         if self.instances.remove(&handle).is_none() {
             assert!(
                 self.multimeshes.remove(&handle).is_some(),
@@ -293,5 +313,43 @@ impl RenderBackend for Recorder {
                 "a multimesh outlives its instances"
             );
         }
+    }
+    fn material_create(&mut self, shader: Handle) -> Handle {
+        let handle = self.new_handle();
+        self.commands.push(Command::MaterialCreate(handle, shader));
+        self.materials.insert(
+            handle,
+            RecordedMaterial {
+                shader,
+                textures: BTreeMap::new(),
+            },
+        );
+        handle
+    }
+
+    fn material_set_texture(&mut self, material: Handle, parameter: u32, texture: Option<Handle>) {
+        self.commands
+            .push(Command::MaterialTexture(material, parameter, texture));
+        let textures = &mut self
+            .materials
+            .get_mut(&material)
+            .expect("live material")
+            .textures;
+        match texture {
+            Some(texture) => textures.insert(parameter, texture),
+            None => textures.remove(&parameter),
+        };
+    }
+
+    fn instance_set_material_handle(&mut self, instance: Handle, material: Option<Handle>) {
+        self.commands
+            .push(Command::InstanceMaterialHandle(instance, material));
+        self.instance(instance).material_handle = material;
+    }
+
+    fn instance_set_vector(&mut self, instance: Handle, parameter: u32, value: Vector) {
+        self.commands
+            .push(Command::InstanceVector(instance, parameter, value));
+        self.instance(instance).vectors.insert(parameter, value);
     }
 }

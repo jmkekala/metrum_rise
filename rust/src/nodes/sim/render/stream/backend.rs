@@ -52,6 +52,16 @@ pub(crate) enum Scenario {
     Reflection,
 }
 
+/// An instance shader parameter's value beyond a float (`RENDER-32-K`: the graded cells'
+/// `cell_patch_rect_hm` and `cell_lattice_anchor_hm`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Vector {
+    /// An `ivec2`.
+    Int2([i32; 2]),
+    /// An `ivec4`.
+    Int4([i32; 4]),
+}
+
 /// The `RenderingServer` calls the streaming layers need. Meshes, materials and instance shader
 /// parameters are indices into what the backend was given at registration.
 pub(crate) trait RenderBackend {
@@ -99,6 +109,33 @@ pub(crate) trait RenderBackend {
     fn instance_set_parameter(&mut self, instance: Handle, parameter: u32, value: f32);
     /// Frees an object.
     fn free(&mut self, handle: Handle);
+    // The graded cells' calls (`RENDER-32-K`). A backend that serves no layer with materials of
+    // its own (a test's tally) keeps the defaults: no material, nothing sent.
+    /// A material of `shader` (a handle the layer was given) with no parameter set, owned by
+    /// the layer that made it.
+    fn material_create(&mut self, _shader: Handle) -> Handle {
+        0
+    }
+    /// Sets (or clears, `None`) a material's texture parameter (a catalogue parameter index) to
+    /// a texture handle.
+    fn material_set_texture(&mut self, _material: Handle, _parameter: u32, _texture: Option<Handle>) {}
+    /// Sets an instance's material override to a material handle (`None`: the mesh's own), for
+    /// materials that are not catalogue entries (a layer's own, or a resource's handed over).
+    fn instance_set_material_handle(&mut self, _instance: Handle, _material: Option<Handle>) {}
+    /// Sets an instance shader parameter (a catalogue index) to an integer vector.
+    fn instance_set_vector(&mut self, _instance: Handle, _parameter: u32, _value: Vector) {}
+}
+
+/// Where a layer's entries start in a shared catalogue ([`GodotBackend::add_catalogue`]): its
+/// mesh, material and parameter indices are these plus its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CatalogueRange {
+    /// The layer's first mesh index.
+    pub(crate) mesh: u32,
+    /// The layer's first material index.
+    pub(crate) material: u32,
+    /// The layer's first parameter index.
+    pub(crate) parameter: u32,
 }
 
 /// Smallest pooled capacity.
@@ -622,7 +659,8 @@ mod godot_backend {
     };
     use godot::obj::Singleton;
     use godot::prelude::{
-        Basis, Gd, PackedFloat32Array, Rid, StringName, ToGodot, Transform3D, Vector3,
+        Basis, Gd, PackedFloat32Array, Rid, StringName, ToGodot, Transform3D, Variant, Vector2i,
+        Vector3, Vector4i,
     };
 
     /// The `RenderingServer` backend. Holds the meshes, materials and parameter names the layers
@@ -663,6 +701,25 @@ mod godot_backend {
             self.meshes = meshes;
             self.materials = materials;
             self.parameters = parameters;
+        }
+
+        /// Appends a layer's meshes, materials and instance parameter names to the catalogue
+        /// and returns where they start, so layers sharing one backend index their own ranges.
+        pub(crate) fn add_catalogue(
+            &mut self,
+            meshes: Vec<Rid>,
+            materials: Vec<Rid>,
+            parameters: Vec<StringName>,
+        ) -> CatalogueRange {
+            let range = CatalogueRange {
+                mesh: self.meshes.len() as u32,
+                material: self.materials.len() as u32,
+                parameter: self.parameters.len() as u32,
+            };
+            self.meshes.extend(meshes);
+            self.materials.extend(materials);
+            self.parameters.extend(parameters);
+            range
         }
 
         /// Sets or clears the reflection scenario.
@@ -803,6 +860,42 @@ mod godot_backend {
 
         fn free(&mut self, handle: Handle) {
             self.server.free_rid(Rid::new(handle));
+        }
+
+        fn material_create(&mut self, shader: Handle) -> Handle {
+            let material = self.server.material_create();
+            self.server.material_set_shader(material, Rid::new(shader));
+            material.to_u64()
+        }
+
+        fn material_set_texture(
+            &mut self,
+            material: Handle,
+            parameter: u32,
+            texture: Option<Handle>,
+        ) {
+            let name = &self.parameters[parameter as usize];
+            // Nil clears the parameter, as a `ShaderMaterial` given null does.
+            let value = texture.map_or_else(Variant::nil, |texture| Rid::new(texture).to_variant());
+            self.server
+                .material_set_param(Rid::new(material), name, &value);
+        }
+
+        fn instance_set_material_handle(&mut self, instance: Handle, material: Option<Handle>) {
+            self.server.instance_geometry_set_material_override(
+                Rid::new(instance),
+                material.map_or(Rid::Invalid, Rid::new),
+            );
+        }
+
+        fn instance_set_vector(&mut self, instance: Handle, parameter: u32, value: Vector) {
+            let name = &self.parameters[parameter as usize];
+            let value = match value {
+                Vector::Int2([x, y]) => Vector2i::new(x, y).to_variant(),
+                Vector::Int4([x, y, z, w]) => Vector4i::new(x, y, z, w).to_variant(),
+            };
+            self.server
+                .instance_geometry_set_shader_parameter(Rid::new(instance), name, &value);
         }
     }
 

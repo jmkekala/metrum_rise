@@ -12,10 +12,13 @@
 //! `(page, slot, first atlas layer, layers)`.
 
 use super::cells::{Patch, Shown, WALL_INSTANCE_FLOATS};
+use super::objects::{Applied, CellCatalogue, CellObjects, PatchDraw};
 use super::copies::PlaceFailure;
 use super::pages::{Copy, PageEvent, PoolPolicy};
 use super::state::{Block, Effect, Graded, PageRef, Shape, Tile};
+use crate::nodes::sim::render::stream::backend::GodotBackend;
 use crate::nodes::sim::render::stream::levels::level_code;
+use crate::nodes::sim::render::vegetation_product::godot_math::Aabb as Bounds;
 use godot::prelude::*;
 
 /// Integers per effect in `take_effects`.
@@ -33,6 +36,29 @@ fn level_vector(level: Option<crate::simulation::terrain::graded::Level>) -> Vec
         let (code, step) = level_code(level);
         Vector2i::new(code as i32, step as i32)
     })
+}
+
+// The cells' effects the objects apply (every cell kind but the draw state, which the GDScript
+// applies to its patch node).
+fn is_cell_effect(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::CellAcquired { .. }
+            | Effect::CellPages { .. }
+            | Effect::CellPark { .. }
+            | Effect::CellBegin { .. }
+            | Effect::CellBaseMesh { .. }
+            | Effect::CellCountsCleared { .. }
+            | Effect::CellMeshes { .. }
+            | Effect::CellPublish { .. }
+            | Effect::CellCount { .. }
+            | Effect::CellWalls { .. }
+            | Effect::CellShow { .. }
+            | Effect::CellHide { .. }
+            | Effect::CellVariant { .. }
+            | Effect::CellRebuilt { .. }
+            | Effect::CellBuilt { .. }
+    )
 }
 
 fn place_code(result: Result<(), PlaceFailure>) -> i64 {
@@ -60,6 +86,137 @@ pub struct GradedTileBook {
     buffer: PackedFloat32Array,
     // The renderer's trace (record or replay): the cell builds' budget answers go through it.
     trace: Option<Gd<RefCounted>>,
+    // The cells' `RenderingServer` objects and the backend they go through (`RENDER-32-K`),
+    // attached by the renderer's setup; the material sync's state; the cell effects of the last
+    // take, applied in runs (`apply_cells`); the cell counters (`cell_counters`).
+    objects: Option<CellObjects>,
+    backend: Option<GodotBackend>,
+    sync: MaterialSync,
+    cell_effects: Vec<Effect>,
+    cell_counts: [i64; CELL_COUNTERS],
+    // Every page's textures as the renderer made them (kept across an attach).
+    page_textures: std::collections::HashMap<i64, [u64; 2]>,
+}
+
+// `cell_counters`: the frame's material sync, wall and flip microseconds (reset with the frame's
+// counters), then walls truncated, sets given the variant, multimeshes and materials made, and
+// set builds completed.
+const CELL_COUNTERS: usize = 8;
+const SYNC_US: usize = 0;
+const WALLS_US: usize = 1;
+const FLIP_US: usize = 2;
+const TRUNCATED: usize = 3;
+const BUILDS: usize = 7;
+
+// The patch material parameters whose change means a drawing set's materials must sync: the
+// textures and per-patch values `terrain.gd` swaps on commits, masks, water and overlays.
+const WATCHED: [&str; 8] = [
+    "heightmap",
+    "terrain_mask_layer",
+    "terrain_masks",
+    "watermap",
+    "land_cover_texture",
+    "overlay_mode",
+    "overlay_texture",
+    "terrain_debug_lod_step",
+];
+
+/// The graded materials' parameter sync (`_sync_material`): per set the values its materials
+/// hold and the watched values its last full pass started from, read and written through the
+/// `RenderingServer` (textures as their RIDs, as a `ShaderMaterial` forwards them).
+#[derive(Default)]
+struct MaterialSync {
+    names: Vec<StringName>,
+    watched: Vec<StringName>,
+    values: Vec<Vec<Variant>>,
+    held: Vec<Vec<Variant>>,
+}
+
+impl MaterialSync {
+    fn ensure(&mut self, set: usize) {
+        while self.values.len() <= set {
+            self.values.push(vec![Variant::nil(); self.names.len()]);
+            self.held.push(Vec::new());
+        }
+    }
+
+    // Whether the watched parameters of `material` differ from those set `set`'s last pass
+    // started from. O(8).
+    fn watched_moved(&mut self, server: &Gd<godot::classes::RenderingServer>, set: usize, material: Rid) -> bool {
+        self.ensure(set);
+        let held = &self.held[set];
+        held.len() != self.watched.len()
+            || self
+                .watched
+                .iter()
+                .zip(held)
+                .any(|(name, held)| !same(&server.material_get_param(material, name), held))
+    }
+
+    // Copies `source`'s parameters into the set's materials from `next` on; with `over` it stops
+    // once the budget says so, after one parameter at least. Returns where it stopped (`None`:
+    // finished). O(parameters x the set's materials).
+    fn run(
+        &mut self,
+        server: &mut Gd<godot::classes::RenderingServer>,
+        set: usize,
+        materials: &[Rid],
+        source: Rid,
+        next: usize,
+        mut over: Option<&mut dyn FnMut() -> bool>,
+    ) -> Option<usize> {
+        self.ensure(set);
+        if next == 0 {
+            let watched: Vec<Variant> =
+                self.watched.iter().map(|name| server.material_get_param(source, name)).collect();
+            self.held[set] = watched;
+        }
+        let mut index = next;
+        while index < self.names.len() {
+            if index > next
+                && let Some(over) = over.as_mut()
+                && over()
+            {
+                return Some(index);
+            }
+            let name = &self.names[index];
+            let value = server.material_get_param(source, name);
+            index += 1;
+            let held = &mut self.values[set][index - 1];
+            if same(&value, held) {
+                continue;
+            }
+            *held = value.clone();
+            for &material in materials {
+                server.material_set_param(material, name, &value);
+            }
+        }
+        None
+    }
+}
+
+// GDScript's `typeof(a) == typeof(b) and a == b`.
+fn same(a: &Variant, b: &Variant) -> bool {
+    a.get_type() == b.get_type() && a == b
+}
+
+// The trace's budget answer (a replay's recorded one), as `_over_budget` gives it.
+fn over_budget(trace: &mut Option<Gd<RefCounted>>, unbudgeted: bool, start_us: i64) -> bool {
+    let elapsed = godot::classes::Time::singleton().get_ticks_usec() as i64 - start_us;
+    let over = !unbudgeted && elapsed as f64 / 1000.0 >= 1.0;
+    match trace.as_mut() {
+        Some(trace) => {
+            let answer = trace.call("value", &["budget".to_variant(), GString::from(if over { "1" } else { "0" }).to_variant()]);
+            answer.to::<GString>() == GString::from("1")
+        }
+        None => over,
+    }
+}
+
+// Godot's `hash()` of `floats` as bytes (`PackedFloat32Array.to_byte_array()`).
+fn bytes_hash(floats: &[f32]) -> u32 {
+    let bytes: Vec<u8> = floats.iter().flat_map(|value| value.to_le_bytes()).collect();
+    PackedByteArray::from(bytes.as_slice()).to_variant().hash_u32()
 }
 
 #[godot_api]
@@ -866,17 +1023,7 @@ impl GradedTileBook {
         self.state.settle();
         let unbudgeted = self.state.unbudgeted;
         let mut trace = self.trace.clone();
-        let mut over = move || {
-            let elapsed = godot::classes::Time::singleton().get_ticks_usec() as i64 - start_us;
-            let over = !unbudgeted && elapsed as f64 / 1000.0 >= 1.0;
-            match trace.as_mut() {
-                Some(trace) => {
-                    let answer = trace.call("value", &["budget".to_variant(), GString::from(if over { "1" } else { "0" }).to_variant()]);
-                    answer.to::<GString>() == GString::from("1")
-                }
-                None => over,
-            }
-        };
+        let mut over = move || over_budget(&mut trace, unbudgeted, start_us);
         self.state.build_tiles(set as u32, Some((&mut over, minimum as u32)))
     }
 
@@ -902,7 +1049,11 @@ impl GradedTileBook {
     /// `release_patch`'s part: patch `key`'s set returns to the pool. Returns it, -1 when none.
     #[func]
     pub fn release_set(&mut self, key: Vector2i) -> i64 {
-        self.state.release_set((key.x, key.y)).map_or(-1, i64::from)
+        let set = self.state.release_set((key.x, key.y));
+        if let (Some(set), Some(objects), Some(backend)) = (set, self.objects.as_mut(), self.backend.as_mut()) {
+            objects.release(backend, set);
+        }
+        set.map_or(-1, i64::from)
     }
 
     /// Patch `key`'s set, -1 when none.
@@ -961,6 +1112,7 @@ impl GradedTileBook {
     #[func]
     pub fn reset_frame_counters(&mut self) {
         self.state.cells.frame = [0; 4];
+        self.cell_counts[SYNC_US..=FLIP_US].fill(0);
     }
 
     /// The preview's tiles of epochs `first` to `last`, flat `(x, z)` in order.
@@ -1084,7 +1236,9 @@ impl GradedTileBook {
     /// capacity, truncated)` (`wall_floats`), 40 draw `(x, z, state)`, 41 show `(set, x, z)`, 42
     /// hide `(set)`, 44 variant `(set, four pages, shown)`, 45 rebuilt
     /// `(set, x, z)`, 46 built `(set)`. The kinds the cells apply themselves (binds, entry
-    /// changes, marks) are settled first and not returned.
+    /// changes, marks) are settled first and not returned. Once the cells' objects are attached
+    /// (`cells_attach`) the cells' kinds but 40 come as runs: 47 `(first, end)`, which
+    /// `apply_cells` applies.
     #[func]
     pub fn take_effects(&mut self) -> PackedInt64Array {
         self.state.settle();
@@ -1095,7 +1249,21 @@ impl GradedTileBook {
         cells.wall_floats.clear();
         let mut out = std::mem::take(&mut self.encoded);
         out.clear();
+        self.cell_effects.clear();
+        let attached = self.objects.is_some();
         for effect in self.state.out.drain(..) {
+            // The cells' effects run in Rust (`apply_cells`), as runs in their place.
+            if attached && is_cell_effect(&effect) {
+                let at = self.cell_effects.len() as i64;
+                self.cell_effects.push(effect);
+                let last = out.len().saturating_sub(EFFECT_FIELDS);
+                if out.len() >= EFFECT_FIELDS && out[last] == 47 && out[last + 2] == at {
+                    out[last + 2] = at + 1;
+                } else {
+                    out.extend([47, at, at + 1, 0, 0, 0, 0]);
+                }
+                continue;
+            }
             let fields: [i64; EFFECT_FIELDS] = match effect {
                 Effect::PageMade { id, reused, code, block, slots, layers } => [
                     i64::from(reused),
@@ -1178,4 +1346,378 @@ impl GradedTileBook {
         self.encoded = out;
         packed
     }
+    // --- The cells' objects (`RENDER-32-K`). ---
+
+    /// Attaches the cells' `RenderingServer` objects after `cells_setup`: drawn in `scenario`
+    /// with the seven lattice meshes and the wall quad (`meshes`, in that order), the graded
+    /// shader and its behind-the-road variant, the wall material, the base lattice's anchor in
+    /// half-metres, the patch material's parameters a set's materials sync (`uniforms`) and the
+    /// triangles of each lattice mesh (the perf channel's count). Makes every prewarmed set's
+    /// objects. O(sets).
+    #[func]
+    #[allow(clippy::too_many_arguments)]
+    pub fn cells_attach(
+        &mut self,
+        scenario: Rid,
+        meshes: Array<Rid>,
+        graded_shader: Rid,
+        behind_shader: Rid,
+        wall_material: Rid,
+        anchor: Vector2i,
+        uniforms: PackedStringArray,
+        triangles: PackedInt64Array,
+    ) {
+        self.cells_detach();
+        let mut backend = GodotBackend::new(scenario);
+        let names = ["cell_mode", "cell_patch_rect_hm", "cell_lattice_anchor_hm", "graded_texels", "graded_atlas"];
+        let range = backend.add_catalogue(
+            meshes.iter_shared().collect(),
+            Vec::new(),
+            names.iter().map(|name| StringName::from(*name)).collect(),
+        );
+        let catalogue = CellCatalogue {
+            lattice: std::array::from_fn(|code| range.mesh + code as u32),
+            wall: range.mesh + 7,
+            mode: range.parameter,
+            rect: range.parameter + 1,
+            anchor: range.parameter + 2,
+            texels: range.parameter + 3,
+            atlas: range.parameter + 4,
+            graded_shader: graded_shader.to_u64(),
+            behind_shader: behind_shader.to_u64(),
+            wall_material: wall_material.to_u64(),
+            anchor_hm: [anchor.x, anchor.y],
+            triangles: std::array::from_fn(|code| triangles.get(code).unwrap_or(0)),
+        };
+        let mut objects = CellObjects::new(catalogue, self.state.cells.per_patch as u32);
+        objects.ensure(&mut backend, self.state.cells.sets.len());
+        objects.pages = self.page_textures.clone();
+        self.sync = MaterialSync {
+            names: uniforms.as_slice().iter().map(StringName::from).collect(),
+            watched: WATCHED.iter().map(|name| StringName::from(*name)).collect(),
+            ..MaterialSync::default()
+        };
+        self.objects = Some(objects);
+        self.backend = Some(backend);
+    }
+
+    /// Whether the cells draw at all (the terrain node's visibility). O(sets) on a change.
+    #[func]
+    pub fn cells_set_drawn(&mut self, drawn: bool) {
+        if let (Some(objects), Some(backend)) = (self.objects.as_mut(), self.backend.as_mut()) {
+            objects.set_drawn(backend, drawn);
+        }
+    }
+
+    /// Frees the cells' objects (the renderer's disposal). O(sets).
+    #[func]
+    pub fn cells_detach(&mut self) {
+        if let (Some(objects), Some(backend)) = (self.objects.as_mut(), self.backend.as_mut()) {
+            objects.free_all(backend);
+        }
+        self.objects = None;
+        self.backend = None;
+        self.sync = MaterialSync::default();
+        self.cell_effects.clear();
+    }
+
+    /// What resident patch `key`'s set draws with, from `terrain.gd`'s entry: the patch node's
+    /// instance id, its material and its culling box.
+    #[func]
+    pub fn set_patch_draw(&mut self, key: Vector2i, node: i64, material: Rid, aabb: Aabb) {
+        if let Some(objects) = self.objects.as_mut() {
+            let aabb = Bounds {
+                position: [aabb.position.x, aabb.position.y, aabb.position.z],
+                size: [aabb.size.x, aabb.size.y, aabb.size.z],
+            };
+            objects.patches.insert((key.x, key.y), PatchDraw { node, material: material.to_u64(), aabb });
+        }
+    }
+
+    /// Page `page`'s two textures (slot texels, row atlas), which a set's materials bind.
+    #[func]
+    pub fn set_page_textures(&mut self, page: i64, texels: Rid, atlas: Rid) {
+        let textures = [texels.to_u64(), atlas.to_u64()];
+        self.page_textures.insert(page, textures);
+        if let Some(objects) = self.objects.as_mut() {
+            objects.pages.insert(page, textures);
+        }
+    }
+
+    /// Applies the cell effects `first` to `end` of the last take (a run, effect 47) to the
+    /// sets' objects, in order: the trace's publication and wall lines, the material syncs of
+    /// sets that start drawing or take the variant. O(the effects + their publications).
+    #[func]
+    pub fn apply_cells(&mut self, first: i64, end: i64) {
+        let Self { state, objects, backend, sync, cell_effects, cell_counts, trace, .. } = self;
+        let (Some(objects), Some(backend)) = (objects.as_mut(), backend.as_mut()) else {
+            return;
+        };
+        let mut server = godot::classes::RenderingServer::singleton();
+        for at in first as usize..end as usize {
+            let effect = cell_effects[at];
+            let start = std::time::Instant::now();
+            let applied = objects.apply(
+                backend,
+                &effect,
+                &state.resident,
+                &state.cells.taken_publish,
+                &state.cells.taken_walls,
+            );
+            let mut materials = [Rid::Invalid; 8];
+            match applied {
+                Applied::None | Applied::Begun { .. } => {}
+                Applied::Published { key, mesh, at } => {
+                    if let Some(trace) = trace.as_mut() {
+                        let length = state.cells.per_patch * 16;
+                        let at = at as usize;
+                        let hash = bytes_hash(&state.cells.taken_publish[at..at + length]);
+                        trace_out(trace, format!("cells {} {} {} {}", key.0, key.1, mesh, hash));
+                    }
+                }
+                Applied::Walls { key, start: from, count, instances, truncated } => {
+                    if let Some(trace) = trace.as_mut() {
+                        let from = from as usize;
+                        let faces = &state.cells.taken_walls[from..from + count as usize * WALL_INSTANCE_FLOATS];
+                        trace_out(
+                            trace,
+                            format!("walls {} {} {} {} {} {}", key.0, key.1, count, instances, truncated, bytes_hash(faces)),
+                        );
+                    }
+                    if truncated > 0 {
+                        cell_counts[TRUNCATED] += i64::from(truncated);
+                        crate::debug_log!(
+                            "terrain",
+                            "graded walls: {truncated} faces past the patch capacity {instances}"
+                        );
+                    }
+                    cell_counts[WALLS_US] += start.elapsed().as_micros() as i64;
+                }
+                Applied::Shown { set, key } => {
+                    let source = objects.patches.get(&key).map(|patch| Rid::new(patch.material));
+                    let count = collect(objects, set, &mut materials);
+                    let sync_start = std::time::Instant::now();
+                    if let Some(source) = source
+                        && sync.watched_moved(&server, set as usize, source)
+                    {
+                        sync.run(&mut server, set as usize, &materials[..count], source, 0, None);
+                        objects.sets[set as usize].sync_next = 0;
+                    }
+                    cell_counts[SYNC_US] += sync_start.elapsed().as_micros() as i64;
+                    cell_counts[FLIP_US] += start.elapsed().as_micros() as i64;
+                }
+                Applied::Rebuilt { set, key } => {
+                    let source = objects.patches.get(&key).map(|patch| Rid::new(patch.material));
+                    let count = collect(objects, set, &mut materials);
+                    let sync_start = std::time::Instant::now();
+                    if let Some(source) = source {
+                        sync.run(&mut server, set as usize, &materials[..count], source, 0, None);
+                        objects.sets[set as usize].sync_next = 0;
+                    }
+                    cell_counts[SYNC_US] += sync_start.elapsed().as_micros() as i64;
+                }
+                Applied::Variant { set } => {
+                    // The variant's new materials take the values the set holds.
+                    sync.ensure(set as usize);
+                    let count = collect(objects, set, &mut materials);
+                    for material in materials[..count].iter().skip(count.saturating_sub(4)) {
+                        for (name, value) in sync.names.iter().zip(&sync.values[set as usize]) {
+                            if !value.is_nil() {
+                                server.material_set_param(*material, name, value);
+                            }
+                        }
+                    }
+                }
+                Applied::Hidden => cell_counts[FLIP_US] += start.elapsed().as_micros() as i64,
+                Applied::Built => cell_counts[BUILDS] += 1,
+            }
+        }
+    }
+
+    /// Set `set`'s material sync for its build (`_sync_material` from the build path): goes on
+    /// where the last call stopped and stops once the frame's install budget (from `start_us`)
+    /// is spent, after one parameter at least. Returns whether the set's materials are synced
+    /// for this build. O(parameters synced x the set's materials).
+    #[func]
+    pub fn sync_build(&mut self, set: i64, start_us: i64) -> bool {
+        let Self { state, objects, sync, trace, .. } = self;
+        let Some(objects) = objects.as_mut() else {
+            return true;
+        };
+        let at = set as usize;
+        if objects.sets[at].synced {
+            return true;
+        }
+        let key = state.cells.sets[at].key;
+        let Some(source) = objects.patches.get(&key).map(|patch| Rid::new(patch.material)) else {
+            return false;
+        };
+        let mut materials = [Rid::Invalid; 8];
+        let count = collect(objects, set as u32, &mut materials);
+        let unbudgeted = state.unbudgeted;
+        let mut trace = trace.clone();
+        let mut over = move || over_budget(&mut trace, unbudgeted, start_us);
+        let mut server = godot::classes::RenderingServer::singleton();
+        let next = objects.sets[at].sync_next;
+        let stopped = sync.run(&mut server, at, &materials[..count], source, next, Some(&mut over));
+        let objects = &mut objects.sets[at];
+        objects.sync_next = stopped.unwrap_or(0);
+        objects.synced = stopped.is_none();
+        objects.synced
+    }
+
+    /// Patch `key`'s material may have changed (`process`'s changed materials): its drawing
+    /// set's materials sync where the watched parameters moved. O(1), and the parameters when
+    /// they moved.
+    #[func]
+    pub fn material_changed(&mut self, key: Vector2i) {
+        let key = (key.x, key.y);
+        let Self { state, objects, sync, cell_counts, .. } = self;
+        let Some(objects) = objects.as_mut() else {
+            return;
+        };
+        let Some(&set) = state.cells.by_patch.get(&key) else {
+            return;
+        };
+        if !state.resident.contains_key(&key) || !objects.parent(set).1 {
+            return;
+        }
+        let Some(source) = objects.patches.get(&key).map(|patch| Rid::new(patch.material)) else {
+            return;
+        };
+        let start = std::time::Instant::now();
+        let mut server = godot::classes::RenderingServer::singleton();
+        if sync.watched_moved(&server, set as usize, source) {
+            let mut materials = [Rid::Invalid; 8];
+            let count = collect(objects, set, &mut materials);
+            sync.run(&mut server, set as usize, &materials[..count], source, 0, None);
+            objects.sets[set as usize].sync_next = 0;
+        }
+        cell_counts[SYNC_US] += start.elapsed().as_micros() as i64;
+    }
+
+    /// Whether patch `key`'s set draws under a node other than `node` (the patch's node changed).
+    #[func]
+    pub fn cells_node_moved(&self, key: Vector2i, node: i64) -> bool {
+        let (Some(objects), Some(&set)) = (self.objects.as_ref(), self.state.cells.by_patch.get(&(key.x, key.y))) else {
+            return false;
+        };
+        let (parent, shown) = objects.parent(set);
+        shown && parent != node
+    }
+
+    /// Whether patch `key` has a set drawing under patch node `node` (`hole_patches`).
+    #[func]
+    pub fn cells_drawn_under(&self, key: Vector2i, node: i64) -> bool {
+        let (Some(objects), Some(&set)) = (self.objects.as_ref(), self.state.cells.by_patch.get(&(key.x, key.y))) else {
+            return false;
+        };
+        objects.drawn_under(set, node)
+    }
+
+    /// The cell counters: the frame's material sync, wall and flip microseconds, then walls
+    /// truncated, sets given the variant, multimeshes and materials made, set builds completed.
+    #[func]
+    pub fn cell_counters(&self) -> PackedInt64Array {
+        let mut out = self.cell_counts;
+        if let Some(objects) = self.objects.as_ref() {
+            out[4] = objects.variants_created as i64;
+            out[5] = objects.multimeshes_created as i64;
+            out[6] = objects.materials_created as i64;
+        }
+        PackedInt64Array::from(out.as_slice())
+    }
+
+    /// Set `set`'s objects for tests, grass and the probe: `multimeshes` (RIDs by cell mesh),
+    /// `counts` (instances drawn as sent), `has` (a mesh with instances), `drawn` (its instance
+    /// draws), `bound` (its material override, or an invalid RID), `textures` (per mesh the
+    /// (texels, atlas) its material binds, invalid RIDs for none or the base cells), `walls`
+    /// (wall instances drawn as sent), `walls_drawn`, `parent` (the patch node's instance id, 0
+    /// none) and `shown`.
+    #[func]
+    pub fn cell_objects(&self, set: i64) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        let Some(objects) = self.objects.as_ref() else {
+            return out;
+        };
+        let set = set as u32;
+        let mut multimeshes = Array::<Rid>::new();
+        let mut counts = PackedInt32Array::new();
+        let mut has = PackedByteArray::new();
+        let mut drawn = PackedByteArray::new();
+        let mut bound = Array::<Rid>::new();
+        for (multimesh, count, with, draws, material) in objects.parts(set) {
+            multimeshes.push(Rid::new(multimesh));
+            counts.push(count as i32);
+            has.push(u8::from(with));
+            drawn.push(u8::from(draws));
+            bound.push(material.map_or(Rid::Invalid, Rid::new));
+        }
+        let mut textures = Array::<Rid>::new();
+        for bound in objects.textures(set) {
+            for texture in bound {
+                textures.push(texture.map_or(Rid::Invalid, Rid::new));
+            }
+        }
+        let (walls, walls_drawn) = objects.walls(set);
+        let (parent, shown) = objects.parent(set);
+        out.set("multimeshes", multimeshes);
+        out.set("counts", counts);
+        out.set("has", has);
+        out.set("drawn", drawn);
+        out.set("bound", bound);
+        out.set("textures", textures);
+        out.set("walls", walls as i64);
+        out.set("walls_drawn", walls_drawn);
+        out.set("parent", parent);
+        out.set("shown", shown);
+        out
+    }
+
+    /// Patch `key`'s cell meshes for grass's mask mirrors, flat per mesh `(multimesh RID id,
+    /// has instances, page its material binds or -1)`; empty without a set. O(the set's meshes).
+    #[func]
+    pub fn mask_sources(&self, key: Vector2i) -> PackedInt64Array {
+        let (Some(objects), Some(&set)) = (self.objects.as_ref(), self.state.cells.by_patch.get(&(key.x, key.y))) else {
+            return PackedInt64Array::new();
+        };
+        let pages = self.state.cells.sets[set as usize].pages;
+        let mut out = Vec::with_capacity(27);
+        for (index, (multimesh, _, has, _, _)) in objects.parts(set).enumerate() {
+            let level = if index >= CELL_BEHIND_INDEX { index - CELL_BEHIND_INDEX } else { index };
+            let page = if index == CELL_BASE_INDEX { -1 } else { pages[level] };
+            out.extend([multimesh as i64, i64::from(has), page]);
+        }
+        PackedInt64Array::from(out.as_slice())
+    }
+
+    /// What the drawing sets submit (before culling), instances then triangles per cell mesh,
+    /// for the perf channel. O(drawing sets' meshes).
+    #[func]
+    pub fn submitted_cells(&self) -> PackedInt64Array {
+        let mut out = [0i64; 18];
+        if let Some(objects) = self.objects.as_ref() {
+            for (_, &set) in self.state.cells.by_patch.iter() {
+                objects.submitted(set, &mut out);
+            }
+        }
+        PackedInt64Array::from(out.as_slice())
+    }
 }
+
+// The set's graded materials, in mesh order, into `out`; returns how many.
+fn collect(objects: &CellObjects, set: u32, out: &mut [Rid; 8]) -> usize {
+    let mut count = 0;
+    for material in objects.materials(set) {
+        out[count] = Rid::new(material);
+        count += 1;
+    }
+    count
+}
+
+fn trace_out(trace: &mut Gd<RefCounted>, line: String) {
+    trace.call("out", &[GString::from(line.as_str()).to_variant()]);
+}
+
+const CELL_BASE_INDEX: usize = super::cells::CELL_BASE;
+const CELL_BEHIND_INDEX: usize = super::cells::CELL_BEHIND;
