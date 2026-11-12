@@ -4,7 +4,7 @@
 ## replay"). Recording writes, in the order they happen, every input the renderer reads (its
 ## entry calls with their arguments, the resident patch dictionary's mutations as terrain.gd makes
 ## them, Rust's replies, the install budget's answers) as `<` lines and every output it makes (its
-## Rust calls, page creations and moves, slot uploads, cell buffer publications, draw states) as
+## Rust calls, page creations and moves, slot uploads, cell buffer publications, draw states, wall faces) as
 ## `>` lines. Replaying reads a recorded trace back: each input returns the recorded value and each
 ## output must equal the recorded line, so a port of the renderer's state to Rust (G2a-c) is
 ## proven by reproducing every output bit for bit (godot/tests/graded_replay.gd). The tile bakes'

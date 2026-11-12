@@ -4,7 +4,7 @@
 ## the renderer as it is now, headless and without Rust's residency jobs: the resident patch
 ## dictionary's recorded mutations, entry calls, polled results, Rust's replies and the install
 ## budget's answers are fed back in order, and every output (Rust calls, page creations and
-## moves, slot uploads, cell buffer publications, draw states) must equal the recorded one. The
+## moves, slot uploads, cell buffer publications, draw states, wall faces) must equal the recorded one. The
 ## trace is METRUM_GRADED_REPLAY or the first user argument; a list of traces separated by `;`
 ## replays each; METRUM_GRADED_REPLAY_POOL=unbounded replays traces recorded before `TERRAIN-09`'s
 ## bound on the pooled pages. Exit 0 when every trace replays to its end.

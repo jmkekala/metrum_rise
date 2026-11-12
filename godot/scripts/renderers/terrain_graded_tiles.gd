@@ -2296,6 +2296,8 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 			wanted += (entry["walls"] as PackedFloat32Array).size() / WALL_FACE_FLOATS
 	if wanted > multimesh.instance_count:
 		multimesh.instance_count = nearest_po2(wanted)
+	# A trace records each face's basis columns as set (`RENDER-32-J`).
+	var traced := PackedFloat32Array()
 	for tile in _patch_tiles(rect):
 		var entry := _shown_in(tile, cells["key"])
 		if entry.is_empty():
@@ -2310,11 +2312,16 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 			if count == multimesh.instance_count:
 				truncated += 1
 				continue
-			multimesh.set_instance_transform(count, Transform3D(Basis(
-				Vector3(origin.x + faces[at], faces[at + 4], origin.y + faces[at + 1]),
-				Vector3(origin.x + faces[at + 2], faces[at + 5], origin.y + faces[at + 3]),
-				Vector3(faces[at + 6], faces[at + 7], 0.0)), Vector3.ZERO))
+			var column_a := Vector3(origin.x + faces[at], faces[at + 4], origin.y + faces[at + 1])
+			var column_b := Vector3(origin.x + faces[at + 2], faces[at + 5], origin.y + faces[at + 3])
+			var column_c := Vector3(faces[at + 6], faces[at + 7], 0.0)
+			multimesh.set_instance_transform(count, Transform3D(Basis(column_a, column_b, column_c), Vector3.ZERO))
+			if trace != null:
+				traced.append_array(PackedFloat32Array([column_a.x, column_a.y, column_a.z, column_b.x, column_b.y, column_b.z, column_c.x, column_c.y, column_c.z]))
 			count += 1
+	if trace != null:
+		var key: Vector2i = cells["key"]
+		trace.out("walls %d %d %d %d %d %d" % [key.x, key.y, count, multimesh.instance_count, truncated, hash(traced.to_byte_array())])
 	if truncated > 0:
 		counters["walls_truncated"] += truncated
 		MetrumDebug.log("terrain", "graded walls: %d faces past the patch capacity %d" % [truncated, multimesh.instance_count])
