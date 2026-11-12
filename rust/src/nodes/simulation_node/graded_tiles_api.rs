@@ -18,7 +18,7 @@
 
 use super::*;
 use crate::nodes::sim::core::{GradedEditSelection, GradedInstallTiles};
-use crate::nodes::sim::render::stream::layers::graded::book::{Baked, GradedTileBook, Polled};
+use crate::nodes::sim::render::stream::layers::graded::book::{Baked, Edit, GradedTileBook, Polled};
 use crate::nodes::sim::render::stream::levels::{GL3_STEPS, level_code, level_from_code};
 use crate::nodes::sim::render::stream::requests::{
     TileRequest as GradedTileRequest, TileRequestQueue,
@@ -772,6 +772,7 @@ impl SimulationNode {
         jobs.buffers.append(spent);
         jobs.take_others(true, |finished| {
             out.push(match finished {
+                Finished::Dict("edits", dict) => Polled::Edit(Edit::from_dict(&dict)),
                 Finished::Dict(kind, dict) => Polled::Other(kind, dict),
                 Finished::Retry(request) => {
                     let (code, step) = level_code(request.level);

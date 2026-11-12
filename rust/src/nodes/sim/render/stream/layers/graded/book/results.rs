@@ -17,12 +17,17 @@
 //! effects (the uploads, the cells' runs, the counted evictions and same-level uploads) the book
 //! applies itself; edits and the batch's staged tiles are the book's ([`super::edits`]).
 //!
+//! The runs are generic over their [`Host`] (`CODE-30`): the game's [`ScriptHost`] binds the
+//! book's `Gd` one step at a time and calls the renderer's script; the book's tests
+//! (`book/tests.rs`) drive the same runs without the engine, with scripted polls and clock.
+//!
 //! Bounds: a poll `O(its results)`; a tile `O(1)` checks, then its placing and writes
 //! (`O(copies x (slot bytes + rows))`, one backend call a layer); the variant waits
 //! `O(waiting tiles)` a frame while any wait. No allocation on the tile path once the buffers
 //! have grown (the book's entry bookkeeping aside).
 
 use super::*;
+use super::edits::Edit;
 use crate::nodes::sim::render::stream::layers::graded::ordered::OrderedMap;
 use crate::nodes::simulation_node::SimulationNode;
 use std::collections::VecDeque;
@@ -152,7 +157,9 @@ pub(crate) enum Polled {
         /// The request's token.
         token: i64,
     },
-    /// A result of another kind, by its key in the poll's dictionary.
+    /// An edit the simulation handed over, decoded from the poll's `edits` ([`Edit`]).
+    Edit(Edit),
+    /// A list or a failure the renderer takes, by its key in the poll's dictionary.
     Other(&'static str, VarDictionary),
 }
 
@@ -244,6 +251,20 @@ fn own_effect(effect: &Effect, attached: bool) -> bool {
 }
 
 impl GradedTileBook {
+    // `take_result_counts`' counts, drained but the longest poll.
+    pub(super) fn result_counts(&mut self) -> [i64; COUNTS] {
+        let counts = self.taken.counts;
+        self.taken.counts[..POLL_US_MAX].fill(0);
+        self.taken.counts[POLL_US_MAX + 1..].fill(0);
+        counts
+    }
+
+    // Results deferred past a frame's budget (tests).
+    #[cfg(test)]
+    pub(super) fn taken_deferred(&self) -> usize {
+        self.taken.deferred.len()
+    }
+
     // Takes the effects of the last calls and applies them where every one is the book's own
     // (as `_apply_effects` applies them, in order). Returns whether the renderer must apply them
     // instead (they stay queued for its `take_effects`).
@@ -286,60 +307,154 @@ impl GradedTileBook {
     }
 }
 
-// One frame's result path: the book and the renderer it calls back, the simulation (none under
-// a trace or a stand-in), the frame's start and whether it took a result or count yet.
-pub(super) struct Run {
-    pub(super) book: Gd<GradedTileBook>,
+/// The renderer's side of a run of the result path or the edit batch (`CODE-30`, the streaming
+/// audit's finding 5): the book, borrowed one step at a time, and the callbacks into what stays
+/// the renderer's. The game's is [`ScriptHost`] (the book's `Gd`, unbound around each callback,
+/// and `terrain_graded_tiles.gd`); the book's tests use a recording one, without the engine.
+pub(crate) trait Host {
+    /// The book borrowed for one step.
+    type Book<'a>: std::ops::DerefMut<Target = GradedTileBook>
+    where
+        Self: 'a;
+    /// Borrows the book; no callback runs while the borrow lives.
+    fn book(&mut self) -> Self::Book<'_>;
+    /// `_apply_effects`: the renderer applies the effects queued in the book (page arrays,
+    /// cancels, draw states, and the cells' runs while the book has no objects).
+    fn apply_effects(&mut self);
+    /// `_take_polled`: a polled list or failure the renderer takes (`kind` as the poll names it).
+    fn take_polled(&mut self, kind: &'static str, entry: VarDictionary);
+    /// The renderer's `release_preview(first, last)` (its own entry point, which a trace records).
+    fn release_preview(&mut self, first: i64, last: i64);
+    /// One poll of finished work into `polled` (edits, lists, failures, tiles, in that order);
+    /// `spent` returns written bake buffers to the simulation's pool. Returns the tile bakes
+    /// pending.
+    fn poll(&mut self, polled: &mut Vec<Polled>, spent: &mut Vec<Vec<u8>>) -> i64;
+    /// The budget's clock, microseconds on the frame start's scale.
+    fn now_us(&mut self) -> i64;
+}
+
+/// The game's [`Host`]: the book's `Gd`, the renderer's script, and the simulation (none under a
+/// trace or a test's stand-in, which poll through the renderer's `_sim_poll`).
+pub(crate) struct ScriptHost {
+    book: Gd<GradedTileBook>,
     renderer: Gd<RefCounted>,
     simulation: Option<Gd<SimulationNode>>,
+    // The engine's clock (`Time.get_ticks_usec`, which the frame's start reads) when the run
+    // began and a monotonic clock from then: a budget check without a call into the engine.
+    clock: (i64, std::time::Instant),
+}
+
+impl ScriptHost {
+    // A host whose clock starts at the engine's (the frame's result path).
+    fn timed(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>, simulation: Option<Gd<SimulationNode>>) -> Self {
+        let engine = godot::classes::Time::singleton().get_ticks_usec() as i64;
+        Self { book, renderer, simulation, clock: (engine, std::time::Instant::now()) }
+    }
+
+    // A host outside the frame's poll (no budget, no simulation).
+    pub(super) fn new(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>) -> Self {
+        Self { book, renderer, simulation: None, clock: (0, std::time::Instant::now()) }
+    }
+}
+
+impl Host for ScriptHost {
+    type Book<'a> = godot::obj::GdMut<'a, GradedTileBook>;
+
+    fn book(&mut self) -> Self::Book<'_> {
+        self.book.bind_mut()
+    }
+
+    fn apply_effects(&mut self) {
+        self.renderer.call("_apply_effects", &[]);
+    }
+
+    fn take_polled(&mut self, kind: &'static str, entry: VarDictionary) {
+        self.renderer.call("_take_polled", &[kind.to_variant(), entry.to_variant()]);
+    }
+
+    fn release_preview(&mut self, first: i64, last: i64) {
+        self.renderer.call("release_preview", &[first.to_variant(), last.to_variant()]);
+    }
+
+    fn poll(&mut self, polled: &mut Vec<Polled>, spent: &mut Vec<Vec<u8>>) -> i64 {
+        if let Some(simulation) = self.simulation.as_mut() {
+            return simulation.bind_mut().poll_graded_results(POLL_BATCH, polled, spent);
+        }
+        let result = self.renderer.call("_sim_poll", &[]).to::<VarDictionary>();
+        for kind in ["edits", "patches", "failed", "tiles"] {
+            let Some(entries) = result.get(kind) else {
+                continue;
+            };
+            for entry in entries.to::<VarArray>().iter_shared() {
+                let dict = entry.to::<VarDictionary>();
+                polled.push(match kind {
+                    "tiles" => Polled::Tile(Baked::from_dict(dict)),
+                    "edits" => Polled::Edit(Edit::from_dict(&dict)),
+                    "failed" => retried(&dict).unwrap_or(Polled::Other(kind, dict)),
+                    kind => Polled::Other(kind, dict),
+                });
+            }
+        }
+        result.get("tiles_pending").map_or(0, |value| value.to::<i64>())
+    }
+
+    fn now_us(&mut self) -> i64 {
+        self.clock.0 + self.clock.1.elapsed().as_micros() as i64
+    }
+}
+
+// One frame's result path: the host (the book and the renderer it calls back), the frame's start
+// and whether it took a result or count yet.
+pub(super) struct Run<H: Host> {
+    pub(super) host: H,
     start_us: i64,
     progressed: bool,
     // The tiles placed this frame, each charged `CELL_CHARGE_US` in the budget checks.
     placed: i64,
-    // The engine's clock (`Time.get_ticks_usec`, which `start_us` reads) when the run began and
-    // a monotonic clock from then: a budget check without a call into the engine.
-    clock: (i64, std::time::Instant),
     // Whether the perf channel's split counts this run's time (the frame's result path does; the
     // edit batch and the preview, outside it, do not).
     split: bool,
 }
 
-impl Run {
-    // A run outside the frame's poll (no budget, no simulation, no split): the edit batch, the
-    // preview and the variant waits.
-    pub(super) fn unbudgeted(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>) -> Self {
-        let clock = (0, std::time::Instant::now());
-        Self { book, renderer, simulation: None, start_us: 0, progressed: true, placed: 0, clock, split: false }
+impl<H: Host> Run<H> {
+    // The frame's result path from `start_us` (on the host's clock).
+    pub(super) fn budgeted(host: H, start_us: i64) -> Self {
+        Self { host, start_us, progressed: false, placed: 0, split: true }
+    }
+
+    // A run outside the frame's poll (no budget, no split): the edit batch, the preview.
+    pub(super) fn unbudgeted(host: H) -> Self {
+        Self { host, start_us: 0, progressed: true, placed: 0, split: false }
     }
 
     // `_over_budget` with the placed tiles' cell rewrites charged (as if the frame had started
     // that much earlier): the trace's answer where one records or replays.
     fn over(&mut self) -> bool {
         let start_us = self.start_us - self.placed * CELL_CHARGE_US;
-        let mut book = self.book.bind_mut();
+        let now_us = self.host.now_us();
+        let mut book = self.host.book();
         let book = &mut *book;
         if book.trace.is_some() {
             return over_budget(&mut book.trace, book.state.unbudgeted, start_us);
         }
-        let now_us = self.clock.0 + self.clock.1.elapsed().as_micros() as i64;
         !book.state.unbudgeted && now_us - start_us >= 1000
     }
 
-    fn has_counts(&self) -> bool {
-        !self.book.bind().state.requests.counts.is_empty()
+    fn has_counts(&mut self) -> bool {
+        !self.host.book().state.requests.counts.is_empty()
     }
 
     // `_apply_count`.
     fn count(&mut self) {
-        self.book.bind_mut().state.apply_count();
+        self.host.book().state.apply_count();
         self.effects();
     }
 
     pub(super) fn effects(&mut self) {
         let start = std::time::Instant::now();
-        let renderer = self.book.bind_mut().apply_own_effects();
+        let renderer = self.host.book().apply_own_effects();
         if renderer {
-            self.renderer.call("_apply_effects", &[]);
+            self.host.apply_effects();
         }
         self.add(EFFECTS_NS, start);
     }
@@ -349,15 +464,14 @@ impl Run {
         if !self.split {
             return;
         }
-        self.book.bind_mut().taken.counts[slot] += start.elapsed().as_nanos() as i64;
+        self.host.book().taken.counts[slot] += start.elapsed().as_nanos() as i64;
     }
 
-    // Calls the renderer's `method`, timed as a callback.
-    pub(super) fn call(&mut self, method: &str, args: &[Variant]) -> Variant {
+    // The renderer's `release_preview`, timed as a callback.
+    pub(super) fn release_preview(&mut self, first: i64, last: i64) {
         let start = std::time::Instant::now();
-        let out = self.renderer.call(method, args);
+        self.host.release_preview(first, last);
         self.add(CALLBACK_NS, start);
-        out
     }
 
     fn take(&mut self, item: Polled) {
@@ -365,24 +479,26 @@ impl Run {
             Polled::Tile(baked) => self.install(baked),
             Polled::Retry { tile, code, step, token } => {
                 let tile = Vector2i::new(tile.x, tile.z);
-                self.book.bind_mut().failed_tile(tile, i64::from(code), i64::from(step), token, true);
+                self.host.book().failed_tile(tile, i64::from(code), i64::from(step), token, true);
             }
-            Polled::Other("edits", dict) => {
+            Polled::Edit(edit) => {
                 let start = std::time::Instant::now();
-                self.apply_edit(&dict);
+                self.apply_edit(edit);
                 self.add(CALLBACK_NS, start);
             }
             Polled::Other(kind, dict) => {
-                self.call("_take_polled", &[kind.to_variant(), dict.to_variant()]);
+                let start = std::time::Instant::now();
+                self.host.take_polled(kind, dict);
+                self.add(CALLBACK_NS, start);
             }
         }
     }
 
     // `_install`: a result of the tile's current request installs, waits for its sets' variant
     // or, the edit batch's, stages for it; any other is stale and dropped. O(1) + its placing.
-    fn install(&mut self, mut baked: Baked) {
+    pub(super) fn install(&mut self, mut baked: Baked) {
         let start = std::time::Instant::now();
-        let mut guard = self.book.bind_mut();
+        let mut guard = self.host.book();
         let book = &mut *guard;
         book.taken.counts[TILES] += 1;
         if book.taken.behind {
@@ -428,33 +544,11 @@ impl Run {
     fn poll(&mut self, polled: &mut Vec<Polled>) -> usize {
         let start = std::time::Instant::now();
         polled.clear();
-        let pending = match self.simulation.as_mut() {
-            Some(simulation) => {
-                let mut spent = std::mem::take(&mut self.book.bind_mut().taken.spent);
-                let pending = simulation.bind_mut().poll_graded_results(POLL_BATCH, polled, &mut spent);
-                self.book.bind_mut().taken.spent = spent;
-                pending
-            }
-            None => {
-                let result = self.renderer.call("_sim_poll", &[]).to::<VarDictionary>();
-                for kind in ["edits", "patches", "failed", "tiles"] {
-                    let Some(entries) = result.get(kind) else {
-                        continue;
-                    };
-                    for entry in entries.to::<VarArray>().iter_shared() {
-                        let dict = entry.to::<VarDictionary>();
-                        polled.push(match kind {
-                            "tiles" => Polled::Tile(Baked::from_dict(dict)),
-                            "failed" => retried(&dict).unwrap_or(Polled::Other(kind, dict)),
-                            kind => Polled::Other(kind, dict),
-                        });
-                    }
-                }
-                result.get("tiles_pending").map_or(0, |value| value.to::<i64>())
-            }
-        };
+        let mut spent = std::mem::take(&mut self.host.book().taken.spent);
+        let pending = self.host.poll(polled, &mut spent);
         let tiles = polled.iter().filter(|item| matches!(item, Polled::Tile(_))).count();
-        let mut book = self.book.bind_mut();
+        let mut book = self.host.book();
+        book.taken.spent = spent;
         book.taken.tiles_pending = pending;
         let counts = &mut book.taken.counts;
         counts[POLL_US_MAX] = counts[POLL_US_MAX].max(start.elapsed().as_micros() as i64);
@@ -474,13 +568,13 @@ impl Run {
                 self.count();
                 self.progressed = true;
             }
-            if self.book.bind().taken.deferred.is_empty() {
+            if self.host.book().taken.deferred.is_empty() {
                 break;
             }
             if self.progressed && self.over() {
                 return;
             }
-            let item = self.book.bind_mut().taken.deferred.pop_front();
+            let item = self.host.book().taken.deferred.pop_front();
             if let Some(item) = item {
                 self.take(item);
             }
@@ -493,7 +587,7 @@ impl Run {
             let tiles = self.poll(polled);
             for item in polled.drain(..) {
                 if self.progressed && self.over() {
-                    let mut book = self.book.bind_mut();
+                    let mut book = self.host.book();
                     book.taken.deferred.push_back(item);
                     book.taken.counts[DEFERRED] += 1;
                     continue;
@@ -509,6 +603,42 @@ impl Run {
                 return;
             }
         }
+    }
+
+    // The frame's tile results (`install_results`): the poll buffer is the book's, reused.
+    pub(super) fn results(&mut self) {
+        let mut polled = std::mem::take(&mut self.host.book().taken.polled);
+        self.run(&mut polled);
+        // A poll's results the frame left are deferred above; the buffer is empty again.
+        polled.clear();
+        self.host.book().taken.polled = polled;
+    }
+
+    // `_take_variant_waits`' results: the flagged tiles whose sets all hold the variant now
+    // install, in the order they began waiting.
+    pub(super) fn variant_waits(&mut self) {
+        let mut keys = {
+            let mut book = self.host.book();
+            let mut keys = std::mem::take(&mut book.taken.wait_keys);
+            keys.clear();
+            keys.extend(book.taken.waits.keys().copied());
+            keys
+        };
+        for &tile in &keys {
+            let ready = {
+                let mut book = self.host.book();
+                if book.variant_missing(Vector2i::new(tile.x, tile.z)) {
+                    None
+                } else {
+                    book.taken.waits.remove(&tile)
+                }
+            };
+            if let Some(baked) = ready {
+                self.install(baked);
+            }
+        }
+        keys.clear();
+        self.host.book().taken.wait_keys = keys;
     }
 }
 
@@ -529,44 +659,17 @@ impl GradedTileBook {
         simulation: Option<Gd<SimulationNode>>,
         start_us: i64,
     ) {
-        let mut polled = std::mem::take(&mut book.clone().bind_mut().taken.polled);
-        let clock = (godot::classes::Time::singleton().get_ticks_usec() as i64, std::time::Instant::now());
-        let mut run = Run { book, renderer, simulation, start_us, progressed: false, placed: 0, clock, split: true };
-        run.run(&mut polled);
-        // A poll's results the frame left are deferred above; the buffer is empty again.
-        polled.clear();
-        run.book.bind_mut().taken.polled = polled;
+        Run::budgeted(ScriptHost::timed(book, renderer, simulation), start_us).results();
     }
 
     /// `_take_variant_waits`' results: the flagged tiles whose sets all hold the variant now
     /// install (in the order they began waiting). O(waiting tiles).
     #[func]
     pub fn take_variant_waits(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>) {
-        let mut keys = {
-            let mut guard = book.clone();
-            let mut bound = guard.bind_mut();
-            let mut keys = std::mem::take(&mut bound.taken.wait_keys);
-            keys.clear();
-            keys.extend(bound.taken.waits.keys().copied());
-            keys
-        };
-        let clock = (0, std::time::Instant::now());
-        let mut run = Run { book, renderer, simulation: None, start_us: 0, progressed: true, placed: 0, clock, split: true };
-        for &tile in &keys {
-            let ready = {
-                let mut book = run.book.bind_mut();
-                if book.variant_missing(Vector2i::new(tile.x, tile.z)) {
-                    None
-                } else {
-                    book.taken.waits.remove(&tile)
-                }
-            };
-            if let Some(baked) = ready {
-                run.install(baked);
-            }
-        }
-        keys.clear();
-        run.book.bind_mut().taken.wait_keys = keys;
+        let mut run = Run::unbudgeted(ScriptHost::new(book, renderer));
+        // The waits' time counts in the perf channel's split, as before.
+        run.split = true;
+        run.variant_waits();
     }
 
     /// The result path's counts since the last read: results deferred, tiles that waited for
@@ -576,10 +679,7 @@ impl GradedTileBook {
     /// and the tiles taken.
     #[func]
     pub fn take_result_counts(&mut self) -> PackedInt64Array {
-        let counts = PackedInt64Array::from(self.taken.counts.as_slice());
-        self.taken.counts[..POLL_US_MAX].fill(0);
-        self.taken.counts[POLL_US_MAX + 1..].fill(0);
-        counts
+        PackedInt64Array::from(self.result_counts().as_slice())
     }
 
     /// Tile bakes waiting in the simulation's queue, as of the last poll.

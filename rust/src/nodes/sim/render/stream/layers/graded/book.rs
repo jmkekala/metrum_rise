@@ -113,6 +113,9 @@ pub struct GradedTileBook {
 
 mod edits;
 mod results;
+#[cfg(test)]
+mod tests;
+pub(crate) use edits::Edit;
 pub(crate) use results::{Baked, Bytes, Polled};
 
 // A bake as the renderer places it: its slot layer and row atlas run (little-endian RGBAF,
@@ -575,18 +578,17 @@ impl GradedTileBook {
             .adopt_preview(tile_of(tile), (level.x as u8, level.y as u8, i64::from(level.z)), epoch)
     }
 
-    /// Reserves the edit batch's copies, flat `(x, z, code, step, token, layers)` per staged tile
-    /// in order. Returns `[0, then per tile its count and (page, slot, first, layers)]`, or `[1]`
-    /// (nothing reserved) or `[2, x, z]` (that tile's level is exhausted; it left the batch).
-    fn reserve_edit(&mut self, staged: PackedInt64Array) -> PackedInt64Array {
+    // Reserves the edit batch's copies, flat `(x, z, code, step, token, layers)` per staged tile
+    // in order. Into `out`: `[0, then per tile its count and (page, slot, first, layers)]`, or
+    // `[1]` (nothing reserved) or `[2, x, z]` (that tile's level is exhausted; it left the batch).
+    fn reserve_edit(&mut self, staged: &[i64], out: &mut Vec<i64>) {
         let staged: Vec<super::ops::Staged> = staged
-            .as_slice()
             .as_chunks::<6>().0.iter()
             .map(|tile| {
                 (Tile { x: tile[0] as i32, z: tile[1] as i32 }, tile[2] as u8, tile[3] as u8, tile[4], tile[5] as u32)
             })
             .collect();
-        let mut out = Vec::new();
+        out.clear();
         match self.state.reserve_edit(&staged, &mut self.scratch) {
             Ok(tiles) => {
                 out.push(0);
@@ -600,7 +602,6 @@ impl GradedTileBook {
             Err(None) => out.push(1),
             Err(Some(tile)) => out.extend([2, i64::from(tile.x), i64::from(tile.z)]),
         }
-        PackedInt64Array::from(out.as_slice())
     }
 
     /// The hand-over: every wanted tile that can install is to be requested, and a complete
@@ -1078,13 +1079,13 @@ impl GradedTileBook {
         self.cell_counts[SYNC_US..=FLIP_US].fill(0);
     }
 
-    /// The preview's tiles of epochs `first` to `last`, flat `(x, z)` in order.
-    fn preview_tiles(&self, first: i64, last: i64) -> PackedInt32Array {
+    // The preview's tiles of epochs `first` to `last`, in order.
+    fn preview_tiles(&self, first: i64, last: i64) -> Vec<Tile> {
         self.state
             .preview
             .iter()
             .filter(|(_, entry)| entry.token >= first && entry.token <= last)
-            .flat_map(|(tile, _)| [tile.x, tile.z])
+            .map(|(tile, _)| *tile)
             .collect()
     }
 
