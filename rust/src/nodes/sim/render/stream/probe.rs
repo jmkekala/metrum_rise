@@ -101,7 +101,14 @@ impl LayerTracker {
     /// Takes frame `frame`'s installed set (`data`, [`LANES`] floats a chunk) in `epoch`, with the
     /// frustum `planes` (`[nx, ny, nz, d]`, outward: a point is outside when `n.p > d`) and the
     /// layer's height range `y`. `O(chunks x planes)`.
-    pub(crate) fn observe(&mut self, frame: u64, epoch: u32, data: &[f32], planes: &[[f32; 4]], y: [f32; 2]) {
+    pub(crate) fn observe(
+        &mut self,
+        frame: u64,
+        epoch: u32,
+        data: &[f32],
+        planes: &[[f32; 4]],
+        y: [f32; 2],
+    ) {
         let baseline = !self.started;
         self.started = true;
         let mut in_view_holes = 0;
@@ -110,7 +117,11 @@ impl LayerTracker {
             let flags = record[3] as u32;
             let drawn = flags & DRAWN != 0;
             let visible = drawn || flags & COVERED != 0;
-            let in_view = in_frustum(planes, [record[4], y[0], record[5]], [record[6], y[1], record[7]]);
+            let in_view = in_frustum(
+                planes,
+                [record[4], y[0], record[5]],
+                [record[6], y[1], record[7]],
+            );
             let previous = match self.chunks.get(&key).copied() {
                 Some(chunk) if chunk.seen + 1 == frame => Some(chunk),
                 // Not seen last frame (no frame was observed between): it left and enters again.
@@ -167,8 +178,20 @@ impl LayerTracker {
                 self.stats(chunk.epoch).waits_visible.push(waited);
             }
             let (hole, bare) = (in_view && !drawn, in_view && !visible);
-            Self::run(&mut chunk.hole, &mut chunk.hole_epoch, hole, epoch, |length, at| push_run(&mut self.stats, at, length, false));
-            Self::run(&mut chunk.bare, &mut chunk.bare_epoch, bare, epoch, |length, at| push_run(&mut self.stats, at, length, true));
+            Self::run(
+                &mut chunk.hole,
+                &mut chunk.hole_epoch,
+                hole,
+                epoch,
+                |length, at| push_run(&mut self.stats, at, length, false),
+            );
+            Self::run(
+                &mut chunk.bare,
+                &mut chunk.bare_epoch,
+                bare,
+                epoch,
+                |length, at| push_run(&mut self.stats, at, length, true),
+            );
             if hole {
                 in_view_holes += 1;
                 self.stats(epoch).hole_frames += 1;
@@ -258,7 +281,13 @@ fn push_run(stats: &mut Vec<EpochStats>, epoch: u32, length: u32, bare: bool) {
 /// No planes: in view.
 pub(crate) fn in_frustum(planes: &[[f32; 4]], low: [f32; 3], high: [f32; 3]) -> bool {
     planes.iter().all(|plane| {
-        let corner = [0, 1, 2].map(|axis| if plane[axis] < 0.0 { high[axis] } else { low[axis] });
+        let corner = [0, 1, 2].map(|axis| {
+            if plane[axis] < 0.0 {
+                high[axis]
+            } else {
+                low[axis]
+            }
+        });
         let over = plane[0] * corner[0] + plane[1] * corner[1] + plane[2] * corner[2] > plane[3];
         !over
     })
@@ -283,7 +312,11 @@ impl StreamDrawnProbe {
     pub fn begin_frame(&mut self, planes: Array<Plane>) {
         self.frame += 1;
         self.planes.clear();
-        self.planes.extend(planes.iter_shared().map(|plane| [plane.normal.x, plane.normal.y, plane.normal.z, plane.d]));
+        self.planes.extend(
+            planes
+                .iter_shared()
+                .map(|plane| [plane.normal.x, plane.normal.y, plane.normal.z, plane.d]),
+        );
     }
 
     /// Counts what follows for the epoch `label` (a sample's label; empty: between samples).
@@ -310,7 +343,13 @@ impl StreamDrawnProbe {
             }
         };
         let (frame, epoch) = (self.frame, self.epoch);
-        self.layers[index].1.observe(frame, epoch, data.as_slice(), &self.planes, [y_min as f32, y_max as f32]);
+        self.layers[index].1.observe(
+            frame,
+            epoch,
+            data.as_slice(),
+            &self.planes,
+            [y_min as f32, y_max as f32],
+        );
     }
 
     /// The counts: per epoch label, per layer `entered`, `waits`, `waits_visible`,
@@ -319,12 +358,15 @@ impl StreamDrawnProbe {
     #[func]
     pub fn report(&self) -> VarDictionary {
         let mut out = VarDictionary::new();
-        let packed = |values: &[u32]| PackedInt32Array::from_iter(values.iter().map(|&value| value as i32));
+        let packed =
+            |values: &[u32]| PackedInt32Array::from_iter(values.iter().map(|&value| value as i32));
         for (name, layer) in &self.layers {
             let (stats, open) = layer.report(self.frame);
             for (epoch, (stats, open)) in stats.iter().zip(&open).enumerate() {
                 let label = self.epochs.get(epoch).cloned().unwrap_or_default();
-                let mut by_layer: VarDictionary = out.get(label.clone()).map_or_else(VarDictionary::new, |value| value.to());
+                let mut by_layer: VarDictionary = out
+                    .get(label.clone())
+                    .map_or_else(VarDictionary::new, |value| value.to());
                 let mut entry = VarDictionary::new();
                 entry.set("entered", stats.entered);
                 entry.set("waits", packed(&stats.waits));

@@ -22,18 +22,56 @@ fn the_first_frame_is_the_baseline_and_entries_wait_until_drawn() {
     let mut layer = LayerTracker::default();
     layer.observe(1, 0, &set(&[([0, 0, 1], 0, UNIT)]), &PLANES, [0.0, 1.0]);
     // An entry drawn at once waits 0; another waits two frames, ready for the second.
-    layer.observe(2, 1, &set(&[([0, 0, 1], 0, UNIT), ([1, 0, 1], DRAWN, UNIT), ([2, 0, 1], 0, UNIT)]), &PLANES, [0.0, 1.0]);
-    layer.observe(3, 1, &set(&[([0, 0, 1], DRAWN, UNIT), ([1, 0, 1], DRAWN, UNIT), ([2, 0, 1], READY, UNIT)]), &PLANES, [0.0, 1.0]);
-    layer.observe(4, 2, &set(&[([0, 0, 1], DRAWN, UNIT), ([1, 0, 1], DRAWN, UNIT), ([2, 0, 1], DRAWN, UNIT)]), &PLANES, [0.0, 1.0]);
+    layer.observe(
+        2,
+        1,
+        &set(&[
+            ([0, 0, 1], 0, UNIT),
+            ([1, 0, 1], DRAWN, UNIT),
+            ([2, 0, 1], 0, UNIT),
+        ]),
+        &PLANES,
+        [0.0, 1.0],
+    );
+    layer.observe(
+        3,
+        1,
+        &set(&[
+            ([0, 0, 1], DRAWN, UNIT),
+            ([1, 0, 1], DRAWN, UNIT),
+            ([2, 0, 1], READY, UNIT),
+        ]),
+        &PLANES,
+        [0.0, 1.0],
+    );
+    layer.observe(
+        4,
+        2,
+        &set(&[
+            ([0, 0, 1], DRAWN, UNIT),
+            ([1, 0, 1], DRAWN, UNIT),
+            ([2, 0, 1], DRAWN, UNIT),
+        ]),
+        &PLANES,
+        [0.0, 1.0],
+    );
     let (stats, open) = layer.report(4);
     assert_eq!(stats[0].entered, 0, "the baseline enters nothing");
     assert_eq!(stats[1].entered, 2);
-    assert_eq!(stats[1].waits, vec![0, 2], "waits count for the epoch the chunk entered in");
+    assert_eq!(
+        stats[1].waits,
+        vec![0, 2],
+        "waits count for the epoch the chunk entered in"
+    );
     assert_eq!(stats[1].ready_frames, vec![0, 1]);
     assert!(open.iter().all(Vec::is_empty));
     // The baseline chunk was a hole in view for frames 1 and 2: one run of two, in epoch 0.
     assert_eq!(stats[0].holes, vec![2]);
-    assert_eq!(stats[1].holes, vec![2], "the waiting entry's run, ready or not");
+    assert_eq!(
+        stats[1].holes,
+        vec![2],
+        "the waiting entry's run, ready or not"
+    );
 }
 
 #[test]
@@ -51,7 +89,11 @@ fn holes_out_of_view_do_not_count_and_a_cover_ends_the_visible_wait() {
     let (stats, _) = layer.report(4);
     assert_eq!(stats[0].waits, vec![2, 2]);
     assert_eq!(stats[0].waits_visible, vec![0, 2]);
-    assert_eq!(stats[0].holes, vec![2], "the far chunk is outside the frustum");
+    assert_eq!(
+        stats[0].holes,
+        vec![2],
+        "the far chunk is outside the frustum"
+    );
     assert!(stats[0].bare.is_empty(), "the covered chunk was never bare");
     assert_eq!(stats[0].holes_max, 1);
 }
@@ -60,7 +102,13 @@ fn holes_out_of_view_do_not_count_and_a_cover_ends_the_visible_wait() {
 fn a_chunk_that_leaves_undrawn_is_counted_and_one_still_waiting_is_open() {
     let mut layer = LayerTracker::default();
     layer.observe(1, 0, &[], &PLANES, [0.0, 1.0]);
-    layer.observe(2, 0, &set(&[([0, 0, 1], 0, UNIT), ([1, 0, 1], 0, UNIT)]), &PLANES, [0.0, 1.0]);
+    layer.observe(
+        2,
+        0,
+        &set(&[([0, 0, 1], 0, UNIT), ([1, 0, 1], 0, UNIT)]),
+        &PLANES,
+        [0.0, 1.0],
+    );
     layer.observe(3, 0, &set(&[([1, 0, 1], 0, UNIT)]), &PLANES, [0.0, 1.0]);
     // A gap of a frame re-enters the chunk.
     layer.observe(5, 0, &set(&[([1, 0, 1], DRAWN, UNIT)]), &PLANES, [0.0, 1.0]);
