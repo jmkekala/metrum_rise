@@ -53,16 +53,16 @@ const PATHS := [
 ]
 const DEFAULT_PATH_FRAMES := 600
 const SLOW_FRAME_MS := 33.3
-const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits"]
+const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits", "filter2", "filter3", "low", "no_casters"]
+const ShadowVariants := preload("res://scripts/benchmarks/shadow_variants.gd")
+# This matrix's names for the shared shadow variants; any other variant keeps full shadows.
+const SHADOW_VARIANTS := {"no_shadows": "none", "minimal": "none", "no_blend_splits": "no_blend"}
 const DEFAULT_WARMUP_FRAMES := 120
 const DEFAULT_CAPTURE_FRAMES := 600
 
 var _report: Dictionary
 var _environment: Environment
 var _sun: DirectionalLight3D
-# The shadow settings the player's quality chose, restored after a variant that changes one.
-var _sun_angular_distance := 0.0
-var _sun_blend_splits := false
 var _vegetation: Node
 var _grass: Node
 var _water: Node3D
@@ -74,8 +74,6 @@ func run(bench: Node) -> void:
 	var main := bench.get_parent()
 	_environment = (main.get_node("WorldEnvironment") as WorldEnvironment).environment
 	_sun = main.get_node("DirectionalLight3D")
-	_sun_angular_distance = _sun.light_angular_distance
-	_sun_blend_splits = _sun.directional_shadow_blend_splits
 	_vegetation = main.get_node("Vegetation")
 	_grass = main.get_node("Grass")
 	_water = main.get_node("Water")
@@ -360,16 +358,14 @@ func _apply_variant(variant: String) -> void:
 	# The day cycle writes ssil_enabled every frame (on only while windows can be lit).
 	_lighting.ssil_allowed = effects and variant != "no_ssil"
 	_environment.glow_enabled = effects and variant != "no_glow"
-	_sun.shadow_enabled = not (minimal or variant == "no_shadows")
+	# The sun's shadows and the receivers' cloud lookup (`shadow_variants.gd`).
+	ShadowVariants.apply(_lighting, _sun, SHADOW_VARIANTS.get(variant, variant))
 	_water.visible = variant != "no_water"
 	_terrain.visible = variant != "no_terrain"
 	# The cloud pass and the receivers' cloud lookups, measured apart.
 	_lighting._cloud_effect.enabled = not (minimal or variant == "no_clouds")
-	_lighting.cloud_shadows_allowed = not (minimal or variant == "no_cloud_shadows")
-	# The two open RENDER-15 shadow costs at High quality: the variable penumbra (an angular
-	# size of zero makes the directional shadow a plain PCF lookup) and blending between splits.
-	_sun.light_angular_distance = 0.0 if variant == "no_pcss" else _sun_angular_distance
-	_sun.directional_shadow_blend_splits = variant != "no_blend_splits" and _sun_blend_splits
+	if minimal:
+		_lighting.cloud_shadows_allowed = false
 
 # Screenshot-only: TreeSpecies caches every vegetation ShaderMaterial in static containers.
 func _set_vegetation_wind(strength: float) -> void:

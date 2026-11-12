@@ -13,7 +13,10 @@ over its own. `summary` prints a report's per-phase table; with `--scripts` (an 
 `--detail`) also each phase's mean milliseconds per frame by renderer. `compare` gives a series'
 verdict by same-binary spread, `digests` compares two runs' settle points (`equal`, `band`,
 `different`), and `stills` captures the idle matrix's screenshots and compares them (byte identity,
-the systematic-pixel test).
+the systematic-pixel test, a capture's variants against its `full`). `--shadows` sets the sun-shadow
+variant sequence (`RENDER-15`, METRUM_STREAM_SHADOWS) of a run or a series' branch rows, and
+`split` turns a run's `full,X,X,full` blocks into per-variant quartets for `compare`.
+`--gpu-profile` adds Godot's render timestamps (`gpu_passes` per sample, shown by `summary`).
 
     ./run.sh --benchmark-stream                     # builds release, then `run` on Kuopio
     tools/stream_benchmark.py run --label c30k-br1 --save <populated_city_30000.sqlite> --out <dir>
@@ -22,6 +25,8 @@ the systematic-pixel test).
     tools/stream_benchmark.py digests <a.metrics.json> <b.metrics.json>
     tools/stream_benchmark.py stills capture|compare|systematic ...
     tools/stream_benchmark.py summary <dir>/c30k-br1.metrics.json [--scripts]
+    tools/stream_benchmark.py run --label 30k-shadows --shadows full,none,none,full ... ; \
+        tools/stream_benchmark.py split <dir>/30k-shadows.metrics.json; tools/stream_benchmark.py compare <dir> 30k-shadows.none
 """
 
 import argparse
@@ -44,7 +49,7 @@ import timing_session  # noqa: E402  (shares the machine settings and window che
 ROOT = Path(__file__).resolve().parent.parent
 # The benchmark's own scripts: copied over another build's scripts so both sides measure alike.
 BENCH_SCRIPTS = ["benchmarks/stream_frame_benchmark.gd", "benchmarks/gameplay_road_benchmark.gd",
-                 "core/perf_debug.gd"]
+                 "core/perf_debug.gd", "benchmarks/shadow_variants.gd"]
 WORKERS = "8"
 # Set in the child a run or series starts under the timed locks.
 LOCKED_ENV = "METRUM_STREAM_LOCKED"
@@ -91,15 +96,16 @@ def wait_for_quiet(settings, limit_s):
 
 
 def rows_of(args):
-    """The rows a `run` or `series` makes: `(label, library, scripts)` in run order. A series is
-    C B B C: control, branch, branch, control, labelled `<input>-ctl1`, `-br1`, `-br2`, `-ctl2`."""
+    """The rows a `run` or `series` makes: `(label, library, scripts, shadows)` in run order. A
+    series is C B B C: control, branch, branch, control, labelled `<input>-ctl1`, `-br1`, `-br2`,
+    `-ctl2`; `--shadows` applies to its branch rows only."""
     godot_dir = Path(args.godot_dir).resolve()
     library = Path(args.library or godot_dir / "bin/libmetrum_rise.so").resolve()
     scripts = Path(args.scripts).resolve() if args.scripts else None
     if args.command == "run":
-        return [(args.label, library, scripts)]
-    control = (Path(args.ctl_library).resolve(), Path(args.ctl_scripts).resolve() if args.ctl_scripts else None)
-    sides = {"ctl": control, "br": (library, scripts)}
+        return [(args.label, library, scripts, args.shadows)]
+    control = (Path(args.ctl_library).resolve(), Path(args.ctl_scripts).resolve() if args.ctl_scripts else None, "")
+    sides = {"ctl": control, "br": (library, scripts, args.shadows)}
     return [(f"{args.input_label}-{side}{n}", *sides[side]) for side, n in SERIES]
 
 
@@ -110,7 +116,7 @@ def run(args):
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     rows = rows_of(args)
-    for label, _library, _scripts in rows:
+    for label, *_ in rows:
         if (out / f"{label}.metrics.json").exists():
             print(f"stream_benchmark: {out / label}.metrics.json exists; choose a new label", file=sys.stderr)
             return 2
@@ -121,12 +127,12 @@ def run(args):
         return subprocess.run(wrapper + [sys.executable, str(Path(__file__).resolve())] + args.argv,
                               env=env).returncode
     status = 0
-    for label, library, scripts in rows:
-        status = max(status, run_row(args, settings, out, label, library, scripts))
+    for label, library, scripts, shadows in rows:
+        status = max(status, run_row(args, settings, out, label, library, scripts, shadows))
     return status
 
 
-def run_row(args, settings, out, label, library, scripts):
+def run_row(args, settings, out, label, library, scripts, shadows):
     godot_dir = Path(args.godot_dir).resolve()
     metrics = out / f"{label}.metrics.json"
     save = str(Path(args.save).resolve()) if args.save else ""
@@ -143,7 +149,8 @@ def run_row(args, settings, out, label, library, scripts):
                                        capture_output=True, text=True).stdout.strip(),
             "input": save or world, "input_sha256": sha256(save)[:16] if save else "",
             "resolution": args.resolution, "speed": args.speed, "detail": args.detail,
-            "phases": args.phases, "cpus": settings.get("cpus", ""), "workers": WORKERS,
+            "phases": args.phases, "shadows": shadows, "gpu_profile": args.gpu_profile,
+            "cpus": settings.get("cpus", ""), "workers": WORKERS,
             "locked": os.environ.get(LOCKED_ENV) == "1" or not settings.get("timed_wrapper"),
         }
         width, height = args.resolution.split("x")
@@ -159,14 +166,16 @@ def run_row(args, settings, out, label, library, scripts):
             "METRUM_GAMEPLAY_BENCHMARK_TIMEOUT_SEC": str(args.settle_timeout),
             "METRUM_IDLE_BENCH_SAVE_PATH": save, "METRUM_STREAM_SPEED": str(args.speed),
             "METRUM_STREAM_PHASES": args.phases, "METRUM_STREAM_TURNS": args.turns,
-            "METRUM_STREAM_DIGESTS": "1" if args.digests else "0",
+            "METRUM_STREAM_DIGESTS": "1" if args.digests else "0", "METRUM_STREAM_SHADOWS": shadows,
+            "METRUM_STREAM_GPU_PASSES": "1" if args.gpu_profile else "0",
         })
         command = ["timeout", "--kill-after=10s", str(args.timeout)]
         if settings.get("cpus"):
             command = ["taskset", "-c", settings["cpus"]] + command
         command += ["gamescope", "--backend", "headless", "-r", "1000", "-W", width, "-H", height, "--",
                     "godot", "--path", str(project), "--log-file", str(out / f"{label}.godot.log"),
-                    "--windowed", "--resolution", args.resolution, "--", "--gameplay-road-benchmark"]
+                    "--windowed", "--resolution", args.resolution]
+        command += (["--gpu-profile"] if args.gpu_profile else []) + ["--", "--gameplay-road-benchmark"]
         wait_for_quiet(settings, args.timeout)
         identity["start"] = datetime.datetime.now().isoformat(timespec="seconds")
         identity["loadavg"] = os.getloadavg()
@@ -226,6 +235,13 @@ def print_summary(report, scripts=False):
               f"{percentile(times, 0.95):>8.2f}{max(times):>8.2f}{sample['over_16_7']:>6}"
               f"{sample['over_22']:>5}{sample['over_33_3']:>5}{percentile(gpu, 0.5):>7.2f}  "
               f"{rows[-1].get('reflection_levels')}{settle}")
+    for sample in report["samples"]:
+        passes = sample.get("gpu_passes")
+        if passes:
+            # Passes under 5 us at p50 (the culls, marks and empty canvases) are left out.
+            parts = " ".join(f"{name}={stat['p50']:.3f}" for name, stat in sorted(passes.items())
+                             if stat["p50"] >= 0.005)
+            print(f"{phase_label(sample):<22} gpu p50 by pass: {parts}")
     if not scripts:
         return
     for sample in report["samples"]:
@@ -277,6 +293,34 @@ def compare_lines(name, runs):
             f"{statistics.mean([x['gpu'] for x in c + b]):.1f} | {verdict} (p50 {d['p50']:+.1f}, "
             f"max {d['max']:+.1f}; spread {sp['p50']:.1f} / {sp['max']:.1f}) |")
     return lines
+
+
+def split_blocks(report):
+    """A shadow-sequence run's quartets (`RENDER-15`): per variant X whose blocks run `full, X, X,
+    full`, the reports `ctl1`, `br1`, `br2`, `ctl2` holding those blocks' samples, as a series'
+    rows would, for `compare_lines`. Returns `{variant: {row: report}}`."""
+    sequence = report.get("shadows", [])
+    blocks = [[s for s in report["samples"] if s.get("block") == i] for i in range(len(sequence))]
+    out = {}
+    for i in range(1, len(sequence) - 2):
+        variant = sequence[i]
+        if variant != "full" and sequence[i + 1] == variant and sequence[i - 1] == sequence[i + 2] == "full":
+            rows = {"ctl1": blocks[i - 1], "br1": blocks[i], "br2": blocks[i + 1], "ctl2": blocks[i + 2]}
+            out[variant] = {row: dict(report, samples=samples) for row, samples in rows.items()}
+    return out
+
+
+def split(args):
+    """Writes `<label>.<variant>-ctl1` ... `-ctl2` metrics beside the run's report, so `compare
+    <dir> <label>.<variant>` reads each variant's quartet."""
+    path = Path(args.metrics)
+    label = path.name.removesuffix(".metrics.json")
+    quartets = split_blocks(json.loads(path.read_text()))
+    for variant, rows in quartets.items():
+        for row, report in rows.items():
+            (path.parent / f"{label}.{variant}-{row}.metrics.json").write_text(json.dumps(report))
+    print(" ".join(f"{label}.{variant}" for variant in quartets))
+    return 0 if quartets else 1
 
 
 def compare(args):
@@ -531,7 +575,7 @@ def capture(args):
             "METRUM_GAMEPLAY_BENCHMARK_TIMEOUT_SEC": "180",
             "METRUM_IDLE_BENCH_SAVE_PATH": str(Path(args.save).resolve()) if args.save else "",
             "METRUM_IDLE_BENCH_POSES": args.poses, "METRUM_IDLE_BENCH_VIEWS": args.views,
-            "METRUM_IDLE_BENCH_VARIANTS": "full", "METRUM_IDLE_BENCH_HOUR": str(args.hour),
+            "METRUM_IDLE_BENCH_VARIANTS": args.variants, "METRUM_IDLE_BENCH_HOUR": str(args.hour),
             "METRUM_IDLE_BENCH_PATHS": "none", "METRUM_IDLE_BENCH_FRAMES": "10",
             "METRUM_IDLE_BENCH_WARMUP_FRAMES": str(args.warmup), "METRUM_IDLE_BENCH_SCREENSHOT_DIR": str(out),
         })
@@ -549,7 +593,8 @@ def capture(args):
         shutil.rmtree(profile, ignore_errors=True)
     errors = (out / "godot.out").read_text(errors="replace").count("SCRIPT ERROR")
     pngs = sorted(p.name for p in out.glob("*.png"))
-    expected = len([p for p in args.poses.split(",") if p]) + len([v for v in args.views.split(";") if v])
+    expected = (len([p for p in args.poses.split(",") if p]) + len([v for v in args.views.split(";") if v])) \
+        * len([v for v in args.variants.split(",") if v])
     metrics = out / "metrics.json"
     ok = status == 0 and errors == 0 and len(pngs) == expected and metrics.exists() \
         and json.loads(metrics.read_text()).get("success")
@@ -558,9 +603,50 @@ def capture(args):
     return 0 if ok else 1
 
 
+def stills_variants(directory, crops=None, window=(480, 270)):
+    """Per `<pose>-<variant>.png` of one capture, its difference from `<pose>-full.png`
+    (`image_difference`). With `crops`, writes the window of the variant's most-changed region
+    side by side: full, variant, and the difference amplified eight times."""
+    import numpy  # noqa: PLC0415
+    out = []
+    for path in sorted(Path(directory).glob("*.png")):
+        pose, _, variant = path.stem.rpartition("-")
+        full = path.with_name(f"{pose}-full.png")
+        if variant == "full" or not full.exists():
+            continue
+        a, b = load_rgb(full), load_rgb(path)
+        d = image_difference(a, b)
+        out.append((pose, variant, d))
+        if crops is None or d["pixels"] <= 0:
+            continue
+        from PIL import Image  # noqa: PLC0415
+        delta = numpy.abs(a.astype(numpy.int16) - b.astype(numpy.int16)).max(axis=2)
+        # The window with the most differing pixels, on a grid of half-window steps.
+        width, height = min(window[0], a.shape[1]), min(window[1], a.shape[0])
+        best, corner = -1, (0, 0)
+        for y in range(0, a.shape[0] - height + 1, height // 2):
+            for x in range(0, a.shape[1] - width + 1, width // 2):
+                count = int((delta[y:y + height, x:x + width] > 0).sum())
+                if count > best:
+                    best, corner = count, (x, y)
+        x, y = corner
+        diff = numpy.clip(delta[y:y + height, x:x + width].astype(numpy.int32) * 8, 0, 255).astype(numpy.uint8)
+        strip = numpy.concatenate([a[y:y + height, x:x + width], b[y:y + height, x:x + width],
+                                   numpy.repeat(diff[:, :, None], 3, axis=2)], axis=1)
+        Path(crops).mkdir(parents=True, exist_ok=True)
+        Image.fromarray(strip).save(Path(crops) / f"{pose}-{variant}-x{x}y{y}.png")
+    return out
+
+
 def stills(args):
     if args.stills_command == "capture":
         return capture(args)
+    if args.stills_command == "variants":
+        rows = stills_variants(args.dir, args.crops)
+        for pose, variant, d in rows:
+            print(f"{pose} {variant}: {d['pixels']} px against full, max delta {d['max_delta']}, "
+                  f"worst 16x16 block {d['worst_block']:.0%}")
+        return 0 if rows else 1
     if args.stills_command == "compare":
         rows = stills_compare(args.a, args.b)
         for name, verdict, note in rows:
@@ -593,6 +679,9 @@ def add_run_options(parser, series):
     parser.add_argument("--turns", default="")
     parser.add_argument("--detail", action="store_true", help="perf channel on: shares, not times")
     parser.add_argument("--digests", action="store_true", help="settle-point digests (untimed: reads back)")
+    parser.add_argument("--shadows", default="", help="METRUM_STREAM_SHADOWS: a run's (a series' branch rows') "
+                        "sun-shadow variant sequence, e.g. full,none,none,full")
+    parser.add_argument("--gpu-profile", action="store_true", help="Godot's render timestamps per pass (gpu_passes)")
     parser.add_argument("--settle-timeout", type=int, default=180)
     parser.add_argument("--timeout", type=int, default=600)
 
@@ -613,6 +702,8 @@ def main(argv=None):
     digest.add_argument("a")
     digest.add_argument("b")
     digest.add_argument("--levels", help="a report whose graded_levels apply (for reports without them)")
+    blocks = commands.add_parser("split")
+    blocks.add_argument("metrics", help="a run with a `full,X,X,full` METRUM_STREAM_SHADOWS sequence")
     still = commands.add_parser("stills").add_subparsers(dest="stills_command", required=True)
     shot = still.add_parser("capture")
     shot.add_argument("--label", required=True)
@@ -624,6 +715,7 @@ def main(argv=None):
     shot.add_argument("--world", default=str(ROOT / "maps/processed/Kuopio/kuopio_324km2_10m.sqlite"))
     shot.add_argument("--poses", required=True, help="idle-matrix poses, comma separated")
     shot.add_argument("--views", default="", help="extra views, `name:x,z,yaw,pitch,distance;...`")
+    shot.add_argument("--variants", default="full", help="idle-matrix variants, comma separated")
     shot.add_argument("--hour", type=int, default=10)
     shot.add_argument("--warmup", type=int, default=30)
     shot.add_argument("--resolution", default="1920x1080")
@@ -631,6 +723,9 @@ def main(argv=None):
     pair = still.add_parser("compare")
     pair.add_argument("a")
     pair.add_argument("b")
+    kinds = still.add_parser("variants")
+    kinds.add_argument("dir", help="one capture: each <pose>-<variant>.png against <pose>-full.png")
+    kinds.add_argument("--crops", help="write the most-changed window side by side here")
     test = still.add_parser("systematic")
     for name in ("ctl1", "ctl2", "br1", "br2"):
         test.add_argument(name)
@@ -643,6 +738,8 @@ def main(argv=None):
         return compare(args)
     if args.command == "digests":
         return digests(args)
+    if args.command == "split":
+        return split(args)
     if args.command == "stills":
         return stills(args)
     print_summary(json.loads(Path(args.metrics).read_text()), args.scripts)

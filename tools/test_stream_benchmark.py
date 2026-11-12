@@ -125,6 +125,26 @@ class SeriesTests(unittest.TestCase):
             self.assertEqual(libraries, [str(control), str(library), str(library), str(control)])
             self.assertTrue(json.loads((temp / "out/30k-br1.identity.json").read_text())["locked"])
 
+    def test_shadows_reach_the_branch_rows_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            godot, library = fake_godot(temp)
+            argv = ["series", "--input-label", "30k", "--ctl-library", str(library), "--library", str(library),
+                    "--godot-dir", str(godot), "--out", str(temp / "out"), "--shadows", "full"]
+            settings = {"cpus": "", "busy_processes": [], "quiet_windows": [], "timed_wrapper": []}
+            calls = []
+
+            def fake_run(command, **kwargs):
+                calls.append((command, kwargs.get("env", {})))
+                return mock.Mock(returncode=0, stdout="abc\n")
+            with mock.patch.object(sb.timing_session, "load_settings", return_value=settings), \
+                    mock.patch.object(sb.subprocess, "run", side_effect=fake_run), \
+                    mock.patch.object(sb.timing_session, "busy_processes", return_value=[]), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                sb.main(argv)
+            shadows = [env["METRUM_STREAM_SHADOWS"] for command, env in calls if "gamescope" in command]
+            self.assertEqual(shadows, ["", "full", "full", ""])
+
     def test_an_existing_label_refuses_before_any_lock(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
@@ -233,6 +253,18 @@ class DigestTests(unittest.TestCase):
                 self.assertEqual(sb.main(["digests", str(a), str(b)]), 1)
 
 
+class SplitTests(unittest.TestCase):
+    def test_a_chain_splits_into_one_quartet_per_variant(self):
+        sequence = ["full", "none", "none", "full", "low", "low", "full"]
+        samples = [{"label": "still", "block": i, "shadows": v} for i, v in enumerate(sequence)]
+        quartets = sb.split_blocks({"shadows": sequence, "samples": samples})
+        self.assertEqual(sorted(quartets), ["low", "none"])
+        blocks = {row: report["samples"][0]["block"] for row, report in quartets["low"].items()}
+        self.assertEqual(blocks, {"ctl1": 3, "br1": 4, "br2": 5, "ctl2": 6})
+        # A variant without its own pair between two full blocks makes no quartet.
+        self.assertEqual(sb.split_blocks({"shadows": ["full", "none", "full"], "samples": samples[:3]}), {})
+
+
 class StillsTests(unittest.TestCase):
     def setUp(self):
         try:
@@ -260,6 +292,23 @@ class StillsTests(unittest.TestCase):
             name, verdict, note = sb.stills_compare(temp / "a", temp / "b")[0]
             self.assertEqual(verdict, "different")
             self.assertIn("1 px, max delta 9", note)
+
+    def test_variants_compare_against_their_poses_full(self):
+        import numpy
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            image = numpy.zeros((40, 64, 3), numpy.uint8)
+            self.write(temp / "a", "city-full.png", image)
+            self.write(temp / "a", "city-no_pcss.png", image)
+            changed = image.copy()
+            changed[30:34, 50:60] = (0, 20, 0)
+            self.write(temp / "a", "city-low.png", changed)
+            rows = sb.stills_variants(temp / "a", temp / "crops", window=(16, 8))
+            self.assertEqual([(pose, variant, d["pixels"]) for pose, variant, d in rows],
+                             [("city", "low", 40), ("city", "no_pcss", 0)])
+            crops = list((temp / "crops").glob("*.png"))
+            self.assertEqual(len(crops), 1)
+            self.assertTrue(crops[0].name.startswith("city-low-"))
 
     def test_speckle_is_not_systematic_and_a_stable_change_is(self):
         import numpy

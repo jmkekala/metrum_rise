@@ -673,7 +673,11 @@ func apply_graphics_settings() -> void:
 		_apply_shadow_quality(_sun)
 
 func _apply_shadow_quality(sun: DirectionalLight3D) -> void:
-	var low := GameSettings.get_shadow_quality() == GameSettings.SHADOW_QUALITY_LOW
+	apply_shadow_quality(sun, GameSettings.get_shadow_quality() == GameSettings.SHADOW_QUALITY_LOW)
+
+## Sets the sun's shadows as the High or the Low graphics setting draws them. The benchmarks'
+## shadow variants (`shadow_variants.gd`) start from it.
+static func apply_shadow_quality(sun: DirectionalLight3D, low: bool) -> void:
 	# Angular distance drives Godot's variable-penumbra path; zero makes the directional shadow a
 	# plain PCF lookup. Two splits instead of four, and no split blending, halve the cascade
 	# sampling again.

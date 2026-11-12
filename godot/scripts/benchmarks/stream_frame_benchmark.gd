@@ -39,7 +39,21 @@
 ## point, and the pose in `water_pose`; a world without such a shore skips it. No input of record
 ## has water: the pond copy of the 30k save (a 600 x 400 m pond, 3 m deep, north of its last
 ## street) is the input of this phase.
+##
+## METRUM_STREAM_SHADOWS (`RENDER-15`, benchmark-only, unset by default) is a comma-separated
+## sequence of the sun-shadow variants of `shadow_variants.gd`, applied once the load has settled
+## (after `SceneLighting` set the sun) and before the base pose settles. One entry runs the phases
+## as usual with that variant. Several run the `still` and `turns` phases once per entry, in
+## order, each block from the settled base pose, and tag every sample with its `shadows` variant
+## and `block` index; a quartet `full,X,X,full` (or a chain `full,X,X,full,Y,Y,full`) gives each
+## variant a C B B C verdict from one load (`tools/stream_benchmark.py split`, then `compare`).
+## With METRUM_STREAM_GPU_PASSES=1 and Godot's `--gpu-profile` (Godot then captures its render
+## timestamps) every sample records
+## `gpu_passes`: per pass, named by its starting mark and that mark's occurrence in the frame, the
+## statistics of its GPU milliseconds a frame.
 extends RefCounted
+
+const ShadowVariants := preload("res://scripts/benchmarks/shadow_variants.gd")
 
 const SCHEMA_VERSION := 1
 const WARMUP_FRAMES := 120
@@ -87,6 +101,9 @@ var _settle_points := 0
 # and the wanted set of the last frame.
 var _vegetation_waiting := {}
 var _vegetation_wanted := {}
+var _gpu_profile := false
+# Per pass key, the GPU milliseconds of each frame of the current sample (`--gpu-profile`).
+var _gpu_passes := {}
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -111,13 +128,22 @@ func run(bench: Node) -> void:
 		turns = Array(turn_text.split(",", false)).map(func(token: String) -> float: return float(token))
 	_scripts = PerfDebug.is_enabled()
 	_digests = OS.get_environment("METRUM_STREAM_DIGESTS") == "1"
+	_gpu_profile = OS.get_environment("METRUM_STREAM_GPU_PASSES") == "1"
+	var shadows: Array = Array(OS.get_environment("METRUM_STREAM_SHADOWS").split(",", false))
+	for variant: String in shadows:
+		if not ShadowVariants.NAMES.has(variant):
+			bench._fail("unknown METRUM_STREAM_SHADOWS variant %s" % variant)
+			return
+	if shadows.size() > 1 and phases.any(func(phase: String) -> bool: return phase not in ["still", "turns", "post_load"]):
+		bench._fail("a METRUM_STREAM_SHADOWS sequence runs only the still and turns phases")
+		return
 	_report = {
 		"schema_version": SCHEMA_VERSION, "benchmark": "stream", "success": false, "mode": bench.mode,
 		"runtime": bench._runtime_metadata(), "save_path": OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH"),
 		"world_path": bench.world_path, "simulation_speed": float(OS.get_environment("METRUM_STREAM_SPEED")),
 		"pitch_radians": PITCH_RAD, "distance_m": DISTANCE_M, "phases": phases, "turn_durations_s": turns,
 		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [], "lamp_digests": [],
-		"building_digests": [], "water_pose": [],
+		"building_digests": [], "water_pose": [], "shadows": shadows,
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
 	bench._metrics = _report
@@ -158,6 +184,10 @@ func run(bench: Node) -> void:
 	var base := saved_view.duplicate()
 	base[4] = PITCH_RAD
 	base[5] = DISTANCE_M
+	var lighting := main.get_node("SceneLighting")
+	var sun: DirectionalLight3D = main.get_node("DirectionalLight3D")
+	if not shadows.is_empty():
+		ShadowVariants.apply(lighting, sun, shadows[0])
 	settled = await _start_from(bench, base)
 	if not settled:
 		bench._fail("the base pose did not settle")
@@ -172,17 +202,18 @@ func run(bench: Node) -> void:
 	print("[STREAM] LOAD_END agents=%d total_ms=%.1f load_call_ms=%.1f" % [
 		_report.load.agent_count, _report.load.elapsed_ms, load_call_ms])
 	var pan_m: float = float(bench.camera.speed) * DISTANCE_M / PAN_REFERENCE_DISTANCE_M * PAN_S
-	if phases.has("still"):
-		_report.samples.append(await _capture_frames(bench, "still", STILL_FRAMES))
-	if phases.has("turns"):
-		for duration_variant: Variant in turns:
-			var duration := float(duration_variant)
-			settled = await _start_from(bench, base)
-			if not settled:
-				bench._fail("the turn's start did not settle")
+	for block in maxi(1, shadows.size()):
+		var first_sample: int = _report.samples.size()
+		if block > 0:
+			ShadowVariants.apply(lighting, sun, shadows[block])
+			if not await _start_from(bench, base):
+				bench._fail("the shadow block %d's base pose did not settle" % block)
 				return
-			for turn: Array in [["turn_out", 1.0], ["turn_back", -1.0], ["turn_repeat", 1.0]]:
-				_report.samples.append(await _capture_turn(bench, turn[0], duration, turn[1]))
+		if not await _still_and_turns(bench, phases, turns, base):
+			return
+		if shadows.size() > 1:
+			for sample: Dictionary in _report.samples.slice(first_sample):
+				sample.merge({"shadows": shadows[block], "block": block})
 	if phases.has("pan"):
 		settled = await _start_from(bench, base)
 		if not settled:
@@ -294,6 +325,20 @@ static func report_errors(report: Dictionary) -> PackedStringArray:
 					errors.append("%s frame %s lacks %s" % [label, str(row.get("frame", "?")), key])
 					return errors
 	return errors
+
+# The still and turns phases, if selected; false (the run failed) when a turn's start did not settle.
+func _still_and_turns(bench: Node, phases: Array, turns: Array, base: PackedFloat32Array) -> bool:
+	if phases.has("still"):
+		_report.samples.append(await _capture_frames(bench, "still", STILL_FRAMES))
+	if phases.has("turns"):
+		for duration_variant: Variant in turns:
+			var duration := float(duration_variant)
+			if not await _start_from(bench, base):
+				bench._fail("the turn's start did not settle")
+				return false
+			for turn: Array in [["turn_out", 1.0], ["turn_back", -1.0], ["turn_repeat", 1.0]]:
+				_report.samples.append(await _capture_turn(bench, turn[0], duration, turn[1]))
+	return true
 
 # Puts the camera at `view`, waits WARMUP_FRAMES frames and then until settled.
 func _start_from(bench: Node, view: PackedFloat32Array) -> bool:
@@ -501,6 +546,7 @@ func _begin() -> Array:
 	if _scripts:
 		PerfDebug.take_frame()
 	_previous_streams = _streams()
+	_gpu_passes = {}
 	_last_us = Time.get_ticks_usec()
 	return []
 
@@ -594,6 +640,8 @@ func _row(index: int) -> Dictionary:
 	}
 	if _scripts:
 		row["vegetation_drawn_frames"] = _vegetation_drawn_frames()
+	if _gpu_profile:
+		_record_gpu_passes()
 	_previous_streams = streams
 	_last_us = now_us
 	return row
@@ -619,10 +667,38 @@ func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
 	var sample := {"label": label, "duration_s": duration_s, "frames": rows.size(),
 		"frame_ms": stats(times), "rows": rows}
 	sample.merge(over)
+	if _gpu_profile:
+		var passes := {}
+		for key: String in _gpu_passes:
+			passes[key] = stats(_gpu_passes[key])
+		sample["gpu_passes"] = passes
 	print("[STREAM] %s %.1fs frames=%d p50=%.3f p95=%.3f max=%.3f over16=%d over22=%d over33=%d levels=%s" % [
 		label, duration_s, rows.size(), sample.frame_ms.p50, sample.frame_ms.p95, sample.frame_ms.max,
 		over.over_16_7, over.over_22, over.over_33_3, str(rows.back().reflection_levels if not rows.is_empty() else [])])
 	return sample
+
+# The last drawn frame's render timestamps (`--gpu-profile`) as intervals, each named by its
+# starting mark and that mark's occurrence in the frame (several viewports draw the same passes),
+# plus `TOTAL`, first mark to last. Timestamps are nanoseconds.
+func _record_gpu_passes() -> void:
+	var device := RenderingServer.get_rendering_device()
+	var count := device.get_captured_timestamps_count() if device != null else 0
+	if count < 2:
+		return
+	var seen := {}
+	for i in count - 1:
+		var mark := device.get_captured_timestamp_name(i)
+		var occurrence := int(seen.get(mark, 0))
+		seen[mark] = occurrence + 1
+		var key := "%s#%d" % [mark, occurrence]
+		if not _gpu_passes.has(key):
+			_gpu_passes[key] = PackedFloat64Array()
+		_gpu_passes[key].append(float(device.get_captured_timestamp_gpu_time(i + 1)
+			- device.get_captured_timestamp_gpu_time(i)) / 1000000.0)
+	if not _gpu_passes.has("TOTAL"):
+		_gpu_passes["TOTAL"] = PackedFloat64Array()
+	_gpu_passes["TOTAL"].append(float(device.get_captured_timestamp_gpu_time(count - 1)
+		- device.get_captured_timestamp_gpu_time(0)) / 1000000.0)
 
 ## Mean and nearest-rank percentiles of `values`; zeros when empty.
 static func stats(values: PackedFloat64Array) -> Dictionary:
