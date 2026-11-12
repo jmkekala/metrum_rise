@@ -43,6 +43,7 @@ var _sun: DirectionalLight3D
 # keeps the resources alive while Rust draws with their RIDs.
 var _looks: Dictionary = {}
 var _reflection_scenario := RID()
+var _linked := false
 var _fresh := false
 
 func configure(simulation: Node, placeholder: Mesh) -> void:
@@ -55,12 +56,20 @@ func configure(simulation: Node, placeholder: Mesh) -> void:
 	add_to_group("building_lod_renderers")
 	if get_parent() and get_parent().get_parent():
 		_sun = get_parent().get_parent().get_node_or_null("DirectionalLight3D") as DirectionalLight3D
+	_link_scenarios()
+	reload_resources()
+
+# Hands Rust the world to draw the batches in and the water reflection's, once inside a world
+# (a renderer configured outside the tree links on its first update).
+func _link_scenarios() -> void:
+	if _linked or not is_inside_tree():
+		return
+	_linked = true
 	simulation_node.set_building_lod_scenario(get_world_3d().scenario)
 	var reflection := get_tree().get_first_node_in_group("water_reflections")
 	if reflection != null:
 		_reflection_scenario = reflection.reflection_scenario()
 	simulation_node.set_building_lod_reflection_scenario(_reflection_scenario)
-	reload_resources()
 
 ## The water reflection's world (`water_reflection.gd`); an invalid RID when it goes away.
 func set_reflection_scenario(scenario: RID) -> void:
@@ -155,6 +164,7 @@ func update(camera: Camera3D) -> bool:
 	timing = {}
 	if camera == null:
 		return false
+	_link_scenarios()
 	var viewport := camera.get_viewport()
 	var render_size := Vector2(viewport.get_texture().get_size()) * viewport.scaling_3d_scale
 	var camera_transform := camera.get_camera_transform()
