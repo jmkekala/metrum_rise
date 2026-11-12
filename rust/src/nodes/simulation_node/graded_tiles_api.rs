@@ -781,14 +781,11 @@ impl SimulationNode {
         });
 
         jobs.take_tiles_with(max_tiles, |result| {
-            let counts = [result.samples[0] as i64, result.samples[1] as i64, result.seams as i64, result.edges as i64];
             out.push(Polled::Tile(Baked::owned(
                 result.request.tile,
                 level_code(result.request.level),
                 result.request.token,
                 result.behind,
-                result.graded,
-                counts,
                 [result.texels, result.rows, result.walls],
             )));
         });

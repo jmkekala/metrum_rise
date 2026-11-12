@@ -421,7 +421,7 @@ func _edit(record: Dictionary, kind: String) -> Dictionary:
 	var frames := 0
 	await _next_frame()
 	_kind = "wait"
-	while frames < EDIT_FRAME_LIMIT and (int(_graded.counters["edits"]) == edits or _graded._book.edit_batch_len() > 0 or _graded._edit_release >= 0):
+	while frames < EDIT_FRAME_LIMIT and (int(_graded.counters["edits"]) == edits or _graded._book.edit_batch_len() > 0 or _graded._book.edit_release() >= 0):
 		await _next_frame()
 		frames += 1
 	var batch: Array = _frames.filter(func(row): return row.has("batch_ms"))

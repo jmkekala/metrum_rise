@@ -69,16 +69,14 @@ func _run() -> void:
 	# Same preview epoch, newer pose: its failed upload must not become adoptable old bytes.
 	var newer_preview := payload(graded, b, 1, 13)
 	graded._show_preview_tile(newer_preview)
-	var adopted := newer_preview.duplicate()
-	adopted["adopted"] = true
-	adopted["preview_epoch"] = 1
-	expect(not graded._adopt_preview(b, adopted), "a failed latest preview upload cannot adopt the preceding pose")
+	expect(not graded._book.adopt_preview(b, Vector3i(int(newer_preview["level"]), int(newer_preview["step"]), int(newer_preview["token"])), 1),
+		"a failed latest preview upload cannot adopt the preceding pose")
 	# The edit needs a larger atlas run than the full bound page can provide. It must wait
 	# without acknowledgement, while migration preserves both installed and preview holders.
 	var changed := payload(graded, a, 2, 13)
-	graded._edit_serial_taken = 2
+	graded._book.set_edit_serial_taken(2)
 	graded._book.edit_batch_set(a, 2)
-	graded._edit_staged[a] = changed
+	graded._book.stage_edit_result(changed)
 	expect(graded._install_edit_batch(graded._resident) == 0, "full bound page defers the whole edit")
 	expect(graded.installed_edit_serial() < 2, "a deferred upload must not acknowledge its edit")
 	expect(int(graded.installed[a]["token"]) == 1, "deferred edit preserves published token")
@@ -100,7 +98,7 @@ func _run() -> void:
 	# A site edit can arrive while a new road tile is staged but not installed yet.
 	var c := Vector2i(2, 0)
 	graded._book.edit_batch_set(c, 3)
-	graded._edit_staged[c] = payload(graded, c, 3, 1)
+	graded._book.stage_edit_result(payload(graded, c, 3, 1))
 	graded._apply_edit({"serial": 4, "all": false, "levels": [{"level": 2, "step": 0, "tiles": PackedInt32Array([2, 0])}]})
 	graded._request_tiles()
 	expect(graded._book.edit_batch_token(c) == 4 and graded._book.requested_token(c, 2, 0) == 4,

@@ -109,10 +109,13 @@ pub struct GradedTileBook {
     // results waiting for their sets' variant, its scratch and counters, and the owned bake
     // buffers written, for the simulation's pool.
     taken: results::Results,
+    // The edit batch and the preview's waits (`RENDER-32-K` part 4, [`edits`]).
+    edits: edits::Edits,
     // A placed tile's wall faces as floats, reused.
     walls_scratch: Vec<f32>,
 }
 
+mod edits;
 mod results;
 pub(crate) use results::{Baked, Bytes, Polled};
 
@@ -309,6 +312,7 @@ impl GradedTileBook {
     #[func]
     pub fn clear(&mut self) {
         self.state.clear();
+        self.edits.clear(&mut self.taken);
         self.taken.clear();
     }
 
@@ -476,13 +480,6 @@ impl GradedTileBook {
         self.state.wanted.contains_key(&tile_of(tile))
     }
 
-    /// The edit batch installed: it and the staged tiles' levels empty.
-    #[func]
-    pub fn edit_batch_clear(&mut self) {
-        self.state.requests.edit_batch.clear();
-        self.state.requests.edit_levels.clear();
-    }
-
     /// Installs `tile` at `code`/`step`/`token` with `layers` atlas layers and its bake's wall
     /// faces; the copies it writes take the bake's slot layer `texels` and row atlas run `rows`
     /// (effect 48). False where its pages could not take it (it waits, or is exhausted: effects).
@@ -498,31 +495,6 @@ impl GradedTileBook {
     ) -> bool {
         self.stage(tile, level, Bytes::Shared(texels), Bytes::Shared(rows));
         self.upload_with(tile, level, layers, None, walls.as_slice())
-    }
-
-    /// Installs an edit batch's `tile` into its reserved copies (flat page, slot, first, layers),
-    /// as `upload` does.
-    #[func]
-    #[allow(clippy::too_many_arguments)]
-    pub fn upload_reserved(
-        &mut self,
-        tile: Vector2i,
-        level: Vector4i,
-        layers: i64,
-        copies: PackedInt64Array,
-        walls: PackedFloat32Array,
-        texels: PackedByteArray,
-        rows: PackedByteArray,
-    ) -> bool {
-        self.stage(tile, level, Bytes::Shared(texels), Bytes::Shared(rows));
-        let copies = copies
-            .as_slice()
-            .as_chunks::<4>().0.iter()
-            .map(|copy| {
-                (copy[0] as u32, Copy { slot: copy[1] as u32, first: copy[2] as u32, layers: copy[3] as u32 })
-            })
-            .collect();
-        self.upload_with(tile, level, layers, Some(copies), walls.as_slice())
     }
 
     // The bake whose copies the next take's writes take (one placed before it unwritten goes back
@@ -564,38 +536,8 @@ impl GradedTileBook {
         done
     }
 
-    /// Places the preview's `tile` with its wall faces and bake bytes (as `upload` takes them):
-    /// 0 placed (what it draws changed), 1 a full page waits (its block grows), 2 exhausted.
-    #[func]
-    pub fn place_preview(
-        &mut self,
-        tile: Vector2i,
-        level: Vector4i,
-        layers: i64,
-        walls: PackedFloat32Array,
-        texels: PackedByteArray,
-        rows: PackedByteArray,
-    ) -> i64 {
-        self.stage(tile, level, Bytes::Shared(texels), Bytes::Shared(rows));
-        let tile = tile_of(tile);
-        let level = (level.x as u8, level.y as u8, i64::from(level.z), level.w != 0);
-        self.state.settle();
-        self.state.shown_copy(tile, &mut self.before);
-        self.state.cells.staged_walls = Some((tile, walls.as_slice().to_vec()));
-        let placed = place_code(self.state.place_preview(tile, level, layers as u32, &mut self.scratch));
-        self.state.settle();
-        self.state.cells.staged_walls = None;
-        if placed == 0 {
-            let before = std::mem::take(&mut self.before);
-            self.state.shown_changed(tile, &before);
-            self.before = before;
-        }
-        placed
-    }
-
     /// Drops the preview's `tile` (what it draws changed); false when it showed none.
-    #[func]
-    pub fn drop_preview(&mut self, tile: Vector2i) -> bool {
+    fn drop_preview(&mut self, tile: Vector2i) -> bool {
         let tile = tile_of(tile);
         self.state.settle();
         if !self.state.preview.contains_key(&tile) {
@@ -610,7 +552,7 @@ impl GradedTileBook {
         true
     }
 
-    /// A committed tile adopts the preview's copies (`_adopt_preview`).
+    /// A committed tile adopts the preview's copies (the batch's adoption; tests).
     #[func]
     pub fn adopt_preview(&mut self, tile: Vector2i, level: Vector3i, epoch: i64) -> bool {
         self.state
@@ -620,8 +562,7 @@ impl GradedTileBook {
     /// Reserves the edit batch's copies, flat `(x, z, code, step, token, layers)` per staged tile
     /// in order. Returns `[0, then per tile its count and (page, slot, first, layers)]`, or `[1]`
     /// (nothing reserved) or `[2, x, z]` (that tile's level is exhausted; it left the batch).
-    #[func]
-    pub fn reserve_edit(&mut self, staged: PackedInt64Array) -> PackedInt64Array {
+    fn reserve_edit(&mut self, staged: PackedInt64Array) -> PackedInt64Array {
         let staged: Vec<super::ops::Staged> = staged
             .as_slice()
             .as_chunks::<6>().0.iter()
@@ -644,52 +585,6 @@ impl GradedTileBook {
             Err(Some(tile)) => out.extend([2, i64::from(tile.x), i64::from(tile.z)]),
         }
         PackedInt64Array::from(out.as_slice())
-    }
-
-    /// Dirties `tile` with the edit's `serial` (`_dirty_tile`'s part).
-    #[func]
-    pub fn dirty_tile(&mut self, tile: Vector2i, serial: i64) {
-        self.state.dirty_tile(tile_of(tile), serial);
-    }
-
-    /// A staged result invalidated before its first install keeps its level to rebake.
-    #[func]
-    pub fn set_edit_level(&mut self, tile: Vector2i, code: i64, step: i64) {
-        self.state
-            .requests
-            .edit_levels
-            .insert(tile_of(tile), (code as u8, step as u8));
-    }
-
-    /// A reset edit: every batched, installed, requested and refused tile dirtied. Returns them in
-    /// order, flat `(x, z)`.
-    #[func]
-    pub fn dirty_all(&mut self, serial: i64) -> PackedInt32Array {
-        self.state.dirty_all(serial, &mut self.tiles);
-        self.tiles.iter().flat_map(|tile| [tile.x, tile.z]).collect()
-    }
-
-    /// An edit's dirty tiles at `code`/`step` (flat `(x, z)`): those held, batched, requested or
-    /// refused there are dirtied and returned.
-    #[func]
-    pub fn dirty_level(&mut self, code: i64, step: i64, tiles: PackedInt32Array, serial: i64) -> PackedInt32Array {
-        let tiles: Vec<Tile> = tiles
-            .as_slice()
-            .as_chunks::<2>().0.iter()
-            .map(|tile| Tile { x: tile[0], z: tile[1] })
-            .collect();
-        self.state
-            .dirty_level(code as u8, step as u8, &tiles, serial, &mut self.tiles);
-        self.tiles.iter().flat_map(|tile| [tile.x, tile.z]).collect()
-    }
-
-    /// A commit's own `tile` joins the edit batch (held, desired, or shown graded by the
-    /// preview): its token, or -1 to skip it.
-    #[func]
-    pub fn stage_edit_tile(&mut self, tile: Vector2i, graded: bool, serial: i64) -> i64 {
-        self.state
-            .stage_edit_tile(tile_of(tile), graded, serial)
-            .unwrap_or(-1)
     }
 
     /// The hand-over: every wanted tile that can install is to be requested, and a complete
@@ -958,8 +853,7 @@ impl GradedTileBook {
 
     /// `_variant_missing`: whether a set of the patches meeting `tile` lacks the behind-the-road
     /// variant (each such set is queued for it).
-    #[func]
-    pub fn variant_missing(&mut self, tile: Vector2i) -> bool {
+    fn variant_missing(&mut self, tile: Vector2i) -> bool {
         self.state.settle();
         self.state.variant_missing(tile_of(tile))
     }
@@ -1190,8 +1084,7 @@ impl GradedTileBook {
     }
 
     /// The preview's tiles of epochs `first` to `last`, flat `(x, z)` in order.
-    #[func]
-    pub fn preview_tiles(&self, first: i64, last: i64) -> PackedInt32Array {
+    fn preview_tiles(&self, first: i64, last: i64) -> PackedInt32Array {
         self.state
             .preview
             .iter()
@@ -1353,6 +1246,11 @@ impl GradedTileBook {
                 self.writes.push(PageWrite { page, copy });
                 continue;
             }
+            // An eviction's dropped staged result leaves the edit batch here ([`edits`]).
+            if let Effect::EditDropped { tile } = effect {
+                self.edits.dropped(tile, &mut self.taken);
+                continue;
+            }
             if let Effect::PageMade { id, code, slots, layers, .. } = effect {
                 let side = self.state.pages.level(code).side as u32;
                 self.page_shapes.insert(id, [side, slots, layers]);
@@ -1384,7 +1282,7 @@ impl GradedTileBook {
                 Effect::Cancel { tile, stale } => [12, i64::from(tile.x), i64::from(tile.z), i64::from(stale), 0, 0, 0],
                 Effect::Exhausted { tile, code } => [13, i64::from(tile.x), i64::from(tile.z), i64::from(code), 0, 0, 0],
                 Effect::Evicted { tile, .. } => [14, i64::from(tile.x), i64::from(tile.z), 0, 0, 0, 0],
-                Effect::EditDropped { tile } => [15, i64::from(tile.x), i64::from(tile.z), 0, 0, 0, 0],
+                Effect::EditDropped { .. } => unreachable!("taken by the edit batch"),
                 Effect::SameLevel => [16, 0, 0, 0, 0, 0, 0],
                 Effect::Grew { code, block, slots, layers } => [
                     21,

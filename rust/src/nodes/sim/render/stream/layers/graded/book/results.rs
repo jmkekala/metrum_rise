@@ -12,10 +12,10 @@
 //! the simulation's result without a copy ([`Bytes::Owned`], back to its pool once written) or,
 //! under a trace or a test's stand-in simulation, from the polled dictionary
 //! ([`Bytes::Shared`]). What stays the renderer's is called back in its place, with the book
-//! unbound: the edits, lists and failures a poll returns (`_take_polled`), a tile the edit batch
-//! takes (`_stage_edit`, part 4's), and any take whose effects need its Godot objects (page
-//! arrays, cancels, draw states: `_apply_effects`). Every other take's effects (the uploads, the
-//! cells' runs, the counted evictions and same-level uploads) the book applies itself.
+//! unbound: the lists and failures a poll returns (`_take_polled`) and any take whose effects need
+//! its Godot objects (page arrays, cancels, draw states: `_apply_effects`). Every other take's
+//! effects (the uploads, the cells' runs, the counted evictions and same-level uploads) the book
+//! applies itself; edits and the batch's staged tiles are the book's ([`super::edits`]).
 //!
 //! Bounds: a poll `O(its results)`; a tile `O(1)` checks, then its placing and writes
 //! (`O(copies x (slot bytes + rows))`, one backend call a layer); the variant waits
@@ -44,7 +44,7 @@ const CELL_CHARGE_US: i64 = 8;
 // uploads and cells), the renderer's callbacks, and the tiles taken. All but the longest poll
 // are drained by the read.
 const DEFERRED: usize = 0;
-const VARIANT_WAITS: usize = 1;
+pub(super) const VARIANT_WAITS: usize = 1;
 const EVICTIONS: usize = 2;
 const SAME_LEVEL: usize = 3;
 const POLL_US_MAX: usize = 4;
@@ -71,13 +71,6 @@ impl Bytes {
             Bytes::Owned(bytes) => bytes,
         }
     }
-
-    fn to_packed(&self) -> PackedByteArray {
-        match self {
-            Bytes::Shared(array) => array.clone(),
-            Bytes::Owned(bytes) => PackedByteArray::from(bytes.as_slice()),
-        }
-    }
 }
 
 /// A finished tile bake as the result path takes it (`poll_graded_tile_results`' `tiles`).
@@ -92,10 +85,6 @@ pub(crate) struct Baked {
     pub(crate) token: i64,
     /// Its cells draw the behind-the-road variant (T49 (c)).
     pub(crate) behind: bool,
-    /// Whether the tile is graded (`graded`).
-    pub(crate) graded: bool,
-    /// `samples_x`, `samples_z`, `seam_count`, `edge_count`.
-    pub(crate) counts: [i64; 4],
     /// The slot layer, row atlas run and wall faces, packed as `poll_graded_tile_results`
     /// documents.
     pub(crate) texels: Bytes,
@@ -103,20 +92,15 @@ pub(crate) struct Baked {
     pub(crate) rows: Bytes,
     /// The wall faces (`pack_walls`).
     pub(crate) walls: Bytes,
-    // The polled dictionary it came from (handed back as it is where the renderer keeps it).
-    source: Option<VarDictionary>,
 }
 
 impl Baked {
     /// A tile result from its parts (the simulation's poll, bytes moved).
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn owned(
         tile: Tile,
         level: (i64, i64),
         token: i64,
         behind: bool,
-        graded: bool,
-        counts: [i64; 4],
         [texels, rows, walls]: [Vec<u8>; 3],
     ) -> Self {
         Self {
@@ -125,17 +109,14 @@ impl Baked {
             step: level.1 as u8,
             token,
             behind,
-            graded,
-            counts,
             texels: Bytes::Owned(texels),
             rows: Bytes::Owned(rows),
             walls: Bytes::Owned(walls),
-            source: None,
         }
     }
 
     // A polled tile dictionary (a trace's, a stand-in simulation's), its arrays shared.
-    fn from_dict(dict: VarDictionary) -> Self {
+    pub(super) fn from_dict(dict: VarDictionary) -> Self {
         let int = |key: &str| dict.get(key).map_or(0, |value| value.to::<i64>());
         let bytes = |key: &str| {
             Bytes::Shared(dict.get(key).map_or_else(PackedByteArray::new, |value| value.to::<PackedByteArray>()))
@@ -146,39 +127,10 @@ impl Baked {
             step: int("step") as u8,
             token: int("token"),
             behind: dict.get("behind").is_some_and(|value| value.to::<bool>()),
-            graded: dict.get("graded").is_none_or(|value| value.to::<bool>()),
-            counts: [int("samples_x"), int("samples_z"), int("seam_count"), int("edge_count")],
             texels: bytes("texels"),
             rows: bytes("rows"),
             walls: bytes("walls"),
-            source: Some(dict),
         }
-    }
-
-    // The tile as `poll_graded_tile_results` returns it (`behind` as taken).
-    fn to_dict(&self) -> VarDictionary {
-        if let Some(source) = &self.source {
-            let mut dict = source.clone();
-            dict.set("behind", self.behind);
-            return dict;
-        }
-        let mut dict = VarDictionary::new();
-        dict.set("tile_x", i64::from(self.tile.x));
-        dict.set("tile_z", i64::from(self.tile.z));
-        dict.set("level", i64::from(self.code));
-        dict.set("step", i64::from(self.step));
-        dict.set("token", self.token);
-        dict.set("samples_x", self.counts[0]);
-        dict.set("samples_z", self.counts[1]);
-        dict.set("graded", self.graded);
-        dict.set("behind", self.behind);
-        dict.set("seam_count", self.counts[2]);
-        dict.set("edge_count", self.counts[3]);
-        dict.set("wall_count", (self.walls.as_slice().len() / crate::simulation::terrain::graded::WALL_FACE_BYTES) as i64);
-        dict.set("texels", self.texels.to_packed());
-        dict.set("rows", self.rows.to_packed());
-        dict.set("walls", self.walls.to_packed());
-        dict
     }
 }
 
@@ -219,8 +171,8 @@ pub(super) struct Results {
     // Owned bake buffers written or dropped, for the simulation's pool (its next poll).
     spent: Vec<Vec<u8>>,
     // A placed tile's wall faces as floats, reused.
-    walls: Vec<f32>,
-    counts: [i64; COUNTS],
+    pub(super) walls: Vec<f32>,
+    pub(super) counts: [i64; COUNTS],
     // Tile bakes waiting in the simulation's queue, as of the last poll.
     tiles_pending: i64,
     // Tests: every result taken from now on is flagged behind the road.
@@ -228,7 +180,7 @@ pub(super) struct Results {
 }
 
 impl Results {
-    fn recycle_bytes(&mut self, bytes: Bytes) {
+    pub(super) fn recycle_bytes(&mut self, bytes: Bytes) {
         if let Bytes::Owned(buffer) = bytes {
             self.spent.push(buffer);
         }
@@ -240,7 +192,8 @@ impl Results {
         self.recycle_bytes(rows);
     }
 
-    fn recycle(&mut self, baked: Baked) {
+    /// Returns a whole bake's owned buffers to the simulation's pool.
+    pub(super) fn recycle_baked(&mut self, baked: Baked) {
         self.recycle_bake(baked.texels, baked.rows);
         self.recycle_bytes(baked.walls);
     }
@@ -249,7 +202,7 @@ impl Results {
     pub(super) fn clear(&mut self) {
         while let Some(item) = self.deferred.pop_front() {
             if let Polled::Tile(baked) = item {
-                self.recycle(baked);
+                self.recycle_baked(baked);
             }
         }
         let mut keys = std::mem::take(&mut self.wait_keys);
@@ -257,7 +210,7 @@ impl Results {
         keys.extend(self.waits.keys().copied());
         for tile in &keys {
             if let Some(baked) = self.waits.remove(tile) {
-                self.recycle(baked);
+                self.recycle_baked(baked);
             }
         }
         keys.clear();
@@ -286,7 +239,7 @@ fn retried(failure: &VarDictionary) -> Option<Polled> {
 // Whether the book applies `effect` itself (the uploads, the cells' runs once their objects are
 // attached, the counted evictions and same-level uploads); the rest need the renderer.
 fn own_effect(effect: &Effect, attached: bool) -> bool {
-    matches!(effect, Effect::Write { .. } | Effect::Evicted { .. } | Effect::SameLevel)
+    matches!(effect, Effect::Write { .. } | Effect::Evicted { .. } | Effect::SameLevel | Effect::EditDropped { .. })
         || (attached && is_cell_effect(effect))
 }
 
@@ -335,8 +288,8 @@ impl GradedTileBook {
 
 // One frame's result path: the book and the renderer it calls back, the simulation (none under
 // a trace or a stand-in), the frame's start and whether it took a result or count yet.
-struct Run {
-    book: Gd<GradedTileBook>,
+pub(super) struct Run {
+    pub(super) book: Gd<GradedTileBook>,
     renderer: Gd<RefCounted>,
     simulation: Option<Gd<SimulationNode>>,
     start_us: i64,
@@ -346,9 +299,19 @@ struct Run {
     // The engine's clock (`Time.get_ticks_usec`, which `start_us` reads) when the run began and
     // a monotonic clock from then: a budget check without a call into the engine.
     clock: (i64, std::time::Instant),
+    // Whether the perf channel's split counts this run's time (the frame's result path does; the
+    // edit batch and the preview, outside it, do not).
+    split: bool,
 }
 
 impl Run {
+    // A run outside the frame's poll (no budget, no simulation, no split): the edit batch, the
+    // preview and the variant waits.
+    pub(super) fn unbudgeted(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>) -> Self {
+        let clock = (0, std::time::Instant::now());
+        Self { book, renderer, simulation: None, start_us: 0, progressed: true, placed: 0, clock, split: false }
+    }
+
     // `_over_budget` with the placed tiles' cell rewrites charged (as if the frame had started
     // that much earlier): the trace's answer where one records or replays.
     fn over(&mut self) -> bool {
@@ -372,7 +335,7 @@ impl Run {
         self.effects();
     }
 
-    fn effects(&mut self) {
+    pub(super) fn effects(&mut self) {
         let start = std::time::Instant::now();
         let renderer = self.book.bind_mut().apply_own_effects();
         if renderer {
@@ -383,11 +346,14 @@ impl Run {
 
     // Adds the time since `start` to the split's `slot`.
     fn add(&mut self, slot: usize, start: std::time::Instant) {
+        if !self.split {
+            return;
+        }
         self.book.bind_mut().taken.counts[slot] += start.elapsed().as_nanos() as i64;
     }
 
     // Calls the renderer's `method`, timed as a callback.
-    fn call(&mut self, method: &str, args: &[Variant]) -> Variant {
+    pub(super) fn call(&mut self, method: &str, args: &[Variant]) -> Variant {
         let start = std::time::Instant::now();
         let out = self.renderer.call(method, args);
         self.add(CALLBACK_NS, start);
@@ -400,6 +366,11 @@ impl Run {
             Polled::Retry { tile, code, step, token } => {
                 let tile = Vector2i::new(tile.x, tile.z);
                 self.book.bind_mut().failed_tile(tile, i64::from(code), i64::from(step), token, true);
+            }
+            Polled::Other("edits", dict) => {
+                let start = std::time::Instant::now();
+                self.apply_edit(&dict);
+                self.add(CALLBACK_NS, start);
             }
             Polled::Other(kind, dict) => {
                 self.call("_take_polled", &[kind.to_variant(), dict.to_variant()]);
@@ -420,26 +391,23 @@ impl Run {
         let tile = Vector2i::new(baked.tile.x, baked.tile.z);
         let (code, step, token) = (i64::from(baked.code), i64::from(baked.step), baked.token);
         if book.requested_token(tile, code, step) != token {
-            book.taken.recycle(baked);
+            book.taken.recycle_baked(baked);
             return;
         }
         if book.edit_batch_token(tile) == token {
             // Part of an edit: it waits for the batch's other tiles (and, flagged, its sets'
-            // variant) in the renderer's batch.
+            // variant) in the batch ([`super::edits`]).
             book.requested_erase(tile, code, step, token);
             if baked.behind {
                 book.variant_missing(tile);
             }
-            let dict = baked.to_dict();
-            book.taken.recycle(baked);
-            drop(guard);
-            self.call("_stage_edit", &[dict.to_variant()]);
+            book.stage_baked(baked);
             return;
         }
         // A later result of the tile supersedes one that waited (an older level's or token's).
         if let Some(waited) = book.taken.waits.remove(&baked.tile) {
             book.requested_erase(tile, i64::from(waited.code), i64::from(waited.step), waited.token);
-            book.taken.recycle(waited);
+            book.taken.recycle_baked(waited);
         }
         if baked.behind && book.variant_missing(tile) {
             // Still requested while it waits (`take_variant_waits`).
@@ -550,9 +518,9 @@ impl GradedTileBook {
     /// and deferred results, then polls of finished work (edits, lists, failures, tiles, in that
     /// order a poll) until the frame's install budget from `start_us` is spent, checked before
     /// each result and count, each tile placed charged its later cell rewrites
-    /// (`CELL_CHARGE_US`). Tiles install here; the renderer's `_take_polled` takes the other
-    /// kinds, `_stage_edit` a tile of the edit batch and `_apply_effects` a take whose effects
-    /// need it. `simulation` polls without dictionaries; null (a trace, a stand-in) polls through
+    /// (`CELL_CHARGE_US`). Tiles install or stage for the edit batch here, edits apply here
+    /// ([`super::edits`]); the renderer's `_take_polled` takes the lists and other failures and
+    /// `_apply_effects` a take whose effects need it. `simulation` polls without dictionaries; null (a trace, a stand-in) polls through
     /// the renderer's `_sim_poll`. O(results and counts taken + one poll's results).
     #[func]
     pub fn install_results(
@@ -563,7 +531,7 @@ impl GradedTileBook {
     ) {
         let mut polled = std::mem::take(&mut book.clone().bind_mut().taken.polled);
         let clock = (godot::classes::Time::singleton().get_ticks_usec() as i64, std::time::Instant::now());
-        let mut run = Run { book, renderer, simulation, start_us, progressed: false, placed: 0, clock };
+        let mut run = Run { book, renderer, simulation, start_us, progressed: false, placed: 0, clock, split: true };
         run.run(&mut polled);
         // A poll's results the frame left are deferred above; the buffer is empty again.
         polled.clear();
@@ -583,7 +551,7 @@ impl GradedTileBook {
             keys
         };
         let clock = (0, std::time::Instant::now());
-        let mut run = Run { book, renderer, simulation: None, start_us: 0, progressed: true, placed: 0, clock };
+        let mut run = Run { book, renderer, simulation: None, start_us: 0, progressed: true, placed: 0, clock, split: true };
         for &tile in &keys {
             let ready = {
                 let mut book = run.book.bind_mut();

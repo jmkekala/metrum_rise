@@ -116,8 +116,6 @@ var _book: GradedTileBook = null
 var installed: Dictionary:
 	get:
 		return _entries(false)
-# The edit batch's staged results (the book keeps the batch's tokens): tile key -> its bake.
-var _edit_staged: Dictionary = {}
 # The views `installed` and `preview` built since the book last changed (null: none).
 var _views: Array = [null, null]
 # A traced hand-over's answers (per stale cancel, then per request) and the next cancel's.
@@ -125,19 +123,21 @@ var _hand_over := PackedInt64Array()
 var _hand_over_at := 0
 # Whether the book's resident set follows the live dictionary (from the first process()).
 var _resident_synced := false
-# The tiles the last edit batch installed, for tests and the probe.
-var last_edit_batch: Array = []
+## The tiles the last edit batch installed, for tests and the probe (the book's).
+var last_edit_batch: Array:
+	get:
+		var out := []
+		var flat: PackedInt32Array = _book.last_edit_batch()
+		for index in range(0, flat.size(), 2):
+			out.append(Vector2i(flat[index], flat[index + 1]))
+		return out
 ## For tests and the probe: the road preview's tiles (TERRAIN-07-E) as `installed` gives them
 ## (the token is the preview epoch), drawn in place of the installed tile from copies of their own.
 var preview: Dictionary:
 	get:
 		return _entries(true)
-# The highest preview epoch the edits in the batch release when it installs (-1: none).
-var _edit_release := -1
-# The serial of the last edit taken (Rust hands them over in serial order), and the one the
-# last edit batch installed up to: installed_edit_serial() (T61 (2)).
-var _edit_serial_taken := 0
-var _edit_serial_batched := 0
+# The edit batch, its release of the preview's epochs, the serials taken and installed, and the
+# preview's tiles waiting for their sets' variant are the book's (`RENDER-32-K` part 4).
 # The resident patches of the last process() call, for preview changes between frames.
 var _resident: Dictionary = {}
 # Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
@@ -176,12 +176,6 @@ var _meshes: Dictionary = {}
 var _materials_made := 0
 var _wall_mesh: ArrayMesh = null
 var _wall_material: ShaderMaterial = null
-# The behind-the-road variant (T49 (c)) on demand (the book queues the sets the build path adds it
-# to): the flagged tiles waiting for it in a set of theirs, so no set draws a flagged tile without
-# its variant: the book keeps the bake results (installed once their sets hold the variant), this
-# script tile key -> its preview tile (shown then: the preview's lag, T27 (d)). An edit batch with
-# a flagged tile waits whole (_install_edit_batch).
-var _preview_waits: Dictionary = {}
 # What a resident patch draws (the book's draw state, T53 (a)): its PlaneMesh, its set or nothing.
 const DRAW_PLANE := 0
 const DRAW_SET := 1
@@ -494,8 +488,6 @@ func clear() -> void:
 	if _book != null:
 		_book.clear()
 		_apply_effects()
-	_edit_release = -1
-	_edit_staged.clear()
 	patch_lists.clear()
 	patch_lists_requested.clear()
 	patch_lists_refused.clear()
@@ -505,7 +497,6 @@ func clear() -> void:
 	for key: Vector2i in _collapsed.keys():
 		_set_plane(key, null, true)
 	_unready.clear()
-	_preview_waits.clear()
 	if _book != null:
 		_book.clear_cells()
 	if is_instance_valid(simulation_node) or (trace != null and trace.replaying):
@@ -572,7 +563,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	var changes_us := Time.get_ticks_usec()
 	_advance_builds(start_us, resident_patches)
 	var builds_us := Time.get_ticks_usec()
-	if _book.has_variant_waits() or not _preview_waits.is_empty():
+	if _book.has_variant_waits() or _book.has_preview_waits():
 		_take_variant_waits(resident_patches)
 	if not _lists_wanted.is_empty():
 		_request_patch_lists(resident_patches)
@@ -687,7 +678,7 @@ func _apply_wall_changes() -> void:
 ## waiting on its variant or results keeps it back; an edit no held tile takes leaves nothing to
 ## wait for. O(1).
 func installed_edit_serial() -> int:
-	return _edit_serial_taken if _book.edit_batch_len() == 0 and _edit_release < 0 else _edit_serial_batched
+	return _book.installed_edit_serial()
 
 ## Shows one road preview frame's graded tiles (TERRAIN-07-E, docs/terrain.md "Preview, commit,
 ## undo and load"): `changes` holds `graded_tiles` (packed as poll_graded_tile_results packs its
@@ -703,10 +694,10 @@ func show_preview(changes: Dictionary) -> float:
 	var tiles: Array = changes.get("graded_tiles", [])
 	if removed.is_empty() and tiles.is_empty():
 		return 0.0
-	for index in range(0, removed.size(), 2):
-		_drop_preview(Vector2i(removed[index], removed[index + 1]))
-	for tile: Dictionary in tiles:
-		_show_preview_tile(tile)
+	# The removed tiles drop back to their installed tile, then each shown one takes slots of its
+	# own (the book's, `RENDER-32-K` part 4).
+	GradedTileBook.show_preview_frame(_book, self, removed, tiles)
+	_edits_taken()
 	var tiles_us := Time.get_ticks_usec()
 	var cell_patches := _book.dirty_counts().x
 	var marks: PackedInt64Array = _book.frame_counters()
@@ -738,52 +729,25 @@ func show_preview(changes: Dictionary) -> float:
 func release_preview(first_epoch: int, last_epoch: int) -> void:
 	if trace != null:
 		trace.entry("release_preview %d %d" % [first_epoch, last_epoch])
-	var tiles: PackedInt32Array = _book.preview_tiles(first_epoch, last_epoch)
-	for index in range(0, tiles.size(), 2):
-		_drop_preview(Vector2i(tiles[index], tiles[index + 1]))
-	_drop_preview_waits(first_epoch, last_epoch)
+	GradedTileBook.release_preview_epochs(_book, self, first_epoch, last_epoch)
+	_edits_taken()
 	_apply_cell_changes()
 	_apply_wall_changes()
 
+# One preview tile as show_preview takes it (tests): a flagged tile shows once its sets hold the
+# variant (the preview's lag, T27 (d)).
 func _show_preview_tile(tile: Dictionary) -> void:
-	var key := Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))
-	# A flagged tile shows once its sets hold the variant (the preview's lag, T27 (d)); the tile
-	# shows what it showed meanwhile.
-	_preview_waits.erase(key)
-	if bool(tile["behind"]) and _book.variant_missing(key):
-		counters["variant_waits"] += 1
-		_preview_waits[key] = tile
-		return
-	var code := int(tile["level"])
-	var layers := (tile["rows"] as PackedByteArray).size() / GradedPages.ATLAS_LAYER_BYTES
-	# Placed, what the tile draws changed: the book marks its cells, walls and sets, and writes
-	# its copies from the bake's bytes.
-	var placed: int = _book.place_preview(key, Vector4i(code, int(tile["step"]), int(tile["token"]), int(bool(tile["behind"]))), layers,
-		(tile["walls"] as PackedByteArray).to_float32_array(), tile["texels"], tile["rows"])
-	_apply_effects()
-	if placed != 0:
-		# The preview's lag (T27 (d)): a page that is full draws the tile once a later pose finds
-		# room (its block grows meanwhile). A page that cannot grow (its cap or the budget) is the
-		# level's pool exhausted, as the install path records it.
-		if placed == 1:
-			counters["preview_page_waits"] += 1
-			MetrumDebug.log("terrain", "graded level %d page full at preview tile %s" % [code, str(key)])
-		else:
-			counters["pool_exhausted"] += 1
-			MetrumDebug.log("terrain", "graded pool %d exhausted at preview tile %s" % [code, str(key)])
+	GradedTileBook.show_preview_tile(_book, self, tile)
+	_edits_taken()
 
-# Drops the preview tiles of epochs `first_epoch` to `last_epoch` waiting for a set's variant.
-func _drop_preview_waits(first_epoch: int, last_epoch: int) -> void:
-	for key: Vector2i in _preview_waits.keys():
-		var token := int(_preview_waits[key]["token"])
-		if token >= first_epoch and token <= last_epoch:
-			_preview_waits.erase(key)
-
-func _drop_preview(key: Vector2i) -> void:
-	_preview_waits.erase(key)
-	# The installed tile draws again: the book marks its cells, walls and sets.
-	_book.drop_preview(key)
-	_apply_effects()
+# What the book's edit batch and preview applied, into the counters (with the result path's).
+func _edits_taken() -> void:
+	_results_taken()
+	var taken: PackedInt64Array = _book.take_edit_counts()
+	counters["edits"] += taken[0]
+	counters["edit_adopted"] += taken[1]
+	counters["preview_page_waits"] += taken[2]
+	counters["pool_exhausted"] += taken[3]
 
 # Takes finished work (edits, patch lists, failures, tile bakes, in that order per poll) until the
 # frame's install budget is spent, checked before each result and before each tile a list or a
@@ -794,15 +758,15 @@ func _drop_preview(key: Vector2i) -> void:
 # before it queued, so the order of the changes is the arrival order whatever the frame breaks.
 # The frame's first count or result is taken unconditionally, so the work progresses whatever
 # the frame's other work cost. The loop, the deferred results and the tiles' checks, placing and
-# uploads are the book's (`RENDER-32-K` part 3): it calls back _take_polled for the other kinds,
-# _stage_edit for a tile of the edit batch and _apply_effects for a take whose effects need this
-# script, and charges each placed tile the cell rewrites it causes later in the frame in its budget
+# uploads are the book's (`RENDER-32-K` part 3), and so are the edits and the batch's staged tiles
+# (part 4): it calls back _take_polled for the lists and other failures and _apply_effects for a
+# take whose effects need this script, and charges each placed tile the cell rewrites it causes later in the frame in its budget
 # checks; the simulation polls without dictionaries unless a trace records or replays (_sim_poll).
 # O(results and counts taken + one poll's results).
 func _poll_and_install(start_us: int, _resident_patches: Dictionary) -> void:
 	var simulation: SimulationNode = simulation_node as SimulationNode if trace == null else null
 	GradedTileBook.install_results(_book, self, simulation, start_us)
-	_results_taken()
+	_edits_taken()
 
 # What the book's result path applied itself, into the counters (the effects it left to this
 # script are counted where _apply_effects applies them).
@@ -821,21 +785,12 @@ func _results_taken() -> void:
 	counters["upload_bytes"] = _book.upload_bytes()
 	counters["upload_ms_max"] = float(_book.upload_us_max()) / 1000.0
 
-# The book's result path hands over a polled edit, list or failure (`kind` as the poll names it).
+# The book's result path hands over a polled list or failure (`kind` as the poll names it; it
+# applies edits itself).
 func _take_polled(kind: String, entry: Dictionary) -> void:
-	_take_result(kind, entry, _resident)
-
-# The book's result path hands over a tile of the edit batch: it waits for the batch's other
-# tiles (and, flagged, its sets' variant) here.
-func _stage_edit(tile: Dictionary) -> void:
-	_edit_staged[Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))] = tile
-
-func _take_result(kind: String, entry: Dictionary, resident_patches: Dictionary) -> void:
 	match kind:
-		"edits":
-			_apply_edit(entry)
 		"patches":
-			_take_list(entry, resident_patches)
+			_take_list(entry, _resident)
 		"failed":
 			_failed(entry)
 
@@ -909,8 +864,6 @@ func _apply_effects() -> void:
 				MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [int(effects[at + 3]), str(tile)])
 			14:
 				counters["evictions"] += 1
-			15:
-				_edit_staged.erase(tile)
 			16:
 				counters["same_level_uploads"] += 1
 			21:
@@ -1035,13 +988,14 @@ func _failed(failure: Dictionary) -> void:
 		if not retry:
 			# The tile stays as it was; the edit installs without it, and its patches' sets draw
 			# without it (the book's draw state).
-			_edit_staged.erase(tile)
+			_book.edit_unstage(tile)
 			_book.tile_refused(tile)
 	if not retry:
 		counters["bake_failures"] += 1
 		MetrumDebug.log("terrain", "graded %s %s token %d refused: %s" % [failure["kind"], str(keys), token, failure["reason"]])
 
-func _upload(key: Vector2i, tile: Dictionary, _resident_patches: Dictionary, reserved: Variant = null) -> void:
+# A bake installed by hand (tests; polled tiles install in the book's result path).
+func _upload(key: Vector2i, tile: Dictionary, _resident_patches: Dictionary) -> void:
 	var level := Vector4i(int(tile["level"]), int(tile["step"]), int(tile["token"]), int(bool(tile["behind"])))
 	var layers := (tile["rows"] as PackedByteArray).size() / GradedPages.ATLAS_LAYER_BYTES
 	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
@@ -1050,144 +1004,31 @@ func _upload(key: Vector2i, tile: Dictionary, _resident_patches: Dictionary, res
 	# writes the bake's bytes). A tile whose page cannot take it waits for its block's larger page
 	# or is recorded exhausted. Its entry takes the bake's walls; changed faces rewrite its
 	# patches' walls.
-	if reserved == null:
-		_book.upload(key, level, layers, walls, tile["texels"], tile["rows"])
-	else:
-		_book.upload_reserved(key, level, layers, reserved, walls, tile["texels"], tile["rows"])
+	_book.upload(key, level, layers, walls, tile["texels"], tile["rows"])
 	_apply_effects()
 
-# Installs the edit batch once every tile of it has its result, all in this frame. Returns how
-# many tiles it installed.
-func _install_edit_batch(resident_patches: Dictionary) -> int:
-	var batch := int(_book.edit_batch_len())
-	if batch == 0 and _edit_release >= 0:
-		# A commit whose staged tiles no held tile takes: its preview ends with the edit.
-		release_preview(0, _edit_release)
-		_edit_release = -1
-	if batch == 0 or _edit_staged.size() < batch:
-		return 0
-	# A flagged tile's sets take the variant first (queued as it staged): the batch installs whole
-	# once none lacks it.
-	var waiting := false
-	for key: Vector2i in _edit_staged:
-		if bool(_edit_staged[key]["behind"]) and _book.variant_missing(key):
-			waiting = true
-	if waiting:
-		counters["variant_waits"] += 1
-		return 0
-	# Adoption changes ownership only: the same preview slots remain drawn. Free the replaced
-	# installed copies before planning the batch's allocations, without changing visible data.
-	for key: Vector2i in _edit_staged:
-		_adopt_preview(key, _edit_staged[key])
-	var reservation := _reserve_edit_copies()
-	if reservation.is_empty():
-		return 0
-	# Every allocation fits before any published texture is overwritten (the book placed them and
-	# registered every incoming holder before the uploads free old-level copies).
-	for key: Vector2i in _edit_staged:
-		_upload(key, _edit_staged[key], resident_patches, reservation[key])
-	last_edit_batch = _edit_staged.keys()
-	var count := _edit_staged.size()
-	_book.edit_batch_clear()
-	_edit_staged.clear()
-	_edit_serial_batched = _edit_serial_taken
-	# The committed tiles replace the preview's in the same frame.
-	if _edit_release >= 0:
-		var released: PackedInt32Array = _book.preview_tiles(-(1 << 62), _edit_release)
-		for index in range(0, released.size(), 2):
-			_drop_preview(Vector2i(released[index], released[index + 1]))
-		_drop_preview_waits(0, _edit_release)
-		_edit_release = -1
+# Installs the edit batch once every tile of it has its result and its sets' variant, all in this
+# frame, the committed tiles adopting the preview's slots where they are its payload and the
+# preview's released tiles dropped in the same frame (the book's, `RENDER-32-K` part 4). Returns
+# how many tiles it installed.
+func _install_edit_batch(_resident_patches: Dictionary) -> int:
+	var count: int = GradedTileBook.install_edit_batch(_book, self)
+	_edits_taken()
 	return count
 
-# The book places every copy of the batch, all or none (a failure puts its pages back), and
-# registers their holders. Failure starts a page move and keeps the complete edit staged; it must
-# not acknowledge an upload that never happened. Returns tile -> its copies (flat page, slot,
-# first, layers), empty on a failure. O(batch copies + free runs of the touched pages),
-# independent of world size; idle does none.
-func _reserve_edit_copies() -> Dictionary:
-	var flat := PackedInt64Array()
-	for key: Vector2i in _edit_staged:
-		var tile: Dictionary = _edit_staged[key]
-		var layers := (tile["rows"] as PackedByteArray).size() / GradedPages.ATLAS_LAYER_BYTES
-		flat.append_array(PackedInt64Array([key.x, key.y, int(tile["level"]), int(tile["step"]), int(tile["token"]), layers]))
-	var out: PackedInt64Array = _book.reserve_edit(flat)
-	_apply_effects()
-	if out[0] == 2:
-		# Its level is exhausted at the device or budget cap (the explicit pool-exhaustion
-		# contract): it leaves the batch without an upload.
-		_edit_staged.erase(Vector2i(out[1], out[2]))
-	if out[0] != 0:
-		return {}
-	var reserved := {}
-	var at := 1
-	for key: Vector2i in _edit_staged:
-		var count := int(out[at])
-		reserved[key] = out.slice(at + 1, at + 1 + 4 * count)
-		at += 1 + 4 * count
-	return reserved
-
-# A committed tile that is the very payload the preview shows (Rust's `adopted`, the preview tile
-# of the commit's epoch at the same level) takes over the preview's slot as the installed tile
-# (`TERRAIN-07-E` round 6): nothing is uploaded and nothing drawn changes, so neither its instance
-# nor its walls are rewritten. Returns whether it did. O(1).
-func _adopt_preview(key: Vector2i, tile: Dictionary) -> bool:
-	if not bool(tile.get("adopted", false)):
-		return false
-	if not _book.adopt_preview(key, Vector3i(int(tile["level"]), int(tile["step"]), int(tile["token"])), int(tile["preview_epoch"])):
-		return false
-	_apply_effects()
-	counters["edit_adopted"] += 1
-	return true
-
-# Rebakes the tiles an edit dirtied at the level each is held at, installed or in flight.
+# An edit Rust handed over: the tiles it dirtied rebake at the level each is held at, installed or
+# in flight; a commit's or undo's own tiles stage for the batch (the book's; the result path takes
+# polled edits itself, tests call this).
 func _apply_edit(edit: Dictionary) -> void:
-	counters["edits"] += 1
-	var serial := int(edit["serial"])
-	_edit_serial_taken = serial
-	if bool(edit["all"]):
-		# Every batched, installed, requested and refused tile, in that order.
-		_staged_dirty(_book.dirty_all(serial))
-		return
-	for entry: Dictionary in edit["levels"]:
-		# The tiles held, batched, requested or refused at the level (a refused tile is held too:
-		# the edit may have changed what refused it).
-		_staged_dirty(_book.dirty_level(int(entry["level"]), int(entry["step"]), entry["tiles"], serial))
-	# A commit's or undo's own tiles (TERRAIN-07-E): bitwise the rebakes of the edit's inputs, so
-	# they install with the batch instead of rebaking. A tile neither held nor wanted installs
-	# only where the preview shows it graded, so it draws on in the batch's frame; its patch's
-	# list, refreshed with the edit's patch generations, then wants it. Any other tile waits for
-	# that list, as a newly graded tile does.
-	for tile: Dictionary in edit.get("staged", []):
-		var key := Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))
-		var token := int(_book.stage_edit_tile(key, bool(tile["graded"]), serial))
-		_staged_dirty(PackedInt32Array([key.x, key.y]) if token >= 0 else PackedInt32Array())
-		if token < 0:
-			continue
-		tile["token"] = token
-		tile["preview_epoch"] = int(edit.get("preview_epoch", -1))
-		if bool(tile["behind"]):
-			_book.variant_missing(key)
-		_edit_staged[key] = tile
-	_edit_release = max(_edit_release, int(edit.get("preview_epoch", -1)))
+	GradedTileBook.apply_edit(_book, self, edit)
+	_edits_taken()
 
 # A dirty tile takes the edit's serial as its token, so a bake in flight with an older one is
 # dropped and the tile is requested again, a refused one too; an installed tile joins the edit
-# batch.
+# batch (tests).
 func _dirty_tile(tile: Vector2i, serial: int) -> void:
-	_book.dirty_tile(tile, serial)
-	_staged_dirty(PackedInt32Array([tile.x, tile.y]))
-
-# The book dirtied `tiles` (flat x, z; their requests cancelled): a staged result of one is
-# dropped, its level kept for the rebake.
-func _staged_dirty(tiles: PackedInt32Array) -> void:
-	_apply_effects()
-	for index in range(0, tiles.size(), 2):
-		var tile := Vector2i(tiles[index], tiles[index + 1])
-		if _edit_staged.has(tile):
-			var staged: Dictionary = _edit_staged[tile]
-			_book.set_edit_level(tile, int(staged["level"]), int(staged["step"]))
-			_edit_staged.erase(tile)
+	GradedTileBook.dirty_edit_tile(_book, self, tile, serial)
+	_edits_taken()
 
 # A resident patch entry was added, rewritten or removed: its counted tiles follow its residency,
 # its list is asked again if its generation moved, and its cells follow its LOD step.
@@ -1347,9 +1188,9 @@ func _take_variant_waits(_resident_patches: Dictionary) -> void:
 	if _book.has_variant_waits():
 		GradedTileBook.take_variant_waits(_book, self)
 		_results_taken()
-	for key: Vector2i in _preview_waits.keys():
-		if not _book.variant_missing(key):
-			_show_preview_tile(_preview_waits[key])
+	if _book.has_preview_waits():
+		GradedTileBook.take_preview_waits(_book, self)
+		_edits_taken()
 
 # Whether `tile` cannot show at its desired level and token: Rust refused it by contract (T7) or
 # its level's pool is exhausted (T23). Its patch's set draws without it (a base cell; both are
@@ -1409,7 +1250,7 @@ func cell_builds_pending() -> int:
 func has_pending_work() -> bool:
 	return _book.has_pending_work() or _book.cells_pending() or not (
 		patch_lists_requested.is_empty() and _lists_wanted.is_empty() and not _book.results_waiting()
-		and _unready.is_empty() and _preview_waits.is_empty()
+		and _unready.is_empty() and not _book.has_preview_waits()
 	)
 
 ## The world's patches within `radius_m` of the ground point `centre` (XZ, to the nearest point of
