@@ -689,9 +689,9 @@ impl StreamNode {
 }
 
 impl StreamNode {
-    // The terrain and water patches' frame: the terrain's square from the view, the water's
-    // units, the terrain's; the water's wanted set and the vegetation's tiers follow the
-    // terrain's residency.
+    // The terrain and water patches' frame: the terrain's square from the view, its units, the
+    // water's wanted set and halo from the terrain's residency, the water's units; the
+    // vegetation's tiers follow the terrain's residency.
     fn patch_frame(&mut self) {
         self.frame_patch_us = 0.0;
         self.frame_patch_units_us = 0.0;
@@ -722,9 +722,22 @@ impl StreamNode {
             })
         };
         let unbudgeted = self.load_settling;
-        // The water first: its holes are terrain patches resident since the last frame, and its
-        // units are cheap, so a shore never waits behind the terrain's builds for more than a
-        // frame. The terrain's activations of this frame join the water's wanted set after.
+        // The terrain first, then the water with what is left: the water's holes are terrain
+        // patches resident since the last frame. (Water first starved the terrain's 0.5 ms builds
+        // of the frame's last fraction: Kuopio's load settled 0.6 s later.)
+        if let Some(scripts) = self.terrain_scripts.as_mut() {
+            let mut exec = ScriptExecutor(scripts);
+            self.terrain_work = self.terrain.frame(
+                eye,
+                self.delta,
+                &mut self.budget,
+                &self.clock,
+                unbudgeted,
+                &in_view,
+                &mut exec,
+            );
+        }
+        self.follow_terrain();
         self.water.set_halo(self.terrain.halo());
         self.water.hold_prewarm(self.terrain.has_pending_work());
         if let Some(scripts) = self.water_scripts.as_mut() {
@@ -741,19 +754,6 @@ impl StreamNode {
             self.water.take_changes().for_each(drop);
             self.water.take_generations().for_each(drop);
         }
-        if let Some(scripts) = self.terrain_scripts.as_mut() {
-            let mut exec = ScriptExecutor(scripts);
-            self.terrain_work = self.terrain.frame(
-                eye,
-                self.delta,
-                &mut self.budget,
-                &self.clock,
-                unbudgeted,
-                &in_view,
-                &mut exec,
-            );
-        }
-        self.follow_terrain();
         self.frame_patch_us = start.elapsed().as_secs_f64() * 1e6;
         self.frame_patch_units_us = self.budget.measured_us - units_before;
     }
