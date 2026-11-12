@@ -14621,9 +14621,15 @@ libraries for every run below, the debug library for the Godot tests).
   on the control's). Kuopio: level but `turn_repeat` 0.5 s max +1.7 ms (spread 0.7); in the one
   rerun of its turns `turn_repeat` 0.5 s max +4.0 ms (10-11 against 6-7 ms; spread 1.0), `turn_out`
   1 s max +1.8, and `turn_out` 0.5 s and `turn_repeat` 1 s p50 +0.1 against spreads of 0.0-0.1:
-  Kuopio's turn maxima are not level (every frame under 12 ms, p50 2.0-2.8 ms on both sides); not
-  rerun again (the brief's limit), the cause not found (the frame's new work is a news check, the
-  builds' run setup and the lists in Rust, all `O(1)` or the same work as before). `PERF-07` at
+  Kuopio's turn maxima were not level (every frame under 12 ms, p50 2.0-2.8 ms on both sides).
+  The review's fix round attributed them (instrumented `--detail` runs of Kuopio's 0.5 s turns, one
+  a side): the worst `turn_repeat` frames have the same owners at the same cost on both sides, the
+  graded cell set builds (0.71-0.95 ms of their 1 ms budget, residency 0.92-0.98 ms) with
+  vegetation 0.4-0.8 ms on 6-8 ms frames, and frames of under 0.4 ms of script; the branch's
+  instrumented maximum was 8.2 ms against the control's 11.9 (a frame of 2.8 ms of buildings and 2.9
+  of terrain). No trace records in these runs, and the hand-off adds no per-frame dictionary beyond
+  the reused news map. The one timed rerun of that phase group (C B B C, 00:32-00:33): `turn_repeat`
+  0.5 s better at p50 (-0.1 ms, max -1.5), `turn_out` and `turn_back` 0.5 s level. `PERF-07` at
   level F: 30k 1x mean 2.453 / 2.454 ms, p99 4.14 / 4.20, p99.9 5.05 / 5.46, every metric level,
   both PASS; 30k 32x level on every metric.
 - Gates (`766978e8`): clippy `--all-targets` warning set equal to `7679850d`'s
@@ -14632,7 +14638,17 @@ libraries for every run below, the debug library for the Godot tests).
   0 SCRIPT ERROR; `graded_tile_renderer_test` headless and rendered, its bridge trace recorded in
   the hand-off's format, drawing its wall face, replayed bit for bit). Its first run failed one check
   of `graded_tile_renderer_test` (`TERRAIN-24`'s row) beside a stills batch and another round's
-  timed runs; three reruns of the test and the gate rerun passed.
+  timed runs; three reruns of the test and the gate rerun passed. The fix round read the path and
+ran the test 40 times a side (branch and control, release libraries, interleaved) under `stress`:
+20 a side with 8 workers on the E-cores and 20 a side with 24 workers on every core: 0 failures
+on either side. The hand-off cannot bring a change after the settle: a core change reaches the
+book in the same stream pass as the unit that made it (which `has_terrain_pending_work` counts
+until it runs), a commit only follows a dirty terrain or a pending payload, and the settle needs
+three idle frames while the renderer takes the news in the next one. What can bump the revision
+after the settle is unchanged by this round: the settle does not wait for queued set builds of
+patches whose list names no tile (`cells_pending`), and a build bumps its set's mask revision as it
+begins and ends; with the frame's budget spent by other work under load they can finish after the
+three idle frames (`TERRAIN-24`).
 
 **Against the bars.** Replay parity on all traces: met. Digests: equal. Stills: Kuopio
 byte-identical, the 30k city byte-identical but `saved`'s `RENDER-45` residue: met. The drag
@@ -14640,7 +14656,8 @@ probe as part 5 left it (fast commit 39 of 39, background frames not above contr
 `CODE-30`'s unit tests, every graded Godot test, `graded_tile_renderer_test` headless and rendered:
 met (with the one failure above, for review). No node created or freed on a frame path: met
 (nothing new makes an object). Graded totals not worse than control: met. Rows level: the 30k city
-level after its rerun; Kuopio's turn maxima not level (above), for review. One instrumented 100k
+level after its rerun, Kuopio's 0.5 s turns level after the fix round's attribution and rerun
+(above). One instrumented 100k
 load a side: taken. `PERF-07` at level F: level. The executor deletion: partly (1,425 to 1,347
 lines, the rest named above). Not relaxed.
 
