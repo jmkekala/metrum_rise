@@ -12039,8 +12039,13 @@ tools/stream_benchmark.py stills variants "$ARTIFACTS/stills/s30-var" --crops "$
   `frame_post_draw`, and the rest) and `core_locks` (`PL1`, [record](#where-the-frame-goes-with-the-simulation-running-pl1-2026-11-12)).
 - `--shadows` (`METRUM_STREAM_SHADOWS`, benchmark-only, unset by default; a series' branch rows
   only) applies the sun-shadow variants of `godot/scripts/benchmarks/shadow_variants.gd` (`full`,
-  `none`, `filter2`, `filter3`, `no_pcss`, `no_blend`, `low`, `no_cloud_shadows`, `no_casters`;
-  the idle matrix shares them as `no_shadows`, `no_blend_splits` and the same other names). One
+  `none`, `filter2`, `filter3`, `no_pcss`, `no_blend`, `low`, `medium`, `medium_blend`,
+  `no_cloud_shadows`, `no_casters`, the caster classes `no_buildings`, `no_trees`, `no_cars`,
+  `no_walkers`, `no_parked`, `no_furniture`, the range `far<m>`, `agents_near`, and parts joined
+  by `+` (`RENDER-15` SH2); the idle matrix shares them as `no_shadows`,
+  `no_blend_splits` and the same other names, and its stills take any of them). Rows record the
+  shadow passes' draws, objects and primitives (`shadow_pass`) and `compare --gpu` the GPU p50
+  delta beside them. One
   entry runs the phases with it; a sequence runs `still` and `turns` once per entry from one load,
   and `split` turns each `full, X, X, full` run of blocks into a quartet `compare` reads, the two
   `full` blocks around the pair as its control. `--gpu-profile` runs Godot with its render
@@ -16740,6 +16745,108 @@ Still, frame / GPU p50 against `full`, ms (same-binary spread in brackets):
   `--shadows full`, read p50 `+0.0` and max `+1.4` against spreads `0.1` / `0.8`; its one rerun
   reads level (p50 `+0.0`, max `-0.1`; spreads `0.0` / `3.5`). Settle-point digests of a run with
   and without `--shadows full`: graded 2 of 2, buildings 2 of 2 and the water pose equal.
+
+A Medium shadow setting, and the casters by class and range (`RENDER-15`, 2026-11-13, round
+SH2). The user's decision (2026-11-12): a Medium setting players choose, the default staying High
+with its look unchanged, and the casters' cost by class and distance measured with stills, any
+change to the default look chosen by the user from them.
+
+- **Medium** (`GameSettings.SHADOW_QUALITY_MEDIUM`, stored as `2` so a settings file from before it
+  keeps its Low as `1`; Options lists High, Medium, Low): High's soft filter (the project's quality
+  4, so a trunk's shadow stays whole, `VEG-25`) and its penumbra (`light_angular_distance`) over
+  two splits instead of four, without split blending. `SceneLighting.apply_shadow_quality(sun,
+  quality)` takes the three levels; High sets exactly what it set before (`ui_settings_test`).
+  Filter and PCSS stay by the SH1 numbers above (`0.1-0.17 ms` each, the forest's trunk shadows).
+  Blending was measured both ways (`medium_blend`): with two splits it costs `0.06 ms` on the 30k
+  still (within the spread) and `0.16 ms` at 100k, and it moves the image further from High's,
+  not closer (30k `saved` 44,828 changed pixels against 4,580 without it, Kuopio `close` 82,861
+  against 13,697; Godot's blend band reaches far into the second split), so Medium blends
+  nothing (decision for review).
+- **Variants** (`shadow_variants.gd`): `medium`, `medium_blend`; `no_<class>` for `buildings`
+  (the building batches, a Rust toggle `set_building_cast_shadows`), `trees` (the vegetation's own
+  toggle), `cars` (the moving cars), `walkers`, `parked` (a Rust toggle
+  `set_parked_cast_shadows`) and `furniture` (road signs, street lights): the class still draws;
+  `far<m>`: the sun's shadow ends at that range, its splits at the same shares; parts join with
+  `+` (`far200+no_cars`). `agents_near` casts the moving cars and walkers from shadow-only twins
+  holding only the agents within reach of the shadow range (view depth within the range plus
+  30 m, distance within 1.9 times it plus 30 m), refilled each frame in GDScript from the buffers
+  `agents.gd` now keeps: a prototype of the lever below, whose frame time carries the GDScript
+  refill and whose turns' GPU time carries a whole-buffer upload every frame, so only its still's
+  GPU time measures it. Every row now records the shadow passes' draws, objects and primitives
+  (`shadow_pass`), the load a census of the node casters (nodes, instances, instances within the
+  shadow range), and `compare --gpu` prints the GPU p50 delta and the shadow-pass primitives.
+
+`dev` `204a4a78` plus this round (`stream-sh2` `0f0b8f91`, release SHA-256 `d86c1992`), same
+machine and settings as SH1; chains `full, X, X, full` from one load, `split`, `compare --gpu`; 30k
+still and three 1 s turns, the 100k city and Kuopio stills; the GPU pass split from separate
+`--gpu-profile` runs of the stills. The timed rows ran before Medium dropped its blending: their
+`medium_noblend` is today's `medium`, their `medium` today's `medium_blend` (the same settings,
+renamed in the table).
+
+GPU p50 saved against `full` on the still, ms (same-binary spread), and the shadow pass
+(`--gpu-profile`):
+
+| Variant | 30k (`full` GPU 7.5, shadow pass 1.93) | 100k (`full` 14.2, pass 2.30) | Kuopio (`full` 0.99) |
+| --- | --- | --- | --- |
+| `none` | `-2.18 (0.01)` | `-2.64 (0.02)` | level |
+| `medium` (Medium as shipped) | `-0.97 (0.18)`, pass 1.04 | `-1.23 (0.02)` | `-0.08 (0.01)` |
+| `medium_blend` | `-0.91 (0.07)`, pass 1.09 | `-1.07 (0.06)`, pass 1.29 | `-0.02 (0.01)` |
+| `low` | `-1.08 (0.06)` | `-1.38 (0.13)` | level |
+| `agents_near` | `-0.99 (0.12)`, pass 1.00 | `-1.55 (0.01)`, pass 0.96 | |
+| `no_cars` | `-0.90 (0.01)`, pass 1.08 | `-1.37 (0.03)`, pass 1.04 | |
+| `no_buildings` | `-0.71 (0.03)`, pass 1.26 | `-0.78 (0.03)`, pass 1.61 | |
+| `no_parked` | `-0.27 (0.03)`, pass 1.68 | `-0.16 (0.04)`, pass 2.14 | |
+| `no_walkers` | `-0.15 (0.01)`, pass 1.78 | `-0.20 (0.09)` | |
+| `no_furniture`, `no_trees` | level | level | `no_trees` level |
+| `far300` / `far200` / `far100` | `-0.23` / `-0.46` / `-0.68` | `-0.26` / `-0.50` / `-0.74` | level / level / `-0.06` |
+
+- **Where the shadow pass goes.** The moving cars: `28.1 M` of the 30k still's `53.5 M`
+  shadow-pass primitives (52%) and `43.6 M` of the 100k's `69.0 M` (63%), from 3,113 and 4,972
+  drawn cars of which 123 and 186 stand within the `420 m` shadow range. `agents.gd` draws them in
+  one MultiMesh per model and colour (25) for the whole city out to `CAR_DRAW_DISTANCE_M`
+  (`2,500 m`); Godot culls a MultiMesh whole, so every split draws every car. Their cost does not
+  fall with the range (`far200+no_cars` `-1.35`, `far100+no_cars` `-1.62`: the cars' share stays
+  `0.89-0.94 ms` at any range). Buildings next (`12.8 M` primitives): `0.36 ms` of their `0.71`
+  lies beyond 200 m (`far200+no_buildings` `-0.81` against `far200` `-0.46`), `0.50` beyond 100 m.
+  The parked cars carry 1,604 of the 2,627 shadow draws but `0.27 ms`, `0.13` of it beyond 200 m.
+  Trees, rocks and plants: nothing on the 30k and 100k cities (the fixtures have almost no trees)
+  and at most `0.06 ms` in Kuopio, whose trees already cast from impostors past `60 m`
+  (`TREE_SHADOW_HANDOVER_M`), the cheaper-mesh caster this item asked about; the buildings' tier
+  choice is the same in the shadow pass as on screen, and the 30k fixture's large buildings are
+  single-tier placeholders, so no cheaper building caster was measured.
+- **Frame time** on the still follows the GPU where the frame is GPU-bound: 30k `medium` `-1.1`
+  (spread `1.0`), `no_cars` `-0.8`, `none` `-1.8 ms`; 100k `medium` `-1.0`, `no_cars` `-1.1`,
+  `none` `-2.1 ms`. The 1 s turns are CPU-bound (frame p50 about `15 ms`, GPU `9-10 ms`): `none`
+  `-2.0` to `-2.7 ms`, every other variant level or within its spread except single rows either
+  way; Kuopio's shadows cost under `0.1 ms`.
+- **Stills** (`stills capture --variants`, `stills variants --crops`; pixels differing from `full`;
+  30k `saved` / `city` / `city_low`, Kuopio `forest_low` / `close` at 4,000 warm-up frames):
+  `agents_near` 0 / 0 / 3 pixels (the 3, delta up to 2, are `saved`'s known residue beside
+  distant cars, [stills bar](#stream-benchmark-perf-23)): no visible change. `medium` (as shipped)
+  4,580 / 6,771 / 5,642, Kuopio 270,481 / 13,697 (largest delta 114 in the forest, where the near
+  split's trunk and crown shadows coarsen); `medium_blend` 44,828 / 31,775 / 8,359 and 434,396 /
+  82,861; `far300` 15,703 / 7,287 / 3,099 and 243,731 / 20,329; `far200` 23,447 / 11,766 / 3,076
+  and 253,074 / 48,954. Crops of the most-changed windows (full, variant, difference x8) and the
+  stills for the user's pick: `$ARTIFACTS/crops`, `$ARTIFACTS/stills/s30-var`, `k-var`.
+- **High unchanged.** Stills of `dev` `204a4a78`'s release library with its own scripts against
+  the branch, no variant: Kuopio `overview`, `close`, `forest_low` byte-identical; 30k `city`,
+  `city_low` byte-identical, `saved` 1 pixel of delta 1 (inside the stills bar's residue). A
+  series of the same two (no `--shadows`): still level (p50 `+0.0`, max `+1.2`; spreads `0.0` /
+  `1.3`; GPU `+0.01`, the same 53.5 M shadow primitives), turns p50 level or better, `turn_back`
+  max `+2.8` against a spread of `2.8`; its one rerun (turns only) reads `turn_back` level and
+  `turn_out` max `+9.7` (one 34 ms frame in one branch run; p50 `-0.3`, spread `1.2` / `3.1`),
+  every p50 level. The flagged maxima moved between the two runs; High's path differs from `dev`
+  only by `agents.gd` keeping two buffer references and the inert Rust toggles.
+- **Recommendation**, by milliseconds saved per visible change (the user picks from the stills;
+  nothing changed in the game's look): (1) the agents' shadow casters limited to the shadow range:
+  Rust builds a second, compact buffer of the cars and walkers within reach as it smooths them
+  (`O(agents)` a frame on a loop that already runs), drawn shadow-only while the full buckets
+  stop casting: `1.0 ms` GPU on the 30k still, `1.5 ms` at 100k, and no visible change by the
+  stills; (2) Medium, opt-in, as built: `1.0` / `1.2 ms`; (3) the buildings' casters past
+  200 m: up to `0.36 ms` and visible (the far buildings lose their shadows), and the building
+  batches are 512 m chunks, so it needs finer caster batches first; a shorter shadow range for
+  everything (`far300` `0.23-0.26 ms`) is visible for less; (4) parked cars and street furniture:
+  under `0.3 ms`, not worth a change.
 
 Frame budget after these changes, and canopy density (2026-10-03, `RENDER-04`): the idle matrix
 gains `forest` and `forest_low` poses (150 m and 30 m over one of Kuopio's densest canopy cells,

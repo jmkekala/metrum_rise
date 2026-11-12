@@ -152,7 +152,7 @@ holds it to 92% of the viewport and moves it back inside. `Graphics` owns Apply-
 (a top-right frame rate and frame time readout, `scripts/core/fps_overlay.gd`), `Max FPS`
 (Unlimited/30/60/120/144; the main menu always holds `120` or the lower player cap, and nothing else sets the cap outside benchmarks: a world starting up once reset it to 60, `UI-06`), `Render scale` (Native, or 77/67/50% upscaled with FSR 2, which
 also turns off the screen-space AA pass), `Shadows` (High, the default; Medium: High's soft
-filter and penumbra over two cascades instead of four, `RENDER-15`; or Low: plain PCF, two
+filter and penumbra over two unblended cascades instead of four, `RENDER-15`; or Low: plain PCF, two
 cascades, no cascade blending; stored as High 0, Low 1, Medium 2, so a settings file from before
 Medium keeps its choice), `View distance` (Full, or Reduced: the far plane floors at 3 km instead of
 9 km) and `Building detail` (Performance/Balanced/Quality; default Balanced), persisted in the
