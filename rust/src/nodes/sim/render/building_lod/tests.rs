@@ -311,7 +311,7 @@ fn travel_buckets_keep_every_tier_the_per_frame_rule_gives_on_random_walks() {
         .map(|building| {
             let transform = Mat4::from_scale_rotation_translation(
                 Vec3::splat(walk.range(0.6, 1.6)),
-                glam::Quat::from_rotation_y(walk.range(0.0, 6.28)),
+                glam::Quat::from_rotation_y(walk.range(0.0, std::f32::consts::TAU)),
                 Vec3::new(
                     walk.range(-1500.0, 1500.0),
                     walk.range(0.0, 40.0),

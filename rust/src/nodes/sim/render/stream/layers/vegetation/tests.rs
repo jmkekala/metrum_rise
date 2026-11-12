@@ -286,8 +286,10 @@ fn a_scripted_sequence_draws_one_version_and_its_command_digest_is_pinned() {
 // `RENDER-32-F` re-pinned it: the camera refresh visits the patches due by travel instead of every
 // shown patch in map order, which sends the same commands in another order (V2a's digest
 // 0x3ca89537c16bddd5 is reproduced by refreshing every patch; the sorted commands and the final
-// recorder state of both are identical).
-const GOLDEN_DIGEST: u64 = 0x9f52_348f_b634_1b93;
+// recorder state of both are identical). `RENDER-37` re-pinned it: the near canopy's detail swap
+// writes its kept rows into fresh storage (reallocate, mesh, buffer, count) instead of changing
+// the mesh on the written buffer, which the engine read back.
+const GOLDEN_DIGEST: u64 = 0x8db4_4358_2644_9bda;
 
 #[test]
 fn installs_take_class_then_distance_then_key_order_within_the_budget() {
