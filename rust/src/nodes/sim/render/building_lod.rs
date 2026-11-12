@@ -271,7 +271,7 @@ impl Chunk {
     /// buckets are tested against.
     #[cfg(test)]
     pub fn update(&mut self, parts: &[Part], view: View, reset_history: bool) {
-        self.update_due(parts, view, reset_history, &Motion::ALL);
+        self.update_due(parts, view, reset_history, &Motion::ALL, true);
     }
 
     /// Evaluates the parts whose thresholds `motion` reached (all of them after a
@@ -279,13 +279,15 @@ impl Chunk {
     /// tier moved. O(1) when the chunk's least threshold is not reached; otherwise O(instances)
     /// threshold checks, O(due parts) evaluations in blocks across the Rayon pool, and
     /// O(instances + groups) for a re-pack. No allocations after synchronization. Callers publish
-    /// all changed groups in one render frame.
+    /// all changed groups in one render frame. With `parallel`, inside the caller's Rayon pool,
+    /// many due parts are evaluated in blocks across it; without, on the calling thread.
     pub fn update_due(
         &mut self,
         parts: &[Part],
         view: View,
         reset_history: bool,
         motion: &Motion,
+        parallel: bool,
     ) {
         let all = reset_history || motion.all || self.resync;
         if !all && motion.travel < self.due_min[0] && motion.turn < self.due_min[1] {
@@ -313,7 +315,7 @@ impl Chunk {
         } else {
             self.due.iter().filter(|due| is_due(due)).count()
         };
-        let (evaluations, moved, due_min) = if count < PARALLEL_MIN {
+        let (evaluations, moved, due_min) = if !parallel || count < PARALLEL_MIN {
             pass(&mut self.entries, &mut self.due)
         } else {
             self.entries
@@ -345,6 +347,15 @@ impl Chunk {
         }
         self.resync = true;
         self.republish = true;
+    }
+
+    /// Whether `motion` reaches a part's thresholds (or the next update evaluates every part).
+    /// O(1).
+    pub fn is_due(&self, motion: &Motion) -> bool {
+        motion.all
+            || self.resync
+            || motion.travel >= self.due_min[0]
+            || motion.turn >= self.due_min[1]
     }
 
     /// Whether the next update evaluates every part (instances changed or the chunk came back).

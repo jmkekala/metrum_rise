@@ -248,6 +248,8 @@ impl SimulationNode {
         // Microseconds: the frame before the tier update (lock, site queries, bounds), the update.
         result.set("prepare_us", (update_start - start).as_secs_f64() * 1e6);
         result.set("update_us", update_us);
+        result.set("placing_us", self.building_lods.placing_us);
+        result.set("evaluating_us", self.building_lods.evaluating_us);
         result.set("evaluated_parts", self.building_lods.evaluated_parts as i64);
         result.set("queried_chunks", self.building_lods.queried_chunks as i64);
         if !changed && self.building_lods.removed.is_empty() {

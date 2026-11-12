@@ -357,7 +357,7 @@ fn travel_buckets_keep_every_tier_the_per_frame_rule_gives_on_random_walks() {
             }
             let (view, pose) = orbit(pivot, yaw, pitch, distance, size);
             let motion = travel.advance(Some(pose), view);
-            lazy.update_due(&parts, view, false, &motion);
+            lazy.update_due(&parts, view, false, &motion, true);
             reference.update(&parts, view, false);
             lazy_work += lazy.evaluations;
             reference_work += reference.evaluations;
@@ -384,12 +384,12 @@ fn a_still_view_evaluates_nothing_and_a_pan_a_fraction() {
     let mut travel = spatial::Travel::default();
     let size = Vec2::new(1920.0, 1080.0);
     let (view, pose) = orbit(Vec3::ZERO, 0.0, 0.1, 400.0, size);
-    chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view));
+    chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view), true);
     assert_eq!(chunk.evaluations, 400, "a first frame evaluates every part");
-    chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view));
+    chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view), true);
     assert_eq!(chunk.evaluations, 0, "a still view evaluates nothing");
     let (view, pose) = orbit(Vec3::new(4.0, 0.0, 0.0), 0.0, 0.1, 400.0, size);
-    chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view));
+    chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view), true);
     assert!(chunk.evaluations < 100, "a 4 m pan evaluates a few parts: {}", chunk.evaluations);
 }
 
@@ -406,17 +406,17 @@ fn a_chunk_coming_back_equals_a_new_one_and_publishes_every_batch() {
     // History from a walk, then the chunk leaves and the camera moves on.
     for step in 0..40 {
         let (view, pose) = orbit(Vec3::new(step as f32 * 9.0, 0.0, 0.0), 0.2, 0.1, 300.0, size);
-        kept.update_due(&parts, view, false, &travel.advance(Some(pose), view));
+        kept.update_due(&parts, view, false, &travel.advance(Some(pose), view), true);
         kept.acknowledge();
     }
     let (view, pose) = orbit(Vec3::new(-200.0, 0.0, 40.0), 1.1, 0.3, 500.0, size);
     let motion = travel.advance(Some(pose), view);
     kept.reenter();
     assert!(kept.needs_update());
-    kept.update_due(&parts, view, false, &motion);
+    kept.update_due(&parts, view, false, &motion, true);
     let mut fresh = Chunk::default();
     fresh.synchronize(&instances, &parts, true);
-    fresh.update_due(&parts, view, false, &motion);
+    fresh.update_due(&parts, view, false, &motion, true);
     assert_eq!(selections(&kept), selections(&fresh), "no history survives the chunk leaving");
     let published = |chunk: &Chunk| {
         let mut groups: Vec<_> = chunk

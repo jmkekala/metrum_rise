@@ -19,6 +19,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Chunks kept with their instances after they leave the query, so a turn that brings them back
@@ -218,6 +219,11 @@ pub(crate) struct SpatialBatches {
     travel: Travel,
     // Chunks that left the query, at most RETAINED of them (`RENDER-34`).
     retained: HashMap<(i32, i32), Resident>,
+    /// Microseconds of the latest update spent placing chunks' instances and evaluating their
+    /// parts, summed over the workers (the perf channel).
+    pub placing_us: f64,
+    /// See `placing_us`.
+    pub evaluating_us: f64,
 }
 
 impl SpatialBatches {
@@ -341,6 +347,8 @@ impl SpatialBatches {
     ) -> bool {
         self.evaluated_parts = 0;
         self.queried_chunks = 0;
+        self.placing_us = 0.0;
+        self.evaluating_us = 0.0;
         let revision = (
             allocator.building_ref_revision(),
             allocator.building_visual_revision,
@@ -425,22 +433,33 @@ impl SpatialBatches {
         let catalog = &self.catalog;
         let assets = &self.assets;
         let rising = &self.level_change_started;
-        // par_bridge borrows the map; HashMap::par_iter_mut would first allocate a staging Vec.
-        // Godot's main thread rebuilds the changed chunks: shared pool (CODE-17).
-        crate::thread_pools::install(|| {
-            self.chunks
-                .iter_mut()
-                .par_bridge()
-                .for_each(|(key, chunk)| {
-                    // A fresh level change restarts its building's rise even without a
-                    // revision bump. Sites under construction move with the construction clock
-                    // and a rise with real time: their chunks are placed again when the clock
-                    // moved or a rise animates (or just ended), not on every camera move
-                    // (`RENDER-34`), since the same clock places them the same.
-                    let changed = chunk.revision != Some(revision)
-                        || fresh
-                        || chunk.construction
-                            && (chunk.clock != clock_slots || animating || settling);
+        // A fresh level change restarts its building's rise even without a revision bump. Sites
+        // under construction move with the construction clock and a rise with real time: their
+        // chunks are placed again when the clock moved or a rise animates (or just ended), not
+        // on every camera move (`RENDER-34`), since the same clock places them the same.
+        let placed_again = |chunk: &Resident| {
+            chunk.revision != Some(revision)
+                || fresh
+                || chunk.construction && (chunk.clock != clock_slots || animating || settling)
+        };
+        // Nothing to place or evaluate: no dispatch to the pool at all. O(resident chunks).
+        let work = self.chunks.values().any(|chunk| {
+            placed_again(chunk)
+                || chunk.batches.needs_update()
+                || camera_changed && (quality_changed || chunk.batches.is_due(&motion))
+        });
+        // Placing chunks or evaluating whole ones goes to the pool; the parts a camera move
+        // brings due are few (their thresholds), so those frames stay on the main thread, which
+        // saves the pool's wake-up (`RENDER-34`).
+        let heavy = self.chunks.values().any(|chunk| {
+            placed_again(chunk)
+                || chunk.batches.needs_update()
+                || camera_changed && (quality_changed || motion.all)
+        });
+        let (gather_ns, evaluate_ns) = (AtomicU64::new(0), AtomicU64::new(0));
+        let process = |key: &(i32, i32), chunk: &mut Resident, parallel: bool| {
+                    let changed = placed_again(chunk);
+                    let start = Instant::now();
                     if changed {
                         chunk.instances.clear();
                         chunk.construction = false;
@@ -544,14 +563,32 @@ impl SpatialBatches {
                             .batches
                             .synchronize(&chunk.instances, parts, reset_history);
                         chunk.revision = Some(revision);
+                        gather_ns.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     }
                     if changed || camera_changed || chunk.batches.needs_update() {
+                        let start = Instant::now();
                         chunk
                             .batches
-                            .update_due(parts, view, quality_changed, &motion);
+                            .update_due(parts, view, quality_changed, &motion, parallel);
+                        evaluate_ns.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     }
-                });
-        });
+        };
+        if heavy {
+            // par_bridge borrows the map; HashMap::par_iter_mut would first allocate a staging
+            // Vec. Godot's main thread rebuilds the changed chunks: shared pool (CODE-17).
+            crate::thread_pools::install(|| {
+                self.chunks
+                    .iter_mut()
+                    .par_bridge()
+                    .for_each(|(key, chunk)| process(key, chunk, true));
+            });
+        } else if work {
+            for (key, chunk) in self.chunks.iter_mut() {
+                process(key, chunk, false);
+            }
+        }
+        self.placing_us = gather_ns.into_inner() as f64 / 1000.0;
+        self.evaluating_us = evaluate_ns.into_inner() as f64 / 1000.0;
         self.construction = self.chunks.values().any(|chunk| chunk.construction);
         self.evaluated_parts = self
             .chunks
