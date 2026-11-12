@@ -149,6 +149,7 @@ mod async_jobs;
 mod async_terrain;
 mod building_lod_api;
 mod cell_zoning_api;
+mod core_lock_stats;
 mod economy_api;
 mod graded_tiles_api;
 mod gridlock_api;
@@ -287,18 +288,26 @@ impl SimulationNode {
     /// Poisoning is an authoritative simulation failure: callers must not expose
     /// potentially partial state after a failed phase.
     #[inline]
+    #[track_caller]
     fn lock_core(&self) -> std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore> {
         Self::wait_for_shared_core(&self.core_turnstile, &self.core)
     }
 
     /// [`Self::lock_core`] for a caller that holds its own reference to the core.
+    #[track_caller]
     fn wait_for_shared_core<'a>(
         turnstile: &CoreTurnstile,
         core: &'a Mutex<SimCore>,
     ) -> std::sync::MutexGuard<'a, SimCore> {
-        turnstile
+        // The perf channel's main-thread counts (`CODE-26`): one relaxed load when off.
+        let start = core_lock_stats::enabled().then(std::time::Instant::now);
+        let guard = turnstile
             .wait_for(core)
-            .expect("simulation core lock poisoned by a failed authoritative phase")
+            .expect("simulation core lock poisoned by a failed authoritative phase");
+        if let Some(start) = start {
+            core_lock_stats::note_wait(std::panic::Location::caller(), start);
+        }
+        guard
     }
 
     /// Non-blocking mutex acquire. Returns `None` if the sim thread currently holds
@@ -306,6 +315,7 @@ impl SimulationNode {
     /// calls (terrain raycast, network snap) so the Godot main thread never stalls
     /// waiting for an in-progress road placement.
     #[inline]
+    #[track_caller]
     fn try_lock_core(&self) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
         Self::try_lock_shared_core(&self.core)
     }
@@ -314,6 +324,7 @@ impl SimulationNode {
     /// one-shot callers (a click, a test reading the answer) ask to wait for the core
     /// (`CODE-20`). Under load the simulation thread can hold the core for long runs of frames.
     #[inline]
+    #[track_caller]
     fn lock_core_if(
         &self,
         wait: bool,
@@ -325,8 +336,17 @@ impl SimulationNode {
         }
     }
 
+    #[track_caller]
     fn try_lock_shared_core(core: &Mutex<SimCore>) -> Option<std::sync::MutexGuard<'_, SimCore>> {
-        match core.try_lock() {
+        let result = core.try_lock();
+        // The perf channel's main-thread counts (`CODE-26`): one relaxed load when off.
+        if core_lock_stats::enabled() {
+            core_lock_stats::note_try(
+                std::panic::Location::caller(),
+                matches!(result, Err(std::sync::TryLockError::WouldBlock)),
+            );
+        }
+        match result {
             Ok(g) => Some(g),
             Err(std::sync::TryLockError::WouldBlock) => None,
             Err(std::sync::TryLockError::Poisoned(_)) => {

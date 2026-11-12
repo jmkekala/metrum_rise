@@ -10,15 +10,19 @@
 ## night pan started where the night turns left the terrain catching up). `post_load` records
 ## the frames from the load call's return until settled, with the hand-over's time (`ready_ms`).
 ## METRUM_STREAM_PHASES picks phases (still, turns, pan, zoom, jump, night, post_load),
-## METRUM_STREAM_TURNS the turn durations in seconds.
+## METRUM_STREAM_TURNS the turn durations in seconds, METRUM_STREAM_STILL_S the still's length in
+## seconds of wall time instead of its frames (a still with the simulation running, `PL1`). Each row
+## also records the wall clock at its frame's end (`t_unix`), to join a profile's samples to frames.
+## METRUM_STREAM_SETTLE_CAP_S caps every settle wait (`unsettled_starts` counts those it ended).
 ##
 ## A row is one frame: its time from one `process_frame` to the next (the frame's scripts and its
 ## draw), the renderer's CPU and GPU measures, draw counts, the streaming counters of every chunked
 ## renderer and their change, the reflection's voted levels, and with the perf channel on
-## (METRUM_DEBUG_PERF=1, shares only) that frame's PerfDebug records and the frames each vegetation
-## patch drawn that frame waited from wanted to drawn. "Settled" means the gameplay
-## harness's idle state, `terrain.is_render_settled()` and no vegetation upload pending, for
-## SETTLED_FRAMES frames in a row. `./run.sh --benchmark-stream` runs it pinned and isolated.
+## (METRUM_DEBUG_PERF=1, shares only) that frame's PerfDebug records, the frames each vegetation
+## patch drawn that frame waited from wanted to drawn, the main thread's core locks by call site
+## (`core_locks`, `CODE-26`) and the frame's time split at its draw (`draw_split`, `PL1`).
+## "Settled" means the gameplay harness's idle state, `terrain.is_render_settled()` and no
+## vegetation upload pending, for SETTLED_FRAMES frames in a row. `./run.sh --benchmark-stream` runs it pinned and isolated.
 ## With METRUM_STREAM_DIGESTS=1 (an untimed run: it reads the pages back) every settle point
 ## records the graded tiles' product in `graded_digests`: per installed tile its level, step,
 ## token, flag, walls and the bytes of each of its copies (the slot layer with its run's place in
@@ -109,6 +113,16 @@ var _gpu_profile := false
 # A load's road chunk hydration (`RENDER-32-P`; none on a control) and the parked cars.
 var _roads: Node
 var _parked: Node
+# The simulation node when it counts the main thread's core locks (`CODE-26`, perf channel on).
+var _core_locks: Node
+# The simulation node, for each row's game minute (`PL1`: a frame joins the hour boundary it falls on).
+var _simulation: Node
+# The frame's draw, bracketed by RenderingServer's frame_pre_draw and frame_post_draw (perf channel
+# on, `PL1`): each row splits its time into the frame's process (scripts, then the pre-draw hooks
+# connected before this benchmark), its draw and what follows the draw until the next frame resumes
+# the benchmark (the next iteration's events and physics).
+var _pre_draw_us := 0
+var _post_draw_us := 0
 # Per pass key, the GPU milliseconds of each frame of the current sample (`--gpu-profile`).
 var _gpu_passes := {}
 
@@ -121,6 +135,7 @@ func run(bench: Node) -> void:
 	_road_tool = main.get_node("RoadTool")
 	_roads = main.get_node_or_null("NetworkRenderer/RoadChunkHydration")
 	_parked = main.get_node_or_null("ParkedCars")
+	_simulation = bench.simulation_node
 	_grass = main.get_node("Grass")
 	_reflection = main.get_node_or_null("SceneLighting/WaterReflection")
 	Engine.max_fps = 0
@@ -159,6 +174,11 @@ func run(bench: Node) -> void:
 	bench._metrics = _report
 	if _scripts:
 		PerfDebug.begin_frame_capture()
+		if bench.simulation_node.has_method("take_core_lock_stats"):
+			_core_locks = bench.simulation_node
+			_core_locks.set_core_lock_stats(true)
+		RenderingServer.frame_pre_draw.connect(_on_pre_draw)
+		RenderingServer.frame_post_draw.connect(_on_post_draw)
 	var settled := false
 	var load_start := Time.get_ticks_usec()
 	print("[STREAM] LOAD_BEGIN save=%s world=%s" % [_report.save_path, bench.world_path])
@@ -301,6 +321,10 @@ func run(bench: Node) -> void:
 			_report.samples.append(await _capture_frames(bench, "water_still", WATER_FRAMES))
 	if _scripts:
 		PerfDebug.end_frame_capture()
+		if _core_locks != null:
+			_core_locks.set_core_lock_stats(false)
+		RenderingServer.frame_pre_draw.disconnect(_on_pre_draw)
+		RenderingServer.frame_post_draw.disconnect(_on_post_draw)
 	var errors := report_errors(_report)
 	if not errors.is_empty():
 		bench._fail("stream report schema", {"errors": Array(errors)})
@@ -339,7 +363,11 @@ static func report_errors(report: Dictionary) -> PackedStringArray:
 # The still and turns phases, if selected; false (the run failed) when a turn's start did not settle.
 func _still_and_turns(bench: Node, phases: Array, turns: Array, base: PackedFloat32Array) -> bool:
 	if phases.has("still"):
-		_report.samples.append(await _capture_frames(bench, "still", STILL_FRAMES))
+		var still_s := float(OS.get_environment("METRUM_STREAM_STILL_S"))
+		if still_s > 0.0:
+			_report.samples.append(await _capture_for(bench, "still", still_s))
+		else:
+			_report.samples.append(await _capture_frames(bench, "still", STILL_FRAMES))
 	if phases.has("turns"):
 		for duration_variant: Variant in turns:
 			var duration := float(duration_variant)
@@ -364,7 +392,13 @@ func _is_settled(bench: Node) -> bool:
 func _wait_settled(bench: Node) -> bool:
 	var start_us := Time.get_ticks_usec()
 	var stable := 0
+	# METRUM_STREAM_SETTLE_CAP_S (`PL1`): a city whose simulation edits it every few frames (100k
+	# at 32x) may never settle; past the cap the phase starts unsettled and the report counts it.
+	var cap_s := float(OS.get_environment("METRUM_STREAM_SETTLE_CAP_S"))
 	while stable < SETTLED_FRAMES:
+		if cap_s > 0.0 and bench._elapsed_ms(start_us) > cap_s * 1000.0:
+			_report["unsettled_starts"] = int(_report.get("unsettled_starts", 0)) + 1
+			return true
 		if bench._elapsed_ms(start_us) > bench.settle_timeout_sec * 1000.0:
 			return false
 		await bench.get_tree().process_frame
@@ -634,6 +668,8 @@ static func _sha(bytes: PackedByteArray) -> String:
 func _begin() -> Array:
 	if _scripts:
 		PerfDebug.take_frame()
+	if _core_locks != null:
+		_core_locks.take_core_lock_stats()
 	_previous_streams = _streams()
 	_gpu_passes = {}
 	_last_us = Time.get_ticks_usec()
@@ -645,6 +681,16 @@ func _capture_frames(bench: Node, label: String, frames: int) -> Dictionary:
 		await bench.get_tree().process_frame
 		rows.append(_row(rows.size()))
 	return _finish(label, 0.0, rows)
+
+# Records frames for `duration_s` of wall time (METRUM_STREAM_STILL_S: a still with the simulation
+# running, `PL1`).
+func _capture_for(bench: Node, label: String, duration_s: float) -> Dictionary:
+	var rows := _begin()
+	var start_us := _last_us
+	while float(Time.get_ticks_usec() - start_us) < duration_s * 1000000.0:
+		await bench.get_tree().process_frame
+		rows.append(_row(rows.size()))
+	return _finish(label, duration_s, rows)
 
 # Orbits by TURN_RADIANS over `duration_s` of wall time, each frame by the share of the turn its
 # time asks for, so a slow frame turns further (as the player's drag does).
@@ -717,6 +763,10 @@ func _row(index: int) -> Dictionary:
 	var streams := _streams()
 	var row := {
 		"frame": index, "engine_frame": Engine.get_process_frames(),
+		# The wall clock (CLOCK_REALTIME) at the frame's end: joins a `perf record -k realtime`
+		# profile's samples to their frame (`PL1`).
+		"t_unix": Time.get_unix_time_from_system(),
+		"minute": _simulation.get_current_minute_of_day(),
 		"frame_ms": float(now_us - _last_us) / 1000.0,
 		"process_ms": Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
 		"render_cpu_ms": RenderingServer.viewport_get_measured_render_time_cpu(_viewport_rid)
@@ -734,11 +784,24 @@ func _row(index: int) -> Dictionary:
 	}
 	if _scripts:
 		row["vegetation_drawn_frames"] = _vegetation_drawn_frames()
+		# [process, draw, after the draw] in ms; zeros when a hook did not fire inside this frame.
+		var bracketed := _last_us <= _pre_draw_us and _pre_draw_us <= _post_draw_us and _post_draw_us <= now_us
+		row["draw_split"] = [float(_pre_draw_us - _last_us) / 1000.0, float(_post_draw_us - _pre_draw_us) / 1000.0,
+			float(now_us - _post_draw_us) / 1000.0] if bracketed else [0.0, 0.0, 0.0]
+	if _core_locks != null:
+		# Per call site: tries, busy, waits, wait us, longest wait us (`CODE-26`).
+		row["core_locks"] = _core_locks.take_core_lock_stats()
 	if _gpu_profile:
 		_record_gpu_passes()
 	_previous_streams = streams
 	_last_us = now_us
 	return row
+
+func _on_pre_draw() -> void:
+	_pre_draw_us = Time.get_ticks_usec()
+
+func _on_post_draw() -> void:
+	_post_draw_us = Time.get_ticks_usec()
 
 # The water reflection's voted plane levels, NaN (no plane) as null.
 func _reflection_levels() -> Array:

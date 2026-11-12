@@ -562,6 +562,33 @@ impl SimulationNode {
             .setup_benchmark_city_internal(grid_size, agent_count);
     }
 
+    /// Turns the perf channel's main-thread core lock counts on (called on the main thread) or
+    /// off (`CODE-26`); either way drops the counts so far. Off by default.
+    #[func]
+    pub fn set_core_lock_stats(&self, enabled: bool) {
+        super::core_lock_stats::set_enabled(enabled);
+    }
+
+    /// The main thread's core locks since the last call, by call site (`file:line`): tries, tries
+    /// that found the core busy, blocking waits, their total and longest wait in microseconds.
+    /// Resets the counts; empty while they are off (`CODE-26`).
+    #[func]
+    pub fn take_core_lock_stats(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        for site in super::core_lock_stats::take() {
+            let counts = PackedInt64Array::from(
+                [site.tries, site.busy, site.waits, site.wait_us, site.wait_max_us]
+                    .map(|value| value as i64)
+                    .as_slice(),
+            );
+            out.set(
+                format!("{}:{}", site.location.file(), site.location.line()),
+                counts,
+            );
+        }
+        out
+    }
+
     /// Returns performance stats (ms, FPS, agents).
     #[func]
     pub fn get_perf_stats(&self) -> VarDictionary {

@@ -155,6 +155,9 @@ var _prewarm_requests: Dictionary = {}
 # total, resources, height texture, mesh and node, masks, material parameters, land cover.
 var _build_us := PackedFloat64Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 var _build_perf := false
+# The dirty-patch commit's parts while the perf channel is on (`RENDER-40`): its prepare (stage)
+# and commit milliseconds and the patches it committed, since the last perf record.
+var _commit_us := PackedFloat64Array([0, 0, 0])
 var pending_terrain_ack_states: PackedInt64Array = PackedInt64Array()
 var dirty_patch_payload_generations: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
@@ -323,9 +326,11 @@ func _process(delta: float) -> void:
 	var border_elapsed_ms := 0.0
 	var water_sync_elapsed_ms := 0.0
 	var water_sync_perf_stats := {}
+	var dirty_patch_count := 0
 	if not network_refresh_pending and simulation_node.is_terrain_dirty():
 		var dirty_start_us := Time.get_ticks_usec()
 		var dirty_pairs: PackedInt32Array = simulation_node.get_dirty_terrain_patches()
+		dirty_patch_count = int(dirty_pairs.size() / 2)
 		_terrain_debug_dirty_batches += 1
 		_terrain_debug_dirty_patch_total += int(dirty_pairs.size() / 2)
 		_try_commit_standalone_terrain_visual_update()
@@ -393,6 +398,11 @@ func _process(delta: float) -> void:
 			"payload_requested_count": float(patch_payload_requested.size()),
 			"payload_ready_count": float(patch_payload_ready.size()),
 			"upload": upload_elapsed_ms,
+			# The upload's parts (`RENDER-40`): dirty patches asked, the commit's prepare and
+			# commit, and the patches committed.
+			"upload_dirty_patches": dirty_patch_count,
+			"upload_prepare_ms": _commit_us[0] / 1000.0, "upload_commit_ms": _commit_us[1] / 1000.0,
+			"upload_committed_patches": int(_commit_us[2]),
 			"border": border_elapsed_ms,
 			"water_sync": water_sync_elapsed_ms,
 		}
@@ -416,6 +426,7 @@ func _process(delta: float) -> void:
 			for part: String in graded_parts.keys():
 				perf_details["graded_" + part] = float(graded_parts[part])
 		PerfDebug.record("terrain", elapsed_ms, perf_details)
+		_commit_us.fill(0.0)
 		_reset_terrain_resource_pool_perf_counters()
 
 # Hands the resident patches to the graded tile renderer with the keys changed since last frame,
@@ -588,7 +599,10 @@ func _try_commit_standalone_terrain_visual_update() -> bool:
 	if simulation_node.is_network_dirty():
 		return false
 	var network_generation := _terrain_network_render_generation()
+	var prepare_start_us := Time.get_ticks_usec() if _build_perf else 0
 	var prepared := prepare_terrain_visual_update(false)
+	if _build_perf:
+		_commit_us[0] += Time.get_ticks_usec() - prepare_start_us
 	if prepared.is_empty():
 		return false
 	# A network edit may arrive while detached resources are being built. Leave those resources
@@ -598,7 +612,13 @@ func _try_commit_standalone_terrain_visual_update() -> bool:
 		or _terrain_network_render_generation() != network_generation
 	):
 		return false
-	return commit_prepared_terrain_visual_update(prepared)
+	if not _build_perf:
+		return commit_prepared_terrain_visual_update(prepared)
+	var commit_start_us := Time.get_ticks_usec()
+	var committed := commit_prepared_terrain_visual_update(prepared)
+	_commit_us[1] += Time.get_ticks_usec() - commit_start_us
+	_commit_us[2] += (prepared["dirty_keys"] as Array).size() if committed else 0
+	return committed
 
 func _terrain_network_render_generation() -> int:
 	if simulation_node.has_method("get_network_render_generation"):

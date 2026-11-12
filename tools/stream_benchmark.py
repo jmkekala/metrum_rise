@@ -149,7 +149,7 @@ def run_row(args, settings, out, label, library, scripts, shadows):
                                        capture_output=True, text=True).stdout.strip(),
             "input": save or world, "input_sha256": sha256(save)[:16] if save else "",
             "resolution": args.resolution, "speed": args.speed, "detail": args.detail,
-            "phases": args.phases, "shadows": shadows, "gpu_profile": args.gpu_profile,
+            "phases": args.phases, "still_s": args.still_s, "settle_cap_s": args.settle_cap_s, "shadows": shadows, "gpu_profile": args.gpu_profile,
             "cpus": settings.get("cpus", ""), "workers": WORKERS,
             "locked": os.environ.get(LOCKED_ENV) == "1" or not settings.get("timed_wrapper"),
         }
@@ -166,6 +166,7 @@ def run_row(args, settings, out, label, library, scripts, shadows):
             "METRUM_GAMEPLAY_BENCHMARK_TIMEOUT_SEC": str(args.settle_timeout),
             "METRUM_IDLE_BENCH_SAVE_PATH": save, "METRUM_STREAM_SPEED": str(args.speed),
             "METRUM_STREAM_PHASES": args.phases, "METRUM_STREAM_TURNS": args.turns,
+            "METRUM_STREAM_STILL_S": str(args.still_s), "METRUM_STREAM_SETTLE_CAP_S": str(args.settle_cap_s),
             "METRUM_STREAM_DIGESTS": "1" if args.digests else "0", "METRUM_STREAM_SHADOWS": shadows,
             "METRUM_STREAM_GPU_PASSES": "1" if args.gpu_profile else "0",
         })
@@ -679,6 +680,10 @@ def add_run_options(parser, series):
     parser.add_argument("--speed", type=float, default=0.0)
     parser.add_argument("--phases", default="")
     parser.add_argument("--turns", default="")
+    parser.add_argument("--still-s", type=float, default=0.0,
+                        help="METRUM_STREAM_STILL_S: the still's seconds instead of its frames (0: frames)")
+    parser.add_argument("--settle-cap-s", type=float, default=0.0,
+                        help="METRUM_STREAM_SETTLE_CAP_S: start a phase unsettled after this long (0: wait)")
     parser.add_argument("--detail", action="store_true", help="perf channel on: shares, not times")
     parser.add_argument("--digests", action="store_true", help="settle-point digests (untimed: reads back)")
     parser.add_argument("--shadows", default="", help="METRUM_STREAM_SHADOWS: a run's (a series' branch rows') "
