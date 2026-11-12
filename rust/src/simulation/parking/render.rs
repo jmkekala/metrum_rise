@@ -11,7 +11,7 @@ use super::*;
 use rayon::prelude::*;
 use std::cell::Cell;
 use std::cmp::Reverse;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One chunk's immutable publication; no buckets removes its previous instances. Three flat
 /// buffers, so the next rebuild can reuse them whole.
@@ -83,7 +83,10 @@ pub(crate) struct ParkedAck {
     // The newest serial Godot has installed. Only ever rises, so a late answer cannot discard a
     // newer chunk.
     installed: AtomicU64,
-    full: AtomicBool,
+    // A full request: one more than `installed` when the renderer asked, 0 before any. A request
+    // repeated while the republication it asked for is still on its way carries the same value,
+    // so it is served once (`PARK-13`).
+    full: AtomicU64,
 }
 
 /// The parked half of a render snapshot. Chunks stay listed until the renderer acknowledges
@@ -105,7 +108,7 @@ impl ParkedPublication {
     pub(crate) fn offer(&self, full: bool) -> bool {
         let installed = self.ack.installed.load(Ordering::Relaxed);
         if full && self.full_serial <= installed {
-            self.ack.full.store(true, Ordering::Relaxed);
+            self.ack.full.fetch_max(installed + 1, Ordering::Relaxed);
         }
         self.serial > installed
     }
@@ -352,7 +355,9 @@ impl ParkingSystem {
             self.pending.retain(|update| update.serial > installed);
             self.pending_changed |= self.pending.len() != listed;
         }
-        if self.publication.ack.full.swap(false, Ordering::Relaxed) {
+        let requested = self.publication.ack.full.load(Ordering::Relaxed);
+        if requested > self.full_served {
+            self.full_served = requested;
             self.publication.serial += 1;
             let serial = self.publication.serial;
             self.publication.full_serial = serial;

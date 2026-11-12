@@ -2098,8 +2098,12 @@ core lock for them:
   answer and no epoch to compare. Model and colour persist across the switch.
 - Godot answers through atomics, never the lock. `acknowledge_parked_cars(epoch, serial)` says it
   installed everything up to a publication serial; an answer from a replaced world is dropped and
-  a serial only rises, so a late answer cannot discard a newer chunk. A renderer reconnect sets a
-  flag, and the next snapshot lists every chunk once more. The `parked` key is absent from the
+  a serial only rises, so a late answer cannot discard a newer chunk. A renderer reconnect asks for
+  a full republication, and the next snapshot lists every chunk once more. The request carries the
+  serial the renderer had installed (plus one), and the simulation serves each value once: the
+  renderer keeps asking from the snapshots it still reads until the republication arrives, and
+  such a repeat no longer starts a second republication (`PARK-13`, found 2026-11-12: the second
+  one re-sent every chunk after the renderer had installed the first). The `parked` key is absent from the
   frame when nothing changed, and the listed `Arc` vector is rebuilt only when a chunk or an
   acknowledgement changes it, `O(listed chunks)` pointer copies.
 - A chunk lists the bays its parked cars stand on (`Chunk::parked`, with `Place::parked_slot`: 12

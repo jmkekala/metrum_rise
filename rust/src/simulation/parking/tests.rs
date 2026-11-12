@@ -136,6 +136,44 @@ fn a_full_request_lists_every_chunk_again_in_a_later_snapshot() {
     assert_eq!(s.publication().full_serial, full.full_serial, "served once");
 }
 
+// `PARK-13`: the renderer asks every frame until a full republication reaches it, so it asks
+// again from a stale snapshot after the simulation took the request and before the
+// republication is published. That repeat is served by the republication on its way, not by a
+// second one.
+#[test]
+fn a_full_request_repeated_before_its_republication_arrives_is_served_once() {
+    let mut s = ParkingSystem::default();
+    s.add_place(source(0), bay(-512.0, 4.0));
+    s.add_place(source(1), bay(512.0, 4.0));
+    s.fill_test_fleet();
+    s.build_dirty_chunks();
+    let listed = s.publication();
+    listed.acknowledge(listed.serial);
+    s.take_renderer_answers();
+    let stale = s.publication();
+    assert!(!stale.offer(true));
+    s.take_renderer_answers();
+    assert!(
+        !stale.offer(true),
+        "the renderer still reads the stale snapshot"
+    );
+    s.take_renderer_answers();
+    let full = s.publication();
+    assert!(full.holds_full());
+    assert_eq!(full.serial, listed.serial + 1, "one republication");
+    full.acknowledge(full.serial);
+    s.take_renderer_answers();
+    assert_eq!(
+        s.publication().serial,
+        full.serial,
+        "nothing more after it is installed"
+    );
+    // A later request, after that one was installed, is served again.
+    assert!(!s.publication().offer(true));
+    s.take_renderer_answers();
+    assert_eq!(s.publication().full_serial, full.serial + 1);
+}
+
 // A rebuild is a copy: only a place with no pose for its car's model reaches the ground solve.
 #[test]
 fn a_chunk_rebuild_solves_no_unchanged_place() {

@@ -51,6 +51,9 @@ pub(crate) struct ParkingSystem {
     publication: ParkedPublication,
     pending_changed: bool,
     acknowledged: u64,
+    // The newest full request served (`ParkedAck::full`'s value then), so a request repeated
+    // before its republication reaches the renderer is not served twice (`PARK-13`).
+    full_served: u64,
     // The update list before the current one, refilled once no snapshot holds it.
     spare_updates: Arc<Vec<render::ParkedUpdate>>,
     // Rebuild slots, reused every frame; `dirty` says how many are in use.

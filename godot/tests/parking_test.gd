@@ -103,7 +103,8 @@ func _run() -> void:
 	sim.acknowledge_parked_cars(full["epoch"], full["serial"])
 	sim.acknowledge_parked_cars(full["epoch"] + 1, 1 << 40)
 	frame = sim.get_vehicle_frame(false)
-	_expect(frame.has("cars") and not frame.has("parked"), "nothing parked when nothing changed")
+	var resent: Dictionary = frame.get("parked", {})
+	_expect(frame.has("cars") and not frame.has("parked"), "nothing parked when nothing changed: acknowledged serial %d, sent serial %s full %s with %d chunks" % [full["serial"], resent.get("serial"), resent.get("full"), resent.get("chunks", []).size()])
 	var unchanged: Dictionary = sim.get_parked_car_chunks(false)
 	_expect(unchanged.get("chunks", []).is_empty(), "unchanged chunks send nothing")
 	# Placement snaps to its frontage; target the published centre, and retry a busy bridge.
