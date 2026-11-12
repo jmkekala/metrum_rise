@@ -14,11 +14,12 @@ uniform float opacity : hint_range(0.0, 1.0) = 0.8;
 
 void fragment() {
 	float pattern = round(UV.y);
+	// A dash gap is discarded at the end (`RENDER-38`): the cloud lookup below takes fwidth, which
+	// at a dash end would otherwise read the quad's discarded lanes.
+	bool gap = false;
 	if (UV.y > 1.5 && pattern > 2.5) {
 		float dash_m = pattern > 3.5 ? 3.0 : 1.0;
-		if (mod(UV.x, dash_m * 4.0) > dash_m) {
-			discard;
-		}
+		gap = mod(UV.x, dash_m * 4.0) > dash_m;
 	}
 	ALBEDO = COLOR.rgb;
 	ALPHA = COLOR.a * opacity;
@@ -26,4 +27,7 @@ void fragment() {
 	standard_light_cloud_sun = standard_light_cloud(VERTEX, INV_VIEW_MATRIX);
 	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
 		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
+	if (gap) {
+		discard;
+	}
 }

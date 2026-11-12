@@ -97,6 +97,9 @@ paths: terrain and water cost 0.13-0.17 ms a frame on Kuopio's turns and pans (0
 100k load's patch bookkeeping falls from 2.1 ms a frame to 0.01, and Kuopio is playable and
 settled about 0.6 s sooner after a load (a terrain build 0.41 to 0.16 ms, its land cover built off
 the main thread, and a post-load window at the control's own cost a frame). The stream benchmark gains a pond on the 30k city, made by a recorded recipe.
+The graded ground's material edges and road seams no longer flicker from frame to frame
+(`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
+city's stills byte-identical run to run again, at the control's GPU and frame time.
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,

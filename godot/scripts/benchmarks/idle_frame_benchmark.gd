@@ -228,7 +228,8 @@ func run(bench: Node) -> void:
 			# Optional visual baseline: the last captured frame, for before/after image diffs.
 			var screenshot_dir := OS.get_environment("METRUM_IDLE_BENCH_SCREENSHOT_DIR")
 			if not screenshot_dir.is_empty():
-				# Wind sway depends on wall-clock shader TIME, so it never matches between runs.
+				# Trees at rest: their sway follows the weather's wind clock (weather_wind.x, never
+				# TIME), which stops wherever the run paused it, so a swaying shot would hang on that.
 				_set_vegetation_wind(0.0)
 				await bench.get_tree().process_frame
 				await bench.get_tree().process_frame

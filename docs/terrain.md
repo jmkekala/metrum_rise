@@ -12048,10 +12048,12 @@ tools/stream_benchmark.py stills variants "$ARTIFACTS/stills/s30-var" --crops "$
   `systematic` by this rule where that round judged the mask unstructured (rechecked by
   `RENDER-38`, below).
 - **The stills bar.** Kuopio's settled poses (4,000 warm-up frames): byte identity (`stills
-  compare`). The 30k city's poses: `stills systematic` over two runs a side, because the 30k stills
-  are not byte-stable even within one run: the graded terrain's edge pixels change every frame
-  ([`RENDER-38`](#why-the-30k-stills-are-not-byte-stable-render-38-2026-11-12)). Byte identity
-  returns as the 30k bar when that shader fault is fixed.
+  compare`). The 30k city's poses (`saved`, `city`, `city_low`): byte identity too since the
+  graded terrain's derivative fault was fixed
+  ([`RENDER-38`](#why-the-30k-stills-are-not-byte-stable-render-38-2026-11-12), 2026-11-12),
+  with one known residue: up to 3 pixels of `saved`, delta up to 2, beside distant cars (the fix
+  round's three runs). Anything beyond that is a difference; `stills systematic` stays for a build that
+  predates the fix.
 
 The water input of record is the pond on the 30k city (`RENDER-32-M` step 0):
 `stream_pond_30000_v118.sqlite` beside the prepared cities, made by
@@ -14687,6 +14689,66 @@ them are this fault's pixels (pixels today's control draws differently over six 
 the derivative probe changes). The part's verdict, no structure beyond the speckle, stands.
 Until the fix lands the systematic test can flag the fault's edges by chance; a flagged 30k pose
 is read against these edges before it counts as a difference.
+
+**The fix** (round R38F, branch `stream-r38f`, 2026-11-12; the user's decision: "Fix it if it does
+not kill performance", the edge pixels' change approved, nothing beyond them). Shader-only, in
+`terrain_surface.gdshaderinc` and `road_marking.gdshader`; the shared grass and paving includes
+are unchanged.
+
+- *The recommended gradient form, measured and stopped.* Gradients of world XZ taken before the
+  seam test and the split, every grass, paving, grain and coal read through `textureGrad`, every
+  footprint from those gradients: run to run stable, but against the control it changed 109,296 /
+  34,499 / 14,750 pixels of `saved` / `city` / `city_low` outside the edge set below (mostly delta
+  1-3, largest 79), in grass interiors: an explicit gradient does not give the texture unit the
+  level of detail its implicit one does (the stochastic tiles' offsets, the rounding of the
+  coordinate differences). That is a change beyond the edges, so it was not kept (crops
+  `$ARTIFACTS/sbs-texturegrad`).
+- *What landed.* Each block of the graded fragment that takes derivatives runs in every lane of a
+  2 x 2 quad where any lane needs it, and each lane keeps its own result, so the implicit reads
+  stay as they were wherever a quad was uniform and become defined where it was not:
+  `quad_mixed(v)` (fine derivatives of a lane's class against its row and column neighbours, then
+  of that, which reaches the diagonal one) is nonzero in every lane of a quad whose lanes differ.
+  On a material edge (grass, asphalt, concrete) the grass block and both paving reads run in all
+  four lanes and the paving lanes take the paving after the grass block; the coal pit and the
+  field read the same way at their edges; the far canopy speckle takes its derivatives before its
+  ramp's branch (that ring was R38's last unlocated `saved` pixels); the seam discards are a flag
+  discarded at the end of the fragment (the graded variants only, so the base variant keeps no
+  discard and its early depth); the road markings discard a dash gap after the cloud lookup. The
+  Compatibility renderer has no fine derivatives: its `quad_mixed` uses `dFdx`, which may be
+  coarse and then misses a quad whose odd lane is the diagonal one.
+- *Stills* (`dev` `64d6cfd1`'s release library, SHA-256 `778071dc`, both sides; control scripts by
+  `git archive` of the base; the tracked `stills capture`, 30 warm-up frames, Kuopio 4,000). R38's
+  edge set per pose: pixels the derivative probe (exp9's shaders on this base, same library) changes
+  against any control run, or the three control runs differ at. Branch against control (pixels
+  differing from every control run): 108,972 / 48,479 / 22,079 pixels of `saved` / `city` /
+  `city_low` (largest delta 79 / 41 / 38), all on the edge set but 4 / 25 / 65 (largest delta 6 / 1
+  / 1), which lie on road seams where the probe happened to draw the control's value. Against the
+  probe itself: 81-84 / 359 / 765 pixels (largest delta 10 / 2 / 5), the paving's implicit reads
+  against the probe's gradients. Branch against branch, three runs: `city` and `city_low`
+  byte-identical; `saved` 2-3 pixels, delta up to 2, at four positions in the far third of the view,
+  on paving and road beside distant cars (not located; a likely source is the agents' fade dither,
+  whose `discard` comes before their texture reads and cloud lookup, `RENDER-28`). Kuopio
+  `forest_low`, `close`, `mid`: branch against branch and branch against control byte-identical.
+  Crops control | branch | mask (red inside the edge set, yellow outside) in `$ARTIFACTS/sbs`.
+- *Performance* (level F; gamescope headless, 1920x1080, P-cores, eight workers, paused; one
+  library, so control and branch differ only in their scripts). `stream_benchmark.py series` C B B
+  C, 30k (`e9a62f0e`) and Kuopio, `compare` and the GPU p50 by the same spread rule: 30k GPU level
+  in 14 of 21 phases, `better` in 3, `worse` in `turn_back 0.5s` (+0.80 ms, spread 0.77), `turn_out
+  1s` (+0.39 / 0.28), `turn_repeat 1s` (+0.44 / 0.43) and `pan_out 3s` (+0.05 / 0.04), the largest
+  `better` `night_turn_back 1s` (-1.47); frame `worse` in `still` max (+4.4 ms) and `turn_back
+  0.5s`. Kuopio GPU level or better in 20 of 21 (`worse` in `zoom_in_repeat 1.5s`, +0.06 at a 0.01
+  spread), frame flags at its rounding (+0.1 ms p50) and in single max frames. The one rerun of the
+  flagged groups (30k `still,turns`, Kuopio `still,turns,zoom,night`): 30k GPU level in five turns,
+  `better` in `turn_repeat 1s` (-0.92), `still` 7.43 / 7.42 against 7.42 / 7.40 (`worse` by +0.01 at
+  a 0.01 spread); frame level but `turn_repeat 1s` max (+4.3, p50 -1.6); Kuopio GPU level in 15 of
+  16, frame level or within 0.1 ms p50 and single max frames. No flag repeats between the two
+  series: level with control. The 30k stills poses' GPU (untimed, 10 frames a pose, C B B C): `city`
+  10.20, 10.20 against 10.22, 10.24 ms, `city_low` 7.39, 7.40 against 7.40, 7.40: level; `saved`
+  10.83, 11.26 against 11.90, 12.28, but that pose swings 10.1-13.3 ms run to run on both sides over
+  the round's ten captures (control 10.8-12.8, branch 10.1-13.3), so ten frames cannot resolve it;
+  the timed `still` rows above are level.
+
+The stills bar is byte identity again (see "Stream benchmark").
 
 ### Terrain and water patches on the core (`RENDER-32-M`, 2026-11-12)
 

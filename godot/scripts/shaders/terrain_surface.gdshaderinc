@@ -588,8 +588,33 @@ varying float paved_surface;
 
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
 
+// Screen-space derivatives (implicit-LOD texture reads, fwidth, dFdx) are formed from the four
+// lanes of a 2 x 2 pixel quad, so they are defined only where all four lanes run them. The
+// fragment below branches per pixel (the graded paving/grass split, the coal pit, the field) and
+// ends lanes at the road seams; inside such a branch a quad straddling its condition took
+// derivatives from lanes that never ran it, and its edge pixels sampled another mip level every
+// frame (`RENDER-38`). So a block with derivatives runs in every lane of a quad where any lane
+// needs it (each lane then keeps its own result), and the seam discard comes at the end.
+// quad_mixed(v) is nonzero in every lane of a quad whose lanes do not all hold the same v: fine
+// derivatives compare a lane with its row and column neighbour, and the second pass reaches the
+// diagonal one (a lane equal to both neighbours has a neighbour that differs from the diagonal).
+// Call it in uniform control flow. The Compatibility renderer has no fine derivatives; its
+// dFdx may be coarse, which misses a quad whose odd lane is the diagonal one.
+float quad_mixed(float v) {
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+	float edge = abs(dFdx(v)) + abs(dFdy(v));
+	return edge + abs(dFdx(edge)) + abs(dFdy(edge));
+#else
+	float edge = abs(dFdxFine(v)) + abs(dFdyFine(v));
+	return edge + abs(dFdxFine(edge)) + abs(dFdyFine(edge));
+#endif
+}
+
 void fragment() {
 #ifdef TERRAIN_GRADED
+	// The seam test only flags the fragment; it is discarded at the end, after every lane of its
+	// quad has run the shading the others take derivatives from (its own result is never drawn).
+	bool cut = false;
 	// Terrain is discarded exactly inside the road footprint, in every pass that runs this shader
 	// (the depth prepass and shadows included), so cut-away ground casts no shadow on the road.
 	// Within one pixel inside a road seam it is kept where it lies at or below the road top,
@@ -612,11 +637,9 @@ void fragment() {
 	// shadow and depth passes keep it behind the road too.
 	DEPTH = FRAGCOORD.z;
 	if (cell_mask_here.sdf < 0.0) {
-		if (cell_mask_here.sdf <= -cell_pixel_m || cell_mask_here.road_top < -1e29) {
-			discard;
-		}
+		cut = cell_mask_here.sdf <= -cell_pixel_m || cell_mask_here.road_top < -1e29;
 		float rise = var_world_pos.y - cell_mask_here.road_top;
-		if (rise > 0.0) {
+		if (!cut && rise > 0.0) {
 			// The push: `push_fall` metres of fall along the ray away from the camera, which the
 			// ray covers in `push_fall / ray_fall` metres (`ray_fall`, the sine of its
 			// depression, in [-1, 1]).
@@ -640,26 +663,31 @@ void fragment() {
 			vec4 far_plane = projection_rows[2];
 #endif
 			float far_view = dot(far_plane.xyz, VIEW);
-			if (push_fall * far_view > ray_fall * dot(far_plane, vec4(VERTEX, 1.0))) {
-				discard;
-			}
-			vec3 behind = VERTEX - VIEW * (push_fall / ray_fall);
-			vec4 behind_clip = PROJECTION_MATRIX * vec4(behind, 1.0);
+			cut = push_fall * far_view > ray_fall * dot(far_plane, vec4(VERTEX, 1.0));
+			if (!cut) {
+				vec3 behind = VERTEX - VIEW * (push_fall / ray_fall);
+				vec4 behind_clip = PROJECTION_MATRIX * vec4(behind, 1.0);
 #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
-			DEPTH = behind_clip.z / behind_clip.w * 0.5 + 0.5;
+				DEPTH = behind_clip.z / behind_clip.w * 0.5 + 0.5;
 #else
-			DEPTH = behind_clip.z / behind_clip.w;
+				DEPTH = behind_clip.z / behind_clip.w;
 #endif
+			}
 		}
 	}
 #else
-	if (cell_mask_here.sdf < 0.0) {
-		if (cell_mask_here.sdf <= -cell_pixel_m || var_world_pos.y > cell_mask_here.road_top) {
-			discard;
-		}
-	}
+	cut = cell_mask_here.sdf < 0.0
+		&& (cell_mask_here.sdf <= -cell_pixel_m || var_world_pos.y > cell_mask_here.road_top);
 #endif
 	vec4 graded_debug = vec4(var_cell_delta, cell_mask_here.sdf, float(var_cell.y), float(var_cell.x));
+	// The material class paints the site paving, with the yards' texture and lighting. The base
+	// variant (PlaneMesh patches and base cells) has no material class and draws no paving.
+	bool asphalt = cell_mask_here.class_id == 1;
+	float paving_class = float(cell_mask_here.class_id > 0 && terrain_visual_debug_mode == 0
+		&& terrain_grass_visual_debug_mode == 0);
+	// A quad on a material edge (grass, asphalt, concrete) runs the grass block and both paving
+	// reads in all four lanes (quad_mixed, above); each lane then keeps its own material.
+	bool material_edge = quad_mixed(paving_class * (asphalt ? 1.0 : 2.0)) > 0.0;
 #else
 	// Base cells name their lattice code (PlaneMesh patches -1) and no slot.
 	vec4 graded_debug = vec4(0.0, 1e30, float(var_cell.y), -1.0);
@@ -695,42 +723,8 @@ void fragment() {
 	} else {
 	var_cloud_sun = weather_cloud_sun(var_world_pos);
 #ifdef TERRAIN_GRADED
-	// The material class paints the site paving, with the yards' texture and lighting. The base
-	// variant (PlaneMesh patches and base cells) has no material class and draws no paving.
-	bool asphalt = cell_mask_here.class_id == 1;
-	paved_surface = float(cell_mask_here.class_id > 0 && terrain_visual_debug_mode == 0
-		&& terrain_grass_visual_debug_mode == 0);
-	if (paved_surface > 0.5) {
-		// Graded frontage is paving: use the same texture, normal basis and lighting as yards.
-		IRRADIANCE = vec4(0.0);
-		RADIANCE = vec4(0.0);
-		TANGENT = paving_tangent(NORMAL, VIEW_MATRIX);
-		BINORMAL = normalize(cross(TANGENT, NORMAL));
-
-		PavingSample paving;
-		if (asphalt) {
-			paving = sample_paving(
-				site_asphalt_albedo_tex, site_asphalt_normal_tex, site_asphalt_roughness_tex,
-				var_world_pos.xz, site_asphalt_uv_scale, site_asphalt_macro_uv_scale,
-				site_asphalt_macro_influence, site_asphalt_brightness,
-				site_asphalt_albedo_floor, site_asphalt_floor_influence
-			);
-		} else {
-			paving = sample_paving(
-				site_concrete_albedo_tex, site_concrete_normal_tex, site_concrete_roughness_tex,
-				var_world_pos.xz, site_concrete_uv_scale, site_concrete_macro_uv_scale,
-				site_concrete_macro_influence, site_concrete_brightness,
-				site_concrete_albedo_floor, site_concrete_floor_influence
-			);
-		}
-		float paving_wet = weather_wetness((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y);
-		weather_wet_surface(paving_wet, 0.9, paving.albedo, paving.roughness);
-		ALBEDO = paving.albedo;
-		NORMAL_MAP = paving.normal_map;
-		ROUGHNESS = paving.roughness;
-		METALLIC = 0.0;
-		SPECULAR = PAVING_SPECULAR;
-	} else
+	paved_surface = paving_class;
+	if (paved_surface < 0.5 || material_edge)
 #else
 	paved_surface = 0.0;
 #endif
@@ -877,6 +871,9 @@ void fragment() {
 			// of the ground from above hides most of it. O(1): one pow, on a fetch already made.
 			float far_ramp = smoothstep(canopy_far_begin_m, canopy_far_end_m, var_view_distance_m);
 			float crowns_seen = 0.0;
+			// Taken before the ramp's branch: a quad on the ramp's start has lanes outside it.
+			vec2 across = dFdx(var_world_pos.xz);
+			vec2 along = dFdy(var_world_pos.xz);
 			if (far_ramp > 0.0) {
 				vec3 to_camera = CAMERA_POSITION_WORLD - var_world_pos;
 				float cot_elevation = length(to_camera.xz) / max(to_camera.y, 0.001);
@@ -891,8 +888,6 @@ void fragment() {
 				// of their count, which keeps one tap's variance and zero mean. At most eight taps,
 				// and only past canopy_far_begin_m.
 				vec2 xz = var_world_pos.xz;
-				vec2 across = dFdx(xz);
-				vec2 along = dFdy(xz);
 				vec2 axis = dot(across, across) > dot(along, along) ? across : along;
 				float taps = clamp(ceil(length(axis) / CANOPY_FAR_SPECKLE_CELL_M), 1.0, 8.0);
 				float speckle = 0.0;
@@ -928,11 +923,15 @@ void fragment() {
 					coal_pit_mask = texture(coal_pit_texture, coal_pit_uv).r;
 				}
 			}
-			if (coal_pit_mask > 0.001) {
+			// Read in every lane of a quad on the pit's edge (quad_mixed), drawn where the pit is.
+			bool coal_here = coal_pit_mask > 0.001;
+			if (coal_here || quad_mixed(float(coal_here)) > 0.0) {
 				vec3 coal_albedo = texture(terrain_coal_albedo, var_world_pos.xz * terrain_coal_detail_scale).rgb;
 				coal_albedo = mix(coal_albedo, max(coal_albedo, terrain_coal_lift_color), terrain_coal_lift_strength);
 				coal_albedo = mix(coal_albedo, coal_albedo * vec3(0.82, 0.80, 0.76), macro_mask * 0.18);
-				color = mix(color, coal_albedo, coal_pit_mask * terrain_coal_pit_strength);
+				if (coal_here) {
+					color = mix(color, coal_albedo, coal_pit_mask * terrain_coal_pit_strength);
+				}
 			}
 			float field_mask = 0.0;
 			if (field_overlay_world_bounds.z > 0.001 && field_overlay_world_bounds.w > 0.001) {
@@ -946,9 +945,13 @@ void fragment() {
 					field_mask = texture(field_overlay_texture, field_uv).r;
 				}
 			}
-			if (field_mask > 0.001) {
+			// Read in every lane of a quad on the field's edge, drawn where the field is.
+			bool field_here = field_mask > 0.001;
+			if (field_here || quad_mixed(float(field_here)) > 0.0) {
 				vec3 grain_albedo = terrain_grain_field_color(var_world_pos.xz);
-				color = mix(color, grain_albedo, field_mask * terrain_field_strength);
+				if (field_here) {
+					color = mix(color, grain_albedo, field_mask * terrain_field_strength);
+				}
 			}
 			// Wind waves rolling over the grass and grain; the forest floor is sheltered and the
 			// coal pit bare.
@@ -1027,6 +1030,45 @@ void fragment() {
 			SPECULAR = 0.08;
 		}
 	}
+#ifdef TERRAIN_GRADED
+	// After the grass block, so no paving value is held across it.
+	PavingSample paving;
+	if ((paved_surface > 0.5 && asphalt) || material_edge) {
+		paving = sample_paving(
+			site_asphalt_albedo_tex, site_asphalt_normal_tex, site_asphalt_roughness_tex,
+			var_world_pos.xz, site_asphalt_uv_scale, site_asphalt_macro_uv_scale,
+			site_asphalt_macro_influence, site_asphalt_brightness,
+			site_asphalt_albedo_floor, site_asphalt_floor_influence
+		);
+	}
+	if ((paved_surface > 0.5 && !asphalt) || material_edge) {
+		PavingSample concrete = sample_paving(
+			site_concrete_albedo_tex, site_concrete_normal_tex, site_concrete_roughness_tex,
+			var_world_pos.xz, site_concrete_uv_scale, site_concrete_macro_uv_scale,
+			site_concrete_macro_influence, site_concrete_brightness,
+			site_concrete_albedo_floor, site_concrete_floor_influence
+		);
+		if (!asphalt) {
+			paving = concrete;
+		}
+	}
+	if (paved_surface > 0.5) {
+		// Graded frontage is paving: use the same texture, normal basis and lighting as yards.
+		// On a material edge the grass block ran too: every output it wrote is set again here.
+		float paving_wet = weather_wetness((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y);
+		weather_wet_surface(paving_wet, 0.9, paving.albedo, paving.roughness);
+		IRRADIANCE = vec4(0.0);
+		RADIANCE = vec4(0.0);
+		EMISSION = vec3(0.0);
+		TANGENT = paving_tangent(NORMAL, VIEW_MATRIX);
+		BINORMAL = normalize(cross(TANGENT, NORMAL));
+		ALBEDO = paving.albedo;
+		NORMAL_MAP = paving.normal_map;
+		ROUGHNESS = paving.roughness;
+		METALLIC = 0.0;
+		SPECULAR = PAVING_SPECULAR;
+	}
+#endif
 	}
 	if (zoning_mask_enabled && terrain_visual_debug_mode == 0 && !WATER_REFLECTION_UNDERSIDE) {
 		apply_zoning_ground(var_world_pos, CAMERA_POSITION_WORLD, ALBEDO, EMISSION);
@@ -1044,6 +1086,11 @@ void fragment() {
 			vec3(0.5, 0.5, 1.0), 1.0, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 #endif
 	}
+#ifdef TERRAIN_GRADED
+	if (cut) {
+		discard;
+	}
+#endif
 }
 
 void light() {
