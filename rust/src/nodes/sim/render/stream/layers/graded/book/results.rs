@@ -31,13 +31,21 @@ use std::collections::VecDeque;
 const POLL_BATCH: usize = 4;
 
 // `take_result_counts`: results deferred, tiles that waited for their sets' variant, evictions
-// and same-level uploads the book applied (drained by the read), then the longest poll (us).
+// and same-level uploads the book applied, then the longest poll (us, kept), then the perf
+// channel's split: nanoseconds in the polls, the tiles' checks and placing, their effects (the
+// uploads and cells), the renderer's callbacks, and the tiles taken. All but the longest poll
+// are drained by the read.
 const DEFERRED: usize = 0;
 const VARIANT_WAITS: usize = 1;
 const EVICTIONS: usize = 2;
 const SAME_LEVEL: usize = 3;
 const POLL_US_MAX: usize = 4;
-const COUNTS: usize = 5;
+const POLL_NS: usize = 5;
+const PLACE_NS: usize = 6;
+const EFFECTS_NS: usize = 7;
+const CALLBACK_NS: usize = 8;
+const TILES: usize = 9;
+const COUNTS: usize = 10;
 
 /// A bake's bytes: shared with a polled dictionary, or moved out of the simulation's result.
 pub(crate) enum Bytes {
@@ -347,10 +355,25 @@ impl Run {
     }
 
     fn effects(&mut self) {
+        let start = std::time::Instant::now();
         let renderer = self.book.bind_mut().apply_own_effects();
         if renderer {
             self.renderer.call("_apply_effects", &[]);
         }
+        self.add(EFFECTS_NS, start);
+    }
+
+    // Adds the time since `start` to the split's `slot`.
+    fn add(&mut self, slot: usize, start: std::time::Instant) {
+        self.book.bind_mut().taken.counts[slot] += start.elapsed().as_nanos() as i64;
+    }
+
+    // Calls the renderer's `method`, timed as a callback.
+    fn call(&mut self, method: &str, args: &[Variant]) -> Variant {
+        let start = std::time::Instant::now();
+        let out = self.renderer.call(method, args);
+        self.add(CALLBACK_NS, start);
+        out
     }
 
     fn take(&mut self, item: Polled) {
@@ -361,7 +384,7 @@ impl Run {
                 self.book.bind_mut().failed_tile(tile, i64::from(code), i64::from(step), token, true);
             }
             Polled::Other(kind, dict) => {
-                self.renderer.call("_take_polled", &[kind.to_variant(), dict.to_variant()]);
+                self.call("_take_polled", &[kind.to_variant(), dict.to_variant()]);
             }
         }
     }
@@ -369,8 +392,10 @@ impl Run {
     // `_install`: a result of the tile's current request installs, waits for its sets' variant
     // or, the edit batch's, stages for it; any other is stale and dropped. O(1) + its placing.
     fn install(&mut self, mut baked: Baked) {
+        let start = std::time::Instant::now();
         let mut guard = self.book.bind_mut();
         let book = &mut *guard;
+        book.taken.counts[TILES] += 1;
         if book.taken.behind {
             baked.behind = true;
         }
@@ -390,7 +415,7 @@ impl Run {
             let dict = baked.to_dict();
             book.taken.recycle(baked);
             drop(guard);
-            self.renderer.call("_stage_edit", &[dict.to_variant()]);
+            self.call("_stage_edit", &[dict.to_variant()]);
             return;
         }
         // A later result of the tile supersedes one that waited (an older level's or token's).
@@ -406,6 +431,7 @@ impl Run {
         }
         book.requested_erase(tile, code, step, token);
         book.upload_baked(baked);
+        book.taken.counts[PLACE_NS] += start.elapsed().as_nanos() as i64;
         drop(guard);
         self.effects();
     }
@@ -445,6 +471,7 @@ impl Run {
         book.taken.tiles_pending = pending;
         let counts = &mut book.taken.counts;
         counts[POLL_US_MAX] = counts[POLL_US_MAX].max(start.elapsed().as_micros() as i64);
+        counts[POLL_NS] += start.elapsed().as_nanos() as i64;
         tiles
     }
 
@@ -553,12 +580,15 @@ impl GradedTileBook {
     }
 
     /// The result path's counts since the last read: results deferred, tiles that waited for
-    /// their sets' variant, evictions and same-level uploads it applied; then the longest poll
-    /// in microseconds (kept).
+    /// their sets' variant, evictions and same-level uploads it applied; the longest poll in
+    /// microseconds (kept); then nanoseconds in the polls, in the tiles' checks and placing, in
+    /// their effects (uploads, cells, the renderer's `_apply_effects`), in the other callbacks,
+    /// and the tiles taken.
     #[func]
     pub fn take_result_counts(&mut self) -> PackedInt64Array {
         let counts = PackedInt64Array::from(self.taken.counts.as_slice());
         self.taken.counts[..POLL_US_MAX].fill(0);
+        self.taken.counts[POLL_US_MAX + 1..].fill(0);
         counts
     }
 

@@ -293,6 +293,9 @@ var counters := {
 	"unready_in_view_max": 0,
 }
 # Per-frame accumulators of the parts the edit frame reports.
+# The book's result path this frame (take_result_counts): nanoseconds in its polls, the tiles'
+# checks and placing, their effects, the other callbacks, and the tiles taken.
+var _frame_results := PackedInt64Array([0, 0, 0, 0, 0])
 var _frame_lists := 0
 var _frame_lists_same := 0
 var _frame_relevelled := 0
@@ -548,6 +551,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	_frame_considered = 0
 	_frame_handed = 0
 	_book.reset_frame_counters()
+	_frame_results.fill(0)
 	var uploads_before := int(counters["uploads"])
 	# A camera move re-levels the tiles due first, so the tiles this frame adds take the camera's
 	# position too. O(tiles due + buckets passed).
@@ -613,6 +617,10 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 			"lists": _frame_lists, "lists_unchanged": _frame_lists_same,
 			"uploads": int(counters["uploads"]) - uploads_before,
 			"wanted": wanted_count(), "installed": _book.entry_count(false),
+			# poll_ms's parts in the book (`RENDER-32-K` part 3).
+			"result_poll_ms": float(_frame_results[0]) / 1e6, "result_place_ms": float(_frame_results[1]) / 1e6,
+			"result_effects_ms": float(_frame_results[2]) / 1e6, "result_callback_ms": float(_frame_results[3]) / 1e6,
+			"result_tiles": _frame_results[4],
 		}
 		if perf:
 			counters["frame_parts"] = parts
@@ -805,6 +813,8 @@ func _results_taken() -> void:
 	counters["evictions"] += taken[2]
 	counters["same_level_uploads"] += taken[3]
 	counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(taken[4]) / 1000.0)
+	for index in _frame_results.size():
+		_frame_results[index] += taken[5 + index]
 	_sync_cell_counters()
 	counters["uploads"] = _book.uploads()
 	counters["upload_bytes"] = _book.upload_bytes()
