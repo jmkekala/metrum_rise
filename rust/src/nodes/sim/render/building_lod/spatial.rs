@@ -21,6 +21,11 @@ use std::ops::Range;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+/// Chunks kept with their instances after they leave the query, so a turn that brings them back
+/// does not gather their buildings again (`RENDER-34`): about a ring of 512 m chunks around the
+/// rule's view-shaped query.
+const RETAINED: usize = 64;
+
 /// Real-time length of the rise that presents an in-place level change. Presentation only:
 /// the simulation swapped the asset instantly and keeps running underneath.
 const LEVEL_CHANGE_RISE: Duration = Duration::from_millis(2500);
@@ -209,6 +214,8 @@ pub(crate) struct SpatialBatches {
     // Whether the previous frame animated, so the frame after the last rise settles it.
     level_change_animating: bool,
     travel: Travel,
+    // Chunks that left the query, at most RETAINED of them (`RENDER-34`).
+    retained: HashMap<(i32, i32), Resident>,
 }
 
 impl SpatialBatches {
@@ -305,6 +312,7 @@ impl SpatialBatches {
             }
         }
         self.chunks.clear();
+        self.retained.clear();
         self.ordered_chunks.clear();
         self.last_revision = None;
         self.last_view = None;
@@ -377,20 +385,37 @@ impl SpatialBatches {
                 for batch in &chunk.batches.batches {
                     self.removed.push(((x, z), batch.key));
                 }
+                // Kept with its instances, so coming back costs no gathering (`RENDER-34`).
+                self.retained.insert((x, z), chunk);
             }
         }
         self.ordered_chunks.clear();
+        // A retained chunk's instances are current while the revision holds and nothing about
+        // it animates; it then comes back as a new chunk would, without history.
+        let reusable = |chunk: &Resident| {
+            chunk.revision == Some(revision) && !chunk.construction && !fresh && !animating
+        };
         for x in bounds[0]..=bounds[2] {
             for z in bounds[1]..=bounds[3] {
                 self.queried_chunks += 1;
                 if allocator.building_chunks.contains_key(&(x, z))
                     || self.chunks.contains_key(&(x, z))
                 {
-                    self.chunks.entry((x, z)).or_default();
+                    if !self.chunks.contains_key(&(x, z)) {
+                        let chunk = match self.retained.remove(&(x, z)) {
+                            Some(mut chunk) if reusable(&chunk) => {
+                                chunk.batches.reenter();
+                                chunk
+                            }
+                            _ => Resident::default(),
+                        };
+                        self.chunks.insert((x, z), chunk);
+                    }
                     self.ordered_chunks.push((x, z));
                 }
             }
         }
+        self.evict_retained(bounds);
         let parts = &self.parts;
         let catalog = &self.catalog;
         let assets = &self.assets;
@@ -508,7 +533,7 @@ impl SpatialBatches {
                             .synchronize(&chunk.instances, parts, reset_history);
                         chunk.revision = Some(revision);
                     }
-                    if changed || camera_changed {
+                    if changed || camera_changed || chunk.batches.needs_update() {
                         chunk
                             .batches
                             .update_due(parts, view, quality_changed, &motion);
@@ -548,6 +573,28 @@ impl SpatialBatches {
                     }
                 })
         })
+    }
+
+    // Over RETAINED, the retained chunks farthest from the query's centre go (ties by key).
+    // O(retained) per chunk evicted; a turn evicts about one a frame.
+    fn evict_retained(&mut self, bounds: [i32; 4]) {
+        let centre = [
+            i64::from(bounds[0]) + i64::from(bounds[2]),
+            i64::from(bounds[1]) + i64::from(bounds[3]),
+        ];
+        while self.retained.len() > RETAINED {
+            let farthest = self
+                .retained
+                .keys()
+                .map(|&(x, z)| {
+                    let (dx, dz) = (2 * i64::from(x) - centre[0], 2 * i64::from(z) - centre[1]);
+                    (dx * dx + dz * dz, (x, z))
+                })
+                .max()
+                .map(|(_, key)| key)
+                .expect("a retained chunk");
+            self.retained.remove(&farthest);
+        }
     }
 
     /// Acknowledge only after a complete coherent frame has been copied to the Godot bridge.

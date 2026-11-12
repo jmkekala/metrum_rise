@@ -392,3 +392,42 @@ fn a_still_view_evaluates_nothing_and_a_pan_a_fraction() {
     chunk.update_due(&parts, view, false, &travel.advance(Some(pose), view));
     assert!(chunk.evaluations < 100, "a 4 m pan evaluates a few parts: {}", chunk.evaluations);
 }
+
+#[test]
+fn a_chunk_coming_back_equals_a_new_one_and_publishes_every_batch() {
+    let parts = [Part::new([-Vec3::splat(8.0), Vec3::splat(8.0)], &[true; 5]).unwrap()];
+    let instances: Vec<Instance> = (0..300)
+        .map(|i| instance(i, 0, (i as f32 - 150.0) * 6.0))
+        .collect();
+    let size = Vec2::new(1920.0, 1080.0);
+    let mut kept = Chunk::default();
+    let mut travel = spatial::Travel::default();
+    kept.synchronize(&instances, &parts, true);
+    // History from a walk, then the chunk leaves and the camera moves on.
+    for step in 0..40 {
+        let (view, pose) = orbit(Vec3::new(step as f32 * 9.0, 0.0, 0.0), 0.2, 0.1, 300.0, size);
+        kept.update_due(&parts, view, false, &travel.advance(Some(pose), view));
+        kept.acknowledge();
+    }
+    let (view, pose) = orbit(Vec3::new(-200.0, 0.0, 40.0), 1.1, 0.3, 500.0, size);
+    let motion = travel.advance(Some(pose), view);
+    kept.reenter();
+    assert!(kept.needs_update());
+    kept.update_due(&parts, view, false, &motion);
+    let mut fresh = Chunk::default();
+    fresh.synchronize(&instances, &parts, true);
+    fresh.update_due(&parts, view, false, &motion);
+    assert_eq!(selections(&kept), selections(&fresh), "no history survives the chunk leaving");
+    let published = |chunk: &Chunk| {
+        let mut groups: Vec<_> = chunk
+            .batches
+            .iter()
+            .filter(|batch| batch.changed && batch.count > 0)
+            .map(|batch| (batch.key, chunk.transforms(batch).to_vec()))
+            .collect();
+        groups.sort_by_key(|group| group.0);
+        groups
+    };
+    assert_eq!(published(&kept), published(&fresh), "every non-empty batch is published again");
+    assert!(!kept.needs_update());
+}

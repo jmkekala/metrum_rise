@@ -184,6 +184,7 @@ impl SimulationNode {
         shadow_to_light: Vector3,
         shadow_distance: f32,
     ) -> VarDictionary {
+        let start = std::time::Instant::now();
         let mut result = VarDictionary::new();
         result.set("busy", true);
         let shared = Arc::clone(&self.core);
@@ -232,6 +233,7 @@ impl SimulationNode {
         } else {
             [0, 0, -1, -1]
         };
+        let update_start = std::time::Instant::now();
         let changed = lods.update(
             &core.allocator,
             bounds,
@@ -240,8 +242,12 @@ impl SimulationNode {
             core.construction_clock_slots(),
             std::time::Instant::now(),
         );
+        let update_us = update_start.elapsed().as_secs_f64() * 1e6;
         drop(core);
         result.set("busy", false);
+        // Microseconds: the frame before the tier update (lock, site queries, bounds), the update.
+        result.set("prepare_us", (update_start - start).as_secs_f64() * 1e6);
+        result.set("update_us", update_us);
         result.set("evaluated_parts", self.building_lods.evaluated_parts as i64);
         result.set("queried_chunks", self.building_lods.queried_chunks as i64);
         if !changed && self.building_lods.removed.is_empty() {
@@ -254,7 +260,9 @@ impl SimulationNode {
         }
         let missing = self.missing_building_looks();
         if missing.is_empty() {
+            let publish_start = std::time::Instant::now();
             result.set("uploaded_bytes", self.publish_building_lods());
+            result.set("publish_us", publish_start.elapsed().as_secs_f64() * 1e6);
         } else {
             result.set("missing", missing);
         }

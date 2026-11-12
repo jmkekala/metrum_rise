@@ -136,8 +136,10 @@ impl Motion {
     };
 }
 
-// Parts evaluated together on one worker.
+// Parts evaluated together on one worker, and the due parts below which a chunk evaluates on its
+// own worker.
 const BLOCK: usize = 256;
+const PARALLEL_MIN: usize = 1024;
 
 struct Entry {
     instance: Instance,
@@ -147,8 +149,6 @@ struct Entry {
     // The LOD0 box's centre in the world and a bound on the distance between two of its corners.
     center: Vec3,
     reach: f32,
-    // The travel and the turn at which the part is next evaluated.
-    due: [f64; 2],
 }
 
 /// Slice into a chunk's packed transform/custom-data buffer.
@@ -175,10 +175,15 @@ pub(crate) struct Chunk {
     scratch: Vec<[f32; 16]>,
     /// Parts evaluated since the last acknowledgement.
     pub evaluations: usize,
-    // The least threshold of the chunk's parts, and whether its instances changed since the
-    // last update (every part then evaluated and the chunk re-packed).
+    // The travel and the turn at which each part is next evaluated, beside the entries so the
+    // checks of a moving frame read 16 bytes a part.
+    due: Vec<[f64; 2]>,
+    // The least threshold of the chunk's parts; whether its instances changed since the last
+    // update (every part then evaluated and the chunk re-packed); whether every non-empty batch
+    // is published again at the next re-pack (the chunk came back into the query).
     due_min: [f64; 2],
     resync: bool,
+    republish: bool,
 }
 
 impl Chunk {
@@ -250,9 +255,10 @@ impl Chunk {
                 selected: 0,
                 center,
                 reach,
-                due: [f64::NEG_INFINITY; 2],
             }
         }));
+        self.due.clear();
+        self.due.resize(instances.len(), [f64::NEG_INFINITY; 2]);
         self.packed.resize(instances.len(), [0.0; 16]);
         self.scratch.resize(instances.len(), [0.0; 16]);
         // Old ranges no longer refer to the same layout after a topology change.
@@ -286,28 +292,39 @@ impl Chunk {
             self.evaluations = 0;
             return;
         }
-        let (evaluations, moved, due_min) = self
-            .entries
-            .par_chunks_mut(BLOCK)
-            .map(|block| {
-                let mut evaluations = 0;
-                let mut moved = false;
-                let mut due_min = [f64::INFINITY; 2];
-                for entry in block {
-                    if all || motion.travel >= entry.due[0] || motion.turn >= entry.due[1] {
-                        let before = entry.selected;
-                        evaluate(entry, parts, view, reset_history, motion);
-                        evaluations += 1;
-                        moved |= entry.selected != before;
-                    }
-                    due_min = [due_min[0].min(entry.due[0]), due_min[1].min(entry.due[1])];
+        let is_due = |due: &[f64; 2]| all || motion.travel >= due[0] || motion.turn >= due[1];
+        let pass = |entries: &mut [Entry], dues: &mut [[f64; 2]]| {
+            let mut evaluations = 0;
+            let mut moved = false;
+            let mut due_min = [f64::INFINITY; 2];
+            for (entry, due) in entries.iter_mut().zip(dues) {
+                if is_due(due) {
+                    let before = entry.selected;
+                    *due = evaluate(entry, parts, view, reset_history, motion);
+                    evaluations += 1;
+                    moved |= entry.selected != before;
                 }
-                (evaluations, moved, due_min)
-            })
-            .reduce(
-                || (0, false, [f64::INFINITY; 2]),
-                |a, b| (a.0 + b.0, a.1 | b.1, [a.2[0].min(b.2[0]), a.2[1].min(b.2[1])]),
-            );
+                due_min = [due_min[0].min(due[0]), due_min[1].min(due[1])];
+            }
+            (evaluations, moved, due_min)
+        };
+        let count = if all {
+            self.due.len()
+        } else {
+            self.due.iter().filter(|due| is_due(due)).count()
+        };
+        let (evaluations, moved, due_min) = if count < PARALLEL_MIN {
+            pass(&mut self.entries, &mut self.due)
+        } else {
+            self.entries
+                .par_chunks_mut(BLOCK)
+                .zip(self.due.par_chunks_mut(BLOCK))
+                .map(|(entries, dues)| pass(entries, dues))
+                .reduce(
+                    || (0, false, [f64::INFINITY; 2]),
+                    |a, b| (a.0 + b.0, a.1 | b.1, [a.2[0].min(b.2[0]), a.2[1].min(b.2[1])]),
+                )
+        };
         self.evaluations = evaluations;
         self.due_min = due_min;
         // Unmoved tiers of unchanged instances pack to the same bytes, so only a move or a
@@ -316,6 +333,23 @@ impl Chunk {
             self.pack();
         }
         self.resync = false;
+        self.republish = false;
+    }
+
+    /// The chunk comes back into the query with the instances it left with: its parts are
+    /// evaluated without history, as a new chunk's are, and its non-empty batches are published
+    /// again at the next update. O(parts).
+    pub fn reenter(&mut self) {
+        for entry in &mut self.entries {
+            entry.previous = None;
+        }
+        self.resync = true;
+        self.republish = true;
+    }
+
+    /// Whether the next update evaluates every part (instances changed or the chunk came back).
+    pub fn needs_update(&self) -> bool {
+        self.resync
     }
 
     // Counting scatter of every entry into its selected group, flagging the groups whose
@@ -341,7 +375,8 @@ impl Chunk {
             batch.next_count += 1;
         }
         for batch in &mut self.batches {
-            batch.changed |= batch.count != batch.next_count
+            batch.changed |= self.republish && batch.next_count != 0
+                || batch.count != batch.next_count
                 || self.packed[batch.offset..batch.offset + batch.count]
                     != self.scratch[batch.next_offset..batch.next_offset + batch.next_count];
             batch.offset = batch.next_offset;
@@ -390,8 +425,14 @@ impl Chunk {
     }
 }
 
-// The per-frame rule for one part, then its thresholds.
-fn evaluate(entry: &mut Entry, parts: &[Part], view: View, reset_history: bool, motion: &Motion) {
+// The per-frame rule for one part; returns its thresholds.
+fn evaluate(
+    entry: &mut Entry,
+    parts: &[Part],
+    view: View,
+    reset_history: bool,
+    motion: &Motion,
+) -> [f64; 2] {
     let part = &parts[entry.instance.part];
     let pixels = projected_size_pixels(
         part.bounds[0],
@@ -411,7 +452,7 @@ fn evaluate(entry: &mut Entry, parts: &[Part], view: View, reset_history: bool, 
     // fallback geometry must not change the policy or trigger import retries.
     entry.previous = Some(requested);
     entry.selected = entry.group + part.fallback[requested];
-    entry.due = if !motion.bounded {
+    if !motion.bounded {
         [f64::NEG_INFINITY; 2]
     } else if tiers <= 1 {
         // One tier: every size selects it.
@@ -425,7 +466,7 @@ fn evaluate(entry: &mut Entry, parts: &[Part], view: View, reset_history: bool, 
             motion.travel + distance * 0.5,
             motion.turn + distance / (2.0 * rho + distance),
         ]
-    };
+    }
 }
 
 // What the rounding of the boundaries, the size and the bound's own arithmetic are allowed:
