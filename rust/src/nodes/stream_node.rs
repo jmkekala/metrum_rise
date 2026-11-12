@@ -6,16 +6,23 @@
 //! once in its `_process` and again just before the frame draws (`frame_pre_draw`), so a product
 //! that landed meanwhile still draws this frame.
 //!
-//! Vegetation is its first layer: `vegetation.gd` registers its meshes and materials by RID,
-//! requests patches from the `SimulationNode`'s jobs, and shows, hides and frees installed
-//! patches here by key; no node is created per patch. Every `RenderingServer` call of the layer
-//! goes through [`GodotBackend`] on the main thread.
+//! Vegetation is its first layer: `vegetation.gd` registers its meshes and materials by RID and
+//! its settings; `terrain.gd` pushes its resident patches and surface commits. The vegetation's
+//! residency (`RENDER-32-F`) runs once a frame here, after `CameraNode` published the view: it
+//! requests patches from the `SimulationNode`'s jobs, and shows, hides and frees installed patches
+//! itself; no node is created per patch and no GDScript runs per patch. Every `RenderingServer`
+//! call of the layer goes through [`GodotBackend`] on the main thread.
 
+use crate::nodes::camera_node::CameraNode;
 use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow};
+use crate::nodes::sim::render::stream::layers::vegetation::residency::{
+    PatchJobs, PatchOrder, ResidencySettings, Standing, VegetationResidency,
+};
 use crate::nodes::sim::render::stream::layers::vegetation::{
     Delivery, MATERIAL_COUNT, MESH_COUNT, PatchKey, SLOT_LIMIT, SPARE_LIMIT, VegetationLayer,
     VegetationRules,
 };
+use crate::nodes::sim::render::stream::view::CameraSample;
 use crate::nodes::sim::render::stream::schedule::{FrameBudget, MonotonicClock, STREAM_BUDGET_US};
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use crate::nodes::sim::render::vegetation_product::{Batch, VegetationProduct};
@@ -32,7 +39,9 @@ pub struct StreamNode {
     base: Base<Node>,
     backend: Option<GodotBackend>,
     vegetation: VegetationLayer,
+    residency: VegetationResidency,
     spawner: Option<Spawner>,
+    view: Option<CameraSample>,
     budget: FrameBudget,
     clock: MonotonicClock,
     // The perf channel: this frame's main-thread time and counters, recorded before the draw.
@@ -43,6 +52,7 @@ pub struct StreamNode {
     frame_refreshed: usize,
     frame_copy_us: f64,
     frame_pulled: usize,
+    frame_residency_us: f64,
 }
 
 #[godot_api]
@@ -52,7 +62,9 @@ impl INode for StreamNode {
             base,
             backend: None,
             vegetation: VegetationLayer::new(SLOT_LIMIT, SPARE_LIMIT),
+            residency: VegetationResidency::default(),
             spawner: None,
+            view: None,
             budget: FrameBudget::new(STREAM_BUDGET_US),
             clock: MonotonicClock::default(),
             perf: false,
@@ -62,6 +74,7 @@ impl INode for StreamNode {
             frame_refreshed: 0,
             frame_copy_us: 0.0,
             frame_pulled: 0,
+            frame_residency_us: 0.0,
         }
     }
 
@@ -86,7 +99,8 @@ impl INode for StreamNode {
         self.frame_refreshed = 0;
         self.frame_copy_us = 0.0;
         self.frame_pulled = 0;
-        self.run_pass();
+        self.frame_residency_us = 0.0;
+        self.run_pass(true);
     }
 }
 
@@ -95,7 +109,7 @@ impl StreamNode {
     /// The second pass of the frame, just before it draws; then the frame's perf record.
     #[func]
     fn pre_draw(&mut self) {
-        self.run_pass();
+        self.run_pass(false);
         if self.perf {
             self.record_perf();
         }
@@ -153,9 +167,11 @@ impl StreamNode {
         self.vegetation.redraw_reflections(backend);
     }
 
-    /// Shows or hides every vegetation patch (`vegetation.gd`'s `enabled`).
+    /// Shows or hides every vegetation patch (`vegetation.gd`'s `enabled`); a hidden layer's
+    /// residency does no work.
     #[func]
     pub fn set_vegetation_enabled(&mut self, enabled: bool) {
+        self.residency.set_enabled(enabled);
         if let Some(backend) = self.backend.as_mut() {
             self.vegetation.set_enabled(backend, enabled);
         }
@@ -176,28 +192,179 @@ impl StreamNode {
         self.vegetation.set_fresh_buffers(fresh);
     }
 
-    /// Drops a prepared product of `key` waiting for its install: call before a new request for
-    /// the key and with its cancel. `O(waiting)`.
+    /// Starts the vegetation over for a loaded world with `settings` (`vegetation.gd`'s
+    /// `rebuild_from_simulation_state`): density, canopy near, crossfade begin, canopy far, bush
+    /// range, rock range, subdivision (1-8), upload budget (0: the subdivision squared), the sun's
+    /// shadow range, world width and depth. Frees every patch and drops every request. Returns
+    /// false, changing nothing, when malformed or before the catalogue.
     #[func]
-    pub fn forget_vegetation_patch(&mut self, key: Vector3i) {
-        self.vegetation.forget(patch_key(key));
+    pub fn set_vegetation_settings(&mut self, settings: PackedFloat64Array) -> bool {
+        let Some(settings) = ResidencySettings::from_lanes(settings.as_slice()) else {
+            godot_error!("set_vegetation_settings: malformed settings");
+            return false;
+        };
+        let Some(backend) = self.backend.as_mut() else {
+            return false;
+        };
+        self.vegetation.set_subdivision(settings.subdivision);
+        let mut jobs = Jobs(self.spawner.as_mut());
+        self.residency
+            .reset(settings, &mut self.vegetation, backend, &mut jobs);
+        self.recycle_spent();
+        true
     }
 
-    /// Shows or hides an installed patch. `O(batches)`.
+    /// The terrain's render patch side, metres (`terrain.gd`'s `get_render_patch_span_m`; 0
+    /// before a world).
     #[func]
-    pub fn set_vegetation_patch_visible(&mut self, key: Vector3i, visible: bool) {
+    pub fn set_terrain_patch_span(&mut self, span: f64) {
+        self.residency.set_terrain_span(span);
+    }
+
+    /// A terrain patch became resident or left (`terrain.gd`). `O(1)`.
+    #[func]
+    pub fn set_terrain_patch_resident(&mut self, key: Vector2i, resident: bool) {
+        self.residency.set_resident([key.x, key.y], resident);
+    }
+
+    /// The terrain's residency revision moved (`terrain.gd`): the vegetation's tiers are evaluated
+    /// next frame, as they were when the script compared the revision.
+    #[func]
+    pub fn revise_terrain_residency(&mut self) {
+        self.residency.revise_residency();
+    }
+
+    /// Every terrain patch left (`terrain.gd` cleared its patches).
+    #[func]
+    pub fn clear_terrain_patches(&mut self) {
+        self.residency.clear_resident();
+    }
+
+    /// A terrain patch committed a payload of surface `generation` (-1: none left): the vegetation
+    /// patches it owns are checked for staleness. `O(1)`.
+    #[func]
+    pub fn set_terrain_surface_generation(&mut self, key: Vector2i, generation: i64) {
+        self.residency
+            .set_surface_generation([key.x, key.y], generation);
+    }
+
+    /// Whether the vegetation has work waiting: a first evaluation, a queued or requested patch.
+    #[func]
+    pub fn has_vegetation_pending_work(&self) -> bool {
+        self.residency.has_pending_work()
+    }
+
+    /// The vegetation's counts: `wanted`, `patches` (drawn), `standins`, `cached`, `queue`,
+    /// `requested`, `fine`, `coarse`, `trees`, `generated` (installs) and `generation_max_us`
+    /// (the longest install). `O(drawn patches)` (the fine count).
+    #[func]
+    pub fn get_vegetation_metrics(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        let names = [
+            "wanted",
+            "patches",
+            "standins",
+            "cached",
+            "queue",
+            "requested",
+            "fine",
+            "coarse",
+            "trees",
+            "generated",
+            "generation_max_us",
+        ];
+        for (name, value) in names.iter().zip(self.residency.counts()) {
+            out.set(*name, value);
+        }
+        out
+    }
+
+    /// The wanted vegetation patches (the benchmark's wanted-to-drawn). `O(wanted)`.
+    #[func]
+    pub fn get_vegetation_wanted(&self) -> Array<Vector3i> {
+        self.residency
+            .wanted()
+            .map(|[x, y, z]| Vector3i::new(x, y, z))
+            .collect()
+    }
+
+    /// Every vegetation record by key (tests, probes): `tree_count`, `surface_generation`,
+    /// `vegetation_generation`, `understory`, `near_band`, `shadow_caster`, `standing` (0 drawn,
+    /// 1 stand-in, 2 cached), `stale` and `queued`. `O(records)`.
+    #[func]
+    pub fn get_vegetation_records(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        for (key, record, standing) in self.residency.records() {
+            let mut entry = VarDictionary::new();
+            entry.set("tree_count", record.tree_count);
+            entry.set("surface_generation", record.surface);
+            entry.set("vegetation_generation", record.vegetation);
+            entry.set("understory", record.bands.understory);
+            entry.set("near_band", record.bands.near_band);
+            entry.set("shadow_caster", i64::from(record.bands.caster));
+            entry.set(
+                "standing",
+                match standing {
+                    Standing::Drawn => 0i64,
+                    Standing::StandIn => 1,
+                    Standing::Cached => 2,
+                },
+            );
+            entry.set("stale", self.residency.stale(key, &record));
+            entry.set("queued", self.residency.is_queued(key));
+            out.set(Vector3i::new(key[0], key[1], key[2]), entry);
+        }
+        out
+    }
+
+    /// The bands `key` takes from the viewport camera now, as `Vector3i(understory, near band,
+    /// shadow caster)` (1: yes; -1 each before the settings and the terrain span), with its
+    /// record's hysteresis (tests building a patch's product themselves).
+    #[func]
+    pub fn get_vegetation_bands(&mut self, key: Vector3i) -> Vector3i {
+        self.update_camera();
+        let camera = self.view.map(|view| [view.eye[0], view.eye[2]]);
+        self.residency
+            .bands_for(patch_key(key), camera)
+            .map_or(Vector3i::new(-1, -1, -1), |bands| {
+                Vector3i::new(
+                    i32::from(bands.understory),
+                    i32::from(bands.near_band),
+                    i32::from(bands.caster),
+                )
+            })
+    }
+
+    /// Queues `key` for a request check, as a band change or an edit would (tests).
+    #[func]
+    pub fn queue_vegetation_patch(&mut self, key: Vector3i) {
+        self.residency.queue(patch_key(key));
+    }
+
+    /// Takes a drawn patch out of the drawn set, hidden into the cache or freed (tests of the
+    /// restore path).
+    #[func]
+    pub fn retire_vegetation_patch(&mut self, key: Vector3i) {
         if let Some(backend) = self.backend.as_mut() {
-            self.vegetation
-                .set_visible(backend, patch_key(key), visible);
+            self.residency
+                .retire(patch_key(key), &mut self.vegetation, backend);
         }
     }
 
-    /// Frees an installed patch back to the pools. `O(batches)`.
+    /// The view the core measured from this frame (`CameraNode`'s, or the viewport camera's
+    /// position): `eye` and, from a `CameraNode`, `pivot`, `yaw`, `pitch`, `distance`. Empty
+    /// without a camera.
     #[func]
-    pub fn free_vegetation_patch(&mut self, key: Vector3i) {
-        if let Some(backend) = self.backend.as_mut() {
-            self.vegetation.free(backend, patch_key(key));
+    pub fn get_stream_view(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        if let Some(view) = self.view {
+            out.set("eye", Vector3::from_array(view.eye));
+            out.set("pivot", Vector3::from_array(view.pivot));
+            out.set("yaw", view.yaw);
+            out.set("pitch", view.pitch);
+            out.set("distance", view.distance);
         }
+        out
     }
 
     /// Frees every vegetation patch and drops what waits (the renderer's reset).
@@ -207,16 +374,6 @@ impl StreamNode {
             self.vegetation.clear(backend);
         }
         self.recycle_spent();
-    }
-
-    /// The vegetation installs since the last call, six lanes each: key x, y, z, the request's
-    /// serial, the plants drawn (-1: the core was busy, request the patch again) and the install's
-    /// microseconds.
-    #[func]
-    pub fn take_vegetation_installs(&mut self) -> PackedInt64Array {
-        let events = PackedInt64Array::from(self.vegetation.events());
-        self.vegetation.clear_events();
-        events
     }
 
     /// Hands over a product built by `build_vegetation_product` for the patch `key` at `origin`
@@ -259,6 +416,7 @@ impl StreamNode {
         let installs =
             self.vegetation
                 .install(backend, &mut budget, &self.clock, &|_, _| true, true);
+        self.residency.take_installs(&mut self.vegetation, backend);
         self.recycle_spent();
         installs as i64
     }
@@ -372,11 +530,19 @@ impl StreamNode {
 }
 
 impl StreamNode {
-    // One pass: pull, follow the camera, install within what is left of the frame's budget.
-    fn run_pass(&mut self) {
+    // One pass: the residency (the frame's first pass), pull, follow the camera, install within
+    // what is left of the frame's budget, take the installs.
+    fn run_pass(&mut self, residency: bool) {
         let start = std::time::Instant::now();
-        self.pull();
         self.update_camera();
+        if residency && let Some(backend) = self.backend.as_mut() {
+            let eye = self.view.map(|view| view.eye);
+            let mut jobs = Jobs(self.spawner.as_mut());
+            self.residency
+                .frame(eye, &mut self.vegetation, backend, &mut jobs);
+            self.frame_residency_us = start.elapsed().as_secs_f64() * 1e6;
+        }
+        self.pull();
         let in_view = self.frustum();
         let Some(backend) = self.backend.as_mut() else {
             return;
@@ -390,6 +556,7 @@ impl StreamNode {
         self.frame_installs +=
             self.vegetation
                 .install(backend, &mut self.budget, &self.clock, &test, false);
+        self.residency.take_installs(&mut self.vegetation, backend);
         self.frame_copy_us += backend.take_copy_us();
         self.recycle_spent();
         self.frame_us += start.elapsed().as_secs_f64() * 1e6;
@@ -433,13 +600,19 @@ impl StreamNode {
         }
     }
 
+    // The view: `CameraNode`'s, published as it moved; another camera's position (tests).
     fn update_camera(&mut self) {
-        let camera = self
+        self.view = self
             .base()
             .get_viewport()
             .and_then(|viewport| viewport.get_camera_3d())
-            .map(|camera| camera.get_global_position().to_array());
-        self.vegetation.set_camera(camera);
+            .map(|camera| match camera.try_cast::<CameraNode>() {
+                Ok(node) => node.bind().published_view().unwrap_or_else(|| {
+                    plain_view(node.get_global_position().to_array())
+                }),
+                Err(camera) => plain_view(camera.get_global_position().to_array()),
+            });
+        self.vegetation.set_camera(self.view.map(|view| view.eye));
     }
 
     // The camera's frustum planes, only while something waits for an install.
@@ -484,6 +657,23 @@ impl StreamNode {
         details.set("slots_live", status.slots_live as i64);
         details.set("slots_spare", status.slots_spare as i64);
         details.set("stream_ms", self.frame_us / 1000.0);
+        let work = self.residency.work();
+        details.set("residency_ms", self.frame_residency_us / 1000.0);
+        details.set("residency_changed", i64::from(work.evaluated));
+        details.set("ring_cells", work.ring_cells as i64);
+        details.set("band_checks", work.band_checks as i64);
+        details.set("band_buckets", work.buckets as i64);
+        details.set("stale_checks", work.stale_checks as i64);
+        details.set("cache_checks", work.cache_checks as i64);
+        details.set("requests", work.requests as i64);
+        details.set("uploads", work.installs as i64);
+        details.set("busy", work.busy as i64);
+        details.set("standins_released", work.released as i64);
+        let counts = self.residency.counts();
+        details.set("wanted", counts[0]);
+        details.set("patches", counts[1]);
+        details.set("queue", counts[4]);
+        details.set("requested", counts[5]);
         script.call(
             "record",
             &[
@@ -497,6 +687,42 @@ impl StreamNode {
 
 fn patch_key(key: Vector3i) -> PatchKey {
     [key.x, key.y, key.z]
+}
+
+// A camera other than `CameraNode` (tests): its position only.
+fn plain_view(eye: [f32; 3]) -> CameraSample {
+    CameraSample {
+        eye,
+        pivot: eye,
+        yaw: 0.0,
+        pitch: 0.0,
+        distance: 0.0,
+    }
+}
+
+// The vegetation's jobs, or none (a stream node without a simulation requests nothing).
+struct Jobs<'a>(Option<&'a mut Spawner>);
+
+impl PatchJobs for Jobs<'_> {
+    fn request(&mut self, order: &PatchOrder, settings: &ResidencySettings) -> Option<u64> {
+        self.0.as_mut()?.request(order, settings)
+    }
+
+    fn cancel(&mut self, key: PatchKey) {
+        if let Some(spawner) = self.0.as_mut() {
+            spawner.cancel(key);
+        }
+    }
+
+    fn clear(&mut self) {
+        if let Some(spawner) = self.0.as_mut() {
+            spawner.clear();
+        }
+    }
+
+    fn generations(&mut self, known: i64, table: &mut Vec<([i32; 2], i64)>) -> Option<i64> {
+        self.0.as_mut()?.generations(known, table)
+    }
 }
 
 fn godot_aabb(aabb: Aabb) -> godot::builtin::Aabb {

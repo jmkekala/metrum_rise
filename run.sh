@@ -534,7 +534,6 @@ godot_main_chain() {
         selection_gesture_test crosswalk_toggle_test road_lane_edit_test road_cross_section_test road_turn_arrows_test road_pocket_test road_roundabouts_test road_mixed_junction_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         stream_benchmark_report_test \
-        vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test day_cycle_test weather_menu_test camera_save_load_test camera_motion_test \
         zoning_road_tool_test zoning_cells_tool_test debug_console_test \

@@ -135,8 +135,8 @@ fn nowhere(_: [f32; 3], _: [f32; 3]) -> bool {
 fn check_one_version(layer: &VegetationLayer, backend: &Recorder) {
     let mut expected = BTreeSet::new();
     let mut reflected = BTreeSet::new();
-    for patch in layer.installed.values() {
-        if !(layer.enabled && patch.visible) {
+    for (key, patch) in &layer.installed {
+        if !(layer.enabled && layer.is_drawn(*key)) {
             continue;
         }
         for batch in &patch.batches {
@@ -283,7 +283,11 @@ fn a_scripted_sequence_draws_one_version_and_its_command_digest_is_pinned() {
     assert_eq!(digest, GOLDEN_DIGEST, "digest {digest:#018x}");
 }
 
-const GOLDEN_DIGEST: u64 = 0x3ca8_9537_c16b_ddd5;
+// `RENDER-32-F` re-pinned it: the camera refresh visits the patches due by travel instead of every
+// shown patch in map order, which sends the same commands in another order (V2a's digest
+// 0x3ca89537c16bddd5 is reproduced by refreshing every patch; the sorted commands and the final
+// recorder state of both are identical).
+const GOLDEN_DIGEST: u64 = 0x9f52_348f_b634_1b93;
 
 #[test]
 fn installs_take_class_then_distance_then_key_order_within_the_budget() {

@@ -10,6 +10,22 @@
 use crate::simulation::terrain::graded::{TILE_M, TileKey};
 use godot::prelude::Vector3;
 
+/// The orbit camera as `CameraNode` publishes it after each move (`RENDER-32-F`): the eye in
+/// Godot's single precision, exactly the node's global position, and the orbit it comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CameraSample {
+    /// The camera's position.
+    pub(crate) eye: [f32; 3],
+    /// The point it orbits and looks at.
+    pub(crate) pivot: [f32; 3],
+    /// Rotation about the vertical, radians.
+    pub(crate) yaw: f32,
+    /// Rotation about the horizontal, radians.
+    pub(crate) pitch: f32,
+    /// Distance from the pivot, metres.
+    pub(crate) distance: f32,
+}
+
 /// A camera and the distance it travelled since it was first set.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct StreamView {

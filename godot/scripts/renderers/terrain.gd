@@ -116,6 +116,9 @@ const FIELD_OVERLAY_FALLBACK_COLOR := Color(0.86, 0.70, 0.34, 1.0)
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var water_node = $"../Water"
+# The streaming core (`RENDER-32-F`): the vegetation's residency in Rust is told of every resident
+# patch, residency revision and surface commit as it happens, instead of asking each frame.
+@onready var _stream: Node = get_node_or_null("../StreamNode")
 
 var overlay_mode: int = 0
 ## Graded terrain tiles drawn as cells over the plain base-terrain patches.
@@ -269,6 +272,8 @@ func rebuild_from_simulation_state() -> void:
 	_rebuild_mask_pages(int(patch_layout.get("patch_border_texels", 0)))
 	terrain_cell_m = float(patch_layout.get("terrain_cell_m", 1.0))
 	patch_span_m = terrain_cell_m * float(patch_interval_cells)
+	if _stream != null:
+		_stream.set_terrain_patch_span(patch_span_m)
 	_terrain_debug_verbose = MetrumDebug.startup_mode("terrain_verbose")
 	_read_residency_debug_modes()
 	_terrain_mesh_lod_refresh_elapsed_s = 0.0
@@ -556,6 +561,21 @@ func get_resident_patch_keys() -> Array[Vector2i]:
 
 func get_resident_patch_revision() -> int:
 	return _terrain_resident_patch_revision
+
+# The residency revision moves; the streaming core evaluates the vegetation's tiers next frame.
+func _revise_residency() -> void:
+	_terrain_resident_patch_revision += 1
+	if _stream != null:
+		_stream.revise_terrain_residency()
+
+func _push_resident(key: Vector2i, resident: bool) -> void:
+	if _stream != null:
+		_stream.set_terrain_patch_resident(key, resident)
+
+# The generation the patch's payload now carries (get_patch_surface_generation), -1 once gone.
+func _push_surface_generation(key: Vector2i) -> void:
+	if _stream != null:
+		_stream.set_terrain_surface_generation(key, get_patch_surface_generation(key))
 
 func get_pending_render_work_counts() -> Dictionary:
 	return {
@@ -869,7 +889,7 @@ func _sync_patch_residency(
 	_terrain_residency_target_bounds = resident_target_bounds.duplicate()
 	_terrain_residency_target_bounds_valid = true
 	if changed:
-		_terrain_resident_patch_revision += 1
+		_revise_residency()
 		_terrain_debug_residency_changes += 1
 		_rebuild_patch_prewarm_queue()
 		if _terrain_debug_verbose:
@@ -1152,6 +1172,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"last_patch_data": patch_data,
 	}
 	_surface_commit_revision += 1
+	_push_surface_generation(key)
 
 	patches[key]["land_cover"] = patch_resources.get("land_cover", {})
 	patches[key]["spare_land_cover"] = patch_resources.get("spare_land_cover", {})
@@ -1304,6 +1325,7 @@ func _commit_staged_patch_data(
 	patch["spare_height_texture_height"] = old_texture_height
 	patch["last_patch_data"] = patch_data
 	_surface_commit_revision += 1
+	_push_surface_generation(key)
 	_commit_patch_land_cover(patch, stage["land_cover"])
 
 	var material: ShaderMaterial = patch["material"] as ShaderMaterial
@@ -1389,6 +1411,7 @@ func _activate_patch(key: Vector2i) -> bool:
 	):
 		return false
 	resident_patch_lookup[key] = true
+	_push_resident(key, true)
 	_graded_patch_changed(key)
 	_apply_patch_visibility_for_residency(key, patch, last_patch_data)
 	_queue_water_patch_texture_sync(key)
@@ -1399,6 +1422,7 @@ func _deactivate_patch(key: Vector2i) -> void:
 		return
 	if not patches.has(key):
 		resident_patch_lookup.erase(key)
+		_push_resident(key, false)
 		_graded_patch_changed(key)
 		return
 	var patch: Dictionary = patches[key]
@@ -1407,6 +1431,7 @@ func _deactivate_patch(key: Vector2i) -> void:
 	if graded_tiles != null:
 		graded_tiles.release_patch(key, patch_node)
 	resident_patch_lookup.erase(key)
+	_push_resident(key, false)
 	_graded_patch_changed(key)
 
 func _remove_patch(key: Vector2i) -> void:
@@ -1420,11 +1445,14 @@ func _remove_patch(key: Vector2i) -> void:
 	_release_terrain_patch_resources(patch)
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
+	_push_surface_generation(key)
+	if was_resident:
+		_push_resident(key, false)
 	_graded_patch_changed(key)
 	patch_lod_refresh_lookup.erase(key)
 	if was_resident:
 		_terrain_residency_target_bounds_valid = false
-		_terrain_resident_patch_revision += 1
+		_revise_residency()
 	_terrain_debug_patch_removes += 1
 
 func _patch_key_in_bounds(key: Vector2i, bounds: Dictionary) -> bool:
@@ -1478,6 +1506,8 @@ func _clear_patches() -> void:
 		_release_terrain_patch_resources(patch)
 	patches.clear()
 	resident_patch_lookup.clear()
+	if _stream != null:
+		_stream.clear_terrain_patches()
 	if graded_tiles != null and not _graded_resident.is_empty():
 		graded_tiles.patch_mutated(Vector2i.ZERO, {}, true)
 	_graded_resident.clear()
@@ -1504,7 +1534,7 @@ func _clear_patches() -> void:
 	_terrain_residency_pending_mutations = false
 	_terrain_residency_target_bounds_valid = false
 	_terrain_residency_target_bounds.clear()
-	_terrain_resident_patch_revision += 1
+	_revise_residency()
 
 func _prewarm_terrain_patch_resource_pool() -> void:
 	while patch_resource_pool.size() < PATCH_RESOURCE_POOL_PREWARM_COUNT:

@@ -13,7 +13,8 @@
 //! of its own ([`layers`]). Round V2a (`RENDER-32-E`) adds the install side: the
 //! `RenderingServer` backend and its slot pools ([`backend`]), the frame's streaming budget and
 //! install order ([`schedule`]), each layer's status ([`status`]) and the vegetation layer that
-//! installs through them, run each frame by the `StreamNode`.
+//! installs through them, run each frame by the `StreamNode`. Round V2b (`RENDER-32-F`) adds the
+//! rings and travel buckets ([`rings`]) and moves the vegetation's residency into its layer.
 
 pub(crate) mod backend;
 pub(crate) mod cache;
@@ -21,6 +22,7 @@ pub(crate) mod layers;
 pub(crate) mod levels;
 pub(crate) mod prepare;
 pub(crate) mod requests;
+pub(crate) mod rings;
 pub(crate) mod schedule;
 pub(crate) mod status;
 pub(crate) mod view;

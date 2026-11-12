@@ -10,6 +10,7 @@ const Species = preload("res://scripts/renderers/tree_species.gd")
 const SPAN = 510.0
 class Terrain extends Node:
 	func get_patch_surface_generation(_key): return 7
+	func get_render_patch_span_m(): return SPAN
 class Simulation extends Node:
 	var data := PackedFloat32Array()
 	func _init():
@@ -21,8 +22,6 @@ class Simulation extends Node:
 			data[i*6+3] = float(i % 31) * 0.2
 			data[i*6+4] = 0.8 + float(i % 17) * 0.025
 			data[i*6+5] = [0, 1, 2, 2, 2, 2, 3, 3][i % 8]
-	func get_vegetation_patch_generation(_key): return 0
-	func try_get_vegetation_generations(_known_epoch): return PackedInt64Array([0])
 	func get_terrain_world_size(): return Vector2(1020, 1020)
 	# Rust packs world positions; the fixture is authored relative to the patch it is fetched for.
 	# No crown coverage, so every tree keeps an open stand.
@@ -35,26 +34,11 @@ class Simulation extends Node:
 			world[i] += origin.x
 			world[i + 2] += origin.y
 		return world
-	# Rust builds a requested product on its background pool (`RENDER-32-D`); the mock builds it
-	# at once from its own fetches and hands it to the stream node, which installs it
-	# (`RENDER-32-E`).
-	var stream: Node
-	var _serial := 0
-	var _catalogue := PackedFloat32Array()
-	func set_vegetation_product_catalogue(catalogue):
-		_catalogue = catalogue
+	# The products' catalogue (`rebuild_from_simulation_state` hands it to the background jobs).
+	var catalogue := PackedFloat32Array()
+	func set_vegetation_product_catalogue(value):
+		catalogue = value
 		return true
-	func clear_vegetation_requests(): pass
-	func cancel_vegetation_patch(_key): pass
-	func request_vegetation_patch(key, origin, span, understory, near_band, caster, settings):
-		var runs: PackedFloat32Array = (PackedFloat32Array() if near_band
-			else get_vegetation_hedge_runs(origin, span))
-		var product: Dictionary = SimulationNode.build_vegetation_product(
-			get_decorative_tree_patch(origin, span, understory), get_vegetation_stand_cover(origin, span),
-			runs, origin, near_band, caster, settings, _catalogue)
-		_serial += 1
-		stream.deliver_vegetation_product(key, _serial, product, origin, span)
-		return _serial
 func _initialize(): call_deferred("run")
 func run():
 	var host := Node3D.new()
@@ -68,7 +52,6 @@ func run():
 	var stream := StreamNode.new()
 	stream.name = "StreamNode"
 	host.add_child(stream)
-	simulation.stream = stream
 	var camera := Camera3D.new()
 	host.add_child(camera)
 	camera.current = true
@@ -80,6 +63,10 @@ func run():
 	# The water reflection's world, where the stream node mirrors the impostors.
 	var reflection_world := World3D.new()
 	vegetation.set_reflection_scenario(reflection_world.scenario)
+	# The residency's settings and the terrain span: the stream node answers the bands a patch
+	# takes from the camera (`RENDER-32-F`); its patches here are built and delivered by the test.
+	stream.set_terrain_patch_span(SPAN)
+	vegetation.rebuild_from_simulation_state()
 	var geometry := _geometry_counts(vegetation.meshes)
 	_check_geometry_budget(geometry)
 	_check_impostors(vegetation)
@@ -89,9 +76,8 @@ func run():
 	for key in [Vector3i(0,0,1), Vector3i(1,0,1), Vector3i(0,1,1), Vector3i(1,1,1)]:
 		_upload(vegetation, key, SPAN)
 	await process_frame
-	vegetation.generation_ms_max = 0.0
 	for repeat in range(6):
-		for key in vegetation.patches.keys():
+		for key in _records.keys():
 			_upload(vegetation, key, SPAN)
 		await process_frame
 	var nodes := 0
@@ -119,8 +105,8 @@ func run():
 	var drawn := positions.duplicate()
 	drawn.sort()
 	assert(drawn == expected_positions)
-	for key in vegetation.patches:
-		var record: Dictionary = vegetation.patches[key]
+	for key in _records:
+		var record: Dictionary = _records[key]
 		# What the stream node drew (`RENDER-32-E`): one dictionary per batch, each instance's state.
 		var patch: Dictionary = stream.get_vegetation_patch(key)
 		# Seeds are keyed on world position, so each patch of the one fixture splits its
@@ -131,7 +117,6 @@ func run():
 		for entry in _near_instances(vegetation, world_data):
 			var bucket := Vector2i(entry[0], entry[1])
 			expected_buckets[bucket] = int(expected_buckets.get(bucket, 0)) + 1
-		assert(record["surface_generation"] == 7)
 		assert(record["understory"])
 		assert(record["near_band"])
 		assert(patch["origin"] == Vector2(key.x, key.y) * SPAN - simulation.get_terrain_world_size() * 0.5)
@@ -232,12 +217,15 @@ func run():
 	# One proxy per canopy species in each of the four patches.
 	assert(proxies_seen == 8)
 	assert(nodes == 160 and resident == 20480)
-	assert(vegetation.tree_count == 16384)
+	var trees := 0
+	for key in _records:
+		trees += int(_records[key]["tree_count"])
+	assert(trees == 16384)
 	# The detail level swaps the near mesh on the buffer already uploaded, so the reduced level
 	# costs no second instance. A patch holds a single level only where the whole box of its
 	# trees lies on one side of the handover band, which each tree crosses by its own distance.
 	# The stream node follows the camera (`RENDER-32-E`; the rule's boundaries are its Rust tests).
-	var detail_key: Vector3i = vegetation.patches.keys()[0]
+	var detail_key: Vector3i = _records.keys()[0]
 	var trees: AABB = stream.get_vegetation_patch(detail_key)["canopy_box"]
 	assert(trees.size.x > 0.0 and trees.size.z > 0.0)
 	var band_end: float = Vegetation.TREE_NEAR_DETAIL_M + Species.TREE_DETAIL_FADE_M
@@ -274,7 +262,7 @@ func run():
 	# nothing it holds can reach a cascade and it carries no caster either.
 	camera.global_position = Vector3(2000.0, 0.0, -255.0)
 	_upload(vegetation, Vector3i(0, 0, 1), SPAN)
-	var far_record: Dictionary = vegetation.patches[Vector3i(0, 0, 1)]
+	var far_record: Dictionary = _records[Vector3i(0, 0, 1)]
 	assert(not far_record["near_band"] and not far_record["understory"])
 	assert(far_record["shadow_caster"] == Vegetation.ShadowCaster.NONE)
 	var far_patch: Dictionary = stream.get_vegetation_patch(Vector3i(0, 0, 1))
@@ -288,19 +276,12 @@ func run():
 		assert(batch["main"]["material"] == species)
 		assert(batch["main"]["aabb"].size != Vector3.ZERO)
 		assert(batch["count"] == 512)
-	# The near band must not follow the span of whichever patch uploaded last. It once did, and
-	# with the floor below the coarse diagonal every upload flipped it between 250 m and 721 m,
-	# so resident patches disagreed with their own record each frame and rebuilt without end.
-	_upload(vegetation, Vector3i(0, 0, Vegetation.PATCH_SUBDIVISION), SPAN / Vegetation.PATCH_SUBDIVISION)
-	var fine_near: float = vegetation.canopy_near_m()
-	_upload(vegetation, Vector3i(0, 0, 1), SPAN)
-	assert(vegetation.canopy_near_m() == fine_near)
 	camera.global_position = Vector3.ZERO
 	# Empty buckets emit no nodes, and changing density preserves the original subset rule.
 	vegetation.density_fraction = 0.0
 	_upload(vegetation, Vector3i(0, 0, 1), SPAN)
 	assert(stream.get_vegetation_patch(Vector3i(0, 0, 1))["batches"].is_empty())
-	assert(vegetation.patches[Vector3i(0, 0, 1)]["tree_count"] == 0)
+	assert(_records[Vector3i(0, 0, 1)]["tree_count"] == 0)
 	# Pins name the variant in both the bucketed near level and the far-only impostor rows, whose
 	# layer lane is the variant (the dummy backend cannot read a buffer back, so the product is
 	# read directly).
@@ -329,12 +310,26 @@ func run():
 	print("PASS vegetation appearance, shared material and bounds, LOD buckets, positions and empty density")
 	quit()
 
-## Requests a patch and installs what the mock built for it, as the next frames would: the stream
-## node installs it, and the renderer takes the install.
+# What each patch was built with, by key: its bands and plants (the residency's records hold
+# what the game requests; this test builds and delivers its products itself).
+var _records := {}
+var _serial := 0
+
+## Builds a patch's product from the mock's placements with the bands the stream node gives it
+## from the camera now (its residency's rule), delivers it and installs it.
 func _upload(vegetation, key: Vector3i, span: float) -> void:
-	vegetation._upload_patch(key, span)
+	var simulation = vegetation.simulation
+	var bands: Vector3i = vegetation.stream.get_vegetation_bands(key)
+	assert(bands.x >= 0)
+	var origin := Vector2(key.x, key.y) * span - simulation.get_terrain_world_size() * 0.5
+	var product: Dictionary = SimulationNode.build_vegetation_product(
+		simulation.get_decorative_tree_patch(origin, span, bands.x == 1), {}, PackedFloat32Array(),
+		origin, bands.y == 1, bands.z == 1, vegetation._product_settings(), simulation.catalogue)
+	_serial += 1
+	vegetation.stream.deliver_vegetation_product(key, _serial, product, origin, span)
 	vegetation.stream.flush_vegetation()
-	vegetation._take_installs()
+	_records[key] = {"understory": bands.x == 1, "near_band": bands.y == 1,
+		"shadow_caster": bands.z, "tree_count": int(product["tree_count"])}
 
 ## The stream node's mesh index of a near level (`StreamNode.set_vegetation_catalogue`'s order:
 ## three levels per variant, species by species), and of the impostor quad after them.

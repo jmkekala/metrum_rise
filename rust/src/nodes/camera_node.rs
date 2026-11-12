@@ -5,6 +5,7 @@
 //!
 //! Provides orbit, pan, and zoom functionality tailored for city simulation.
 
+use crate::nodes::sim::render::stream::view::CameraSample;
 use crate::nodes::simulation_node::SimulationNode;
 use crate::simulation::save::SavedCameraState;
 use godot::classes::camera_3d::ProjectionType;
@@ -98,6 +99,9 @@ pub struct CameraNode {
 
     water_clearance_pending: bool,
     world_bounds_enabled: bool,
+    // The view the streaming core measures from, published each time the camera moves
+    // (`RENDER-32-F`).
+    published: Option<CameraSample>,
 
     base: Base<Camera3D>,
 }
@@ -135,6 +139,7 @@ impl ICamera3D for CameraNode {
             orthogonal: false,
             water_clearance_pending: false,
             world_bounds_enabled: false,
+            published: None,
         }
     }
 
@@ -594,6 +599,19 @@ impl CameraNode {
         self.base_mut().set_far(far_clip);
         self.base_mut().set_global_position(new_pos);
         self.base_mut().look_at(pivot);
+        self.published = Some(CameraSample {
+            eye: new_pos.to_array(),
+            pivot: pivot.to_array(),
+            yaw: self.yaw,
+            pitch: self.pitch,
+            distance: self.motion.distance(),
+        });
+    }
+
+    /// The view as of the camera's last move (`RENDER-32-F`): what the streaming core measures
+    /// its chunks from, so no renderer derives its own. `None` before the first move.
+    pub(crate) fn published_view(&self) -> Option<CameraSample> {
+        self.published
     }
 }
 

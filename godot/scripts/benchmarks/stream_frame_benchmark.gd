@@ -532,36 +532,38 @@ func _streams() -> Dictionary:
 
 # The vegetation's queue and residency counters. From `RENDER-32-D` on also its requests in
 # flight and Rust's count of synchronous vegetation queries (`queries_total`: a frame that moves
-# it asked one on the main thread); -1 on a control build without them. From `RENDER-32-E` on
-# also the stream node's vegetation status (installed, pending, slots).
+# it asked one on the main thread). From `RENDER-32-E` on also the stream node's vegetation status
+# (installed, pending, slots); from `RENDER-32-F` on the residency is the stream node's too.
 func _vegetation_counters() -> Dictionary:
 	var simulation: Node = _vegetation.simulation
-	var requested: Variant = _vegetation.get("requested")
-	var stream: Node = _vegetation.get("stream")
-	var status: Dictionary = stream.get_stream_status()["vegetation"] if stream != null else {}
-	return {"queue": _vegetation.queue.size(), "patches": _vegetation.patches.size(),
-		"slots_live": int(status.get("slots_live", -1)), "slots_spare": int(status.get("slots_spare", -1)),
-		"stream_pending": int(status.get("pending", -1)), "installs_total": int(status.get("installs_total", -1)),
-		"cache": _vegetation.cache.size(), "standins": _vegetation.standins.size(),
-		"trees": _vegetation.tree_count, "generated_total": _vegetation.generated_patches,
-		"requested": (requested as Dictionary).size() if requested is Dictionary else -1,
-		"queries_total": int(simulation.call("get_vegetation_main_thread_queries"))
-			if simulation.has_method("get_vegetation_main_thread_queries") else -1}
+	var stream: Node = _vegetation.stream
+	var status: Dictionary = stream.get_stream_status()["vegetation"]
+	var counts: Dictionary = stream.get_vegetation_metrics()
+	return {"queue": counts["queue"], "patches": counts["patches"],
+		"slots_live": int(status["slots_live"]), "slots_spare": int(status["slots_spare"]),
+		"stream_pending": int(status["pending"]), "installs_total": int(status["installs_total"]),
+		"cache": counts["cached"], "standins": counts["standins"],
+		"trees": counts["trees"], "generated_total": counts["generated"],
+		"requested": counts["requested"],
+		"queries_total": int(simulation.call("get_vegetation_main_thread_queries"))}
 
 # Wanted-to-drawn of the vegetation patches, with the perf channel on only (it walks the wanted
 # set every frame): a patch that enters the wanted set drawing nothing waits from that frame,
 # and the frames it waited are recorded on the frame it draws; one that enters already drawn
 # (built in the frame it was wanted, or kept from before) records 0. A patch no longer wanted
-# stops waiting. Drawn is what the stream node draws (`RENDER-32-E`), which the script's own
-# books learn a frame later.
+# stops waiting. Drawn is what the stream node draws (`RENDER-32-E`); a fine patch also counts as
+# drawn while the coarse patch of its block draws over it (`RENDER-32-F` keeps the fine patches of
+# a block hidden until all are installed, so one grid tier draws over an area).
 func _vegetation_drawn_frames() -> Array:
 	var frame := Engine.get_process_frames()
 	var drawn := []
-	var wanted: Dictionary = _vegetation.wanted_keys
-	var stream: Node = _vegetation.get("stream")
+	var stream: Node = _vegetation.stream
+	var wanted := {}
+	for key: Vector3i in stream.get_vegetation_wanted():
+		wanted[key] = true
 	for key: Vector3i in wanted:
-		var has_patch: bool = (stream.is_vegetation_drawn(key) if stream != null
-			else _vegetation.patches.has(key))
+		var has_patch: bool = stream.is_vegetation_drawn(key) or (key.z > 1 and stream.is_vegetation_drawn(
+			Vector3i(floori(float(key.x) / key.z), floori(float(key.y) / key.z), 1)))
 		if not _vegetation_wanted.has(key):
 			if has_patch:
 				drawn.append(0)
@@ -573,7 +575,7 @@ func _vegetation_drawn_frames() -> Array:
 	for key: Vector3i in _vegetation_waiting.keys():
 		if not wanted.has(key):
 			_vegetation_waiting.erase(key)
-	_vegetation_wanted = wanted.duplicate()
+	_vegetation_wanted = wanted
 	return drawn
 
 # The numeric changes between two counter snapshots, by group; unchanged values left out.

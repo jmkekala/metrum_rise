@@ -8,20 +8,26 @@
 //! as `water_reflection.gd` mirrored them; each impostor's shadow caster as a second instance on
 //! the impostor's own `MultiMesh` (the node path gave it a copy of the same buffer).
 //!
-//! `vegetation.gd` keeps the wanted set, the bands and the staleness (round V2b moves them): it
-//! requests, forgets, shows, hides and frees patches by key, and learns of installs from the
-//! events this layer emits. The layer owns what follows the camera inside a patch: the near
-//! canopy's detail level (the mesh on the buffer already written) and its branched shadow.
+//! The residency ([`residency`], `RENDER-32-F`) keeps the wanted set, the tiers, the bands and
+//! the staleness: it requests, forgets, shows, hides and frees patches by key, and takes the
+//! install events this layer emits. The layer owns what follows the camera inside a patch: the
+//! near canopy's detail level (the mesh on the buffer already written) and its branched shadow,
+//! each patch re-checked when the camera has travelled as far as its nearest boundary
+//! ([`TravelBuckets`]).
 //!
 //! One version of a patch draws at a time: an install hides and releases the patch's previous
 //! version in the same unit that shows the new one, so neither a hole nor two overlapping
-//! versions are ever drawn. Costs: an install is `O(batches + instances)` (the buffer copy);
-//! show, hide and free `O(batches)`; the camera refresh `O(installed patches)` on frames the
+//! versions are ever drawn. One grid tier draws over an area: a fine patch (subdivision `z > 1`)
+//! is kept hidden while the coarse patch of its terrain block is installed and shown, and is
+//! shown in the same call that hides or frees that coarse patch. Costs: an install is
+//! `O(batches + instances)` (the buffer copy); show, hide and free `O(batches)`, a coarse patch's
+//! `O(batches x subdivision²)`; the camera refresh `O(patches due + buckets passed)` on frames the
 //! camera moved and zero otherwise; nothing allocates once the storage has grown.
 
 use super::super::backend::{
     Drawn, RenderBackend, Role, Shadow, SlotId, SlotKind, SlotPool, capacity_class,
 };
+use super::super::rings::TravelBuckets;
 use super::super::schedule::{Class, Clock, FrameBudget, predicted_us};
 use super::super::status::LayerStatus;
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
@@ -31,6 +37,8 @@ use crate::nodes::sim::render::vegetation_product::{
 use std::collections::HashMap;
 
 type Map<K, V> = HashMap<K, V, foldhash::fast::FixedState>;
+
+pub(crate) mod residency;
 
 /// A vegetation patch key: grid column, row and subdivision (`vegetation.gd`'s `Vector3i`).
 pub(crate) type PatchKey = [i32; 3];
@@ -61,6 +69,10 @@ const DETAIL_BLEND: u8 = 2;
 const EVENT_LANES: usize = 6;
 // Predicted backend calls of one batch's install (fill, draw, the reflection or caster).
 const CALLS_PER_BATCH: usize = 12;
+// Travel per bucket of the detail and branched shadow checks, metres.
+const DETAIL_BUCKET_M: f64 = 4.0;
+// What a margin to a detail or shadow boundary gives up for single precision distances.
+const DETAIL_SLACK_M: f64 = 0.01;
 
 /// The renderer's draw rules the layer applies (`vegetation.gd`, `tree_species.gd`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -143,7 +155,8 @@ pub(crate) struct InstalledBatch {
 pub(crate) struct Installed {
     /// The request it came from.
     pub(crate) serial: u64,
-    /// Shown (`vegetation.gd` hides a patch it keeps for a camera moving back).
+    /// Shown by the residency (hidden: kept for a camera moving back). A fine patch draws only
+    /// while no coarse patch of its block is shown as well.
     pub(crate) visible: bool,
     /// Its batches in the product's order.
     pub(crate) batches: Vec<InstalledBatch>,
@@ -174,6 +187,10 @@ pub(crate) struct VegetationLayer {
     cast_shadows: bool,
     camera: Option<[f32; 3]>,
     refreshed: Option<[f32; 3]>,
+    // Shown near canopy patches by the travel at which their detail or shadow can next change.
+    detail_due: TravelBuckets<PatchKey>,
+    due: Vec<PatchKey>,
+    subdivision: i32,
     status: LayerStatus,
 }
 
@@ -198,6 +215,9 @@ impl VegetationLayer {
             cast_shadows: true,
             camera: None,
             refreshed: None,
+            detail_due: TravelBuckets::new(DETAIL_BUCKET_M),
+            due: Vec::new(),
+            subdivision: 1,
             status: LayerStatus::default(),
         }
     }
@@ -273,7 +293,43 @@ impl VegetationLayer {
 
     /// Whether `key` has an installed version that draws.
     pub(crate) fn is_drawn(&self, key: PatchKey) -> bool {
-        self.installed.get(&key).is_some_and(|patch| patch.visible)
+        self.installed
+            .get(&key)
+            .is_some_and(|patch| patch.visible && !self.covered(key))
+    }
+
+    // Whether `key` is a fine patch whose block's coarse patch is installed and shown.
+    fn covered(&self, key: PatchKey) -> bool {
+        key[2] > 1
+            && self
+                .installed
+                .get(&coarse_of(key))
+                .is_some_and(|coarse| coarse.visible)
+    }
+
+    // Applies the visibility of every installed fine patch of `coarse`'s block (its cover moved).
+    // `O(subdivision²)`.
+    fn apply_block(&mut self, backend: &mut impl RenderBackend, coarse: PatchKey) {
+        let divisor = self.subdivision;
+        if coarse[2] != 1 || divisor <= 1 {
+            return;
+        }
+        for at in 0..divisor * divisor {
+            let key = [
+                coarse[0] * divisor + at / divisor,
+                coarse[1] * divisor + at % divisor,
+                divisor,
+            ];
+            if let Some(patch) = self.installed.remove(&key) {
+                self.apply_visibility(backend, key, &patch);
+                self.installed.insert(key, patch);
+            }
+        }
+    }
+
+    /// The fine grid's subdivision, whose patches a coarse patch covers.
+    pub(crate) fn set_subdivision(&mut self, subdivision: i32) {
+        self.subdivision = subdivision;
     }
 
     /// An installed patch.
@@ -320,8 +376,8 @@ impl VegetationLayer {
             installed: self.installed.len(),
             visible: self
                 .installed
-                .values()
-                .filter(|patch| patch.visible)
+                .keys()
+                .filter(|key| self.is_drawn(**key))
                 .count(),
             pending: self.pending.len(),
             slots_live: self.pool.live(),
@@ -342,20 +398,27 @@ impl VegetationLayer {
         let Some(mut patch) = self.installed.remove(&key) else {
             return;
         };
-        if patch.visible != visible {
-            patch.visible = visible;
-            if visible {
-                self.refresh_patch(backend, &mut patch);
-            }
-            self.apply_visibility(backend, &patch);
+        if patch.visible == visible {
+            self.installed.insert(key, patch);
+            return;
         }
+        patch.visible = visible;
+        if visible {
+            self.refresh_patch(backend, key, &mut patch);
+        } else {
+            self.detail_due.remove(key);
+        }
+        self.apply_visibility(backend, key, &patch);
         self.installed.insert(key, patch);
+        self.apply_block(backend, key);
     }
 
     /// Frees an installed patch's slots back to the pool. `O(batches)`.
     pub(crate) fn free(&mut self, backend: &mut impl RenderBackend, key: PatchKey) {
         if let Some(patch) = self.installed.remove(&key) {
+            self.detail_due.remove(key);
             self.release(backend, patch);
+            self.apply_block(backend, key);
         }
     }
 
@@ -369,6 +432,7 @@ impl VegetationLayer {
         }
         self.pool.clear(backend);
         self.events.clear();
+        self.detail_due.clear();
         self.refreshed = None;
     }
 
@@ -381,7 +445,7 @@ impl VegetationLayer {
         let keys: Vec<PatchKey> = self.installed.keys().copied().collect();
         for key in keys {
             if let Some(patch) = self.installed.remove(&key) {
-                self.apply_visibility(backend, &patch);
+                self.apply_visibility(backend, key, &patch);
                 self.installed.insert(key, patch);
             }
         }
@@ -397,8 +461,11 @@ impl VegetationLayer {
                 continue;
             };
             patch.branched = self.branched_wanted(&patch);
-            self.apply_shadows(backend, &patch);
-            self.apply_visibility(backend, &patch);
+            self.apply_shadows(backend, key, &patch);
+            self.apply_visibility(backend, key, &patch);
+            if patch.visible {
+                self.bucket_detail(key, &patch);
+            }
             self.installed.insert(key, patch);
         }
     }
@@ -411,11 +478,12 @@ impl VegetationLayer {
 
     /// Draws every installed impostor in the reflection's world.
     pub(crate) fn redraw_reflections(&mut self, backend: &mut impl RenderBackend) {
-        for patch in self.installed.values() {
+        for (key, patch) in &self.installed {
+            let shown = self.enabled && patch.visible && !self.covered(*key);
             for batch in &patch.batches {
                 if batch.lod == LOD_IMPOSTOR {
                     let main = self.pool.slot(batch.slot).drawn(Role::Main).expect("drawn");
-                    let reflection = reflection_drawn(&main, self.enabled && patch.visible);
+                    let reflection = reflection_drawn(&main, shown);
                     self.pool
                         .draw(backend, batch.slot, Role::Reflection, reflection);
                 }
@@ -423,28 +491,46 @@ impl VegetationLayer {
         }
     }
 
-    /// Moves the near canopy's detail level and branched shadow with the camera, for every
-    /// shown patch, on frames the camera moved. `O(shown patches)`, zero when it did not move.
+    /// Moves the near canopy's detail level and branched shadow with the camera on frames it
+    /// moved: the shown patches whose nearest boundary the camera's travel reached (all of them
+    /// when a camera appears or goes). Returns the patches visited: `O(patches due + buckets
+    /// passed)`, zero when the camera did not move.
     pub(crate) fn refresh(&mut self, backend: &mut impl RenderBackend) -> usize {
         if self.camera == self.refreshed {
             return 0;
         }
+        let moved = match (self.refreshed, self.camera) {
+            (Some(from), Some(to)) => Some(eye_travel(from, to)),
+            _ => None,
+        };
         self.refreshed = self.camera;
-        let mut visited = 0;
-        let rules = self.rules;
-        let camera = self.camera;
-        let cast_shadows = self.cast_shadows;
-        for patch in self.installed.values_mut() {
-            if !patch.visible || !patch.near_canopy {
-                continue;
+        let mut due = std::mem::take(&mut self.due);
+        due.clear();
+        match moved {
+            Some(moved) => {
+                self.detail_due.advance(moved, &mut due);
             }
-            visited += 1;
-            refresh_one(&mut self.pool, backend, rules, camera, cast_shadows, patch);
+            None => due.extend(
+                self.installed
+                    .iter()
+                    .filter(|(_, patch)| patch.visible && patch.near_canopy)
+                    .map(|(key, _)| *key),
+            ),
         }
+        let visited = due.len();
+        for &key in &due {
+            if let Some(mut patch) = self.installed.remove(&key) {
+                self.refresh_patch(backend, key, &mut patch);
+                self.installed.insert(key, patch);
+            }
+        }
+        due.clear();
+        self.due = due;
         visited
     }
 
-    fn refresh_patch(&mut self, backend: &mut impl RenderBackend, patch: &mut Installed) {
+    // A shown patch's detail and shadow at the camera, and its next check.
+    fn refresh_patch(&mut self, backend: &mut impl RenderBackend, key: PatchKey, patch: &mut Installed) {
         if patch.near_canopy {
             refresh_one(
                 &mut self.pool,
@@ -454,6 +540,26 @@ impl VegetationLayer {
                 self.cast_shadows,
                 patch,
             );
+            self.bucket_detail(key, patch);
+        }
+    }
+
+    // Waits a shown near canopy patch for the travel at which its detail or shadow can change.
+    fn bucket_detail(&mut self, key: PatchKey, patch: &Installed) {
+        if !patch.near_canopy {
+            return;
+        }
+        let margin = match (self.rules, self.camera) {
+            (Some(rules), Some(camera)) => {
+                detail_margin(&rules, camera, self.cast_shadows, patch) - DETAIL_SLACK_M
+            }
+            // Without a camera nothing moves; a camera appearing refreshes every patch.
+            _ => f64::INFINITY,
+        };
+        if margin.is_finite() {
+            self.detail_due.put(key, margin);
+        } else {
+            self.detail_due.remove(key);
         }
     }
 
@@ -591,7 +697,7 @@ impl VegetationLayer {
             patch.detail = near_detail(&rules, patch.canopy_box, self.camera);
         }
         patch.branched = self.branched_wanted(&patch);
-        let shown = self.enabled;
+        let shown = self.enabled && !self.covered(key);
         for batch in &product.batches {
             if batch.count == 0 {
                 continue;
@@ -660,9 +766,12 @@ impl VegetationLayer {
                 caster: false,
             });
         }
+        self.bucket_detail(key, &patch);
         self.installed.insert(key, patch);
+        self.apply_block(backend, key);
     }
 
+    // Returns a version's slots to the pool (its key's detail check is the caller's).
     fn release(&mut self, backend: &mut impl RenderBackend, mut patch: Installed) {
         for batch in patch.batches.drain(..) {
             self.pool.release(backend, batch.slot);
@@ -675,11 +784,11 @@ impl VegetationLayer {
     }
 
     // Every batch's shadow settings from the patch's choices.
-    fn apply_shadows(&mut self, backend: &mut impl RenderBackend, patch: &Installed) {
+    fn apply_shadows(&mut self, backend: &mut impl RenderBackend, key: PatchKey, patch: &Installed) {
         let Some(rules) = self.rules else {
             return;
         };
-        let shown = self.enabled && patch.visible;
+        let shown = self.enabled && patch.visible && !self.covered(key);
         for batch in &patch.batches {
             let main = Batch {
                 species: batch.species,
@@ -703,9 +812,9 @@ impl VegetationLayer {
         }
     }
 
-    // Every instance's visibility from the layer's and the patch's.
-    fn apply_visibility(&mut self, backend: &mut impl RenderBackend, patch: &Installed) {
-        let shown = self.enabled && patch.visible;
+    // Every instance's visibility from the layer's, the patch's and its block's cover.
+    fn apply_visibility(&mut self, backend: &mut impl RenderBackend, key: PatchKey, patch: &Installed) {
+        let shown = self.enabled && patch.visible && !self.covered(key);
         for batch in &patch.batches {
             self.pool
                 .set_visible(backend, batch.slot, Role::Main, shown);
@@ -968,6 +1077,45 @@ fn branched_wanted(
         trees.position[2] + trees.size[2],
     ];
     f64::from(clamp_distance(camera, trees.position, end)) < rules.shadow_handover_m
+}
+
+/// The coarse patch of the terrain block a patch lies in.
+pub(crate) fn coarse_of(key: PatchKey) -> PatchKey {
+    let divisor = key[2].max(1);
+    [key[0].div_euclid(divisor), key[1].div_euclid(divisor), 1]
+}
+
+fn eye_travel(a: [f32; 3], b: [f32; 3]) -> f64 {
+    let [dx, dy, dz] = [0, 1, 2].map(|axis| f64::from(b[axis]) - f64::from(a[axis]));
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+// The camera travel before `near_detail` or `branched_wanted` can change for the patch: the
+// nearest of their boundaries, each a threshold on a distance from the camera to the tree box
+// (its clamp, or its centre plus half its diagonal) that moves no faster than the camera.
+fn detail_margin(
+    rules: &VegetationRules,
+    camera: [f32; 3],
+    cast_shadows: bool,
+    patch: &Installed,
+) -> f64 {
+    let trees = patch.canopy_box;
+    let end = [
+        trees.position[0] + trees.size[0],
+        trees.position[1] + trees.size[1],
+        trees.position[2] + trees.size[2],
+    ];
+    let clamp = f64::from(clamp_distance(camera, trees.position, end));
+    let size = trees.size;
+    let length = (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
+    let centre = f64::from(distance(trees.center(), camera)) + f64::from(length) * 0.5;
+    let mut margin = (clamp - (rules.near_detail_m + rules.detail_fade_m))
+        .abs()
+        .min((centre - rules.near_detail_m).abs());
+    if cast_shadows && patch.has_caster {
+        margin = margin.min((clamp - rules.shadow_handover_m).abs());
+    }
+    margin
 }
 
 impl Installed {

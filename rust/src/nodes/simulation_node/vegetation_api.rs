@@ -341,60 +341,6 @@ impl SimulationNode {
         true
     }
 
-    /// Requests the product of the vegetation patch `key` (column, row, subdivision) whose
-    /// minimum corner is `origin`, with the bands the renderer chose (`RENDER-32-D`): a
-    /// background worker takes the patch's inputs under `try_lock` and runs the scatter, stand
-    /// cover, hedge runs (outside the near band) and product off the lock, equal bitwise to
-    /// `build_vegetation_product` over the three synchronous queries. Returns the request's
-    /// serial, which the stream node's install event hands back (`RENDER-32-E`); a newer request for the key
-    /// makes this one stale. -1 when refused for now (32 jobs out, 64 MB of products held, no
-    /// catalogue set, malformed arguments): ask again next frame. `O(1)` on the calling thread.
-    #[func]
-    #[allow(clippy::too_many_arguments)]
-    pub fn request_vegetation_patch(
-        &self,
-        key: Vector3i,
-        origin: Vector2,
-        span: f32,
-        understory: bool,
-        near_band: bool,
-        caster: bool,
-        settings: PackedFloat64Array,
-    ) -> i64 {
-        use crate::nodes::sim::render::vegetation_product::ProductSettings;
-        let Some(settings) = ProductSettings::from_lanes(settings.as_slice()) else {
-            return -1;
-        };
-        if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
-            return -1;
-        }
-        let request = jobs::PatchRequest {
-            key: [key.x, key.y, key.z],
-            origin,
-            span,
-            understory,
-            near_band,
-            caster,
-            settings,
-        };
-        jobs::spawn_request(&self.vegetation_spawner(), request).map_or(-1, |serial| serial as i64)
-    }
-
-    /// Makes the live request of `key` stale: its product will not be delivered. `O(1)`.
-    #[func]
-    pub fn cancel_vegetation_patch(&self, key: Vector3i) {
-        self.vegetation_jobs
-            .lock()
-            .unwrap()
-            .cancel([key.x, key.y, key.z]);
-    }
-
-    /// Makes every live vegetation request stale (the renderer's reset). `O(requests)`.
-    #[func]
-    pub fn clear_vegetation_requests(&self) {
-        self.vegetation_jobs.lock().unwrap().clear();
-    }
-
     /// Vegetation patch jobs out: running, or finished and not yet polled.
     #[func]
     pub fn get_vegetation_jobs_in_flight(&self) -> i64 {
@@ -407,34 +353,6 @@ impl SimulationNode {
     #[func]
     pub fn get_vegetation_main_thread_queries(&self) -> i64 {
         jobs::main_thread_queries() as i64
-    }
-
-    /// The land cover epoch ([`Self::get_land_cover_epoch`]) and, when it differs from
-    /// `known_epoch`, every vegetation patch revision that is not zero, without waiting for the
-    /// core (`RENDER-32-D`: the renderer's frame path takes no blocking core lock). Returns
-    /// `[epoch]` while the epoch is `known_epoch`, `[epoch, x, z, generation, ...]` when it moved
-    /// (sorted by key), and an empty array while the simulation holds the core: ask again next
-    /// frame. `O(1)` unchanged, `O(edited patches log edited patches)` when it moved.
-    #[func]
-    pub fn try_get_vegetation_generations(&self, known_epoch: i64) -> PackedInt64Array {
-        let Some(core) = self.try_lock_core() else {
-            return PackedInt64Array::new();
-        };
-        let epoch = core
-            .terrain_payload_generation_counter
-            .wrapping_add(core.vegetation_edits.epoch()) as i64;
-        if epoch == known_epoch {
-            return PackedInt64Array::from(&[epoch][..]);
-        }
-        let mut generations: Vec<(i64, u64)> = core.vegetation_edits.patch_generations().collect();
-        drop(core);
-        generations.sort_unstable();
-        let mut out = Vec::with_capacity(1 + generations.len() * 3);
-        out.push(epoch);
-        for (key, generation) in generations {
-            out.extend_from_slice(&[key >> 32, i64::from(key as u32 as i32), generation as i64]);
-        }
-        PackedInt64Array::from(out.as_slice())
     }
 
     /// Returns a vegetation-only patch revision; terrain payload generations are unaffected.

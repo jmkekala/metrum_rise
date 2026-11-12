@@ -543,45 +543,47 @@ func _capture(record: Dictionary, label: String) -> void:
 func _vegetation_row() -> Dictionary:
 	var epoch := int(_bench.simulation_node.get_land_cover_epoch())
 	var trunks := PackedVector2Array()
+	var stream: Node = _vegetation.stream
 	var row := {"on_road": 0, "extra": 0, "missing": 0, "uploads": 0, "stale": 0, "queued": 0,
-		"queue": _vegetation.queue.size(), "revision": int(_bench.terrain.get_surface_commit_revision()),
-		"epoch": epoch}
-	for drawn: Dictionary in [_vegetation.patches, _vegetation.standins]:
-		for key: Vector3i in drawn:
-			var record: Dictionary = drawn[key]
-			# What the stream node drew for the patch (`RENDER-32-E`): its install's serial
-			# identifies the version, as the patch node's instance id did.
-			var patch: Dictionary = _vegetation.stream.get_vegetation_patch(key)
-			if patch.is_empty():
-				continue
-			var origin: Vector2 = patch["origin"]
-			var span: float = _vegetation._key_span(key)
-			if not Rect2(origin, Vector2.ONE * span).intersects(_veg_region):
-				continue
-			var id: int = patch["serial"]
-			if _veg_ids.has(key) and _veg_ids[key] != id:
-				row.uploads += 1
-			_veg_ids[key] = id
-			if not _veg_trunks.has(id):
-				_veg_trunks[id] = _patch_trunks(patch)
-			var local: Dictionary = _veg_trunks[id]
-			var understory := bool(record["understory"])
-			var cached := "%s %s %d" % [key, understory, epoch]
-			if not _veg_rust.has(cached):
-				_veg_rust[cached] = _placement(origin, span, understory, bool(record["near_band"]))
-			var placed: Dictionary = _veg_rust[cached]
-			for at: Vector2 in local:
-				if _veg_region.has_point(origin + at):
-					trunks.append(origin + at)
-					row.extra += 0 if placed.has(at) else 1
-			for at: Vector2 in placed:
-				if not local.has(at) and _veg_region.has_point(origin + at):
-					row.missing += 1
-			var generations: Vector2i = _vegetation._owner_generations(_vegetation._owner_key(key), null)
-			if ((generations.x >= 0 and generations.x != int(record["surface_generation"]))
-					or generations.y != int(record["vegetation_generation"])):
-				row.stale += 1
-				row.queued += 1 if _vegetation.queued.has(key) else 0
+		"queue": int(stream.get_vegetation_metrics()["queue"]),
+		"revision": int(_bench.terrain.get_surface_commit_revision()), "epoch": epoch}
+	# The stream node's records (`RENDER-32-F`): drawn (0) and stand-ins (1) draw.
+	var records: Dictionary = stream.get_vegetation_records()
+	for key: Vector3i in records:
+		var record: Dictionary = records[key]
+		if int(record["standing"]) > 1:
+			continue
+		# What the stream node drew for the patch (`RENDER-32-E`): its install's serial
+		# identifies the version, as the patch node's instance id did.
+		var patch: Dictionary = stream.get_vegetation_patch(key)
+		if patch.is_empty():
+			continue
+		var origin: Vector2 = patch["origin"]
+		var span: float = float(_bench.terrain.get_render_patch_span_m()) / maxi(key.z, 1)
+		if not Rect2(origin, Vector2.ONE * span).intersects(_veg_region):
+			continue
+		var id: int = patch["serial"]
+		if _veg_ids.has(key) and _veg_ids[key] != id:
+			row.uploads += 1
+		_veg_ids[key] = id
+		if not _veg_trunks.has(id):
+			_veg_trunks[id] = _patch_trunks(patch)
+		var local: Dictionary = _veg_trunks[id]
+		var understory := bool(record["understory"])
+		var cached := "%s %s %d" % [key, understory, epoch]
+		if not _veg_rust.has(cached):
+			_veg_rust[cached] = _placement(origin, span, understory, bool(record["near_band"]))
+		var placed: Dictionary = _veg_rust[cached]
+		for at: Vector2 in local:
+			if _veg_region.has_point(origin + at):
+				trunks.append(origin + at)
+				row.extra += 0 if placed.has(at) else 1
+		for at: Vector2 in placed:
+			if not local.has(at) and _veg_region.has_point(origin + at):
+				row.missing += 1
+		if bool(record["stale"]):
+			row.stale += 1
+			row.queued += 1 if bool(record["queued"]) else 0
 	row.on_road = _on_road(trunks, false)
 	row["on_preview"] = _on_road(trunks, true)
 	row["plants"] = trunks.size()

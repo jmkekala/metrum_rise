@@ -10,6 +10,9 @@ use super::land_cover::Coverage;
 use super::world::VegetationPatchInputs;
 use super::*;
 use crate::nodes::sim::render::stream::cache::ProductCache;
+use crate::nodes::sim::render::stream::layers::vegetation::residency::{
+    PatchJobs, PatchOrder, ResidencySettings,
+};
 use crate::nodes::sim::render::stream::prepare::PrepareQueue;
 use crate::nodes::sim::render::vegetation_product::{
     ProductCatalogue, ProductInputs, ProductSettings, StandCover, VegetationProduct, build_product,
@@ -332,6 +335,58 @@ pub(crate) fn prepare_patch(
         settings: request.settings,
     };
     build_product(&inputs, catalogue, product);
+}
+
+/// The land cover epoch and, when it differs from `known`, every vegetation revision that is
+/// not zero by terrain patch in `out` (cleared first), without waiting for the core: `None` while
+/// the simulation holds it. `O(1)` unchanged, `O(edited patches)` when the epoch moved.
+pub(crate) fn try_generations(
+    core: &Mutex<SimCore>,
+    known: i64,
+    out: &mut Vec<([i32; 2], i64)>,
+) -> Option<i64> {
+    let core = SimulationNode::try_lock_shared_core(core)?;
+    let epoch = core
+        .terrain_payload_generation_counter
+        .wrapping_add(core.vegetation_edits.epoch()) as i64;
+    out.clear();
+    if epoch != known {
+        out.extend(
+            core.vegetation_edits
+                .patch_generations()
+                .map(|(key, generation)| ([(key >> 32) as i32, key as u32 as i32], generation as i64)),
+        );
+    }
+    Some(epoch)
+}
+
+/// The vegetation residency's jobs (`RENDER-32-F`): requests, cancels and the core's
+/// vegetation revisions, all without waiting on the main thread.
+impl PatchJobs for Spawner {
+    fn request(&mut self, order: &PatchOrder, settings: &ResidencySettings) -> Option<u64> {
+        let request = PatchRequest {
+            key: order.key,
+            origin: Vector2::new(order.origin[0], order.origin[1]),
+            span: order.span,
+            understory: order.bands.understory,
+            near_band: order.bands.near_band,
+            caster: order.bands.caster,
+            settings: settings.product,
+        };
+        spawn_request(self, request)
+    }
+
+    fn cancel(&mut self, key: PatchKey) {
+        self.jobs.lock().unwrap().cancel(key);
+    }
+
+    fn clear(&mut self) {
+        self.jobs.lock().unwrap().clear();
+    }
+
+    fn generations(&mut self, known: i64, table: &mut Vec<([i32; 2], i64)>) -> Option<i64> {
+        try_generations(&self.core, known, table)
+    }
 }
 
 /// Counts one synchronous query on the main thread.
