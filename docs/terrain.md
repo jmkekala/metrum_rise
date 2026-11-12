@@ -11929,10 +11929,11 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-H` | L1 | Street lights' grid, far map and pool in Rust (`RENDER-33`) | 0.3 ms mean, 1.0 ms max on night turns and pans. Landed 2026-11-11 (coordinator, night delegation, for review); its `night_pan_out` frame-mean reading of night within 1 ms of day (+0.9/+1.6 ms, graded catch-up) carried to `-I`/`-J` |
 | `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. `-K` part 2 (G2c-2) landed 2026-11-12 (coordinator, delegation, for review; graded total carried to part 3): the page uploads and copies in Rust through the backend, 20-23 % more copies a frame in the same install budget; the graded total level (1.36-1.41 ms, 1.55-1.63 at 100k) and its bars missed: every frame of the turns spends the install budget with finished bakes waiting, so the total is the budget's, not the uploads' (record); carried to part 3. |
 | `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`); the detail swap without read-back (`RENDER-37`) | 0.3 ms on the turn, 1.5 ms at 100k; reflection hook 0.1 ms without water in view. Landed 2026-11-12 (coordinator, delegation, for review): every bar met (0.09-0.21 ms, 0.26-0.53 ms, 0.02-0.04 ms) |
-| `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`) | 0.3 ms a frame on Kuopio's turn and pan |
+| `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`); step 0: a water input of record, a pond made on the prepared 30k city by a recorded deterministic recipe through the lake-fill mutators (planned 2026-11-12) | 0.3 ms a frame on Kuopio's turn and pan, the water half measured on the pond input too |
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement | Entered-to-drawn p95 at most three frames |
 | `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice |
 | `RENDER-32-P` | R1 | Road hydration at load, parked cars, zoning masks (`RENDER-36`) | The 100k load's frame at most 33 ms |
+| `RENDER-32-Q` | Close-out | The frame's streaming budgets: graded, buildings and the stream node each run their own `GodotBackend` and budget against the plan's one 2.0 ms (planned 2026-11-12, review of the rounds). Opens with a measurement of all layers' install work a frame on the 30k and 100k turns: inside 2.0 ms in every frame, the per-layer budgets are recorded as the design and the plan's sentence revised; over it, the graded poll and the building publication charge the stream node's budget | The sum of the layers' install work at most 2.0 ms in every frame |
 
 Track acceptance, on the stream benchmark at 30k, 1080p, paused, after `-A` to `-H` and `-L`:
 timed scripts at most 4 ms mean in every moving phase, no frame over 33.3 ms, the 1 s turn's p50
@@ -12000,7 +12001,9 @@ with its own scripts, the branch `stream-s0` `75534a01`'s release library (`9de3
 scripts; both ran this tree's benchmark scripts. Godot 4.7.2 stable, Forward+, gamescope headless
 at 1000 Hz, 1920x1080, P-cores, eight workers, paused, 10:00 and 23:00. Inputs: the timing
 cache's `populated_city_30000.sqlite` (save version 118, SHA-256 `e9a62f0e`) and Kuopio as a
-new game. Frame times are from one `process_frame` to the next, so they include the benchmark's
+new game. The 30k city's large buildings have no model in the bootstrap pack and draw as the magenta
+placeholder (9-13 % of every 30k still), so on that input stills and GPU numbers say nothing of the
+largest buildings' look or cost. Frame times are from one `process_frame` to the next, so they include the benchmark's
 own counters (a few hundredths of a millisecond).
 
 ```bash
@@ -13934,7 +13937,9 @@ is unchanged; what changes is which frames evaluate it, what a frame redoes, and
 batches. `building_lods.gd` 285 to 291 lines: 73 out (the batch nodes, their reflection signal,
 `_apply_batch`, `batch_identity`), 79 in (the group looks registered by RID, the scenarios, the
 fresh-buffer switch, the frame's timing for the perf channel); `water_reflection_sources.gd` keeps
-the construction scaffolds only.
+the construction scaffolds only. The plan's expected deletion (about 80 lines) did not happen because the resource loading stays
+in GDScript; the building frame entered from `building_lods.gd` with its own backend and budget is
+`RENDER-32-Q`'s.
 
 **The near canopy's detail swap without a read-back** (`RENDER-37`). A `MultiMesh` given a new mesh
 over a written buffer makes the engine read the buffer back from the GPU to bound it again
