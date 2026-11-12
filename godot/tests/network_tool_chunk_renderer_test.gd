@@ -2,6 +2,7 @@
 
 ## Headless contract test for atomic road-chunk hydration and replacement, and for the road
 ## tool's synchronous preview (`ROAD-68-E`): one frame samples, previews and shows a stroke.
+## A load's hydration streams its chunks nearest first through the stream node (`RENDER-32-P`).
 extends SceneTree
 
 const NetworkRendererScript := preload("res://scripts/renderers/network_renderer.gd")
@@ -24,6 +25,9 @@ class MockSimulation:
 	var dirty_terrain_states: PackedInt64Array = PackedInt64Array()
 	var terrain_dirty: bool = false
 	var full_snapshot_requests: Array[bool] = []
+	# The road hydrations taken (`RENDER-32-P`): their generations, and whether one is held.
+	var hydration_requests: Array[int] = []
+	var hydration: Dictionary = {}
 	var acknowledged_generations: Array[int] = []
 	var acknowledged_terrain_states: Array[PackedInt64Array] = []
 	var reject_acknowledgement: bool = false
@@ -39,6 +43,28 @@ class MockSimulation:
 
 	func get_network_render_generation() -> int:
 		return generation
+
+	# The response's full snapshot, taken for a hydration as Rust's SimulationNode takes it.
+	func begin_road_mesh_hydration(expected: int) -> Dictionary:
+		hydration_requests.append(expected)
+		if not response.get("full_replace", false) or int(response["surface_generation"]) != expected:
+			return {}
+		hydration = {}
+		var keys := PackedInt32Array()
+		var vertices := PackedInt64Array()
+		for chunk: Dictionary in response["chunks"]:
+			hydration[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = chunk
+			keys.append_array([chunk["chunk_x"], chunk["chunk_z"]])
+			vertices.append((chunk["road_vertices"] as PackedVector3Array).size())
+		return {"surface_generation": expected, "chunk_span_m": response["chunk_span_m"],
+			"chunk_origin_x_m": response["chunk_origin_x_m"], "chunk_origin_z_m": response["chunk_origin_z_m"],
+			"keys": keys, "vertices": vertices}
+
+	func get_road_mesh_hydration_chunk(x: int, z: int) -> Dictionary:
+		return hydration.get(Vector2i(x, z), {})
+
+	func end_road_mesh_hydration() -> void:
+		hydration = {}
 
 	func get_dirty_terrain_patches() -> PackedInt32Array:
 		return dirty_terrain_patches
@@ -286,7 +312,7 @@ func _run() -> void:
 	simulation.response = _batch(1, true, CHUNK_SPAN_M, [])
 	_expect(road_tool.needs_main_mesh_hydration(), "new renderer must require hydration")
 	network_renderer._process(0.0)
-	_expect(simulation.full_snapshot_requests == [true], "clean hydration must request a full snapshot")
+	_expect(simulation.hydration_requests == [1], "clean hydration must take the full network once")
 	_expect(not road_tool.needs_main_mesh_hydration(), "empty hydration must record generation")
 	_expect(road_tool._road_mesh_generation == 1, "empty hydration must record the exact generation")
 	_expect(road_tool.topology_dirty_count == 1, "clean hydration must refresh topology visuals")
@@ -549,9 +575,56 @@ func _run() -> void:
 
 	host.queue_free()
 	await process_frame
+	await _test_streamed_hydration()
 	if _failures == 0:
 		print("network_tool_chunk_renderer_test: PASS")
 	quit(_failures)
+
+# `RENDER-32-P`: with a stream node, a load's chunks install as its units, nearest first, until
+# none is left; the hydration's source is then let go.
+func _test_streamed_hydration() -> void:
+	var host := Node3D.new()
+	root.add_child(host)
+	var simulation := MockSimulation.new()
+	simulation.name = "SimulationNode"
+	host.add_child(simulation)
+	for mock: Node in [MockTerrain.new(), MockWater.new(), MockZoningOverlay.new()]:
+		mock.name = ["Terrain", "Water", "ZoningOverlay"][host.get_child_count() - 1]
+		host.add_child(mock)
+	var road_tool := TestRoadTool.new()
+	road_tool.name = "RoadTool"
+	host.add_child(road_tool)
+	var stream := StreamNode.new()
+	stream.name = "StreamNode"
+	host.add_child(stream)
+	var camera := Camera3D.new()
+	host.add_child(camera)
+	camera.position = Vector3(CHUNK_ORIGIN_X_M + 0.5 * CHUNK_SPAN_M, 40.0, CHUNK_ORIGIN_Z_M + 0.5 * CHUNK_SPAN_M)
+	camera.current = true
+	var network_renderer: Node = NetworkRendererScript.new()
+	network_renderer.name = "NetworkRenderer"
+	host.add_child(network_renderer)
+	simulation.generation = 1
+	simulation.response = _batch(1, true, CHUNK_SPAN_M,
+		[_triangle_chunk(3, 0), _triangle_chunk(0, 0), _triangle_chunk(1, 0)], CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M)
+	network_renderer._process(0.0)
+	_expect(not road_tool.needs_main_mesh_hydration(), "a streamed hydration records its generation at once")
+	var hydration: Node = network_renderer.get_node("RoadChunkHydration")
+	var order: Array[Vector2i] = []
+	for frame in 30:
+		await process_frame
+		for key: Vector2i in road_tool._road_chunk_instances:
+			if not order.has(key):
+				order.append(key)
+		if not hydration.is_pending():
+			break
+	_expect(order.size() == 3, "every chunk of the hydration installs: %s" % [order])
+	_expect(order.size() == 0 or order[0] == Vector2i(0, 0), "the chunk under the camera installs first: %s" % [order])
+	_expect(not stream.has_road_hydration_pending() and simulation.hydration.is_empty(),
+		"the finished hydration lets its source go")
+	_expect(road_tool._road_mesh_generation == 1, "the units keep the hydration's generation")
+	host.queue_free()
+	await process_frame
 
 func _batch(
 	generation: int,

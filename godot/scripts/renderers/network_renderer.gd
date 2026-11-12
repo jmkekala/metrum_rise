@@ -110,7 +110,7 @@ func _process(_delta: float) -> void:
 	# 3. Build and validate changed road chunks without replacing resident instances. Staging also
 	# rechecks the generation after potentially expensive ArrayMesh construction.
 	var road_mesh_staged := false
-	var road_hydration := road_tool.needs_main_mesh_hydration()
+	var road_hydration: bool = road_tool.needs_main_mesh_hydration()
 	if _road_mesh_refreshed_surface_generation != surface_generation:
 		var road_mesh_start_us := Time.get_ticks_usec()
 		var staged_generation: int = (
