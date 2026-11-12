@@ -516,7 +516,9 @@ func _streams() -> Dictionary:
 		var book: bool = "_book" in tiles
 		graded.merge({"wanted": tiles.wanted_count() if rust_levels else tiles._wanted.size(),
 			"desired": tiles._book.desired_len() if book else (tiles._levels.size() if rust_levels else tiles._desired.size()),
-			"installed": tiles.installed.size(), "requested": -1 if book else tiles.requested.size(),
+			# Since RENDER-32-J `installed` is a view built from the book on each change: count only.
+			"installed": tiles._book.entry_count(false) if book and tiles._book.has_method("entry_count") else tiles.installed.size(),
+			"requested": -1 if book else tiles.requested.size(),
 			"cell_builds_pending": tiles.cell_builds_pending()})
 	var lods: Variant = _buildings.lod_renderer
 	return {
