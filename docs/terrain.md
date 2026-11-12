@@ -12027,7 +12027,13 @@ tools/stream_benchmark.py stills systematic <s30-ctl1> <s30-ctl2> <s30-br1> <s30
   deviations, whichever is larger. It reproduces `RENDER-32-L`'s counts and verdict (city 1,702 /
   595 / 311 against 1,719-1,804 / 504-571 / 326-509, pond 1,644 and 32,503: none) and those of
   `RENDER-32-K` parts 2 and 3; `RENDER-32-K` part 1's `city` (647 against 446-537) reads
-  `systematic` by this rule where that round judged the mask unstructured.
+  `systematic` by this rule where that round judged the mask unstructured (rechecked by
+  `RENDER-38`, below).
+- **The stills bar.** Kuopio's settled poses (4,000 warm-up frames): byte identity (`stills
+  compare`). The 30k city's poses: `stills systematic` over two runs a side, because the 30k stills
+  are not byte-stable even within one run: the graded terrain's edge pixels change every frame
+  ([`RENDER-38`](#why-the-30k-stills-are-not-byte-stable-render-38-2026-11-12)). Byte identity
+  returns as the 30k bar when that shader fault is fixed.
 
 The perf channel's records join the frame they belong to: the benchmark takes them as
 `process_frame` resumes it, which ends the frame it has just timed (that frame's scripts and its
@@ -14474,6 +14480,74 @@ the pull-out shows a coverage jump beyond the control's (above); measured agains
 every 30k phase at p50 and GPU, primitives -22% at 30k and -49% at 100k; "not worse anywhere": met
 except the 100k 1x still's p99 (terrain frames, above) and the 30k paused turns' agents
 (1.27-1.84 against 1.30-1.63, single runs); `PERF-07` at level F unchanged: met.
+
+### Why the 30k stills are not byte-stable (`RENDER-38`, 2026-11-12)
+
+A capture-only round (branch `stream-r38`, no code change): `dev` `429e5fb5`'s release library
+(SHA-256 `a9dd8b25`), the tracked `stills capture` (gamescope headless, 1920x1080, isolated
+profile, P-cores, eight workers, 10:00), the rows of record's 30k city (`e9a62f0e`), Godot 4.7.2,
+RADV (Mesa 26.2.6) on an RX 7900 XTX.
+Probes ran the same library with edited copies of the scripts (`--scripts`), never on the branch.
+
+**Cause.** The graded terrain's fragment shader takes screen-space derivatives (implicit-LOD
+texture reads, `fwidth`, `dFdx`) where they are undefined. A 2 x 2 pixel quad forms its
+derivatives from its four lanes. Where the quad straddles a material edge, only its grass pixels
+run the grass branch (the paving pixels take the paving branch); where it straddles a road seam,
+the seam `discard` has already ended the lanes under the road. The grass shading's derivatives
+then read registers those lanes never wrote, so the grass-side edge pixels sample another mip
+level and footprint: their value depends on how the frame's fragments were packed into waves, and
+it changes every frame, also in a still, paused view. FXAA spreads each change to its neighbours.
+Kuopio's poses have no paving classes or road seams, which is why they are byte-stable. A few
+pixels a pose (up to 15) come from the road meshes: in part the road markings, whose dash gap's
+`discard` comes before the cloud lookup and its `fwidth`; up to 10 of `saved` are not located.
+
+**Evidence** (the brief's steps, then a bisection; pixels differing):
+
+| Test | `saved` | `city` | `city_low` |
+|---|---:|---:|---:|
+| 1. one run, 30 against 130 warm-up frames | 15,886 / 15,662 | 8,374 / 8,026 | 5,702 / 5,747 |
+| 2. 4,000 warm-up frames, run against run | 17,684 | 8,214 | 6,001 |
+| two runs at 30 frames (for scale) | 17,214 | 8,516 | 5,731 |
+
+- Step 1: the image changes within one process as much as between runs, so the input is not a
+  per-run state. `H1` (install order) cannot produce it: at idle nothing installs (over the
+  captured frames the graded upload, mask and mirror counters stay 0; draws and objects equal)
+  and no pipeline compiles between the shots (Godot's pipeline counters equal). Step 2: 4,000
+  frames do not settle it (`H3` out). Steps 3 and 4 (instance order, the edge band) were not needed.
+- Every frame differs from the one before by 5,500-8,800 pixels at `city_low`, in every variant
+  of the idle matrix (`full`, `no_shadows`, `no_pcss`, `no_clouds`, `no_cloud_shadows`,
+  `no_ssil_glow`, `no_vegetation`, `minimal`), never periodic. Terrain hidden: 1-2 pixels. FXAA off:
+  half (2,950). Hiding the grass, agents, parked cars, water, roads or the buildings' nodes
+  leaves it.
+- Probes, each on top of the last: the grass branch run by every graded fragment, the paving
+  override after it: frame to frame 5,700 to 550 (FXAA off 2,950 to 335); the seam discards taken
+  at the end of the fragment: 0-2 a frame, two runs 13 / 8 / 1; the paving read with gradients
+  taken before the branch: three runs 12-15 / 5-10 / 0, on roads (roads hidden: 0-2 a frame);
+  the road markings' dash discard after the cloud lookup: three runs 1-10 / 0-1 / 0, largest
+  delta 1. The last 10 pixels of `saved` (paving beside a road) are not located.
+
+**What a fix draws.** Defined derivatives give an edge pixel its filtered value, which is not one
+of the control's variants. Against six control frames of two runs, the last probe changes
+112,425 / 49,685 / 22,858 pixels of `saved` / `city` / `city_low` (largest delta 79 / 41 / 35):
+85,078 / 35,970 / 14,499 of them pixels the control draws alike in all six frames; in the crops
+all lie on ground material edges and road seams, and at viewing size the two are hard to tell
+apart, except that the probe's edges no longer change from frame to frame. That is a change to
+settled frames, so it waits for the user's choice with side-by-side stills (`$ARTIFACTS/sbs`).
+The probe's uniform grass branch cost about 0.1 ms of GPU on `city_low` (untimed); a fix that
+takes the gradients before the branch and the seam discard (and discards at the end) adds no
+shading work, and is a per-frame GPU path, so timing level F. Kuopio's `forest_low`, `close`
+and `mid` stay byte-identical (two control runs, 4,000 warm-up frames).
+
+**`RENDER-32-K` part 1's `city` rechecked** (its control `d9505de3` and branch `514b4ac2`,
+libraries and scripts, three runs a side, `stills systematic` over the nine two-a-side
+quartets): `city` reads `none` in 9 of 9 (by side 500-610 against nulls 486-586), so its earlier
+`systematic` (647 against 446-537) does not stand. `city_low` reads `systematic` in 8 of 9 (by side
+400-451 against 305-363), and `saved` `none` in 9. Pixels equal within all three runs of each side
+and different between them (`city` / `city_low` / `saved`): 88 / 86 / 277; 88 / 84 / 257 of
+them are this fault's pixels (pixels today's control draws differently over six frames, or that
+the derivative probe changes). The part's verdict, no structure beyond the speckle, stands.
+Until the fix lands the systematic test can flag the fault's edges by chance; a flagged 30k pose
+is read against these edges before it counts as a difference.
 
 ## Implemented Runtime Contract
 
