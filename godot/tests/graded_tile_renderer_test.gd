@@ -628,6 +628,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 		"a settled view renders no grass mask over 120 frames")
 	_expect(grass.mask_mirror_syncs == mask_syncs_before,
 		"a settled view rewrites no grass-mask mirror over 120 frames")
+	await _check_material_sync(graded, terrain)
 
 	var edge: int = simulation.get_hovered_edge(0.0, 100.0)
 	_expect(edge >= 0, "the side road has an edge at (0, 100)")
@@ -675,6 +676,66 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	terrain.free()
 	camera.free()
 	water.free()
+
+# Review finding 6 (`TERRAIN-13`): the book copies each drawing set's patch material parameters into
+# the set's materials through the RenderingServer, whose headless dummy answers nil, so only a
+# rendered run sees them. Every bound material of every drawing set holds its patch material's value
+# of each watched parameter (the book's WATCHED) once settled, again after one parameter of one
+# patch moved (terrain.gd's changed material), and again after an overlay switch and back.
+func _check_material_sync(graded: GradedTiles, terrain) -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	_expect(_material_mismatches(graded, terrain, "settled") == 0, "settled sets hold their patch materials' parameters")
+	var keys: Array = graded.patch_cells.keys().filter(func(shown: Vector2i) -> bool: return bool(graded.patch_cells[shown]["shown"]))
+	if keys.is_empty():
+		_expect(false, "a set draws for the material sync check")
+		return
+	var key: Vector2i = keys[0]
+	var material: ShaderMaterial = terrain._graded_resident[key]["material"]
+	var step = material.get_shader_parameter("terrain_debug_lod_step")
+	material.set_shader_parameter("terrain_debug_lod_step", (int(step) if step != null else 0) + 3)
+	terrain._graded_material_changed(key)
+	for frame in 2:
+		await process_frame
+	_expect(_material_mismatches(graded, terrain, "moved") == 0, "a moved parameter syncs into the set's materials")
+	material.set_shader_parameter("terrain_debug_lod_step", step)
+	terrain._graded_material_changed(key)
+	for mode in [2, 0]:
+		terrain.overlay_mode = mode
+		terrain._apply_overlay_mode()
+		for frame in 2:
+			await process_frame
+		_expect(_material_mismatches(graded, terrain, "overlay %d" % mode) == 0, "an overlay switch to %d syncs into every set" % mode)
+
+const WATCHED_PARAMETERS := ["heightmap", "terrain_mask_layer", "terrain_masks", "watermap", "land_cover_texture",
+	"overlay_mode", "overlay_texture", "terrain_debug_lod_step"]
+
+# The bound materials of drawing sets whose watched parameter differs from their patch material's,
+# each pushed as an error; a check that compares nothing fails too.
+func _material_mismatches(graded: GradedTiles, terrain, label: String) -> int:
+	var compared := 0
+	var mismatched := 0
+	for key: Vector2i in graded.patch_cells.keys():
+		var cells: Dictionary = graded.patch_cells[key]
+		if not bool(cells["shown"]):
+			continue
+		var source: RID = (terrain._graded_resident[key]["material"] as Material).get_rid()
+		for bound: RID in cells["bound"]:
+			if not bound.is_valid() or bound == source:
+				continue
+			for name: String in WATCHED_PARAMETERS:
+				var want: Variant = RenderingServer.material_get_param(source, name)
+				var got: Variant = RenderingServer.material_get_param(bound, name)
+				compared += 1
+				if typeof(got) != typeof(want) or got != want:
+					mismatched += 1
+					if mismatched <= 4:
+						push_error("%s: patch %s %s is %s, its material %s" % [label, key, name, got, want])
+	if compared == 0:
+		push_error("%s: no graded set material compared" % label)
+		return 1
+	print("graded material sync (%s): %d parameters compared, %d differ" % [label, compared, mismatched])
+	return mismatched
 
 # T53 (a), TERRAIN-15: a world load through the load flow (input_manager.gd) hands the game over
 # once every patch within WORLD_READY_RADIUS_M of the camera draws its set or its PlaneMesh. Until
