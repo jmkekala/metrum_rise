@@ -158,7 +158,7 @@ func run(bench: Node) -> void:
 		_vegetation = bench.terrain.get_node_or_null("../Vegetation")
 		# The settle includes every resident patch's cell set build (off the frame paths).
 		_report.loads.append({"case": fixture.case_id, "settle_ms": float(Time.get_ticks_usec() - load_us) / 1000.0,
-			"cell_builds": int(_graded.counters["cell_builds"]), "patches_with_cells": _graded.patch_cells.size()})
+			"cell_builds": int(_graded.counters["cell_builds"]), "patches_with_cells": _graded.patches_with_cells()})
 		if _graded == null:
 			_finish("the terrain renderer draws no graded tiles")
 			return
@@ -460,7 +460,7 @@ func _next_frame() -> void:
 		"uploads": int(counters["uploads"]) - int(_seen["uploads"]),
 		"upload_bytes": int(counters["upload_bytes"]) - int(_seen["upload_bytes"]),
 		"pending": int(_bench.road_tool._graded_pending),
-		"cell_patches": _graded.patch_cells.size(),
+		"cell_patches": _graded.patches_with_cells(),
 		"cell_builds": int(counters["cell_builds"]) - int(_seen["cell_builds"]),
 		# Resident patches drawing nothing (sky through the ground): a failure in any frame.
 		"holes": _graded.hole_patches(),

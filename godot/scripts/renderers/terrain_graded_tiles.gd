@@ -1549,6 +1549,13 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 	_unready.erase(key)
 	_set_plane(key, patch_node, true)
 
+## Resident patches holding a cell set. O(resident patches).
+func patches_with_cells() -> int:
+	var count := 0
+	for key: Vector2i in _resident.keys():
+		count += int(_book.patch_set(key) >= 0)
+	return count
+
 ## Whether the cells draw at all (the terrain node's visibility; they are not its children).
 func set_drawn(drawn: bool) -> void:
 	if _book != null:
@@ -1582,9 +1589,7 @@ func get_pool_counters() -> Dictionary:
 	out["desired_by_level"] = Array(book["desired_by_level"])
 	out["layer_limit"] = layer_limit
 	out["block_patches"] = block_patches
-	var with_cells := 0
-	for key: Vector2i in _resident.keys():
-		with_cells += int(_book.patch_set(key) >= 0)
+	var with_cells := patches_with_cells()
 	out["patches_with_cells"] = with_cells
 	out["cell_builds_queued"] = _book.builds_queued()
 	out["cell_sets_free"] = int(counters["cell_sets_prewarmed"]) - with_cells
