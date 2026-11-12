@@ -153,6 +153,8 @@ pub(crate) struct Graded {
     pub(crate) requests: super::tiles::Requests,
     // Scratch for the wanted tiles a hand-over takes.
     pub(crate) wanted_scratch: Vec<Tile>,
+    // A trace records the hand-over's stale cancels in their place among the effects.
+    pub(crate) markers: bool,
     // Scratch for a block's listed tiles.
     pub(crate) listed_scratch: std::collections::HashSet<Tile>,
 }

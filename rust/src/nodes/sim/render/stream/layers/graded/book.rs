@@ -50,11 +50,24 @@ pub struct GradedTileBook {
     scratch: Vec<(PageRef, Block)>,
     tiles: Vec<Tile>,
     flat: Vec<i64>,
+    // The hand-over's answers, reused.
+    results: Vec<i64>,
     considered: usize,
 }
 
 #[godot_api]
 impl GradedTileBook {
+    /// The last hand-over applied by `apply`, which takes the stale cancels and the flat
+    /// requests and writes the queue's answers (per cancel, then per request) into the reused
+    /// buffer; the book then takes them. No allocation once warm.
+    pub(crate) fn hand_over_with(&mut self, apply: impl FnOnce(&[Tile], &[i64], &mut Vec<i64>)) {
+        let mut results = std::mem::take(&mut self.results);
+        results.clear();
+        apply(&self.state.requests.stale_cancels, &self.flat, &mut results);
+        self.state.hand_over_results(&results);
+        self.results = results;
+    }
+
     /// Sets the world up: the patch grid's lower corner, a patch's side, patches per axis, the
     /// block side in patches, the device's layer limit, and per level code `(slot side, most
     /// slots a page holds, most row texels a tile takes)` as flat triples. Drops every page and
@@ -387,13 +400,43 @@ impl GradedTileBook {
             .unwrap_or(-1)
     }
 
-    /// The hand-over: every wanted tile that can install is requested (the returned flat
-    /// `(x, z, code, step, token)` for `request_graded_tiles`); a complete tile's stale pending
-    /// request is cancelled (effects; answers to `cancel_results`).
+    /// The hand-over: every wanted tile that can install is to be requested, and a complete
+    /// tile's stale pending request cancelled. Rust's queue applies both in one call
+    /// (`SimulationNode.hand_over_graded_tiles`, which answers the book), or a trace reads them
+    /// (`hand_over_stale`, `hand_over_requests`, `hand_over_results`). Returns the requests.
     #[func]
-    pub fn request_tiles(&mut self) -> PackedInt64Array {
+    pub fn request_tiles(&mut self) -> i64 {
         self.considered = self.state.request_tiles(&mut self.flat, &mut self.scratch);
+        (self.flat.len() / 5) as i64
+    }
+
+    /// The last hand-over's stale cancels, flat `(x, z)` in order (for a trace).
+    #[func]
+    pub fn hand_over_stale(&self) -> PackedInt32Array {
+        self.state
+            .requests
+            .stale_cancels
+            .iter()
+            .flat_map(|tile| [tile.x, tile.z])
+            .collect()
+    }
+
+    /// The last hand-over's requests, flat `(x, z, code, step, token)` (for a trace).
+    #[func]
+    pub fn hand_over_requests(&self) -> PackedInt64Array {
         PackedInt64Array::from(self.flat.as_slice())
+    }
+
+    /// Rust's queue's answers to the last hand-over (per stale cancel, then per request).
+    #[func]
+    pub fn hand_over_results(&mut self, results: PackedInt64Array) {
+        self.state.hand_over_results(results.as_slice());
+    }
+
+    /// A trace records the hand-over's stale cancels in their place among the effects.
+    #[func]
+    pub fn set_markers(&mut self, markers: bool) {
+        self.state.markers = markers;
     }
 
     /// The wanted tiles the last hand-over took.
@@ -402,17 +445,6 @@ impl GradedTileBook {
         self.considered as i64
     }
 
-    /// The stale cancels' answers, in order.
-    #[func]
-    pub fn cancel_results(&mut self, dropped: PackedInt64Array) {
-        self.state.cancel_results(dropped.as_slice());
-    }
-
-    /// Rust's queue's answers to the hand-over's requests.
-    #[func]
-    pub fn requests_accepted(&mut self, accepted: PackedByteArray) {
-        self.state.requests_accepted(accepted.as_slice());
-    }
 
     /// Growing blocks whose target holds every copy switch to it (effects).
     #[func]

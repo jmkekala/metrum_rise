@@ -113,8 +113,9 @@ var _edit_staged: Dictionary = {}
 # The bake result an upload's write effects write, and the walls its entry takes.
 var _uploading: Dictionary = {}
 var _entry_walls: Dictionary = {}
-# The hand-over's stale cancels' answers, in order.
-var _stale_dropped := PackedInt64Array()
+# A traced hand-over's answers (per stale cancel, then per request) and the next cancel's.
+var _hand_over := PackedInt64Array()
+var _hand_over_at := 0
 # Whether the book's resident set follows the live dictionary (from the first process()).
 var _resident_synced := false
 # Results polled after the frame's install budget ran out, in arrival order, as [kind, result]:
@@ -359,6 +360,7 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	# The book drops every page and makes the world pages of GL0 and GL1, sized by their bands'
 	# bound and the most rows a tile can hold (at most the layer limit), so they never fill.
 	_book.setup(world_min, patch_span_m, _patch_grid, block_patches, layer_limit, shapes)
+	_book.set_markers(trace != null)
 	_book.set_settle(unbudgeted, residency_settling)
 	_apply_effects()
 	for code in mini(2, levels.size()):
@@ -1043,9 +1045,13 @@ func _apply_effects() -> void:
 					_block_page[code].erase(block)
 				_bind_block(code, block, int(effects[at + 4]) == 1)
 			12:
-				var dropped := _sim_cancel(tile)
 				if int(effects[at + 3]) == 1:
-					_stale_dropped.append(dropped)
+					# A traced hand-over's stale cancel, recorded in its place (_request_tiles).
+					trace.out("cancel %d %d" % [tile.x, tile.y])
+					_hand_over[_hand_over_at] = int(trace.value("cancel", str(_hand_over[_hand_over_at])))
+					_hand_over_at += 1
+				else:
+					_sim_cancel(tile)
 			13:
 				counters["pool_exhausted"] += 1
 				MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [int(effects[at + 3]), str(tile)])
@@ -1111,13 +1117,6 @@ func _sim_poll() -> Dictionary:
 		return simulation_node.poll_graded_tile_results(POLL_BATCH)
 	trace.out("poll %d" % POLL_BATCH)
 	return trace.poll({} if trace.replaying else simulation_node.poll_graded_tile_results(POLL_BATCH))
-
-func _sim_request_tiles(flat: PackedInt64Array) -> PackedByteArray:
-	if trace == null:
-		return simulation_node.request_graded_tiles(flat)
-	trace.out("request_tiles " + GradedTrace.ints(flat))
-	var reply := "" if trace.replaying else GradedTrace.ints(simulation_node.request_graded_tiles(flat))
-	return PackedByteArray(Array(GradedTrace.ints_of(trace.value("request_tiles", reply))))
 
 func _sim_request_lists(flat: PackedInt64Array) -> PackedByteArray:
 	if trace == null:
@@ -1530,17 +1529,32 @@ func _request_patch_lists(resident_patches: Dictionary) -> void:
 # waits for the event that unblocks it: its block's move, a freed slot of its exhausted level or
 # its block's lists. O(wanted tiles) in Rust, each once per change; two calls here.
 func _request_tiles() -> void:
-	var flat: PackedInt64Array = _book.request_tiles()
+	_frame_handed += int(_book.request_tiles())
 	_frame_considered += _book.considered()
-	_stale_dropped.clear()
-	_apply_effects()
-	_book.cancel_results(_stale_dropped)
-	if flat.is_empty():
+	if trace == null:
+		# One call: Rust's queue takes the cancels and requests from the book and answers it.
+		simulation_node.hand_over_graded_tiles(_book)
+		_apply_effects()
 		return
-	_frame_handed += flat.size() / 5
-	# 0: not queued (an unknown level); 1: queued; 2 + k: queued in place of the tile's pending
-	# request at LEVEL_STEPS[k], which Rust drops unbaked.
-	_book.requests_accepted(_sim_request_tiles(flat))
+	# Traced: the same hand-over from flat arrays, its answers recorded op by op where the
+	# renderer made them (each stale cancel marked among the effects, then the requests).
+	var stale: PackedInt32Array = _book.hand_over_stale()
+	var requests: PackedInt64Array = _book.hand_over_requests()
+	var cancels := stale.size() / 2
+	_hand_over = PackedInt64Array()
+	if not trace.replaying and not (stale.is_empty() and requests.is_empty()):
+		_hand_over = simulation_node.hand_over_graded_ops(stale, requests)
+	_hand_over.resize(cancels + requests.size() / 5)
+	_hand_over_at = 0
+	_apply_effects()
+	if not requests.is_empty():
+		# 0: not queued (an unknown level); 1: queued; 2 + k: queued in place of the tile's
+		# pending request at LEVEL_STEPS[k], which Rust drops unbaked.
+		trace.out("request_tiles " + GradedTrace.ints(requests))
+		var accepted := GradedTrace.ints_of(trace.value("request_tiles", GradedTrace.ints(_hand_over.slice(cancels))))
+		for index in mini(accepted.size(), _hand_over.size() - cancels):
+			_hand_over[cancels + index] = accepted[index]
+	_book.hand_over_results(_hand_over)
 
 # The tiles whose interior meets a patch rectangle.
 static func _patch_tiles(rect: Rect2) -> Array[Vector2i]:

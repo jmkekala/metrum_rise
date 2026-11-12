@@ -18,6 +18,7 @@
 
 use super::*;
 use crate::nodes::sim::core::{GradedEditSelection, GradedInstallTiles};
+use crate::nodes::sim::render::stream::layers::graded::book::GradedTileBook;
 use crate::nodes::sim::render::stream::levels::{GL3_STEPS, level_code, level_from_code};
 use crate::nodes::sim::render::stream::requests::{
     TileRequest as GradedTileRequest, TileRequestQueue,
@@ -543,6 +544,40 @@ impl SimulationNode {
             .map_or(-1, |level| i64::from(level_index(level)))
     }
 
+    /// The graded renderer's hand-over in one call (`RENDER-32-I`): the book's stale cancels,
+    /// then its requests, applied to the queue in order (as `cancel_graded_tile` per cancel and
+    /// one `request_graded_tiles` would), its bakes started once after the requests, and the
+    /// answers handed back to the book. `O(cancels + requests)`, no allocation once warm.
+    #[func]
+    pub fn hand_over_graded_tiles(&mut self, mut book: Gd<GradedTileBook>) {
+        let mut requested = false;
+        book.bind_mut().hand_over_with(|stale, requests, results| {
+            requested = self.apply_graded_tile_ops(stale, requests, results);
+        });
+        if requested {
+            self.start_graded_bakes();
+        }
+    }
+
+    /// The same hand-over from flat arrays, answers returned (a trace records them op by op):
+    /// `stale` flat `(x, z)`, `requests` flat `(x, z, code, step, token)`; per cancel the
+    /// dropped level's index or -1, then per request its acceptance code.
+    #[func]
+    pub fn hand_over_graded_ops(&mut self, stale: PackedInt32Array, requests: PackedInt64Array) -> PackedInt64Array {
+        let stale: Vec<TileKey> = stale
+            .as_slice()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|tile| TileKey { x: tile[0], z: tile[1] })
+            .collect();
+        let mut results = Vec::new();
+        if self.apply_graded_tile_ops(&stale, requests.as_slice(), &mut results) {
+            self.start_graded_bakes();
+        }
+        PackedInt64Array::from(results.as_slice())
+    }
+
     /// Drops every pending bake request, as the renderer resets.
     #[func]
     pub fn cancel_graded_tile_requests(&mut self) {
@@ -694,6 +729,30 @@ impl SimulationNode {
 }
 
 impl SimulationNode {
+    // Applies a hand-over's cancels then requests to the queue under one lock, answers into
+    // `results`. Returns whether a request was queued (the caller starts the bakes).
+    fn apply_graded_tile_ops(&self, stale: &[TileKey], requests: &[i64], results: &mut Vec<i64>) -> bool {
+        let mut jobs = self.graded_jobs.lock().unwrap();
+        for &tile in stale {
+            let dropped = jobs.requests.cancel(tile);
+            results.push(dropped.map_or(-1, |level| i64::from(level_index(level))));
+        }
+        for chunk in requests.as_chunks::<5>().0 {
+            let level = (i32::try_from(chunk[0]).ok(), i32::try_from(chunk[1]).ok(), level_from_code(chunk[2], chunk[3]));
+            let (Some(x), Some(z), Some(level)) = level else {
+                results.push(0);
+                continue;
+            };
+            let replaced = jobs.requests.push(GradedTileRequest {
+                tile: TileKey { x, z },
+                level,
+                token: chunk[4],
+            });
+            results.push(i64::from(replaced.map_or(1, |level| 2 + level_index(level))));
+        }
+        !requests.is_empty()
+    }
+
     // Starts the pending tile bakes the free in-flight places take, nearest the view first, on
     // a payload worker: one snapshot under `try_lock` for the batch (a busy core fails them,
     // for Godot to ask again), then a bake per level.

@@ -445,8 +445,11 @@ impl Graded {
                 .get(&tile)
                 .map(|entry| (entry.level, entry.step, entry.token));
             if current == Some((level.0, level.1, token)) && self.tile_complete(tile, level.0, scratch) {
-                // It shows what it wants: a request of another level still pending is dropped.
-                self.effects.push(Effect::Cancel { tile, stale: true });
+                // It shows what it wants: a request of another level still pending is dropped
+                // (the hand-over's cancels; a trace marks each in its place among the effects).
+                if self.markers {
+                    self.effects.push(Effect::Cancel { tile, stale: true });
+                }
                 self.requests.stale_cancels.push(tile);
                 continue;
             }
@@ -504,8 +507,16 @@ impl Graded {
         considered
     }
 
+    /// The hand-over's answers from Rust's queue, in order: per stale cancel the dropped
+    /// request's `LEVEL_STEPS` index (or -1), then per request its acceptance code.
+    pub(crate) fn hand_over_results(&mut self, results: &[i64]) {
+        let cancels = self.requests.stale_cancels.len().min(results.len());
+        self.cancel_results(&results[..cancels]);
+        self.requests_accepted(&results[cancels..]);
+    }
+
     /// The stale cancels' answers, in order: the dropped request's `LEVEL_STEPS` index, or -1.
-    pub(crate) fn cancel_results(&mut self, dropped: &[i64]) {
+    fn cancel_results(&mut self, dropped: &[i64]) {
         let tiles = std::mem::take(&mut self.requests.stale_cancels);
         for (tile, &index) in tiles.iter().zip(dropped) {
             if let Some(&(code, step)) = usize::try_from(index).ok().and_then(|at| LEVEL_STEPS.get(at)) {
@@ -517,10 +528,10 @@ impl Graded {
 
     /// Rust's queue's answers to the hand-over's requests, in order: 0 not queued, 1 queued,
     /// `2 + k` queued in place of a pending request at `LEVEL_STEPS[k]`.
-    pub(crate) fn requests_accepted(&mut self, accepted: &[u8]) {
+    fn requests_accepted(&mut self, accepted: &[i64]) {
         let sent = std::mem::take(&mut self.requests.sent);
         for (index, &(tile, key, token)) in sent.iter().enumerate() {
-            let code = accepted.get(index).copied().unwrap_or(0);
+            let code = accepted.get(index).map_or(0, |&code| u8::try_from(code).unwrap_or(0));
             if code == 0 {
                 continue;
             }

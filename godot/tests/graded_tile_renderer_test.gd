@@ -359,6 +359,18 @@ class RefusingBridge extends Node:
 	func cancel_graded_tile(_tile: Vector2i) -> int:
 		return -1
 
+	# The renderer's one-call hand-over: the book's stale cancels, then its requests, answered.
+	func hand_over_graded_tiles(book: GradedTileBook) -> void:
+		var stale: PackedInt32Array = book.hand_over_stale()
+		var requests: PackedInt64Array = book.hand_over_requests()
+		var results := PackedInt64Array()
+		for index in range(0, stale.size(), 2):
+			results.append(cancel_graded_tile(Vector2i(stale[index], stale[index + 1])))
+		if not requests.is_empty():
+			for code in request_graded_tiles(requests):
+				results.append(code)
+		book.hand_over_results(results)
+
 	func cancel_graded_tile_requests() -> void:
 		pass
 
