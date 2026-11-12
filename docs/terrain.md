@@ -11931,7 +11931,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`); the detail swap without read-back (`RENDER-37`) | 0.3 ms on the turn, 1.5 ms at 100k; reflection hook 0.1 ms without water in view. Landed 2026-11-12 (coordinator, delegation, for review): every bar met (0.09-0.21 ms, 0.26-0.53 ms, 0.02-0.04 ms) |
 | `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`); step 0: a water input of record, a pond made on the prepared 30k city by a recorded deterministic recipe through the lake-fill mutators (planned 2026-11-12) | 0.3 ms a frame on Kuopio's turn and pan, the water half measured on the pond input too |
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement | Entered-to-drawn p95 at most three frames |
-| `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice |
+| `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice (2026-11-12): walkers to 1.0 km with a fade from 0.8 km, cars to 2.5 km with a fade from 2.0 km; stills identical inside the fade starts. Built 2026-11-12 (branch `stream-a2`, [record](#agent-draw-distances-render-32-o-2026-11-12)) |
 | `RENDER-32-P` | R1 | Road hydration at load, parked cars, zoning masks (`RENDER-36`) | The 100k load's frame at most 33 ms |
 | `RENDER-32-Q` | Close-out | The frame's streaming budgets: graded, buildings and the stream node each run their own `GodotBackend` and budget against the plan's one 2.0 ms (planned 2026-11-12, review of the rounds). Opens with a measurement of all layers' install work a frame on the 30k and 100k turns: inside 2.0 ms in every frame, the per-layer budgets are recorded as the design and the plan's sentence revised; over it, the graded poll and the building publication charge the stream node's budget | The sum of the layers' install work at most 2.0 ms in every frame |
 
@@ -14102,6 +14102,125 @@ batches: met (no node; 884 slots made at the load and reused). `RENDER-37`, no v
 2.0 ms on the 30k zooms: met (0.14 ms at most).Stills identical: met
 (Kuopio byte-identical; the city and the pond with no systematic difference beyond the control's
 own run-to-run speckle). `PERF-07` at level F: level or better.
+
+### Agent draw distances (`RENDER-32-O`, 2026-11-12)
+
+A2, `RENDER-28`'s second part, the user's choice of 2026-11-12: walkers drawn to 1.0 km with a fade
+from 0.8 km, moving cars to 2.5 km with a fade from 2.0 km, measured from the camera; parked cars
+stay with `RENDER-32-P`. Branch `stream-a2` off `dev` `280e388c`.
+
+**What changed:**
+
+- **Constants** beside `AGENT_CULL_FAR_M` in `config.rs`: `WALKER_FADE_START_M` 800,
+  `WALKER_DRAW_DISTANCE_M` 1,000, `CAR_FADE_START_M` 2,000, `CAR_DRAW_DISTANCE_M` 2,500;
+  `get_agent_draw_distances()` hands them to the shaders.
+- **Cut before posing** (`core/snapshot/agents.rs`). The eye rides `SetCameraAabb` beside the
+  rectangle (`SimCore::agent_draw_eye`). An agent's reach is its kind's draw distance plus
+  `AGENT_CULL_PADDING_M` (200 m), the rectangle's own allowance for the camera moving during the
+  snapshot's latency. Before posing, an agent whose lane box (widened by the rounding margin), or
+  stored position, lies beyond its reach from the eye in the ground plane is not posed; a posed
+  agent is cut by the distance of its drawn origin, in space (in the ground plane for an off-lane
+  car, grounded later). The ground-plane distance to a box never exceeds that to a point inside it
+  or that in space, and the sums round monotonically, so the early test never cuts what the exact
+  one keeps. One O(1) test per agent; per-chunk counters, no allocation. Culled agents are neither
+  posed, bucketed, smoothed, ground-solved, recorded nor uploaded.
+- **The fade** (`agent_draw_fade.gdshaderinc`): per instance, `1 - smoothstep(start, end, d)` with
+  `d` the instance origin's distance from the main camera (`MAIN_CAM_INV_VIEW_MATRIX`), computed in
+  the vertex shader (a flat varying); a pixel is dropped where the share falls at or below
+  interleaved gradient noise, Godot's own distance-fade dither. Chosen because a `MultiMesh` has no
+  per-instance visibility range and alpha blending would move the agents to the transparent pass:
+  the dither keeps the opaque pass and its depth, and costs nothing within the fade start, where
+  the share is exactly 1 and no pixel is dropped. An instance faded out collapses to its origin in
+  the vertex shader and rasterizes nothing. Walkers (`pedestrian_walk.gdshader`), moving cars
+  (`building_windows.gdshader`'s `AGENT_DRAW_FADE` variant, through `WindowMaterials.create`'s
+  `draw_fade_m`, so buildings and parked cars compile the shader they did) and the cars' lamp glows
+  (additive: the glow's intensity takes the share). **Shadows** fade with their casters: the shadow
+  passes run the same dither from the main camera's distance; in practice no agent in a band casts
+  one, as the sun's shadows end at 420 m (`SHADOW_MAX_DISTANCE_M`).
+- **Walkers upload only when changed** (`render/walker_visual.rs`, `update_walker_buffers` and
+  `get_changed_walker_buckets`, replacing `get_agent_transforms`): a bucket uploads when its
+  snapshot buffer differs bit for bit from the drawn one, so paused and between snapshots none does.
+  O(drawn walkers) compares, copies of changed buckets only.
+- **Perf channel**: `agents.gd` adds walkers and cars cut, the snapshot's agent instance time
+  (`snapshot_agents_ms`, simulation thread) and walker buckets uploaded.
+- Render-consumer state only: the simulation never reads the eye or the cut.
+
+Consequences for review: at night, car lamp glows (drawn at least 1.6 px so traffic showed across
+the map) now end with their cars at 2.5 km; a car that parks beyond 2.5 km appears in its bay
+without having been seen driving there (parked cars are not cut, `RENDER-32-P`).
+
+**Tests** (fresh): the cut against the serial full-pose reference with eyes sweeping both reaches,
+level and 120 m up, with and without a rectangle, walkers and cars on lanes and off them, drawn plus
+cut equal to visible (`draw_distances_cut_agents_beyond_their_reach_and_match_the_full_pose`); the
+populated-city equivalence test with eyes off the boxes' corners (6,002 comparisons, 61,136 walker
+and 11,816 car cuts, bit for bit); the walker upload skip; **sim digests**: a 2,000-resident city
+run 4 hours at 32x with a snapshot built every frame, once cut by an eye over a corner (77,785
+walker and 3,398 car cuts) and once without, gives equal hourly fingerprints and saved tables
+(`render28_draw_distances_leave_the_simulation_unchanged`, release, ignored).
+
+**Stills** (1080p, 10:00, paused; control `dev` `280e388c`'s release library, SHA-256 `9faa673b`,
+with its scripts; branch `916cdf1b`, the same assets): at views whose every visible point lies
+within the walkers' 0.8 km fade start (two street level, two play height, -1.3 rad at 300 m): no
+systematic difference beyond the city's own run-to-run speckle (pixels equal within each side's two
+runs and different across: 555, 569, 278, 148; the same count with the runs paired across sides,
+450-562, 222-266, 122-137; mean channel delta 2, at building and tree edges, not on agents);
+Kuopio (no agents) close and play height byte-identical, its shallow view's sky differing as two
+control runs do. **Pull-out** (the 30k centre, -0.5 rad, orbit 300 m to 3.5 km in 300 steps, each
+settled, then agents shown, hidden, shown): agent pixels (a channel delta of at least 8, stable
+against the second shown frame) fall smoothly through both bands on the branch and follow the
+control's within the dither's noise inside them; the largest step-to-step change is 269 px
+(control 350); relative jumps above the control's come only below 200 px at the end of the
+pull-out. A single 2-4 px agent popping is below this method's resolution; the 200 m reach
+padding is what excludes it. Side-by-side clip and contact sheet with the round's artefacts.
+
+**Fresh rows** (stream benchmark, 1080p, eight workers on the P-cores, gamescope headless; same
+libraries; `$ARTIFACTS` session 11:13-12:01). 30k paused, C B B C, uninstrumented; the 1 s turns
+from the one rerun of their flagged group (the first set's `turn_back` p99 39.4 ms on one branch run):
+
+| | control | branch |
+|---|---|---|
+| still p50 / p99 | 8.37-8.40 / 10.65-10.73 | 7.49-7.51 / 9.72-10.44 |
+| still GPU p50, primitives | 8.30-8.32, 130.7 M | 7.42-7.44, 101.7 M |
+| 1 s turns p50 / p99 | 15.6-16.4 / 21.7-28.0 | 13.6-15.2 / 19.9-25.1 |
+| 1 s turns GPU p50, primitives | 9.4-10.3, 131.9-133.2 M | 7.9-10.2, 101.0-102.2 M |
+
+Instrumented, one run a side (agents' mean ms a frame; counts a frame):
+
+| | control | branch |
+|---|---:|---:|
+| 30k paused still: agents, walkers / cars drawn | 0.27, 3,390 / 3,410 | **0.15**, 649 / 3,110 (2,800 / 295 cut) |
+| 30k paused 1 s turns: agents | 1.30-1.63 | 1.27-1.84 |
+| 30k 1x still: agents, GPU p50, frame p50 | 1.69, 8.16, 13.2 | 1.50, 7.21, 11.7 |
+| 30k 1x 1 s turns: agents | 2.12-2.55 | 2.06-2.42 |
+| 100k 1x still: agents, walkers / cars drawn | 3.27-3.37, 9,900-10,400 / 11,100 | **1.97-1.99**, 829 / 4,830 (9,110 / 6,490 cut) |
+| 100k 1x still: primitives, GPU p50, frame p50 | 321-326 M, 20.3-20.6, 30.5-31.9 | 167 M, 16.2-16.4, 26.5-27.0 |
+| 100k 1x still: frame p99 | 45.8-45.9 | **53.9-58.5** |
+| 100k 1x 1 s turns: agents, GPU p50, frame p50 / p99 | 3.07-3.34, 21.1-28.6, 34.0-34.8 / 45.8-54.1 | 2.13-2.35, 21.9-23.1, 31.7-32.9 / 44.7-54.5 |
+
+Walker uploads: paused still 0.0995 to 0.0012 ms (none). The snapshot's agent instance time (branch
+counter, simulation thread): 1.65 ms on the 30k paused still, 1.4-1.8 at 1x, 1.2-1.3 at 100k.
+Against the control's rule in one binary (`culled_snapshot_matches_full_pose_on_a_prepared_city`,
+the prepared 30k city, `PERF-07`'s 2 km box, 200 frames, `METRUM_K2_EYES`): eyeless 0.995 ms mean
+(timed last, warm), an eye 300 m over the centre 1.023 (timed first), the stream benchmark's base
+pose 0.890.
+
+The 100k 1x still's p99 is worse on both runs. Its slow frames are the graded terrain's (20-37 ms
+of terrain script in each, as the 100k city still streams tiles after its load, `RENDER-32-K`); on
+the frames without terrain work (under 5 ms of it) the branch's p99 is 37.3-37.8 ms against the
+control's 45.8-50.0. Not attributed further; for review.
+
+**Timing level F** (`./run.sh --timing --level F --control <ctl> --branch <br> --base dev`, release
+lib test binaries of `280e388c` (`ec8a33d1`) and `916cdf1b` (`a9812f0a`)): 30k 1x day acceptance
+PASS on the control and both branch rows after the one `--rerun` of the noisy first branch row
+(8,654 preempted frames), every metric level (mean 2.219 against 2.257 ms, p99.9 4.22 against
+4.26); 30k 32x C B B C every metric level (mean -0.9%), the `PERF-17` known exception on both
+sides. The headless benchmark sets no eye, so it runs the eyeless path.
+
+**Bars** (brief): stills identical inside the fade starts: met (above); no visible pop: no frame of
+the pull-out shows a coverage jump beyond the control's (above); measured against control: lower on
+every 30k phase at p50 and GPU, primitives -22% at 30k and -49% at 100k; "not worse anywhere": met
+except the 100k 1x still's p99 (terrain frames, above) and the 30k paused turns' agents
+(1.27-1.84 against 1.30-1.63, single runs); `PERF-07` at level F unchanged: met.
 
 ## Implemented Runtime Contract
 

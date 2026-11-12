@@ -58,7 +58,10 @@ frame, with no node per patch: stills identical, the vegetation's frame time on 
 1 ms (control 1.6-1.8) and at most 1.5 ms of installs in any frame.
 `RENDER-32-G` (accepted by the user 2026-11-12) stops re-solving and re-uploading cars that
 stand still: the 30k city's agents cost 0.27 ms a paused frame instead of 4.4 ms, and 1.7 ms at
-1x instead of 3.7.
+1x instead of 3.7. `RENDER-32-O` (built, not yet landed) gives agents the draw distances the user
+chose: walkers fade out from 0.8 km and end at 1.0 km, moving cars from 2.0 to 2.5 km, cut before
+the snapshot poses them; nothing nearer changes. The 30k paused still runs at 7.5 ms instead of
+8.4, and at 100k agents cost 2.0 ms a frame instead of 3.3 with half the primitives drawn.
 `RENDER-32-J` (built, not yet landed) moves the graded cell sets, wall faces and draw states to
 Rust, replayed bit for bit: the cell rewrites on a 30k turn fall from 3.2-3.6 ms a frame to 0.5,
 and the 30k 1 s turns run at 20 ms p50 (28-32 before `RENDER-32-B`). `RENDER-32-K` part 1 (built,
