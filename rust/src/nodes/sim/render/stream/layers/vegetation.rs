@@ -181,6 +181,9 @@ pub(crate) struct VegetationLayer {
     pending: Vec<Pending>,
     // Products installed or dropped, for their storage to go back to the jobs.
     spent: Vec<VegetationProduct>,
+    // Installed products, for the residency to keep as its patch's retained product
+    // (`RENDER-32-N`) or return as spent.
+    retained: Vec<Delivery>,
     spare_batches: Vec<Vec<InstalledBatch>>,
     events: Vec<i64>,
     enabled: bool,
@@ -214,6 +217,7 @@ impl VegetationLayer {
             installed: Map::default(),
             pending: Vec::new(),
             spent: Vec::new(),
+            retained: Vec::new(),
             spare_batches: Vec::new(),
             events: Vec::new(),
             enabled: true,
@@ -284,6 +288,12 @@ impl VegetationLayer {
     /// Products whose storage can go back to the jobs.
     pub(crate) fn take_spent(&mut self) -> impl Iterator<Item = VegetationProduct> + '_ {
         self.spent.drain(..)
+    }
+
+    /// The products installed since the last call, with their keys and serials (`RENDER-32-N`:
+    /// the residency keeps them for a patch that leaves and comes back, or returns them as spent).
+    pub(crate) fn take_retained(&mut self) -> std::vec::Drain<'_, Delivery> {
+        self.retained.drain(..)
     }
 
     /// The install events since the last call, six lanes each.
@@ -450,6 +460,7 @@ impl VegetationLayer {
         for pending in self.pending.drain(..) {
             self.spent.push(pending.delivery.product);
         }
+        self.spent.extend(self.retained.drain(..).map(|delivery| delivery.product));
         self.pool.clear(backend);
         self.events.clear();
         self.detail_due.clear();
@@ -644,7 +655,7 @@ impl VegetationLayer {
         for at in (0..self.pending.len()).rev() {
             if self.pending[at].installed {
                 let pending = self.pending.swap_remove(at);
-                self.spent.push(pending.delivery.product);
+                self.retained.push(pending.delivery);
             }
         }
         self.status.installs_total += done as u64;

@@ -43,7 +43,7 @@ use crate::nodes::sim::render::stream::layers::terrain::{
 };
 use crate::nodes::sim::render::stream::layers::zoning::ZoningRing;
 use crate::nodes::sim::render::stream::layers::vegetation::residency::{
-    PatchJobs, PatchOrder, ResidencySettings, Standing, VegetationResidency,
+    PREPARED_CAP_BYTES, PatchJobs, PatchOrder, ResidencySettings, Standing, VegetationResidency,
 };
 use crate::nodes::sim::render::stream::layers::vegetation::{
     Delivery, MATERIAL_COUNT, MESH_COUNT, PatchKey, SLOT_LIMIT, SPARE_LIMIT, VegetationLayer,
@@ -651,7 +651,9 @@ impl StreamNode {
 
     /// The streaming status: per layer (`vegetation`) installed, visible, pending, blocked,
     /// slots live, spare, created and freed, installs, and this frame's units with their
-    /// predicted and measured microseconds and the longest unit.
+    /// predicted and measured microseconds and the longest unit; the vegetation's prepared set
+    /// (`prepared`, `prepared_bytes`, `prepared_cap_bytes`, `preparing`, `prepared_over_cap`,
+    /// `prepared_used`, `prepared_dropped`, `prepared_replaced`).
     #[func]
     pub fn get_stream_status(&self) -> VarDictionary {
         let status = self.vegetation.status();
@@ -669,6 +671,17 @@ impl StreamNode {
         layer.set("frame_predicted_us", status.frame.predicted_us);
         layer.set("frame_measured_us", status.frame.measured_us);
         layer.set("frame_max_unit_us", status.frame.max_unit_us);
+        // The prepared set (`RENDER-32-N`): products held, their bytes and cap, prepares in
+        // flight, evictions over the cap, products a request used, dropped and replaced.
+        let [held, bytes, preparing, over_cap, used, dropped, replaced] = self.residency.prepared_counts();
+        layer.set("prepared", held);
+        layer.set("prepared_bytes", bytes);
+        layer.set("prepared_cap_bytes", PREPARED_CAP_BYTES as i64);
+        layer.set("preparing", preparing);
+        layer.set("prepared_over_cap", over_cap);
+        layer.set("prepared_used", used);
+        layer.set("prepared_dropped", dropped);
+        layer.set("prepared_replaced", replaced);
         let mut out = VarDictionary::new();
         out.set("vegetation", layer);
         out.set("budget_us", STREAM_BUDGET_US);
@@ -1214,6 +1227,8 @@ impl StreamNode {
             let mut jobs = Jobs(self.spawner.as_mut());
             self.residency
                 .frame(eye, &mut self.vegetation, backend, &mut jobs);
+            // While nothing wanted waits, products along the camera's reach (`RENDER-32-N`).
+            self.residency.prepare(self.view, &mut jobs);
             self.frame_residency_us = start.elapsed().as_secs_f64() * 1e6;
         }
         self.pull();
@@ -1253,17 +1268,25 @@ impl StreamNode {
         let mut jobs = spawner.jobs.lock().unwrap();
         while let Some(delivered) = jobs.poll() {
             self.frame_pulled += 1;
+            // A product prepared ahead is held by the residency, not installed (`RENDER-32-N`).
             match delivered.product {
-                Some(product) => self.vegetation.deliver(Delivery {
-                    key: delivered.key,
-                    serial: delivered.serial,
-                    origin: product.origin,
-                    span: product.span,
-                    product,
-                }),
-                None => self
-                    .vegetation
-                    .deliver_busy(delivered.key, delivered.serial),
+                Some(product) => {
+                    let delivery = Delivery {
+                        key: delivered.key,
+                        serial: delivered.serial,
+                        origin: product.origin,
+                        span: product.span,
+                        product,
+                    };
+                    if let Some(delivery) = self.residency.take_prepared(delivery) {
+                        self.vegetation.deliver(delivery);
+                    }
+                }
+                None => {
+                    if !self.residency.prepared_busy(delivered.key, delivered.serial) {
+                        self.vegetation.deliver_busy(delivered.key, delivered.serial);
+                    }
+                }
             }
         }
     }
@@ -1276,8 +1299,14 @@ impl StreamNode {
                 for product in self.vegetation.take_spent() {
                     jobs.recycle(product);
                 }
+                for product in self.residency.take_prepared_spent() {
+                    jobs.recycle(product);
+                }
             }
-            None => self.vegetation.take_spent().for_each(drop),
+            None => {
+                self.vegetation.take_spent().for_each(drop);
+                self.residency.take_prepared_spent().for_each(drop);
+            }
         }
     }
 

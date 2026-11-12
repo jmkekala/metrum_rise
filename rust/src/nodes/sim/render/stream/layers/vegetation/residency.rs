@@ -34,8 +34,10 @@
 //! passed)`; an edit `O(patches of the edited blocks)`; a request `O(1)`. Nothing allocates once
 //! the storage has grown.
 
+mod prepared;
 mod rules;
 
+pub(crate) use prepared::PREPARED_CAP_BYTES;
 pub(crate) use rules::{Bands, ResidencySettings};
 
 use super::{PatchKey, VegetationLayer};
@@ -195,6 +197,8 @@ pub(crate) struct VegetationResidency {
     generated: u64,
     generation_us_max: i64,
     work: ResidencyWork,
+    // The products prepared ahead along the camera's reach (`RENDER-32-N`, [`prepared`]).
+    prepared: prepared::Prepared,
 }
 
 impl Default for VegetationResidency {
@@ -239,6 +243,7 @@ impl Default for VegetationResidency {
             generated: 0,
             generation_us_max: 0,
             work: ResidencyWork::default(),
+            prepared: prepared::Prepared::default(),
         }
     }
 }
@@ -281,6 +286,7 @@ impl VegetationResidency {
         self.tree_count = 0;
         self.generated = 0;
         self.generation_us_max = 0;
+        self.prepared.clear();
     }
 
     /// The terrain's render patch side (`get_render_patch_span_m`); 0 holds the residency.
@@ -496,6 +502,8 @@ impl VegetationResidency {
             return;
         };
         let mut installs = 0;
+        let mut accepted = std::mem::take(&mut self.prepared.accepted);
+        accepted.clear();
         let mut at = 0;
         while at + super::EVENT_LANES <= layer.events().len() {
             let event: [i64; super::EVENT_LANES] = layer.events()[at..at + super::EVENT_LANES]
@@ -528,6 +536,7 @@ impl VegetationResidency {
                 bands: request.bands,
             };
             self.patches.insert(key, record);
+            accepted.push((key, request.serial));
             self.tree_count += record.tree_count;
             self.generated += 1;
             self.generation_us_max = self.generation_us_max.max(event[5]);
@@ -539,6 +548,9 @@ impl VegetationResidency {
             }
         }
         layer.clear_events();
+        // The installed products are kept for their patches' return (`RENDER-32-N`).
+        self.retain_installed(&accepted, layer);
+        self.prepared.accepted = accepted;
         self.work.installs += installs;
         if installs > 0 && !self.standins.is_empty() && let Some(camera) = self.camera {
             self.release_standins(&settings, camera, layer, backend);
@@ -930,6 +942,20 @@ impl VegetationResidency {
             }
             // A product of an older request still waiting for its install is dropped first.
             layer.forget(key);
+            // A product prepared ahead for these generations and bands is taken instead of a
+            // job (`RENDER-32-N`): it needs no job, so it takes none of the frame's requests.
+            if let Some(serial) = self.take_ahead(key, surface, vegetation, bands, layer, jobs) {
+                self.requested.insert(
+                    key,
+                    Request {
+                        serial,
+                        surface,
+                        vegetation,
+                        bands,
+                    },
+                );
+                continue;
+            }
             let order = PatchOrder {
                 key,
                 origin: key_origin(key, self.terrain_span, settings.world),

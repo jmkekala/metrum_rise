@@ -15,6 +15,7 @@ use crate::nodes::sim::render::stream::layers::vegetation::{
     Delivery, VARIANT_COUNTS, VegetationRules,
 };
 use crate::nodes::sim::render::stream::schedule::{FrameBudget, MonotonicClock, STREAM_BUDGET_US};
+use crate::nodes::sim::render::stream::view::CameraSample;
 use crate::nodes::sim::render::vegetation_product::{
     PLACEMENT_STRIDE, ProductCatalogue, ProductInputs, VegetationProduct,
     build_product,
@@ -213,6 +214,40 @@ impl World {
         self.layer.take_spent().for_each(drop);
         check_one_tier(&self.layer, &self.backend);
         work
+    }
+
+    // A frame with the prepared set (`RENDER-32-N`): the residency, then its prepare at `view`;
+    // with `complete`, every finished job goes through `take_prepared` as the stream node routes
+    // them (a prepare's product is held, any other delivered).
+    fn frame_prepared(&mut self, view: CameraSample, complete: bool) {
+        self.layer.set_camera(Some(view.eye));
+        self.residency
+            .frame(Some(view.eye), &mut self.layer, &mut self.backend, &mut self.jobs);
+        self.residency.prepare(Some(view), &mut self.jobs);
+        if complete {
+            let finished: Vec<_> = self.jobs.out.drain(..).collect();
+            for (serial, order) in finished {
+                let delivery = Delivery {
+                    key: order.key,
+                    serial,
+                    product: product(&order),
+                    origin: order.origin,
+                    span: order.span,
+                };
+                if let Some(delivery) = self.residency.take_prepared(delivery) {
+                    self.layer.deliver(delivery);
+                }
+            }
+        }
+        self.layer.refresh(&mut self.backend);
+        let mut budget = FrameBudget::new(STREAM_BUDGET_US);
+        self.layer
+            .install(&mut self.backend, &mut budget, &self.clock, &|_, _| true, true);
+        self.residency
+            .take_installs(&mut self.layer, &mut self.backend);
+        self.layer.take_spent().for_each(drop);
+        self.residency.take_prepared_spent().for_each(drop);
+        check_one_tier(&self.layer, &self.backend);
     }
 
     fn settle(&mut self, eye: [f32; 3]) {
@@ -673,4 +708,63 @@ fn a_refused_request_stays_queued_and_progress_resumes() {
             .map(|(key, _, _)| key)
             .collect::<BTreeSet<_>>()
     );
+}
+
+// The camera on an 800 m orbit about a pivot at the world's centre, pitch -0.1 rad.
+fn orbit(angle: f32) -> CameraSample {
+    let ground = 800.0 * 0.1f32.cos();
+    CameraSample {
+        eye: [ground * angle.cos(), 180.0, ground * angle.sin()],
+        pivot: [0.0, 100.0, 0.0],
+        yaw: angle,
+        pitch: -0.1,
+        distance: 800.0,
+    }
+}
+
+#[test]
+fn a_turn_draws_products_prepared_along_the_orbit_and_settles_to_the_same_set() {
+    let mut ahead = World::new(all_blocks());
+    let mut plain = World::new(all_blocks());
+    let start = orbit(0.0);
+    ahead.settle(start.eye);
+    plain.settle(start.eye);
+    // Still frames: the prepared world prepares its reach; nothing it holds draws.
+    for _ in 0..240 {
+        ahead.frame_prepared(start, true);
+    }
+    let [held, bytes, ..] = ahead.residency.prepared_counts();
+    assert!(held > 0 && bytes > 0, "products held along the reach");
+    assert_eq!(ahead.drawn(), plain.drawn(), "nothing prepared is drawn");
+    assert!(!ahead.residency.has_pending_work(), "preparing is not pending work");
+    // A half turn over 12 frames with no job finishing: only prepared products can draw.
+    for step in 1..=12 {
+        let view = orbit(std::f32::consts::PI * step as f32 / 12.0);
+        ahead.frame_prepared(view, false);
+        plain.frame(view.eye, |_| false);
+    }
+    let drawn_wanted = |world: &World| {
+        let wanted: BTreeSet<PatchKey> = world.residency.wanted().collect();
+        world.drawn().intersection(&wanted).count()
+    };
+    let [_, _, _, over_cap, used, ..] = ahead.residency.prepared_counts();
+    assert!(used > 0 && over_cap == 0);
+    assert!(drawn_wanted(&ahead) > drawn_wanted(&plain), "prepared patches drew without a job");
+    // Settled, both draw the same patches from records of the same generations.
+    let end = orbit(std::f32::consts::PI);
+    for _ in 0..64 {
+        ahead.frame_prepared(end, true);
+    }
+    plain.settle(end.eye);
+    assert!(!ahead.residency.has_pending_work());
+    assert_eq!(ahead.drawn(), plain.drawn());
+    let records = |world: &World| -> BTreeMap<PatchKey, (i64, i64, Standing)> {
+        world
+            .residency
+            .records()
+            .filter(|(_, _, standing)| *standing != Standing::Cached)
+            .map(|(key, record, standing)| (key, (record.surface, record.vegetation, standing)))
+            .collect()
+    };
+    assert_eq!(records(&ahead), records(&plain));
 }

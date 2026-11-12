@@ -1056,7 +1056,8 @@ func _streams() -> Dictionary:
 # The vegetation's queue and residency counters. From `RENDER-32-D` on also its requests in
 # flight and Rust's count of synchronous vegetation queries (`queries_total`: a frame that moves
 # it asked one on the main thread). From `RENDER-32-E` on also the stream node's vegetation status
-# (installed, pending, slots); from `RENDER-32-F` on the residency is the stream node's too.
+# (installed, pending, slots); from `RENDER-32-F` on the residency is the stream node's too; from
+# `RENDER-32-N` on its prepared set.
 func _vegetation_counters() -> Dictionary:
 	var simulation: Node = _vegetation.simulation
 	var stream: Node = _vegetation.stream
@@ -1068,7 +1069,14 @@ func _vegetation_counters() -> Dictionary:
 		"cache": counts["cached"], "standins": counts["standins"],
 		"trees": counts["trees"], "generated_total": counts["generated"],
 		"requested": counts["requested"],
-		"queries_total": int(simulation.call("get_vegetation_main_thread_queries"))}
+		"queries_total": int(simulation.call("get_vegetation_main_thread_queries")),
+		# The prepared set (`RENDER-32-N`; -1 on a build without it): products held, bytes,
+		# evictions over the cap, products used, dropped (prepared for other bands or generations)
+		# and replaced (a drawn patch's own, asked for again).
+		"prepared": int(status.get("prepared", -1)), "prepared_bytes": int(status.get("prepared_bytes", -1)),
+		"prepared_over_cap": int(status.get("prepared_over_cap", -1)),
+		"prepared_used": int(status.get("prepared_used", -1)), "prepared_dropped": int(status.get("prepared_dropped", -1)),
+		"prepared_replaced": int(status.get("prepared_replaced", -1))}
 
 # Wanted-to-drawn of the vegetation patches, with the perf channel on only (it walks the wanted
 # set every frame): a patch that enters the wanted set drawing nothing waits from that frame,
