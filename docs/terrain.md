@@ -11929,7 +11929,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-H` | L1 | Street lights' grid, far map and pool in Rust (`RENDER-33`) | 0.3 ms mean, 1.0 ms max on night turns and pans. Landed 2026-11-11 (coordinator, night delegation, for review); its `night_pan_out` frame-mean reading of night within 1 ms of day (+0.9/+1.6 ms, graded catch-up) carried to `-I`/`-J` |
 | `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. `-K` part 2 (G2c-2) landed 2026-11-12 (coordinator, delegation, for review; graded total carried to part 3): the page uploads and copies in Rust through the backend, 20-23 % more copies a frame in the same install budget; the graded total level (1.36-1.41 ms, 1.55-1.63 at 100k) and its bars missed: every frame of the turns spends the install budget with finished bakes waiting, so the total is the budget's, not the uploads' (record); carried to part 3. `-K` part 3 (G2c-3) landed 2026-11-12 (coordinator, delegation, for review; the graded totals carried to `-Q`, the drag probe on the charge to part 4; the coordinator's split, for review: edits, previews, T65 option (3), the tool holds and `TERRAIN-23` are part 4's): the tile result path in Rust, 7.6 us a copy against 32; graded total 0.80-0.84 ms on the 30k 1 s turn (the queue keeps up; the rest is the cell rewrites the installs cause) and 1.67-1.84 at 100k (budget-bound, twice the copies a frame); after the review fix (the install budget charges each placed tile its cell rewrites, 8 us) 0.83-0.88 and 1.39-1.48 against the control's 1.54-1.58: both bars missed, 100k not above control; carried to `-Q` (record). `-K` part 4 (G2c-4) landed 2026-11-12 (coordinator, delegation, for review; handed back at the round's limit, the rest is part 5): the edit batch and preview tiles in Rust, replayed bit for bit, every product and timing level with control; T65 option (3) with the tools' holds, the resident-patch hand-off, `TERRAIN-23`'s cause, the deletions and `ROAD-68-H`'s preview rows carried to part 5 ([record](#the-graded-edit-batch-and-preview-tiles-in-rust-render-32-k-part-4-2026-11-12)). |
 | `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`); the detail swap without read-back (`RENDER-37`) | 0.3 ms on the turn, 1.5 ms at 100k; reflection hook 0.1 ms without water in view. Landed 2026-11-12 (coordinator, delegation, for review): every bar met (0.09-0.21 ms, 0.26-0.53 ms, 0.02-0.04 ms) |
-| `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`); step 0: a water input of record, a pond made on the prepared 30k city by a recorded deterministic recipe through the lake-fill mutators (planned 2026-11-12) | 0.3 ms a frame on Kuopio's turn and pan, the water half measured on the pond input too. Built 2026-11-12 (branch `stream-t1`, rebased onto `429e5fb5`, for review): the control's decisions replayed exactly, settled patches equal by digest, stills identical; terrain and water 0.13-0.18 ms a frame on Kuopio's turns and pans (control 0.20-0.30), 0.15-0.34 on the pond (0.19-0.40; two phase means over 0.3 from single 3 ms frames outside the patches), the 100k load's patch residency 0.009 ms (2.1); Kuopio's hand-over 0.23 s earlier, its settle 0.1-0.5 s later: the settle bar missed under the 2.0 ms budget, for review ([record](#terrain-and-water-patches-on-the-core-render-32-m-2026-11-12)) |
+| `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`); step 0: a water input of record, a pond made on the prepared 30k city by a recorded deterministic recipe through the lake-fill mutators (planned 2026-11-12) | 0.3 ms a frame on Kuopio's turn and pan, the water half measured on the pond input too. Built 2026-11-12 (branch `stream-t1`, rebased onto `8493e60a`, for review; fix round the same day): the control's decisions replayed exactly, settled patches equal by digest, stills identical; terrain and water 0.14-0.17 ms a frame on Kuopio's turns and 0.13-0.14 on its pans (control 0.20-0.28), 0.16-0.26 on the pond (0.21-0.56), the 100k load's patch residency 0.009 ms (2.1); a terrain build 0.41 to 0.16 ms (its land cover from the payload worker, constant material parameters once per pooled material) and the post-load window (5.2 ms a frame until first settled, the control's measured cost): Kuopio hands over 0.6 s and settles 0.6 s earlier than control, every bar met ([record](#terrain-and-water-patches-on-the-core-render-32-m-2026-11-12)) |
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement. Seen in play by the user (2026-11-12, `dev` `8493e60a`, release): chunks visibly pop in when zoomed far out, and trees load visibly while zooming from far out down to the ground. The go/no-go measurement covers both: a far zoom-out and a far-to-ground zoom (`stream_frame_benchmark.gd` zoom phase extended to them), entered-to-drawn per layer | Entered-to-drawn p95 at most three frames, on the far zoom-out and the far-to-ground zoom included |
 | `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice (2026-11-12): walkers to 1.0 km with a fade from 0.8 km, cars to 2.5 km with a fade from 2.0 km; stills identical inside the fade starts. Landed 2026-11-12 (coordinator, delegation, for review; the 100k 1x still p99 in the post-load graded frames carried to `-K` part 3, which timed it level with control, three runs a side; [record](#agent-draw-distances-render-32-o-2026-11-12)) |
 | `RENDER-32-P` | R1 | Road hydration at load, parked cars, zoning masks (`RENDER-36`) | The 100k load's frame at most 33 ms |
@@ -14693,8 +14693,9 @@ is read against these edges before it counts as a difference.
 T1. The terrain and water patches' residency, mesh level of detail and prewarm are decided in Rust
 (`stream/layers/terrain.rs`, `PatchStream`, one per layer) and executed by `terrain.gd` and
 `water.gd` on their pooled nodes, one unit at a time, from the `StreamNode`'s first pass (after
-`CameraNode` moved) under its 2.0 ms frame budget (`stream/schedule.rs`). The rules and constants
-are the scripts' (`dev` `daec355a`), so what is drawn once settled does not change:
+`CameraNode` moved) under its 2.0 ms frame budget (`stream/schedule.rs`), and in the window after
+a world load under a budget of their own (below). The rules and constants are the scripts' (`dev`
+`daec355a`), so what is drawn once settled does not change:
 
 - **Residency.** The terrain wants the square about the eye of half-side
   `min(far, max(8 km, 4 x height))`, padded by a patch and widened by two of hysteresis, in the
@@ -14711,20 +14712,37 @@ are the scripts' (`dev` `daec355a`), so what is drawn once settled does not chan
   from its ring step is queued; a queued patch takes the eye's step when its unit runs. The scripts'
   per-frame check and change caps (32/8 terrain, 48/8 water) and their headroom deferrals are gone:
   a queued check without a change costs no unit.
-- **Prewarm.** Once nothing is missing, leaving or queued, the patches one beyond the square are
-  built hidden, nearest first. The control's terrain prewarm never built them: its payload prune
-  dropped every payload outside the square each frame, so its halo requests were made and discarded
-  every frame; the branch keeps the halo's payloads until built (no visual change: hidden nodes).
-  The water's prewarm waits while the terrain streams.
+- **Prewarm.** Once nothing is missing, leaving or queued, the water's patches one beyond the
+  terrain's square are built hidden, nearest first, as `water.gd` built them; the water's prewarm
+  waits while the terrain streams. The terrain's prewarm square is its wanted square: the
+  control's terrain prewarm never built beyond it in effect (its payload prune dropped every payload
+  outside the square each frame, so its halo requests were made and discarded every frame), and
+  the core keeps that rather than add the halo's memory.
 - **Order and budget.** Holes in view, holes within the near ring (`TERRAIN-15`'s 2 km), other
   holes, level changes in view, other level changes, nearest first by exact squared distance, then
   by key; then patches that left, farthest first; then prewarm. The water's units run before the
   terrain's (its holes are terrain patches resident since the last frame; its units are cheap, so a
-  shore never waits behind the terrain's builds for more than a frame). Payload requests stay
-  bounded as jobs (32 terrain, 64 water a frame), not milliseconds. Unit costs are fixed, from
-  Kuopio's load: a terrain build 0.49 ms at the median (predicted 0.5), a water activation with its
-  build 0.064 ms (predicted 0.12). While a load holds the game (`set_load_settling`), the units are
-  not limited by the budget, as the graded renderer's work is not.
+  shore draws a frame after its ground, as the scripts drew it). Payload requests stay bounded as
+  jobs (32 terrain, 64 water a frame), not milliseconds. Unit costs are fixed, from Kuopio's load:
+  a terrain build 0.16 ms (predicted 0.2), a water activation with its build 0.064 ms (predicted
+  0.12). While a load holds the game (`set_load_settling`) the units are not limited by a budget,
+  as the graded renderer's work is not.
+- **The post-load window** (`POST_LOAD_PATCH_BUDGET_US`, `stream_node.rs`). From a world reset
+  (`reset_terrain_patches`) until the terrain and water first settle with residents, the patch
+  units run under a budget of their own, 5.2 ms a frame: what the scripts spent a frame on
+  Kuopio's load (`terrain.gd` without its graded renderer 3.95 ms, `water.gd` 1.27 ms, instrumented
+  control). The vegetation keeps the stream node's 2.0 ms meanwhile. After the window the patches
+  share the 2.0 ms budget. The perf channel's `terrain_stream` record carries `post_load_window`.
+- **Cheaper builds.** A terrain build was 0.41 ms in `terrain.gd` on Kuopio's load (instrumented:
+  the synchronous land cover query 0.23, the material parameters 0.09, the pooled resources 0.05).
+  The patch's land cover is now built on the terrain payload worker from the vegetation jobs'
+  snapshot (`PatchLandCover`: its inputs and revisions taken with the payload under the core lock,
+  its coverage built off the lock, bit for bit the main-thread query's, a test over every patch of
+  the populated fixture) and comes with the payload (`land_cover`); the 58 parameters no patch,
+  world or setting changes are set once when a pooled material is made
+  (`_apply_constant_patch_parameters`; a template duplicated per material cost 0.31 ms and was
+  dropped). A build is 0.16 ms (land cover 0.016, parameters 0.029, resources 0.082 with the
+  constants). The perf channel splits the builds (`build_*`).
 - **The scripts' side.** `stream_request` (answers keys already held or refused at once),
   `stream_activate` (answers the status and the node's surface generation), `stream_deactivate`,
   `stream_build` and `stream_set_lod`; the executors never call the `StreamNode` back (it is
@@ -14733,8 +14751,8 @@ are the scripts' (`dev` `daec355a`), so what is drawn once settled does not chan
   the terrain's residency and built nodes' surface generations inside the same pass. A dirty edit
   keeps the patch's installed step (the core owns it; the control re-evaluated the step at the
   commit). The world editor scene gains a `StreamNode`.
-- **Deleted.** `terrain.gd` 3,357 to 2,628 lines and `water.gd` 2,522 to 2,015 (1,489 out, 283
-  in with the benchmark and test): `_sync_patch_residency`, the bounds helpers, both LOD sweeps
+- **Deleted.** `terrain.gd` 3,357 to 2,628 lines and `water.gd` 2,522 to 2,015 (1,479 out, 245
+  in): `_sync_patch_residency`, the bounds helpers, both LOD sweeps
   and queues, both prewarm queues, the water's follow-the-terrain pass, 22 terrain and 18 water
   budget constants. The water's mesh job pipeline (its request, submit, poll and apply budgets,
   about 30 constants) is the water's product path and stays; its install collapse into the
@@ -14772,8 +14790,9 @@ and the water following the terrain.
 **Settled products.** At every settle point (`METRUM_STREAM_DIGESTS=1`, the new `patch_digests`:
 per resident patch its key, mesh step and whether it draws, from the scripts' books) the terrain
 and water patches are equal, control against branch: 30k 8 of 8, Kuopio 8 of 8, the pond 5 of 5;
-building batches equal; graded tiles equal except 1-3 tiles at the turn settle points, 2,002-2,031
-m from the camera (the 2 km boundary's hysteresis band, `-B`'s known class).
+building batches equal; graded tiles equal except 1-14 tiles at the turn settle points, 2,001-2,031
+m from the camera (the 2 km boundary's hysteresis band, `-B`'s known class). Again on the final
+tip (`$ARTIFACTS/final/*-dig`): the same, every patch equal.
 
 **Stills** (10:00, the idle matrix's screenshots): Kuopio's `forest_low`, `close` and `mid` after
 4,000 warm-up frames byte-identical, control against branch. The 30k city's `saved`, `city` and
@@ -14782,58 +14801,75 @@ m from the camera (the 2 km boundary's hysteresis band, `-B`'s known class).
 side 1,759, 657 and 390 against 1,719, 649 and 364 for the control split against itself and
 1,741, 695 and 403 for the branch; four runs a side 106, 40 and 8. The pond's `saved` 1,971 and
 its water view 22,874 lie between the other pairings (1,523-1,652; 14,353-34,615). No systematic
-difference: the residue is the city's run-to-run ground speckle (`RENDER-38`).
+difference: the residue is the city's run-to-run ground speckle (`RENDER-38`). Again on the final tip
+(`$ARTIFACTS/final/stills`, `tools/stream_benchmark.py stills compare` and `systematic`): Kuopio's
+three byte-identical; the city's `saved`, `city` and `city_low` split by side 1,680, 624 and 349
+against the other pairings' 1,627-1,868, 510-580 and 310-414: no systematic difference. The
+pond's `saved` read 1,871 against 1,574-1,588 at two runs a side, so four a side were taken: 25
+pixels. Its water view moves between sessions on one binary (the control's two sessions split
+by 61,555 pixels; the surface's animation at the capture), so it is judged over both sessions,
+six runs a side (the first pass's two among them): 17 pixels, no systematic difference.
 
 **Frame time** (`$ARTIFACTS/rows.md`; C B B C, the control `dev` `daec355a`'s release library with its
-scripts (library SHA-256 `a22a7fd0`), the branch at its pre-rebase tip `535dd20d` (`1d353e4d`; rebased, `cb30b3d1`),
-1920x1080, P-cores, eight workers, paused): Kuopio's 0.5 s turns and 3 s pans level or better
-(maxima 2.6-7.7 ms lower on the pans), its load's frames 4.8-4.9 ms p50 against 12.2-12.5; the
-30k 1 s turns and pans level or better (the one flagged group, the pans' `pan_repeat`, p50 +0.1 ms
-and max +4.3 against a spread of 0.1 and 2.3, run again alone, C B B C: level in every pan
-phase); the pond's 1 s turns, pans and water still level.
+scripts (library SHA-256 `a22a7fd0`), 1920x1080, P-cores, eight workers, paused). The first pass
+(the branch at `535dd20d`, `1d353e4d`): the 30k 1 s turns and pans level or better (the one flagged
+group, the pans' `pan_repeat`, p50 +0.1 ms and max +4.3 against a spread of 0.1 and 2.3, run again
+alone, C B B C: level in every pan phase); the pond's 1 s turns, pans and water still level. The
+fix round, on the final tip (code `130aa002`, library `dc4f89cc`; `tools/stream_benchmark.py series` and `compare`,
+`$ARTIFACTS/final/kuopio.series.txt`): Kuopio's load frames 10.5-10.6 ms p50 against 12.6-12.8,
+its maxima 971-986 against 1,043-1,073 (the first draw's shader stall, on both sides); the 0.5 s
+turns level but `turn_repeat`'s p50 (+0.1 ms against a spread of 0.0), the group run again alone,
+C B B C (`kuopio-turns.series.txt`): better in every turn phase (p50 0.7-1.0 ms lower); the 3 s pans level or better (maxima 5.0-5.9 ms lower).
 
-**Terrain and water script time** (`$ARTIFACTS/detail-tw.md`; instrumented, mean ms a frame: `terrain.gd`'s
-record less the graded renderer's own total, `water.gd`'s, and the stream node's patch work with
-its units, `terrain_stream`; the pond twice a side):
+**Terrain and water script time** (`$ARTIFACTS/detail-tw.md`, the final tip's in
+`$ARTIFACTS/final`; instrumented, mean ms a frame: `terrain.gd`'s record less the graded renderer's
+own total, `water.gd`'s, and the stream node's patch work with its units, `terrain_stream`; one
+run a side on the final tip):
 
 | Input, phases | Control | `RENDER-32-M` |
 |---|---|---|
-| Kuopio, 0.5 s and 1 s turns | 0.21-0.30 | 0.13-0.18 |
-| Kuopio, 3 s pans | 0.20-0.21 | 0.13 |
-| The pond, turns | 0.26-0.40 | 0.18-0.34 |
-| The pond, pans and the water still | 0.19-0.24 | 0.15-0.19 |
-| 30k, turns (not a bar) | 0.27-0.53 | 0.20-0.31 |
-| 100k load, patch residency only (decisions, no installs) | 2.14 mean, 7.9 p95, 15.4 max | 0.009 mean, 0.18 max |
+| Kuopio, 0.5 s and 1 s turns | 0.23-0.28 | 0.14-0.17 |
+| Kuopio, 3 s pans | 0.20-0.21 | 0.13-0.14 |
+| The pond, turns | 0.30-0.56 | 0.21-0.26 |
+| The pond, pans and the water still | 0.21-0.25 | 0.16-0.20 |
+| 30k, turns (not a bar) | 0.25-0.40 | 0.19-0.60 |
+| 100k load, patch residency only (decisions, no installs; first pass) | 2.14 mean, 7.9 p95, 15.4 max | 0.009 mean, 0.18 max |
 
 The bars (0.3 ms on Kuopio's turn and pan and on the pond; the 100k load's residency 0.5 ms) are
-met on Kuopio and at 100k. On the pond 22 of the 24 phase means are under 0.3; the two over
-(`turn_repeat 1s` 0.31 in the first run, `turn_back 0.5s` 0.34 in the second) each carry one
-single frame of 3 ms in `terrain.gd` outside any of its timed parts and outside the patches
-(their median frame is 0.09 ms; the control's runs carry the same class, up to 5.7 ms in a frame).
-The patch work itself (the stream node's and `water.gd`'s) is 0.08-0.14 ms a frame on the pond's
-turns. What is left in `terrain.gd` is its per-frame payload poll, overlay revisions, land cover
-epoch, water texture sync and the graded wrapper.
+met: every phase mean on Kuopio and the pond is under 0.3 (the first pass had two pond phase
+means at 0.31 and 0.34, each from one 3 ms frame in `terrain.gd` outside its timed parts and
+outside the patches; none on the final tip). The 30k `turn_repeat 0.5s` row's 0.60 is that class
+again: two of its 28 frames carry 4.4 and 5.6 ms in `terrain.gd` with no patch built (median
+frame 0.10 ms). What is left in
+`terrain.gd` is its per-frame payload poll, overlay revisions, land cover epoch, water texture
+sync and the graded wrapper.
 
-**Load** (`$ARTIFACTS/rows.md`, Kuopio as a new game, from the load call's return): hand-over (`TERRAIN-15`,
-the benchmark's new `ready_ms`) at 1.01-1.03 s against 1.24-1.26 (the near ring's holes first,
-the patch units unbudgeted while the load holds the game); settled at 3.35-3.41 s against
-2.94-3.22, **the settle bar missed** (about 10 %). After the hand-over the units run under the 2.0
-ms budget: a terrain build costs 0.49 ms in `terrain.gd`, so four a frame at about 5 ms a frame,
-where the control built 12 terrain and 12 water patches a frame at 12-13 ms; the install work is
-the same, the share of the wall clock it may take is smaller. Measured on the branch's load:
-terrain resident at 2.47 s, water at 2.73 s (control 2.33 and 2.35). The 100k load (one
-instrumented run a side): hand-over 5.8 s against 4.9, settled 8.4 against 7.1 (same cause; not
-a bar). Decision for review below.
+**Load** (`$ARTIFACTS/final/kuopio.series.txt`, Kuopio as a new game, from the load call's return,
+C B B C on the final tip): hand-over (`TERRAIN-15`, the benchmark's `ready_ms`) at 1.93-1.96 s
+against 2.54 (the near ring's holes first, the patch units unbudgeted while the load holds the
+game); settled at 3.31-3.34 s against 3.91-3.93, **the settle bar met**. Both sides' absolute times
+are longer than the first pass's (1.01 / 3.35 s): on this tree the first draws of the terrain, the
+water and the vegetation each stall a frame for 0.5-1 s on both sides (shader first use). The fix
+needed both parts: with the cheaper build alone (a) the branch settled later than the control
+(4.27-4.42 s against 3.91-4.18, `$ARTIFACTS/fix/rows`), because the post-load budget let the water's and the vegetation's first
+draws, and their stalls, fall after the hand-over one by one; the window (b) brings the patches'
+work forward under the control's own measured cost a frame. The 100k load (one instrumented run a
+side, not a bar; `$ARTIFACTS/final/100k-*-detail`): hand-over at 10.9 s against 11.2, the terrain
+patches all resident at 8.5 s against 9.2, settled at 13.1 s against 11.6. The tail after the
+patches is the graded tiles' (10,500 at 100k), installed at about 38 a frame against the
+control's 50; the graded renderer differs between the sides (the control `dev` `daec355a`'s, the
+branch `8493e60a`'s with `RENDER-32-K` parts 3 and 4); the terrain patches are all resident
+before it.
 
-**`RENDER-32-Q` series** (review finding 11; `$ARTIFACTS/detail-q.md`, the per-frame sums in `$ARTIFACTS/q-series.txt`):
-the sum of every layer's install work a frame, the stream node's measured units (vegetation and,
-on the branch, the terrain and water units), the graded poll's installs and the building
-publication. On the branch's 30k turns: mean 0.97-1.14 ms, p95 1.36-1.77, max 1.68-2.67, 0-3
-frames over 2.0 ms a phase (graded poll 0.87-1.02 of it, the stream node 0.06-0.10, buildings
-0.02-0.03); 100k turns: mean 1.06-1.19, max 1.93-3.23, 0-2 frames over 2.0 a phase. The
-control's terrain and water installs ran under their own GDScript budgets outside this sum (its
-30k turns: max 1.17-1.82, none over 2.0). The load's held frames are unbudgeted by design (100k:
-198 ms in one frame while the game is held). No budget changed here.
+**`RENDER-32-Q` series** (review finding 11; `$ARTIFACTS/detail-q.md`, the final tip's in
+`$ARTIFACTS/final`): the sum of every layer's install work a frame, the stream node's measured units
+(vegetation and, on the branch, the terrain and water units), the graded poll's installs and the
+building publication. On the branch's 30k turns: mean 0.40-0.65 ms, p95 0.70-1.12, max 0.86-1.17,
+no frame over 2.0 ms (the stream node 0.06-0.10 of it, the graded poll 0.33-0.52, buildings
+0.02-0.03); the control: mean 0.75-1.06, max 1.15-3.29, two frames over 2.0 (its graded poll
+0.67-1.00 is `dev` `daec355a`'s, before `RENDER-32-K` parts 3 and 4; its terrain and water installs
+ran under their own GDScript budgets outside this sum). The load's held frames are unbudgeted by
+design (100k first pass: 198 ms in one frame while the game is held). No budget changed here.
 
 **Graded material sync** (review finding 8; the graded renderer's `watched_ms`, the copy of the
 patch parameters its cells follow): 0.0002-0.0003 ms a frame on Kuopio's turns (0.01 % of the
@@ -14845,20 +14881,19 @@ metric level (mean -0.1 %, p99 -0.7 %), the `PERF-17` known exception on both si
 acceptance PASS on both (control 5.71 / 4.58 / 4.70, branch 6.36 / 4.28 / 4.72 ms unpreempted,
 p99.9, preempted less wait), every metric level (mean 2.218 against 2.221 ms, p99 -1.1 %, p99.9
 -7.6 %) but the raw `max_unpreempted_ms`, +11.4 % against a tolerance of 8.5 %, flagged; the row
-timed again alone (`--rerun p07-6-br`) gave the same maximum to the hundredth (6.36 ms): one
-deterministic frame of the day, in a test binary whose simulation code this round does not touch
-(the round adds render layers, a test fixture and the stream node's calls); recorded, not chased.
+timed again alone (`--rerun p07-6-br`) gave the same maximum to the hundredth (6.36 ms). The
+frame is the day's minute 124, the pending-spawn frame, the maximum in most rounds' 1x days on
+either side; the control's row ran it unusually fast in that session (5.71 ms). The round touches no simulation code (render layers, a test
+fixture and the stream node's calls); the branch's 6.36 ms is that frame's usual cost, not this
+round's.
 
-**Decisions for review.** (1) Kuopio's settle time under the 2.0 ms budget (above): options (a) a
-cheaper terrain build so four builds no longer fill the budget (the build's synchronous land
-cover query and its hundred constant material parameters are most of the 0.49 ms; recommended,
-with `RENDER-32-Q`), (b) the patches' own budget after a load until the terrain first settles,
-(c) accept the later settle for the earlier hand-over. (2) The terrain's halo is built hidden
-(the control's prune discarded its payloads, so its prewarm never built it): more memory for at
-most the square's perimeter, no visual change. (3) A dirty edit keeps the patch's installed step.
-(4) The water's units run after the terrain's: during a load's budgeted tail the water follows the
-terrain by up to 0.26 s on Kuopio (water first cost 0.6 s of settle time). (5) The water's mesh
-job pipeline (about 30 budget constants) stays the water's product path; its applies through the
+**Decisions.** (1) Kuopio's settle time: the review chose (a) a cheaper terrain build, with (b)
+the post-load window as a bounded fallback; both were needed (Load, above). (2) The terrain's
+prewarm builds nothing beyond its wanted square, as the control's did in effect: the halo the
+first pass built hidden came to 0 extra resident patches at 30k, Kuopio and 100k, and the core
+keeps the control's behaviour. (3) A dirty edit keeps the patch's installed step. (4) The water's
+units run before the terrain's (a shore draws a frame after its ground). (5) The water's mesh job
+pipeline (about 30 budget constants) stays the water's product path; its applies through the
 scheduler are carried to `RENDER-32-Q`.
 
 ## Implemented Runtime Contract

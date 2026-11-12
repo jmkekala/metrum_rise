@@ -93,10 +93,10 @@ buildings' frame time on a 30k turn falls from 1.4-1.9 ms to 0.1-0.2 (0.3-0.5 ms
 on zooms no longer reads its buffer back from the GPU (`RENDER-37`: 6-11 ms frames to 0.14 ms).
 `RENDER-32-M` (built, not yet landed) decides the terrain and water patches' residency, mesh
 levels and prewarm in Rust, decision for decision as the scripts did on the benchmark's recorded
-paths: terrain and water cost 0.13-0.18 ms a frame on Kuopio's turns and pans (0.2-0.3 before), a
-100k load's patch bookkeeping falls from 2.1 ms a frame to 0.01, and Kuopio is playable 0.2 s
-sooner after a load but settles 0.1-0.5 s later under the 2.0 ms streaming budget (open, for
-review). The stream benchmark gains a pond on the 30k city, made by a recorded recipe.
+paths: terrain and water cost 0.13-0.17 ms a frame on Kuopio's turns and pans (0.2-0.3 before), a
+100k load's patch bookkeeping falls from 2.1 ms a frame to 0.01, and Kuopio is playable and
+settled about 0.6 s sooner after a load (a terrain build 0.41 to 0.16 ms, its land cover built off
+the main thread, and a post-load window at the control's own cost a frame). The stream benchmark gains a pond on the 30k city, made by a recorded recipe.
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,
