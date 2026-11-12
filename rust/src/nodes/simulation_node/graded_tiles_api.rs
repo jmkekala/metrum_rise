@@ -988,4 +988,20 @@ mod tests {
         jobs.requests.start(&mut started);
         assert_eq!(started.len(), 1);
     }
+
+    // `RENDER-32-K` part 3: the result path's poll hands a tile's transient failure over as a
+    // retry, in order and without a dictionary, and keeps no failure.
+    #[test]
+    fn transient_tile_failures_are_retried_without_a_dictionary() {
+        let mut jobs = GradedResidencyJobs::default();
+        jobs.failed_tiles.push((request(1), Failure::Busy));
+        jobs.failed_tiles.push((request(2), Failure::Bake(BakeError::SitesUnavailable)));
+        let mut retried = Vec::new();
+        jobs.take_others(true, |finished| match finished {
+            Finished::Retry(request) => retried.push(request.tile.x),
+            Finished::Dict(kind, _) => panic!("a {kind} dictionary for a transient failure"),
+        });
+        assert_eq!(retried, [1, 2]);
+        assert!(jobs.failed_tiles.is_empty());
+    }
 }
