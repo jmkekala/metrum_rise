@@ -54,7 +54,7 @@ const POST_LOAD_MAX_FRAMES := 6000
 # CameraNode::pan scales its speed by the orbit distance over INITIAL_DISTANCE_M (400 m).
 const PAN_REFERENCE_DISTANCE_M := 400.0
 const DEFAULT_PHASES: Array[String] = ["still", "turns", "pan", "zoom", "jump", "night", "water"]
-const WATER_STEP_M := 150.0
+const WATER_STEP_M := 250.0
 const WATER_SCAN_M := 250.0
 const WATER_SCAN_REACH_M := 8500.0
 const WATER_PITCH_RAD := -0.3
