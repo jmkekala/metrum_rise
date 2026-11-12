@@ -119,7 +119,7 @@ pub(crate) fn capacity_class(count: u32) -> (u8, u32) {
 
 fn class_capacity(class: u8) -> u32 {
     let base = MIN_CAPACITY << (class / 2);
-    if class % 2 == 0 {
+    if class.is_multiple_of(2) {
         base
     } else {
         base + base / 2

@@ -544,7 +544,7 @@ fn product_from_dictionary(data: &VarDictionary) -> Option<VegetationProduct> {
         )
     };
     let mut out = Vec::with_capacity(batches.len() / 8);
-    for (ints, floats) in batches.chunks_exact(8).zip(bounds.chunks_exact(14)) {
+    for (ints, floats) in batches.as_chunks::<8>().0.iter().zip(bounds.as_chunks::<14>().0) {
         let buffer = usize::try_from(ints[7])
             .ok()
             .filter(|&at| at < buffers.len())?;

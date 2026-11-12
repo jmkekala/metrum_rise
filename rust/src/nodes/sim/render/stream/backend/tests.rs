@@ -60,7 +60,7 @@ fn padding_repeats_the_first_instance() {
     let mut out = vec![-1.0f32; 16 * 16];
     pad_rows(&mut out, &rows, 16);
     assert_eq!(&out[..48], &rows[..]);
-    for pad in out[48..].chunks_exact(16) {
+    for pad in out[48..].as_chunks::<16>().0 {
         assert_eq!(pad, &rows[..16]);
     }
 }

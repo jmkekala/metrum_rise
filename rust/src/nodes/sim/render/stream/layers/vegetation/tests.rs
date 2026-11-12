@@ -61,7 +61,7 @@ fn placements(count: usize, seed: usize) -> Vec<f32> {
         record[3] = (n % 31) as f32 * 0.2;
         record[4] = 0.8 + (n % 17) as f32 * 0.025;
         record[5] = [0.0, 1.0, 2.0, 2.0, 3.0, 0.0, 1.0, 2.0][n % 8];
-        if n % 23 == 0 {
+        if n.is_multiple_of(23) {
             // A garden plant pinned by the brush (variant 7, biased by one).
             record[5] = (8 << 2 | 2) as f32;
         }
@@ -194,7 +194,9 @@ fn frame(
     layer.take_spent().for_each(drop);
     let keys = layer
         .events()
-        .chunks_exact(EVENT_LANES)
+        .as_chunks::<EVENT_LANES>()
+        .0
+        .iter()
         .map(|event| [event[0] as i32, event[1] as i32, event[2] as i32])
         .collect();
     layer.clear_events();

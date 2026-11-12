@@ -181,7 +181,7 @@ impl RenderBackend for Recorder {
             stride, lanes,
             "the buffer's stride matches the multimesh's format"
         );
-        assert!(rows.len() % stride == 0 && rows.len() / stride <= capacity as usize);
+        assert!(rows.len().is_multiple_of(stride) && rows.len() / stride <= capacity as usize);
         assert!(!rows.is_empty(), "the padding copies a first instance");
         recorded.rows.clear();
         recorded.rows.extend_from_slice(rows);
