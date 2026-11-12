@@ -1328,7 +1328,7 @@ and pathing components and `load_s`, with the tolerance 2σ·√(1/n_ctl + 1/n_b
 same-binary spread (σ per run: mean 0.7%, p99 1.7%, p99.9 4%, worst unpreempted frame 3%,
 components 1.25%, `load_s` 3.5%; at C B B C that is 1.4%, 3.4%, 8% and 6%). A run with more than
 twice the preempted frames of the quietest run of its group marks the group noisy: tolerances
-double and `--rerun <label>` times that row again. Raw maxima and over-8 counts are reported
+double and `--rerun <label>` times that row again (a rerun never takes a control row from the cache, and times a conditional second run whether or not it is wanted). Raw maxima and over-8 counts are reported
 only.
 
 **Control reuse.** Every timed row is cached under a key of the binary's SHA-256, the snapshot

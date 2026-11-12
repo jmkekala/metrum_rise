@@ -149,6 +149,22 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(other_boot.expire_other_boots(), ["b1"])
             self.assertFalse((Path(root) / "b1").exists())
 
+    def test_rerun_times_a_reuse_row_instead_of_the_cache(self):
+        session = {"binary_sha": {"ctl": "s1"}, "boot": "b1", "cpus": [], "workers": 8, "results": {}}
+        row = {"label": "p07-5-ctl", "side": "ctl", "kind": "perf07", "tier": 30000, "speed": 1,
+               "reuse": "only"}
+        with tempfile.TemporaryDirectory() as out, \
+                patch.object(ts, "decide_reuse", side_effect=AssertionError("cache consulted")), \
+                patch.object(ts, "hash_of", return_value="s1"), \
+                patch.object(ts, "check_snapshots", return_value=None), \
+                patch.object(ts, "row_snapshot_key", return_value="k1"), \
+                patch.dict(ts.RUNNERS, {"perf07": lambda session, row, out: {"day": "timed"}}):
+            ts.execute_row(session, row, Path(out), cache=None, rerun=True)
+        result = session["results"]["p07-5-ctl"]
+        self.assertEqual(result["exit"], 0)
+        self.assertEqual(result["day"], "timed")
+        self.assertNotIn("reused_from", result)
+
     def test_windows(self):
         at = datetime.datetime(2026, 11, 9, 17, 50)
         self.assertIsNone(ts.in_windows(at, ["18:00-18:15"], 5 * 60))

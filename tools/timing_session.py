@@ -870,9 +870,11 @@ def decide_reuse(session, row, cache):
     return entry, None
 
 
-def execute_row(session, row, out, cache):
+def execute_row(session, row, out, cache, rerun=False):
     label = row["label"]
-    if row.get("reuse"):
+    if rerun and row.get("reuse"):
+        log_line(out, f"{label} timed: rerun")
+    elif row.get("reuse"):
         entry, reason = decide_reuse(session, row, cache)
         if entry is not None:
             first = entry["rows"][0]
@@ -885,7 +887,7 @@ def execute_row(session, row, out, cache):
             log_line(out, f"{label} skipped: {reason}")
             return
         log_line(out, f"{label} timed: {reason}")
-    if row.get("second"):
+    if row.get("second") and not rerun:
         reason = second_run_reason(session, row)
         if reason is None:
             session["results"][label] = {"label": label, "side": row["side"], "skipped": "not needed"}
@@ -965,13 +967,15 @@ def phase_timed(session, path, labels=None):
     for row in session["rows"]:
         if labels is not None and row["label"] not in labels:
             continue
-        needs_run = not (row.get("reuse") == "only")
+        # A rerun times its rows again: a noisy control row must not come back from the cache.
+        rerun = labels is not None
+        needs_run = rerun or row.get("reuse") != "only"
         if needs_run and not precheck(session, row["label"], out, session["wait_s"]):
             session["results"][row["label"]] = {"label": row["label"], "side": row["side"],
                                                 "refused": "machine never became quiet"}
             log_line(out, f"{row['label']} REFUSED: machine never became quiet")
             continue
-        execute_row(session, row, out, cache)
+        execute_row(session, row, out, cache, rerun)
         save_session(session, path)
     session["timed_s"] = session.get("timed_s", 0.0) + time.monotonic() - started
     machine_check(session, out / "postcheck.txt")
