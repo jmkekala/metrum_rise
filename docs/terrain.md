@@ -11998,6 +11998,13 @@ tools/stream_benchmark.py stills capture --label s30-ctl1 --out "$ARTIFACTS/stil
     --library <control .so> --scripts <control godot/scripts> --poses saved,city,city_low [--warmup 4000]
 tools/stream_benchmark.py stills compare "$ARTIFACTS/stills/k-ctl" "$ARTIFACTS/stills/k-br"
 tools/stream_benchmark.py stills systematic <s30-ctl1> <s30-ctl2> <s30-br1> <s30-br2> [--masks <dir>]
+# Sun-shadow variants (`RENDER-15`): one load, the chain full,X,X,full,Y,Y,full; split, then compare.
+tools/stream_benchmark.py run --label 30k-sh --out "$ARTIFACTS" --save <...> --phases still,turns --turns 1 \
+    --shadows full,none,none,full,low,low,full [--gpu-profile]
+tools/stream_benchmark.py split "$ARTIFACTS/30k-sh.metrics.json"   # writes 30k-sh.none-ctl1 ... -ctl2
+tools/stream_benchmark.py compare "$ARTIFACTS" 30k-sh.none 30k-sh.low
+tools/stream_benchmark.py stills capture --label s30-var ... --variants full,filter2,low
+tools/stream_benchmark.py stills variants "$ARTIFACTS/stills/s30-var" --crops "$ARTIFACTS/crops"
 ```
 
 - `series` writes `<input>-ctl1`, `-br1`, `-br2`, `-ctl2`; `run` stays for single rows. Both run
@@ -12017,6 +12024,17 @@ tools/stream_benchmark.py stills systematic <s30-ctl1> <s30-ctl2> <s30-br1> <s30
   distance from the camera's height over y = 0), which can only refuse a band, never grant one.
   `RENDER-32-L`'s 30k digests read buildings 13 of 13 equal, graded 10 equal and 3 band (5 tiles
   2,012-2,030 m from the camera), lamps 4 of 4.
+- `--shadows` (`METRUM_STREAM_SHADOWS`, benchmark-only, unset by default; a series' branch rows
+  only) applies the sun-shadow variants of `godot/scripts/benchmarks/shadow_variants.gd` (`full`,
+  `none`, `filter2`, `filter3`, `no_pcss`, `no_blend`, `low`, `no_cloud_shadows`, `no_casters`;
+  the idle matrix shares them as `no_shadows`, `no_blend_splits` and the same other names). One
+  entry runs the phases with it; a sequence runs `still` and `turns` once per entry from one load,
+  and `split` turns each `full, X, X, full` run of blocks into a quartet `compare` reads, the two
+  `full` blocks around the pair as its control. `--gpu-profile` runs Godot with its render
+  timestamps captured and records each sample's GPU milliseconds per pass (`gpu_passes`, shown by
+  `summary`); it is a separate run, not a timed row. `stills capture --variants` captures
+  `<pose>-<variant>.png` per variant, and `stills variants` counts each against its pose's `full`,
+  with `--crops` the most-changed 480 x 270 window side by side (full, variant, difference x8).
 - `stills capture` runs the idle-frame matrix's screenshots in gamescope through the isolated
   launcher (`tools/godot_isolated.py`, `TOOLS-19`) under the shared timing lock. `stills compare`
   is byte identity (else pixels, largest delta, worst 16 x 16 block; exit 1 unless identical).
@@ -15551,6 +15569,81 @@ pixels each. Its passes still cost `0.4-0.5 ms`. **Glow is off** (owner's decisi
 image ever misses a bloom, for example around lit windows, which would also need a lower
 threshold. The shadow changes alter the look at shadow edges and stay open. Captures:
 `screenshots/2026-10-05-clouds/render15/` (local).
+
+What the sun's shadows cost on the populated cities (`RENDER-15`, 2026-11-12, round SH1;
+measurement only, no change to the look or the defaults). `dev` `8493e60a`'s release library
+(SHA-256 `0201b3de`) with the stream benchmark's sun-shadow variants (`--shadows`, the variants of
+`shadow_variants.gd`, [Stream benchmark](#stream-benchmark-perf-23)), gamescope headless at
+1920x1080, 10:00, P-cores, eight workers, under the timing locks; Godot 4.7.2, RADV (Mesa
+26.2.6) on an RX 7900 XTX. Each input loaded once and ran the chain `full, X, X, full` for every
+variant (`split`, then `compare`; the spread is the larger of the two `full` blocks' and the two
+`X` blocks' differences); inputs: the 30k city (`e9a62f0e`; still and three 1 s turns), the 100k
+city (still), Kuopio (still). `no_casters` sets the sun's `shadow_caster_mask` to 0: the shadow
+maps draw nothing while the receivers still read them (with PCSS on, the blocker search then
+finds nothing and skips the penumbra filter). The pass split comes from separate runs with
+Godot's `--gpu-profile` (render timestamps per pass; they add about `2.4 ms` of GPU time at 100k,
+so shares, not totals).
+
+```bash
+tools/stream_benchmark.py run --label 30k-sh --out "$ARTIFACTS" --library <dev .so> --save <populated_city_30000.sqlite> \
+    --phases still,turns --turns 1 --shadows full,none,none,full,filter2,filter2,full,...,no_casters,no_casters,full
+tools/stream_benchmark.py split "$ARTIFACTS/30k-sh.metrics.json"; tools/stream_benchmark.py compare "$ARTIFACTS" 30k-sh.none ...
+tools/stream_benchmark.py run --label 30k-gpu ... --phases still --shadows full,none,none,full,no_casters,no_casters,full --gpu-profile
+```
+
+Still, frame / GPU p50 against `full`, ms (same-binary spread in brackets):
+
+| Variant | 30k (`full` 8.84 / 8.74) | 100k (`full` 12.7 / 12.4) | Kuopio (`full` 1.7 / 0.94) |
+| --- | --- | --- | --- |
+| `none` | `-2.33 (0.13)` / `-2.34 (0.13)` | `-1.06 (1.04)` / `-3.08 (0.03)` | `-0.12 (0.06)` / `-0.16 (0.02)` |
+| `no_casters` | `-2.30 (0.07)` / `-2.28 (0.01)` | `-1.36 (0.04)` / `-3.03 (0.02)` | level / level |
+| `low` | `-1.25 (0.01)` / `-1.26 (0.01)` | `-0.92 (0.30)` / `-1.56 (0.10)` | `-0.13 (0.12)` / `-0.11 (0.05)` |
+| `no_pcss` | `-0.13 (0.01)` / `-0.14 (0.02)` | `-0.10 (0.04)` / `-0.17 (0.05)` | level (rerun) |
+| `no_blend` | `-0.11 (0.02)` / `-0.12 (0.02)` | `-0.07` level / `-0.14 (0.01)` | `-0.12 (0.06)` / `-0.07 (0.03)` |
+| `filter2` | `-0.09 (0.04)` / `-0.11 (0.04)` | `-0.20` level / `-0.10 (0.11)` | level (rerun) |
+| `filter3` | `-0.09 (0.01)` / `-0.09 (0.02)` | level / `-0.10 (0.03)` | level |
+| `no_cloud_shadows` | level / level | level / level | level / level |
+
+- **Where it goes.** The cost is drawing the shadow maps, not reading them. 30k `full` (profiled):
+  the shadow pass `2.28 ms` of `8.70 ms` GPU (26%), the depth prepass `2.44`, the opaque pass
+  `3.55` (`3.44` without shadows: the receivers' lookup with its filter and PCSS is about
+  `0.1 ms`). 100k: shadow pass `2.68` of `14.7 ms` (18%), opaque `6.59` against `6.53`. Kuopio:
+  `0.045 ms` and `0.45` against `0.37`. `no_casters` saves what `none` saves, within the spread.
+  The 2026-10-06 measurement above (PCSS up to `0.74 ms`, blending up to `1.29 ms` in a town, M2
+  Pro) does not carry over to this machine: here each of filter, PCSS and blending is at most
+  `0.17 ms`.
+- **Turns** (30k, 1 s; CPU-bound, frame p50 about `15 ms` against GPU `9 ms`): `none` `-1.9` to
+  `-2.7 ms` frame (`turn_out` level), `no_casters` `-0.6` to `-3.9`, `low` `-0.6` to `-1.4`
+  (`turn_out` level); every other variant level or within `0.8 ms` either way. The first run
+  read `filter3` `turn_repeat` and `no_cloud_shadows` `turn_back` `worse p50`; the one rerun
+  (turns only, the same chain for those two) reads them level, so those were noise.
+- **100k** frames are partly CPU-bound: the GPU saves `3.1 ms` without shadows, the frame `1.1 ms`.
+- **Kuopio**'s GPU time is bimodal in every block, `full` included (30-frame medians switch
+  between about `0.9` and `1.45 ms`: the GPU's clock at a 1 ms load), so its first run's
+  `filter2` and `no_pcss` `worse` were noise; the rerun reads both level.
+- **Stills** (`stills capture --variants`, `stills variants`; pixels differing from `full`; 30k
+  `saved` / `city` / `city_low`, whose `full` differs from a second run's `full` by 17,619 / 8,054 /
+  5,719 pixels, `RENDER-38`; Kuopio `forest_low` with 4,000 warm-up frames, byte-identical run to
+  run): `filter2` 18,056 / 8,895 / 6,425 and Kuopio 152,223 (largest delta 100); `filter3`
+  18,466 / 9,485 / 6,267 and 143,710; `no_blend` 19,914 / 14,806 / 10,192 and 239,270; `no_pcss`
+  24,705 / 18,836 / 12,909 and 411,326; `low` 37,106 / 34,068 / 27,155 and 263,448. On the 30k
+  poses the filter qualities are at the noise; in the forest every variant changes the tree
+  shadows' edges, and `filter2` breaks a trunk's shadow into dots (as `VEG-25` found). Crops of
+  the most-changed windows (full, variant, difference x8): `$ARTIFACTS/crops`.
+- **Recommendation**, by milliseconds saved per visible change: (1) fewer or cheaper casters at
+  range (shadow-only LODs or proxies in the far cascades, or a shorter caster range per split):
+  up to the whole `2.3 ms` (30k) / `3.0 ms` GPU (100k), since drawing is the cost; how much of it
+  each method keeps and what it changes is the next measurement; look change depends on the
+  method, user decides. (2) A Medium setting with two splits and the High filter: `low` saves
+  `1.25` / `1.56 ms`, of which filter, PCSS and blending together are at most about `0.4 ms`, so
+  most of it is the two splits (inferred, not measured alone); look change: user decides (the
+  far shadows coarsen). (3) Filter quality, PCSS off, blending off: `0.1-0.17 ms` each for a
+  visible change in the forest: not worth it here; look change: user decides; recommended to
+  keep. (4) Cloud shadows: nothing to save.
+- **The default run unchanged:** a series of the 30k still, a run without the variable as control against
+  `--shadows full`, read p50 `+0.0` and max `+1.4` against spreads `0.1` / `0.8`; its one rerun
+  reads level (p50 `+0.0`, max `-0.1`; spreads `0.0` / `3.5`). Settle-point digests of a run with
+  and without `--shadows full`: graded 2 of 2, buildings 2 of 2 and the water pose equal.
 
 Frame budget after these changes, and canopy density (2026-10-03, `RENDER-04`): the idle matrix
 gains `forest` and `forest_low` poses (150 m and 30 m over one of Kuopio's densest canopy cells,
