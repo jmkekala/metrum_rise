@@ -333,6 +333,9 @@ struct Run {
     simulation: Option<Gd<SimulationNode>>,
     start_us: i64,
     progressed: bool,
+    // The engine's clock (`Time.get_ticks_usec`, which `start_us` reads) when the run began and
+    // a monotonic clock from then: a budget check without a call into the engine.
+    clock: (i64, std::time::Instant),
 }
 
 impl Run {
@@ -341,7 +344,11 @@ impl Run {
         let start_us = self.start_us;
         let mut book = self.book.bind_mut();
         let book = &mut *book;
-        over_budget(&mut book.trace, book.state.unbudgeted, start_us)
+        if book.trace.is_some() {
+            return over_budget(&mut book.trace, book.state.unbudgeted, start_us);
+        }
+        let now_us = self.clock.0 + self.clock.1.elapsed().as_micros() as i64;
+        !book.state.unbudgeted && now_us - start_us >= 1000
     }
 
     fn has_counts(&self) -> bool {
@@ -542,7 +549,8 @@ impl GradedTileBook {
         start_us: i64,
     ) {
         let mut polled = std::mem::take(&mut book.clone().bind_mut().taken.polled);
-        let mut run = Run { book, renderer, simulation, start_us, progressed: false };
+        let clock = (godot::classes::Time::singleton().get_ticks_usec() as i64, std::time::Instant::now());
+        let mut run = Run { book, renderer, simulation, start_us, progressed: false, clock };
         run.run(&mut polled);
         // A poll's results the frame left are deferred above; the buffer is empty again.
         polled.clear();
@@ -561,7 +569,8 @@ impl GradedTileBook {
             keys.extend(bound.taken.waits.keys().copied());
             keys
         };
-        let mut run = Run { book, renderer, simulation: None, start_us: 0, progressed: true };
+        let clock = (0, std::time::Instant::now());
+        let mut run = Run { book, renderer, simulation: None, start_us: 0, progressed: true, clock };
         for &tile in &keys {
             let ready = {
                 let mut book = run.book.bind_mut();
