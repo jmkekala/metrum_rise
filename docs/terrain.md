@@ -14785,7 +14785,7 @@ its water view 22,874 lie between the other pairings (1,523-1,652; 14,353-34,615
 difference: the residue is the city's run-to-run ground speckle (`RENDER-38`).
 
 **Frame time** (`$ARTIFACTS/rows.md`; C B B C, the control `dev` `daec355a`'s release library with its
-scripts (library SHA-256 `a22a7fd0`), the branch at its pre-rebase tip `535dd20d` (`1d353e4d`),
+scripts (library SHA-256 `a22a7fd0`), the branch at its pre-rebase tip `535dd20d` (`1d353e4d`; rebased, `cb30b3d1`),
 1920x1080, P-cores, eight workers, paused): Kuopio's 0.5 s turns and 3 s pans level or better
 (maxima 2.6-7.7 ms lower on the pans), its load's frames 4.8-4.9 ms p50 against 12.2-12.5; the
 30k 1 s turns and pans level or better (the one flagged group, the pans' `pan_repeat`, p50 +0.1 ms
