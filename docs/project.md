@@ -77,7 +77,7 @@ to the page in Rust, without dictionaries or GDScript per tile: a 30k turn's gra
 from 1.2-1.4 ms a frame to 0.8-0.9 and its install queue keeps up; at 100k the install budget now
 also counts the cell rewrites its installs cause, so the graded time is 1.4-1.5 ms against the
 control's 1.5-1.6 with half again as many tiles a frame; the 0.5 / 1.0 ms bars stay missed.
-`RENDER-32-K` part 4 (2026-11-12, branch `stream-g2c4`) moves the graded edit batch and the road
+`RENDER-32-K` part 4 (landed 2026-11-12, part 5 left) moves the graded edit batch and the road
 preview's tiles to Rust, replayed bit for bit; T65's one rule, the tools' holds and the rest of the
 renderer's deletion are part 5's, and `TERRAIN-23` (the drag probe's fast commit) is narrowed, not
 fixed.
