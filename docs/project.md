@@ -77,6 +77,10 @@ to the page in Rust, without dictionaries or GDScript per tile: a 30k turn's gra
 from 1.2-1.4 ms a frame to 0.8-0.9 and its install queue keeps up; at 100k the install budget now
 also counts the cell rewrites its installs cause, so the graded time is 1.4-1.5 ms against the
 control's 1.5-1.6 with half again as many tiles a frame; the 0.5 / 1.0 ms bars stay missed.
+`RENDER-32-K` part 4 (2026-11-12, branch `stream-g2c4`) moves the graded edit batch and the road
+preview's tiles to Rust, replayed bit for bit; T65's one rule, the tools' holds and the rest of the
+renderer's deletion are part 5's, and `TERRAIN-23` (the drag probe's fast commit) is narrowed, not
+fixed.
 `RENDER-32-F` (landed)
 moves the vegetation's residency, bands and staleness to Rust, decision for decision equal to the
 GDScript on the benchmark's recorded paths: its frame time on a turn falls to 0.1-0.3 ms, and an
@@ -1543,6 +1547,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TOOLS-19` part 2 (2026-11-12, branch `stream-g2c4`): a test script, benchmark or probe started in the player's real profile exits with status 3 before any script runs ([guard](debug.md#godot-test-guard)); the graded drag probe has a tracked runner that fails loudly (`tools/graded_drag_probe.py`, `TERRAIN-23`).
 - `TOOLS-19` part 1 and `TOOLS-20` (2026-11-12, branch `stream-tl1`, landed on `dev`): every scripted Godot run (tests, benchmarks, probes, imports) goes through `tools/godot_isolated.py`, an absolute throwaway profile that refuses a relative or home XDG path ([guard](debug.md#godot-test-guard)); the stream benchmark's verdicts are tracked subcommands, `series` (C B B C in one lock), `compare`, `digests` (equal, band or different; the benchmark records the level rule's ends) and `stills` ([tools](terrain.md#stream-benchmark-perf-23)).
 - `TOOLS-16` (2026-11-10, landed on `dev`, open until the packages are tried on a Mac and on Windows): release builds. Every push to `main` builds Linux, Windows and macOS packages on GitHub Actions, smoke-tests Linux and (under Wine) Windows by starting both bundled worlds without the build checkout, and publishes a GitHub Release `vYYYY.M.N`; `dev` never does. Saves record the release version as `game_build` and the main menu shows it (`dev` for a checkout). Two full runs passed on the test branch. See [`release.md`](release.md).
 - `TOOLS-15` (2026-11-10, landed on `dev`): an exported game can start a city. The first trial export found three blockers: the economy, demand and zoning tuning files were read from the build machine's checkout (now compiled in), and the bundled packs, walker VAT set and car models were read as raw files that export does not ship (now imported as `keep`). See [`TOOLS-15`](roadmap.md).
