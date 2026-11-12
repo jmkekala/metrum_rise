@@ -1,0 +1,57 @@
+< setup 00000041000000450000004500000044 -
+< layout 131,6080;67,4480;35,3880;8,4416
+< layer_limit 256
+> page_new 0 0 0,0 64 256
+> page_new 1 1 0,0 192 256
+< process 0000000000803b4400002a43 0 1 - -
+> view 0000000000803b4400002a43
+> poll 4
+< poll 0 2
+< list 1 0 2 -
+< tile -1 -1 2 0 0 1 0 0 0 20160 8192 -
+< budget 0
+< budget 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< clear
+> cancel_all

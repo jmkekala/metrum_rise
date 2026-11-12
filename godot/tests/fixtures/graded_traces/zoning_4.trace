@@ -1,0 +1,538 @@
+< setup 00000041000000450000004500000044 -
+< layout 131,6080;67,4480;35,3880;8,4416
+< layer_limit 256
+> page_new 0 0 0,0 64 256
+> page_new 1 1 0,0 192 256
+< process 0000000000803b4400002a43 0 1 - -
+> view 0000000000803b4400002a43
+> poll 4
+< poll 0 10
+< list 0 1 6 -
+< list 0 3 6 -
+< failed tile 1,0,2,0 5 1 busy
+< failed tile 2,0,2,0 5 1 busy
+< failed tile 1,-1,2,0 5 1 busy
+< failed tile 2,-1,2,0 5 1 busy
+< tile -2 2 2 0 5 1 0 0 0 20160 8192 -
+< tile -2 3 2 0 5 1 0 0 0 20160 4096 -
+< tile -3 -4 2 0 5 1 0 0 0 20160 4096 -
+< tile -3 -3 2 0 5 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 4
+< tile -3 -2 2 0 5 1 0 0 0 20160 4096 -
+< tile -3 -1 2 0 5 1 0 0 0 20160 4096 -
+< tile -3 0 2 0 5 1 0 0 0 20160 4096 -
+< tile -3 1 2 0 5 1 0 0 0 20160 4096 -
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< process 0000000000803b4400002a43 0 1 - -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 4
+< tile -3 2 2 0 5 1 0 0 0 20160 4096 -
+< tile -3 3 2 0 5 1 0 0 0 20160 4096 -
+< tile -1 -1 2 0 5 1 0 0 0 20160 4096 -
+< tile -1 0 2 0 5 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 4
+< tile 0 -1 2 0 5 1 0 0 0 20160 4096 -
+< tile 0 0 2 0 5 1 0 0 0 20160 4096 -
+< tile 3 -1 2 0 5 1 0 0 0 20160 4096 -
+< tile 3 0 2 0 5 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 0
+< budget 1
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< budget 0
+< budget 0
+< patch 2 2 107223189656 -9223371929614808911 00000000000000000000004400000044 1 13 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 2,2 2,2
+> poll 4
+< poll 0 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 1
+> request_lists 2,2,13
+< request_lists 1
+> draw 2 2 2
+< patch 2 1 107139303970 -9223371929698694688 00000000000000c40000004400000044 1 13 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 2,1 2,1
+> poll 4
+< poll 0 1
+< list 2 2 13 0,0,0,1,0,2
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 1
+> request_lists 2,1,13
+< request_lists 1
+> page_new 2 2 2,2 32 96
+> request_tiles 0,0,2,0,0,0,1,2,0,0,0,2,2,0,0
+< request_tiles 1,1,1
+> draw 2 2 2
+> draw 2 1 2
+< patch 1 2 107055417794 -9223371929782580685 000000c4000000000000004400000044 1 13 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 1,2 1,2
+> poll 4
+< poll 0 4
+< list 2 1 13 0,-3,0,-2,0,-1,1,-3,2,-3,3,-3
+< tile 0 0 2 0 0 1 0 0 0 20160 4096 -
+< tile 0 1 2 0 0 1 0 0 0 20160 4096 -
+< tile 0 2 2 0 0 1 0 0 0 20160 12288 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> write 2 0 0 1 0 0 2 0 0
+< budget 0
+> write 2 1 1 1 0 1 2 0 0
+< budget 1
+< budget 1
+> request_lists 1,2,13
+< request_lists 1
+> page_new 3 2 2,1 32 96
+> request_tiles 0,-3,2,0,0,0,-2,2,0,0,0,-1,2,0,0,1,-3,2,0,0,2,-3,2,0,0,3,-3,2,0,0
+< request_tiles 1,1,1,1,1,1
+> draw 2 1 2
+> draw 1 2 2
+< patch 3 2 106971531421 -9223371929866466748 00000044000000000000004400000044 1 9 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 3,2 3,2
+> write 2 2 2 3 0 2 2 0 0
+< budget 0
+> poll 4
+< poll 0 1
+< list 1 2 13 -2,0,-2,1,-2,2,-2,3,-1,2
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 1
+> cells 2 2 2 1319353426
+> cells 2 2 4 3326975076
+> request_lists 3,2,9
+< request_lists 1
+> page_new 4 2 1,2 32 96
+> request_tiles -2,0,2,0,0,-2,1,2,0,0,-2,2,2,0,0,-2,3,2,0,0,-1,2,2,0,0
+< request_tiles 1,1,1,1,1
+> draw 1 2 2
+> draw 3 2 2
+< patch 2 3 106887645368 -9223371929950353064 00000000000000440000004400000044 1 9 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 2,3 2,3
+> poll 4
+< poll 0 6
+< failed tile -1,2,2,0 0 1 busy
+< failed tile -2,2,2,0 0 1 busy
+< failed tile -2,3,2,0 0 1 busy
+< failed tile -2,1,2,0 0 1 busy
+< failed tile -2,0,2,0 0 1 busy
+< failed patch 3,2,0,0 9 1 busy
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 1
+> cells 2 2 2 4051099887
+> cells 2 2 4 3477886402
+> request_lists 3,2,9,2,3,9
+< request_lists 1,1
+> request_tiles -1,2,2,0,0,-2,2,2,0,0,-2,3,2,0,0,-2,1,2,0,0,-2,0,2,0,0
+< request_tiles 1,1,1,1,1
+> draw 2 3 2
+< patch 2 0 106803759418 -9223371930034239214 00000000000080c40000004400000044 1 9 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 2,0 2,0
+> poll 4
+< poll 0 11
+< list 3 2 9 -
+< list 2 3 9 -
+< failed tile -1,2,2,0 0 1 busy
+< failed tile -2,2,2,0 0 1 busy
+< failed tile -2,3,2,0 0 1 busy
+< failed tile -2,1,2,0 0 1 busy
+< failed tile -2,0,2,0 0 1 busy
+< tile 0 -3 2 0 0 1 0 0 0 20160 12288 -
+< tile 0 -2 2 0 0 1 0 0 0 20160 8192 -
+< tile 0 -1 2 0 0 1 0 0 0 20160 4096 -
+< tile 1 -3 2 0 0 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> write 3 0 0 3 0 -3 2 0 0
+< budget 0
+> write 3 1 3 2 0 -2 2 0 0
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+> cells 2 2 4 2675934563
+> request_lists 2,0,9
+< request_lists 1
+> request_tiles -1,2,2,0,0,-2,2,2,0,0,-2,3,2,0,0,-2,1,2,0,0,-2,0,2,0,0
+< request_tiles 1,1,1,1,1
+> draw 3 2 0
+> draw 2 3 0
+> draw 2 0 2
+< patch 1 1 106719873238 -9223371930118125369 000000c4000000c40000004400000044 1 13 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 1,1 1,1
+> write 3 2 5 1 0 -1 2 0 0
+< budget 0
+> write 3 3 6 1 1 -3 2 0 0
+< budget 0
+> poll 4
+< poll 0 8
+< failed tile -1,2,2,0 0 1 busy
+< failed tile -2,2,2,0 0 1 busy
+< failed tile -2,3,2,0 0 1 busy
+< failed tile -2,1,2,0 0 1 busy
+< failed tile -2,0,2,0 0 1 busy
+< failed patch 2,0,0,0 9 1 busy
+< tile 2 -3 2 0 0 1 0 0 0 20160 4096 -
+< tile 3 -3 2 0 0 1 0 0 0 20160 8192 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> write 3 4 7 1 2 -3 2 0 0
+< budget 1
+< budget 1
+> cells 2 2 4 3209343342
+> request_lists 2,0,9,1,1,13
+< request_lists 1,1
+> request_tiles -1,2,2,0,0,-2,2,2,0,0,-2,3,2,0,0,-2,1,2,0,0,-2,0,2,0,0
+< request_tiles 1,1,1,1,1
+> draw 1 1 2
+< patch 3 1 106635987532 -9223371930202011222 00000044000000c40000004400000044 1 9 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 3,1 3,1
+> write 3 5 8 2 3 -3 2 0 0
+< budget 0
+> poll 4
+< poll 0 2
+< list 2 0 9 -
+< list 1 1 13 -2,-4,-2,-3,-2,-2,-2,-1,-1,-3
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 1
+> cells 2 2 4 3847806222
+> request_lists 3,1,9
+< request_lists 1
+> page_new 5 2 1,1 32 96
+> request_tiles -2,-4,2,0,0,-2,-3,2,0,0,-2,-2,2,0,0,-2,-1,2,0,0,-1,-3,2,0,0
+< request_tiles 1,1,1,1,1
+> draw 2 0 0
+> draw 1 1 2
+> draw 3 1 2
+< patch 0 2 106552101450 -9223371930285897328 000080c4000000000000004400000044 1 9 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 0,2 0,2
+> poll 4
+< poll 0 1
+< list 3 1 9 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> cells 2 2 4 980275244
+> walls 2 2 0 256 0 546098158
+< budget 0
+< budget 1
+> request_lists 0,2,9
+< request_lists 1
+> draw 3 1 0
+> draw 0 2 2
+> draw 2 2 1
+< patch 1 3 106468215154 -9223371930369783354 000000c4000000440000004400000044 1 9 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 1,3 1,3
+> poll 4
+< poll 0 5
+< list 0 2 9 -
+< tile -2 -4 2 0 0 1 0 0 0 20160 8192 -
+< tile -2 -3 2 0 0 1 0 0 0 20160 16384 -
+< tile -2 -2 2 0 0 1 0 0 0 20160 8192 -
+< tile -2 -1 2 0 0 1 0 0 0 20160 4096 -
+< budget 0
+> write 5 0 0 2 -2 -4 2 0 0
+< budget 0
+> write 5 1 2 4 -2 -3 2 0 0
+< budget 0
+> write 5 2 6 2 -2 -2 2 0 0
+< budget 1
+< budget 1
+< budget 1
+> request_lists 1,3,9
+< request_lists 1
+> draw 0 2 0
+> draw 1 3 2
+< patch 3 3 106384329254 -9223371930453669306 00000044000000440000004400000044 1 9 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 3,3 3,3
+> write 5 3 8 1 -2 -1 2 0 0
+< budget 0
+> poll 4
+< poll 0 5
+< list 1 3 9 -
+< tile -1 -3 2 0 0 1 0 0 0 20160 8192 -
+< tile -2 0 2 0 0 1 0 0 0 20160 4096 -
+< tile -2 1 2 0 0 1 0 0 0 20160 8192 -
+< tile -2 2 2 0 0 1 0 0 0 20160 16384 -
+< budget 0
+< budget 0
+> write 5 4 9 2 -1 -3 2 0 0
+< budget 0
+> write 4 0 0 1 -2 0 2 0 0
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+> request_lists 3,3,9
+< request_lists 1
+> draw 1 3 0
+> draw 3 3 2
+< patch 1 0 106300442961 -9223371930537555869 000000c4000080c40000004400000044 1 9 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 1,0 1,0
+> write 4 1 1 2 -2 1 2 0 0
+< budget 0
+> write 4 2 3 4 -2 2 2 0 0
+< budget 0
+> poll 4
+< poll 0 3
+< list 3 3 9 -
+< tile -2 3 2 0 0 1 0 0 0 20160 8192 -
+< tile -1 2 2 0 0 1 0 0 0 20160 8192 -
+< budget 0
+< budget 0
+> write 4 3 7 2 -2 3 2 0 0
+< budget 1
+< budget 1
+> request_lists 1,0,9
+< request_lists 1
+> draw 3 3 0
+> draw 1 0 2
+< clear
+> page_release 2 1
+> page_release 3 1
+> page_release 5 1
+> page_release 4 1
+< release_patch 2 2 0
+< release_patch 2 1 0
+> cancel_all

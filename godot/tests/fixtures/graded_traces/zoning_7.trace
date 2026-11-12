@@ -1,0 +1,691 @@
+< setup 00000041000000450000004500000044 -
+< layout 131,6080;67,4480;35,3880;8,4416
+< layer_limit 256
+> page_new 0 0 0,0 64 256
+> page_new 1 1 0,0 192 256
+< process 0000000000803b4400002a43 0 1 - -
+> view 0000000000803b4400002a43
+> poll 4
+< poll 0 13
+< failed tile -2,-1,2,0 17 1 busy
+< failed tile -2,-2,2,0 17 1 busy
+< failed tile -3,-2,2,0 17 1 busy
+< failed tile -2,-3,2,0 17 1 busy
+< failed tile -3,-3,2,0 17 1 busy
+< failed tile -2,-4,2,0 17 1 busy
+< failed tile -3,-4,2,0 17 1 busy
+< failed patch 1,3,0,0 18 1 busy
+< failed patch 1,0,0,0 18 1 busy
+< tile 1 -3 2 0 0 1 0 0 0 20160 4096 -
+< tile 1 -2 2 0 0 1 0 0 0 20160 4096 -
+< tile 1 -1 2 0 0 1 0 0 0 20160 4096 -
+< tile 0 0 2 0 15 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 4
+< tile 0 1 2 0 15 1 0 0 0 20160 4096 -
+< tile 0 2 2 0 15 1 0 0 0 20160 4096 -
+< tile 0 3 2 0 15 1 0 0 0 20160 4096 -
+< tile 1 0 2 0 15 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 4
+< tile 1 1 2 0 15 1 0 0 0 20160 4096 -
+< tile 1 2 2 0 15 1 0 0 0 20160 4096 -
+< tile 1 3 2 0 15 1 0 0 0 20160 4096 -
+< tile -2 0 2 0 17 1 0 0 0 20160 4096 -
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< process 0000000000803b4400002a43 0 1 - -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 4
+< tile -2 1 2 0 17 1 0 0 0 20160 4096 -
+< tile -2 2 2 0 17 1 0 0 0 20160 4096 -
+< tile -2 3 2 0 17 1 0 0 0 20160 4096 -
+< tile 0 -3 2 0 17 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 4
+< tile 0 -2 2 0 17 1 0 0 0 20160 4096 -
+< tile 0 -1 2 0 17 1 0 0 0 20160 4096 -
+< tile 1 -4 2 0 17 1 0 0 0 20160 4096 -
+< tile -1 1 2 0 17 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 3
+< tile -1 2 2 0 17 1 0 0 0 20160 4096 -
+< tile -1 3 2 0 17 1 0 0 0 20160 8192 -
+< tile 0 -4 2 0 17 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< process 0000000000803b4400002a43 0 1 - -
+> poll 4
+< poll 0 0
+< patch 2 2 136180664787 -9223371900657333707 00000000000000000000004400000044 1 22 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 2,2 2,2
+> poll 4
+< poll 0 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 1
+> request_lists 2,2,22
+< request_lists 1
+> draw 2 2 2
+< patch 2 1 136096778421 -9223371900741220202 00000000000000c40000004400000044 1 22 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 2,1 2,1
+> poll 4
+< poll 0 1
+< failed patch 2,2,0,0 22 1 busy
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 1
+> request_lists 2,2,22,2,1,22
+< request_lists 1,1
+> draw 2 1 2
+< patch 1 2 136012892442 -9223371900825106190 000000c4000000000000004400000044 1 22 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 1,2 1,2
+> poll 4
+< poll 0 2
+< list 2 2 22 0,0,1,0,2,0,3,0,4,0
+< list 2 1 22 0,-1,1,-1,2,-1,3,-1,4,-1
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> cells 2 2 4 1378815785
+> walls 2 2 0 256 0 546098158
+< budget 1
+> request_lists 1,2,22
+< request_lists 1
+> page_new 2 2 2,2 32 96
+> page_new 3 2 2,1 32 96
+> request_tiles 0,0,2,0,0,1,0,2,0,0,2,0,2,0,0,3,0,2,0,0,4,0,2,0,0,0,-1,2,0,0,1,-1,2,0,0,2,-1,2,0,0,3,-1,2,0,0,4,-1,2,0,0
+< request_tiles 1,1,1,1,1,1,1,1,1,1
+> draw 2 2 2
+> draw 2 1 2
+> draw 1 2 2
+< patch 3 2 135929006427 -9223371900908992169 00000044000000000000004400000044 1 21 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 3,2 3,2
+> poll 4
+< poll 0 39
+< edit 18 1 -1 0 0
+< edit 19 0 6 6 20
+< level 0 0 -5,-1,-5,0,-4,-1,-4,0,-3,-1,-3,0,-2,-1,-2,0,-1,-1,-1,0,0,-1,0,0,1,-1,1,0,2,-1,2,0,3,-1,3,0,4,-1,4,0
+< level 1 0 -5,-1,-5,0,-4,-1,-4,0,-3,-1,-3,0,-2,-1,-2,0,-1,-1,-1,0,0,-1,0,0,1,-1,1,0,2,-1,2,0,3,-1,3,0,4,-1,4,0
+< level 2 0 -5,-1,-5,0,-4,-1,-4,0,-3,-1,-3,0,-2,-1,-2,0,-1,-1,-1,0,0,-1,0,0,1,-1,1,0,2,-1,2,0,3,-1,3,0,4,-1,4,0
+< level 3 2 -6,-2,-6,-1,-6,0,-6,1,-5,-2,-5,-1,-5,0,-5,1,-4,-2,-4,-1,-4,0,-4,1,-3,-2,-3,-1,-3,0,-3,1,-2,-2,-2,-1,-2,0,-2,1,-1,-2,-1,-1,-1,0,-1,1,0,-2,0,-1,0,0,0,1,1,-2,1,-1,1,0,1,1,2,-2,2,-1,2,0,2,1,3,-2,3,-1,3,0,3,1,4,-2,4,-1,4,0,4,1,5,-2,5,-1,5,0,5,1
+< level 3 4 -7,-2,-7,-1,-7,0,-7,1,-6,-3,-6,-2,-6,-1,-6,0,-6,1,-6,2,-5,-3,-5,-2,-5,-1,-5,0,-5,1,-5,2,-4,-3,-4,-2,-4,-1,-4,0,-4,1,-4,2,-3,-3,-3,-2,-3,-1,-3,0,-3,1,-3,2,-2,-3,-2,-2,-2,-1,-2,0,-2,1,-2,2,-1,-3,-1,-2,-1,-1,-1,0,-1,1,-1,2,0,-3,0,-2,0,-1,0,0,0,1,0,2,1,-3,1,-2,1,-1,1,0,1,1,1,2,2,-3,2,-2,2,-1,2,0,2,1,2,2,3,-3,3,-2,3,-1,3,0,3,1,3,2,4,-3,4,-2,4,-1,4,0,4,1,4,2,5,-3,5,-2,5,-1,5,0,5,1,5,2,6,-2,6,-1,6,0,6,1
+< level 3 8 -9,-3,-9,-2,-9,-1,-9,0,-9,1,-9,2,-8,-4,-8,-3,-8,-2,-8,-1,-8,0,-8,1,-8,2,-8,3,-7,-5,-7,-4,-7,-3,-7,-2,-7,-1,-7,0,-7,1,-7,2,-7,3,-7,4,-6,-5,-6,-4,-6,-3,-6,-2,-6,-1,-6,0,-6,1,-6,2,-6,3,-6,4,-5,-5,-5,-4,-5,-3,-5,-2,-5,-1,-5,0,-5,1,-5,2,-5,3,-5,4,-4,-5,-4,-4,-4,-3,-4,-2,-4,-1,-4,0,-4,1,-4,2,-4,3,-4,4,-3,-5,-3,-4,-3,-3,-3,-2,-3,-1,-3,0,-3,1,-3,2,-3,3,-3,4,-2,-5,-2,-4,-2,-3,-2,-2,-2,-1,-2,0,-2,1,-2,2,-2,3,-2,4,-1,-5,-1,-4,-1,-3,-1,-2,-1,-1,-1,0,-1,1,-1,2,-1,3,-1,4,0,-5,0,-4,0,-3,0,-2,0,-1,0,0,0,1,0,2,0,3,0,4,1,-5,1,-4,1,-3,1,-2,1,-1,1,0,1,1,1,2,1,3,1,4,2,-5,2,-4,2,-3,2,-2,2,-1,2,0,2,1,2,2,2,3,2,4,3,-5,3,-4,3,-3,3,-2,3,-1,3,0,3,1,3,2,3,3,3,4,4,-5,4,-4,4,-3,4,-2,4,-1,4,0,4,1,4,2,4,3,4,4,5,-5,5,-4,5,-3,5,-2,5,-1,5,0,5,1,5,2,5,3,5,4,6,-5,6,-4,6,-3,6,-2,6,-1,6,0,6,1,6,2,6,3,6,4,7,-4,7,-3,7,-2,7,-1,7,0,7,1,7,2,7,3,8,-3,8,-2,8,-1,8,0,8,1,8,2
+< tile -5 -1 2 0 19 1 0 0 1 20160 4096 -
+< tile -5 0 2 0 19 1 0 0 1 20160 4096 -
+< tile -4 -1 2 0 19 1 0 0 1 20160 4096 -
+< tile -4 0 2 0 19 1 0 0 1 20160 4096 -
+< tile -3 -1 2 0 19 1 0 0 1 20160 4096 -
+< tile -3 0 2 0 19 1 0 0 1 20160 4096 -
+< tile -2 -1 2 0 19 1 0 0 1 20160 4096 -
+< tile -2 0 2 0 19 1 0 0 1 20160 4096 -
+< tile -1 -1 2 0 19 1 0 0 1 20160 4096 -
+< tile -1 0 2 0 19 1 0 0 1 20160 4096 -
+< tile 0 -1 2 0 19 1 0 0 1 20160 4096 -
+< tile 0 0 2 0 19 1 0 0 1 20160 4096 -
+< tile 1 -1 2 0 19 1 0 0 1 20160 4096 -
+< tile 1 0 2 0 19 1 0 0 1 20160 4096 -
+< tile 2 -1 2 0 19 1 0 0 1 20160 4096 -
+< tile 2 0 2 0 19 1 0 0 1 20160 4096 -
+< tile 3 -1 2 0 19 1 0 0 1 20160 4096 -
+< tile 3 0 2 0 19 1 0 0 1 20160 4096 -
+< tile 4 -1 2 0 19 1 0 1 1 20160 4096 -
+< tile 4 0 2 0 19 1 0 0 1 20160 4096 -
+< list 1 2 22 -5,0,-4,0,-3,0,-2,0,-1,0
+< failed tile 0,0,2,0 0 1 busy
+< failed tile 1,0,2,0 0 1 busy
+< failed tile 0,-1,2,0 0 1 busy
+< failed tile 2,0,2,0 0 1 busy
+< failed tile 1,-1,2,0 0 1 busy
+< failed tile 2,-1,2,0 0 1 busy
+< failed tile 3,0,2,0 0 1 busy
+< failed tile 3,-1,2,0 0 1 busy
+< failed tile 4,0,2,0 0 1 busy
+< failed tile 4,-1,2,0 0 1 busy
+> cancel 0 0
+< cancel -1
+> cancel 1 0
+< cancel -1
+> cancel 2 0
+< cancel -1
+> cancel 3 0
+< cancel -1
+> cancel 4 0
+< cancel -1
+> cancel 0 -1
+< cancel -1
+> cancel 1 -1
+< cancel -1
+> cancel 2 -1
+< cancel -1
+> cancel 3 -1
+< cancel -1
+> cancel 4 -1
+< cancel -1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+> request_lists 3,2,21
+< request_lists 1
+> request_tiles 0,0,2,0,18,1,0,2,0,18,2,0,2,0,18,3,0,2,0,18,4,0,2,0,18,0,-1,2,0,18,1,-1,2,0,18,2,-1,2,0,18,3,-1,2,0,18,4,-1,2,0,18
+< request_tiles 1,1,1,1,1,1,1,1,1,1
+> draw 3 2 2
+< patch 2 3 135845120182 -9223371900992878200 00000000000000440000004400000044 1 21 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 2,3 2,3
+> cancel 0 -1
+< cancel -1
+> cancel 0 0
+< cancel -1
+> cancel 1 -1
+< cancel -1
+> cancel 1 0
+< cancel -1
+> cancel 2 -1
+< cancel -1
+> cancel 2 0
+< cancel -1
+> cancel 3 -1
+< cancel -1
+> cancel 3 0
+< cancel -1
+> cancel 4 -1
+< cancel -1
+> cancel 4 0
+< cancel -1
+> cancel -5 -1
+< cancel -1
+> cancel -5 0
+< cancel -1
+> cancel -4 -1
+< cancel -1
+> cancel -4 0
+< cancel -1
+> cancel -3 -1
+< cancel -1
+> cancel -3 0
+< cancel -1
+> cancel -2 -1
+< cancel -1
+> cancel -2 0
+< cancel -1
+> cancel -1 -1
+< cancel -1
+> cancel -1 0
+< cancel -1
+> cancel 0 -1
+< cancel -1
+> cancel 0 0
+< cancel -1
+> cancel 1 -1
+< cancel -1
+> cancel 1 0
+< cancel -1
+> cancel 2 -1
+< cancel -1
+> cancel 2 0
+< cancel -1
+> cancel 3 -1
+< cancel -1
+> cancel 3 0
+< cancel -1
+> cancel 4 -1
+< cancel -1
+> cancel 4 0
+< cancel -1
+< budget 1
+< budget 1
+> request_lists 2,3,21
+< request_lists 1
+> request_tiles 0,-1,2,0,19,0,0,2,0,19,1,-1,2,0,19,1,0,2,0,19,2,-1,2,0,19,2,0,2,0,19,3,-1,2,0,19,3,0,2,0,19,4,-1,2,0,19,4,0,2,0,19
+< request_tiles 1,1,1,1,1,1,1,1,1,1
+> draw 2 3 2
+< patch 2 0 135761234291 -9223371901076764308 00000000000080c40000004400000044 1 21 0000a0c3000080c50000a0c3000020440000004600002044
+< patch 1 1 135677348273 -9223371901160650293 000000c4000000c40000004400000044 1 22 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 2,0,1,1 2,0,1,1
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 10 6
+< list 3 2 21 -
+< list 2 3 21 -
+< tile 0 -1 2 0 18 1 0 0 0 20160 4096 -
+< tile 0 0 2 0 18 1 0 0 0 20160 4096 -
+< tile 1 -1 2 0 18 1 0 0 0 20160 4096 -
+< tile 1 0 2 0 18 1 0 0 0 20160 4096 -
+< budget 0
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+> request_lists 2,0,21,1,1,22
+< request_lists 1,1
+> page_new 4 2 1,2 32 96
+> request_tiles -5,0,2,0,19,-4,0,2,0,19,-3,0,2,0,19,-2,0,2,0,19,-1,0,2,0,19
+< request_tiles 1,1,1,1,1
+> draw 1 2 2
+> draw 3 2 0
+> draw 2 0 2
+> draw 1 1 2
+< patch 3 1 135593462264 -9223371901244536437 00000044000000c40000004400000044 1 21 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 3,1 3,1
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 6 6
+< failed patch 2,0,0,0 21 1 busy
+< failed patch 1,1,0,0 22 1 busy
+< tile 2 -1 2 0 18 1 0 0 0 20160 4096 -
+< tile 2 0 2 0 18 1 0 0 0 20160 4096 -
+< tile 3 -1 2 0 18 1 0 0 0 20160 4096 -
+< tile 3 0 2 0 18 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 2 2
+< tile 4 -1 2 0 18 1 0 0 0 20160 4096 -
+< tile 4 0 2 0 18 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 1
+> request_lists 2,0,21,1,1,22,3,1,21
+< request_lists 1,1,1
+> draw 2 3 0
+> draw 3 1 2
+< patch 0 2 135509576099 -9223371901328422644 000080c4000000000000004400000044 1 21 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 0,2 0,2
+> poll 4
+< poll 0 7
+< failed patch 2,0,0,0 21 1 busy
+< failed patch 1,1,0,0 22 1 busy
+< failed patch 3,1,0,0 21 1 busy
+< tile 0 -1 2 0 19 1 0 0 0 20160 4096 -
+< tile 0 0 2 0 19 1 0 0 0 20160 4096 -
+< tile 1 -1 2 0 19 1 0 0 0 20160 4096 -
+< tile 1 0 2 0 19 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 4
+< tile 2 -1 2 0 19 1 0 0 0 20160 4096 -
+< tile 2 0 2 0 19 1 0 0 0 20160 4096 -
+< tile 3 -1 2 0 19 1 0 0 0 20160 4096 -
+< tile 3 0 2 0 19 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 4
+< tile 4 -1 2 0 19 1 0 0 0 20160 4096 -
+< tile 4 0 2 0 19 1 0 0 0 20160 4096 -
+< tile -5 0 2 0 19 1 0 0 0 20160 4096 -
+< tile -4 0 2 0 19 1 0 0 0 20160 4096 -
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+< budget 1
+> request_lists 2,0,21,1,1,22,3,1,21,0,2,21
+< request_lists 1,1,1,1
+> draw 0 2 2
+< patch 1 3 135425690014 -9223371901412308813 000000c4000000440000004400000044 1 21 0000a0c3000080c50000a0c3000020440000004600002044
+< patch 3 3 135341804034 -9223371901496194487 00000044000000440000004400000044 1 21 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 1,3,3,3 1,3,3,3
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+> poll 4
+< poll 0 7
+< list 2 0 21 -
+< list 1 1 22 -5,-1,-4,-1,-3,-1,-2,-1,-1,-1
+< list 3 1 21 -
+< list 0 2 21 -
+< tile -3 0 2 0 19 1 0 0 0 20160 4096 -
+< tile -2 0 2 0 19 1 0 0 0 20160 4096 -
+< tile -1 0 2 0 19 1 0 0 0 20160 4096 -
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 0
+< budget 1
+> request_lists 1,3,21,3,3,21
+< request_lists 1,1
+> page_new 5 2 1,1 32 96
+> request_tiles -5,-1,2,0,19,-4,-1,2,0,19,-3,-1,2,0,19,-2,-1,2,0,19,-1,-1,2,0,19
+< request_tiles 1,1,1,1,1
+> draw 2 0 0
+> draw 1 1 2
+> draw 3 1 0
+> draw 0 2 0
+> draw 1 3 2
+> draw 3 3 2
+< patch 1 0 135257917674 -9223371901580080718 000000c4000080c40000004400000044 1 21 0000a0c3000080c50000a0c3000020440000004600002044
+< patch 3 0 135174031605 -9223371901663967092 00000044000080c40000004400000044 1 21 0000a0c3000080c50000a0c3000020440000004600002044
+< process 0000000000803b4400002a43 0 1 1,0,3,0 1,0,3,0
+> write 5 0 0 1 -5 -1 2 0 19
+> write 4 0 0 1 -5 0 2 0 19
+> write 5 1 1 1 -4 -1 2 0 19
+> write 4 1 1 1 -4 0 2 0 19
+> write 5 2 2 1 -3 -1 2 0 19
+> write 4 2 2 1 -3 0 2 0 19
+> write 5 3 3 1 -2 -1 2 0 19
+> write 4 3 3 1 -2 0 2 0 19
+> write 5 4 4 1 -1 -1 2 0 19
+> write 4 4 4 1 -1 0 2 0 19
+> write 3 0 0 1 0 -1 2 0 19
+> write 2 0 0 1 0 0 2 0 19
+> write 3 1 1 1 1 -1 2 0 19
+> write 2 1 1 1 1 0 2 0 19
+> write 3 2 2 1 2 -1 2 0 19
+> write 2 2 2 1 2 0 2 0 19
+> write 3 3 3 1 3 -1 2 0 19
+> write 2 3 3 1 3 0 2 0 19
+> write 3 4 4 1 4 -1 2 0 19
+> write 2 4 4 1 4 0 2 0 19
+< budget 1
+> request_lists 1,0,21,3,0,21
+< request_lists 1,1
+> cells 2 2 2 935937936
+> cells 2 2 4 2638261481
+> draw 2 2 1
+> draw 1 0 2
+> draw 3 0 2
+< clear
+> page_release 5 1
+> page_release 4 1
+> page_release 3 1
+> page_release 2 1
+< release_patch 2 2 0
+< release_patch 2 1 0
+> cancel_all

@@ -521,6 +521,12 @@ godot_vehicle_chain() {
     traces=$(find "$asset_test_profile" -maxdepth 1 -name 'graded-trace.*' | sort | tr '\n' ';')
     [ -n "$traces" ] || { echo "graded_replay: zoning_reference_test recorded no trace"; return 1; }
     METRUM_GRADED_REPLAY="$traces" run_godot_bridge_test graded_replay || return 1
+    # The tracked goldens (the zoning reference's and the bridge test's traces, recorded on
+    # `RENDER-32-K` part 5): they pin the renderer's outputs across builds, which a trace this
+    # build records and replays cannot. A change that moves them is re-recorded as a reviewed step.
+    traces=$(find "$PROJECT_ROOT/godot/tests/fixtures/graded_traces" -name '*.trace' | sort | tr '\n' ';')
+    [ -n "$traces" ] || { echo "graded_replay: no golden trace"; return 1; }
+    METRUM_GRADED_REPLAY="$traces" run_godot_bridge_test graded_replay || return 1
 }
 
 # The graded tile renderer test, its production renderer recording a trace through the bridge's
