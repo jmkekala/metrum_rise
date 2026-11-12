@@ -100,6 +100,7 @@ pub struct StreamNode {
     road_scripts: Option<Gd<Node>>,
     road_budget: FrameBudget,
     road_work: RoadWork,
+    frame_road_us: f64,
     // The parked cars' slots (`RENDER-32-P`), once `parked_cars.gd` gave the scenario.
     parked: Option<ParkedDraw>,
     // The zoning masks' ring while the overlay shows (`RENDER-32-P`).
@@ -152,6 +153,7 @@ impl INode for StreamNode {
             road_scripts: None,
             road_budget: FrameBudget::new(ROAD_HYDRATION_BUDGET_US),
             road_work: RoadWork::default(),
+            frame_road_us: 0.0,
             parked: None,
             zoning: None,
         }
@@ -1093,7 +1095,9 @@ impl StreamNode {
         self.update_camera();
         if residency {
             self.patch_frame();
+            let roads = std::time::Instant::now();
             self.road_frame();
+            self.frame_road_us = roads.elapsed().as_secs_f64() * 1e6;
             if let (Some(ring), Some(view)) = (self.zoning.as_mut(), self.view) {
                 ring.update([f64::from(view.eye[0]), f64::from(view.eye[2])]);
             }
@@ -1122,8 +1126,13 @@ impl StreamNode {
         self.residency.take_installs(&mut self.vegetation, backend);
         self.frame_copy_us += backend.take_copy_us();
         self.recycle_spent();
-        // The patches' share is their own record (`terrain_stream`).
-        let patches_us = if residency { self.frame_patch_us } else { 0.0 };
+        // The patches' and the road hydration's shares are their own records (`terrain_stream`,
+        // `road_hydration`).
+        let patches_us = if residency {
+            self.frame_patch_us + self.frame_road_us
+        } else {
+            0.0
+        };
         self.frame_us += start.elapsed().as_secs_f64() * 1e6 - patches_us;
     }
 

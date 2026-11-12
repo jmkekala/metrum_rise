@@ -10,6 +10,7 @@
 ## needed its full snapshot.
 extends Node
 
+const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const INSTALLED := 0
 const GONE := 1
 const BUSY := 2
@@ -79,18 +80,27 @@ func stream_road_chunk(key: Vector2i) -> int:
 	return _install(key, int(simulation_node.get_network_render_generation()))
 
 func _install(key: Vector2i, generation: int) -> int:
+	var start_us := Time.get_ticks_usec()
 	var data: Dictionary = simulation_node.get_road_mesh_hydration_chunk(key.x, key.y)
 	if data.is_empty():
 		return GONE
+	var packed_us := Time.get_ticks_usec()
 	var instance: MeshInstance3D = road_tool._build_road_chunk_instance(
 		data, key, _span, _origin.x, _origin.y
 	)
 	if instance == null:
 		push_error("Road chunk %s failed validation during hydration" % key)
 		return GONE
+	var built_us := Time.get_ticks_usec()
 	road_tool._commit_road_mesh_update(
 		generation, false, _span, _origin.x, _origin.y, [data], {key: instance}, false
 	)
+	# The unit's split (the stream node records the unit's whole time as `road_hydration`).
+	PerfDebug.record("road_units", 0.0, {
+		"pack_ms": float(packed_us - start_us) / 1000.0,
+		"build_ms": float(built_us - packed_us) / 1000.0,
+		"commit_ms": float(Time.get_ticks_usec() - built_us) / 1000.0,
+	})
 	return INSTALLED
 
 ## The streaming core has no chunk left: the source is let go.
