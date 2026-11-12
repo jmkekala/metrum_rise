@@ -19,6 +19,8 @@ variant sequence (`RENDER-15`, METRUM_STREAM_SHADOWS) of a run or a series' bran
 `--gpu-profile` adds Godot's render timestamps (`gpu_passes` per sample, shown by `summary`).
 `--phases census` (untimed) writes the draw census of a few poses into `<out>/<label>.census`, and
 `census` prints its tables (`RENDER-44`, `tools/draw_census.py`).
+`--drawn` runs the drawn probe (METRUM_STREAM_DRAWN, `RENDER-32-N`: an instrumented run) and
+`drawn` prints its table: per sample and layer, entered-to-drawn and in-view holes in frames.
 
     ./run.sh --benchmark-stream                     # builds release, then `run` on Kuopio
     tools/stream_benchmark.py run --label c30k-br1 --save <populated_city_30000.sqlite> --out <dir>
@@ -27,6 +29,8 @@ variant sequence (`RENDER-15`, METRUM_STREAM_SHADOWS) of a run or a series' bran
     tools/stream_benchmark.py digests <a.metrics.json> <b.metrics.json>
     tools/stream_benchmark.py stills capture|compare|systematic ...
     tools/stream_benchmark.py summary <dir>/c30k-br1.metrics.json [--scripts]
+    tools/stream_benchmark.py run --label 30k-drawn --drawn --phases turns,zoom --turns 0.5 ... ; \
+        tools/stream_benchmark.py drawn <dir>/30k-drawn.metrics.json
     tools/stream_benchmark.py run --label 30k-shadows --shadows full,none,none,full ... ; \
         tools/stream_benchmark.py split <dir>/30k-shadows.metrics.json; tools/stream_benchmark.py compare <dir> 30k-shadows.none
 """
@@ -151,7 +155,7 @@ def run_row(args, settings, out, label, library, scripts, shadows):
                                        capture_output=True, text=True).stdout.strip(),
             "input": save or world, "input_sha256": sha256(save)[:16] if save else "",
             "resolution": args.resolution, "speed": args.speed, "detail": args.detail,
-            "phases": args.phases, "still_s": args.still_s, "settle_cap_s": args.settle_cap_s, "shadows": shadows, "gpu_profile": args.gpu_profile,
+            "phases": args.phases, "drawn": args.drawn, "still_s": args.still_s, "settle_cap_s": args.settle_cap_s, "shadows": shadows, "gpu_profile": args.gpu_profile,
             "cpus": settings.get("cpus", ""), "workers": WORKERS,
             "locked": os.environ.get(LOCKED_ENV) == "1" or not settings.get("timed_wrapper"),
         }
@@ -173,6 +177,7 @@ def run_row(args, settings, out, label, library, scripts, shadows):
             "METRUM_STREAM_GPU_PASSES": "1" if args.gpu_profile else "0",
             "METRUM_STREAM_CENSUS_DIR": str(out / f"{label}.census"),
             "METRUM_STREAM_CENSUS_HOLD": os.environ.get("METRUM_STREAM_CENSUS_HOLD", "0"),
+            "METRUM_STREAM_DRAWN": "1" if args.drawn else "0",
         })
         command = ["timeout", "--kill-after=10s", str(args.timeout)]
         if settings.get("cpus"):
@@ -298,6 +303,46 @@ def compare_lines(name, runs):
             f"{statistics.mean([x['gpu'] for x in c + b]):.1f} | {verdict} (p50 {d['p50']:+.1f}, "
             f"max {d['max']:+.1f}; spread {sp['p50']:.1f} / {sp['max']:.1f}) |")
     return lines
+
+
+# `drawn`: the drawn probe's table (METRUM_STREAM_DRAWN=1, `RENDER-32-N`).
+def drawn_lines(report, bar=3):
+    """Per sample and layer: chunks entered; entered-to-drawn p50 / p95 / max frames (drawn: the
+    chunk itself; visible: it or a stand-in over its area), the share of the waiting frames whose
+    product was ready (the install budget's), chunks still waiting at the end (`open`, their
+    longest wait so far) or gone undrawn; in-view holes (runs of frames an installed-set chunk in
+    the frustum was not drawn) and bare runs (nothing drew over it): count and longest. `pass`
+    when the drawn p95 and every hole are at most `bar` frames and nothing stayed open."""
+    probe = report.get("drawn_probe") or {}
+    lines = ["| sample | layer | entered | drawn p50 / p95 / max | visible p50 / p95 / max | ready share | "
+             "open (longest) / left | holes (longest) | bare (longest) | holes max a frame | verdict |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
+    stat = lambda v: f"{percentile(v, 0.5)} / {percentile(v, 0.95)} / {max(v)}" if v else "-"
+    for sample in [s["label"] for s in report["samples"]]:
+        for layer, entry in sorted((probe.get(sample) or {}).items()):
+            waits, visible, ready = entry["waits"], entry["waits_visible"], entry["ready_frames"]
+            holes, bare, open_ = entry["holes"], entry["bare"], entry["open"]
+            if not (entry["entered"] or holes or open_):
+                continue
+            share = f"{sum(ready) / sum(waits):.0%}" if sum(waits) else "-"
+            ok = (not waits or percentile(waits, 0.95) <= bar) and all(h <= bar for h in holes) and not open_
+            lines.append(
+                f"| {sample} | {layer} | {entry['entered']} | {stat(waits)} | {stat(visible)} | {share} | "
+                f"{len(open_)} ({max(open_) if open_ else 0}) / {entry['left_undrawn']} | "
+                f"{len(holes)} ({max(holes) if holes else 0}) | {len(bare)} ({max(bare) if bare else 0}) | "
+                f"{entry['holes_max']} | {'pass' if ok else 'MISS'} |")
+    return lines
+
+
+def drawn(args):
+    status = 0
+    for path in args.metrics:
+        report = json.loads(Path(path).read_text())
+        lines = drawn_lines(report, args.bar)
+        print(f"## {Path(path).name}: frames observed {report.get('drawn_probe', {}).get('frames', 0)}")
+        print("\n".join(lines))
+        status = max(status, int(any(line.endswith("MISS |") for line in lines)))
+    return status
 
 
 def split_blocks(report):
@@ -722,6 +767,7 @@ def add_run_options(parser, series):
     parser.add_argument("--shadows", default="", help="METRUM_STREAM_SHADOWS: a run's (a series' branch rows') "
                         "sun-shadow variant sequence, e.g. full,none,none,full")
     parser.add_argument("--gpu-profile", action="store_true", help="Godot's render timestamps per pass (gpu_passes)")
+    parser.add_argument("--drawn", action="store_true", help="the drawn probe (instrumented: entered-to-drawn, holes)")
     parser.add_argument("--settle-timeout", type=int, default=180)
     parser.add_argument("--timeout", type=int, default=600)
 
@@ -744,6 +790,9 @@ def main(argv=None):
     digest.add_argument("a")
     digest.add_argument("b")
     digest.add_argument("--levels", help="a report whose graded_levels apply (for reports without them)")
+    probe = commands.add_parser("drawn")
+    probe.add_argument("metrics", nargs="+", help="runs with --drawn")
+    probe.add_argument("--bar", type=int, default=3, help="frames: the p95 and hole bar (RENDER-32-N: 3)")
     blocks = commands.add_parser("split")
     blocks.add_argument("metrics", help="a run with a `full,X,X,full` METRUM_STREAM_SHADOWS sequence")
     still = commands.add_parser("stills").add_subparsers(dest="stills_command", required=True)
@@ -784,6 +833,8 @@ def main(argv=None):
         return digests(args)
     if args.command == "split":
         return split(args)
+    if args.command == "drawn":
+        return drawn(args)
     if args.command == "stills":
         return stills(args)
     if args.command == "census":

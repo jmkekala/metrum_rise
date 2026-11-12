@@ -17,12 +17,15 @@
 //! rings and travel buckets ([`rings`]) and moves the vegetation's residency into its layer.
 //! Round T1 (`RENDER-32-M`) decides the terrain and water patches' residency, levels of detail and
 //! prewarm in a layer ([`layers`]) whose units the scripts execute on their pooled nodes.
+//! Round C1 (`RENDER-32-N`) adds the stream benchmark's drawn probe ([`probe`]): entered-to-drawn
+//! and in-view holes per layer, benchmark only.
 
 pub(crate) mod backend;
 pub(crate) mod cache;
 pub(crate) mod layers;
 pub(crate) mod levels;
 pub(crate) mod prepare;
+pub(crate) mod probe;
 pub(crate) mod requests;
 pub(crate) mod rings;
 pub(crate) mod schedule;

@@ -49,6 +49,7 @@ use crate::nodes::sim::render::stream::layers::vegetation::{
     Delivery, MATERIAL_COUNT, MESH_COUNT, PatchKey, SLOT_LIMIT, SPARE_LIMIT, VegetationLayer,
     VegetationRules,
 };
+use crate::nodes::sim::render::stream::probe;
 use crate::nodes::sim::render::stream::view::CameraSample;
 use crate::nodes::sim::render::stream::schedule::{FrameBudget, MonotonicClock, STREAM_BUDGET_US};
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
@@ -530,6 +531,53 @@ impl StreamNode {
     #[func]
     pub fn is_vegetation_drawn(&self, key: Vector3i) -> bool {
         self.vegetation.is_drawn(patch_key(key))
+    }
+
+    /// The stream benchmark's drawn probe (`RENDER-32-N`): layer `name`'s installed set this
+    /// frame as [`probe`] records (`terrain`, `water`, `vegetation_coarse`, `vegetation_fine`,
+    /// and through the attached book `graded` and `graded_tiles`); empty for another name.
+    /// Benchmark only, `O(the layer's set)` (the terrain's and water's `O(grid)`).
+    #[func]
+    pub fn probe_stream_layer(&self, name: GString) -> PackedFloat32Array {
+        let mut out = Vec::new();
+        match name.to_string().as_str() {
+            layer @ ("terrain" | "water") => {
+                let stream = if layer == "terrain" { &self.terrain } else { &self.water };
+                if let Some(grid) = stream.grid() {
+                    for (key, resident, ready) in stream.probe_wanted() {
+                        let [x, z, width, depth] = grid.rect(key);
+                        let flags = if resident { probe::DRAWN } else { 0 } | if ready { probe::READY } else { 0 };
+                        probe::push_chunk(&mut out, [key[0], key[1], 0], flags, [x, z, x + width, z + depth]);
+                    }
+                }
+            }
+            layer @ ("vegetation_coarse" | "vegetation_fine") => {
+                let fine = layer == "vegetation_fine";
+                for (key, rect, cached) in self.residency.probe_wanted() {
+                    if (key[2] > 1) != fine {
+                        continue;
+                    }
+                    let (drawn, covered, pending) = self.vegetation.probe_state(key);
+                    let flags = [(drawn, probe::DRAWN), (covered, probe::COVERED), (pending || cached, probe::READY)]
+                        .iter()
+                        .filter(|(on, _)| *on)
+                        .fold(0, |flags, (_, flag)| flags | flag);
+                    probe::push_chunk(&mut out, key, flags, rect);
+                }
+            }
+            "graded" => {
+                if let Some(book) = self.graded.as_ref() {
+                    return book.bind().probe_patches();
+                }
+            }
+            "graded_tiles" => {
+                if let Some(book) = self.graded.as_ref() {
+                    return book.bind().probe_tiles();
+                }
+            }
+            _ => {}
+        }
+        PackedFloat32Array::from(out.as_slice())
     }
 
     /// An installed patch as the layer drew it (tests): `serial`, `visible`, `detail`,

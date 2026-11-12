@@ -5,7 +5,9 @@
 ## METRUM_STREAM_SPEED (0 by default) and the clock at 10:00, takes the save's own view at pitch
 ## -0.1 rad and an 800 m orbit, and records every frame of: a still view; 180-degree orbit turns
 ## over 0.5 s and 1 s (out, back, repeat); a 3 s keyboard-speed pan (out, back, repeat); a zoom
-## 800 -> 60 -> 800 m over 1.5 s each; a 3 km camera jump and back, each until settled; and at
+## 800 -> 60 -> 800 m over 1.5 s each, then at the game's default pitch a far zoom-out (800 m to the
+## camera's maximum distance) and a far-to-ground zoom (the maximum to street level), each from a
+## settled start, the last followed by a settle (`RENDER-32-N`); a 3 km camera jump and back, each until settled; and at
 ## 23:00 a still, a 1 s turn and, from the settled base pose as by day, a pan (`RENDER-32-I`: the
 ## night pan started where the night turns left the terrain catching up). `post_load` records
 ## the frames from the load call's return until settled, with the hand-over's time (`ready_ms`).
@@ -17,6 +19,12 @@
 ## The `census` phase (`RENDER-44`, untimed) writes `draw_census.gd`'s census of the settled base
 ## pose, three street-level views, a mid-height view and the middle of a turn into
 ## METRUM_STREAM_CENSUS_DIR. Every sample starts with a `[STREAM] BEGIN <label>` line.
+## METRUM_STREAM_DRAWN=1 (an instrumented run, `RENDER-32-N`, `CODE-12`) runs the drawn probe
+## (`StreamDrawnProbe`) after every drawn frame: per layer (terrain, water, graded patches and
+## tiles, vegetation coarse and fine, buildings) the frames from a chunk entering its layer's
+## installed set to drawn, and every in-view hole with its length, counted for the sample the
+## chunk entered in (`drawn_probe`, `tools/stream_benchmark.py drawn`); each row also records
+## the road hydration's pending chunks and the parked chunks drawn (neither follows the camera).
 ##
 ## A row is one frame: its time from one `process_frame` to the next (the frame's scripts and its
 ## draw), the renderer's CPU and GPU measures, draw counts, the streaming counters of every chunked
@@ -76,6 +84,19 @@ const DISTANCE_M := 800.0
 const ZOOM_NEAR_M := 60.0
 const ZOOM_S := 1.5
 const PAN_S := 3.0
+# The far zooms (`RENDER-32-N`): the game's default pitch (CameraNode's INITIAL_PITCH), the
+# gameplay camera's distance bounds (input_manager.gd: 10 m to WORLD_CAMERA_MAX_DISTANCE_M) and
+# durations at the near zoom's rate (800 -> 60 m in 1.5 s: an e-fold in 0.58 s).
+const FAR_PITCH_RAD := -0.785
+const FAR_DISTANCE_M := 40000.0
+const STREET_DISTANCE_M := 10.0
+const FAR_OUT_S := 2.3
+const FAR_DOWN_S := 4.8
+# The probed layers' heights below and above the world's terrain range (their frustum test):
+# ground layers, plants, buildings (metres).
+const PROBE_GROUND_M := 2.0
+const PROBE_PLANTS_M := 60.0
+const PROBE_BUILDINGS_M := 300.0
 const JUMP_M := 3000.0
 const JUMP_MAX_FRAMES := 3000
 const POST_LOAD_MAX_FRAMES := 6000
@@ -134,6 +155,12 @@ var _pre_draw_us := 0
 var _post_draw_us := 0
 # Per pass key, the GPU milliseconds of each frame of the current sample (`--gpu-profile`).
 var _gpu_passes := {}
+# The drawn probe (METRUM_STREAM_DRAWN=1, `RENDER-32-N`), the stream node, the camera and the
+# world's terrain height range the probe tests the frustum with.
+var _probe: RefCounted
+var _stream: Node
+var _camera: Camera3D
+var _probe_heights := Vector2.ZERO
 
 func run(bench: Node) -> void:
 	var main := bench.get_parent()
@@ -161,6 +188,14 @@ func run(bench: Node) -> void:
 	if not turn_text.is_empty():
 		turns = Array(turn_text.split(",", false)).map(func(token: String) -> float: return float(token))
 	_scripts = PerfDebug.is_enabled()
+	if OS.get_environment("METRUM_STREAM_DRAWN") == "1":
+		# By name: a control library without the class still runs the benchmark's other phases.
+		_probe = ClassDB.instantiate("StreamDrawnProbe")
+		if _probe == null:
+			bench._fail("METRUM_STREAM_DRAWN needs a library with StreamDrawnProbe")
+			return
+		_stream = main.get_node("StreamNode")
+		_camera = bench.camera
 	_digests = OS.get_environment("METRUM_STREAM_DIGESTS") == "1"
 	_gpu_profile = OS.get_environment("METRUM_STREAM_GPU_PASSES") == "1"
 	var shadows: Array = Array(OS.get_environment("METRUM_STREAM_SHADOWS").split(",", false))
@@ -178,7 +213,7 @@ func run(bench: Node) -> void:
 		"pitch_radians": PITCH_RAD, "distance_m": DISTANCE_M, "phases": phases, "turn_durations_s": turns,
 		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [], "lamp_digests": [],
 		"building_digests": [], "patch_digests": [], "road_digests": [], "parked_digests": [],
-		"water_pose": [], "shadows": shadows,
+		"water_pose": [], "shadows": shadows, "drawn_probe": {},
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
 	bench._metrics = _report
@@ -243,6 +278,9 @@ func run(bench: Node) -> void:
 		"node_casters": ShadowVariants.node_casters(main, bench.get_viewport().get_camera_3d().global_position,
 			sun.directional_shadow_max_distance),
 	}
+	if _probe != null:
+		_probe_heights = _terrain_heights(bench.simulation_node, world)
+		RenderingServer.frame_post_draw.connect(_on_probe_post_draw)
 	print("[STREAM] LOAD_END agents=%d total_ms=%.1f load_call_ms=%.1f" % [
 		_report.load.agent_count, _report.load.elapsed_ms, load_call_ms])
 	if phases.has("census") and not await _census(bench, base):
@@ -275,6 +313,21 @@ func run(bench: Node) -> void:
 		for zoom: Array in [["zoom_in", DISTANCE_M, ZOOM_NEAR_M], ["zoom_out", ZOOM_NEAR_M, DISTANCE_M],
 				["zoom_in_repeat", DISTANCE_M, ZOOM_NEAR_M]]:
 			_report.samples.append(await _capture_view(bench, zoom[0], ZOOM_S, base, 5, zoom[1], zoom[2], true))
+		# The far zooms (`RENDER-32-N`), each from a settled start; the last is followed by a
+		# settle, so what entered in its last frames draws inside the run.
+		var near := base.duplicate()
+		near[4] = FAR_PITCH_RAD
+		var far := near.duplicate()
+		far[5] = FAR_DISTANCE_M
+		for zoom: Array in [["far_zoom_out", near, FAR_OUT_S, DISTANCE_M, FAR_DISTANCE_M],
+				["far_to_ground", far, FAR_DOWN_S, FAR_DISTANCE_M, STREET_DISTANCE_M]]:
+			if not await _start_from(bench, zoom[1]):
+				bench._fail("the %s start did not settle" % zoom[0])
+				return
+			_report.samples.append(await _capture_view(bench, zoom[0], zoom[2], zoom[1], 5, zoom[3], zoom[4], true))
+		if not await _wait_settled(bench):
+			bench._fail("the far-to-ground zoom did not settle")
+			return
 	if phases.has("jump"):
 		# A camera jump (a minimap click, a focus on a far building): the pivot moves 3 km towards
 		# the world's centre, so the jump stays inside any world, and back.
@@ -335,6 +388,9 @@ func run(bench: Node) -> void:
 				bench._fail("the water pose did not settle")
 				return
 			_report.samples.append(await _capture_frames(bench, "water_still", WATER_FRAMES))
+	if _probe != null:
+		RenderingServer.frame_post_draw.disconnect(_on_probe_post_draw)
+		_report.drawn_probe = _probe.report()
 	if _scripts:
 		PerfDebug.end_frame_capture()
 		if _core_locks != null:
@@ -717,9 +773,12 @@ static func _sha(bytes: PackedByteArray) -> String:
 	return context.finish().hex_encode()
 
 # Starts a sample: drops the perf records and the counters' history from before it. Prints
-# `[STREAM] BEGIN <label>`, so an outside tracer (`RENDER-46`'s Intel PT captures) can start on it.
+# `[STREAM] BEGIN <label>`, so an outside tracer (`RENDER-46`'s Intel PT captures) can start on it;
+# the drawn probe counts the frames that follow for `label`.
 func _begin(label: String) -> Array:
 	print("[STREAM] BEGIN %s" % label)
+	if _probe != null:
+		_probe.set_epoch(label)
 	if _scripts:
 		PerfDebug.take_frame()
 	if _core_locks != null:
@@ -851,9 +910,37 @@ func _row(index: int) -> Dictionary:
 		row["core_locks"] = _core_locks.take_core_lock_stats()
 	if _gpu_profile:
 		_record_gpu_passes()
+	if _probe != null:
+		# The layers that do not follow the camera (`RENDER-32-P`): a load's road chunks still to
+		# hydrate, and the parked chunks drawn.
+		row["roads_pending"] = _stream.get_road_hydration_counts().x
+		row["parked_drawn"] = _stream.get_parked_drawn().size()
 	_previous_streams = streams
 	_last_us = now_us
 	return row
+
+# The drawn probe (`RENDER-32-N`), once the frame has drawn: every layer's installed set as its
+# owner reports it, against the camera that frame drew with. O(the installed sets).
+func _on_probe_post_draw() -> void:
+	_probe.begin_frame(_camera.get_frustum())
+	var low := _probe_heights.x - PROBE_GROUND_M
+	var ground := _probe_heights.y + PROBE_GROUND_M
+	for layer: String in ["terrain", "water", "graded", "graded_tiles"]:
+		_probe.observe(layer, _stream.probe_stream_layer(layer), low, ground)
+	for layer: String in ["vegetation_coarse", "vegetation_fine"]:
+		_probe.observe(layer, _stream.probe_stream_layer(layer), low, _probe_heights.y + PROBE_PLANTS_M)
+	_probe.observe("buildings", _simulation.probe_building_chunks(), low, _probe_heights.y + PROBE_BUILDINGS_M)
+
+# The terrain's lowest and highest height on a 65 x 65 lattice over the world (once a run).
+static func _terrain_heights(simulation: Node, world: Vector2) -> Vector2:
+	var low := INF
+	var high := -INF
+	for i in 65:
+		for j in 65:
+			var height: float = simulation.get_height_at(Vector2((i / 64.0 - 0.5) * world.x, (j / 64.0 - 0.5) * world.y))
+			low = minf(low, height)
+			high = maxf(high, height)
+	return Vector2(low, high)
 
 func _on_pre_draw() -> void:
 	_pre_draw_us = Time.get_ticks_usec()
@@ -871,6 +958,8 @@ func _reflection_levels() -> Array:
 	return out
 
 func _finish(label: String, duration_s: float, rows: Array) -> Dictionary:
+	if _probe != null:
+		_probe.set_epoch("")
 	var times := PackedFloat64Array()
 	var over := {"over_16_7": 0, "over_22": 0, "over_33_3": 0}
 	for row: Dictionary in rows:

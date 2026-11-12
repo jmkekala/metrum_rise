@@ -119,6 +119,7 @@ pub struct GradedTileBook {
 
 mod edits;
 mod lists;
+mod probe;
 mod residency;
 mod results;
 #[cfg(test)]

@@ -7,6 +7,7 @@ use crate::nodes::lod_policy::quality_from_id;
 use crate::nodes::sim::render::building_lod::spatial::{Pose, query_bounds};
 use crate::nodes::sim::render::building_lod::{BatchKey, Part, View};
 use crate::nodes::sim::render::stream::backend::{GodotBackend, slot_census};
+use crate::nodes::sim::render::stream::probe;
 use crate::nodes::sim::render::stream::layers::buildings::{
     Applied, BuildingLayer, Look, SLOT_LIMIT, SPARE_LIMIT,
 };
@@ -336,6 +337,35 @@ impl SimulationNode {
             out.set("slots_freed", freed as i64);
         }
         out
+    }
+
+    /// The stream benchmark's drawn probe (`RENDER-32-N`): every chunk of the building LOD's
+    /// current query with live batches, as `stream::probe` records; drawn when each live batch
+    /// is, covered when some is (a frame waiting whole keeps the chunk's last batches). Benchmark
+    /// only, `O(resident batches)`.
+    #[func]
+    pub fn probe_building_chunks(&self) -> PackedFloat32Array {
+        let mut out = Vec::new();
+        let size = crate::simulation::network::graph::RegionGraph::CHUNK_SIZE;
+        for (&chunk, resident) in &self.building_lods.chunks {
+            let live = || resident.batches.batches.iter().filter(|batch| batch.count > 0);
+            if live().next().is_none() {
+                continue;
+            }
+            let draws = |batch: &crate::nodes::sim::render::building_lod::Batch| {
+                self.building_draw.as_ref().is_some_and(|draw| draw.layer.draws(chunk, batch.key))
+            };
+            let flags = if live().all(draws) {
+                probe::DRAWN
+            } else if live().any(draws) {
+                probe::COVERED
+            } else {
+                0
+            };
+            let [x, z] = [chunk.0 as f32 * size, chunk.1 as f32 * size];
+            probe::push_chunk(&mut out, [chunk.0, chunk.1, 0], flags, [x, z, x + size, z + size]);
+        }
+        PackedFloat32Array::from(out.as_slice())
     }
 
     /// The drawn building batches (tests and the stream benchmark's digests), one dictionary

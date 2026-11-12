@@ -607,6 +607,20 @@ impl PatchStream {
             .filter_map(move |(index, _)| grid.map(|grid| grid.key(index)))
     }
 
+    /// The wanted patches with whether each is resident (drawn) and its payload ready (it
+    /// waits for its unit only), for the stream benchmark's drawn probe (`RENDER-32-N`).
+    /// `O(grid)`.
+    pub(crate) fn probe_wanted(&self) -> impl Iterator<Item = (PatchKey, bool, bool)> + '_ {
+        let grid = self.grid;
+        self.flags
+            .iter()
+            .enumerate()
+            .filter(|(_, flags)| **flags & WANTED != 0)
+            .filter_map(move |(index, &flags)| {
+                grid.map(|grid| (grid.key(index), flags & RESIDENT != 0, flags & READY != 0))
+            })
+    }
+
     /// A payload's news (`terrain.gd` / `water.gd` poll). `O(1)`.
     pub(crate) fn payload(&mut self, key: PatchKey, news: Payload) {
         let Some(grid) = self.grid.filter(|grid| grid.contains(key)) else {

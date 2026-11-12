@@ -327,6 +327,21 @@ impl VegetationLayer {
         }
     }
 
+    /// The stream benchmark's drawn probe (`RENDER-32-N`): whether `key` draws, whether another
+    /// tier draws over its area (a fine patch's coarse patch, a coarse patch's fine stand-ins)
+    /// and whether a product of it waits for its install. `O(pending + subdivision²)`.
+    pub(crate) fn probe_state(&self, key: PatchKey) -> (bool, bool, bool) {
+        let shown = |key: PatchKey| self.installed.get(&key).is_some_and(|patch| patch.visible);
+        let covered = if key[2] > 1 {
+            shown(coarse_of(key))
+        } else {
+            let divisor = self.subdivision;
+            (0..divisor * divisor).any(|at| shown([key[0] * divisor + at / divisor, key[1] * divisor + at % divisor, divisor]))
+        };
+        let ready = self.pending.iter().any(|pending| pending.delivery.key == key && !pending.installed);
+        (self.is_drawn(key), covered, ready)
+    }
+
     /// The fine grid's subdivision, whose patches a coarse patch covers.
     pub(crate) fn set_subdivision(&mut self, subdivision: i32) {
         self.subdivision = subdivision;

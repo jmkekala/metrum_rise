@@ -368,6 +368,18 @@ impl VegetationResidency {
         self.wanted.iter().copied()
     }
 
+    /// The stream benchmark's drawn probe (`RENDER-32-N`): every wanted patch with its ground
+    /// rectangle `[min x, min z, max x, max z]` and whether a hidden version of it is cached (it
+    /// waits for its install only). `O(wanted)`.
+    pub(crate) fn probe_wanted(&self) -> impl Iterator<Item = (PatchKey, [f32; 4], bool)> + '_ {
+        let world = self.settings.map_or([0.0; 2], |settings| settings.world);
+        self.wanted.iter().map(move |&key| {
+            let origin = key_origin(key, self.terrain_span, world);
+            let span = key_span(key, self.terrain_span) as f32;
+            (key, [origin[0], origin[1], origin[0] + span, origin[1] + span], self.cache.contains_key(&key))
+        })
+    }
+
     /// Every record and where it stands (tests, probes). `O(records)`.
     pub(crate) fn records(&self) -> impl Iterator<Item = (PatchKey, Record, Standing)> + '_ {
         let drawn = self.patches.iter().map(|(k, r)| (*k, *r, Standing::Drawn));

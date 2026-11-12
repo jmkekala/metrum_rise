@@ -356,6 +356,11 @@ impl BuildingLayer {
         self.drawn.iter().map(|(&(chunk, key), &slot)| (chunk, key, slot))
     }
 
+    /// Whether batch `key` of `chunk` is drawn (the stream benchmark's drawn probe). `O(1)`.
+    pub(crate) fn draws(&self, chunk: ChunkKey, key: BatchKey) -> bool {
+        self.drawn.contains_key(&(chunk, key))
+    }
+
     /// The batches drawn now.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
