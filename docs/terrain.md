@@ -13439,8 +13439,17 @@ wait 6.71 / 4.18 / 4.33 ms against the control's 6.25 / 4.20 / 3.92), mean 2.207
 ms, level on every metric; 30k 32x C B B C level (mean +0.2 %), the `PERF-17` known exception on
 both sides. No simulation path changed.
 
-**Products.** Stills at three 30k poses (`saved`, `city`, `city_low`, hour 10, gamescope 1080p,
-the idle matrix): STILLS. T60's probe checks on the branch (gamescope): PROBE.
+**Products.** Stills (the idle matrix, hour 10, gamescope 1080p, two runs a side): Kuopio's
+`close` and `mid` byte-identical to the control; `forest_low` identical within each side but not
+across after the matrix's 30 warm-up frames (657 pixels of grass at the foot of the frame, at most
+37 levels): after 4,000 warm-up frames the two are byte-identical, and the branch's 30-frame image
+already equals that settled one, so the control had not finished its cell set builds (its grass
+mask is rendered from a set still building) and the branch had. The 30k city's poses (`saved`,
+`city`, `city_low`) are not byte-stable even control against control (6,000-18,000 scattered
+pixels a pose, the same scale branch against control, no 16 x 16 block more than 15 % different
+in any pair). T60's probe checks on the branch (gamescope, `baa3cf7e`): the populated swing passes
+every check (2 strokes, 0 failures, no background frame); Kuopio's `kuopio_08` swing fails only the
+fast commit's one-batch check (`TERRAIN-23`), as the control did when its trace was recorded.
 
 **Bars** (brief): replay parity: met (every trace, every output, cell buffers, draw states and
 walls included). The 30k 1 s turn p50 at least 5 ms below `-B`'s control: met against the rows
