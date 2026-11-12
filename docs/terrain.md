@@ -11927,7 +11927,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-F` | V2b | Rings; vegetation residency, bands and staleness in Rust | `-D`'s carried bars (night delegation 2026-11-12, for review): the 30k `jump` frame maximum within the same-binary spread of `-E`'s control (`-E`: +2.7 ms, the residency's hides and frees in GDScript); vegetation at most 2.5 ms a frame on Kuopio's 0.5 s turns (the band scan), and the largest single vegetation unit at most 2.0 ms at 30k (one 2.38 ms request on `night_turn_back`). Vegetation 0.5 ms mean a frame; zero ring cells on frames without a crossing; `RENDER-27`'s bar |
 | `RENDER-32-G` | A1 | Agents without a visual change (`RENDER-28` part 1) | Agents 0.6 ms on the paused still |
 | `RENDER-32-H` | L1 | Street lights' grid, far map and pool in Rust (`RENDER-33`) | 0.3 ms mean, 1.0 ms max on night turns and pans. Landed 2026-11-11 (coordinator, night delegation, for review); its `night_pan_out` frame-mean reading of night within 1 ms of day (+0.9/+1.6 ms, graded catch-up) carried to `-I`/`-J` |
-| `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. `-K` part 2 (G2c-2) landed 2026-11-12 (coordinator, delegation, for review; graded total carried to part 3): the page uploads and copies in Rust through the backend, 20-23 % more copies a frame in the same install budget; the graded total level (1.36-1.41 ms, 1.55-1.63 at 100k) and its bars missed: every frame of the turns spends the install budget with finished bakes waiting, so the total is the budget's, not the uploads' (record); carried to part 3. `-K` part 3 (G2c-3, 2026-11-12, not landed; the coordinator's split, for review: edits, previews, T65 option (3), the tool holds and `TERRAIN-23` are part 4's): the tile result path in Rust, 7.6 us a copy against 32; graded total 0.80-0.84 ms on the 30k 1 s turn (the queue keeps up; the rest is the cell rewrites the installs cause) and 1.67-1.84 at 100k (budget-bound, twice the copies a frame): both bars missed and carried to part 4 with the budget rule (record). |
+| `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. `-K` part 2 (G2c-2) landed 2026-11-12 (coordinator, delegation, for review; graded total carried to part 3): the page uploads and copies in Rust through the backend, 20-23 % more copies a frame in the same install budget; the graded total level (1.36-1.41 ms, 1.55-1.63 at 100k) and its bars missed: every frame of the turns spends the install budget with finished bakes waiting, so the total is the budget's, not the uploads' (record); carried to part 3. `-K` part 3 (G2c-3, 2026-11-12, not landed; the coordinator's split, for review: edits, previews, T65 option (3), the tool holds and `TERRAIN-23` are part 4's): the tile result path in Rust, 7.6 us a copy against 32; graded total 0.80-0.84 ms on the 30k 1 s turn (the queue keeps up; the rest is the cell rewrites the installs cause) and 1.67-1.84 at 100k (budget-bound, twice the copies a frame); after the review fix (the install budget charges each placed tile its cell rewrites, 8 us) 0.83-0.88 and 1.39-1.48 against the control's 1.54-1.58: both bars missed, 100k not above control; carried (record). |
 | `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`); the detail swap without read-back (`RENDER-37`) | 0.3 ms on the turn, 1.5 ms at 100k; reflection hook 0.1 ms without water in view. Landed 2026-11-12 (coordinator, delegation, for review): every bar met (0.09-0.21 ms, 0.26-0.53 ms, 0.02-0.04 ms) |
 | `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`); step 0: a water input of record, a pond made on the prepared 30k city by a recorded deterministic recipe through the lake-fill mutators (planned 2026-11-12) | 0.3 ms a frame on Kuopio's turn and pan, the water half measured on the pond input too |
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement | Entered-to-drawn p95 at most three frames |
@@ -14019,8 +14019,14 @@ the branch run's last 18 frames the simulation's edit came through (terrain payl
 ms of agents a frame; the control's still saw no edit in its window. So the graded result path does
 not carry those frames' time; whether the branch's busier bake pool (the queue drains faster, so
 bakes refill it sooner) preempts the main thread in the untimed terrain parts is open: one
-instrumented pair at 1x, where the simulation drives the edits, does not separate it (see the
-round's hand-over).
+instrumented pair at 1x, where the simulation drives the edits, does not separate it. Timed, after
+the review fix (the charge below; `--speed 1 --phases still`, three runs a side alternating C B,
+12:39-12:54, the session's control): frame p99 55.3, 51.6, 54.7 ms on the control and 52.4, 55.2,
+54.4 on the branch (p50 28.7-29.2 and 28.7-29.3; max 55.7-61.9 and 55.2-63.2); frames over 45 ms
+6, 3, 7 against 5, 2, 3, their render CPU 12.0-12.7 ms and GPU 19.3-24.1 on both sides. The branch
+lies inside the control's run-to-run spread, so the instrumented 83.6 ms was that run's simulation
+edit, not the result path; the timed rows carry no script split, so the slow frames' script time
+is attributed only by the instrumented pair above (graded under 1.3 ms in each).
 
 **Rows** (timed, C B B C, 11:16-11:27; 30k still and turns, Kuopio still and turns), p50 ms (C1,
 C2 / B1, B2):
@@ -14074,8 +14080,47 @@ Rust test: `graded_tiles_api.rs` (a tile's transient failure retried without a d
 renderer test's `FlaggingTiles` flags results through the book (`flag_results_behind`) where it
 overrode `_install`.
 
+**The install budget charges its cell rewrites** (the coordinator's review, 2026-11-12: the 100k
+turns' graded total above the control blocks landing; the fix stays inside the graded poll's own
+budget, the stream-wide budget is `RENDER-32-Q`'s). The cell rewrites a frame's installs cause run
+after the poll (`apply_cell_changes`), outside its budget checks; each placed tile now counts a
+fixed `CELL_CHARGE_US` in the result path's checks, as if the frame had started that much
+earlier, so the poll stops while the frame's graded work still fits. A tile's cell rewrites
+measure about four cell tiles at 2.0-2.2 us on both cities (the 100k turns' further patch-wide
+rewrites, 2-3 patches a frame, follow the camera's patch steps, not the installs). The traces
+record the budget answers, so all nine replay unchanged (no re-recording). Instrumented, one run a
+side, this session's control (graded total / copies a frame / wanted tiles, mean a frame):
+
+| Phase | control | 12 us a tile | 8 us a tile (kept) |
+|---|---|---|---|
+| 30k turn_out 1 s | 1.25 / 30.2 / 187 | 0.76 / 28.8 / 198 | 0.83 / 37.1 / 27 |
+| 30k turn_back 1 s | 1.40 / 32.7 / 407 | 0.96 / 36.8 / 322 | 0.83 / 37.1 / 49 |
+| 30k turn_repeat 1 s | 1.41 / 29.0 / 510 | 0.90 / 35.2 / 438 | 0.88 / 40.0 / 59 |
+| 100k turn_out 1 s | 1.54 / 24.6 / 1,509 | 1.23 / 30.9 / 1,354 | 1.39 / 36.3 / 1,284 |
+| 100k turn_back 1 s | 1.58 / 25.5 / 1,640 | 1.29 / 32.7 / 1,642 | 1.45 / 36.8 / 1,614 |
+| 100k turn_repeat 1 s | 1.58 / 24.9 / 1,569 | 1.40 / 31.6 / 1,632 | 1.48 / 36.1 / 1,579 |
+
+12 us bound the 30k turns as well and left a backlog (wanted 198-438, the total up to 0.96 ms); 8
+us keeps the 30k queue near empty (27-59 against the control's 187-510; the uncharged branch read
+1-4) with 37-40 copies a frame, and holds the 100k turns 0.10-0.15 ms below the control while
+installing 36-37 copies a frame against its 25-26 (the backlog no larger), so the tiles reach the
+screen no later than the control's (the benchmark has no graded wanted-to-drawn counter; copies a
+frame and the backlog stand in for it). The 100k bar of 1.0 ms is not reachable this way without
+installing below the control's rate: at the control's 25 copies a frame the poll (about 17 us a
+tile at 100k), the tiles' cell rewrites, the camera's patch rewrites (0.2-0.25 ms) and the requests
+(0.2) already sum to about 1.1 ms; so, as the review allows, the fix stops at "not above the
+control". The 30k turn_repeat's 0.88 ms is one instrumented run against the session's
+0.80-0.84; the same code without the charge read 0.80-0.93 over two runs.
+The fix's products (its release library `4561e1bd`, tree of `8034621c`): the nine traces replay
+bit for bit; settled installs by digest 4 of 4 equal (3,280 tiles); Kuopio's three poses
+byte-identical; the 30k poses without systematic difference (by side 1,738, 589, 315 a pose
+against 1,702-1,703, 481-601, 339-393 for the other pairings). The rows, level F and T60's probe
+above ran the uncharged `7cf092ba`; the charge only stops a frame's poll earlier and was not
+re-timed (the 100k 1x still below was).
+
 **Against the bars.** The graded total at most 0.5 ms mean on the 30k 1 s turn and 1.0 ms at
-100k: missed (0.80-0.84 and 1.67-1.84 ms). The result path itself meets the 7 us a copy part 2
+100k: missed (0.80-0.84 and 1.67-1.84 ms before the review fix; with the charge 0.83-0.88 and
+1.39-1.48, below the control's 1.54-1.58). The result path itself meets the 7 us a copy part 2
 set out (7.6 us, from 32); what the 30k turn spends now is the work its installs cause (cells
 0.29-0.32 ms) and the residency, outside the result path, and at 100k the budget-bound poll turns
 the saving into twice the installs a frame. Meeting 1.0 ms at 100k needs the install budget to
