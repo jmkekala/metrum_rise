@@ -79,6 +79,8 @@ const TERRAIN_BORDER_CONTOUR_MAJOR_COLOR := Color(0.10, 0.16, 0.14)
 const TERRAIN_BORDER_CONTOUR_MINOR_STRENGTH := 0.14
 const TERRAIN_BORDER_CONTOUR_MAJOR_STRENGTH := 0.28
 const TERRAIN_DEBUG_LOG_INTERVAL_S := 0.5
+const PATCH_EXTRA_CULL_MARGIN_M := 4096.0
+const PATCH_CULL_PAD_M := 64.0
 # The terrain's least resident half-side (the streaming core's `CULL_FAR_M`): the scene's distance
 # fade reads it through get_visibility_cull_far_m.
 const PATCH_RESIDENCY_CULL_FAR_M := 8000.0
@@ -511,9 +513,11 @@ func unready_patches_near_camera(radius_m: float) -> int:
 	return graded_tiles.unready_near(Vector2(camera.global_position.x, camera.global_position.z), radius_m)
 
 ## While a world load waits for is_render_settled() (the load flow holds the game), the graded
-## renderer's work takes the whole frame instead of the streaming budget's spare time; the frame
-## time does not matter then. The load flow turns it off as it hands the game over.
+## renderer's work and the streaming core's patch units take the whole frame instead of the
+## streaming budget's spare time; the frame time does not matter then. The load flow turns it off
+## as it hands the game over.
 func set_load_settling(settling: bool) -> void:
+	_stream.set_terrain_load_settling(settling)
 	if graded_tiles != null:
 		graded_tiles.unbudgeted = settling
 

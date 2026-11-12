@@ -15,6 +15,8 @@
 //! install order ([`schedule`]), each layer's status ([`status`]) and the vegetation layer that
 //! installs through them, run each frame by the `StreamNode`. Round V2b (`RENDER-32-F`) adds the
 //! rings and travel buckets ([`rings`]) and moves the vegetation's residency into its layer.
+//! Round T1 (`RENDER-32-M`) decides the terrain and water patches' residency, levels of detail and
+//! prewarm in a layer ([`layers`]) whose units the scripts execute on their pooled nodes.
 
 pub(crate) mod backend;
 pub(crate) mod cache;

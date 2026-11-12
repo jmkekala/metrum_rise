@@ -43,7 +43,7 @@ fn pond_name(residents: u32) -> String {
 }
 
 #[test]
-#[ignore = "writes the stream benchmark's pond: METRUM_PERF_CACHE=<prepared cities> $TEST_BINARY generate_stream_pond_fixture --exact --ignored --nocapture"]
+#[ignore = "writes the stream benchmark's pond: METRUM_PERF_CACHE=<prepared cities> $TEST_BINARY nodes::sim::core::tests::stream_pond_fixture::generate_stream_pond_fixture --exact --ignored --nocapture"]
 fn generate_stream_pond_fixture() {
     let directory = std::env::var_os("METRUM_PERF_CACHE").map_or_else(
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/perf-contract"),
@@ -95,6 +95,16 @@ fn generate_stream_pond_fixture() {
     let temporary = directory.join(format!(".{}.{}.tmp", pond_name(residents), std::process::id()));
     core.save_game_internal(temporary.to_str().unwrap(), None)
         .unwrap_or_else(|error| panic!("could not save the pond: {error}"));
+    // The save's own clock stamp is the source's, so the recipe's output is the same bytes on
+    // every run (the SHA-256 of record).
+    let stamp: i64 = rusqlite::Connection::open(&source)
+        .unwrap()
+        .query_row("SELECT saved_at_unix FROM save_meta LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    rusqlite::Connection::open(&temporary)
+        .unwrap()
+        .execute("UPDATE save_meta SET saved_at_unix = ?1", [stamp])
+        .unwrap();
     std::fs::rename(&temporary, &path).unwrap();
 
     // The save holds the pond: a fresh load reads the same water back.

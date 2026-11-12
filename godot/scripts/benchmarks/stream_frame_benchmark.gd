@@ -8,9 +8,9 @@
 ## 800 -> 60 -> 800 m over 1.5 s each; a 3 km camera jump and back, each until settled; and at
 ## 23:00 a still, a 1 s turn and, from the settled base pose as by day, a pan (`RENDER-32-I`: the
 ## night pan started where the night turns left the terrain catching up). `post_load` records
-## the frames from the load call's return until settled. METRUM_STREAM_PHASES picks phases
-## (still, turns, pan, zoom, jump, night, post_load), METRUM_STREAM_TURNS the turn durations in
-## seconds.
+## the frames from the load call's return until settled, with the hand-over's time (`ready_ms`).
+## METRUM_STREAM_PHASES picks phases (still, turns, pan, zoom, jump, night, post_load),
+## METRUM_STREAM_TURNS the turn durations in seconds.
 ##
 ## A row is one frame: its time from one `process_frame` to the next (the frame's scripts and its
 ## draw), the renderer's CPU and GPU measures, draw counts, the streaming counters of every chunked
@@ -623,9 +623,13 @@ func _capture_until_settled(bench: Node, label: String, max_frames: int, start: 
 	var stable := 0
 	var settle_ms := -1.0
 	var settle_frames := -1
+	# The hand-over (`TERRAIN-15`): the first frame the input manager reports the world ready.
+	var ready_ms := -1.0
 	while rows.size() < max_frames and stable < SETTLED_FRAMES:
 		await bench.get_tree().process_frame
 		rows.append(_row(rows.size()))
+		if ready_ms < 0.0 and bench.input_manager.is_world_ready():
+			ready_ms = bench._elapsed_ms(start_us)
 		if _is_settled(bench):
 			if stable == 0:
 				settle_ms = bench._elapsed_ms(start_us)
@@ -634,7 +638,8 @@ func _capture_until_settled(bench: Node, label: String, max_frames: int, start: 
 		else:
 			stable = 0
 	var sample := _finish(label, 0.0, rows)
-	sample.merge({"settled": stable >= SETTLED_FRAMES, "settle_ms": settle_ms, "settle_frames": settle_frames})
+	sample.merge({"settled": stable >= SETTLED_FRAMES, "settle_ms": settle_ms, "settle_frames": settle_frames,
+		"ready_ms": ready_ms})
 	if stable >= SETTLED_FRAMES:
 		_record_digest(label)
 	return sample

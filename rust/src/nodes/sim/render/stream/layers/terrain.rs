@@ -234,20 +234,22 @@ pub(crate) struct UnitCosts {
     pub(crate) free_us: f64,
 }
 
-/// Terrain's unit costs: an activation of a built patch is a node shown, a level change and the
-/// script's bookkeeping; a build fills a height image, a texture, a mask layer and about a
-/// hundred material parameters.
+/// Terrain's unit costs, measured on Kuopio's load (`RENDER-32-M` record): a build (a height
+/// image and texture, a mask layer, land cover and about a hundred material parameters in
+/// `terrain.gd`) takes 0.49 ms at the median; an activation of a built patch is a node shown, a
+/// level change and the graded hand-over's bookkeeping.
 pub(crate) const TERRAIN_COSTS: UnitCosts = UnitCosts {
-    activate_us: 60.0,
-    build_us: 400.0,
-    lod_us: 40.0,
+    activate_us: 100.0,
+    build_us: 500.0,
+    lod_us: 60.0,
     free_us: 40.0,
 };
-/// Water's unit costs: a build fills a depth image and texture and a material.
+/// Water's unit costs, measured as terrain's: an activation that builds the node (a depth image
+/// and texture, a material) takes 0.064 ms at the median, 0.21 ms at most.
 pub(crate) const WATER_COSTS: UnitCosts = UnitCosts {
     activate_us: 60.0,
-    build_us: 250.0,
-    lod_us: 30.0,
+    build_us: 120.0,
+    lod_us: 40.0,
     free_us: 30.0,
 };
 
@@ -373,6 +375,7 @@ pub(crate) struct PatchStream {
     requests: Vec<i32>,
     work: PatchWork,
     force_lod1: bool,
+    prewarm_held: bool,
 }
 
 impl PatchStream {
@@ -409,6 +412,7 @@ impl PatchStream {
             requests: Vec::new(),
             work: PatchWork::default(),
             force_lod1: false,
+            prewarm_held: false,
         }
     }
 
@@ -473,6 +477,12 @@ impl PatchStream {
             self.ring_height = None;
             self.gate.force();
         }
+    }
+
+    /// Holds the prewarm back (water: while the terrain still streams, so the water's halo
+    /// builds do not take the frames the terrain's holes need).
+    pub(crate) fn hold_prewarm(&mut self, held: bool) {
+        self.prewarm_held = held;
     }
 
     /// The grid, once a world is set.
@@ -858,7 +868,13 @@ impl PatchStream {
         self.work.frees = freed;
 
         // Prewarm once nothing else waits.
-        if !blocked && !held && self.missing == 0 && self.extra == 0 && self.queue.is_empty() {
+        if !blocked
+            && !held
+            && !self.prewarm_held
+            && self.missing == 0
+            && self.extra == 0
+            && self.queue.is_empty()
+        {
             self.prewarm_units(grid, eye, budget, clock, unbudgeted, &distance_sq, exec);
         }
         self.request_payloads(grid, &distance_sq, exec);
@@ -939,6 +955,10 @@ impl PatchStream {
         let mut wanting = std::mem::take(&mut self.order);
         wanting.clear();
         let prewarm = self.missing == 0;
+        if prewarm && self.prewarm_held {
+            self.order = wanting;
+            return;
+        }
         if !prewarm {
             for &index in &self.holes {
                 if self.flags[index as usize] & NEEDS == 0 {

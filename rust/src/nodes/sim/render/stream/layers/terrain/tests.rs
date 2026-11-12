@@ -326,7 +326,23 @@ fn golden_control_residency_and_levels() {
         eprintln!("GOLDEN {} {report:?}", path.display());
         assert_eq!(report.square_mismatches, 0, "{}", path.display());
         assert_eq!(report.candidate_mismatches, 0, "{}", path.display());
-        assert!(report.gate_mismatches <= 1, "{}", path.display());
+        assert_eq!(report.gate_mismatches, 0, "{}", path.display());
+    }
+}
+
+// The recordings' first 140 KB each (30k: 1,148 frames and 32 checks; Kuopio: its load, 759
+// frames and 6 checks), kept in the repository so the replay runs in every gate.
+#[test]
+fn golden_control_subsets_replay() {
+    for (name, text) in [
+        ("30k", include_str!("golden/30k.rec")),
+        ("kuopio", include_str!("golden/kuopio.rec")),
+    ] {
+        let report = replay(text);
+        assert!(report.checks > 0 && report.squares > 0, "{name}: {report:?}");
+        assert_eq!(report.square_mismatches, 0, "{name}");
+        assert_eq!(report.candidate_mismatches, 0, "{name}");
+        assert_eq!(report.gate_mismatches, 0, "{name}");
     }
 }
 
@@ -381,15 +397,26 @@ fn replay(text: &str) -> Replay {
                     world: [v[4] as f32, v[5] as f32],
                 });
                 gate = LodGate::default();
+                // The load's own sync runs before the new world's first frame.
+                close_frame(&mut gate, frame.take(), deferred, checked, &mut report);
+                gate = LodGate::default();
             }
             Some("F") => {
                 close_frame(&mut gate, frame, deferred, checked, &mut report);
-                let v: Vec<f64> = fields.map(|f| f.parse().unwrap()).collect();
+                let fields: Vec<&str> = fields.collect();
+                // The delta is Godot's `var_to_bytes` of the double, hex: a 4-byte header, then
+                // its 8 bytes little-endian.
+                let bytes: Vec<u8> = (0..fields[1].len())
+                    .step_by(2)
+                    .map(|at| u8::from_str_radix(&fields[1][at..at + 2], 16).unwrap())
+                    .collect();
+                let delta = f64::from_le_bytes(bytes[4..12].try_into().unwrap());
+                let v: Vec<f64> = fields[2..].iter().map(|f| f.parse().unwrap()).collect();
                 frame = Some((
-                    [v[2] as f32, v[3] as f32, v[4] as f32],
-                    v[5] as f32,
-                    v[1],
-                    v[6] as usize,
+                    [v[0] as f32, v[1] as f32, v[2] as f32],
+                    v[3] as f32,
+                    delta,
+                    v[4] as usize,
                 ));
                 deferred = false;
                 checked = false;
