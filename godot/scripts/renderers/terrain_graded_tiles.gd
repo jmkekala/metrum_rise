@@ -1003,8 +1003,9 @@ func patch_mutated(key: Vector2i, entry: Dictionary, clear_all := false) -> void
 # draws with; empty: erased).
 func _book_patch(key: Vector2i, entry: Dictionary) -> void:
 	_book.set_patch(key, not entry.is_empty(), entry.get("rect", Rect2()), int(entry.get("step", 0)), int(entry.get("generation", 0)))
-	if not entry.is_empty():
-		# What its set draws with: the patch node (whose place it takes), material and culling box.
+	if entry.has("node") and entry.has("material"):
+		# What its set draws with: the patch node (whose place it takes), material and culling box
+		# (a test's entry without them draws no set).
 		_book.set_patch_draw(key, (entry["node"] as Object).get_instance_id(), (entry["material"] as Material).get_rid(), entry["aabb"])
 
 # A failed request: a transient one (busy core, unready site index) is asked again; one Rust
