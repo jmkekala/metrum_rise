@@ -245,11 +245,16 @@ func _process(_delta: float) -> void:
 		lod_renderer.update(get_viewport().get_camera_3d())
 	_update_building_render_frame()
 	if PerfDebug.is_enabled():
-		PerfDebug.record("buildings", float(Time.get_ticks_usec() - frame_start_us) / 1000.0, {
+		var elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
+		var details := {
 			"lod_parts": lod_renderer.evaluated_parts if lod_renderer else 0,
 			"lod_chunks": lod_renderer.queried_chunks if lod_renderer else 0,
 			"upload_bytes": lod_renderer.uploaded_bytes if lod_renderer else 0,
-		})
+		}
+		# The batches' churn through the stream backend's pool (`RENDER-32-L`).
+		if lod_renderer != null:
+			details.merge(simulation_node.get_building_lod_work())
+		PerfDebug.record("buildings", elapsed_ms, details)
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:

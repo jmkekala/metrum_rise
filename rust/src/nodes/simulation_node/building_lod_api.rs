@@ -8,7 +8,7 @@ use crate::nodes::sim::render::building_lod::spatial::{Pose, query_bounds};
 use crate::nodes::sim::render::building_lod::{BatchKey, Part, View};
 use crate::nodes::sim::render::stream::backend::GodotBackend;
 use crate::nodes::sim::render::stream::layers::buildings::{
-    BuildingLayer, Look, SLOT_LIMIT, SPARE_LIMIT,
+    Applied, BuildingLayer, Look, SLOT_LIMIT, SPARE_LIMIT,
 };
 use glam::{Mat3, Mat4, Vec2, Vec3};
 
@@ -109,6 +109,7 @@ impl SimulationNode {
             self.building_draw = Some(BuildingDraw {
                 backend,
                 layer: BuildingLayer::new(SLOT_LIMIT, SPARE_LIMIT),
+                applied: Applied::default(),
             });
         }
     }
@@ -245,6 +246,9 @@ impl SimulationNode {
         result.set("queried_chunks", self.building_lods.queried_chunks as i64);
         if !changed && self.building_lods.removed.is_empty() {
             // An unchanged frame: nothing to draw, no batch visited.
+            if let Some(draw) = self.building_draw.as_mut() {
+                draw.applied = Applied::default();
+            }
             result.set("uploaded_bytes", 0);
             return result;
         }
@@ -273,8 +277,29 @@ impl SimulationNode {
         let applied = draw
             .layer
             .apply(&mut draw.backend, &lods.removed, lods.changes());
+        draw.applied = applied;
         lods.acknowledge();
         applied.bytes as i64
+    }
+
+    /// The last published frame's work (the perf channel): batches `written`, `hidden` (emptied
+    /// or their chunk left), `blocked` (pool full), and the pool's `slots_live`, `slots_spare`,
+    /// `slots_created` and `slots_freed` so far.
+    #[func]
+    pub fn get_building_lod_work(&self) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        if let Some(draw) = self.building_draw.as_ref() {
+            let pool = draw.layer.pool();
+            let (created, freed) = pool.churn();
+            out.set("written", draw.applied.written as i64);
+            out.set("hidden", draw.applied.hidden as i64);
+            out.set("blocked", draw.applied.blocked as i64);
+            out.set("slots_live", pool.live() as i64);
+            out.set("slots_spare", pool.spares() as i64);
+            out.set("slots_created", created as i64);
+            out.set("slots_freed", freed as i64);
+        }
+        out
     }
 
     /// The drawn building batches (tests and the stream benchmark's digests), one dictionary
@@ -310,6 +335,7 @@ impl SimulationNode {
 pub(crate) struct BuildingDraw {
     backend: GodotBackend,
     layer: BuildingLayer,
+    applied: Applied,
 }
 
 impl SimulationNode {
