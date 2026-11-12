@@ -11914,7 +11914,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-G` | A1 | Agents without a visual change (`RENDER-28` part 1) | Agents 0.6 ms on the paused still |
 | `RENDER-32-H` | L1 | Street lights' grid, far map and pool in Rust (`RENDER-33`) | 0.3 ms mean, 1.0 ms max on night turns and pans. Landed 2026-11-11 (coordinator, night delegation, for review); its `night_pan_out` frame-mean reading of night within 1 ms of day (+0.9/+1.6 ms, graded catch-up) carried to `-I`/`-J` |
 | `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. `-K` part 2 (G2c-2) landed 2026-11-12 (coordinator, delegation, for review; graded total carried to part 3): the page uploads and copies in Rust through the backend, 20-23 % more copies a frame in the same install budget; the graded total level (1.36-1.41 ms, 1.55-1.63 at 100k) and its bars missed: every frame of the turns spends the install budget with finished bakes waiting, so the total is the budget's, not the uploads' (record); carried to part 3. |
-| `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`) | 0.3 ms on the turn, 1.5 ms at 100k |
+| `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`); the detail swap without read-back (`RENDER-37`) | 0.3 ms on the turn, 1.5 ms at 100k; reflection hook 0.1 ms without water in view. Built 2026-11-12: every bar met (0.09-0.21 ms, 0.26-0.53 ms, 0.02-0.04 ms) |
 | `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`) | 0.3 ms a frame on Kuopio's turn and pan |
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement | Entered-to-drawn p95 at most three frames |
 | `RENDER-32-O` | A2 | Agent draw distances (`RENDER-28` part 2), from stills | The user's choice |
@@ -14048,8 +14048,31 @@ workers, paused; another round's stream runs alternated with these under the sam
 user's rule): every pan better at p50 by 0.5-0.6 ms, maxima level (+0.3, +2.0, -1.9 ms against
 spreads of 2.3, 2.9, 1.7). Kuopio every
   phase better or level (p50 0.1-0.9 ms lower).
-⟦STILLS⟧
-⟦LEVELF⟧
+- Stills (the idle matrix, 10:00, gamescope 1080p; control on its own tree): Kuopio's `forest_low`,
+  `close` and `mid` after 4,000 warm-up frames byte-identical to the control's (the near canopy's
+  detail swap included). The 30k city's `saved`, `city` and `city_low` and the pond save's `saved`
+  and water view, two runs a side: not byte-stable control against control (`RENDER-32-K`'s
+  speckle; the water view's ripples move between runs, 468,000 pixels control against control), so
+  compared by the pixels stable within each side and different between them, against the same
+  count for the other pairings of the four runs: city 1,702 / 595 / 311 against 1,804-1,719 /
+  504-571 / 326-509, the pond's `saved` 1,644 against 1,750-1,816, its water view 32,503 against
+  7,882-37,624 (the ripples): no systematic difference. The water view shows the far shore's trees
+  in the reflection; the city's buildings stand behind them, outside what the mirror shows from
+  this pose, so the reflection's building proxies are checked by the digests and the layer's
+  tests, not by this still.
+- Level F (`./run.sh --timing --level F --control <ctl> --branch <br> --base e7d9a148`, release lib
+  test binaries of `e7d9a148` (`73c9c8ef`) and `cfc2ccd3` (`f8cf1a7a`); 09:37-09:46): `PERF-07`
+  30k 1x acceptance PASS on the branch (unpreempted, p99.9, preempted less wait 6.54 / 4.24 /
+  5.31 ms), every metric level or better (mean 2.238 against 2.350 ms); the control's day was
+  flagged noisy (16,015 preempted frames, its acceptance FAIL at 9.02 ms preempted less wait) and
+  its `--rerun` reused the cached row rather than timing it again, so the verdict is read on the
+  branch's pass and the direction of every delta. 30k 32x C B B C every metric level (mean +0.1%),
+  the `PERF-17` known exception on both sides. No simulation path changed.
+- Rebased onto `dev` `5ca2fd2c` (`RENDER-32-K` part 2: graded uploads only, no building or
+  vegetation path, so the measurements above stand): clippy's warning set equal to `dev`'s, debug
+  `cargo test --lib` 2,485 passed, 0 failed, 221 ignored, no missing docs, `./run.sh --test` PASS
+  (2,489 Rust tests, 222 skipped; both Godot chains, `building_lod_test` and
+  `building_asset_reload_test` included, no `SCRIPT ERROR`).
 
 Bars: buildings at most 0.3 ms mean on the 30k turn: met (0.09-0.21; control 1.4-1.9 instrumented,
 0.98 in the plan's rows of record); 1.5 ms at 100k: met (0.26-0.53). Reflection hook at most 0.1 ms
@@ -14057,7 +14080,9 @@ without water in view: met (0.023-0.038 on every phase of every input). Tier per
 per-frame rule on random walks: met (Rust, every frame of four 900-frame walks). Batch buffers
 identical at settle poses: met (13 of 13). No node created or freed on a frame path for building
 batches: met (no node; 884 slots made at the load and reused). `RENDER-37`, no vegetation unit over
-2.0 ms on the 30k zooms: met (0.14 ms at most). ⟦BARS⟧
+2.0 ms on the 30k zooms: met (0.14 ms at most).Stills identical: met
+(Kuopio byte-identical; the city and the pond with no systematic difference beyond the control's
+own run-to-run speckle). `PERF-07` at level F: level or better.
 
 ## Implemented Runtime Contract
 
