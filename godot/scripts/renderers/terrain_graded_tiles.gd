@@ -796,7 +796,8 @@ func _drop_preview(key: Vector2i) -> void:
 # the frame's other work cost. The loop, the deferred results and the tiles' checks, placing and
 # uploads are the book's (`RENDER-32-K` part 3): it calls back _take_polled for the other kinds,
 # _stage_edit for a tile of the edit batch and _apply_effects for a take whose effects need this
-# script; the simulation polls without dictionaries unless a trace records or replays (_sim_poll).
+# script, and charges each placed tile the cell rewrites it causes later in the frame in its budget
+# checks; the simulation polls without dictionaries unless a trace records or replays (_sim_poll).
 # O(results and counts taken + one poll's results).
 func _poll_and_install(start_us: int, _resident_patches: Dictionary) -> void:
 	var simulation: SimulationNode = simulation_node as SimulationNode if trace == null else null

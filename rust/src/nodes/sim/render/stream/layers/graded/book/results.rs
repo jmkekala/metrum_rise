@@ -30,6 +30,12 @@ use std::collections::VecDeque;
 /// Tiles one poll takes at most (the renderer's `POLL_BATCH`).
 const POLL_BATCH: usize = 4;
 
+/// What the install budget charges a frame for each tile it placed: the cell rewrites the install
+/// causes later in the frame (`apply_cell_changes`, after the poll), so the poll stops while the
+/// frame's graded work still fits the budget. A fixed constant (no adaptive estimate, `RENDER-32`
+/// 5.4): the 100k turns' measured cell rewrites a placed tile, 10-13 us (30k: 8-9).
+const CELL_CHARGE_US: i64 = 12;
+
 // `take_result_counts`: results deferred, tiles that waited for their sets' variant, evictions
 // and same-level uploads the book applied, then the longest poll (us, kept), then the perf
 // channel's split: nanoseconds in the polls, the tiles' checks and placing, their effects (the
@@ -333,15 +339,18 @@ struct Run {
     simulation: Option<Gd<SimulationNode>>,
     start_us: i64,
     progressed: bool,
+    // The tiles placed this frame, each charged `CELL_CHARGE_US` in the budget checks.
+    placed: i64,
     // The engine's clock (`Time.get_ticks_usec`, which `start_us` reads) when the run began and
     // a monotonic clock from then: a budget check without a call into the engine.
     clock: (i64, std::time::Instant),
 }
 
 impl Run {
-    // `_over_budget`: the trace's answer where one records or replays.
+    // `_over_budget` with the placed tiles' cell rewrites charged (as if the frame had started
+    // that much earlier): the trace's answer where one records or replays.
     fn over(&mut self) -> bool {
-        let start_us = self.start_us;
+        let start_us = self.start_us - self.placed * CELL_CHARGE_US;
         let mut book = self.book.bind_mut();
         let book = &mut *book;
         if book.trace.is_some() {
@@ -440,6 +449,7 @@ impl Run {
         book.upload_baked(baked);
         book.taken.counts[PLACE_NS] += start.elapsed().as_nanos() as i64;
         drop(guard);
+        self.placed += 1;
         self.effects();
     }
 
@@ -537,7 +547,8 @@ impl GradedTileBook {
     /// The frame's tile results (`_poll_and_install`, `RENDER-32-K` part 3): the queued counts
     /// and deferred results, then polls of finished work (edits, lists, failures, tiles, in that
     /// order a poll) until the frame's install budget from `start_us` is spent, checked before
-    /// each result and count. Tiles install here; the renderer's `_take_polled` takes the other
+    /// each result and count, each tile placed charged its later cell rewrites
+    /// (`CELL_CHARGE_US`). Tiles install here; the renderer's `_take_polled` takes the other
     /// kinds, `_stage_edit` a tile of the edit batch and `_apply_effects` a take whose effects
     /// need it. `simulation` polls without dictionaries; null (a trace, a stand-in) polls through
     /// the renderer's `_sim_poll`. O(results and counts taken + one poll's results).
@@ -550,7 +561,7 @@ impl GradedTileBook {
     ) {
         let mut polled = std::mem::take(&mut book.clone().bind_mut().taken.polled);
         let clock = (godot::classes::Time::singleton().get_ticks_usec() as i64, std::time::Instant::now());
-        let mut run = Run { book, renderer, simulation, start_us, progressed: false, clock };
+        let mut run = Run { book, renderer, simulation, start_us, progressed: false, placed: 0, clock };
         run.run(&mut polled);
         // A poll's results the frame left are deferred above; the buffer is empty again.
         polled.clear();
@@ -570,7 +581,7 @@ impl GradedTileBook {
             keys
         };
         let clock = (0, std::time::Instant::now());
-        let mut run = Run { book, renderer, simulation: None, start_us: 0, progressed: true, clock };
+        let mut run = Run { book, renderer, simulation: None, start_us: 0, progressed: true, placed: 0, clock };
         for &tile in &keys {
             let ready = {
                 let mut book = run.book.bind_mut();
