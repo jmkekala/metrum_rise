@@ -25,7 +25,15 @@
 ## the header masked, and the run), so two builds' settled installs compare by digest whatever
 ## slots they took (`RENDER-32-B`). At night it also records the street lights' lamp grid and far
 ## map textures by digest in `lamp_digests`, and adds two night settle points, the jump's pose
-## and back, each far enough to re-centre both (`RENDER-32-H`).
+## and back, each far enough to re-centre both (`RENDER-32-H`). Every settle point also records
+## the building LOD batches in `building_digests` (per batch its chunk, group, count and rows),
+## whichever side draws them (`RENDER-32-L`).
+##
+## The `water` phase (`RENDER-32-L`) looks at a shore across water, so the water reflection
+## draws: the first wet point of a fixed scan out from the world's centre whose neighbour WATER_STEP_M
+## east is dry, viewed eastwards from over the water at WATER_PITCH_RAD and WATER_DISTANCE_M. It
+## records a still sample there (`water_still`, its rows carrying the voted levels) and a settle
+## point, and the pose in `water_pose`; a world without such a shore skips it.
 extends RefCounted
 
 const SCHEMA_VERSION := 1
@@ -43,7 +51,13 @@ const JUMP_MAX_FRAMES := 3000
 const POST_LOAD_MAX_FRAMES := 6000
 # CameraNode::pan scales its speed by the orbit distance over INITIAL_DISTANCE_M (400 m).
 const PAN_REFERENCE_DISTANCE_M := 400.0
-const DEFAULT_PHASES: Array[String] = ["still", "turns", "pan", "zoom", "jump", "night"]
+const DEFAULT_PHASES: Array[String] = ["still", "turns", "pan", "zoom", "jump", "night", "water"]
+const WATER_STEP_M := 150.0
+const WATER_SCAN_M := 250.0
+const WATER_SCAN_REACH_M := 8500.0
+const WATER_PITCH_RAD := -0.3
+const WATER_DISTANCE_M := 400.0
+const WATER_FRAMES := 90
 ## The keys every frame row carries (`scripts` is empty without the perf channel).
 const ROW_KEYS: Array[String] = ["frame", "frame_ms", "process_ms", "render_cpu_ms", "render_gpu_ms",
 	"draw_calls", "objects", "primitives", "video_mem", "streams", "stream_delta",
@@ -98,6 +112,7 @@ func run(bench: Node) -> void:
 		"world_path": bench.world_path, "simulation_speed": float(OS.get_environment("METRUM_STREAM_SPEED")),
 		"pitch_radians": PITCH_RAD, "distance_m": DISTANCE_M, "phases": phases, "turn_durations_s": turns,
 		"perf_records": _scripts, "load": {}, "samples": [], "graded_digests": [], "lamp_digests": [],
+		"building_digests": [], "water_pose": [],
 		"timing_contract": "frame_ms is the wall time from one process_frame to the next; scripts are the perf channel's records of that same frame (instrumented runs give shares, not times)",
 	}
 	bench._metrics = _report
@@ -229,6 +244,15 @@ func run(bench: Node) -> void:
 					bench._fail("a night digest pose did not settle")
 					return
 		main.menu_set_time_of_day(10.0)
+	if phases.has("water"):
+		var water := _water_pose(bench, base, world)
+		if not water.is_empty():
+			_report.water_pose = Array(water)
+			print("[STREAM] WATER_POSE %s" % str(Array(water)))
+			if not await _start_from(bench, water):
+				bench._fail("the water pose did not settle")
+				return
+			_report.samples.append(await _capture_frames(bench, "water_still", WATER_FRAMES))
 	if _scripts:
 		PerfDebug.end_frame_capture()
 	var errors := report_errors(_report)
@@ -294,6 +318,7 @@ func _record_digest(label: String) -> void:
 		return
 	_settle_points += 1
 	_record_lamp_digest()
+	_record_building_digest()
 	var tiles: Variant = _terrain.graded_tiles
 	if tiles == null:
 		return
@@ -330,6 +355,85 @@ func _record_digest(label: String) -> void:
 		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
 		"camera": [camera.x, camera.y, camera.z], "tiles": lines.size(),
 		"digest": _sha("\n".join(lines).to_utf8_buffer()), "by_tile": by_tile})
+
+# The view of the water phase (see the header): rings of WATER_SCAN_M about the world's centre,
+# each walked in a fixed order; empty when no shore is found.
+func _water_pose(bench: Node, base: PackedFloat32Array, world: Vector2) -> PackedFloat32Array:
+	var reach := minf(WATER_SCAN_REACH_M, minf(world.x, world.y) * 0.5 - WATER_STEP_M)
+	var rings := int(reach / WATER_SCAN_M)
+	for ring in rings + 1:
+		for index in maxi(1, 8 * ring):
+			# The ring's square perimeter, from its north-west corner clockwise.
+			var side := 2 * ring
+			var x := -ring
+			var z := -ring
+			if ring > 0:
+				var leg := index / side
+				var along := index % side
+				match leg:
+					0:
+						x = -ring + along
+					1:
+						x = ring
+						z = -ring + along
+					2:
+						x = ring - along
+						z = ring
+					_:
+						z = ring - along
+			var point := Vector2(x, z) * WATER_SCAN_M
+			var level: float = bench.simulation_node.get_camera_water_surface_at(point)
+			if is_nan(level):
+				continue
+			if not is_nan(bench.simulation_node.get_camera_water_surface_at(point + Vector2(WATER_STEP_M, 0.0))):
+				continue
+			var view := base.duplicate()
+			view[0] = point.x
+			view[1] = level
+			view[2] = point.y
+			# The camera west of the pivot looking east, across the water to the shore.
+			view[3] = -PI * 0.5
+			view[4] = WATER_PITCH_RAD
+			view[5] = WATER_DISTANCE_M
+			return view
+	return PackedFloat32Array()
+
+# The building LOD batches at a settle point, whichever side draws them: Rust's stream backend
+# (`drawn_batches`) or the control's batch nodes (`batches`). Rows read back from the engine.
+func _record_building_digest() -> void:
+	var lods: Variant = _buildings.get("lod_renderer") if _buildings != null else null
+	if lods == null:
+		return
+	var lines := PackedStringArray()
+	if lods.has_method("drawn_batches"):
+		for batch: Dictionary in lods.drawn_batches():
+			var buffer := RenderingServer.multimesh_get_buffer(batch.multimesh)
+			lines.append(_building_line(batch.chunk, batch.part, batch.lod, batch.deserted, batch.scheme,
+				int(batch.count), buffer))
+	else:
+		var nodes: Dictionary = lods.get("batches")
+		for key: Vector4i in nodes:
+			var node: MultiMeshInstance3D = nodes[key]
+			var count := node.multimesh.visible_instance_count if node.visible else 0
+			var identity: Dictionary = lods.batch_identity(key)
+			lines.append(_building_line(identity.chunk, identity.part, identity.lod, identity.deserted,
+				identity.scheme, count, node.multimesh.buffer))
+	lines.sort()
+	var empty := lines.count("")
+	var camera: Vector3 = _terrain.get_viewport().get_camera_3d().global_position
+	_report.building_digests.append({"point": _settle_points,
+		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
+		"camera": [camera.x, camera.y, camera.z], "batches": lines.size() - empty,
+		"digest": _sha("\n".join(lines).to_utf8_buffer())})
+
+# One batch's line: its identity, count and the digest of its first `count` rows; empty when it
+# draws nothing.
+func _building_line(chunk: Vector2i, part: int, lod: int, deserted: bool, scheme: int, count: int,
+		buffer: PackedFloat32Array) -> String:
+	if count <= 0:
+		return ""
+	return "%d,%d|%d|%d|%d|%d|%d|%s" % [chunk.x, chunk.y, part, lod, int(deserted), scheme, count,
+		_sha(buffer.slice(0, count * 16).to_byte_array())]
 
 # The street lights' two textures as uploaded, read back (night only: by day neither is built).
 func _record_lamp_digest() -> void:

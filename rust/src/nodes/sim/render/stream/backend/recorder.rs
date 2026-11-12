@@ -33,6 +33,10 @@ pub(crate) enum Command {
     TextureLayer(Handle, u32, [u32; 2], u64),
     TextureCopy(Handle, Handle, u32),
     TextureForget(Handle),
+    InstanceExtraMargin(Handle, f32),
+    InstanceDynamicGi(Handle, bool),
+    InstanceRangeMargins(Handle, [f32; 2], [f32; 2]),
+    InstanceFlagParameter(Handle, u32, bool),
 }
 
 /// A recorded material: its shader and its texture parameters.
@@ -71,6 +75,11 @@ pub(crate) struct RecordedInstance {
     // A material handle override (`instance_set_material_handle`) and vector parameters.
     pub(crate) material_handle: Option<Handle>,
     pub(crate) vectors: BTreeMap<u32, Vector>,
+    // The building batches' settings (`RENDER-32-L`).
+    pub(crate) extra_margin: f32,
+    pub(crate) dynamic_gi: bool,
+    pub(crate) range_margins: [f32; 2],
+    pub(crate) flags: Vec<(u32, bool)>,
 }
 
 /// Records commands and keeps the state they leave.
@@ -257,6 +266,10 @@ impl RenderBackend for Recorder {
                 parameters: Vec::new(),
                 material_handle: None,
                 vectors: BTreeMap::new(),
+                extra_margin: 0.0,
+                dynamic_gi: false,
+                range_margins: [0.0; 2],
+                flags: Vec::new(),
             },
         );
         Some(handle)
@@ -300,6 +313,32 @@ impl RenderBackend for Recorder {
         self.commands
             .push(Command::InstanceParameter(instance, parameter, value));
         self.instance(instance).parameters.push((parameter, value));
+    }
+
+    fn instance_set_extra_margin(&mut self, instance: Handle, margin: f32) {
+        self.commands
+            .push(Command::InstanceExtraMargin(instance, margin));
+        self.instance(instance).extra_margin = margin;
+    }
+
+    fn instance_set_dynamic_gi(&mut self, instance: Handle, enabled: bool) {
+        self.commands
+            .push(Command::InstanceDynamicGi(instance, enabled));
+        self.instance(instance).dynamic_gi = enabled;
+    }
+
+    fn instance_set_range_margins(&mut self, instance: Handle, range: [f32; 2], margins: [f32; 2]) {
+        self.commands
+            .push(Command::InstanceRangeMargins(instance, range, margins));
+        let recorded = self.instance(instance);
+        recorded.range = range;
+        recorded.range_margins = margins;
+    }
+
+    fn instance_set_flag_parameter(&mut self, instance: Handle, parameter: u32, value: bool) {
+        self.commands
+            .push(Command::InstanceFlagParameter(instance, parameter, value));
+        self.instance(instance).flags.push((parameter, value));
     }
 
     fn free(&mut self, handle: Handle) {

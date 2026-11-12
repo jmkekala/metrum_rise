@@ -5,6 +5,8 @@
 
 use super::{BatchKey, Chunk, Instance, Motion, Part, View};
 use crate::assets::AssetRegistry;
+use crate::nodes::sim::render::stream::layers::buildings::Change;
+use crate::nodes::sim::render::vegetation_product::godot_math::Aabb;
 use crate::nodes::sim::render::buildings::{
     building_part_pose, construction_rise_offset_m, construction_visual_progress,
 };
@@ -520,6 +522,32 @@ impl SpatialBatches {
             .map(|chunk| chunk.batches.evaluations)
             .sum();
         true
+    }
+
+    /// The frame's changed batches in publication order (chunks in query order, groups in key
+    /// order) with their instances and bounds. O(resident batches + changed instances).
+    pub fn changes(&self) -> impl Iterator<Item = Change<'_>> + '_ {
+        self.ordered_chunks.iter().flat_map(move |&key| {
+            let chunk = &self.chunks[&key].batches;
+            chunk
+                .batches
+                .iter()
+                .filter(|batch| batch.changed)
+                .map(move |batch| {
+                    let bounds = if batch.count == 0 {
+                        Aabb::default()
+                    } else {
+                        let [lo, hi] = chunk.bounds(batch, &self.parts[batch.key.part]);
+                        Aabb::new(lo.to_array(), (hi - lo).to_array())
+                    };
+                    Change {
+                        chunk: key,
+                        key: batch.key,
+                        rows: chunk.transforms(batch),
+                        bounds,
+                    }
+                })
+        })
     }
 
     /// Acknowledge only after a complete coherent frame has been copied to the Godot bridge.

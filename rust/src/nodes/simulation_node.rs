@@ -226,6 +226,9 @@ pub struct SimulationNode {
     pub(crate) water_patch_mesh_jobs: Arc<Mutex<WaterPatchMeshAsyncState>>,
     /// Main-thread presentation cache; never serialized or used by simulation decisions.
     pub(crate) building_lods: crate::nodes::sim::render::building_lod::spatial::SpatialBatches,
+    /// The building LOD batches' `RenderingServer` slots (`RENDER-32-L`), once
+    /// `building_lods.gd` gave the scenario; presentation state like `building_lods`.
+    pub(crate) building_draw: Option<building_lod_api::BuildingDraw>,
     /// Main-thread drawn car poses between snapshots; never serialized or read by simulation.
     pub(crate) car_visuals: crate::nodes::sim::render::car_visual::CarVisualSmoother,
     /// The drawn car buffers by bucket, as `smooth_car_render_data` returns them, and the
@@ -489,6 +492,7 @@ impl INode3D for SimulationNode {
             road_types: Mutex::new(None),
             water_patch_mesh_jobs,
             building_lods: Default::default(),
+            building_draw: None,
             car_visuals: Default::default(),
             car_buffers: VarDictionary::new(),
             changed_car_buckets: PackedInt64Array::new(),

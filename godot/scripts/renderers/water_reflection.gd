@@ -89,7 +89,8 @@ var _dirty_terrain_patches := {}
 # The vegetation renderer: the stream node draws its tree impostors in this pass's world too
 # (`RENDER-32-E`), from the frame they install in the scene.
 var _vegetation: Node
-# Building and scaffold batches mirrored as shared MultiMesh proxies (water_reflection_sources.gd).
+# Scaffold batches mirrored as shared MultiMesh proxies (water_reflection_sources.gd); the building
+# LOD batches' proxies are drawn by Rust with their batches (`RENDER-32-L`).
 var _building_proxies: RefCounted
 
 ## Wires the pass to the scene's key light and environment. Call once before the first frame.
@@ -109,12 +110,20 @@ func setup(
 	_link_vegetation()
 
 ## Hands the reflection's world to the vegetation once both exist (setup may come before or after
-## the world is made).
+## the world is made), and to the building batches (`RENDER-32-L`), which draw their proxies in it;
+## a building renderer made later asks for it (`reflection_scenario`).
 func _link_vegetation() -> void:
 	if _vegetation != null and _world != null and _vegetation.has_method("set_reflection_scenario"):
 		_vegetation.set_reflection_scenario(_world.scenario)
+	if _world != null and is_inside_tree():
+		get_tree().call_group("building_lod_renderers", "set_reflection_scenario", _world.scenario)
+
+## The reflection's world, or an invalid RID before it exists.
+func reflection_scenario() -> RID:
+	return _world.scenario if _world != null else RID()
 
 func _ready() -> void:
+	add_to_group("water_reflections")
 	_world = World3D.new()
 	_link_vegetation()
 	_building_proxies = ReflectionSources.new()
@@ -157,6 +166,7 @@ func _exit_tree() -> void:
 		_building_proxies.clear()
 	if is_instance_valid(_vegetation) and _vegetation.has_method("set_reflection_scenario"):
 		_vegetation.set_reflection_scenario(RID())
+	get_tree().call_group("building_lod_renderers", "set_reflection_scenario", RID())
 	for proxy in _proxies.values():
 		RenderingServer.free_rid(proxy[0])
 	_proxies.clear()
@@ -434,7 +444,8 @@ func _vote_planes(camera: Camera3D) -> PackedFloat32Array:
 	return _voted_levels
 
 # Mirrors the resident terrain patches into the reflection world; tree impostors are drawn there
-# by the stream node, buildings follow their batches' events (water_reflection_sources.gd).
+# by the stream node, building batches by Rust with their batches, scaffolds by their events
+# (water_reflection_sources.gd).
 # Agents, grass, props, understory, near tree meshes, hedges, lots and roads are left out; a
 # bridge would need its own geometry first. Each frame handles
 # one PROXY_SYNC_FRAMES-th of the patches and of the proxies, round robin, so no frame pays for

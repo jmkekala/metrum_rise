@@ -4,8 +4,13 @@
 
 use super::*;
 use crate::nodes::lod_policy::quality_from_id;
-use crate::nodes::sim::render::building_lod::{Part, View, spatial::query_bounds};
-use glam::{Mat4, Vec2, Vec3};
+use crate::nodes::sim::render::building_lod::spatial::{Pose, query_bounds};
+use crate::nodes::sim::render::building_lod::{BatchKey, Part, View};
+use crate::nodes::sim::render::stream::backend::GodotBackend;
+use crate::nodes::sim::render::stream::layers::buildings::{
+    BuildingLayer, Look, SLOT_LIMIT, SPARE_LIMIT,
+};
+use glam::{Mat3, Mat4, Vec2, Vec3};
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -16,6 +21,8 @@ impl SimulationNode {
         let (shared, turnstile) = (Arc::clone(&self.core), Arc::clone(&self.core_turnstile));
         let core = Self::wait_for_shared_core(&turnstile, &shared);
         self.building_lods.load_catalog(&core.allocator.registry);
+        drop(core);
+        self.reset_building_draw();
         let mut parts = VarArray::new();
         for (id, part) in self.building_lods.catalog.iter().enumerate() {
             let mut item = VarDictionary::new();
@@ -92,17 +99,86 @@ impl SimulationNode {
         true
     }
 
-    /// Nonblocking, camera-driven building rendering. Returns only changed chunk groups;
-    /// a busy core retains the previous complete frame. Resource loading never occurs here.
+    /// Draws the building batches in `scenario` from now on (`building_lods.gd`, once): the
+    /// `RenderingServer` slots of `RENDER-32-L`. A second call keeps the slots.
+    #[func]
+    pub fn set_building_lod_scenario(&mut self, scenario: Rid) {
+        if self.building_draw.is_none() && scenario.is_valid() {
+            let mut backend = GodotBackend::new(scenario);
+            backend.set_catalogue(Vec::new(), Vec::new(), reflection_parameters());
+            self.building_draw = Some(BuildingDraw {
+                backend,
+                layer: BuildingLayer::new(SLOT_LIMIT, SPARE_LIMIT),
+            });
+        }
+    }
+
+    /// Sets the water reflection's world (an invalid RID: none); the batches' proxies move
+    /// into it.
+    #[func]
+    pub fn set_building_lod_reflection_scenario(&mut self, scenario: Rid) {
+        if let Some(draw) = self.building_draw.as_mut() {
+            draw.layer.drop_reflections(&mut draw.backend);
+            draw.backend
+                .set_reflection_scenario(scenario.is_valid().then_some(scenario));
+            draw.layer.redraw_reflections(&mut draw.backend);
+        }
+    }
+
+    /// Whether reused slots take fresh storage (the viewport draws motion vectors).
+    #[func]
+    pub fn set_building_lod_fresh_buffers(&mut self, fresh: bool) {
+        if let Some(draw) = self.building_draw.as_mut() {
+            draw.layer.set_fresh_buffers(fresh);
+        }
+    }
+
+    /// Registers the mesh and material override (an invalid RID: none) a group draws with,
+    /// built by `building_lods.gd` when [`Self::update_building_lods`] named it missing.
+    #[func]
+    pub fn register_building_lod_look(
+        &mut self,
+        part: i64,
+        lod: i64,
+        deserted: bool,
+        scheme: i64,
+        mesh: Rid,
+        material: Rid,
+    ) {
+        let Some(draw) = self.building_draw.as_mut() else {
+            return;
+        };
+        let look = Look {
+            mesh: draw.backend.push_mesh(mesh),
+            material: material
+                .is_valid()
+                .then(|| draw.backend.push_material(material)),
+        };
+        let key = BatchKey {
+            part: part as usize,
+            deserted,
+            scheme: scheme as u16,
+            lod: lod as usize,
+        };
+        draw.layer.register(key, look);
+    }
+
+    /// Nonblocking, camera-driven building rendering (`RENDER-34`, `RENDER-32-L`): selects the
+    /// tiers of the parts the camera's motion can have changed and draws the changed batches
+    /// through the stream backend. `world_to_clip` is `projection` times the inverse of
+    /// `camera_transform`, as the camera renders. Returns `busy` (the core was busy: the drawn
+    /// frame stays), `reload`, `evaluated_parts`, `queried_chunks`, `uploaded_bytes` and
+    /// `missing`: the groups (part, tier, deserted, scheme; four lanes each) to register before
+    /// [`Self::publish_building_lods`] draws this frame. Resource loading never occurs here.
     #[func]
     #[allow(clippy::too_many_arguments)]
-    pub fn try_get_building_lod_frame(
+    pub fn update_building_lods(
         &mut self,
         generation: i64,
         world_to_clip: Projection,
+        projection: Projection,
+        camera_transform: Transform3D,
         render_size: Vector2,
-        camera_position: Vector3,
-        camera_forward: Vector3,
         quality: i32,
         shadow_to_light: Vector3,
         shadow_distance: f32,
@@ -123,18 +199,26 @@ impl SimulationNode {
         // The view reads the chunk lists and their bounds: the index's site part (`ALLOC-05`).
         core.prepare_site_queries();
         let view = View {
-            world_to_clip: Mat4::from_cols_array_2d(
-                &world_to_clip.cols.map(|c| [c.x, c.y, c.z, c.w]),
-            ),
+            world_to_clip: mat4(world_to_clip),
             render_size: Vec2::new(render_size.x, render_size.y),
             quality: quality_from_id(quality),
         };
         let to_vec = |p: Vector3| Vec3::new(p.x, p.y, p.z);
+        let basis = camera_transform.basis;
+        let pose = Pose {
+            eye: to_vec(camera_transform.origin),
+            basis: Mat3::from_cols(
+                to_vec(basis.col_a()),
+                to_vec(basis.col_b()),
+                to_vec(basis.col_c()),
+            ),
+            projection: mat4(projection),
+        };
         let bounds = if let Some(occupied) = core.allocator.building_chunk_bounds {
             let Some(bounds) = query_bounds(
                 view,
-                to_vec(camera_position),
-                to_vec(camera_forward),
+                pose.eye,
+                -pose.basis.z_axis,
                 to_vec(shadow_to_light),
                 shadow_distance,
                 lods.horizontal_margin,
@@ -151,53 +235,122 @@ impl SimulationNode {
             &core.allocator,
             bounds,
             view,
-            None,
+            Some(pose),
             core.construction_clock_slots(),
             std::time::Instant::now(),
         );
+        drop(core);
         result.set("busy", false);
-        result.set("evaluated_parts", lods.evaluated_parts as i64);
-        result.set("queried_chunks", lods.queried_chunks as i64);
-        if !changed && lods.removed.is_empty() {
+        result.set("evaluated_parts", self.building_lods.evaluated_parts as i64);
+        result.set("queried_chunks", self.building_lods.queried_chunks as i64);
+        if !changed && self.building_lods.removed.is_empty() {
+            // An unchanged frame: nothing to draw, no batch visited.
+            result.set("uploaded_bytes", 0);
             return result;
         }
-        let mut updates = VarArray::new();
-        // World replacement can reuse the same chunk/group key. Retire the old
-        // generation first, then install the new groups within this same frame.
-        for &(key, batch) in &lods.removed {
-            let mut item = batch_identity(key, batch);
-            item.set("transforms", PackedFloat32Array::new());
-            item.set("retired", true);
-            updates.push(&item.to_variant());
+        let missing = self.missing_building_looks();
+        if missing.is_empty() {
+            result.set("uploaded_bytes", self.publish_building_lods());
+        } else {
+            result.set("missing", missing);
         }
-        for &key in &lods.ordered_chunks {
-            let chunk = &lods.chunks[&key].batches;
-            for batch in &chunk.batches {
-                if !batch.changed {
-                    continue;
-                }
-                let mut item = batch_identity(key, batch.key);
-                if batch.count != 0 {
-                    let [lo, hi] = chunk.bounds(batch, &lods.parts[batch.key.part]);
-                    item.set(
-                        "bounds",
-                        Aabb::new(
-                            Vector3::new(lo.x, lo.y, lo.z),
-                            Vector3::new(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z),
-                        ),
-                    );
-                }
-                item.set(
-                    "transforms",
-                    PackedFloat32Array::from(chunk.transforms(batch).as_flattened()),
-                );
-                updates.push(&item.to_variant());
-            }
-        }
-        result.set("updates", updates);
-        lods.acknowledge();
         result
     }
+
+    /// Draws the frame [`Self::update_building_lods`] left waiting for looks, once every group
+    /// has one. Returns the bytes written, or -1 while a group still has no look.
+    #[func]
+    pub fn publish_building_lods(&mut self) -> i64 {
+        let lods = &mut self.building_lods;
+        let Some(draw) = self.building_draw.as_mut() else {
+            // Nothing draws the batches: the frame is taken as published.
+            lods.acknowledge();
+            return 0;
+        };
+        if !draw.layer.missing(lods.changes()).is_empty() {
+            return -1;
+        }
+        let applied = draw
+            .layer
+            .apply(&mut draw.backend, &lods.removed, lods.changes());
+        lods.acknowledge();
+        applied.bytes as i64
+    }
+
+    /// The drawn building batches (tests and the stream benchmark's digests), one dictionary
+    /// each: `chunk`, `part`, `lod`, `deserted`, `scheme`, `count` and `multimesh` (its RID).
+    /// `O(batches)`.
+    #[func]
+    pub fn get_building_lod_batches(&self) -> VarArray {
+        let mut out = VarArray::new();
+        let Some(draw) = self.building_draw.as_ref() else {
+            return out;
+        };
+        let pool = draw.layer.pool();
+        for (chunk, key, slot) in draw.layer.batches() {
+            let mut item = batch_identity(chunk, key);
+            let slot = pool.slot(slot);
+            item.set("multimesh", Rid::new(slot.multimesh));
+            let count = self.building_lods.chunks.get(&chunk).map_or(0, |resident| {
+                resident
+                    .batches
+                    .batches
+                    .iter()
+                    .find(|batch| batch.key == key)
+                    .map_or(0, |batch| batch.count)
+            });
+            item.set("count", count as i64);
+            out.push(&item.to_variant());
+        }
+        out
+    }
+}
+
+/// The building batches' backend and slots.
+pub(crate) struct BuildingDraw {
+    backend: GodotBackend,
+    layer: BuildingLayer,
+}
+
+impl SimulationNode {
+    // The groups of the waiting frame without a look, four lanes each.
+    fn missing_building_looks(&mut self) -> PackedInt32Array {
+        let Some(draw) = self.building_draw.as_mut() else {
+            return PackedInt32Array::new();
+        };
+        let lods = &self.building_lods;
+        let missing = draw.layer.missing(lods.changes());
+        let mut out = PackedInt32Array::new();
+        for key in missing {
+            for lane in [
+                key.part as i32,
+                key.lod as i32,
+                i32::from(key.deserted),
+                i32::from(key.scheme),
+            ] {
+                out.push(lane);
+            }
+        }
+        out
+    }
+
+    // A new catalogue: every slot and look goes.
+    pub(super) fn reset_building_draw(&mut self) {
+        if let Some(draw) = self.building_draw.as_mut() {
+            draw.layer.reset(&mut draw.backend);
+            draw.backend
+                .set_catalogue(Vec::new(), Vec::new(), reflection_parameters());
+        }
+    }
+}
+
+// The building layer's instance parameters: `REFLECTION_FLAG` first.
+fn reflection_parameters() -> Vec<StringName> {
+    vec![StringName::from("water_reflection_proxy")]
+}
+
+fn mat4(projection: Projection) -> Mat4 {
+    Mat4::from_cols_array_2d(&projection.cols.map(|c| [c.x, c.y, c.z, c.w]))
 }
 
 fn batch_identity(

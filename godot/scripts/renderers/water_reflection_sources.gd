@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## One shared MultiMesh reflection instance per resident building/scaffold batch.
+## One shared MultiMesh reflection instance per construction scaffold batch (the building LOD
+## batches' proxies are drawn by Rust with their batches, `RENDER-32-L`).
 ## Source events own residency; a dense round robin bounds transform/material polling.
 extends RefCounted
 

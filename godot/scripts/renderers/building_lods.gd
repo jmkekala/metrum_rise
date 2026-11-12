@@ -1,20 +1,18 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Resource/upload half of spatial building LOD rendering. Rust owns candidate gathering,
-## projection, hysteresis and grouping; Godot applies complete changed batches before drawing.
+## Resource half of spatial building LOD rendering. Rust owns candidate gathering, projection,
+## hysteresis, grouping and the batches themselves: it draws them through the stream backend's
+## pooled `RenderingServer` objects, in the world and in the water reflection's
+## (`RENDER-32-L`). This script loads the tier meshes, builds each group's mesh and material
+## override when Rust first names the group, and hands them over by RID.
 extends Node3D
-
-## Emitted after a batch's complete upload, so the water reflection re-reads its shared buffer.
-signal reflection_batch_changed(instance: MultiMeshInstance3D)
 
 const BuildingMeshes := preload("res://scripts/renderers/building_meshes.gd")
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SchemeMaterials := preload("res://scripts/renderers/scheme_materials.gd")
-const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const GameSettings := preload("res://scripts/core/game_settings.gd")
 
 var simulation_node: Node
-var batches: Dictionary = {}
 var catalog: Array = []
 var meshes: Array = []
 var resources: RefCounted
@@ -38,6 +36,11 @@ var _scheme_stride := 1
 var _placeholder: Mesh
 var _deserted_material: Material
 var _sun: DirectionalLight3D
+# The look registered per group, Vector4i(part, tier, deserted, scheme) -> [mesh, override]:
+# keeps the resources alive while Rust draws with their RIDs.
+var _looks: Dictionary = {}
+var _reflection_scenario := RID()
+var _fresh := false
 
 func configure(simulation: Node, placeholder: Mesh) -> void:
 	simulation_node = simulation
@@ -49,15 +52,24 @@ func configure(simulation: Node, placeholder: Mesh) -> void:
 	add_to_group("building_lod_renderers")
 	if get_parent() and get_parent().get_parent():
 		_sun = get_parent().get_parent().get_node_or_null("DirectionalLight3D") as DirectionalLight3D
+	simulation_node.set_building_lod_scenario(get_world_3d().scenario)
+	var reflection := get_tree().get_first_node_in_group("water_reflections")
+	if reflection != null:
+		_reflection_scenario = reflection.reflection_scenario()
+	simulation_node.set_building_lod_reflection_scenario(_reflection_scenario)
 	reload_resources()
+
+## The water reflection's world (`water_reflection.gd`); an invalid RID when it goes away.
+func set_reflection_scenario(scenario: RID) -> void:
+	_reflection_scenario = scenario
+	if simulation_node != null:
+		simulation_node.set_building_lod_reflection_scenario(scenario)
 
 func set_quality(value: int) -> void:
 	quality = clampi(value, 0, 2)
 
 func reload_resources() -> void:
-	for instance: MultiMeshInstance3D in batches.values():
-		instance.free()
-	batches.clear()
+	_looks.clear()
 	meshes.clear()
 	_source_parts.clear()
 	_source_materials.clear()
@@ -147,10 +159,15 @@ func update(camera: Camera3D) -> bool:
 	if is_instance_valid(_sun) and _sun.shadow_enabled and _sun.visible:
 		shadow_direction = _sun.global_basis.z
 		shadow_distance = _sun.directional_shadow_max_distance
-	var frame: Dictionary = simulation_node.try_get_building_lod_frame(
-		generation, camera.get_camera_projection() * Projection(camera_transform.affine_inverse()),
-		render_size, camera_transform.origin, -camera_transform.basis.z, quality,
-		shadow_direction, shadow_distance
+	# Motion vectors (TAA, FSR 2) keep a buffer's previous upload: reused slots take fresh storage.
+	var fresh := viewport.use_taa or viewport.scaling_3d_mode == Viewport.SCALING_3D_MODE_FSR2
+	if fresh != _fresh:
+		_fresh = fresh
+		simulation_node.set_building_lod_fresh_buffers(fresh)
+	var projection := camera.get_camera_projection()
+	var frame: Dictionary = simulation_node.update_building_lods(
+		generation, projection * Projection(camera_transform.affine_inverse()), projection,
+		camera_transform, render_size, quality, shadow_direction, shadow_distance
 	)
 	if frame.get("reload", false):
 		reload_resources()
@@ -159,68 +176,40 @@ func update(camera: Camera3D) -> bool:
 		return false
 	evaluated_parts = int(frame.get("evaluated_parts", 0))
 	queried_chunks = int(frame.get("queried_chunks", 0))
-	for change: Dictionary in frame.get("updates", []):
-		_apply_batch(change)
+	var missing: PackedInt32Array = frame.get("missing", PackedInt32Array())
+	if missing.is_empty():
+		uploaded_bytes = int(frame.get("uploaded_bytes", 0))
+		return true
+	# Groups seen for the first time: their looks, then the waiting frame, whole.
+	for at in range(0, missing.size(), 4):
+		_register_look(missing[at], missing[at + 1], missing[at + 2] == 1, missing[at + 3])
+	uploaded_bytes = maxi(0, simulation_node.publish_building_lods())
 	return true
 
-func _apply_batch(change: Dictionary) -> void:
-	var chunk: Vector2i = change.chunk
-	var scheme := int(change.get("scheme", 0))
-	var key := Vector4i(chunk.x, chunk.y, int(change.part),
-		(int(change.lod) * 2 + int(change.deserted)) * _scheme_stride + scheme)
-	var buffer: PackedFloat32Array = change.transforms
-	var count := buffer.size() / 16
-	var instance: MultiMeshInstance3D = batches.get(key)
-	if change.get("retired", false):
-		if instance != null:
-			instance.free()
-			batches.erase(key)
-		return
-	if instance == null:
-		if count == 0:
-			return
-		instance = MultiMeshInstance3D.new()
-		instance.multimesh = MultiMesh.new()
-		instance.multimesh.transform_format = MultiMesh.TRANSFORM_3D
-		instance.multimesh.use_custom_data = true
-		instance.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
-		if change.deserted:
-			# One flat material replaces every surface, so a deserted group never needs a
-			# scheme variant and keeps sharing the source mesh.
-			instance.multimesh.mesh = meshes[int(change.part)][int(change.lod)]
-			instance.material_override = _deserted_material
-		else:
-			var group := _scheme_group(int(change.part), int(change.lod), scheme)
-			instance.multimesh.mesh = group["mesh"]
-			if group["override"] != null:
-				instance.material_override = group["override"]
-		SceneLightingConfig.apply_shadow_policy(instance, SceneLightingConfig.SHADOW_STATIC_CASTER, "buildings")
-		instance.set_meta("reflection_source", true)
-		add_child(instance)
-		batches[key] = instance
-	var multimesh := instance.multimesh
-	# Keep peak power-of-two capacity while this chunk is resident; a tier switch does
-	# not shrink/reallocate buffers. Only visible_instance_count determines what is drawn.
-	if count > multimesh.instance_count:
-		var capacity := maxi(1, multimesh.instance_count)
-		while capacity < count:
-			capacity *= 2
-		multimesh.instance_count = capacity
-	if count > 0:
-		multimesh.custom_aabb = change.bounds
-		buffer.resize(multimesh.instance_count * 16)
-		multimesh.buffer = buffer
-		uploaded_bytes += buffer.size() * 4
-	multimesh.visible_instance_count = count
-	instance.visible = count > 0
-	reflection_batch_changed.emit(instance)
+# The mesh and whole-instance override one group draws with, handed to Rust by RID.
+func _register_look(part: int, lod: int, deserted: bool, scheme: int) -> void:
+	var mesh: Mesh = meshes[part][lod]
+	var override: Material = null
+	if deserted:
+		# One flat material replaces every surface, so a deserted group never needs a
+		# scheme variant and keeps sharing the source mesh.
+		override = _deserted_material
+	else:
+		var group := _scheme_group(part, lod, scheme)
+		mesh = group["mesh"]
+		override = group["override"]
+	_looks[Vector4i(part, lod, int(deserted), scheme)] = [mesh, override]
+	simulation_node.register_building_lod_look(part, lod, deserted, scheme, mesh.get_rid(),
+		override.get_rid() if override != null else RID())
 
-## Decode a batch dictionary key back into its group identity. `_apply_batch` is the only
-## writer of this packing, so diagnostics and regressions cannot drift from it.
-func batch_identity(key: Vector4i) -> Dictionary:
-	var group := key.w / _scheme_stride
-	return {"chunk": Vector2i(key.x, key.y), "part": key.z, "lod": group / 2,
-		"deserted": group % 2 == 1, "scheme": key.w % _scheme_stride}
+## The mesh and override registered for a group (tests), or an empty array.
+func look(part: int, lod: int, deserted: bool, scheme: int) -> Array:
+	return _looks.get(Vector4i(part, lod, int(deserted), scheme), [])
+
+## The drawn batches (`SimulationNode.get_building_lod_batches`): chunk, part, lod, deserted,
+## scheme, count and the `MultiMesh` RID of each.
+func drawn_batches() -> Array:
+	return simulation_node.get_building_lod_batches()
 
 ## Mesh and whole-instance override that draw one catalog part, tier and scheme.
 ## Built once per triple and shared by every chunk that draws it.

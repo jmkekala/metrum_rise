@@ -87,7 +87,7 @@ pub(crate) struct Instance {
 }
 
 /// Stable group identity inside one spatial chunk and catalog generation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct BatchKey {
     /// Catalog-local part ordinal.
     pub part: usize,

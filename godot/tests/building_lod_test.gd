@@ -150,12 +150,10 @@ func refresh() -> void:
 
 func counts() -> Dictionary:
 	var result := {"instances": 0, "tiers": {}, "deserted": 0, "groups": 0, "schemes": {}}
-	for key: Vector4i in renderer.lod_renderer.batches:
-		var node: MultiMeshInstance3D = renderer.lod_renderer.batches[key]
-		var count := node.multimesh.visible_instance_count
+	for identity: Dictionary in renderer.lod_renderer.drawn_batches():
+		var count: int = identity.count
 		result.instances += count
 		if count > 0:
-			var identity: Dictionary = renderer.lod_renderer.batch_identity(key)
 			result.groups += 1
 			result.tiers[identity.lod] = true
 			if identity.deserted:
@@ -201,7 +199,7 @@ func _run() -> void:
 	renderer = Buildings.new()
 	world.add_child(renderer)
 	renderer.set_process(false)
-	modern = simulation.has_method("try_get_building_lod_frame")
+	modern = simulation.has_method("update_building_lods")
 	expect(simulation.load_game(fixture_dir.path_join("complete.sqlite")), "complete save must load")
 	simulation.set_simulation_speed(0.0)
 	pose(Vector3(0, 2200, 1800), Vector3.ZERO)
@@ -308,13 +306,14 @@ func window_schedules() -> Dictionary:
 	if DisplayServer.get_name() == "headless":
 		return result
 	var lods: Node3D = renderer.lod_renderer
-	for key: Vector4i in lods.batches:
-		var identity: Dictionary = lods.batch_identity(key)
-		var mm: MultiMesh = lods.batches[key].multimesh
-		expect(mm.use_custom_data, "window schedules share the transform upload")
-		for index in mm.visible_instance_count:
-			var position := mm.get_instance_transform(index).origin
-			var schedule := mm.get_instance_custom_data(index)
+	for identity: Dictionary in lods.drawn_batches():
+		# Twelve transform floats and the four window parameters (custom data) per instance.
+		var buffer := RenderingServer.multimesh_get_buffer(identity.multimesh)
+		expect(buffer.size() >= int(identity.count) * 16, "window schedules share the transform upload")
+		for index in int(identity.count):
+			var at := index * 16
+			var position := Vector3(buffer[at + 3], buffer[at + 7], buffer[at + 11])
+			var schedule := Color(buffer[at + 12], buffer[at + 13], buffer[at + 14], buffer[at + 15])
 			result[Vector4(identity.part, position.x, 0, position.z)] = schedule
 			if identity.deserted:
 				expect(schedule.a == 0.0, "abandoned instance carries the dark profile")
@@ -374,13 +373,12 @@ func check_schemes(frame: Dictionary) -> void:
 			expect(color.is_equal_approx(expected[scheme]),
 				"tier %d scheme %d must bind its own albedo, got %s" % [lod, scheme, color])
 	# The drawn groups must come from that same cache rather than a second construction.
-	for key: Vector4i in lods.batches:
-		var identity: Dictionary = lods.batch_identity(key)
-		var node: MultiMeshInstance3D = lods.batches[key]
-		if identity.part != SCHEMED_PART or node.multimesh.visible_instance_count == 0:
+	for identity: Dictionary in lods.drawn_batches():
+		if identity.part != SCHEMED_PART or int(identity.count) == 0:
 			continue
 		var group: Dictionary = lods._scheme_group(SCHEMED_PART, identity.lod, identity.scheme)
-		expect(node.multimesh.mesh == group["mesh"] and node.material_override == group["override"],
+		var drawn: Array = lods.look(identity.part, identity.lod, identity.deserted, identity.scheme)
+		expect(drawn == [group["mesh"], group["override"]],
 			"a drawn scheme group must use its cached mesh and override")
 
 func benchmark() -> void:

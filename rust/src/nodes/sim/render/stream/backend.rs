@@ -145,6 +145,23 @@ pub(crate) trait RenderBackend {
     /// Drops what the backend keeps of `texture`'s written layers (a CPU copy where the
     /// renderer cannot read a texture back): the texture holds nothing the caller needs.
     fn texture_forget(&mut self, _texture: Handle) {}
+    // The building batches' instance settings (`RENDER-32-L`): what a `MultiMeshInstance3D`
+    // with the buildings' shadow policy and its water reflection proxy were given. A backend
+    // that serves no such layer keeps the defaults: nothing sent.
+    /// Sets an instance's extra visibility margin, metres (`extra_cull_margin`).
+    fn instance_set_extra_margin(&mut self, _instance: Handle, _margin: f32) {}
+    /// Sets whether an instance takes part in dynamic global illumination (`GI_MODE_DYNAMIC`).
+    fn instance_set_dynamic_gi(&mut self, _instance: Handle, _enabled: bool) {}
+    /// Sets an instance's visibility range with its begin and end margins, without fade.
+    fn instance_set_range_margins(
+        &mut self,
+        _instance: Handle,
+        _range: [f32; 2],
+        _margins: [f32; 2],
+    ) {
+    }
+    /// Sets an instance shader parameter (a catalogue index) to a boolean.
+    fn instance_set_flag_parameter(&mut self, _instance: Handle, _parameter: u32, _value: bool) {}
 }
 
 /// Where a layer's entries start in a shared catalogue ([`GodotBackend::add_catalogue`]): its
@@ -262,7 +279,6 @@ impl Slot {
     }
 
     /// An instance of the slot, if made.
-    #[cfg(test)]
     pub(crate) fn instance(&self, role: Role) -> Option<Handle> {
         self.instances[role as usize]
     }
@@ -743,7 +759,7 @@ mod godot_backend {
     use godot::classes::rendering_device::TextureUsageBits;
     use godot::classes::{DisplayServer, Image, RenderingDevice, RenderingServer};
     use godot::classes::rendering_server::{
-        MultimeshTransformFormat, ShadowCastingSetting, VisibilityRangeFadeMode,
+        InstanceFlags, MultimeshTransformFormat, ShadowCastingSetting, VisibilityRangeFadeMode,
     };
     use godot::obj::{EngineBitfield, Singleton};
     use godot::prelude::{
@@ -867,6 +883,19 @@ mod godot_backend {
             self.materials.extend(materials);
             self.parameters.extend(parameters);
             range
+        }
+
+        /// Appends a mesh to the catalogue and returns its index (a layer registering its
+        /// meshes as it first needs them, `RENDER-32-L`).
+        pub(crate) fn push_mesh(&mut self, mesh: Rid) -> u32 {
+            self.meshes.push(mesh);
+            (self.meshes.len() - 1) as u32
+        }
+
+        /// Appends a material to the catalogue and returns its index.
+        pub(crate) fn push_material(&mut self, material: Rid) -> u32 {
+            self.materials.push(material);
+            (self.materials.len() - 1) as u32
         }
 
         /// Sets or clears the reflection scenario.
@@ -1122,6 +1151,44 @@ mod godot_backend {
             if let Some(copies) = self.mirror.remove(&texture) {
                 self.mirror_bytes -= copies.values().map(|data| data.len() as i64).sum::<i64>();
             }
+        }
+
+        fn instance_set_extra_margin(&mut self, instance: Handle, margin: f32) {
+            self.server
+                .instance_set_extra_visibility_margin(Rid::new(instance), margin);
+        }
+
+        fn instance_set_dynamic_gi(&mut self, instance: Handle, enabled: bool) {
+            self.server.instance_geometry_set_flag(
+                Rid::new(instance),
+                InstanceFlags::USE_DYNAMIC_GI,
+                enabled,
+            );
+        }
+
+        fn instance_set_range_margins(
+            &mut self,
+            instance: Handle,
+            range: [f32; 2],
+            margins: [f32; 2],
+        ) {
+            self.server.instance_geometry_set_visibility_range(
+                Rid::new(instance),
+                range[0],
+                range[1],
+                margins[0],
+                margins[1],
+                VisibilityRangeFadeMode::DISABLED,
+            );
+        }
+
+        fn instance_set_flag_parameter(&mut self, instance: Handle, parameter: u32, value: bool) {
+            let name = &self.parameters[parameter as usize];
+            self.server.instance_geometry_set_shader_parameter(
+                Rid::new(instance),
+                name,
+                &value.to_variant(),
+            );
         }
     }
 
