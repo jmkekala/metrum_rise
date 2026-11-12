@@ -72,7 +72,7 @@ Rust with no node: stills identical, the cells' part of a turn 0.3-0.4 ms a fram
 installs 12-23 % more tiles a frame in the same budget, stills identical (after fixing a grass
 mask left stale by a cell set build), but the graded time a frame is unchanged, because the turns
 keep the install budget full; the renderer test's waits are fixed (`TERRAIN-17`, `TERRAIN-24`).
-`RENDER-32-K` part 3 (built, not yet landed) takes each finished graded tile from the simulation
+`RENDER-32-K` part 3 (landed 2026-11-12) takes each finished graded tile from the simulation
 to the page in Rust, without dictionaries or GDScript per tile: a 30k turn's graded time falls
 from 1.2-1.4 ms a frame to 0.8-0.9 and its install queue keeps up; at 100k the install budget now
 also counts the cell rewrites its installs cause, so the graded time is 1.4-1.5 ms against the
