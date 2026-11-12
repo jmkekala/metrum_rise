@@ -388,6 +388,7 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
         SimCommand::SetCameraAabb {
             bounds: (-1_000.0, 1_000.0, -1_000.0, 1_000.0),
             camera: Some(Vector2::ZERO),
+            eye: None,
         },
         SimCommand::SetCellOverlayVisible(true),
         SimCommand::PrepareCellChunk {

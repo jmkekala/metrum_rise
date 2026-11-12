@@ -2843,6 +2843,104 @@ fn culled_snapshot_matches_full_pose_through_lane_changes() {
 }
 
 #[test]
+fn draw_distances_cut_agents_beyond_their_reach_and_match_the_full_pose() {
+    use crate::config::{AGENT_CULL_PADDING_M, CAR_DRAW_DISTANCE_M, WALKER_DRAW_DISTANCE_M};
+    use crate::simulation::economy::agents::{MODE_CAR, MODE_WALK, TRANSIT_NETWORK};
+
+    // Every bucket of both kinds as bits, ignoring empty recycled buckets.
+    fn instances(snapshot: &RenderSnapshot) -> Vec<(bool, u8, Vec<u32>)> {
+        let mut out: Vec<_> = [
+            (false, &snapshot.pedestrian_transforms),
+            (true, &snapshot.car_transforms),
+        ]
+        .into_iter()
+        .flat_map(|(car, buckets)| {
+            buckets
+                .iter()
+                .filter(|(_, buffer)| !buffer.is_empty())
+                .map(move |(&key, buffer)| (car, key, buffer.iter().map(|v| v.to_bits()).collect()))
+        })
+        .collect();
+        out.sort();
+        out
+    }
+
+    let mut core = lane_change_snapshot_fixture(1.0);
+    let length = core.transit_network.lane_system.lanes[0].length;
+    // Walkers and cars along both lanes (an 8 m climb), and off-lane ones at stored positions.
+    let mut counts = [0_u32; 2];
+    for k in 0..160 {
+        let id = core.agents.spawn_housed_agent(0, k as f32 * 0.5, 12.0);
+        let car = k % 2 == 1;
+        core.agents.transit[id] = TRANSIT_NETWORK;
+        core.agents.transit_mode[id] = if car { MODE_CAR } else { MODE_WALK };
+        core.agents.lane_change_from_lane_id[id] = u32::MAX;
+        if k % 5 == 4 {
+            core.agents.current_lane_id[id] = usize::MAX;
+        } else {
+            core.agents.current_lane_id[id] = (k / 2) % 2;
+            core.agents.lane_distance[id] = length * k as f32 / 160.0;
+        }
+        counts[usize::from(car)] += 1;
+    }
+    let mut culled = RenderSnapshot::default();
+    let mut full = RenderSnapshot::default();
+    // The camera at each kind's reach from the agents' span, behind them (-x), level and above.
+    let mut partial = [0; 2];
+    for (kind, reach) in [
+        WALKER_DRAW_DISTANCE_M + AGENT_CULL_PADDING_M,
+        CAR_DRAW_DISTANCE_M + AGENT_CULL_PADDING_M,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for step in -8..48 {
+            for height in [0.0, 120.0] {
+                let back = (reach * reach - height * height).sqrt();
+                core.agent_draw_eye = Some(Vector3::new(step as f32 * 2.5 - back, height, 0.4));
+                for camera in [(0.0, 0.0, 0.0, 0.0), (-10.0, 60.0, -20.0, 20.0)] {
+                    core.camera_aabb = camera;
+                    core.agent_instances_both_ways(&mut culled, &mut full);
+                    assert_eq!(
+                        instances(&culled),
+                        instances(&full),
+                        "eye {:?} camera {camera:?}",
+                        core.agent_draw_eye
+                    );
+                }
+                // With the last (rectangle) camera; then "show all": drawn and cut add up.
+                core.camera_aabb = (0.0, 0.0, 0.0, 0.0);
+                core.agent_instances_both_ways(&mut culled, &mut full);
+                let drawn = [
+                    culled
+                        .pedestrian_transforms
+                        .values()
+                        .map(Vec::len)
+                        .sum::<usize>()
+                        / 16,
+                    culled.car_render_ids.values().map(Vec::len).sum::<usize>(),
+                ];
+                for k in 0..2 {
+                    assert_eq!(drawn[k] as u32 + culled.agent_draw_cut[k], counts[k]);
+                }
+                if drawn[kind] > 0 && culled.agent_draw_cut[kind] > 0 {
+                    partial[kind] += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        partial.iter().all(|&eyes| eyes > 10),
+        "reach not swept: {partial:?}"
+    );
+    // Without an eye nothing is cut.
+    core.agent_draw_eye = None;
+    core.agent_instances_both_ways(&mut culled, &mut full);
+    assert_eq!(culled.agent_draw_cut, [0, 0]);
+    assert_eq!(instances(&culled), instances(&full));
+}
+
+#[test]
 #[ignore = "unprofiled lane-change snapshot measurement; run alone with --release --ignored --nocapture"]
 fn lane_change_snapshot_benchmark() {
     use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};

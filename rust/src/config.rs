@@ -63,6 +63,22 @@ pub const AGENT_CULL_FAR_M: f32 = 4000.0;
 /// sim thread. Prevents agents from popping in at the exact viewport edge due to AABB latency.
 pub const AGENT_CULL_PADDING_M: f32 = 200.0;
 
+/// Distance (metres) from the camera at which walkers start to fade out (`RENDER-28`, chosen by
+/// the user 2026-11-12). Within it a walker is drawn whole.
+pub const WALKER_FADE_START_M: f32 = 800.0;
+
+/// Walkers' draw distance (metres) from the camera: they are dithered out over the band from
+/// [`WALKER_FADE_START_M`] and draw nothing beyond. The render snapshot stops posing them
+/// [`AGENT_CULL_PADDING_M`] further out, for the camera's movement in the snapshot's latency.
+pub const WALKER_DRAW_DISTANCE_M: f32 = 1000.0;
+
+/// Distance (metres) from the camera at which moving cars start to fade out (`RENDER-28`).
+pub const CAR_FADE_START_M: f32 = 2000.0;
+
+/// Moving cars' draw distance (metres) from the camera, as [`WALKER_DRAW_DISTANCE_M`] for
+/// walkers. Parked cars are drawn by their own renderer and are not cut (`RENDER-32-P`).
+pub const CAR_DRAW_DISTANCE_M: f32 = 2500.0;
+
 // IDM (Intelligent Driver Model) — Car Physics
 
 /// Maximum acceleration in m/s². Governs how quickly cars reach free-flow speed.

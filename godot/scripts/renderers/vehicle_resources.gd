@@ -27,6 +27,9 @@ var _vehicle_glb_cache: Dictionary = {}
 var texture_cache: Dictionary = {}
 var _lamp_materials: Dictionary = {}
 var lamps_enabled := true
+# Moving cars' draw distance fade band from the camera, metres (agents.gd sets it from Rust,
+# `RENDER-28`); zero draws at every distance (parked cars, `RENDER-32-P`).
+var draw_fade_m := Vector2.ZERO
 
 func _load_source_texture(path: String) -> Texture2D:
 	if texture_cache.has(path):
@@ -139,7 +142,7 @@ func _build_vehicle_mesh_from_glb(
 		final_mesh.surface_set_material(final_mesh.get_surface_count() - 1, material)
 
 	if lamps_enabled:
-		VehicleLamps.add_surfaces(final_mesh, model_path, _lamp_materials)
+		VehicleLamps.add_surfaces(final_mesh, model_path, _lamp_materials, draw_fade_m)
 	return final_mesh
 
 func _vehicle_glb_material(model_path: String) -> Material:
@@ -151,7 +154,7 @@ func _vehicle_glb_material(model_path: String) -> Material:
 	mat.cull_mode = BaseMaterial3D.CULL_BACK
 	mat.disable_receive_shadows = true
 	# Through the building shader, so the clouds dim the sun on cars as on the street.
-	return WindowMaterials.create(mat)
+	return WindowMaterials.create(mat, false, WindowMaterials.DEFAULT_BRIGHTNESS, draw_fade_m)
 
 func _collect_glb_node_surfaces(
 	doc: Dictionary,
@@ -461,10 +464,10 @@ func _build_car_mesh(body_color: Color) -> ArrayMesh:
 	mat.roughness = 0.8
 	mat.metallic = 0.0   # metallic without an HDR environment looks glassy/see-through
 	mat.disable_receive_shadows = true
-	mesh.surface_set_material(0, WindowMaterials.create(mat))
+	mesh.surface_set_material(0, WindowMaterials.create(mat, false, WindowMaterials.DEFAULT_BRIGHTNESS, draw_fade_m))
 
 	if lamps_enabled:
-		VehicleLamps.add_surfaces(mesh, "procedural", _lamp_materials)
+		VehicleLamps.add_surfaces(mesh, "procedural", _lamp_materials, draw_fade_m)
 	return mesh
 
 func _add_box(verts: Array, norms: Array, mn: Vector3, mx: Vector3) -> void:

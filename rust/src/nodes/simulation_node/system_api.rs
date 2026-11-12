@@ -79,6 +79,7 @@ impl SimulationNode {
     /// padded by ~200 m to avoid pop-in at the viewport edge. Agents outside the
     /// rect are excluded from the next `RenderSnapshot` transform buffers, reducing
     /// GPU upload cost from O(A_total) to O(A_visible).
+    /// `camera_position` is the eye the agents' draw distances measure from (`RENDER-28`).
     #[func]
     pub fn set_camera_aabb(
         &mut self,
@@ -88,13 +89,13 @@ impl SimulationNode {
         z_max: f32,
         camera_position: Vector3,
     ) {
-        let camera = camera_position
-            .is_finite()
-            .then_some(Vector2::new(camera_position.x, camera_position.z));
+        let eye = camera_position.is_finite().then_some(camera_position);
+        let camera = eye.map(|eye| Vector2::new(eye.x, eye.z));
         self.render_camera_position = camera;
         let _ = self.cmd_tx.send(SimCommand::SetCameraAabb {
             bounds: (x_min, x_max, z_min, z_max),
             camera,
+            eye,
         });
     }
 
@@ -261,11 +262,70 @@ impl SimulationNode {
             .is_ok()
     }
 
-    /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.
+    /// Returns pedestrian_type → MultiMesh buffer (transform and walk phase, 16 floats a walker)
+    /// of the walkers the latest snapshot draws, the node's own dictionary, valid until the next
+    /// call. [`Self::get_changed_walker_buckets`] lists the buckets whose buffer changed since
+    /// the last call, the only ones to upload; a bucket that left is absent (draw none)
+    /// (`RENDER-28`). O(drawn walkers) bitwise compares, a copy of the changed buckets only.
     #[func]
-    pub fn get_agent_transforms(&self) -> VarDictionary {
-        use crate::nodes::sim::bridge::agents::get_agent_transforms;
-        get_agent_transforms(&self.snapshot.read().unwrap())
+    pub fn update_walker_buffers(&mut self) -> VarDictionary {
+        self.walker_visuals
+            .update(&self.snapshot.read().unwrap().pedestrian_transforms);
+        self.changed_walker_buckets.clear();
+        for &key in self.walker_visuals.changed() {
+            let drawn = self.walker_visuals.drawn(key);
+            if drawn.is_empty() {
+                self.walker_buffers.remove(i64::from(key));
+            } else {
+                self.walker_buffers
+                    .set(i64::from(key), PackedFloat32Array::from(drawn));
+            }
+            self.changed_walker_buckets.push(i64::from(key));
+        }
+        self.walker_buffers.clone()
+    }
+
+    /// The buckets whose walker buffer the last `update_walker_buffers` call changed, including
+    /// those that left. O(changed buckets).
+    #[func]
+    pub fn get_changed_walker_buckets(&self) -> PackedInt64Array {
+        self.changed_walker_buckets.clone()
+    }
+
+    /// The walkers' and moving cars' draw distances (`RENDER-28`), metres from the camera: walker
+    /// fade start, walker draw distance, car fade start, car draw distance. The agents' shaders
+    /// fade over each band; the snapshot stops posing past its end.
+    #[func]
+    pub fn get_agent_draw_distances() -> PackedFloat32Array {
+        use crate::config::{
+            CAR_DRAW_DISTANCE_M, CAR_FADE_START_M, WALKER_DRAW_DISTANCE_M, WALKER_FADE_START_M,
+        };
+        PackedFloat32Array::from(
+            [
+                WALKER_FADE_START_M,
+                WALKER_DRAW_DISTANCE_M,
+                CAR_FADE_START_M,
+                CAR_DRAW_DISTANCE_M,
+            ]
+            .as_slice(),
+        )
+    }
+
+    /// The latest snapshot's agent parts for the perf channel (`RENDER-28`): walkers and cars
+    /// inside the camera's rectangle that their draw distances cut, and the microseconds the
+    /// snapshot spent on agent instances. O(1).
+    #[func]
+    pub fn get_agent_snapshot_parts(&self) -> PackedInt64Array {
+        let snapshot = self.snapshot.read().unwrap();
+        let cut = snapshot.agent_draw_cut;
+        PackedInt64Array::from(
+            [
+                i64::from(cut[0]),
+                i64::from(cut[1]),
+                i64::from(snapshot.agent_instances_us),
+            ]
+            .as_slice(),
+        )
     }
 
     /// Returns coherent per-model car transforms, render IDs and off-lane support flags.

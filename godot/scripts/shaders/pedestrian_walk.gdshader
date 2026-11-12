@@ -9,13 +9,17 @@ uniform float     num_frames  = 30.0;
 uniform vec3      albedo_tint = vec3(1.0, 1.0, 1.0);
 uniform int       debug_mode  = 0;
 uniform bool      reverse_phase = false;
+// The walkers' draw distance fade band from the camera, metres (agents.gd sets it from Rust).
+uniform vec2      draw_fade_m = vec2(1.0e9, 2.0e9);
 
 varying float vat_id_debug;
 varying float vat_offset_debug;
+varying flat float draw_fade;
 uniform float specular = 0.5;
 
 // Godot's lighting with the cloud shadow on the sun; reads `specular`.
 #include "res://scripts/shaders/standard_light.gdshaderinc"
+#include "res://scripts/shaders/agent_draw_fade.gdshaderinc"
 
 void vertex() {
 	// walk_phase [0..1] passed from Rust via INSTANCE_CUSTOM.x
@@ -34,11 +38,19 @@ void vertex() {
 	if (debug_mode != 1 && debug_mode != 2) {
 		VERTEX += offset;
 	}
+	draw_fade = agent_draw_fade(MODEL_MATRIX, MAIN_CAM_INV_VIEW_MATRIX, draw_fade_m);
+	// Faded out: every triangle collapses to the origin and rasterizes nothing.
+	if (draw_fade <= 0.0) {
+		VERTEX = vec3(0.0);
+	}
 }
 
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
 
 void fragment() {
+	if (agent_draw_dropped(draw_fade, FRAGCOORD.xy)) {
+		discard;
+	}
 	if (debug_mode == 2) {
 		ALBEDO = vec3(vat_id_debug, fract(vat_id_debug * 32.0), 1.0 - vat_id_debug);
 	} else if (debug_mode == 3) {

@@ -103,7 +103,8 @@
 //! | | `get_zoning_overlay_occupancy_revision` | `zoning_overlay.gd` |
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
 //! | | `try_get_zoning_parcels_overlay_packed` | `zoning_overlay.gd` |
-//! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
+//! | **Agents** | `update_walker_buffers` | `agents.gd` (`get_changed_walker_buckets`: the walker buckets to upload) |
+//! | | `get_agent_draw_distances` | `agents.gd` (the fade bands of the agents' shaders) |
 //! | | `get_car_render_data` | `agents.gd` |
 //! | | `smooth_car_render_data` | `agents.gd` |
 //! | | `ground_car_transforms` | `vehicle_ground_support_test.gd` |
@@ -235,6 +236,11 @@ pub struct SimulationNode {
     /// buckets its last call changed (`RENDER-28`); presentation state like `car_visuals`.
     car_buffers: VarDictionary,
     changed_car_buckets: PackedInt64Array,
+    /// The drawn walker buffers (`RENDER-28`): Rust's copy, the bucket dictionary
+    /// `update_walker_buffers` returns and the buckets its last call changed.
+    walker_visuals: crate::nodes::sim::render::walker_visual::DrawnWalkers,
+    walker_buffers: VarDictionary,
+    changed_walker_buckets: PackedInt64Array,
     /// Last camera origin reported with agent culling, shared by interpolated vehicle grounding.
     pub(crate) render_camera_position: Option<Vector2>,
     /// Stuck-at-junction detector; exists only while the `junction_connectors` view is on.
@@ -496,6 +502,9 @@ impl INode3D for SimulationNode {
             car_visuals: Default::default(),
             car_buffers: VarDictionary::new(),
             changed_car_buckets: PackedInt64Array::new(),
+            walker_visuals: Default::default(),
+            walker_buffers: VarDictionary::new(),
+            changed_walker_buckets: PackedInt64Array::new(),
             render_camera_position: None,
             junction_stalls: None,
             terrain_patch_payload_jobs,

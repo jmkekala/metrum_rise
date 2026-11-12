@@ -319,6 +319,11 @@ pub struct RenderSnapshot {
     pub car_render_ids: HashMap<u8, Vec<i64>>,
     /// Off-lane support flags, aligned with each car transform/identity bucket.
     pub car_ground_flags: HashMap<u8, Vec<u8>>,
+    /// Walkers and cars inside the camera's rectangle that their draw distance cut (`RENDER-28`).
+    pub(crate) agent_draw_cut: [u32; 2],
+    /// Microseconds this snapshot spent on its agent instances: cull, pose, buckets and the
+    /// off-lane cars' ground solve (`RENDER-28`, the perf channel).
+    pub(crate) agent_instances_us: u32,
     /// Mirrors `SimCore::terrain_dirty` at snapshot time.
     pub terrain_dirty: bool,
     /// Sorted dirty terrain patch keys paired with their authoritative payload revisions.
@@ -429,6 +434,8 @@ impl Default for RenderSnapshot {
             car_transforms: HashMap::new(),
             car_render_ids: HashMap::new(),
             car_ground_flags: HashMap::new(),
+            agent_draw_cut: [0; 2],
+            agent_instances_us: 0,
             terrain_dirty: true,
             terrain_dirty_patch_states: Arc::new(Vec::new()),
             terrain_payload_global_generation: 0,
@@ -556,7 +563,10 @@ impl SimCore {
 
         // Cull, pose and bucket the agents in parallel; instance order stays agent order, the
         // interpolation identity contract (`SIM-02-K`).
+        let agents_started = std::time::Instant::now();
         self.build_agent_instances(&mut snapshot);
+        snapshot.agent_instances_us =
+            u32::try_from(agents_started.elapsed().as_micros()).unwrap_or(u32::MAX);
         self.publish_parked_chunks(&mut snapshot.parked);
         snapshot.vehicle_world_epoch = self.world_epoch;
         snapshot.vehicle_ground_key = [

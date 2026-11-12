@@ -40,6 +40,13 @@ varying vec3 window_radiance;
 // Set only on the water reflection's instances (water_reflection_sources.gd), so the main view
 // and previews share the material unchanged.
 instance uniform bool water_reflection_proxy = false;
+#ifdef AGENT_DRAW_FADE
+// Moving cars only (window_materials.gd `create`'s `draw_fade_m`): their draw distance fade band
+// from the camera, metres.
+#include "res://scripts/shaders/agent_draw_fade.gdshaderinc"
+uniform vec2 draw_fade_m = vec2(1.0e9, 2.0e9);
+varying flat float draw_fade;
+#endif
 
 void vertex() {
 	// A reflection instance lifts whatever lies below its mirror's water plane onto the plane,
@@ -53,6 +60,13 @@ void vertex() {
 			VERTEX = (inverse(MODEL_MATRIX) * vec4(world, 1.0)).xyz;
 		}
 	}
+#ifdef AGENT_DRAW_FADE
+	draw_fade = agent_draw_fade(MODEL_MATRIX, MAIN_CAM_INV_VIEW_MATRIX, draw_fade_m);
+	// Faded out: every triangle collapses to the origin and rasterizes nothing.
+	if (draw_fade <= 0.0) {
+		VERTEX = vec3(0.0);
+	}
+#endif
 	UV = UV * uv1_scale.xy + uv1_offset.xy;
 	UV2 = UV2 * uv2_scale.xy + uv2_offset.xy;
 #ifdef WINDOW_EMISSION
@@ -71,6 +85,11 @@ void vertex() {
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
 
 void fragment() {
+#ifdef AGENT_DRAW_FADE
+	if (agent_draw_dropped(draw_fade, FRAGCOORD.xy)) {
+		discard;
+	}
+#endif
 	vec4 base = albedo * texture(texture_albedo, UV);
 #ifdef WINDOW_VERTEX_COLOR
 	base *= COLOR;

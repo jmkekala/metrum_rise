@@ -20,6 +20,14 @@
 //! walker that has just left its door is stored at the curb while its lane distance is already
 //! on the sidewalk. Daily happiness reads the stored position, so the snapshot leaves it alone.
 //!
+//! The agents' draw distances (`RENDER-28`) cut the same way: an agent whose bounds lie beyond
+//! its kind's reach from the camera eye in the ground plane, its draw distance plus
+//! `AGENT_CULL_PADDING_M`, is not posed; a posed agent is cut by the distance of its drawn origin,
+//! in space, or in the ground plane for an off-lane car, which is grounded later. The ground-plane
+//! distance to a box never exceeds that to a point inside it, nor that in space, so the early test
+//! is conservative. Shaders fade the agents out over the band before the draw distance; the
+//! padding keeps an agent the camera has neared since the snapshot inside its fade, not popping in.
+//!
 //! Survivors are posed by the code that posed every agent before and tested against the camera
 //! exactly, so the instances are those of a full pose. Agents are posed in fixed contiguous
 //! index chunks on the shared pool, and each bucket appends its instances in chunk order, which
@@ -35,6 +43,7 @@ use super::{
     AGENT_SURFACE_CLEARANCE_M, RenderSnapshot, access_phase_direction, default_model_basis,
     model_basis, pedestrian_lane_surface_height, transform_floats,
 };
+use crate::config::{AGENT_CULL_PADDING_M, CAR_DRAW_DISTANCE_M, WALKER_DRAW_DISTANCE_M};
 use crate::nodes::sim::core::state::SimCore;
 use crate::nodes::sim::render::lane_pose::{sample_lane_change_pose, sample_lane_pose};
 use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK, transit_is_visible};
@@ -60,10 +69,19 @@ struct PosedAgent {
     walk_phase: f32,
 }
 
+// Why an agent has no instance in this snapshot.
+enum Cut {
+    Hidden,
+    Outside,
+    Far,
+}
+
 /// Per-chunk instance buffers kept across snapshots, so steady-state posing allocates nothing.
 #[derive(Default)]
 pub(crate) struct AgentPoseScratch {
     chunks: Vec<Vec<PosedAgent>>,
+    // Per chunk, the walkers and cars its draw distances cut.
+    far: Vec<[u32; 2]>,
 }
 
 #[derive(Clone, Copy)]
@@ -90,6 +108,80 @@ impl Camera {
     }
 }
 
+// The agents' draw distances from the camera eye (module docs).
+#[derive(Clone, Copy)]
+struct DrawEye(Vector3);
+
+impl DrawEye {
+    // The squared reach of an agent kind: its draw distance plus the latency padding.
+    fn reach_sq(car: bool) -> f32 {
+        let reach = AGENT_CULL_PADDING_M
+            + if car {
+                CAR_DRAW_DISTANCE_M
+            } else {
+                WALKER_DRAW_DISTANCE_M
+            };
+        reach * reach
+    }
+
+    // True when the drawn origin (x, y, z) lies beyond the kind's reach; `y` is `None` for an
+    // off-lane car, measured in the ground plane. The ground terms are summed first, so the sum
+    // is never below the ground-plane distance `misses_box` rounds.
+    fn excludes(self, x: f32, y: Option<f32>, z: f32, car: bool) -> bool {
+        let (dx, dz) = (x - self.0.x, z - self.0.z);
+        let dy = y.map_or(0.0, |y| y - self.0.y);
+        dx * dx + dz * dz + dy * dy > Self::reach_sq(car)
+    }
+
+    // True only when no point of the widened box lies within the kind's reach in the ground
+    // plane, so none lies within it in space either.
+    fn misses_box(self, bounds: LanePlanarBox, car: bool) -> bool {
+        let [min_x, min_z, max_x, max_z] = bounds;
+        let dx = ((min_x - CULL_ROUNDING_MARGIN_M) - self.0.x)
+            .max(self.0.x - (max_x + CULL_ROUNDING_MARGIN_M))
+            .max(0.0);
+        let dz = ((min_z - CULL_ROUNDING_MARGIN_M) - self.0.z)
+            .max(self.0.z - (max_z + CULL_ROUNDING_MARGIN_M))
+            .max(0.0);
+        dx * dx + dz * dz > Self::reach_sq(car)
+    }
+}
+
+// What the snapshot cuts agents to: the camera's ground rectangle and the draw distances.
+#[derive(Clone, Copy)]
+struct AgentView {
+    rect: Option<Camera>,
+    eye: Option<DrawEye>,
+}
+
+impl AgentView {
+    fn cuts_anything(self) -> bool {
+        self.rect.is_some() || self.eye.is_some()
+    }
+
+    // The cut of an agent whose pose lies in the widened `bounds`, if certain.
+    fn cut_box(self, bounds: LanePlanarBox, car: bool) -> Option<Cut> {
+        if self.rect.is_some_and(|rect| rect.misses_box(bounds)) {
+            Some(Cut::Outside)
+        } else if self.eye.is_some_and(|eye| eye.misses_box(bounds, car)) {
+            Some(Cut::Far)
+        } else {
+            None
+        }
+    }
+
+    // The cut of an agent drawn at (x, y, z), `y` as in `DrawEye::excludes`.
+    fn cut_point(self, x: f32, y: Option<f32>, z: f32, car: bool) -> Option<Cut> {
+        if self.rect.is_some_and(|rect| rect.excludes(x, z)) {
+            Some(Cut::Outside)
+        } else if self.eye.is_some_and(|eye| eye.excludes(x, y, z, car)) {
+            Some(Cut::Far)
+        } else {
+            None
+        }
+    }
+}
+
 fn union(a: LanePlanarBox, b: LanePlanarBox) -> LanePlanarBox {
     [
         a[0].min(b[0]),
@@ -100,85 +192,103 @@ fn union(a: LanePlanarBox, b: LanePlanarBox) -> LanePlanarBox {
 }
 
 impl SimCore {
-    // `None` while the camera box is the default "show all".
-    fn snapshot_camera(&self) -> Option<Camera> {
+    // The rectangle is `None` while the camera box is the default "show all", the eye until a
+    // renderer reports one.
+    fn agent_view(&self) -> AgentView {
         let (x_min, x_max, z_min, z_max) = self.camera_aabb;
-        (x_min < x_max).then_some(Camera {
-            x_min,
-            x_max,
-            z_min,
-            z_max,
-        })
+        AgentView {
+            rect: (x_min < x_max).then_some(Camera {
+                x_min,
+                x_max,
+                z_min,
+                z_max,
+            }),
+            eye: self.agent_draw_eye.map(DrawEye),
+        }
     }
 
     /// Fills the cleared agent buckets of `snapshot` and grounds its off-lane cars.
     ///
-    /// O(agents) cheap cull tests and O(in-camera agents) poses, both on the shared pool, plus
-    /// O(lane points) when the lane revision changed.
+    /// O(agents) cheap cull tests and O(in-camera agents within their draw distance) poses, both
+    /// on the shared pool, plus O(lane points) when the lane revision changed.
     pub(super) fn build_agent_instances(&mut self, snapshot: &mut RenderSnapshot) {
-        let camera = self.snapshot_camera();
-        if camera.is_some() {
+        let view = self.agent_view();
+        if view.cuts_anything() {
             self.transit_network.lane_system.refresh_planar_bounds();
         }
         let mut scratch = std::mem::take(&mut self.snapshot_agent_scratch);
         let core = &*self;
         let agent_count = core.agents.len();
-        scratch
-            .chunks
-            .resize_with(agent_count.div_ceil(POSE_CHUNK_AGENTS), Vec::new);
+        let chunks = agent_count.div_ceil(POSE_CHUNK_AGENTS);
+        scratch.chunks.resize_with(chunks, Vec::new);
+        scratch.far.resize(chunks, [0; 2]);
         scratch
             .chunks
             .par_iter_mut()
+            .zip(scratch.far.par_iter_mut())
             .enumerate()
-            .for_each(|(chunk, posed)| {
+            .for_each(|(chunk, (posed, far))| {
                 posed.clear();
+                *far = [0; 2];
                 let start = chunk * POSE_CHUNK_AGENTS;
-                let end = (start + POSE_CHUNK_AGENTS).min(agent_count);
-                posed.extend((start..end).filter_map(|i| core.cull_and_pose_agent(i, camera)));
+                for i in start..(start + POSE_CHUNK_AGENTS).min(agent_count) {
+                    match core.cull_and_pose_agent(i, view) {
+                        Ok(agent) => posed.push(agent),
+                        Err(Cut::Far) => {
+                            far[usize::from(core.agents.transit_mode[i] == MODE_CAR)] += 1
+                        }
+                        Err(Cut::Hidden | Cut::Outside) => {}
+                    }
+                }
             });
+        snapshot.agent_draw_cut = scratch
+            .far
+            .iter()
+            .fold([0; 2], |sum, far| [sum[0] + far[0], sum[1] + far[1]]);
         bucket_posed_agents(&scratch.chunks, snapshot);
         self.snapshot_agent_scratch = scratch;
         self.ground_off_lane_cars(snapshot);
     }
 
-    fn cull_and_pose_agent(&self, i: usize, camera: Option<Camera>) -> Option<PosedAgent> {
+    fn cull_and_pose_agent(&self, i: usize, view: AgentView) -> Result<PosedAgent, Cut> {
         if !transit_is_visible(self.agents.transit[i]) {
-            return None;
+            return Err(Cut::Hidden);
         }
-        if let Some(camera) = camera
-            && !self.pose_may_be_inside(i, camera)
+        if view.cuts_anything()
+            && let Some(cut) = self.cut_before_posing(i, view)
         {
-            return None;
+            return Err(cut);
         }
-        self.pose_agent(i, camera)
+        self.pose_agent(i, view)
     }
 
-    // False only when agent `i`'s pose cannot pass the camera test (module docs). O(1).
-    fn pose_may_be_inside(&self, i: usize, camera: Camera) -> bool {
+    // The cut agent `i`'s pose cannot escape, if any (module docs). O(1).
+    fn cut_before_posing(&self, i: usize, view: AgentView) -> Option<Cut> {
+        let car = self.agents.transit_mode[i] == MODE_CAR;
         let boxes = self.transit_network.lane_system.planar_bounds();
         let Some(&lane_box) = boxes.get(self.agents.current_lane_id[i]) else {
-            return !camera.excludes(self.agents.pos_x[i], self.agents.pos_y[i]);
+            // Posed at the stored position; a walker's height comes later, never nearer.
+            return view.cut_point(self.agents.pos_x[i], None, self.agents.pos_y[i], car);
         };
         if !self.agents.lane_distance[i].is_finite() {
-            return true;
+            return None;
         }
         let mut bounds = lane_box;
         // A superset of the lane-change blend's condition in `pose_agent`.
-        if self.agents.transit_mode[i] == MODE_CAR
+        if car
             && self.agents.transit[i] == TRANSIT_NETWORK
             && let Some(&source_box) = boxes.get(self.agents.lane_change_from_lane_id[i] as usize)
         {
             if !self.agents.lane_change_start_d[i].is_finite() {
-                return true;
+                return None;
             }
             bounds = union(bounds, source_box);
         }
-        !camera.misses_box(bounds)
+        view.cut_box(bounds, car)
     }
 
-    // Agent `i`'s instance, or `None` when the camera excludes it. The pose of the full-pose
-    // loop, unchanged.
-    fn pose_agent(&self, i: usize, camera: Option<Camera>) -> Option<PosedAgent> {
+    // Agent `i`'s instance, or why the view cuts it. The pose of the full-pose loop, unchanged.
+    fn pose_agent(&self, i: usize, view: AgentView) -> Result<PosedAgent, Cut> {
         let mut world_x = self.agents.pos_x[i];
         let mut world_z = self.agents.pos_y[i];
         let mut lane_pose = None;
@@ -215,8 +325,11 @@ impl SimCore {
             }
         }
 
-        if camera.is_some_and(|camera| camera.excludes(world_x, world_z)) {
-            return None;
+        if view
+            .rect
+            .is_some_and(|rect| rect.excludes(world_x, world_z))
+        {
+            return Err(Cut::Outside);
         }
         // Lane geometry owns network height. Both off-lane modes use the same current
         // road/pad/CDT ownership query in ingress and egress, including cut-away terrain.
@@ -224,13 +337,19 @@ impl SimCore {
             let world_y = pedestrian_lane_surface_y.unwrap_or_else(|| {
                 self.get_world_surface_height_internal(Vector2::new(world_x, world_z))
             }) + AGENT_SURFACE_CLEARANCE_M;
+            if view
+                .eye
+                .is_some_and(|eye| eye.excludes(world_x, Some(world_y), world_z, false))
+            {
+                return Err(Cut::Far);
+            }
             let forward = lane_pose
                 .map(|(_, tangent)| tangent)
                 .or_else(|| access_phase_direction(self, i, world_x, world_z));
             // GLTF export converts Blender -Y (character facing) to +Z, so the
             // model faces +Z in Godot. basis_z = fwd aligns +Z with travel dir.
             let basis = forward.map(model_basis).unwrap_or_else(default_model_basis);
-            Some(PosedAgent {
+            Ok(PosedAgent {
                 key: self.agents.pedestrian_type[i],
                 car: false,
                 ground_flag: 0,
@@ -251,7 +370,15 @@ impl SimCore {
                     .unwrap_or(Vector3::BACK);
                 (0.0, model_basis(heading))
             };
-            Some(PosedAgent {
+            // An off-lane car is grounded later: its ground-plane distance.
+            let drawn_y = lane_pose.is_some().then_some(world_y);
+            if view
+                .eye
+                .is_some_and(|eye| eye.excludes(world_x, drawn_y, world_z, true))
+            {
+                return Err(Cut::Far);
+            }
+            Ok(PosedAgent {
                 key: (v_type * 10) + variant_id,
                 car: true,
                 ground_flag: u8::from(lane_pose.is_none()),
@@ -394,6 +521,7 @@ impl SimCore {
 
         let (aabb_x_min, aabb_x_max, aabb_z_min, aabb_z_max) = self.camera_aabb;
         let cull = aabb_x_min < aabb_x_max; // false when default "show all"
+        let eye = self.agent_draw_eye.map(DrawEye);
 
         for i in 0..self.agents.len() {
             if !transit_is_visible(self.agents.transit[i]) {
@@ -450,6 +578,9 @@ impl SimCore {
                 let world_y = pedestrian_lane_surface_y.unwrap_or_else(|| {
                     self.get_world_surface_height_internal(Vector2::new(world_x, world_z))
                 }) + AGENT_SURFACE_CLEARANCE_M;
+                if eye.is_some_and(|eye| eye.excludes(world_x, Some(world_y), world_z, false)) {
+                    continue;
+                }
                 let forward = lane_pose
                     .map(|(_, tangent)| tangent)
                     .or_else(|| access_phase_direction(self, i, world_x, world_z));
@@ -461,6 +592,10 @@ impl SimCore {
                 buffer.push(0.0);
                 buffer.push(0.0);
             } else {
+                let lane_y = lane_pose.map(|(pos, _)| pos.y + AGENT_SURFACE_CLEARANCE_M);
+                if eye.is_some_and(|eye| eye.excludes(world_x, lane_y, world_z, true)) {
+                    continue;
+                }
                 let render_id = self.agents.render_id[i];
                 let (v_type, variant_id, _) = self.parking.vehicle_visual(self.agents.parking_trip[i].vehicle)
                     .unwrap_or((self.agents.vehicle_type[i], (render_id % 5) as u8, render_id));

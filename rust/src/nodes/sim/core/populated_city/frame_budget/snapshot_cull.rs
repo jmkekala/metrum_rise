@@ -155,10 +155,14 @@ fn assert_same(context: &str, culled: &RenderSnapshot, full: &RenderSnapshot) ->
 struct Run {
     comparisons: usize,
     instances: usize,
+    // Walkers and cars the draw distances cut inside compared boxes (`RENDER-28`).
+    draw_cut: [usize; 2],
     // Frames in which some agent of the kind stood inside a compared box.
     framed: HashMap<Kind, usize>,
     culled: Vec<Duration>,
     full: Vec<Duration>,
+    // The culled path's time per `METRUM_K2_EYES` eye (`RENDER-28`'s draw distances).
+    culled_eyes: Vec<Vec<Duration>>,
     // Off-lane cars grounded, and the 16 m bins they occupy, summed over frames: how many poses
     // one shared graded-surface gather could serve (`TERRAIN-07-F` round 3).
     off_lane_cars: usize,
@@ -196,11 +200,18 @@ fn compare_frames(core: &mut SimCore, frames: usize, speed: f32, run: &mut Run) 
         let (boxes, by_kind) = cameras(core, frame);
         for (index, &camera) in boxes.iter().enumerate() {
             core.camera_aabb = camera;
-            core.render_camera_position = Some(Vector2::new(
-                (camera.0 + camera.1) * 0.5,
-                (camera.2 + camera.3) * 0.5,
-            ));
+            let centre = Vector2::new((camera.0 + camera.1) * 0.5, (camera.2 + camera.3) * 0.5);
+            core.render_camera_position = Some(centre);
+            // Every other frame the draw distances measure from an eye off the box's low corner
+            // (`RENDER-28`), alternately near enough that the walkers' reach and the cars' reach
+            // run through the city.
+            let back = if frame % 4 == 0 { 300.0 } else { 1_600.0 };
+            core.agent_draw_eye =
+                (frame % 2 == 0).then_some(Vector3::new(camera.0 - back, 60.0, camera.2 - back));
             core.agent_instances_both_ways(&mut culled, &mut full);
+            for (total, cut) in run.draw_cut.iter_mut().zip(culled.agent_draw_cut) {
+                *total += cut as usize;
+            }
             let context = format!(
                 "speed {speed} frame {frame} camera {index} {camera:?} day {} minute {}",
                 core.time.day_index, core.time.minute_of_day
@@ -213,6 +224,7 @@ fn compare_frames(core: &mut SimCore, frames: usize, speed: f32, run: &mut Run) 
     // The default "show all" camera poses every visible agent.
     core.camera_aabb = (0.0, 0.0, 0.0, 0.0);
     core.render_camera_position = None;
+    core.agent_draw_eye = None;
     core.agent_instances_both_ways(&mut culled, &mut full);
     run.instances += assert_same("show all", &culled, &full);
     run.comparisons += 1;
@@ -304,10 +316,15 @@ fn culled_snapshot_matches_full_pose_on_a_populated_city() {
     compare_frames(core, 300, 32.0, &mut run);
     let (points, on_site) = assert_surface_queries_match(core, 1);
     eprintln!(
-        "K2_SNAPSHOT_EQUIVALENCE comparisons={} instances={} framed={:?} surface_points={points} on_site={on_site}",
-        run.comparisons, run.instances, run.framed
+        "K2_SNAPSHOT_EQUIVALENCE comparisons={} instances={} draw_cut={:?} framed={:?} surface_points={points} on_site={on_site}",
+        run.comparisons, run.instances, run.draw_cut, run.framed
     );
     assert!(on_site > 0, "no compared point lay on a building site");
+    assert!(
+        run.draw_cut[0] > 0 && run.draw_cut[1] > 0,
+        "a draw distance cut no agent: {:?}",
+        run.draw_cut
+    );
     // No car of this fixture changes lanes in these frames; the core tests cover lane changes.
     for kind in [
         Kind::Junction,
@@ -381,7 +398,8 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
         serde_json::json!({
             "residents": residents(), "speed": speed, "frames": frames,
             "comparisons": run.comparisons + timed.comparisons,
-            "instances": run.instances, "framed": format!("{:?}", run.framed),
+            "instances": run.instances, "draw_cut": run.draw_cut,
+            "framed": format!("{:?}", run.framed),
             "surface_points": points, "surface_points_on_site": on_site,
             "perf07_camera_instances_per_frame":
                 timed.instances as f64 / timed.comparisons.max(1) as f64,
@@ -392,6 +410,7 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
             "far_min_clearance_m": timed.far_min_clearance_m,
             "vehicle_ground_full_detail_m": core.vehicle_ground_full_detail_m,
             "culled_mean_ms": mean_ms(&timed.culled),
+            "culled_eyes_mean_ms": timed.culled_eyes.iter().map(|times| mean_ms(times)).collect::<Vec<_>>(),
             "culled_p99_ms": percentile_ms(&mut timed.culled, 0.99),
             "full_pose_mean_ms": mean_ms(&timed.full),
             "full_pose_p99_ms": percentile_ms(&mut timed.full, 0.99),
@@ -408,9 +427,38 @@ fn compare_frames_timed(core: &mut SimCore, frames: usize, speed: f32, run: &mut
     let camera = core.camera_aabb;
     let mut culled = RenderSnapshot::default();
     let mut full = RenderSnapshot::default();
+    // Eyes the draw distances measure from, timed beside the eyeless path in a rotating order
+    // (`RENDER-28`): by default play height over the box's centre and the stream benchmark's
+    // base pose (an 800 m orbit at -0.1 rad).
+    let eyes: Vec<Vector3> = std::env::var("METRUM_K2_EYES")
+        .unwrap_or_else(|_| "0,300,0;0,80,-800".into())
+        .split(';')
+        .map(|eye| {
+            let v: Vec<f32> = eye
+                .split(',')
+                .map(|value| value.parse().expect("METRUM_K2_EYES: x,y,z;..."))
+                .collect();
+            Vector3::new(v[0], v[1], v[2])
+        })
+        .collect();
+    run.culled_eyes = vec![Vec::new(); eyes.len()];
     for frame in 0..frames {
         core.step_frame(FRAME_DT_S);
         core.camera_aabb = camera;
+        for variant in (0..=eyes.len()).map(|k| (k + frame) % (eyes.len() + 1)) {
+            if variant == 0 {
+                continue;
+            }
+            core.agent_draw_eye = Some(eyes[variant - 1]);
+            let (time, _) = core.agent_instances_both_ways(&mut culled, &mut full);
+            run.culled_eyes[variant - 1].push(time);
+            assert_same(
+                &format!("timed frame {frame} eye {variant}"),
+                &culled,
+                &full,
+            );
+        }
+        core.agent_draw_eye = None;
         let (culled_time, full_time) = core.agent_instances_both_ways(&mut culled, &mut full);
         run.culled.push(culled_time);
         run.full.push(full_time);

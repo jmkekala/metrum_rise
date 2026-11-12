@@ -34,6 +34,8 @@ pub(crate) enum SimCommand {
         bounds: (f32, f32, f32, f32),
         /// Camera XZ, absent only before a renderer has a valid camera.
         camera: Option<godot::prelude::Vector2>,
+        /// Camera eye the agents' draw distances measure from, absent as `camera` is.
+        eye: Option<godot::prelude::Vector3>,
     },
     /// Show or hide the zoning cell overlay; shown overlays regenerate edited chunks eagerly.
     SetCellOverlayVisible(bool),
@@ -164,10 +166,14 @@ pub(crate) fn run_sim_thread(
                     set_speed_commands += 1;
                     pending_speed = Some(s);
                 }
-                Ok(SimCommand::SetCameraAabb { bounds, camera }) => {
+                Ok(SimCommand::SetCameraAabb {
+                    bounds,
+                    camera,
+                    eye,
+                }) => {
                     commands_processed += 1;
                     camera_aabb_commands += 1;
-                    pending_camera_aabb = Some((bounds, camera));
+                    pending_camera_aabb = Some((bounds, camera, eye));
                 }
                 Ok(SimCommand::SetCellOverlayVisible(visible)) => {
                     commands_processed += 1;
@@ -409,9 +415,10 @@ pub(crate) fn run_sim_thread(
                 core.time.speed_multiplier = speed;
                 record_crash_command_for_core(&core, CrashCommand::SetSpeed { speed });
             }
-            if let Some((camera_aabb, camera)) = pending_camera_aabb.take() {
+            if let Some((camera_aabb, camera, eye)) = pending_camera_aabb.take() {
                 core.camera_aabb = camera_aabb;
                 core.render_camera_position = camera;
+                core.agent_draw_eye = eye;
                 record_crash_command_for_core(
                     &core,
                     CrashCommand::SetCameraAabb {

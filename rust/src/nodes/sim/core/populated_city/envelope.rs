@@ -897,6 +897,63 @@ fn sim02_determinism() {
     );
 }
 
+/// `RENDER-28`: the agents' draw distances are render only. The same city runs twice with a
+/// render snapshot built after every frame, as the game builds them: once measured from an eye
+/// over one corner, whose draw distances cut most walkers and some cars, once with no eye. Every
+/// hour's fingerprint and the saved tables are equal.
+#[test]
+#[ignore = "RENDER-28: the draw distances leave the simulation unchanged; release only"]
+fn render28_draw_distances_leave_the_simulation_unchanged() {
+    use super::super::snapshot::RenderSnapshot;
+    release_only();
+    let residents = env_u32("METRUM_SIM02_RESIDENTS", 2_000);
+    let hours = u64::from(env_u32("METRUM_RENDER28_HOURS", 4));
+    let run = |eye: Option<godot::prelude::Vector3>, label: &str| -> (Run, [u64; 2]) {
+        let mut city = PopulatedCity::build(residents);
+        city.core.time.speed_multiplier = 32.0;
+        city.core.agent_draw_eye = eye;
+        let end = absolute_minute(&city.core) + hours * MINUTES_PER_HOUR;
+        let mut hour = absolute_minute(&city.core) / MINUTES_PER_HOUR;
+        let mut hourly = Vec::new();
+        let mut snapshot = RenderSnapshot::default();
+        let mut cut = [0_u64; 2];
+        while absolute_minute(&city.core) < end {
+            city.core.step_frame(FRAME_DT_S);
+            snapshot = city.core.build_snapshot_reusing(snapshot);
+            for (total, frame) in cut.iter_mut().zip(snapshot.agent_draw_cut) {
+                *total += u64::from(frame);
+            }
+            let now = absolute_minute(&city.core) / MINUTES_PER_HOUR;
+            if now != hour {
+                hour = now;
+                hourly.push(semantic_fingerprint(&city));
+            }
+        }
+        let saved = save_fingerprint(&mut city.core, &scratch_save_path(label));
+        ((hourly, saved), cut)
+    };
+    let (with_eye, cut) = run(
+        Some(godot::prelude::Vector3::new(1_500.0, 150.0, 1_500.0)),
+        "render28_eye",
+    );
+    let (without, none) = run(None, "render28_none");
+    let difference = first_difference(&without, &with_eye);
+    eprintln!(
+        "RENDER28_SIM_DIGESTS residents={residents} hours={hours} hourly={} tables={} \
+         walker_cuts={} car_cuts={} difference={difference:?}",
+        without.0.len(),
+        without.1.len(),
+        cut[0],
+        cut[1]
+    );
+    assert_eq!(none, [0, 0]);
+    assert!(
+        cut[0] > 0 && cut[1] > 0,
+        "the eye cut no agent of a kind: {cut:?}"
+    );
+    assert!(difference.is_none(), "{difference:?}");
+}
+
 /// Saves mid-hour, between frames, then runs the straight and reloaded cities side by side
 /// across the next midnight. Returns the first difference.
 fn reload_continuation(residents: u32, days: u32) -> Option<String> {

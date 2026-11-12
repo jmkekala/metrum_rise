@@ -19,8 +19,12 @@ static func channel(index: int) -> Vector4:
 	result[clampi(index, 0, 3)] = 1.0
 	return result
 
-static func create(source: BaseMaterial3D, preview: bool = false, brightness: float = DEFAULT_BRIGHTNESS) -> ShaderMaterial:
+# `draw_fade_m`, when set, is a moving car's draw distance fade band from the camera in metres
+# (agents.gd, `RENDER-28`): the material dithers the car out over it.
+static func create(source: BaseMaterial3D, preview: bool = false, brightness: float = DEFAULT_BRIGHTNESS,
+		draw_fade_m := Vector2.ZERO) -> ShaderMaterial:
 	var flags := ""
+	if draw_fade_m != Vector2.ZERO: flags += "#define AGENT_DRAW_FADE\n"
 	if source.emission_texture != null: flags += "#define WINDOW_EMISSION\n"
 	if source.normal_enabled: flags += "#define WINDOW_NORMAL\n"
 	if source.ao_enabled: flags += "#define WINDOW_AO\n"
@@ -79,4 +83,6 @@ static func create(source: BaseMaterial3D, preview: bool = false, brightness: fl
 			"metallic_channel": channel(source.metallic_texture_channel)})
 	for name: String in values:
 		material.set_shader_parameter(name, values[name])
+	if draw_fade_m != Vector2.ZERO:
+		material.set_shader_parameter("draw_fade_m", draw_fade_m)
 	return material

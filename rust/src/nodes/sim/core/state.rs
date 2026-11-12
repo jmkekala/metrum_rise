@@ -375,6 +375,10 @@ pub struct SimCore {
     pub camera_aabb: (f32, f32, f32, f32),
     /// Last reported render camera XZ, or `None` until a renderer reports one.
     pub(crate) render_camera_position: Option<Vector2>,
+    /// Last reported render camera eye, or `None` until a renderer reports one: the agents' draw
+    /// distances measure from it (`RENDER-28`). Render-consumer state; the simulation never
+    /// reads it.
+    pub(crate) agent_draw_eye: Option<Vector3>,
     /// Horizontal radius in which off-lane vehicle rendering uses the exact support solve.
     pub(crate) vehicle_ground_full_detail_m: f32,
     /// Counts the changes of the ground a vehicle stands on (`RENDER-28`): every record of the
@@ -494,6 +498,7 @@ impl SimCore {
             road_terrain_inputs: Default::default(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
             render_camera_position: None,
+            agent_draw_eye: None,
             vehicle_ground_full_detail_m:
                 crate::nodes::sim::render::vehicle_ground::VEHICLE_GROUND_FULL_DETAIL_M,
             vehicle_ground_generation: 0,

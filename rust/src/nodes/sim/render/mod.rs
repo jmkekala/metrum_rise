@@ -28,6 +28,8 @@ pub(crate) mod street_lights;
 pub(crate) mod stream;
 /// A vegetation patch's instance buffers, bounds and ranges (`RENDER-32-C`).
 pub(crate) mod vegetation_product;
+/// The walkers' drawn buffers between snapshots, uploaded only when changed (`RENDER-28`).
+pub(crate) mod walker_visual;
 /// Water patch mesh generation and cache helpers.
 pub mod water;
 /// The water a view ray first comes down onto, for the planar reflection's mirror planes.

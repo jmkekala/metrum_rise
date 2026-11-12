@@ -2,11 +2,15 @@
 
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
-## Rust methods called: get_agent_transforms(), get_vehicle_frame(), smooth_car_render_data(),
-##   get_changed_car_buckets(), get_car_frame_parts(), set_vehicle_ground_support(),
-##   get_agent_paths_debug(), update_agent_view()
-## The agents' view (the ground rectangle the snapshot culls to) comes from the camera in Rust.
-## Only the car buckets whose drawn buffer changed are uploaded: a car at rest is drawn as it was.
+## Rust methods called: update_walker_buffers(), get_changed_walker_buckets(), get_vehicle_frame(),
+##   smooth_car_render_data(), get_changed_car_buckets(), get_car_frame_parts(),
+##   set_vehicle_ground_support(), get_agent_paths_debug(), update_agent_view(),
+##   get_agent_draw_distances(), get_agent_snapshot_parts()
+## The agents' view (the ground rectangle the snapshot culls to, and the eye their draw distances
+## measure from) comes from the camera in Rust. Walkers and moving cars fade out by a dither over
+## a band before their draw distance (`RENDER-28`); the snapshot does not pose them beyond it.
+## Only the buckets whose drawn buffer changed are uploaded: a car at rest is drawn as it was, and
+## walkers upload only when the snapshot moved them.
 ## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
 ##   [xx, yx, zx, ox, xy, yy, zy, oy, xz, yz, zz, oz] — MultiMesh row-major 3×4 layout.
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
@@ -44,6 +48,7 @@ var _debug_overlay_visible := false
 # walker buffers, vehicle frame, car smoothing with the off-lane ground solve, car buffers,
 # headlights. Written in place every update.
 var _swarm_us := PackedInt64Array([0, 0, 0, 0, 0, 0])
+var _walker_buckets_uploaded := 0
 
 func _ready():
 	# --- Walker MultiMeshes — VAT (Vertex Animation Texture) pipeline ---
@@ -76,6 +81,9 @@ func _ready():
 	}
 
 	var walk_shader = preload("res://scripts/shaders/pedestrian_walk.gdshader")
+	# Walker fade start and draw distance, then the cars', from the camera in metres.
+	var draw: PackedFloat32Array = SimulationNode.get_agent_draw_distances()
+	_vehicles.draw_fade_m = Vector2(draw[2], draw[3])
 	var console := get_node_or_null("/root/DebugConsole")
 	if console != null:
 		console.visual_mode_changed.connect(_on_visual_mode_changed)
@@ -134,6 +142,7 @@ func _ready():
 		mat.set_shader_parameter("albedo_tint",    person_tints[p_type])
 		mat.set_shader_parameter("debug_mode",     pedestrian_vat_debug_mode)
 		mat.set_shader_parameter("reverse_phase",  WALKER_VAT_REVERSE_PHASE)
+		mat.set_shader_parameter("draw_fade_m",    Vector2(draw[0], draw[1]))
 		mmi.material_override = mat
 
 		add_child(mmi)
@@ -225,6 +234,13 @@ func _process(delta):
 		cars += mmi.multimesh.instance_count
 	details["walkers"] = walkers
 	details["cars"] = cars
+	# From the latest snapshot: agents inside the camera's rectangle that their draw distance
+	# cut, and its agent instances' time (ms, on the simulation thread).
+	var snapshot_parts: PackedInt64Array = simulation_node.get_agent_snapshot_parts()
+	details["walkers_cut"] = snapshot_parts[0]
+	details["cars_cut"] = snapshot_parts[1]
+	details["snapshot_agents_ms"] = float(snapshot_parts[2]) / 1000.0
+	details["walker_buckets_uploaded"] = _walker_buckets_uploaded
 	PerfDebug.record("agents", elapsed_ms, details)
 
 func _update_view() -> void:
@@ -235,14 +251,17 @@ func _update_view() -> void:
 func update_swarm(delta: float = 0.0):
 	# Walkers (Grouped by variant)
 	var start_us := Time.get_ticks_usec()
-	var walker_data = simulation_node.get_agent_transforms()
+	var walker_data: Dictionary = simulation_node.update_walker_buffers()
 	var fetched_us := Time.get_ticks_usec()
-	for p_type in walker_mmis:
-		var mmi = walker_mmis[p_type]
-		var buffer = walker_data.get(p_type, PackedFloat32Array())
-		var count = buffer.size() / 16 # Transform (12) + Custom (4)
-		
-		# MMIs are initialized on demand; skip if no agents of this type.
+	# Only the buckets the snapshot changed; a bucket absent from walker_data left: it draws none.
+	var changed_walkers: PackedInt64Array = simulation_node.get_changed_walker_buckets()
+	_walker_buckets_uploaded = changed_walkers.size()
+	for p_type in changed_walkers:
+		var mmi = walker_mmis.get(p_type)
+		if mmi == null:
+			continue
+		var buffer: PackedFloat32Array = walker_data.get(p_type, PackedFloat32Array())
+		var count := int(buffer.size() / 16) # Transform (12) + Custom (4)
 		if count != mmi.multimesh.instance_count:
 			mmi.multimesh.instance_count = count
 		if count > 0:

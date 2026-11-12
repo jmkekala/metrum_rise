@@ -4,14 +4,20 @@ render_mode unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabl
 // Halo of a car lamp at night, one camera-facing quad per lamp (vehicle_lamps.gd). All four
 // vertices sit at the lamp centre with the corner in UV; NORMAL is the way the lamp faces, so a
 // headlight shows from ahead and a tail light from behind. Near, a halo of COLOR.a metres; far, at
-// least `min_pixel_radius` pixels, so traffic stays visible across the map. By day the quad
-// collapses in the vertex shader and draws nothing.
+// least `min_pixel_radius` pixels, so traffic stays visible out to the cars' draw distance, over
+// whose fade band the halo fades with its car. By day the quad collapses in the vertex shader and
+// draws nothing.
 
 global uniform vec2 scene_window_clock;
 
 uniform float min_pixel_radius = 1.6;
 uniform float glow_energy = 3.0;
 uniform vec2 lamps_on_elevation_deg = vec2(4.0, -2.0);
+// The cars' draw distance fade band from the camera, metres (`RENDER-28`): the halo fades out with
+// its car. Unset, the halo draws at every distance.
+uniform vec2 draw_fade_m = vec2(1.0e9, 2.0e9);
+
+#include "res://scripts/shaders/agent_draw_fade.gdshaderinc"
 
 varying float intensity;
 
@@ -25,7 +31,8 @@ void vertex() {
 	float pixel_m = distance_m * 2.0 / (PROJECTION_MATRIX[1][1] * VIEWPORT_SIZE.y);
 	float radius = max(COLOR.a, min_pixel_radius * pixel_m);
 	// Near, a faint halo round a lens that already glows; far, the point carries the lamp alone.
-	intensity = night * smoothstep(-0.15, 0.5, facing)
+	intensity = night * agent_draw_fade(MODEL_MATRIX, MAIN_CAM_INV_VIEW_MATRIX, draw_fade_m)
+		* smoothstep(-0.15, 0.5, facing)
 		* mix(0.4, 1.0, smoothstep(COLOR.a, COLOR.a * 6.0, radius));
 	// Drawn just in front of the lens so the car body does not cut the halo.
 	center += to_camera * 0.2;

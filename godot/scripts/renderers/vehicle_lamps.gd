@@ -49,7 +49,9 @@ const GLOW_MATERIAL_KEY := "glow"
 
 # `materials` is the caller's cache, shared by every model it builds: the glow material under
 # `GLOW_MATERIAL_KEY` and one beam material per `material_key` (it holds that model's lamps).
-static func add_surfaces(mesh: ArrayMesh, material_key: String, materials: Dictionary) -> void:
+# `draw_fade_m`, when set, is the cars' draw distance fade band: the glows fade out with the car.
+static func add_surfaces(mesh: ArrayMesh, material_key: String, materials: Dictionary,
+		draw_fade_m := Vector2.ZERO) -> void:
 	var body_surfaces := mesh.get_surface_count()
 	mesh.set_meta(BODY_SURFACES_META, body_surfaces)
 	mesh.set_meta(BODY_AABB_META, mesh.get_aabb())
@@ -66,6 +68,8 @@ static func add_surfaces(mesh: ArrayMesh, material_key: String, materials: Dicti
 	if not materials.has(GLOW_MATERIAL_KEY):
 		var glow := ShaderMaterial.new()
 		glow.shader = GLOW_SHADER
+		if draw_fade_m != Vector2.ZERO:
+			glow.set_shader_parameter("draw_fade_m", draw_fade_m)
 		materials[GLOW_MATERIAL_KEY] = glow
 	_add_glow_surface(mesh, head, tail, materials[GLOW_MATERIAL_KEY])
 	if not materials.has(material_key):

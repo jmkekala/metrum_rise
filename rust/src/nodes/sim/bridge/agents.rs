@@ -4,15 +4,6 @@
 use crate::nodes::sim::core::RenderSnapshot;
 use godot::prelude::*;
 
-/// Returns a Dictionary of packed transforms for visible agents, keyed by type.
-pub fn get_agent_transforms(snapshot: &RenderSnapshot) -> VarDictionary {
-    let mut dict = VarDictionary::new();
-    for (&k, v) in &snapshot.pedestrian_transforms {
-        dict.set(k as i32, PackedFloat32Array::from_iter(v.iter().cloned()));
-    }
-    dict
-}
-
 /// Exports car transforms, identities and support flags from a single coherent snapshot.
 pub fn get_car_render_data(snapshot: &RenderSnapshot) -> VarDictionary {
     let mut dict = VarDictionary::new();
