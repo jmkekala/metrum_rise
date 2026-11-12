@@ -21,6 +21,9 @@ var quality := 1
 var evaluated_parts := 0
 var queried_chunks := 0
 var uploaded_bytes := 0
+## The last frame's Rust microseconds (the perf channel): before the update, the update, the
+## publication.
+var timing: Dictionary = {}
 var _source_parts: Dictionary = {}
 # Authored surface materials of each loaded mesh, by mesh. The mesh itself draws converted
 # copies (see _converted), and scheme bindings still match and vary the originals.
@@ -149,6 +152,7 @@ func update(camera: Camera3D) -> bool:
 	uploaded_bytes = 0
 	evaluated_parts = 0
 	queried_chunks = 0
+	timing = {}
 	if camera == null:
 		return false
 	var viewport := camera.get_viewport()
@@ -176,6 +180,8 @@ func update(camera: Camera3D) -> bool:
 		return false
 	evaluated_parts = int(frame.get("evaluated_parts", 0))
 	queried_chunks = int(frame.get("queried_chunks", 0))
+	timing = {"prepare_us": frame.get("prepare_us", 0.0), "update_us": frame.get("update_us", 0.0),
+		"publish_us": frame.get("publish_us", 0.0)}
 	var missing: PackedInt32Array = frame.get("missing", PackedInt32Array())
 	if missing.is_empty():
 		uploaded_bytes = int(frame.get("uploaded_bytes", 0))

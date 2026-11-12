@@ -254,6 +254,7 @@ func _process(_delta: float) -> void:
 		# The batches' churn through the stream backend's pool (`RENDER-32-L`).
 		if lod_renderer != null:
 			details.merge(simulation_node.get_building_lod_work())
+			details.merge(lod_renderer.timing)
 		PerfDebug.record("buildings", elapsed_ms, details)
 
 func _input(event: InputEvent) -> void:
