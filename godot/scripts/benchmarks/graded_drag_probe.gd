@@ -516,7 +516,7 @@ func _settle(record: Dictionary) -> bool:
 	while bool(wait.get("ok", false)) and graded != null and stable < 3 and frames < SETTLE_FRAME_LIMIT:
 		await _bench.get_tree().process_frame
 		frames += 1
-		var idle: bool = (not graded._book.has_pending_work() and graded.patch_lists_requested.is_empty()
+		var idle: bool = (not graded._book.has_pending_work() and not graded._book.lists_in_flight()
 			and graded.cell_builds_pending() == 0)
 		stable = stable + 1 if idle else 0
 	if stable < 3:

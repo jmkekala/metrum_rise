@@ -55,7 +55,6 @@ func _run() -> void:
 	graded._book.clear_resident()
 	graded._book_patch(Vector2i.ZERO, graded._resident[Vector2i.ZERO])
 	graded._resident_synced = true
-	graded.patch_lists[Vector2i.ZERO] = {"tiles": [], "token": 0}
 	graded._book.take_list(Vector2i.ZERO, 0, PackedInt32Array())
 	var a := Vector2i.ZERO
 	var b := Vector2i(1, 0)

@@ -55,10 +55,6 @@ impl Host for Recorder {
         self.book.encoded = effects;
     }
 
-    fn take_polled(&mut self, kind: &'static str, _entry: VarDictionary) {
-        panic!("no {kind} is polled in these tests");
-    }
-
     fn release_preview(&mut self, first: i64, last: i64) {
         self.released.push((first, last));
         Run::unbudgeted(&mut *self).release_epochs(first, last);
@@ -88,10 +84,6 @@ impl Host for &mut Recorder {
 
     fn apply_effects(&mut self) {
         (**self).apply_effects();
-    }
-
-    fn take_polled(&mut self, kind: &'static str, entry: VarDictionary) {
-        (**self).take_polled(kind, entry);
     }
 
     fn release_preview(&mut self, first: i64, last: i64) {
@@ -134,6 +126,7 @@ fn plain_book() -> GradedTileBook {
         edits: edits::Edits::default(),
         walls_scratch: Vec::new(),
         patch_news: Default::default(),
+        list_requests: Default::default(),
     }
 }
 

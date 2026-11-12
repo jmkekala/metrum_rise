@@ -113,9 +113,12 @@ pub struct GradedTileBook {
     // The patches whose resident entry the streaming core changed since the renderer's last
     // frame ([`residency`]).
     patch_news: OrderedMap<super::state::PatchKey, ()>,
+    // The patch lists' requests ([`lists`]).
+    list_requests: lists::Lists,
 }
 
 mod edits;
+mod lists;
 mod residency;
 mod results;
 #[cfg(test)]
@@ -316,6 +319,7 @@ impl GradedTileBook {
     #[func]
     pub fn clear(&mut self) {
         self.state.clear();
+        self.list_requests.clear();
         self.edits.clear(&mut self.taken);
         self.taken.clear();
     }
@@ -668,6 +672,7 @@ impl GradedTileBook {
     pub fn patch_changed(&mut self, key: Vector2i, resident: bool, rect: Rect2, node_moved: bool) {
         let rect = resident.then_some([rect.position.x, rect.position.y, rect.size.x, rect.size.y]);
         self.state.patch_changed_cells((key.x, key.y), rect, node_moved);
+        self.list_requests.patch_changed((key.x, key.y), resident);
     }
 
     /// Whether the book's queued work will change what is drawn.
@@ -1082,6 +1087,7 @@ impl GradedTileBook {
     #[func]
     pub fn reset_frame_counters(&mut self) {
         self.state.cells.frame = [0; 4];
+        self.list_requests.reset_frame();
         self.cell_counts[SYNC_US..=FLIP_US].fill(0);
     }
 

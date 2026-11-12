@@ -12,10 +12,11 @@
 //! the simulation's result without a copy ([`Bytes::Owned`], back to its pool once written) or,
 //! under a trace or a test's stand-in simulation, from the polled dictionary
 //! ([`Bytes::Shared`]). What stays the renderer's is called back in its place, with the book
-//! unbound: the lists and failures a poll returns (`_take_polled`) and any take whose effects need
-//! its Godot objects (page arrays, cancels, draw states: `_apply_effects`). Every other take's
-//! effects (the uploads, the cells' runs, the counted evictions and same-level uploads) the book
-//! applies itself; edits and the batch's staged tiles are the book's ([`super::edits`]).
+//! unbound: any take whose effects need its Godot objects (page arrays, cancels, draw states:
+//! `_apply_effects`). Every other take's effects (the uploads, the cells' runs, the counted
+//! evictions and same-level uploads) the book applies itself; edits and the batch's staged tiles
+//! are the book's ([`super::edits`]), and so are the lists and failures a poll returns
+//! ([`super::lists`], `RENDER-32-K` part 6).
 //!
 //! The runs are generic over their [`Host`] (`CODE-30`): the game's [`ScriptHost`] binds the
 //! book's `Gd` one step at a time and calls the renderer's script; the book's tests
@@ -159,7 +160,7 @@ pub(crate) enum Polled {
     },
     /// An edit the simulation handed over, decoded from the poll's `edits` ([`Edit`]).
     Edit(Edit),
-    /// A list or a failure the renderer takes, by its key in the poll's dictionary.
+    /// A list or a failure (`patches`, `failed`) as the poll's dictionary ([`super::lists`]).
     Other(&'static str, VarDictionary),
 }
 
@@ -321,8 +322,6 @@ pub(crate) trait Host {
     /// `_apply_effects`: the renderer applies the effects queued in the book (page arrays,
     /// cancels, draw states, and the cells' runs while the book has no objects).
     fn apply_effects(&mut self);
-    /// `_take_polled`: a polled list or failure the renderer takes (`kind` as the poll names it).
-    fn take_polled(&mut self, kind: &'static str, entry: VarDictionary);
     /// The renderer's `release_preview(first, last)` (its own entry point, which a trace records).
     fn release_preview(&mut self, first: i64, last: i64);
     /// One poll of finished work into `polled` (edits, lists, failures, tiles, in that order);
@@ -366,10 +365,6 @@ impl Host for ScriptHost {
 
     fn apply_effects(&mut self) {
         self.renderer.call("_apply_effects", &[]);
-    }
-
-    fn take_polled(&mut self, kind: &'static str, entry: VarDictionary) {
-        self.renderer.call("_take_polled", &[kind.to_variant(), entry.to_variant()]);
     }
 
     fn release_preview(&mut self, first: i64, last: i64) {
@@ -488,7 +483,11 @@ impl<H: Host> Run<H> {
             }
             Polled::Other(kind, dict) => {
                 let start = std::time::Instant::now();
-                self.host.take_polled(kind, dict);
+                if kind == "patches" {
+                    self.take_list(&dict);
+                } else {
+                    self.failed(&dict);
+                }
                 self.add(CALLBACK_NS, start);
             }
         }
@@ -649,8 +648,8 @@ impl GradedTileBook {
     /// order a poll) until the frame's install budget from `start_us` is spent, checked before
     /// each result and count, each tile placed charged its later cell rewrites
     /// (`CELL_CHARGE_US`). Tiles install or stage for the edit batch here, edits apply here
-    /// ([`super::edits`]); the renderer's `_take_polled` takes the lists and other failures and
-    /// `_apply_effects` a take whose effects need it. `simulation` polls without dictionaries; null (a trace, a stand-in) polls through
+    /// ([`super::edits`]), lists and failures here ([`super::lists`]); the renderer's
+    /// `_apply_effects` takes a take whose effects need it. `simulation` polls without dictionaries; null (a trace, a stand-in) polls through
     /// the renderer's `_sim_poll`. O(results and counts taken + one poll's results).
     #[func]
     pub fn install_results(

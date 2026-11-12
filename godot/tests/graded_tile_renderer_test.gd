@@ -244,7 +244,7 @@ func _check_streaming(graded: GradedTiles, camera: Vector3, resident: Dictionary
 	_expect(await _settle(graded, camera, resident), "the streamed patches settle")
 	_expect_streamed("the streamed patches")
 	for key: Vector2i in resident.keys():
-		var listed := not (graded.patch_lists.get(key, {}).get("tiles", []) as Array).is_empty()
+		var listed := not graded._book.list_tiles(key).is_empty()
 		var cells: Dictionary = graded.patch_cells.get(key, {})
 		_expect(not listed or bool(cells.get("shown", false)), "streamed patch %s draws its set" % key)
 

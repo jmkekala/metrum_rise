@@ -36,8 +36,8 @@
 ## draws with, and applies the draw states to the patch nodes. The tile result path is the book's
 ## too (`RENDER-32-K` part 3): it polls the finished bakes within the install budget, checks each
 ## against its request and the edit batch, keeps the deferred results and the tiles waiting for
-## their sets' variant, and places and writes the tiles; it hands this script the edits, lists and
-## failures, the edit batch's tiles and the effects that need its objects. The resident patches
+## their sets' variant, and places and writes the tiles; it hands this script the effects that need
+## its objects. The patch lists' requests, arrivals and failures are the book's too (part 6). The resident patches
 ## are the book's too (`RENDER-32-K` part 6): the streaming core sets their entries as the
 ## terrain's patches come, change step, commit and leave, and this script takes the changed keys
 ## each frame; terrain.gd lends it each resident patch's node, material and culling box
@@ -149,12 +149,8 @@ var preview: Dictionary:
 var _resident: Dictionary = {}
 # The patches the core changed, taken from the book each frame (reused).
 var _news: Dictionary = {}
-# Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
-var patch_lists: Dictionary = {}
-var patch_lists_requested: Dictionary = {}
-# Patch lists Rust refused by contract (retry false): patch key -> the token refused, never asked
-# again at that token. (Refused tiles and exhausted pools are the book's.)
-var patch_lists_refused: Dictionary = {}
+# The patch lists, their requests, refusals and the patches whose list may need a request are
+# the book's (`RENDER-32-K` part 6).
 ## For tests: patch key -> its cell set as the book holds it (`GradedTileBook.cell_objects`, with
 ## `set`, `variant` and `rect`), built on each read. Cell sets are built off the frame paths
 ## (`TERRAIN-07-E` round 6): every resident patch gets its set (prewarmed in setup, one per patch of
@@ -222,11 +218,6 @@ var _camera := Vector3.ZERO
 var _camera_set := false
 var _level_end_m := PackedFloat64Array()
 var _gl3_end_m := PackedFloat64Array()
-# The patch lists that may need a request: a patch that changed or whose list arrived, failed or
-# was not accepted. (The tiles that may need one are the book's.)
-var _lists_wanted: Dictionary = {}
-# Patch list requests per frame: Rust holds at most 32 in flight.
-const LIST_REQUESTS_PER_FRAME := 32
 var counters := {
 	"textures_created": 0,
 	"images_created": 0,
@@ -299,8 +290,6 @@ var counters := {
 # The book's result path this frame (take_result_counts): nanoseconds in its polls, the tiles'
 # checks and placing, their effects, the other callbacks, and the tiles taken.
 var _frame_results := PackedInt64Array([0, 0, 0, 0, 0])
-var _frame_lists := 0
-var _frame_lists_same := 0
 var _frame_relevelled := 0
 # The wanted tiles _request_tiles took this frame and those it handed to Rust.
 var _frame_considered := 0
@@ -497,9 +486,6 @@ func clear() -> void:
 	if _book != null:
 		_book.clear()
 		_apply_effects()
-	patch_lists.clear()
-	patch_lists_requested.clear()
-	patch_lists_refused.clear()
 	for key: Vector2i in _resident.keys():
 		if _book.patch_set(key) >= 0:
 			release_patch(key, null)
@@ -511,7 +497,6 @@ func clear() -> void:
 	if is_instance_valid(simulation_node) or (trace != null and trace.replaying):
 		_sim_cancel_all()
 	_camera_set = false
-	_lists_wanted.clear()
 
 ## Frees the cell sets' objects. Renderer replacement and shutdown call it before dropping the
 ## renderer; clear() first returns every set to the pool.
@@ -604,8 +589,6 @@ func forget_patches() -> void:
 func _frame(camera_position: Vector3, changed_patches: Dictionary, changed_materials: Dictionary) -> void:
 	var start_us := Time.get_ticks_usec()
 	var resident_patches := _resident
-	_frame_lists = 0
-	_frame_lists_same = 0
 	_frame_relevelled = 0
 	_frame_considered = 0
 	_frame_handed = 0
@@ -633,7 +616,7 @@ func _frame(camera_position: Vector3, changed_patches: Dictionary, changed_mater
 	var builds_us := Time.get_ticks_usec()
 	if _book.has_variant_waits() or _book.has_preview_waits():
 		_take_variant_waits(resident_patches)
-	if not _lists_wanted.is_empty():
+	if _book.has_lists_wanted():
 		_request_patch_lists(resident_patches)
 	# The settle flags changed: parked blocks whose lists are in release their tiles.
 	_book.release_parked()
@@ -673,7 +656,7 @@ func _frame(camera_position: Vector3, changed_patches: Dictionary, changed_mater
 			"cell_tiles": frame[0], "relevelled": _frame_relevelled,
 			"considered": _frame_considered, "handed": _frame_handed,
 			"flips": frame[1], "flip_ms": float(cell[2]) / 1000.0,
-			"lists": _frame_lists, "lists_unchanged": _frame_lists_same,
+			"lists": _book.frame_list_counts().x, "lists_unchanged": _book.frame_list_counts().y,
 			"uploads": int(counters["uploads"]) - uploads_before,
 			"wanted": wanted_count(), "installed": _book.entry_count(false),
 			# poll_ms's parts in the book (`RENDER-32-K` part 3).
@@ -827,8 +810,8 @@ func _edits_taken() -> void:
 # The frame's first count or result is taken unconditionally, so the work progresses whatever
 # the frame's other work cost. The loop, the deferred results and the tiles' checks, placing and
 # uploads are the book's (`RENDER-32-K` part 3), and so are the edits and the batch's staged tiles
-# (part 4): it calls back _take_polled for the lists and other failures and _apply_effects for a
-# take whose effects need this script, and charges each placed tile the cell rewrites it causes later in the frame in its budget
+# (part 4), the lists and failures (part 6): it calls back _apply_effects for a take whose
+# effects need this script, and charges each placed tile the cell rewrites it causes later in the frame in its budget
 # checks; the simulation polls without dictionaries unless a trace records or replays (_sim_poll).
 # O(results and counts taken + one poll's results).
 func _poll_and_install(start_us: int, _resident_patches: Dictionary) -> void:
@@ -843,6 +826,7 @@ func _results_taken() -> void:
 	var taken: PackedInt64Array = _book.take_result_counts()
 	counters["results_deferred"] += taken[0]
 	counters["variant_waits"] += taken[1]
+	counters["bake_failures"] += _book.take_bake_failures()
 	counters["evictions"] += taken[2]
 	counters["same_level_uploads"] += taken[3]
 	counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(taken[4]) / 1000.0)
@@ -852,38 +836,6 @@ func _results_taken() -> void:
 	counters["uploads"] = _book.uploads()
 	counters["upload_bytes"] = _book.upload_bytes()
 	counters["upload_ms_max"] = float(_book.upload_us_max()) / 1000.0
-
-# The book's result path hands over a polled list or failure (`kind` as the poll names it; it
-# applies edits itself).
-func _take_polled(kind: String, entry: Dictionary) -> void:
-	match kind:
-		"patches":
-			_take_list(entry, _resident)
-		"failed":
-			_failed(entry)
-
-# A patch's graded tile list from Rust: recorded, its tiles counted in the desired set.
-func _take_list(list: Dictionary, resident_patches: Dictionary) -> void:
-	var key := Vector2i(int(list["patch_x"]), int(list["patch_z"]))
-	patch_lists_requested.erase(key)
-	var tiles: Array[Vector2i] = []
-	var flat: PackedInt32Array = list["tiles"]
-	for index in range(0, flat.size(), 2):
-		tiles.append(Vector2i(flat[index], flat[index + 1]))
-	_frame_lists += 1
-	var previous: Array = patch_lists.get(key, {}).get("tiles", [])
-	if patch_lists.has(key) and previous == tiles:
-		_frame_lists_same += 1
-	# The cells show the installed tiles of the patch's rectangle, not its list: a list that
-	# empties or fills only starts or stops the set's drawing (the book's draw state); listed
-	# tiles install or evict on their own. A patch without a set builds one.
-	_book.list_cells(key, true)
-	patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
-	# Counted into the desired set; the parked tiles of its blocks released once their lists are in.
-	_book.take_list(key, int(list["token"]), flat)
-	_apply_effects()
-	# A list baked for an older generation is asked again.
-	_lists_wanted[key] = true
 
 func _over_budget(start_us: int) -> bool:
 	var over := not unbudgeted and float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS
@@ -1032,36 +984,6 @@ func _book_patch(key: Vector2i, entry: Dictionary) -> void:
 		# (a test's entry without them draws no set).
 		_book.set_patch_draw(key, (entry["node"] as Object).get_instance_id(), (entry["material"] as Material).get_rid(), entry["aabb"])
 
-# A failed request: a transient one (busy core, unready site index) is asked again; one Rust
-# refuses by contract is recorded with its token, counted and logged once, and not asked again
-# until its token changes (an edit, a new patch generation).
-func _failed(failure: Dictionary) -> void:
-	var keys: PackedInt64Array = failure["keys"]
-	var token := int(failure["token"])
-	var retry := bool(failure["retry"])
-	if String(failure["kind"]) == "patch":
-		var key := Vector2i(keys[0], keys[1])
-		if int(patch_lists_requested.get(key, -2)) == token:
-			patch_lists_requested.erase(key)
-		if not retry:
-			patch_lists_refused[key] = token
-			_book.list_cells(key, false)
-			_book.list_refused(key, token)
-			_apply_effects()
-		_lists_wanted[key] = true
-	else:
-		var tile := Vector2i(keys[0], keys[1])
-		# The book drops the request; a refusal by contract is recorded and leaves the edit batch.
-		_book.failed_tile(tile, keys[2], keys[3], token, retry)
-		if not retry:
-			# The tile stays as it was; the edit installs without it, and its patches' sets draw
-			# without it (the book's draw state).
-			_book.edit_unstage(tile)
-			_book.tile_refused(tile)
-	if not retry:
-		counters["bake_failures"] += 1
-		MetrumDebug.log("terrain", "graded %s %s token %d refused: %s" % [failure["kind"], str(keys), token, failure["reason"]])
-
 # A bake installed by hand (tests; polled tiles install in the book's result path).
 func _upload(key: Vector2i, tile: Dictionary, _resident_patches: Dictionary) -> void:
 	var level := Vector4i(int(tile["level"]), int(tile["step"]), int(tile["token"]), int(bool(tile["behind"])))
@@ -1112,10 +1034,6 @@ func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 	# frame) and draws what its draw state says: nothing until its list arrives.
 	_book.patch_changed(key, present, _book.patch_rect(key), node_moved)
 	_apply_effects()
-	if not present:
-		_lists_wanted.erase(key)
-		return
-	_lists_wanted[key] = true
 
 # Applies the next queued count: a tile enters the desired set with the first list naming it and
 # leaves with the last.
@@ -1142,31 +1060,11 @@ func wanted_count() -> int:
 	return _book.wanted_count() + _book.tiles_pending()
 
 # Asks for the lists of the wanted patches whose list is not of their generation, not in flight
-# and not refused at it, within Rust's in-flight bound; the rest stay wanted.
-func _request_patch_lists(resident_patches: Dictionary) -> void:
-	var flat := PackedInt64Array()
-	for key: Vector2i in _lists_wanted.keys():
-		if flat.size() >= LIST_REQUESTS_PER_FRAME * 3:
-			break
-		_lists_wanted.erase(key)
-		if not _book.is_resident(key):
-			continue
-		var generation: int = _book.patch_generation(key)
-		var list: Dictionary = patch_lists.get(key, {})
-		if not list.is_empty() and int(list["token"]) == generation:
-			continue
-		if int(patch_lists_requested.get(key, -2)) == generation or int(patch_lists_refused.get(key, -2)) == generation:
-			continue
-		patch_lists_requested[key] = generation
-		flat.append_array(PackedInt64Array([key.x, key.y, generation]))
-	if flat.is_empty():
-		return
-	var accepted: PackedByteArray = _sim_request_lists(flat)
-	for index in accepted.size():
-		if accepted[index] == 0:
-			var key := Vector2i(flat[index * 3], flat[index * 3 + 1])
-			patch_lists_requested.erase(key)
-			_lists_wanted[key] = true
+# and not refused at it, within Rust's in-flight bound (the book's); the rest stay wanted.
+func _request_patch_lists(_resident_patches: Dictionary) -> void:
+	var flat: PackedInt64Array = _book.lists_to_request()
+	if not flat.is_empty():
+		_book.lists_accepted(flat, _sim_request_lists(flat))
 
 # The hand-over (the book's, `RENDER-32-I`): every wanted tile that is not installed at its level
 # and token, not requested or refused at that token and not blocked on a page goes to Rust's
@@ -1318,7 +1216,7 @@ func cell_builds_pending() -> int:
 ## copy of it left out the set builds). O(queued builds).
 func has_pending_work() -> bool:
 	return _book.has_pending_work() or _book.cells_pending() or not (
-		patch_lists_requested.is_empty() and _lists_wanted.is_empty() and not _book.results_waiting()
+		not _book.lists_pending() and not _book.results_waiting()
 		and _unready.is_empty() and not _book.has_preview_waits()
 	)
 
@@ -1336,7 +1234,7 @@ func unready_near(centre: Vector2, radius_m: float) -> int:
 			var origin := world_min + Vector2(key) * patch_span_m
 			if centre.clamp(origin, origin + Vector2.ONE * patch_span_m).distance_to(centre) > radius_m:
 				continue
-			if not _book.is_resident(key) or _unready.has(key) or not (patch_lists.has(key) or patch_lists_refused.has(key)):
+			if not _book.is_resident(key) or _unready.has(key) or not _book.list_known(key):
 				count += 1
 	return count
 
@@ -1351,10 +1249,7 @@ func plane_violations() -> int:
 		# The node keeps the range as a 32-bit float (hole_patches).
 		if node == null or is_equal_approx(node.visibility_range_end, HIDDEN_RANGE_M):
 			continue
-		var list: Dictionary = patch_lists.get(key, {})
-		var drawable := list.is_empty() and not patch_lists_refused.has(key)
-		for tile: Vector2i in list.get("tiles", []):
-			drawable = drawable or not _refused_at_level(tile)
+		var drawable: bool = _book.list_drawable(key)
 		if drawable or _book.previews_in(_book.patch_rect(key)):
 			violations += 1
 	return violations
@@ -1463,7 +1358,7 @@ func get_pool_counters() -> Dictionary:
 	var book := _book.pool_counters()
 	for name: String in book:
 		out[name] = book[name]
-	out["refused"] = int(book["refused"]) + patch_lists_refused.size()
+	out["refused"] = int(book["refused"]) + _book.lists_refused_count()
 	out["desired_by_level"] = Array(book["desired_by_level"])
 	out["layer_limit"] = layer_limit
 	out["block_patches"] = block_patches
