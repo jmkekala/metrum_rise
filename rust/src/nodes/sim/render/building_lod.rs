@@ -261,7 +261,9 @@ impl Chunk {
         }
     }
 
-    /// Every part evaluated (no travel buckets): O(instances + groups).
+    /// Every part evaluated (no travel buckets): O(instances + groups). The reference the
+    /// buckets are tested against.
+    #[cfg(test)]
     pub fn update(&mut self, parts: &[Part], view: View, reset_history: bool) {
         self.update_due(parts, view, reset_history, &Motion::ALL);
     }
