@@ -44,31 +44,31 @@ second round (`RENDER-32-B`) puts the graded tiles' levels and bake queue in Rus
 is 3-4 ms faster a frame and a 100k load's graded tiles settle in 11 s instead of 34 s. The
 third (`RENDER-32-C`) builds every vegetation instance buffer in Rust, bit for bit what the
 GDScript built (Rust now owns the plants' appearance hash): Kuopio's turns are 3-5 ms faster.
-`RENDER-32-D` (built, not yet landed) runs the vegetation query on a background thread from a
+`RENDER-32-D` (landed) runs the vegetation query on a background thread from a
 snapshot: the vegetation's frame time on a turn falls from 6-11 ms to 1.5-2.7 ms, and Kuopio's
 turns are twice as fast.
-`RENDER-32-H` (built, not yet landed) moves the street lights' night passes to Rust, bit for bit:
+`RENDER-32-H` (landed) moves the street lights' night passes to Rust, bit for bit:
 on the 30k city at night they cost 0.2 ms a frame instead of 5 ms, and night turns no longer cost
-more than day turns. `RENDER-32-I` (built, not yet landed) moves the graded renderer's
+more than day turns. `RENDER-32-I` (landed) moves the graded renderer's
 pages, copies, growth, installed tiles and bake hand-over to Rust, proven by replaying recorded
 traces bit for bit: the graded residency work on a 100k turn falls from 2.5-2.8 ms a frame to 0.4, and the pooled
-empty pages are bounded at 32 MiB (`TERRAIN-09`). `RENDER-32-E` (built, not yet landed) installs the
+empty pages are bounded at 32 MiB (`TERRAIN-09`). `RENDER-32-E` (landed) installs the
 vegetation through pooled `RenderingServer` objects from Rust under one 2.0 ms streaming budget a
 frame, with no node per patch: stills identical, the vegetation's frame time on a 30k turn about
 1 ms (control 1.6-1.8) and at most 1.5 ms of installs in any frame.
 `RENDER-32-G` (accepted by the user 2026-11-12) stops re-solving and re-uploading cars that
 stand still: the 30k city's agents cost 0.27 ms a paused frame instead of 4.4 ms, and 1.7 ms at
-1x instead of 3.7. `RENDER-32-O` (built, not yet landed) gives agents the draw distances the user
+1x instead of 3.7. `RENDER-32-O` (landed) gives agents the draw distances the user
 chose: walkers fade out from 0.8 km and end at 1.0 km, moving cars from 2.0 to 2.5 km, cut before
 the snapshot poses them; nothing nearer changes. The 30k paused still runs at 7.5 ms instead of
 8.4, and at 100k agents cost 2.0 ms a frame instead of 3.3 with half the primitives drawn.
-`RENDER-32-J` (built, not yet landed) moves the graded cell sets, wall faces and draw states to
+`RENDER-32-J` (landed) moves the graded cell sets, wall faces and draw states to
 Rust, replayed bit for bit: the cell rewrites on a 30k turn fall from 3.2-3.6 ms a frame to 0.5,
-and the 30k 1 s turns run at 20 ms p50 (28-32 before `RENDER-32-B`). `RENDER-32-K` part 1 (built,
-not yet landed) draws those cells, walls and their materials as `RenderingServer` objects from
+and the 30k 1 s turns run at 20 ms p50 (28-32 before `RENDER-32-B`). `RENDER-32-K` part 1 (landed)
+draws those cells, walls and their materials as `RenderingServer` objects from
 Rust with no node: stills identical, the cells' part of a turn 0.3-0.4 ms a frame instead of
 0.5-0.8, and Kuopio's cell-set builds done within its load instead of 0.8 ms a frame after it.
-`RENDER-32-K` part 2 (built, not yet landed) writes the graded page uploads from Rust: a 30k turn
+`RENDER-32-K` part 2 (landed) writes the graded page uploads from Rust: a 30k turn
 installs 12-23 % more tiles a frame in the same budget, stills identical (after fixing a grass
 mask left stale by a cell set build), but the graded time a frame is unchanged, because the turns
 keep the install budget full; the renderer test's waits are fixed (`TERRAIN-17`, `TERRAIN-24`).
@@ -77,11 +77,11 @@ to the page in Rust, without dictionaries or GDScript per tile: a 30k turn's gra
 from 1.2-1.4 ms a frame to 0.8-0.9 and its install queue keeps up; at 100k the install budget now
 also counts the cell rewrites its installs cause, so the graded time is 1.4-1.5 ms against the
 control's 1.5-1.6 with half again as many tiles a frame; the 0.5 / 1.0 ms bars stay missed.
-`RENDER-32-F` (built, not yet landed)
+`RENDER-32-F` (landed)
 moves the vegetation's residency, bands and staleness to Rust, decision for decision equal to the
 GDScript on the benchmark's recorded paths: its frame time on a turn falls to 0.1-0.3 ms, and an
 area draws from one grid tier in every frame.
-`RENDER-32-L` (built, not yet landed) evaluates a building part's level of detail only when the
+`RENDER-32-L` (landed) evaluates a building part's level of detail only when the
 camera has moved far enough that it could change, exactly as before otherwise, and draws the
 building batches and their water reflections through the pooled `RenderingServer` objects: the
 buildings' frame time on a 30k turn falls from 1.4-1.9 ms to 0.1-0.2 (0.3-0.5 ms at 100k against
@@ -1543,7 +1543,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
-- `TOOLS-19` part 1 and `TOOLS-20` (2026-11-12, branch `stream-tl1`): every scripted Godot run (tests, benchmarks, probes, imports) goes through `tools/godot_isolated.py`, an absolute throwaway profile that refuses a relative or home XDG path ([guard](debug.md#godot-test-guard)); the stream benchmark's verdicts are tracked subcommands, `series` (C B B C in one lock), `compare`, `digests` (equal, band or different; the benchmark records the level rule's ends) and `stills` ([tools](terrain.md#stream-benchmark-perf-23)).
+- `TOOLS-19` part 1 and `TOOLS-20` (2026-11-12, branch `stream-tl1`, landed on `dev`): every scripted Godot run (tests, benchmarks, probes, imports) goes through `tools/godot_isolated.py`, an absolute throwaway profile that refuses a relative or home XDG path ([guard](debug.md#godot-test-guard)); the stream benchmark's verdicts are tracked subcommands, `series` (C B B C in one lock), `compare`, `digests` (equal, band or different; the benchmark records the level rule's ends) and `stills` ([tools](terrain.md#stream-benchmark-perf-23)).
 - `TOOLS-16` (2026-11-10, landed on `dev`, open until the packages are tried on a Mac and on Windows): release builds. Every push to `main` builds Linux, Windows and macOS packages on GitHub Actions, smoke-tests Linux and (under Wine) Windows by starting both bundled worlds without the build checkout, and publishes a GitHub Release `vYYYY.M.N`; `dev` never does. Saves record the release version as `game_build` and the main menu shows it (`dev` for a checkout). Two full runs passed on the test branch. See [`release.md`](release.md).
 - `TOOLS-15` (2026-11-10, landed on `dev`): an exported game can start a city. The first trial export found three blockers: the economy, demand and zoning tuning files were read from the build machine's checkout (now compiled in), and the bundled packs, walker VAT set and car models were read as raw files that export does not ship (now imported as `keep`). See [`TOOLS-15`](roadmap.md).
 - `TRAFFIC-32`/`33`/`34` round STUCK2 (2026-11-10, landed on `dev`): a car whose road route to its booked bay is cut off releases the booking and parks in the nearest bay it can reach (the driver walks on), else drives home, else waits at a lane's end and retries home on the stranded walkers' backoff; a parked driver with no walk on drives home or stays in its bay. It never stands in a junction. A parking leg's failure now logs one `events` line with that outcome, and a car with no lane stands at speed 0 ([recovery](traffic.md#recovery-park-02)).
