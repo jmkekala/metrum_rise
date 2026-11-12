@@ -11913,7 +11913,7 @@ line goes; per-instance calls and object churn do.
 | `RENDER-32-F` | V2b | Rings; vegetation residency, bands and staleness in Rust | `-D`'s carried bars (night delegation 2026-11-12, for review): the 30k `jump` frame maximum within the same-binary spread of `-E`'s control (`-E`: +2.7 ms, the residency's hides and frees in GDScript); vegetation at most 2.5 ms a frame on Kuopio's 0.5 s turns (the band scan), and the largest single vegetation unit at most 2.0 ms at 30k (one 2.38 ms request on `night_turn_back`). Vegetation 0.5 ms mean a frame; zero ring cells on frames without a crossing; `RENDER-27`'s bar |
 | `RENDER-32-G` | A1 | Agents without a visual change (`RENDER-28` part 1) | Agents 0.6 ms on the paused still |
 | `RENDER-32-H` | L1 | Street lights' grid, far map and pool in Rust (`RENDER-33`) | 0.3 ms mean, 1.0 ms max on night turns and pans. Landed 2026-11-11 (coordinator, night delegation, for review); its `night_pan_out` frame-mean reading of night within 1 ms of day (+0.9/+1.6 ms, graded catch-up) carried to `-I`/`-J` |
-| `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. |
+| `RENDER-32-I`, `-J`, `-K` | G2a-c | Pages and slots; cells, walls and draw states; edits, previews and T65, by record and replay | `-B`'s three missed bars, carried by the user's decision (2026-11-11): `-I` the page checks (met, landed 2026-11-12), `-J` the cell rewrites (the 30k 1 s turn p50 at least 5 ms below `-B`'s control: `-I` recovered none measurable; the cell rewrites are 3.2-3.6 ms a frame at 30k, 6.1-6.9 at 100k; `-J` step 1, built 2026-11-12: cells 0.5 ms, the 1 s turns 19.6-20.7 ms p50 against the rows of record's 28.6-32.1, Kuopio's build time and the backend move carried). From `-H` (coordinator, night delegation, for review): `night_pan_out` within 1 ms of the day's pan in the frame mean, with a settle before the night pans (met in `-I`). Graded 0.5 ms on the turn, 1.0 ms at 100k; no background frames on the drag probe `-J` step 1 landed 2026-11-12 (coordinator, night delegation, for review): the 5 ms turn bar met; carried to `-K`: the cells through the backend (step 2, with Kuopio's 0.85 ms of set material sync a frame), graded total 0.5 / 1.0 ms (page uploads). `-K` part 1 (G2c-1) landed 2026-11-12 (coordinator, night delegation, for review): the cells, walls and their materials through the backend, no node; Kuopio's build time on frames gone; graded total 1.36-1.40 ms on the 30k 1 s turn and 1.52-1.65 at 100k, the page uploads carried to part 2. `-K` part 2 (G2c-2, built 2026-11-12, not landed): the page uploads and copies in Rust through the backend, 20-23 % more copies a frame in the same install budget; the graded total level (1.36-1.41 ms, 1.55-1.63 at 100k) and its bars missed: every frame of the turns spends the install budget with finished bakes waiting, so the total is the budget's, not the uploads' (record); carried to part 3. |
 | `RENDER-32-L` | B1 | Buildings by travel bucket, batches through the pools (`RENDER-34`) | 0.3 ms on the turn, 1.5 ms at 100k |
 | `RENDER-32-M` | T1 | Terrain and water residency, LOD and prewarm on the rings (`TERRAIN-05`, `WATER-01`) | 0.3 ms a frame on Kuopio's turn and pan |
 | `RENDER-32-N` | C1 | Prepared reach set (`CODE-12`), after a go/no-go measurement | Entered-to-drawn p95 at most three frames |
@@ -13750,6 +13750,167 @@ control 0.76 ms a frame). The graded total on the 30k 1 s turn and at 100k: 1.36
 (0.8-1.0 ms) are what remains above them. No node created or freed on a frame path for graded
 cells: met (no node at all; grass's mirrors are `RenderingServer` instances too). `PERF-07` at
 level F: level.
+
+### The graded page uploads in Rust (`RENDER-32-K` part 2, 2026-11-12)
+
+G2c-2: the page uploads (`write_copy` in `terrain_graded_pages.gd`) and the test waits of
+`TERRAIN-17` and `TERRAIN-24`. Edit batches, preview slots, T65 option (3), the tools' holds and
+`TERRAIN-23` remain part 3's.
+
+**Where the poll's time went** (measured first: the control's release library with timers in a
+copy of its scripts, 30k 1 s turns, instrumented, one run; mean a frame). The poll took its 1.0 ms
+install budget in every frame of all three turns (5.2-5.4 polls of four tiles, 20-22 tiles, 24-25
+copies a frame), and the budget, not the work, ended each frame's poll: the queue of finished
+bakes never emptied. Of the poll's 0.97-0.99 ms: Rust's poll call building the result
+dictionaries and their byte arrays 0.23-0.29 ms (about 12 us a tile); the copies' writes
+(`write_copy`) 0.22-0.23 ms, of which the slot layer's header edit (an `Image` copy on write)
+0.035, the slot layer's `RenderingDevice` update 0.056-0.061 (2.4 us a copy, 0.37-0.49 MB a
+frame) and the atlas layers 0.12 (2 us a layer, 57-60 layers a frame); the book's placing calls
+0.055-0.058; the rest of the tile handling in GDScript (result checks, the effects loop, the
+cells' runs) about 0.2; the loop around it (budget checks, counts) about 0.25. The bytes are not the cost: the
+device's copy of 0.4 MB is a few tens of microseconds; the per-copy calls and the GDScript around
+them are.
+
+**What moved.** The book writes each placed copy itself (`stream/layers/graded/uploads.rs`): the
+slot layer with the header's first channel set to the run's first atlas layer, then the atlas run
+a layer at a time, through the stream backend's new `texture_write_layer` (a `RenderingDevice`
+`texture_update` by the page texture's RID where the frame's thread may call the device, the
+`RenderingServer` from a reused `Image` otherwise). The renderer passes the bake's byte arrays
+with `upload`, `upload_reserved` and `place_preview` (shared, not copied); the take's write
+effects come as runs (effect 48) in their place among the effects, after the page arrays the
+effects before them made, and the trace's `write` lines are the book's, unchanged. A block's move
+copies its page through `texture_copy_layers` (device to device; the engine's own one-layer arrays
+read back exactly), and Compatibility's CPU copies (`TERRAIN-22`) are the backend's. The device
+updates a texture by whole layers only, so one call per page a frame is not available: a copy is
+one call for its slot layer and one per atlas layer, as before, without the `Image` copies.
+`terrain_graded_pages.gd` 290 to 180 lines (141 out, 31 in); `terrain_graded_tiles.gd` 1,617 to
+1,620.
+
+**Bounds.** A write `O(slot bytes + rows)`, one backend call per layer; a copy of a page
+`O(its layers)`. No allocation on the upload path once the take's writes list has grown (the
+bakes are shared, the upload array reused); Compatibility allocates a CPU copy per written layer,
+as before.
+
+**Budget.** The uploads stay inside the graded poll's 1.0 ms install budget and its checks, whose
+answers the traces pin; they do not join `StreamNode`'s 2.0 ms streaming budget (decision for
+review: the graded frame runs in `terrain.gd`, not in the stream node's frame, and on a turn whose
+queue never empties a shared 2.0 ms budget would raise the graded time a frame toward 2 ms rather
+than lower it; it belongs with part 3's edit rule, which puts edit batches outside the budget).
+
+**Test waits** (`TERRAIN-17`, `TERRAIN-24`). The stream status has no graded layer, so the
+renderer test waits on the renderer's own state: `_settle` already waited on the book's pending
+work and cell builds (`TERRAIN-17`, 2026-11-06); `_settle_production` now also waits until the
+renderer has taken and installed the graded edits up to the serial the simulation recorded for the
+bridge (`installed_edit_serial()` against `get_graded_edit_serial()` read after the edits). Before,
+three idle frames could pass while the edit's selection still ran on a worker (a busy core under a
+second suite), and the test could read the tiles without the bridge's walls: the likely cause of
+`TERRAIN-24`'s 0 faces (not reproduced).
+`./run.sh --test` now records the production renderer's trace through the bridge
+(`METRUM_GRADED_BRIDGE_TRACE`), checks that it draws a wall face and replays it bit for bit: the
+graded trace that draws a bridge mouth's walls (2 faces, 140 frames). The control `e7d9a148`'s
+renderer replays the branch's bridge trace bit for bit too.
+
+**Open risks of part 1, looked at.** The sets' instances stand at the patch rectangle's centre from
+its `f32` rectangle while `terrain.gd` places the node from the `f64` patch data: equal while the
+rectangle's corners are exact in `f32`, which holds on the patch grid of every integer-metre world
+(origins and sizes are whole metres under 2^24); not changed (reading the node's own position
+would go stale on a node move the book does not hear of). A page texture freed while a material
+still binds its RID: a page is dropped only from the pool, holding no copy, and a set binding it
+draws no graded cell from it; not changed.
+
+**Fresh results** (2026-11-12; control `e7d9a148`'s release library and release lib test binary
+built in a side worktree, its scripts; branch `47e13391`'s for the timing, rows and probe, whose
+tip `4fe029c3` adds the renderer test's wait, `run.sh`'s bridge trace and the mask fix below,
+which runs once per finished set build). The graded parts (instrumented, one run a side, 08:35-08:40; mean ms a frame):
+
+| Phase | control: poll, copies, graded total | branch: poll, copies, graded total |
+|---|---|---|
+| 30k turn_out 1 s | 0.90, 29.1, 1.32 | 0.88, 32.7, 1.36 |
+| 30k turn_back 1 s | 0.98, 27.9, 1.41 | 0.98, 31.9, 1.41 |
+| 30k turn_repeat 1 s | 1.00, 26.7, 1.40 | 0.98, 32.1, 1.41 |
+| 100k after the load | 1.51, 38.9, 2.21 (settled in 8.28 s) | 1.52, 43.3, 2.27 (7.80 s) |
+| 100k turn_out 1 s | 0.82, 19.9, 1.52 | 0.81, 23.9, 1.55 |
+| 100k turn_back 1 s | 0.87, 18.7, 1.56 | 0.88, 22.5, 1.57 |
+| 100k turn_repeat 1 s | 0.87, 21.0, 1.62 | 0.88, 23.8, 1.63 |
+
+The same budget installs 12-23 % more copies a frame (30-31 us a copy against 34-36 with
+everything the poll does), and the graded total does not move: on the turns the poll ends on its
+budget in every frame with finished bakes waiting (the branch installs about 1,800 copies in a
+1 s turn and the queue is still full at its end), so the total is the budget plus the frame's
+other graded work whatever a copy costs. To bring the mean to 0.5 ms the poll would need about 0.2 ms a frame for the 30 or more
+copies a turn frame asks: under 7 us a copy for the whole path (the polled result, its checks,
+the placing, the cell changes and about four device calls of 1.5-2.5 us), which a GDScript step
+per result and the result dictionaries cannot reach. The bars stay missed and are carried to part 3, where the
+result path (edits, variants, staging) moves to Rust as one piece.
+
+**Rows** (timed, C B B C, 08:40-08:49; 30k still and turns, Kuopio still and turns), p50 ms (C1,
+C2 / B1, B2):
+
+| Phase | 30k control | 30k branch | verdict | Kuopio control | Kuopio branch | verdict |
+|---|---|---|---|---|---|---|
+| still | 8.4, 8.4 | 8.4, 8.4 | level | 1.7, 2.1 | 1.6, 1.7 | max -6.4 |
+| turn_out 0.5 s | 16.9, 16.7 | 17.6, 17.8 | p50 +0.9 (spread 0.2) | 2.1, 1.9 | 1.9, 1.8 | level |
+| turn_back 0.5 s | 19.3, 16.0 | 16.5, 18.0 | level | 1.9, 1.9 | 1.9, 1.9 | level |
+| turn_repeat 0.5 s | 15.5, 16.4 | 17.2, 17.7 | p50 +1.5, max +1.8 (spread 0.9, 1.7) | 1.9, 1.9 | 1.9, 1.9 | level |
+| turn_out 1 s | 16.2, 16.0 | 16.3, 17.1 | level | 2.1, 2.1 | 2.1, 2.1 | max -1.8 |
+| turn_back 1 s | 16.3, 16.6 | 17.2, 16.5 | level | 2.0, 1.9 | 2.0, 2.0 | level |
+| turn_repeat 1 s | 16.6, 16.2 | 16.5, 16.6 | level | 2.0, 2.2 | 2.1, 2.2 | level |
+
+The one rerun, of the flagged group only (the 30k 0.5 s turns, C B B C, 08:49-08:51): level (p50
++0.2, -0.4, +0.1 against spreads 1.4, 1.0, 1.5; max -3.6, +4.0, +1.3 against 4.9, 6.3, 1.7).
+
+**Timing level F** (`./run.sh --timing --level F --control <ctl> --branch <br> --base e7d9a148`,
+release lib test binaries of `e7d9a148` and `47e13391`; 08:25-08:34): 30k 1x day acceptance PASS
+on both (unpreempted, p99.9, preempted less wait 6.42 / 4.60 / 4.59 ms against the branch's 6.11 /
+4.29 / 3.82), mean 2.234 against 2.233 ms, level on every metric; 30k 32x C B B C level (mean
+-0.4 %; one branch row noisy, tolerances doubled), the `PERF-17` known exception on both sides. No
+simulation path changed.
+
+**Products.** Replay: the eight `RENDER-32-J` traces and the bridge trace bit for bit (every
+`write` line, page creation, move and copy, publication, draw state, wall rebuild and budget
+answer) through the branch, and the bridge trace through the control's renderer too. Settled
+installs by digest (untimed, `METRUM_STREAM_DIGESTS=1`, 30k load, still and turns): 4 of 4 settle
+points equal, 3,280 tiles each. Stills (the idle matrix, hour 10, gamescope 1080p): Kuopio's
+`close` and `mid` byte-identical to the control in every run. `forest_low` was byte-identical in
+three branch runs of four; the fourth, taken while the debug library suite built and ran beside
+it, kept 657 grass pixels at the foot of the frame (at most 37 levels): the image the control
+shows 30 frames after a load (`RENDER-32-J`'s record), a grass mask rendered while a patch's cell
+set was building and never rendered again. The cause predates this round: a set build clears its
+counts and bumps the set's mask revision as it begins, grass mirrors the set then with no mesh
+holding instances, and the finished build did not bump it again, so the mirrors stayed hidden
+until some later change of that patch; faster installs or a loaded machine move where the last
+change falls. Fixed (`4fe029c3`: the finished build bumps the revision, with a Rust test); the
+fixed branch's three poses byte-identical to the control in both runs, the first beside the debug
+library suite, the second beside the rendered test runs. The 30k city's `saved`,
+`city` and `city_low` (two runs a side) differ control against control by 5,800-17,300 scattered
+pixels and branch against control by the same (5,700-17,800, no 16 x 16 block over 17 %); the
+pixels stable within each side but different between them (1,696, 607, 357 a pose) lie within
+the same count for the other pairings of the four runs (1,694-1,830, 430-591, 338-369): no
+systematic difference (the 30k stills, the digests and the probe ran `47e13391`). T60's probe on the
+branch (gamescope): the populated swing 2 strokes, 0
+failures; Kuopio's `kuopio_08` only `TERRAIN-23`'s fast commit, as `dev`.
+
+**Gates** (the tip `4fe029c3`, fresh): clippy `--all-targets` warning set equal to `e7d9a148`'s
+(`asset_document.rs:15` only); debug `cargo test --lib` 2,476 passed, 0 failed, 221 ignored;
+`./run.sh --test` PASS (Rust 2,480 of 2,480, 222 skipped; both Godot chains, no `SCRIPT ERROR`,
+no Godot script skipped; the zoning self-replay's traces and the bridge trace PASS). New Rust tests:
+`uploads.rs` (a copy's layer writes), `cells.rs` (a finished build's mask revision).
+`graded_tile_renderer_test` 20 times in a row headless and 20 times rendered (gamescope 640x480,
+as the gate runs it) beside the debug library suite's build and run: 0 failures of 40, and once
+more in each mode inside the gate.
+
+**Bars** (brief). Replay parity on all eight traces: met (and the bridge trace). Settled installs
+by digest: met (4 of 4). Stills: met after the mask fix (Kuopio byte-identical; 30k no difference
+beyond the control's own run-to-run speckle); before it, one loaded branch run of four kept a stale
+grass mask, see Products. The graded total at most 0.5 ms mean on the 30k 1 s turn and 1.0 ms at
+100k: missed (1.36-1.41 and 1.55-1.63 ms, level with the control): the turns spend the install
+budget in every frame with work waiting, so cheaper uploads install more a frame instead of
+costing less; carried to part 3. Every graded Godot test: met. T60's probe: met (the fast commit
+`TERRAIN-23`'s, as `dev`). `graded_tile_renderer_test` 20 times in a row: 20 of 20 headless and 20
+of 20 rendered (`TERRAIN-17`, `TERRAIN-24`). No node created or freed on a frame path: met (none;
+the uploads make no object). No per-frame allocation on the upload path: met on Forward+ (the
+bakes' bytes shared, one reused upload array; Compatibility keeps a CPU copy per written layer as
+before). `PERF-07` at level F: level.
 
 ## Implemented Runtime Contract
 

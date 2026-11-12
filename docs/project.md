@@ -65,6 +65,10 @@ and the 30k 1 s turns run at 20 ms p50 (28-32 before `RENDER-32-B`). `RENDER-32-
 not yet landed) draws those cells, walls and their materials as `RenderingServer` objects from
 Rust with no node: stills identical, the cells' part of a turn 0.3-0.4 ms a frame instead of
 0.5-0.8, and Kuopio's cell-set builds done within its load instead of 0.8 ms a frame after it.
+`RENDER-32-K` part 2 (built, not yet landed) writes the graded page uploads from Rust: a 30k turn
+installs 12-23 % more tiles a frame in the same budget, stills identical (after fixing a grass
+mask left stale by a cell set build), but the graded time a frame is unchanged, because the turns
+keep the install budget full; the renderer test's waits are fixed (`TERRAIN-17`, `TERRAIN-24`).
 `RENDER-32-F` (built, not yet landed)
 moves the vegetation's residency, bands and staleness to Rust, decision for decision equal to the
 GDScript on the benchmark's recorded paths: its frame time on a turn falls to 0.1-0.3 ms, and an
