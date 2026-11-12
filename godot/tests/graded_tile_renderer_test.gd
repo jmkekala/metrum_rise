@@ -589,6 +589,11 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	var bridge_trace := OS.get_environment("METRUM_GRADED_BRIDGE_TRACE")
 	if not bridge_trace.is_empty():
 		OS.set_environment("METRUM_GRADED_TRACE", bridge_trace)
+	# The streaming core decides the patches' residency (`RENDER-32-M`).
+	if host.get_node_or_null("StreamNode") == null:
+		var stream := StreamNode.new()
+		stream.name = "StreamNode"
+		host.add_child(stream)
 	var terrain := TerrainRenderer.new()
 	terrain.name = "Terrain"
 	host.add_child(terrain)

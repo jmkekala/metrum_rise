@@ -89,6 +89,11 @@ func _run() -> void:
 	_report["focus"] = [focus.x, focus.y, focus.z]
 	_report["empty"] = _memory()
 	var start_us := Time.get_ticks_usec()
+	# The streaming core decides the patches' residency (`RENDER-32-M`).
+	if scene.get_node_or_null("StreamNode") == null:
+		var stream := StreamNode.new()
+		stream.name = "StreamNode"
+		scene.add_child(stream)
 	var terrain := TerrainScript.new()
 	terrain.name = "Terrain"
 	scene.add_child(terrain)

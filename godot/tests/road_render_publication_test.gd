@@ -45,6 +45,11 @@ func _run():
 	var water := Node3D.new()
 	water.name = "Water"
 	host.add_child(water)
+	# The streaming core decides the patches' residency (`RENDER-32-M`).
+	if host.get_node_or_null("StreamNode") == null:
+		var stream := StreamNode.new()
+		stream.name = "StreamNode"
+		host.add_child(stream)
 	terrain = Terrain.new()
 	terrain.name = "Terrain"
 	host.add_child(terrain)

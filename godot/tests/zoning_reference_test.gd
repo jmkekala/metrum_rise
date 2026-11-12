@@ -153,6 +153,10 @@ func _reference(fixture: Dictionary) -> void:
 	var water := Node3D.new()
 	water.name = "Water"
 	scene.add_child(water)
+	# The streaming core decides the patches' residency (`RENDER-32-M`).
+	var stream := StreamNode.new()
+	stream.name = "StreamNode"
+	scene.add_child(stream)
 	var terrain := TerrainScript.new()
 	terrain.name = "Terrain"
 	scene.add_child(terrain)

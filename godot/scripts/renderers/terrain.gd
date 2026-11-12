@@ -238,9 +238,10 @@ func rebuild_from_simulation_state() -> void:
 	_reset_terrain_debug_counters()
 	_clear_patches()
 	# The streaming core decides residency, levels of detail and prewarm from here on and calls
-	# the stream_* units below (`RENDER-32-M`).
+	# the stream_* units below (`RENDER-32-M`). The water renderer registers itself as it rebuilds
+	# (`reset_water_patches`), after this.
 	_stream.reset_terrain_patches(
-		self, water_node, patch_cols, patch_rows, patch_interval_cells, terrain_cell_m, terrain_world_size
+		self, null, patch_cols, patch_rows, patch_interval_cells, terrain_cell_m, terrain_world_size
 	)
 	_push_debug_modes()
 	if graded_tiles != null:
