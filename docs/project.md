@@ -101,7 +101,7 @@ paths: terrain and water cost 0.13-0.17 ms a frame on Kuopio's turns and pans (0
 100k load's patch bookkeeping falls from 2.1 ms a frame to 0.01, and Kuopio is playable and
 settled about 0.6 s sooner after a load (a terrain build 0.41 to 0.16 ms, its land cover built off
 the main thread, and a post-load window at the control's own cost a frame). The stream benchmark gains a pond on the 30k city, made by a recorded recipe.
-`RENDER-32-P` (built 2026-11-12, for review) streams a load's road chunks in one at a time,
+`RENDER-32-P` (landed 2026-11-12) streams a load's road chunks in one at a time,
 nearest first with the near ring before the hand-over, instead of every chunk in the load's first
 frame (one 1.4 s frame at 100k; now at most 33 ms of road work in any frame), draws the parked
 cars through pooled objects with no node per chunk, keeps the zoning masks on a 2 km ring about
