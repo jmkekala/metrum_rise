@@ -33,8 +33,10 @@ const POLL_BATCH: usize = 4;
 /// What the install budget charges a frame for each tile it placed: the cell rewrites the install
 /// causes later in the frame (`apply_cell_changes`, after the poll), so the poll stops while the
 /// frame's graded work still fits the budget. A fixed constant (no adaptive estimate, `RENDER-32`
-/// 5.4): the 100k turns' measured cell rewrites a placed tile, 10-13 us (30k: 8-9).
-const CELL_CHARGE_US: i64 = 12;
+/// 5.4): a placed tile's cell rewrites as measured on the turns, about four cell tiles at 2.0-2.2
+/// us each (30k and 100k alike; the 100k turns' patch-wide rewrites are the camera's, not the
+/// installs').
+const CELL_CHARGE_US: i64 = 8;
 
 // `take_result_counts`: results deferred, tiles that waited for their sets' variant, evictions
 // and same-level uploads the book applied, then the longest poll (us, kept), then the perf
