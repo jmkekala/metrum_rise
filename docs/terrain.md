@@ -12995,13 +12995,38 @@ wait 6.30 / 4.29 / 5.48 ms against the control's 6.07 / 4.35 / 5.03), mean 2.227
 level on every metric; 30k 32x C B B C level (mean -0.2%), the `PERF-17` known exception on both
 sides. No simulation path changed.
 
+**One call for the hand-over** (the round's fix-first). The instrumented runs above left the 100k
+turns at 0.48-0.70 ms, mostly the stale cancels: each complete tile's cancel was one GDScript
+call to `cancel_graded_tile` (250-400 a frame). Now `SimulationNode.hand_over_graded_tiles(book)`
+takes the book's stale cancels and requests, applies them to the bake queue in order under one
+lock (as the per-tile cancels and the one request call did), starts the bakes once after the
+requests and hands the answers back to the book: no GDScript per tile, no allocation once warm,
+`O(cancels + requests)`. A traced renderer runs the same queue routine from flat arrays
+(`hand_over_graded_ops`) and records each answer where the renderer made it, so the traces keep
+their lines: all eight trace files still replay bit for bit. Fresh (02:08-02:36, one
+instrumented run a side at 100k, control `dev` `0aab8176`):
+
+| Phase | control residency + relevel (requests) | branch residency + relevel (requests) |
+|---|---|---|
+| 100k turn_out 1 s | 2.61 + 0.19 = 2.80 (2.47) | 0.26 + 0.17 = 0.43 (0.21) |
+| 100k turn_back 1 s | 2.48 + 0.21 = 2.68 (2.30) | 0.21 + 0.16 = 0.37 (0.15) |
+| 100k turn_repeat 1 s | 2.30 + 0.20 = 2.51 (2.13) | 0.24 + 0.17 = 0.40 (0.18) |
+| 30k turn_out 1 s | (above: 0.71) | 0.15 + 0.05 = 0.19 (0.09) |
+| 30k turn_back 1 s | (above: 0.79) | 0.25 + 0.05 = 0.30 (0.09; cell set builds 0.14) |
+| 30k turn_repeat 1 s | (above: 0.71) | 0.10 + 0.05 = 0.15 (0.06) |
+
+30k turn rows, C B B C (turns only): the 0.5 s turns faster (p50 -1.8 and -0.6 ms, `turn_back`'s
+maximum -7.1), the 1 s turns level (p50 +1.0, -1.0, +0.8 against spreads of 1.2-2.2).
+
 **Bars** (brief): replay parity: met (every trace, every output, through the Rust state). `-B`'s
-page checks: residency and re-levelling 0.21, 0.31 and 0.21 ms on the 30k 1 s turns (bar 0.3:
-met on two, 0.305 on `turn_back`, whose cell set builds are 0.11 ms of it) and 0.55, 0.70 and 0.48
-ms on the 100k turns (bar 0.5: met on one; the stale cancels' calls); none of the 30k turn's
-missing p50 gain recovered measurably. `TERRAIN-09`'s pooled pages bounded: met (32 MiB, tested).
-`-H`'s night against day with the pans settled: met. Remaining with attribution: the batched queue
-call (`-I` follow-up or `-J`) and the cell rewrites (`-J`).
+page checks: residency and re-levelling 0.19, 0.30 and 0.15 ms on the 30k 1 s turns (bar 0.3:
+met, `turn_back` at the bar with 0.14 ms of cell set builds, `-J`'s) and 0.43, 0.37 and 0.40 ms
+on the 100k turns (bar 0.5: met). The 30k 1 s turn's missing p50 gain: none measurable (the turn's
+graded time is now the cell rewrites, 3.2-3.6 ms, `-J`); the 0.5 s turns gained 0.6-1.8 ms.
+`TERRAIN-09`'s pooled pages bounded: met (32 MiB, tested). `-H`'s night against day with the
+pans settled: met. `PERF-07` at level F: level (the timing above ran before the one-call
+hand-over, which touches no simulation path). Carried to `-J`: the cell set builds inside
+`turn_back`'s 0.30 ms and the turn's p50 (the cell rewrites).
 
 ## Implemented Runtime Contract
 

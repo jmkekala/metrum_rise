@@ -51,7 +51,7 @@ turns are twice as fast.
 on the 30k city at night they cost 0.2 ms a frame instead of 5 ms, and night turns no longer cost
 more than day turns. `RENDER-32-I` (built, not yet landed) moves the graded renderer's
 pages, copies, growth, installed tiles and bake hand-over to Rust, proven by replaying recorded
-traces bit for bit: the hand-over costs a fifth of what it did on a 30k turn, and the pooled
+traces bit for bit: the graded residency work on a 100k turn falls from 2.5-2.8 ms a frame to 0.4, and the pooled
 empty pages are bounded at 32 MiB (`TERRAIN-09`).
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
