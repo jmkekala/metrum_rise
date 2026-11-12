@@ -16,3 +16,4 @@ pub(crate) mod ordered;
 pub(crate) mod pages;
 pub(crate) mod state;
 pub(crate) mod tiles;
+pub(crate) mod uploads;

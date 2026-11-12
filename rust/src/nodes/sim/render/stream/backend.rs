@@ -124,6 +124,26 @@ pub(crate) trait RenderBackend {
     fn instance_set_material_handle(&mut self, _instance: Handle, _material: Option<Handle>) {}
     /// Sets an instance shader parameter (a catalogue index) to an integer vector.
     fn instance_set_vector(&mut self, _instance: Handle, _parameter: u32, _value: Vector) {}
+    // The graded pages' contents (`RENDER-32-K` part 2). A page's layered textures are
+    // resources made by GDScript and handed over by handle; their layers are written here. A
+    // backend that serves no such layer keeps the defaults: nothing is written.
+    /// Writes layer `layer` of the RGBAF layered texture `texture`, whose layers are `size`
+    /// texels wide and high (`size[0] * size[1] * 16` bytes): `fill` writes those bytes into
+    /// the backend's upload array, which is reused across calls.
+    fn texture_write_layer(
+        &mut self,
+        _texture: Handle,
+        _layer: u32,
+        _size: [u32; 2],
+        _fill: &mut dyn FnMut(&mut [u8]),
+    ) {
+    }
+    /// Copies layers `0..layers` of `from` into the same layers of `to`, both RGBAF layered
+    /// textures of `size` texels a layer.
+    fn texture_copy_layers(&mut self, _from: Handle, _to: Handle, _size: [u32; 2], _layers: u32) {}
+    /// Drops what the backend keeps of `texture`'s written layers (a CPU copy where the
+    /// renderer cannot read a texture back): the texture holds nothing the caller needs.
+    fn texture_forget(&mut self, _texture: Handle) {}
 }
 
 /// Where a layer's entries start in a shared catalogue ([`GodotBackend::add_catalogue`]): its
@@ -653,14 +673,16 @@ pub(crate) use godot_backend::GodotBackend;
 
 mod godot_backend {
     use super::*;
-    use godot::classes::RenderingServer;
+    use godot::classes::image::Format;
+    use godot::classes::rendering_device::TextureUsageBits;
+    use godot::classes::{DisplayServer, Image, RenderingDevice, RenderingServer};
     use godot::classes::rendering_server::{
         MultimeshTransformFormat, ShadowCastingSetting, VisibilityRangeFadeMode,
     };
-    use godot::obj::Singleton;
+    use godot::obj::{EngineBitfield, Singleton};
     use godot::prelude::{
-        Basis, Gd, PackedFloat32Array, Rid, StringName, ToGodot, Transform3D, Variant, Vector2i,
-        Vector3, Vector4i,
+        Basis, Gd, PackedByteArray, PackedFloat32Array, Rid, StringName, ToGodot, Transform3D,
+        Variant, Vector2i, Vector3, Vector4i,
     };
 
     /// The `RenderingServer` backend. Holds the meshes, materials and parameter names the layers
@@ -675,20 +697,79 @@ mod godot_backend {
         scratch: Map<usize, PackedFloat32Array>,
         // Microseconds spent copying rows into the upload arrays since the last take.
         copy_us: f64,
+        // The texture layer writes (`RENDER-32-K` part 2): one reused upload array; the
+        // `RenderingDevice` where this thread may call it (Forward+ and Mobile, Godot's default
+        // single-threaded rendering), else the `RenderingServer` through one reused `Image` per
+        // layer size; on a renderer without device readback but with a display (Compatibility,
+        // `TERRAIN-22`) a CPU copy of every written layer, which a page's growth copies.
+        upload: PackedByteArray,
+        device: Option<Gd<RenderingDevice>>,
+        images: Map<[u32; 2], Gd<Image>>,
+        mirrored: bool,
+        mirror: Map<Handle, Map<u32, PackedByteArray>>,
+        mirror_bytes: i64,
     }
 
     impl GodotBackend {
         /// A backend drawing in `scenario`.
         pub(crate) fn new(scenario: Rid) -> Self {
+            let mut server = RenderingServer::singleton();
+            let device = server
+                .is_on_render_thread()
+                .then(|| server.get_rendering_device())
+                .flatten();
+            let mirrored = server.get_rendering_device().is_none()
+                && DisplayServer::singleton().get_name().to_string() != "headless";
             Self {
-                server: RenderingServer::singleton(),
+                server,
                 meshes: Vec::new(),
                 materials: Vec::new(),
                 parameters: Vec::new(),
                 scenarios: [Some(scenario), None],
                 scratch: Map::default(),
                 copy_us: 0.0,
+                upload: PackedByteArray::new(),
+                device,
+                images: Map::default(),
+                mirrored,
+                mirror: Map::default(),
+                mirror_bytes: 0,
             }
+        }
+
+        /// The bytes of the written layers' CPU copies.
+        pub(crate) fn mirror_bytes(&self) -> i64 {
+            self.mirror_bytes
+        }
+
+        /// The CPU copy of `texture`'s layer `layer` (empty: never written since the texture
+        /// was made or forgotten).
+        pub(crate) fn mirror_layer(&self, texture: Handle, layer: u32) -> PackedByteArray {
+            self.mirror
+                .get(&texture)
+                .and_then(|layers| layers.get(&layer))
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        // Keeps `data` as the CPU copy of `texture`'s layer `layer` (shared, not copied).
+        fn keep(&mut self, texture: Handle, layer: u32, data: PackedByteArray) {
+            self.mirror_bytes += data.len() as i64;
+            if let Some(old) = self.mirror.entry(texture).or_default().insert(layer, data) {
+                self.mirror_bytes -= old.len() as i64;
+            }
+        }
+
+        // Writes `data` into layer `layer` of `texture` through the `RenderingServer` (no
+        // device on this thread), from the size's reused `Image`.
+        fn server_write(&mut self, texture: Handle, layer: u32, size: [u32; 2], data: &PackedByteArray) {
+            let (width, height) = (size[0] as i32, size[1] as i32);
+            let image = self.images.entry(size).or_insert_with(|| {
+                Image::create_empty(width, height, false, Format::RGBAF).expect("an RGBAF image")
+            });
+            image.set_data(width, height, false, Format::RGBAF, data);
+            self.server
+                .texture_2d_update(Rid::new(texture), &*image, layer as i32);
         }
 
         /// Registers the meshes, materials and instance parameter names by index.
@@ -896,6 +977,85 @@ mod godot_backend {
             };
             self.server
                 .instance_geometry_set_shader_parameter(Rid::new(instance), name, &value);
+        }
+
+        fn texture_write_layer(
+            &mut self,
+            texture: Handle,
+            layer: u32,
+            size: [u32; 2],
+            fill: &mut dyn FnMut(&mut [u8]),
+        ) {
+            let length = size[0] as usize * size[1] as usize * 16;
+            if self.upload.len() != length {
+                self.upload.resize(length);
+            }
+            // The array is unshared here (a kept CPU copy is a clone, replaced below), so this
+            // writes in place.
+            fill(self.upload.as_mut_slice());
+            if let Some(device) = self.device.as_mut() {
+                // The device copies the bytes into its staging memory before it returns.
+                let target = self.server.texture_get_rd_texture(Rid::new(texture));
+                device.texture_update(target, layer, &self.upload);
+                return;
+            }
+            let data = std::mem::take(&mut self.upload);
+            self.server_write(texture, layer, size, &data);
+            if self.mirrored {
+                self.keep(texture, layer, data.clone());
+            }
+            self.upload = data;
+        }
+
+        fn texture_copy_layers(&mut self, from: Handle, to: Handle, size: [u32; 2], layers: u32) {
+            if let Some(device) = self.device.as_mut() {
+                let source = self.server.texture_get_rd_texture(Rid::new(from));
+                let target = self.server.texture_get_rd_texture(Rid::new(to));
+                // A page's own arrays may be copied into on the device; the engine's layered
+                // arrays (a one-layer test page) may not, so those are read back exactly.
+                let copyable = device.texture_get_format(target).is_some_and(|format| {
+                    format.get_usage_bits().is_set(TextureUsageBits::CAN_COPY_TO_BIT)
+                });
+                let extent = Vector3::new(size[0] as f32, size[1] as f32, 1.0);
+                for layer in 0..layers {
+                    if copyable {
+                        device.texture_copy(source, target, Vector3::ZERO, Vector3::ZERO, extent, 0, 0, layer, layer);
+                    } else {
+                        let data = device.texture_get_data(source, layer);
+                        device.texture_update(target, layer, &data);
+                    }
+                }
+                return;
+            }
+            if !self.mirrored {
+                // The dummy renderer (headless) stores no texels.
+                return;
+            }
+            // Compatibility: the source's written layers from their CPU copies (`TERRAIN-22`;
+            // Godot 4.7.2's GLES3 reads an RGBAF layer back clamped, so nothing is read back).
+            let written: Vec<(u32, PackedByteArray)> = self
+                .mirror
+                .get(&from)
+                .map(|copies| {
+                    let mut copies: Vec<_> = copies
+                        .iter()
+                        .filter(|(layer, _)| **layer < layers)
+                        .map(|(&layer, data)| (layer, data.clone()))
+                        .collect();
+                    copies.sort_unstable_by_key(|(layer, _)| *layer);
+                    copies
+                })
+                .unwrap_or_default();
+            for (layer, data) in written {
+                self.server_write(to, layer, size, &data);
+                self.keep(to, layer, data);
+            }
+        }
+
+        fn texture_forget(&mut self, texture: Handle) {
+            if let Some(copies) = self.mirror.remove(&texture) {
+                self.mirror_bytes -= copies.values().map(|data| data.len() as i64).sum::<i64>();
+            }
         }
     }
 

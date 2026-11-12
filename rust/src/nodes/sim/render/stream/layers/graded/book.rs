@@ -16,7 +16,8 @@ use super::objects::{Applied, CellCatalogue, CellObjects, PatchDraw};
 use super::copies::PlaceFailure;
 use super::pages::{Copy, PageEvent, PoolPolicy};
 use super::state::{Block, Effect, Graded, PageRef, Shape, Tile};
-use crate::nodes::sim::render::stream::backend::GodotBackend;
+use super::uploads::{self, ATLAS_WIDTH};
+use crate::nodes::sim::render::stream::backend::{GodotBackend, RenderBackend};
 use crate::nodes::sim::render::stream::levels::level_code;
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb as Bounds;
 use godot::prelude::*;
@@ -96,6 +97,30 @@ pub struct GradedTileBook {
     cell_counts: [i64; CELL_COUNTERS],
     // Every page's textures as the renderer made them (kept across an attach).
     page_textures: std::collections::HashMap<i64, [u64; 2]>,
+    // The page uploads (`RENDER-32-K` part 2): every page's shape as made (slot side, slots,
+    // atlas layers), the bake the renderer is placing, the last take's writes with the bakes
+    // they take (applied in runs, effect 48) and what they counted.
+    page_shapes: std::collections::HashMap<u32, [u32; 3]>,
+    staged: Option<Bake>,
+    writes: Vec<PageWrite>,
+    upload_counts: [i64; 3],
+}
+
+// A bake as the renderer places it: its slot layer and row atlas run (little-endian RGBAF,
+// shared with the polled result, not copied) and what a trace's `write` line names: the tile's
+// x and z, level code, step and token.
+#[derive(Clone)]
+struct Bake {
+    texels: PackedByteArray,
+    rows: PackedByteArray,
+    names: [i64; 5],
+}
+
+// One copy to write: its page, the copy and the bake it takes.
+struct PageWrite {
+    page: u32,
+    copy: Copy,
+    bake: Bake,
 }
 
 // `cell_counters`: the frame's material sync, wall and flip microseconds (reset with the frame's
@@ -450,14 +475,26 @@ impl GradedTileBook {
     }
 
     /// Installs `tile` at `code`/`step`/`token` with `layers` atlas layers and its bake's wall
-    /// faces. False where its pages could not take it (it waits, or is exhausted: effects).
+    /// faces; the copies it writes take the bake's slot layer `texels` and row atlas run `rows`
+    /// (effect 48). False where its pages could not take it (it waits, or is exhausted: effects).
     #[func]
-    pub fn upload(&mut self, tile: Vector2i, level: Vector4i, layers: i64, walls: PackedFloat32Array) -> bool {
+    pub fn upload(
+        &mut self,
+        tile: Vector2i,
+        level: Vector4i,
+        layers: i64,
+        walls: PackedFloat32Array,
+        texels: PackedByteArray,
+        rows: PackedByteArray,
+    ) -> bool {
+        self.stage(tile, level, texels, rows);
         self.upload_with(tile, level, layers, None, walls)
     }
 
-    /// Installs an edit batch's `tile` into its reserved copies (flat page, slot, first, layers).
+    /// Installs an edit batch's `tile` into its reserved copies (flat page, slot, first, layers),
+    /// as `upload` does.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn upload_reserved(
         &mut self,
         tile: Vector2i,
@@ -465,7 +502,10 @@ impl GradedTileBook {
         layers: i64,
         copies: PackedInt64Array,
         walls: PackedFloat32Array,
+        texels: PackedByteArray,
+        rows: PackedByteArray,
     ) -> bool {
+        self.stage(tile, level, texels, rows);
         let copies = copies
             .as_slice()
             .as_chunks::<4>().0.iter()
@@ -474,6 +514,12 @@ impl GradedTileBook {
             })
             .collect();
         self.upload_with(tile, level, layers, Some(copies), walls)
+    }
+
+    // The bake whose copies the next take's writes take.
+    fn stage(&mut self, tile: Vector2i, level: Vector4i, texels: PackedByteArray, rows: PackedByteArray) {
+        let names = [tile.x, tile.y, level.x, level.y, level.z].map(i64::from);
+        self.staged = Some(Bake { texels, rows, names });
     }
 
     // `_upload`: the walls staged for the entry it makes; a placed tile whose faces changed
@@ -500,10 +546,19 @@ impl GradedTileBook {
         done
     }
 
-    /// Places the preview's `tile` with its wall faces: 0 placed (what it draws changed), 1 a
-    /// full page waits (its block grows), 2 exhausted.
+    /// Places the preview's `tile` with its wall faces and bake bytes (as `upload` takes them):
+    /// 0 placed (what it draws changed), 1 a full page waits (its block grows), 2 exhausted.
     #[func]
-    pub fn place_preview(&mut self, tile: Vector2i, level: Vector4i, layers: i64, walls: PackedFloat32Array) -> i64 {
+    pub fn place_preview(
+        &mut self,
+        tile: Vector2i,
+        level: Vector4i,
+        layers: i64,
+        walls: PackedFloat32Array,
+        texels: PackedByteArray,
+        rows: PackedByteArray,
+    ) -> i64 {
+        self.stage(tile, level, texels, rows);
         let tile = tile_of(tile);
         let level = (level.x as u8, level.y as u8, i64::from(level.z), level.w != 0);
         self.state.settle();
@@ -1251,19 +1306,29 @@ impl GradedTileBook {
         let mut out = std::mem::take(&mut self.encoded);
         out.clear();
         self.cell_effects.clear();
+        self.writes.clear();
+        let staged = self.staged.take();
         let attached = self.objects.is_some();
         for effect in self.state.out.drain(..) {
             // The cells' effects run in Rust (`apply_cells`), as runs in their place.
             if attached && is_cell_effect(&effect) {
-                let at = self.cell_effects.len() as i64;
+                push_run(&mut out, 47, self.cell_effects.len() as i64);
                 self.cell_effects.push(effect);
-                let last = out.len().saturating_sub(EFFECT_FIELDS);
-                if out.len() >= EFFECT_FIELDS && out[last] == 47 && out[last + 2] == at {
-                    out[last + 2] = at + 1;
-                } else {
-                    out.extend([47, at, at + 1, 0, 0, 0, 0]);
-                }
                 continue;
+            }
+            // So do the uploads (`apply_writes`), each with the bake being placed.
+            if let Effect::Write { page, copy } = effect {
+                let Some(bake) = staged.as_ref() else {
+                    debug_assert!(false, "a write without a staged bake");
+                    continue;
+                };
+                push_run(&mut out, 48, self.writes.len() as i64);
+                self.writes.push(PageWrite { page, copy, bake: bake.clone() });
+                continue;
+            }
+            if let Effect::PageMade { id, code, slots, layers, .. } = effect {
+                let side = self.state.pages.level(code).side as u32;
+                self.page_shapes.insert(id, [side, slots, layers]);
             }
             let fields: [i64; EFFECT_FIELDS] = match effect {
                 Effect::PageMade { id, reused, code, block, slots, layers } => [
@@ -1288,15 +1353,7 @@ impl GradedTileBook {
                     i64::from(layers),
                 ],
                 Effect::Page(PageEvent::New(_) | PageEvent::Reuse(_)) => unreachable!("made into PageMade"),
-                Effect::Write { page, copy } => [
-                    10,
-                    i64::from(page),
-                    i64::from(copy.slot),
-                    i64::from(copy.first),
-                    i64::from(copy.layers),
-                    0,
-                    0,
-                ],
+                Effect::Write { .. } => unreachable!("taken as a run"),
                 Effect::Cancel { tile, stale } => [12, i64::from(tile.x), i64::from(tile.z), i64::from(stale), 0, 0, 0],
                 Effect::Exhausted { tile, code } => [13, i64::from(tile.x), i64::from(tile.z), i64::from(code), 0, 0, 0],
                 Effect::Evicted { tile, .. } => [14, i64::from(tile.x), i64::from(tile.z), 0, 0, 0, 0],
@@ -1443,6 +1500,106 @@ impl GradedTileBook {
         if let Some(objects) = self.objects.as_mut() {
             objects.pages.insert(page, textures);
         }
+    }
+
+    /// Applies the writes `first` to `end` of the last take (a run, effect 48): each copy takes
+    /// its bake's slot layer and row atlas run through the backend (`write_copy` of
+    /// `terrain_graded_pages.gd`), traced as a `write` line. O(the copies' bytes).
+    #[func]
+    pub fn apply_writes(&mut self, first: i64, end: i64) {
+        let Self { backend, writes, page_textures, page_shapes, trace, upload_counts, .. } = self;
+        for write in &writes[first as usize..end as usize] {
+            let (copy, names) = (write.copy, write.bake.names);
+            if let Some(trace) = trace.as_mut() {
+                trace_out(
+                    trace,
+                    format!(
+                        "write {} {} {} {} {} {} {} {} {}",
+                        write.page, copy.slot, copy.first, copy.layers, names[0], names[1], names[2], names[3], names[4]
+                    ),
+                );
+            }
+            upload_counts[0] += 1;
+            upload_counts[1] += (write.bake.texels.len() + write.bake.rows.len()) as i64;
+            let (Some(backend), Some(textures), Some(shape)) = (
+                backend.as_mut(),
+                page_textures.get(&i64::from(write.page)),
+                page_shapes.get(&write.page),
+            ) else {
+                continue;
+            };
+            let start = std::time::Instant::now();
+            uploads::write_copy(
+                backend,
+                *textures,
+                shape[0],
+                copy,
+                write.bake.texels.as_slice(),
+                write.bake.rows.as_slice(),
+            );
+            upload_counts[2] = upload_counts[2].max(start.elapsed().as_micros() as i64);
+        }
+    }
+
+    /// The copies written since the book was made (the renderer's `uploads` counter).
+    #[func]
+    pub fn uploads(&self) -> i64 {
+        self.upload_counts[0]
+    }
+
+    /// The bytes those copies wrote (`upload_bytes`).
+    #[func]
+    pub fn upload_bytes(&self) -> i64 {
+        self.upload_counts[1]
+    }
+
+    /// The longest copy's write, microseconds (`upload_ms_max`).
+    #[func]
+    pub fn upload_us_max(&self) -> i64 {
+        self.upload_counts[2]
+    }
+
+    /// Copies page `source`'s contents into page `target` (a block's move to a larger page:
+    /// every slot layer and atlas layer the source has, into the same layers). O(the source's
+    /// layers), device to device where the renderer has a device.
+    #[func]
+    pub fn copy_page(&mut self, source: i64, target: i64) {
+        let (Some(backend), Some(from), Some(to), Some(&[side, slots, layers])) = (
+            self.backend.as_mut(),
+            self.page_textures.get(&source),
+            self.page_textures.get(&target),
+            self.page_shapes.get(&(source as u32)),
+        ) else {
+            return;
+        };
+        backend.texture_copy_layers(from[0], to[0], [side, side + 1], slots);
+        backend.texture_copy_layers(from[1], to[1], [ATLAS_WIDTH, 1], layers);
+    }
+
+    /// Page `page` holds no copy any more (released): what the backend keeps of its layers
+    /// goes (Compatibility's CPU copies).
+    #[func]
+    pub fn forget_page(&mut self, page: i64) {
+        if let (Some(backend), Some(textures)) = (self.backend.as_mut(), self.page_textures.get(&page)) {
+            backend.texture_forget(textures[0]);
+            backend.texture_forget(textures[1]);
+        }
+    }
+
+    /// The CPU copy of page `page`'s slot layer (`texels`) or atlas layer `layer` where the
+    /// renderer keeps one (Compatibility, `TERRAIN-22`); empty where none was written. For tests.
+    #[func]
+    pub fn page_layer(&self, page: i64, texels: bool, layer: i64) -> PackedByteArray {
+        match (self.backend.as_ref(), self.page_textures.get(&page)) {
+            (Some(backend), Some(textures)) => backend.mirror_layer(textures[usize::from(!texels)], layer as u32),
+            _ => PackedByteArray::new(),
+        }
+    }
+
+    /// The bytes of every page's CPU copies (Compatibility; 0 elsewhere).
+    #[func]
+    pub fn page_mirror_bytes(&self) -> i64 {
+        self.backend.as_ref().map_or(0, GodotBackend::mirror_bytes)
     }
 
     /// Applies the cell effects `first` to `end` of the last take (a run, effect 47) to the
@@ -1713,6 +1870,17 @@ fn collect(objects: &CellObjects, set: u32, out: &mut [Rid; 8]) -> usize {
         count += 1;
     }
     count
+}
+
+// Encodes effect `index` of a run kind (47 cells, 48 writes) into `out`: extends the last run
+// when it is of the same kind and ends at `index`, else starts one.
+fn push_run(out: &mut Vec<i64>, kind: i64, index: i64) {
+    let last = out.len().saturating_sub(EFFECT_FIELDS);
+    if out.len() >= EFFECT_FIELDS && out[last] == kind && out[last + 2] == index {
+        out[last + 2] = index + 1;
+    } else {
+        out.extend([kind, index, index + 1, 0, 0, 0, 0]);
+    }
 }
 
 fn trace_out(trace: &mut Gd<RefCounted>, line: String) {

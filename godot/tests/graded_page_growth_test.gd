@@ -168,9 +168,10 @@ func _run() -> void:
 		# layers: four slot layers and every run written into it since it was created.
 		var page: Dictionary = graded.page_store.by_id[grown]
 		var kept := 0
-		for key: String in ["texel_bytes", "atlas_bytes"]:
-			for data: PackedByteArray in page[key]:
-				kept += data.size()
+		for layer in int(page["slots"]):
+			kept += graded._book.page_layer(grown, true, layer).size()
+		for layer in int(page["layers"]):
+			kept += graded._book.page_layer(grown, false, layer).size()
 		expect(graded.page_store.mirror_bytes == kept, "the CPU copy is the bound page's written layers: %d of %d" % [graded.page_store.mirror_bytes, kept])
 		expect(kept <= int(page["bytes"]), "the CPU copy is at most the page's bytes")
 	graded.dispose()

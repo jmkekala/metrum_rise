@@ -30,6 +30,9 @@ pub(crate) enum Command {
     MaterialTexture(Handle, u32, Option<Handle>),
     InstanceMaterialHandle(Handle, Option<Handle>),
     InstanceVector(Handle, u32, Vector),
+    TextureLayer(Handle, u32, [u32; 2], u64),
+    TextureCopy(Handle, Handle, u32),
+    TextureForget(Handle),
 }
 
 /// A recorded material: its shader and its texture parameters.
@@ -77,6 +80,9 @@ pub(crate) struct Recorder {
     pub(crate) multimeshes: BTreeMap<Handle, RecordedMultimesh>,
     pub(crate) instances: BTreeMap<Handle, RecordedInstance>,
     pub(crate) materials: BTreeMap<Handle, RecordedMaterial>,
+    // Every written texture layer's bytes, by texture and layer.
+    pub(crate) textures: BTreeMap<Handle, BTreeMap<u32, Vec<u8>>>,
+    upload: Vec<u8>,
     // Whether the reflection scenario exists.
     pub(crate) reflection: bool,
     next: Handle,
@@ -352,4 +358,43 @@ impl RenderBackend for Recorder {
             .push(Command::InstanceVector(instance, parameter, value));
         self.instance(instance).vectors.insert(parameter, value);
     }
+
+    fn texture_write_layer(
+        &mut self,
+        texture: Handle,
+        layer: u32,
+        size: [u32; 2],
+        fill: &mut dyn FnMut(&mut [u8]),
+    ) {
+        self.upload.clear();
+        self.upload.resize(size[0] as usize * size[1] as usize * 16, 0);
+        fill(&mut self.upload);
+        self.commands
+            .push(Command::TextureLayer(texture, layer, size, bytes_digest(&self.upload)));
+        self.textures
+            .entry(texture)
+            .or_default()
+            .insert(layer, self.upload.clone());
+    }
+
+    fn texture_copy_layers(&mut self, from: Handle, to: Handle, _size: [u32; 2], layers: u32) {
+        self.commands.push(Command::TextureCopy(from, to, layers));
+        let copied: Vec<(u32, Vec<u8>)> = self
+            .textures
+            .get(&from)
+            .map(|written| written.range(..layers).map(|(&layer, bytes)| (layer, bytes.clone())).collect())
+            .unwrap_or_default();
+        self.textures.entry(to).or_default().extend(copied);
+    }
+
+    fn texture_forget(&mut self, texture: Handle) {
+        self.commands.push(Command::TextureForget(texture));
+    }
+}
+
+// FNV-1a over `bytes`.
+fn bytes_digest(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }

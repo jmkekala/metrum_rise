@@ -4,10 +4,10 @@
 ## graded 64 m tiles of the resident patches by camera distance, the pages (docs/terrain.md "Pages
 ## and the row atlas": per level several, each a Texture2DArray of slot layers and one of row atlas
 ## layers, a block of patches binding one page per level, a tile held in each page its patches'
-## blocks use), in-place uploads from pooled Images per level, and per patch one MultiMesh per
+## blocks use), in-place uploads (the book's, `RENDER-32-K` part 2), and per patch one MultiMesh per
 ## cell mesh (the base cells and GL0-GL3) whose instances carry the tile's place in the patch, slot
 ## and stitching codes, each graded level with its own material binding its block's page (the
-## pages' allocator and row atlas uploads are terrain_graded_pages.gd's). It does no
+## pages' textures are terrain_graded_pages.gd's). It does no
 ## geometry: positions, stitching, clamping and the mask are terrain_cells.gdshaderinc's, the
 ## values Rust's. Nothing is created per edit; the counters in get_pool_counters() prove it.
 ## An edit (item 5) dirties the tiles Rust selects for it at the level each is held at: they
@@ -25,7 +25,8 @@
 ## preview tile's copies, the requests, refusals and exhaustion, the edit batch's tokens and the
 ## hand-over to the bake queue, which starts the bakes nearest the camera first within its
 ## in-flight bound. This script calls it where it did that work and applies its effects
-## (_apply_effects): page arrays and uploads, cancels, and the cells' Godot calls. The cell sets,
+## (_apply_effects): page arrays, cancels, and the runs of uploads and cells' Godot calls the book
+## makes in their place. The cell sets,
 ## walls and draw states are the book's too (`RENDER-32-J`): every set's instance records and CPU
 ## buffers, the per-tile updates, the builds' order, the wall faces and what each resident patch
 ## draws. Their Godot objects are the book's too (`RENDER-32-K`): per set a `RenderingServer`
@@ -113,8 +114,6 @@ var installed: Dictionary:
 		return _entries(false)
 # The edit batch's staged results (the book keeps the batch's tokens): tile key -> its bake.
 var _edit_staged: Dictionary = {}
-# The bake result an upload's write effects write.
-var _uploading: Dictionary = {}
 # The views `installed` and `preview` built since the book last changed (null: none).
 var _views: Array = [null, null]
 # A traced hand-over's answers (per stale cancel, then per request) and the next cancel's.
@@ -756,12 +755,11 @@ func _show_preview_tile(tile: Dictionary) -> void:
 		return
 	var code := int(tile["level"])
 	var layers := (tile["rows"] as PackedByteArray).size() / GradedPages.ATLAS_LAYER_BYTES
-	_uploading = tile
-	# Placed, what the tile draws changed: the book marks its cells, walls and sets.
+	# Placed, what the tile draws changed: the book marks its cells, walls and sets, and writes
+	# its copies from the bake's bytes.
 	var placed: int = _book.place_preview(key, Vector4i(code, int(tile["step"]), int(tile["token"]), int(bool(tile["behind"]))), layers,
-		(tile["walls"] as PackedByteArray).to_float32_array())
+		(tile["walls"] as PackedByteArray).to_float32_array(), tile["texels"], tile["rows"])
 	_apply_effects()
-	_uploading = {}
 	if placed != 0:
 		# The preview's lag (T27 (d)): a page that is full draws the tile once a later pose finds
 		# room (its block grows meanwhile). A page that cannot grow (its cap or the budget) is the
@@ -872,13 +870,14 @@ func _over_budget(start_us: int) -> bool:
 	return over
 
 # Applies the book's effects of the last calls, in order: page arrays (made, reused, released,
-# dropped, copied, refused), slot uploads from the result being installed, Rust queue cancels,
-# exhaustion, evictions and the staged results an eviction drops, the runs of cell effects the
-# book applies to its objects (47) and the draw states.
+# dropped, copied, refused), the runs of slot uploads the book writes from the result being
+# placed (48), Rust queue cancels, exhaustion, evictions and the staged results an eviction
+# drops, the runs of cell effects the book applies to its objects (47) and the draw states.
 func _apply_effects() -> void:
 	_views = [null, null]
 	var effects: PackedInt64Array = _book.take_effects()
 	var cells := false
+	var writes := false
 	for at in range(0, effects.size(), 7):
 		var kind := int(effects[at])
 		var tile := Vector2i(int(effects[at + 1]), int(effects[at + 2]))
@@ -895,8 +894,9 @@ func _apply_effects() -> void:
 				page_store.copied(int(effects[at + 1]), int(effects[at + 2]))
 			5:
 				page_store.refused(int(effects[at + 2]), Vector2i(int(effects[at + 3]), int(effects[at + 4])), int(effects[at + 5]), int(effects[at + 6]))
-			10:
-				page_store.write_copy(page_store.by_id[int(effects[at + 1])], Vector3i(int(effects[at + 2]), int(effects[at + 3]), int(effects[at + 4])), _uploading)
+			48:
+				_book.apply_writes(effects[at + 1], effects[at + 2])
+				writes = true
 			12:
 				if int(effects[at + 3]) == 1:
 					# A traced hand-over's stale cancel, recorded in its place (_request_tiles).
@@ -931,6 +931,10 @@ func _apply_effects() -> void:
 				_set_plane(key, _resident[key]["node"], state == DRAW_PLANE)
 	if cells:
 		_sync_cell_counters()
+	if writes:
+		counters["uploads"] = _book.uploads()
+		counters["upload_bytes"] = _book.upload_bytes()
+		counters["upload_ms_max"] = float(_book.upload_us_max()) / 1000.0
 
 # --- Rust calls, through the trace when one records or replays (a replay calls no Rust). ---
 
@@ -1076,16 +1080,15 @@ func _upload(key: Vector2i, tile: Dictionary, _resident_patches: Dictionary, res
 	var layers := (tile["rows"] as PackedByteArray).size() / GradedPages.ATLAS_LAYER_BYTES
 	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
 	# Into every page its patches' blocks use; at the same level each copy keeps its slot and is
-	# rewritten in place, before this frame draws (the book places, the effects write). A tile
-	# whose page cannot take it waits for its block's larger page or is recorded exhausted. Its
-	# entry takes the bake's walls; changed faces rewrite its patches' walls.
-	_uploading = tile
+	# rewritten in place, before this frame draws (the book places and, at its write effects,
+	# writes the bake's bytes). A tile whose page cannot take it waits for its block's larger page
+	# or is recorded exhausted. Its entry takes the bake's walls; changed faces rewrite its
+	# patches' walls.
 	if reserved == null:
-		_book.upload(key, level, layers, walls)
+		_book.upload(key, level, layers, walls, tile["texels"], tile["rows"])
 	else:
-		_book.upload_reserved(key, level, layers, reserved, walls)
+		_book.upload_reserved(key, level, layers, reserved, walls, tile["texels"], tile["rows"])
 	_apply_effects()
-	_uploading = {}
 
 # Installs the edit batch once every tile of it has its result, all in this frame. Returns how
 # many tiles it installed.
