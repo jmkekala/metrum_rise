@@ -81,6 +81,9 @@ func set_quality(value: int) -> void:
 	quality = clampi(value, 0, 2)
 
 func reload_resources() -> void:
+	# The new catalogue frees Rust's batch slots first: a look's mesh freed while a slot's
+	# MultiMesh still names it leaves each instance of the slot reading a freed mesh (`RENDER-39`).
+	var description: Dictionary = simulation_node.get_building_lod_catalog()
 	_looks.clear()
 	meshes.clear()
 	_source_parts.clear()
@@ -90,7 +93,6 @@ func reload_resources() -> void:
 	_scheme_variants.clear()
 	_scheme_stride = 1
 	resources = BuildingMeshes.new()
-	var description: Dictionary = simulation_node.get_building_lod_catalog()
 	generation = int(description.generation)
 	catalog = description.parts
 	var availability: Array[PackedByteArray] = []

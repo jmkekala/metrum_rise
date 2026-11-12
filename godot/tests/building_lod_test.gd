@@ -208,11 +208,24 @@ func _run() -> void:
 		await benchmark()
 	elif modern:
 		await correctness(pack_dir)
+		teardown()
 	else:
 		expect(false, "correctness mode requires the new LOD API")
 	world.free()
 	print("building_lod_test: %s" % ("PASS" if failures == 0 else "FAIL"))
 	quit(failures)
+
+# `RENDER-41`: the batches' RenderingServer slots are freed as the simulation node leaves the
+# tree, spares included, while the looks' meshes still exist.
+func teardown() -> void:
+	var before: Dictionary = simulation.get_building_lod_work()
+	expect(int(before.get("slots_live", 0)) > 0, "the batches draw before the teardown")
+	world.remove_child(simulation)
+	var after: Dictionary = simulation.get_building_lod_work()
+	expect(int(after.slots_live) == 0 and int(after.slots_spare) == 0
+		and int(after.slots_freed) == int(after.slots_created),
+		"every slot freed as the node leaves the tree: %s" % after)
+	world.add_child(simulation)
 
 func correctness(pack_dir: String) -> void:
 	var lods: Node3D = renderer.lod_renderer

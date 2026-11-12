@@ -378,7 +378,7 @@ impl SimulationNode {
         out
     }
 
-    // A new catalogue: every slot and look goes.
+    // A new catalogue or the node leaving the tree: every slot and look goes.
     pub(super) fn reset_building_draw(&mut self) {
         if let Some(draw) = self.building_draw.as_mut() {
             draw.layer.reset(&mut draw.backend);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The building layer against the recorder: a frame drawn as the batch nodes drew it, missing
-//! looks, size classes, and a chunk leaving and coming back without new objects.
+//! looks, size classes, a chunk leaving and coming back without new objects, and the teardown.
 
 use super::super::super::backend::recorder::{Command, Recorder};
 use super::super::super::backend::Scenario;
@@ -244,4 +244,25 @@ fn a_batch_that_outgrows_its_slot_in_a_full_pool_is_drawn_once_or_waits_whole() 
         sorted(vec![huge.as_flattened().to_vec(), new.as_flattened().to_vec()])
     );
     assert_eq!((layer.len(), layer.pool().live()), (2, 2));
+}
+
+#[test]
+fn a_reset_frees_every_object_the_layer_made() {
+    // The teardown (`RENDER-41`): a new catalogue or the simulation node leaving the tree frees
+    // every `MultiMesh` and instance of the pool, reflection proxies and spares included.
+    let mut backend = Recorder::new();
+    let mut layer = layer();
+    let (a, b) = (rows(5, 0.0), rows(9, 100.0));
+    let first = [change((0, 0), key(1, 0), &a), change((0, 0), key(1, 1), &b)];
+    layer.apply(&mut backend, &[], first.into_iter());
+    let removed = [((0, 0), key(1, 0))];
+    layer.apply(&mut backend, &removed, [change((1, 0), key(1, 1), &a)].into_iter());
+    assert!(layer.pool().live() > 0 && layer.pool().spares() > 0);
+    assert!(backend.instances.values().any(|instance| instance.scenario == Scenario::Reflection));
+    layer.reset(&mut backend);
+    assert!(backend.multimeshes.is_empty(), "every multimesh freed");
+    assert!(backend.instances.is_empty(), "every instance freed");
+    let (created, freed) = layer.pool().churn();
+    assert_eq!((layer.pool().live(), layer.pool().spares(), created), (0, 0, freed));
+    assert_eq!(layer.batches().count(), 0);
 }

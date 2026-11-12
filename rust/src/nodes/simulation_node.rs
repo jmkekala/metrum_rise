@@ -566,6 +566,13 @@ impl INode3D for SimulationNode {
         self.start_sim_thread();
     }
 
+    // The building batches' slots are `RenderingServer` objects no node owns: they are freed as
+    // the node leaves the tree, before the scene's nodes and the looks' meshes are deleted
+    // (`RENDER-41`); `Drop` may come after `building_lods.gd` freed the meshes.
+    fn exit_tree(&mut self) {
+        self.reset_building_draw();
+    }
+
     fn process(&mut self, delta: f64) {
         self.time_passed += delta;
 
