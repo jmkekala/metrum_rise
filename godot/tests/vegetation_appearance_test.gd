@@ -217,10 +217,10 @@ func run():
 	# One proxy per canopy species in each of the four patches.
 	assert(proxies_seen == 8)
 	assert(nodes == 160 and resident == 20480)
-	var trees := 0
+	var planted := 0
 	for key in _records:
-		trees += int(_records[key]["tree_count"])
-	assert(trees == 16384)
+		planted += int(_records[key]["tree_count"])
+	assert(planted == 16384)
 	# The detail level swaps the near mesh on the buffer already uploaded, so the reduced level
 	# costs no second instance. A patch holds a single level only where the whole box of its
 	# trees lies on one side of the handover band, which each tree crosses by its own distance.
@@ -321,7 +321,8 @@ func _upload(vegetation, key: Vector3i, span: float) -> void:
 	var simulation = vegetation.simulation
 	var bands: Vector3i = vegetation.stream.get_vegetation_bands(key)
 	assert(bands.x >= 0)
-	var origin := Vector2(key.x, key.y) * span - simulation.get_terrain_world_size() * 0.5
+	var world: Vector2 = simulation.get_terrain_world_size()
+	var origin := Vector2(key.x, key.y) * span - world * 0.5
 	var product: Dictionary = SimulationNode.build_vegetation_product(
 		simulation.get_decorative_tree_patch(origin, span, bands.x == 1), {}, PackedFloat32Array(),
 		origin, bands.y == 1, bands.z == 1, vegetation._product_settings(), simulation.catalogue)
