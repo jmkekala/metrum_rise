@@ -173,6 +173,8 @@ pub(crate) struct Resident {
     instances: Vec<Instance>,
     revision: Option<(u64, u64)>,
     construction: bool,
+    // The construction clock the instances were placed at.
+    clock: f64,
 }
 
 /// Render-consumer state. No field is simulation authority or serialized save data.
@@ -393,7 +395,10 @@ impl SpatialBatches {
         // A retained chunk's instances are current while the revision holds and nothing about
         // it animates; it then comes back as a new chunk would, without history.
         let reusable = |chunk: &Resident| {
-            chunk.revision == Some(revision) && !chunk.construction && !fresh && !animating
+            chunk.revision == Some(revision)
+                && (!chunk.construction || chunk.clock == clock_slots)
+                && !fresh
+                && !animating
         };
         for x in bounds[0]..=bounds[2] {
             for z in bounds[1]..=bounds[3] {
@@ -428,11 +433,18 @@ impl SpatialBatches {
                 .par_bridge()
                 .for_each(|(key, chunk)| {
                     // A fresh level change restarts its building's rise even without a
-                    // revision bump.
-                    let changed = chunk.revision != Some(revision) || chunk.construction || fresh;
+                    // revision bump. Sites under construction move with the construction clock
+                    // and a rise with real time: their chunks are placed again when the clock
+                    // moved or a rise animates (or just ended), not on every camera move
+                    // (`RENDER-34`), since the same clock places them the same.
+                    let changed = chunk.revision != Some(revision)
+                        || fresh
+                        || chunk.construction
+                            && (chunk.clock != clock_slots || animating || settling);
                     if changed {
                         chunk.instances.clear();
                         chunk.construction = false;
+                        chunk.clock = clock_slots;
                         if let Some(indices) = allocator.building_chunks.get(key) {
                             for &id in indices {
                                 let building = &allocator.buildings[id];
