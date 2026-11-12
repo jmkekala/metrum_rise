@@ -550,7 +550,9 @@ run_profile_refusal_test() {
         return 1
     fi
     mkdir -p "$copy/project" "$copy/home" || return 1
+    # Every entry but the copy's override.cfg, which renames the project.
     for entry in "$asset_test_project"/* "$asset_test_project"/.godot; do
+        [ "${entry##*/}" = override.cfg ] && continue
         [ -e "$entry" ] && ln -s "$entry" "$copy/project/"
     done
     output=$(env -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_CACHE_HOME HOME="$copy/home" \
