@@ -1000,6 +1000,20 @@ darker than the trees, and `0.6%` over all tiles past the range. The new `(0.162
 0.063)` measures `+0.1%` and `-0.0%` on the dense tiles and `0.0%` over all of them. Green over
 red matches within `2%` with either value.
 
+**Refitted again from above (2026-11-12, Veeti's `42f07425`, chosen by the user from stills).**
+The fit above came from one shallow view, where the stand-in is a thin fogged band; seen from
+above it drew far forest about twice as bright as its trees. The albedo is now
+`(0.075, 0.117, 0.034)`, fitted on Kuopio's forests 6-8 km away from straight down, 46 and 20
+degrees at two hours, against the trees drawn to 12 km and a black-albedo capture that separates
+coverage from crown brightness. The comparison stills drew the reference with the stand-in turned
+off (the commit's own reference keeps the stand-in under the drawn trees, so it moves with the
+albedo under test). Forest blocks against that reference, in levels of 255 (straight down / 46 /
+20 degrees): Kuopio's default forest at 10:00 +8 / +11 / +16 before and +2 / +4 / +8 after, at
+the "More" stem density +25 / +24 / +23 before and +2 / 0 / -2 after; at play height the two
+differ by at most 3 levels (the far band sits in the horizon fog). On the 30k city's save neither
+closes the gap (+8 / +13 / +16 before, +5 / +10 / +14 after): the stand-in covers too little of
+that save's forest.
+
 ### The far forest floor matches the shadows it replaces (2026-10-01)
 
 Past the shadow range (`420 m`, fading from `327.6 m`) the terrain shader darkens the floor of
