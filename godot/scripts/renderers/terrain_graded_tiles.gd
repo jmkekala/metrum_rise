@@ -33,11 +33,15 @@
 ## `MultiMesh` and instance per cell mesh and for the walls, and its graded materials, made through
 ## the stream backend, with the material sync from the patch's material; this script hands the
 ## book the meshes, shaders, page textures and the patches' nodes, materials and culling boxes it
-## draws with, and applies the draw states to the patch nodes.
+## draws with, and applies the draw states to the patch nodes. The tile result path is the book's
+## too (`RENDER-32-K` part 3): it polls the finished bakes within the install budget, checks each
+## against its request and the edit batch, keeps the deferred results and the tiles waiting for
+## their sets' variant, and places and writes the tiles; it hands this script the edits, lists and
+## failures, the edit batch's tiles and the effects that need its objects.
 ##
 ## Rust methods called: get_graded_tile_layout(), request_graded_patch_tiles(),
 ##   request_graded_tiles(), cancel_graded_tile(), cancel_graded_tile_requests(),
-##   poll_graded_tile_results(), set_road_preview_terrain_view(); GradedTileBook
+##   poll_graded_tile_results() (traced), set_road_preview_terrain_view(); GradedTileBook
 extends RefCounted
 
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -121,11 +125,6 @@ var _hand_over := PackedInt64Array()
 var _hand_over_at := 0
 # Whether the book's resident set follows the live dictionary (from the first process()).
 var _resident_synced := false
-# Results polled after the frame's install budget ran out, in arrival order, as [kind, result]:
-# the next frame takes them first (Rust hands a result over once).
-var _deferred: Array[Array] = []
-# A poll's result kinds, in the order a poll's results are taken.
-const RESULT_KINDS := ["edits", "patches", "failed", "tiles"]
 # The tiles the last edit batch installed, for tests and the probe.
 var last_edit_batch: Array = []
 ## For tests and the probe: the road preview's tiles (TERRAIN-07-E) as `installed` gives them
@@ -179,10 +178,9 @@ var _wall_mesh: ArrayMesh = null
 var _wall_material: ShaderMaterial = null
 # The behind-the-road variant (T49 (c)) on demand (the book queues the sets the build path adds it
 # to): the flagged tiles waiting for it in a set of theirs, so no set draws a flagged tile without
-# its variant: tile key -> its bake result (installed once its sets hold the variant) and tile key
-# -> its preview tile (shown then: the preview's lag, T27 (d)). An edit batch with a flagged tile
-# waits whole (_install_edit_batch).
-var _variant_waits: Dictionary = {}
+# its variant: the book keeps the bake results (installed once their sets hold the variant), this
+# script tile key -> its preview tile (shown then: the preview's lag, T27 (d)). An edit batch with
+# a flagged tile waits whole (_install_edit_batch).
 var _preview_waits: Dictionary = {}
 # What a resident patch draws (the book's draw state, T53 (a)): its PlaneMesh, its set or nothing.
 const DRAW_PLANE := 0
@@ -224,8 +222,6 @@ var _gl3_end_m := PackedFloat64Array()
 # The patch lists that may need a request: a patch that changed or whose list arrived, failed or
 # was not accepted. (The tiles that may need one are the book's.)
 var _lists_wanted: Dictionary = {}
-# Tile bakes waiting in Rust's queue, as of the last poll.
-var _tiles_pending := 0
 # Patch list requests per frame: Rust holds at most 32 in flight.
 const LIST_REQUESTS_PER_FRAME := 32
 var counters := {
@@ -497,7 +493,6 @@ func clear() -> void:
 		_apply_effects()
 	_edit_release = -1
 	_edit_staged.clear()
-	_deferred.clear()
 	patch_lists.clear()
 	patch_lists_requested.clear()
 	patch_lists_refused.clear()
@@ -507,7 +502,6 @@ func clear() -> void:
 	for key: Vector2i in _collapsed.keys():
 		_set_plane(key, null, true)
 	_unready.clear()
-	_variant_waits.clear()
 	_preview_waits.clear()
 	if _book != null:
 		_book.clear_cells()
@@ -515,7 +509,6 @@ func clear() -> void:
 		_sim_cancel_all()
 	_camera_set = false
 	_lists_wanted.clear()
-	_tiles_pending = 0
 
 ## Frees the cell sets' objects. Renderer replacement and shutdown call it before dropping the
 ## renderer; clear() first returns every set to the pool.
@@ -575,7 +568,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	var changes_us := Time.get_ticks_usec()
 	_advance_builds(start_us, resident_patches)
 	var builds_us := Time.get_ticks_usec()
-	if not (_variant_waits.is_empty() and _preview_waits.is_empty()):
+	if _book.has_variant_waits() or not _preview_waits.is_empty():
 		_take_variant_waits(resident_patches)
 	if not _lists_wanted.is_empty():
 		_request_patch_lists(resident_patches)
@@ -792,42 +785,39 @@ func _drop_preview(key: Vector2i) -> void:
 # and one list counted up to 0.35 ms past it). Each result is taken after the counts the one
 # before it queued, so the order of the changes is the arrival order whatever the frame breaks.
 # The frame's first count or result is taken unconditionally, so the work progresses whatever
-# the frame's other work cost. O(results and counts taken + one poll's results).
-func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
-	var progressed := false
-	while true:
-		while _book.has_counts():
-			if progressed and _over_budget(start_us):
-				return
-			_apply_count()
-			progressed = true
-		if _deferred.is_empty():
-			break
-		if progressed and _over_budget(start_us):
-			return
-		var item: Array = _deferred.pop_front()
-		_take_result(item[0], item[1], resident_patches)
-		progressed = true
-	while true:
-		if progressed and _over_budget(start_us):
-			return
-		var poll_start_us := Time.get_ticks_usec()
-		var result: Dictionary = _sim_poll()
-		counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(Time.get_ticks_usec() - poll_start_us) / 1000.0)
-		_tiles_pending = int(result.get("tiles_pending", 0))
-		for kind: String in RESULT_KINDS:
-			for entry: Dictionary in result.get(kind, []):
-				if progressed and _over_budget(start_us):
-					_deferred.append([kind, entry])
-					counters["results_deferred"] += 1
-					continue
-				_take_result(kind, entry, resident_patches)
-				progressed = true
-				# The budget spent, the rest of the counts and every later result wait.
-				while _book.has_counts() and not _over_budget(start_us):
-					_apply_count()
-		if result.get("tiles", []).size() < POLL_BATCH:
-			return
+# the frame's other work cost. The loop, the deferred results and the tiles' checks, placing and
+# uploads are the book's (`RENDER-32-K` part 3): it calls back _take_polled for the other kinds,
+# _stage_edit for a tile of the edit batch and _apply_effects for a take whose effects need this
+# script; the simulation polls without dictionaries unless a trace records or replays (_sim_poll).
+# O(results and counts taken + one poll's results).
+func _poll_and_install(start_us: int, _resident_patches: Dictionary) -> void:
+	var simulation: SimulationNode = simulation_node as SimulationNode if trace == null else null
+	GradedTileBook.install_results(_book, self, simulation, start_us)
+	_results_taken()
+
+# What the book's result path applied itself, into the counters (the effects it left to this
+# script are counted where _apply_effects applies them).
+func _results_taken() -> void:
+	_views = [null, null]
+	var taken: PackedInt64Array = _book.take_result_counts()
+	counters["results_deferred"] += taken[0]
+	counters["variant_waits"] += taken[1]
+	counters["evictions"] += taken[2]
+	counters["same_level_uploads"] += taken[3]
+	counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(taken[4]) / 1000.0)
+	_sync_cell_counters()
+	counters["uploads"] = _book.uploads()
+	counters["upload_bytes"] = _book.upload_bytes()
+	counters["upload_ms_max"] = float(_book.upload_us_max()) / 1000.0
+
+# The book's result path hands over a polled edit, list or failure (`kind` as the poll names it).
+func _take_polled(kind: String, entry: Dictionary) -> void:
+	_take_result(kind, entry, _resident)
+
+# The book's result path hands over a tile of the edit batch: it waits for the batch's other
+# tiles (and, flagged, its sets' variant) here.
+func _stage_edit(tile: Dictionary) -> void:
+	_edit_staged[Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))] = tile
 
 func _take_result(kind: String, entry: Dictionary, resident_patches: Dictionary) -> void:
 	match kind:
@@ -837,8 +827,6 @@ func _take_result(kind: String, entry: Dictionary, resident_patches: Dictionary)
 			_take_list(entry, resident_patches)
 		"failed":
 			_failed(entry)
-		"tiles":
-			_install(entry, resident_patches)
 
 # A patch's graded tile list from Rust: recorded, its tiles counted in the desired set.
 func _take_list(list: Dictionary, resident_patches: Dictionary) -> void:
@@ -1042,39 +1030,6 @@ func _failed(failure: Dictionary) -> void:
 		counters["bake_failures"] += 1
 		MetrumDebug.log("terrain", "graded %s %s token %d refused: %s" % [failure["kind"], str(keys), token, failure["reason"]])
 
-func _install(tile: Dictionary, resident_patches: Dictionary) -> void:
-	var key := Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))
-	var code := int(tile["level"])
-	var step := int(tile["step"])
-	var token := int(tile["token"])
-	if _book.requested_token(key, code, step) != token:
-		return
-	var flagged := bool(tile["behind"])
-	if _book.edit_batch_token(key) == token:
-		# Part of an edit: it waits for the batch's other tiles (and, flagged, its sets' variant).
-		_book.requested_erase(key, code, step, token)
-		if flagged:
-			_book.variant_missing(key)
-		_edit_staged[key] = tile
-		return
-	# A later result of the tile supersedes one that waited (an older level's or token's).
-	_drop_variant_wait(key)
-	if flagged and _book.variant_missing(key):
-		# Still requested while it waits (_take_variant_waits).
-		counters["variant_waits"] += 1
-		_variant_waits[key] = tile
-		return
-	_book.requested_erase(key, code, step, token)
-	_upload(key, tile, resident_patches)
-
-# Drops the bake result of `key` waiting for its sets' variant, and its request.
-func _drop_variant_wait(key: Vector2i) -> void:
-	var tile: Dictionary = _variant_waits.get(key, {})
-	if tile.is_empty():
-		return
-	_variant_waits.erase(key)
-	_book.requested_erase(key, int(tile["level"]), int(tile["step"]), int(tile["token"]))
-
 func _upload(key: Vector2i, tile: Dictionary, _resident_patches: Dictionary, reserved: Variant = null) -> void:
 	var level := Vector4i(int(tile["level"]), int(tile["step"]), int(tile["token"]), int(bool(tile["behind"])))
 	var layers := (tile["rows"] as PackedByteArray).size() / GradedPages.ATLAS_LAYER_BYTES
@@ -1263,7 +1218,7 @@ func _move_camera(camera_position: Vector3) -> void:
 ## The tiles that want a bake and have none started: wanted, parked on a page, or pending in
 ## Rust's queue (as of the last poll).
 func wanted_count() -> int:
-	return _book.wanted_count() + _tiles_pending
+	return _book.wanted_count() + _book.tiles_pending()
 
 # Asks for the lists of the wanted patches whose list is not of their generation, not in flight
 # and not refused at it, within Rust's in-flight bound; the rest stay wanted.
@@ -1375,14 +1330,12 @@ func _add_wanted_variants(start_us: int) -> void:
 			_apply_effects()
 			added += 1
 
-# The flagged tiles whose sets all hold the variant now: a bake result installs, a preview tile
-# shows (where its preview still wants it). O(waiting tiles).
-func _take_variant_waits(resident_patches: Dictionary) -> void:
-	for key: Vector2i in _variant_waits.keys():
-		if not _book.variant_missing(key):
-			var tile: Dictionary = _variant_waits[key]
-			_variant_waits.erase(key)
-			_install(tile, resident_patches)
+# The flagged tiles whose sets all hold the variant now: a bake result installs (the book's), a
+# preview tile shows (where its preview still wants it). O(waiting tiles).
+func _take_variant_waits(_resident_patches: Dictionary) -> void:
+	if _book.has_variant_waits():
+		GradedTileBook.take_variant_waits(_book, self)
+		_results_taken()
 	for key: Vector2i in _preview_waits.keys():
 		if not _book.variant_missing(key):
 			_show_preview_tile(_preview_waits[key])
@@ -1444,8 +1397,8 @@ func cell_builds_pending() -> int:
 ## copy of it left out the set builds). O(queued builds).
 func has_pending_work() -> bool:
 	return _book.has_pending_work() or _book.cells_pending() or not (
-		patch_lists_requested.is_empty() and _lists_wanted.is_empty() and _deferred.is_empty()
-		and _unready.is_empty() and _variant_waits.is_empty() and _preview_waits.is_empty()
+		patch_lists_requested.is_empty() and _lists_wanted.is_empty() and not _book.results_waiting()
+		and _unready.is_empty() and _preview_waits.is_empty()
 	)
 
 ## The world's patches within `radius_m` of the ground point `centre` (XZ, to the nearest point of

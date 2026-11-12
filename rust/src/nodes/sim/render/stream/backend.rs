@@ -779,12 +779,13 @@ mod godot_backend {
         scratch: Map<usize, PackedFloat32Array>,
         // Microseconds spent copying rows into the upload arrays since the last take.
         copy_us: f64,
-        // The texture layer writes (`RENDER-32-K` part 2): one reused upload array; the
+        // The texture layer writes (`RENDER-32-K` part 2): one reused upload array per layer
+        // length (a page copy alternates its slot layer and its atlas layers); the
         // `RenderingDevice` where this thread may call it (Forward+ and Mobile, Godot's default
         // single-threaded rendering), else the `RenderingServer` through one reused `Image` per
         // layer size; on a renderer without device readback but with a display (Compatibility,
         // `TERRAIN-22`) a CPU copy of every written layer, which a page's growth copies.
-        upload: PackedByteArray,
+        uploads: Map<usize, PackedByteArray>,
         device: Option<Gd<RenderingDevice>>,
         images: Map<[u32; 2], Gd<Image>>,
         mirrored: bool,
@@ -810,7 +811,7 @@ mod godot_backend {
                 scenarios: [Some(scenario), None],
                 scratch: Map::default(),
                 copy_us: 0.0,
-                upload: PackedByteArray::new(),
+                uploads: Map::default(),
                 device,
                 images: Map::default(),
                 mirrored,
@@ -1082,24 +1083,24 @@ mod godot_backend {
             fill: &mut dyn FnMut(&mut [u8]),
         ) {
             let length = size[0] as usize * size[1] as usize * 16;
-            if self.upload.len() != length {
-                self.upload.resize(length);
+            let mut data = self.uploads.remove(&length).unwrap_or_default();
+            if data.len() != length {
+                data.resize(length);
             }
             // The array is unshared here (a kept CPU copy is a clone, replaced below), so this
             // writes in place.
-            fill(self.upload.as_mut_slice());
+            fill(data.as_mut_slice());
             if let Some(device) = self.device.as_mut() {
                 // The device copies the bytes into its staging memory before it returns.
                 let target = self.server.texture_get_rd_texture(Rid::new(texture));
-                device.texture_update(target, layer, &self.upload);
-                return;
+                device.texture_update(target, layer, &data);
+            } else {
+                self.server_write(texture, layer, size, &data);
+                if self.mirrored {
+                    self.keep(texture, layer, data.clone());
+                }
             }
-            let data = std::mem::take(&mut self.upload);
-            self.server_write(texture, layer, size, &data);
-            if self.mirrored {
-                self.keep(texture, layer, data.clone());
-            }
-            self.upload = data;
+            self.uploads.insert(length, data);
         }
 
         fn texture_copy_layers(&mut self, from: Handle, to: Handle, size: [u32; 2], layers: u32) {

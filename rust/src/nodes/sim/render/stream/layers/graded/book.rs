@@ -98,29 +98,37 @@ pub struct GradedTileBook {
     // Every page's textures as the renderer made them (kept across an attach).
     page_textures: std::collections::HashMap<i64, [u64; 2]>,
     // The page uploads (`RENDER-32-K` part 2): every page's shape as made (slot side, slots,
-    // atlas layers), the bake the renderer is placing, the last take's writes with the bakes
-    // they take (applied in runs, effect 48) and what they counted.
+    // atlas layers), the bake the renderer is placing, the last take's writes (applied in runs,
+    // effect 48) with the one bake they all take, and what they counted.
     page_shapes: std::collections::HashMap<u32, [u32; 3]>,
     staged: Option<Bake>,
     writes: Vec<PageWrite>,
+    write_bake: Option<Bake>,
     upload_counts: [i64; 3],
+    // The tile result path (`RENDER-32-K` part 3, [`results`]): its deferred results, the
+    // results waiting for their sets' variant, its scratch and counters, and the owned bake
+    // buffers written, for the simulation's pool.
+    taken: results::Results,
+    // A placed tile's wall faces as floats, reused.
+    walls_scratch: Vec<f32>,
 }
 
+mod results;
+pub(crate) use results::{Baked, Bytes, Polled};
+
 // A bake as the renderer places it: its slot layer and row atlas run (little-endian RGBAF,
-// shared with the polled result, not copied) and what a trace's `write` line names: the tile's
-// x and z, level code, step and token.
-#[derive(Clone)]
+// shared with the polled result or moved out of it, not copied) and what a trace's `write` line
+// names: the tile's x and z, level code, step and token.
 struct Bake {
-    texels: PackedByteArray,
-    rows: PackedByteArray,
+    texels: Bytes,
+    rows: Bytes,
     names: [i64; 5],
 }
 
-// One copy to write: its page, the copy and the bake it takes.
+// One copy to write: its page and the copy; it takes the take's bake (`write_bake`).
 struct PageWrite {
     page: u32,
     copy: Copy,
-    bake: Bake,
 }
 
 // `cell_counters`: the frame's material sync, wall and flip microseconds (reset with the frame's
@@ -301,6 +309,7 @@ impl GradedTileBook {
     #[func]
     pub fn clear(&mut self) {
         self.state.clear();
+        self.taken.clear();
     }
 
     /// The resident patch dictionary's mutation: `key` resident (its entry's rectangle, LOD
@@ -487,8 +496,8 @@ impl GradedTileBook {
         texels: PackedByteArray,
         rows: PackedByteArray,
     ) -> bool {
-        self.stage(tile, level, texels, rows);
-        self.upload_with(tile, level, layers, None, walls)
+        self.stage(tile, level, Bytes::Shared(texels), Bytes::Shared(rows));
+        self.upload_with(tile, level, layers, None, walls.as_slice())
     }
 
     /// Installs an edit batch's `tile` into its reserved copies (flat page, slot, first, layers),
@@ -505,7 +514,7 @@ impl GradedTileBook {
         texels: PackedByteArray,
         rows: PackedByteArray,
     ) -> bool {
-        self.stage(tile, level, texels, rows);
+        self.stage(tile, level, Bytes::Shared(texels), Bytes::Shared(rows));
         let copies = copies
             .as_slice()
             .as_chunks::<4>().0.iter()
@@ -513,34 +522,43 @@ impl GradedTileBook {
                 (copy[0] as u32, Copy { slot: copy[1] as u32, first: copy[2] as u32, layers: copy[3] as u32 })
             })
             .collect();
-        self.upload_with(tile, level, layers, Some(copies), walls)
+        self.upload_with(tile, level, layers, Some(copies), walls.as_slice())
     }
 
-    // The bake whose copies the next take's writes take.
-    fn stage(&mut self, tile: Vector2i, level: Vector4i, texels: PackedByteArray, rows: PackedByteArray) {
+    // The bake whose copies the next take's writes take (one placed before it unwritten goes back
+    // to the pool).
+    fn stage(&mut self, tile: Vector2i, level: Vector4i, texels: Bytes, rows: Bytes) {
         let names = [tile.x, tile.y, level.x, level.y, level.z].map(i64::from);
-        self.staged = Some(Bake { texels, rows, names });
+        if let Some(old) = self.staged.replace(Bake { texels, rows, names }) {
+            self.taken.recycle_bake(old.texels, old.rows);
+        }
     }
 
     // `_upload`: the walls staged for the entry it makes; a placed tile whose faces changed
-    // rewrites its patches' walls.
+    // rewrites its patches' walls. The staged faces' buffer is reused.
     fn upload_with(
         &mut self,
         tile: Vector2i,
         level: Vector4i,
         layers: i64,
         reserved: Option<Vec<(u32, Copy)>>,
-        walls: PackedFloat32Array,
+        walls: &[f32],
     ) -> bool {
         let tile = tile_of(tile);
         let level = (level.x as u8, level.y as u8, i64::from(level.z), level.w != 0);
         self.state.settle();
-        let before = self.state.installed.get(&tile).map(|entry| entry.walls.clone()).unwrap_or_default();
-        self.state.cells.staged_walls = Some((tile, walls.as_slice().to_vec()));
+        // The faces differ from the installed entry's (none: from no faces).
+        let changed = self.state.installed.get(&tile).map_or(!walls.is_empty(), |entry| entry.walls[..] != *walls);
+        let mut staged = std::mem::take(&mut self.walls_scratch);
+        staged.clear();
+        staged.extend_from_slice(walls);
+        self.state.cells.staged_walls = Some((tile, staged));
         let done = self.state.upload(tile, level, layers as u32, reserved, &mut self.scratch);
         self.state.settle();
-        self.state.cells.staged_walls = None;
-        if done && walls.as_slice() != &before[..] {
+        if let Some((_, staged)) = self.state.cells.staged_walls.take() {
+            self.walls_scratch = staged;
+        }
+        if done && changed {
             self.state.walls_changed(tile);
         }
         done
@@ -558,7 +576,7 @@ impl GradedTileBook {
         texels: PackedByteArray,
         rows: PackedByteArray,
     ) -> i64 {
-        self.stage(tile, level, texels, rows);
+        self.stage(tile, level, Bytes::Shared(texels), Bytes::Shared(rows));
         let tile = tile_of(tile);
         let level = (level.x as u8, level.y as u8, i64::from(level.z), level.w != 0);
         self.state.settle();
@@ -1297,6 +1315,12 @@ impl GradedTileBook {
     /// `apply_cells` applies.
     #[func]
     pub fn take_effects(&mut self) -> PackedInt64Array {
+        self.encode_effects();
+        PackedInt64Array::from(self.encoded.as_slice())
+    }
+
+    // `take_effects` into `encoded` (reused), the writes keeping the take's bake.
+    fn encode_effects(&mut self) {
         self.state.settle();
         let cells = &mut self.state.cells;
         std::mem::swap(&mut cells.taken_publish, &mut cells.publish_floats);
@@ -1307,6 +1331,9 @@ impl GradedTileBook {
         out.clear();
         self.cell_effects.clear();
         self.writes.clear();
+        if let Some(old) = self.write_bake.take() {
+            self.taken.recycle_bake(old.texels, old.rows);
+        }
         let staged = self.staged.take();
         let attached = self.objects.is_some();
         for effect in self.state.out.drain(..) {
@@ -1318,12 +1345,12 @@ impl GradedTileBook {
             }
             // So do the uploads (`apply_writes`), each with the bake being placed.
             if let Effect::Write { page, copy } = effect {
-                let Some(bake) = staged.as_ref() else {
+                if staged.is_none() {
                     debug_assert!(false, "a write without a staged bake");
                     continue;
-                };
+                }
                 push_run(&mut out, 48, self.writes.len() as i64);
-                self.writes.push(PageWrite { page, copy, bake: bake.clone() });
+                self.writes.push(PageWrite { page, copy });
                 continue;
             }
             if let Effect::PageMade { id, code, slots, layers, .. } = effect {
@@ -1400,9 +1427,12 @@ impl GradedTileBook {
             };
             out.extend(fields);
         }
-        let packed = PackedInt64Array::from(out.as_slice());
         self.encoded = out;
-        packed
+        match staged {
+            Some(bake) if !self.writes.is_empty() => self.write_bake = Some(bake),
+            Some(bake) => self.taken.recycle_bake(bake.texels, bake.rows),
+            None => {}
+        }
     }
     // --- The cells' objects (`RENDER-32-K`). ---
 
@@ -1507,9 +1537,12 @@ impl GradedTileBook {
     /// `terrain_graded_pages.gd`), traced as a `write` line. O(the copies' bytes).
     #[func]
     pub fn apply_writes(&mut self, first: i64, end: i64) {
-        let Self { backend, writes, page_textures, page_shapes, trace, upload_counts, .. } = self;
+        let Self { backend, writes, write_bake, page_textures, page_shapes, trace, upload_counts, .. } = self;
+        let Some(bake) = write_bake.as_ref() else {
+            return;
+        };
         for write in &writes[first as usize..end as usize] {
-            let (copy, names) = (write.copy, write.bake.names);
+            let (copy, names) = (write.copy, bake.names);
             if let Some(trace) = trace.as_mut() {
                 trace_out(
                     trace,
@@ -1520,7 +1553,7 @@ impl GradedTileBook {
                 );
             }
             upload_counts[0] += 1;
-            upload_counts[1] += (write.bake.texels.len() + write.bake.rows.len()) as i64;
+            upload_counts[1] += (bake.texels.as_slice().len() + bake.rows.as_slice().len()) as i64;
             let (Some(backend), Some(textures), Some(shape)) = (
                 backend.as_mut(),
                 page_textures.get(&i64::from(write.page)),
@@ -1534,8 +1567,8 @@ impl GradedTileBook {
                 *textures,
                 shape[0],
                 copy,
-                write.bake.texels.as_slice(),
-                write.bake.rows.as_slice(),
+                bake.texels.as_slice(),
+                bake.rows.as_slice(),
             );
             upload_counts[2] = upload_counts[2].max(start.elapsed().as_micros() as i64);
         }

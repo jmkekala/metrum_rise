@@ -388,14 +388,12 @@ class RefusingBridge extends Node:
 		return out
 
 # The renderer with every bake result flagged behind the road from `flag_all` on (the fixture's
-# flat roads flag none), as a hilly map's tiles are (T49 (c)).
+# flat roads flag none), as a hilly map's tiles are (T49 (c)): the book's result path flags them.
 class FlaggingTiles extends GradedTiles:
-	var flag_all := false
-
-	func _install(tile: Dictionary, resident_patches: Dictionary) -> void:
-		if flag_all:
-			tile["behind"] = true
-		super(tile, resident_patches)
+	var flag_all := false:
+		set(value):
+			flag_all = value
+			_book.flag_results_behind(value)
 
 # `TERRAIN-07-G` round 10: a set holds the behind-the-road variant's meshes and materials only once
 # its patch shows a flagged tile. Settled with no flag, every set holds the five plain cell meshes;

@@ -18,7 +18,7 @@
 
 use super::*;
 use crate::nodes::sim::core::{GradedEditSelection, GradedInstallTiles};
-use crate::nodes::sim::render::stream::layers::graded::book::GradedTileBook;
+use crate::nodes::sim::render::stream::layers::graded::book::{Baked, GradedTileBook, Polled};
 use crate::nodes::sim::render::stream::levels::{GL3_STEPS, level_code, level_from_code};
 use crate::nodes::sim::render::stream::requests::{
     TileRequest as GradedTileRequest, TileRequestQueue,
@@ -302,15 +302,113 @@ impl GradedResidencyJobs {
         });
     }
 
-    // Takes at most `max` finished tiles for Godot's poll, oldest first; they leave the
-    // in-flight count here.
-    fn take_tiles(&mut self, max: usize) -> Vec<TileResult> {
-        let take = max.min(self.tiles.len());
-        let ready: Vec<TileResult> = self.tiles.drain(..take).collect();
-        for result in &ready {
-            self.requests.finish(result.request.tile, result.request.level);
+    // Takes at most `max` finished tiles for Godot's poll, oldest first, each into `take`; they
+    // leave the in-flight count here.
+    fn take_tiles_with(&mut self, max: usize, mut take: impl FnMut(TileResult)) {
+        let Self { tiles, requests, .. } = self;
+        let count = max.min(tiles.len());
+        for result in tiles.drain(..count) {
+            requests.finish(result.request.tile, result.request.level);
+            take(result);
         }
+    }
+
+    #[cfg(test)]
+    fn take_tiles(&mut self, max: usize) -> Vec<TileResult> {
+        let mut ready = Vec::new();
+        self.take_tiles_with(max, |result| ready.push(result));
         ready
+    }
+
+    // The finished edits, lists and failures, each as `poll_graded_tile_results` returns it,
+    // into `take` by kind in the poll's order (edits, lists, then the tiles' and the lists'
+    // failures); with `retry` a tile's transient failure goes to it instead, without a
+    // dictionary. The staged tiles' buffers return to the pool.
+    fn take_others(&mut self, retry: bool, mut take: impl FnMut(Finished)) {
+        if !self.edits.is_empty() {
+            for result in std::mem::take(&mut self.edits) {
+                let dict = edit_dict(result, &mut self.buffers);
+                take(Finished::Dict("edits", dict));
+            }
+        }
+        for (request, tiles) in self.patches.drain(..) {
+            let mut dict = VarDictionary::new();
+            dict.set("patch_x", request.patch.0 as i64);
+            dict.set("patch_z", request.patch.1 as i64);
+            dict.set("token", request.token);
+            let flat: Vec<i32> = tiles.iter().flat_map(|tile| [tile.x, tile.z]).collect();
+            dict.set("tiles", PackedInt32Array::from(flat.as_slice()));
+            take(Finished::Dict("patches", dict));
+        }
+        for (request, failure) in self.failed_tiles.drain(..) {
+            if retry && failure.retried() {
+                take(Finished::Retry(request));
+                continue;
+            }
+            let (code, step) = level_code(request.level);
+            let keys = [i64::from(request.tile.x), i64::from(request.tile.z), code, step];
+            take(Finished::Dict("failed", failure_dict("tile", keys, request.token, failure)));
+        }
+        for (request, failure) in self.failed_patches.drain(..) {
+            let keys = [request.patch.0 as i64, request.patch.1 as i64, 0, 0];
+            take(Finished::Dict("failed", failure_dict("patch", keys, request.token, failure)));
+        }
+    }
+}
+
+// A finished edit, list or failure as `poll_graded_tile_results` returns it, or a tile's
+// transient failure for the result path (`poll_graded_results`).
+enum Finished {
+    Dict(&'static str, VarDictionary),
+    Retry(GradedTileRequest),
+}
+
+// An edit result as `poll_graded_tile_results` returns it; its staged tiles' buffers go to
+// `buffers`.
+fn edit_dict(result: EditResult, buffers: &mut Vec<Vec<u8>>) -> VarDictionary {
+    let edit = result.selection;
+    let mut dict = VarDictionary::new();
+    dict.set("serial", edit.serial as i64);
+    dict.set("all", edit.all);
+    let mut staged = VarArray::new();
+    for (index, tile) in result.staged.into_iter().enumerate() {
+        let mut packed = tile.to_dict();
+        let adopted = result.adopted.get(index).copied().unwrap_or(false);
+        packed.set("adopted", adopted);
+        staged.push(&packed.to_variant());
+        buffers.extend([tile.texels, tile.rows, tile.walls]);
+    }
+    dict.set("staged", staged);
+    dict.set("preview_epoch", result.epoch.map_or(-1, |epoch| epoch as i64));
+    let mut levels = VarArray::new();
+    for (level, tiles) in &edit.levels {
+        let (code, step) = level_code(*level);
+        let mut entry = VarDictionary::new();
+        entry.set("level", code);
+        entry.set("step", step);
+        let flat: Vec<i32> = tiles.iter().flat_map(|tile| [tile.x, tile.z]).collect();
+        entry.set("tiles", PackedInt32Array::from(flat.as_slice()));
+        levels.push(&entry.to_variant());
+    }
+    dict.set("levels", levels);
+    dict
+}
+
+// A failure as `poll_graded_tile_results` returns it.
+fn failure_dict(kind: &str, keys: [i64; 4], token: i64, failure: Failure) -> VarDictionary {
+    let mut dict = VarDictionary::new();
+    dict.set("kind", kind);
+    dict.set("keys", PackedInt64Array::from(keys.as_slice()));
+    dict.set("token", token);
+    dict.set("reason", failure_label(failure));
+    dict.set("retry", failure.retried());
+    dict
+}
+
+impl Failure {
+    // Transient (a busy core, an unready site index): Godot asks again.
+    fn retried(self) -> bool {
+        matches!(self, Failure::Busy | Failure::Bake(BakeError::SitesUnavailable))
     }
 }
 
@@ -622,96 +720,24 @@ impl SimulationNode {
     ) -> VarDictionary {
         self.spawn_graded_edit_selection(wait);
         let mut jobs = self.graded_jobs.lock().unwrap();
-        let mut edits = VarArray::new();
-        for result in std::mem::take(&mut jobs.edits) {
-            let edit = result.selection;
-            let mut dict = VarDictionary::new();
-            dict.set("serial", edit.serial as i64);
-            dict.set("all", edit.all);
-            let mut staged = VarArray::new();
-            for (index, tile) in result.staged.into_iter().enumerate() {
-                let mut packed = tile.to_dict();
-                let adopted = result.adopted.get(index).copied().unwrap_or(false);
-                packed.set("adopted", adopted);
-                staged.push(&packed.to_variant());
-                jobs.buffers.extend([tile.texels, tile.rows, tile.walls]);
+        let (mut edits, mut patches, mut failed) = (VarArray::new(), VarArray::new(), VarArray::new());
+        jobs.take_others(false, |finished| {
+            if let Finished::Dict(kind, dict) = finished {
+                let list = match kind {
+                    "edits" => &mut edits,
+                    "patches" => &mut patches,
+                    _ => &mut failed,
+                };
+                list.push(&dict.to_variant());
             }
-            dict.set("staged", staged);
-            dict.set(
-                "preview_epoch",
-                result.epoch.map_or(-1, |epoch| epoch as i64),
-            );
-            let mut levels = VarArray::new();
-            for (level, tiles) in &edit.levels {
-                let (code, step) = level_code(*level);
-                let mut entry = VarDictionary::new();
-                entry.set("level", code);
-                entry.set("step", step);
-                let flat: Vec<i32> = tiles.iter().flat_map(|tile| [tile.x, tile.z]).collect();
-                entry.set("tiles", PackedInt32Array::from(flat.as_slice()));
-                levels.push(&entry.to_variant());
-            }
-            dict.set("levels", levels);
-            edits.push(&dict.to_variant());
-        }
-        let mut patches = VarArray::new();
-        for (request, tiles) in std::mem::take(&mut jobs.patches) {
-            let mut dict = VarDictionary::new();
-            dict.set("patch_x", request.patch.0 as i64);
-            dict.set("patch_z", request.patch.1 as i64);
-            dict.set("token", request.token);
-            let flat: Vec<i32> = tiles.iter().flat_map(|tile| [tile.x, tile.z]).collect();
-            dict.set("tiles", PackedInt32Array::from(flat.as_slice()));
-            patches.push(&dict.to_variant());
-        }
+        });
         let mut tiles = VarArray::new();
-        for result in jobs.take_tiles(usize::try_from(max_tiles).unwrap_or(0)) {
+        let mut spent = Vec::new();
+        jobs.take_tiles_with(usize::try_from(max_tiles).unwrap_or(0), |result| {
             tiles.push(&result.to_dict().to_variant());
-            jobs.buffers
-                .extend([result.texels, result.rows, result.walls]);
-        }
-        let mut failed = VarArray::new();
-        let failures = std::mem::take(&mut jobs.failed_tiles)
-            .into_iter()
-            .map(|(request, failure)| {
-                let (code, step) = level_code(request.level);
-                (
-                    "tile",
-                    [
-                        i64::from(request.tile.x),
-                        i64::from(request.tile.z),
-                        code,
-                        step,
-                    ],
-                    request.token,
-                    failure,
-                )
-            })
-            .chain(std::mem::take(&mut jobs.failed_patches).into_iter().map(
-                |(request, failure)| {
-                    (
-                        "patch",
-                        [request.patch.0 as i64, request.patch.1 as i64, 0, 0],
-                        request.token,
-                        failure,
-                    )
-                },
-            ));
-        for (kind, keys, token, failure) in failures {
-            let mut dict = VarDictionary::new();
-            dict.set("kind", kind);
-            dict.set("keys", PackedInt64Array::from(keys.as_slice()));
-            dict.set("token", token);
-            dict.set("reason", failure_label(failure));
-            dict.set(
-                "retry",
-                matches!(
-                    failure,
-                    Failure::Busy | Failure::Bake(BakeError::SitesUnavailable)
-                ),
-            );
-            failed.push(&dict.to_variant());
-        }
+            spent.extend([result.texels, result.rows, result.walls]);
+        });
+        jobs.buffers.append(&mut spent);
         let mut out = VarDictionary::new();
         out.set("edits", edits);
         out.set("patches", patches);
@@ -729,6 +755,50 @@ impl SimulationNode {
 }
 
 impl SimulationNode {
+    /// One poll of the graded tile result path (`GradedTileBook::install_results`,
+    /// `RENDER-32-K` part 3), as `poll_graded_tile_results(max_tiles)` without the tiles'
+    /// dictionaries: into `out` the edits, lists and failures as that poll's dictionaries, then
+    /// at most `max_tiles` tiles with their bytes moved out of the results (not copied). `spent`
+    /// returns written bake buffers to the pool. Returns the tiles pending. O(results taken); no
+    /// allocation for a tile once the buffers have grown.
+    pub(crate) fn poll_graded_results(
+        &mut self,
+        max_tiles: usize,
+        out: &mut Vec<Polled>,
+        spent: &mut Vec<Vec<u8>>,
+    ) -> i64 {
+        self.spawn_graded_edit_selection(false);
+        let mut jobs = self.graded_jobs.lock().unwrap();
+        jobs.buffers.append(spent);
+        jobs.take_others(true, |finished| {
+            out.push(match finished {
+                Finished::Dict(kind, dict) => Polled::Other(kind, dict),
+                Finished::Retry(request) => {
+                    let (code, step) = level_code(request.level);
+                    Polled::Retry { tile: request.tile, code: code as u8, step: step as u8, token: request.token }
+                }
+            });
+        });
+
+        jobs.take_tiles_with(max_tiles, |result| {
+            let counts = [result.samples[0] as i64, result.samples[1] as i64, result.seams as i64, result.edges as i64];
+            out.push(Polled::Tile(Baked::owned(
+                result.request.tile,
+                level_code(result.request.level),
+                result.request.token,
+                result.behind,
+                result.graded,
+                counts,
+                [result.texels, result.rows, result.walls],
+            )));
+        });
+        let pending = jobs.requests.pending_len() as i64;
+        drop(jobs);
+        // The polled tiles freed their in-flight places.
+        self.start_graded_bakes();
+        pending
+    }
+
     // Applies a hand-over's cancels then requests to the queue under one lock, answers into
     // `results`. Returns whether a request was queued (the caller starts the bakes).
     fn apply_graded_tile_ops(&self, stale: &[TileKey], requests: &[i64], results: &mut Vec<i64>) -> bool {
