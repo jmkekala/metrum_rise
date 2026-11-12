@@ -11963,6 +11963,11 @@ tools/stream_benchmark.py run --label ctl-30k-1 --out "$ARTIFACTS" --save <popul
 tools/stream_benchmark.py summary "$ARTIFACTS/ctl-30k-1.metrics.json" [--scripts]
 ```
 
+A noisy row is rerun alone (the user, 2026-11-12): only the flagged phases' group, C B B C, with
+`--phases` (still, turns, pan, zoom, jump, night, post_load) and, for turns, `--turns` at the
+flagged durations; never the whole matrix. The simulation timing does the same with `./run.sh
+--timing --artifacts "$ARTIFACTS" --rerun <label>` ([timing](simulation.md#timing-levels-and-the-session-runner-perf-19)).
+
 The perf channel's records join the frame they belong to: the benchmark takes them as
 `process_frame` resumes it, which ends the frame it has just timed (that frame's scripts and its
 pre-draw hooks). The planning probe sampled them by engine frame number and found them one row
