@@ -106,12 +106,9 @@ const FIELD_OVERLAY_FALLBACK_COLOR := Color(0.86, 0.70, 0.34, 1.0)
 var overlay_mode: int = 0
 ## Graded terrain tiles drawn as cells over the plain base-terrain patches.
 var graded_tiles: TerrainGradedTiles = null
-# The resident patches the graded tiles read (key -> {node, material, rect, step, generation,
-# aabb}), kept as patches change rather than rebuilt per frame, with the keys changed since the
-# last frame (the graded tiles follow those patches only), and the keys whose material
-# parameters the graded cells copy may have changed since. An idle frame hands them over in O(1).
-var _graded_resident: Dictionary = {}
-var _graded_changed: Dictionary = {}
+# The keys whose material parameters the graded cells copy may have changed since the last frame.
+# (The graded tiles' resident patches are the streaming core's, handed to their book as the
+# patches change, `RENDER-32-K` part 6; this script lends them each patch's node.)
 var _graded_materials_changed: Dictionary = {}
 var terrain_world_size: Vector2 = Vector2.ZERO
 var terrain_cell_m: float = 1.0
@@ -227,6 +224,8 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	if graded_tiles != null:
+		if is_instance_valid(_stream):
+			_stream.attach_graded_book(null)
 		graded_tiles.dispose()
 		graded_tiles = null
 
@@ -252,6 +251,7 @@ func rebuild_from_simulation_state() -> void:
 	)
 	_push_debug_modes()
 	if graded_tiles != null:
+		_stream.attach_graded_book(null)
 		graded_tiles.dispose()
 		graded_tiles = null
 	_prewarm_regular_terrain_mesh_variants()
@@ -264,6 +264,8 @@ func rebuild_from_simulation_state() -> void:
 	_prewarm_terrain_patch_resource_pool()
 	graded_tiles = TerrainGradedTiles.new()
 	graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size, patch_span_m)
+	# The streaming core hands the terrain's resident entries to the graded book from here on.
+	graded_tiles.attach_stream(_stream)
 	mark_overlay_dirty()
 	_refresh_overlay_texture(int(simulation_node.get_current_day()))
 	var coal_pit_updated := _update_coal_pit_texture()
@@ -429,9 +431,8 @@ func _process(delta: float) -> void:
 		_commit_us.fill(0.0)
 		_reset_terrain_resource_pool_perf_counters()
 
-# Hands the resident patches to the graded tile renderer with the keys changed since last frame,
-# and the camera with its height above the ground under it, from which the tiles' levels take
-# their distance.
+# The graded tile renderer's frame, with the camera's height above the ground under it, from which
+# the tiles' levels take their distance (its resident patches are the streaming core's).
 func _process_graded_tiles() -> void:
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
@@ -441,8 +442,7 @@ func _process_graded_tiles() -> void:
 	graded_tiles.view_planes = camera.get_frustum()
 	eye.y -= float(simulation_node.get_world_surface_height(Vector2(eye.x, eye.z)))
 	graded_tiles.residency_settling = has_pending_render_work(false)
-	graded_tiles.process(eye, _graded_resident, _graded_changed, _graded_materials_changed)
-	_graded_changed.clear()
+	graded_tiles.process(eye, _graded_materials_changed)
 	_graded_materials_changed.clear()
 
 # A material parameter of patch `key` the graded cells copy may have changed (`key` null for a
@@ -451,29 +451,18 @@ func _graded_material_changed(key: Variant) -> void:
 	if graded_tiles != null and key is Vector2i:
 		_graded_materials_changed[key] = true
 
-# Rewrites the graded tiles' entry of patch `key` (its node, material, rectangle, LOD step and
-# payload generation) after its residency, payload or LOD step changed; a patch that is not
-# resident or has no payload has none.
+# Lends the graded tiles patch `key`'s node, material and culling box after its residency,
+# payload or LOD step changed; a patch that is not resident or has no payload lends none.
 func _graded_patch_changed(key: Vector2i) -> void:
 	if graded_tiles == null:
 		return
-	_graded_changed[key] = true
 	var patch: Dictionary = patches.get(key, {})
 	var data: Dictionary = patch.get("last_patch_data", {}) as Dictionary
 	if not resident_patch_lookup.has(key) or patch.is_empty() or data.is_empty():
-		if _graded_resident.erase(key):
-			graded_tiles.patch_mutated(key, {})
+		graded_tiles.set_patch_node(key, null, null, AABB())
 		return
 	var size := Vector2(float(data["world_size_x"]), float(data["world_size_z"]))
-	_graded_resident[key] = {
-		"node": patch["node"],
-		"material": patch["material"],
-		"rect": Rect2(Vector2(float(data["world_origin_x"]), float(data["world_origin_z"])), size),
-		"step": int(patch.get("lod_step", 1)),
-		"generation": get_patch_surface_generation(key),
-		"aabb": patch_cull_aabb(size),
-	}
-	graded_tiles.patch_mutated(key, _graded_resident[key])
+	graded_tiles.set_patch_node(key, patch["node"], patch["material"], patch_cull_aabb(size))
 
 func get_resident_patch_keys() -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []
@@ -1181,10 +1170,8 @@ func _clear_patches() -> void:
 	patches.clear()
 	resident_patch_lookup.clear()
 	_stream.clear_terrain_patches()
-	if graded_tiles != null and not _graded_resident.is_empty():
-		graded_tiles.patch_mutated(Vector2i.ZERO, {}, true)
-	_graded_resident.clear()
-	_graded_changed.clear()
+	if graded_tiles != null and not graded_tiles.resident_keys().is_empty():
+		graded_tiles.forget_patches()
 	patch_payload_requested.clear()
 	patch_payload_requested_generation.clear()
 	patch_payload_ready.clear()
@@ -2187,8 +2174,9 @@ func mark_field_overlay_dirty() -> void:
 	field_overlay_dirty = true
 
 func _apply_overlay_mode() -> void:
-	for key in _graded_resident.keys():
-		_graded_material_changed(key)
+	if graded_tiles != null:
+		for key in graded_tiles.resident_keys():
+			_graded_material_changed(key)
 	for key in patches.keys():
 		var material: ShaderMaterial = patches[key]["material"]
 		material.set_shader_parameter("overlay_mode", overlay_mode)

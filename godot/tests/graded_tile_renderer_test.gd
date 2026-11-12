@@ -696,7 +696,7 @@ func _check_material_sync(graded: GradedTiles, terrain) -> void:
 		_expect(false, "a set draws for the material sync check")
 		return
 	var key: Vector2i = keys[0]
-	var material: ShaderMaterial = terrain._graded_resident[key]["material"]
+	var material: ShaderMaterial = terrain.patches[key]["material"]
 	var step = material.get_shader_parameter("terrain_debug_lod_step")
 	material.set_shader_parameter("terrain_debug_lod_step", (int(step) if step != null else 0) + 3)
 	terrain._graded_material_changed(key)
@@ -724,7 +724,7 @@ func _material_mismatches(graded: GradedTiles, terrain, label: String) -> int:
 		var cells: Dictionary = graded.patch_cells[key]
 		if not bool(cells["shown"]):
 			continue
-		var source: RID = (terrain._graded_resident[key]["material"] as Material).get_rid()
+		var source: RID = (terrain.patches[key]["material"] as Material).get_rid()
 		for bound: RID in cells["bound"]:
 			if not bound.is_valid() or bound == source:
 				continue
@@ -868,7 +868,7 @@ func _mark_changed(resident: Dictionary) -> void:
 
 # One renderer frame with the changes since the last, as terrain.gd hands them over.
 func _frame(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> void:
-	graded.process(camera, resident, _changed, {})
+	graded.process_with(camera, resident, _changed, {})
 	_changed.clear()
 	_violations = max(_violations, graded.plane_violations())
 	if _check_partial:

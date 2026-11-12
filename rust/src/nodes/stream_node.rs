@@ -17,7 +17,8 @@
 //! residency, levels of detail and prewarm are decided by [`PatchStream`] and executed one unit
 //! at a time by `terrain.gd` and `water.gd` on their pooled nodes ([`ScriptExecutor`]), under
 //! the same frame budget; the terrain's residency changes feed the water's wanted set and the
-//! vegetation's tiers in the same pass.
+//! vegetation's tiers in the same pass, and its resident entries (residency, mesh steps, surface
+//! generations) the graded tile renderer's book (`RENDER-32-K` part 6).
 //!
 //! A load's road chunks (`RENDER-32-P`) hydrate after the patches in the first pass: one chunk a
 //! unit, nearest first with the view and the near ring first ([`RoadHydration`]), executed by
@@ -29,6 +30,7 @@
 
 use crate::nodes::camera_node::CameraNode;
 use crate::nodes::sim::render::stream::backend::{GodotBackend, Role, Shadow};
+use crate::nodes::sim::render::stream::layers::graded::book::GradedTileBook;
 use crate::nodes::sim::render::stream::layers::parked::{
     ParkedLayer, SLOT_LIMIT as PARKED_SLOT_LIMIT, SPARE_LIMIT as PARKED_SPARE_LIMIT,
 };
@@ -105,6 +107,8 @@ pub struct StreamNode {
     parked: Option<ParkedDraw>,
     // The zoning masks' ring (`RENDER-32-P`) with the chunk span and world size it is for.
     zoning: Option<(ZoningRing, f64, [f64; 2])>,
+    // The graded tile renderer's book, which follows the terrain's resident entries.
+    graded: Option<Gd<GradedTileBook>>,
 }
 
 // The parked layer with its own backend (its own mesh catalogue, appended as buckets appear)
@@ -156,6 +160,7 @@ impl INode for StreamNode {
             frame_road_us: 0.0,
             parked: None,
             zoning: None,
+            graded: None,
         }
     }
 
@@ -330,6 +335,22 @@ impl StreamNode {
     pub fn set_terrain_surface_generation(&mut self, key: Vector2i, generation: i64) {
         self.residency
             .set_surface_generation([key.x, key.y], generation);
+        if let Some(book) = self.graded.as_mut() {
+            book.bind_mut().follow_generation([key.x, key.y], generation);
+        }
+    }
+
+    /// Hands the terrain's resident entries to the graded tile renderer's `book` from now on
+    /// (`RENDER-32-K` part 6): each activation, mesh step change, departure and surface commit of
+    /// a terrain patch sets the book's entry as it happens. Attached at a world's setup, before
+    /// any patch is resident; null detaches.
+    #[func]
+    pub fn attach_graded_book(&mut self, book: Option<Gd<GradedTileBook>>) {
+        if book.is_some() && self.terrain.resident_count() > 0 {
+            godot_error!("attach_graded_book: terrain patches are already resident");
+        }
+        self.terrain.set_followed(book.is_some());
+        self.graded = book;
     }
 
     /// Whether the vegetation has work waiting: a first evaluation, a queued or requested patch.
@@ -1085,6 +1106,12 @@ impl StreamNode {
 
     // The terrain's residency changes: the water's wanted set and the vegetation's tiers.
     fn follow_terrain(&mut self) {
+        if let (Some(book), Some(grid)) = (self.graded.as_mut(), self.terrain.grid()) {
+            let mut book = book.bind_mut();
+            for (key, follow) in self.terrain.take_follow() {
+                book.follow_terrain(key, follow, grid.rect(key));
+            }
+        }
         for (key, generation) in self.terrain.take_generations() {
             self.residency.set_surface_generation(key, generation);
         }

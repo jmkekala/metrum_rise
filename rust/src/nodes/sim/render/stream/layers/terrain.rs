@@ -90,16 +90,23 @@ impl PatchGrid {
     /// single precision widened as GDScript adds them (`_create_patch`), then stored as the
     /// node's single precision position. The last patch of a row is shorter.
     pub(crate) fn centre(&self, key: PatchKey) -> [f32; 2] {
-        let mut centre = [0.0; 2];
+        let [x, z, width, depth] = self.rect(key);
+        [(f64::from(x) + f64::from(width) * 0.5) as f32, (f64::from(z) + f64::from(depth) * 0.5) as f32]
+    }
+
+    /// `key`'s payload rectangle `[origin x, origin z, size x, size z]` in the payload's single
+    /// precision (`world_origin_*`, `world_size_*`: the terrain's grid origin of the patch's first
+    /// cell, and its cells' extent). The last patch of a row is shorter.
+    pub(crate) fn rect(&self, key: PatchKey) -> [f32; 4] {
+        let mut rect = [0.0; 4];
         for axis in 0..2 {
             let intervals = (self.world[axis] / self.cell).round() as i32;
             let start = key[axis] * self.interval;
             let end = (start + self.interval).min(intervals);
-            let origin = start as f32 * self.cell - self.world[axis] * 0.5;
-            let size = (end - start) as f32 * self.cell;
-            centre[axis] = (f64::from(origin) + f64::from(size) * 0.5) as f32;
+            rect[axis] = start as f32 * self.cell - self.world[axis] * 0.5;
+            rect[axis + 2] = (end - start) as f32 * self.cell;
         }
-        centre
+        rect
     }
 
     /// The wanted square for an eye (`terrain.gd`'s `_camera_patch_bounds` widened by the
@@ -343,6 +350,23 @@ impl Payload {
     }
 }
 
+/// A resident patch's change, for a layer that follows the entries themselves (the graded book,
+/// `RENDER-32-K` part 6), in the order the units ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Follow {
+    /// Became resident at `step`, its node carrying surface `generation`.
+    Resident {
+        /// The mesh step it was activated at.
+        step: u8,
+        /// The surface generation its node carries.
+        generation: i64,
+    },
+    /// A resident patch took the mesh of this step.
+    Step(u8),
+    /// Left (hidden, or its node freed).
+    Left,
+}
+
 /// The counts of one frame's work and the layer's state, for the perf channel and tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PatchWork {
@@ -397,6 +421,8 @@ pub(crate) struct PatchStream {
     // that follow (water, vegetation).
     changes: Vec<(PatchKey, bool)>,
     generations: Vec<(PatchKey, i64)>,
+    // The resident patches' changes of this frame, while a follower takes them (`follow`).
+    follow: Option<Vec<(PatchKey, Follow)>>,
     news: Vec<i32>,
     // Scratch.
     order: Vec<(Class, f64, u32)>,
@@ -435,6 +461,7 @@ impl PatchStream {
             ring_height: None,
             changes: Vec::new(),
             generations: Vec::new(),
+            follow: None,
             news: Vec::new(),
             order: Vec::new(),
             requests: Vec::new(),
@@ -472,6 +499,10 @@ impl PatchStream {
         self.changes.reserve(len);
         self.generations.clear();
         self.generations.reserve(len);
+        if let Some(follow) = self.follow.as_mut() {
+            follow.clear();
+            follow.reserve(len);
+        }
         self.news.clear();
         self.requests.clear();
         let lattice = grid.map_or(
@@ -552,6 +583,18 @@ impl PatchStream {
     /// the caller (they precede the residency changes of the same frame).
     pub(crate) fn take_generations(&mut self) -> std::vec::Drain<'_, (PatchKey, i64)> {
         self.generations.drain(..)
+    }
+
+    /// Records the resident patches' changes ([`Follow`]) from now on for a follower that takes
+    /// them each frame (`take_follow`), or stops.
+    pub(crate) fn set_followed(&mut self, followed: bool) {
+        self.follow = followed.then(Vec::new);
+    }
+
+    /// The resident patches' changes since the last call, in the order the units ran; taken by
+    /// the follower.
+    pub(crate) fn take_follow(&mut self) -> std::vec::Drain<'_, (PatchKey, Follow)> {
+        self.follow.get_or_insert_with(Vec::new).drain(..)
     }
 
     /// The resident patches. `O(grid)`.
@@ -666,6 +709,9 @@ impl PatchStream {
         } else {
             self.flags[index] &= !(RESIDENT | MISMATCH | QUEUED);
             self.resident -= 1;
+            if let Some(follow) = self.follow.as_mut() {
+                follow.push((grid.key(index), Follow::Left));
+            }
             if wanted {
                 self.missing += 1;
                 self.holes.push(index as u32);
@@ -827,6 +873,9 @@ impl PatchStream {
                 exec.set_lod(key, target);
                 budget.record(self.costs.lod_us, clock.now_us() - start);
                 self.step[index] = target;
+                if let Some(follow) = self.follow.as_mut() {
+                    follow.push((key, Follow::Step(target)));
+                }
                 self.update_mismatch(index);
                 self.work.lod_changes += 1;
                 continue;
@@ -854,6 +903,9 @@ impl PatchStream {
             match done {
                 Activation::Done => {
                     self.step[index] = step;
+                    if let Some(follow) = self.follow.as_mut() {
+                        follow.push((key, Follow::Resident { step, generation }));
+                    }
                     self.set_resident(index, true);
                     self.work.activations += 1;
                 }

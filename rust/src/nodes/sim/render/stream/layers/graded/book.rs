@@ -21,6 +21,7 @@ use crate::nodes::sim::render::stream::backend::{GodotBackend, RenderBackend};
 use crate::nodes::sim::render::stream::levels::{
     GL3_END_M, LEVEL_END_M, desired_level, held_code, level_vector,
 };
+use crate::nodes::sim::render::stream::layers::graded::ordered::OrderedMap;
 use crate::nodes::sim::render::vegetation_product::godot_math::Aabb as Bounds;
 use godot::prelude::*;
 
@@ -109,9 +110,13 @@ pub struct GradedTileBook {
     edits: edits::Edits,
     // A placed tile's wall faces as floats, reused.
     walls_scratch: Vec<f32>,
+    // The patches whose resident entry the streaming core changed since the renderer's last
+    // frame ([`residency`]).
+    patch_news: OrderedMap<super::state::PatchKey, ()>,
 }
 
 mod edits;
+mod residency;
 mod results;
 #[cfg(test)]
 mod tests;
@@ -331,6 +336,7 @@ impl GradedTileBook {
     #[func]
     pub fn clear_resident(&mut self) {
         self.state.resident.clear();
+        self.patch_news.clear();
     }
 
     /// The load's settle flags as the renderer holds them (a block's page waits while they say

@@ -133,6 +133,7 @@ fn plain_book() -> GradedTileBook {
         taken: results::Results::default(),
         edits: edits::Edits::default(),
         walls_scratch: Vec::new(),
+        patch_news: Default::default(),
     }
 }
 
@@ -554,4 +555,32 @@ fn a_commit_no_held_tile_takes_releases_its_preview_through_the_renderer() {
     assert_eq!(world.released, [(0, 3)]);
     assert!(world.book.state.preview.len() == 0);
     assert_eq!(world.book.installed_edit_serial(), 8);
+}
+
+#[test]
+fn the_cores_entries_are_news_and_follow_steps_and_generations() {
+    use crate::nodes::sim::render::stream::layers::terrain::Follow;
+    let mut book = plain_book();
+    let rect = [-510.0, -510.0, 510.0, 510.0];
+    book.follow_terrain([0, 0], Follow::Resident { step: 2, generation: 7 }, rect);
+    book.follow_terrain([1, 0], Follow::Resident { step: 1, generation: 3 }, [0.0, -510.0, 510.0, 510.0]);
+    // A step change keeps the rectangle and generation; a commit keeps the step.
+    book.follow_terrain([0, 0], Follow::Step(4), [0.0; 4]);
+    book.follow_generation([0, 0], 8);
+    assert_eq!(book.state.resident.get(&(0, 0)), Some(&Patch { rect, step: 4, generation: 8 }));
+    // Patches not resident take nothing; a commit of one is news all the same.
+    book.follow_terrain([5, 5], Follow::Step(2), rect);
+    book.follow_terrain([5, 5], Follow::Left, rect);
+    book.follow_generation([5, 5], 1);
+    assert!(!book.state.resident.contains_key(&(5, 5)));
+    // The news: each changed key once, in the order first changed.
+    let news: Vec<_> = book.patch_news.keys().copied().collect();
+    assert_eq!(news, [(0, 0), (1, 0), (5, 5)]);
+    book.patch_news.clear();
+    book.follow_terrain([0, 0], Follow::Left, rect);
+    assert!(!book.state.resident.contains_key(&(0, 0)));
+    assert_eq!(book.patch_news.keys().copied().collect::<Vec<_>>(), [(0, 0)]);
+    // The resident order is the order they came (the renderer's dictionary order).
+    book.follow_terrain([0, 0], Follow::Resident { step: 1, generation: 9 }, rect);
+    assert_eq!(book.state.resident.keys().copied().collect::<Vec<_>>(), [(1, 0), (0, 0)]);
 }

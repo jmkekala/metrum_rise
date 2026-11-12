@@ -37,7 +37,11 @@
 ## too (`RENDER-32-K` part 3): it polls the finished bakes within the install budget, checks each
 ## against its request and the edit batch, keeps the deferred results and the tiles waiting for
 ## their sets' variant, and places and writes the tiles; it hands this script the edits, lists and
-## failures, the edit batch's tiles and the effects that need its objects.
+## failures, the edit batch's tiles and the effects that need its objects. The resident patches
+## are the book's too (`RENDER-32-K` part 6): the streaming core sets their entries as the
+## terrain's patches come, change step, commit and leave, and this script takes the changed keys
+## each frame; terrain.gd lends it each resident patch's node, material and culling box
+## (set_patch_node).
 ##
 ## Rust methods called: get_graded_tile_layout(), request_graded_patch_tiles(),
 ##   request_graded_tiles(), cancel_graded_tile(), cancel_graded_tile_requests(),
@@ -138,8 +142,13 @@ var preview: Dictionary:
 		return _entries(true)
 # The edit batch, its release of the preview's epochs, the serials taken and installed, and the
 # preview's tiles waiting for their sets' variant are the book's (`RENDER-32-K` part 4).
-# The resident patches of the last process() call, for preview changes between frames.
+# The resident patches' Godot objects, patch key -> {node, material, aabb} (terrain.gd's, through
+# set_patch_node; a test's or an earlier trace's whole entries through process_with). Their
+# residency, rectangles, steps and generations are the book's, from the streaming core
+# (`RENDER-32-K` part 6) or from those entries.
 var _resident: Dictionary = {}
+# The patches the core changed, taken from the book each frame (reused).
+var _news: Dictionary = {}
 # Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
 var patch_lists: Dictionary = {}
 var patch_lists_requested: Dictionary = {}
@@ -163,7 +172,7 @@ var patch_cells: Dictionary:
 			var view: Dictionary = _book.cell_objects(set)
 			view["set"] = set
 			view["variant"] = (view["multimeshes"] as Array).size() == CELL_MESHES
-			view["rect"] = _resident[key]["rect"]
+			view["rect"] = _book.patch_rect(key)
 			out[key] = view
 		return out
 # The last mask revision the book gave a set (grass mirrors a set's cells by it: mask_revision()).
@@ -512,19 +521,34 @@ func dispose() -> void:
 		_book.cells_detach()
 
 ## One frame: polls finished work and installs it within the install budget, keeps the tiles of
-## `resident_patches` (patch key -> {node, material, rect: Rect2, step, generation}) at their
-## distance's level, evicts the rest and rewrites the instances of the patches that changed.
-## `camera_position` is the camera's XZ with, as `y`, its height above the ground under it: a
-## tile's distance is the camera's to the tile's centre on that ground.
-## `changed_patches` holds the keys whose entry was added, rewritten or removed since the last
-## call and `changed_materials` the keys whose material parameters may have changed (the caller
-## clears both); with neither, nor a camera move, nor finished work, the frame only polls.
-## O(changes) per frame: a changed patch or an arriving list costs its own tiles.
-func process(camera_position: Vector3, resident_patches: Dictionary, changed_patches: Dictionary, changed_materials: Dictionary) -> void:
+## the resident patches at their distance's level, evicts the rest and rewrites the instances of
+## the patches that changed. The resident patches are the book's, set by the streaming core as
+## the terrain's patches come, change step or commit and leave (`RENDER-32-K` part 6); their
+## nodes are terrain.gd's (set_patch_node). `camera_position` is the camera's XZ with, as `y`,
+## its height above the ground under it: a tile's distance is the camera's to the tile's centre
+## on that ground. `changed_materials` holds the keys whose material parameters may have changed
+## (the caller clears it); with no patch changed, nor such a key, nor a camera move, nor finished
+## work, the frame only polls. O(changes) per frame: a changed patch or an arriving list costs
+## its own tiles.
+func process(camera_position: Vector3, changed_materials: Dictionary) -> void:
+	_news.clear()
+	if _book.has_patch_news():
+		var flat: PackedInt32Array = _book.take_patch_news()
+		for index in range(0, flat.size(), 2):
+			_news[Vector2i(flat[index], flat[index + 1])] = true
+	if trace != null:
+		trace.entry("frame %s %d %d %s %s" % [GradedTrace.floats(PackedFloat32Array([camera_position.x, camera_position.y, camera_position.z])),
+			int(unbudgeted), int(residency_settling), GradedTrace.keys(_news), GradedTrace.keys(changed_materials)])
+	_frame(camera_position, _news, changed_materials)
+
+## The frame with the resident patches given whole (tests, and replays of traces recorded before
+## the core's hand-off): `resident_patches` (patch key -> {node, material, rect: Rect2, step,
+## generation, aabb}) is the resident set, and `changed_patches` the keys whose entry was added,
+## rewritten or removed since the last call; the book's entries follow them.
+func process_with(camera_position: Vector3, resident_patches: Dictionary, changed_patches: Dictionary, changed_materials: Dictionary) -> void:
 	if trace != null:
 		trace.entry("process %s %d %d %s %s" % [GradedTrace.floats(PackedFloat32Array([camera_position.x, camera_position.y, camera_position.z])),
 			int(unbudgeted), int(residency_settling), GradedTrace.keys(changed_patches), GradedTrace.keys(changed_materials)])
-	var start_us := Time.get_ticks_usec()
 	if not _resident_synced or not is_same(_resident, resident_patches):
 		# From the first frame on the book's resident set follows this dictionary's mutations
 		# (patch_mutated); before it the renderer saw none.
@@ -536,6 +560,50 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	# A caller that changes the dictionary without patch_mutated (tests) names the keys here.
 	for key: Vector2i in changed_patches:
 		_book_patch(key, resident_patches.get(key, {}))
+	_frame(camera_position, changed_patches, changed_materials)
+
+## Patch `key`'s Godot objects (terrain.gd, as its node draws the patch): its node, material and
+## culling box; a null node: none (the patch left or has no payload). The cell sets draw with
+## them; a trace records them. O(1).
+func set_patch_node(key: Vector2i, node: GeometryInstance3D, material: Material, aabb: AABB) -> void:
+	var held: Dictionary = _resident.get(key, {})
+	if node == null:
+		if held.is_empty():
+			return
+		_resident.erase(key)
+		if trace != null and not trace.replaying:
+			trace.entry("patch_node_erase %d %d" % [key.x, key.y])
+		return
+	if not held.is_empty() and held["node"] == node and held["material"] == material and held["aabb"] == aabb:
+		return
+	_resident[key] = {"node": node, "material": material, "aabb": aabb}
+	_book.set_patch_draw(key, node.get_instance_id(), material.get_rid(), aabb)
+	if trace != null and not trace.replaying:
+		trace.entry("patch_node %d %d %d %d %s" % [key.x, key.y, node.get_instance_id(), material.get_instance_id(),
+			GradedTrace.floats(PackedFloat32Array([aabb.position.x, aabb.position.y, aabb.position.z, aabb.size.x, aabb.size.y, aabb.size.z]))])
+
+## Has the streaming core hand the terrain's resident entries to this renderer's book.
+func attach_stream(stream: Node) -> void:
+	stream.attach_graded_book(_book)
+
+## The resident patches' keys, in the order they became resident (terrain.gd's overlay sync).
+func resident_keys() -> Array:
+	return _resident.keys()
+
+## Forgets every resident patch (terrain.gd cleared its patches; the core starts over with the
+## world). A trace records it as `patches_clear`.
+func forget_patches() -> void:
+	if trace != null and not trace.replaying:
+		trace.entry("patches_clear")
+	_resident.clear()
+	_news.clear()
+	if _book != null:
+		_book.clear_resident()
+
+# The frame's work (process, process_with): `changed_patches` the patches whose entry changed.
+func _frame(camera_position: Vector3, changed_patches: Dictionary, changed_materials: Dictionary) -> void:
+	var start_us := Time.get_ticks_usec()
+	var resident_patches := _resident
 	_frame_lists = 0
 	_frame_lists_same = 0
 	_frame_relevelled = 0
@@ -880,7 +948,7 @@ func _apply_effects() -> void:
 				if trace != null:
 					trace.out("draw %d %d %d" % [key.x, key.y, state])
 				_set_ready(key, state != DRAW_NONE)
-				_set_plane(key, _resident[key]["node"], state == DRAW_PLANE)
+				_set_plane(key, _resident.get(key, {}).get("node"), state == DRAW_PLANE)
 	if cells:
 		_sync_cell_counters()
 	if writes:
@@ -941,11 +1009,11 @@ func _sim_view(camera_position: Vector3) -> void:
 ## resident set follows them from the first process() on; a trace records them (a replay makes
 ## the same ones, so the dictionary's order is the same too).
 func patch_mutated(key: Vector2i, entry: Dictionary, clear_all := false) -> void:
-	if _book != null and _resident_synced:
-		if clear_all:
-			_book.clear_resident()
-		else:
-			_book_patch(key, entry)
+	if _book != null and clear_all:
+		_resident.clear()
+		_book.clear_resident()
+	elif _book != null and _resident_synced:
+		_book_patch(key, entry)
 	if trace == null or trace.replaying:
 		return
 	if clear_all:
@@ -1033,15 +1101,16 @@ func _dirty_tile(tile: Vector2i, serial: int) -> void:
 # A resident patch entry was added, rewritten or removed: its counted tiles follow its residency,
 # its list is asked again if its generation moved, and its cells follow its LOD step.
 func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
-	var present := resident_patches.has(key)
+	var present := _book.is_resident(key)
 	# A drawing set whose patch now has another node hides; it draws again once the book says.
-	var node_moved: bool = present and _book.cells_node_moved(key, (resident_patches[key]["node"] as Object).get_instance_id())
+	var node: Object = resident_patches.get(key, {}).get("node")
+	var node_moved: bool = present and node != null and _book.cells_node_moved(key, node.get_instance_id())
 	# The book: the cells across its sides follow its step; its counted tiles follow its residency
 	# and its blocks' parked tiles release; a patch that left evicts the commit-only tiles no other
 	# resident patch meets, a resident one's installed tiles want copies in its blocks' pages; a
 	# resident patch's set follows it (built, rewritten in this frame if drawing, or again off the
 	# frame) and draws what its draw state says: nothing until its list arrives.
-	_book.patch_changed(key, present, resident_patches[key]["rect"] if present else Rect2(), node_moved)
+	_book.patch_changed(key, present, _book.patch_rect(key), node_moved)
 	_apply_effects()
 	if not present:
 		_lists_wanted.erase(key)
@@ -1080,9 +1149,9 @@ func _request_patch_lists(resident_patches: Dictionary) -> void:
 		if flat.size() >= LIST_REQUESTS_PER_FRAME * 3:
 			break
 		_lists_wanted.erase(key)
-		if not resident_patches.has(key):
+		if not _book.is_resident(key):
 			continue
-		var generation := int(resident_patches[key]["generation"])
+		var generation: int = _book.patch_generation(key)
 		var list: Dictionary = patch_lists.get(key, {})
 		if not list.is_empty() and int(list["token"]) == generation:
 			continue
@@ -1156,7 +1225,7 @@ func _advance_builds(start_us: int, resident_patches: Dictionary) -> void:
 			minimum = 0
 		if minimum == 0 and _over_budget(start_us):
 			return
-		if not resident_patches.has(key):
+		if not _book.is_resident(key):
 			_book.build_finished(key, false)
 			continue
 		var set := _book.begin_build(key)
@@ -1267,7 +1336,7 @@ func unready_near(centre: Vector2, radius_m: float) -> int:
 			var origin := world_min + Vector2(key) * patch_span_m
 			if centre.clamp(origin, origin + Vector2.ONE * patch_span_m).distance_to(centre) > radius_m:
 				continue
-			if not _resident.has(key) or _unready.has(key) or not (patch_lists.has(key) or patch_lists_refused.has(key)):
+			if not _book.is_resident(key) or _unready.has(key) or not (patch_lists.has(key) or patch_lists_refused.has(key)):
 				count += 1
 	return count
 
@@ -1286,7 +1355,7 @@ func plane_violations() -> int:
 		var drawable := list.is_empty() and not patch_lists_refused.has(key)
 		for tile: Vector2i in list.get("tiles", []):
 			drawable = drawable or not _refused_at_level(tile)
-		if drawable or _book.previews_in(_resident[key]["rect"]):
+		if drawable or _book.previews_in(_book.patch_rect(key)):
 			violations += 1
 	return violations
 
@@ -1378,7 +1447,7 @@ func mask_sources(key: Vector2i) -> PackedInt64Array:
 
 ## Resident patch `key`'s rectangle (empty when it is not resident).
 func patch_rect(key: Vector2i) -> Rect2:
-	return _resident.get(key, {}).get("rect", Rect2())
+	return _book.patch_rect(key) if _book != null else Rect2()
 
 ## Patch `key`'s cell set's grass mask revision (0 without a set): it moves whenever what the set
 ## draws changes, and grass renders the patch's mask again then. O(1).

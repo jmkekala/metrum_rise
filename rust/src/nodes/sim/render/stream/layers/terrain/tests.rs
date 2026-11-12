@@ -150,6 +150,52 @@ fn residency_follows_the_square_by_its_strips_and_settles_on_it() {
 }
 
 #[test]
+fn the_followed_entries_are_the_scripts_resident_patches_and_steps() {
+    // `RENDER-32-K` part 6: a follower replaying the layer's news holds exactly the patches the
+    // scripts hold resident, at their steps, on a walk with jumps and level changes.
+    let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
+    layer.reset(Some(GRID));
+    layer.set_followed(true);
+    let mut scripts = Scripts::default();
+    let mut followed: BTreeMap<PatchKey, u8> = BTreeMap::new();
+    let mut walk = Walk(0x6a09_e667_f3bc_c908);
+    let mut eye = [0.0_f32, 800.0, 0.0];
+    let mut steps = 0;
+    for step in 0..400 {
+        let reach = if step % 97 == 96 { 6000.0 } else { 300.0 };
+        eye[0] = (eye[0] + ((walk.next() - 0.5) * reach) as f32).clamp(-9000.0, 9000.0);
+        eye[2] = (eye[2] + ((walk.next() - 0.5) * reach) as f32).clamp(-9000.0, 9000.0);
+        eye[1] = (eye[1] + ((walk.next() - 0.5) * 400.0) as f32).clamp(60.0, 4000.0);
+        frame(&mut layer, &mut scripts, eye, 0.1);
+        for (key, follow) in layer.take_follow() {
+            match follow {
+                Follow::Resident { step, generation } => {
+                    assert_eq!(generation, 0);
+                    assert!(followed.insert(key, step).is_none(), "{key:?} resident twice");
+                }
+                Follow::Step(step) => {
+                    *followed.get_mut(&key).expect("a step change of a resident patch") = step;
+                    steps += 1;
+                }
+                Follow::Left => assert!(followed.remove(&key).is_some(), "{key:?} left unheld"),
+            }
+        }
+        assert_eq!(followed, scripts.resident, "frame {step}");
+    }
+    assert!(steps > 0, "the walk changed no step");
+    // A layer nobody follows records nothing.
+    layer.set_followed(false);
+    frame(&mut layer, &mut scripts, [5000.0, 800.0, 5000.0], 0.1);
+    assert_eq!(layer.take_follow().count(), 0);
+}
+
+#[test]
+fn the_rect_is_the_payloads_and_the_last_patch_is_short() {
+    assert_eq!(GRID.rect([0, 0]), [-9000.0, -9000.0, 510.0, 510.0]);
+    assert_eq!(GRID.rect([35, 2]), [35.0 * 510.0 - 9000.0, 2.0 * 510.0 - 9000.0, 150.0, 510.0]);
+}
+
+#[test]
 fn level_checks_queue_exactly_the_patches_the_scripts_sweep_finds() {
     let mut layer = PatchStream::new(TERRAIN_LIMITS, COSTS);
     layer.reset(Some(GRID));

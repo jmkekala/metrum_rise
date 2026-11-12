@@ -2,7 +2,8 @@
 
 ## Replays a recorded graded tile renderer trace (terrain_graded_trace.gd, `RENDER-32-I`) through
 ## the renderer as it is now, headless and without Rust's residency jobs: the resident patch
-## dictionary's recorded mutations, entry calls, polled results, Rust's replies and the install
+## dictionary's recorded mutations (or, since `RENDER-32-K` part 6, the streaming core's resident
+## entries and terrain.gd's patch nodes), entry calls, polled results, Rust's replies and the install
 ## budget's answers are fed back in order, and every output (Rust calls, page creations and
 ## moves, slot uploads, cell buffer publications, draw states, wall faces) must equal the recorded one. The
 ## trace is METRUM_GRADED_REPLAY or the first user argument; a list of traces separated by `;`
@@ -104,7 +105,30 @@ func _replay(path: String) -> bool:
 				var camera: PackedFloat32Array = Trace.floats_of(words[2])
 				renderer.unbudgeted = words[3] == "1"
 				renderer.residency_settling = words[4] == "1"
-				renderer.process(Vector3(camera[0], camera[1], camera[2]), resident, Trace.keys_of(words[5]), Trace.keys_of(words[6]))
+				renderer.process_with(Vector3(camera[0], camera[1], camera[2]), resident, Trace.keys_of(words[5]), Trace.keys_of(words[6]))
+			# Traces recorded since the streaming core hands the resident patches over
+			# (`RENDER-32-K` part 6): the core's entries, terrain.gd's nodes, the frames.
+			"patch_core":
+				trace.take()
+				var rect: PackedFloat32Array = Trace.floats_of(words[4])
+				renderer.page_store.book.core_patch(Vector2i(int(words[2]), int(words[3])), true,
+					Rect2(rect[0], rect[1], rect[2], rect[3]), int(words[5]), int(words[6]))
+			"patch_core_erase":
+				trace.take()
+				renderer.page_store.book.core_patch(Vector2i(int(words[2]), int(words[3])), false, Rect2(), 0, 0)
+			"patch_node":
+				trace.take()
+				var box: PackedFloat32Array = Trace.floats_of(words[6])
+				renderer.set_patch_node(Vector2i(int(words[2]), int(words[3])), _node(int(words[4])), _material(int(words[5])),
+					AABB(Vector3(box[0], box[1], box[2]), Vector3(box[3], box[4], box[5])))
+			"patch_node_erase":
+				trace.take()
+				renderer.set_patch_node(Vector2i(int(words[2]), int(words[3])), null, null, AABB())
+			"frame":
+				var camera: PackedFloat32Array = Trace.floats_of(words[2])
+				renderer.unbudgeted = words[3] == "1"
+				renderer.residency_settling = words[4] == "1"
+				renderer.process(Vector3(camera[0], camera[1], camera[2]), Trace.keys_of(words[6]))
 			"preview":
 				renderer.show_preview(Trace.preview_of(line.substr(2)))
 			"release_preview":
