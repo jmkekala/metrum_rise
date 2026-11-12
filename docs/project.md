@@ -73,6 +73,12 @@ keep the install budget full; the renderer test's waits are fixed (`TERRAIN-17`,
 moves the vegetation's residency, bands and staleness to Rust, decision for decision equal to the
 GDScript on the benchmark's recorded paths: its frame time on a turn falls to 0.1-0.3 ms, and an
 area draws from one grid tier in every frame.
+`RENDER-32-L` (built, not yet landed) evaluates a building part's level of detail only when the
+camera has moved far enough that it could change, exactly as before otherwise, and draws the
+building batches and their water reflections through the pooled `RenderingServer` objects: the
+buildings' frame time on a 30k turn falls from 1.4-1.9 ms to 0.1-0.2 (0.3-0.5 ms at 100k against
+3.5-5.1), the water reflection's hook from 0.3 ms a frame to 0.03, and the near canopy's detail swap
+on zooms no longer reads its buffer back from the GPU (`RENDER-37`: 6-11 ms frames to 0.14 ms).
 
 Graded terrain now stays visible with FSR 2 (any render scale below Native, on every platform):
 complete cell-buffer publication fixes `TERRAIN-10`, reproduced and verified under Metal,

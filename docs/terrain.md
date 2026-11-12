@@ -13912,6 +13912,153 @@ the uploads make no object). No per-frame allocation on the upload path: met on 
 bakes' bytes shared, one reused upload array; Compatibility keeps a CPU copy per written layer as
 before). `PERF-07` at level F: level.
 
+### Buildings by travel bucket, batches through the pools (`RENDER-32-L`, 2026-11-12)
+
+B1, with `RENDER-37` first. The building LOD's per-frame rule (a part's projected size in render
+pixels, `select_lod` with its previous tier, over the parts of the chunks in the view-shaped query)
+is unchanged; what changes is which frames evaluate it, what a frame redoes, and who draws the
+batches. `building_lods.gd` 285 to 291 lines: 73 out (the batch nodes, their reflection signal,
+`_apply_batch`, `batch_identity`), 79 in (the group looks registered by RID, the scenarios, the
+fresh-buffer switch, the frame's timing for the perf channel); `water_reflection_sources.gd` keeps
+the construction scaffolds only.
+
+**The near canopy's detail swap without a read-back** (`RENDER-37`). A `MultiMesh` given a new mesh
+over a written buffer makes the engine read the buffer back from the GPU to bound it again
+(3.8-5.9 ms frames on the 30k zooms in `RENDER-32-F`). The near canopy's slots keep a copy of the
+rows they were filled with (`SlotPool::fill_kept`), and the detail swap (`SlotPool::swap_mesh`)
+gives the slot fresh storage, sets the mesh before any buffer and writes the kept rows again: the
+engine bounds the new mesh from the rows it is given, as a first fill does. Same mesh, rows and
+bounds; the vegetation's command digest re-pinned for the new calls.
+
+**Where the 30k turn's 1.0 ms went** (measured first, branch counters on the control's code): every
+moving frame evaluated all 20,000-23,700 parts of the queried chunks (0.4 ms of it on the pans,
+where no tier changed), the chunks holding a construction site were placed again (their buildings
+gathered, posed and synchronized) on every camera move although the paused clock placed them the
+same, and on a turn about one 512 m chunk a frame left and entered the query: 7-15 batches a frame
+freed and created as `MultiMeshInstance3D` nodes, each re-registered with the reflection. Once the
+evaluations went, the Rayon pool's wake-up for a frame with a few hundred due parts was the largest
+cost left (0.06-0.1 ms on a pan, more on a turn).
+
+**Travel buckets** (`building_lod.rs`, `RENDER-34`). After each evaluation a part gets the camera
+motion it can take before the rule could choose another tier: the hold interval of its tier
+(`lod_policy::hold_interval`, the sizes over which `select_lod` keeps it, shrunk by 0.1% and
+1e-3 px for rounding) against a bound on how far a rigid move of the view changes the projected
+extent of its LOD0 box. A view change moves view-space points rigidly, `v' = Q v + d`; for the
+screen coordinate `f = x / depth` the change of the difference between two corners is
+`g(v_i) - g(v_j)` with `g(v) = f(Qv + d) - f(v)`, so by the mean value theorem along the segment
+between them the extent moves by at most `reach x (|Q - I| |grad f| + |v' - v| |hess f|)` over the
+region the box can reach, with `|grad f| <= sqrt(1 + u^2) / w` and
+`|hess f| <= (u + sqrt(1 + u^2)) / w^2` (`w` the least depth, `u` the greatest lateral ratio); the
+least depth must stay beyond the near plane, and a size that projects to infinity (a corner at or
+behind the near plane: the first tier) is held while the whole box stays behind it. The motion is
+the two path lengths the bridge sums each frame, eye travel and rotation
+(`|R - R_prev| = 2 sin(angle / 2)`): a part is due when the travel passed half its distance or the
+rotation `distance / (2 rho + distance)`, `rho` its corners' reach from the eye. A frame that has
+reached neither would give the part the tier it has, so skipping it leaves every tier and every
+hysteresis history what the per-frame rule gives. A projection, viewport or quality change, a
+placed-again chunk and a quality reset evaluate every part; the far plane (which `CameraNode` moves
+with the zoom) does not enter the sizes. The thresholds sit beside the entries (16 bytes a part);
+a chunk is skipped below its least threshold and re-packs only when a tier moved. A frame whose
+work is only due parts runs on the main thread; placing chunks or evaluating whole ones goes to
+the pool (in blocks of 256 parts when a chunk has 1,024 due or more).
+
+**Placed when they change.** A chunk under construction is placed again when the construction clock
+moved or a level-change rise animates (or has just ended), not on every camera move. A chunk that
+leaves the query keeps its instances (at most 64 chunks, the farthest from the query's centre go
+first); coming back with the revision and the clock it left with, it is evaluated without
+history and publishes every non-empty batch again, exactly as a new chunk.
+
+**Residency: frustum query kept.** A ring would keep chunks resident that the rule drops, and a
+dropped chunk comes back with no hysteresis history, so a ring changes which tier a part near a
+boundary takes, and so the stills; and a ring evaluates more parts. The churn a turn caused was
+objects and placing, not the query: both are gone (pooled slots, kept instances). Measured on the
+branch: a 0.5 s turn hides and writes 14-15 batches a frame, a 1 s turn 7-9, all into slots that
+exist (884 slots created at the load, none after it).
+
+**Batches through the pools** (`stream/layers/buildings.rs`). Every changed batch of a frame writes
+its rows into a pooled slot of the stream backend (`SimulationNode` holds the building layer's own
+`GodotBackend` and `SlotPool`: 16,384 slots, 4,096 spare) and draws what `building_lods.gd`'s
+`MultiMeshInstance3D` per batch drew: the group's mesh and material override, the batch's bounds
+on its `MultiMesh`, shadows on with the buildings' 32 m extra visibility margin, dynamic GI. A
+frame is applied whole: a group's mesh and override are Godot resources `building_lods.gd` builds
+the first time a frame names the group (`missing`), registers by RID, and then publishes the
+waiting frame in the same call. A slot keeps its size class while its batch shrinks; a batch that
+outgrows it moves to a larger one in the same frame. No node is created or freed for a batch.
+
+**The reflection's building proxies** are the slots' reflection instances, drawn and hidden with
+their batches (no shadow, `water_reflection_proxy`, visible to 1,000 m with a 32 m end margin and
+the 32 m extra margin, as `water_reflection_sources.gd` set them): nothing is polled per frame.
+
+**The water pose** (`PERF-23`). No input of record has water (the 30k and 100k saves have none,
+Kuopio's world has no lake fills), so the stream benchmark's `water` phase runs on a copy of the
+30k save with a pond (600 x 400 m, 3 m deep, north of its last street; SHA-256 `9ea8a95e`): the
+first wet point of a fixed scan from the world's centre with a dry neighbour south, seen southwards
+across the water to the city at pitch -0.3 and 400 m (the pond's edge 250 m north of the city's
+middle). The reflection's building proxies and tree impostors draw there, checked by digest and
+by stills against control.
+
+Costs: a still frame `O(1)`; a moving frame `O(resident chunks)` plus, in chunks whose least
+threshold the motion passed, `O(parts)` threshold checks and `O(due parts)` evaluations; a re-pack
+`O(parts + groups)` of a chunk whose tier moved; a chunk placed `O(its buildings' parts)`; the layer
+`O(changed batches + their instances)`. No allocation once the storage has grown (the chunk entries
+and thresholds, the layer's maps, the pool).
+
+Tests (Rust, no Godot): on random walks of 900 frames (pans, orbit turns, zooms, pitch changes,
+still frames, jumps; four seeds; 1,500 parts of twelve sizes and two to six tiers) every part's
+tier and history and every packed batch equal the per-frame rule's in every frame, at under half
+its evaluations; the hold interval against `select_lod` over a size sweep; a still view evaluates
+nothing and a 4 m pan a few parts; a chunk coming back equals a new one and publishes every batch;
+the layer draws a frame as the nodes did with its reflection proxy, names a missing look once,
+reuses its objects when a chunk leaves and comes back, keeps a slot while it fits; the kept-row
+mesh swap's command sequence. `building_lod_test` and `building_asset_reload_test` read the drawn
+batches from Rust.
+
+Fresh results (2026-11-12, one boot; release libraries: control `dev` `e7d9a148`'s, SHA-256
+`6cc468a4`, with its own Godot scripts; branch at `cfc2ccd3`'s Rust, SHA-256 `a9115433`; both on
+this tree's benchmark scripts and assets; 1080p, gamescope headless at 1000 Hz, P-cores, eight
+workers, paused; another round's stream runs alternated with these under the same locks):
+
+- Instrumented (`--detail`), buildings' main-thread time (mean ms a frame, the script's whole
+  frame including the Rust call), branch against control: 30k 0.5 s turns 0.13-0.21 (1.74-1.90),
+  1 s turns 0.09-0.14 (1.43-1.80), night turns 0.10-0.11 (1.15-1.51), pans and zooms 0.045-0.050
+  (0.36-0.45), still 0.027 (0.022); parts evaluated a frame on the turns 162-324 (19,851-22,231),
+  on pans and zooms 0 (23,300-23,500: no tier changes there, and none was skipped that the rule
+  would have changed, the buffers' digests below). 100k (103,390 agents, turns only): 0.26-0.53 ms
+  (3.50-5.12), 1,430-2,709 parts a frame (49,768-62,441); its turns 27-30 ms p50 against 29-35.
+  Kuopio (no buildings) 0.03-0.04 (0.04-0.07).
+- The water reflection's pre-draw hook, mean a frame: 0.023-0.033 ms on every 30k phase (control
+  0.26-0.36), 0.034-0.038 at 100k (0.79-1.14), 0.013-0.016 on Kuopio (0.015-0.019).
+- `RENDER-37`: the vegetation's largest frame on the 30k zooms 0.11-0.14 ms (control 6.1-10.7, the
+  read-backs), on Kuopio's 0.25-0.71 (1.5-1.7); its mean a frame 0.03 (0.20-0.23).
+- Settled products by digest (untimed, `METRUM_STREAM_DIGESTS=1`, every settle point of the full
+  benchmark): building batches 13 of 13 equal at 30k (884 batches each: chunk, group, count and
+  rows), 2 of 2 on Kuopio (none); lamps 4 of 4; graded tiles 10 of 13 at 30k (the two
+  `turn_repeat` and `night_turn_repeat` settle points differ, the path-dependent level hysteresis
+  seen control against control in `RENDER-32-E`; nothing graded changed here), 2 of 2 on Kuopio.
+- The water pose (the pond save, `still` and `water` phases, untimed with digests): both sides
+  find the same pose (pivot 250, 2,000 at the water's 3.05 m, looking south) and vote the same
+  plane (3.0 m, the second none) in every frame; building batches 3 of 3 settle points equal (884
+  batches, the water pose's included), graded 3 of 3.
+- Stream rows, C B B C (two runs a side, same-binary spread verdict; `rows.md`): 30k turns 0.5-1.1 ms
+  better at p50 or level (1 s turns 15.2-16.4 ms against 16.0-16.8), zooms 0.6-1.7 ms better, jumps
+  level or better; pans 0.4-0.6 ms better at p50 with `pan_out` and `pan_back` maxima flagged
+  (+5.7 and +4.1 ms against spreads of 1.7 and 1.4: single frames of 20-22 ms, a different frame in
+  each run, followed by a frame of 14-17 ms of render CPU; the instrumented run puts no script
+  over 1 ms in them and buildings at 0.13 ms at most on any pan frame). The one rerun of the pans (C B B C of that group alone, the
+user's rule): every pan better at p50 by 0.5-0.6 ms, maxima level (+0.3, +2.0, -1.9 ms against
+spreads of 2.3, 2.9, 1.7). Kuopio every
+  phase better or level (p50 0.1-0.9 ms lower).
+⟦STILLS⟧
+⟦LEVELF⟧
+
+Bars: buildings at most 0.3 ms mean on the 30k turn: met (0.09-0.21; control 1.4-1.9 instrumented,
+0.98 in the plan's rows of record); 1.5 ms at 100k: met (0.26-0.53). Reflection hook at most 0.1 ms
+without water in view: met (0.023-0.038 on every phase of every input). Tier per part equal to the
+per-frame rule on random walks: met (Rust, every frame of four 900-frame walks). Batch buffers
+identical at settle poses: met (13 of 13). No node created or freed on a frame path for building
+batches: met (no node; 884 slots made at the load and reused). `RENDER-37`, no vegetation unit over
+2.0 ms on the 30k zooms: met (0.14 ms at most). ⟦BARS⟧
+
 ## Implemented Runtime Contract
 
 ### 1. `WorldConfig` Is The Authoritative World Metadata
