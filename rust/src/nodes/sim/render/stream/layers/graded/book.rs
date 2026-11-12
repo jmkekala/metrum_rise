@@ -673,6 +673,7 @@ impl GradedTileBook {
             out.set(format!("free_layers_{code}").as_str(), free_layers);
         }
         out.set("pool_bytes", state.pages.bytes() as i64);
+        out.set("mask_revision_bumps", state.cells.mask_bumps as i64);
         out.set("pooled_bytes", state.pages.pooled_bytes() as i64);
         out.set("growing", state.growth_waits.len() as i64);
         out.set("installed", state.installed.len() as i64);
@@ -768,6 +769,23 @@ impl GradedTileBook {
             }
         }
         stale
+    }
+
+    /// Patch `key`'s set's grass mask revision (0 without a set): grass renders the patch's
+    /// mask again when it moves.
+    #[func]
+    pub fn mask_revision(&self, key: Vector2i) -> i64 {
+        self.state
+            .cells
+            .by_patch
+            .get(&(key.x, key.y))
+            .map_or(0, |&set| self.state.cells.sets[set as usize].mask_revision)
+    }
+
+    /// The last grass mask revision given to any set.
+    #[func]
+    pub fn mask_revision_last(&self) -> i64 {
+        self.state.cells.mask_revision
     }
 
     /// Whether a set is queued for the behind-the-road variant.
@@ -1064,7 +1082,7 @@ impl GradedTileBook {
     /// code, reset)`, 35 counts cleared `(set)`, 36 meshes `(set, first)`, 37 publish `(set, mesh,
     /// at)` (`cell_buffer`), 38 count `(set, mesh, count)`, 39 walls `(set, start, count,
     /// capacity, truncated)` (`wall_floats`), 40 draw `(x, z, state)`, 41 show `(set, x, z)`, 42
-    /// hide `(set)`, 43 mask `(set, revision)`, 44 variant `(set, four pages, shown)`, 45 rebuilt
+    /// hide `(set)`, 44 variant `(set, four pages, shown)`, 45 rebuilt
     /// `(set, x, z)`, 46 built `(set)`. The kinds the cells apply themselves (binds, entry
     /// changes, marks) are settled first and not returned.
     #[func]
@@ -1143,7 +1161,6 @@ impl GradedTileBook {
                 Effect::Draw { key, state } => [40, key.0.into(), key.1.into(), state.into(), 0, 0, 0],
                 Effect::CellShow { set, key } => [41, set.into(), key.0.into(), key.1.into(), 0, 0, 0],
                 Effect::CellHide { set } => [42, set.into(), 0, 0, 0, 0, 0],
-                Effect::CellMask { set, revision } => [43, set.into(), revision, 0, 0, 0, 0],
                 Effect::CellVariant { set, pages, shown } => {
                     [44, set.into(), pages[0], pages[1], pages[2], pages[3], shown.into()]
                 }

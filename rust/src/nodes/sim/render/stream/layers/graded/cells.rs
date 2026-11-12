@@ -79,6 +79,8 @@ pub(crate) struct CellSet {
     pub buffers: Vec<Vec<f32>>,
     pub dirty: [bool; CELL_MESHES],
     pub wall_capacity: u32,
+    // Its grass mask revision (grass renders the patch's mask again when it moves).
+    pub mask_revision: i64,
 }
 
 impl CellSet {
@@ -124,7 +126,9 @@ pub(crate) struct Cells {
     pub(crate) builds_urgent: OrderedMap<PatchKey, ()>,
     pub(crate) variants_wanted: OrderedMap<PatchKey, ()>,
     pub(crate) patch_steps: std::collections::HashMap<PatchKey, i32>,
+    // The last mask revision given, and how many were (`mask_revision_bumps`).
     pub(crate) mask_revision: i64,
+    pub(crate) mask_bumps: u64,
     // The tile whose walls the call in progress stages (`_entry_walls`).
     pub(crate) staged_walls: Option<(Tile, Vec<f32>)>,
     // Published buffers and wall faces of the effects not yet taken.
@@ -207,6 +211,7 @@ impl Graded {
             buffers: Vec::new(),
             dirty: [false; CELL_MESHES],
             wall_capacity: MAX_WALLS_PER_PATCH,
+            mask_revision: 0,
         };
         Self::add_records(&mut set, &cells.identity, cells.per_patch, CELL_PLAIN);
         cells.sets.push(set);
@@ -389,11 +394,11 @@ impl Graded {
         self.cells.key_scratch = keys;
     }
 
-    // A set's mask revision advances (grass renders its mask again).
+    // A set's mask revision advances (grass renders its mask again; it reads the revision).
     fn bump_mask(&mut self, set: u32) {
         self.cells.mask_revision += 1;
-        let revision = self.cells.mask_revision;
-        self.effects_out(Effect::CellMask { set, revision });
+        self.cells.mask_bumps += 1;
+        self.cells.sets[set as usize].mask_revision = self.cells.mask_revision;
     }
 
     /// `_mask_changed`: every resident patch drawing `tile` renders its mask again.
@@ -526,10 +531,6 @@ impl Graded {
         // Nothing above pushes to the raw effects; keep the allocation.
         debug_assert!(self.effects.is_empty());
         self.effects = raw;
-    }
-
-    pub(crate) fn effects_out(&mut self, effect: Effect) {
-        self.out.push(effect);
     }
 
     // `_bind_block`: block `block`'s sets at level `code` bind its page; with `rewrite` each of

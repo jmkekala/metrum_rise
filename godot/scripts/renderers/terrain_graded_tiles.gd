@@ -152,8 +152,10 @@ var patch_lists_refused: Dictionary = {}
 # of its tiles shows graded (the book's build queues, the patches a shown tile waits for first).
 var patch_cells: Dictionary = {}
 var _sets: Array[Dictionary] = []
-# The last mask revision the book gave a set (grass mirrors a set's cells by it).
-var _cell_mask_revision := 0
+# The last mask revision the book gave a set (grass mirrors a set's cells by it: mask_revision()).
+var _cell_mask_revision: int:
+	get:
+		return _book.mask_revision_last() if _book != null else 0
 var _cells_per_patch := 81
 var _meshes: Dictionary = {}
 var _wall_mesh: ArrayMesh = null
@@ -924,7 +926,7 @@ func _apply_effects() -> void:
 
 # One of the cells' Godot calls (the book's effects 30-46 but the walls and draw states): a set
 # taken for a patch, its pages bound, parked, begun, its base mesh, counts, meshes, a buffer
-# published, a mesh's count, shown, hidden, its mask revision, the variant, a whole rewrite's
+# published, a mesh's count, shown, hidden, the variant, a whole rewrite's
 # material, a build counted.
 func _apply_cell_effect(kind: int, effects: PackedInt64Array, at: int) -> void:
 	var cells: Dictionary = _sets[int(effects[at + 1])] if int(effects[at + 1]) < _sets.size() else {}
@@ -967,10 +969,6 @@ func _apply_cell_effect(kind: int, effects: PackedInt64Array, at: int) -> void:
 			var flip_us := Time.get_ticks_usec()
 			_hide_cells(cells)
 			_frame_flip_us += Time.get_ticks_usec() - flip_us
-		43:
-			_cell_mask_revision = int(effects[at + 2])
-			counters["mask_revision_bumps"] += 1
-			cells["mask_revision"] = _cell_mask_revision
 		44:
 			_add_variant(cells, [int(effects[at + 2]), int(effects[at + 3]), int(effects[at + 4]), int(effects[at + 5])], int(effects[at + 6]) == 1)
 		45:
@@ -1784,7 +1782,7 @@ func _new_cells() -> Dictionary:
 		"root": root, "nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null,
 		# Whether it holds the behind variant's meshes, and the culling box its nodes take.
 		"variant": false, "aabb": AABB(),
-		"step": -1, "rect_hm": Vector4i.ZERO, "rect": Rect2(), "key": Vector2i.ZERO, "mask_revision": 0,
+		"step": -1, "rect_hm": Vector4i.ZERO, "rect": Rect2(), "key": Vector2i.ZERO,
 		# Whether it synced its material for this build, and whether it draws its patch.
 		"synced": false, "shown": false, "values": [], "sync_next": 0,
 	}
@@ -1906,6 +1904,11 @@ func _sync_material(cells: Dictionary, source: ShaderMaterial, start_us := -1) -
 				material.set_shader_parameter(name, value)
 	cells["sync_next"] = 0
 	return true
+
+## Patch `key`'s cell set's grass mask revision (0 without a set): it moves whenever what the set
+## draws changes, and grass renders the patch's mask again then. O(1).
+func mask_revision(key: Vector2i) -> int:
+	return _book.mask_revision(key)
 
 ## Page sizes, use and creation counters, for tests and the memory record: per level code its
 ## pages (`pages_N`), their slots and free slots (`slots_N`, `free_N`, the pages its blocks bind

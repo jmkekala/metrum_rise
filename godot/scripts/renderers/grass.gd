@@ -150,7 +150,7 @@ func _process(_delta: float) -> void:
 		var graded_cells: Dictionary = {}
 		if _terrain.graded_tiles != null:
 			graded_cells = _terrain.graded_tiles.patch_cells.get(key, {})
-		_sync_graded_mask(slot, source, graded_cells)
+		_sync_graded_mask(slot, source, graded_cells, key)
 		mask_mesh.visible = graded_cells.is_empty()
 		if _keys[slot] != key or mask_mesh.mesh != source.mesh:
 			_keys[slot] = key
@@ -253,7 +253,7 @@ func _create_mask() -> void:
 # Mirrors one patch's current cell buffers into the private mask world. The source MultiMeshes
 # own all tile movement and counts, so steady frames only compare references and bindings.
 func _sync_graded_mask(
-	slot: int, source: MeshInstance3D, cells: Dictionary
+	slot: int, source: MeshInstance3D, cells: Dictionary, key: Vector2i
 ) -> void:
 	var mirrors: Array = _graded_mask_cells[slot]
 	if cells.is_empty():
@@ -265,7 +265,7 @@ func _sync_graded_mask(
 		_graded_mask_revisions[slot] = -1
 		_render_mask_once(slot)
 		return
-	var revision := int(cells.get("mask_revision", 0))
+	var revision: int = _terrain.graded_tiles.mask_revision(key)
 	if _graded_mask_revisions[slot] == revision:
 		return
 	mask_mirror_syncs += 1

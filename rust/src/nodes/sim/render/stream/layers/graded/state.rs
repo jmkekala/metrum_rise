@@ -125,8 +125,6 @@ pub(crate) enum Effect {
     CellShow { set: u32, key: PatchKey },
     /// Set `set` stops drawing.
     CellHide { set: u32 },
-    /// Set `set`'s grass mask revision.
-    CellMask { set: u32, revision: i64 },
     /// Set `set` takes the behind-the-road variant's meshes, binding `pages` (`shown`: it draws).
     CellVariant { set: u32, pages: [i64; 4], shown: bool },
     /// Drawing set `set`, rewritten whole, takes patch `key`'s material again.
