@@ -26,6 +26,7 @@
 
 mod crash;
 pub(crate) mod money;
+pub(crate) mod profile_guard;
 pub(crate) mod work;
 
 pub mod channel;

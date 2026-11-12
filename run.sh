@@ -535,9 +535,39 @@ run_graded_bridge_trace_test() {
     METRUM_GRADED_REPLAY="$trace.1" run_godot_bridge_test graded_replay
 }
 
+# The test guard's refusal (`TOOLS-19` part 2): profile_guard_test.gd writes its marker in the
+# gate's isolated profile, and is refused (exit 3, before it runs) in a copy of that project that
+# keeps the player's project name, under a throwaway HOME with the XDG homes unset, whose default
+# data directory stands in for the player's profile.
+run_profile_refusal_test() {
+    local copy="$asset_test_profile/refusal" entry output status
+    local markers=("$copy/home/.local/share/godot/app_userdata/Metrum Rise/profile_guard_marker"
+        "$copy/home/Library/Application Support/Godot/app_userdata/Metrum Rise/profile_guard_marker")
+    run_guarded_godot_test godot --headless --path "$asset_test_project" \
+        --script res://tests/profile_guard_test.gd || return 1
+    if [ "$METRUM_PLATFORM" = linux ] && [ ! -f "$XDG_DATA_HOME/godot/app_userdata/$godot_test_profile_name/profile_guard_marker" ]; then
+        echo "Godot test profile_guard_test FAILED: no marker in the isolated profile" >&2
+        return 1
+    fi
+    mkdir -p "$copy/project" "$copy/home" || return 1
+    for entry in "$asset_test_project"/* "$asset_test_project"/.godot; do
+        [ -e "$entry" ] && ln -s "$entry" "$copy/project/"
+    done
+    output=$(env -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_CACHE_HOME HOME="$copy/home" \
+        godot --headless --path "$copy/project" --script res://tests/profile_guard_test.gd 2>&1)
+    status=$?
+    if [ $status -ne 3 ] || ! grep -q "refusing to run the test script" <<<"$output" || [ -e "${markers[0]}" ] || [ -e "${markers[1]}" ]; then
+        echo "$output" >&2
+        echo "Godot test profile_guard_test FAILED: the player's profile was not refused (exit $status)" >&2
+        return 1
+    fi
+    echo "profile_guard_test: refused in the player's profile (exit 3), marker absent"
+}
+
 # Every other Godot regression. Each fixture generator runs just before the test that reads it.
 godot_main_chain() {
     local script
+    run_profile_refusal_test || return 1
     for script in \
         economy_machinery_test growth_meter_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \

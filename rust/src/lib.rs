@@ -41,6 +41,9 @@ unsafe impl ExtensionLibrary for MetrumRiseExtension {
             }
             crate::debug::init();
         }
+        if stage == InitStage::Scene {
+            refuse_tests_in_the_players_profile();
+        }
     }
 
     // Godot deinitializes Scene after deleting the scene tree and unloads the library soon
@@ -52,5 +55,38 @@ unsafe impl ExtensionLibrary for MetrumRiseExtension {
             crate::thread_pools::stop();
             crate::debug::shutdown();
         }
+    }
+}
+
+// `TOOLS-19` part 2: a test script, benchmark matrix or probe started in the player's real profile
+// exits non-zero here, before any script runs and before it writes to user://
+// (`debug::profile_guard`). The Scene stage runs before Godot creates the main loop or a
+// `--script` main loop.
+fn refuse_tests_in_the_players_profile() {
+    use crate::debug::profile_guard::{LaunchFacts, default_data_dir, refusal};
+    use godot::classes::{Os, ProjectSettings};
+    let mut os = Os::singleton();
+    let (given, user) = (os.get_cmdline_args(), os.get_cmdline_user_args());
+    let args: Vec<String> = given
+        .as_slice()
+        .iter()
+        .chain(user.as_slice())
+        .map(|arg| arg.to_string())
+        .collect();
+    let project_name = ProjectSettings::singleton()
+        .get_setting("application/config/name")
+        .to_string();
+    let data_dir = os.get_data_dir().to_string();
+    let facts = LaunchFacts {
+        args: &args,
+        project_name: &project_name,
+        data_dir: &data_dir,
+        default_data_dir: default_data_dir(&os.get_name().to_string(), |name| {
+            std::env::var(name).ok()
+        }),
+    };
+    if let Some(reason) = refusal(&facts) {
+        godot_error!("{reason}");
+        std::process::exit(3);
     }
 }

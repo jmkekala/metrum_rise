@@ -649,6 +649,19 @@ tools/godot_isolated.py run --mods player -- gamescope --backend headless -- god
 
 A round's logs end clean: `grep -rl 'is a relative path' <artefacts>` finds nothing.
 
+**The refusal (`TOOLS-19` part 2).** The extension refuses a test, benchmark or probe started in
+the player's profile: at its Scene initialisation stage (before Godot creates a main loop or runs a
+`--script`), when the command line names a script under `res://tests/` or
+`res://scripts/benchmarks/` or a benchmark user argument (`--gameplay-road-benchmark`,
+`--benchmark`, `--generate-benchmark`), the project keeps its own name and Godot's data directory
+is the platform's default one (`OS.get_data_dir()` against `$HOME/.local/share`, `$HOME/Library/Application
+Support` or `%APPDATA%`; no home directory counts as the player's), it logs the reason and exits
+with status 3 before anything writes to user:// (`rust/src/debug/profile_guard.rs`). Godot's own
+log opens before extensions load, and an import runs no test: the launcher covers those. The gate's
+`profile_guard_test` runs the same script in its isolated profile (it writes its marker) and in a
+copy of that project keeping the player's name, under a throwaway `HOME` with the XDG homes unset
+(refused, exit 3, no marker).
+
 Godot does not exit on a GDScript error: the coroutine that hit it ends, the scene tree keeps
 running, and a test that never reaches `quit()` would hold its chain forever. So
 `./run.sh --test` runs every Godot test of its chains under `run_guarded_godot_test`
