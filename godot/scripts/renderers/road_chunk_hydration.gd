@@ -25,8 +25,11 @@ var _span := 0.0
 var _origin := Vector2.ZERO
 
 ## Makes the road chunks' one-time resources (the sign models and the lamp meshes and kinds) in the
-## load call, which waits anyway, instead of in the first chunk's unit (0.3 s at 100k).
+## load call, which waits anyway, instead of in the first chunk's unit (0.3 s at 100k). A world
+## without roads needs neither.
 func prewarm() -> void:
+	if simulation_node.get_network_nodes().is_empty():
+		return
 	var signs: Node = road_tool.get("_road_signs")
 	if signs != null:
 		signs._ensure_meshes()
