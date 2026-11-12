@@ -125,6 +125,13 @@ impl Graded {
         (first, last)
     }
 
+    // Whether a resident patch meets `tile`: one does while a commit-only tile stays installed
+    // (`patch_changed` evicts it when the last leaves).
+    fn resident_meets(&self, tile: Tile) -> bool {
+        let (first, last) = self.tile_patches_meeting(tile);
+        (first[1]..=last[1]).any(|z| (first[0]..=last[0]).any(|x| self.resident.contains_key(&(x, z))))
+    }
+
     /// `_patch_changed`'s part: the patch's counted tiles follow its residency (the live
     /// dictionary's, already set), its blocks' parked tiles are released; a patch that left
     /// evicts the commit-only tiles no other resident patch meets, a resident one (`rect`, its
@@ -144,10 +151,7 @@ impl Graded {
                 if !self.installed.contains_key(&tile) || self.levels.level_of(tile).is_some() {
                     continue;
                 }
-                let (first, last) = self.tile_patches_meeting(tile);
-                let retained = (first[1]..=last[1])
-                    .any(|z| (first[0]..=last[0]).any(|x| self.resident.contains_key(&(x, z))));
-                if !retained {
+                if !self.resident_meets(tile) {
                     self.undesire(tile);
                 }
             }
@@ -362,10 +366,15 @@ impl Graded {
     }
 
     /// `_apply_edit` for a commit's or undo's own tile: installed with the batch when held or
-    /// desired, or shown graded by the preview. Returns the token it carries, None to skip.
+    /// desired, or when graded where a resident patch draws it (shown by the preview or not:
+    /// `TERRAIN-23`, a click right after the poses, before the preview showed any tile, installs
+    /// its tiles in its batch too). Such a tile's patch list, refreshed with the edit's patch
+    /// generations, then wants it, and the last resident patch meeting it to leave evicts it
+    /// (`patch_changed`). Returns the token it carries, None to skip: a tile that is not graded,
+    /// or that no resident patch meets, waits for its list. `O(patches meeting a tile)`.
     pub(crate) fn stage_edit_tile(&mut self, tile: Tile, graded: bool, serial: i64) -> Option<i64> {
         let held = self.installed.contains_key(&tile) || self.levels.level_of(tile).is_some();
-        if !held && !(self.preview.contains_key(&tile) && graded) {
+        if !held && !(graded && (self.preview.contains_key(&tile) || self.resident_meets(tile))) {
             return None;
         }
         self.dirty_tile(tile, serial);
@@ -384,5 +393,49 @@ impl Graded {
             || requests.edit_batch.len() > 0
             || self.growth_waits.len() > 0
             || self.block_target.iter().any(|targets| targets.len() > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::state::{Entry, Graded, Shape, Tile};
+
+    // A 2 x 2-patch world of 510 m patches from (-510, -510) with patch (0, 0) resident: tile
+    // (-2, -2) lies on it, tile (2, 2) on patch (1, 1) only.
+    fn world() -> Graded {
+        let mut graded = Graded {
+            shape: Shape {
+                world_min: [-510.0, -510.0],
+                patch_span: 510.0,
+                patch_grid: [2, 2],
+                block_patches: 2,
+                layer_limit: 2048,
+            },
+            ..Graded::default()
+        };
+        graded.resident.insert((0, 0), super::super::cells::Patch::default());
+        graded
+    }
+
+    // `TERRAIN-23`: a commit's graded tile that is neither held, wanted nor shown by the preview
+    // joins the edit batch where a resident patch meets it, and leaves with the last such patch;
+    // an ungraded one, or one no resident patch meets, waits for its list.
+    #[test]
+    fn a_commit_tile_on_a_resident_patch_joins_the_batch() {
+        let mut graded = world();
+        let (near, far) = (Tile { x: -2, z: -2 }, Tile { x: 2, z: 2 });
+        assert_eq!(graded.stage_edit_tile(near, false, 7), None);
+        assert_eq!(graded.stage_edit_tile(far, true, 7), None);
+        assert!(graded.requests.edit_batch.len() == 0);
+        assert_eq!(graded.stage_edit_tile(near, true, 7), Some(7));
+        assert_eq!(graded.requests.edit_batch.get(&near), Some(&7));
+        // Installed by the batch, listed by no patch: the patch leaving evicts it.
+        graded.installed.insert(
+            near,
+            Entry { cell_code: 0, level: 0, step: 0, token: 7, behind: false, copies: Vec::new(), adoptable: true, walls: Vec::new() },
+        );
+        graded.resident.remove(&(0, 0));
+        graded.patch_changed((0, 0), None);
+        assert!(!graded.installed.contains_key(&near));
     }
 }

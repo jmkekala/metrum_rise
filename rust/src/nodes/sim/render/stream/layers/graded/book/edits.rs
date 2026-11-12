@@ -349,7 +349,8 @@ impl Run {
         self.book.bind_mut().tiles = tiles;
         // A commit's or undo's own tiles (TERRAIN-07-E): bitwise the rebakes of the edit's
         // inputs, so they install with the batch instead of rebaking. A tile neither held nor
-        // wanted installs only where the preview shows it graded; any other waits for its list.
+        // wanted installs where it is graded and a resident patch meets it (`TERRAIN-23`); any
+        // other waits for its list.
         let epoch = edit
             .get("preview_epoch")
             .map_or(-1, |epoch| epoch.to::<i64>());
