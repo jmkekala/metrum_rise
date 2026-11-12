@@ -11882,7 +11882,10 @@ line goes; per-instance calls and object churn do.
   product cache on the background Rayon pool (nearest first, bounded in flight, inputs taken
   under `try_lock`, stale generations dropped, a byte cap); one install scheduler; a
   `RenderBackend` that alone calls `RenderingServer` (pooled multimeshes and instances by size
-  class, a recording implementation for tests); `StreamStatus` per layer (wanted, prepared,
+  class, a recording implementation for tests; a pool's owner frees every slot, spares
+  included, when it leaves the tree and before the meshes its slots name are freed, since no node
+  owns these objects and the engine neither frees them nor lets go of a freed mesh:
+  `RENDER-39`, `RENDER-41`); `StreamStatus` per layer (wanted, prepared,
   installed, holes in view, holes in the near ring) for `TERRAIN-15`'s hand-over, `UI-08` and
   every test's "settled" wait.
 - **The line.** Rust owns and calls `RenderingServer` directly for every instance layer it keeps
@@ -14582,6 +14585,9 @@ frame is applied whole: a group's mesh and override are Godot resources `buildin
 the first time a frame names the group (`missing`), registers by RID, and then publishes the
 waiting frame in the same call. A slot keeps its size class while its batch shrinks; a batch that
 outgrows it moves to a larger one in the same frame. No node is created or freed for a batch.
+The slots are freed when `SimulationNode` leaves the tree (its `exit_tree`, before any node of the
+scene and so any look's mesh is deleted) and on a new catalogue (every world load), which
+`building_lods.gd` asks for before it lets go of the old looks (`RENDER-39`, `RENDER-41`).
 
 **The reflection's building proxies** are the slots' reflection instances, drawn and hidden with
 their batches (no shadow, `water_reflection_proxy`, visible to 1,000 m with a 32 m end margin and
@@ -15288,6 +15294,67 @@ freed on a frame path for parked cars and zoning masks: met; road chunks remain 
 nodes, one a unit (`network_tool.gd`, outside this round). Rows level or better: met but the 30k
 zooms (`zoom_out` p50 +0.1 ms, `zoom_in` maximum +10.5 ms after the one rerun; for review).
 `PERF-07` at level F: level.
+
+### Building slots freed at teardown (`RENDER-39`, `RENDER-41`, 2026-11-12)
+
+Round BX1. Both faults were the building batches' slot pool (`RENDER-32-L`): a slot is one
+`MultiMesh` with a main and a reflection instance, `RenderingServer` objects no node owns, drawing
+a look's mesh that `building_lods.gd` owns.
+
+**The `Parameter "mesh" is null` lines** (`RENDER-39`). The engine does not let go of a freed mesh
+a `MultiMesh` names: when the mesh is freed, every instance of that `MultiMesh` is queued for an
+update, which reads the freed mesh's surfaces and logs one line an instance. `reload_resources`
+cleared its looks (the last references to their meshes) before it asked Rust for the new catalogue
+that frees the slots, so every load over a city logged a line per drawn instance (1,224 a reload
+of the 30k city); at quit nothing freed the slots before the meshes went (1,328 lines after the
+30k city, 1,768 after the 30k stills' poses). Now `reload_resources` asks for the catalogue first.
+The zoning switch logged nothing on either side, in a new game with roads and in the 30k city: the
+burst the user saw after `Tool Switched to: ZONING` is the quit's lines, printed after the last
+line of the session (about 150 for the 80 slots and their reflection proxies the user's quit
+leaked).
+
+**The leaked objects at exit** (`RENDER-41`). `SimulationNode::exit_tree` frees the building pool,
+every slot with its spares and reflection proxies, before any node of the scene is deleted and so
+before any look's mesh (`Drop` may come after `building_lods.gd` freed them). The other pools
+already freed theirs: vegetation and parked cars in `StreamNode::exit_tree`, the graded cells on
+their renderer's predelete; the road hydration and the zoning ring own no `RenderingServer` object.
+A world reload frees the previous world's slots through the new catalogue (none accumulate: 664
+live after each of three 30k loads, 1,328 of 1,992 created freed).
+
+**Teardown probe** (the gameplay harness's `teardown` matrix,
+`scripts/benchmarks/teardown_probe.gd`, rendered in gamescope's headless backend, isolated profile
+with the player's packs): a new game
+on Kuopio, a 3 x 3 road grid and a separate road, Zoning on and off, the 30k city loaded three
+times, Zoning on and off there, quit (with `METRUM_TEARDOWN_NEW_GAME=1`, a new game over the city
+before the quit); Godot's lines counted per step between the probe's markers:
+
+```bash
+METRUM_GAMEPLAY_BENCHMARK_MATRIX=teardown METRUM_TEARDOWN_SAVE=<populated_city_30000.sqlite> \
+METRUM_TEARDOWN_LOADS=3 METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH=<kuopio_324km2_10m.sqlite> ... \
+tools/godot_isolated.py run --mods player --library <.so> -- gamescope --backend headless -W 1280 \
+    -H 720 -- godot --path {project} --windowed --resolution 1280x720 -- --gameplay-road-benchmark
+```
+
+| Step | Control (`ffded97b`) | Branch |
+|---|---|---|
+| New game, roads, Zoning on and off | 0 | 0 |
+| First 30k load | 0 | 0 |
+| Second and third load | 1,224 `mesh is null` each | 0 |
+| Zoning on and off in the city | 0 | 0 |
+| Quit in the city | 1,328 `mesh is null`; 664 `MultiMesh`, 1,328 instances, 664 storage buffers leaked; 664 `Leaked instance dependency`; live `GeometryInstanceForwardClustered` pages | 0 |
+| A new game over the city, then quit | 1,224 on the new game, 0 at quit | 0 |
+
+Tests: a recorder test of the building layer's reset (every `MultiMesh` and instance freed, spares
+and reflection proxies included, created equal to freed); `building_lod_test` checks every slot
+freed as the simulation node leaves the tree. Stills (`stills capture`, hour 10): Kuopio's
+`forest_low`, `close` and `mid` byte-identical; the 30k city two runs a side, `city_low`
+identical in every pairing, `city` 0-1 pixel (control run 1 against every other run, delta 1),
+`saved` 1-4 pixels (delta at most 2; control against control 3, branch against branch 2: the
+`RENDER-45` residue, one pixel past its recorded 3 in the control run 2 pairings), `stills
+systematic` none on all three. The 30k stills logs: 1,768 `mesh is null` lines and 884 slots
+leaked in each control run, none in either branch run. Settle-point digests (30k, one untimed run
+a side): graded, buildings, roads and parked 4 of 4 equal, water 1 of 1. No per-frame path changed
+(a node's exit and a load's order), so no timing round.
 
 ## Implemented Runtime Contract
 

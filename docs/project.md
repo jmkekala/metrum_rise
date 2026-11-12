@@ -107,6 +107,9 @@ frame (one 1.4 s frame at 100k; now at most 33 ms of road work in any frame), dr
 cars through pooled objects with no node per chunk, keeps the zoning masks on a 2 km ring about
 the camera, and retries a building frame the full slot pool refused until it draws whole
 (`RENDER-42`).
+The building batches' pooled objects are freed when the game scene goes and before a world load
+lets go of their meshes (`RENDER-39`, `RENDER-41`, fixed 2026-11-12): no more `Parameter "mesh"
+is null` bursts on a load or at quit, and no leaked rendering objects at exit.
 The graded ground's material edges and road seams no longer flicker from frame to frame
 (`RENDER-38`, fixed 2026-11-12): their shading is defined at the edges, which keeps the 30k
 city's stills byte-identical run to run again, at the control's GPU and frame time.
