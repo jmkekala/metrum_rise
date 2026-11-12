@@ -4,13 +4,14 @@
 
 import argparse
 import json
-import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import godot_isolated  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,26 +23,14 @@ def main():
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    profile = Path(tempfile.mkdtemp(prefix="metrum-parking-capture-"))
-    project = profile / "godot"
-    project.mkdir()
-    for entry in (ROOT / "godot").iterdir():
-        if entry.name not in {"project.godot", "override.cfg"}:
-            (project / entry.name).symlink_to(entry)
-    shutil.copy2(ROOT / "godot/project.godot", project / "project.godot")
-    name = "MetrumParkingCapture-" + profile.name
-    (project / "override.cfg").write_text(
-        f'[application]\nconfig/name="{name}"\nconfig/use_custom_user_dir=false\n'
-    )
-    for entry in ROOT.iterdir():
-        if not entry.name.startswith(".") and entry.name != "godot":
-            (profile / entry.name).symlink_to(entry)
+    # An isolated profile (`TOOLS-19`): absolute XDG homes and a project copy of its own name.
+    profile, project, name, env = godot_isolated.create(prefix="metrum-parking-capture-", display=True,
+                                                        name_prefix="MetrumParkingCapture")
     if sys.platform == "darwin":
-        data = Path.home() / "Library/Application Support/Godot/app_userdata"
+        user = Path.home() / "Library/Application Support/Godot/app_userdata" / name
     else:
-        data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "godot/app_userdata"
-    source = data / "Metrum Rise/mods"
-    user = data / name
+        user = godot_isolated.user_dir(profile, name)
+    source = godot_isolated.player_mods()
     mods = user / "mods"
     mods.mkdir(parents=True)
     # Read the player's requested packs only; all fixture edits stay in these private copies.
@@ -64,7 +53,6 @@ def main():
             text = text.replace('[building]', '[building]\nhousehold_capacity = 8')
         manifest.write_text(text)
     (user / "active_packs.cfg").write_text('[packs]\nenabled=["parking", "neukku", "kuopio"]\n')
-    env = os.environ.copy()
     env["METRUM_PARKING_CAPTURE_DIR"] = str(output)
     command = ["perl", "-e", "alarm 900; exec @ARGV", "godot", "--path", str(project)]
     command += ["--headless"] if args.headless else ["--windowed", "--resolution", "1600x900", "--position", "80,80"]

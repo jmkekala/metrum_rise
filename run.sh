@@ -330,36 +330,34 @@ PY
 
 # Every Godot regression runs in a throwaway profile. Several of them install content packs and
 # rewrite the active pack selection, so pointing them at the player's real user:// would change
-# which packs their game loads and strand fixture packs behind an interrupted run. A unique
-# project identity also isolates user:// on macOS, which ignores XDG. Reuse imported resources
-# without copying assets or changing the project. Sets asset_test_profile, asset_test_project and
-# godot_test_profile_name, and exports XDG_DATA_HOME / XDG_CONFIG_HOME.
+# which packs their game loads and strand fixture packs behind an interrupted run. The profile is
+# tools/godot_isolated.py's (`TOOLS-19`): absolute data, config and cache homes (Godot ignores a
+# relative XDG path and falls back to the home profile), and a project copy with a unique name,
+# which also isolates user:// on macOS, which ignores XDG. Imported resources are reused through
+# links, without copying assets or changing the project. An optional directory of packs is copied
+# into the profile's user://mods. Sets asset_test_profile, asset_test_project and
+# godot_test_profile_name, and exports XDG_DATA_HOME / XDG_CONFIG_HOME / XDG_CACHE_HOME.
 create_isolated_godot_profile() {
-    asset_test_profile=$(mktemp -d -t metrum-godot-tests.XXXXXX) || return 1
-    asset_test_project="$asset_test_profile/project"
-    mkdir "$asset_test_project" || return 1
-    local entry
-    for entry in "$GODOT_DIR"/* "$GODOT_DIR/.godot"; do
-        case "${entry##*/}" in project.godot|override.cfg) continue ;; esac
-        [ -e "$entry" ] || continue
-        ln -s "$entry" "$asset_test_project/" || return 1
-    done
-    cp "$GODOT_DIR/project.godot" "$asset_test_project/project.godot" || return 1
-    # Some tests reach repo siblings through `res://../<dir>` (economy, maps, benchmarks).
-    # The relocated project makes that resolve to the temporary profile, so mirror every
-    # sibling of the real project directory beside it.
-    for entry in "$PROJECT_ROOT"/*; do
-        [ -e "$entry" ] || continue
-        [ "$entry" = "$GODOT_DIR" ] && continue
-        ln -s "$entry" "$asset_test_profile/" || return 1
-    done
-    # macOS ignores XDG and derives user:// from this name, so it is the isolation that
-    # matters there; keep one definition so the two cannot drift apart.
-    godot_test_profile_name="MetrumGodotTests-${asset_test_profile##*/}"
-    printf '[application]\nconfig/name="%s"\nconfig/use_custom_user_dir=false\n' \
-        "$godot_test_profile_name" > "$asset_test_project/override.cfg" || return 1
-    export XDG_DATA_HOME="$asset_test_profile/data"
-    export XDG_CONFIG_HOME="$asset_test_profile/config"
+    local assignments
+    local mods_args=()
+    [ -n "${1:-}" ] && [ -d "$1" ] && mods_args=(--mods "$1")
+    assignments=$(python3 "$PROJECT_ROOT/tools/godot_isolated.py" profile --prefix metrum-godot-tests. \
+        --name-prefix MetrumGodotTests --godot-dir "$GODOT_DIR" "${mods_args[@]}") || return 1
+    eval "$assignments"
+    asset_test_profile=$METRUM_GODOT_PROFILE
+    asset_test_project=$METRUM_GODOT_PROJECT
+    godot_test_profile_name=$METRUM_GODOT_PROFILE_NAME
+    export XDG_DATA_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
+}
+
+# The Godot half of the road-chunk benchmark, in a throwaway profile (`TOOLS-19`).
+run_road_chunk_upload_benchmark() {
+    local status
+    create_isolated_godot_profile || return 1
+    godot --headless --path "$asset_test_project" --script res://tests/road_chunk_renderer_benchmark.gd
+    status=$?
+    rm -rf "$asset_test_profile"
+    return $status
 }
 
 # Rendered Godot tests need a real renderer. They run in gamescope's headless backend, which
@@ -663,6 +661,9 @@ build_gate_targets() {
         return 1
     fi
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_stream_benchmark.py; then
+        return 1
+    fi
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_godot_isolated.py; then
         return 1
     fi
     echo "Checking benchmark targets for API drift..."
@@ -1513,8 +1514,10 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     fi
     echo "  Metrics: $GAMEPLAY_METRICS_PATH"
     echo "  Log:     $GAMEPLAY_LOG_PATH"
+    # An isolated profile with a copy of the player's packs (`TOOLS-19`): the run never writes them.
+    create_isolated_godot_profile "$(player_mods_dir)" || exit 1
     cd "$GODOT_DIR"
-    GAMEPLAY_COMMAND=(godot --path "$GODOT_DIR" --log-file "$GAMEPLAY_LOG_PATH")
+    GAMEPLAY_COMMAND=(godot --path "$asset_test_project" --log-file "$GAMEPLAY_LOG_PATH")
     if [ "$GAMEPLAY_ROAD_PROFILE_MODE" = "headless" ]; then
         GAMEPLAY_COMMAND+=(--headless)
     else
@@ -1532,6 +1535,7 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
         "${GAMEPLAY_COMMAND[@]}"
     fi
     PROFILE_STATUS=$?
+    rm -rf "$asset_test_profile"
     if [ $PROFILE_STATUS -eq 0 ] && [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ]; then
         if [ ! -s "$GAMEPLAY_PROFILE_PATH" ] || ! gzip -t "$GAMEPLAY_PROFILE_PATH" 2>/dev/null; then
             echo "Error: Samply did not produce a readable profile at $GAMEPLAY_PROFILE_PATH" >&2
@@ -1573,7 +1577,7 @@ fi
 
 if [ $ROAD_CHUNK_UPLOAD_BENCHMARK -eq 1 ]; then
     echo "Running deterministic Godot road-chunk upload benchmark..."
-    godot --headless --path "$GODOT_DIR" --script res://tests/road_chunk_renderer_benchmark.gd
+    run_road_chunk_upload_benchmark
     exit $?
 fi
 
@@ -1584,7 +1588,7 @@ if [ $ROAD_CHUNK_BENCHMARK -eq 1 ]; then
         exit 1
     fi
     echo "Running deterministic Godot road-chunk upload benchmark..."
-    godot --headless --path "$GODOT_DIR" --script res://tests/road_chunk_renderer_benchmark.gd
+    run_road_chunk_upload_benchmark
     exit $?
 fi
 

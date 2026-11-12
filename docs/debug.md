@@ -629,6 +629,26 @@ the preceding stage returned. `add road transaction started` is emitted before t
 
 ## Godot Test Guard
 
+**Isolated profile (`TOOLS-19`).** Every Godot run of a test, benchmark, probe or import runs in
+a throwaway profile, never the player's: Godot ignores a relative `XDG_DATA_HOME` /
+`XDG_CONFIG_HOME` (it warns "is a relative path") and falls back to the home profile, where a
+run rotates the player's logs, rewrites the editor settings or, for a pack-writing test, the
+active packs. `tools/godot_isolated.py` makes the profile: absolute data, config and cache homes,
+a project copy with a unique name (every entry of `godot/` linked, so imports are shared), and on
+request another build's library or scripts and a copy of the player's packs. It refuses an
+environment whose XDG homes are unset, relative or the home profile's. `run` deletes a passed
+run's profile and keeps a failed one's; `profile` prints the paths for a shell to `eval`.
+`./run.sh --test`, its replay and benchmark modes, the stream benchmark, the parking capture and
+the camera playtest use it; a hand-started run uses it too:
+
+```bash
+tools/godot_isolated.py run -- godot --headless --path {project} --script res://tests/<test>.gd
+tools/godot_isolated.py run --library <other .so> -- godot --headless --path {project} --import
+tools/godot_isolated.py run --mods player -- gamescope --backend headless -- godot --path {project} ...
+```
+
+A round's logs end clean: `grep -rl 'is a relative path' <artefacts>` finds nothing.
+
 Godot does not exit on a GDScript error: the coroutine that hit it ends, the scene tree keeps
 running, and a test that never reaches `quit()` would hold its chain forever. So
 `./run.sh --test` runs every Godot test of its chains under `run_guarded_godot_test`

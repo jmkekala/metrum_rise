@@ -11,10 +11,13 @@ import csv
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import godot_isolated  # noqa: E402
 
 
 def digest(path):
@@ -96,10 +99,9 @@ window/size/viewport_height=540
 [rendering]
 renderer/rendering_method="gl_compatibility"
 ''')
-    env = os.environ.copy()
-    env.update({"XDG_DATA_HOME": str(output / "userdata"),
-                "XDG_CONFIG_HOME": str(output / "config"),
-                "METRUM_DEBUG": "0", "RAYON_NUM_THREADS": "4"})
+    # Absolute XDG homes in the output (`TOOLS-19`): the run never touches the home profile.
+    env = godot_isolated.isolated_env(output, display=True)
+    env.update({"METRUM_DEBUG": "0", "RAYON_NUM_THREADS": "4"})
     metadata = {
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
         "camera_source_sha256": digest(repo / "rust/src/nodes/camera_node.rs"),

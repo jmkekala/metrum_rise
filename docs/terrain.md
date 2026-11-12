@@ -11983,6 +11983,52 @@ A noisy row is rerun alone (the user, 2026-11-12): only the flagged phases' grou
 flagged durations; never the whole matrix. The simulation timing does the same with `./run.sh
 --timing --artifacts "$ARTIFACTS" --rerun <label>` ([timing](simulation.md#timing-levels-and-the-session-runner-perf-19)).
 
+**Tracked verdict tools** (`TOOLS-20`, 2026-11-12). Every round's acceptance on this benchmark
+uses these subcommands, not per-round scripts:
+
+```bash
+# C B B C rows in one hold of the timing locks: the process check (godot, cargo, rustc, the local
+# busy processes), the window check, start and load are taken inside it, right before each row.
+tools/stream_benchmark.py series --input-label 30k --out "$ARTIFACTS" --save <populated_city_30000.sqlite> \
+    --ctl-library <control .so> --ctl-scripts <control godot/scripts> --library <branch .so> [--phases ...]
+tools/stream_benchmark.py compare "$ARTIFACTS" 30k kuopio        # the verdict table per input
+# Settle-point digests (untimed: `run --digests` or `series --digests`), one run a side:
+tools/stream_benchmark.py digests "$ARTIFACTS/30k-ctl-dig.metrics.json" "$ARTIFACTS/30k-br-dig.metrics.json"
+tools/stream_benchmark.py stills capture --label s30-ctl1 --out "$ARTIFACTS/stills" --save <...> \
+    --library <control .so> --scripts <control godot/scripts> --poses saved,city,city_low [--warmup 4000]
+tools/stream_benchmark.py stills compare "$ARTIFACTS/stills/k-ctl" "$ARTIFACTS/stills/k-br"
+tools/stream_benchmark.py stills systematic <s30-ctl1> <s30-ctl2> <s30-br1> <s30-br2> [--masks <dir>]
+```
+
+- `series` writes `<input>-ctl1`, `-br1`, `-br2`, `-ctl2`; `run` stays for single rows. Both run
+  themselves again under the local `timed_wrapper` (the run and exclusive timing locks), so no
+  other round's build lands between the rows of a quartet (13 minutes did in `RENDER-32-L`).
+- `compare`: per phase, the branch's mean p50 and max minus the control's against the same-binary
+  spread (the larger of the two sides' run-to-run differences): `worse` where the delta exceeds the
+  spread, else `better` where its negative does, else `level`. It reproduces line for line the
+  recorded tables of `RENDER-32-L` (both inputs and its pan rerun) and `RENDER-32-K` part 2's.
+- `digests`: per settle point and family (graded tiles, building batches, lamp textures, the water
+  pose) `equal`, `band` or `different`; exit 1 on any `different`. A graded point is `band` only
+  when every differing tile differs in level or step, lies inside a level end's hysteresis band
+  of the camera at the two levels the rule allows there, and every tile at equal level, step and
+  token has equal bytes. The benchmark records the rule's ends in `graded_levels` (asked of the
+  rule itself) and each point's `level_camera` (XZ and height above the ground); a report from
+  before them takes `--levels <a newer report>` and a distance bound (ground distance up to the
+  distance from the camera's height over y = 0), which can only refuse a band, never grant one.
+  `RENDER-32-L`'s 30k digests read buildings 13 of 13 equal, graded 10 equal and 3 band (5 tiles
+  2,012-2,030 m from the camera), lamps 4 of 4.
+- `stills capture` runs the idle-frame matrix's screenshots in gamescope through the isolated
+  launcher (`tools/godot_isolated.py`, `TOOLS-19`) under the shared timing lock. `stills compare`
+  is byte identity (else pixels, largest delta, worst 16 x 16 block; exit 1 unless identical).
+  `stills systematic` is the two-runs-a-side test the rounds have used: pixels equal within each
+  side's runs and different between the sides, against the same count for the two other pairings
+  of the four runs (control and branch mixed: run-to-run speckle, the null); `systematic` (exit 1)
+  only when the count exceeds the larger null by more than the nulls' range or three Poisson
+  deviations, whichever is larger. It reproduces `RENDER-32-L`'s counts and verdict (city 1,702 /
+  595 / 311 against 1,719-1,804 / 504-571 / 326-509, pond 1,644 and 32,503: none) and those of
+  `RENDER-32-K` parts 2 and 3; `RENDER-32-K` part 1's `city` (647 against 446-537) reads
+  `systematic` by this rule where that round judged the mask unstructured.
+
 The perf channel's records join the frame they belong to: the benchmark takes them as
 `process_frame` resumes it, which ends the frame it has just timed (that frame's scripts and its
 pre-draw hooks). The planning probe sampled them by engine frame number and found them one row

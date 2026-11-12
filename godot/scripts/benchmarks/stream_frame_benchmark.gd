@@ -23,7 +23,10 @@
 ## records the graded tiles' product in `graded_digests`: per installed tile its level, step,
 ## token, flag, walls and the bytes of each of its copies (the slot layer with its run's place in
 ## the header masked, and the run), so two builds' settled installs compare by digest whatever
-## slots they took (`RENDER-32-B`). At night it also records the street lights' lamp grid and far
+## slots they took (`RENDER-32-B`), with the camera the levels were measured from
+## (`level_camera`: XZ and the height above the ground under it), and once the level rule's ends
+## in `graded_levels`, read from the rule itself, so `tools/stream_benchmark.py digests` can tell a
+## level end's hysteresis band from a difference (`TOOLS-20`). At night it also records the street lights' lamp grid and far
 ## map textures by digest in `lamp_digests`, and adds two night settle points, the jump's pose
 ## and back, each far enough to re-centre both (`RENDER-32-H`). Every settle point also records
 ## the building LOD batches in `building_digests` (per batch its chunk, group, count and rows),
@@ -353,10 +356,44 @@ func _record_digest(label: String) -> void:
 		lines.append(line)
 		by_tile["%d,%d" % [tile.x, tile.y]] = line
 	var camera: Vector3 = _terrain.get_viewport().get_camera_3d().global_position
+	var level_camera: Vector3 = tiles.get("_camera")
 	_report.graded_digests.append({"point": _settle_points, "label": label,
 		"sample": (_report.samples.back() as Dictionary).get("label", "") if not _report.samples.is_empty() else "",
 		"camera": [camera.x, camera.y, camera.z], "tiles": lines.size(),
+		"level_camera": [level_camera.x, level_camera.y, level_camera.z],
 		"digest": _sha("\n".join(lines).to_utf8_buffer()), "by_tile": by_tile})
+	if not _report.has("graded_levels"):
+		_report.graded_levels = _graded_levels(tiles)
+
+# The graded level rule's ends, metres from the camera: where each of `GL0`-`GL2` ends for a tile
+# not held (`level_end_m`) and for one held at that level (`held_level_end_m`, the hysteresis
+# band's far side), `GL3`'s step ends, the levels as `[code, step]` and the tile size. The held
+# ends are found by asking the rule: a camera over tile (0, 0)'s centre at height h is h from it.
+func _graded_levels(tiles: Object) -> Dictionary:
+	var constants: Dictionary = tiles.get_script().get_script_constant_map()
+	var tile_m: float = constants["TILE_M"]
+	var levels := GradedTileLevels.new()
+	var held_ends: Array[float] = []
+	for code in GradedTileLevels.level_end_m().size():
+		var lo := 0.0
+		var hi := 100000.0
+		for _step in 64:
+			var mid := (lo + hi) * 0.5
+			levels.move_camera(Vector3(tile_m * 0.5, mid, tile_m * 0.5))
+			if levels.rule_level(Vector2i.ZERO, code).x <= code:
+				lo = mid
+			else:
+				hi = mid
+		held_ends.append(snappedf(hi, 0.001))
+	var finite_gl3: Array[float] = []
+	for end in GradedTileLevels.gl3_end_m():
+		if is_finite(end):
+			finite_gl3.append(end)
+	var steps: Array = []
+	for step: Vector2i in constants["LEVEL_STEPS"]:
+		steps.append([step.x, step.y])
+	return {"tile_m": tile_m, "level_end_m": Array(GradedTileLevels.level_end_m()),
+		"held_level_end_m": held_ends, "gl3_end_m": finite_gl3, "level_steps": steps}
 
 # The view of the water phase (see the header): rings of WATER_SCAN_M about the world's centre,
 # each walked in a fixed order; empty when no shore is found.
