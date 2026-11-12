@@ -85,6 +85,11 @@ installs its graded terrain in the same frame as its road, and the streaming aud
 cleanups are in (a page write checked against its own bake, golden traces in the gate, no entry
 clone on install, freed pages forgotten); the last junction frames of T65 wait for the user's
 choice of rule, and the renderer's deletion to an executor is still to come.
+`RENDER-32-K` part 6 hands the graded renderer's resident patches from `terrain.gd` to the
+streaming core (the book follows the terrain layer's activations, step changes, departures and
+commits directly), puts the graded result path and edit batch under Rust tests without Godot
+(`CODE-30`), and moves the patch lists' bookkeeping and the cell set builds into the book;
+`terrain_graded_tiles.gd` is 1,347 lines (from 1,425), the rest of its deletion still to come.
 `RENDER-32-F` (landed)
 moves the vegetation's residency, bands and staleness to Rust, decision for decision equal to the
 GDScript on the benchmark's recorded paths: its frame time on a turn falls to 0.1-0.3 ms, and an

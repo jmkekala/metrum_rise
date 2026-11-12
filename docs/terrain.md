@@ -14518,6 +14518,133 @@ against 1.47 with more copies a frame, one run a side. No node created or freed 
 met (nothing new makes an object). `graded_tile_renderer_test` headless and rendered in the gate
 (a `TERRAIN-24` pass) and `TERRAIN-17`'s test: met. `PERF-07` at level F: level. Not relaxed.
 
+### The resident-patch hand-off, the result path under Rust tests and the first deletions (`RENDER-32-K` part 6, 2026-11-12)
+
+G2c-6's brief: the resident-patch hand-off (`terrain.gd`'s resident patches to the graded book
+through T1's rings), `CODE-30` (the result path and the edit batch under Rust tests) and the
+deletion of `terrain_graded_tiles.gd` to an executor of about 400 lines (`terrain_graded_pages.gd`
+to its uploads). Built: the hand-off, `CODE-30`, and the first two deletions (the patch lists'
+bookkeeping and the cell set build loop). Not built: the rest of the deletion (below, with what
+is left and why). `terrain_graded_tiles.gd` 1,425 lines before, 1,494 after the hand-off (the
+dictionary-fed frame kept for tests and earlier traces, the node registration), 1,347 at the end;
+`terrain_graded_pages.gd` 181, unchanged; `terrain.gd` 2,676 to 2,664.
+
+**The hand-off.** The terrain layer (`PatchStream`, `stream/layers/terrain.rs`) records, for a
+follower, each resident patch's change in the order its units ran (`Follow`: activated at a step
+with the surface generation its node answered, a step change, a departure); the stream node hands
+them to the `GradedTileBook` that `terrain.gd` attached at the world's setup
+(`attach_graded_book`), each with its rectangle from the patch grid (`PatchGrid::rect`, the
+payload's own single-precision arithmetic, which `centre` now uses too), and every surface commit
+through `set_terrain_surface_generation` (resident or not: every commit was a changed key of the
+renderer's frame before). The book sets its resident entries and keeps the changed keys as news
+(`book/residency.rs`); the renderer's frame (`process(camera, materials)`) takes them and follows
+them exactly as it followed the changed keys `terrain.gd` collected. `terrain.gd` keeps no
+resident dictionary for the graded tiles: it lends each resident patch's node, material and culling
+box (`set_patch_node`), the executor's own objects, at the points it rewrote the entry before. The
+dictionary-fed frame stays as `process_with` for the Godot tests and the replay of traces recorded
+before the hand-off; a live trace records the core's entries (`patch_core`), the nodes
+(`patch_node`) and the frames (`frame`), and the replay feeds them back the same way. The one
+difference in what the frame follows: a step change of a patch that is not resident (only inside an
+activation that a network publication then blocks) is no longer a changed key; such a key's
+`patch_changed` only releases parked blocks and sweeps commit-only tiles, which its later
+activation does again. Bounds: `O(1)` a change; the follower's buffer grows to the most changes a
+frame made and is reused (no allocation on a frame after that).
+
+**`CODE-30`.** The book's runs (the result path's budget loop and deferral, the variant waits, the
+edit batch, the preview's frames and releases, and now the lists and the builds) are generic over
+a `Host` trait (`book/results.rs`): the book borrowed one step at a time and the renderer's
+callbacks (`_apply_effects`, `release_preview`, the poll, the budget's clock). The game's
+`ScriptHost` binds the book's `Gd` and calls the script as before. The book needed no new core
+struct: it has no base field, so a test constructs it directly. Edits are decoded once (`Edit`),
+the batch's reservation and the preview's tile lists use Rust buffers, so no step of those paths
+needs the engine. `book/tests.rs` drives the runs with a recording host, scripted polls and a
+scripted clock: a budget that runs out mid-poll defers and resumes in order, a stale result is
+dropped, a flagged tile waits for its sets' variant, an edit batch installs whole or not at all
+and holds the installed serial back meanwhile (T61), a refused tile leaves the batch, preview
+frames draw over the installed tile until released, a flagged preview tile waits for the variant
+(T27 (d)), a commit adopts the preview in the frame its batch installs (T60), and a commit no held
+tile takes releases its preview through the renderer.
+
+**The deletions.** The patch lists' bookkeeping (`patch_lists`, `patch_lists_requested`,
+`patch_lists_refused`, `_lists_wanted`, `_request_patch_lists`' loop, `_take_list`, `_failed`) is
+the book's (`book/lists.rs`; the lists and refusals were already the state's): the result path
+takes a poll's lists and failures itself, so the `_take_polled` callback is gone, and the
+renderer keeps only the traced simulation call between `lists_to_request` and `lists_accepted`.
+The cell set build loop (`_advance_builds`, `_add_wanted_variants`) is a run of the book with the
+same budget checks in the same places (`advance_builds`); `_over_budget` went with it.
+
+What is left in `terrain_graded_tiles.gd`, and why: the Godot objects it makes (the lattice and
+wall meshes, the wall material, the shaders' uniform list, the page textures through
+`terrain_graded_pages.gd`), which stay with the executor; `_apply_effects`, which applies the
+effects that need those objects (page arrays, cancels through the simulation, the patch nodes'
+draw states) and is the executor's loop; the trace's record and replay wrappers around every
+simulation call (`_sim_*`, the traced hand-over), which stay while the traces are written in
+GDScript; and, to be ported next, the counters and the perf channel's frame parts (about 150
+lines, read by the benchmark, the probe and the tests by name), the readiness latency (`_unready`,
+`_set_ready`, `_count_unready_in_view`, `unready_near`: the frustum test needs the patch nodes'
+transforms, which the book would take with the culling box), the test and probe readers
+(`installed` / `preview` views, `patch_cells`, `plane_violations`, `hole_patches`,
+`tile_draw_violations`, `get_pool_counters`, about 200 lines, best served by one Rust dictionary
+each), and the dictionary-fed frame (`process_with`, `patch_mutated`), which goes once the Godot
+tests feed the book through the core's entries and the pre-hand-off traces are re-recorded.
+`terrain_graded_pages.gd` is already its uploads' textures (creation, reuse, copies, the device's
+layer limit); its `layer_data` read-back serves the Compatibility mirror's tests.
+
+**Fresh results** (2026-11-12; branch `766978e8`, the round rebased onto `dev` `7679850d` at the
+coordinator's request, against a control built from `7679850d` in a side worktree; release
+libraries for every run below, the debug library for the Godot tests).
+
+- Replay: all 21 traces bit for bit: the eight zoning goldens and the bridge golden, `RENDER-32-K`
+  part 5's two Kuopio swing traces (recorded before the hand-off, replayed through
+  `process_with`), this round's eight zoning reference traces and a Kuopio swing trace recorded
+  live in the hand-off's format (562 frames, 1,486 core entries, 1,296 node registrations, 228
+  preview frames). The eight zoning traces of both sides set the same resident entries (rectangle
+  bits, step, generation, culling box) in every patch line.
+- Digests (30k, settle points, one a side): graded 4 of 4, buildings 4 of 4, roads 4 of 4, parked 4
+  of 4, water 1 of 1 equal.
+- Stills: Kuopio `close`, `mid`, `forest_low` byte-identical. 30k, three runs a side: `city` and
+  `city_low` byte-identical in all three pairs; `saved` 0, 2 and 1 px (max delta 1), the parked
+  `RENDER-45` residue (one set's systematic test flags its 1 px at (54, 371), the other none).
+- Drag probe (gamescope headless): the populated 100k swing 2 strokes, 282 frames, 0 background,
+  pass; Kuopio's 39 strokes: the background in 16 of 6,038 frames, all `kuopio_03` attempt 8's
+  junction frames (T65's, its rule now `ROAD-112`'s), against the control's 16 of 6,039 the same
+  session; the fast commit installs in one batch frame on all 39 strokes on both sides.
+- Timed, level F (2026-11-13 00:00-00:29, release libraries, `.run.lock` with the exclusive
+  timing lock, P-cores; another round's timed runs took the locks between some of these). Graded
+  parts, instrumented, one run a side (mean ms a frame, control / branch): 30k 1 s turns
+  0.85 / 0.83, 0.80 / 0.82, 0.93 / 0.86 (copies a frame 41.8 / 39.1, 39.6 / 44.1, 43.6 / 36.7); 100k
+  after the load 1.72 / 1.74 (42.8 / 43.0 copies), 100k 1 s turns 1.33 / 1.32, 1.44 / 1.45, 1.44 /
+  1.47: not worse than control. Rows (`series` C B B C, `compare`): the 30k still and 0.5 s turns
+  level but `turn_repeat` 0.5 s +0.4 ms p50 (spread 0.3) and `turn_out` 1 s +5.1 ms max (spread
+  1.8), the second branch run's GPU p50 1-2 ms above the others'; the one rerun of the 30k turns:
+  level or better in every turn phase (one frame of 34 ms on the branch's `turn_repeat` 1 s, none
+  on the control's). Kuopio: level but `turn_repeat` 0.5 s max +1.7 ms (spread 0.7); in the one
+  rerun of its turns `turn_repeat` 0.5 s max +4.0 ms (10-11 against 6-7 ms; spread 1.0), `turn_out`
+  1 s max +1.8, and `turn_out` 0.5 s and `turn_repeat` 1 s p50 +0.1 against spreads of 0.0-0.1:
+  Kuopio's turn maxima are not level (every frame under 12 ms, p50 2.0-2.8 ms on both sides); not
+  rerun again (the brief's limit), the cause not found (the frame's new work is a news check, the
+  builds' run setup and the lists in Rust, all `O(1)` or the same work as before). `PERF-07` at
+  level F: 30k 1x mean 2.453 / 2.454 ms, p99 4.14 / 4.20, p99.9 5.05 / 5.46, every metric level,
+  both PASS; 30k 32x level on every metric.
+- Gates (`766978e8`): clippy `--all-targets` warning set equal to `7679850d`'s
+  (`asset_document.rs:15` only); debug `cargo test --lib` 2,532 passed, 0 failed, 224 ignored;
+  `./run.sh --test` PASS on the second run (nextest 2,536 of 2,536, 225 skipped; both Godot chains;
+  0 SCRIPT ERROR; `graded_tile_renderer_test` headless and rendered, its bridge trace recorded in
+  the hand-off's format, drawing its wall face, replayed bit for bit). Its first run failed one check
+  of `graded_tile_renderer_test` (`TERRAIN-24`'s row) beside a stills batch and another round's
+  timed runs; three reruns of the test and the gate rerun passed.
+
+**Against the bars.** Replay parity on all traces: met. Digests: equal. Stills: Kuopio
+byte-identical, the 30k city byte-identical but `saved`'s `RENDER-45` residue: met. The drag
+probe as part 5 left it (fast commit 39 of 39, background frames not above control's): met.
+`CODE-30`'s unit tests, every graded Godot test, `graded_tile_renderer_test` headless and rendered:
+met (with the one failure above, for review). No node created or freed on a frame path: met
+(nothing new makes an object). Graded totals not worse than control: met. Rows level: the 30k city
+level after its rerun; Kuopio's turn maxima not level (above), for review. One instrumented 100k
+load a side: taken. `PERF-07` at level F: level. The executor deletion: partly (1,425 to 1,347
+lines, the rest named above). Not relaxed.
+
+
 ### Buildings by travel bucket, batches through the pools (`RENDER-32-L`, 2026-11-12)
 
 B1, with `RENDER-37` first. The building LOD's per-frame rule (a part's projected size in render
