@@ -83,12 +83,15 @@ func _parked_renderer(sim: SimulationNode, full: Dictionary, filled: int) -> voi
 	for update: Dictionary in full["chunks"]:
 		for bucket: int in update["buckets"]:
 			expected["%s|%d" % [update["chunk"], bucket]] = update["buckets"][bucket]
+	# The headless renderer keeps no buffer to read back: the counts here, the rows bit for bit in
+	# the layer's recorder tests and the stream benchmark's digests.
 	var drawn := 0
 	var rows: Array[Dictionary] = parked.drawn_rows()
 	for item: Dictionary in rows:
 		var key := "%s|%d" % [item.chunk, item.bucket]
-		_expect(expected.get(key, PackedFloat32Array()) == item.rows, "parked bucket %s drawn bit for bit" % key)
-		drawn += (item.rows as PackedFloat32Array).size() / 12
+		_expect((expected.get(key, PackedFloat32Array()) as PackedFloat32Array).size() == int(item.count) * 12,
+			"parked bucket %s draws its every car" % key)
+		drawn += int(item.count)
 	_expect(rows.size() == expected.size(), "every parked bucket drawn once")
 	_expect(drawn == filled, "every parked car drawn once: %d of %d" % [drawn, filled])
 	_expect(parked.get_child_count() == 0, "no node per parked chunk")
@@ -129,7 +132,6 @@ func _run() -> void:
 		for ids: PackedInt64Array in update["identities"].values():
 			published += ids.size()
 	_expect(published == filled, "the snapshot holds every parked car")
-	_parked_renderer(sim, full, filled)
 	var frame: Dictionary = sim.get_vehicle_frame(false)
 	_expect(not frame.has("busy"), "the vehicle frame has no busy state")
 	_expect(frame.has("cars") and frame.has("parked"), "cars and unseen chunks come together")
@@ -140,6 +142,7 @@ func _run() -> void:
 	_expect(frame.has("cars") and not frame.has("parked"), "nothing parked when nothing changed: acknowledged serial %d, sent serial %s full %s with %d chunks" % [full["serial"], resent.get("serial"), resent.get("full"), resent.get("chunks", []).size()])
 	var unchanged: Dictionary = sim.get_parked_car_chunks(false)
 	_expect(unchanged.get("chunks", []).is_empty(), "unchanged chunks send nothing")
+	_parked_renderer(sim, full, filled)
 	# Placement snaps to its frontage; target the published centre, and retry a busy bridge.
 	var target: Dictionary = {}
 	deadline = Time.get_ticks_msec() + 20000

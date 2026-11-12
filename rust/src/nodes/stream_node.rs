@@ -867,8 +867,9 @@ impl StreamNode {
         }
     }
 
-    /// The drawn parked buckets (tests and the stream benchmark's digests): `chunk`, `bucket`
-    /// and `multimesh` (its RID; its visible instances are the bucket's poses). `O(buckets)`.
+    /// The drawn parked buckets (tests and the stream benchmark's digests): `chunk`, `bucket`,
+    /// `count` (the poses drawn) and `multimesh` (its RID; its first `count` instances are the
+    /// bucket's poses). `O(buckets)`.
     #[func]
     pub fn get_parked_drawn(&self) -> VarArray {
         let mut out = VarArray::new();
@@ -879,7 +880,9 @@ impl StreamNode {
             let mut item = VarDictionary::new();
             item.set("chunk", Vector2i::new(chunk.0, chunk.1));
             item.set("bucket", i64::from(bucket));
-            item.set("multimesh", Rid::new(draw.layer.pool().slot(slot).multimesh));
+            let slot = draw.layer.pool().slot(slot);
+            item.set("multimesh", Rid::new(slot.multimesh));
+            item.set("count", i64::from(slot.visible_count().unwrap_or(0)));
             out.push(&item.to_variant());
         }
         out

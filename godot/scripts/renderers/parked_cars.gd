@@ -64,18 +64,14 @@ func apply_publication(payload: Dictionary) -> void:
 	if complete:
 		simulation_node.acknowledge_parked_cars(epoch, payload["serial"])
 
-## The drawn buckets with their poses read back (tests and the stream benchmark's digests):
-## `chunk`, `bucket` and `rows`.
+## The drawn buckets (the stream benchmark's digests): `chunk`, `bucket`, `count` and `rows`, the
+## poses read back from the engine (a headless renderer keeps no buffer: then empty).
 func drawn_rows() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	if _stream == null:
 		return out
 	for item: Dictionary in _stream.get_parked_drawn():
-		var multimesh: RID = item.multimesh
-		var rows := RenderingServer.multimesh_get_buffer(multimesh)
-		# -1: every instance draws (a slot filled to its capacity keeps the engine's default).
-		var count := RenderingServer.multimesh_get_visible_instances(multimesh)
-		if count >= 0:
-			rows = rows.slice(0, count * 12)
-		out.append({"chunk": item.chunk, "bucket": item.bucket, "rows": rows})
+		var count: int = item.count
+		var rows := RenderingServer.multimesh_get_buffer(item.multimesh).slice(0, count * 12)
+		out.append({"chunk": item.chunk, "bucket": item.bucket, "count": count, "rows": rows})
 	return out

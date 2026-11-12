@@ -288,6 +288,12 @@ impl Slot {
         self.drawn[role as usize]
     }
 
+    /// The instances the `MultiMesh` draws as last set (`None`: unknown), its capacity for a
+    /// slot filled to it.
+    pub(crate) fn visible_count(&self) -> Option<u32> {
+        self.count
+    }
+
     /// The `MultiMesh`'s own bounds as last set (zero size: the engine's).
     pub(crate) fn multimesh_aabb(&self) -> Aabb {
         self.multimesh_aabb.unwrap_or_default()
