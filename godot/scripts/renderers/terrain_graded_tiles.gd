@@ -67,7 +67,6 @@ const PAGE_LAYERS_PER_SLOT := 3
 # Patch cells: a patch meets at most (ceil(span / 64 m) + 1)^2 tiles (9 x 9 on a 510 m patch),
 # the instances of each cell MultiMesh (_cells_per_patch). A tile's place in its patch is
 # column + 32 * row in one instance channel (terrain_cells.gdshaderinc; the book writes it).
-const INSTALL_BUDGET_MS := 1.0
 const POLL_BATCH := 4
 # The cell meshes of a patch: GL0-GL3 (0-3), the base cells (CELL_BASE) and GL0-GL3 of the tiles
 # whose bake flags them behind the road (CELL_BEHIND + level, T49 (c)): their cells draw the
@@ -837,12 +836,6 @@ func _results_taken() -> void:
 	counters["upload_bytes"] = _book.upload_bytes()
 	counters["upload_ms_max"] = float(_book.upload_us_max()) / 1000.0
 
-func _over_budget(start_us: int) -> bool:
-	var over := not unbudgeted and float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS
-	if trace != null:
-		over = trace.value("budget", str(int(over))) == "1"
-	return over
-
 # Applies the book's effects of the last calls, in order: page arrays (made, reused, released,
 # dropped, copied, refused), the runs of slot uploads the book writes from the result being
 # placed (48), Rust queue cancels, exhaustion, evictions and the staged results an eviction
@@ -1107,47 +1100,12 @@ func _rebuild_patch_cells(key: Vector2i, _resident_patches: Dictionary) -> void:
 	_book.rebuild_set(key)
 	_apply_effects()
 
-# Builds the queued sets off the frame paths: the patches a shown tile waits for first, at least
-# one tile of the first of them in every frame, then the rest while the frame's install budget
-# lasts. A set first syncs its materials (the book, from the patch's material), then writes its tiles; a built set starts drawing if a
-# tile of it shows graded. O(tiles written this frame + uniforms synced).
-func _advance_builds(start_us: int, resident_patches: Dictionary) -> void:
-	_add_wanted_variants(start_us)
-	var minimum := 1
-	while true:
-		var next: Vector3i = _book.next_build()
-		if next.z < 0:
-			return
-		var key := Vector2i(next.x, next.y)
-		if next.z == 0:
-			minimum = 0
-		if minimum == 0 and _over_budget(start_us):
-			return
-		if not _book.is_resident(key):
-			_book.build_finished(key, false)
-			continue
-		var set := _book.begin_build(key)
-		_apply_effects()
-		var done := _book.set_built(set)
-		if not done and _book.sync_build(set, start_us):
-			done = _book.build_tiles(set, start_us, minimum)
-			_apply_effects()
-		minimum = 0
-		if not done:
-			return
-		_book.build_finished(key, true)
-
-# The sets a flagged tile waits for take the variant, first in the build path: the first of them
-# in every frame, then the rest while the frame's install budget lasts. O(sets given it x the
-# variant's meshes).
-func _add_wanted_variants(start_us: int) -> void:
-	var added := 0
-	while _book.has_variants_wanted():
-		if added > 0 and _over_budget(start_us):
-			return
-		if _book.add_next_variant() == 1:
-			_apply_effects()
-			added += 1
+# Builds the queued sets off the frame paths, the variant the waiting flagged tiles need first
+# (the book's, `RENDER-32-K` part 6): the patches a shown tile waits for first, at least one tile
+# of the first of them in every frame, then the rest while the frame's install budget lasts.
+# O(tiles written this frame + uniforms synced).
+func _advance_builds(start_us: int, _resident_patches: Dictionary) -> void:
+	GradedTileBook.advance_builds(_book, self, start_us)
 
 # The flagged tiles whose sets all hold the variant now: a bake result installs (the book's), a
 # preview tile shows (where its preview still wants it). O(waiting tiles).

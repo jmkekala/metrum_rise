@@ -613,6 +613,55 @@ impl<H: Host> Run<H> {
         self.host.book().taken.polled = polled;
     }
 
+    // `_advance_builds`: the sets a flagged tile waits for take the variant first (the first in
+    // every frame, the rest while the install budget lasts), then the queued set builds: the
+    // patches a shown tile waits for first, at least one tile of the first of them in every
+    // frame, then the rest while the budget lasts. A set first syncs its materials, then writes
+    // its tiles; a built set starts drawing if a tile of it shows graded. O(tiles written this
+    // frame + uniforms synced).
+    pub(super) fn advance_builds(&mut self, start_us: i64) {
+        let mut added = 0;
+        while self.host.book().has_variants_wanted() {
+            if added > 0 && self.over() {
+                return;
+            }
+            if self.host.book().add_next_variant() == 1 {
+                self.effects();
+                added += 1;
+            }
+        }
+        let mut minimum = 1;
+        loop {
+            let next = self.host.book().next_build();
+            if next.z < 0 {
+                return;
+            }
+            let key = Vector2i::new(next.x, next.y);
+            if next.z == 0 {
+                minimum = 0;
+            }
+            if minimum == 0 && self.over() {
+                return;
+            }
+            if !self.host.book().is_resident(key) {
+                self.host.book().build_finished(key, false);
+                continue;
+            }
+            let set = self.host.book().begin_build(key);
+            self.effects();
+            let mut done = self.host.book().set_built(set);
+            if !done && self.host.book().sync_build(set, start_us) {
+                done = self.host.book().build_tiles(set, start_us, minimum);
+                self.effects();
+            }
+            minimum = 0;
+            if !done {
+                return;
+            }
+            self.host.book().build_finished(key, true);
+        }
+    }
+
     // `_take_variant_waits`' results: the flagged tiles whose sets all hold the variant now
     // install, in the order they began waiting.
     pub(super) fn variant_waits(&mut self) {
@@ -659,6 +708,18 @@ impl GradedTileBook {
         start_us: i64,
     ) {
         Run::budgeted(ScriptHost::timed(book, renderer, simulation), start_us).results();
+    }
+
+    /// The frame's cell set builds (`_advance_builds`, `RENDER-32-K` part 6): the variant the
+    /// waiting flagged tiles need first, then the queued builds, within the install budget from
+    /// `start_us` (the trace's answers where one records or replays). O(tiles written this frame
+    /// + uniforms synced).
+    #[func]
+    pub fn advance_builds(book: Gd<GradedTileBook>, renderer: Gd<RefCounted>, start_us: i64) {
+        let mut run = Run::budgeted(ScriptHost::timed(book, renderer, None), start_us);
+        // Outside the result path's split.
+        run.split = false;
+        run.advance_builds(start_us);
     }
 
     /// `_take_variant_waits`' results: the flagged tiles whose sets all hold the variant now
