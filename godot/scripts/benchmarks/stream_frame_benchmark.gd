@@ -26,11 +26,11 @@
 ## slots they took (`RENDER-32-B`), with the camera the levels were measured from
 ## (`level_camera`: XZ and the height above the ground under it), and once the level rule's ends
 ## in `graded_levels`, read from the rule itself, so `tools/stream_benchmark.py digests` can tell a
-## level end's hysteresis band from a difference (`TOOLS-20`). At night it also records the street lights' lamp grid and far
-## map textures by digest in `lamp_digests`, and adds two night settle points, the jump's pose
-## and back, each far enough to re-centre both (`RENDER-32-H`). Every settle point also records
-## the building LOD batches in `building_digests` (per batch its chunk, group, count and rows),
-## whichever side draws them (`RENDER-32-L`).
+## level end's hysteresis band from a difference (`TOOLS-20`). At night it also records the
+## street lights' lamp grid and far map textures by digest in `lamp_digests`, and adds two night
+## settle points, the jump's pose and back, each far enough to re-centre both (`RENDER-32-H`).
+## Every settle point also records the building LOD batches in `building_digests` (per batch its
+## chunk, group, count and rows), whichever side draws them (`RENDER-32-L`).
 ##
 ## The `water` phase (`RENDER-32-L`) looks at a shore across water, so the water reflection
 ## draws: the first wet point of a fixed scan out from the world's centre whose neighbour WATER_STEP_M
