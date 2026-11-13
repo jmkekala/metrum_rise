@@ -110,7 +110,7 @@ func _run() -> void:
 	for key: Vector2i in resident.keys():
 		resident[key]["generation"] = int(resident[key]["generation"]) + 1
 	_mark_changed(resident)
-	graded.counters["install_ms_max"] = 0.0
+	graded._book.reset_install_ms_max()
 	_expect(await _settle_edit(graded, camera, resident), "the edit's tiles must install again")
 	counters = graded.get_pool_counters()
 	_expect(int(counters["uploads"]) > uploads_before, "the edit must upload its tiles again")
@@ -215,7 +215,7 @@ func _check_moving_camera(graded: GradedTiles, resident: Dictionary) -> void:
 			levels_seen[int(graded.installed[tile]["level"])] = true
 		for key: Vector2i in graded.patch_cells.keys():
 			var moved := _cell_record(graded, key)
-			graded._rebuild_patch_cells(key, resident)
+			_rebuild_patch_cells(graded, key)
 			_expect(moved == _cell_record(graded, key), "patch %s: the per-tile cells equal the patch's rewrite" % key)
 			_check_cells(graded, key, resident)
 	_expect(exact, "every desired tile has its distance's level in every frame")
@@ -266,7 +266,7 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 			var holders := graded.installed.keys().filter(func(tile: Vector2i) -> bool: return (graded.installed[tile]["copies"] as Dictionary).has(page_id))
 			if holders.is_empty():
 				continue
-			_expect(graded._move_block(code, block, Vector2i(int(page["slots"]) * 2, int(page["layers"]))), "level %d block %s starts its move" % [code, block])
+			_expect(_move_block(graded, code, block, Vector2i(int(page["slots"]) * 2, int(page["layers"]))), "level %d block %s starts its move" % [code, block])
 			var target := int(graded._book.block_target(code, block))
 			moving[Vector3i(code, block.x, block.y)] = target
 			# Until the move, a copy of the block's tiles goes into both pages: its sets keep
@@ -285,7 +285,7 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 		var block := Vector2i(marked.y, marked.z)
 		_expect(int(graded._book.block_page(marked.x, block)) == int(moving[marked]), "level %d block %s binds its new page" % [marked.x, block])
 	for tile: Vector2i in graded.installed.keys():
-		_expect(graded._tile_complete(tile, graded.installed[tile]), "tile %s has a copy in every page that draws it" % tile)
+		_expect(graded._book.tile_complete(tile), "tile %s has a copy in every page that draws it" % tile)
 	for key: Vector2i in resident.keys():
 		_check_cells(graded, key, resident)
 	_expect(_partial == 0 and _violations == 0, "no frame of the moves draws a partial set (%d) or a PlaneMesh over listed tiles (%d)" % [_partial, _violations])
@@ -441,7 +441,7 @@ func _check_variant(simulation: SimulationNode, host: Node3D, layout: Dictionary
 		var cells: Dictionary = graded.patch_cells[key]
 		_expect(bool(cells["variant"]) == graded._book.set_flagged(graded._book.patch_set(key)), "patch %s holds the variant as its flagged tiles need it" % key)
 		var moved := _cell_record(graded, key)
-		graded._rebuild_patch_cells(key, resident)
+		_rebuild_patch_cells(graded, key)
 		_expect(moved == _cell_record(graded, key), "patch %s: the per-tile cells equal the patch's rewrite" % key)
 		_check_cells(graded, key, resident)
 	graded.dispose()
@@ -509,7 +509,7 @@ func _check_refusals_are_asked_once(host: Node3D, simulation: SimulationNode, la
 	_expect(once, "each refused tile is asked once: %s" % bridge.asked)
 	_expect(int(graded.counters["bake_failures"]) == 2 and int(graded.get_pool_counters()["refused"]) == 2,
 		"each refusal is counted once: %s" % graded.get_pool_counters())
-	graded._apply_edit({"serial": 1, "all": true, "levels": []})
+	GradedTileBook.apply_edit(graded._book, graded, {"serial": 1, "all": true, "levels": []})
 	for frame in 30:
 		_frame(graded, camera, resident)
 		await process_frame
@@ -866,14 +866,34 @@ func _mark_changed(resident: Dictionary) -> void:
 	for key: Vector2i in resident.keys():
 		_changed[key] = true
 
-# One renderer frame with the changes since the last, as terrain.gd hands them over.
+# One renderer frame with the changes since the last, as the streaming core and terrain.gd hand
+# them over: each changed patch's entry set in the book (its news) and its node lent.
 func _frame(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> void:
-	graded.process_with(camera, resident, _changed, {})
+	for key: Vector2i in _changed:
+		var entry: Dictionary = resident.get(key, {})
+		if entry.is_empty():
+			graded._book.core_patch(key, false, Rect2(), 0, 0)
+			graded.set_patch_node(key, null, null, AABB())
+			continue
+		graded._book.core_patch(key, true, entry["rect"], int(entry["step"]), int(entry["generation"]))
+		graded.set_patch_node(key, entry["node"], entry["material"], entry["aabb"])
 	_changed.clear()
+	graded.process(camera, {})
 	_violations = max(_violations, graded.plane_violations())
 	if _check_partial:
 		_partial = max(_partial, graded.partial_sets())
-	_unready_seen = max(_unready_seen, graded._unready.size())
+	_unready_seen = max(_unready_seen, graded._book.unready_count())
+
+# Patch `key`'s set built whole in this frame (the reference for the per-tile updates).
+func _rebuild_patch_cells(graded: GradedTiles, key: Vector2i) -> void:
+	graded._book.rebuild_set(key)
+	graded._apply_effects()
+
+# Starts block `block`'s move at level `code` to a new page of `size` (slots, atlas layers).
+func _move_block(graded: GradedTiles, code: int, block: Vector2i, size: Vector2i) -> bool:
+	var moved: bool = graded._book.move_block(code, block, size)
+	graded._apply_effects()
+	return moved
 
 func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool:
 	var stable := 0

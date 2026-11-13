@@ -44,6 +44,26 @@ func check_bytes(graded: Tiles, entry: Dictionary, data: Dictionary) -> void:
 			rows.append_array(graded.page_store.layer_data(page, false, copy.y + layer))
 		expect(rows == data["rows"], "migration preserves exact atlas bytes")
 
+# The test's renderer helpers (`RENDER-32-K` part 7: the renderer's own went with its executor
+# deletion): patch (0, 0) resident, a bake installed by hand, a block's move and growth.
+func make_resident(graded: Tiles) -> void:
+	graded._book.core_patch(Vector2i.ZERO, true, Rect2(-250, -250, 512, 512), 1, 0)
+
+func upload(graded: Tiles, key: Vector2i, tile: Dictionary) -> void:
+	var level := Vector4i(int(tile["level"]), int(tile["step"]), int(tile["token"]), int(bool(tile["behind"])))
+	var layers := (tile["rows"] as PackedByteArray).size() / Pages.ATLAS_LAYER_BYTES
+	graded._book.upload(key, level, layers, (tile["walls"] as PackedByteArray).to_float32_array(), tile["texels"], tile["rows"])
+	graded._apply_effects()
+
+func move_block(graded: Tiles, code: int, block: Vector2i, size: Vector2i) -> bool:
+	var moved: bool = graded._book.move_block(code, block, size)
+	graded._apply_effects()
+	return moved
+
+func advance_growth(graded: Tiles) -> void:
+	graded._book.advance_growth()
+	graded._apply_effects()
+
 func _run() -> void:
 	var sim := SimulationNode.new()
 	root.add_child(sim)
@@ -51,23 +71,20 @@ func _run() -> void:
 	sim.set_simulation_speed(0)
 	var graded := Tiles.new()
 	graded.setup(sim, 10, Vector2(500, 500), 512, [8, 8, 8, 8])
-	graded._resident = {Vector2i.ZERO: {"rect": Rect2(-250, -250, 512, 512), "step": 1, "generation": 0}}
-	graded._book.clear_resident()
-	graded._book_patch(Vector2i.ZERO, graded._resident[Vector2i.ZERO])
-	graded._resident_synced = true
+	make_resident(graded)
 	graded._book.take_list(Vector2i.ZERO, 0, PackedInt32Array())
 	var a := Vector2i.ZERO
 	var b := Vector2i(1, 0)
 	var first := payload(graded, a, 1, 12)
 	var second := payload(graded, b, 1, 12)
-	graded._upload(a, first, graded._resident)
-	graded._show_preview_tile(second)
+	upload(graded, a, first)
+	GradedTileBook.show_preview_tile(graded._book, graded, second)
 	var old_id := int(graded._book.block_page(2, Vector2i.ZERO))
 	expect(int(graded._book.page_info(old_id)[6]) == 0, "fixture fills the old atlas")
 	expect(graded._book.level_of(a).x < 0, "commit-only installed tile has no residency-list reference")
 	# Same preview epoch, newer pose: its failed upload must not become adoptable old bytes.
 	var newer_preview := payload(graded, b, 1, 13)
-	graded._show_preview_tile(newer_preview)
+	GradedTileBook.show_preview_tile(graded._book, graded, newer_preview)
 	expect(not graded._book.adopt_preview(b, Vector3i(int(newer_preview["level"]), int(newer_preview["step"]), int(newer_preview["token"])), 1),
 		"a failed latest preview upload cannot adopt the preceding pose")
 	# The edit needs a larger atlas run than the full bound page can provide. It must wait
@@ -76,38 +93,38 @@ func _run() -> void:
 	graded._book.set_edit_serial_taken(2)
 	graded._book.edit_batch_set(a, 2)
 	graded._book.stage_edit_result(changed)
-	expect(graded._install_edit_batch(graded._resident) == 0, "full bound page defers the whole edit")
+	expect(GradedTileBook.install_edit_batch(graded._book, graded) == 0, "full bound page defers the whole edit")
 	expect(graded.installed_edit_serial() < 2, "a deferred upload must not acknowledge its edit")
 	expect(int(graded.installed[a]["token"]) == 1, "deferred edit preserves published token")
-	graded._advance_growth()
+	advance_growth(graded)
 	expect(graded._book.block_target(2, Vector2i.ZERO) < 0, "unlisted installed tiles cannot strand migration")
 	expect(graded._book.block_page(2, Vector2i.ZERO) != old_id, "larger page becomes bound")
 	await process_frame
 	check_bytes(graded, graded.installed[a], first)
 	check_bytes(graded, graded.preview[b], second)
-	expect(graded._install_edit_batch(graded._resident) == 1, "edit installs after the page switches")
+	expect(GradedTileBook.install_edit_batch(graded._book, graded) == 1, "edit installs after the page switches")
 	expect(graded.installed_edit_serial() == 2, "only installed edit is acknowledged")
 	await process_frame
 	check_bytes(graded, graded.installed[a], changed)
 	# A later site/road invalidation must rebake a commit-only tile too. It is still visible
 	# even though no patch list has ever named it.
-	graded._dirty_tile(a, 3)
+	GradedTileBook.dirty_edit_tile(graded._book, graded, a, 3)
 	graded._request_tiles()
 	expect(graded._book.requested_token(a, 2, 0) >= 0, "unlisted installed tile requests its dirty rebake")
 	# A site edit can arrive while a new road tile is staged but not installed yet.
 	var c := Vector2i(2, 0)
 	graded._book.edit_batch_set(c, 3)
 	graded._book.stage_edit_result(payload(graded, c, 3, 1))
-	graded._apply_edit({"serial": 4, "all": false, "levels": [{"level": 2, "step": 0, "tiles": PackedInt32Array([2, 0])}]})
+	GradedTileBook.apply_edit(graded._book, graded, {"serial": 4, "all": false, "levels": [{"level": 2, "step": 0, "tiles": PackedInt32Array([2, 0])}]})
 	graded._request_tiles()
 	expect(graded._book.edit_batch_token(c) == 4 and graded._book.requested_token(c, 2, 0) == 4,
 		"a newer site edit rebakes a tile invalidated before its first install")
 	graded._book.undesire(c)
 	graded._apply_effects()
 	graded.release_preview(0, 1)
-	graded._resident = {}
-	graded._book.clear_resident()
-	graded._patch_changed(Vector2i.ZERO, {})
+	graded._book.core_patch(Vector2i.ZERO, false, Rect2(), 0, 0)
+	graded._book.patch_changed(Vector2i.ZERO, false, Rect2(), false)
+	graded._apply_effects()
 	expect(graded.installed.is_empty() and graded._book.edit_batch_len() == 0, "leaving residency evicts commit-only tiles and pending edits")
 	graded.dispose()
 	sim.free()

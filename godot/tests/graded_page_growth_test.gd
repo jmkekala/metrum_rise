@@ -111,8 +111,8 @@ func grow(graded: Tiles, label: String) -> int:
 	var old_id := int(graded._book.block_page(2, Vector2i.ZERO))
 	var old: Dictionary = graded.page_store.by_id[old_id]
 	var uploads := int(graded.counters["uploads"])
-	expect(graded._move_block(2, Vector2i.ZERO, Vector2i(int(old["slots"]) * 2, int(old["layers"]) * 2)), "%s: the block moves" % label)
-	graded._advance_growth()
+	expect(move_block(graded, 2, Vector2i.ZERO, Vector2i(int(old["slots"]) * 2, int(old["layers"]) * 2)), "%s: the block moves" % label)
+	advance_growth(graded)
 	var page_id := int(graded._book.block_page(2, Vector2i.ZERO))
 	expect(page_id != old_id and graded._book.block_target(2, Vector2i.ZERO) < 0, "%s: the block binds its larger page" % label)
 	expect(int(graded.counters["uploads"]) == uploads, "%s: the move uploads no tile" % label)
@@ -120,6 +120,26 @@ func grow(graded: Tiles, label: String) -> int:
 	expect(int(graded._book.page_texture_count()) == graded.page_store.by_id.size(),
 		"%s: the book holds the textures of the live and pooled pages only" % label)
 	return page_id
+
+# The test's renderer helpers (`RENDER-32-K` part 7: the renderer's own went with its executor
+# deletion): patch (0, 0) resident, a bake installed by hand, a block's move and growth.
+func make_resident(graded: Tiles) -> void:
+	graded._book.core_patch(Vector2i.ZERO, true, Rect2(-250, -250, 512, 512), 1, 0)
+
+func upload(graded: Tiles, key: Vector2i, tile: Dictionary) -> void:
+	var level := Vector4i(int(tile["level"]), int(tile["step"]), int(tile["token"]), int(bool(tile["behind"])))
+	var layers := (tile["rows"] as PackedByteArray).size() / Pages.ATLAS_LAYER_BYTES
+	graded._book.upload(key, level, layers, (tile["walls"] as PackedByteArray).to_float32_array(), tile["texels"], tile["rows"])
+	graded._apply_effects()
+
+func move_block(graded: Tiles, code: int, block: Vector2i, size: Vector2i) -> bool:
+	var moved: bool = graded._book.move_block(code, block, size)
+	graded._apply_effects()
+	return moved
+
+func advance_growth(graded: Tiles) -> void:
+	graded._book.advance_growth()
+	graded._apply_effects()
 
 func _run() -> void:
 	expect(DisplayServer.get_name() != "headless", "the growth test needs a renderer")
@@ -141,19 +161,16 @@ func _run() -> void:
 	sim.set_simulation_speed(0)
 	var graded := Tiles.new()
 	graded.setup(sim, 10, Vector2(500, 500), 512, [8, 8, 8, 8])
-	graded._resident = {Vector2i.ZERO: {"rect": Rect2(-250, -250, 512, 512), "step": 1, "generation": 0}}
-	graded._book.clear_resident()
-	graded._book_patch(Vector2i.ZERO, graded._resident[Vector2i.ZERO])
-	graded._resident_synced = true
+	make_resident(graded)
 	graded._book.take_list(Vector2i.ZERO, 0, PackedInt32Array())
 	var tiles := {}
 	for index in 3:
 		var key := Vector2i(index, 0)
 		tiles[key] = payload(graded, key, index + 1, index + 2)
-		graded._upload(key, tiles[key], graded._resident)
+		upload(graded, key, tiles[key])
 	var shown := Vector2i(3, 0)
 	tiles[shown] = payload(graded, shown, 9, 3)
-	graded._show_preview_tile(tiles[shown])
+	GradedTileBook.show_preview_tile(graded._book, graded, tiles[shown])
 	await process_frame
 	var first_page := int(graded._book.block_page(2, Vector2i.ZERO))
 	await check_page(graded, first_page, tiles, "before the moves")
@@ -162,7 +179,7 @@ func _run() -> void:
 	# An edit into the moved page (its run longer: a new run), then a second move from it.
 	var edited := Vector2i(1, 0)
 	tiles[edited] = payload(graded, edited, 21, 5)
-	graded._upload(edited, tiles[edited], graded._resident)
+	upload(graded, edited, tiles[edited])
 	var grown := grow(graded, "second move")
 	await check_page(graded, grown, tiles, "second move")
 	if graded.page_store.mirrored:

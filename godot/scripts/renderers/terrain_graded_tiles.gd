@@ -1,50 +1,29 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Graded terrain tiles (TERRAIN-07-D, docs/terrain.md "Godot tile renderer"): residency of the
-## graded 64 m tiles of the resident patches by camera distance, the pages (docs/terrain.md "Pages
-## and the row atlas": per level several, each a Texture2DArray of slot layers and one of row atlas
-## layers, a block of patches binding one page per level, a tile held in each page its patches'
-## blocks use), in-place uploads (the book's, `RENDER-32-K` part 2), and per patch one MultiMesh per
-## cell mesh (the base cells and GL0-GL3) whose instances carry the tile's place in the patch, slot
-## and stitching codes, each graded level with its own material binding its block's page (the
-## pages' textures are terrain_graded_pages.gd's). It does no
-## geometry: positions, stitching, clamping and the mask are terrain_cells.gdshaderinc's, the
-## values Rust's. Nothing is created per edit; the counters in get_pool_counters() prove it.
-## An edit (item 5) dirties the tiles Rust selects for it at the level each is held at: they
-## rebake with the edit's serial as their token and install together in one frame, each into
-## its own slot when its level is unchanged. The tiles' wall faces (conflict walls, abutments,
-## tunnel row and trough walls) draw as instances of one quad in a pooled MultiMesh per patch, placed by
-## terrain_graded_walls.gdshader from the values in their instance transforms.
-## The road preview's graded tiles (TERRAIN-07-E) draw over the installed ones from slots of
-## their own (show_preview); a commit's or undo's edit carries the tiles it staged, which install
-## with the edit's batch instead of rebaking, and the batch releases the preview tiles of the
-## epoch the commit adopted, in the same frame.
+## Graded terrain tiles (TERRAIN-07-D, docs/terrain.md "Godot tile renderer"): the executor of the
+## graded book. The graded 64 m tiles of the resident patches by camera distance, their pages
+## (docs/terrain.md "Pages and the row atlas"), the uploads, per patch one MultiMesh per cell mesh
+## (the base cells and GL0-GL3) and a pooled wall MultiMesh, the edits' batches and the road
+## preview's tiles (TERRAIN-07-E) are Rust's: GradedTileBook (TERRAIN-13, `RENDER-32-B` to `-K`)
+## holds the state, runs the frame (the camera's re-level, the edit batch, the result path, the
+## changed patches, the cell set builds, the lists and the hand-over to the bake queue, the cell
+## and wall rewrites; `RENDER-32-K` part 7) and the preview frames, makes the cells' objects
+## through the stream backend, applies the draw states to the patch nodes and keeps every counter
+## and the readiness latency. The resident patches are the streaming core's (part 6); terrain.gd
+## lends each one's node, material and culling box (set_patch_node). It does no geometry:
+## positions, stitching, clamping and the mask are terrain_cells.gdshaderinc's, the values Rust's.
+## Nothing is created per edit; the counters in get_pool_counters() prove it.
 ##
-## The graded state is Rust's (GradedTileBook, TERRAIN-13, `RENDER-32-B` and `-I`): the tiles'
-## levels and travel buckets, the pages and a block's pages and growth, every installed and
-## preview tile's copies, the requests, refusals and exhaustion, the edit batch's tokens and the
-## hand-over to the bake queue, which starts the bakes nearest the camera first within its
-## in-flight bound. This script calls it where it did that work and applies its effects
-## (_apply_effects): page arrays, cancels, and the runs of uploads and cells' Godot calls the book
-## makes in their place. The cell sets,
-## walls and draw states are the book's too (`RENDER-32-J`): every set's instance records and CPU
-## buffers, the per-tile updates, the builds' order, the wall faces and what each resident patch
-## draws. Their Godot objects are the book's too (`RENDER-32-K`): per set a `RenderingServer`
-## `MultiMesh` and instance per cell mesh and for the walls, and its graded materials, made through
-## the stream backend, with the material sync from the patch's material; this script hands the
-## book the meshes, shaders, page textures and the patches' nodes, materials and culling boxes it
-## draws with, and applies the draw states to the patch nodes. The tile result path is the book's
-## too (`RENDER-32-K` part 3): it polls the finished bakes within the install budget, checks each
-## against its request and the edit batch, keeps the deferred results and the tiles waiting for
-## their sets' variant, and places and writes the tiles; it hands this script the effects that need
-## its objects. The patch lists' requests, arrivals and failures are the book's too (part 6). The resident patches
-## are the book's too (`RENDER-32-K` part 6): the streaming core sets their entries as the
-## terrain's patches come, change step, commit and leave, and this script takes the changed keys
-## each frame; terrain.gd lends it each resident patch's node, material and culling box
-## (set_patch_node).
+## What stays here, and why: the Godot objects the book draws with that it does not make (the
+## lattice and wall meshes, the wall material, the shaders' uniform list, the page textures
+## through terrain_graded_pages.gd); _apply_effects, which applies the effects that need them
+## (page arrays, cancels through the simulation) and hands the rest back; the record and replay
+## wrappers around every simulation call (`_sim_*`, the traced hand-over), which the book calls
+## back while the traces are written in GDScript (terrain_graded_trace.gd); and one-line readers
+## for terrain.gd, the tests and the probe.
 ##
 ## Rust methods called: get_graded_tile_layout(), request_graded_patch_tiles(),
-##   request_graded_tiles(), cancel_graded_tile(), cancel_graded_tile_requests(),
+##   hand_over_graded_tiles(), cancel_graded_tile(), cancel_graded_tile_requests(),
 ##   poll_graded_tile_results() (traced), set_road_preview_terrain_view(); GradedTileBook
 extends RefCounted
 
@@ -61,12 +40,9 @@ const TILE_M := 64.0
 # GL0 and GL1 have one page each for the world, sized by their bands' bound (the memory table);
 # GL2 and GL3 one per block of patches and level, sized for the block's listed tiles.
 const WORLD_PAGE_SLOTS := [64, 192]
-# Atlas layers a block page holds per slot: the census's mean rows (455-620 texels) take two or
-# three layers.
-const PAGE_LAYERS_PER_SLOT := 3
 # Patch cells: a patch meets at most (ceil(span / 64 m) + 1)^2 tiles (9 x 9 on a 510 m patch),
-# the instances of each cell MultiMesh (_cells_per_patch). A tile's place in its patch is
-# column + 32 * row in one instance channel (terrain_cells.gdshaderinc; the book writes it).
+# the instances of each cell MultiMesh. A tile's place in its patch is column + 32 * row in one
+# instance channel (terrain_cells.gdshaderinc; the book writes it).
 const POLL_BATCH := 4
 # The cell meshes of a patch: GL0-GL3 (0-3), the base cells (CELL_BASE) and GL0-GL3 of the tiles
 # whose bake flags them behind the road (CELL_BEHIND + level, T49 (c)): their cells draw the
@@ -77,13 +53,7 @@ const CELL_MESHES := 9
 const CELL_BASE := 4
 const CELL_BEHIND := 5
 const CELL_PLAIN := 5
-# Wall face instances per patch, prewarmed with its cells: at most 42 faces per patch on the
-# Kuopio reference save and none on the populated save (TERRAIN-07-D round 6 census, GL0). A
-# tunnel approach's trough walls (`ROAD-61` round R8e) take about 256 faces per side per 64 m at
-# GL0, so a patch that needs more grows its MultiMesh to the next power of two (the book's wall rebuild).
-const MAX_WALLS_PER_PATCH := 256
-# A visibility range no camera is within (metres): a patch's PlaneMesh while its cells draw it.
-const HIDDEN_RANGE_M := 0.001
+# Floats per wall face in a tile's `walls` (the book grows a patch's wall MultiMesh as it needs).
 const WALL_FACE_FLOATS := 8
 # Every (level code, GL3 step) a tile can be requested at, in the order of request_graded_tiles'
 # replaced-request codes.
@@ -100,97 +70,61 @@ var patch_span_m := 510.0
 var world_min := Vector2.ZERO
 var lattice_anchor_hm := Vector2i.ZERO
 var levels: Array[Dictionary] = []
-# The pages (terrain_graded_pages.gd): each level's layer shapes, every page by id, its slots and
-# atlas runs, the budget and the free pool.
+# The pages' textures (terrain_graded_pages.gd): each level's layer shapes and every page by id.
 var page_store := GradedPages.new()
 # The device's array layer limit (L) and the block side (B) in patches at GL2 and GL3.
 var layer_limit := GradedPages.MIN_LAYER_LIMIT
 var block_patches := 1
-# The patch grid of the world (patches per axis).
-var _patch_grid := Vector2i.ZERO
-# The graded state in Rust (GradedTileBook, `RENDER-32-I`): the pages and a block's pages and
-# growth, every installed and preview tile's copies, the requests, refusals and exhaustion, the
-# desired levels and counts, the edit batch's tokens and the hand-over. Each call's effects are
-# applied in order (_apply_effects).
+# The graded state, frame and counters in Rust (GradedTileBook): each call's effects that need
+# this script are applied in order (_apply_effects).
 var _book: GradedTileBook = null
-## For tests and the probe: tile key -> {code, level, step, token, walls, behind, copies} of every
-## installed tile, built from the book on each read (`copies` maps a page id to its copy there,
-## Vector3i(slot, first atlas layer, layers)). The renderer itself reads none.
-var installed: Dictionary:
-	get:
-		return _entries(false)
-# The views `installed` and `preview` built since the book last changed (null: none).
-var _views: Array = [null, null]
 # A traced hand-over's answers (per stale cancel, then per request) and the next cancel's.
 var _hand_over := PackedInt64Array()
 var _hand_over_at := 0
-# Whether the book's resident set follows the live dictionary (from the first process()).
-var _resident_synced := false
-## The tiles the last edit batch installed, for tests and the probe (the book's).
-var last_edit_batch: Array:
+# The level rule's ends the road preview's view takes (GradedTileBook's, read once).
+var _level_end_m := PackedFloat64Array()
+var _gl3_end_m := PackedFloat64Array()
+var _meshes: Dictionary = {}
+var _wall_mesh: ArrayMesh = null
+var _wall_material: ShaderMaterial = null
+
+## For tests and the probe: tile key -> {code, level, step, token, walls, behind, copies} of every
+## installed tile (`copies` maps a page id to its copy there, Vector3i(slot, first atlas layer,
+## layers)), the book's, built on each read. The renderer itself reads none.
+var installed: Dictionary:
 	get:
-		var out := []
-		var flat: PackedInt32Array = _book.last_edit_batch()
-		for index in range(0, flat.size(), 2):
-			out.append(Vector2i(flat[index], flat[index + 1]))
-		return out
+		return _book.entries_view(false) if _book != null else {}
 ## For tests and the probe: the road preview's tiles (TERRAIN-07-E) as `installed` gives them
 ## (the token is the preview epoch), drawn in place of the installed tile from copies of their own.
 var preview: Dictionary:
 	get:
-		return _entries(true)
-# The edit batch, its release of the preview's epochs, the serials taken and installed, and the
-# preview's tiles waiting for their sets' variant are the book's (`RENDER-32-K` part 4).
-# The resident patches' Godot objects, patch key -> {node, material, aabb} (terrain.gd's, through
-# set_patch_node; a test's or an earlier trace's whole entries through process_with). Their
-# residency, rectangles, steps and generations are the book's, from the streaming core
-# (`RENDER-32-K` part 6) or from those entries.
-var _resident: Dictionary = {}
-# The patches the core changed, taken from the book each frame (reused).
-var _news: Dictionary = {}
-# The patch lists, their requests, refusals and the patches whose list may need a request are
-# the book's (`RENDER-32-K` part 6).
+		return _book.entries_view(true) if _book != null else {}
+## The tiles the last edit batch installed, for tests and the probe (the book's).
+var last_edit_batch: Array:
+	get:
+		return _book.last_edit_batch_tiles()
 ## For tests: patch key -> its cell set as the book holds it (`GradedTileBook.cell_objects`, with
-## `set`, `variant` and `rect`), built on each read. Cell sets are built off the frame paths
-## (`TERRAIN-07-E` round 6): every resident patch gets its set (prewarmed in setup, one per patch of
-## the grid), kept current by the per-tile updates and hidden until one of its tiles shows graded
-## (the book's build queues, the patches a shown tile waits for first).
+## `set`, `variant` and `rect`), built on each read. Every resident patch gets its set (prewarmed
+## in setup, one per patch of the grid), kept current by the per-tile updates and hidden until one
+## of its tiles shows graded.
 var patch_cells: Dictionary:
 	get:
-		var out := {}
-		if _book == null:
-			return out
-		for key: Vector2i in _resident.keys():
-			var set := _book.patch_set(key)
-			if set < 0:
-				continue
-			var view: Dictionary = _book.cell_objects(set)
-			view["set"] = set
-			view["variant"] = (view["multimeshes"] as Array).size() == CELL_MESHES
-			view["rect"] = _book.patch_rect(key)
-			out[key] = view
-		return out
+		return _book.patch_cells_view() if _book != null else {}
+## The renderer's counters and the pools' (get_pool_counters), the book's, built on each read.
+var counters: Dictionary:
+	get:
+		return _book.counters()
 # The last mask revision the book gave a set (grass mirrors a set's cells by it: mask_revision()).
 var _cell_mask_revision: int:
 	get:
 		return _book.mask_revision_last() if _book != null else 0
-var _cells_per_patch := 81
-var _meshes: Dictionary = {}
-# Materials this script made (the wall material; the graded ones are the book's).
-var _materials_made := 0
-var _wall_mesh: ArrayMesh = null
-var _wall_material: ShaderMaterial = null
-# What a resident patch draws (the book's draw state, T53 (a)): its PlaneMesh, its set or nothing.
-const DRAW_PLANE := 0
-const DRAW_SET := 1
-const DRAW_NONE := 2
-# Patch key -> the patch node whose PlaneMesh this renderer collapsed (_set_plane).
-var _collapsed: Dictionary = {}
-# Resident patches drawing nothing (DRAW_NONE) -> Vector2i(msec, process frame) since when.
-var _unready: Dictionary = {}
 ## The view's frustum (terrain.gd sets it each frame from its camera, Camera3D.get_frustum()): an
 ## unready patch whose culling box meets it counts in `unready_in_view` (empty: none is counted).
-var view_planes: Array[Plane] = []
+var view_planes: Array[Plane] = []:
+	set(value):
+		view_planes = value
+		if _book != null:
+			_book.set_view_planes(value)
 ## While a world load waits for the render to settle (the load flow holds the game until
 ## terrain.gd's is_render_settled()), the graded work takes the whole frame, not the streaming
 ## install budget's spare time.
@@ -206,93 +140,6 @@ var residency_settling := false:
 		residency_settling = value
 		if _book != null:
 			_book.set_settle(unbudgeted, residency_settling)
-# The desired tiles are the book's: every tile a resident patch's list names, at its distance's
-# level (GL0 to 64 m, GL1 to 128 m, GL2 to 2 km, GL3 beyond at steps 2, 4, 8; T5, TD10) with
-# hysteresis around the level it is installed at, re-levelled by travel bucket (T26). A list's
-# tiles are counted in one at a time under the install budget (_poll_and_install), before the
-# next result (a list counted at once took up to 0.35 ms past the budget, TERRAIN-07-D round 10).
-# The last camera (XZ, with its height above the ground as y), and the level rule's ends the
-# road preview's view takes (GradedTileBook's).
-var _camera := Vector3.ZERO
-var _camera_set := false
-var _level_end_m := PackedFloat64Array()
-var _gl3_end_m := PackedFloat64Array()
-var counters := {
-	"textures_created": 0,
-	"images_created": 0,
-	"meshes_created": 0,
-	"materials_created": 0,
-	"multimeshes_created": 0,
-	"uploads": 0,
-	# Uploads that rewrote the tile's existing pool slot at the same level.
-	"same_level_uploads": 0,
-	# Resident patch mask revisions advanced after their graded cell payload changed.
-	"mask_revision_bumps": 0,
-	# Texel and row bytes written into the pools' layers.
-	"upload_bytes": 0,
-	# Polled results (edits, lists, failures, tiles) a frame left to the next one, its budget
-	# spent.
-	"results_deferred": 0,
-	"evictions": 0,
-	"pool_exhausted": 0,
-	# Preview tiles a full page left to a later pose while its block grows (T27 (d)'s lag).
-	"preview_page_waits": 0,
-	# Pages created (not reused from the free pool), blocks moved to a larger page and moves
-	# started (docs/terrain.md "Pages and the row atlas").
-	"pages_created": 0,
-	"page_moves": 0,
-	"page_growths": 0,
-	"walls_truncated": 0,
-	"bake_failures": 0,
-	"edits": 0,
-	"edit_batches": 0,
-	"edit_tiles_last": 0,
-	# Committed tiles that took over the preview's slot instead of an upload (_adopt_preview).
-	"edit_adopted": 0,
-	"edit_install_ms_last": 0.0,
-	"edit_install_ms_max": 0.0,
-	# The road preview's installs (show_preview), the most one frame took; the frames that
-	# changed the preview, and the last such frame's milliseconds and tiles.
-	"preview_install_ms_max": 0.0,
-	"preview_frames": 0,
-	"preview_install_ms_last": 0.0,
-	"preview_tiles_last": 0,
-	"preview_parts": {},
-	"install_ms_last": 0.0,
-	"install_ms_max": 0.0,
-	# The streaming installs' own part of a frame (the polls and their installs), without the
-	# re-levelling and the edit batch before them.
-	"stream_install_ms_max": 0.0,
-	"poll_ms_max": 0.0,
-	"upload_ms_max": 0.0,
-	# The last edit frame's parts (ms) and the patches whose cells or walls it rewrote.
-	"edit_frame_parts": {},
-	# Every frame's parts while the perf debug channel is on (terrain.gd reports them).
-	"frame_parts": {},
-	# The cell sets prewarmed at setup and the time it took (T25's load cost).
-	"cell_sets_prewarmed": 0,
-	# Cell sets built (the book's builds), and the patches waiting for one.
-	"cell_builds": 0,
-	"cell_prewarm_ms": 0.0,
-	# Sets given the behind-the-road variant (the book's), and flagged tiles that waited for it.
-	"cell_variants_created": 0,
-	"variant_waits": 0,
-	# T53 (a): the most milliseconds and frames a resident patch drew nothing before it was
-	# ready, and the unready patches within the view distance, summed over frames and the most in
-	# one frame (the residency margin's acceptance: 0 while the camera pans).
-	"ready_ms_max": 0,
-	"ready_frames_max": 0,
-	"unready_in_view": 0,
-	"unready_in_view_max": 0,
-}
-# Per-frame accumulators of the parts the edit frame reports.
-# The book's result path this frame (take_result_counts): nanoseconds in its polls, the tiles'
-# checks and placing, their effects, the other callbacks, and the tiles taken.
-var _frame_results := PackedInt64Array([0, 0, 0, 0, 0])
-var _frame_relevelled := 0
-# The wanted tiles _request_tiles took this frame and those it handed to Rust.
-var _frame_considered := 0
-var _frame_handed := 0
 
 ## Reads the slot layout, creates the world pages of GL0 and GL1 and prewarms the cell meshes.
 ## `pool_slots` overrides the per-level most slots a page holds (tests use small pages).
@@ -322,7 +169,6 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	block_patches = 1
 	while _block_tiles(block_patches + 1) <= layer_limit / 4:
 		block_patches += 1
-	page_store.counters = counters
 	page_store.trace = trace
 	page_store.clear_levels()
 	_book = page_store.book
@@ -334,30 +180,25 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 			cap = int(pool_slots[code])
 		page_store.add_level(levels[code], mini(cap, layer_limit))
 		shapes.append_array(PackedInt64Array([int(levels[code]["side"]), mini(cap, layer_limit), int(levels[code]["max_row_texels"])]))
-	_patch_grid = Vector2i(int(ceil(world_size.x / span_m)), int(ceil(world_size.y / span_m)))
+	var grid := Vector2i(int(ceil(world_size.x / span_m)), int(ceil(world_size.y / span_m)))
 	# The book drops every page and makes the world pages of GL0 and GL1, sized by their bands'
 	# bound and the most rows a tile can hold (at most the layer limit), so they never fill.
-	_book.setup(world_min, patch_span_m, _patch_grid, block_patches, layer_limit, shapes)
+	_book.setup(world_min, patch_span_m, grid, block_patches, layer_limit, shapes)
 	_book.set_markers(trace != null)
 	_book.set_settle(unbudgeted, residency_settling)
+	_book.set_view_planes(view_planes)
 	_apply_effects()
 	_build_meshes()
 	_wall_material = ShaderMaterial.new()
 	_wall_material.shader = WALL_SHADER
-	_materials_made = 1
 	# One cell set per patch of the world's grid, the most patches that can draw cells at once
 	# (every resident patch may hold a graded tile), so neither streaming nor an edit creates one.
 	var tiles_per_side := int(ceil(span_m / TILE_M)) + 1
-	_cells_per_patch = tiles_per_side * tiles_per_side
-	var grid := Vector2i(int(ceil(world_size.x / span_m)), int(ceil(world_size.y / span_m)))
-	_patch_grid = grid
 	var prewarm_us := Time.get_ticks_usec()
 	# The book's records and CPU buffers of the sets, by index, all free, and their objects.
-	_book.cells_setup(_cells_per_patch, grid.x * grid.y)
+	_book.cells_setup(tiles_per_side * tiles_per_side, grid.x * grid.y)
 	_attach_cells()
-	counters["cell_sets_prewarmed"] = grid.x * grid.y
-	counters["cell_prewarm_ms"] = float(Time.get_ticks_usec() - prewarm_us) / 1000.0
-	_sync_cell_counters()
+	_book.note_prewarm(Time.get_ticks_usec() - prewarm_us)
 
 # Hands the book what the cells draw with (`RENDER-32-K`): the main world, the lattice meshes and
 # the wall quad, the graded shaders, the wall material, the lattice anchor, the patch material's
@@ -385,41 +226,10 @@ func _page_textures(id: int) -> void:
 	var page: Dictionary = page_store.by_id[id]
 	_book.set_page_textures(id, (page["texels"] as Texture).get_rid(), (page["atlas"] as Texture).get_rid())
 
-# The book's object counters into `counters` (the creation counters prove nothing is made per
-# edit).
-func _sync_cell_counters() -> void:
-	var cell: PackedInt64Array = _book.cell_counters()
-	counters["walls_truncated"] = cell[3]
-	counters["cell_variants_created"] = cell[4]
-	counters["multimeshes_created"] = cell[5]
-	counters["materials_created"] = _materials_made + cell[6]
-	counters["cell_builds"] = cell[7]
-
 # The tiles a block of `patches` x `patches` patches meets at most: T(B).
 func _block_tiles(patches: int) -> int:
 	var side := int(ceil(float(patches) * patch_span_m / TILE_M)) + 1
 	return side * side
-
-# --- Pages (docs/terrain.md "Pages and the row atlas"). ---
-
-# Whether installed `tile` has a copy in every page that draws it (the book's). For tests.
-func _tile_complete(tile: Vector2i, _entry: Dictionary = {}) -> bool:
-	return _book.tile_complete(tile)
-
-# Starts block `block`'s move at level `code` to a new page of `size` (slots, atlas layers): it
-# becomes the block's target (a target that ran out too is dropped), preserving all installed
-# and preview copies. Returns false where the budget refuses the page. O(page capacity).
-func _move_block(code: int, block: Vector2i, size: Vector2i) -> bool:
-	var moved := _book.move_block(code, block, size)
-	_apply_effects()
-	return moved
-
-# The growing blocks whose target took a copy or whose page lost one: a target holding a copy of
-# every installed tile the block's page holds becomes the page the block's sets bind
-# (_switch_block). O(those blocks' tiles).
-func _advance_growth() -> void:
-	_book.advance_growth()
-	_apply_effects()
 
 # Cell mesh per lattice code: vertex k per axis carries its lattice index in VERTEX.xz (the
 # shader places it); each lattice cell is split along its (i, j)-(i + 1, j + 1) diagonal, as the
@@ -451,7 +261,6 @@ func _build_meshes() -> void:
 		var mesh := ArrayMesh.new()
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		_meshes[code] = mesh
-		counters["meshes_created"] += 1
 	# The wall quad: x 0 at a face's end a and 1 at b, y 0 at its bottom and 1 at its top. Its
 	# triangles are clockwise seen from +Z, the side terrain_graded_walls.gdshader's normal points
 	# to (the face's lower side), so that side is the front face: with cull_disabled Godot
@@ -463,7 +272,6 @@ func _build_meshes() -> void:
 	quad[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 3, 1, 0, 2, 3])
 	_wall_mesh = ArrayMesh.new()
 	_wall_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, quad)
-	counters["meshes_created"] += 1
 
 ## The lattice code of the base cells and GL3 at a patch LOD step: 3 + log2(step).
 static func base_code(step: int) -> int:
@@ -480,22 +288,19 @@ func _notification(what: int) -> void:
 func clear() -> void:
 	if trace != null:
 		trace.entry("clear")
-	# Every copy freed (block pages go with their last; the moves end with them), and the book's
-	# requests, refusals, tokens, lists, counts and desires dropped.
 	if _book != null:
+		# Every copy freed (block pages go with their last; the moves end with them), and the
+		# book's requests, refusals, tokens, lists, counts and desires dropped; every set back in
+		# the pool, every collapsed PlaneMesh drawn again.
 		_book.clear()
 		_apply_effects()
-	for key: Vector2i in _resident.keys():
-		if _book.patch_set(key) >= 0:
-			release_patch(key, null)
-	for key: Vector2i in _collapsed.keys():
-		_set_plane(key, null, true)
-	_unready.clear()
-	if _book != null:
+		for key: Vector2i in _book.patch_node_keys():
+			if _book.patch_set(key) >= 0:
+				release_patch(key, null)
+		_book.restore_planes()
 		_book.clear_cells()
 	if is_instance_valid(simulation_node) or (trace != null and trace.replaying):
 		_sim_cancel_all()
-	_camera_set = false
 
 ## Frees the cell sets' objects. Renderer replacement and shutdown call it before dropping the
 ## renderer; clear() first returns every set to the pool.
@@ -504,67 +309,41 @@ func dispose() -> void:
 	if _book != null:
 		_book.cells_detach()
 
-## One frame: polls finished work and installs it within the install budget, keeps the tiles of
-## the resident patches at their distance's level, evicts the rest and rewrites the instances of
-## the patches that changed. The resident patches are the book's, set by the streaming core as
-## the terrain's patches come, change step or commit and leave (`RENDER-32-K` part 6); their
-## nodes are terrain.gd's (set_patch_node). `camera_position` is the camera's XZ with, as `y`,
-## its height above the ground under it: a tile's distance is the camera's to the tile's centre
-## on that ground. `changed_materials` holds the keys whose material parameters may have changed
-## (the caller clears it); with no patch changed, nor such a key, nor a camera move, nor finished
-## work, the frame only polls. O(changes) per frame: a changed patch or an arriving list costs
-## its own tiles.
+## One frame (the book's, GradedTileBook.frame): polls finished work and installs it within the
+## install budget, keeps the tiles of the resident patches at their distance's level, evicts the
+## rest and rewrites the instances of the patches that changed. The resident patches are the
+## book's, set by the streaming core as the terrain's patches come, change step or commit and
+## leave (`RENDER-32-K` part 6); the patches it changed are the frame's news. `camera_position` is
+## the camera's XZ with, as `y`, its height above the ground under it: a tile's distance is the
+## camera's to the tile's centre on that ground. `changed_materials` holds the keys whose material
+## parameters may have changed (the caller clears it). O(changes) per frame.
 func process(camera_position: Vector3, changed_materials: Dictionary) -> void:
-	_news.clear()
-	if _book.has_patch_news():
-		var flat: PackedInt32Array = _book.take_patch_news()
-		for index in range(0, flat.size(), 2):
-			_news[Vector2i(flat[index], flat[index + 1])] = true
+	var news: PackedInt32Array = _book.take_patch_news() if _book.has_patch_news() else PackedInt32Array()
 	if trace != null:
 		trace.entry("frame %s %d %d %s %s" % [GradedTrace.floats(PackedFloat32Array([camera_position.x, camera_position.y, camera_position.z])),
-			int(unbudgeted), int(residency_settling), GradedTrace.keys(_news), GradedTrace.keys(changed_materials)])
-	_frame(camera_position, _news, changed_materials)
+			int(unbudgeted), int(residency_settling), GradedTrace.ints(news), GradedTrace.keys(changed_materials)])
+	_run_frame(camera_position, news, changed_materials)
 
-## The frame with the resident patches given whole (tests, and replays of traces recorded before
-## the core's hand-off): `resident_patches` (patch key -> {node, material, rect: Rect2, step,
-## generation, aabb}) is the resident set, and `changed_patches` the keys whose entry was added,
-## rewritten or removed since the last call; the book's entries follow them.
-func process_with(camera_position: Vector3, resident_patches: Dictionary, changed_patches: Dictionary, changed_materials: Dictionary) -> void:
-	if trace != null:
-		trace.entry("process %s %d %d %s %s" % [GradedTrace.floats(PackedFloat32Array([camera_position.x, camera_position.y, camera_position.z])),
-			int(unbudgeted), int(residency_settling), GradedTrace.keys(changed_patches), GradedTrace.keys(changed_materials)])
-	if not _resident_synced or not is_same(_resident, resident_patches):
-		# From the first frame on the book's resident set follows this dictionary's mutations
-		# (patch_mutated); before it the renderer saw none.
-		_book.clear_resident()
-		for key: Vector2i in resident_patches:
-			_book_patch(key, resident_patches[key])
-		_resident_synced = true
-	_resident = resident_patches
-	# A caller that changes the dictionary without patch_mutated (tests) names the keys here.
-	for key: Vector2i in changed_patches:
-		_book_patch(key, resident_patches.get(key, {}))
-	_frame(camera_position, changed_patches, changed_materials)
+# The frame itself, the changed resident patches given flat (x, z) (process; a replay of a trace
+# recorded before the core's hand-off gives its recorded keys).
+func _run_frame(camera_position: Vector3, news: PackedInt32Array, changed_materials: Dictionary) -> void:
+	var simulation: SimulationNode = simulation_node as SimulationNode if trace == null else null
+	GradedTileBook.frame(_book, self, simulation, camera_position, news, changed_materials, PerfDebug.is_enabled())
 
 ## Patch `key`'s Godot objects (terrain.gd, as its node draws the patch): its node, material and
 ## culling box; a null node: none (the patch left or has no payload). The cell sets draw with
 ## them; a trace records them. O(1).
 func set_patch_node(key: Vector2i, node: GeometryInstance3D, material: Material, aabb: AABB) -> void:
-	var held: Dictionary = _resident.get(key, {})
+	var id := node.get_instance_id() if node != null else 0
+	if not _book.lend_patch_node(key, id, material.get_rid() if node != null else RID(), aabb):
+		return
+	if trace == null or trace.replaying:
+		return
 	if node == null:
-		if held.is_empty():
-			return
-		_resident.erase(key)
-		if trace != null and not trace.replaying:
-			trace.entry("patch_node_erase %d %d" % [key.x, key.y])
+		trace.entry("patch_node_erase %d %d" % [key.x, key.y])
 		return
-	if not held.is_empty() and held["node"] == node and held["material"] == material and held["aabb"] == aabb:
-		return
-	_resident[key] = {"node": node, "material": material, "aabb": aabb}
-	_book.set_patch_draw(key, node.get_instance_id(), material.get_rid(), aabb)
-	if trace != null and not trace.replaying:
-		trace.entry("patch_node %d %d %d %d %s" % [key.x, key.y, node.get_instance_id(), material.get_instance_id(),
-			GradedTrace.floats(PackedFloat32Array([aabb.position.x, aabb.position.y, aabb.position.z, aabb.size.x, aabb.size.y, aabb.size.z]))])
+	trace.entry("patch_node %d %d %d %d %s" % [key.x, key.y, id, material.get_instance_id(),
+		GradedTrace.floats(PackedFloat32Array([aabb.position.x, aabb.position.y, aabb.position.z, aabb.size.x, aabb.size.y, aabb.size.z]))])
 
 ## Has the streaming core hand the terrain's resident entries to this renderer's book.
 func attach_stream(stream: Node) -> void:
@@ -572,163 +351,22 @@ func attach_stream(stream: Node) -> void:
 
 ## The resident patches' keys, in the order they became resident (terrain.gd's overlay sync).
 func resident_keys() -> Array:
-	return _resident.keys()
+	return _book.patch_node_keys()
 
 ## Forgets every resident patch (terrain.gd cleared its patches; the core starts over with the
 ## world). A trace records it as `patches_clear`.
 func forget_patches() -> void:
 	if trace != null and not trace.replaying:
 		trace.entry("patches_clear")
-	_resident.clear()
-	_news.clear()
 	if _book != null:
-		_book.clear_resident()
+		_book.forget_patches()
 
-# The frame's work (process, process_with): `changed_patches` the patches whose entry changed.
-func _frame(camera_position: Vector3, changed_patches: Dictionary, changed_materials: Dictionary) -> void:
-	var start_us := Time.get_ticks_usec()
-	var resident_patches := _resident
-	_frame_relevelled = 0
-	_frame_considered = 0
-	_frame_handed = 0
-	_book.reset_frame_counters()
-	_frame_results.fill(0)
-	var uploads_before := int(counters["uploads"])
-	# A camera move re-levels the tiles due first, so the tiles this frame adds take the camera's
-	# position too. O(tiles due + buckets passed).
-	_move_camera(camera_position)
-	var relevel_us := Time.get_ticks_usec()
-	# An edit's batch installs in a frame of its own: the poll that completes it leaves it for
-	# the next frame, which installs it and polls nothing.
-	var batch_tiles := _install_edit_batch(resident_patches)
-	var batch_us := Time.get_ticks_usec()
-	if batch_tiles == 0:
-		_poll_and_install(start_us, resident_patches)
-	var polled_us := Time.get_ticks_usec()
-	counters["stream_install_ms_max"] = max(float(counters["stream_install_ms_max"]), float(polled_us - batch_us) / 1000.0)
-	counters["install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
-	counters["install_ms_max"] = max(float(counters["install_ms_max"]), float(counters["install_ms_last"]))
-	for key: Vector2i in changed_patches.keys():
-		_patch_changed(key, resident_patches)
-	var changes_us := Time.get_ticks_usec()
-	_advance_builds(start_us, resident_patches)
-	var builds_us := Time.get_ticks_usec()
-	if _book.has_variant_waits() or _book.has_preview_waits():
-		_take_variant_waits(resident_patches)
-	if _book.has_lists_wanted():
-		_request_patch_lists(resident_patches)
-	# The settle flags changed: parked blocks whose lists are in release their tiles.
-	_book.release_parked()
-	if _book.has_wanted():
-		_request_tiles()
-	var residency_us := Time.get_ticks_usec()
-	# A patch's cells follow its material's parameters (a changed patch's LOD step in
-	# _patch_changed). O(changed materials).
-	for key: Vector2i in changed_materials.keys():
-		_book.material_changed(key)
-	var watched_us := Time.get_ticks_usec()
-	_advance_growth()
-	var cell_patches := _book.dirty_counts().x
-	_apply_cell_changes()
-	var cells_us := Time.get_ticks_usec()
-	var wall_patches := _book.dirty_counts().y
-	_apply_wall_changes()
-	_count_unready_in_view(resident_patches)
-	var perf := PerfDebug.is_enabled()
-	if batch_tiles > 0 or perf:
-		var end_us := Time.get_ticks_usec()
-		var frame: PackedInt64Array = _book.frame_counters()
-		var cell: PackedInt64Array = _book.cell_counters()
-		var ms := func(from_us: int, to_us: int) -> float: return float(to_us - from_us) / 1000.0
-		var parts := {
-			"relevel_ms": ms.call(start_us, relevel_us),
-			"batch_ms": ms.call(relevel_us, batch_us), "poll_ms": ms.call(batch_us, polled_us),
-			"residency_ms": ms.call(polled_us, residency_us), "watched_ms": ms.call(residency_us, watched_us),
-			# residency_ms's parts: the changed patches, the cell set builds and the requests
-			# (variant waits, lists, parked tiles, tile requests).
-			"patch_changes_ms": ms.call(polled_us, changes_us), "builds_ms": ms.call(changes_us, builds_us),
-			"requests_ms": ms.call(builds_us, residency_us),
-			"cells_ms": ms.call(watched_us, cells_us), "cells_sync_ms": float(cell[0]) / 1000.0,
-			"cells_walls_ms": float(cell[1]) / 1000.0, "walls_ms": ms.call(cells_us, end_us),
-			"total_ms": ms.call(start_us, end_us),
-			"cell_patches": cell_patches, "wall_patches": wall_patches,
-			"cell_tiles": frame[0], "relevelled": _frame_relevelled,
-			"considered": _frame_considered, "handed": _frame_handed,
-			"flips": frame[1], "flip_ms": float(cell[2]) / 1000.0,
-			"lists": _book.frame_list_counts().x, "lists_unchanged": _book.frame_list_counts().y,
-			"uploads": int(counters["uploads"]) - uploads_before,
-			"wanted": wanted_count(), "installed": _book.entry_count(false),
-			# poll_ms's parts in the book (`RENDER-32-K` part 3).
-			"result_poll_ms": float(_frame_results[0]) / 1e6, "result_place_ms": float(_frame_results[1]) / 1e6,
-			"result_effects_ms": float(_frame_results[2]) / 1e6, "result_callback_ms": float(_frame_results[3]) / 1e6,
-			"result_tiles": _frame_results[4],
-		}
-		if perf:
-			counters["frame_parts"] = parts
-		if batch_tiles > 0:
-			counters["edit_frame_parts"] = parts
-	if batch_tiles > 0:
-		# The edit's frame: its uploads, the cell rewrites they caused and the frame's changes.
-		counters["edit_batches"] += 1
-		counters["edit_tiles_last"] = batch_tiles
-		counters["edit_install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
-		counters["edit_install_ms_max"] = max(float(counters["edit_install_ms_max"]), float(counters["edit_install_ms_last"]))
-
-## Perf diagnostics: what the shown cell sets submit (before culling), instances and triangles per
-## cell mesh, into `parts` as cells_<mesh> and cell_triangles_<mesh>. O(resident patches' cell
-## meshes) a call; the perf channel calls it after its timed span, so it costs no renderer time.
-func count_submitted_cells(parts: Dictionary) -> void:
-	var submitted: PackedInt64Array = _book.submitted_cells()
-	for index in CELL_MESHES:
-		parts["cells_%d" % index] = submitted[index]
-		parts["cell_triangles_%d" % index] = submitted[CELL_MESHES + index]
-
-# The residency margin's check (T53 (a)): the unready patches whose culling box (the one Godot
-# culls the patch by) is not wholly outside a plane of the view's frustum. O(unready patches):
-# none once the residency has caught up.
-func _count_unready_in_view(resident_patches: Dictionary) -> void:
-	if view_planes.is_empty() or _unready.is_empty():
-		return
-	var in_view := 0
-	for key: Vector2i in _unready.keys():
-		var patch: Dictionary = resident_patches.get(key, {})
-		var node: Node3D = patch.get("node", null)
-		if node == null or not node.is_inside_tree():
-			continue
-		var box: AABB = node.global_transform * (patch["aabb"] as AABB)
-		var outside := false
-		for plane: Plane in view_planes:
-			# The box corner farthest along the plane's inward side: outside if even it is over.
-			var corner := box.position + Vector3(
-				box.size.x if plane.normal.x < 0.0 else 0.0,
-				box.size.y if plane.normal.y < 0.0 else 0.0,
-				box.size.z if plane.normal.z < 0.0 else 0.0)
-			if plane.is_point_over(corner):
-				outside = true
-				break
-		if not outside:
-			in_view += 1
-	counters["unready_in_view"] += in_view
-	counters["unready_in_view_max"] = max(int(counters["unready_in_view_max"]), in_view)
-
-# The book's queued cell changes: a patch-wide change rewrites the patch's set, every other change
-# its own tiles' instances in the sets drawing them; then the sets that may start or stop drawing
-# and the cells across their sides. O(changed patches' tiles + changed tiles).
-func _apply_cell_changes() -> void:
-	_book.apply_cell_changes()
-	_apply_effects()
-
-func _apply_wall_changes() -> void:
-	_book.apply_wall_changes()
-	_apply_effects()
-
-## The serial of the last graded edit whose tiles draw (docs/terrain.md T61 (2)): every edit
-## taken once no batch waits, else those up to the last installed batch. The road tool holds an
-## install's replaced road chunks until this reaches the journal's serial it read then. A batch
-## waiting on its variant or results keeps it back; an edit no held tile takes leaves nothing to
-## wait for. O(1).
-func installed_edit_serial() -> int:
-	return _book.installed_edit_serial()
+## Returns a patch to its PlaneMesh and its cell resources to the pool. Called when the patch
+## recycles (leaves the residency or the renderer resets).
+func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
+	if trace != null:
+		trace.entry("release_patch %d %d %d" % [key.x, key.y, trace.object_id(patch_node)])
+	_book.release_patch_node(key, patch_node.get_instance_id() if patch_node != null else 0)
 
 ## Shows one road preview frame's graded tiles (TERRAIN-07-E, docs/terrain.md "Preview, commit,
 ## undo and load"): `changes` holds `graded_tiles` (packed as poll_graded_tile_results packs its
@@ -739,39 +377,7 @@ func installed_edit_serial() -> int:
 func show_preview(changes: Dictionary) -> float:
 	if trace != null:
 		trace.entry(GradedTrace.preview(changes))
-	var start_us := Time.get_ticks_usec()
-	var removed: PackedInt32Array = changes.get("graded_removed", PackedInt32Array())
-	var tiles: Array = changes.get("graded_tiles", [])
-	if removed.is_empty() and tiles.is_empty():
-		return 0.0
-	# The removed tiles drop back to their installed tile, then each shown one takes slots of its
-	# own (the book's, `RENDER-32-K` part 4).
-	GradedTileBook.show_preview_frame(_book, self, removed, tiles)
-	_edits_taken()
-	var tiles_us := Time.get_ticks_usec()
-	var cell_patches := _book.dirty_counts().x
-	var marks: PackedInt64Array = _book.frame_counters()
-	var flip_us: int = _book.cell_counters()[2]
-	_apply_cell_changes()
-	var cells_us := Time.get_ticks_usec()
-	var wall_patches := _book.dirty_counts().y
-	_apply_wall_changes()
-	var frame: PackedInt64Array = _book.frame_counters()
-	var end_us := Time.get_ticks_usec()
-	var ms := float(end_us - start_us) / 1000.0
-	counters["preview_install_ms_max"] = max(float(counters["preview_install_ms_max"]), ms)
-	counters["preview_frames"] += 1
-	counters["preview_install_ms_last"] = ms
-	counters["preview_tiles_last"] = tiles.size()
-	# The frame's slot writes and drops, then the cell and wall rewrites they caused.
-	counters["preview_parts"] = {
-		"tiles_ms": float(tiles_us - start_us) / 1000.0, "cells_ms": float(cells_us - tiles_us) / 1000.0,
-		"walls_ms": float(end_us - cells_us) / 1000.0, "cell_patches": cell_patches, "wall_patches": wall_patches,
-		"cell_tiles": frame[0] - marks[0], "flips": frame[1] - marks[1],
-		"flip_ms": float(_book.cell_counters()[2] - flip_us) / 1000.0,
-		"written": frame[2] - marks[2], "moved": frame[3] - marks[3],
-	}
-	return ms
+	return GradedTileBook.preview_changes(_book, self, changes.get("graded_removed", PackedInt32Array()), changes.get("graded_tiles", []))
 
 ## Drops the preview tiles of preview epochs `first_epoch` to `last_epoch`: the installed tiles
 ## draw again. A cancelled preview drops its own epoch; an edit batch drops every epoch up to the
@@ -779,75 +385,17 @@ func show_preview(changes: Dictionary) -> float:
 func release_preview(first_epoch: int, last_epoch: int) -> void:
 	if trace != null:
 		trace.entry("release_preview %d %d" % [first_epoch, last_epoch])
-	GradedTileBook.release_preview_epochs(_book, self, first_epoch, last_epoch)
-	_edits_taken()
-	_apply_cell_changes()
-	_apply_wall_changes()
-
-# One preview tile as show_preview takes it (tests): a flagged tile shows once its sets hold the
-# variant (the preview's lag, T27 (d)).
-func _show_preview_tile(tile: Dictionary) -> void:
-	GradedTileBook.show_preview_tile(_book, self, tile)
-	_edits_taken()
-
-# What the book's edit batch and preview applied, into the counters (with the result path's).
-func _edits_taken() -> void:
-	_results_taken()
-	var taken: PackedInt64Array = _book.take_edit_counts()
-	counters["edits"] += taken[0]
-	counters["edit_adopted"] += taken[1]
-	counters["preview_page_waits"] += taken[2]
-	counters["pool_exhausted"] += taken[3]
-
-# Takes finished work (edits, patch lists, failures, tile bakes, in that order per poll) until the
-# frame's install budget is spent, checked before each result and before each tile a list or a
-# patch change counts: a frame ends within the budget plus one result's or one count's work
-# (round 7 checked it after each poll, and a poll hands over every finished list at once: 17
-# lists took 2.1 ms in one frame on the populated save; round 10 checked it before each result,
-# and one list counted up to 0.35 ms past it). Each result is taken after the counts the one
-# before it queued, so the order of the changes is the arrival order whatever the frame breaks.
-# The frame's first count or result is taken unconditionally, so the work progresses whatever
-# the frame's other work cost. The loop, the deferred results and the tiles' checks, placing and
-# uploads are the book's (`RENDER-32-K` part 3), and so are the edits and the batch's staged tiles
-# (part 4), the lists and failures (part 6): it calls back _apply_effects for a take whose
-# effects need this script, and charges each placed tile the cell rewrites it causes later in the frame in its budget
-# checks; the simulation polls without dictionaries unless a trace records or replays (_sim_poll).
-# O(results and counts taken + one poll's results).
-func _poll_and_install(start_us: int, _resident_patches: Dictionary) -> void:
-	var simulation: SimulationNode = simulation_node as SimulationNode if trace == null else null
-	GradedTileBook.install_results(_book, self, simulation, start_us)
-	_edits_taken()
-
-# What the book's result path applied itself, into the counters (the effects it left to this
-# script are counted where _apply_effects applies them).
-func _results_taken() -> void:
-	_views = [null, null]
-	var taken: PackedInt64Array = _book.take_result_counts()
-	counters["results_deferred"] += taken[0]
-	counters["variant_waits"] += taken[1]
-	counters["bake_failures"] += _book.take_bake_failures()
-	counters["evictions"] += taken[2]
-	counters["same_level_uploads"] += taken[3]
-	counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(taken[4]) / 1000.0)
-	for index in _frame_results.size():
-		_frame_results[index] += taken[5 + index]
-	_sync_cell_counters()
-	counters["uploads"] = _book.uploads()
-	counters["upload_bytes"] = _book.upload_bytes()
-	counters["upload_ms_max"] = float(_book.upload_us_max()) / 1000.0
+	GradedTileBook.release_preview_frame(_book, self, first_epoch, last_epoch)
 
 # Applies the book's effects of the last calls, in order: page arrays (made, reused, released,
 # dropped, copied, refused), the runs of slot uploads the book writes from the result being
-# placed (48), Rust queue cancels, exhaustion, evictions and the staged results an eviction
-# drops, the runs of cell effects the book applies to its objects (47) and the draw states.
+# placed (48), Rust queue cancels, the runs of cell effects the book applies to its objects (47)
+# and the draw states (40, the book's on the patch nodes). The book counts every effect as it
+# hands it over.
 func _apply_effects() -> void:
-	_views = [null, null]
 	var effects: PackedInt64Array = _book.take_effects()
-	var cells := false
-	var writes := false
 	for at in range(0, effects.size(), 7):
 		var kind := int(effects[at])
-		var tile := Vector2i(int(effects[at + 1]), int(effects[at + 2]))
 		match kind:
 			0, 1:
 				page_store.made(int(effects[at + 1]), kind == 1, int(effects[at + 2]), Vector2i(int(effects[at + 3]), int(effects[at + 4])), int(effects[at + 5]), int(effects[at + 6]))
@@ -863,8 +411,8 @@ func _apply_effects() -> void:
 				page_store.refused(int(effects[at + 2]), Vector2i(int(effects[at + 3]), int(effects[at + 4])), int(effects[at + 5]), int(effects[at + 6]))
 			48:
 				_book.apply_writes(effects[at + 1], effects[at + 2])
-				writes = true
 			12:
+				var tile := Vector2i(int(effects[at + 1]), int(effects[at + 2]))
 				if int(effects[at + 3]) == 1:
 					# A traced hand-over's stale cancel, recorded in its place (_request_tiles).
 					trace.out("cancel %d %d" % [tile.x, tile.y])
@@ -872,34 +420,10 @@ func _apply_effects() -> void:
 					_hand_over_at += 1
 				else:
 					_sim_cancel(tile)
-			13:
-				counters["pool_exhausted"] += 1
-				MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [int(effects[at + 3]), str(tile)])
-			14:
-				counters["evictions"] += 1
-			16:
-				counters["same_level_uploads"] += 1
-			21:
-				counters["page_growths"] += 1
-				MetrumDebug.log("terrain", "graded level %d block %s grows to %d slots, %d layers" % [int(effects[at + 1]), str(Vector2i(int(effects[at + 2]), int(effects[at + 3]))), int(effects[at + 4]), int(effects[at + 5])])
-			22:
-				counters["page_moves"] += 1
 			47:
 				_book.apply_cells(effects[at + 1], effects[at + 2])
-				cells = true
 			40:
-				var key := Vector2i(int(effects[at + 1]), int(effects[at + 2]))
-				var state := int(effects[at + 3])
-				if trace != null:
-					trace.out("draw %d %d %d" % [key.x, key.y, state])
-				_set_ready(key, state != DRAW_NONE)
-				_set_plane(key, _resident.get(key, {}).get("node"), state == DRAW_PLANE)
-	if cells:
-		_sync_cell_counters()
-	if writes:
-		counters["uploads"] = _book.uploads()
-		counters["upload_bytes"] = _book.upload_bytes()
-		counters["upload_ms_max"] = float(_book.upload_us_max()) / 1000.0
+				_book.apply_draw(Vector2i(int(effects[at + 1]), int(effects[at + 2])), int(effects[at + 3]))
 
 # --- Rust calls, through the trace when one records or replays (a replay calls no Rust). ---
 
@@ -942,6 +466,8 @@ func _sim_cancel_all() -> void:
 			return
 	simulation_node.cancel_graded_tile_requests()
 
+# The camera moved (the book's frame calls it before it re-levels): the road preview stages its
+# tiles at the same rule's levels, without the hysteresis (T42).
 func _sim_view(camera_position: Vector3) -> void:
 	if trace != null:
 		trace.out("view " + GradedTrace.floats(PackedFloat32Array([camera_position.x, camera_position.y, camera_position.z])))
@@ -949,126 +475,23 @@ func _sim_view(camera_position: Vector3) -> void:
 			return
 	simulation_node.set_road_preview_terrain_view(camera_position, _level_end_m, _gl3_end_m)
 
-## terrain.gd's mutations of the resident patch dictionary, as it makes them: `entry` set for
-## `key`, or with an empty `entry` erased; `clear_all` the whole dictionary cleared. The book's
-## resident set follows them from the first process() on; a trace records them (a replay makes
-## the same ones, so the dictionary's order is the same too).
-func patch_mutated(key: Vector2i, entry: Dictionary, clear_all := false) -> void:
-	if _book != null and clear_all:
-		_resident.clear()
-		_book.clear_resident()
-	elif _book != null and _resident_synced:
-		_book_patch(key, entry)
-	if trace == null or trace.replaying:
-		return
-	if clear_all:
-		trace.entry("patches_clear")
-	elif entry.is_empty():
-		trace.entry("patch_erase %d %d" % [key.x, key.y])
-	else:
-		trace.entry(GradedTrace.patch(key, entry))
-
-# The book's copy of a resident patch entry (its rectangle, step and generation, what its set
-# draws with; empty: erased).
-func _book_patch(key: Vector2i, entry: Dictionary) -> void:
-	_book.set_patch(key, not entry.is_empty(), entry.get("rect", Rect2()), int(entry.get("step", 0)), int(entry.get("generation", 0)))
-	if entry.has("node") and entry.has("material"):
-		# What its set draws with: the patch node (whose place it takes), material and culling box
-		# (a test's entry without them draws no set).
-		_book.set_patch_draw(key, (entry["node"] as Object).get_instance_id(), (entry["material"] as Material).get_rid(), entry["aabb"])
-
-# A bake installed by hand (tests; polled tiles install in the book's result path).
-func _upload(key: Vector2i, tile: Dictionary, _resident_patches: Dictionary) -> void:
-	var level := Vector4i(int(tile["level"]), int(tile["step"]), int(tile["token"]), int(bool(tile["behind"])))
-	var layers := (tile["rows"] as PackedByteArray).size() / GradedPages.ATLAS_LAYER_BYTES
-	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
-	# Into every page its patches' blocks use; at the same level each copy keeps its slot and is
-	# rewritten in place, before this frame draws (the book places and, at its write effects,
-	# writes the bake's bytes). A tile whose page cannot take it waits for its block's larger page
-	# or is recorded exhausted. Its entry takes the bake's walls; changed faces rewrite its
-	# patches' walls.
-	_book.upload(key, level, layers, walls, tile["texels"], tile["rows"])
-	_apply_effects()
-
-# Installs the edit batch once every tile of it has its result and its sets' variant, all in this
-# frame, the committed tiles adopting the preview's slots where they are its payload and the
-# preview's released tiles dropped in the same frame (the book's, `RENDER-32-K` part 4). Returns
-# how many tiles it installed.
-func _install_edit_batch(_resident_patches: Dictionary) -> int:
-	var count: int = GradedTileBook.install_edit_batch(_book, self)
-	_edits_taken()
-	return count
-
-# An edit Rust handed over: the tiles it dirtied rebake at the level each is held at, installed or
-# in flight; a commit's or undo's own tiles stage for the batch (the book's; the result path takes
-# polled edits itself, tests call this).
-func _apply_edit(edit: Dictionary) -> void:
-	GradedTileBook.apply_edit(_book, self, edit)
-	_edits_taken()
-
-# A dirty tile takes the edit's serial as its token, so a bake in flight with an older one is
-# dropped and the tile is requested again, a refused one too; an installed tile joins the edit
-# batch (tests).
-func _dirty_tile(tile: Vector2i, serial: int) -> void:
-	GradedTileBook.dirty_edit_tile(_book, self, tile, serial)
-	_edits_taken()
-
-# A resident patch entry was added, rewritten or removed: its counted tiles follow its residency,
-# its list is asked again if its generation moved, and its cells follow its LOD step.
-func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
-	var present := _book.is_resident(key)
-	# A drawing set whose patch now has another node hides; it draws again once the book says.
-	var node: Object = resident_patches.get(key, {}).get("node")
-	var node_moved: bool = present and node != null and _book.cells_node_moved(key, node.get_instance_id())
-	# The book: the cells across its sides follow its step; its counted tiles follow its residency
-	# and its blocks' parked tiles release; a patch that left evicts the commit-only tiles no other
-	# resident patch meets, a resident one's installed tiles want copies in its blocks' pages; a
-	# resident patch's set follows it (built, rewritten in this frame if drawing, or again off the
-	# frame) and draws what its draw state says: nothing until its list arrives.
-	_book.patch_changed(key, present, _book.patch_rect(key), node_moved)
-	_apply_effects()
-
-# Applies the next queued count: a tile enters the desired set with the first list naming it and
-# leaves with the last.
-func _apply_count() -> void:
-	_book.apply_count()
-	_apply_effects()
-
-# The camera moved: Rust re-levels the tiles due (its travel buckets, T26) and returns those whose
-# level changed, which want a bake at it. The road preview stages its tiles at the same rule's
-# levels, without the hysteresis (T42). A still camera costs nothing; a move O(tiles due + buckets
-# passed) in Rust and O(changed tiles) here.
-func _move_camera(camera_position: Vector3) -> void:
-	_frame_relevelled = 0
-	if _camera_set and camera_position == _camera:
-		return
-	_sim_view(camera_position)
-	_camera = camera_position
-	_camera_set = true
-	_frame_relevelled = _book.move_camera(camera_position)
-
-## The tiles that want a bake and have none started: wanted, parked on a page, or pending in
-## Rust's queue (as of the last poll).
-func wanted_count() -> int:
-	return _book.wanted_count() + _book.tiles_pending()
-
 # Asks for the lists of the wanted patches whose list is not of their generation, not in flight
-# and not refused at it, within Rust's in-flight bound (the book's); the rest stay wanted.
-func _request_patch_lists(_resident_patches: Dictionary) -> void:
+# and not refused at it, within Rust's in-flight bound (the book's; its frame calls it); the rest
+# stay wanted.
+func _request_patch_lists() -> void:
 	var flat: PackedInt64Array = _book.lists_to_request()
 	if not flat.is_empty():
 		_book.lists_accepted(flat, _sim_request_lists(flat))
 
-# The hand-over (the book's, `RENDER-32-I`): every wanted tile that is not installed at its level
-# and token, not requested or refused at that token and not blocked on a page goes to Rust's
-# queue, which starts the bakes nearest the camera first as its in-flight places free (TERRAIN-13
-# part 1); a complete tile's stale pending request is cancelled (the effects, whose answers go
-# back). A newer request replaces the tile's pending one, never baked. A tile blocked on a page
-# waits for the event that unblocks it: its block's move, a freed slot of its exhausted level or
-# its block's lists. O(wanted tiles) in Rust, each once per change; two calls here.
+# The hand-over (the book's, `RENDER-32-I`; its frame calls it): every wanted tile that is not
+# installed at its level and token, not requested or refused at that token and not blocked on a
+# page goes to Rust's queue, which starts the bakes nearest the camera first as its in-flight
+# places free (TERRAIN-13 part 1); a complete tile's stale pending request is cancelled (the
+# effects, whose answers go back). A newer request replaces the tile's pending one, never baked.
+# A tile blocked on a page waits for the event that unblocks it: its block's move, a freed slot
+# of its exhausted level or its block's lists. O(wanted tiles) in Rust, each once per change.
 func _request_tiles() -> void:
-	_frame_handed += int(_book.request_tiles())
-	_frame_considered += _book.considered()
+	_book.request_tiles()
 	if trace == null:
 		# One call: Rust's queue takes the cancels and requests from the book and answers it.
 		simulation_node.hand_over_graded_tiles(_book)
@@ -1094,69 +517,18 @@ func _request_tiles() -> void:
 			_hand_over[cancels + index] = accepted[index]
 	_book.hand_over_results(_hand_over)
 
-# Builds patch `key`'s set whole in this frame: a drawing set whose patch changed step (the
-# camera moved), and the tests' reference for the per-tile updates. O(the patch's tiles).
-func _rebuild_patch_cells(key: Vector2i, _resident_patches: Dictionary) -> void:
-	_book.rebuild_set(key)
-	_apply_effects()
+# --- Readers: terrain.gd, the perf channel, tests and the probe (the book's). ---
 
-# Builds the queued sets off the frame paths, the variant the waiting flagged tiles need first
-# (the book's, `RENDER-32-K` part 6): the patches a shown tile waits for first, at least one tile
-# of the first of them in every frame, then the rest while the frame's install budget lasts.
-# O(tiles written this frame + uniforms synced).
-func _advance_builds(start_us: int, _resident_patches: Dictionary) -> void:
-	GradedTileBook.advance_builds(_book, self, start_us)
+## The serial of the last graded edit whose tiles draw (docs/terrain.md T61 (2)): the road tool
+## holds an install's replaced road chunks until this reaches the journal's serial it read then.
+## O(1).
+func installed_edit_serial() -> int:
+	return _book.installed_edit_serial()
 
-# The flagged tiles whose sets all hold the variant now: a bake result installs (the book's), a
-# preview tile shows (where its preview still wants it). O(waiting tiles).
-func _take_variant_waits(_resident_patches: Dictionary) -> void:
-	if _book.has_variant_waits():
-		GradedTileBook.take_variant_waits(_book, self)
-		_results_taken()
-	if _book.has_preview_waits():
-		GradedTileBook.take_preview_waits(_book, self)
-		_edits_taken()
-
-# Whether `tile` cannot show at its desired level and token: Rust refused it by contract (T7) or
-# its level's pool is exhausted (T23). Its patch's set draws without it (a base cell; both are
-# counted and logged errors).
-func _refused_at_level(tile: Vector2i) -> bool:
-	return _book.refused_at_level(tile)
-
-# Patch `key`'s PlaneMesh draws (`drawn`) or not. Collapsed, it is not drawn at all: its
-# visibility range ends before any camera, so its vertices do not run (TERRAIN-07-D round 5). It
-# stays visible, since grass and the water reflection read the patch node's visibility. Drawing
-# again restores the node it collapsed, whatever node the patch holds now: terrain.gd pools its
-# patch nodes, and a pooled node left collapsed draws nothing for the next patch it takes
-# (`TERRAIN-07-E` round 6). O(1).
-func _set_plane(key: Vector2i, patch_node: GeometryInstance3D, drawn: bool) -> void:
-	var held: Variant = _collapsed.get(key)
-	if held != null and (drawn or held != patch_node):
-		_collapsed.erase(key)
-		if is_instance_valid(held):
-			(held as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 0.0)
-			(held as GeometryInstance3D).visibility_range_end = 0.0
-		held = null
-	if drawn or held != null or patch_node == null:
-		return
-	patch_node.set_instance_shader_parameter("cell_mode", 1.0)
-	patch_node.visibility_range_end = HIDDEN_RANGE_M
-	_collapsed[key] = patch_node
-
-# Patch `key` is ready (draws its set or its PlaneMesh) or not (draws nothing). The time and
-# frames from its residency to ready are the residency margin's latency (counters); an unready
-# patch within the view distance counts in each frame (process). O(1).
-func _set_ready(key: Vector2i, ready: bool) -> void:
-	if not ready:
-		if not _unready.has(key):
-			_unready[key] = Vector2i(Time.get_ticks_msec(), Engine.get_process_frames())
-		return
-	var since: Variant = _unready.get(key)
-	if since == null:
-		return
-	_unready.erase(key)
-	counters["ready_ms_max"] = max(int(counters["ready_ms_max"]), Time.get_ticks_msec() - (since as Vector2i).x)
-	counters["ready_frames_max"] = max(int(counters["ready_frames_max"]), Engine.get_process_frames() - (since as Vector2i).y)
+## The tiles that want a bake and have none started: wanted, parked on a page, or pending in
+## Rust's queue (as of the last poll).
+func wanted_count() -> int:
+	return _book.wanted_total()
 
 ## Cell set builds still queued (built off the frame paths: a world's sets after its load, or
 ## hidden sets whose patch took a new step). They take the streaming budget's spare time each
@@ -1164,128 +536,58 @@ func _set_ready(key: Vector2i, ready: bool) -> void:
 func cell_builds_pending() -> int:
 	return _book.builds_queued()
 
-## Whether queued work will change what the graded cells draw without a new input: tile or list
-## requests pending or in flight in Rust, tiles parked on a block's page, counts, results deferred past a
-## frame's budget, an edit batch waiting for its tiles, a resident patch drawing nothing (T53
-## (a)), and the cell set builds of patches a shown tile waits for or whose list names a tile (a
-## set whose patch lists none stays hidden when built, so its build changes nothing drawn).
-## terrain.gd's is_render_settled includes it: a capture of the settled terrain waits on that one
-## signal, and so does a world load's hand-over (`TERRAIN-07-G` round 6: the reference test's own
-## copy of it left out the set builds). O(queued builds).
+## Whether queued work will change what the graded cells draw without a new input
+## (GradedTileBook.render_pending). terrain.gd's is_render_settled includes it: a capture of the
+## settled terrain waits on that one signal, and so does a world load's hand-over (`TERRAIN-07-G`
+## round 6). A set whose patch lists no tile stays hidden when built, so its queued build is not
+## counted (cell_builds_pending counts it). O(queued builds).
 func has_pending_work() -> bool:
-	return _book.has_pending_work() or _book.cells_pending() or not (
-		not _book.lists_pending() and not _book.results_waiting()
-		and _unready.is_empty() and not _book.has_preview_waits()
-	)
+	return _book.render_pending()
 
-## The world's patches within `radius_m` of the ground point `centre` (XZ, to the nearest point of
-## each patch's rectangle) that do not yet draw what they draw once settled: not resident, their
-## list not arrived (nor refused), or drawing nothing (T53 (a)). As of the last process() call.
-## O(patches within the radius).
+## The world's patches within `radius_m` of the ground point `centre` (XZ) that do not yet draw
+## what they draw once settled (GradedTileBook.unready_near). O(patches within the radius).
 func unready_near(centre: Vector2, radius_m: float) -> int:
-	var first := ((centre - Vector2.ONE * radius_m - world_min) / patch_span_m).floor()
-	var last := ((centre + Vector2.ONE * radius_m - world_min) / patch_span_m).floor()
-	var count := 0
-	for z in range(maxi(int(first.y), 0), mini(int(last.y), _patch_grid.y - 1) + 1):
-		for x in range(maxi(int(first.x), 0), mini(int(last.x), _patch_grid.x - 1) + 1):
-			var key := Vector2i(x, z)
-			var origin := world_min + Vector2(key) * patch_span_m
-			if centre.clamp(origin, origin + Vector2.ONE * patch_span_m).distance_to(centre) > radius_m:
-				continue
-			if not _book.is_resident(key) or _unready.has(key) or not _book.list_known(key):
-				count += 1
-	return count
+	return _book.unready_near(centre, radius_m)
 
-## Resident patches drawing their PlaneMesh where T53 (a) forbids it: their list has not arrived
-## or names a tile that can show (not refused, its pool not exhausted), or a preview tile meets
-## them. Read from the patch nodes, for tests, which check it in every frame: always 0.
-## O(resident patches' lists + preview tiles).
+## Resident patches drawing their PlaneMesh where T53 (a) forbids it (tests: always 0).
 func plane_violations() -> int:
-	var violations := 0
-	for key: Vector2i in _resident.keys():
-		var node: GeometryInstance3D = _resident[key]["node"]
-		# The node keeps the range as a 32-bit float (hole_patches).
-		if node == null or is_equal_approx(node.visibility_range_end, HIDDEN_RANGE_M):
-			continue
-		var drawable: bool = _book.list_drawable(key)
-		if drawable or _book.previews_in(_book.patch_rect(key)):
-			violations += 1
-	return violations
+	return _book.plane_violations()
 
-## Drawing sets whose list names a tile they do not show (not installed, not previewed and not
-## refused): a partial set. For tests of a streaming run without edits (an edit's refreshed list
-## may name a tile its edit did not select, drawn as the base it was until it installs,
-## the book's draw state): always 0 there. O(drawing sets' lists).
+## Drawing sets whose list names a tile they do not show, for tests of a streaming run without
+## edits: always 0 there. O(drawing sets' lists).
 func partial_sets() -> int:
 	return _book.partial_sets()
 
-## Tiles of drawing sets that draw other than what they show (`TERRAIN-12`): per drawing set of a
-## resident patch, each of its tiles must be exactly one live instance, in the cell mesh of what
-## it shows there now (its base cell, or the graded level of its installed or preview tile,
-## _cell_mesh), whose custom data in the MultiMesh itself is _cell_custom's now, and a graded
-## instance's slot must hold that tile's copy in the page the set's material binds. Returned as
-## {holes: tiles drawn from the wrong mesh, a vacated slot or an unbound page; stitches: tiles
-## with only a stale side code}. For the probe and tests, every frame of a drag; O(drawing sets'
-## tiles).
+## Tiles of drawing sets that draw other than what they show (`TERRAIN-12`), {holes, stitches}.
+## For the probe and tests, every frame of a drag; O(drawing sets' tiles).
 func tile_draw_violations() -> Dictionary:
-	var state: Vector2i = _book.draw_violations()
-	var out := {"holes": state.x, "stitches": state.y}
-	var rendered := DisplayServer.get_name() != "headless"
-	for key: Vector2i in _resident.keys():
-		var set := _book.patch_set(key)
-		if set < 0 or not _book.set_built(set):
-			continue
-		var cells: Dictionary = _book.cell_objects(set)
-		if not bool(cells["shown"]):
-			continue
-		var counts: PackedInt32Array = _book.set_counts(set)
-		var sent: PackedInt32Array = cells["counts"]
-		var has: PackedByteArray = cells["has"]
-		for index in mini(counts.size(), sent.size()):
-			if sent[index] != counts[index] or (has[index] == 1) != (counts[index] > 0):
-				out["holes"] += 1
-		if not rendered:
-			continue
-		# The MultiMesh itself where a rendering device keeps its data (headless keeps none): each
-		# instance's custom data is the book's record of it.
-		var multimeshes: Array = cells["multimeshes"]
-		var instances: PackedFloat32Array = _book.set_instances(set)
-		for at in range(0, instances.size(), 6):
-			var custom := Color(instances[at + 2], instances[at + 3], instances[at + 4], instances[at + 5])
-			if RenderingServer.multimesh_instance_get_custom_data(multimeshes[int(instances[at])], int(instances[at + 1])) != custom:
-				out["holes"] += 1
-	return out
+	return _book.tile_draw_violations()
 
-## Resident patches drawing nothing: their PlaneMesh collapsed with no drawing set of theirs under
-## it (a hole showing the sky). For tests and the probe; O(resident patches).
+## Resident patches drawing nothing (a hole showing the sky). For tests and the probe.
 func hole_patches() -> int:
-	var holes := 0
-	for key: Vector2i in _resident.keys():
-		var node: GeometryInstance3D = _resident[key]["node"]
-		# The node keeps the range as a 32-bit float: the value read back is HIDDEN_RANGE_M
-		# rounded to it, never equal to the 64-bit constant (round 6's check counted nothing).
-		if node == null or not is_equal_approx(node.visibility_range_end, HIDDEN_RANGE_M):
-			continue
-		if not _book.cells_drawn_under(key, node.get_instance_id()):
-			holes += 1
-	return holes
-
-## Returns a patch to its PlaneMesh and its cell resources to the pool. Called when the patch
-## recycles (leaves the residency or the renderer resets).
-func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
-	if trace != null:
-		trace.entry("release_patch %d %d %d" % [key.x, key.y, trace.object_id(patch_node)])
-	# The book hides its set, takes it out of the patch node and returns it to the pool.
-	_book.release_set(key)
-	_unready.erase(key)
-	_set_plane(key, patch_node, true)
+	return _book.hole_patches()
 
 ## Resident patches holding a cell set. O(resident patches).
 func patches_with_cells() -> int:
-	var count := 0
-	for key: Vector2i in _resident.keys():
-		count += int(_book.patch_set(key) >= 0)
-	return count
+	return _book.patches_with_cells()
+
+## The page sizes, use and every counter (GradedTileBook.counters), for tests, the probe and the
+## memory record. O(levels).
+func get_pool_counters() -> Dictionary:
+	return _book.counters()
+
+## The perf channel's parts of the last frame (terrain.gd reports them while the channel is on).
+func frame_parts() -> Dictionary:
+	return _book.frame_parts()
+
+## Perf diagnostics: what the shown cell sets submit (before culling), instances and triangles per
+## cell mesh, into `parts` as cells_<mesh> and cell_triangles_<mesh>. O(resident patches' cell
+## meshes) a call; the perf channel calls it after its timed span, so it costs no renderer time.
+func count_submitted_cells(parts: Dictionary) -> void:
+	var submitted: PackedInt64Array = _book.submitted_cells()
+	for index in CELL_MESHES:
+		parts["cells_%d" % index] = submitted[index]
+		parts["cell_triangles_%d" % index] = submitted[CELL_MESHES + index]
 
 ## Whether the cells draw at all (the terrain node's visibility; they are not its children).
 func set_drawn(drawn: bool) -> void:
@@ -1306,42 +608,3 @@ func patch_rect(key: Vector2i) -> Rect2:
 ## draws changes, and grass renders the patch's mask again then. O(1).
 func mask_revision(key: Vector2i) -> int:
 	return _book.mask_revision(key)
-
-## Page sizes, use and creation counters, for tests and the memory record: per level code its
-## pages (`pages_N`), their slots and free slots (`slots_N`, `free_N`, the pages its blocks bind
-## or move to), their atlas layers and free layers; `pool_bytes`, every page's bytes (the free
-## pooled ones included), and the layer limit and block side.
-func get_pool_counters() -> Dictionary:
-	var out := counters.duplicate()
-	var book := _book.pool_counters()
-	for name: String in book:
-		out[name] = book[name]
-	out["refused"] = int(book["refused"]) + _book.lists_refused_count()
-	out["desired_by_level"] = Array(book["desired_by_level"])
-	out["layer_limit"] = layer_limit
-	out["block_patches"] = block_patches
-	var with_cells := patches_with_cells()
-	out["patches_with_cells"] = with_cells
-	out["cell_builds_queued"] = _book.builds_queued()
-	out["cell_sets_free"] = int(counters["cell_sets_prewarmed"]) - with_cells
-	return out
-
-# The view `installed` and `preview` give tests and the probe: the book's entries, read whole once
-# after each change (_apply_effects drops the views).
-func _entries(is_preview: bool) -> Dictionary:
-	if _views[int(is_preview)] != null:
-		return _views[int(is_preview)]
-	var out := {}
-	if _book == null:
-		return out
-	var tiles: PackedInt32Array = _book.entry_tiles(is_preview)
-	for index in range(0, tiles.size(), 2):
-		var tile := Vector2i(tiles[index], tiles[index + 1])
-		var fields: PackedInt64Array = _book.entry(tile, is_preview)
-		var copies := {}
-		for at in range(6, fields.size(), 4):
-			copies[int(fields[at])] = Vector3i(int(fields[at + 1]), int(fields[at + 2]), int(fields[at + 3]))
-		out[tile] = {"code": int(fields[0]), "level": int(fields[1]), "step": int(fields[2]), "token": int(fields[3]),
-			"walls": _book.entry_walls(tile, is_preview), "behind": fields[4] == 1, "copies": copies}
-	_views[int(is_preview)] = out
-	return out

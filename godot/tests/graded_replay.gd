@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Replays a recorded graded tile renderer trace (terrain_graded_trace.gd, `RENDER-32-I`) through
-## the renderer as it is now, headless and without Rust's residency jobs: the resident patch
-## dictionary's recorded mutations (or, since `RENDER-32-K` part 6, the streaming core's resident
-## entries and terrain.gd's patch nodes), entry calls, polled results, Rust's replies and the install
-## budget's answers are fed back in order, and every output (Rust calls, page creations and
-## moves, slot uploads, cell buffer publications, draw states, wall faces) must equal the recorded one. The
+## the renderer as it is now, headless and without Rust's residency jobs: the streaming core's
+## resident entries and terrain.gd's patch nodes (since `RENDER-32-K` part 6), entry calls, polled
+## results, Rust's replies and the install budget's answers are fed back in order, and every output
+## (Rust calls, page creations and moves, slot uploads, cell buffer publications, draw states, wall
+## faces) must equal the recorded one. A trace recorded before the core's hand-off (the resident
+## patch dictionary's mutations and `process` frames with their changed keys) is fed through the
+## same entries: each changed key's entry set in the book and its node lent, then the frame run
+## with the recorded keys as its news (`RENDER-32-K` part 7, which removed the dictionary-fed
+## frame). The
 ## trace is METRUM_GRADED_REPLAY or the first user argument; a list of traces separated by `;`
 ## replays each; METRUM_GRADED_REPLAY_POOL=unbounded replays traces recorded before `TERRAIN-09`'s
 ## bound on the pooled pages. Exit 0 when every trace replays to its end.
@@ -55,6 +59,16 @@ func _material(id: int) -> ShaderMaterial:
 		_materials[id] = material
 	return _materials[id]
 
+# A pre-hand-off trace's resident entry as the book takes it: its rectangle, step and generation
+# (empty: not resident) without news, and its node lent (or taken back).
+func _legacy_patch(renderer: RefCounted, key: Vector2i, entry: Dictionary) -> void:
+	if entry.is_empty():
+		renderer._book.set_patch(key, false, Rect2(), 0, 0)
+		renderer.set_patch_node(key, null, null, AABB())
+		return
+	renderer._book.set_patch(key, true, entry["rect"], int(entry["step"]), int(entry["generation"]))
+	renderer.set_patch_node(key, entry["node"], entry["material"], entry["aabb"])
+
 func _replay(path: String) -> bool:
 	var started := Time.get_ticks_msec()
 	var trace: RefCounted = Trace.replay(path)
@@ -64,7 +78,9 @@ func _replay(path: String) -> bool:
 	var renderer: RefCounted = Tiles.new()
 	renderer.trace = trace
 	_trace = trace
+	# A pre-hand-off trace's resident dictionary, and whether its first frame synced the book.
 	var resident := {}
+	var synced := false
 	var calls := {}
 	while trace.has_next():
 		var line: String = trace.peek()
@@ -92,20 +108,35 @@ func _replay(path: String) -> bool:
 					"rect": Rect2(rect[0], rect[1], rect[2], rect[3]), "step": int(words[7]), "generation": int(words[8]),
 					"aabb": AABB(Vector3(box[0], box[1], box[2]), Vector3(box[3], box[4], box[5])),
 				}
-				renderer.patch_mutated(key, resident[key])
+				if synced:
+					_legacy_patch(renderer, key, resident[key])
 			"patch_erase":
 				trace.take()
-				resident.erase(Vector2i(int(words[2]), int(words[3])))
-				renderer.patch_mutated(Vector2i(int(words[2]), int(words[3])), {})
+				var key := Vector2i(int(words[2]), int(words[3]))
+				resident.erase(key)
+				if synced:
+					_legacy_patch(renderer, key, {})
 			"patches_clear":
 				trace.take()
 				resident.clear()
-				renderer.patch_mutated(Vector2i.ZERO, {}, true)
+				renderer._book.forget_patches()
 			"process":
+				# A pre-hand-off frame: its first syncs the book with the dictionary, each takes its
+				# changed keys' entries again and follows them as its news.
+				trace.take()
 				var camera: PackedFloat32Array = Trace.floats_of(words[2])
 				renderer.unbudgeted = words[3] == "1"
 				renderer.residency_settling = words[4] == "1"
-				renderer.process_with(Vector3(camera[0], camera[1], camera[2]), resident, Trace.keys_of(words[5]), Trace.keys_of(words[6]))
+				if not synced:
+					renderer._book.clear_resident()
+					for key: Vector2i in resident:
+						_legacy_patch(renderer, key, resident[key])
+					synced = true
+				var news := PackedInt32Array()
+				for key: Vector2i in Trace.keys_of(words[5]):
+					_legacy_patch(renderer, key, resident.get(key, {}))
+					news.append_array(PackedInt32Array([key.x, key.y]))
+				renderer._run_frame(Vector3(camera[0], camera[1], camera[2]), news, Trace.keys_of(words[6]))
 			# Traces recorded since the streaming core hands the resident patches over
 			# (`RENDER-32-K` part 6): the core's entries, terrain.gd's nodes, the frames.
 			"patch_core":
@@ -142,6 +173,7 @@ func _replay(path: String) -> bool:
 	# Its own disposal is not part of the trace.
 	renderer.trace = null
 	renderer.page_store.trace = null
+	renderer._book.set_trace(null)
 	renderer.dispose()
 	var seconds := float(Time.get_ticks_msec() - started) / 1000.0
 	if not trace.failure.is_empty():

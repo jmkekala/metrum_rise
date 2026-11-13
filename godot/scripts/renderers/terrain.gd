@@ -423,7 +423,7 @@ func _process(delta: float) -> void:
 		# The frame's own time ends here: the diagnostic count below walks every cell set.
 		var elapsed_ms := float(Time.get_ticks_usec() - frame_start_us) / 1000.0
 		if graded_tiles != null:
-			var graded_parts: Dictionary = graded_tiles.counters["frame_parts"]
+			var graded_parts: Dictionary = graded_tiles.frame_parts()
 			graded_tiles.count_submitted_cells(graded_parts)
 			for part: String in graded_parts.keys():
 				perf_details["graded_" + part] = float(graded_parts[part])

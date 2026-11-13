@@ -10,8 +10,9 @@
 ## (`RENDER-32-K` part 2): it writes each copy from its bake and copies a moved block's page
 ## through the stream backend, by the arrays' RIDs, and on Compatibility keeps the written
 ## layers' bytes, which a growth copies (TERRAIN-22). Which page a block of patches uses, the
-## tiles' copies, a block's growth and the materials' binding are terrain_graded_tiles.gd's.
-## Nothing here allocates per frame: pages are pooled.
+## tiles' copies, a block's growth and the materials' binding are the book's too; the counters of
+## the pages and textures made are the book's (`RENDER-32-K` part 7). Nothing here allocates per
+## frame: pages are pooled.
 extends RefCounted
 
 # Texels of a row atlas layer (residency.rs ATLAS_WIDTH, checked against the layout at setup).
@@ -79,8 +80,6 @@ func copied(source_id: int, target_id: int) -> void:
 		trace.out("page_copy %d %d" % [source_id, target_id])
 	book.copy_page(source_id, target_id)
 
-# The renderer's counters (the same Dictionary): textures, images and pages created, uploads.
-var counters: Dictionary = {}
 # The renderer's record and replay (terrain_graded_trace.gd), null when off: page creations,
 # releases, moves and slot uploads are its outputs.
 var trace: RefCounted = null
@@ -117,7 +116,6 @@ static func device_layer_limit() -> int:
 # atlas layers a tile's rows take.
 func add_level(level: Dictionary, cap: int) -> void:
 	var side := int(level["side"])
-	counters["images_created"] += 2
 	levels.append({
 		"side": side,
 		"cap": cap,
@@ -144,8 +142,6 @@ func made(page_id: int, reused: bool, code: int, block: Vector2i, slots: int, la
 	var side := int(level["side"])
 	var texels := _array(level["zero_texels"], slots)
 	var atlas := _array(level["zero_atlas"], layers)
-	counters["textures_created"] += 2
-	counters["pages_created"] += 1
 	by_id[page_id] = {"id": page_id, "code": code, "block": block, "slots": slots, "layers": layers, "texels": texels,
 		"atlas": atlas, "bytes": slots * side * (side + 1) * 16 + layers * ATLAS_LAYER_BYTES}
 
