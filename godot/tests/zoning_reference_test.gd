@@ -143,13 +143,12 @@ func _reference(fixture: Dictionary) -> void:
 	var road := RoadToolScript.new()
 	road.name = "RoadTool"
 	road.simulation_node = simulation
-	road.road_mesh_root = Node3D.new()
-	road.add_child(road.road_mesh_root)
+	road.make_chunks()
 	var generation := simulation.get_network_render_generation()
-	_expect(road.update_main_mesh(generation) == generation, "Reference uses the committed road chunks")
-	road.remove_child(road.road_mesh_root)
-	scene.add_child(road.road_mesh_root)
-	var road_chunks := road._road_chunk_instances.size()
+	_expect(road.chunks.update(generation) == generation, "Reference uses the committed road chunks")
+	road.chunks.remove_child(road.chunks.chunk_root)
+	scene.add_child(road.chunks.chunk_root)
+	var road_chunks := road.chunks.chunks.size()
 	var water := Node3D.new()
 	water.name = "Water"
 	scene.add_child(water)

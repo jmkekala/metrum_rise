@@ -42,6 +42,7 @@
 extends "res://scripts/tools/network_tool.gd"
 
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
+const RoadChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
 const RoadReasonText := preload("res://scripts/ui/road_reason_text.gd")
 const RoadTypeMenu := preload("res://scripts/ui/road_type_menu.gd")
 const HighlightMesh := preload("res://scripts/renderers/highlight_mesh.gd")
@@ -184,7 +185,21 @@ func _preview_frame_completed() -> void:
 	if preview_metrics != null:
 		preview_metrics.frame(_preview_drawn_sequence, DisplayServer.get_name() != "headless")
 
+## The committed network's chunks (`RENDER-52`): resident set, staging, holds, lights and signs.
+var chunks: Node3D
+
+## Makes the tool's chunk renderer, its first child, reading the tool's simulation and terrain
+## nodes. `_ready` calls it; tests that assemble a tool outside a scene call it themselves.
+func make_chunks() -> void:
+	chunks = RoadChunkRenderer.new()
+	chunks.simulation_node = simulation_node
+	chunks.terrain_node = terrain_node
+	chunks.host = self
+	add_child(chunks)
+
 func _ready():
+	# Before the base class's visuals: the chunks, lights and signs keep their place in the tree.
+	make_chunks()
 	super._ready()
 	process_priority = PREVIEW_SAMPLE_PROCESS_PRIORITY
 	if blueprint_mesh:
@@ -494,7 +509,7 @@ func _show_preview(points: PackedVector3Array) -> void:
 		# them over once.
 		var graded_ms := _show_graded(_preview)
 		if is_valid and bool(_preview.get("has_road_chunks", false)):
-			shown = _preview_display.show(self, _preview, sequence)
+			shown = _preview_display.show(chunks, _preview, sequence)
 		if not shown:
 			_preview_display.clear()
 		_show_demolition(_preview)
@@ -556,7 +571,7 @@ func _clear_preview_visual() -> void:
 		_info_label.visible = false
 
 # After an accepted commit the preview stays shown until the committed generation's chunks are
-# installed; `_road_mesh_installed` releases it in the same call, so no frame shows neither.
+# installed; `road_chunks_installed` releases it in the same call, so no frame shows neither.
 func _hold_preview_until(generation: int) -> void:
 	if _swap_display != null:
 		_swap_display.reset()
@@ -568,38 +583,26 @@ func _hold_preview_until(generation: int) -> void:
 
 func _release_swapped_preview() -> void:
 	# Chunks held for a graded edit (T61 (2)) draw the preview's state with it until they swap.
-	if _swap_display != null and _road_mesh_generation >= _swap_generation and _held_serial < 0:
+	if _swap_display != null and chunks.generation >= _swap_generation and not chunks.is_holding():
 		_swap_display.reset()
 		_swap_display = null
 		_swap_generation = -1
 
-# Any install (an undo, a commit, a deletion) made while the graded journal holds an edit the
-# renderer has not installed waits for it (T61 (2)): until then the replaced chunks draw over the
-# terrain cut they were baked with. A held commit keeps its preview drawn too
-# (`_release_swapped_preview`). The acknowledgement is not delayed: only the drawing waits.
-func _chunk_hold_serial() -> int:
-	var graded = _graded_renderer()
-	if graded == null or not is_instance_valid(simulation_node):
-		return -1
-	var serial := int(simulation_node.get_graded_edit_serial())
-	return serial if serial > graded.installed_edit_serial() else -1
-
-func _held_edit_installed(serial: int) -> bool:
-	var graded = _graded_renderer()
-	return graded == null or graded.installed_edit_serial() >= serial
-
-func _held_chunks_released() -> void:
+## The chunk renderer swapped the chunks it held for a graded edit (T61 (2)) for the installed
+## ones; a held commit's preview (`_release_swapped_preview`) goes with them.
+func road_chunks_released() -> void:
 	_release_swapped_preview()
 	# A preview that waited for the held chunks shows on the installed ones.
-	_preview_display.resident_installed(self)
+	_preview_display.resident_installed(chunks)
 
-func _road_mesh_installed(_generation: int) -> void:
+## The chunk renderer installed a generation's chunks.
+func road_chunks_installed(_generation: int) -> void:
 	# The acknowledgement may arrive in the same frame as the chunks it names.
 	_poll_road_commit_result()
 	_release_swapped_preview()
 	# A preview made meanwhile (the next stroke of a chain) indexes the chunks just installed:
 	# it shows in this call.
-	_preview_display.resident_installed(self)
+	_preview_display.resident_installed(chunks)
 
 func _begin_stroke(pos: Vector3, kind: int, direction: Vector3) -> void:
 	start_pos = pos
@@ -929,6 +932,8 @@ func cancel_road():
 	if _info_label:
 		_info_label.visible = false
 
+## Drops the committed chunks and the preview (another world): the next refresh takes the whole
+## network.
 func reset_main_mesh_chunks() -> void:
 	_clear_preview_visual()
 	_preview_display.reset()
@@ -937,7 +942,7 @@ func reset_main_mesh_chunks() -> void:
 		_swap_display = null
 		_swap_generation = -1
 	_clear_preview_cache()
-	super.reset_main_mesh_chunks()
+	chunks.reset()
 	_queue_preview_update()
 
 func mark_network_topology_dirty() -> void:
@@ -998,7 +1003,7 @@ func _prompt_border_connection(node_id: int) -> void:
 	add_child(dialog)
 	dialog.confirmed.connect(func() -> void:
 		simulation_node.set_border_connection(node_id)
-		update_main_mesh()
+		chunks.update()
 		dialog.queue_free()
 	)
 	dialog.canceled.connect(func() -> void: dialog.queue_free())

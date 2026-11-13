@@ -2562,7 +2562,7 @@ func _sculpt_at_mouse(delta: float) -> void:
 
 	var road_tool = get_node_or_null("../RoadTool")
 	if road_tool:
-		road_tool.update_main_mesh()
+		road_tool.chunks.update()
 
 func _ensure_border_visuals() -> void:
 	if border_skirt_instance == null:

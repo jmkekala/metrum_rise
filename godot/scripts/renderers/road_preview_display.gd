@@ -41,20 +41,20 @@ func _notification(what: int) -> void:
 ## Shows a preview's `road_chunks` over the resident chunks with the same keys. False, with the
 ## previous display unchanged, when the payload does not fit the resident chunks. A preview of a
 ## road mesh generation not installed yet shows no road until `resident_installed`.
-func show(tool: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
+func show(renderer: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 	if preview_sequence == sequence and sequence > 0:
 		return true
 	var span := float(preview.get("chunk_span_m", 0.0))
 	var origin_x := float(preview.get("chunk_origin_x_m", 0.0))
 	var origin_z := float(preview.get("chunk_origin_z_m", 0.0))
-	if tool._road_mesh_generation >= 0 and (span != tool._road_chunk_span_m or origin_x != tool._road_chunk_origin_x_m or origin_z != tool._road_chunk_origin_z_m):
+	if renderer.generation >= 0 and (span != renderer.span_m or origin_x != renderer.origin_x_m or origin_z != renderer.origin_z_m):
 		return false
 	var chunks: Variant = preview.get("road_chunks")
 	if not chunks is Array or chunks.is_empty():
 		return false
 	# The hidden runs index the resident chunks of exactly this generation.
 	# Held chunks (T61 (2)) are not drawn yet: wait for them as for an install.
-	if int(preview.get("road_mesh_generation", -1)) != tool._road_mesh_generation or tool._held_serial >= 0:
+	if int(preview.get("road_mesh_generation", -1)) != renderer.generation or renderer.is_holding():
 		clear()
 		_pending = preview
 		_pending_sequence = preview_sequence
@@ -71,7 +71,7 @@ func show(tool: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 			_recycle(staged)
 			return false
 		keys.append(key)
-		var target = _resident_target(tool, key, chunk)
+		var target = _resident_target(renderer, key, chunk)
 		if target == null:
 			_recycle(staged)
 			return false
@@ -79,15 +79,15 @@ func show(tool: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 			targets[key] = target
 		if not _has_overlay(chunk):
 			continue
-		var instance: MeshInstance3D = _spare.pop_back() if not _spare.is_empty() else tool._new_road_chunk_node()
+		var instance: MeshInstance3D = _spare.pop_back() if not _spare.is_empty() else renderer.new_chunk_node()
 		# Spares are detached and hidden from the display, so clearing their surfaces is safe.
 		instance.mesh.clear_surfaces()
 		staged.append(instance)
-		if not tool._fill_road_chunk_mesh(instance.mesh, chunk):
+		if not renderer.fill_chunk_mesh(instance.mesh, chunk):
 			_recycle(staged)
 			return false
 		instance.name = "RoadPreview_%d_%d" % [key.x, key.y]
-		tool._place_road_chunk_instance(instance, key, span, origin_x, origin_z)
+		renderer.place_chunk(instance, key, span, origin_x, origin_z)
 	# Everything is staged before the visible state changes: the runs collapse and restore and the
 	# overlays swap in this call, so no frame shows a replaced run beside its rebuilt piece or
 	# neither.
@@ -95,7 +95,7 @@ func show(tool: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 	_apply_runs(targets)
 	_recycle(_instances)
 	for instance in staged:
-		tool.road_mesh_root.add_child(instance)
+		renderer.chunk_root.add_child(instance)
 	_instances = staged
 	_keys = keys
 	_shown = preview
@@ -104,18 +104,18 @@ func show(tool: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 		_spare.pop_back().free()
 	return true
 
-## After the road tool installed resident chunks: shows the preview that waited for them, or
+## After the chunk renderer installed resident chunks: shows the preview that waited for them, or
 ## re-shows the shown one when the install replaced chunks it indexes.
-func resident_installed(tool: Node3D) -> void:
+func resident_installed(renderer: Node3D) -> void:
 	var preview := _pending
 	var preview_sequence := _pending_sequence
-	if preview.is_empty() and sequence > 0 and int(_shown.get("road_mesh_generation", -1)) != tool._road_mesh_generation:
+	if preview.is_empty() and sequence > 0 and int(_shown.get("road_mesh_generation", -1)) != renderer.generation:
 		preview = _shown
 		preview_sequence = sequence
 	if preview.is_empty():
 		return
 	clear()
-	if not show(tool, preview, preview_sequence):
+	if not show(renderer, preview, preview_sequence):
 		clear()
 
 ## Restores every collapsed run and removes the overlays.
@@ -139,16 +139,16 @@ func reset() -> void:
 # The resident runs a chunk's payload hides: {"instance", "positions", "runs": {Vector3i(layer,
 # start, end): Vector2i(first position, count)}}; empty when it hides none; null when the payload
 # does not fit the resident chunk.
-func _resident_target(tool: Node3D, key: Vector2i, chunk: Dictionary) -> Variant:
+func _resident_target(renderer: Node3D, key: Vector2i, chunk: Dictionary) -> Variant:
 	var hidden: Variant = chunk.get("hidden")
 	var positions: Variant = chunk.get("hidden_positions")
 	if not hidden is PackedInt32Array or hidden.size() % 3 != 0 or not positions is PackedVector3Array:
 		return null
 	if hidden.is_empty():
 		return {}
-	if not tool._road_chunk_instances.has(key):
+	if not renderer.chunks.has(key):
 		return null
-	var instance: MeshInstance3D = tool._road_chunk_instances[key]
+	var instance: MeshInstance3D = renderer.chunks[key]
 	var mesh := instance.mesh as ArrayMesh
 	var surfaces: Variant = mesh.get_meta("road_layer_surfaces", null) if mesh != null else null
 	if not surfaces is PackedInt32Array:

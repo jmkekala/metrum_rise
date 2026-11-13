@@ -56,7 +56,7 @@ func _commit(points: PackedVector3Array) -> bool:
 # the road shader reads it).
 func _painted_vertices(road_tool: Node3D) -> int:
 	var painted := 0
-	for instance: MeshInstance3D in road_tool._road_chunk_instances.values():
+	for instance: MeshInstance3D in road_tool.chunks.chunks.values():
 		var mesh: ArrayMesh = instance.mesh
 		if mesh == null:
 			continue
@@ -72,7 +72,7 @@ func _painted_vertices(road_tool: Node3D) -> int:
 # The road tool installs the current render generation; returns whether it did.
 func _install(road_tool: Node3D) -> bool:
 	var generation := simulation.get_network_render_generation()
-	return road_tool.update_main_mesh(generation) == generation
+	return road_tool.chunks.update(generation) == generation
 
 func _click(camera: Camera3D, world: Vector3) -> void:
 	for pressed in [true, false]:
@@ -106,8 +106,7 @@ func _run() -> void:
 	road_tool.name = "RoadTool"
 	road_tool.simulation_node = simulation
 	road_tool.terrain_node = TerrainStub.new()
-	road_tool.road_mesh_root = Node3D.new()
-	road_tool.add_child(road_tool.road_mesh_root)
+	road_tool.make_chunks()
 	road_tool.blueprint_mesh = MeshInstance3D.new()
 	road_tool.add_child(road_tool.blueprint_mesh)
 	road_tool._info_label = Label.new()

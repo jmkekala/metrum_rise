@@ -46,7 +46,7 @@ func _road_hydration() -> Node:
 		_hydration = RoadChunkHydration.new()
 		_hydration.name = "RoadChunkHydration"
 		_hydration.simulation_node = simulation_node
-		_hydration.road_tool = road_tool
+		_hydration.chunks = road_tool.chunks
 		_hydration.stream_node = get_node_or_null("../StreamNode") if is_inside_tree() else null
 		add_child(_hydration)
 	return _hydration
@@ -56,9 +56,9 @@ func _process(_delta: float) -> void:
 	var total_start_us := Time.get_ticks_usec() if perf_enabled else 0
 	# After the terrain's process (the scene order): chunks held for a graded edit swap in the
 	# frame its batch installed (T61 (2)).
-	road_tool.release_held_chunks()
+	road_tool.chunks.release_held()
 	if not simulation_node.is_network_dirty():
-		if road_tool.needs_main_mesh_hydration():
+		if road_tool.chunks.needs_hydration():
 			var generation := _current_road_surface_generation()
 			if _road_hydration().prepare(generation) and _hydration.commit(true) == generation:
 				road_tool.mark_network_topology_dirty()
@@ -110,13 +110,13 @@ func _process(_delta: float) -> void:
 	# 3. Build and validate changed road chunks without replacing resident instances. Staging also
 	# rechecks the generation after potentially expensive ArrayMesh construction.
 	var road_mesh_staged := false
-	var road_hydration: bool = road_tool.needs_main_mesh_hydration()
+	var road_hydration: bool = road_tool.chunks.needs_hydration()
 	if _road_mesh_refreshed_surface_generation != surface_generation:
 		var road_mesh_start_us := Time.get_ticks_usec()
 		var staged_generation: int = (
 			surface_generation if road_hydration and _road_hydration().prepare(surface_generation)
 			else -1 if road_hydration
-			else road_tool.update_main_mesh(surface_generation, true)
+			else road_tool.chunks.update(surface_generation, true)
 		)
 		if staged_generation != surface_generation:
 			return
@@ -124,7 +124,7 @@ func _process(_delta: float) -> void:
 		road_mesh_staged = true
 	if _current_road_surface_generation() != surface_generation:
 		if road_mesh_staged:
-			road_tool.discard_staged_main_mesh_update()
+			road_tool.chunks.discard_staged()
 		return
 
 	# 4. Commit the already-validated terrain and road batches back-to-back. Godot cannot draw
@@ -133,14 +133,14 @@ func _process(_delta: float) -> void:
 		var terrain_commit_start_us := Time.get_ticks_usec()
 		if not terrain.commit_prepared_terrain_visual_update(prepared_terrain_update):
 			if road_mesh_staged:
-				road_tool.discard_staged_main_mesh_update()
+				road_tool.chunks.discard_staged()
 			return
 		terrain_visuals_ms += float(Time.get_ticks_usec() - terrain_commit_start_us) / 1000.0
 	if road_mesh_staged:
 		var road_commit_start_us := Time.get_ticks_usec()
 		var rendered_generation: int = (
 			_road_hydration().commit(false) if road_hydration
-			else road_tool.commit_staged_main_mesh_update(surface_generation)
+			else road_tool.chunks.commit_staged(surface_generation)
 		)
 		if rendered_generation != surface_generation:
 			return

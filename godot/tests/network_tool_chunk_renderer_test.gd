@@ -155,19 +155,40 @@ class MockZoningOverlay:
 	func mark_no_build_dirty() -> void:
 		dirty_count += 1
 
-class TestRoadTool:
-	extends NetworkTool
+class TestChunks:
+	extends "res://scripts/renderers/road_chunk_renderer.gd"
 
-	var topology_dirty_count: int = 0
-	var nodes_dirty_count: int = 0
-	var border_check_count: int = 0
 	var advance_generation_after_stage: bool = false
 
-	func update_main_mesh(expected_generation: int = -1, stage_only: bool = false) -> int:
-		var result := super.update_main_mesh(expected_generation, stage_only)
+	func update(expected_generation: int = -1, stage_only: bool = false) -> int:
+		var result := super.update(expected_generation, stage_only)
 		if stage_only and result == expected_generation and advance_generation_after_stage:
 			simulation_node.generation += 1
 		return result
+
+# The chunk renderer's host, as the road tool is (`RENDER-52`): the renderer is its child `chunks`.
+class TestRoadTool:
+	extends Node3D
+
+	var chunks: TestChunks
+	var topology_dirty_count: int = 0
+	var nodes_dirty_count: int = 0
+	var border_check_count: int = 0
+
+	func _init() -> void:
+		chunks = TestChunks.new()
+		chunks.host = self
+		add_child(chunks)
+
+	func _ready() -> void:
+		chunks.simulation_node = get_node("../SimulationNode")
+		chunks.terrain_node = get_node("../Terrain")
+
+	func road_chunks_installed(_generation: int) -> void:
+		pass
+
+	func road_chunks_released() -> void:
+		pass
 
 	func mark_network_nodes_dirty() -> void:
 		nodes_dirty_count += 1
@@ -310,11 +331,11 @@ func _run() -> void:
 
 	simulation.generation = 1
 	simulation.response = _batch(1, true, CHUNK_SPAN_M, [])
-	_expect(road_tool.needs_main_mesh_hydration(), "new renderer must require hydration")
+	_expect(road_tool.chunks.needs_hydration(), "new renderer must require hydration")
 	network_renderer._process(0.0)
 	_expect(simulation.hydration_requests == [1], "clean hydration must take the full network once")
-	_expect(not road_tool.needs_main_mesh_hydration(), "empty hydration must record generation")
-	_expect(road_tool._road_mesh_generation == 1, "empty hydration must record the exact generation")
+	_expect(not road_tool.chunks.needs_hydration(), "empty hydration must record generation")
+	_expect(road_tool.chunks.generation == 1, "empty hydration must record the exact generation")
 	_expect(road_tool.topology_dirty_count == 1, "clean hydration must refresh topology visuals")
 
 	simulation.generation = 2
@@ -322,12 +343,12 @@ func _run() -> void:
 		_triangle_chunk(0, 0),
 		_triangle_chunk(3, -2),
 	], CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M)
-	_expect(road_tool.update_main_mesh(2) == 2, "valid full snapshot must commit")
-	_expect(road_tool._road_chunk_instances.size() == 2, "full snapshot must add both chunks")
+	_expect(road_tool.chunks.update(2) == 2, "valid full snapshot must commit")
+	_expect(road_tool.chunks.chunks.size() == 2, "full snapshot must add both chunks")
 	var sentinel_key := Vector2i(0, 0)
 	var changed_key := Vector2i(3, -2)
-	var sentinel: MeshInstance3D = road_tool._road_chunk_instances[sentinel_key]
-	var previous_changed: MeshInstance3D = road_tool._road_chunk_instances[changed_key]
+	var sentinel: MeshInstance3D = road_tool.chunks.chunks[sentinel_key]
+	var previous_changed: MeshInstance3D = road_tool.chunks.chunks[changed_key]
 	_expect(
 		sentinel.position == Vector3(
 			CHUNK_ORIGIN_X_M + 0.5 * CHUNK_SPAN_M, 0.0, CHUNK_ORIGIN_Z_M + 0.5 * CHUNK_SPAN_M
@@ -342,8 +363,8 @@ func _run() -> void:
 		),
 		"nonzero chunk must be placed at its centre relative to the published origin"
 	)
-	_expect(road_tool._road_chunk_origin_x_m == CHUNK_ORIGIN_X_M, "full snapshot must record x origin")
-	_expect(road_tool._road_chunk_origin_z_m == CHUNK_ORIGIN_Z_M, "full snapshot must record z origin")
+	_expect(road_tool.chunks.origin_x_m == CHUNK_ORIGIN_X_M, "full snapshot must record x origin")
+	_expect(road_tool.chunks.origin_z_m == CHUNK_ORIGIN_Z_M, "full snapshot must record z origin")
 
 	simulation.generation = 3
 	simulation.response = _batch(
@@ -354,10 +375,10 @@ func _run() -> void:
 		CHUNK_ORIGIN_X_M,
 		CHUNK_ORIGIN_Z_M
 	)
-	_expect(road_tool.update_main_mesh(3) == 3, "incremental upsert must commit")
-	_expect(road_tool._road_chunk_instances.size() == 2, "upsert must retain untouched chunks")
-	_expect(road_tool._road_chunk_instances[sentinel_key] == sentinel, "upsert must retain sentinel identity")
-	_expect(road_tool._road_chunk_instances[changed_key] != previous_changed, "upsert must replace changed identity")
+	_expect(road_tool.chunks.update(3) == 3, "incremental upsert must commit")
+	_expect(road_tool.chunks.chunks.size() == 2, "upsert must retain untouched chunks")
+	_expect(road_tool.chunks.chunks[sentinel_key] == sentinel, "upsert must retain sentinel identity")
+	_expect(road_tool.chunks.chunks[changed_key] != previous_changed, "upsert must replace changed identity")
 
 	simulation.generation = 4
 	simulation.response = _batch(
@@ -368,9 +389,9 @@ func _run() -> void:
 		CHUNK_ORIGIN_X_M,
 		CHUNK_ORIGIN_Z_M
 	)
-	_expect(road_tool.update_main_mesh(4) == 4, "tombstone batch must commit")
-	_expect(road_tool._road_chunk_instances.size() == 1, "tombstone must remove only its chunk")
-	_expect(road_tool._road_chunk_instances[sentinel_key] == sentinel, "tombstone must retain sentinel identity")
+	_expect(road_tool.chunks.update(4) == 4, "tombstone batch must commit")
+	_expect(road_tool.chunks.chunks.size() == 1, "tombstone must remove only its chunk")
+	_expect(road_tool.chunks.chunks[sentinel_key] == sentinel, "tombstone must retain sentinel identity")
 	await process_frame
 	var orphan_baseline := int(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT))
 
@@ -383,13 +404,13 @@ func _run() -> void:
 		CHUNK_ORIGIN_X_M,
 		CHUNK_ORIGIN_Z_M
 	)
-	_expect(road_tool.update_main_mesh(5) == -1, "stale staged batch must be rejected")
-	_expect(road_tool._road_chunk_instances.size() == 1, "stale batch must retain resident set")
-	_expect(road_tool._road_chunk_instances[sentinel_key] == sentinel, "stale batch must retain sentinel identity")
-	_expect(road_tool._road_mesh_generation == 4, "stale batch must retain generation")
-	_expect(road_tool._road_chunk_span_m == CHUNK_SPAN_M, "stale batch must retain span")
-	_expect(road_tool._road_chunk_origin_x_m == CHUNK_ORIGIN_X_M, "stale batch must retain x origin")
-	_expect(road_tool._road_chunk_origin_z_m == CHUNK_ORIGIN_Z_M, "stale batch must retain z origin")
+	_expect(road_tool.chunks.update(5) == -1, "stale staged batch must be rejected")
+	_expect(road_tool.chunks.chunks.size() == 1, "stale batch must retain resident set")
+	_expect(road_tool.chunks.chunks[sentinel_key] == sentinel, "stale batch must retain sentinel identity")
+	_expect(road_tool.chunks.generation == 4, "stale batch must retain generation")
+	_expect(road_tool.chunks.span_m == CHUNK_SPAN_M, "stale batch must retain span")
+	_expect(road_tool.chunks.origin_x_m == CHUNK_ORIGIN_X_M, "stale batch must retain x origin")
+	_expect(road_tool.chunks.origin_z_m == CHUNK_ORIGIN_Z_M, "stale batch must retain z origin")
 	await process_frame
 	_expect(
 		int(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)) == orphan_baseline,
@@ -411,13 +432,13 @@ func _run() -> void:
 		CHUNK_ORIGIN_X_M,
 		CHUNK_ORIGIN_Z_M
 	)
-	_expect(road_tool.update_main_mesh(6) == -1, "non-finite geometry must be rejected")
-	_expect(road_tool._road_chunk_instances.size() == 1, "invalid batch must retain resident set")
-	_expect(road_tool._road_chunk_instances[sentinel_key] == sentinel, "invalid batch must retain sentinel identity")
-	_expect(road_tool._road_mesh_generation == 4, "invalid batch must retain generation")
-	_expect(road_tool._road_chunk_span_m == CHUNK_SPAN_M, "invalid batch must retain span")
-	_expect(road_tool._road_chunk_origin_x_m == CHUNK_ORIGIN_X_M, "invalid batch must retain x origin")
-	_expect(road_tool._road_chunk_origin_z_m == CHUNK_ORIGIN_Z_M, "invalid batch must retain z origin")
+	_expect(road_tool.chunks.update(6) == -1, "non-finite geometry must be rejected")
+	_expect(road_tool.chunks.chunks.size() == 1, "invalid batch must retain resident set")
+	_expect(road_tool.chunks.chunks[sentinel_key] == sentinel, "invalid batch must retain sentinel identity")
+	_expect(road_tool.chunks.generation == 4, "invalid batch must retain generation")
+	_expect(road_tool.chunks.span_m == CHUNK_SPAN_M, "invalid batch must retain span")
+	_expect(road_tool.chunks.origin_x_m == CHUNK_ORIGIN_X_M, "invalid batch must retain x origin")
+	_expect(road_tool.chunks.origin_z_m == CHUNK_ORIGIN_Z_M, "invalid batch must retain z origin")
 	_test_road_payload_certificate(road_tool)
 
 	simulation.generation = 7
@@ -429,13 +450,13 @@ func _run() -> void:
 		CHUNK_ORIGIN_X_M,
 		CHUNK_ORIGIN_Z_M
 	)
-	_expect(road_tool.update_main_mesh(7) == -1, "incremental span change must be rejected")
-	_expect(road_tool._road_chunk_instances.size() == 1, "span rejection must retain resident set")
-	_expect(road_tool._road_chunk_instances[sentinel_key] == sentinel, "span rejection must retain sentinel identity")
-	_expect(road_tool._road_mesh_generation == 4, "span rejection must retain generation")
-	_expect(road_tool._road_chunk_span_m == CHUNK_SPAN_M, "span rejection must retain committed span")
-	_expect(road_tool._road_chunk_origin_x_m == CHUNK_ORIGIN_X_M, "span rejection must retain x origin")
-	_expect(road_tool._road_chunk_origin_z_m == CHUNK_ORIGIN_Z_M, "span rejection must retain z origin")
+	_expect(road_tool.chunks.update(7) == -1, "incremental span change must be rejected")
+	_expect(road_tool.chunks.chunks.size() == 1, "span rejection must retain resident set")
+	_expect(road_tool.chunks.chunks[sentinel_key] == sentinel, "span rejection must retain sentinel identity")
+	_expect(road_tool.chunks.generation == 4, "span rejection must retain generation")
+	_expect(road_tool.chunks.span_m == CHUNK_SPAN_M, "span rejection must retain committed span")
+	_expect(road_tool.chunks.origin_x_m == CHUNK_ORIGIN_X_M, "span rejection must retain x origin")
+	_expect(road_tool.chunks.origin_z_m == CHUNK_ORIGIN_Z_M, "span rejection must retain z origin")
 
 	simulation.generation = 8
 	simulation.response = _batch(
@@ -446,16 +467,16 @@ func _run() -> void:
 		CHUNK_ORIGIN_X_M + 1.0,
 		CHUNK_ORIGIN_Z_M
 	)
-	_expect(road_tool.update_main_mesh(8) == -1, "incremental origin change must be rejected")
-	_expect(road_tool._road_chunk_instances.size() == 1, "origin rejection must retain resident set")
-	_expect(road_tool._road_chunk_instances[sentinel_key] == sentinel, "origin rejection must retain sentinel identity")
-	_expect(road_tool._road_mesh_generation == 4, "origin rejection must retain generation")
-	_expect(road_tool._road_chunk_span_m == CHUNK_SPAN_M, "origin rejection must retain span")
-	_expect(road_tool._road_chunk_origin_x_m == CHUNK_ORIGIN_X_M, "origin rejection must retain x origin")
-	_expect(road_tool._road_chunk_origin_z_m == CHUNK_ORIGIN_Z_M, "origin rejection must retain z origin")
+	_expect(road_tool.chunks.update(8) == -1, "incremental origin change must be rejected")
+	_expect(road_tool.chunks.chunks.size() == 1, "origin rejection must retain resident set")
+	_expect(road_tool.chunks.chunks[sentinel_key] == sentinel, "origin rejection must retain sentinel identity")
+	_expect(road_tool.chunks.generation == 4, "origin rejection must retain generation")
+	_expect(road_tool.chunks.span_m == CHUNK_SPAN_M, "origin rejection must retain span")
+	_expect(road_tool.chunks.origin_x_m == CHUNK_ORIGIN_X_M, "origin rejection must retain x origin")
+	_expect(road_tool.chunks.origin_z_m == CHUNK_ORIGIN_Z_M, "origin rejection must retain z origin")
 
-	var atomic_previous_instance: MeshInstance3D = road_tool._road_chunk_instances[sentinel_key]
-	var atomic_previous_generation := road_tool._road_mesh_generation
+	var atomic_previous_instance: MeshInstance3D = road_tool.chunks.chunks[sentinel_key]
+	var atomic_previous_generation := road_tool.chunks.generation
 	var atomic_previous_nodes_dirty_count := road_tool.nodes_dirty_count
 	simulation.generation = 9
 	simulation.response = _batch(
@@ -471,11 +492,11 @@ func _run() -> void:
 	terrain.prepare_ready = false
 	network_renderer._process(0.0)
 	_expect(
-		road_tool._road_mesh_generation == atomic_previous_generation,
+		road_tool.chunks.generation == atomic_previous_generation,
 		"an unprepared terrain batch must retain the previous road generation"
 	)
 	_expect(
-		road_tool._road_chunk_instances[sentinel_key] == atomic_previous_instance,
+		road_tool.chunks.chunks[sentinel_key] == atomic_previous_instance,
 		"an unprepared terrain batch must retain previous road instances"
 	)
 	_expect(
@@ -491,15 +512,15 @@ func _run() -> void:
 	terrain.commit_ready = false
 	network_renderer._process(0.0)
 	_expect(
-		road_tool._road_mesh_generation == atomic_previous_generation,
+		road_tool.chunks.generation == atomic_previous_generation,
 		"a rejected terrain commit must retain the previous road generation"
 	)
 	_expect(
-		road_tool._road_chunk_instances[sentinel_key] == atomic_previous_instance,
+		road_tool.chunks.chunks[sentinel_key] == atomic_previous_instance,
 		"a rejected terrain commit must retain previous road instances"
 	)
 	_expect(
-		road_tool._staged_road_mesh_update.is_empty(),
+		road_tool.chunks._staged.is_empty(),
 		"a rejected terrain commit must discard staged road instances"
 	)
 	_expect(
@@ -512,10 +533,10 @@ func _run() -> void:
 	)
 
 	terrain.commit_ready = true
-	road_tool.advance_generation_after_stage = true
+	road_tool.chunks.advance_generation_after_stage = true
 	network_renderer._process(0.0)
 	_expect(
-		road_tool._road_mesh_generation == atomic_previous_generation,
+		road_tool.chunks.generation == atomic_previous_generation,
 		"a generation change during road staging must retain the previous visual pair"
 	)
 	_expect(
@@ -523,7 +544,7 @@ func _run() -> void:
 		"a generation change during road staging must abort before terrain commit"
 	)
 	_expect(
-		road_tool._staged_road_mesh_update.is_empty(),
+		road_tool.chunks._staged.is_empty(),
 		"a stale staged road batch must release its detached instances"
 	)
 	_expect(
@@ -535,7 +556,7 @@ func _run() -> void:
 		"a stale staged road batch must not acknowledge the network"
 	)
 
-	road_tool.advance_generation_after_stage = false
+	road_tool.chunks.advance_generation_after_stage = false
 	simulation.response = _batch(
 		10,
 		false,
@@ -546,9 +567,9 @@ func _run() -> void:
 	)
 	simulation.reject_acknowledgement = true
 	network_renderer._process(0.0)
-	_expect(road_tool._road_mesh_generation == 10, "a complete terrain batch must publish its paired road generation")
+	_expect(road_tool.chunks.generation == 10, "a complete terrain batch must publish its paired road generation")
 	_expect(
-		road_tool._road_chunk_instances[sentinel_key] != atomic_previous_instance,
+		road_tool.chunks.chunks[sentinel_key] != atomic_previous_instance,
 		"a complete terrain batch must swap the staged road instance"
 	)
 	_expect(simulation.acknowledged_generations == [10], "the complete pair must reach the exact acknowledgement fence")
@@ -608,12 +629,12 @@ func _test_streamed_hydration() -> void:
 	simulation.response = _batch(1, true, CHUNK_SPAN_M,
 		[_triangle_chunk(3, 0), _triangle_chunk(0, 0), _triangle_chunk(1, 0)], CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M)
 	network_renderer._process(0.0)
-	_expect(not road_tool.needs_main_mesh_hydration(), "a streamed hydration records its generation at once")
+	_expect(not road_tool.chunks.needs_hydration(), "a streamed hydration records its generation at once")
 	var hydration: Node = network_renderer.get_node("RoadChunkHydration")
 	var order: Array[Vector2i] = []
 	for frame in 30:
 		await process_frame
-		for key: Vector2i in road_tool._road_chunk_instances:
+		for key: Vector2i in road_tool.chunks.chunks:
 			if not order.has(key):
 				order.append(key)
 		if not hydration.is_pending():
@@ -622,7 +643,7 @@ func _test_streamed_hydration() -> void:
 	_expect(order.size() == 0 or order[0] == Vector2i(0, 0), "the chunk under the camera installs first: %s" % [order])
 	_expect(not stream.has_road_hydration_pending() and simulation.hydration.is_empty(),
 		"the finished hydration lets its source go")
-	_expect(road_tool._road_mesh_generation == 1, "the units keep the hydration's generation")
+	_expect(road_tool.chunks.generation == 1, "the units keep the hydration's generation")
 	host.queue_free()
 	await process_frame
 
@@ -646,12 +667,12 @@ func _batch(
 func _test_road_payload_certificate(road_tool: Node) -> void:
 	# The Rust certificate may skip only the per-vertex scan, never the boundary shape checks.
 	var key := Vector2i(1, 1)
-	var uncertified: MeshInstance3D = road_tool._build_road_chunk_instance(
+	var uncertified: MeshInstance3D = road_tool.chunks.build_chunk(
 		_triangle_chunk(1, 1), key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M
 	)
 	var certified_chunk := _triangle_chunk(1, 1)
 	certified_chunk["road_mesh_payload_validated"] = true
-	var certified: MeshInstance3D = road_tool._build_road_chunk_instance(
+	var certified: MeshInstance3D = road_tool.chunks.build_chunk(
 		certified_chunk, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M
 	)
 	_expect(uncertified != null and certified != null, "valid road payloads must build")
@@ -672,34 +693,34 @@ func _test_road_payload_certificate(road_tool: Node) -> void:
 	bad_crossing["road_mesh_payload_validated"] = true
 	bad_crossing["road_crossings"] = PackedFloat32Array([0, 0, 0, 0])
 	_expect(
-		road_tool._build_road_chunk_instance(bad_crossing, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		road_tool.chunks.build_chunk(bad_crossing, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
 		"certified crossing payload must still pass attribute count checks"
 	)
 	var wrong_type := _triangle_chunk(1, 1)
 	wrong_type["road_mesh_payload_validated"] = 1
 	_expect(
-		road_tool._build_road_chunk_instance(wrong_type, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		road_tool.chunks.build_chunk(wrong_type, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
 		"non-bool road payload certificate must be rejected"
 	)
 	var certified_bad_count := _triangle_chunk(1, 1)
 	certified_bad_count["road_mesh_payload_validated"] = true
 	certified_bad_count["road_normals"] = PackedVector3Array([Vector3.UP])
 	_expect(
-		road_tool._build_road_chunk_instance(certified_bad_count, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		road_tool.chunks.build_chunk(certified_bad_count, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
 		"certified payload must still pass attribute count checks"
 	)
 	var certified_bad_type := _triangle_chunk(1, 1)
 	certified_bad_type["road_mesh_payload_validated"] = true
 	certified_bad_type["road_uvs"] = PackedVector3Array()
 	_expect(
-		road_tool._build_road_chunk_instance(certified_bad_type, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		road_tool.chunks.build_chunk(certified_bad_type, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
 		"certified payload must still pass Variant type checks"
 	)
 	var uncertified_nan := _triangle_chunk(1, 1)
 	uncertified_nan["road_mesh_payload_validated"] = false
 	uncertified_nan["road_colors"] = PackedColorArray([Color(NAN, 0.0, 0.0), Color.WHITE, Color.WHITE])
 	_expect(
-		road_tool._build_road_chunk_instance(uncertified_nan, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		road_tool.chunks.build_chunk(uncertified_nan, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
 		"uncertified non-finite payload must be rejected"
 	)
 
@@ -874,10 +895,9 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	var tool := RoadToolScript.new()
 	tool.name = "RoadTool"
 	tool.simulation_node = simulation
-	tool.road_mesh_root = Node3D.new()
-	tool.add_child(tool.road_mesh_root)
+	tool.make_chunks()
 	var generation := simulation.get_network_render_generation()
-	_expect(tool.update_main_mesh(generation) == generation, "isolated preview must hydrate the empty committed chunk grid")
+	_expect(tool.chunks.update(generation) == generation, "isolated preview must hydrate the empty committed chunk grid")
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
@@ -922,7 +942,7 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 		_expect(tool._road_preview_material.get_shader_parameter("placement_state") == expected, "road material must distinguish valid, checking, and rejected placement")
 	var malformed: Dictionary = tool._preview.duplicate(true)
 	malformed["road_chunks"][0]["road_normals"] = PackedVector3Array()
-	_expect(not tool._preview_display.show(tool, malformed, tool._preview_sequence + 1), "incomplete mesh batches must fail atomically")
+	_expect(not tool._preview_display.show(tool.chunks, malformed, tool._preview_sequence + 1), "incomplete mesh batches must fail atomically")
 	_expect(tool._preview_display._instances == instances, "failed staging must preserve the complete previous preview")
 	var rejected: Dictionary = tool._preview.duplicate(false)
 	rejected["is_valid"] = false
@@ -952,6 +972,7 @@ func _pointer_road_tool(simulation: MockRoadCandidateSimulation) -> PointerRoadT
 	simulation.validation = {"is_valid": true}
 	var tool := PointerRoadTool.new()
 	tool.simulation_node = simulation
+	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool.active = true
@@ -1047,11 +1068,11 @@ func _test_road_preview_swaps_on_installed_commit() -> void:
 	simulation.commit_result = {"committed": true, "generation": 5}
 	tool._poll_road_commit_result()
 	_expect(tool._swap_display == shown and tool._swap_generation == 5, "an accepted commit keeps its preview shown until its chunks are installed")
-	tool._road_mesh_generation = 4
-	tool._road_mesh_installed(4)
+	tool.chunks.generation = 4
+	tool.road_chunks_installed(4)
 	_expect(tool._swap_display == shown, "an older generation's chunks do not end the preview")
-	tool._road_mesh_generation = 5
-	tool._road_mesh_installed(5)
+	tool.chunks.generation = 5
+	tool.road_chunks_installed(5)
 	_expect(tool._swap_display == null and shown._instances.is_empty(), "the committed chunks replace the preview in the same call")
 	tool.free()
 	simulation.free()
@@ -1082,6 +1103,7 @@ func _test_road_commit_acknowledgment() -> void:
 	simulation.validation = {"is_valid": true}
 	var tool := RoadToolScript.new()
 	tool.simulation_node = simulation
+	tool.make_chunks()
 	tool.active = true
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
@@ -1130,6 +1152,7 @@ func _test_free_control_curve_chain() -> void:
 	simulation.validation = {"is_valid": true}
 	var tool := ClickRoadTool.new()
 	tool.simulation_node = simulation
+	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool._info_label = Label.new()

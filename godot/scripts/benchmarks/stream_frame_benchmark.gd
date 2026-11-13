@@ -673,10 +673,15 @@ func _record_patch_digest() -> void:
 			"digest": _sha("\n".join(lines).to_utf8_buffer()), "lines": lines}
 	_report.patch_digests.append(entry)
 
+# The road chunks by key: the chunk renderer's (`RENDER-52`), or a control's road tool's index.
+func _road_chunks() -> Variant:
+	var renderer: Variant = _road_tool.get("chunks")
+	return renderer.chunks if renderer != null else _road_tool.get("_road_chunk_instances")
+
 # The road chunks drawn at a settle point (`RENDER-32-P`): per chunk its key, place, surface
-# layout and every surface's arrays, from the road tool's own index on either side.
+# layout and every surface's arrays, from the chunks' own index on either side.
 func _record_road_digest() -> void:
-	var chunks: Variant = _road_tool.get("_road_chunk_instances")
+	var chunks: Variant = _road_chunks()
 	if chunks == null:
 		return
 	var lines := PackedStringArray()
@@ -790,7 +795,8 @@ func _building_line(chunk: Vector2i, part: int, lod: int, deserted: bool, scheme
 
 # The street lights' two textures as uploaded, read back (night only: by day neither is built).
 func _record_lamp_digest() -> void:
-	var lights: Variant = _road_tool.get("_street_lights")
+	var renderer: Variant = _road_tool.get("chunks")
+	var lights: Variant = renderer.street_lights if renderer != null else _road_tool.get("_street_lights")
 	if lights == null:
 		return
 	var cells: Variant = lights.get("_cell_texture")
@@ -1089,7 +1095,7 @@ func _streams() -> Dictionary:
 		"vegetation": _vegetation_counters(),
 		"buildings": {"lod_parts": lods.evaluated_parts, "lod_chunks": lods.queried_chunks,
 			"upload_bytes": lods.uploaded_bytes},
-		"roads": {"chunks": _road_tool._road_chunk_instances.size()},
+		"roads": {"chunks": (_road_chunks() as Dictionary).size()},
 		"grass": {"mask_renders": _grass.mask_renders, "mask_syncs": _grass.mask_mirror_syncs},
 	}
 

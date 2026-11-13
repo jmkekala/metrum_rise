@@ -73,8 +73,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	var tool := RoadToolScript.new()
 	tool.name = "RoadTool"
 	tool.simulation_node = simulation
-	tool.road_mesh_root = Node3D.new()
-	tool.add_child(tool.road_mesh_root)
+	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
@@ -89,7 +88,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		tool.control_pos = _stream_point(fixture, 0.0, -24.0)
 		tool.current_state = RoadToolScript.State.SETTING_END
 	var generation := simulation.get_network_render_generation()
-	_expect(tool.update_main_mesh(generation) == generation, "stream source meshes must hydrate")
+	_expect(tool.chunks.update(generation) == generation, "stream source meshes must hydrate")
 	tool._node_visuals_dirty = false
 	tool._node_visuals_visible = true
 	var before := simulation.get_road_benchmark_state()
@@ -136,7 +135,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		samples.append({"frame": index, "input_us": input_us, "display_us": displayed_us, "sequence": int(preview.get("sequence", 0)), "valid": valid})
 		# Optional rendered pose diagnostics deliberately stall this trace; exclude them from timings.
 		if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty() and index in [16, 24, 40]:
-			await _capture(tool.road_mesh_root, fixture.name + "_motion_" + str(index))
+			await _capture(tool.chunks.chunk_root, fixture.name + "_motion_" + str(index))
 		if input_interval_sec > 0.0:
 			await create_timer(input_interval_sec).timeout
 		else:
@@ -147,7 +146,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	for field in ["generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"]:
 		_expect(before[field] == after[field], "stream must not mutate authoritative " + field)
 	tool.cancel_road()
-	for original in tool._road_chunk_instances.values():
+	for original in tool.chunks.chunks.values():
 		_expect(original.visible, "stream cancellation must restore originals")
 	tool.free()
 	var stages := {}

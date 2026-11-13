@@ -59,8 +59,9 @@ func _run():
 	tool.name = "RoadTool"
 	tool.simulation_node = sim
 	tool.terrain_node = terrain
-	tool.road_mesh_root = Node3D.new()
-	host.add_child(tool.road_mesh_root)
+	tool.make_chunks()
+	tool.chunks.remove_child(tool.chunks.chunk_root)
+	host.add_child(tool.chunks.chunk_root)
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool._info_label = Label.new()
@@ -114,7 +115,7 @@ func _run():
 		sim.set_simulation_speed(0)
 		await audit(strokes.size())
 		DirAccess.remove_absolute(path)
-	print("Road render publication: seed=6807 attempts=%d generation=%d failures=%d" % [strokes.size(), tool._road_mesh_generation, failures])
+	print("Road render publication: seed=6807 attempts=%d generation=%d failures=%d" % [strokes.size(), tool.chunks.generation, failures])
 	tool.free()
 	network.free()
 	host.free()
@@ -128,23 +129,23 @@ func settle(label: String) -> bool:
 		terrain._process(1.0/60)
 		network._process(1.0/60)
 		await process_frame
-		var idle: bool = tool._commit_request_id == 0 and not sim.is_network_dirty() and not sim.is_terrain_dirty() and terrain.is_render_settled() and tool._held_serial < 0
+		var idle: bool = tool._commit_request_id == 0 and not sim.is_network_dirty() and not sim.is_terrain_dirty() and terrain.is_render_settled() and not tool.chunks.is_holding()
 		stable = stable + 1 if idle else 0
 		if stable == 3:
 			return true
 	var g = terrain.graded_tiles
-	check(false, "%s timeout held=%d serial=%d installed=%d batch=%s staged=%s wanted=%s requests=%s counts=%s" % [label, tool._held_serial, sim.get_graded_edit_serial(), g.installed_edit_serial(), g._book.edit_batch_len(), g._edit_staged.keys(), g.wanted_count(), g.get_pool_counters(), terrain.get_pending_render_work_counts()])
+	check(false, "%s timeout held=%d serial=%d installed=%d batch=%s staged=%s wanted=%s requests=%s counts=%s" % [label, tool.chunks.held_serial, sim.get_graded_edit_serial(), g.installed_edit_serial(), g._book.edit_batch_len(), g._edit_staged.keys(), g.wanted_count(), g.get_pool_counters(), terrain.get_pending_render_work_counts()])
 	return false
 
 func audit(stroke: int):
 	var full: Dictionary = sim.get_road_mesh_data(true)
-	check(tool._road_chunk_instances.size() == full.chunks.size(), "chunk count %d" % stroke)
+	check(tool.chunks.chunks.size() == full.chunks.size(), "chunk count %d" % stroke)
 	for chunk: Dictionary in full.chunks:
 		var key := Vector2i(chunk.chunk_x, chunk.chunk_z)
-		check(tool._road_chunk_instances.has(key), "missing %s" % key)
-		if not tool._road_chunk_instances.has(key):
+		check(tool.chunks.chunks.has(key), "missing %s" % key)
+		if not tool.chunks.chunks.has(key):
 			continue
-		var instance: MeshInstance3D = tool._road_chunk_instances[key]
+		var instance: MeshInstance3D = tool.chunks.chunks[key]
 		check(instance.visible, "hidden %s" % key)
 		var surfaces: PackedInt32Array = instance.mesh.get_meta("road_layer_surfaces")
 		for layer in LAYERS.size():

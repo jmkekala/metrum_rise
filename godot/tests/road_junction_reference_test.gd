@@ -280,13 +280,12 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	var road := RoadToolScript.new()
 	road.name = "RoadTool"
 	road.simulation_node = simulation
-	road.road_mesh_root = Node3D.new()
-	road.add_child(road.road_mesh_root)
+	road.make_chunks()
 	var generation: int = simulation.get_network_render_generation()
-	_expect(road.update_main_mesh(generation) == generation, "%s uses the committed road chunks" % label)
-	road.remove_child(road.road_mesh_root)
-	scene.add_child(road.road_mesh_root)
-	var road_chunks: int = road._road_chunk_instances.size()
+	_expect(road.chunks.update(generation) == generation, "%s uses the committed road chunks" % label)
+	road.chunks.remove_child(road.chunks.chunk_root)
+	scene.add_child(road.chunks.chunk_root)
+	var road_chunks: int = road.chunks.chunks.size()
 	if OS.get_environment("METRUM_ROAD_JUNCTION_CONNECTORS") == "1":
 		_expect(MetrumDebug.set_visual_mode("junction_connectors", "arcs"), "junction_connectors must switch on")
 		var overlay := JunctionOverlayScript.new()

@@ -74,8 +74,7 @@ func _road_tool() -> Node3D:
 	tool.simulation_node = simulation
 	tool.terrain_node = TerrainStub.new()
 	tool.add_child(tool.terrain_node)
-	tool.road_mesh_root = Node3D.new()
-	tool.add_child(tool.road_mesh_root)
+	tool.make_chunks()
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool._info_label = Label.new()
@@ -86,7 +85,7 @@ func _road_tool() -> Node3D:
 	tool.bkw_lanes = 1
 	tool.active = true
 	var generation := simulation.get_network_render_generation()
-	_expect(tool.update_main_mesh(generation) == generation, "the resident chunks hydrate before the preview")
+	_expect(tool.chunks.update(generation) == generation, "the resident chunks hydrate before the preview")
 	tool._node_visuals_dirty = false
 	tool._node_visuals_visible = true
 	return tool

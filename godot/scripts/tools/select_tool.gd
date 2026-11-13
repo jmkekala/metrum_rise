@@ -129,7 +129,7 @@ func _unhandled_input(event: InputEvent) -> void:
 					if _preview_crosswalk(clicked_cw).get("is_valid", false) and simulation_node.set_crosswalk_override(selected_node, clicked_cw.edge_id, not clicked_cw.has_cw):
 						_build_node_visuals(selected_node)
 						if get_node_or_null("../RoadTool"):
-							get_node("../RoadTool").update_main_mesh()
+							get_node("../RoadTool").chunks.update()
 					return
 						
 				var clicked_lane = _get_hovered_lane_sphere(pos)
@@ -504,7 +504,7 @@ func set_selected_edge_class(class_int: int) -> void:
 	for idx in selected_edges:
 		simulation_node.set_edge_class(idx, class_int)
 	if get_node_or_null("../RoadTool"):
-		get_node("../RoadTool").update_main_mesh()
+		get_node("../RoadTool").chunks.update()
 
 ## Rust's verdict on giving every selected road `fwd` + `bkw` lanes, the median `median_style`
 ## of `median_width` metres (`ROAD-80`), kerbside `parking` (`PARK-05`: bit 0 left, bit 1 right)

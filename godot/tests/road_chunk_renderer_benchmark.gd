@@ -54,13 +54,31 @@ class MockSimulation:
 	func get_network_render_generation() -> int:
 		return generation
 
+# The chunk renderer's host, as the road tool is (`RENDER-52`): the renderer is its child `chunks`.
 class BenchmarkRoadTool:
-	extends NetworkTool
+	extends Node3D
 
-	func mark_network_topology_dirty() -> void:
+	const ChunkRenderer := preload("res://scripts/renderers/road_chunk_renderer.gd")
+	var chunks: Node3D
+
+	func _init() -> void:
+		chunks = ChunkRenderer.new()
+		chunks.host = self
+		add_child(chunks)
+
+	func _ready() -> void:
+		chunks.simulation_node = get_node("../SimulationNode")
+
+	func reset_main_mesh_chunks() -> void:
+		chunks.reset()
+
+	func mark_network_nodes_dirty() -> void:
 		pass
 
-	func drain_pending_border_checks() -> void:
+	func road_chunks_installed(_generation: int) -> void:
+		pass
+
+	func road_chunks_released() -> void:
 		pass
 
 var _failures: int = 0
@@ -103,7 +121,7 @@ func _run() -> void:
 	await process_frame
 	road_tool.set_process(false)
 	road_tool.set_physics_process(false)
-	road_tool.road_mesh_root.visible = false
+	road_tool.chunks.chunk_root.visible = false
 	RenderingServer.force_sync()
 
 	print(
@@ -148,16 +166,16 @@ func _run_case(
 
 	simulation.generation += 1
 	simulation.response = _batch(simulation.generation, true, initial_chunks)
-	if road_tool.update_main_mesh(simulation.generation) != simulation.generation:
+	if road_tool.chunks.update(simulation.generation) != simulation.generation:
 		_failures += 1
 		push_error("road chunk benchmark failed to create deterministic resident fixture")
 		return
-	if road_tool._road_chunk_instances.size() != resident_chunks:
+	if road_tool.chunks.chunks.size() != resident_chunks:
 		_failures += 1
 		push_error("road chunk benchmark resident fixture has the wrong chunk count")
 		return
 	var fixture_key := _chunk_key(resident_chunks - 1)
-	var fixture_instance: MeshInstance3D = road_tool._road_chunk_instances[fixture_key]
+	var fixture_instance: MeshInstance3D = road_tool.chunks.chunks[fixture_key]
 	if fixture_instance.position != _chunk_position(fixture_key):
 		_failures += 1
 		push_error("road chunk benchmark fixture has the wrong chunk origin placement")
@@ -233,13 +251,13 @@ func _run_update(
 	var previous_changed_instances := {}
 	for chunk in updates:
 		var key := Vector2i(int(chunk["chunk_x"]), int(chunk["chunk_z"]))
-		previous_changed_instances[key] = road_tool._road_chunk_instances.get(key)
+		previous_changed_instances[key] = road_tool.chunks.chunks.get(key)
 	var sentinel_key := _chunk_key(expected_resident_chunks - 1)
-	var sentinel_instance: MeshInstance3D = road_tool._road_chunk_instances[sentinel_key]
+	var sentinel_instance: MeshInstance3D = road_tool.chunks.chunks[sentinel_key]
 
 	RenderingServer.force_sync()
 	var started_usec := Time.get_ticks_usec()
-	var committed_generation := road_tool.update_main_mesh(simulation.generation)
+	var committed_generation := road_tool.chunks.update(simulation.generation)
 	var stage_usec := Time.get_ticks_usec() - started_usec
 	RenderingServer.force_sync()
 	var complete_usec := Time.get_ticks_usec() - started_usec
@@ -247,20 +265,20 @@ func _run_update(
 		_failures += 1
 		push_error("road chunk benchmark update did not commit")
 		return Vector2i(-1, -1)
-	if road_tool._road_chunk_instances.size() != expected_resident_chunks:
+	if road_tool.chunks.chunks.size() != expected_resident_chunks:
 		_failures += 1
 		push_error("road chunk benchmark update changed the resident count")
 		return Vector2i(-1, -1)
 	if (
-		road_tool._road_mesh_generation != simulation.generation
-		or road_tool._road_chunk_span_m != CHUNK_SPAN_M
-		or road_tool._road_chunk_origin_x_m != CHUNK_ORIGIN_X_M
-		or road_tool._road_chunk_origin_z_m != CHUNK_ORIGIN_Z_M
+		road_tool.chunks.generation != simulation.generation
+		or road_tool.chunks.span_m != CHUNK_SPAN_M
+		or road_tool.chunks.origin_x_m != CHUNK_ORIGIN_X_M
+		or road_tool.chunks.origin_z_m != CHUNK_ORIGIN_Z_M
 	):
 		_failures += 1
 		push_error("road chunk benchmark update committed incoherent metadata")
 		return Vector2i(-1, -1)
-	if road_tool._road_chunk_instances[sentinel_key] != sentinel_instance:
+	if road_tool.chunks.chunks[sentinel_key] != sentinel_instance:
 		_failures += 1
 		push_error("road chunk benchmark replaced an untouched sentinel")
 		return Vector2i(-1, -1)
@@ -269,11 +287,11 @@ func _run_update(
 		push_error("road chunk benchmark moved the untouched sentinel")
 		return Vector2i(-1, -1)
 	for key in previous_changed_instances:
-		if road_tool._road_chunk_instances[key] == previous_changed_instances[key]:
+		if road_tool.chunks.chunks[key] == previous_changed_instances[key]:
 			_failures += 1
 			push_error("road chunk benchmark did not replace a changed chunk")
 			return Vector2i(-1, -1)
-		if road_tool._road_chunk_instances[key].position != _chunk_position(key):
+		if road_tool.chunks.chunks[key].position != _chunk_position(key):
 			_failures += 1
 			push_error("road chunk benchmark placed a changed chunk at the wrong origin")
 			return Vector2i(-1, -1)
@@ -308,7 +326,7 @@ func _structure_layer_arrays(layer: String, color: Color) -> Dictionary:
 # vertices).
 func _shadow_copies(road_tool: BenchmarkRoadTool) -> Vector2i:
 	var result := Vector2i.ZERO
-	for instance in road_tool._road_chunk_instances.values():
+	for instance in road_tool.chunks.chunks.values():
 		for child in instance.get_children():
 			if child is MeshInstance3D \
 					and child.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:

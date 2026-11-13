@@ -440,6 +440,11 @@ func _begin_frames() -> void:
 	_frames = []
 	_last_us = Time.get_ticks_usec()
 	_remember()
+	# With the perf channel on (METRUM_DEBUG_PERF=1, instrumented), each row gets its frame's road
+	# chunk work (`RENDER-52`): the network refresh's road staging and commit, the chunk units.
+	if PerfDebug.is_enabled():
+		PerfDebug.begin_frame_capture()
+		PerfDebug.take_frame()
 
 func _remember() -> void:
 	for name in ["uploads", "upload_bytes", "preview_frames", "edit_batches", "edit_adopted", "cell_builds"]:
@@ -479,7 +484,7 @@ func _next_frame() -> void:
 	if _kind in ["pose", "catch_up", "sweep"] and int(row["preview_shown"]) > 0 and not road_drawn:
 		_unroaded += 1
 		row["unroaded"] = true
-	row["chunks_held"] = tool._held_serial >= 0
+	row["chunks_held"] = tool.chunks.is_holding()
 	if _clip and not _capture_dir.is_empty() and _kind != "settled":
 		DirAccess.make_dir_recursive_absolute(_capture_dir)
 		_bench.get_viewport().get_texture().get_image().save_png(_capture_dir.path_join("clip_%05d_%s.png" % [_clip_frames, _kind]))
@@ -502,9 +507,23 @@ func _next_frame() -> void:
 		row["batch_tiles"] = int(counters["edit_tiles_last"])
 		row["batch_adopted"] = int(counters["edit_adopted"]) - int(_seen["edit_adopted"])
 		row["batch_parts"] = (counters["edit_frame_parts"] as Dictionary).duplicate()
+	if PerfDebug.is_enabled():
+		_road_share(row, PerfDebug.take_frame())
 	_frames.append(row)
 	_last_us = now
 	_remember()
+
+# The road chunk work of the frame `row` records, from its perf records: `network_ms` (the
+# network refresh, terrain included), `road_ms` (its road staging and commit plus any road chunk
+# units), `road_units` (units installed).
+static func _road_share(row: Dictionary, perf: Dictionary) -> void:
+	var network: Dictionary = perf.get("network", {})
+	var road := float(network.get("details", {}).get("road_mesh", 0.0))
+	var units: Dictionary = perf.get("road_hydration", {})
+	road += float(units.get("elapsed_ms", 0.0))
+	row["road_units"] = int(units.get("details", {}).get("installed", 0))
+	row["network_ms"] = float(network.get("elapsed_ms", 0.0))
+	row["road_ms"] = road
 
 # The harness's idle wait, then the graded tiles idle (no tile or list in flight, no count queued,
 # no cell set to build) for three frames in a row.
@@ -624,7 +643,7 @@ func _placement(origin: Vector2, span: float, understory: bool, near_band: bool)
 # (road_preview_display.gd names them RoadPreview_<x>_<z>).
 func _on_road(trunks: PackedVector2Array, preview: bool) -> int:
 	var binned: Array[Dictionary] = []
-	for chunk in _bench.road_tool.road_mesh_root.get_children():
+	for chunk in _bench.road_tool.chunks.chunk_root.get_children():
 		if not chunk is MeshInstance3D or not chunk.visible or String(chunk.name).begins_with("RoadPreview_") != preview:
 			continue
 		var id: int = chunk.get_instance_id()

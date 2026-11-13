@@ -704,14 +704,17 @@ func _find_fixture_anchor(
 func _align_fixture_anchor(anchor: Vector2, fixture: Dictionary) -> Vector2:
 	if fixture.get("anchor_alignment", "free") != "chunk_corner":
 		return anchor
-	var chunk_span_m: float = road_tool._road_chunk_span_m
+	var chunks: Object = _road_chunk_state()
+	var chunk_span_m: float = chunks.get("span_m" if chunks != road_tool else "_road_chunk_span_m")
 	if chunk_span_m <= 0.0:
 		return anchor
+	var origin_x: float = chunks.get("origin_x_m" if chunks != road_tool else "_road_chunk_origin_x_m")
+	var origin_z: float = chunks.get("origin_z_m" if chunks != road_tool else "_road_chunk_origin_z_m")
 	return Vector2(
-		road_tool._road_chunk_origin_x_m
-			+ round((anchor.x - road_tool._road_chunk_origin_x_m) / chunk_span_m) * chunk_span_m,
-		road_tool._road_chunk_origin_z_m
-			+ round((anchor.y - road_tool._road_chunk_origin_z_m) / chunk_span_m) * chunk_span_m
+		origin_x
+			+ round((anchor.x - origin_x) / chunk_span_m) * chunk_span_m,
+		origin_z
+			+ round((anchor.y - origin_z) / chunk_span_m) * chunk_span_m
 	)
 
 func _fixture_fits_world(
@@ -1166,7 +1169,7 @@ func _wait_for_generation(previous_generation: int, timeout_sec: float, start_us
 				milestones["generation_ready_ms"] = _elapsed_ms(start_us)
 		if (
 			generation_advanced and not milestones.has("render_ack_ms")
-			and road_tool._road_mesh_generation == expected_generation
+			and _road_chunk_generation() == expected_generation
 			and not simulation_node.is_network_dirty()
 		):
 			milestones["render_ack_ms"] = _elapsed_ms(start_us)
@@ -1218,11 +1221,22 @@ func _wait_for_idle(timeout_sec: float) -> Dictionary:
 		"pending": _pending_work_snapshot(),
 	}
 
+# The committed chunks' state: the chunk renderer (`RENDER-52`), or a control's road tool, which
+# held it before (this script also runs over a control's scripts).
+func _road_chunk_state() -> Object:
+	var chunks: Variant = road_tool.get("chunks")
+	return chunks if chunks != null else road_tool
+
+# The installed road chunk generation, -1 while the chunks wait for the whole network.
+func _road_chunk_generation() -> int:
+	var chunks: Object = _road_chunk_state()
+	return int(chunks.get("generation" if chunks != road_tool else "_road_mesh_generation"))
+
 func _is_idle() -> bool:
 	return (
 		not simulation_node.is_network_dirty()
 		and not simulation_node.is_terrain_dirty()
-		and not road_tool.needs_main_mesh_hydration()
+		and _road_chunk_generation() >= 0
 		and road_tool._commit_request_id == 0
 		and road_tool._pending_border_checks.is_empty()
 		and not terrain.has_pending_render_work(false)
@@ -1234,7 +1248,7 @@ func _pending_work_snapshot() -> Dictionary:
 		"network_dirty": simulation_node.is_network_dirty(),
 		"terrain_dirty": simulation_node.is_terrain_dirty(),
 		"water_dirty": simulation_node.is_water_dirty(),
-		"road_hydration": road_tool.needs_main_mesh_hydration(),
+		"road_hydration": _road_chunk_generation() < 0,
 		"border_checks": road_tool._pending_border_checks.size(),
 		"terrain": terrain.get_pending_render_work_counts(),
 		"terrain_failures": terrain.get_blocked_dirty_patch_failures(),

@@ -164,7 +164,7 @@ func run(bench: Node) -> void:
 	# each where in view) and triangles, what a whole-map view would draw (terrain.md T55).
 	var road_tool: Node = main.get_node_or_null("RoadTool")
 	if road_tool != null:
-		var chunks: Dictionary = road_tool.get("_road_chunk_instances")
+		var chunks: Dictionary = road_tool.chunks.chunks
 		var surfaces := 0
 		var triangles := 0
 		for instance: Variant in chunks.values():
